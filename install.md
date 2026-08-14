@@ -5,7 +5,7 @@
 ## Files
 
 ```
-plugin/godot-bridge.mjs           # the plugin (zero-import ESM module, named exports name/inject/apply)
+plugin/godot-bridge.mjs           # the plugin (standard DSH module: named exports name/inject/apply)
 plugin/mcp_interaction_server.gd  # vendored from godot-mcp (MIT) — in-game TCP server autoload
 plugin/godot_operations.gd        # vendored from godot-mcp (MIT) — headless ops script
 plugin/validate_script.gd         # vendored from godot-mcp (MIT) — GDScript compile-check
@@ -13,21 +13,9 @@ package.json                      # dsh.bundle manifest (for `dsh plugin add`)
 cordis.patch.yml                  # bundle patch layer (inserts the tool row)
 ```
 
-One implementation (TCP bridge + process management + 15 tools) is shipped; the two install paths below load the exact same `godot-bridge.mjs` file. The only difference is how the plugin row gets into your composition: `dsh plugin add` writes it via the bundle manifest, the manual path adds it by hand.
+The plugin is a standard DSH bundle module: it imports `defineTool` from `@deepseek-ai/dsh-tools` and registers the fifteen `godot_*` tools via `ctx.tools.register`. It uses named exports (`export const name`, `export const inject`, `export function apply`) — the cordis loader's `unwrapExports` (`exports.default ?? exports`) turns the namespace into the plugin object. Do not add a stray `export default`: it would make `unwrapExports` collapse to that single value and silently drop `name`/`inject`/`apply`.
 
-## Why the plugin is zero-import
-
-**`import` resolution is location-based**: Node resolves a bare specifier (`import '@deepseek-ai/...'`) by walking **up from the importing file's own directory** through each `node_modules`. Harness's own plugins live inside the harness dependency tree, so `@deepseek-ai/*` is directly above them and imports work normally. This plugin, however, is deployed as a standalone file under the user preset:
-
-```
-${DSH_HOME:-~/.dsh}/.agent-presets/<preset>/plugins/godot-bridge.mjs
-```
-
-Walking up from there (`~/.dsh` → home → drive root) never reaches the harness's `node_modules`, so any `import '@deepseek-ai/*'` would fail with `MODULE_NOT_FOUND`. Zero-import is therefore a constraint of the install location, not a stylistic choice — and it is what makes the "copy one file" install work at all.
-
-To register tools without importing anything, the module builds tool definitions with hand-written JSON Schema and passes them to the injected `tools` service — `ctx.tools.register` only validates `output.render`, `output.schema` (via `assertSupportedJsonSchema`) and `timeoutMs`; it does not require a `defineTool`-produced definition.
-
-The module uses named exports (`export const name`, `export const inject`, `export function apply`) — the cordis loader's `unwrapExports` (`exports.default ?? exports`) turns the namespace into the plugin object. Do not add a stray `export default`: it would make `unwrapExports` collapse to that single value and silently drop `name`/`inject`/`apply`.
+Because it imports `@deepseek-ai/*`, the module must live where Node can resolve the harness dependency tree — i.e. be installed through the official bundle mechanism (`dsh plugin add`), which puts the package in the profile's `node_modules` (the harness heals the shared `@deepseek-ai/*` layer there at boot). Do **not** copy the file into a user agent preset (`~/.dsh/.agent-presets/...`): Node cannot resolve `@deepseek-ai/dsh-tools` from that location.
 
 ## Install
 
@@ -37,22 +25,14 @@ The module uses named exports (`export const name`, `export const inject`, `expo
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-The package's `dsh.bundle` manifest points at `cordis.patch.yml`, which inserts the `tool-godot-bridge` row (referenced by package name) into the profile. Pure ESM + assets — no build script, so a git install needs no `allowBuilds` exemption. After a restart, every session on that profile has the fifteen tools.
+`dsh plugin` is a pnpm forwarder: it installs the package into the profile and — because the package's `dsh.bundle` manifest points at `cordis.patch.yml`, which inserts the `tool-godot-bridge` row (referenced by package name) — appends `godot-bridge` to the profile's `dsh.profile.bundles` layer list. Pure ESM + assets, no build script, so a git install needs no `allowBuilds` exemption. After a restart, every session on that profile has the fifteen tools.
 
-### Manual: deployment-level agent preset
+The same command installs a local checkout or a tarball:
 
-Use this when you have no `dsh` CLI or want the plugin in a specific preset.
-
-1. Copy `plugin/godot-bridge.mjs` → `<preset-dir>/plugins/godot-bridge.mjs`
-2. Append to `<preset-dir>/agent.cordis.yml`:
-
-   ```yaml
-   - id: tool-godot-bridge
-     name: './plugins/godot-bridge.mjs'
-   ```
-
-3. Validate: `agentPresets.standingKeyFor('<preset-id>')` — must return without error
-4. Start a session on that preset; confirm the fifteen `godot_*` tools in the tool list
+```sh
+dsh plugin --profile web add ./path/to/godot-bridge     # local checkout
+dsh plugin --profile web add ./godot-bridge-0.1.0.tgz   # pnpm pack output
+```
 
 ## Config
 
@@ -63,5 +43,5 @@ Use this when you have no `dsh` CLI or want the plugin in a specific preset.
 ## Maintenance
 
 - Editing `plugin/godot-bridge.mjs` needs no rebuild (plain ESM).
-- After changing a preset composition, re-run `standingKeyFor` to mount-validate.
+- After changing the plugin, reinstall it into the profile (`dsh plugin --profile web add github:Smalldy/godot-bridge` again) and restart the session.
 - The game side (`mcp_interaction_server.gd` autoload) is never modified by the plugin.

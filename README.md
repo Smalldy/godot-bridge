@@ -61,22 +61,11 @@ DSH session
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-The package ships a `dsh.bundle` manifest (`cordis.patch.yml`) that inserts the `tool-godot-bridge` row into your profile. After a restart, the fifteen `godot_*` tools are available in every session on that profile. Listed in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry (topic: `dsh-plugin`).
+`dsh plugin` is a pnpm forwarder: it installs the package into the profile's `node_modules` and — because the package declares `dsh.bundle` (its `cordis.patch.yml` inserts the `tool-godot-bridge` row) — appends it to the profile's `dsh.profile.bundles` layer list. The `web` profile is the standard one the Web app already boots from, so this simply adds the tools to standard mode — **no new profile is created**. After a restart, the fifteen `godot_*` tools are available in every session on that profile. Listed in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry (topic: `dsh-plugin`).
 
-**No dsh CLI? Manual install** — copy `plugin/godot-bridge.mjs` to your user preset and add one row to its `agent.cordis.yml`:
+The same command installs a local checkout or tarball (`dsh plugin --profile web add ./path/to/godot-bridge`).
 
-```
-${DSH_HOME:-~/.dsh}/.agent-presets/<your-preset>/plugins/godot-bridge.mjs
-```
-
-```yaml
-- id: tool-godot-bridge
-  name: './plugins/godot-bridge.mjs'
-```
-
-Then start a session on that preset — the fifteen `godot_*` tools are available. (Validate the mount with `agentPresets.standingKeyFor('<your-preset>')` if you want to check before launching.)
-
-> The module is deliberately **zero-import**: user presets live under `~/.dsh`, where Node cannot resolve the harness's `node_modules`. It builds tool definitions with hand-written JSON Schema and registers them via `ctx.tools.register` (which validates `output.render` / `output.schema` / `timeoutMs`, no `defineTool` import needed).
+> The plugin is a standard DSH bundle module: it imports `defineTool` from `@deepseek-ai/dsh-tools` and registers via `ctx.tools.register`. It must be installed through the bundle mechanism above — the harness heals the shared `@deepseek-ai/*` dependency layer inside the profile's `node_modules`, which is what makes the import resolve. Do not copy the file into a user agent preset (`~/.dsh/.agent-presets/...`); Node cannot resolve `@deepseek-ai/dsh-tools` from that location.
 
 ## Usage
 
@@ -104,7 +93,7 @@ GODOT_PATH resolution: tool arg `godot_path` → `<workspace>/.omp/mcp.json` `en
 ## Project layout
 
 ```
-plugin/godot-bridge.mjs           # the plugin (zero-import ESM module, named exports)
+plugin/godot-bridge.mjs           # the plugin (standard DSH module, named exports name/inject/apply)
 plugin/mcp_interaction_server.gd  # vendored from godot-mcp (MIT) — in-game TCP server autoload
 plugin/godot_operations.gd        # vendored from godot-mcp (MIT) — headless ops script
 plugin/validate_script.gd         # vendored from godot-mcp (MIT) — GDScript compile-check

@@ -1,31 +1,29 @@
-/**
- * godot-bridge — DSH ↔ Godot 运行时控制桥（部署级插件模块）
- * ===========================================================
- * 这是给 cordis 组合（agent preset）用的 ESM 模块形态：
- *   - 命名导出 name / inject / apply（cordis Loader 的 unwrapExports 支持）
- *   - 零 import：预设位于 ~/.dsh 下，Node 向上解析不到 harness 的 node_modules，
- *     所以不 import 任何 @deepseek-ai/* 包；工具定义用手写 JSON Schema 直接
- *     ctx.tools.register（register 只校验 output.render / output.schema / timeoutMs）。
+﻿/**
+ * godot-bridge — DSH ↔ Godot 运行时控制桥（标准 DSH 插件形态）
+ * ==============================================================
+ * 标准 DSH 插件：命名导出 name / inject / apply，工具经官方
+ * @deepseek-ai/dsh-tools 的 defineTool 构造，通过 ctx.tools.register 注册。
+ * 通过 `dsh plugin add` 安装（bundle 装进 profile 的 node_modules，
+ * harness 启动时 heal 共享 @deepseek-ai/* 依赖层，因此可以正常 import）。
  *
- * 组合行（agent.cordis.yml）：
+ * 组合行（bundle cordis.patch.yml）：
  *   - id: tool-godot-bridge
- *     name: './plugins/godot-bridge.mjs'
- *
- * 与动态插件版（tools/godot-bridge/godot-bridge.js，code.host 形态）逻辑一致，
- * 只是注册 API 从 harness.defineTool/registerTool 换成 ctx.tools.register。
+ *     name: godot-bridge
  *
  * 注意：GODOT_PATH 默认读 <workspace>/.omp/mcp.json 的 env.GODOT_PATH，
  * 找不到用内置 gdvm 4.7.1 真实 exe 路径；务必用真实 exe，别用 shim。
  */
 
+import { defineTool as defineToolOfficial } from '@deepseek-ai/dsh-tools'
+
 export const name = 'godot-bridge'
 
-export const inject = ['subprocess', 'timer', 'tools']
+export const inject = ['subprocess', 'timer', 'tools', 'fs', 'sandboxPolicy']
 
 export function apply(ctx) {
-  const subprocess = ctx.get('subprocess')
-  const timer = ctx.get('timer')
-  const tools = ctx.get('tools')
+  const subprocess = ctx.subprocess
+  const timer = ctx.timer
+  const tools = ctx.tools
   if (subprocess === undefined || timer === undefined || tools === undefined) return
 
   const PORT = 9090
@@ -48,7 +46,7 @@ export function apply(ctx) {
 
   async function getWorkspaceRoot(exec) {
     try {
-      const policy = ctx.get('sandboxPolicy')
+      const policy = ctx.sandboxPolicy
       if (!policy) return null
       const resolved = exec && exec.agent
         ? policy.resolve({ session: exec.agent.session })
@@ -66,7 +64,7 @@ export function apply(ctx) {
     if (godotPath) return godotPath
     godotPath = FALLBACK_GODOT
     try {
-      const fs = ctx.get('fs')
+      const fs = ctx.fs
       const root = await getWorkspaceRoot()
       if (fs !== undefined && root) {
         const target = await fs.resolve('.omp/mcp.json', { cwd: root })
@@ -163,7 +161,7 @@ export function apply(ctx) {
         return decodeURIComponent(u.pathname).replace(/^\/([A-Za-z]:)/, '$1')
       }
     } catch (e) {}
-    const fs = ctx.get('fs')
+    const fs = ctx.fs
     const candidates = []
     if (projectPath) {
       candidates.push(projectPath + '/tools/godot-bridge/' + name)
@@ -235,7 +233,7 @@ export function apply(ctx) {
 
   async function readProjectFile(projectPath, filename) {
     try {
-      const fs = ctx.get('fs')
+      const fs = ctx.fs
       const target = await fs.resolve(filename, { cwd: projectPath })
       const info = await fs.stat(target)
       if (!info) return null
@@ -246,7 +244,7 @@ export function apply(ctx) {
   }
 
   async function writeProjectFile(projectPath, filename, content) {
-    const fs = ctx.get('fs')
+    const fs = ctx.fs
     const target = await fs.resolve(filename, { cwd: projectPath })
     // The fs service applies the DEPLOYMENT default policy unless one is
     // passed; without it, writes inside the session workspace are denied when
@@ -372,12 +370,19 @@ export function apply(ctx) {
     return { out: out, err: err, exitCode: outcome.exitCode }
   }
 
-  // Hand-built ToolDefinition (JSON-schema parameters) registered via
-  // ctx.tools.register — no defineTool import needed in this module.
+  // Official-shape wrapper: the defs below still carry the legacy
+  // { type:'object', properties, required:[] } parameter shape; convert to the
+  // official per-property map ({ prop: { ..., required: true } }) and let
+  // @deepseek-ai/dsh-tools' defineTool build the registry-ready definition.
   function defineTool(opt) {
-    const parameters = { type: 'object', properties: opt.properties, additionalProperties: false }
-    if (opt.required && opt.required.length > 0) parameters.required = opt.required
-    return {
+    const parameters = {}
+    const required = opt.required || []
+    for (const key of Object.keys(opt.properties || {})) {
+      const spec = Object.assign({}, opt.properties[key])
+      if (required.includes(key)) spec.required = true
+      parameters[key] = spec
+    }
+    const def = {
       name: opt.name,
       description: opt.description,
       parameters: parameters,
@@ -387,15 +392,16 @@ export function apply(ctx) {
           return [{ type: 'text', text: JSON.stringify(value) }]
         },
       },
-      timeoutMs: opt.timeoutMs || 30000,
-      async execute(args, exec) {
-        try {
-          return await opt.execute(args, exec)
-        } catch (e) {
-          return { error: String((e && e.message) || e) }
-        }
-      },
     }
+    if (opt.timeoutMs) def.timeoutMs = opt.timeoutMs
+    def.execute = async function (args, exec) {
+      try {
+        return await opt.execute(args, exec)
+      } catch (e) {
+        return { error: String((e && e.message) || e) }
+      }
+    }
+    return defineToolOfficial(def)
   }
 
   const COMMANDS = [

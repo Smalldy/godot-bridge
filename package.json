@@ -8,7 +8,8 @@
     ".": "./plugin/godot-bridge.mjs"
   },
   "files": [
-    "plugin/"
+    "plugin/",
+    "cordis.patch.yml"
   ],
   "keywords": [
     "dsh",

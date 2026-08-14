@@ -61,22 +61,11 @@ DSH 会话
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-包内带 `dsh.bundle` manifest（`cordis.patch.yml`），会把 `tool-godot-bridge` 行插入你的 profile。重启后该 profile 的所有会话都有 15 个 `godot_*` 工具。已收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单（topic：`dsh-plugin`）。
+`dsh plugin` 是 pnpm 转发器：把包装进 profile 的 `node_modules`，并因包内声明 `dsh.bundle`（其 `cordis.patch.yml` 插入 `tool-godot-bridge` 行）而把它追加进该 profile 的 `dsh.profile.bundles` 层列表。`web` 就是 Web 应用启动所用的**标准 profile**——这条命令只是把工具加进标准模式，**不会新建任何 profile**。重启后该 profile 的所有会话都有 15 个 `godot_*` 工具。已收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单（topic：`dsh-plugin`）。
 
-**没有 dsh CLI？手动安装**——把 `plugin/godot-bridge.mjs` 复制进你的用户预设，并在其 `agent.cordis.yml` 里加一行：
+同一命令也可安装本地 checkout 或 tarball（`dsh plugin --profile web add ./path/to/godot-bridge`）。
 
-```
-${DSH_HOME:-~/.dsh}/.agent-presets/<你的预设>/plugins/godot-bridge.mjs
-```
-
-```yaml
-- id: tool-godot-bridge
-  name: './plugins/godot-bridge.mjs'
-```
-
-然后用该预设开新会话——15 个 `godot_*` 工具即可用。（想先校验挂载可用 `agentPresets.standingKeyFor('<你的预设>')`。）
-
-> 该模块刻意做成**零 import**：用户预设位于 `~/.dsh` 下，Node 向上解析不到 harness 的 `node_modules`。工具定义用手写 JSON Schema 并通过 `ctx.tools.register` 注册（`register` 只校验 `output.render` / `output.schema` / `timeoutMs`，无需 import `defineTool`）。
+> 插件是标准 DSH bundle 模块：`import { defineTool } from '@deepseek-ai/dsh-tools'` 并经 `ctx.tools.register` 注册。它必须通过上面的 bundle 机制安装——harness 启动时会在 profile 的 `node_modules` 里 heal 共享的 `@deepseek-ai/*` 依赖层，import 才解析得到。不要把文件复制进用户 agent 预设（`~/.dsh/.agent-presets/...`）；那个位置解析不到 `@deepseek-ai/dsh-tools`。
 
 ## 用法
 
@@ -104,7 +93,7 @@ GODOT_PATH 解析顺序：工具参数 `godot_path` → `<workspace>/.omp/mcp.js
 ## 项目结构
 
 ```
-plugin/godot-bridge.mjs           # 插件本体（零 import ESM 模块，命名导出）
+plugin/godot-bridge.mjs           # 插件本体（标准 DSH 模块，命名导出 name/inject/apply）
 plugin/mcp_interaction_server.gd  # 取自 godot-mcp（MIT）——游戏内 TCP 服务器 autoload
 plugin/godot_operations.gd        # 取自 godot-mcp（MIT）——headless 操作脚本
 plugin/validate_script.gd         # 取自 godot-mcp（MIT）——GDScript 编译检查
