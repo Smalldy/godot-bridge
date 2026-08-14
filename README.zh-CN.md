@@ -18,6 +18,13 @@
 | `godot_ping` | — | 探测游戏是否在 9090 应答 |
 | `godot_headless_op` | `read_scene`、`modify_scene_node`、`remove_scene_node`、`attach_script`、`create_resource`、`save_scene`、`create_scene`、`add_node`、`get_uid`、`manage_scene_signals`…… | headless 静态操作（`godot --headless --script godot_operations.gd`）：16 个操作，无需运行游戏 |
 | `godot_validate_script` | `validate_script` | headless GDScript 编译检查（`validate_script.gd`）→ `{valid, errors}` |
+| `godot_set_project_setting` | `modify_project_settings`、`set_main_scene`、`manage_layers`、`manage_plugins`、`manage_translations` | 在任意 project.godot 段设置类型化键值（`PackedStringArray(...)` / `Vector2i(...)` / bool 等） |
+| `godot_manage_autoloads` | `manage_autoloads` | 列出/增删 autoload 单例（`Name="*res://…"`） |
+| `godot_manage_input_map` | `manage_input_map` | 列出/增删输入动作——**正确的 Godot 4 键码**（修复 godot-mcp 的 Godot 3 基线 bug） |
+| `godot_manage_export_presets` | `manage_export_presets` | 列出/增删导出预设（`export_presets.cfg`） |
+| `godot_create_script` | `create_script` | GDScript 模板（extends / class_name / 方法桩 / 自定义源码） |
+| `godot_create_project` | `create_project` / `create_csharp_script` | 项目脚手架，可选 Godot .NET `.csproj` |
+| `godot_export_project` | `export_project` | headless 导出（`--export-release` / `--export-debug <预设> <输出>`） |
 
 其余 godot-mcp 工具是在 MCP 服务器自己的 Node 进程里实现的：纯文件/编辑器操作由 DSH 原生文件工具覆盖；少数几个带 **Godot 特有写逻辑**（`manage_input_map`、`manage_export_presets`、`modify_project_settings`、项目/脚本模板生成等），通用编辑只能配合格式知识替代——完整对照见 [COVERAGE.md](COVERAGE.zh-CN.md)。
 
@@ -61,7 +68,7 @@ DSH 会话
      name: './plugins/godot-bridge.mjs'
    ```
 
-3. 校验挂载（`agentPresets.standingKeyFor('<你的预设>')`），然后用该预设开新会话——8 个 `godot_*` 工具即可用。
+3. 校验挂载（`agentPresets.standingKeyFor('<你的预设>')`），然后用该预设开新会话——15 个 `godot_*` 工具即可用。
 
 > 该模块刻意做成**零 import**：用户预设位于 `~/.dsh` 下，Node 向上解析不到 harness 的 `node_modules`。工具定义用手写 JSON Schema 并通过 `ctx.tools.register` 注册（`register` 只校验 `output.render` / `output.schema` / `timeoutMs`，无需 import `defineTool`）。
 
@@ -77,7 +84,7 @@ DSH 会话
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-包内带 `dsh.bundle` manifest（`cordis.patch.yml`），会把 `tool-godot-bridge` 行插入你的 profile。重启后该 profile 的所有会话都有 8 个 `godot_*` 工具。已向 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单提交收录（[PR #199](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/199)，待合并；topic：`dsh-plugin`）。
+包内带 `dsh.bundle` manifest（`cordis.patch.yml`），会把 `tool-godot-bridge` 行插入你的 profile。重启后该 profile 的所有会话都有 15 个 `godot_*` 工具。已向 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单提交收录（[PR #199](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/199)，待合并；topic：`dsh-plugin`）。
 
 ## 用法
 

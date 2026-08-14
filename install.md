@@ -14,7 +14,7 @@ package.json                      # dsh.bundle manifest (for `dsh plugin add`)
 cordis.patch.yml                  # bundle patch layer (inserts the tool row)
 ```
 
-All three forms implement identical logic (TCP bridge + process management + 8 tools); they differ only in the registration API, which each runtime requires:
+All three forms implement identical logic (TCP bridge + process management + 15 tools); they differ only in the registration API, which each runtime requires:
 
 | | dynamic plugin (B) | deployment preset (A) | community bundle (C) |
 | --- | --- | --- | --- |
@@ -43,7 +43,7 @@ The module uses named exports (`export const name`, `export const inject`, `expo
    ```
 
 3. Validate: `agentPresets.standingKeyFor('<preset-id>')` — must return without error
-4. Start a session on that preset; confirm the eight `godot_*` tools in the tool list
+4. Start a session on that preset; confirm the fifteen `godot_*` tools in the tool list
 
 ### B. In-session dynamic plugin (quick test)
 
@@ -55,7 +55,7 @@ Tell your agent: *read `plugin/godot-bridge.js`, define a dynamic plugin (`cordi
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-The package's `dsh.bundle` manifest points at `cordis.patch.yml`, which inserts the `tool-godot-bridge` row (referenced by package name) into the profile. Pure ESM + assets — no build script, so a git install needs no `allowBuilds` exemption. After a restart, every session on that profile has the eight tools.
+The package's `dsh.bundle` manifest points at `cordis.patch.yml`, which inserts the `tool-godot-bridge` row (referenced by package name) into the profile. Pure ESM + assets — no build script, so a git install needs no `allowBuilds` exemption. After a restart, every session on that profile has the fifteen tools.
 
 ## Config
 

@@ -18,6 +18,13 @@ No MCP protocol, no Python server, no editor addon. The game side is untouched: 
 | `godot_ping` | — | Probe whether the game answers on 9090 |
 | `godot_headless_op` | `read_scene`, `modify_scene_node`, `remove_scene_node`, `attach_script`, `create_resource`, `save_scene`, `create_scene`, `add_node`, `get_uid`, `manage_scene_signals`, … | Headless static operations (`godot --headless --script godot_operations.gd`): 16 ops, no running game needed |
 | `godot_validate_script` | `validate_script` | Headless GDScript compile-check via `validate_script.gd` → `{valid, errors}` |
+| `godot_set_project_setting` | `modify_project_settings`, `set_main_scene`, `manage_layers`, `manage_plugins`, `manage_translations` | Set a typed key in any project.godot section (`PackedStringArray(...)` / `Vector2i(...)` / bool / …) |
+| `godot_manage_autoloads` | `manage_autoloads` | List / add / remove autoload singletons (`Name="*res://…"`) |
+| `godot_manage_input_map` | `manage_input_map` | List / add / remove input actions — **correct Godot 4 keycodes** (fixes godot-mcp's Godot 3 baseline bug) |
+| `godot_manage_export_presets` | `manage_export_presets` | List / add / remove export presets (`export_presets.cfg`) |
+| `godot_create_script` | `create_script` | GDScript template (extends / class_name / method stubs / source) |
+| `godot_create_project` | `create_project` / `create_csharp_script` | Project scaffold, optional Godot .NET `.csproj` |
+| `godot_export_project` | `export_project` | Headless export (`--export-release` / `--export-debug <preset> <output>`) |
 
 The remaining godot-mcp tools were implemented in the MCP server's own Node process: pure file/editor operations are covered by DSH's native file tools, while a handful carry **Godot-specific write logic** (`manage_input_map`, `manage_export_presets`, `modify_project_settings`, project/script templates) that a generic edit replaces only with format knowledge — see [COVERAGE.md](COVERAGE.md) for the full breakdown.
 
@@ -61,7 +68,7 @@ DSH session
      name: './plugins/godot-bridge.mjs'
    ```
 
-3. Validate the mount (`agentPresets.standingKeyFor('<your-preset>')`), then start a session on that preset — the eight `godot_*` tools are available.
+3. Validate the mount (`agentPresets.standingKeyFor('<your-preset>')`), then start a session on that preset — the fifteen `godot_*` tools are available.
 
 > The module is deliberately **zero-import**: user presets live under `~/.dsh`, where Node cannot resolve the harness's `node_modules`. It builds tool definitions with hand-written JSON Schema and registers them via `ctx.tools.register` (which validates `output.render` / `output.schema` / `timeoutMs`, no `defineTool` import needed).
 
@@ -77,7 +84,7 @@ Install straight from GitHub — pure ESM + assets, no npm account, no build ste
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-The package ships a `dsh.bundle` manifest (`cordis.patch.yml`) that inserts the `tool-godot-bridge` row into your profile. After a restart, the eight `godot_*` tools are available in every session on that profile. A listing in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry is pending review ([PR #199](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/199)).
+The package ships a `dsh.bundle` manifest (`cordis.patch.yml`) that inserts the `tool-godot-bridge` row into your profile. After a restart, the fifteen `godot_*` tools are available in every session on that profile. A listing in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry is pending review ([PR #199](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/199)).
 
 ## Usage
 

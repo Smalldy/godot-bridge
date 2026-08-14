@@ -14,7 +14,7 @@ package.json                      # dsh.bundle manifest（供 `dsh plugin add` �
 cordis.patch.yml                  # bundle patch 层（插入工具行）
 ```
 
-三种形态实现完全相同的逻辑（TCP 桥 + 进程管理 + 8 个工具），只是注册 API 不同，由各自运行环境决定：
+三种形态实现完全相同的逻辑（TCP 桥 + 进程管理 + 15 个工具），只是注册 API 不同，由各自运行环境决定：
 
 | | 动态插件（B） | 部署预设（A） | 社区 bundle（C） |
 | --- | --- | --- | --- |
@@ -43,7 +43,7 @@ cordis.patch.yml                  # bundle patch 层（插入工具行）
    ```
 
 3. 校验：`agentPresets.standingKeyFor('<预设id>')` — 必须无错返回
-4. 用该预设开新会话，确认 8 个 `godot_*` 工具在工具列表里
+4. 用该预设开新会话，确认 15 个 `godot_*` 工具在工具列表里
 
 ### B. 会话内动态插件（快速试用）
 
@@ -55,7 +55,7 @@ cordis.patch.yml                  # bundle patch 层（插入工具行）
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-包内 `dsh.bundle` manifest 指向 `cordis.patch.yml`，把 `tool-godot-bridge` 行（按包名引用）插入 profile。纯 ESM + 资产、无构建脚本，git 安装不需要 `allowBuilds` 豁免。重启后该 profile 的所有会话都有 8 个工具。
+包内 `dsh.bundle` manifest 指向 `cordis.patch.yml`，把 `tool-godot-bridge` 行（按包名引用）插入 profile。纯 ESM + 资产、无构建脚本，git 安装不需要 `allowBuilds` 豁免。重启后该 profile 的所有会话都有 15 个工具。
 
 ## 配置
 

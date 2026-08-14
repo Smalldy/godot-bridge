@@ -83,29 +83,31 @@
 | get_godot_version | pwsh（`godot --version`） |
 | list_projects / get_project_info | glob + read project.godot |
 
-## Godot 特有写逻辑（暂未移植）⚠️
+## Godot 特有写逻辑 — 已移植 ✅
 
-这些 MCP 工具带有 **Godot 特有格式知识**，通用文本编辑并不能完全等价替代——DSH 仍可完成等效编辑，但调用方必须懂格式，或等待后续移植：
+这些 MCP 工具带 Godot 特有格式知识，现已作为 godot-bridge 原生工具提供（经 `ctx.fs` 的纯文件逻辑，无需运行游戏）：
 
-| MCP | Godot 特有部分 | DSH 等效（需格式知识） |
+| MCP | godot-bridge 工具 | 说明 |
 | --- | --- | --- |
-| modify_project_settings | project.godot `[section] key=value` 的类型化值（`PackedStringArray(...)`、`Vector2i(...)` 等）与段边界处理 | edit project.godot |
-| manage_autoloads | `Name="*res://path.gd"` 单例约定（`"*"` 前缀、`res://` 路径） | edit project.godot |
-| manage_input_map | `InputEventKey` 对象序列化 + `physical_keycode` 映射——⚠️ **MCP 实现用了 Godot 3 键码基线（16777216）**处理特殊键（ENTER=16777221、SHIFT=16777237）；Godot 4 是 4194304（ENTER=4194309、SHIFT=4194325）。项目自身开发备忘记录过此导致的绑定静默失效 | edit project.godot（用 Godot 4 基线；优先 `KEY_*` 常量） |
-| manage_export_presets | `export_presets.cfg` 段结构 | write / edit export_presets.cfg |
-| manage_layers / manage_plugins / manage_translations / set_main_scene | project.godot 段行格式（命名图层字符串数组、`[editor_plugins]`、`[internationalization]`、`run/main_scene`） | edit project.godot |
-| create_project / create_csharp_script / create_script | Godot 项目脚手架 / `.csproj`（SDK 版本）/ GDScript / C# 模板 | write（+ dotnet） |
-| export_project | `godot --headless --export-preset <名称>` 调用 | pwsh |
-| validate_scripts（批量） | N × godot_validate_script（或 glob + 循环） | N × godot_validate_script |
+| modify_project_settings | `godot_set_project_setting` | 段感知 + 类型化值序列化（`PackedStringArray(...)`、`Vector2i(...)`、bool 等） |
+| set_main_scene | `godot_set_project_setting`（`application` / `run/main_scene`） | |
+| manage_layers / manage_plugins / manage_translations | `godot_set_project_setting`（`layer_names` / `editor_plugins` / `internationalization`） | |
+| manage_autoloads | `godot_manage_autoloads` | `Name="*res://path.gd"` 单例约定 |
+| manage_input_map | `godot_manage_input_map` | `InputEventKey` 序列化采用**正确的 Godot 4 键码基线（KEY_SPECIAL=4194304）**——godot-mcp 用了 Godot 3 基线（16777216）导致特殊键绑定静默失效 |
+| manage_export_presets | `godot_manage_export_presets` | `export_presets.cfg` 结构 |
+| create_script | `godot_create_script` | GDScript 模板（extends / class_name / 方法桩 / 自定义源码） |
+| create_project / create_csharp_script | `godot_create_project` | 项目脚手架，可选 Godot .NET `.csproj` |
+| export_project | `godot_export_project` | `godot --headless --export-release\|--export-debug <预设> <输出>` |
+| validate_scripts（批量） | N × `godot_validate_script`（或 glob + 循环） | |
 
 ## 覆盖汇总
 
-| 组 | godot-bridge | 经 DSH 原生 | Godot 特有、未移植 |
-| --- | --- | --- | --- |
-| 运行时 `game_*`（约 105） | ✅ 100% | — | — |
-| 进程（3） | ✅ 100% | — | — |
-| headless 操作（16）+ validate_script（1） | ✅ 100% | — | — |
-| 纯文件/编辑器操作（11） | — | 🔁 DSH 原生 | — |
-| Godot 特有写逻辑（约 9） | — | ⚠️ 需格式知识 | — |
+| 组 | godot-bridge | 经 DSH 原生 |
+| --- | --- | --- |
+| 运行时 `game_*`（约 105） | ✅ 100% | — |
+| 进程（3） | ✅ 100% | — |
+| headless 操作（16）+ validate_script（1） | ✅ 100% | — |
+| Godot 特有写逻辑（10） | ✅ 100% | — |
+| 纯文件/编辑器操作（11） | — | 🔁 DSH 原生 |
 
-**结论**：所有 Godot 特有的运行时/headless 工具都已原生移植。其余 MCP 工具分为两类：纯文件/编辑器操作（harness 本就做得更好），以及少数 Godot 特有写辅助（`manage_input_map`、`manage_export_presets`、`modify_project_settings`、模板生成等）——通用编辑只能配合格式知识替代，适合后续做 `godot_project_edit` 移植。
+**结论**：所有 Godot 特有工具（运行时、headless、项目写逻辑）都已原生移植；唯一剩余的是 harness 本就做得更好的纯文件/编辑器操作。

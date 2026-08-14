@@ -83,29 +83,31 @@ These tools carry no Godot-specific logic; DSH's native tools cover them as-is:
 | get_godot_version | pwsh (`godot --version`) |
 | list_projects / get_project_info | glob + read project.godot |
 
-## Godot-specific write logic (not ported yet) ⚠️
+## Godot-specific write logic — ported ✅
 
-These MCP tools carry **Godot-specific format knowledge** that a generic text edit does not fully replace — DSH can still perform the equivalent edit, but the caller must know the format, or wait for a future port:
+These tools carry Godot-specific format knowledge and are now native godot-bridge tools (pure file logic via `ctx.fs`, no game needed):
 
-| MCP | Godot-specific part | DSH equivalent (with format knowledge) |
+| MCP | godot-bridge tool | notes |
 | --- | --- | --- |
-| modify_project_settings | project.godot `[section] key=value` typed values (`PackedStringArray(...)`, `Vector2i(...)` …) and section-boundary handling | edit project.godot |
-| manage_autoloads | `Name="*res://path.gd"` singleton convention (the `"*"` prefix, `res://` paths) | edit project.godot |
-| manage_input_map | `InputEventKey` object serialization + `physical_keycode` mapping — ⚠️ **the MCP implementation uses the Godot 3 keycode baseline (16777216)** for special keys (ENTER=16777221, SHIFT=16777237); Godot 4 uses 4194304 (ENTER=4194309, SHIFT=4194325). The project's own dev notes document silent binding failures from this. | edit project.godot (use the Godot 4 baseline; prefer `KEY_*` constants) |
-| manage_export_presets | `export_presets.cfg` section structure | write / edit export_presets.cfg |
-| manage_layers / manage_plugins / manage_translations / set_main_scene | project.godot section line formats (named-layer string arrays, `[editor_plugins]`, `[internationalization]`, `run/main_scene`) | edit project.godot |
-| create_project / create_csharp_script / create_script | Godot project scaffold / `.csproj` (SDK version) / GDScript / C# templates | write (+ dotnet) |
-| export_project | `godot --headless --export-preset <name>` invocation | pwsh |
-| validate_scripts (batch) | N × godot_validate_script (or glob + loop) | N × godot_validate_script |
+| modify_project_settings | `godot_set_project_setting` | section-aware + typed value serialization (`PackedStringArray(...)`, `Vector2i(...)`, bool, …) |
+| set_main_scene | `godot_set_project_setting` (`application` / `run/main_scene`) | |
+| manage_layers / manage_plugins / manage_translations | `godot_set_project_setting` (`layer_names` / `editor_plugins` / `internationalization`) | |
+| manage_autoloads | `godot_manage_autoloads` | `Name="*res://path.gd"` singleton convention |
+| manage_input_map | `godot_manage_input_map` | `InputEventKey` serialization with the **correct Godot 4 keycode baseline (KEY_SPECIAL=4194304)** — godot-mcp used the Godot 3 baseline (16777216) and silently broke special-key bindings |
+| manage_export_presets | `godot_manage_export_presets` | `export_presets.cfg` structure |
+| create_script | `godot_create_script` | GDScript template (extends / class_name / method stubs / source) |
+| create_project / create_csharp_script | `godot_create_project` | project scaffold incl. optional Godot .NET `.csproj` |
+| export_project | `godot_export_project` | `godot --headless --export-release|--export-debug <preset> <output>` |
+| validate_scripts (batch) | N × `godot_validate_script` (or glob + loop) | |
 
 ## Coverage summary
 
-| group | godot-bridge | via DSH native | Godot-specific, not ported |
-| --- | --- | --- | --- |
-| runtime `game_*` (~105) | ✅ 100% | — | — |
-| process (3) | ✅ 100% | — | — |
-| headless ops (16) + validate_script (1) | ✅ 100% | — | — |
-| pure file/editor ops (11) | — | 🔁 DSH native | — |
-| Godot-specific write logic (~9) | — | ⚠️ possible with format knowledge | — |
+| group | godot-bridge | via DSH native |
+| --- | --- | --- |
+| runtime `game_*` (~105) | ✅ 100% | — |
+| process (3) | ✅ 100% | — |
+| headless ops (16) + validate_script (1) | ✅ 100% | — |
+| Godot-specific write logic (10) | ✅ 100% | — |
+| pure file/editor ops (11) | — | 🔁 DSH native |
 
-**Verdict**: every Godot-specific runtime/headless tool is ported natively. The remaining MCP tools split into pure file/editor operations the harness already does better, and a handful of Godot-specific write helpers (`manage_input_map`, `manage_export_presets`, `modify_project_settings`, templates…) that a generic edit can only replace with format knowledge — a candidate for a future `godot_project_edit` port.
+**Verdict**: every Godot-specific tool (runtime, headless, and project-edit write logic) is ported natively; the only remainder is pure file/editor operations the harness already does better.
