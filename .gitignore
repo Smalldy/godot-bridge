@@ -1,0 +1,15 @@
+﻿# Godot
+.godot/
+*.tmp
+*.log
+import/
+!addons/**/*.import
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store

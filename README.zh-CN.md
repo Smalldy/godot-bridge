@@ -40,7 +40,7 @@ DSH 会话
 ## 环境要求
 
 - DeepSeek Harness（带 host 运行时的会话）
-- 注册了 `McpInteractionServer` autoload 的 Godot 4.x 项目（`mcp_interaction_server.gd` 位于项目根——godot-mcp 项目已具备）
+- 注册了 `McpInteractionServer` autoload 的 Godot 4.x 项目。若项目还没有，把 `plugin/mcp_interaction_server.gd` 复制到项目根，并注册为名为 `McpInteractionServer` 的 autoload（godot-mcp 项目已具备）
 - `node` 在 PATH 中
 - Godot 可执行文件（务必用**真实 exe 完整路径**，不要用 gdvm shim——见"坑"）
 
@@ -95,16 +95,17 @@ GODOT_PATH 解析顺序：工具参数 `godot_path` → `<workspace>/.omp/mcp.js
 ## 项目结构
 
 ```
-plugin/godot-bridge.js          # 动态插件形态（code.host 函数体）
-plugin/godot-bridge.mjs         # 部署形态（零 import ESM 模块，命名导出）
-plugin/godot_operations.gd      # 从 godot-mcp 内置（MIT）——headless 操作脚本
-plugin/validate_script.gd       # 从 godot-mcp 内置（MIT）——GDScript 编译检查
-install.md                      # 详细安装与维护说明
-ARCHITECTURE.md                 # 如何取代 godot-mcp + 协议细节
-COVERAGE.md                     # 与 godot-mcp 的逐工具对比
+plugin/godot-bridge.js            # 动态插件形态（code.host 函数体）
+plugin/godot-bridge.mjs           # 部署形态（零 import ESM 模块，命名导出）
+plugin/mcp_interaction_server.gd  # 从 godot-mcp 内置（MIT）——游戏内 TCP 服务器 autoload
+plugin/godot_operations.gd        # 从 godot-mcp 内置（MIT）——headless 操作脚本
+plugin/validate_script.gd         # 从 godot-mcp 内置（MIT）——GDScript 编译检查
+install.md                        # 详细安装与维护说明
+ARCHITECTURE.md                   # 如何取代 godot-mcp + 协议细节
+COVERAGE.md                       # 与 godot-mcp 的逐工具对比
 ```
 
-`godot_operations.gd` 与 `validate_script.gd` 从 [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp)（MIT）内置而来。部署形态通过模块相对路径定位（`import.meta.url`）；动态形态回退到 `<workspace>/tools/godot-bridge/` 或 `godot-mcp` checkout，或显式传 `ops_script` / `validate_script` 参数。
+`mcp_interaction_server.gd`、`godot_operations.gd` 与 `validate_script.gd` 从 [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp)（MIT）内置而来。部署形态通过模块相对路径定位（`import.meta.url`）；动态形态回退到 `<workspace>/tools/godot-bridge/` 或 `godot-mcp` checkout，或显式传 `ops_script` / `validate_script` 参数。
 
 ## 许可证
 
