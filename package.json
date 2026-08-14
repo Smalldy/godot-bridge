@@ -23,6 +23,10 @@
     "ai-agent"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Smalldy/godot-bridge.git"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

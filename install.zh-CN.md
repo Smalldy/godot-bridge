@@ -58,4 +58,5 @@ dsh plugin --profile web remove godot-bridge
 
 - 改 `plugin/godot-bridge.mjs` 无需重新构建（纯 ESM）。
 - 改完插件后重新安装进 profile（再次 `dsh plugin --profile web add github:Smalldy/godot-bridge`）并重启会话。
+- **发布更新**：在 `package.json` 递增 `version` 并推送——插件启动时的版本检查（见 README「更新提示」）以此作为发布标记，已装用户只有在远端版本更高时才会看到提示。
 - 游戏侧（`mcp_interaction_server.gd` autoload）永远不会被插件修改。

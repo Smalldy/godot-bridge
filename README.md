@@ -75,6 +75,14 @@ dsh plugin --profile web remove godot-bridge
 
 Removes the package and its `godot-bridge` bundle layer from the profile — after a restart the fifteen `godot_*` tools are gone from sessions on that profile. The standard `web` profile itself is untouched (this never creates or removes a profile). Stop any running game first with `godot_stop_project`; the plugin's unload cleanup also terminates a Godot child it started. Reinstall any time with the `add` command above.
 
+## Update notices
+
+On load the plugin does a **best-effort** version check: it fetches the repo's `main`-branch `package.json` (`raw.githubusercontent.com`, 5s timeout, silent on failure/offline) and compares it with the installed version. When a newer version exists it registers a system-prompt section, so the model surfaces **"godot-bridge update available: installed X, latest Y"** in every session until the plugin is updated (`dsh plugin --profile web update godot-bridge`, then restart DSH). `godot_ping` additionally reports `plugin_version` / `latest_version` / `update_available` for on-demand checks.
+
+**To publish an update**: bump `version` in `package.json` (the release marker) and push — an unchanged version triggers no notice. Forks: set `repository` in `package.json` and the check follows the fork automatically.
+
+Known limitations: the notice is a system-prompt section, so presets whose persona is complete/suppressing (e.g. 极简模式 / `minimal`) do not show it; the check needs network access at boot.
+
 ## Usage
 
 ```text

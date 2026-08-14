@@ -75,6 +75,14 @@ dsh plugin --profile web remove godot-bridge
 
 从 profile 中删除该包及其 `godot-bridge` bundle 层——重启后该 profile 的会话不再有 15 个 `godot_*` 工具。标准 `web` profile 本身不受影响（这条命令从不创建或删除 profile）。先 `godot_stop_project` 停掉运行中的游戏；插件卸载清理也会终止它启动的 Godot 子进程。任何时候可用上面的 `add` 命令重新安装。
 
+## 更新提示
+
+插件加载时会做一次**尽力而为**的版本检查：抓取仓库 `main` 分支的 `package.json`（`raw.githubusercontent.com`，5 秒超时，失败/离线时静默跳过），与已安装版本比较。存在更新时注册一条系统提示（system-prompt section），让模型在每个会话里转达 **"godot-bridge 有可用更新：已装 X，最新 Y"**，直到插件更新（`dsh plugin --profile web update godot-bridge`，然后重启 DSH）为止。`godot_ping` 也会额外返回 `plugin_version` / `latest_version` / `update_available`，可随时按需查询。
+
+**发布更新**：在 `package.json` 里**递增 `version`**（这是发布标记）并推送——版本没变就不会触发提示。fork 场景：设置 `package.json` 的 `repository` 后，检查会自动跟随你的 fork。
+
+已知限制：提示是系统提示 section，所以 persona 为 complete/抑制型（如**极简模式** `minimal`）的预设不会显示；检查需要启动时能联网。
+
 ## 用法
 
 ```text

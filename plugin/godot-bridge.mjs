@@ -15,6 +15,8 @@
  */
 
 import { defineTool as defineToolOfficial } from '@deepseek-ai/dsh-tools'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 export const name = 'godot-bridge'
 
@@ -28,6 +30,25 @@ export function apply(ctx) {
 
   const PORT = 9090
   const FALLBACK_GODOT = 'C:/Users/74368/.gdvm/installs/registry.gdvm.io-7999f4302078c203/default/4.7.1-stable/Godot_v4.7.1-stable_win64.exe'
+
+  // ── update notice state (best-effort; see checkForUpdate below) ──────────
+  // The installed version comes from this bundle's own package.json; the
+  // "latest" version is fetched from the repo's main branch package.json.
+  // Forks: point `repository` in package.json at the fork and the check
+  // follows it automatically (fallback: Smalldy/godot-bridge).
+  let INSTALLED_VERSION = null
+  let UPDATE_SOURCE = 'Smalldy/godot-bridge'
+  try {
+    const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'))
+    if (pkg && typeof pkg.version === 'string') INSTALLED_VERSION = pkg.version
+    const repo = pkg && pkg.repository
+    const repoUrl = typeof repo === 'string' ? repo : (repo && repo.url)
+    if (typeof repoUrl === 'string') {
+      const m = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.#]+)/)
+      if (m) UPDATE_SOURCE = m[1] + '/' + m[2]
+    }
+  } catch (e) {}
+  let updateState = { latest: null, available: false }
 
   let nodePath = null
   let godotPath = null
@@ -78,6 +99,105 @@ export function apply(ctx) {
     } catch (e) {}
     return godotPath
   }
+
+  // ── update notice: best-effort version check ─────────────────────────────
+  // Parses "x.y.z" into comparable numbers; returns null for anything else.
+  function parseVersion(v) {
+    const m = String(v || '').trim().match(/^(\d+)\.(\d+)\.(\d+)/)
+    return m ? [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)] : null
+  }
+
+  function isNewer(latest, installed) {
+    const a = parseVersion(latest)
+    const b = parseVersion(installed)
+    if (!a || !b) return false
+    for (let i = 0; i < 3; i++) {
+      if (a[i] !== b[i]) return a[i] > b[i]
+    }
+    return false
+  }
+
+  // Fetch the repo's main-branch package.json version through a one-shot
+  // `node -e` (Node ≥18 global fetch; no git or extra dependency needed).
+  // Never throws; returns null on any failure (offline, non-200, timeout).
+  async function fetchLatestVersion() {
+    try {
+      const url = 'https://raw.githubusercontent.com/' + UPDATE_SOURCE + '/main/package.json'
+      const node = await getNodePath()
+      const ac = new AbortController()
+      const timerHandle = setTimeout(function () { ac.abort() }, 5000)
+      let handle
+      try {
+        handle = subprocess.spawn({
+          argv: [
+            node, '-e',
+            "fetch(process.argv[1]).then(function(r){if(!r.ok){throw new Error(String(r.status));}return r.json();}).then(function(j){process.stdout.write(String(j.version||''));}).catch(function(){process.exit(1);});",
+            url,
+          ],
+          cwd: '.',
+          stdio: {
+            stdin: 'ignore',
+            stdout: { collect: { maxBytes: 1024 * 1024 } },
+            stderr: 'ignore',
+          },
+          graceMs: 1000,
+          signal: ac.signal,
+        })
+      } catch (e) {
+        clearTimeout(timerHandle)
+        return null
+      }
+      try {
+        await handle.done
+      } catch (e) {
+        clearTimeout(timerHandle)
+        return null
+      }
+      clearTimeout(timerHandle)
+      let text = ''
+      try {
+        if (handle.collected && handle.collected.stdout) {
+          text = handle.collected.stdout.readFrom(0).text || ''
+        }
+      } catch (e) {}
+      const v = text.trim()
+      return v.length > 0 ? v : null
+    } catch (e) {
+      return null
+    }
+  }
+
+  // Fire-and-forget: never delays boot and never fails the plugin. When a
+  // newer version exists it registers a global system-prompt section, so the
+  // model surfaces the notice in every session until the plugin is updated.
+  ;(async function checkForUpdate() {
+    try {
+      const latest = await fetchLatestVersion()
+      if (latest && isNewer(latest, INSTALLED_VERSION)) {
+        updateState.latest = latest
+        updateState.available = true
+        try {
+          console.log('[godot-bridge] update available: ' + (INSTALLED_VERSION || '?') + ' -> ' + latest)
+        } catch (e) {}
+        try {
+          const systemPrompt = ctx.get('systemPrompt')
+          if (systemPrompt) {
+            ctx.effect(function () {
+              return systemPrompt.section({
+                name: 'godot-bridge:update',
+                order: 90,
+                text: 'godot-bridge update available: installed '
+                  + (INSTALLED_VERSION || '?') + ', latest ' + latest
+                  + '. Update with `dsh plugin --profile web update godot-bridge`, then restart DSH. '
+                  + 'godot-bridge 有可用更新：已安装 ' + (INSTALLED_VERSION || '?')
+                  + '，最新 ' + latest + '。更新命令：`dsh plugin --profile web update godot-bridge`，然后重启 DSH。',
+              })
+            })
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
+  })()
 
   // One-shot node bridge: connect to the in-game TCP server, send one
   // newline-delimited JSON command, print the first complete response line.
@@ -429,7 +549,14 @@ export function apply(ctx) {
       },
       async execute(args, exec) {
         const resp = await runGameCommand('get_performance', {}, args.timeout_ms || 5000, exec.signal)
-        return { game_running: !(resp && resp.error), port: PORT, detail: resp }
+        return {
+          game_running: !(resp && resp.error),
+          port: PORT,
+          plugin_version: INSTALLED_VERSION,
+          latest_version: updateState.latest,
+          update_available: updateState.available,
+          detail: resp,
+        }
       },
     }),
 

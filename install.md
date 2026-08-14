@@ -58,4 +58,5 @@ Notes:
 
 - Editing `plugin/godot-bridge.mjs` needs no rebuild (plain ESM).
 - After changing the plugin, reinstall it into the profile (`dsh plugin --profile web add github:Smalldy/godot-bridge` again) and restart the session.
+- **Publishing an update**: bump `version` in `package.json` and push — the plugin's boot-time check (see README "Update notices") uses that version as the release marker, so existing installs only see a notice when it is higher than what they have.
 - The game side (`mcp_interaction_server.gd` autoload) is never modified by the plugin.
