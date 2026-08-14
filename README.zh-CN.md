@@ -110,9 +110,9 @@ plugin/godot-bridge.mjs           # 部署形态（零 import ESM 模块，命�
 plugin/mcp_interaction_server.gd  # 从 godot-mcp 内置（MIT）——游戏内 TCP 服务器 autoload
 plugin/godot_operations.gd        # 从 godot-mcp 内置（MIT）——headless 操作脚本
 plugin/validate_script.gd         # 从 godot-mcp 内置（MIT）——GDScript 编译检查
-install.md                        # 详细安装与维护说明
-ARCHITECTURE.md                   # 如何取代 godot-mcp + 协议细节
-COVERAGE.md                       # 与 godot-mcp 的逐工具对比
+install.md / install.zh-CN.md           # 详细安装与维护说明
+ARCHITECTURE.md / ARCHITECTURE.zh-CN.md  # 如何取代 godot-mcp + 协议细节
+COVERAGE.md / COVERAGE.zh-CN.md          # 与 godot-mcp 的逐工具对比
 ```
 
 `mcp_interaction_server.gd`、`godot_operations.gd` 与 `validate_script.gd` 从 [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp)（MIT）内置而来。部署形态通过模块相对路径定位（`import.meta.url`）；动态形态回退到 `<workspace>/tools/godot-bridge/` 或 `godot-mcp` checkout，或显式传 `ops_script` / `validate_script` 参数。

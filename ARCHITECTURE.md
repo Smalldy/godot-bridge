@@ -1,3 +1,5 @@
+[English](ARCHITECTURE.md) | [中文](ARCHITECTURE.zh-CN.md)
+
 # godot-bridge — architecture
 
 ## Why this exists

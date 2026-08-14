@@ -1,3 +1,5 @@
+[English](install.md) | [中文](install.zh-CN.md)
+
 # godot-bridge — install & maintenance
 
 ## Files
