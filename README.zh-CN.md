@@ -17,7 +17,7 @@
 | `godot_get_debug_output` | `get_debug_output` | 增量读取已启动进程的 stdout/stderr |
 | `godot_command` | 全部 `game_*`（约 130 个） | 发送任意交互服务器命令：`get_scene_tree`、`get_ui_elements`、`eval`、`get/set_property`、`call_method`、`click`、`key_press`、`screenshot`、`raycast`、`serialize_state`、`ui_*`…… |
 | `godot_screenshot` | `game_screenshot` | 视口截图（base64 PNG） |
-| `godot_ping` | — | 探测游戏是否在 9090 应答 |
+| `godot_ping` | — | 探测游戏是否在 9090 应答（并报告已装/最新插件版本） |
 | `godot_headless_op` | `read_scene`、`modify_scene_node`、`remove_scene_node`、`attach_script`、`create_resource`、`save_scene`、`create_scene`、`add_node`、`get_uid`、`manage_scene_signals`…… | headless 静态操作（`godot --headless --script godot_operations.gd`）：16 个操作，无需运行游戏 |
 | `godot_validate_script` | `validate_script` | headless GDScript 编译检查（`validate_script.gd`）→ `{valid, errors}` |
 | `godot_set_project_setting` | `modify_project_settings`、`set_main_scene`、`manage_layers`、`manage_plugins`、`manage_translations` | 在任意 project.godot 段设置类型化键值（`PackedStringArray(...)` / `Vector2i(...)` / bool 等） |
@@ -118,6 +118,7 @@ cordis.patch.yml                  # bundle patch 层（插入工具行）
 install.md / install.zh-CN.md     # 详细安装与维护说明
 ARCHITECTURE.md / ARCHITECTURE.zh-CN.md  # 如何取代 godot-mcp + 协议细节
 COVERAGE.md / COVERAGE.zh-CN.md   # 与 godot-mcp 的逐工具对比
+CHANGELOG.md / CHANGELOG.zh-CN.md  # 版本发布记录
 ```
 
 `mcp_interaction_server.gd`、`godot_operations.gd` 与 `validate_script.gd` 取自 [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp)（MIT，随包内置）。插件通过模块相对路径定位这些脚本（`import.meta.url`）；传显式 `ops_script` / `validate_script` 参数可覆盖。

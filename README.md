@@ -17,7 +17,7 @@ No MCP protocol, no Python server, no editor addon. The game side is untouched: 
 | `godot_get_debug_output` | `get_debug_output` | Incremental stdout/stderr of the launched process |
 | `godot_command` | all `game_*` (~130) | Send any interaction-server command: `get_scene_tree`, `get_ui_elements`, `eval`, `get/set_property`, `call_method`, `click`, `key_press`, `screenshot`, `raycast`, `serialize_state`, `ui_*`, … |
 | `godot_screenshot` | `game_screenshot` | Viewport capture as base64 PNG |
-| `godot_ping` | — | Probe whether the game answers on 9090 |
+| `godot_ping` | — | Probe whether the game answers on 9090 (also reports installed/latest plugin version) |
 | `godot_headless_op` | `read_scene`, `modify_scene_node`, `remove_scene_node`, `attach_script`, `create_resource`, `save_scene`, `create_scene`, `add_node`, `get_uid`, `manage_scene_signals`, … | Headless static operations (`godot --headless --script godot_operations.gd`): 16 ops, no running game needed |
 | `godot_validate_script` | `validate_script` | Headless GDScript compile-check via `validate_script.gd` → `{valid, errors}` |
 | `godot_set_project_setting` | `modify_project_settings`, `set_main_scene`, `manage_layers`, `manage_plugins`, `manage_translations` | Set a typed key in any project.godot section (`PackedStringArray(...)` / `Vector2i(...)` / bool / …) |
@@ -118,6 +118,7 @@ cordis.patch.yml                  # bundle patch layer (inserts the tool row)
 install.md / install.zh-CN.md     # detailed install & maintenance
 ARCHITECTURE.md / ARCHITECTURE.zh-CN.md  # how it replaces godot-mcp + protocol details
 COVERAGE.md / COVERAGE.zh-CN.md   # full tool-by-tool comparison vs godot-mcp
+CHANGELOG.md / CHANGELOG.zh-CN.md  # release history
 ```
 
 `mcp_interaction_server.gd`, `godot_operations.gd` and `validate_script.gd` are vendored from [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp) (MIT). The plugin locates the headless scripts relative to the module (`import.meta.url`); pass an explicit `ops_script` / `validate_script` argument to override.
