@@ -897,7 +897,16 @@ export function apply(ctx) {
           const lines = ['extends ' + ext, '']
           if (args.class_name) lines.splice(1, 0, 'class_name ' + args.class_name)
           if (Array.isArray(args.methods)) {
-            for (const m of args.methods) { lines.push('', 'func ' + m + '():', '\tpass') }
+            const overrides = {
+              '_ready': 'func _ready() -> void:',
+              '_process': 'func _process(delta: float) -> void:',
+              '_physics_process': 'func _physics_process(delta: float) -> void:',
+              '_input': 'func _input(event: InputEvent) -> void:',
+              '_unhandled_input': 'func _unhandled_input(event: InputEvent) -> void:',
+              '_enter_tree': 'func _enter_tree() -> void:',
+              '_exit_tree': 'func _exit_tree() -> void:',
+            }
+            for (const m of args.methods) { lines.push('', overrides[m] || ('func ' + m + '():'), '\tpass') }
           }
           source = lines.join('\n') + '\n'
         }
