@@ -69,6 +69,16 @@ DSH 会话
 
 让你的 Agent 用 `plugin/godot-bridge.js` 定义动态 Host 插件（`cordis_define`，idPrefix `gbrg`，`code.host` = 文件内容）并运行。此形态走动态沙箱的 `harness.defineTool` / `harness.registerTool` API；逻辑与 A 完全一致。
 
+### C. 社区 bundle（`dsh plugin add`）
+
+直接从 GitHub 安装——纯 ESM + 资产，无需 npm 账号、无需构建步骤：
+
+```sh
+dsh plugin --profile web add github:Smalldy/godot-bridge
+```
+
+包内带 `dsh.bundle` manifest（`cordis.patch.yml`），会把 `tool-godot-bridge` 行插入你的 profile。重启后该 profile 的所有会话都有 8 个 `godot_*` 工具。同时已收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单（topic：`dsh-plugin`）。
+
 ## 用法
 
 ```text

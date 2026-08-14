@@ -1,0 +1,5 @@
+# godot-bridge bundle layer: register the tool plugin row.
+# Install with: dsh plugin --profile web add github:Smalldy/godot-bridge
+- insert:
+    - id: tool-godot-bridge
+      name: godot-bridge

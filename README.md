@@ -69,6 +69,16 @@ DSH session
 
 Tell your agent to define a dynamic Host plugin from `plugin/godot-bridge.js` (`cordis_define`, idPrefix `gbrg`, `code.host` = file content) and run it. This form uses the dynamic-sandbox `harness.defineTool` / `harness.registerTool` API; logic is identical to A.
 
+### C. Community bundle (`dsh plugin add`)
+
+Install straight from GitHub — pure ESM + assets, no npm account, no build step:
+
+```sh
+dsh plugin --profile web add github:Smalldy/godot-bridge
+```
+
+The package ships a `dsh.bundle` manifest (`cordis.patch.yml`) that inserts the `tool-godot-bridge` row into your profile. After a restart, the eight `godot_*` tools are available in every session on that profile. Also listed in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry (topic: `dsh-plugin`).
+
 ## Usage
 
 ```text
