@@ -34,6 +34,7 @@ export function apply(ctx) {
   let nodePath = null
   let godotPath = null
   let godot = null // { handle, outOffset, errOffset, projectPath, scene }
+  let sessionWorkspace = null
 
   async function getNodePath() {
     if (nodePath) return nodePath
@@ -53,6 +54,7 @@ export function apply(ctx) {
         ? policy.resolve({ session: exec.agent.session })
         : policy.resolve()
       if (resolved && typeof resolved.workspaceRoot === 'string' && resolved.workspaceRoot.length > 0) {
+        sessionWorkspace = resolved.workspaceRoot
         return resolved.workspaceRoot
       }
     } catch (e) {}
@@ -184,6 +186,161 @@ export function apply(ctx) {
 
   async function runHeadless(godotExe, projectPath, scriptPath, extraArgs, signal) {
     const argv = [godotExe, '--headless', '--path', projectPath, '--script', scriptPath].concat(extraArgs)
+    let handle
+    try {
+      handle = subprocess.spawn({
+        argv: argv,
+        cwd: projectPath,
+        stdio: {
+          stdin: 'ignore',
+          stdout: { collect: { maxBytes: 8 * 1024 * 1024 } },
+          stderr: { collect: { maxBytes: 8 * 1024 * 1024 } },
+        },
+        graceMs: 3000,
+        signal: signal,
+      })
+    } catch (e) {
+      return { out: '', err: '', exitCode: -1, spawnError: String((e && e.message) || e) }
+    }
+    let outcome
+    try {
+      outcome = await handle.done
+    } catch (e) {
+      return { out: '', err: '', exitCode: -1, spawnError: String((e && e.message) || e) }
+    }
+    let out = ''
+    let err = ''
+    try {
+      if (handle.collected && handle.collected.stdout) out = handle.collected.stdout.readFrom(0).text || ''
+      if (handle.collected && handle.collected.stderr) err = handle.collected.stderr.readFrom(0).text || ''
+    } catch (e) {}
+    return { out: out, err: err, exitCode: outcome.exitCode }
+  }
+
+  // ── Godot project-edit helpers (pure file logic + Godot format knowledge) ──
+
+  async function ensureDir(dir) {
+    if (!dir) return
+    try {
+      const node = await getNodePath()
+      const h = subprocess.spawn({
+        argv: [node, '-e', "require('fs').mkdirSync(process.argv[1], { recursive: true })", dir],
+        cwd: dir,
+        stdio: { stdin: 'ignore', stdout: { collect: { maxBytes: 1024 * 1024 } }, stderr: 'inherit' },
+        graceMs: 3000,
+      })
+      await h.done
+    } catch (e) {}
+  }
+
+  async function readProjectFile(projectPath, filename) {
+    try {
+      const fs = ctx.get('fs')
+      const target = await fs.resolve(filename, { cwd: projectPath })
+      const info = await fs.stat(target)
+      if (!info) return null
+      return await fs.readText(target)
+    } catch (e) {
+      return null
+    }
+  }
+
+  async function writeProjectFile(projectPath, filename, content) {
+    const fs = ctx.get('fs')
+    const target = await fs.resolve(filename, { cwd: projectPath })
+    // The fs service applies the DEPLOYMENT default policy unless one is
+    // passed; without it, writes inside the session workspace are denied when
+    // the deployment root differs. Pass the session policy explicitly (same
+    // resolution the pwsh tool uses).
+    const policy = sessionWorkspace
+      ? { mode: 'workspace-write', workspaceRoot: sessionWorkspace }
+      : undefined
+    await fs.writeText(target, content, undefined, undefined, policy)
+    return true
+  }
+
+  // Extract one `[section]` block (up to the next `[section]` or EOF).
+  function getSection(content, section) {
+    const re = new RegExp('\\[' + section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\]([\\s\\S]*?)(?=\\n\\[|$)')
+    const m = content.match(re)
+    return m ? m[1] : null
+  }
+
+  // Set `key=value` inside a section; creates the section when missing.
+  function setSectionKey(content, section, key, value) {
+    const header = '[' + section + ']'
+    const keyLine = key + '=' + value
+    const idx = content.indexOf(header)
+    if (idx === -1) return content.replace(/\s*$/, '') + '\n\n' + header + '\n\n' + keyLine + '\n'
+    const sectionEndRel = content.indexOf('\n[', idx + header.length)
+    const sectionEnd = sectionEndRel === -1 ? content.length : sectionEndRel
+    const block = content.slice(idx, sectionEnd)
+    const keyRe = new RegExp('^' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*=.*$', 'm')
+    let newBlock
+    if (keyRe.test(block)) newBlock = block.replace(keyRe, keyLine)
+    else newBlock = block.replace(/\s*$/, '') + '\n' + keyLine
+    return content.slice(0, idx) + newBlock + content.slice(sectionEnd)
+  }
+
+  // Remove `key=` lines inside a section.
+  function removeSectionKey(content, section, key) {
+    const header = '[' + section + ']'
+    const idx = content.indexOf(header)
+    if (idx === -1) return content
+    const sectionEndRel = content.indexOf('\n[', idx + header.length)
+    const sectionEnd = sectionEndRel === -1 ? content.length : sectionEndRel
+    const block = content.slice(idx, sectionEnd)
+    const keyRe = new RegExp('\\n?' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*=.*', 'g')
+    const newBlock = block.replace(keyRe, '')
+    return content.slice(0, idx) + newBlock + content.slice(sectionEnd)
+  }
+
+  // Serialize a JSON value into Godot's project.godot value syntax.
+  function serializeGodotValue(value, type) {
+    if (type === 'string' || (type === undefined && typeof value === 'string')) {
+      return '"' + String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'
+    }
+    if (type === 'string_array' || (type === undefined && Array.isArray(value))) {
+      return 'PackedStringArray(' + value.map(function (s) { return '"' + String(s).replace(/"/g, '\\"') + '"' }).join(', ') + ')'
+    }
+    if (type === 'bool' || (type === undefined && typeof value === 'boolean')) return value ? 'true' : 'false'
+    if (type === 'vector2i') {
+      const p = value && typeof value === 'object' ? value : {}
+      return 'Vector2i(' + (p.x || 0) + ', ' + (p.y || 0) + ')'
+    }
+    return String(value)
+  }
+
+  // Godot 4 physical keycodes (KEY_SPECIAL = 4194304; ASCII keys are their ASCII value).
+  // godot-mcp used the Godot 3 baseline (16777216) here, silently breaking special-key bindings.
+  const GODOT_KEYCODES = {
+    'SPACE': 32, 'ENTER': 4194309, 'RETURN': 4194309, 'ESCAPE': 4194305, 'ESC': 4194305,
+    'TAB': 4194306, 'CAPSLOCK': 4194307, 'CAPS_LOCK': 4194307, 'BACKSPACE': 4194308,
+    'INSERT': 4194310, 'DELETE': 4194311, 'HOME': 4194312, 'END': 4194313,
+    'PAGEUP': 4194314, 'PAGE_UP': 4194314, 'PAGEDOWN': 4194315, 'PAGE_DOWN': 4194315,
+    'LEFT': 4194319, 'UP': 4194320, 'RIGHT': 4194321, 'DOWN': 4194322,
+    'SHIFT': 4194325, 'CTRL': 4194326, 'CONTROL': 4194326, 'META': 4194327, 'ALT': 4194328,
+    'F1': 4194332, 'F2': 4194333, 'F3': 4194334, 'F4': 4194335, 'F5': 4194336, 'F6': 4194337,
+    'F7': 4194338, 'F8': 4194339, 'F9': 4194340, 'F10': 4194341, 'F11': 4194342, 'F12': 4194343,
+  }
+
+  function keyToGodotKeycode(key) {
+    if (!key) return 0
+    const upper = String(key).toUpperCase()
+    if (GODOT_KEYCODES[upper]) return GODOT_KEYCODES[upper]
+    if (upper.length === 1) return upper.charCodeAt(0)
+    return 0
+  }
+
+  function inputEventObject(keycode) {
+    return 'Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,'
+      + '"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,'
+      + '"keycode":0,"physical_keycode":' + keycode + ',"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)'
+  }
+
+  // Headless Godot without --script (e.g. export): godot --headless --path <p> <extraArgs>.
+  async function runGodotHeadless(godotExe, projectPath, extraArgs, signal) {
+    const argv = [godotExe, '--headless', '--path', projectPath].concat(extraArgs)
     let handle
     try {
       handle = subprocess.spawn({
@@ -502,6 +659,324 @@ export function apply(ctx) {
           errors.push({ message: message, file: file, line: line })
         }
         return { valid: errors.length === 0, script_path: scriptPath, error_count: errors.length, errors: errors }
+      },
+    }),
+
+    defineTool({
+      name: 'godot_set_project_setting',
+      description: 'Set one key inside a project.godot section (creates the section when missing). Covers modify_project_settings; set_main_scene (application / run/main_scene); manage_layers (layer_names / 2d_render/layer_1); manage_plugins (editor_plugins / enabled); manage_translations (internationalization / ...). value_type serializes the JSON value into Godot syntax: string (quoted), string_array (PackedStringArray), bool, int/float, vector2i; raw passes it through unchanged.',
+      required: ['section', 'key', 'value'],
+      properties: {
+        section: { type: 'string', description: 'project.godot section, e.g. application, rendering, layer_names, editor_plugins, internationalization' },
+        key: { type: 'string', description: 'Setting key inside the section, e.g. run/main_scene, 2d_render/layer_1' },
+        value: { type: 'string', description: 'Value: JSON (e.g. ["a","b"] for string_array, true, 5) or plain text' },
+        value_type: { type: 'string', enum: ['auto', 'raw', 'string', 'bool', 'int', 'float', 'string_array', 'vector2i'], description: 'How to serialize value (default auto-detects JSON)' },
+        project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
+      },
+      async execute(args, exec) {
+        const root = await getWorkspaceRoot(exec)
+        const projectPath = args.project_path || root
+        if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
+        const content = await readProjectFile(projectPath, 'project.godot')
+        if (content === null) return { error: 'project.godot not found at ' + projectPath }
+        let parsedValue = args.value
+        if (args.value_type !== 'raw') {
+          try { parsedValue = JSON.parse(args.value) } catch (e) { parsedValue = args.value }
+        }
+        const type = args.value_type === 'auto' ? undefined : args.value_type
+        const line = serializeGodotValue(parsedValue, type)
+        const next = setSectionKey(content, args.section, args.key, line)
+        try {
+          await writeProjectFile(projectPath, 'project.godot', next)
+        } catch (e) {
+          return { error: 'write failed: ' + String((e && e.message) || e) }
+        }
+        return { success: true, section: args.section, key: args.key, value: line, project_path: projectPath }
+      },
+    }),
+
+    defineTool({
+      name: 'godot_manage_autoloads',
+      description: 'List / add / remove autoload singletons in project.godot. Add writes Name="*res://path.gd" (the "*" prefix marks the singleton enabled).',
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['list', 'add', 'remove'], description: 'Operation' },
+        name: { type: 'string', description: 'Autoload singleton name (add/remove)' },
+        script_path: { type: 'string', description: 'Script path with res:// prefix (add), e.g. res://autoload/game_state.gd' },
+        enabled: { type: 'boolean', description: 'Singleton enabled ("*" prefix). Default true.' },
+        project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
+      },
+      async execute(args, exec) {
+        const root = await getWorkspaceRoot(exec)
+        const projectPath = args.project_path || root
+        if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
+        const content = await readProjectFile(projectPath, 'project.godot')
+        if (content === null) return { error: 'project.godot not found at ' + projectPath }
+        if (args.action === 'list') {
+          const block = getSection(content, 'autoload')
+          const autoloads = {}
+          if (block) {
+            for (const raw of block.split('\n')) {
+              const kv = raw.trim().match(/^([^=]+)=(.*)$/)
+              if (kv) autoloads[kv[1].trim()] = kv[2].trim()
+            }
+          }
+          return { success: true, autoloads: autoloads }
+        }
+        if (!args.name) return { error: 'name is required for add/remove' }
+        if (args.action === 'add') {
+          if (!args.script_path) return { error: 'script_path is required for add' }
+          const star = args.enabled === false ? '' : '*'
+          const value = '"' + star + String(args.script_path) + '"'
+          const next = setSectionKey(content, 'autoload', args.name, value)
+          try {
+            await writeProjectFile(projectPath, 'project.godot', next)
+          } catch (e) {
+            return { error: 'write failed: ' + String((e && e.message) || e) }
+          }
+          return { success: true, name: args.name, path: star + args.script_path }
+        }
+        const next = removeSectionKey(content, 'autoload', args.name)
+        try {
+          await writeProjectFile(projectPath, 'project.godot', next)
+        } catch (e) {
+          return { error: 'write failed: ' + String((e && e.message) || e) }
+        }
+        return { success: true, name: args.name, removed: true }
+      },
+    }),
+
+    defineTool({
+      name: 'godot_manage_input_map',
+      description: 'List / add / remove input actions in project.godot [input]. Add serializes an InputEventKey with the correct Godot 4 physical_keycode (KEY_SPECIAL=4194304; ASCII keys use their ASCII value) — godot-mcp used the Godot 3 baseline (16777216), which silently broke special-key bindings.',
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['list', 'add', 'remove'], description: 'Operation' },
+        action_name: { type: 'string', description: 'Input action name (add/remove), e.g. jump' },
+        key: { type: 'string', description: 'Key name for add, e.g. W, SPACE, ENTER, SHIFT, F3' },
+        keycode: { type: 'number', description: 'Explicit physical_keycode override (overrides key)' },
+        deadzone: { type: 'number', description: 'Action deadzone (default 0.5)' },
+        project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
+      },
+      async execute(args, exec) {
+        const root = await getWorkspaceRoot(exec)
+        const projectPath = args.project_path || root
+        if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
+        const content = await readProjectFile(projectPath, 'project.godot')
+        if (content === null) return { error: 'project.godot not found at ' + projectPath }
+        if (args.action === 'list') {
+          const block = getSection(content, 'input')
+          const actions = {}
+          if (block) {
+            for (const raw of block.split('\n')) {
+              const kv = raw.trim().match(/^([^=]+)=(.*)$/)
+              if (kv) actions[kv[1].trim()] = kv[2].trim()
+            }
+          }
+          return { success: true, actions: actions }
+        }
+        if (!args.action_name) return { error: 'action_name is required for add/remove' }
+        if (args.action === 'add') {
+          const deadzone = args.deadzone !== undefined ? args.deadzone : 0.5
+          const keycode = args.keycode !== undefined ? args.keycode : keyToGodotKeycode(args.key)
+          if (!keycode) return { error: 'unknown key: ' + args.key + ' (pass keycode explicitly)' }
+          const evt = inputEventObject(keycode)
+          const esc = args.action_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const blockRe = new RegExp('^' + esc + '\\s*=\\s*\\{[\\s\\S]*?\\}\\s*$', 'm')
+          let next
+          const existing = content.match(blockRe)
+          if (existing) {
+            const block = existing[0]
+            const dzMatch = block.match(/"deadzone"\s*:\s*([\d.eE+-]+)/)
+            const dz = dzMatch ? dzMatch[1] : String(deadzone)
+            const eventsMatch = block.match(/"events"\s*:\s*\[([\s\S]*)\]\s*\}\s*$/)
+            const existingEvents = eventsMatch ? eventsMatch[1] : ''
+            let merged = existingEvents
+            const dup = new RegExp('"physical_keycode"\\s*:\\s*' + keycode + '\\b')
+            if (!dup.test(existingEvents)) {
+              merged = existingEvents.trim().length > 0 ? existingEvents + ', ' + evt : evt
+            }
+            const newBlock = merged.trim().length > 0
+              ? args.action_name + '={"deadzone": ' + dz + ', "events": [' + merged + ']}'
+              : args.action_name + '={"deadzone": ' + dz + '}'
+            next = content.replace(blockRe, newBlock)
+          } else {
+            next = setSectionKey(content, 'input', args.action_name,
+              '{"deadzone": ' + deadzone + ', "events": [' + evt + ']}')
+          }
+          try {
+            await writeProjectFile(projectPath, 'project.godot', next)
+          } catch (e) {
+            return { error: 'write failed: ' + String((e && e.message) || e) }
+          }
+          return { success: true, action: args.action_name, keycode: keycode, note: 'Godot 4 physical_keycode (KEY_SPECIAL=4194304)' }
+        }
+        const next = removeSectionKey(content, 'input', args.action_name)
+        try {
+          await writeProjectFile(projectPath, 'project.godot', next)
+        } catch (e) {
+          return { error: 'write failed: ' + String((e && e.message) || e) }
+        }
+        return { success: true, action: args.action_name, removed: true }
+      },
+    }),
+
+    defineTool({
+      name: 'godot_manage_export_presets',
+      description: 'List / add / remove export presets in export_presets.cfg. Add creates a bare [preset.<ts>] block with name/platform/runnable; fill in the platform options manually afterwards (or use the editor).',
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['list', 'add', 'remove'], description: 'Operation' },
+        name: { type: 'string', description: 'Preset name (add/remove)' },
+        platform: { type: 'string', description: 'Platform id for add, e.g. Windows Desktop, Linux, macOS, Web' },
+        runnable: { type: 'boolean', description: 'runnable flag (default false)' },
+        project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
+      },
+      async execute(args, exec) {
+        const root = await getWorkspaceRoot(exec)
+        const projectPath = args.project_path || root
+        if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
+        if (args.action === 'list') {
+          const content = await readProjectFile(projectPath, 'export_presets.cfg')
+          if (content === null) return { success: true, presets: [] }
+          const presets = []
+          const names = Array.from(content.matchAll(/name="([^"]+)"/g), function (m) { return m[1] })
+          const platforms = Array.from(content.matchAll(/platform="([^"]+)"/g), function (m) { return m[1] })
+          for (let i = 0; i < names.length; i++) presets.push({ name: names[i], platform: platforms[i] || 'unknown' })
+          return { success: true, presets: presets }
+        }
+        if (args.action === 'add') {
+          if (!args.name || !args.platform) return { error: 'name and platform are required for add' }
+          const runnable = args.runnable ? 'true' : 'false'
+          const block = '\n[preset.' + Date.now() + ']\n\nname="' + args.name + '"\nplatform="' + args.platform + '"\nrunnable=' + runnable + '\n'
+          const existing = await readProjectFile(projectPath, 'export_presets.cfg')
+          const next = (existing || '') + block
+          try {
+            await writeProjectFile(projectPath, 'export_presets.cfg', next)
+          } catch (e) {
+            return { error: 'write failed: ' + String((e && e.message) || e) }
+          }
+          return { success: true, preset: args.name, platform: args.platform }
+        }
+        if (!args.name) return { error: 'name is required for remove' }
+        const content = await readProjectFile(projectPath, 'export_presets.cfg')
+        if (content === null) return { error: 'No export_presets.cfg found' }
+        const esc = args.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const pattern = new RegExp('\\[preset\\.[^\\]]+\\]\\s*\\n[\\s\\S]*?name="' + esc + '"[\\s\\S]*?(?=\\[preset\\.|$)', 'g')
+        const next = content.replace(pattern, '')
+        try {
+          await writeProjectFile(projectPath, 'export_presets.cfg', next)
+        } catch (e) {
+          return { error: 'write failed: ' + String((e && e.message) || e) }
+        }
+        return { success: true, preset: args.name, removed: true }
+      },
+    }),
+
+    defineTool({
+      name: 'godot_create_script',
+      description: 'Create a GDScript file from a template (extends, optional class_name, method stubs) or from explicit source.',
+      required: ['script_path'],
+      properties: {
+        script_path: { type: 'string', description: 'Script path relative to project, e.g. scripts/player.gd' },
+        extends: { type: 'string', description: 'Base class (default Node)' },
+        class_name: { type: 'string', description: 'Optional class_name' },
+        methods: { type: 'array', items: { type: 'string' }, description: 'Method stubs to include' },
+        source: { type: 'string', description: 'Full source code (overrides template)' },
+        project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
+      },
+      async execute(args, exec) {
+        const root = await getWorkspaceRoot(exec)
+        const projectPath = args.project_path || root
+        if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
+        const scriptPath = String(args.script_path || '')
+        if (!/\.gd$/i.test(scriptPath)) return { error: 'script_path must end with .gd' }
+        let source = args.source
+        if (!source) {
+          const ext = args.extends || 'Node'
+          const lines = ['extends ' + ext, '']
+          if (args.class_name) lines.splice(1, 0, 'class_name ' + args.class_name)
+          if (Array.isArray(args.methods)) {
+            for (const m of args.methods) { lines.push('', 'func ' + m + '():', '\tpass') }
+          }
+          source = lines.join('\n') + '\n'
+        }
+        const slash = scriptPath.lastIndexOf('/')
+        const dir = slash > 0 ? projectPath + '/' + scriptPath.slice(0, slash) : projectPath
+        await ensureDir(dir)
+        try {
+          await writeProjectFile(projectPath, scriptPath, source)
+        } catch (e) {
+          return { error: 'write failed: ' + String((e && e.message) || e) }
+        }
+        return { success: true, script_path: scriptPath }
+      },
+    }),
+
+    defineTool({
+      name: 'godot_create_project',
+      description: 'Scaffold a new Godot project: creates the directory and a minimal project.godot (optionally a Godot .NET C# project with .csproj).',
+      required: ['project_path', 'project_name'],
+      properties: {
+        project_path: { type: 'string', description: 'Directory to create the project in (must be writable by this session)' },
+        project_name: { type: 'string', description: 'Project name (also used as config/name)' },
+        dotnet: { type: 'boolean', description: 'Scaffold a Godot .NET (C#) project' },
+        features: { type: 'string', description: 'config/features value override (default PackedStringArray("4.7") or with "C#")' },
+      },
+      async execute(args, exec) {
+        const projectPath = String(args.project_path || '')
+        const projectName = String(args.project_name || '')
+        if (!projectPath || !projectName) return { error: 'project_path and project_name are required' }
+        await ensureDir(projectPath)
+        const existing = await readProjectFile(projectPath, 'project.godot')
+        if (existing !== null) return { error: 'project.godot already exists at ' + projectPath }
+        const isDotnet = args.dotnet === true
+        const features = args.features || (isDotnet ? 'PackedStringArray("4.7", "C#")' : 'PackedStringArray("4.7")')
+        const asm = projectName.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[0-9]/, '_')
+        let content = '; Engine configuration file.\n; Generated by godot-bridge.\n\nconfig_version=5\n\n[application]\n\nconfig/name="' + projectName + '"\nconfig/features=' + features + '\n'
+        if (isDotnet) content += '\n[dotnet]\n\nproject/assembly_name="' + asm + '"\n'
+        try {
+          await writeProjectFile(projectPath, 'project.godot', content)
+          if (isDotnet) {
+            const csproj = '<Project Sdk="Godot.NET.Sdk/4.4.0">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <EnableDynamicLoading>true</EnableDynamicLoading>\n    <Nullable>enable</Nullable>\n    <RootNamespace>' + asm + '</RootNamespace>\n  </PropertyGroup>\n</Project>\n'
+            await writeProjectFile(projectPath, asm + '.csproj', csproj)
+          }
+        } catch (e) {
+          return { error: 'write failed: ' + String((e && e.message) || e) }
+        }
+        return { success: true, project_path: projectPath, project_name: projectName, dotnet: isDotnet }
+      },
+    }),
+
+    defineTool({
+      name: 'godot_export_project',
+      description: 'Export the project headlessly: godot --headless --path <project> --export-debug|--export-release <preset> <output>. Requires an export preset (see godot_manage_export_presets).',
+      required: ['preset_name', 'output_path'],
+      properties: {
+        preset_name: { type: 'string', description: 'Export preset name' },
+        output_path: { type: 'string', description: 'Output file path' },
+        debug: { type: 'boolean', description: 'Use --export-debug (default false → --export-release)' },
+        project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
+        godot_path: { type: 'string', description: 'Godot executable (default: same resolution as godot_run_project)' },
+      },
+      timeoutMs: 130000,
+      async execute(args, exec) {
+        const root = await getWorkspaceRoot(exec)
+        const projectPath = args.project_path || root
+        if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
+        const gp = args.godot_path || await getGodotPath()
+        const flag = args.debug ? '--export-debug' : '--export-release'
+        const res = await runGodotHeadless(gp, projectPath, [flag, String(args.preset_name), String(args.output_path)], exec.signal)
+        if (res.spawnError) return { error: 'export spawn failed: ' + res.spawnError }
+        const failed = res.err.indexOf('ERROR') >= 0 && res.exitCode !== 0
+        return {
+          success: !failed,
+          preset: args.preset_name,
+          output: args.output_path,
+          exit_code: res.exitCode,
+          stdout: res.out,
+          stderr: res.err,
+        }
       },
     }),
   ]
