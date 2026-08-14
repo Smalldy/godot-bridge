@@ -70,32 +70,42 @@ Every `game_*` tool maps 1:1 to an interaction-server command (the enum in `godo
 
 `validate_script` → `godot_validate_script` ✅ (parses `SCRIPT ERROR` lines into `{message, file, line}`).
 
-## Not duplicated — implemented in the MCP server as Node-side file/editor logic 🔁
+## Not duplicated — pure file/editor operations 🔁
 
-DSH's native file tools already cover these; godot-bridge intentionally does not duplicate them:
+These tools carry no Godot-specific logic; DSH's native tools cover them as-is:
 
 | MCP | DSH equivalent |
 | --- | --- |
 | read_file / write_file / delete_file / create_directory | read / write / edit + pwsh |
-| read_project_settings / modify_project_settings | read / edit project.godot |
-| list_project_files | glob |
+| read_project_settings / list_project_files | read / glob |
 | rename_file | pwsh (Move-Item) |
-| create_project / create_csharp_script | write (+ dotnet) |
-| manage_autoloads / manage_input_map / manage_export_presets / manage_layers / manage_plugins / set_main_scene / manage_translations | edit project.godot |
-| manage_shader / create_script | write |
-| validate_scripts (batch) | N × godot_validate_script (or glob + loop) |
-| export_project | pwsh (`godot --headless --export-preset …`) |
 | launch_editor | pwsh (`godot -e`) |
 | get_godot_version | pwsh (`godot --version`) |
 | list_projects / get_project_info | glob + read project.godot |
 
+## Godot-specific write logic (not ported yet) ⚠️
+
+These MCP tools carry **Godot-specific format knowledge** that a generic text edit does not fully replace — DSH can still perform the equivalent edit, but the caller must know the format, or wait for a future port:
+
+| MCP | Godot-specific part | DSH equivalent (with format knowledge) |
+| --- | --- | --- |
+| modify_project_settings | project.godot `[section] key=value` typed values (`PackedStringArray(...)`, `Vector2i(...)` …) and section-boundary handling | edit project.godot |
+| manage_autoloads | `Name="*res://path.gd"` singleton convention (the `"*"` prefix, `res://` paths) | edit project.godot |
+| manage_input_map | `InputEventKey` object serialization + `physical_keycode` mapping — ⚠️ **the MCP implementation uses the Godot 3 keycode baseline (16777216)** for special keys (ENTER=16777221, SHIFT=16777237); Godot 4 uses 4194304 (ENTER=4194309, SHIFT=4194325). The project's own dev notes document silent binding failures from this. | edit project.godot (use the Godot 4 baseline; prefer `KEY_*` constants) |
+| manage_export_presets | `export_presets.cfg` section structure | write / edit export_presets.cfg |
+| manage_layers / manage_plugins / manage_translations / set_main_scene | project.godot section line formats (named-layer string arrays, `[editor_plugins]`, `[internationalization]`, `run/main_scene`) | edit project.godot |
+| create_project / create_csharp_script / create_script | Godot project scaffold / `.csproj` (SDK version) / GDScript / C# templates | write (+ dotnet) |
+| export_project | `godot --headless --export-preset <name>` invocation | pwsh |
+| validate_scripts (batch) | N × godot_validate_script (or glob + loop) | N × godot_validate_script |
+
 ## Coverage summary
 
-| group | godot-bridge | via DSH native | not covered |
+| group | godot-bridge | via DSH native | Godot-specific, not ported |
 | --- | --- | --- | --- |
 | runtime `game_*` (~105) | ✅ 100% | — | — |
 | process (3) | ✅ 100% | — | — |
 | headless ops (16) + validate_script (1) | ✅ 100% | — | — |
-| Node-side file/editor (~25) | — | 🔁 DSH native | — |
+| pure file/editor ops (11) | — | 🔁 DSH native | — |
+| Godot-specific write logic (~9) | — | ⚠️ possible with format knowledge | — |
 
-**Verdict**: every Godot-specific tool is ported natively; the rest were plain file/editor operations the harness already does better.
+**Verdict**: every Godot-specific runtime/headless tool is ported natively. The remaining MCP tools split into pure file/editor operations the harness already does better, and a handful of Godot-specific write helpers (`manage_input_map`, `manage_export_presets`, `modify_project_settings`, templates…) that a generic edit can only replace with format knowledge — a candidate for a future `godot_project_edit` port.

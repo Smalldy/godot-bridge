@@ -19,7 +19,7 @@ No MCP protocol, no Python server, no editor addon. The game side is untouched: 
 | `godot_headless_op` | `read_scene`, `modify_scene_node`, `remove_scene_node`, `attach_script`, `create_resource`, `save_scene`, `create_scene`, `add_node`, `get_uid`, `manage_scene_signals`, … | Headless static operations (`godot --headless --script godot_operations.gd`): 16 ops, no running game needed |
 | `godot_validate_script` | `validate_script` | Headless GDScript compile-check via `validate_script.gd` → `{valid, errors}` |
 
-The remaining godot-mcp tools (`read_project_settings`, `manage_autoloads`, `manage_input_map`, `create_project`, `export_project`, …) were implemented in the MCP server's own Node process as file/editor operations — DSH's native file tools (`read`/`write`/`edit`/`glob`/`grep` + shell) already cover those, so they are not duplicated here.
+The remaining godot-mcp tools were implemented in the MCP server's own Node process: pure file/editor operations are covered by DSH's native file tools, while a handful carry **Godot-specific write logic** (`manage_input_map`, `manage_export_presets`, `modify_project_settings`, project/script templates) that a generic edit replaces only with format knowledge — see [COVERAGE.md](COVERAGE.md) for the full breakdown.
 
 ## How it works
 

@@ -70,32 +70,42 @@
 
 `validate_script` → `godot_validate_script` ✅（把 `SCRIPT ERROR` 行解析为 `{message, file, line}`）。
 
-## 不重复实现 — MCP 里是 Node 侧文件/编辑器逻辑 🔁
+## 不重复实现 — 纯文件/编辑器操作 🔁
 
-DSH 原生文件工具已覆盖，godot-bridge 刻意不重复：
+这些工具没有任何 Godot 特有逻辑，DSH 原生工具直接覆盖：
 
 | MCP | DSH 等效 |
 | --- | --- |
 | read_file / write_file / delete_file / create_directory | read / write / edit + pwsh |
-| read_project_settings / modify_project_settings | read / edit project.godot |
-| list_project_files | glob |
+| read_project_settings / list_project_files | read / glob |
 | rename_file | pwsh（Move-Item） |
-| create_project / create_csharp_script | write（+ dotnet） |
-| manage_autoloads / manage_input_map / manage_export_presets / manage_layers / manage_plugins / set_main_scene / manage_translations | edit project.godot |
-| manage_shader / create_script | write |
-| validate_scripts（批量） | N × godot_validate_script（或 glob + 循环） |
-| export_project | pwsh（`godot --headless --export-preset …`） |
 | launch_editor | pwsh（`godot -e`） |
 | get_godot_version | pwsh（`godot --version`） |
 | list_projects / get_project_info | glob + read project.godot |
 
+## Godot 特有写逻辑（暂未移植）⚠️
+
+这些 MCP 工具带有 **Godot 特有格式知识**，通用文本编辑并不能完全等价替代——DSH 仍可完成等效编辑，但调用方必须懂格式，或等待后续移植：
+
+| MCP | Godot 特有部分 | DSH 等效（需格式知识） |
+| --- | --- | --- |
+| modify_project_settings | project.godot `[section] key=value` 的类型化值（`PackedStringArray(...)`、`Vector2i(...)` 等）与段边界处理 | edit project.godot |
+| manage_autoloads | `Name="*res://path.gd"` 单例约定（`"*"` 前缀、`res://` 路径） | edit project.godot |
+| manage_input_map | `InputEventKey` 对象序列化 + `physical_keycode` 映射——⚠️ **MCP 实现用了 Godot 3 键码基线（16777216）**处理特殊键（ENTER=16777221、SHIFT=16777237）；Godot 4 是 4194304（ENTER=4194309、SHIFT=4194325）。项目自身开发备忘记录过此导致的绑定静默失效 | edit project.godot（用 Godot 4 基线；优先 `KEY_*` 常量） |
+| manage_export_presets | `export_presets.cfg` 段结构 | write / edit export_presets.cfg |
+| manage_layers / manage_plugins / manage_translations / set_main_scene | project.godot 段行格式（命名图层字符串数组、`[editor_plugins]`、`[internationalization]`、`run/main_scene`） | edit project.godot |
+| create_project / create_csharp_script / create_script | Godot 项目脚手架 / `.csproj`（SDK 版本）/ GDScript / C# 模板 | write（+ dotnet） |
+| export_project | `godot --headless --export-preset <名称>` 调用 | pwsh |
+| validate_scripts（批量） | N × godot_validate_script（或 glob + 循环） | N × godot_validate_script |
+
 ## 覆盖汇总
 
-| 组 | godot-bridge | 经 DSH 原生 | 未覆盖 |
+| 组 | godot-bridge | 经 DSH 原生 | Godot 特有、未移植 |
 | --- | --- | --- | --- |
 | 运行时 `game_*`（约 105） | ✅ 100% | — | — |
 | 进程（3） | ✅ 100% | — | — |
 | headless 操作（16）+ validate_script（1） | ✅ 100% | — | — |
-| Node 侧文件/编辑器（约 25） | — | 🔁 DSH 原生 | — |
+| 纯文件/编辑器操作（11） | — | 🔁 DSH 原生 | — |
+| Godot 特有写逻辑（约 9） | — | ⚠️ 需格式知识 | — |
 
-**结论**：所有 Godot 特有工具都已原生移植；其余只是 harness 本就做得更好的文件/编辑器操作。
+**结论**：所有 Godot 特有的运行时/headless 工具都已原生移植。其余 MCP 工具分为两类：纯文件/编辑器操作（harness 本就做得更好），以及少数 Godot 特有写辅助（`manage_input_map`、`manage_export_presets`、`modify_project_settings`、模板生成等）——通用编辑只能配合格式知识替代，适合后续做 `godot_project_edit` 移植。

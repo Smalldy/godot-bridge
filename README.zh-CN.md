@@ -19,7 +19,7 @@
 | `godot_headless_op` | `read_scene`、`modify_scene_node`、`remove_scene_node`、`attach_script`、`create_resource`、`save_scene`、`create_scene`、`add_node`、`get_uid`、`manage_scene_signals`…… | headless 静态操作（`godot --headless --script godot_operations.gd`）：16 个操作，无需运行游戏 |
 | `godot_validate_script` | `validate_script` | headless GDScript 编译检查（`validate_script.gd`）→ `{valid, errors}` |
 
-其余 godot-mcp 工具（`read_project_settings`、`manage_autoloads`、`manage_input_map`、`create_project`、`export_project`……）是在 MCP 服务器自己的 Node 进程里实现的文件/编辑器操作——DSH 原生文件工具（`read`/`write`/`edit`/`glob`/`grep` + shell）已覆盖，故不在此重复实现。
+其余 godot-mcp 工具是在 MCP 服务器自己的 Node 进程里实现的：纯文件/编辑器操作由 DSH 原生文件工具覆盖；少数几个带 **Godot 特有写逻辑**（`manage_input_map`、`manage_export_presets`、`modify_project_settings`、项目/脚本模板生成等），通用编辑只能配合格式知识替代——完整对照见 [COVERAGE.md](COVERAGE.zh-CN.md)。
 
 ## 工作原理
 
