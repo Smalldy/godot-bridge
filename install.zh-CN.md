@@ -34,6 +34,20 @@ dsh plugin --profile web add ./path/to/godot-bridge     # 本地 checkout
 dsh plugin --profile web add ./godot-bridge-0.1.0.tgz   # pnpm pack 产物
 ```
 
+## 移除
+
+```sh
+dsh plugin --profile web remove godot-bridge
+```
+
+`dsh plugin remove` 在 profile 目录里转发 `pnpm remove`，然后调和 `dsh.profile.bundles`——依赖**和** `godot-bridge` bundle 层会一起从 profile 的 `package.json` 中删除。重启后该 profile 的会话不再有 15 个 `godot_*` 工具。标准 `web` profile 本身不受影响；移除插件从不创建或删除 profile。
+
+注意事项：
+
+- 若游戏正在运行，先用 `godot_stop_project` 停掉——插件没了之后就没有工具能停了。作为兜底，插件注册了卸载清理：会话重载后会自动终止它启动的 Godot 子进程。
+- 不会动其他任何东西：`project.godot`、游戏的 `McpInteractionServer` autoload、以及任何游戏文件在安装/移除时都不会被修改。
+- 任何时候可用上面的 `add` 命令重新安装。
+
 ## 配置
 
 - GODOT_PATH：工具参数 `godot_path` > `<workspace>/.omp/mcp.json` 的 `env.GODOT_PATH` > 内置 gdvm 4.7.1 兜底。始终指向**真实 exe**，别用 gdvm shim。

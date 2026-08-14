@@ -67,6 +67,14 @@ The same command installs a local checkout or tarball (`dsh plugin --profile web
 
 > The plugin is a standard DSH bundle module: it imports `defineTool` from `@deepseek-ai/dsh-tools` and registers via `ctx.tools.register`. It must be installed through the bundle mechanism above — the harness heals the shared `@deepseek-ai/*` dependency layer inside the profile's `node_modules`, which is what makes the import resolve. Do not copy the file into a user agent preset (`~/.dsh/.agent-presets/...`); Node cannot resolve `@deepseek-ai/dsh-tools` from that location.
 
+### Uninstall
+
+```sh
+dsh plugin --profile web remove godot-bridge
+```
+
+Removes the package and its `godot-bridge` bundle layer from the profile — after a restart the fifteen `godot_*` tools are gone from sessions on that profile. The standard `web` profile itself is untouched (this never creates or removes a profile). Stop any running game first with `godot_stop_project`; the plugin's unload cleanup also terminates a Godot child it started. Reinstall any time with the `add` command above.
+
 ## Usage
 
 ```text

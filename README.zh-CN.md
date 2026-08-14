@@ -67,6 +67,14 @@ dsh plugin --profile web add github:Smalldy/godot-bridge
 
 > 插件是标准 DSH bundle 模块：`import { defineTool } from '@deepseek-ai/dsh-tools'` 并经 `ctx.tools.register` 注册。它必须通过上面的 bundle 机制安装——harness 启动时会在 profile 的 `node_modules` 里 heal 共享的 `@deepseek-ai/*` 依赖层，import 才解析得到。不要把文件复制进用户 agent 预设（`~/.dsh/.agent-presets/...`）；那个位置解析不到 `@deepseek-ai/dsh-tools`。
 
+### 移除
+
+```sh
+dsh plugin --profile web remove godot-bridge
+```
+
+从 profile 中删除该包及其 `godot-bridge` bundle 层——重启后该 profile 的会话不再有 15 个 `godot_*` 工具。标准 `web` profile 本身不受影响（这条命令从不创建或删除 profile）。先 `godot_stop_project` 停掉运行中的游戏；插件卸载清理也会终止它启动的 Godot 子进程。任何时候可用上面的 `add` 命令重新安装。
+
 ## 用法
 
 ```text

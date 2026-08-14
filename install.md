@@ -34,6 +34,20 @@ dsh plugin --profile web add ./path/to/godot-bridge     # local checkout
 dsh plugin --profile web add ./godot-bridge-0.1.0.tgz   # pnpm pack output
 ```
 
+## Uninstall
+
+```sh
+dsh plugin --profile web remove godot-bridge
+```
+
+`dsh plugin remove` forwards to `pnpm remove` in the profile directory and then reconciles `dsh.profile.bundles` — the dependency **and** the `godot-bridge` bundle layer are both removed from the profile's `package.json`. After a restart, the fifteen `godot_*` tools are gone from sessions on that profile. The `web` profile itself (the standard one) is untouched; removing a plugin never creates or deletes a profile.
+
+Notes:
+
+- If a Godot process is running, stop it first with `godot_stop_project` — once the plugin is gone there is no tool to do it. As a safety net, the plugin registers an unload effect that terminates any Godot child it started, so a session reload after removal cleans it up.
+- Nothing else is touched: `project.godot`, the game's `McpInteractionServer` autoload, and any game files are never modified by install or removal.
+- Reinstall any time with the `add` command above.
+
 ## Config
 
 - GODOT_PATH: tool arg `godot_path` > `<workspace>/.omp/mcp.json` `env.GODOT_PATH` > built-in gdvm 4.7.1 fallback. Always point at the **real exe**, never the gdvm shim.
