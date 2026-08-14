@@ -1,4 +1,4 @@
-﻿/**
+/**
  * godot-bridge — DSH ↔ Godot 运行时控制桥（标准 DSH 插件形态）
  * ==============================================================
  * 标准 DSH 插件：命名导出 name / inject / apply，工具经官方
@@ -81,18 +81,19 @@ export function apply(ctx) {
 
   // One-shot node bridge: connect to the in-game TCP server, send one
   // newline-delimited JSON command, print the first complete response line.
-  // NOTE: with `node -e <script> <cmd> <paramsJson>`, the extra args land at
-  // process.argv[1] and process.argv[2] (argv[0] is node itself).
+  // NOTE: with `node -e <script> <cmd> <paramsJson> <timeoutMs>`, the extra
+  // args land at process.argv[1..3] (argv[0] is node itself).
   const BRIDGE = [
     "var NL=String.fromCharCode(10);",
     "var net=require('net');",
     "var cmd=process.argv[1]||'';",
     "var params={};",
     "try{params=JSON.parse(process.argv[2]||'{}');}catch(e){}",
+    "var to=parseInt(process.argv[3]||'20000',10);if(!(to>0)){to=20000;}",
     "var sock=net.connect(9090,'127.0.0.1');",
     "var buf='',done=false;",
     "function fin(obj){if(done){return;}done=true;clearTimeout(t);try{sock.destroy();}catch(e){}process.stdout.write(JSON.stringify(obj));}",
-    "var t=setTimeout(function(){fin({error:'bridge timeout'});},20000);",
+    "var t=setTimeout(function(){fin({error:'bridge timeout'});},to);",
     "sock.on('connect',function(){sock.write(JSON.stringify({command:cmd,params:params,id:1})+NL);});",
     "sock.on('data',function(d){buf+=d.toString();for(;;){var i=buf.indexOf(NL);if(i<0){break;}var line=buf.slice(0,i).trim();buf=buf.slice(i+1);if(!line){continue;}try{fin(JSON.parse(line));return;}catch(e){}}});",
     "sock.on('error',function(e){fin({error:'tcp:'+e.message});});",
@@ -105,7 +106,7 @@ export function apply(ctx) {
     let handle
     try {
       handle = subprocess.spawn({
-        argv: [node, '-e', BRIDGE, String(command), JSON.stringify(params || {})],
+        argv: [node, '-e', BRIDGE, String(command), JSON.stringify(params || {}), String(timeoutMs || 20000)],
         cwd: root || '.',
         stdio: {
           stdin: 'ignore',
