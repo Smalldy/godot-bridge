@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url'
 
 export const name = 'godot-bridge'
 
-export const inject = ['subprocess', 'timer', 'tools', 'fs', 'sandboxPolicy']
+export const inject = ['subprocess', 'timer', 'tools', 'fs', 'sandboxPolicy', 'systemPrompt']
 
 export function apply(ctx) {
   const subprocess = ctx.subprocess
@@ -168,8 +168,9 @@ export function apply(ctx) {
   }
 
   // Fire-and-forget: never delays boot and never fails the plugin. When a
-  // newer version exists it registers a global system-prompt section, so the
-  // model surfaces the notice in every session until the plugin is updated.
+  // newer version exists it registers a global system-prompt section with an
+  // imperative instruction, so the model surfaces the notice in every session
+  // until the plugin is updated.
   ;(async function checkForUpdate() {
     try {
       const latest = await fetchLatestVersion()
@@ -177,24 +178,28 @@ export function apply(ctx) {
         updateState.latest = latest
         updateState.available = true
         try {
-          console.log('[godot-bridge] update available: ' + (INSTALLED_VERSION || '?') + ' -> ' + latest)
-        } catch (e) {}
-        try {
-          const systemPrompt = ctx.get('systemPrompt')
+          const systemPrompt = ctx.systemPrompt
           if (systemPrompt) {
             ctx.effect(function () {
               return systemPrompt.section({
                 name: 'godot-bridge:update',
                 order: 90,
-                text: 'godot-bridge update available: installed '
+                text: 'IMPORTANT - you must inform the user: godot-bridge has an update available (installed '
                   + (INSTALLED_VERSION || '?') + ', latest ' + latest
-                  + '. Update with `dsh plugin --profile web update godot-bridge`, then restart DSH. '
-                  + 'godot-bridge 有可用更新：已安装 ' + (INSTALLED_VERSION || '?')
-                  + '，最新 ' + latest + '。更新命令：`dsh plugin --profile web update godot-bridge`，然后重启 DSH。',
+                  + '). Tell them to run `dsh plugin --profile web update godot-bridge` and restart DSH. '
+                  + '重要 - 你必须告知用户：godot-bridge 有可用更新（已装 ' + (INSTALLED_VERSION || '?')
+                  + '，最新 ' + latest + '）。请用户执行 `dsh plugin --profile web update godot-bridge` 并重启 DSH。',
               })
             })
+            try {
+              console.log('[godot-bridge] update notice registered: ' + (INSTALLED_VERSION || '?') + ' -> ' + latest)
+            } catch (e) {}
           }
-        } catch (e) {}
+        } catch (e) {
+          try {
+            console.log('[godot-bridge] update notice registration failed: ' + ((e && e.message) || e))
+          } catch (e2) {}
+        }
       }
     } catch (e) {}
   })()
