@@ -9,7 +9,9 @@
   },
   "files": [
     "plugin/",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "CHANGELOG.md",
+    "CHANGELOG.zh-CN.md"
   ],
   "keywords": [
     "dsh",
