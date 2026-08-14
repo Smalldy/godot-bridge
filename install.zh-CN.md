@@ -17,9 +17,17 @@ cordis.patch.yml                  # bundle patch 层（插入工具行）
 
 ## 为什么插件是"零 import"
 
-用户预设位于 `${DSH_HOME:-~/.dsh}/.agent-presets/`。从那里 Node 向上走 `node_modules` 永远到不了 harness 的依赖，所以本地插件模块不能 `import` 任何 `@deepseek-ai/*` 包。因此模块用手写 JSON Schema 构造工具定义，通过注入的 `tools` 服务注册——`ctx.tools.register` 只校验 `output.render`、`output.schema`（经 `assertSupportedJsonSchema`）和 `timeoutMs`，不要求 defineTool 产物。
+**`import` 解析是"按文件位置"的**：Node 解析裸标识符（`import '@deepseek-ai/...'`）时，从**被导入文件自己的目录**开始逐级向上找 `node_modules`。harness 官方插件位于 harness 依赖树内部，`@deepseek-ai/*` 就在它们上方，所以 import 正常工作；而本插件以独立文件部署在用户预设下：
 
-模块用命名导出（`export const name`、`export const inject`、`export function apply`）——cordis loader 的 `unwrapExports`（`exports.default ?? exports`）会把命名空间变成插件对象。不要加多余的 `export default`。
+```
+${DSH_HOME:-~/.dsh}/.agent-presets/<预设>/plugins/godot-bridge.mjs
+```
+
+从这个位置向上找（`~/.dsh` → 用户主目录 → 盘符根）永远到不了 harness 的 `node_modules`，任何 `import '@deepseek-ai/*'` 都会 `MODULE_NOT_FOUND`。所以"零 import"是**安装位置强加的约束，不是风格选择**——也正是它让"复制一个文件即可安装"成为可能。
+
+为了不 import 任何东西也能注册工具，模块用手写 JSON Schema 构造工具定义，交给注入的 `tools` 服务注册——`ctx.tools.register` 只校验 `output.render`、`output.schema`（经 `assertSupportedJsonSchema`）和 `timeoutMs`，不要求 defineTool 产物。
+
+模块用命名导出（`export const name`、`export const inject`、`export function apply`）——cordis loader 的 `unwrapExports`（`exports.default ?? exports`）会把命名空间变成插件对象。不要加多余的 `export default`：它会令 `unwrapExports` 收敛成那一个值，`name`/`inject`/`apply` 被静默丢弃。
 
 ## 安装
 

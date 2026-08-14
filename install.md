@@ -17,9 +17,17 @@ One implementation (TCP bridge + process management + 15 tools) is shipped; the 
 
 ## Why the plugin is zero-import
 
-User presets live under `${DSH_HOME:-~/.dsh}/.agent-presets/`. Node's upward `node_modules` walk from there never reaches the harness's dependencies, so a local plugin module cannot `import` any `@deepseek-ai/*` package. The module therefore builds tool definitions with hand-written JSON Schema and registers them through the injected `tools` service — `ctx.tools.register` only validates `output.render`, `output.schema` (via `assertSupportedJsonSchema`) and `timeoutMs`; it does not require a `defineTool`-produced definition.
+**`import` resolution is location-based**: Node resolves a bare specifier (`import '@deepseek-ai/...'`) by walking **up from the importing file's own directory** through each `node_modules`. Harness's own plugins live inside the harness dependency tree, so `@deepseek-ai/*` is directly above them and imports work normally. This plugin, however, is deployed as a standalone file under the user preset:
 
-The module uses named exports (`export const name`, `export const inject`, `export function apply`) — the cordis loader's `unwrapExports` (`exports.default ?? exports`) turns the namespace into the plugin object. Do not add a stray `export default`.
+```
+${DSH_HOME:-~/.dsh}/.agent-presets/<preset>/plugins/godot-bridge.mjs
+```
+
+Walking up from there (`~/.dsh` → home → drive root) never reaches the harness's `node_modules`, so any `import '@deepseek-ai/*'` would fail with `MODULE_NOT_FOUND`. Zero-import is therefore a constraint of the install location, not a stylistic choice — and it is what makes the "copy one file" install work at all.
+
+To register tools without importing anything, the module builds tool definitions with hand-written JSON Schema and passes them to the injected `tools` service — `ctx.tools.register` only validates `output.render`, `output.schema` (via `assertSupportedJsonSchema`) and `timeoutMs`; it does not require a `defineTool`-produced definition.
+
+The module uses named exports (`export const name`, `export const inject`, `export function apply`) — the cordis loader's `unwrapExports` (`exports.default ?? exports`) turns the namespace into the plugin object. Do not add a stray `export default`: it would make `unwrapExports` collapse to that single value and silently drop `name`/`inject`/`apply`.
 
 ## Install
 
