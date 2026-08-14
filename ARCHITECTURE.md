@@ -16,7 +16,7 @@ The MCP layer itself contributes nothing but an outer JSON-RPC shell. DeepSeek H
 | --- | --- | --- |
 | process | Node `spawn` | host `subprocess.spawn` (same args) |
 | runtime | TCP 9090 JSON | same TCP 9090 JSON via a one-shot `node -e` bridge |
-| headless | `godot --headless …` | not included yet; same spawn pattern can be added |
+| headless | `godot --headless …` | included: `godot_headless_op` + `godot_validate_script` over vendored `godot_operations.gd` / `validate_script.gd` |
 
 Crucially, **the game side does not know MCP exists**: `mcp_interaction_server.gd` is a plain TCP JSON server. Replacing the MCP server requires zero game-side changes; `project.godot` autoloads stay as-is.
 

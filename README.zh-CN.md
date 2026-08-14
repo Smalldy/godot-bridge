@@ -2,9 +2,9 @@
 
 # godot-bridge
 
-原生 **DeepSeek Harness (DSH)** 插件：通过游戏内置的 TCP 交互服务器，启动并操控运行中的 **Godot 4.x** 游戏——用一等公民的 Agent 工具取代 [`godot-mcp`](https://github.com/tugcantopaloglu/godot-mcp) MCP 服务器。
+原生 **DeepSeek Harness (DSH)** 插件：通过游戏内置的 TCP 交互服务器，启动并操控运行中的 **Godot 4.x** 游戏——以原生 Agent 工具取代 [`godot-mcp`](https://github.com/tugcantopaloglu/godot-mcp) MCP 服务器。
 
-无需 MCP 协议、无需 Python 服务器、无需编辑器插件。游戏侧零改动：`McpInteractionServer`（`mcp_interaction_server.gd` autoload）本就在 `127.0.0.1:9090` 监听并说换行分隔 JSON——godot-bridge 在 DSH host 内部原生说同一种协议。
+无需 MCP 协议、无需 Python 服务器、无需编辑器插件。游戏侧零改动：`McpInteractionServer`（`mcp_interaction_server.gd` autoload）本就在 `127.0.0.1:9090` 监听，采用换行分隔的 JSON 协议——godot-bridge 在 DSH host 内部原生使用同一种协议。
 
 ## 工具
 
@@ -40,7 +40,7 @@ DSH 会话
 ## 环境要求
 
 - DeepSeek Harness（带 host 运行时的会话）
-- 注册了 `McpInteractionServer` autoload 的 Godot 4.x 项目。若项目还没有，把 `plugin/mcp_interaction_server.gd` 复制到项目根，并注册为名为 `McpInteractionServer` 的 autoload（godot-mcp 项目已具备）
+- 注册了 `McpInteractionServer` autoload 的 Godot 4.x 项目。若项目还没有，把 `plugin/mcp_interaction_server.gd` 复制到项目根，并以 `McpInteractionServer` 命名注册为 autoload（godot-mcp 项目已具备）
 - `node` 在 PATH 中
 - Godot 可执行文件（务必用**真实 exe 完整路径**，不要用 gdvm shim——见"坑"）
 
@@ -61,7 +61,7 @@ DSH 会话
      name: './plugins/godot-bridge.mjs'
    ```
 
-3. 校验挂载（`agentPresets.standingKeyFor('<你的预设>')`），然后用该预设开新会话——6 个 `godot_*` 工具即可用。
+3. 校验挂载（`agentPresets.standingKeyFor('<你的预设>')`），然后用该预设开新会话——8 个 `godot_*` 工具即可用。
 
 > 该模块刻意做成**零 import**：用户预设位于 `~/.dsh` 下，Node 向上解析不到 harness 的 `node_modules`。工具定义用手写 JSON Schema 并通过 `ctx.tools.register` 注册（`register` 只校验 `output.render` / `output.schema` / `timeoutMs`，无需 import `defineTool`）。
 
@@ -77,7 +77,7 @@ DSH 会话
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-包内带 `dsh.bundle` manifest（`cordis.patch.yml`），会把 `tool-godot-bridge` 行插入你的 profile。重启后该 profile 的所有会话都有 8 个 `godot_*` 工具。同时已收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单（topic：`dsh-plugin`）。
+包内带 `dsh.bundle` manifest（`cordis.patch.yml`），会把 `tool-godot-bridge` 行插入你的 profile。重启后该 profile 的所有会话都有 8 个 `godot_*` 工具。已向 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单提交收录（[PR #199](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/199)，待合并；topic：`dsh-plugin`）。
 
 ## 用法
 
@@ -107,15 +107,17 @@ GODOT_PATH 解析顺序：工具参数 `godot_path` → `<workspace>/.omp/mcp.js
 ```
 plugin/godot-bridge.js            # 动态插件形态（code.host 函数体）
 plugin/godot-bridge.mjs           # 部署形态（零 import ESM 模块，命名导出）
-plugin/mcp_interaction_server.gd  # 从 godot-mcp 内置（MIT）——游戏内 TCP 服务器 autoload
-plugin/godot_operations.gd        # 从 godot-mcp 内置（MIT）——headless 操作脚本
-plugin/validate_script.gd         # 从 godot-mcp 内置（MIT）——GDScript 编译检查
-install.md / install.zh-CN.md           # 详细安装与维护说明
+plugin/mcp_interaction_server.gd  # 取自 godot-mcp（MIT）——游戏内 TCP 服务器 autoload
+plugin/godot_operations.gd        # 取自 godot-mcp（MIT）——headless 操作脚本
+plugin/validate_script.gd         # 取自 godot-mcp（MIT）——GDScript 编译检查
+package.json                      # dsh.bundle manifest（供 `dsh plugin add` 安装）
+cordis.patch.yml                  # bundle patch 层（插入工具行）
+install.md / install.zh-CN.md     # 详细安装与维护说明
 ARCHITECTURE.md / ARCHITECTURE.zh-CN.md  # 如何取代 godot-mcp + 协议细节
-COVERAGE.md / COVERAGE.zh-CN.md          # 与 godot-mcp 的逐工具对比
+COVERAGE.md / COVERAGE.zh-CN.md   # 与 godot-mcp 的逐工具对比
 ```
 
-`mcp_interaction_server.gd`、`godot_operations.gd` 与 `validate_script.gd` 从 [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp)（MIT）内置而来。部署形态通过模块相对路径定位（`import.meta.url`）；动态形态回退到 `<workspace>/tools/godot-bridge/` 或 `godot-mcp` checkout，或显式传 `ops_script` / `validate_script` 参数。
+`mcp_interaction_server.gd`、`godot_operations.gd` 与 `validate_script.gd` 取自 [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp)（MIT，随包内置）。部署形态通过模块相对路径定位（`import.meta.url`）；动态形态回退到 `<workspace>/tools/godot-bridge/` 或 `godot-mcp` checkout，或显式传 `ops_script` / `validate_script` 参数。
 
 ## 许可证
 

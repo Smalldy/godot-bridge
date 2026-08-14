@@ -77,7 +77,7 @@ Install straight from GitHub — pure ESM + assets, no npm account, no build ste
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-The package ships a `dsh.bundle` manifest (`cordis.patch.yml`) that inserts the `tool-godot-bridge` row into your profile. After a restart, the eight `godot_*` tools are available in every session on that profile. Also listed in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry (topic: `dsh-plugin`).
+The package ships a `dsh.bundle` manifest (`cordis.patch.yml`) that inserts the `tool-godot-bridge` row into your profile. After a restart, the eight `godot_*` tools are available in every session on that profile. A listing in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry is pending review ([PR #199](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/199)).
 
 ## Usage
 
@@ -110,9 +110,11 @@ plugin/godot-bridge.mjs           # deployment form (zero-import ESM module, nam
 plugin/mcp_interaction_server.gd  # vendored from godot-mcp (MIT) — in-game TCP server autoload
 plugin/godot_operations.gd        # vendored from godot-mcp (MIT) — headless ops script
 plugin/validate_script.gd         # vendored from godot-mcp (MIT) — GDScript compile-check
-install.md / install.zh-CN.md           # detailed install & maintenance
-ARCHITECTURE.md / ARCHITECTURE.zh-CN.md # how it replaces godot-mcp + protocol details
-COVERAGE.md / COVERAGE.zh-CN.md         # full tool-by-tool comparison vs godot-mcp
+package.json                      # dsh.bundle manifest (for `dsh plugin add`)
+cordis.patch.yml                  # bundle patch layer (inserts the tool row)
+install.md / install.zh-CN.md     # detailed install & maintenance
+ARCHITECTURE.md / ARCHITECTURE.zh-CN.md  # how it replaces godot-mcp + protocol details
+COVERAGE.md / COVERAGE.zh-CN.md   # full tool-by-tool comparison vs godot-mcp
 ```
 
 `mcp_interaction_server.gd`, `godot_operations.gd` and `validate_script.gd` are vendored from [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp) (MIT). The deployment form locates the headless scripts relative to the module (`import.meta.url`); the dynamic form falls back to `<workspace>/tools/godot-bridge/` or the `godot-mcp` checkout, or an explicit `ops_script`/`validate_script` argument.
