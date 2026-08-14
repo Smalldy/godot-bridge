@@ -7,7 +7,6 @@
 图例：
 - ✅ **原生实现** — 由 godot-bridge 工具直接提供（运行时 `godot_command` / `godot_screenshot` / 进程工具 / `godot_headless_op` / `godot_validate_script`）
 - 🔁 **DSH 原生等效** — 该 godot-mcp 工具在 MCP 服务器自己的 Node 进程里实现为文件/编辑器逻辑；DSH 内置工具（`read`/`write`/`edit`/`glob`/`grep`/`pwsh`）已经做得更好
-- ⚠️ **部分** — 附注说明
 
 ## 运行时工具 — 全部由 `godot_command` 覆盖 ✅
 

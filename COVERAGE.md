@@ -7,7 +7,6 @@ Compared against the original [`tugcantopaloglu/godot-mcp`](https://github.com/t
 Legend:
 - ✅ **native** — implemented by a godot-bridge tool (runtime `godot_command` / `godot_screenshot` / process tools / `godot_headless_op` / `godot_validate_script`)
 - 🔁 **DSH-native** — the godot-mcp tool was implemented in the MCP server's own Node process as file/editor logic; DSH's built-in tools (`read`/`write`/`edit`/`glob`/`grep`/`pwsh`) already do this better
-- ⚠️ **partial** — a note
 
 ## Runtime tools — all covered by `godot_command` ✅
 
