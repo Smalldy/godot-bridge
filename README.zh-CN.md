@@ -2,6 +2,8 @@
 
 # godot-bridge
 
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 原生 **DeepSeek Harness (DSH)** 插件：通过游戏内置的 TCP 交互服务器，启动并操控运行中的 **Godot 4.x** 游戏——以原生 Agent 工具取代 [`godot-mcp`](https://github.com/tugcantopaloglu/godot-mcp) MCP 服务器。
 
 无需 MCP 协议、无需 Python 服务器、无需编辑器插件。游戏侧零改动：`McpInteractionServer`（`mcp_interaction_server.gd` autoload）本就在 `127.0.0.1:9090` 监听，采用换行分隔的 JSON 协议——godot-bridge 在 DSH host 内部原生使用同一种协议。
@@ -84,7 +86,7 @@ DSH 会话
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-包内带 `dsh.bundle` manifest（`cordis.patch.yml`），会把 `tool-godot-bridge` 行插入你的 profile。重启后该 profile 的所有会话都有 15 个 `godot_*` 工具。已向 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单提交收录（[PR #199](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/199)，待合并；topic：`dsh-plugin`）。
+包内带 `dsh.bundle` manifest（`cordis.patch.yml`），会把 `tool-godot-bridge` 行插入你的 profile。重启后该 profile 的所有会话都有 15 个 `godot_*` 工具。已收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单（topic：`dsh-plugin`）。
 
 ## 用法
 

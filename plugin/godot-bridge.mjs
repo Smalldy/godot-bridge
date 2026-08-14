@@ -927,6 +927,7 @@ export function apply(ctx) {
         const projectPath = String(args.project_path || '')
         const projectName = String(args.project_name || '')
         if (!projectPath || !projectName) return { error: 'project_path and project_name are required' }
+        await getWorkspaceRoot(exec) // prime sessionWorkspace for the fs sandbox policy
         await ensureDir(projectPath)
         const existing = await readProjectFile(projectPath, 'project.godot')
         if (existing !== null) return { error: 'project.godot already exists at ' + projectPath }

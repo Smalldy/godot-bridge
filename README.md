@@ -2,6 +2,8 @@
 
 # godot-bridge
 
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 Native **DeepSeek Harness (DSH)** plugin that launches and drives a running **Godot 4.x** game through its in-game TCP interaction server — replacing the [`godot-mcp`](https://github.com/tugcantopaloglu/godot-mcp) MCP server with first-class agent tools.
 
 No MCP protocol, no Python server, no editor addon. The game side is untouched: `McpInteractionServer` (the `mcp_interaction_server.gd` autoload) already listens on `127.0.0.1:9090` and speaks newline-delimited JSON — godot-bridge speaks the same protocol natively from inside the DSH host.
@@ -84,7 +86,7 @@ Install straight from GitHub — pure ESM + assets, no npm account, no build ste
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-The package ships a `dsh.bundle` manifest (`cordis.patch.yml`) that inserts the `tool-godot-bridge` row into your profile. After a restart, the fifteen `godot_*` tools are available in every session on that profile. A listing in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry is pending review ([PR #199](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/199)).
+The package ships a `dsh.bundle` manifest (`cordis.patch.yml`) that inserts the `tool-godot-bridge` row into your profile. After a restart, the fifteen `godot_*` tools are available in every session on that profile. Listed in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry (topic: `dsh-plugin`).
 
 ## Usage
 
