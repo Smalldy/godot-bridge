@@ -154,7 +154,7 @@ export function apply(ctx) {
 
   // ── headless static operations (godot_operations.gd / validate_script.gd) ──
 
-  async function resolveScriptFile(name, explicit, projectPath, exec) {
+  async function resolveScriptFile(name, explicit) {
     if (explicit) return explicit
     try {
       if (typeof import.meta !== 'undefined' && import.meta.url) {
@@ -162,25 +162,7 @@ export function apply(ctx) {
         return decodeURIComponent(u.pathname).replace(/^\/([A-Za-z]:)/, '$1')
       }
     } catch (e) {}
-    const fs = ctx.fs
-    const candidates = []
-    if (projectPath) {
-      candidates.push(projectPath + '/tools/godot-bridge/' + name)
-      candidates.push(projectPath + '/../godot-mcp/src/scripts/' + name)
-    }
-    const root = await getWorkspaceRoot(exec)
-    if (root) {
-      candidates.push(root + '/tools/godot-bridge/' + name)
-      candidates.push(root + '/../godot-mcp/src/scripts/' + name)
-    }
-    for (const c of candidates) {
-      try {
-        const t = await fs.resolve(c, { cwd: projectPath || root || '.' })
-        const i = await fs.stat(t)
-        if (i) return c
-      } catch (e) {}
-    }
-    return candidates.length > 0 ? candidates[0] : name
+    return name
   }
 
   async function runHeadless(godotExe, projectPath, scriptPath, extraArgs, signal) {
@@ -594,7 +576,7 @@ export function apply(ctx) {
         const projectPath = args.project_path || root
         if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
         const gp = args.godot_path || await getGodotPath()
-        const ops = await resolveScriptFile('godot_operations.gd', args.ops_script, projectPath, exec)
+        const ops = await resolveScriptFile('godot_operations.gd', args.ops_script)
         const res = await runHeadless(gp, projectPath, ops, [String(args.operation), JSON.stringify(args.params || {})], exec.signal)
         if (res.spawnError) return { error: 'headless spawn failed: ' + res.spawnError }
         const text = (res.out || '').trim()
@@ -646,7 +628,7 @@ export function apply(ctx) {
         const scriptPath = String(args.script_path || '')
         if (!/\.gd$/i.test(scriptPath)) return { error: 'validate_script only checks GDScript (.gd) files' }
         const gp = args.godot_path || await getGodotPath()
-        const vs = await resolveScriptFile('validate_script.gd', args.validate_script, projectPath, exec)
+        const vs = await resolveScriptFile('validate_script.gd', args.validate_script)
         const res = await runHeadless(gp, projectPath, vs, ['res://' + scriptPath.replace(/^res:\/\//, '')], exec.signal)
         if (res.spawnError) return { error: 'headless spawn failed: ' + res.spawnError }
         const errors = []
