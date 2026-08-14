@@ -55,38 +55,28 @@ DSH 会话
 
 ## 安装
 
-### A. 部署级 agent 预设（推荐，重启不丢）
-
-1. 把 `plugin/godot-bridge.mjs` 复制进你的用户预设：
-
-   ```
-   ${DSH_HOME:-~/.dsh}/.agent-presets/<你的预设>/plugins/godot-bridge.mjs
-   ```
-
-2. 在该预设的 `agent.cordis.yml` 里加一行（普通消费行——只注册工具、不发布服务，无需 `isolate` realm）：
-
-   ```yaml
-   - id: tool-godot-bridge
-     name: './plugins/godot-bridge.mjs'
-   ```
-
-3. 校验挂载（`agentPresets.standingKeyFor('<你的预设>')`），然后用该预设开新会话——15 个 `godot_*` 工具即可用。
-
-> 该模块刻意做成**零 import**：用户预设位于 `~/.dsh` 下，Node 向上解析不到 harness 的 `node_modules`。工具定义用手写 JSON Schema 并通过 `ctx.tools.register` 注册（`register` 只校验 `output.render` / `output.schema` / `timeoutMs`，无需 import `defineTool`）。
-
-### B. 会话内动态插件（快速试用）
-
-让你的 Agent 用 `plugin/godot-bridge.js` 定义动态 Host 插件（`cordis_define`，idPrefix `gbrg`，`code.host` = 文件内容）并运行。此形态走动态沙箱的 `harness.defineTool` / `harness.registerTool` API；逻辑与 A 完全一致。
-
-### C. 社区 bundle（`dsh plugin add`）
-
-直接从 GitHub 安装——纯 ESM + 资产，无需 npm 账号、无需构建步骤：
+**推荐——一条命令**（需要 `dsh` CLI）：
 
 ```sh
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
 包内带 `dsh.bundle` manifest（`cordis.patch.yml`），会把 `tool-godot-bridge` 行插入你的 profile。重启后该 profile 的所有会话都有 15 个 `godot_*` 工具。已收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单（topic：`dsh-plugin`）。
+
+**没有 dsh CLI？手动安装**——把 `plugin/godot-bridge.mjs` 复制进你的用户预设，并在其 `agent.cordis.yml` 里加一行：
+
+```
+${DSH_HOME:-~/.dsh}/.agent-presets/<你的预设>/plugins/godot-bridge.mjs
+```
+
+```yaml
+- id: tool-godot-bridge
+  name: './plugins/godot-bridge.mjs'
+```
+
+然后用该预设开新会话——15 个 `godot_*` 工具即可用。（想先校验挂载可用 `agentPresets.standingKeyFor('<你的预设>')`。）
+
+> 该模块刻意做成**零 import**：用户预设位于 `~/.dsh` 下，Node 向上解析不到 harness 的 `node_modules`。工具定义用手写 JSON Schema 并通过 `ctx.tools.register` 注册（`register` 只校验 `output.render` / `output.schema` / `timeoutMs`，无需 import `defineTool`）。
 
 ## 用法
 
@@ -114,8 +104,7 @@ GODOT_PATH 解析顺序：工具参数 `godot_path` → `<workspace>/.omp/mcp.js
 ## 项目结构
 
 ```
-plugin/godot-bridge.js            # 动态插件形态（code.host 函数体）
-plugin/godot-bridge.mjs           # 部署形态（零 import ESM 模块，命名导出）
+plugin/godot-bridge.mjs           # 插件本体（零 import ESM 模块，命名导出）
 plugin/mcp_interaction_server.gd  # 取自 godot-mcp（MIT）——游戏内 TCP 服务器 autoload
 plugin/godot_operations.gd        # 取自 godot-mcp（MIT）——headless 操作脚本
 plugin/validate_script.gd         # 取自 godot-mcp（MIT）——GDScript 编译检查
@@ -126,7 +115,7 @@ ARCHITECTURE.md / ARCHITECTURE.zh-CN.md  # 如何取代 godot-mcp + 协议细节
 COVERAGE.md / COVERAGE.zh-CN.md   # 与 godot-mcp 的逐工具对比
 ```
 
-`mcp_interaction_server.gd`、`godot_operations.gd` 与 `validate_script.gd` 取自 [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp)（MIT，随包内置）。部署形态通过模块相对路径定位（`import.meta.url`）；动态形态回退到 `<workspace>/tools/godot-bridge/` 或 `godot-mcp` checkout，或显式传 `ops_script` / `validate_script` 参数。
+`mcp_interaction_server.gd`、`godot_operations.gd` 与 `validate_script.gd` 取自 [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp)（MIT，随包内置）。插件通过模块相对路径定位这些脚本（`import.meta.url`）；传显式 `ops_script` / `validate_script` 参数可覆盖。
 
 ## 许可证
 

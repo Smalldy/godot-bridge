@@ -55,38 +55,28 @@ DSH session
 
 ## Install
 
-### A. Deployment-level agent preset (recommended, survives restarts)
-
-1. Copy `plugin/godot-bridge.mjs` into your user preset:
-
-   ```
-   ${DSH_HOME:-~/.dsh}/.agent-presets/<your-preset>/plugins/godot-bridge.mjs
-   ```
-
-2. Add one row to that preset's `agent.cordis.yml` (a plain consumer row — it registers tools, publishes no service, so no `isolate` realm needed):
-
-   ```yaml
-   - id: tool-godot-bridge
-     name: './plugins/godot-bridge.mjs'
-   ```
-
-3. Validate the mount (`agentPresets.standingKeyFor('<your-preset>')`), then start a session on that preset — the fifteen `godot_*` tools are available.
-
-> The module is deliberately **zero-import**: user presets live under `~/.dsh`, where Node cannot resolve the harness's `node_modules`. It builds tool definitions with hand-written JSON Schema and registers them via `ctx.tools.register` (which validates `output.render` / `output.schema` / `timeoutMs`, no `defineTool` import needed).
-
-### B. In-session dynamic plugin (quick test)
-
-Tell your agent to define a dynamic Host plugin from `plugin/godot-bridge.js` (`cordis_define`, idPrefix `gbrg`, `code.host` = file content) and run it. This form uses the dynamic-sandbox `harness.defineTool` / `harness.registerTool` API; logic is identical to A.
-
-### C. Community bundle (`dsh plugin add`)
-
-Install straight from GitHub — pure ESM + assets, no npm account, no build step:
+**Recommended — one command** (requires the `dsh` CLI):
 
 ```sh
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
 The package ships a `dsh.bundle` manifest (`cordis.patch.yml`) that inserts the `tool-godot-bridge` row into your profile. After a restart, the fifteen `godot_*` tools are available in every session on that profile. Listed in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry (topic: `dsh-plugin`).
+
+**No dsh CLI? Manual install** — copy `plugin/godot-bridge.mjs` to your user preset and add one row to its `agent.cordis.yml`:
+
+```
+${DSH_HOME:-~/.dsh}/.agent-presets/<your-preset>/plugins/godot-bridge.mjs
+```
+
+```yaml
+- id: tool-godot-bridge
+  name: './plugins/godot-bridge.mjs'
+```
+
+Then start a session on that preset — the fifteen `godot_*` tools are available. (Validate the mount with `agentPresets.standingKeyFor('<your-preset>')` if you want to check before launching.)
+
+> The module is deliberately **zero-import**: user presets live under `~/.dsh`, where Node cannot resolve the harness's `node_modules`. It builds tool definitions with hand-written JSON Schema and registers them via `ctx.tools.register` (which validates `output.render` / `output.schema` / `timeoutMs`, no `defineTool` import needed).
 
 ## Usage
 
@@ -114,8 +104,7 @@ GODOT_PATH resolution: tool arg `godot_path` → `<workspace>/.omp/mcp.json` `en
 ## Project layout
 
 ```
-plugin/godot-bridge.js            # dynamic-plugin form (code.host body)
-plugin/godot-bridge.mjs           # deployment form (zero-import ESM module, named exports)
+plugin/godot-bridge.mjs           # the plugin (zero-import ESM module, named exports)
 plugin/mcp_interaction_server.gd  # vendored from godot-mcp (MIT) — in-game TCP server autoload
 plugin/godot_operations.gd        # vendored from godot-mcp (MIT) — headless ops script
 plugin/validate_script.gd         # vendored from godot-mcp (MIT) — GDScript compile-check
@@ -126,7 +115,7 @@ ARCHITECTURE.md / ARCHITECTURE.zh-CN.md  # how it replaces godot-mcp + protocol 
 COVERAGE.md / COVERAGE.zh-CN.md   # full tool-by-tool comparison vs godot-mcp
 ```
 
-`mcp_interaction_server.gd`, `godot_operations.gd` and `validate_script.gd` are vendored from [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp) (MIT). The deployment form locates the headless scripts relative to the module (`import.meta.url`); the dynamic form falls back to `<workspace>/tools/godot-bridge/` or the `godot-mcp` checkout, or an explicit `ops_script`/`validate_script` argument.
+`mcp_interaction_server.gd`, `godot_operations.gd` and `validate_script.gd` are vendored from [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp) (MIT). The plugin locates the headless scripts relative to the module (`import.meta.url`); pass an explicit `ops_script` / `validate_script` argument to override.
 
 ## License
 
