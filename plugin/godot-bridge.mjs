@@ -18,7 +18,7 @@
 
 import { defineTool as defineToolOfficial } from '@deepseek-ai/dsh-tools'
 import Schema from '@deepseek-ai/schemastery'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'godot-bridge'
@@ -42,7 +42,38 @@ export function apply(ctx, config) {
 
   const PORT = 9090
 
-  const GODOT_PATH_GUIDANCE = 'Godot executable is not configured. Set godotPath in the tool-godot-bridge row config (your profile\'s cordis.patch.yml), or pass the godot_path tool argument.'
+  // ── configuration validation & onboarding guidance ────────────────────────
+  // Fail loud per the cordis Config contract (docs/cordis-tutorial/05-config):
+  // a configured godotPath naming a nonexistent file rejects the plugin at
+  // load (fiber FAILED, precise boot error). An UNSET godotPath is legitimate
+  // (file-only tools still work) — in that case a system-prompt section makes
+  // the model proactively guide the user instead of improvising (searching the
+  // disk for Godot).
+  const godotPath = config && typeof config.godotPath === 'string' ? config.godotPath.trim() : ''
+  if (godotPath.length > 0) {
+    if (!existsSync(godotPath)) {
+      throw new Error(
+        'godot-bridge: config.godotPath points to a nonexistent file: "' + godotPath + '". '
+        + 'Fix godotPath in the tool-godot-bridge row config (profile cordis.patch.yml), '
+        + 'or remove it to run without the Godot executable.',
+      )
+    }
+  } else {
+    try {
+      const systemPrompt = ctx.systemPrompt
+      if (systemPrompt) {
+        ctx.effect(function () {
+          return systemPrompt.section({
+            name: 'godot-bridge:config-guidance',
+            order: 150,
+            text: 'GODOT CONFIG REQUIRED - godot-bridge has no Godot executable configured. Do NOT search the filesystem for Godot; tell the user to configure it: in their profile cordis.patch.yml, override the tool-godot-bridge row config with: "- id: tool-godot-bridge\\n  config:\\n    godotPath: C:/path/to/Godot_v4.x.exe" (real exe full path), then restart DSH. Alternatively pass the godot_path tool argument per call. / 中文：godot-bridge 尚未配置 Godot 可执行文件路径。不要自行搜索系统；请告知用户在 profile 的 cordis.patch.yml 中给 tool-godot-bridge 行配置 godotPath（"- id: tool-godot-bridge\\n  config:\\n    godotPath: C:/path/to/Godot_v4.x.exe"，真实 exe 完整路径）并重启 DSH，或每次调用传 godot_path 参数。',
+          })
+        })
+      }
+    } catch (e) {}
+  }
+
+  const GODOT_PATH_GUIDANCE = 'Godot executable is not configured. Set godotPath in the tool-godot-bridge row config (your profile\'s cordis.patch.yml):\n- id: tool-godot-bridge\n  config:\n    godotPath: C:/path/to/Godot_v4.x.exe\nOr pass the godot_path tool argument.'
 
   // ── update notice state (best-effort; see checkForUpdate below) ──────────
   // The installed version comes from this bundle's own package.json; the
