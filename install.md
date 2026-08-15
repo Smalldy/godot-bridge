@@ -13,7 +13,7 @@ package.json                      # dsh.bundle manifest (for `dsh plugin add`)
 cordis.patch.yml                  # bundle patch layer (inserts the tool row)
 ```
 
-The plugin is a standard DSH bundle module: it imports `defineTool` from `@deepseek-ai/dsh-tools` and registers the fifteen `godot_*` tools via `ctx.tools.register`. It uses named exports (`export const name`, `export const inject`, `export function apply`) — the cordis loader's `unwrapExports` (`exports.default ?? exports`) turns the namespace into the plugin object. Do not add a stray `export default`: it would make `unwrapExports` collapse to that single value and silently drop `name`/`inject`/`apply`.
+The plugin is a standard DSH bundle module: it imports `defineTool` from `@deepseek-ai/dsh-tools` and registers the sixteen `godot_*` tools via `ctx.tools.register`. It uses named exports (`export const name`, `export const inject`, `export function apply`) — the cordis loader's `unwrapExports` (`exports.default ?? exports`) turns the namespace into the plugin object. Do not add a stray `export default`: it would make `unwrapExports` collapse to that single value and silently drop `name`/`inject`/`apply`.
 
 Because it imports `@deepseek-ai/*`, the module must live where Node can resolve the harness dependency tree — i.e. be installed through the official bundle mechanism (`dsh plugin add`), which puts the package in the profile's `node_modules` (the harness heals the shared `@deepseek-ai/*` layer there at boot). Do **not** copy the file into a user agent preset (`~/.dsh/.agent-presets/...`): Node cannot resolve `@deepseek-ai/dsh-tools` from that location.
 
@@ -25,7 +25,7 @@ Because it imports `@deepseek-ai/*`, the module must live where Node can resolve
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-`dsh plugin` is a pnpm forwarder: it installs the package into the profile and — because the package's `dsh.bundle` manifest points at `cordis.patch.yml`, which inserts the `tool-godot-bridge` row (referenced by package name) — appends `godot-bridge` to the profile's `dsh.profile.bundles` layer list. Pure ESM + assets, no build script, so a git install needs no `allowBuilds` exemption. After a restart, every session on that profile has the fifteen tools.
+`dsh plugin` is a pnpm forwarder: it installs the package into the profile and — because the package's `dsh.bundle` manifest points at `cordis.patch.yml`, which inserts the `tool-godot-bridge` row (referenced by package name) — appends `godot-bridge` to the profile's `dsh.profile.bundles` layer list. Pure ESM + assets, no build script, so a git install needs no `allowBuilds` exemption. After a restart, every session on that profile has the sixteen tools.
 
 The same command installs a local checkout or a tarball:
 
@@ -40,7 +40,7 @@ dsh plugin --profile web add ./godot-bridge-0.1.0.tgz   # pnpm pack output
 dsh plugin --profile web remove godot-bridge
 ```
 
-`dsh plugin remove` forwards to `pnpm remove` in the profile directory and then reconciles `dsh.profile.bundles` — the dependency **and** the `godot-bridge` bundle layer are both removed from the profile's `package.json`. After a restart, the fifteen `godot_*` tools are gone from sessions on that profile. The `web` profile itself (the standard one) is untouched; removing a plugin never creates or deletes a profile.
+`dsh plugin remove` forwards to `pnpm remove` in the profile directory and then reconciles `dsh.profile.bundles` — the dependency **and** the `godot-bridge` bundle layer are both removed from the profile's `package.json`. After a restart, the sixteen `godot_*` tools are gone from sessions on that profile. The `web` profile itself (the standard one) is untouched; removing a plugin never creates or deletes a profile.
 
 Notes:
 
@@ -50,12 +50,11 @@ Notes:
 
 ## Config
 
-- Godot executable: per-tool `godot_path` argument > the `godotPath` field of the `tool-godot-bridge` row config (official cordis Config mechanism — override it in your profile's `cordis.patch.yml`). No built-in fallback. Always point at the **real exe**, never a version-manager shim. Example profile `cordis.patch.yml`:
+- Godot executable: per-tool `godot_path` argument > the `godotPath` setting (the Web plugin-config page, or the `godot-bridge:` section of `settings.yaml`) > the `godot` command on PATH. The plugin author does **not** preset a path (Godot is a portable exe that can live anywhere); set your own engine path in settings when it isn't on PATH. Always point at the **real exe**, never a version-manager shim. Example `settings.yaml`:
 
   ```yaml
-  - id: tool-godot-bridge
-    config:
-      godotPath: C:/path/to/Godot_v4.4-stable_win64.exe
+  godot-bridge:
+    godotPath: C:/path/to/Godot_v4.4-stable_win64.exe
   ```
 - Port/host: hardcoded `127.0.0.1:9090` (matches the `McpInteractionServer` autoload default).
 - Headless scripts: the plugin locates them relative to the module (`import.meta.url`); pass an explicit `ops_script` / `validate_script` argument to override.

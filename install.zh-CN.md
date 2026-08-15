@@ -13,7 +13,7 @@ package.json                      # dsh.bundle manifest（供 `dsh plugin add` �
 cordis.patch.yml                  # bundle patch 层（插入工具行）
 ```
 
-插件是标准 DSH bundle 模块：`import { defineTool } from '@deepseek-ai/dsh-tools'`，15 个 `godot_*` 工具经 `ctx.tools.register` 注册。模块用命名导出（`export const name`、`export const inject`、`export function apply`）——cordis loader 的 `unwrapExports`（`exports.default ?? exports`）会把命名空间变成插件对象。不要加多余的 `export default`：它会令 `unwrapExports` 收敛成那一个值，`name`/`inject`/`apply` 被静默丢弃。
+插件是标准 DSH bundle 模块：`import { defineTool } from '@deepseek-ai/dsh-tools'`，16 个 `godot_*` 工具经 `ctx.tools.register` 注册。模块用命名导出（`export const name`、`export const inject`、`export function apply`）——cordis loader 的 `unwrapExports`（`exports.default ?? exports`）会把命名空间变成插件对象。不要加多余的 `export default`：它会令 `unwrapExports` 收敛成那一个值，`name`/`inject`/`apply` 被静默丢弃。
 
 因为要 `import '@deepseek-ai/*'`，模块必须装在 Node 能解析 harness 依赖树的位置——即走官方 bundle 机制（`dsh plugin add`）：包装进 profile 的 `node_modules`（harness 启动时会在那里 heal 共享的 `@deepseek-ai/*` 依赖层）。**不要**把文件复制进用户 agent 预设（`~/.dsh/.agent-presets/...`）：那个位置解析不到 `@deepseek-ai/dsh-tools`。
 
@@ -25,7 +25,7 @@ cordis.patch.yml                  # bundle patch 层（插入工具行）
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-`dsh plugin` 是 pnpm 转发器：把包装进 profile，并因包内 `dsh.bundle` manifest 指向 `cordis.patch.yml`（插入按包名引用的 `tool-godot-bridge` 行）而把 `godot-bridge` 追加进该 profile 的 `dsh.profile.bundles` 层列表。纯 ESM + 资产、无构建脚本，git 安装不需要 `allowBuilds` 豁免。重启后该 profile 的所有会话都有 15 个工具。
+`dsh plugin` 是 pnpm 转发器：把包装进 profile，并因包内 `dsh.bundle` manifest 指向 `cordis.patch.yml`（插入按包名引用的 `tool-godot-bridge` 行）而把 `godot-bridge` 追加进该 profile 的 `dsh.profile.bundles` 层列表。纯 ESM + 资产、无构建脚本，git 安装不需要 `allowBuilds` 豁免。重启后该 profile 的所有会话都有 16 个工具。
 
 同一命令也可安装本地 checkout 或 tarball：
 
@@ -40,7 +40,7 @@ dsh plugin --profile web add ./godot-bridge-0.1.0.tgz   # pnpm pack 产物
 dsh plugin --profile web remove godot-bridge
 ```
 
-`dsh plugin remove` 在 profile 目录里转发 `pnpm remove`，然后调和 `dsh.profile.bundles`——依赖**和** `godot-bridge` bundle 层会一起从 profile 的 `package.json` 中删除。重启后该 profile 的会话不再有 15 个 `godot_*` 工具。标准 `web` profile 本身不受影响；移除插件从不创建或删除 profile。
+`dsh plugin remove` 在 profile 目录里转发 `pnpm remove`，然后调和 `dsh.profile.bundles`——依赖**和** `godot-bridge` bundle 层会一起从 profile 的 `package.json` 中删除。重启后该 profile 的会话不再有 16 个 `godot_*` 工具。标准 `web` profile 本身不受影响；移除插件从不创建或删除 profile。
 
 注意事项：
 
@@ -50,12 +50,11 @@ dsh plugin --profile web remove godot-bridge
 
 ## 配置
 
-- Godot 可执行文件：每次调用的 `godot_path` 参数 > `tool-godot-bridge` 行的 `config.godotPath`（官方 cordis Config 机制——在 profile 的 `cordis.patch.yml` 覆盖）。无内置兜底。始终指向**真实 exe**，别用版本管理器 shim。profile `cordis.patch.yml` 示例：
+- Godot 可执行文件：每次调用的 `godot_path` 参数 > `godotPath` 设置（Web 插件配置页，或 `settings.yaml` 的 `godot-bridge:` 段）> PATH 上的 `godot` 命令。插件作者**不预设**路径（Godot 是便携 exe，可能位于任意位置）；`godot` 不在 PATH 时，请在设置里填自己的引擎路径。始终指向**真实 exe**，别用版本管理器 shim。`settings.yaml` 示例：
 
   ```yaml
-  - id: tool-godot-bridge
-    config:
-      godotPath: C:/path/to/Godot_v4.4-stable_win64.exe
+  godot-bridge:
+    godotPath: C:/path/to/Godot_v4.4-stable_win64.exe
   ```
 - 端口/主机：写死 `127.0.0.1:9090`（与 `McpInteractionServer` autoload 默认一致）。
 - headless 脚本定位：插件按模块相对路径（`import.meta.url`）；传显式 `ops_script` / `validate_script` 参数可覆盖。

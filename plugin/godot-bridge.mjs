@@ -10,25 +10,34 @@
  *   - id: tool-godot-bridge
  *     name: godot-bridge
  *
- * 配置（官方 cordis Config 机制）：导出的 Config schema 校验行配置。
- *   config.godotPath —— Godot 可执行文件完整路径（缺省空 = 未配置）。
- *   工具参数 godot_path 优先于该配置；无内置兜底路径。
- * 用户在其 profile 的 cordis.patch.yml 覆盖 tool-godot-bridge 行的 config 即可。
+ * 配置（官方 cordis Config + settings section，面向用户）：
+ *   godotPath —— Godot 可执行文件完整路径，可选、面向用户。Godot 是便携
+ *   exe，可能位于任意位置，因此插件作者/部署层不预设该路径（cordis.patch.yml
+ *   的 row config 留空）。用户在 settings（Web 插件配置页或 settings.yaml 的
+ *   `godot-bridge:` 段）设置，热重载；未设置时 Godot 相关工具回退到从 PATH
+ *   解析 `godot`，再失败才返回指引。语义校验（路径存在）由 settings 的
+ *   validate 钩子承担，而非 apply 里 throw。
+ * 工具参数 godot_path 优先于 settings 配置，其次 PATH 解析兜底。
  */
 
 import { defineTool as defineToolOfficial } from '@deepseek-ai/dsh-tools'
 import Schema from '@deepseek-ai/schemastery'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'godot-bridge'
 
-export const inject = ['subprocess', 'timer', 'tools', 'fs', 'sandboxPolicy', 'systemPrompt']
+export const inject = ['subprocess', 'tools', 'fs', 'sandboxPolicy', 'systemPrompt']
 
 /**
- * Runtime configuration schema (official cordis Config mechanism, see
- * docs/cordis-tutorial/05-config): Cordis validates the `tool-godot-bridge`
- * row config against it before `apply` runs. (Plain ESM — no TS interface.)
+ * Runtime configuration schema (official cordis Config + settings section).
+ * `godotPath` is USER-facing and OPTIONAL: Godot is a portable exe that can
+ * live anywhere, so the plugin author never presets it (cordis.patch.yml stays
+ * empty). The user sets their own engine path in settings (the Web
+ * plugin-config page or the `godot-bridge:` section of settings.yaml),
+ * hot-reloaded; when unset, Godot-needing tools fall back to resolving
+ * `godot` on PATH. (Plain ESM — no TS interface.)
  */
 export const Config = Schema.object({
   godotPath: Schema.string().default(''),
@@ -36,44 +45,68 @@ export const Config = Schema.object({
 
 export function apply(ctx, config) {
   const subprocess = ctx.subprocess
-  const timer = ctx.timer
   const tools = ctx.tools
-  if (subprocess === undefined || timer === undefined || tools === undefined) return
+  if (subprocess === undefined || tools === undefined) return
 
   const PORT = 9090
 
-  // ── configuration validation & onboarding guidance ────────────────────────
-  // Fail loud per the cordis Config contract (docs/cordis-tutorial/05-config):
-  // a configured godotPath naming a nonexistent file rejects the plugin at
-  // load (fiber FAILED, precise boot error). An UNSET godotPath is legitimate
-  // (file-only tools still work) — in that case a system-prompt section makes
-  // the model proactively guide the user instead of improvising (searching the
-  // disk for Godot).
-  const godotPath = config && typeof config.godotPath === 'string' ? config.godotPath.trim() : ''
-  if (godotPath.length > 0) {
-    if (!existsSync(godotPath)) {
-      throw new Error(
-        'godot-bridge: config.godotPath points to a nonexistent file: "' + godotPath + '". '
-        + 'Fix godotPath in the tool-godot-bridge row config (profile cordis.patch.yml), '
-        + 'or remove it to run without the Godot executable.',
-      )
-    }
-  } else {
-    try {
-      const systemPrompt = ctx.systemPrompt
-      if (systemPrompt) {
-        ctx.effect(function () {
-          return systemPrompt.section({
-            name: 'godot-bridge:config-guidance',
-            order: 150,
-            text: 'GODOT CONFIG REQUIRED - godot-bridge has no Godot executable configured. Do NOT search the filesystem for Godot; tell the user to configure it: in their profile cordis.patch.yml, override the tool-godot-bridge row config with: "- id: tool-godot-bridge\\n  config:\\n    godotPath: C:/path/to/Godot_v4.x.exe" (real exe full path), then restart DSH. Alternatively pass the godot_path tool argument per call. / 中文：godot-bridge 尚未配置 Godot 可执行文件路径。不要自行搜索系统；请告知用户在 profile 的 cordis.patch.yml 中给 tool-godot-bridge 行配置 godotPath（"- id: tool-godot-bridge\\n  config:\\n    godotPath: C:/path/to/Godot_v4.x.exe"，真实 exe 完整路径）并重启 DSH，或每次调用传 godot_path 参数。',
-          })
-        })
+  // ── configuration (official settings section, user-facing) ──────────────
+  // godotPath is OPTIONAL and user-owned. Godot is a portable exe that can
+  // live anywhere, so neither the plugin author nor the deployment presets a
+  // path. The user sets their engine path in settings (the Web plugin-config
+  // page or the `godot-bridge:` section of settings.yaml), hot-reloaded; the
+  // model can also ask the user for the path and persist it via
+  // godot_set_engine_path. Semantic validity (the path exists) is enforced by
+  // the settings `validate` hook — NOT by a throw in apply, which would fail
+  // the whole fiber and also disable the pure-file tools that never touch the
+  // Godot binary. When unset, Godot-needing tools fall back to resolving
+  // `godot` on PATH and only then return guidance.
+  const NS = settingsNamespace('godot-bridge')
+  let current = function () { return config }
+  let engineScope = null
+  // Inlined from installSettingsSection so we keep the write scope (that
+  // helper hides it); godot_set_engine_path uses engineScope to persist a path
+  // the user supplied to the model.
+  ctx.inject(['settings'], function (sctx) {
+    const scope = sctx.settings.register(NS, Config, {
+      base: config,
+      validate: function (value) {
+        const p = value && typeof value.godotPath === 'string' ? value.godotPath.trim() : ''
+        if (p.length > 0 && !existsSync(p)) {
+          throw new Error('godot-bridge: godotPath points to a nonexistent file: "' + p + '"')
+        }
+      },
+    })
+    engineScope = scope
+    current = function () { return scope.get() }
+    sctx.effect(function () {
+      return function () {
+        // Settings detached (not our own unload): fall back to the composition
+        // entry config so the plugin keeps working exactly as composed.
+        if (ctx.fiber && (ctx.fiber.state === 4 || ctx.fiber.state === 5)) return
+        engineScope = null
+        current = function () { return config }
       }
+    })
+  })
+
+  // Always-on guidance: when a Godot-needing tool reports that no engine path
+  // is available, direct the model to tell the user how to set it (and never
+  // to go hunting for Godot on the filesystem itself).
+  const systemPrompt = ctx.systemPrompt
+  if (systemPrompt) {
+    try {
+      ctx.effect(function () {
+        return systemPrompt.section({
+          name: 'godot-bridge:config-guidance',
+          order: 150,
+          text: 'GODOT ENGINE PATH - godot-bridge drives a Godot game. If a godot_* tool reports that no Godot engine path is configured, do NOT search the filesystem for Godot. Instead, ask the user where their Godot executable is (or tell them how to set it), then persist it with the godot_set_engine_path tool; alternatively the user can set it in settings (the Web plugin-config page, or the `godot-bridge:` section of settings.yaml, key `godotPath`) or add `godot` to their PATH. / 中文：godot-bridge 需要一个 Godot 引擎路径。若 godot_* 工具提示未配置引擎路径，不要自行搜索文件系统。请向用户询问其 Godot 可执行文件位置（或告知用户如何设置），然后用 godot_set_engine_path 工具保存；用户也可在设置（Web 插件配置页，或 settings.yaml 的 `godot-bridge:` 段，键 `godotPath`）中填写，或将 `godot` 加入 PATH。',
+        })
+      })
     } catch (e) {}
   }
 
-  const GODOT_PATH_GUIDANCE = 'Godot executable is not configured. Set godotPath in the tool-godot-bridge row config (your profile\'s cordis.patch.yml):\n- id: tool-godot-bridge\n  config:\n    godotPath: C:/path/to/Godot_v4.x.exe\nOr pass the godot_path tool argument.'
+  const GODOT_PATH_GUIDANCE = 'No Godot engine path is available. Ask the user where their Godot executable is and persist it with the godot_set_engine_path tool, or have the user set it in settings (the Web plugin-config page, or the `godot-bridge:` section of settings.yaml, key `godotPath`), add `godot` to PATH, or pass the godot_path tool argument.'
 
   // ── update notice state (best-effort; see checkForUpdate below) ──────────
   // The installed version comes from this bundle's own package.json; the
@@ -123,13 +156,22 @@ export function apply(ctx, config) {
     return null
   }
 
-  // Godot exe: tool arg godot_path > row config godotPath (cordis Config).
-  // No built-in fallback; returns null when unset so callers can guide.
-  async function getGodotPath() {
+  // Godot exe resolution: explicit tool arg > user settings godotPath > PATH.
+  // A configured path is used only when it exists (the settings `validate`
+  // hook already refused a bad one at write time; this is the runtime backstop
+  // for a value that slipped in via cordis.patch.yml or an external edit). On
+  // a missing/exhausted explicit path we keep falling through to PATH, and
+  // return null only when every source fails so callers can guide.
+  async function resolveGodotPath(explicit) {
+    if (explicit && String(explicit).trim().length > 0) return String(explicit).trim()
+    let configured = ''
     try {
-      if (config && typeof config.godotPath === 'string' && config.godotPath.length > 0) {
-        return config.godotPath
-      }
+      const c = current()
+      configured = c && typeof c.godotPath === 'string' ? c.godotPath.trim() : ''
+    } catch (e) {}
+    if (configured.length > 0 && existsSync(configured)) return configured
+    try {
+      return await subprocess.resolveExecutable('godot')
     } catch (e) {}
     return null
   }
@@ -226,12 +268,12 @@ export function apply(ctx, config) {
               })
             })
             try {
-              console.log('[godot-bridge] update notice registered: ' + (INSTALLED_VERSION || '?') + ' -> ' + latest)
+              ctx.logger.info('[godot-bridge] update notice registered: ' + (INSTALLED_VERSION || '?') + ' -> ' + latest)
             } catch (e) {}
           }
         } catch (e) {
           try {
-            console.log('[godot-bridge] update notice registration failed: ' + ((e && e.message) || e))
+            ctx.logger.warn('[godot-bridge] update notice registration failed: ' + ((e && e.message) || e))
           } catch (e2) {}
         }
       }
@@ -433,7 +475,7 @@ export function apply(ctx, config) {
   // Spawn Godot for a project and wait for the interaction server. Returns the
   // same shape as godot_run_project's response.
   async function launchProject(projectPath, opts, exec) {
-    const gp = opts.godot_path || await getGodotPath()
+    const gp = await resolveGodotPath(opts.godot_path)
     if (!gp) return { error: GODOT_PATH_GUIDANCE }
     const argv = [gp]
     if (opts.debug !== false) argv.push('-d')
@@ -714,6 +756,27 @@ export function apply(ctx, config) {
 
   const defs = [
     defineTool({
+      name: 'godot_set_engine_path',
+      description: 'Persist the Godot engine executable path into settings so subsequent godot_* tools can launch the project or run headless operations. Use this when the user tells you where their Godot executable is (or right after you asked them for it) instead of editing settings.yaml by hand. The path must exist and is written through the settings service (schema- and existence-validated, hot-reloaded — no restart needed).',
+      required: ['godot_path'],
+      properties: {
+        godot_path: { type: 'string', description: 'Absolute path to the Godot executable (the real exe, never a version-manager shim)' },
+      },
+      async execute(args, exec) {
+        const p = String(args.godot_path || '').trim()
+        if (!p) return { error: 'godot_path is required' }
+        if (!existsSync(p)) return { error: 'godot_path does not exist: "' + p + '". Ask the user for the correct path to their Godot executable.' }
+        if (!engineScope) return { error: 'the settings service is not available here, so the engine path cannot be persisted. Ask the user to set godotPath in the `godot-bridge:` section of settings.yaml manually.' }
+        try {
+          await engineScope.update({ godotPath: p })
+        } catch (e) {
+          return { error: 'failed to save engine path: ' + String((e && e.message) || e) }
+        }
+        return { success: true, godot_path: p, note: 'Engine path saved to settings (hot-reloaded; no restart needed).' }
+      },
+    }),
+
+    defineTool({
       name: 'godot_ping',
       description: 'Probe whether the running Godot game accepts commands on the in-game interaction server (TCP 127.0.0.1:9090). Returns game_running plus the probe detail, plugin version info, and - when nothing is running - a hint to start the game with godot_run_project.',
       properties: {
@@ -742,7 +805,7 @@ export function apply(ctx, config) {
       properties: {
         project_path: { type: 'string', description: 'Path to the Godot project (default: current session workspace)' },
         scene: { type: 'string', description: 'Optional scene to run relative to the project, e.g. scenes/main/main_menu.tscn' },
-        godot_path: { type: 'string', description: 'Godot executable. Default: the godotPath setting under the [godot-bridge] section of $DSH_HOME/settings.yaml. Use the REAL exe full path - never a shim.' },
+        godot_path: { type: 'string', description: 'Godot executable. Default: the godotPath setting (Web plugin-config page or settings.yaml godot-bridge section), then the godot command on PATH. Use the REAL exe full path - never a shim.' },
         debug: { type: 'boolean', description: 'Run with -d (debug mode). Default true.' },
         wait_ms: { type: 'number', description: 'How long to wait for the interaction server before giving up (default 20000)' },
       },
@@ -852,7 +915,7 @@ export function apply(ctx, config) {
         operation: { type: 'string', enum: HEADLESS_OPS, description: 'Operation to run' },
         params: { type: 'object', additionalProperties: true, description: 'Operation parameters (project-relative paths; see godot_operations.gd)' },
         project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
-        godot_path: { type: 'string', description: 'Godot executable (default: the godotPath setting in $DSH_HOME/settings.yaml [godot-bridge])' },
+        godot_path: { type: 'string', description: 'Godot executable (default: the godotPath setting, then the godot command on PATH)' },
         ops_script: { type: 'string', description: 'Override path to godot_operations.gd' },
       },
       timeoutMs: 60000,
@@ -860,7 +923,7 @@ export function apply(ctx, config) {
         const root = await getWorkspaceRoot(exec)
         const projectPath = args.project_path || root
         if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
-        const gp = args.godot_path || await getGodotPath()
+        const gp = await resolveGodotPath(args.godot_path)
         if (!gp) return { error: GODOT_PATH_GUIDANCE }
         const ops = await resolveScriptFile('godot_operations.gd', args.ops_script)
         const res = await runHeadless(gp, projectPath, ops, [String(args.operation), JSON.stringify(args.params || {})], exec.signal)
@@ -903,7 +966,7 @@ export function apply(ctx, config) {
       properties: {
         script_path: { type: 'string', description: 'GDScript path relative to project, e.g. scripts/player.gd' },
         project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
-        godot_path: { type: 'string', description: 'Godot executable (default: the godotPath setting in $DSH_HOME/settings.yaml [godot-bridge])' },
+        godot_path: { type: 'string', description: 'Godot executable (default: the godotPath setting, then the godot command on PATH)' },
         validate_script: { type: 'string', description: 'Override path to validate_script.gd' },
       },
       timeoutMs: 60000,
@@ -913,7 +976,7 @@ export function apply(ctx, config) {
         if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
         const scriptPath = String(args.script_path || '')
         if (!/\.gd$/i.test(scriptPath)) return { error: 'validate_script only checks GDScript (.gd) files' }
-        const gp = args.godot_path || await getGodotPath()
+        const gp = await resolveGodotPath(args.godot_path)
         if (!gp) return { error: GODOT_PATH_GUIDANCE }
         const vs = await resolveScriptFile('validate_script.gd', args.validate_script)
         const res = await runHeadless(gp, projectPath, vs, ['res://' + scriptPath.replace(/^res:\/\//, '')], exec.signal)
@@ -1243,14 +1306,14 @@ export function apply(ctx, config) {
         output_path: { type: 'string', description: 'Output file path' },
         debug: { type: 'boolean', description: 'Use --export-debug (default false → --export-release)' },
         project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
-        godot_path: { type: 'string', description: 'Godot executable (default: the godotPath setting in $DSH_HOME/settings.yaml [godot-bridge])' },
+        godot_path: { type: 'string', description: 'Godot executable (default: the godotPath setting, then the godot command on PATH)' },
       },
       timeoutMs: 130000,
       async execute(args, exec) {
         const root = await getWorkspaceRoot(exec)
         const projectPath = args.project_path || root
         if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
-        const gp = args.godot_path || await getGodotPath()
+        const gp = await resolveGodotPath(args.godot_path)
         if (!gp) return { error: GODOT_PATH_GUIDANCE }
         const flag = args.debug ? '--export-debug' : '--export-release'
         const res = await runGodotHeadless(gp, projectPath, [flag, String(args.preset_name), String(args.output_path)], exec.signal)

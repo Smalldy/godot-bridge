@@ -54,7 +54,7 @@ flowchart TB
         PROFILE["$DSH_HOME/profiles/web/package.json<br/>dsh.profile.bundles = base · web-app · godot-bridge"]
         NODE["profiles/web/node_modules/godot-bridge"]
         PLUGIN["cordis row tool-godot-bridge<br/>godot-bridge.mjs apply(ctx)"]
-        TOOLS["15 godot_* tools<br/>defineTool + ctx.tools.register"]
+        TOOLS["16 godot_* tools<br/>defineTool + ctx.tools.register"]
         PROMPT["system-prompt sections<br/>update notice (conditional)"]
     end
 

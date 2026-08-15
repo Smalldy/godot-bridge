@@ -18,6 +18,7 @@
 | `godot_command` | 全部 `game_*`（约 130 个） | 发送任意交互服务器命令：`get_scene_tree`、`get_ui_elements`、`eval`、`get/set_property`、`call_method`、`click`、`key_press`、`screenshot`、`raycast`、`serialize_state`、`ui_*`…… |
 | `godot_screenshot` | `game_screenshot` | 视口截图（base64 PNG） |
 | `godot_ping` | — | 探测游戏是否在 9090 应答（并报告已装/最新插件版本） |
+| `godot_set_engine_path` | — | 把 Godot 引擎可执行文件路径写入 settings（模型向用户索要路径后据此保存，热重载） |
 | `godot_headless_op` | `read_scene`、`modify_scene_node`、`remove_scene_node`、`attach_script`、`create_resource`、`save_scene`、`create_scene`、`add_node`、`get_uid`、`manage_scene_signals`…… | headless 静态操作（`godot --headless --script godot_operations.gd`）：16 个操作，无需运行游戏 |
 | `godot_validate_script` | `validate_script` | headless GDScript 编译检查（`validate_script.gd`）→ `{valid, errors}` |
 | `godot_set_project_setting` | `modify_project_settings`、`set_main_scene`、`manage_layers`、`manage_plugins`、`manage_translations` | 在任意 project.godot 段设置类型化键值（`PackedStringArray(...)` / `Vector2i(...)` / bool 等） |
@@ -51,7 +52,7 @@ DSH 会话
 - DeepSeek Harness（带 host 运行时的会话）
 - 注册了 `McpInteractionServer` autoload 的 Godot 4.x 项目。若项目还没有，把 `plugin/mcp_interaction_server.gd` 复制到项目根，并以 `McpInteractionServer` 命名注册为 autoload（godot-mcp 项目已具备）。**`godot_run_project` 也会在缺失时自动安装**（把随包文件复制进 `autoload/` 并在 `project.godot` 注册）——无需手动处理；非 Godot 项目完全不受影响。
 - `node` 在 PATH 中
-- Godot 可执行文件——在 profile 的 `cordis.patch.yml` 里给 `tool-godot-bridge` 行配置 **`godotPath`**（或每次调用传 `godot_path` 参数）。务必用**真实 exe 完整路径**，不要用版本管理器的 shim（见"坑"）
+- Godot 可执行文件——按此顺序解析：每次调用的 `godot_path` 参数 → **`godotPath` 设置**（Web 插件配置页，或 `settings.yaml` 的 `godot-bridge:` 段）→ PATH 上的 `godot` 命令。`godot` 已在 PATH 时**无需任何配置**；否则在**设置**里填你的引擎路径（插件作者不预设路径——Godot 是便携 exe，可能位于任意位置）。务必用**真实 exe 完整路径**，不要用版本管理器的 shim（见"坑"）
 
 ## 安装
 
@@ -61,7 +62,7 @@ DSH 会话
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-`dsh plugin` 是 pnpm 转发器：把包装进 profile 的 `node_modules`，并因包内声明 `dsh.bundle`（其 `cordis.patch.yml` 插入 `tool-godot-bridge` 行）而把它追加进该 profile 的 `dsh.profile.bundles` 层列表。`web` 就是 Web 应用启动所用的**标准 profile**——这条命令只是把工具加进标准模式，**不会新建任何 profile**。重启后该 profile 的所有会话都有 15 个 `godot_*` 工具。已收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单（topic：`dsh-plugin`）。
+`dsh plugin` 是 pnpm 转发器：把包装进 profile 的 `node_modules`，并因包内声明 `dsh.bundle`（其 `cordis.patch.yml` 插入 `tool-godot-bridge` 行）而把它追加进该 profile 的 `dsh.profile.bundles` 层列表。`web` 就是 Web 应用启动所用的**标准 profile**——这条命令只是把工具加进标准模式，**不会新建任何 profile**。重启后该 profile 的所有会话都有 16 个 `godot_*` 工具。已收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 社区清单（topic：`dsh-plugin`）。
 
 同一命令也可安装本地 checkout 或 tarball（`dsh plugin --profile web add ./path/to/godot-bridge`）。
 
@@ -73,7 +74,7 @@ dsh plugin --profile web add github:Smalldy/godot-bridge
 dsh plugin --profile web remove godot-bridge
 ```
 
-从 profile 中删除该包及其 `godot-bridge` bundle 层——重启后该 profile 的会话不再有 15 个 `godot_*` 工具。标准 `web` profile 本身不受影响（这条命令从不创建或删除 profile）。先 `godot_stop_project` 停掉运行中的游戏；插件卸载清理也会终止它启动的 Godot 子进程。任何时候可用上面的 `add` 命令重新安装。
+从 profile 中删除该包及其 `godot-bridge` bundle 层——重启后该 profile 的会话不再有 16 个 `godot_*` 工具。标准 `web` profile 本身不受影响（这条命令从不创建或删除 profile）。先 `godot_stop_project` 停掉运行中的游戏；插件卸载清理也会终止它启动的 Godot 子进程。任何时候可用上面的 `add` 命令重新安装。
 
 ## 更新提示
 
@@ -97,7 +98,7 @@ godot_get_debug_output       # 读取启动日志
 godot_stop_project           # 结束
 ```
 
-Godot 可执行文件解析顺序：每次调用的 `godot_path` 参数 → `tool-godot-bridge` 行的 `config.godotPath`（在 profile 的 `cordis.patch.yml` 覆盖，官方 cordis Config 机制）。**没有内置兜底路径**；务必指向**真实 exe**，别用 shim。
+Godot 可执行文件解析顺序：每次调用的 `godot_path` 参数 → `godotPath` 设置（Web 插件配置页，或 `settings.yaml` 的 `godot-bridge:` 段）→ PATH 上的 `godot` 命令。`godot` 已在 PATH 时无需配置；否则在**设置**里填引擎路径，务必指向**真实 exe**，别用 shim。
 
 ## 坑（血泪教训）
 

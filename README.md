@@ -18,6 +18,7 @@ No MCP protocol, no Python server, no editor addon. The game side is untouched: 
 | `godot_command` | all `game_*` (~130) | Send any interaction-server command: `get_scene_tree`, `get_ui_elements`, `eval`, `get/set_property`, `call_method`, `click`, `key_press`, `screenshot`, `raycast`, `serialize_state`, `ui_*`, … |
 | `godot_screenshot` | `game_screenshot` | Viewport capture as base64 PNG |
 | `godot_ping` | — | Probe whether the game answers on 9090 (also reports installed/latest plugin version) |
+| `godot_set_engine_path` | — | Persist the Godot engine executable path into settings (the model asks the user for it, then saves it here; hot-reloaded) |
 | `godot_headless_op` | `read_scene`, `modify_scene_node`, `remove_scene_node`, `attach_script`, `create_resource`, `save_scene`, `create_scene`, `add_node`, `get_uid`, `manage_scene_signals`, … | Headless static operations (`godot --headless --script godot_operations.gd`): 16 ops, no running game needed |
 | `godot_validate_script` | `validate_script` | Headless GDScript compile-check via `validate_script.gd` → `{valid, errors}` |
 | `godot_set_project_setting` | `modify_project_settings`, `set_main_scene`, `manage_layers`, `manage_plugins`, `manage_translations` | Set a typed key in any project.godot section (`PackedStringArray(...)` / `Vector2i(...)` / bool / …) |
@@ -51,7 +52,7 @@ DSH session
 - DeepSeek Harness (a session with a host runtime)
 - A Godot 4.x project with the `McpInteractionServer` autoload registered. If your project does not have it yet, copy `plugin/mcp_interaction_server.gd` to the project root and register it as an autoload named `McpInteractionServer` (godot-mcp projects already have this). **`godot_run_project` also auto-installs it when missing** (copies the vendored file into `autoload/` and registers it in `project.godot`), so no manual setup is needed — and non-Godot projects are completely unaffected.
 - `node` on PATH
-- Godot executable — configure **`godotPath`** on the `tool-godot-bridge` row in your profile's `cordis.patch.yml` (or pass `godot_path` per tool call). Use the **real exe full path**, never a version-manager shim (see Pitfalls).
+- Godot executable — resolved in this order: the `godot_path` tool argument → the **`godotPath` setting** (the Web plugin-config page, or the `godot-bridge:` section of `settings.yaml`) → the `godot` command on PATH. Nothing to configure when `godot` is on PATH; otherwise set your engine path in **settings** (the plugin author does not preset it — Godot is a portable exe that can live anywhere). Use the **real exe full path**, never a version-manager shim (see Pitfalls).
 
 ## Install
 
@@ -61,7 +62,7 @@ DSH session
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-`dsh plugin` is a pnpm forwarder: it installs the package into the profile's `node_modules` and — because the package declares `dsh.bundle` (its `cordis.patch.yml` inserts the `tool-godot-bridge` row) — appends it to the profile's `dsh.profile.bundles` layer list. The `web` profile is the standard one the Web app already boots from, so this simply adds the tools to standard mode — **no new profile is created**. After a restart, the fifteen `godot_*` tools are available in every session on that profile. Listed in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry (topic: `dsh-plugin`).
+`dsh plugin` is a pnpm forwarder: it installs the package into the profile's `node_modules` and — because the package declares `dsh.bundle` (its `cordis.patch.yml` inserts the `tool-godot-bridge` row) — appends it to the profile's `dsh.profile.bundles` layer list. The `web` profile is the standard one the Web app already boots from, so this simply adds the tools to standard mode — **no new profile is created**. After a restart, the sixteen `godot_*` tools are available in every session on that profile. Listed in the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) community registry (topic: `dsh-plugin`).
 
 The same command installs a local checkout or tarball (`dsh plugin --profile web add ./path/to/godot-bridge`).
 
@@ -73,7 +74,7 @@ The same command installs a local checkout or tarball (`dsh plugin --profile web
 dsh plugin --profile web remove godot-bridge
 ```
 
-Removes the package and its `godot-bridge` bundle layer from the profile — after a restart the fifteen `godot_*` tools are gone from sessions on that profile. The standard `web` profile itself is untouched (this never creates or removes a profile). Stop any running game first with `godot_stop_project`; the plugin's unload cleanup also terminates a Godot child it started. Reinstall any time with the `add` command above.
+Removes the package and its `godot-bridge` bundle layer from the profile — after a restart the sixteen `godot_*` tools are gone from sessions on that profile. The standard `web` profile itself is untouched (this never creates or removes a profile). Stop any running game first with `godot_stop_project`; the plugin's unload cleanup also terminates a Godot child it started. Reinstall any time with the `add` command above.
 
 ## Update notices
 
@@ -97,7 +98,7 @@ godot_get_debug_output       # read the boot log
 godot_stop_project           # done
 ```
 
-Godot executable resolution: per-tool `godot_path` argument → the `godotPath` field of the `tool-godot-bridge` row config (overridden in the profile's `cordis.patch.yml`, official cordis Config mechanism). There is **no built-in fallback**; point at the **real exe**, never a shim.
+Godot executable resolution: per-tool `godot_path` argument → the `godotPath` setting (the Web plugin-config page, or the `godot-bridge:` section of `settings.yaml`) → the `godot` command on PATH. Nothing to configure when `godot` is on PATH; otherwise set the engine path in **settings** and point at the **real exe**, never a shim.
 
 ## Pitfalls (learned the hard way)
 
