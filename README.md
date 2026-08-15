@@ -51,7 +51,7 @@ DSH session
 - DeepSeek Harness (a session with a host runtime)
 - A Godot 4.x project with the `McpInteractionServer` autoload registered. If your project does not have it yet, copy `plugin/mcp_interaction_server.gd` to the project root and register it as an autoload named `McpInteractionServer` (godot-mcp projects already have this). **`godot_run_project` also auto-installs it when missing** (copies the vendored file into `autoload/` and registers it in `project.godot`), so no manual setup is needed — and non-Godot projects are completely unaffected.
 - `node` on PATH
-- Godot executable — set the **`godotPath`** setting under the `[godot-bridge]` section of `$DSH_HOME/settings.yaml` (or pass `godot_path` per tool call). Use the **real exe full path**, never a version-manager shim (see Pitfalls).
+- Godot executable — configure **`godotPath`** on the `tool-godot-bridge` row in your profile's `cordis.patch.yml` (or pass `godot_path` per tool call). Use the **real exe full path**, never a version-manager shim (see Pitfalls).
 
 ## Install
 
@@ -97,7 +97,7 @@ godot_get_debug_output       # read the boot log
 godot_stop_project           # done
 ```
 
-Godot executable resolution: per-tool `godot_path` argument → the `godotPath` setting under the `[godot-bridge]` section of `$DSH_HOME/settings.yaml` (official settings mechanism, hot-reloaded — no restart needed). There is **no built-in fallback**; point at the **real exe**, never a shim.
+Godot executable resolution: per-tool `godot_path` argument → the `godotPath` field of the `tool-godot-bridge` row config (overridden in the profile's `cordis.patch.yml`, official cordis Config mechanism). There is **no built-in fallback**; point at the **real exe**, never a shim.
 
 ## Pitfalls (learned the hard way)
 

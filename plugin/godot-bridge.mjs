@@ -10,22 +10,31 @@
  *   - id: tool-godot-bridge
  *     name: godot-bridge
  *
- * 注意：Godot 可执行文件路径由用户设置 —— 工具参数 godot_path 优先，
- * 否则读设置（$DSH_HOME/settings.yaml 的 [godot-bridge] 段 godotPath，
- * 官方 settings 机制，热生效）；没有内置兜底路径。
+ * 配置（官方 cordis Config 机制）：导出的 Config schema 校验行配置。
+ *   config.godotPath —— Godot 可执行文件完整路径（缺省空 = 未配置）。
+ *   工具参数 godot_path 优先于该配置；无内置兜底路径。
+ * 用户在其 profile 的 cordis.patch.yml 覆盖 tool-godot-bridge 行的 config 即可。
  */
 
 import { defineTool as defineToolOfficial } from '@deepseek-ai/dsh-tools'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
-import { z } from 'zod'
+import Schema from '@deepseek-ai/schemastery'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'godot-bridge'
 
-export const inject = ['subprocess', 'timer', 'tools', 'fs', 'sandboxPolicy', 'systemPrompt', 'settings']
+export const inject = ['subprocess', 'timer', 'tools', 'fs', 'sandboxPolicy', 'systemPrompt']
 
-export function apply(ctx) {
+/**
+ * Runtime configuration schema (official cordis Config mechanism, see
+ * docs/cordis-tutorial/05-config): Cordis validates the `tool-godot-bridge`
+ * row config against it before `apply` runs. (Plain ESM — no TS interface.)
+ */
+export const Config = Schema.object({
+  godotPath: Schema.string().default(''),
+})
+
+export function apply(ctx, config) {
   const subprocess = ctx.subprocess
   const timer = ctx.timer
   const tools = ctx.tools
@@ -33,19 +42,7 @@ export function apply(ctx) {
 
   const PORT = 9090
 
-  // ── user setting: Godot executable path ───────────────────────────────────
-  // Registered under the official settings mechanism: $DSH_HOME/settings.yaml,
-  // section `godot-bridge: { godotPath: "C:/.../Godot.exe" }`. Read on every
-  // call (hot-reloaded, no caching); the per-tool `godot_path` argument wins.
-  let settingsScope = null
-  try {
-    settingsScope = ctx.settings.register(
-      settingsNamespace('godot-bridge'),
-      z.object({ godotPath: z.string().optional() }),
-    )
-  } catch (e) {}
-
-  const GODOT_PATH_GUIDANCE = 'Godot executable is not configured. Set godotPath under the [godot-bridge] section of $DSH_HOME/settings.yaml (e.g. "godot-bridge:\n  godotPath: C:/path/Godot_v4.x.exe"), or pass the godot_path tool argument.'
+  const GODOT_PATH_GUIDANCE = 'Godot executable is not configured. Set godotPath in the tool-godot-bridge row config (your profile\'s cordis.patch.yml), or pass the godot_path tool argument.'
 
   // ── update notice state (best-effort; see checkForUpdate below) ──────────
   // The installed version comes from this bundle's own package.json; the
@@ -95,13 +92,12 @@ export function apply(ctx) {
     return null
   }
 
-  // Godot exe: user setting godot-bridge.godotPath (settings.yaml, hot-reloaded)
-  // — no built-in fallback; returns null when unset so callers can guide.
+  // Godot exe: tool arg godot_path > row config godotPath (cordis Config).
+  // No built-in fallback; returns null when unset so callers can guide.
   async function getGodotPath() {
     try {
-      if (settingsScope) {
-        const v = settingsScope.get()
-        if (v && typeof v.godotPath === 'string' && v.godotPath.length > 0) return v.godotPath
+      if (config && typeof config.godotPath === 'string' && config.godotPath.length > 0) {
+        return config.godotPath
       }
     } catch (e) {}
     return null

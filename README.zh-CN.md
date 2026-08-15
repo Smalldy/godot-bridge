@@ -51,7 +51,7 @@ DSH 会话
 - DeepSeek Harness（带 host 运行时的会话）
 - 注册了 `McpInteractionServer` autoload 的 Godot 4.x 项目。若项目还没有，把 `plugin/mcp_interaction_server.gd` 复制到项目根，并以 `McpInteractionServer` 命名注册为 autoload（godot-mcp 项目已具备）。**`godot_run_project` 也会在缺失时自动安装**（把随包文件复制进 `autoload/` 并在 `project.godot` 注册）——无需手动处理；非 Godot 项目完全不受影响。
 - `node` 在 PATH 中
-- Godot 可执行文件——在 `$DSH_HOME/settings.yaml` 的 `[godot-bridge]` 段设置 **`godotPath`**（或每次调用传 `godot_path` 参数）。务必用**真实 exe 完整路径**，不要用版本管理器的 shim（见"坑"）
+- Godot 可执行文件——在 profile 的 `cordis.patch.yml` 里给 `tool-godot-bridge` 行配置 **`godotPath`**（或每次调用传 `godot_path` 参数）。务必用**真实 exe 完整路径**，不要用版本管理器的 shim（见"坑"）
 
 ## 安装
 
@@ -97,7 +97,7 @@ godot_get_debug_output       # 读取启动日志
 godot_stop_project           # 结束
 ```
 
-Godot 可执行文件解析顺序：每次调用的 `godot_path` 参数 → `$DSH_HOME/settings.yaml` 的 `[godot-bridge]` 段 `godotPath` 设置（官方 settings 机制，**热生效**，无需重启）。**没有内置兜底路径**；务必指向**真实 exe**，别用 shim。
+Godot 可执行文件解析顺序：每次调用的 `godot_path` 参数 → `tool-godot-bridge` 行的 `config.godotPath`（在 profile 的 `cordis.patch.yml` 覆盖，官方 cordis Config 机制）。**没有内置兜底路径**；务必指向**真实 exe**，别用 shim。
 
 ## 坑（血泪教训）
 
