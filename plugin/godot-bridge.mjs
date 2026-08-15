@@ -204,6 +204,27 @@ export function apply(ctx) {
     } catch (e) {}
   })()
 
+  // ── environment guidance: ensure the McpInteractionServer autoload ────────
+  // Always-on system-prompt section so the model proactively checks and, when
+  // missing, repairs the autoload (copy the vendored file + register) before
+  // driving a project with the godot_* tools. The source path is resolved from
+  // the module location, so it is correct for each installed copy.
+  try {
+    const autoloadSource = fileURLToPath(new URL('./mcp_interaction_server.gd', import.meta.url))
+    const systemPrompt = ctx.systemPrompt
+    if (systemPrompt) {
+      ctx.effect(function () {
+        return systemPrompt.section({
+          name: 'godot-bridge:environment',
+          order: 150,
+          text: 'GODOT AUTOLOAD SETUP - before using godot_* tools on a Godot project, ensure the McpInteractionServer autoload is registered. Check it with godot_manage_autoloads (action "list", project_path = the project). If McpInteractionServer is missing, fix it yourself: (1) copy the vendored file "'
+            + autoloadSource + '" to "<project>/autoload/mcp_interaction_server.gd" with your file tools, then (2) register it with godot_manage_autoloads (action "add", name "McpInteractionServer", script_path "res://autoload/mcp_interaction_server.gd"). A game without this autoload never listens on 127.0.0.1:9090. / 中文：使用 godot_* 工具前，请确保项目已注册 McpInteractionServer autoload：用 godot_manage_autoloads（action "list"）检查；若缺少，自行修复：(1) 将随包附带文件 "'
+            + autoloadSource + '" 复制到 "<project>/autoload/mcp_interaction_server.gd"；(2) 用 godot_manage_autoloads（action "add"，name "McpInteractionServer"，script_path "res://autoload/mcp_interaction_server.gd"）注册。未注册的游戏不会在 127.0.0.1:9090 监听。',
+        })
+      })
+    }
+  } catch (e) {}
+
   // One-shot node bridge: connect to the in-game TCP server, send one
   // newline-delimited JSON command, print the first complete response line.
   // NOTE: with `node -e <script> <cmd> <paramsJson> <timeoutMs>`, the extra

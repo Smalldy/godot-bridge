@@ -49,7 +49,7 @@ DSH session
 ## Requirements
 
 - DeepSeek Harness (a session with a host runtime)
-- A Godot 4.x project with the `McpInteractionServer` autoload registered. If your project does not have it yet, copy `plugin/mcp_interaction_server.gd` to the project root and register it as an autoload named `McpInteractionServer` (godot-mcp projects already have this).
+- A Godot 4.x project with the `McpInteractionServer` autoload registered. If your project does not have it yet, copy `plugin/mcp_interaction_server.gd` to the project root and register it as an autoload named `McpInteractionServer` (godot-mcp projects already have this). **The plugin also injects a system-prompt guidance that makes the agent check for this autoload and repair it automatically (copy the vendored file + register) before driving a project** — a missing autoload is fixed without manual work.
 - `node` on PATH
 - Godot executable (use the **real exe path**, not the gdvm shim — see Pitfalls)
 
