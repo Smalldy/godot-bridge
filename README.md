@@ -51,7 +51,7 @@ DSH session
 - DeepSeek Harness (a session with a host runtime)
 - A Godot 4.x project with the `McpInteractionServer` autoload registered. If your project does not have it yet, copy `plugin/mcp_interaction_server.gd` to the project root and register it as an autoload named `McpInteractionServer` (godot-mcp projects already have this). **`godot_run_project` also auto-installs it when missing** (copies the vendored file into `autoload/` and registers it in `project.godot`), so no manual setup is needed — and non-Godot projects are completely unaffected.
 - `node` on PATH
-- Godot executable (use the **real exe path**, not the gdvm shim — see Pitfalls)
+- Godot executable — set the **`godotPath`** setting under the `[godot-bridge]` section of `$DSH_HOME/settings.yaml` (or pass `godot_path` per tool call). Use the **real exe full path**, never a version-manager shim (see Pitfalls).
 
 ## Install
 
@@ -97,14 +97,14 @@ godot_get_debug_output       # read the boot log
 godot_stop_project           # done
 ```
 
-GODOT_PATH resolution: tool arg `godot_path` → `<workspace>/.omp/mcp.json` `env.GODOT_PATH` → built-in gdvm 4.7.1 fallback.
+Godot executable resolution: per-tool `godot_path` argument → the `godotPath` setting under the `[godot-bridge]` section of `$DSH_HOME/settings.yaml` (official settings mechanism, hot-reloaded — no restart needed). There is **no built-in fallback**; point at the **real exe**, never a shim.
 
 ## Pitfalls (learned the hard way)
 
 - **DSH file sandbox vs Godot `user://`**: launching Godot through the sandboxed shell executor (pwsh/bash tool) propagates a restricted token and Godot crashes at startup (`Failed to open 'user://logs/…'`, signal 11). godot-bridge spawns via the raw `subprocess` service, which is not file-confined — this is why it works.
 - **`node -e` argv**: with `node -e <script> <cmd> <json>`, extra args land at `process.argv[1]`/`[2]` (not `[2]`/`[3]`).
 - **eval in debug mode**: a compile error in `eval` code pauses the game at the debugger (same as godot-mcp). Use dynamic access (`p.get("global_position")`) to dodge static typing, and `godot_stop_project` + `godot_run_project` to recover.
-- **Real exe, not the gdvm shim**: the gdvm shim exits immediately and orphans the real Godot; process management misjudges it as dead.
+- **Real exe, not a version-manager shim**: a shim exits immediately and orphans the real Godot; process management misjudges it as dead.
 
 ## Project layout
 

@@ -10,17 +10,20 @@
  *   - id: tool-godot-bridge
  *     name: godot-bridge
  *
- * 注意：GODOT_PATH 默认读 <workspace>/.omp/mcp.json 的 env.GODOT_PATH，
- * 找不到用内置 gdvm 4.7.1 真实 exe 路径；务必用真实 exe，别用 shim。
+ * 注意：Godot 可执行文件路径由用户设置 —— 工具参数 godot_path 优先，
+ * 否则读设置（$DSH_HOME/settings.yaml 的 [godot-bridge] 段 godotPath，
+ * 官方 settings 机制，热生效）；没有内置兜底路径。
  */
 
 import { defineTool as defineToolOfficial } from '@deepseek-ai/dsh-tools'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { z } from 'zod'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'godot-bridge'
 
-export const inject = ['subprocess', 'timer', 'tools', 'fs', 'sandboxPolicy', 'systemPrompt']
+export const inject = ['subprocess', 'timer', 'tools', 'fs', 'sandboxPolicy', 'systemPrompt', 'settings']
 
 export function apply(ctx) {
   const subprocess = ctx.subprocess
@@ -29,7 +32,20 @@ export function apply(ctx) {
   if (subprocess === undefined || timer === undefined || tools === undefined) return
 
   const PORT = 9090
-  const FALLBACK_GODOT = 'C:/Users/74368/.gdvm/installs/registry.gdvm.io-7999f4302078c203/default/4.7.1-stable/Godot_v4.7.1-stable_win64.exe'
+
+  // ── user setting: Godot executable path ───────────────────────────────────
+  // Registered under the official settings mechanism: $DSH_HOME/settings.yaml,
+  // section `godot-bridge: { godotPath: "C:/.../Godot.exe" }`. Read on every
+  // call (hot-reloaded, no caching); the per-tool `godot_path` argument wins.
+  let settingsScope = null
+  try {
+    settingsScope = ctx.settings.register(
+      settingsNamespace('godot-bridge'),
+      z.object({ godotPath: z.string().optional() }),
+    )
+  } catch (e) {}
+
+  const GODOT_PATH_GUIDANCE = 'Godot executable is not configured. Set godotPath under the [godot-bridge] section of $DSH_HOME/settings.yaml (e.g. "godot-bridge:\n  godotPath: C:/path/Godot_v4.x.exe"), or pass the godot_path tool argument.'
 
   // ── update notice state (best-effort; see checkForUpdate below) ──────────
   // The installed version comes from this bundle's own package.json; the
@@ -51,7 +67,6 @@ export function apply(ctx) {
   let updateState = { latest: null, available: false }
 
   let nodePath = null
-  let godotPath = null
   let godot = null // { handle, outOffset, errOffset, projectPath, scene }
   let sessionWorkspace = null
 
@@ -80,24 +95,16 @@ export function apply(ctx) {
     return null
   }
 
-  // Godot exe: tool arg > .omp/mcp.json env > known gdvm 4.7.1 path.
+  // Godot exe: user setting godot-bridge.godotPath (settings.yaml, hot-reloaded)
+  // — no built-in fallback; returns null when unset so callers can guide.
   async function getGodotPath() {
-    if (godotPath) return godotPath
-    godotPath = FALLBACK_GODOT
     try {
-      const fs = ctx.fs
-      const root = await getWorkspaceRoot()
-      if (fs !== undefined && root) {
-        const target = await fs.resolve('.omp/mcp.json', { cwd: root })
-        const text = await fs.readText(target)
-        const parsed = JSON.parse(text)
-        const server = parsed && parsed.mcpServers && parsed.mcpServers.godot
-        if (server && server.env && server.env.GODOT_PATH) {
-          godotPath = server.env.GODOT_PATH
-        }
+      if (settingsScope) {
+        const v = settingsScope.get()
+        if (v && typeof v.godotPath === 'string' && v.godotPath.length > 0) return v.godotPath
       }
     } catch (e) {}
-    return godotPath
+    return null
   }
 
   // ── update notice: best-effort version check ─────────────────────────────
@@ -400,6 +407,7 @@ export function apply(ctx) {
   // same shape as godot_run_project's response.
   async function launchProject(projectPath, opts, exec) {
     const gp = opts.godot_path || await getGodotPath()
+    if (!gp) return { error: GODOT_PATH_GUIDANCE }
     const argv = [gp]
     if (opts.debug !== false) argv.push('-d')
     argv.push('--path', projectPath)
@@ -707,7 +715,7 @@ export function apply(ctx) {
       properties: {
         project_path: { type: 'string', description: 'Path to the Godot project (default: current session workspace)' },
         scene: { type: 'string', description: 'Optional scene to run relative to the project, e.g. scenes/main/main_menu.tscn' },
-        godot_path: { type: 'string', description: 'Godot executable. Default: GODOT_PATH from .omp/mcp.json, else the known gdvm 4.7.1 path. Use the REAL exe full path - never the gdvm shim.' },
+        godot_path: { type: 'string', description: 'Godot executable. Default: the godotPath setting under the [godot-bridge] section of $DSH_HOME/settings.yaml. Use the REAL exe full path - never a shim.' },
         debug: { type: 'boolean', description: 'Run with -d (debug mode). Default true.' },
         wait_ms: { type: 'number', description: 'How long to wait for the interaction server before giving up (default 20000)' },
       },
@@ -817,7 +825,7 @@ export function apply(ctx) {
         operation: { type: 'string', enum: HEADLESS_OPS, description: 'Operation to run' },
         params: { type: 'object', additionalProperties: true, description: 'Operation parameters (project-relative paths; see godot_operations.gd)' },
         project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
-        godot_path: { type: 'string', description: 'Godot executable (default: same resolution as godot_run_project)' },
+        godot_path: { type: 'string', description: 'Godot executable (default: the godotPath setting in $DSH_HOME/settings.yaml [godot-bridge])' },
         ops_script: { type: 'string', description: 'Override path to godot_operations.gd' },
       },
       timeoutMs: 60000,
@@ -826,6 +834,7 @@ export function apply(ctx) {
         const projectPath = args.project_path || root
         if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
         const gp = args.godot_path || await getGodotPath()
+        if (!gp) return { error: GODOT_PATH_GUIDANCE }
         const ops = await resolveScriptFile('godot_operations.gd', args.ops_script)
         const res = await runHeadless(gp, projectPath, ops, [String(args.operation), JSON.stringify(args.params || {})], exec.signal)
         if (res.spawnError) return { error: 'headless spawn failed: ' + res.spawnError }
@@ -867,7 +876,7 @@ export function apply(ctx) {
       properties: {
         script_path: { type: 'string', description: 'GDScript path relative to project, e.g. scripts/player.gd' },
         project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
-        godot_path: { type: 'string', description: 'Godot executable (default: same resolution as godot_run_project)' },
+        godot_path: { type: 'string', description: 'Godot executable (default: the godotPath setting in $DSH_HOME/settings.yaml [godot-bridge])' },
         validate_script: { type: 'string', description: 'Override path to validate_script.gd' },
       },
       timeoutMs: 60000,
@@ -878,6 +887,7 @@ export function apply(ctx) {
         const scriptPath = String(args.script_path || '')
         if (!/\.gd$/i.test(scriptPath)) return { error: 'validate_script only checks GDScript (.gd) files' }
         const gp = args.godot_path || await getGodotPath()
+        if (!gp) return { error: GODOT_PATH_GUIDANCE }
         const vs = await resolveScriptFile('validate_script.gd', args.validate_script)
         const res = await runHeadless(gp, projectPath, vs, ['res://' + scriptPath.replace(/^res:\/\//, '')], exec.signal)
         if (res.spawnError) return { error: 'headless spawn failed: ' + res.spawnError }
@@ -1206,7 +1216,7 @@ export function apply(ctx) {
         output_path: { type: 'string', description: 'Output file path' },
         debug: { type: 'boolean', description: 'Use --export-debug (default false → --export-release)' },
         project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
-        godot_path: { type: 'string', description: 'Godot executable (default: same resolution as godot_run_project)' },
+        godot_path: { type: 'string', description: 'Godot executable (default: the godotPath setting in $DSH_HOME/settings.yaml [godot-bridge])' },
       },
       timeoutMs: 130000,
       async execute(args, exec) {
@@ -1214,6 +1224,7 @@ export function apply(ctx) {
         const projectPath = args.project_path || root
         if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
         const gp = args.godot_path || await getGodotPath()
+        if (!gp) return { error: GODOT_PATH_GUIDANCE }
         const flag = args.debug ? '--export-debug' : '--export-release'
         const res = await runGodotHeadless(gp, projectPath, [flag, String(args.preset_name), String(args.output_path)], exec.signal)
         if (res.spawnError) return { error: 'export spawn failed: ' + res.spawnError }

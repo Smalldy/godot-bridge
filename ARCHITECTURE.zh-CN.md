@@ -163,4 +163,4 @@ sequenceDiagram
 
 - `eval` 编译错误会让 debug 模式的游戏卡在调试器（与 godot-mcp 完全相同）。用 `godot_stop_project` + `godot_run_project` 恢复；写动态访问代码（`node.get("prop")`）绕开静态类型推断。
 - `godot_get_debug_output` 是增量式的（offset 读取器）。
-- GODOT_PATH 必须用真实 exe；gdvm shim 会立即退出并把真实进程变孤儿。
+- 配置的 Godot 路径必须是真实 exe；版本管理器 shim 会立即退出并把真实进程变孤儿。

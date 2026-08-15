@@ -50,7 +50,12 @@ Notes:
 
 ## Config
 
-- GODOT_PATH: tool arg `godot_path` > `<workspace>/.omp/mcp.json` `env.GODOT_PATH` > built-in gdvm 4.7.1 fallback. Always point at the **real exe**, never the gdvm shim.
+- Godot executable: per-tool `godot_path` argument > the `godotPath` setting under the `[godot-bridge]` section of `$DSH_HOME/settings.yaml` (hot-reloaded). No built-in fallback. Always point at the **real exe**, never a version-manager shim. Example settings.yaml:
+
+  ```yaml
+  godot-bridge:
+    godotPath: C:/path/to/Godot_v4.4-stable_win64.exe
+  ```
 - Port/host: hardcoded `127.0.0.1:9090` (matches the `McpInteractionServer` autoload default).
 - Headless scripts: the plugin locates them relative to the module (`import.meta.url`); pass an explicit `ops_script` / `validate_script` argument to override.
 

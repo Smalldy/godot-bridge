@@ -163,4 +163,4 @@ sequenceDiagram
 
 - `eval` compile errors pause a debug-mode game at the debugger (identical to godot-mcp). Recover with `godot_stop_project` + `godot_run_project`; write dynamic-access code (`node.get("prop")`) to dodge static typing.
 - `godot_get_debug_output` is incremental (offset-based readers).
-- GODOT_PATH must be the real exe; the gdvm shim exits immediately and orphans the real process.
+- The configured Godot path must be the real exe; a version-manager shim exits immediately and orphans the real process.

@@ -50,7 +50,12 @@ dsh plugin --profile web remove godot-bridge
 
 ## 配置
 
-- GODOT_PATH：工具参数 `godot_path` > `<workspace>/.omp/mcp.json` 的 `env.GODOT_PATH` > 内置 gdvm 4.7.1 兜底。始终指向**真实 exe**，别用 gdvm shim。
+- Godot 可执行文件：每次调用的 `godot_path` 参数 > `$DSH_HOME/settings.yaml` 的 `[godot-bridge]` 段 `godotPath` 设置（热生效）。无内置兜底。始终指向**真实 exe**，别用版本管理器 shim。settings.yaml 示例：
+
+  ```yaml
+  godot-bridge:
+    godotPath: C:/path/to/Godot_v4.4-stable_win64.exe
+  ```
 - 端口/主机：写死 `127.0.0.1:9090`（与 `McpInteractionServer` autoload 默认一致）。
 - headless 脚本定位：插件按模块相对路径（`import.meta.url`）；传显式 `ops_script` / `validate_script` 参数可覆盖。
 

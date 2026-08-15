@@ -51,7 +51,7 @@ DSH 会话
 - DeepSeek Harness（带 host 运行时的会话）
 - 注册了 `McpInteractionServer` autoload 的 Godot 4.x 项目。若项目还没有，把 `plugin/mcp_interaction_server.gd` 复制到项目根，并以 `McpInteractionServer` 命名注册为 autoload（godot-mcp 项目已具备）。**`godot_run_project` 也会在缺失时自动安装**（把随包文件复制进 `autoload/` 并在 `project.godot` 注册）——无需手动处理；非 Godot 项目完全不受影响。
 - `node` 在 PATH 中
-- Godot 可执行文件（务必用**真实 exe 完整路径**，不要用 gdvm shim——见"坑"）
+- Godot 可执行文件——在 `$DSH_HOME/settings.yaml` 的 `[godot-bridge]` 段设置 **`godotPath`**（或每次调用传 `godot_path` 参数）。务必用**真实 exe 完整路径**，不要用版本管理器的 shim（见"坑"）
 
 ## 安装
 
@@ -97,14 +97,14 @@ godot_get_debug_output       # 读取启动日志
 godot_stop_project           # 结束
 ```
 
-GODOT_PATH 解析顺序：工具参数 `godot_path` → `<workspace>/.omp/mcp.json` 的 `env.GODOT_PATH` → 内置 gdvm 4.7.1 兜底路径。
+Godot 可执行文件解析顺序：每次调用的 `godot_path` 参数 → `$DSH_HOME/settings.yaml` 的 `[godot-bridge]` 段 `godotPath` 设置（官方 settings 机制，**热生效**，无需重启）。**没有内置兜底路径**；务必指向**真实 exe**，别用 shim。
 
 ## 坑（血泪教训）
 
 - **DSH 文件沙箱 vs Godot `user://`**：经沙箱化 shell 执行器（pwsh/bash 工具）启动 Godot 会传播受限令牌，Godot 启动即崩（`Failed to open 'user://logs/…'`，signal 11）。godot-bridge 走原始 `subprocess` 服务、不受文件沙箱限制——这就是它能正常工作的原因。
 - **`node -e` 的 argv**：`node -e <script> <cmd> <json>` 时，额外参数落在 `process.argv[1]`/`[2]`（不是 `[2]`/`[3]`）。
 - **debug 模式下的 eval**：`eval` 代码出现编译错误会让游戏卡在调试器（与 godot-mcp 相同）。用动态访问（`p.get("global_position")`）绕开静态类型推断；卡死时 `godot_stop_project` + `godot_run_project` 重启。
-- **用真实 exe，别用 gdvm shim**：shim 会立即退出并把真实 Godot 变孤儿进程，进程管理会误判其已死亡。
+- **用真实 exe，别用版本管理器 shim**：shim 会立即退出并把真实 Godot 变孤儿进程，进程管理会误判其已死亡。
 
 ## 项目结构
 
