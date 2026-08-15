@@ -204,27 +204,6 @@ export function apply(ctx) {
     } catch (e) {}
   })()
 
-  // ── environment guidance: ensure the McpInteractionServer autoload ────────
-  // Always-on system-prompt section so the model proactively checks and, when
-  // missing, repairs the autoload (copy the vendored file + register) before
-  // driving a project with the godot_* tools. The source path is resolved from
-  // the module location, so it is correct for each installed copy.
-  try {
-    const autoloadSource = fileURLToPath(new URL('./mcp_interaction_server.gd', import.meta.url))
-    const systemPrompt = ctx.systemPrompt
-    if (systemPrompt) {
-      ctx.effect(function () {
-        return systemPrompt.section({
-          name: 'godot-bridge:environment',
-          order: 150,
-          text: 'GODOT AUTOLOAD SETUP - before using godot_* tools on a Godot project, ensure the McpInteractionServer autoload is registered. Check it with godot_manage_autoloads (action "list", project_path = the project). If McpInteractionServer is missing, fix it yourself: (1) copy the vendored file "'
-            + autoloadSource + '" to "<project>/autoload/mcp_interaction_server.gd" with your file tools, then (2) register it with godot_manage_autoloads (action "add", name "McpInteractionServer", script_path "res://autoload/mcp_interaction_server.gd"). A game without this autoload never listens on 127.0.0.1:9090. / 中文：使用 godot_* 工具前，请确保项目已注册 McpInteractionServer autoload：用 godot_manage_autoloads（action "list"）检查；若缺少，自行修复：(1) 将随包附带文件 "'
-            + autoloadSource + '" 复制到 "<project>/autoload/mcp_interaction_server.gd"；(2) 用 godot_manage_autoloads（action "add"，name "McpInteractionServer"，script_path "res://autoload/mcp_interaction_server.gd"）注册。未注册的游戏不会在 127.0.0.1:9090 监听。',
-        })
-      })
-    }
-  } catch (e) {}
-
   // One-shot node bridge: connect to the in-game TCP server, send one
   // newline-delimited JSON command, print the first complete response line.
   // NOTE: with `node -e <script> <cmd> <paramsJson> <timeoutMs>`, the extra
@@ -384,6 +363,37 @@ export function apply(ctx) {
       : undefined
     await fs.writeText(target, content, undefined, undefined, policy)
     return true
+  }
+
+  // Ensure the McpInteractionServer autoload exists in the project. When it is
+  // missing, copies the vendored mcp_interaction_server.gd (next to this
+  // module) into <project>/autoload/ and registers it in project.godot. This
+  // is what makes godot_run_project self-healing — no manual setup, and for
+  // non-Godot projects the tool is simply never called.
+  async function ensureInteractionAutoload(projectPath) {
+    try {
+      const content = await readProjectFile(projectPath, 'project.godot')
+      if (content === null) return { status: 'error', reason: 'project.godot not found at ' + projectPath }
+      const block = getSection(content, 'autoload')
+      if (block && /(^|\n)\s*McpInteractionServer\s*=/.test(block)) {
+        return { status: 'ok', present: true }
+      }
+      const source = fileURLToPath(new URL('./mcp_interaction_server.gd', import.meta.url))
+      let text = null
+      try {
+        text = readFileSync(source, 'utf8')
+      } catch (e) {}
+      if (text === null) {
+        return { status: 'error', reason: 'vendored mcp_interaction_server.gd unreadable at ' + source }
+      }
+      await ensureDir(projectPath + '/autoload')
+      await writeProjectFile(projectPath, 'autoload/mcp_interaction_server.gd', text)
+      const next = setSectionKey(content, 'autoload', 'McpInteractionServer', '"*res://autoload/mcp_interaction_server.gd"')
+      await writeProjectFile(projectPath, 'project.godot', next)
+      return { status: 'fixed', registered: true, path: 'res://autoload/mcp_interaction_server.gd' }
+    } catch (e) {
+      return { status: 'error', reason: String((e && e.message) || e) }
+    }
   }
 
   // Extract one `[section]` block (up to the next `[section]` or EOF).
@@ -588,7 +598,7 @@ export function apply(ctx) {
 
     defineTool({
       name: 'godot_run_project',
-      description: 'Launch the Godot project in debug mode (godot -d --path <project>) and wait for the in-game interaction server. The project must register the McpInteractionServer autoload (mcp_interaction_server.gd). Returns process info and game_ready.',
+      description: 'Launch the Godot project in debug mode (godot -d --path <project>) and wait for the in-game interaction server. Automatically installs the McpInteractionServer autoload when the project lacks it (copies the vendored mcp_interaction_server.gd into autoload/ and registers it in project.godot) — no manual setup needed. Returns process info, the autoload check result, and game_ready.',
       properties: {
         project_path: { type: 'string', description: 'Path to the Godot project (default: current session workspace)' },
         scene: { type: 'string', description: 'Optional scene to run relative to the project, e.g. scenes/main/main_menu.tscn' },
@@ -601,6 +611,10 @@ export function apply(ctx) {
         const root = await getWorkspaceRoot(exec)
         const projectPath = args.project_path || root
         if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
+        const autoload = await ensureInteractionAutoload(projectPath)
+        if (autoload.status === 'error') {
+          return { error: 'autoload setup failed: ' + autoload.reason }
+        }
         if (godot) {
           try {
             godot.handle.terminate()
@@ -636,6 +650,7 @@ export function apply(ctx) {
           project_path: projectPath,
           godot_path: gp,
           scene: args.scene || null,
+          autoload: autoload,
           game_ready: ready,
           port: PORT,
           note: ready

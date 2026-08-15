@@ -49,7 +49,7 @@ DSH 会话
 ## 环境要求
 
 - DeepSeek Harness（带 host 运行时的会话）
-- 注册了 `McpInteractionServer` autoload 的 Godot 4.x 项目。若项目还没有，把 `plugin/mcp_interaction_server.gd` 复制到项目根，并以 `McpInteractionServer` 命名注册为 autoload（godot-mcp 项目已具备）。**插件还会注入一条系统提示引导，让 agent 在使用前自动检查该 autoload，缺失时自动修复（复制随包文件 + 注册）**——无需手动处理。
+- 注册了 `McpInteractionServer` autoload 的 Godot 4.x 项目。若项目还没有，把 `plugin/mcp_interaction_server.gd` 复制到项目根，并以 `McpInteractionServer` 命名注册为 autoload（godot-mcp 项目已具备）。**`godot_run_project` 也会在缺失时自动安装**（把随包文件复制进 `autoload/` 并在 `project.godot` 注册）——无需手动处理；非 Godot 项目完全不受影响。
 - `node` 在 PATH 中
 - Godot 可执行文件（务必用**真实 exe 完整路径**，不要用 gdvm shim——见"坑"）
 
