@@ -40,6 +40,125 @@ godot-bridge 走 harness 的**原始 `subprocess` 服务**——shell 执行器�
 
 所有工具原样返回游戏的 JSON 响应（规范化值按 `{type:'object', additionalProperties:true}` 校验），以文本渲染。工具调用默认排他（无 `isConcurrencySafe`），与单命令游戏服务器匹配。
 
+## 架构图
+
+### 系统总览
+
+```mermaid
+flowchart TB
+    subgraph GITHUB["GitHub — Smalldy/godot-bridge"]
+        REPO["bundle<br/>package.json (dsh.bundle) · cordis.patch.yml · plugin/"]
+    end
+
+    subgraph DSH["DeepSeek Harness host（web profile）"]
+        PROFILE["$DSH_HOME/profiles/web/package.json<br/>dsh.profile.bundles = base · web-app · godot-bridge"]
+        NODE["profiles/web/node_modules/godot-bridge"]
+        PLUGIN["cordis 行 tool-godot-bridge<br/>godot-bridge.mjs apply(ctx)"]
+        TOOLS["15 个 godot_* 工具<br/>defineTool + ctx.tools.register"]
+        PROMPT["系统提示 section<br/>更新提示（条件触发）"]
+    end
+
+    subgraph CHANNELS["插件通道"]
+        BRIDGE["node -e 一次性 TCP 桥"]
+        HEADLESS["godot --headless --script<br/>godot_operations.gd / validate_script.gd"]
+        PROC["subprocess.spawn(godot -d --path …)"]
+        FILE["fs 服务<br/>project.godot · export_presets.cfg"]
+        NET["fetch raw.githubusercontent.com<br/>启动时版本检查"]
+    end
+
+    subgraph GAME["Godot 项目（用户）"]
+        AUTOLOAD["project.godot [autoload]<br/>McpInteractionServer"]
+        SERVER["mcp_interaction_server.gd<br/>TCP 127.0.0.1:9090"]
+        SFILES["scenes/*.tscn · resources/*.tres<br/>scripts/*.gd"]
+    end
+
+    GITHUB -->|"dsh plugin add github:… / release .tgz"| PROFILE
+    PROFILE --> NODE
+    NODE --> PLUGIN
+    PLUGIN --> TOOLS
+    PLUGIN --> PROMPT
+    TOOLS --> BRIDGE
+    BRIDGE -->|"{command, params, id}<br/>换行分隔 JSON"| SERVER
+    TOOLS --> HEADLESS
+    HEADLESS --> SFILES
+    TOOLS --> PROC
+    PROC -->|"启动游戏"| SERVER
+    TOOLS --> FILE
+    FILE --> SFILES
+    PLUGIN --> NET
+    AUTOLOAD --> SERVER
+```
+
+### 工具通道
+
+```mermaid
+flowchart LR
+    subgraph TOOLS["godot_* 工具"]
+        P["进程<br/>run / stop / get_debug_output / ping"]
+        R["运行时<br/>command / screenshot"]
+        H["headless<br/>headless_op / validate_script / export_project"]
+        E["项目编辑<br/>set_project_setting / manage_* / create_*"]
+    end
+    P -->|"spawn + 收集输出"| G["Godot 进程"]
+    R -->|"TCP 9090（node -e 桥）"| S["McpInteractionServer<br/>游戏进程内"]
+    H -->|"godot --headless"| F["场景 / 资源 / 脚本文件"]
+    E -->|"fs 服务"| F
+    S --> G
+```
+
+### godot_run_project — 启动流程
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant RP as godot_run_project
+    participant H as 插件辅助
+    participant FS as fs 服务
+    participant GO as Godot 进程
+    participant SRV as McpInteractionServer 9090
+
+    Agent->>RP: execute({project_path, scene, wait_ms})
+    RP->>H: ensureInteractionAutoload(project)
+    H->>FS: 读 project.godot
+    alt autoload 缺失
+        H->>FS: 复制随包 gd → autoload/<br/>注册 [autoload] 条目
+    end
+    RP->>H: launchProject(project, …)
+    H->>GO: subprocess.spawn(godot -d --path project)
+    Note over GO: 启动——autoload 开启 TCP 服务器
+    loop 轮询 ≤ wait_ms（默认 20s，每 ~4s）
+        H->>SRV: 经 node -e 桥发 get_performance
+        SRV-->>H: ok
+    end
+    RP-->>Agent: {game_ready, autoload, pid, port, note}
+```
+
+### 运行时工具前置守卫（自愈）
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant T as godot_command / godot_screenshot
+    participant G as ensureGameService
+    participant LP as launchProject
+    participant SRV as McpInteractionServer 9090
+
+    Agent->>T: execute(...)
+    T->>G: 探测 get_performance（1.5s 超时）
+    alt 服务器在线
+        G-->>T: 放行
+    else 无游戏 + 可推导项目<br/>（project_path 或 workspace 有 project.godot）
+        G->>LP: 自动启动项目<br/>（autoload 自愈 + spawn + 等待就绪）
+        LP-->>G: game_ready
+        G-->>T: 放行
+    else 无法推导项目
+        G-->>T: 指引错误（调用 godot_run_project）
+    end
+    T->>SRV: 经桥发送 runGameCommand(command)
+    SRV-->>T: 响应 JSON
+    T-->>Agent: 结果
+```
+
 ## 已知行为说明
 
 - `eval` 编译错误会让 debug 模式的游戏卡在调试器（与 godot-mcp 完全相同）。用 `godot_stop_project` + `godot_run_project` 恢复；写动态访问代码（`node.get("prop")`）绕开静态类型推断。

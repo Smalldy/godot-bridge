@@ -40,6 +40,125 @@ godot-bridge spawns through the harness's **raw `subprocess` service** — the u
 
 All tools return the game's response JSON verbatim (canonical value validated against `{type:'object', additionalProperties:true}`), rendered as text. Tool calls are exclusive by default (no `isConcurrencySafe`), matching the single-command game server.
 
+## Architecture diagrams
+
+### System overview
+
+```mermaid
+flowchart TB
+    subgraph GITHUB["GitHub — Smalldy/godot-bridge"]
+        REPO["bundle<br/>package.json (dsh.bundle) · cordis.patch.yml · plugin/"]
+    end
+
+    subgraph DSH["DeepSeek Harness host (web profile)"]
+        PROFILE["$DSH_HOME/profiles/web/package.json<br/>dsh.profile.bundles = base · web-app · godot-bridge"]
+        NODE["profiles/web/node_modules/godot-bridge"]
+        PLUGIN["cordis row tool-godot-bridge<br/>godot-bridge.mjs apply(ctx)"]
+        TOOLS["15 godot_* tools<br/>defineTool + ctx.tools.register"]
+        PROMPT["system-prompt sections<br/>update notice (conditional)"]
+    end
+
+    subgraph CHANNELS["Plugin channels"]
+        BRIDGE["node -e one-shot TCP bridge"]
+        HEADLESS["godot --headless --script<br/>godot_operations.gd / validate_script.gd"]
+        PROC["subprocess.spawn(godot -d --path …)"]
+        FILE["fs service<br/>project.godot · export_presets.cfg"]
+        NET["fetch raw.githubusercontent.com<br/>boot-time version check"]
+    end
+
+    subgraph GAME["Godot project (user)"]
+        AUTOLOAD["project.godot [autoload]<br/>McpInteractionServer"]
+        SERVER["mcp_interaction_server.gd<br/>TCP 127.0.0.1:9090"]
+        SFILES["scenes/*.tscn · resources/*.tres<br/>scripts/*.gd"]
+    end
+
+    GITHUB -->|"dsh plugin add github:… / release .tgz"| PROFILE
+    PROFILE --> NODE
+    NODE --> PLUGIN
+    PLUGIN --> TOOLS
+    PLUGIN --> PROMPT
+    TOOLS --> BRIDGE
+    BRIDGE -->|"{command, params, id}<br/>newline-delimited JSON"| SERVER
+    TOOLS --> HEADLESS
+    HEADLESS --> SFILES
+    TOOLS --> PROC
+    PROC -->|"boots the game"| SERVER
+    TOOLS --> FILE
+    FILE --> SFILES
+    PLUGIN --> NET
+    AUTOLOAD --> SERVER
+```
+
+### Tool channels
+
+```mermaid
+flowchart LR
+    subgraph TOOLS["godot_* tools"]
+        P["process<br/>run / stop / get_debug_output / ping"]
+        R["runtime<br/>command / screenshot"]
+        H["headless<br/>headless_op / validate_script / export_project"]
+        E["project-edit<br/>set_project_setting / manage_* / create_*"]
+    end
+    P -->|"spawn + collected output"| G["Godot process"]
+    R -->|"TCP 9090 via node -e bridge"| S["McpInteractionServer<br/>inside the game"]
+    H -->|"godot --headless"| F["scene / resource / script files"]
+    E -->|"fs service"| F
+    S --> G
+```
+
+### godot_run_project — launch flow
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant RP as godot_run_project
+    participant H as plugin helpers
+    participant FS as fs service
+    participant GO as Godot process
+    participant SRV as McpInteractionServer 9090
+
+    Agent->>RP: execute({project_path, scene, wait_ms})
+    RP->>H: ensureInteractionAutoload(project)
+    H->>FS: read project.godot
+    alt autoload missing
+        H->>FS: copy vendored gd → autoload/<br/>register [autoload] entry
+    end
+    RP->>H: launchProject(project, …)
+    H->>GO: subprocess.spawn(godot -d --path project)
+    Note over GO: boots — autoload starts the TCP server
+    loop poll ≤ wait_ms (default 20s, every ~4s)
+        H->>SRV: get_performance via node -e bridge
+        SRV-->>H: ok
+    end
+    RP-->>Agent: {game_ready, autoload, pid, port, note}
+```
+
+### Runtime tool pre-flight (self-healing guard)
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant T as godot_command / godot_screenshot
+    participant G as ensureGameService
+    participant LP as launchProject
+    participant SRV as McpInteractionServer 9090
+
+    Agent->>T: execute(...)
+    T->>G: probe get_performance (1.5s timeout)
+    alt server answers
+        G-->>T: pass
+    else no game + project derivable<br/>(project_path or workspace project.godot)
+        G->>LP: auto-start project<br/>(autoload self-heal + spawn + wait ready)
+        LP-->>G: game_ready
+        G-->>T: pass
+    else nothing derivable
+        G-->>T: guidance error (call godot_run_project)
+    end
+    T->>SRV: runGameCommand(command) via bridge
+    SRV-->>T: response JSON
+    T-->>Agent: result
+```
+
 ## Known behavior notes
 
 - `eval` compile errors pause a debug-mode game at the debugger (identical to godot-mcp). Recover with `godot_stop_project` + `godot_run_project`; write dynamic-access code (`node.get("prop")`) to dodge static typing.

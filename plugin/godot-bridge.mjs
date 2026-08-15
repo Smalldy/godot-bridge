@@ -396,6 +396,91 @@ export function apply(ctx) {
     }
   }
 
+  // Spawn Godot for a project and wait for the interaction server. Returns the
+  // same shape as godot_run_project's response.
+  async function launchProject(projectPath, opts, exec) {
+    const gp = opts.godot_path || await getGodotPath()
+    const argv = [gp]
+    if (opts.debug !== false) argv.push('-d')
+    argv.push('--path', projectPath)
+    if (opts.scene) argv.push(String(opts.scene))
+    let handle
+    try {
+      handle = subprocess.spawn({
+        argv: argv,
+        cwd: projectPath,
+        stdio: {
+          stdin: 'ignore',
+          stdout: { collect: { maxBytes: 4 * 1024 * 1024, spill: { maxBytes: 32 * 1024 * 1024 } } },
+          stderr: { collect: { maxBytes: 4 * 1024 * 1024, spill: { maxBytes: 32 * 1024 * 1024 } } },
+        },
+        graceMs: 3000,
+        signal: exec.signal,
+      })
+    } catch (e) {
+      return { error: 'failed to spawn Godot: ' + (e && e.message) }
+    }
+    godot = { handle: handle, outOffset: 0, errOffset: 0, projectPath: projectPath, scene: opts.scene || null }
+    const ready = await waitForGame(exec.signal, opts.wait_ms || 20000)
+    return {
+      pid: handle.pid,
+      project_path: projectPath,
+      godot_path: gp,
+      scene: opts.scene || null,
+      autoload: opts.autoload,
+      game_ready: ready,
+      port: PORT,
+      note: ready
+        ? 'Game interaction server reachable on 127.0.0.1:9090'
+        : 'Game process started but the interaction server did not answer in time; call godot_get_debug_output to diagnose',
+    }
+  }
+
+  // Common pre-flight for the runtime tools (godot_command / godot_screenshot):
+  // ensures a game is answering on 9090 before the call proceeds. When nothing
+  // is running it self-heals by starting the project IF a Godot project is
+  // derivable (explicit project_path, or the session workspace holding
+  // project.godot) — otherwise it returns actionable guidance instead of a
+  // bare ECONNREFUSED. Read-only probing, no cross-session side effects.
+  async function ensureGameService(args, exec) {
+    try {
+      const resp = await runGameCommand('get_performance', {}, 1500, exec.signal)
+      if (resp && !resp.error) return null
+    } catch (e) {}
+    // The plugin owns a process: give it boot grace, then diagnose.
+    if (godot) {
+      for (let i = 0; i < 5; i++) {
+        await ctx.timeout(1000)
+        if (exec.signal && exec.signal.aborted) return { error: 'cancelled while waiting for the game server' }
+        try {
+          const r = await runGameCommand('get_performance', {}, 1500, exec.signal)
+          if (r && !r.error) return null
+        } catch (e) {}
+      }
+      return { error: 'The Godot process is running but the interaction server (127.0.0.1:9090) is not answering; it may have crashed or the McpInteractionServer autoload is missing. Call godot_get_debug_output to diagnose, or godot_run_project to restart (it auto-installs the autoload).' }
+    }
+    // No game: derive a Godot project and self-heal by starting it.
+    let project = args.project_path || null
+    if (!project) {
+      const root = await getWorkspaceRoot(exec)
+      if (root) {
+        const pg = await readProjectFile(root, 'project.godot')
+        if (pg !== null) project = root
+      }
+    }
+    if (!project) {
+      return { error: 'No Godot game is answering on 127.0.0.1:9090 and no Godot project is derivable here. Call godot_run_project with the project path to start it (it auto-installs the McpInteractionServer autoload), or pass project_path to this tool.' }
+    }
+    const autoload = await ensureInteractionAutoload(project)
+    if (autoload.status === 'error') return { error: 'autoload setup failed: ' + autoload.reason }
+    const launched = await launchProject(project, { autoload: autoload }, exec)
+    if (launched.error) return launched
+    if (!launched.game_ready) {
+      return { error: 'Started the game but the interaction server did not answer in time; call godot_get_debug_output to diagnose.' }
+    }
+    return null
+  }
+
   // Extract one `[section]` block (up to the next `[section]` or EOF).
   function getSection(content, section) {
     const re = new RegExp('\\[' + section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\]([\\s\\S]*?)(?=\\n\\[|$)')
@@ -533,11 +618,27 @@ export function apply(ctx) {
       },
     }
     if (opt.timeoutMs) def.timeoutMs = opt.timeoutMs
-    def.execute = async function (args, exec) {
-      try {
-        return await opt.execute(args, exec)
-      } catch (e) {
-        return { error: String((e && e.message) || e) }
+    if (opt.runtime) {
+      // Runtime tools (godot_command / godot_screenshot) share a common
+      // pre-flight: ensure a game answers on 9090, self-healing by starting
+      // the derivable project when none is running. Static/headless tools do
+      // not opt in — they never need the game.
+      def.execute = async function (args, exec) {
+        try {
+          const guard = await ensureGameService(args, exec)
+          if (guard && guard.error) return guard
+          return await opt.execute(args, exec)
+        } catch (e) {
+          return { error: String((e && e.message) || e) }
+        }
+      }
+    } else {
+      def.execute = async function (args, exec) {
+        try {
+          return await opt.execute(args, exec)
+        } catch (e) {
+          return { error: String((e && e.message) || e) }
+        }
       }
     }
     return defineToolOfficial(def)
@@ -579,19 +680,23 @@ export function apply(ctx) {
   const defs = [
     defineTool({
       name: 'godot_ping',
-      description: 'Probe whether the running Godot game accepts commands on the in-game interaction server (TCP 127.0.0.1:9090). Returns game_running plus the probe detail. Use before game commands when unsure the game is up.',
+      description: 'Probe whether the running Godot game accepts commands on the in-game interaction server (TCP 127.0.0.1:9090). Returns game_running plus the probe detail, plugin version info, and - when nothing is running - a hint to start the game with godot_run_project.',
       properties: {
         timeout_ms: { type: 'number', description: 'Probe timeout in ms (default 5000)' },
       },
       async execute(args, exec) {
         const resp = await runGameCommand('get_performance', {}, args.timeout_ms || 5000, exec.signal)
+        const running = !(resp && resp.error)
         return {
-          game_running: !(resp && resp.error),
+          game_running: running,
           port: PORT,
           plugin_version: INSTALLED_VERSION,
           latest_version: updateState.latest,
           update_available: updateState.available,
           detail: resp,
+          ...(running ? {} : {
+            note: 'No game is answering on 127.0.0.1:9090. Call godot_run_project with the project path to start it (it auto-installs the McpInteractionServer autoload when missing).',
+          }),
         }
       },
     }),
@@ -622,41 +727,13 @@ export function apply(ctx) {
           } catch (e) {}
           godot = null
         }
-        const gp = args.godot_path || await getGodotPath()
-        const argv = [gp]
-        if (args.debug !== false) argv.push('-d')
-        argv.push('--path', projectPath)
-        if (args.scene) argv.push(String(args.scene))
-        let handle
-        try {
-          handle = subprocess.spawn({
-            argv: argv,
-            cwd: projectPath,
-            stdio: {
-              stdin: 'ignore',
-              stdout: { collect: { maxBytes: 4 * 1024 * 1024, spill: { maxBytes: 32 * 1024 * 1024 } } },
-              stderr: { collect: { maxBytes: 4 * 1024 * 1024, spill: { maxBytes: 32 * 1024 * 1024 } } },
-            },
-            graceMs: 3000,
-            signal: exec.signal,
-          })
-        } catch (e) {
-          return { error: 'failed to spawn Godot: ' + (e && e.message) }
-        }
-        godot = { handle: handle, outOffset: 0, errOffset: 0, projectPath: projectPath, scene: args.scene || null }
-        const ready = await waitForGame(exec.signal, args.wait_ms || 20000)
-        return {
-          pid: handle.pid,
-          project_path: projectPath,
-          godot_path: gp,
-          scene: args.scene || null,
+        return await launchProject(projectPath, {
+          scene: args.scene,
+          godot_path: args.godot_path,
+          debug: args.debug,
+          wait_ms: args.wait_ms,
           autoload: autoload,
-          game_ready: ready,
-          port: PORT,
-          note: ready
-            ? 'Game interaction server reachable on 127.0.0.1:9090'
-            : 'Game process started but the interaction server did not answer in time; call godot_get_debug_output to diagnose',
-        }
+        }, exec)
       },
     }),
 
@@ -702,14 +779,16 @@ export function apply(ctx) {
 
     defineTool({
       name: 'godot_command',
-      description: 'Send one command to the running Godot game via its in-game interaction server (McpInteractionServer autoload on TCP 127.0.0.1:9090). The game must be running (godot_run_project, or started manually - the autoload always listens). Returns the game response JSON verbatim. Core commands: get_scene_tree (scene graph), get_ui_elements (visible UI with positions), screenshot (PNG base64), eval (run GDScript, return value), get_property / set_property / call_method / get_node_info (inspect & mutate nodes), click / key_press / key_hold / key_release / mouse_move / scroll (input), play_animation / tween_property, get_performance, pause, change_scene, instantiate_scene, remove_node, connect_signal / emit_signal / await_signal, raycast, spawn_node, serialize_state, and more.',
+      description: 'Send one command to the running Godot game via its in-game interaction server (McpInteractionServer autoload on TCP 127.0.0.1:9090). If no game is answering, this tool automatically starts the derivable Godot project (workspace project.godot or project_path) first — with the autoload auto-installed — and waits for the server, then sends the command; pass project_path when the project is not the session workspace. Returns the game response JSON verbatim. Core commands: get_scene_tree (scene graph), get_ui_elements (visible UI with positions), screenshot (PNG base64), eval (run GDScript, return value), get_property / set_property / call_method / get_node_info (inspect & mutate nodes), click / key_press / key_hold / key_release / mouse_move / scroll (input), play_animation / tween_property, get_performance, pause, change_scene, instantiate_scene, remove_node, connect_signal / emit_signal / await_signal, raycast, spawn_node, serialize_state, and more.',
       required: ['command'],
       properties: {
         command: { type: 'string', enum: COMMANDS, description: 'Command to execute in the game' },
         params: { type: 'object', additionalProperties: true, description: 'Command parameters as documented for that command (node_path, property, code, x/y, etc.)' },
         timeout_ms: { type: 'number', description: 'Timeout in ms (default 15000; async commands like screenshot/eval/await_signal may need more)' },
+        project_path: { type: 'string', description: 'Godot project path to start when no game is running (default: session workspace if it holds project.godot)' },
       },
-      timeoutMs: 40000,
+      timeoutMs: 60000,
+      runtime: true,
       async execute(args, exec) {
         return await runGameCommand(args.command, args.params || {}, args.timeout_ms || 15000, exec.signal)
       },
@@ -717,9 +796,12 @@ export function apply(ctx) {
 
     defineTool({
       name: 'godot_screenshot',
-      description: 'Capture the current game viewport as a PNG. Returns { success, width, height, data } where data is the base64-encoded PNG. Save and decode it to view the game state.',
-      properties: {},
-      timeoutMs: 40000,
+      description: 'Capture the current game viewport as a PNG. Returns { success, width, height, data } where data is the base64-encoded PNG. Save and decode it to view the game state. If no game is answering, automatically starts the derivable Godot project first (same behavior as godot_command).',
+      properties: {
+        project_path: { type: 'string', description: 'Godot project path to start when no game is running (default: session workspace if it holds project.godot)' },
+      },
+      timeoutMs: 60000,
+      runtime: true,
       async execute(args, exec) {
         const resp = await runGameCommand('screenshot', {}, 20000, exec.signal)
         if (resp && resp.success) return resp
