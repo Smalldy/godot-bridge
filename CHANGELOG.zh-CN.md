@@ -5,6 +5,12 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.1.4] - 2026-08-16
+
+### 修复
+
+- 恢复 0.1.3 中误删的 `timer` 注入：`ctx.timeout()` 是 timer 服务的 mixin，其 getter 读取 `ctx.timer`，移除后导致 `godot_run_project` / `godot_command` / `godot_screenshot` 报 `cannot get property "timer" without inject`。
+
 ## [0.1.3] - 2026-08-15
 
 ### 新增
@@ -62,6 +68,7 @@
 - `godot_manage_input_map` 使用正确的 Godot 4 键码（修复 godot-mcp 的 Godot 3 基线 bug）。
 - 双语文档（README / install / ARCHITECTURE / COVERAGE），含安装与移除指南；`cordis.patch.yml` 纳入发布 `files`。
 
+[0.1.4]: https://github.com/Smalldy/godot-bridge/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Smalldy/godot-bridge/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Smalldy/godot-bridge/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Smalldy/godot-bridge/compare/v0.1.0...v0.1.1

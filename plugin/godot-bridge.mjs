@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 
 export const name = 'godot-bridge'
 
-export const inject = ['subprocess', 'tools', 'fs', 'sandboxPolicy', 'systemPrompt']
+export const inject = ['subprocess', 'timer', 'tools', 'fs', 'sandboxPolicy', 'systemPrompt']
 
 /**
  * Runtime configuration schema (official cordis Config + settings section).
@@ -45,8 +45,9 @@ export const Config = Schema.object({
 
 export function apply(ctx, config) {
   const subprocess = ctx.subprocess
+  const timer = ctx.timer
   const tools = ctx.tools
-  if (subprocess === undefined || tools === undefined) return
+  if (subprocess === undefined || timer === undefined || tools === undefined) return
 
   const PORT = 9090
 

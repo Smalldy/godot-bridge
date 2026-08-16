@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-08-16
+
+### Fixed
+
+- Restore the `timer` injection dropped in 0.1.3: `ctx.timeout()` is a mixin of the timer service whose getter reads `ctx.timer`, so its removal broke `godot_run_project` / `godot_command` / `godot_screenshot` with `cannot get property "timer" without inject`.
+
 ## [0.1.3] - 2026-08-15
 
 ### Added
@@ -62,6 +68,7 @@ Initial release — a standard DSH bundle that replaces the godot-mcp MCP server
 - Correct Godot 4 keycodes in `godot_manage_input_map` (fixes godot-mcp's Godot 3 baseline bug).
 - Bilingual documentation (README / install / ARCHITECTURE / COVERAGE) incl. install and uninstall guides; `cordis.patch.yml` included in published `files`.
 
+[0.1.4]: https://github.com/Smalldy/godot-bridge/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Smalldy/godot-bridge/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Smalldy/godot-bridge/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Smalldy/godot-bridge/compare/v0.1.0...v0.1.1
