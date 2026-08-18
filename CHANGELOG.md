@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-08-19
+
+### Added
+
+- `godot_run_headless` tool: bounded headless scene/logic/test runs through the unconfined subprocess service (`godot --headless --path <project> [--quit-after N] [--script <g>]` with a timeout kill), replacing the crash-prone practice of running `godot --headless` through a sandboxed pwsh/bash shell.
+
+### Changed
+
+- `godot_headless_op` / `godot_validate_script` / `godot_export_project` now attach a crash `diagnosis` (`sandbox-crash`, high/low confidence, actionable hint) instead of handing back raw stderr alone, so a sandbox crash can no longer masquerade as a project bug.
+- New `godot-bridge:launch-channel` system-prompt section: Godot must always be started through the godot_* tools (unconfined subprocess), never through pwsh/bash (file-sandboxed, signal 11).
+- `godot_run_project` description points at `godot_run_headless` for non-interactive headless runs.
+
+### Fixed
+
+- `godot_run_headless` returned `note: undefined` on the normal path; the DSH tool layer rejects any `undefined` property ("value is not lossless JSON") and discarded the entire result. `note` is now only present on timeout, and `exit_code` is normalized so every return field is lossless JSON.
+- `godot_validate_script` error entries now use `null` (not `undefined`) for missing file/line locations.
+
 ## [0.1.4] - 2026-08-16
 
 ### Fixed
@@ -68,6 +85,7 @@ Initial release — a standard DSH bundle that replaces the godot-mcp MCP server
 - Correct Godot 4 keycodes in `godot_manage_input_map` (fixes godot-mcp's Godot 3 baseline bug).
 - Bilingual documentation (README / install / ARCHITECTURE / COVERAGE) incl. install and uninstall guides; `cordis.patch.yml` included in published `files`.
 
+[0.1.5]: https://github.com/Smalldy/godot-bridge/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Smalldy/godot-bridge/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Smalldy/godot-bridge/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Smalldy/godot-bridge/compare/v0.1.1...v0.1.2

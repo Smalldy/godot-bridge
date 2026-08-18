@@ -13,3 +13,8 @@ import/
 # OS
 Thumbs.db
 .DS_Store
+
+# Release artifacts (transient, generated during publishing)
+.npm-cache/
+*.tgz
+release-notes.md

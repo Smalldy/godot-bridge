@@ -104,6 +104,13 @@ export function apply(ctx, config) {
           text: 'GODOT ENGINE PATH - godot-bridge drives a Godot game. If a godot_* tool reports that no Godot engine path is configured, do NOT search the filesystem for Godot. Instead, ask the user where their Godot executable is (or tell them how to set it), then persist it with the godot_set_engine_path tool; alternatively the user can set it in settings (the Web plugin-config page, or the `godot-bridge:` section of settings.yaml, key `godotPath`) or add `godot` to their PATH. / 中文：godot-bridge 需要一个 Godot 引擎路径。若 godot_* 工具提示未配置引擎路径，不要自行搜索文件系统。请向用户询问其 Godot 可执行文件位置（或告知用户如何设置），然后用 godot_set_engine_path 工具保存；用户也可在设置（Web 插件配置页，或 settings.yaml 的 `godot-bridge:` 段，键 `godotPath`）中填写，或将 `godot` 加入 PATH。',
         })
       })
+      ctx.effect(function () {
+        return systemPrompt.section({
+          name: 'godot-bridge:launch-channel',
+          order: 151,
+          text: 'GODOT LAUNCH CHANNEL (sandbox crash prevention) - ALWAYS start Godot through the godot_* tools, NEVER through the pwsh/bash shell tools. Godot writes its user:// logs and config under the user home directory on startup; the file sandbox blocks those writes for processes spawned from pwsh/bash, so `godot --headless ...` run inside a shell crashes with signal 11 / segmentation fault. The godot_* tools instead spawn Godot through the unconfined subprocess service, so no permission escalation is ever needed. Use: godot_run_project for an interactive run; godot_run_headless for a bounded headless scene/logic/test run (pass --quit-after N or have the script call get_tree().quit()); godot_headless_op for static .tscn/resource operations; godot_export_project for exports. If a godot_* result ever returns diagnosis:"sandbox-crash", do not investigate a project bug — the root cause is the launch channel; re-run via the godot_* tool, never retry the shell command. / 中文：始终通过 godot_* 工具启动 Godot，严禁用 pwsh/bash shell 工具运行 godot。Godot 启动时会向用户主目录写 user:// 日志与配置；文件沙箱会拦截由 pwsh/bash 派生的进程的这些写入，导致 `godot --headless` 在 shell 内以 signal 11（段错误）崩溃。godot_* 工具则通过不受沙箱约束的 subprocess 服务启动 Godot，因此无需申请任何权限。若某个 godot_* 结果返回 diagnosis:"sandbox-crash"，根因是启动通道而非项目 bug，请改用 godot_* 工具重跑，切勿重复 shell 命令。',
+        })
+      })
     } catch (e) {}
   }
 
@@ -354,6 +361,38 @@ export function apply(ctx, config) {
     return false
   }
 
+  // Scan Godot stdout/stderr for the file-sandbox crash signature. Launched
+  // through a sandboxed shell (pwsh/bash), Godot's user:// log writes are
+  // denied and it dies with signal 11; launched through this plugin's
+  // unconfined subprocess, it never hits that. Detect the signature so the
+  // model gets the root cause instead of digging through logs.
+  //
+  // Two confidence tiers: a *confident* sandbox crash (explicit permission/
+  // signal markers) vs a *suspect* one (Godot hit an I/O failure but no hard
+  // signal text yet). Both return an actionable `hint`; the difference only
+  // steers how strongly the model should trust the root cause.
+  function diagnoseCrash(out, err) {
+    const text = String(out || '') + '\n' + String(err || '')
+    if (!text.trim()) return null
+    const confident = /user:\/\/|Permission denied|access denied|EPERM|error\s+13|EACCES|signal\s*11|SIGSEGV|segmentation fault|could not (open|create|write) .*log/i
+    const suspect = /Failed to open|Failed to write|Cannot (open|create|write)|not permission|Operation not permitted|read-only file system/i
+    if (confident.test(text)) {
+      return {
+        diagnosis: 'sandbox-crash',
+        confidence: 'high',
+        hint: 'Godot crashed because its user:// log/config writes were denied by the file sandbox (typical signal 11 / segmentation fault). You almost certainly launched Godot via pwsh/bash, which file-sandboxes child processes. Re-run through the godot_* tools instead: godot_run_project for an interactive run, godot_run_headless for a headless scene/logic run, godot_headless_op for static operations, or godot_export_project for exports — those all spawn Godot through the unconfined subprocess service and never hit this. Do NOT keep retrying the shell command.',
+      }
+    }
+    if (suspect.test(text)) {
+      return {
+        diagnosis: 'sandbox-crash',
+        confidence: 'low',
+        hint: 'Godot reported an I/O failure that is consistent with a file-sandbox denial (its user:// log/config writes are blocked when launched through pwsh/bash). Prefer the godot_* tools (godot_run_project / godot_run_headless / godot_headless_op / godot_export_project), which spawn Godot through the unconfined subprocess service, before assuming a project bug.',
+      }
+    }
+    return null
+  }
+
   // ── headless static operations (godot_operations.gd / validate_script.gd) ──
 
   async function resolveScriptFile(name, explicit) {
@@ -500,6 +539,16 @@ export function apply(ctx, config) {
     }
     godot = { handle: handle, outOffset: 0, errOffset: 0, projectPath: projectPath, scene: opts.scene || null }
     const ready = await waitForGame(exec.signal, opts.wait_ms || 20000)
+    let diagnosis = null
+    if (!ready) {
+      let out = ''
+      let err = ''
+      try {
+        if (handle.collected && handle.collected.stdout) out = handle.collected.stdout.readFrom(0).text || ''
+        if (handle.collected && handle.collected.stderr) err = handle.collected.stderr.readFrom(0).text || ''
+      } catch (e) {}
+      diagnosis = diagnoseCrash(out, err)
+    }
     return {
       pid: handle.pid,
       project_path: projectPath,
@@ -508,9 +557,12 @@ export function apply(ctx, config) {
       autoload: opts.autoload,
       game_ready: ready,
       port: PORT,
+      ...(diagnosis || {}),
       note: ready
         ? 'Game interaction server reachable on 127.0.0.1:9090'
-        : 'Game process started but the interaction server did not answer in time; call godot_get_debug_output to diagnose',
+        : (diagnosis
+          ? diagnosis.hint
+          : 'Game process started but the interaction server did not answer in time; call godot_get_debug_output to diagnose'),
     }
   }
 
@@ -802,7 +854,7 @@ export function apply(ctx, config) {
 
     defineTool({
       name: 'godot_run_project',
-      description: 'Launch the Godot project in debug mode (godot -d --path <project>) and wait for the in-game interaction server. Automatically installs the McpInteractionServer autoload when the project lacks it (copies the vendored mcp_interaction_server.gd into autoload/ and registers it in project.godot) — no manual setup needed. Returns process info, the autoload check result, and game_ready.',
+      description: 'Launch the Godot project in debug mode (godot -d --path <project>) and wait for the in-game interaction server. Automatically installs the McpInteractionServer autoload when the project lacks it (copies the vendored mcp_interaction_server.gd into autoload/ and registers it in project.godot) — no manual setup needed. Returns process info, the autoload check result, and game_ready. IMPORTANT: do NOT launch Godot via the pwsh/bash shell tools — the file sandbox blocks Godot\'s user:// log writes and it crashes (signal 11); this plugin spawns Godot through the unconfined subprocess service, so godot_run_project is the safe way to start it. For a NON-interactive headless scene/logic/test run, use godot_run_headless instead.',
       properties: {
         project_path: { type: 'string', description: 'Path to the Godot project (default: current session workspace)' },
         scene: { type: 'string', description: 'Optional scene to run relative to the project, e.g. scenes/main/main_menu.tscn' },
@@ -872,13 +924,13 @@ export function apply(ctx, config) {
           err = r.text
           godot.errOffset = r.nextOffset
         }
-        return { running: true, pid: godot.handle.pid, stdout: out, stderr: err }
+        return { running: true, pid: godot.handle.pid, stdout: out, stderr: err, ...(diagnoseCrash(out, err) || {}) }
       },
     }),
 
     defineTool({
       name: 'godot_command',
-      description: 'Send one command to the running Godot game via its in-game interaction server (McpInteractionServer autoload on TCP 127.0.0.1:9090). If no game is answering, this tool automatically starts the derivable Godot project (workspace project.godot or project_path) first — with the autoload auto-installed — and waits for the server, then sends the command; pass project_path when the project is not the session workspace. Returns the game response JSON verbatim. Core commands: get_scene_tree (scene graph), get_ui_elements (visible UI with positions), screenshot (PNG base64), eval (run GDScript, return value), get_property / set_property / call_method / get_node_info (inspect & mutate nodes), click / key_press / key_hold / key_release / mouse_move / scroll (input), play_animation / tween_property, get_performance, pause, change_scene, instantiate_scene, remove_node, connect_signal / emit_signal / await_signal, raycast, spawn_node, serialize_state, and more.',
+      description: 'Send one command to the running Godot game via its in-game interaction server (McpInteractionServer autoload on TCP 127.0.0.1:9090). If no game is answering, this tool automatically starts the derivable Godot project (workspace project.godot or project_path) first — with the autoload auto-installed — and waits for the server, then sends the command; pass project_path when the project is not the session workspace. Returns the game response JSON verbatim. Core commands: get_scene_tree (scene graph), get_ui_elements (visible UI with positions), screenshot (PNG base64), eval (run GDScript, return value), get_property / set_property / call_method / get_node_info (inspect & mutate nodes), click / key_press / key_hold / key_release / mouse_move / scroll (input), play_animation / tween_property, get_performance, pause, change_scene, instantiate_scene, remove_node, connect_signal / emit_signal / await_signal, raycast, spawn_node, serialize_state, and more. Do NOT launch Godot via pwsh/bash (the file sandbox blocks its user:// log writes and crashes it, signal 11); use godot_run_project, which spawns Godot via the unconfined subprocess service.',
       required: ['command'],
       properties: {
         command: { type: 'string', enum: COMMANDS, description: 'Command to execute in the game' },
@@ -905,6 +957,97 @@ export function apply(ctx, config) {
         const resp = await runGameCommand('screenshot', {}, 20000, exec.signal)
         if (resp && resp.success) return resp
         return { error: (resp && resp.error) || 'screenshot failed' }
+      },
+    }),
+
+    defineTool({
+      name: 'godot_run_headless',
+      description: 'Run the Godot project (or a scene, or a test script) headlessly as a NON-INTERACTIVE batch run, through the unconfined subprocess service: `godot --headless --path <project> [--quit-after N] [--script <script.gd>]`. This is the safe tool for "headlessly run scenes / main-loop logic / tests and hand back stdout-stderr" — it SOLELY spawns Godot via the unconfined subprocess service, so Godot\'s user:// log writes never hit the file sandbox (unlike launching godot --headless through pwsh/bash, which crashes it with signal 11). IMPORTANT: pass --quit-after (Godot-bundled arg that quits after N frames) or use a script that calls get_tree().quit(), otherwise a headless scene loops forever and this tool kills it on timeout. Returns stdout, stderr, exit code, and a sandbox-crash diagnosis when applicable.',
+      properties: {
+        project_path: { type: 'string', description: 'Godot project path (default: current session workspace)' },
+        scene: { type: 'string', description: 'Optional scene to run relative to the project, e.g. scenes/main/main_menu.tscn' },
+        script: { type: 'string', description: 'Optional GDScript (project-relative; with or without res:// prefix) to run instead of the project, e.g. tests/run_logic.gd. The script must call get_tree().quit() when done.' },
+        quit_after: { type: 'number', description: 'Forward `--quit-after N` to Godot: quit after N frames (Godot 4.x). Use this for a bounded main-loop smoke test.' },
+        timeout_ms: { type: 'number', description: 'How long to wait for the run before killing it (default 30000).' },
+        godot_path: { type: 'string', description: 'Godot executable. Default: the godotPath setting, then the godot command on PATH.' },
+      },
+      timeoutMs: 130000,
+      async execute(args, exec) {
+        const root = await getWorkspaceRoot(exec)
+        const projectPath = args.project_path || root
+        if (!projectPath) return { error: 'project_path is required (workspace root unavailable)' }
+        const gp = await resolveGodotPath(args.godot_path)
+        if (!gp) return { error: GODOT_PATH_GUIDANCE }
+        const argv = [gp, '--headless', '--path', projectPath]
+        if (args.quit_after && Number(args.quit_after) > 0) argv.push('--quit-after', String(Math.floor(Number(args.quit_after))))
+        if (args.scene) argv.push(String(args.scene))
+        if (args.script) {
+          const script = String(args.script)
+          if (args.scene) return { error: 'pass either scene or script, not both' }
+          argv.push('--script', script.startsWith('res://') ? script : 'res://' + script.replace(/^res:\/\//, ''))
+        }
+        let handle
+        try {
+          handle = subprocess.spawn({
+            argv: argv,
+            cwd: projectPath,
+            stdio: {
+              stdin: 'ignore',
+              stdout: { collect: { maxBytes: 8 * 1024 * 1024 } },
+              stderr: { collect: { maxBytes: 8 * 1024 * 1024 } },
+            },
+            graceMs: 1000,
+            signal: exec.signal,
+          })
+        } catch (e) {
+          return { error: 'headless spawn failed: ' + (e && e.message) }
+        }
+        // Bounded run: a headless scene with no quit mechanism loops forever.
+        // Race the process against a deadline and terminate on timeout so the
+        // tool always returns instead of hanging the model.
+        const timeoutMs = Math.max(1, Number(args.timeout_ms) || 30000)
+        let timedOut = false
+        const killer = setTimeout(function () {
+          timedOut = true
+          try { handle.terminate() } catch (e) {}
+        }, timeoutMs)
+        let outcome
+        try {
+          outcome = await handle.done
+        } catch (e) {
+          outcome = { exitCode: -1, error: String((e && e.message) || e) }
+        }
+        clearTimeout(killer)
+        let out = ''
+        let err = ''
+        try {
+          if (handle.collected && handle.collected.stdout) out = handle.collected.stdout.readFrom(0).text || ''
+          if (handle.collected && handle.collected.stderr) err = handle.collected.stderr.readFrom(0).text || ''
+        } catch (e) {}
+        const diagnosis = diagnoseCrash(out, err)
+        // Lossless-JSON hardening: the DSH tool layer snapshots the returned
+        // object property-by-property and rejects ANY `undefined` property
+        // ("value is not lossless JSON") — unlike JSON.stringify, which would
+        // silently drop it. It also rejects non-finite numbers and -0. Never
+        // leave a field as undefined / NaN / -0 here.
+        let exitCode = null
+        if (typeof outcome.exitCode === 'number' && Number.isFinite(outcome.exitCode)) {
+          exitCode = Object.is(outcome.exitCode, -0) ? 0 : outcome.exitCode
+        }
+        const result = {
+          success: !timedOut && exitCode === 0,
+          timed_out: timedOut,
+          project_path: projectPath,
+          exit_code: exitCode,
+          argv: argv,
+          stdout: out,
+          stderr: err,
+          ...(diagnosis || {}),
+        }
+        if (timedOut) {
+          result.note = 'The headless run did not exit within the timeout and was killed. Add --quit-after to bound a scene/main-loop run, or make the script call get_tree().quit().'
+        }
+        return result
       },
     }),
 
@@ -949,6 +1092,7 @@ export function apply(ctx, config) {
         // referencing autoloads fail to compile in headless script mode);
         // fail only when the operation produced no usable output.
         const failed = res.err.indexOf('Failed to') >= 0 && !producedJson && parsed === null
+        const diagnosis = diagnoseCrash(res.out, res.err)
         return {
           success: !failed && res.exitCode === 0,
           operation: args.operation,
@@ -956,6 +1100,7 @@ export function apply(ctx, config) {
           exit_code: res.exitCode,
           output: parsed !== null ? parsed : res.out,
           stderr: res.err,
+          ...(diagnosis || {}),
         }
       },
     }),
@@ -982,6 +1127,7 @@ export function apply(ctx, config) {
         const vs = await resolveScriptFile('validate_script.gd', args.validate_script)
         const res = await runHeadless(gp, projectPath, vs, ['res://' + scriptPath.replace(/^res:\/\//, '')], exec.signal)
         if (res.spawnError) return { error: 'headless spawn failed: ' + res.spawnError }
+        const diagnosis = diagnoseCrash(res.out, res.err)
         const errors = []
         const lines = (res.err || '').split(/\r?\n/)
         const locRe = /\((res:\/\/.+):(\d+)\)/
@@ -989,8 +1135,8 @@ export function apply(ctx, config) {
           const m = lines[i].match(/SCRIPT ERROR:\s*(.+?)\s*$/)
           if (!m) continue
           const message = m[1].replace(/^Parse Error:\s*/, '')
-          let file
-          let line
+          let file = null
+          let line = null
           for (const j of [i + 1, i]) {
             if (j >= lines.length) continue
             const loc = lines[j].match(locRe)
@@ -998,7 +1144,15 @@ export function apply(ctx, config) {
           }
           errors.push({ message: message, file: file, line: line })
         }
-        return { valid: errors.length === 0, script_path: scriptPath, error_count: errors.length, errors: errors }
+        return {
+          valid: errors.length === 0,
+          script_path: scriptPath,
+          error_count: errors.length,
+          errors: errors,
+          exit_code: res.exitCode,
+          stderr: res.err,
+          ...(diagnosis || {}),
+        }
       },
     }),
 
@@ -1320,6 +1474,7 @@ export function apply(ctx, config) {
         const res = await runGodotHeadless(gp, projectPath, [flag, String(args.preset_name), String(args.output_path)], exec.signal)
         if (res.spawnError) return { error: 'export spawn failed: ' + res.spawnError }
         const failed = res.err.indexOf('ERROR') >= 0 && res.exitCode !== 0
+        const diagnosis = diagnoseCrash(res.out, res.err)
         return {
           success: !failed,
           preset: args.preset_name,
@@ -1327,6 +1482,7 @@ export function apply(ctx, config) {
           exit_code: res.exitCode,
           stdout: res.out,
           stderr: res.err,
+          ...(diagnosis || {}),
         }
       },
     }),
