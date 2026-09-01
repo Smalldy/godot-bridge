@@ -10,7 +10,9 @@ var _buffer: String = ""
 var _busy: bool = false
 var _busy_since: float = 0.0
 var _current_id: Variant = null
-const PORT: int = 9090
+const DEFAULT_PORT: int = 9090
+var _port: int = DEFAULT_PORT
+var _token: String = ""
 const BUSY_TIMEOUT: float = 120.0
 var _key_map: Dictionary
 var _held_keys: Dictionary = {}
@@ -19,12 +21,23 @@ func _ready() -> void:
 	# Ensure MCP server keeps processing even when game is paused
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_init_key_map()
+	# Port and ownership token are injected by the godot-bridge plugin when it
+	# spawns this process (GODOT_BRIDGE_PORT / GODOT_BRIDGE_TOKEN). A plain
+	# editor-launched run gets neither and stays on 9090 with an empty token,
+	# which is how the plugin tells its own instances apart from user-started
+	# ones (see get_instance_info).
+	var env_port: String = OS.get_environment("GODOT_BRIDGE_PORT")
+	if env_port != "":
+		var parsed: int = int(env_port)
+		if parsed > 0 and parsed <= 65535:
+			_port = parsed
+	_token = OS.get_environment("GODOT_BRIDGE_TOKEN")
 	_server = TCPServer.new()
-	var err: int = _server.listen(PORT, "127.0.0.1")
+	var err: int = _server.listen(_port, "127.0.0.1")
 	if err != OK:
-		push_error("McpInteractionServer: Failed to listen on port %d, error: %d" % [PORT, err])
+		push_error("McpInteractionServer: Failed to listen on port %d, error: %d" % [_port, err])
 		return
-	print("McpInteractionServer: Listening on 127.0.0.1:%d" % PORT)
+	print("McpInteractionServer: Listening on 127.0.0.1:%d" % _port)
 
 
 func _process(_delta: float) -> void:
@@ -145,6 +158,8 @@ func _handle_command(json_str: String) -> void:
 			_cmd_pause(params)
 		"get_performance":
 			_cmd_get_performance(params)
+		"get_instance_info":
+			_cmd_get_instance_info()
 		"connect_signal":
 			_cmd_connect_signal(params)
 		"disconnect_signal":
@@ -790,6 +805,23 @@ func _cmd_get_performance(_params: Dictionary) -> void:
 		"object_orphan_node_count": Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT),
 		"render_total_objects": Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME),
 		"render_total_draw_calls": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)
+	})
+
+
+# --- Get Instance Info (identity / ownership) ---
+func _cmd_get_instance_info() -> void:
+	# Identity the running process so the godot-bridge plugin can tell its own
+	# spawned instances (injected GODOT_BRIDGE_TOKEN, non-default port) from
+	# user-started ones (editor-launched, empty token, default port). This is
+	# what lets the plugin adopt an already-running instance instead of
+	# spawning a duplicate that would fail to bind the port.
+	_send_response({
+		"success": true,
+		"pid": OS.get_process_id(),
+		"port": _port,
+		"token": _token,
+		"project_abs": ProjectSettings.globalize_path("res://").replace("\\", "/"),
+		"engine": Engine.get_version_info().get("string", ""),
 	})
 
 

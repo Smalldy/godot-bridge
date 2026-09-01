@@ -5,6 +5,19 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.1.6] - 2026-09-01
+
+### 新增
+
+- `godot_run_project` 的实例归属处理：先探测端口，若同项目已有实例在运行（典型场景：用户在编辑器里启动了场景，LLM 再运行项目），**直接接管（adopt）**并返回 `external: true`，不再 spawn 一个绑定失败、静默错挂的重复实例（旧行为会制造一个裸奔副本并误驱动用户实例）。
+- 异项目占用端口时自动回退到 9091+（或调用方传入的 `port` 参数），不再撞端口。
+- `mcp_interaction_server.gd` 支持 `GODOT_BRIDGE_PORT` / `GODOT_BRIDGE_TOKEN` 环境变量，并新增 `get_instance_info` 命令（pid/port/token/project），作为归属识别的身份基础。
+- `godot_stop_project` 拒绝终止被接管（用户/编辑器启动）的实例，并说明安全停止方式（编辑器按 F8 / 游戏内退出）；插件绝不杀死自己未启动的进程。新增 `godot-bridge:instance-ownership` 系统提示段，同样禁止用 pwsh 杀进程（会连带把编辑器带崩）。
+
+### 修复
+
+- 兼容 dsh-settings ≥ 0.1.2-alpha：移除已删除的 `settingsNamespace` 导出（改为把裸字符串命名空间传给 `ctx.settings.register`）；settings 与工具注册均加防御式 try/catch，未来 API 再漂移时降级告警而不是拖垮整个 host 启动。
+
 ## [0.1.5] - 2026-08-19
 
 ### 新增
@@ -85,6 +98,7 @@
 - `godot_manage_input_map` 使用正确的 Godot 4 键码（修复 godot-mcp 的 Godot 3 基线 bug）。
 - 双语文档（README / install / ARCHITECTURE / COVERAGE），含安装与移除指南；`cordis.patch.yml` 纳入发布 `files`。
 
+[0.1.6]: https://github.com/Smalldy/godot-bridge/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Smalldy/godot-bridge/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Smalldy/godot-bridge/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Smalldy/godot-bridge/compare/v0.1.2...v0.1.3

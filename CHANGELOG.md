@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-09-01
+
+### Added
+
+- Instance ownership for `godot_run_project`: it probes the port first and ADOPTS an already-running instance of the same project (returns `external: true`) instead of spawning a duplicate that fails to bind — the exact scenario where a user starts a scene in the editor and the LLM then runs the project, which previously produced a silent mis-attach and an orphaned second process.
+- A different project on the port triggers an automatic fallback to 9091+ (or the caller's `port` argument) instead of colliding.
+- `mcp_interaction_server.gd` now reads `GODOT_BRIDGE_PORT` / `GODOT_BRIDGE_TOKEN` and exposes `get_instance_info` (pid/port/token/project) — the identity basis for ownership detection.
+- `godot_stop_project` refuses to terminate adopted (user/editor-launched) instances and explains how to stop safely (F8 in the editor / in-game quit); the plugin never kills processes it did not start. New `godot-bridge:instance-ownership` system-prompt section with the same rule, also forbidding pwsh process-kill workarounds that would take the whole editor down.
+
+### Fixed
+
+- Compatibility with dsh-settings ≥ 0.1.2-alpha: the removed `settingsNamespace` export is gone from the plugin (the plain namespace string is passed to `ctx.settings.register`); settings and tool registration are wrapped defensively so future API drift degrades with a warning instead of failing the host boot.
+
 ## [0.1.5] - 2026-08-19
 
 ### Added
@@ -85,6 +98,7 @@ Initial release — a standard DSH bundle that replaces the godot-mcp MCP server
 - Correct Godot 4 keycodes in `godot_manage_input_map` (fixes godot-mcp's Godot 3 baseline bug).
 - Bilingual documentation (README / install / ARCHITECTURE / COVERAGE) incl. install and uninstall guides; `cordis.patch.yml` included in published `files`.
 
+[0.1.6]: https://github.com/Smalldy/godot-bridge/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Smalldy/godot-bridge/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Smalldy/godot-bridge/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Smalldy/godot-bridge/compare/v0.1.2...v0.1.3

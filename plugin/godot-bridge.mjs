@@ -22,7 +22,6 @@
 
 import { defineTool as defineToolOfficial } from '@deepseek-ai/dsh-tools'
 import Schema from '@deepseek-ai/schemastery'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -62,33 +61,41 @@ export function apply(ctx, config) {
   // the whole fiber and also disable the pure-file tools that never touch the
   // Godot binary. When unset, Godot-needing tools fall back to resolving
   // `godot` on PATH and only then return guidance.
-  const NS = settingsNamespace('godot-bridge')
+  // dsh-settings ≥ 0.1.2-alpha.3 dropped the `settingsNamespace` brand helper:
+  // `ctx.settings.register` now takes the namespace as a plain lowercase
+  // hyphenated string ('godot-bridge' matches /^[a-z][a-z0-9-]*$/).
+  const NS = 'godot-bridge'
   let current = function () { return config }
   let engineScope = null
   // Inlined from installSettingsSection so we keep the write scope (that
   // helper hides it); godot_set_engine_path uses engineScope to persist a path
   // the user supplied to the model.
   ctx.inject(['settings'], function (sctx) {
-    const scope = sctx.settings.register(NS, Config, {
-      base: config,
-      validate: function (value) {
-        const p = value && typeof value.godotPath === 'string' ? value.godotPath.trim() : ''
-        if (p.length > 0 && !existsSync(p)) {
-          throw new Error('godot-bridge: godotPath points to a nonexistent file: "' + p + '"')
+    try {
+      const scope = sctx.settings.register(NS, Config, {
+        base: config,
+        validate: function (value) {
+          const p = value && typeof value.godotPath === 'string' ? value.godotPath.trim() : ''
+          if (p.length > 0 && !existsSync(p)) {
+            throw new Error('godot-bridge: godotPath points to a nonexistent file: "' + p + '"')
+          }
+        },
+      })
+      engineScope = scope
+      current = function () { return scope.get() }
+      sctx.effect(function () {
+        return function () {
+          // Settings detached (not our own unload): fall back to the composition
+          // entry config so the plugin keeps working exactly as composed.
+          if (ctx.fiber && (ctx.fiber.state === 4 || ctx.fiber.state === 5)) return
+          engineScope = null
+          current = function () { return config }
         }
-      },
-    })
-    engineScope = scope
-    current = function () { return scope.get() }
-    sctx.effect(function () {
-      return function () {
-        // Settings detached (not our own unload): fall back to the composition
-        // entry config so the plugin keeps working exactly as composed.
-        if (ctx.fiber && (ctx.fiber.state === 4 || ctx.fiber.state === 5)) return
-        engineScope = null
-        current = function () { return config }
-      }
-    })
+      })
+    } catch (e) {
+      // Registration drift must degrade, not take the whole plugin down.
+      try { ctx.logger.warn('[godot-bridge] settings registration skipped: ' + String((e && e.message) || e)) } catch (e2) {}
+    }
   })
 
   // Always-on guidance: when a Godot-needing tool reports that no engine path
@@ -109,6 +116,13 @@ export function apply(ctx, config) {
           name: 'godot-bridge:launch-channel',
           order: 151,
           text: 'GODOT LAUNCH CHANNEL (sandbox crash prevention) - ALWAYS start Godot through the godot_* tools, NEVER through the pwsh/bash shell tools. Godot writes its user:// logs and config under the user home directory on startup; the file sandbox blocks those writes for processes spawned from pwsh/bash, so `godot --headless ...` run inside a shell crashes with signal 11 / segmentation fault. The godot_* tools instead spawn Godot through the unconfined subprocess service, so no permission escalation is ever needed. Use: godot_run_project for an interactive run; godot_run_headless for a bounded headless scene/logic/test run (pass --quit-after N or have the script call get_tree().quit()); godot_headless_op for static .tscn/resource operations; godot_export_project for exports. If a godot_* result ever returns diagnosis:"sandbox-crash", do not investigate a project bug — the root cause is the launch channel; re-run via the godot_* tool, never retry the shell command. / 中文：始终通过 godot_* 工具启动 Godot，严禁用 pwsh/bash shell 工具运行 godot。Godot 启动时会向用户主目录写 user:// 日志与配置；文件沙箱会拦截由 pwsh/bash 派生的进程的这些写入，导致 `godot --headless` 在 shell 内以 signal 11（段错误）崩溃。godot_* 工具则通过不受沙箱约束的 subprocess 服务启动 Godot，因此无需申请任何权限。若某个 godot_* 结果返回 diagnosis:"sandbox-crash"，根因是启动通道而非项目 bug，请改用 godot_* 工具重跑，切勿重复 shell 命令。',
+        })
+      })
+      ctx.effect(function () {
+        return systemPrompt.section({
+          name: 'godot-bridge:instance-ownership',
+          order: 152,
+          text: 'GODOT INSTANCE OWNERSHIP (never kill user/editor instances) - godot_run_project never blindly spawns a duplicate: if a game instance of the same project is already answering on the port (typically launched by the user in the Godot editor), the plugin ADOPTS it and returns external:true; every godot_command then drives that instance. NEVER terminate Godot processes yourself (pwsh Stop-Process, taskkill, etc.) — a user/editor-launched instance shares the Godot editor process, and killing it takes the whole editor down. godot_stop_project refuses external instances for this reason. To stop a user/editor-launched instance: tell the user to press F8 in the editor (stop running project), or use godot_command eval get_tree().quit() for an editor-child (non-embedded) run, which quits only the game, never the editor. If the human wants a fresh plugin-managed instance while another project holds 9090, pass godot_run_project(port=<free port>). / 中文：Godot 实例归属——绝不杀用户/编辑器的实例。godot_run_project 不会盲目重复启动：若同项目实例已在该端口应答（通常是用户在编辑器里启动的），插件会直接接管并返回 external:true，之后所有 godot_command 都驱动该实例。严禁自行终止 Godot 进程（pwsh Stop-Process、taskkill 等）——用户/编辑器启动的实例与编辑器进程相关，杀掉会连编辑器一起带崩。godot_stop_project 对 external 实例会拒绝执行。停止用户/编辑器实例的方法：提示用户在编辑器按 F8（停止运行中的项目），或对非内嵌的子进程运行使用 godot_command eval get_tree().quit()（只退出游戏，不动编辑器）。若用户想要一个插件管理的全新实例而 9090 被其他项目占用，请传 godot_run_project(port=<空闲端口>)。',
         })
       })
     } catch (e) {}
@@ -136,8 +150,24 @@ export function apply(ctx, config) {
   let updateState = { latest: null, available: false }
 
   let nodePath = null
-  let godot = null // { handle, outOffset, errOffset, projectPath, scene }
+  // godot = { handle, outOffset, errOffset, projectPath, scene, port, token, external, externalPid }
+  //   port/port: the port the instance's interaction server listens on
+  //   token: the ownership token injected at spawn ("" for adopted external)
+  //   external: true when the answering instance was NOT spawned by this plugin
+  //   externalPid: pid of the adopted external instance
+  let godot = null
   let sessionWorkspace = null
+
+  // Random per-spawn ownership token: lets the plugin tell its own spawned
+  // instances from user/editor-launched ones (whose autoload reports "").
+  function newToken() {
+    return 'dsb' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
+  }
+
+  function normalizeAbs(p) {
+    if (!p) return ''
+    return String(p).replace(/\\/g, '/').replace(/\/+$/, '')
+  }
 
   async function getNodePath() {
     if (nodePath) return nodePath
@@ -299,7 +329,8 @@ export function apply(ctx, config) {
     "var params={};",
     "try{params=JSON.parse(process.argv[2]||'{}');}catch(e){}",
     "var to=parseInt(process.argv[3]||'20000',10);if(!(to>0)){to=20000;}",
-    "var sock=net.connect(9090,'127.0.0.1');",
+    "var prt=parseInt(process.argv[4]||'9090',10);if(!(prt>0&&prt<=65535)){prt=9090;}",
+    "var sock=net.connect(prt,'127.0.0.1');",
     "var buf='',done=false;",
     "function fin(obj){if(done){return;}done=true;clearTimeout(t);try{sock.destroy();}catch(e){}process.stdout.write(JSON.stringify(obj));}",
     "var t=setTimeout(function(){fin({error:'bridge timeout'});},to);",
@@ -309,13 +340,14 @@ export function apply(ctx, config) {
     "sock.on('close',function(){fin({error:'connection closed'});});",
   ].join('')
 
-  async function runGameCommand(command, params, timeoutMs, signal) {
+  async function runGameCommand(command, params, timeoutMs, signal, port) {
     const node = await getNodePath()
     const root = await getWorkspaceRoot()
+    const targetPort = Number.isInteger(port) && port > 0 && port <= 65535 ? port : ((godot && Number.isInteger(godot.port)) ? godot.port : PORT)
     let handle
     try {
       handle = subprocess.spawn({
-        argv: [node, '-e', BRIDGE, String(command), JSON.stringify(params || {}), String(timeoutMs || 20000)],
+        argv: [node, '-e', BRIDGE, String(command), JSON.stringify(params || {}), String(timeoutMs || 20000), String(targetPort)],
         cwd: root || '.',
         stdio: {
           stdin: 'ignore',
@@ -349,12 +381,37 @@ export function apply(ctx, config) {
     }
   }
 
-  async function waitForGame(signal, maxMs) {
+  // Probe one port for an answering McpInteractionServer; returns the parsed
+  // get_instance_info (identity) or null when nothing answers there, or an
+  // { unknown: true } marker when something answers but does not report
+  // identity (e.g. an instance running the OLD autoload without
+  // get_instance_info). Unknown occupancy must never be treated as empty —
+  // spawning would create the duplicate that fails to bind.
+  async function probeInstance(port, signal) {
+    const resp = await runGameCommand('get_instance_info', {}, 3000, signal, port)
+    if (!resp) return null
+    if (resp.error || !resp.success) {
+      // Something answered but doesn't speak get_instance_info. Liveness check:
+      // if get_performance works, it's an unidentified live server → unknown.
+      const perf = await runGameCommand('get_performance', {}, 3000, signal, port)
+      if (perf && !perf.error) return { unknown: true, port: port }
+      return null
+    }
+    return {
+      pid: resp.pid,
+      port: resp.port,
+      token: String(resp.token || ''),
+      projectAbs: normalizeAbs(resp.project_abs),
+      engine: resp.engine,
+    }
+  }
+
+  async function waitForGame(signal, maxMs, port) {
     const start = Date.now()
     await ctx.timeout(1500)
     while (Date.now() - start < maxMs) {
       if (signal && signal.aborted) return false
-      const resp = await runGameCommand('get_performance', {}, 4000, signal)
+      const resp = await runGameCommand('get_performance', {}, 4000, signal, port)
       if (resp && !resp.error) return true
       await ctx.timeout(800)
     }
@@ -514,9 +571,114 @@ export function apply(ctx, config) {
 
   // Spawn Godot for a project and wait for the interaction server. Returns the
   // same shape as godot_run_project's response.
+  //
+  // Port/ownership handling (never spawn a duplicate that cannot bind):
+  //  1. Probe the requested port (default 9090) for an answering instance.
+  //  2. If one answers:
+  //     - token matches a previous spawn of THIS plugin → reuse it (managed).
+  //     - same project as requested → ADOPT it: no new process, mark external.
+  //     - different project → try the next port (9091..9093); spawn there.
+  //  3. Nothing answers → spawn normally on the requested port, injecting a
+  //     fresh ownership token via GODOT_BRIDGE_TOKEN/GOOT_BRIDGE_PORT so the
+  //     autoload reports identity we can verify later.
   async function launchProject(projectPath, opts, exec) {
     const gp = await resolveGodotPath(opts.godot_path)
     if (!gp) return { error: GODOT_PATH_GUIDANCE }
+    const wantPort = Number.isInteger(opts.port) && opts.port > 0 && opts.port <= 65535 ? opts.port : PORT
+    const wantAbs = normalizeAbs(projectPath)
+
+    // ── Step 1: what is already on the requested port? ──
+    const existing = await probeInstance(wantPort, exec.signal)
+    if (existing && existing.unknown) {
+      // Something live answers but reports no identity (old autoload). Never
+      // spawn a duplicate over it — that is exactly the crash scenario. Try an
+      // alternate port, or explain.
+      if (opts.allowAltPort !== false) {
+        for (let alt = wantPort + 1; alt <= wantPort + 5; alt++) {
+          const other = await probeInstance(alt, exec.signal)
+          if (other) continue
+          return await spawnOwnInstance(gp, projectPath, alt, opts, exec, {
+            adopted: false,
+            conflictNote: 'port ' + wantPort + ' is occupied by an unidentified instance; this instance listens on ' + alt,
+          })
+        }
+      }
+      return {
+        error: 'Port ' + wantPort + ' is occupied by a live Godot instance that does not report identity (it is running an older McpInteractionServer autoload). The plugin will not spawn a duplicate over it. Restart that instance with the current autoload, pass godot_run_project(port=<free>) to use another port, or stop the other project first.',
+      }
+    }
+    if (existing && existing.token !== '' && godot && godot.token === existing.token) {
+      // Our own previously-spawned process is still up: reuse it.
+      godot.port = existing.port || wantPort
+      return {
+        pid: existing.pid,
+        project_path: projectPath,
+        godot_path: gp,
+        scene: opts.scene || null,
+        autoload: opts.autoload,
+        game_ready: true,
+        managed: true,
+        port: godot.port,
+        note: 'Reusing the game instance this plugin already started (pid ' + existing.pid + ').',
+      }
+    }
+    if (existing) {
+      const sameProject = existing.projectAbs !== '' && wantAbs !== '' && existing.projectAbs === wantAbs
+      if (sameProject) {
+        // A user-launched (or foreign-session) instance of OUR project is
+        // already running. Adopt it: drive it, never spawn a duplicate, and
+        // never let godot_stop_project terminate what we didn't start.
+        godot = {
+          handle: null,
+          outOffset: 0,
+          errOffset: 0,
+          projectPath: projectPath,
+          scene: opts.scene || null,
+          port: existing.port || wantPort,
+          token: existing.token,
+          external: true,
+          externalPid: existing.pid,
+        }
+        return {
+          pid: existing.pid,
+          project_path: projectPath,
+          godot_path: gp,
+          scene: opts.scene || null,
+          autoload: opts.autoload,
+          game_ready: true,
+          managed: false,
+          external: true,
+          port: godot.port,
+          note: 'A Godot instance of this project is already running (pid ' + existing.pid
+            + ', launched by you in the editor or by another session). The plugin ADOPTED it instead of'
+            + ' starting a duplicate — you can drive it with godot_command now. The plugin will NOT terminate'
+            + ' this instance (godot_stop_project refuses external processes); to stop it, press F8 in the'
+            + ' Godot editor or quit the game in-game.',
+        }
+      }
+      // Different project on the port: not ours, not our target. Try a fresh
+      // port instead of failing or colliding.
+      if (opts.allowAltPort !== false) {
+        for (let alt = wantPort + 1; alt <= wantPort + 5; alt++) {
+          const other = await probeInstance(alt, exec.signal)
+          if (other) continue
+          return await spawnOwnInstance(gp, projectPath, alt, opts, exec, {
+            adopted: false,
+            conflictNote: 'port ' + wantPort + ' was occupied by another Godot project; this instance listens on ' + alt,
+          })
+        }
+      }
+      return {
+        error: 'Port ' + wantPort + ' is occupied by a different Godot project; pass godot_run_project(port=<free>) to pick another port, or stop the other project first.',
+      }
+    }
+    // ── Step 2/3: nothing there — spawn our own instance. ──
+    return await spawnOwnInstance(gp, projectPath, wantPort, opts, exec, { adopted: false })
+  }
+
+  // Spawn one Godot process on a concrete port (managed, owned by us).
+  async function spawnOwnInstance(gp, projectPath, port, opts, exec, extra) {
+    const token = newToken()
     const argv = [gp]
     if (opts.debug !== false) argv.push('-d')
     argv.push('--path', projectPath)
@@ -526,6 +688,10 @@ export function apply(ctx, config) {
       handle = subprocess.spawn({
         argv: argv,
         cwd: projectPath,
+        env: {
+          GODOT_BRIDGE_PORT: String(port),
+          GODOT_BRIDGE_TOKEN: token,
+        },
         stdio: {
           stdin: 'ignore',
           stdout: { collect: { maxBytes: 4 * 1024 * 1024, spill: { maxBytes: 32 * 1024 * 1024 } } },
@@ -537,8 +703,18 @@ export function apply(ctx, config) {
     } catch (e) {
       return { error: 'failed to spawn Godot: ' + (e && e.message) }
     }
-    godot = { handle: handle, outOffset: 0, errOffset: 0, projectPath: projectPath, scene: opts.scene || null }
-    const ready = await waitForGame(exec.signal, opts.wait_ms || 20000)
+    godot = {
+      handle: handle,
+      outOffset: 0,
+      errOffset: 0,
+      projectPath: projectPath,
+      scene: opts.scene || null,
+      port: port,
+      token: token,
+      external: false,
+      externalPid: null,
+    }
+    const ready = await waitForGame(exec.signal, opts.wait_ms || 20000, port)
     let diagnosis = null
     if (!ready) {
       let out = ''
@@ -556,10 +732,13 @@ export function apply(ctx, config) {
       scene: opts.scene || null,
       autoload: opts.autoload,
       game_ready: ready,
-      port: PORT,
+      managed: true,
+      external: false,
+      port: port,
+      ...(extra.conflictNote ? { conflict: extra.conflictNote } : {}),
       ...(diagnosis || {}),
       note: ready
-        ? 'Game interaction server reachable on 127.0.0.1:9090'
+        ? 'Game interaction server reachable on 127.0.0.1:' + port
         : (diagnosis
           ? diagnosis.hint
           : 'Game process started but the interaction server did not answer in time; call godot_get_debug_output to diagnose'),
@@ -854,13 +1033,14 @@ export function apply(ctx, config) {
 
     defineTool({
       name: 'godot_run_project',
-      description: 'Launch the Godot project in debug mode (godot -d --path <project>) and wait for the in-game interaction server. Automatically installs the McpInteractionServer autoload when the project lacks it (copies the vendored mcp_interaction_server.gd into autoload/ and registers it in project.godot) — no manual setup needed. Returns process info, the autoload check result, and game_ready. IMPORTANT: do NOT launch Godot via the pwsh/bash shell tools — the file sandbox blocks Godot\'s user:// log writes and it crashes (signal 11); this plugin spawns Godot through the unconfined subprocess service, so godot_run_project is the safe way to start it. For a NON-interactive headless scene/logic/test run, use godot_run_headless instead.',
+      description: 'Launch the Godot project in debug mode (godot -d --path <project>) and wait for the in-game interaction server. Automatically installs the McpInteractionServer autoload when the project lacks it — no manual setup needed. Port/ownership handling: if a game instance of THIS project is already answering on the port (e.g. you started a scene in the editor), the plugin ADOPTS it (returns external:true) instead of starting a duplicate; if a DIFFERENT project occupies the port it falls back to the next free port (9091+) or takes the port you pass. Returns process info, ownership (managed/external), port, and game_ready. IMPORTANT: do NOT launch Godot via the pwsh/bash shell tools — the file sandbox blocks Godot\'s user:// log writes and it crashes (signal 11); this plugin spawns Godot through the unconfined subprocess service, so godot_run_project is the safe way to start it. For a NON-interactive headless scene/logic/test run, use godot_run_headless instead. To stop a user/editor-launched (external) instance, press F8 in the editor or quit in-game — godot_stop_project refuses external processes.',
       properties: {
         project_path: { type: 'string', description: 'Path to the Godot project (default: current session workspace)' },
         scene: { type: 'string', description: 'Optional scene to run relative to the project, e.g. scenes/main/main_menu.tscn' },
         godot_path: { type: 'string', description: 'Godot executable. Default: the godotPath setting (Web plugin-config page or settings.yaml godot-bridge section), then the godot command on PATH. Use the REAL exe full path - never a shim.' },
         debug: { type: 'boolean', description: 'Run with -d (debug mode). Default true.' },
         wait_ms: { type: 'number', description: 'How long to wait for the interaction server before giving up (default 20000)' },
+        port: { type: 'number', description: 'Interaction-server port for the spawned instance (default 9090; auto-falls back to 9091+ when occupied by a different project)' },
       },
       timeoutMs: 60000,
       async execute(args, exec) {
@@ -871,7 +1051,9 @@ export function apply(ctx, config) {
         if (autoload.status === 'error') {
           return { error: 'autoload setup failed: ' + autoload.reason }
         }
-        if (godot) {
+        // Only a managed (plugin-started) instance is terminated here. An
+        // external/user instance is adopted by launchProject, never killed.
+        if (godot && !godot.external && godot.handle) {
           try {
             godot.handle.terminate()
             await godot.handle.waitForExit(exec.signal)
@@ -883,6 +1065,7 @@ export function apply(ctx, config) {
           godot_path: args.godot_path,
           debug: args.debug,
           wait_ms: args.wait_ms,
+          port: args.port,
           autoload: autoload,
         }, exec)
       },
@@ -890,18 +1073,28 @@ export function apply(ctx, config) {
 
     defineTool({
       name: 'godot_stop_project',
-      description: 'Terminate the Godot process started by godot_run_project (tree-scoped kill, like MCP stop_project).',
+      description: 'Terminate the Godot process started by godot_run_project (tree-scoped kill, like MCP stop_project). Only terminates plugin-managed instances; for user/editor-launched (external) instances it refuses and explains how to stop safely (F8 in the editor / quit in-game) — the plugin never kills processes it did not start.',
       properties: {},
       async execute(args, exec) {
         if (!godot) return { stopped: false, reason: 'no Godot process was started by this plugin' }
-        const pid = godot.handle.pid
+        if (godot.external) {
+          return {
+            stopped: false,
+            external: true,
+            pid: godot.externalPid,
+            reason: 'This instance was launched by you (in the editor) or by another session — the plugin did NOT start it and will NOT terminate it; killing it could take down your Godot editor. To stop the running project, press F8 in the Godot editor, or quit the game in-game. If you want a plugin-managed instance instead, use godot_run_project with a different port.',
+          }
+        }
+        const pid = godot.handle ? godot.handle.pid : godot.externalPid
         const projectPath = godot.projectPath
-        godot.handle.terminate()
         try {
-          await godot.handle.waitForExit(exec.signal)
+          if (godot.handle) {
+            godot.handle.terminate()
+            await godot.handle.waitForExit(exec.signal)
+          }
         } catch (e) {}
         godot = null
-        return { stopped: true, pid: pid, project_path: projectPath }
+        return { stopped: true, pid: pid, project_path: projectPath, managed: true }
       },
     }),
 
@@ -911,6 +1104,14 @@ export function apply(ctx, config) {
       properties: {},
       async execute(args, exec) {
         if (!godot) return { running: false, reason: 'no Godot process started by this plugin' }
+        if (godot.external || !godot.handle) {
+          return {
+            running: true,
+            external: true,
+            pid: godot.externalPid,
+            reason: 'This instance was adopted (user/editor-launched), so the plugin has no captured stdout/stderr for it; drive it with godot_command.',
+          }
+        }
         let out = ''
         let err = ''
         const collected = godot.handle.collected
@@ -1489,19 +1690,27 @@ export function apply(ctx, config) {
   ]
 
   // Clean up the Godot child on plugin stop (matches MCP server cleanup).
+  // Only a plugin-managed process is terminated; adopted external instances
+  // are left alone (they belong to the user/editor or another session).
   ctx.effect(function () {
     return function () {
-      if (godot) {
+      if (godot && !godot.external && godot.handle) {
         try { godot.handle.terminate() } catch (e) {}
-        godot = null
       }
+      godot = null
     }
   })
 
   for (let i = 0; i < defs.length; i++) {
     const def = defs[i]
     ctx.effect(function () {
-      return tools.register(def)
+      try {
+        return tools.register(def)
+      } catch (e) {
+        // One tool failing to register must not take the whole plugin down.
+        try { ctx.logger.warn('[godot-bridge] tool registration failed for ' + def.name + ': ' + String((e && e.message) || e)) } catch (e2) {}
+        return function () {}
+      }
     })
   }
 }
