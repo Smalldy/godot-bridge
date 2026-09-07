@@ -5,6 +5,15 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.1.7] - 2026-09-07
+
+### 修复
+
+- 旧版 autoload 残留导致端口路由失效：若项目 `autoload/mcp_interaction_server.gd` 早于 `GODOT_BRIDGE_PORT`/`get_instance_info` 引入，无论 `godot_run_project` 请求什么端口都只会绑 9090——于是 `port=9092` 看似成功，后续 `godot_command`/`godot_screenshot` 却只能找到 9090（issues #4）。`ensureInteractionAutoload` 现在会用随包版本覆盖过期的 autoload（该文件属插件管理的基础设施），并在替换时返回 `upgraded`。
+- `godot_ping` 与错误文案改为上报真实探测端口，不再写死 `127.0.0.1:9090`。
+- `writeProjectFile` 的 fs policy 改为指向目标项目目录而非会话工作区，使对工作区外项目的 autoload/project.godot 写入合法。
+- 所有工具返回出口接入 `sanitizeLossless` 防御：偶发的 `undefined`/`NaN` 字段降级为日志记录并修正，而不是静默报 `value is not lossless JSON`。
+
 ## [0.1.6] - 2026-09-01
 
 ### 新增
@@ -98,6 +107,7 @@
 - `godot_manage_input_map` 使用正确的 Godot 4 键码（修复 godot-mcp 的 Godot 3 基线 bug）。
 - 双语文档（README / install / ARCHITECTURE / COVERAGE），含安装与移除指南；`cordis.patch.yml` 纳入发布 `files`。
 
+[0.1.7]: https://github.com/Smalldy/godot-bridge/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/Smalldy/godot-bridge/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Smalldy/godot-bridge/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Smalldy/godot-bridge/compare/v0.1.3...v0.1.4

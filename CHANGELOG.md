@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-09-07
+
+### Fixed
+
+- Stale autoload was silently defeating port routing: a project whose `autoload/mcp_interaction_server.gd` predated `GODOT_BRIDGE_PORT`/`get_instance_info` kept binding 9090 no matter what port `godot_run_project` requested — so a `port=9092` run reported success but every later `godot_command`/`godot_screenshot` could only find 9090 (issues #4). `ensureInteractionAutoload` now overwrites an out-of-date autoload with the vendored version (the file is plugin-managed infrastructure) and reports `upgraded` when it had to.
+- `godot_ping` and error messages report the real probed port instead of a hardcoded `127.0.0.1:9090`.
+- `writeProjectFile` scopes its fs policy to the target project directory instead of the session workspace, so autoload/project-file writes are legal for projects outside the workspace.
+- Added a `sanitizeLossless` guard at every tool return so a stray `undefined`/`NaN` value degrades to a logged, fixed value instead of a silent `value is not lossless JSON` failure.
+
 ## [0.1.6] - 2026-09-01
 
 ### Added
@@ -98,6 +107,7 @@ Initial release — a standard DSH bundle that replaces the godot-mcp MCP server
 - Correct Godot 4 keycodes in `godot_manage_input_map` (fixes godot-mcp's Godot 3 baseline bug).
 - Bilingual documentation (README / install / ARCHITECTURE / COVERAGE) incl. install and uninstall guides; `cordis.patch.yml` included in published `files`.
 
+[0.1.7]: https://github.com/Smalldy/godot-bridge/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/Smalldy/godot-bridge/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Smalldy/godot-bridge/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Smalldy/godot-bridge/compare/v0.1.3...v0.1.4
