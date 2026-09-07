@@ -169,6 +169,36 @@ export function apply(ctx, config) {
     return String(p).replace(/\\/g, '/').replace(/\/+$/, '')
   }
 
+  // Defensive lossless-JSON guard for tool return values. The DSH tool layer
+  // rejects ANY `undefined`, non-finite number, or -0 anywhere in the returned
+  // object ("value is not lossless JSON") and does NOT name the offending
+  // field — JSON.stringify would silently drop undefined, which is why a
+  // returned object can LOOK fine yet fail the framework's strict walker. This
+  // walker finds and neutralizes the offending value, and logs the exact path
+  // so the drift is never silent again.
+  function sanitizeLossless(root) {
+    const bad = []
+    const seen = new Set()
+    function walk(o, path) {
+      if (o === null || typeof o !== 'object') return
+      if (seen.has(o)) return
+      seen.add(o)
+      for (const k of Object.keys(o)) {
+        const v = o[k]
+        const p = path + k
+        if (v === undefined) { bad.push(p + ' = undefined'); delete o[k] }
+        else if (typeof v === 'number') {
+          if (!Number.isFinite(v) || Object.is(v, -0)) { bad.push(p + ' = ' + v); o[k] = null }
+        } else if (typeof v === 'object' && v !== null) walk(v, p + '.')
+      }
+    }
+    walk(root, '')
+    if (bad.length > 0) {
+      try { console.error('[godot-bridge] sanitized non-lossless return fields: ' + bad.join(' | ')) } catch (e) {}
+    }
+    return root
+  }
+
   async function getNodePath() {
     if (nodePath) return nodePath
     try {
@@ -528,29 +558,33 @@ export function apply(ctx, config) {
     const fs = ctx.fs
     const target = await fs.resolve(filename, { cwd: projectPath })
     // The fs service applies the DEPLOYMENT default policy unless one is
-    // passed; without it, writes inside the session workspace are denied when
-    // the deployment root differs. Pass the session policy explicitly (same
-    // resolution the pwsh tool uses).
-    const policy = sessionWorkspace
-      ? { mode: 'workspace-write', workspaceRoot: sessionWorkspace }
+    // passed. The project being edited (not the session workspace) is the
+    // correct write scope: godot_run_project legitimately touches
+    // <project>/autoload/mcp_interaction_server.gd and project.godot inside
+    // the target project, which sits outside the session workspace (they are
+    // often siblings under the same parent). Rooting the policy at the project
+    // keeps those writes legal while still confining them to that project tree.
+    const policy = projectPath
+      ? { mode: 'workspace-write', workspaceRoot: projectPath }
       : undefined
     await fs.writeText(target, content, undefined, undefined, policy)
     return true
   }
 
-  // Ensure the McpInteractionServer autoload exists in the project. When it is
-  // missing, copies the vendored mcp_interaction_server.gd (next to this
-  // module) into <project>/autoload/ and registers it in project.godot. This
-  // is what makes godot_run_project self-healing — no manual setup, and for
-  // non-Godot projects the tool is simply never called.
+  // Ensure the McpInteractionServer autoload is present AND is the current
+  // vendored version. mcp_interaction_server.gd is plugin infrastructure the
+  // user must not hand-edit, so whenever the on-disk copy differs from the
+  // vendored one it is overwritten unconditionally (the port/token/identity
+  // features this plugin depends on only exist in the vendored version; a
+  // stale copy is exactly how "run on port 9092" silently becomes "binds
+  // 9090" with an autoload that predates GODOT_BRIDGE_PORT/get_instance_info).
+  // The write is scoped to the deployment's session policy like every other
+  // project-file write. Returns: fixed (was absent, now installed+registered),
+  //   upgraded (was present but stale, now overwritten), or ok (already current).
   async function ensureInteractionAutoload(projectPath) {
     try {
       const content = await readProjectFile(projectPath, 'project.godot')
       if (content === null) return { status: 'error', reason: 'project.godot not found at ' + projectPath }
-      const block = getSection(content, 'autoload')
-      if (block && /(^|\n)\s*McpInteractionServer\s*=/.test(block)) {
-        return { status: 'ok', present: true }
-      }
       const source = fileURLToPath(new URL('./mcp_interaction_server.gd', import.meta.url))
       let text = null
       try {
@@ -560,10 +594,29 @@ export function apply(ctx, config) {
         return { status: 'error', reason: 'vendored mcp_interaction_server.gd unreadable at ' + source }
       }
       await ensureDir(projectPath + '/autoload')
-      await writeProjectFile(projectPath, 'autoload/mcp_interaction_server.gd', text)
-      const next = setSectionKey(content, 'autoload', 'McpInteractionServer', '"*res://autoload/mcp_interaction_server.gd"')
-      await writeProjectFile(projectPath, 'project.godot', next)
-      return { status: 'fixed', registered: true, path: 'res://autoload/mcp_interaction_server.gd' }
+      const existing = await readProjectFile(projectPath, 'autoload/mcp_interaction_server.gd')
+      let outcome = 'ok'
+      if (existing === null) {
+        outcome = 'fixed'
+      } else if (existing !== text) {
+        outcome = 'upgraded'
+      }
+      if (existing === null || existing !== text) {
+        await writeProjectFile(projectPath, 'autoload/mcp_interaction_server.gd', text)
+      }
+      // Make sure the autoload is registered regardless of the file state.
+      const block = getSection(content, 'autoload')
+      if (!(block && /(^|\n)\s*McpInteractionServer\s*=/.test(block))) {
+        const next = setSectionKey(content, 'autoload', 'McpInteractionServer', '"*res://autoload/mcp_interaction_server.gd"')
+        await writeProjectFile(projectPath, 'project.godot', next)
+      }
+      return {
+        status: outcome,
+        present: true,
+        registered: true,
+        path: 'res://autoload/mcp_interaction_server.gd',
+        ...(outcome === 'upgraded' ? { note: 'mcp_interaction_server.gd was stale and has been overwritten with the current vendored version (plugin-managed file).' } : {}),
+      }
     } catch (e) {
       return { status: 'error', reason: String((e && e.message) || e) }
     }
@@ -766,7 +819,7 @@ export function apply(ctx, config) {
           if (r && !r.error) return null
         } catch (e) {}
       }
-      return { error: 'The Godot process is running but the interaction server (127.0.0.1:9090) is not answering; it may have crashed or the McpInteractionServer autoload is missing. Call godot_get_debug_output to diagnose, or godot_run_project to restart (it auto-installs the autoload).' }
+      return { error: 'The Godot process is running but the interaction server (127.0.0.1:' + (godot.port || PORT) + ') is not answering; it may have crashed or the McpInteractionServer autoload is missing. Call godot_get_debug_output to diagnose, or godot_run_project to restart (it auto-installs the autoload).' }
     }
     // No game: derive a Godot project and self-heal by starting it.
     let project = args.project_path || null
@@ -778,7 +831,7 @@ export function apply(ctx, config) {
       }
     }
     if (!project) {
-      return { error: 'No Godot game is answering on 127.0.0.1:9090 and no Godot project is derivable here. Call godot_run_project with the project path to start it (it auto-installs the McpInteractionServer autoload), or pass project_path to this tool.' }
+      return { error: 'No Godot game is answering on 127.0.0.1:' + PORT + ' and no Godot project is derivable here. Call godot_run_project with the project path to start it (it auto-installs the McpInteractionServer autoload), or pass project_path to this tool.' }
     }
     const autoload = await ensureInteractionAutoload(project)
     if (autoload.status === 'error') return { error: 'autoload setup failed: ' + autoload.reason }
@@ -935,8 +988,8 @@ export function apply(ctx, config) {
       def.execute = async function (args, exec) {
         try {
           const guard = await ensureGameService(args, exec)
-          if (guard && guard.error) return guard
-          return await opt.execute(args, exec)
+          if (guard && guard.error) return sanitizeLossless(guard)
+          return sanitizeLossless(await opt.execute(args, exec))
         } catch (e) {
           return { error: String((e && e.message) || e) }
         }
@@ -944,7 +997,7 @@ export function apply(ctx, config) {
     } else {
       def.execute = async function (args, exec) {
         try {
-          return await opt.execute(args, exec)
+          return sanitizeLossless(await opt.execute(args, exec))
         } catch (e) {
           return { error: String((e && e.message) || e) }
         }
@@ -1010,22 +1063,23 @@ export function apply(ctx, config) {
 
     defineTool({
       name: 'godot_ping',
-      description: 'Probe whether the running Godot game accepts commands on the in-game interaction server (TCP 127.0.0.1:9090). Returns game_running plus the probe detail, plugin version info, and - when nothing is running - a hint to start the game with godot_run_project.',
+      description: 'Probe whether a Godot game is accepting commands on its in-game interaction server (default port 9090; routed to the port of the instance most recently launched/adopted by godot_run_project when one is active). Returns game_running plus the probe detail, the probed port, plugin version info, and - when nothing is running - a hint to start the game with godot_run_project.',
       properties: {
         timeout_ms: { type: 'number', description: 'Probe timeout in ms (default 5000)' },
       },
       async execute(args, exec) {
         const resp = await runGameCommand('get_performance', {}, args.timeout_ms || 5000, exec.signal)
         const running = !(resp && resp.error)
+        const probePort = (godot && Number.isInteger(godot.port)) ? godot.port : PORT
         return {
           game_running: running,
-          port: PORT,
+          port: probePort,
           plugin_version: INSTALLED_VERSION,
           latest_version: updateState.latest,
           update_available: updateState.available,
           detail: resp,
           ...(running ? {} : {
-            note: 'No game is answering on 127.0.0.1:9090. Call godot_run_project with the project path to start it (it auto-installs the McpInteractionServer autoload when missing).',
+            note: 'No game is answering on 127.0.0.1:' + probePort + '. Call godot_run_project with the project path to start it (it auto-installs the McpInteractionServer autoload when missing).',
           }),
         }
       },
@@ -1131,7 +1185,7 @@ export function apply(ctx, config) {
 
     defineTool({
       name: 'godot_command',
-      description: 'Send one command to the running Godot game via its in-game interaction server (McpInteractionServer autoload on TCP 127.0.0.1:9090). If no game is answering, this tool automatically starts the derivable Godot project (workspace project.godot or project_path) first — with the autoload auto-installed — and waits for the server, then sends the command; pass project_path when the project is not the session workspace. Returns the game response JSON verbatim. Core commands: get_scene_tree (scene graph), get_ui_elements (visible UI with positions), screenshot (PNG base64), eval (run GDScript, return value), get_property / set_property / call_method / get_node_info (inspect & mutate nodes), click / key_press / key_hold / key_release / mouse_move / scroll (input), play_animation / tween_property, get_performance, pause, change_scene, instantiate_scene, remove_node, connect_signal / emit_signal / await_signal, raycast, spawn_node, serialize_state, and more. Do NOT launch Godot via pwsh/bash (the file sandbox blocks its user:// log writes and crashes it, signal 11); use godot_run_project, which spawns Godot via the unconfined subprocess service.',
+      description: 'Send one command to the running Godot game via its in-game interaction server (McpInteractionServer autoload; default port 9090, routed to the port of the instance most recently launched/adopted by godot_run_project when one is active). If no game is answering, this tool automatically starts the derivable Godot project (workspace project.godot or project_path) first — with the autoload auto-installed — and waits for the server, then sends the command; pass project_path when the project is not the session workspace. Returns the game response JSON verbatim. Core commands: get_scene_tree (scene graph), get_ui_elements (visible UI with positions), screenshot (PNG base64), eval (run GDScript, return value), get_property / set_property / call_method / get_node_info (inspect & mutate nodes), click / key_press / key_hold / key_release / mouse_move / scroll (input), play_animation / tween_property, get_performance, pause, change_scene, instantiate_scene, remove_node, connect_signal / emit_signal / await_signal, raycast, spawn_node, serialize_state, and more. Do NOT launch Godot via pwsh/bash (the file sandbox blocks its user:// log writes and crashes it, signal 11); use godot_run_project, which spawns Godot via the unconfined subprocess service.',
       required: ['command'],
       properties: {
         command: { type: 'string', enum: COMMANDS, description: 'Command to execute in the game' },
