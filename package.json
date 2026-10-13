@@ -30,14 +30,10 @@
     "check": "node scripts/check-plugin-contract.mjs"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": ">=0.1.6-0",
     "@deepseek-ai/dsh-tools": ">=0.1.6-0",
     "@deepseek-ai/schemastery": "^3.18.0"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-llm": {
-      "optional": true
-    },
     "@deepseek-ai/dsh-tools": {
       "optional": true
     },
