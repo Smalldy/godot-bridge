@@ -178,8 +178,6 @@ window.__ModuleLoader__.load({
 				statusBlocked: 'blocked',
 				statusDone: 'done',
 				statusCancelled: 'cancelled',
-				overlap: 'overlap',
-				overlapTitle: 'Another in-progress task writes into the same paths',
 				dependsOn: 'waits for',
 				lease: 'lease',
 				leaseExpired: 'lease expired',
@@ -198,17 +196,15 @@ window.__ModuleLoader__.load({
 				acceptance: 'Acceptance',
 				evidence: 'Evidence',
 				depends: 'Depends on',
-				scopes: 'Write scopes',
 				owner: 'Owner',
 				plan: 'Plan doc',
 				history: 'History',
 				createdAt: 'Created',
 				updatedAt: 'Updated',
 				openSession: 'Open session',
+				openSessionHint: 'Becomes active once the Host half supplies the session target',
 				reclaim: 'Reclaim',
 				noSpec: 'No spec yet.',
-				conflictTitle: 'Write scope overlap',
-				conflictBody: 'These in-progress tasks write into the same paths:',
 				blockedByHint: 'Blocked until these finish:',
 				publish: 'Release to queue',
 				unpublish: 'Return to draft',
@@ -228,8 +224,6 @@ window.__ModuleLoader__.load({
 				formSpec: 'Spec',
 				formAcceptance: 'Acceptance criteria',
 				formPlan: 'Plan document',
-				formScopes: 'Write scopes',
-				formScopesHint: 'One path per line. Two in-progress tasks sharing a prefix are flagged as an overlap.',
 				formDepends: 'Depends on',
 				formDependsHint: 'Comma-separated task ids, e.g. T-06, T-09.',
 				formSave: 'Save',
@@ -237,6 +231,24 @@ window.__ModuleLoader__.load({
 				formRequired: 'A title is required.',
 				emptyTitle: 'No tasks in this workspace',
 				emptyBody: 'The board is a file inside your project. This prototype keeps everything in memory instead.',
+				tabFiles: 'Files',
+				locks: 'File locks',
+				locksHint:
+					'A lock is a protocol between agents, not a kernel lock: an agent takes one before writing a file and releases it when it is done. Reading never needs one, but an agent can always see who is writing.',
+				locksNone: 'This agent holds no file and is not queued for one.',
+				locksPageHint:
+					'Held files first, with whoever is queued behind them. On release the longest-waiting reservation takes the file (marked ①).',
+				lockFree: 'free',
+				lockWaited: 'waited',
+				lockNext: '(next)',
+				lockRelease: 'Release',
+				lockForce: 'Reclaim',
+				lockForceHint: 'Drop the holder without waiting for it, then let the queue resolve',
+				lockSimTake: 'Simulate an agent taking it',
+				lockTook: 'lock taken by',
+				lockReserved: 'queued for the lock by',
+				lockGranted: 'lock granted to',
+				lockFreed: 'lock released on',
 				simClaimed: 'Simulated agent claimed',
 				simLease: 'Simulated lease running out on',
 				simIdle: 'Nothing for a simulated agent to pick up.',
@@ -270,8 +282,6 @@ window.__ModuleLoader__.load({
 				statusBlocked: '阻塞',
 				statusDone: '已完成',
 				statusCancelled: '已取消',
-				overlap: '重叠',
-				overlapTitle: '另一个进行中任务写入了相同路径',
 				dependsOn: '等待',
 				lease: '租约',
 				leaseExpired: '租约已过期',
@@ -290,17 +300,15 @@ window.__ModuleLoader__.load({
 				acceptance: '验收标准',
 				evidence: '证据',
 				depends: '依赖',
-				scopes: '写入范围',
 				owner: '归属',
 				plan: '计划文档',
 				history: '历史',
 				createdAt: '创建于',
 				updatedAt: '更新于',
 				openSession: '查看会话',
+				openSessionHint: '接入宿主半后生效',
 				reclaim: '回收',
 				noSpec: '暂无说明。',
-				conflictTitle: '写入范围重叠',
-				conflictBody: '以下进行中任务写入了相同路径：',
 				blockedByHint: '在这些任务完成前保持阻塞：',
 				publish: '发布到队列',
 				unpublish: '退回草稿',
@@ -320,8 +328,6 @@ window.__ModuleLoader__.load({
 				formSpec: '说明',
 				formAcceptance: '验收标准',
 				formPlan: '计划文档',
-				formScopes: '写入范围',
-				formScopesHint: '一行一个路径。两个进行中任务共享同一前缀会被标记为重叠。',
 				formDepends: '依赖',
 				formDependsHint: '逗号分隔的任务 id，例如 T-06, T-09。',
 				formSave: '保存',
@@ -329,6 +335,24 @@ window.__ModuleLoader__.load({
 				formRequired: '标题不能为空。',
 				emptyTitle: '这个工作区还没有任务',
 				emptyBody: '任务板是项目里的一个文件。这个原型把数据放在内存里。',
+				tabFiles: '文件',
+				locks: '文件锁',
+				locksHint:
+					'锁是 agent 之间的协议，不是内核锁：agent 在写入某个文件前取得，写完释放。读取不需要锁，但任何时候都能看到谁正在写。',
+				locksNone: '该 agent 当前没有持有文件，也没有在排队。',
+				locksPageHint:
+					'先列被占用的文件及其排队者。释放时等待最久的一方获得该文件（标 ①）。',
+				lockFree: '空闲',
+				lockWaited: '已等待',
+				lockNext: '（下一个）',
+				lockRelease: '释放',
+				lockForce: '回收',
+				lockForceHint: '不等持有者，直接收回，再让队列自行解决',
+				lockSimTake: '模拟 agent 取用',
+				lockTook: '取得锁',
+				lockReserved: '预约锁',
+				lockGranted: '锁已授予',
+				lockFreed: '锁已释放',
 				simClaimed: '模拟 agent 领取了',
 				simLease: '模拟租约即将耗尽：',
 				simIdle: '没有可供模拟 agent 领取的任务。',
@@ -390,9 +414,28 @@ window.__ModuleLoader__.load({
 			'.gbt-scope{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38%}',
 			'.gbt-note{padding:6px 20px;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary);border-bottom:0.5px solid var(--dsw-alias-border-l1)}',
 			'.gbt-body{flex:1;min-height:0;overflow:auto;padding:10px 12px 48px}',
-			'.gbt-grouphead{display:flex;align-items:center;gap:8px;width:100%;appearance:none;border:none;background:none;font:inherit;font-size:12px;font-weight:600;line-height:1.5;color:var(--dsw-alias-label-secondary);padding:8px 8px 6px;cursor:pointer;text-align:left}',
-			'.gbt-grouphead:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-brand-primary));outline-offset:-2px;border-radius:var(--dsw-radius-md,6px)}',
-			'.gbt-grouphead .gbt-count{font-weight:400;color:var(--dsw-alias-label-secondary);opacity:.75}',
+			'.gbt-board{display:flex;gap:10px;align-items:flex-start;min-height:100%}',
+			'.gbt-col{flex:1 1 190px;min-width:172px;max-width:300px;display:flex;flex-direction:column;gap:8px;background:var(--dsw-alias-bg-layer-1);border:0.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md,6px);padding:8px}',
+			'.gbt-col[data-collapsed="true"]{flex:0 0 auto;min-width:0;max-width:none}',
+			'.gbt-colhead{display:flex;align-items:center;gap:6px;width:100%;appearance:none;border:none;background:none;font:inherit;font-size:12px;font-weight:600;line-height:1.5;color:var(--dsw-alias-label-secondary);padding:0;cursor:pointer;text-align:left;white-space:nowrap}',
+			'.gbt-colhead:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-brand-primary));outline-offset:2px;border-radius:var(--dsw-radius-md,6px)}',
+			'.gbt-colhead .gbt-count{font-weight:400;opacity:.75}',
+			'.gbt-cards{display:flex;flex-direction:column;gap:8px}',
+			'.gbt-card{background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md,6px)}',
+			'.gbt-card:hover{border-color:var(--dsw-alias-border-l2)}',
+			'.gbt-cardmain{display:flex;flex-direction:column;gap:7px;width:100%;text-align:left;appearance:none;font:inherit;color:inherit;cursor:pointer;background:none;border:none;border-radius:inherit;padding:9px 10px}',
+			'.gbt-cardmain:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-brand-primary));outline-offset:1px}',
+			'.gbt-cardtop{display:flex;align-items:center;gap:6px;min-width:0}',
+			'.gbt-cardtitle{font-size:13px;font-weight:500;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}',
+			'.gbt-cardfoot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-lock{display:inline-flex;align-items:center;gap:3px;font-size:11px;line-height:1.5;white-space:nowrap}',
+			'.gbt-lock[data-state="held"]{color:var(--dsw-alias-brand-primary)}',
+			'.gbt-lock[data-state="waiting"]{color:var(--dsw-alias-state-warn-primary)}',
+			'.gbt-lockrow{display:flex;align-items:flex-start;gap:12px;padding:10px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}',
+			'.gbt-lockpath{flex:1;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.6;word-break:break-all}',
+			'.gbt-lockmeta{flex:none;display:flex;flex-direction:column;gap:3px;align-items:flex-end;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary);text-align:right}',
+			'.gbt-waitlist{margin:4px 0 0;padding:0;list-style:none;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-waitlist > li{font-variant-numeric:tabular-nums}',
 			'.gbt-row{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border-radius:var(--dsw-radius-md,6px);border:0.5px solid transparent;background:none;font:inherit;text-align:left;color:inherit;cursor:pointer}',
 			'.gbt-row:hover{background:var(--dsw-alias-bg-layer-2)}',
 			'.gbt-row:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-brand-primary));outline-offset:-2px}',
@@ -416,9 +459,6 @@ window.__ModuleLoader__.load({
 			'.gbt-dhead{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;padding:6px 0 14px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}',
 			'.gbt-dtitle{flex:1;min-width:240px;font-size:17px;font-weight:600;line-height:1.4;margin:0}',
 			'.gbt-actions{display:flex;gap:6px;flex-wrap:wrap;padding:12px 0}',
-			'.gbt-warnbar{margin:10px 0;padding:9px 12px;border-radius:var(--dsw-radius-md,6px);border:0.5px solid var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-bg-layer-1);font-size:12px;line-height:1.6;color:var(--dsw-alias-label-primary)}',
-			'.gbt-warnbar b{color:var(--dsw-alias-state-warn-primary)}',
-			'.gbt-warnbar ul{margin:6px 0 0;padding-left:18px}',
 			'.gbt-section{padding:14px 0;border-top:0.5px solid var(--dsw-alias-border-l1)}',
 			'.gbt-section > h3{margin:0 0 8px;font-size:12px;font-weight:600;line-height:1.5;color:var(--dsw-alias-label-secondary);text-transform:uppercase;letter-spacing:.04em}',
 			'.gbt-prose{margin:0;font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word}',
@@ -453,35 +493,39 @@ window.__ModuleLoader__.load({
 			return x === y || x.indexOf(y + '/') === 0 || y.indexOf(x + '/') === 0
 		}
 
-		/** A task occupies a path while an agent holds it. */
+		/** Lock lease: long enough for a work session, short enough to self-heal. */
+		const TC_LOCK_LEASE_MS = 30 * 60 * 1000
+
+		/** A task occupies work while an agent holds it. */
 		function tcActive(task) {
 			return task.status === 'claimed' || task.status === 'in_progress'
 		}
 
 		/**
-		 * Ids of active tasks whose write scopes collide with another active
-		 * task's, plus the offending pairs for the detail page. Derived from
-		 * the snapshot rather than stored, so the store stays dumb.
+		 * The files one agent holds and the files it is queued for.
+		 *
+		 * Locks are keyed by file path and held by an AGENT (a session), not by
+		 * a task: a task is only what that agent happens to be working on, and
+		 * an agent can hold a file for work no task describes. A lock's
+		 * `taskId` is optional labelling for the reader, never the key.
+		 * Everything here is derived from the snapshot so the views stay dumb.
+		 *
+		 * @param locks - the snapshot's lock table, keyed by path.
+		 * @param who - the agent name to look up.
+		 * @returns `{ held, waiting }`, both sorted path lists.
 		 */
-		function tcConflicts(tasks) {
-			const active = tasks.filter(tcActive)
-			const flagged = new Set()
-			const pairs = []
-			for (let i = 0; i < active.length; i++) {
-				for (let j = i + 1; j < active.length; j++) {
-					const shared = active[i].writeScopes.filter((left) =>
-						active[j].writeScopes.some((right) => tcScopeTouches(left, right)),
-					)
-					if (shared.length === 0) continue
-					flagged.add(active[i].id)
-					flagged.add(active[j].id)
-					pairs.push({ a: active[i].id, b: active[j].id, shared: shared })
-				}
-			}
-			return { flagged: flagged, pairs: pairs }
+		function tcLocksOf(locks, who) {
+			const held = []
+			const waiting = []
+			Object.keys(locks).forEach((path) => {
+				const entry = locks[path]
+				if (entry.holder === who) held.push(path)
+				if (entry.queue.some((waiter) => waiter.who === who)) waiting.push(path)
+			})
+			return { held: held.sort(), waiting: waiting.sort() }
 		}
 
-		/** Seed board: a plausible Godot slice, including one deliberate overlap. */
+		/** Seed board: a plausible Godot slice. */
 		function tcSeedTasks() {
 			const now = Date.now()
 			const minute = 60 * 1000
@@ -496,7 +540,6 @@ window.__ModuleLoader__.load({
 					status: 'in_progress', priority: 'high', order: 0,
 					assignee: { name: '@combat-2', session: 'session-3aa42d46' },
 					leaseUntil: now + 40 * minute, blockedBy: [],
-					writeScopes: ['scripts/core/', 'scripts/combat/'],
 					acceptance: 'headless 跑 tests/combat_test.gd 全绿；三处旧调用点全部改为 DamageContext。',
 					evidence: '', planRef: 'docs/plans/combat-refactor.md',
 					createdAt: iso(600), updatedAt: iso(24),
@@ -512,7 +555,6 @@ window.__ModuleLoader__.load({
 					status: 'in_progress', priority: 'high', order: 0,
 					assignee: { name: '@fixer', session: 'session-57c27369' },
 					leaseUntil: now + 4 * minute, blockedBy: [],
-					writeScopes: ['scripts/save/', 'scripts/core/'],
 					acceptance: 'tests/save_test.gd 覆盖 1/2/3 号槽位往返；旧版本存档能迁移。',
 					evidence: '', planRef: '',
 					createdAt: iso(180), updatedAt: iso(8),
@@ -528,7 +570,6 @@ window.__ModuleLoader__.load({
 					status: 'in_progress', priority: 'normal', order: 0,
 					assignee: { name: '@explore-3', session: 'session-a5b11302' },
 					leaseUntil: now + 22 * minute, blockedBy: [],
-					writeScopes: ['scripts/camera/', 'scenes/player/'],
 					acceptance: '相机参数进入 resources/camera/；截图对比锁定前后的构图。',
 					evidence: '', planRef: '',
 					createdAt: iso(96), updatedAt: iso(3),
@@ -543,7 +584,6 @@ window.__ModuleLoader__.load({
 					spec: '受击后的硬直时长与闪白需要走统一事件，而不是每个敌人脚本各写一遍。',
 					status: 'blocked', priority: 'normal', order: 0,
 					assignee: null, leaseUntil: null, blockedBy: ['T-06'],
-					writeScopes: ['scripts/enemy/', 'scenes/enemy/'],
 					acceptance: '三种敌人都能在受击时进入硬直并闪白；事件由 DamageContext 发出。',
 					evidence: '', planRef: '',
 					createdAt: iso(80), updatedAt: iso(30),
@@ -559,7 +599,6 @@ window.__ModuleLoader__.load({
 					status: 'review', priority: 'low', order: 0,
 					assignee: { name: '@fixer', session: 'session-57c27369' },
 					leaseUntil: null, blockedBy: [],
-					writeScopes: ['default_bus_layout.tres'],
 					acceptance: '四种总线在编辑器里可见；SFX 总线有压缩器；无爆音。',
 					evidence: 'headless 通过：tests/audio_bus_test.gd 全绿（11 例）。',
 					planRef: '',
@@ -576,7 +615,6 @@ window.__ModuleLoader__.load({
 					spec: '巡逻 → 警戒 → 追击 → 返回，状态之间走显式转移表，避免 if 嵌套。',
 					status: 'queued', priority: 'normal', order: 1,
 					assignee: null, leaseUntil: null, blockedBy: [],
-					writeScopes: ['scripts/ai/', 'scenes/enemy/'],
 					acceptance: '状态转移在测试里可穷举；玩家离开视野后 3 秒返回巡逻。',
 					evidence: '', planRef: 'docs/plans/enemy-ai.md',
 					createdAt: iso(50), updatedAt: iso(50),
@@ -587,7 +625,6 @@ window.__ModuleLoader__.load({
 					spec: '血条改为延迟跟随，伤害数字走对象池；都挂在 CanvasLayer 上。',
 					status: 'queued', priority: 'normal', order: 2,
 					assignee: null, leaseUntil: null, blockedBy: [],
-					writeScopes: ['scenes/ui/', 'scripts/ui/'],
 					acceptance: '连续受击不产生新节点；血条在 0.3 秒内追平。',
 					evidence: '', planRef: '',
 					createdAt: iso(44), updatedAt: iso(44),
@@ -598,7 +635,6 @@ window.__ModuleLoader__.load({
 					spec: '把抖动拆成幅度/频率/衰减三个参数，暴露到 resources/camera/shake.tres。',
 					status: 'draft', priority: 'low', order: 0,
 					assignee: null, leaseUntil: null, blockedBy: [],
-					writeScopes: ['scripts/camera/'],
 					acceptance: '改 tres 即可调参，无需重启场景。',
 					evidence: '', planRef: '',
 					createdAt: iso(12), updatedAt: iso(12),
@@ -610,7 +646,6 @@ window.__ModuleLoader__.load({
 					status: 'done', priority: 'normal', order: 0,
 					assignee: { name: '@explore-3', session: 'session-a5b11302' },
 					leaseUntil: null, blockedBy: [],
-					writeScopes: ['scripts/terrain/', 'assets/terrain/'],
 					acceptance: '两张测试高度图导入无警告。',
 					evidence: '编辑器导入日志无警告；assets/terrain/height_01.res 已生成。',
 					planRef: '',
@@ -628,7 +663,6 @@ window.__ModuleLoader__.load({
 					spec: '旧映射用了 Godot 3 的键码基线，特殊键绑定静默失效。',
 					status: 'cancelled', priority: 'normal', order: 0,
 					assignee: null, leaseUntil: null, blockedBy: [],
-					writeScopes: ['project.godot'],
 					acceptance: '被 godot_manage_input_map 取代，不再单独处理。',
 					evidence: '', planRef: '',
 					createdAt: iso(2000), updatedAt: iso(1700),
@@ -638,6 +672,63 @@ window.__ModuleLoader__.load({
 					],
 				},
 			]
+		}
+
+		/**
+		 * Seed lock table, keyed by project-relative file path.
+		 *
+		 * A lock is held by an agent and carries an optional task label
+		 * (`taskId`) plus a lease, so a crashed agent cannot block a file
+		 * forever. `queue` holds reservations in request order; the store
+		 * grants to the longest-waiting reservation on release, which is the
+		 * rule the `scripts/core/damage.gd` seed exists to demonstrate:
+		 * `@fixer` has waited longer than `@explore-3`, so `@fixer` wins.
+		 *
+		 * @returns the seeded lock table.
+		 */
+		function tcSeedLocks() {
+			const now = Date.now()
+			const minute = 60 * 1000
+			return {
+				'scripts/core/damage.gd': {
+					holder: '@combat-2',
+					taskId: 'T-06',
+					since: now - 24 * minute,
+					leaseUntil: now + 40 * minute,
+					queue: [
+						{ who: '@fixer', taskId: 'T-09', since: now - 6 * minute },
+						{ who: '@explore-3', taskId: 'T-12', since: now - 2 * minute },
+					],
+				},
+				'scripts/save/save_manager.gd': {
+					holder: '@fixer',
+					taskId: 'T-09',
+					since: now - 8 * minute,
+					leaseUntil: now + 3 * minute,
+					queue: [],
+				},
+				'scenes/player/player.tscn': {
+					holder: '@explore-3',
+					taskId: 'T-12',
+					since: now - 3 * minute,
+					leaseUntil: now + 22 * minute,
+					queue: [],
+				},
+				'scripts/combat/hitbox.gd': {
+					holder: null,
+					taskId: null,
+					since: null,
+					leaseUntil: null,
+					queue: [],
+				},
+				'project.godot': {
+					holder: null,
+					taskId: null,
+					since: null,
+					leaseUntil: null,
+					queue: [],
+				},
+			}
 		}
 
 		/**
@@ -655,6 +746,7 @@ window.__ModuleLoader__.load({
 			const listeners = new Set()
 			let state = {
 				tasks: tcSeedTasks(),
+				locks: tcSeedLocks(),
 				seq: 16,
 				scopePath: 'J:\\mm13dremake_workspace\\mm13d',
 				// Localisation stays in the views: the store reports an event
@@ -690,14 +782,106 @@ window.__ModuleLoader__.load({
 					.map((task) => task.order)
 				return (orders.length === 0 ? 0 : Math.max.apply(null, orders)) + 1
 			}
+			/**
+			 * Hand a path to its longest-waiting reservation, or back to nobody.
+			 *
+			 * Highest `since` loses, so ordering the wait list by request time is
+			 * the whole priority rule. The grant happens in the same commit as
+			 * the release, so a file is never left unowned while someone waits.
+			 *
+			 * @param path - the locked path.
+			 * @param entry - its current lock record.
+			 * @param reason - `release` (holder gave it up) or `forced` (a human
+			 *   reclaimed it), recorded for the reader.
+			 */
+			function grantNext(path, entry, reason) {
+				const waitlist = entry.queue.slice().sort((a, b) => a.since - b.since)
+				const next = waitlist.shift() || null
+				const granted = next
+					? {
+							holder: next.who,
+							taskId: next.taskId || null,
+							since: Date.now(),
+							leaseUntil: Date.now() + TC_LOCK_LEASE_MS,
+							queue: waitlist,
+						}
+					: { holder: null, taskId: null, since: null, leaseUntil: null, queue: [] }
+				put({
+					locks: Object.assign({}, state.locks, { [path]: granted }),
+					lastEvent: next
+						? {
+								kind: 'granted',
+								path: path,
+								who: next.who,
+								reason: reason,
+								waited: Date.now() - next.since,
+							}
+						: { kind: 'freed', path: path, who: entry.holder },
+				})
+			}
+			/**
+			 * Take a file lock, or fall in line behind whoever holds it.
+			 *
+			 * Idempotent per agent: asking again while already holding the file
+			 * renews the lease, and asking again while already queued keeps the
+			 * ORIGINAL request time — that time is what decides priority, so
+			 * re-asking must never lose your place.
+			 *
+			 * @param path - project-relative file path.
+			 * @param who - the agent taking it.
+			 * @param taskId - optional task label, for the reader only.
+			 */
+			function takeLock(path, who, taskId) {
+				const entry = state.locks[path] || {
+					holder: null,
+					taskId: null,
+					since: null,
+					leaseUntil: null,
+					queue: [],
+				}
+				if (entry.holder === who) {
+					put({
+						locks: Object.assign({}, state.locks, {
+							[path]: Object.assign({}, entry, {
+								leaseUntil: Date.now() + TC_LOCK_LEASE_MS,
+							}),
+						}),
+					})
+					return
+				}
+				if (entry.holder === null && entry.queue.length === 0) {
+					put({
+						locks: Object.assign({}, state.locks, {
+							[path]: Object.assign({}, entry, {
+								holder: who,
+								taskId: taskId || null,
+								since: Date.now(),
+								leaseUntil: Date.now() + TC_LOCK_LEASE_MS,
+							}),
+						}),
+						lastEvent: { kind: 'took', path: path, who: who },
+					})
+					return
+				}
+				if (entry.queue.some((waiter) => waiter.who === who)) return
+				put({
+					locks: Object.assign({}, state.locks, {
+						[path]: Object.assign({}, entry, {
+							queue: entry.queue.concat([
+								{ who: who, taskId: taskId || null, since: Date.now() },
+							]),
+						}),
+					}),
+					lastEvent: { kind: 'reserved', path: path, who: who },
+				})
+			}
 			return {
 				subscribe(listener) {
 					listeners.add(listener)
 					return function unsubscribe() {
 						listeners.delete(listener)
 					}
-				},
-				getSnapshot() {
+				},				getSnapshot() {
 					return state
 				},
 				create(input) {
@@ -715,7 +899,6 @@ window.__ModuleLoader__.load({
 								assignee: null,
 								leaseUntil: null,
 								blockedBy: input.blockedBy || [],
-								writeScopes: input.writeScopes || [],
 								acceptance: input.acceptance || '',
 								evidence: '',
 								planRef: input.planRef || '',
@@ -737,7 +920,6 @@ window.__ModuleLoader__.load({
 							spec: input.spec || '',
 							acceptance: input.acceptance || '',
 							planRef: input.planRef || '',
-							writeScopes: input.writeScopes || [],
 							blockedBy: input.blockedBy || [],
 							priority: input.priority || 'normal',
 						},
@@ -829,13 +1011,44 @@ window.__ModuleLoader__.load({
 					}
 					put({ tasks: state.tasks.slice() })
 				},
-				/** One scripted agent step so the live-update story is tangible. */
+				/** One scripted agent step, so the live-update story is tangible. */
 				simulate() {
+					const sims = ['@sim-1', '@sim-2', '@sim-3']
+					// Priority is state-driven, not a fixed script: whatever the
+					// board cannot currently show, this click makes visible.
+					// 1. A held file with waiters: release it and watch the
+					//    longest-waiting reservation win.
+					const contended = Object.keys(state.locks).filter((path) => {
+						const entry = state.locks[path]
+						return entry.holder !== null && entry.queue.length > 0
+					})
+					if (contended.length > 0) {
+						grantNext(contended[0], state.locks[contended[0]], 'release')
+						return
+					}
+					// 2. A held file with no waiters: have another agent reserve it.
+					const held = Object.keys(state.locks).filter(
+						(path) => state.locks[path].holder !== null,
+					)
+					if (held.length > 0) {
+						const path = held[0]
+						const holder = state.locks[path].holder
+						const who = sims.filter((name) => name !== holder)[0]
+						const holding = state.tasks.filter(
+							(task) => task.assignee && task.assignee.name === who,
+						)[0]
+						takeLock(path, who, holding ? holding.id : null)
+						put({ lastEvent: { kind: 'reserved', path: path, who: who } })
+						return					}
+					// 3. Otherwise put an agent on the next queued task.
 					const queued = state.tasks
 						.filter((task) => task.status === 'queued')
 						.sort((a, b) => a.order - b.order)
 					if (queued.length > 0) {
-						const who = '@sim-' + String(Math.floor(Math.random() * 9) + 1)
+						const who = sims.filter(
+							(name) =>
+								!state.tasks.some((task) => task.assignee && task.assignee.name === name),
+						)[0] || sims[0]
 						const target = queued[0]
 						patch(
 							target.id,
@@ -849,6 +1062,7 @@ window.__ModuleLoader__.load({
 						put({ lastEvent: { kind: 'claimed', id: target.id, who: who } })
 						return
 					}
+					// 4. Last resort: let a task's lease run out.
 					const running = state.tasks.filter(tcActive)
 					if (running.length > 0) {
 						const target = running[0]
@@ -858,8 +1072,48 @@ window.__ModuleLoader__.load({
 					}
 					put({ lastEvent: { kind: 'idle' } })
 				},
+				/**
+				 * Take a file lock, or fall in line behind whoever holds it.
+				 *
+				 * Idempotent per agent: asking again while already holding the
+				 * file renews the lease, and asking again while already queued
+				 * keeps the ORIGINAL request time — that time is what decides
+				 * priority, so re-asking must never lose your place.
+				 *
+				 * @param path - project-relative file path.
+				 * @param who - the agent taking it.
+				 * @param taskId - optional task label, for the reader only.
+				 */
+				acquireLock(path, who, taskId) {
+					takeLock(path, who, taskId)
+				},
+				/** Give the file up; the next commit hands it to the longest waiter. */
+				releaseLock(path, who) {
+					const entry = state.locks[path]
+					if (!entry) return
+					if (who && entry.holder !== who) return
+					grantNext(path, entry, 'release')
+				},
+				/** Human override: drop the holder and let the wait list resolve. */
+				forceRelease(path) {
+					const entry = state.locks[path]
+					if (!entry) return
+					grantNext(path, entry, 'forced')
+				},
+				/** Leave the wait list without taking the file. */
+				cancelReservation(path, who) {
+					const entry = state.locks[path]
+					if (!entry) return
+					put({
+						locks: Object.assign({}, state.locks, {
+							[path]: Object.assign({}, entry, {
+								queue: entry.queue.filter((waiter) => waiter.who !== who),
+							}),
+						}),
+					})
+				},
 				reset() {
-					put({ tasks: tcSeedTasks(), seq: 16, lastEvent: null })
+					put({ tasks: tcSeedTasks(), locks: tcSeedLocks(), seq: 16, lastEvent: null })
 				},
 			}
 		}
@@ -956,16 +1210,7 @@ window.__ModuleLoader__.load({
 				return { text: t('lease') + ' ' + text, warn: minutes <= 5 ? 'true' : null }
 			}
 
-			/** Lines <-> scope list, so the form edits paths one per line. */
-			function toLines(list) {
-				return (list || []).join('\n')
-			}
-			function fromLines(text) {
-				return String(text || '')
-					.split(/[\r\n]+/)
-					.map((line) => line.trim())
-					.filter((line) => line.length > 0)
-			}
+			/** Comma/space separated list, for the dependency field. */
 			function fromCommas(text) {
 				return String(text || '')
 					.split(/[,\s]+/)
@@ -982,7 +1227,46 @@ window.__ModuleLoader__.load({
 				)
 			}
 
-			/** One board row: a wide inner button plus its own hover actions. */
+			/**
+			 * File-lock badges for one agent: how many files it holds and how
+			 * many it is queued for.
+			 *
+			 * Rendered from the lock table, never from a declaration of intent,
+			 * so a badge only ever states what is true right now. Both counts
+			 * carry the full path list in their tooltip.
+			 */
+			function LockBadges(props) {
+				const locks = props.locks
+				if (!locks || (locks.held.length === 0 && locks.waiting.length === 0)) return null
+				return h(
+					'span',
+					{ className: 'gbt-cardfoot' },
+					locks.held.length > 0
+						? h(
+								'span',
+								{
+									className: 'gbt-lock',
+									'data-state': 'held',
+									title: locks.held.join('\n'),
+								},
+								'🔒 ' + String(locks.held.length),
+							)
+						: null,
+					locks.waiting.length > 0
+						? h(
+								'span',
+								{
+									className: 'gbt-lock',
+									'data-state': 'waiting',
+									title: locks.waiting.join('\n'),
+								},
+								'⏳ ' + String(locks.waiting.length),
+							)
+						: null,
+				)
+			}
+
+			/** One queue row: a wide inner button plus its own hover actions. */
 			function Row(props) {
 				const task = props.task
 				const t = props.t
@@ -1023,28 +1307,79 @@ window.__ModuleLoader__.load({
 									t('dependsOn') + ' ' + task.blockedBy.join(', '),
 								)
 							: null,
-						props.conflict
-							? h('span', { className: 'gbt-flag', title: t('overlapTitle') }, '⚠ ' + t('overlap'))
-							: null,
+						h(LockBadges, { locks: props.locks }),
 					),
 					props.actions ? h('div', { className: 'gbt-rowactions' }, props.actions) : null,
 				)
 			}
 
-			/** Collapsible status group. */
-			function Group(props) {
+			/** One task as a card. */
+			function Card(props) {
+				const task = props.task
 				const t = props.t
-				const tasks = props.tasks
-				if (tasks.length === 0) return null
-				const open = props.open
+				const lease = leaseState(task, props.now, t)
 				return h(
 					'div',
-					null,
+					{ className: 'gbt-card' },
 					h(
 						'button',
 						{
 							type: 'button',
-							className: 'gbt-grouphead',
+							className: 'gbt-cardmain',
+							onClick: () => props.onOpen(task.id),
+							'aria-label': task.id + ' ' + task.title,
+						},
+						h(
+							'div',
+							{ className: 'gbt-cardtop' },
+							h('span', { className: 'gbt-id' }, task.id),
+							h(Pill, { status: task.status, label: t(STATUS_KEY[task.status]) }),
+						),
+						h('span', { className: 'gbt-cardtitle' }, task.title),
+						h(
+							'div',
+							{ className: 'gbt-cardfoot' },
+							h(
+								'span',
+								{ className: 'gbt-who' },
+								task.assignee ? task.assignee.name : t('unassigned'),
+							),
+							lease
+								? h(
+										'span',
+										{
+											className: 'gbt-lease',
+											'data-warn': lease.warn || 'false',
+										},
+										lease.text,
+									)
+								: null,
+							task.status === 'blocked' && task.blockedBy.length > 0
+								? h(
+										'span',
+										{ className: 'gbt-flag' },
+										t('dependsOn') + ' ' + task.blockedBy.join(', '),
+									)
+								: null,
+						),
+						h(LockBadges, { locks: props.locks }),
+					),
+				)
+			}
+
+			/** One board column: a status group holding its cards. */
+			function Column(props) {
+				const t = props.t
+				const tasks = props.tasks
+				const open = props.open
+				return h(
+					'div',
+					{ className: 'gbt-col', 'data-collapsed': open ? 'false' : 'true' },
+					h(
+						'button',
+						{
+							type: 'button',
+							className: 'gbt-colhead',
 							'aria-expanded': open ? 'true' : 'false',
 							onClick: () => props.onToggle(props.id),
 						},
@@ -1054,14 +1389,16 @@ window.__ModuleLoader__.load({
 					open
 						? h(
 								'div',
-								null,
+								{ className: 'gbt-cards' },
 								tasks.map((task) =>
-									h(Row, {
+									h(Card, {
 										key: task.id,
 										task: task,
 										t: t,
 										now: props.now,
-										conflict: props.conflicts.flagged.has(task.id),
+										locks: task.assignee
+											? tcLocksOf(props.locks, task.assignee.name)
+											: null,
 										onOpen: props.onOpen,
 									}),
 								),
@@ -1074,7 +1411,6 @@ window.__ModuleLoader__.load({
 			function BoardView(props) {
 				const t = props.t
 				const snapshot = props.snapshot
-				const conflicts = tcConflicts(snapshot.tasks)
 				const groups = props.groups || TC_GROUPS
 				const rowFor = (task) =>
 					h(Row, {
@@ -1082,7 +1418,7 @@ window.__ModuleLoader__.load({
 						task: task,
 						t: t,
 						now: props.now,
-						conflict: conflicts.flagged.has(task.id),
+						locks: task.assignee ? tcLocksOf(snapshot.locks, task.assignee.name) : null,
 						onOpen: props.onOpen,
 					})
 				const byGroup = groups
@@ -1126,15 +1462,15 @@ window.__ModuleLoader__.load({
 				}
 				return h(
 					'div',
-					null,
+					{ className: 'gbt-board' },
 					byGroup.map((group) =>
-						h(Group, {
+						h(Column, {
 							key: group.id,
 							id: group.id,
 							tasks: group.tasks,
 							t: t,
 							now: props.now,
-							conflicts: conflicts,
+							locks: snapshot.locks,
 							open: props.open[group.id] !== false,
 							onToggle: props.onToggle,
 							onOpen: props.onOpen,
@@ -1242,7 +1578,9 @@ window.__ModuleLoader__.load({
 									task: task,
 									t: t,
 									now: props.now,
-									conflict: false,
+									locks: task.assignee
+										? tcLocksOf(snapshot.locks, task.assignee.name)
+										: null,
 									onOpen: props.onOpen,
 									actions: [
 										h(
@@ -1309,16 +1647,18 @@ window.__ModuleLoader__.load({
 				)
 			}
 
-			/** Task detail: actions, overlap warning, fields, audit timeline. */
+			/** Task detail: actions, held file locks, fields, audit timeline. */
 			function DetailView(props) {
 				const t = props.t
 				const task = props.task
 				const snapshot = props.snapshot
-				const conflicts = tcConflicts(snapshot.tasks)
 				const lease = leaseState(task, props.now, t)
 				const [evidence, setEvidence] = React.useState('')
 				const [note, setNote] = React.useState('')
-				const pairs = conflicts.pairs.filter((pair) => pair.a === task.id || pair.b === task.id)
+				// Whatever this task's agent currently holds, or is queued for.
+				const agentLocks = task.assignee
+					? tcLocksOf(snapshot.locks, task.assignee.name)
+					: { held: [], waiting: [] }
 				const actions = []
 				function add(key, label, run, variant) {
 					actions.push(
@@ -1387,34 +1727,6 @@ window.__ModuleLoader__.load({
 						h(Pill, { status: task.status, label: t(STATUS_KEY[task.status]) }),
 					),
 					h('div', { className: 'gbt-actions' }, actions),
-					pairs.length > 0
-						? h(
-								'div',
-								{ className: 'gbt-warnbar' },
-								h('b', null, t('conflictTitle')),
-								h('div', null, t('conflictBody')),
-								h(
-									'ul',
-									null,
-									pairs.map((pair) =>
-										h(
-											'li',
-											{ key: pair.a + pair.b },
-											h(
-												'button',
-												{
-													type: 'button',
-													className: 'gbt-chip',
-													onClick: () => props.onOpen(pair.a === task.id ? pair.b : pair.a),
-												},
-												pair.a === task.id ? pair.b : pair.a,
-											),
-											h('span', { className: 'gbt-code' }, ' ' + pair.shared.join(', ')),
-										),
-									),
-								),
-							)
-						: null,
 					section(t('spec'), h('p', { className: 'gbt-prose' }, task.spec || t('noSpec'))),
 					section(
 						t('acceptance'),
@@ -1444,16 +1756,32 @@ window.__ModuleLoader__.load({
 							)
 						: null,
 					section(
-						t('scopes'),
-						task.writeScopes.length === 0
-							? h('p', { className: 'gbt-prose' }, t('noSpec'))
-							: h(
-									'div',
-									null,
-									task.writeScopes.map((scope) =>
-										h('span', { key: scope, className: 'gbt-chip' }, scope),
+						t('locks'),
+						h(
+							'div',
+							null,
+							h('p', { className: 'gbt-help' }, t('locksHint')),
+							agentLocks.held.length === 0 && agentLocks.waiting.length === 0
+								? h('p', { className: 'gbt-prose' }, t('locksNone'))
+								: h(
+										'div',
+										null,
+										agentLocks.held.map((path) =>
+											h(
+												'span',
+												{ key: 'held-' + path, className: 'gbt-chip' },
+												'🔒 ' + path,
+											),
+										),
+										agentLocks.waiting.map((path) =>
+											h(
+												'span',
+												{ key: 'wait-' + path, className: 'gbt-chip' },
+												'⏳ ' + path,
+											),
+										),
 									),
-								),
+						),
 					),
 					section(
 						t('owner'),
@@ -1467,6 +1795,24 @@ window.__ModuleLoader__.load({
 								task.assignee
 									? task.assignee.name + ' · ' + task.assignee.session
 									: t('unassigned'),
+								// Inert on purpose: jumping to the session needs the
+								// Host half's session target, so the affordance is
+								// shown disabled rather than faked.
+								task.assignee
+									? h(
+											'button',
+											{
+												type: 'button',
+												className: 'gbt-btn',
+												'data-size': 'sm',
+												'data-variant': 'ghost',
+												style: { marginLeft: '8px' },
+												disabled: true,
+												title: t('openSessionHint'),
+											},
+											t('openSession'),
+										)
+									: null,
 							),
 							h('dt', null, t('lease')),
 							h(
@@ -1578,7 +1924,6 @@ window.__ModuleLoader__.load({
 				const [spec, setSpec] = React.useState(task ? task.spec : '')
 				const [acceptance, setAcceptance] = React.useState(task ? task.acceptance : '')
 				const [planRef, setPlanRef] = React.useState(task ? task.planRef : '')
-				const [scopes, setScopes] = React.useState(task ? toLines(task.writeScopes) : '')
 				const [depends, setDepends] = React.useState(task ? task.blockedBy.join(', ') : '')
 				const invalid = title.trim().length === 0
 				function save() {
@@ -1588,7 +1933,6 @@ window.__ModuleLoader__.load({
 						spec: spec.trim(),
 						acceptance: acceptance.trim(),
 						planRef: planRef.trim(),
-						writeScopes: fromLines(scopes),
 						blockedBy: fromCommas(depends),
 						priority: task ? task.priority : 'normal',
 					}
@@ -1651,17 +1995,6 @@ window.__ModuleLoader__.load({
 						}),
 					),
 					field(
-						'scopes',
-						t('formScopes'),
-						h('textarea', {
-							id: 'gbt-scopes',
-							className: 'gbt-area',
-							value: scopes,
-							onChange: (event) => setScopes(event.target.value),
-						}),
-						t('formScopesHint'),
-					),
-					field(
 						'depends',
 						t('formDepends'),
 						h('input', {
@@ -1697,6 +2030,125 @@ window.__ModuleLoader__.load({
 						),
 						invalid ? h('p', { className: 'gbt-problem' }, t('formRequired')) : null,
 					),
+				)
+			}
+
+			/**
+			 * File locks: who is writing what, and who is waiting in line.
+			 *
+			 * The rule the agents follow is a protocol, not a kernel lock, so this
+			 * view IS the enforcement story: a held file says so, and the wait
+			 * list is visible to everyone before they start. The list is ordered
+			 * contended-first, and the head of each queue is marked as the next
+			 * winner, because "longest wait takes it" is the whole arbitration
+			 * rule and it should be readable without knowing the rule.
+			 */
+			function FilesView(props) {
+				const t = props.t
+				const snapshot = props.snapshot
+				const rank = (entry) =>
+					entry.holder !== null && entry.queue.length > 0
+						? 0
+						: entry.holder !== null
+							? 1
+							: entry.queue.length > 0
+								? 2
+								: 3
+				const paths = Object.keys(snapshot.locks).sort((a, b) => {
+					const delta = rank(snapshot.locks[a]) - rank(snapshot.locks[b])
+					return delta !== 0 ? delta : a.localeCompare(b)
+				})
+				return h(
+					'div',
+					{ className: 'gbt-detail' },
+					h('h2', { className: 'gbt-dtitle' }, t('locks')),
+					h('p', { className: 'gbt-help' }, t('locksPageHint')),
+					paths.map((path) => {
+						const entry = snapshot.locks[path]
+						const waitlist = entry.queue.slice().sort((a, b) => a.since - b.since)
+						return h(
+							'div',
+							{ className: 'gbt-lockrow', key: path },
+							h('span', { className: 'gbt-lockpath' }, path),
+							h(
+								'div',
+								{ className: 'gbt-lockmeta' },
+								entry.holder !== null
+									? h(
+											'span',
+											{ className: 'gbt-lock', 'data-state': 'held' },
+											'🔒 ' +
+												entry.holder +
+												(entry.taskId ? ' · ' + entry.taskId : '') +
+												' · ' +
+												shortAgo(entry.since),
+										)
+									: h(
+											'span',
+											{ className: 'gbt-lock', 'data-state': 'free' },
+											t('lockFree'),
+										),
+								waitlist.length > 0
+									? h(
+											'ul',
+											{ className: 'gbt-waitlist' },
+											waitlist.map((waiter, index) =>
+												h(
+													'li',
+													{ key: waiter.who },
+													(index === 0 ? '① ' : '· ') +
+														waiter.who +
+														(index === 0 ? ' ' + t('lockNext') : '') +
+														' · ' +
+														t('lockWaited') +
+														' ' +
+														shortAgo(waiter.since),
+												),
+											),
+										)
+									: null,
+								h(
+									'span',
+									{ className: 'gbt-actions', style: { padding: '4px 0 0' } },
+									entry.holder !== null
+										? h(
+												'button',
+												{
+													type: 'button',
+													className: 'gbt-btn',
+													'data-size': 'sm',
+													onClick: () => props.onRelease(path, entry.holder),
+												},
+												t('lockRelease'),
+											)
+										: h(
+												'button',
+												{
+													type: 'button',
+													className: 'gbt-btn',
+													'data-size': 'sm',
+													onClick: () => props.onSimTake(path),
+												},
+												t('lockSimTake'),
+											),
+									entry.holder !== null
+										? h(
+												'button',
+												{
+													type: 'button',
+													className: 'gbt-btn',
+													'data-size': 'sm',
+													'data-variant': 'ghost',
+													title: t('lockForceHint'),
+													onClick: () => props.onForce(path),
+												},
+												t('lockForce'),
+											)
+										: null,
+								),
+							),
+						)
+					}),
 				)
 			}
 
@@ -1742,6 +2194,22 @@ window.__ModuleLoader__.load({
 						label,
 					)
 				}
+				/** Render the store's last event code as a sentence. */
+				function eventText(event) {
+					if (!event) return ''
+					if (event.kind === 'claimed') return t('simClaimed') + ' ' + event.id
+					if (event.kind === 'lease') return t('simLease') + ' ' + event.id
+					if (event.kind === 'released') {
+						return t('releaseSelected') + ' ' + (event.ids || []).join(', ')
+					}
+					if (event.kind === 'took') return t('lockTook') + ' ' + event.who + ' · ' + event.path
+					if (event.kind === 'reserved') {
+						return t('lockReserved') + ' ' + event.who + ' · ' + event.path
+					}
+					if (event.kind === 'granted') return t('lockGranted') + ' ' + event.who + ' · ' + event.path
+					if (event.kind === 'freed') return t('lockFreed') + ' ' + event.path
+					return t('simIdle')
+				}
 				let body = null
 				if (editing !== null) {
 					body = h(FormView, {
@@ -1774,6 +2242,14 @@ window.__ModuleLoader__.load({
 						onMove: (id, direction) => store.move(id, direction),
 						onClaim: (id) => store.claim(id, '@you'),
 						onPublish: (ids) => store.publish(ids),
+					})
+				} else if (view === 'files') {
+					body = h(FilesView, {
+						t: t,
+						snapshot: snapshot,
+						onRelease: (path, who) => store.releaseLock(path, who),
+						onForce: (path) => store.forceRelease(path),
+						onSimTake: (path) => store.acquireLock(path, '@sim-1', null),
 					})
 				} else if (view === 'archive') {
 					body = h(BoardView, {
@@ -1810,6 +2286,7 @@ window.__ModuleLoader__.load({
 							{ className: 'gbt-tabs', role: 'tablist' },
 							tab('board', t('tabList')),
 							tab('queue', t('tabQueue')),
+							tab('files', t('tabFiles')),
 							tab('archive', t('tabArchive')),
 						),
 						h('span', { className: 'gbt-spacer' }),
@@ -1863,18 +2340,7 @@ window.__ModuleLoader__.load({
 						'div',
 						{ className: 'gbt-note' },
 						t('prototype') +
-							(snapshot.lastEvent
-								? ' · ' +
-									t('lastEvent') +
-									': ' +
-									(snapshot.lastEvent.kind === 'claimed'
-										? t('simClaimed') + ' ' + snapshot.lastEvent.id
-										: snapshot.lastEvent.kind === 'lease'
-											? t('simLease') + ' ' + snapshot.lastEvent.id
-											: snapshot.lastEvent.kind === 'released'
-												? t('releaseSelected') + ' ' + snapshot.lastEvent.ids.join(', ')
-												: t('simIdle'))
-								: ''),
+							(snapshot.lastEvent ? ' · ' + t('lastEvent') + ': ' + eventText(snapshot.lastEvent) : ''),
 					),
 					h('div', { className: 'gbt-body' }, body),
 				)
