@@ -1,26 +1,130 @@
 /**
  * godot-bridge — the task-center row (`godot-bridge/task-center`).
  *
- * A second Loader row of this same package, inserted by this bundle's patch,
- * so the task center is a component of the godot-bridge plugin rather than an
- * independent bundle. A row module may be a subpath export and needs no
- * identity export of its own — `@deepseek-ai/dsh-plugin-manager/tools` in the
- * shipped composition exports only inject/apply, and the package entry owns
- * the plugin identity.
+ * A second Loader row of this same package, inserted by this bundle's patch, so
+ * the task center is a component of the godot-bridge plugin rather than an
+ * independent bundle. A row module may be a subpath export and needs no identity
+ * export of its own — `@deepseek-ai/dsh-plugin-manager/tools` in the shipped
+ * composition exports only inject/apply, and the package entry owns the plugin
+ * identity. Being a directory is what lets the Host half split by
+ * responsibility: the board lives in `./board.mjs` and is imported relatively.
  *
  * This row carries the `/task` command: the human signal that a discussion has
  * converged and real tasks may now be created. It is a registered command
- * because an UNKNOWN slash line is rejected by the adapter instead of becoming
- * a prompt, and because a command ships no model message of its own — the
- * signal travels on the receiving Agent:
+ * because an UNKNOWN slash line is rejected by the adapter instead of becoming a
+ * prompt, and because a command ships no model message of its own — the signal
+ * travels on the receiving Agent:
  *
  *   agent.steer(createUserMessage({ content, source: { kind: 'user' } }))
  *
  * `createUserMessage` lives in @deepseek-ai/dsh-llm and is imported dynamically,
  * so a runtime where that peer does not resolve degrades to a readable `/task`
- * error instead of failing this row. The Host-side board and the `task_center`
- * tool will land in sibling modules of this directory, imported relatively.
+ * error instead of failing this row.
+ *
+ * The signal carries a short digest of the project board, so the agent starts
+ * from the real state instead of guessing. The digest is strictly best-effort:
+ * every failure path becomes a sentence in the message, never a thrown handler,
+ * because the signal is the point and the board is an accessory to it.
  */
+
+import { readBoard } from './board.mjs'
+
+/** Services this row needs: the board is read through the filesystem, and the
+ * project directory comes from the sandbox policy's session workspace. */
+export const inject = ['fs', 'sandboxPolicy']
+
+/** How long the board digest may take before the signal goes out without it. */
+const DIGEST_BUDGET_MS = 2000
+
+/** Relative path reported to the agent, so it can read the file itself. */
+const BOARD_RELATIVE = '.agents/tasks.json'
+
+/** Minutes/hours/days since an ISO timestamp, for a one-line summary. */
+function agoOf(iso) {
+  const at = Date.parse(iso)
+  if (!Number.isFinite(at)) return 'at an unknown time'
+  const minutes = Math.max(0, Math.round((Date.now() - at) / 60000))
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return String(minutes) + 'm ago'
+  const hours = Math.round(minutes / 60)
+  return hours < 24 ? String(hours) + 'h ago' : String(Math.round(hours / 24)) + 'd ago'
+}
+
+/**
+ * One or two lines of board state for the signal.
+ *
+ * Never throws and never blocks for longer than `DIGEST_BUDGET_MS`: a board
+ * problem must not cost the user their `/task`.
+ *
+ * @param ctx - the row's context (`fs`, `sandboxPolicy`, `logger`).
+ * @param agent - the receiving agent, whose session names the project.
+ * @returns the digest line(s).
+ */
+async function boardDigest(ctx, agent) {
+  let projectPath = null
+  try {
+    const policy = ctx.sandboxPolicy
+    const resolved = agent !== null && agent !== undefined && agent.session !== undefined
+      ? policy.resolve({ session: agent.session })
+      : policy.resolve()
+    if (resolved && typeof resolved.workspaceRoot === 'string' && resolved.workspaceRoot.length > 0) {
+      projectPath = resolved.workspaceRoot
+    }
+  } catch (error) {}
+  if (projectPath === null) {
+    return 'Board (' + BOARD_RELATIVE + '): the project directory is unknown, so its state was not read.'
+  }
+  let timer = null
+  const budget = new Promise(function (resolve) {
+    timer = setTimeout(function () {
+      resolve('Board (' + BOARD_RELATIVE + '): reading it took too long, so the state was skipped.')
+    }, DIGEST_BUDGET_MS)
+  })
+  const read = (async function () {
+    try {
+      const result = await readBoard({ fs: ctx.fs }, { projectPath: projectPath })
+      if (!result.ok) {
+        return (
+          'Board (' + BOARD_RELATIVE + '): ' + result.code + ' — ' + result.message +
+          ' Do NOT overwrite that file; ask the user how to proceed.'
+        )
+      }
+      if (!result.existed) return 'Board (' + BOARD_RELATIVE + '): not created yet; create it there.'
+      const tasks = result.board.tasks
+      const count = function (status) {
+        return tasks.filter(function (task) {
+          return task.status === status
+        }).length
+      }
+      let line =
+        'Board (' + BOARD_RELATIVE + '): ' + String(tasks.length) + ' tasks — queued ' + String(count('queued')) +
+        ' · claimed/in progress ' + String(count('claimed') + count('in_progress')) +
+        ' · blocked ' + String(count('blocked')) + ' · review ' + String(count('review')) +
+        ' · done ' + String(count('done'))
+      if (result.board.updatedAt !== null) line += ' · updated ' + agoOf(result.board.updatedAt)
+      const queued = tasks.filter(function (task) {
+        return task.status === 'queued'
+      })
+      if (queued.length > 0) {
+        const head = queued
+          .slice(0, 3)
+          .map(function (task) {
+            return String(task.id) + ' ' + String(task.title || '')
+          })
+          .join('; ')
+        line += '\nQueue head: ' + head + (queued.length > 3 ? ' (+' + String(queued.length - 3) + ' more)' : '')
+      }
+      return line
+    } catch (error) {
+      return 'Board (' + BOARD_RELATIVE + '): reading it failed (' + String((error && error.message) || error) + ').'
+    }
+  })()
+  try {
+    return await Promise.race([read, budget])
+  } finally {
+    if (timer !== null) clearTimeout(timer)
+  }
+}
 
 export function apply(ctx) {
   // ── /task: the human signal that authorises real task creation ───────────
@@ -77,7 +181,7 @@ export function apply(ctx) {
           description:
             '表示讨论已收敛、允许创建真实任务（本命令会把一条用户消息交给 agent，命令自身的返回文本不进模型） / Tell the agent the discussion has converged and it may create real tasks',
           input: { hint: '[extra instruction]' },
-          handler: function (invocation) {
+          handler: async function (invocation) {
             const agent = invocation.agent
             // Both checks answer with a readable error instead of throwing: a
             // thrown handler settles as a generic failure, and this command's
@@ -95,14 +199,13 @@ export function apply(ctx) {
               }
             }
             const extra = String(invocation.rawInput || '').trim()
+            const opening = extra === '' ? TASK_SIGNAL : TASK_SIGNAL + '\n\nThe user adds: ' + extra
+            // The digest is awaited but never allowed to fail or to stall: the
+            // signal is what the agent cannot get any other way.
+            const digest = await boardDigest(ctx, agent)
             agent.steer(
               createUserMessage({
-                content: [
-                  {
-                    type: 'text',
-                    text: extra === '' ? TASK_SIGNAL : TASK_SIGNAL + '\n\nThe user adds: ' + extra,
-                  },
-                ],
+                content: [{ type: 'text', text: opening + '\n\n' + digest }],
                 source: { kind: 'user' },
               }),
             )
