@@ -6,7 +6,7 @@
   "main": "plugin/godot-bridge.mjs",
   "exports": {
     ".": "./plugin/godot-bridge.mjs",
-    "./task-center": "./plugin/task-center.mjs",
+    "./task-center": "./plugin/task-center/index.mjs",
     "./client": "./client/client.js"
   },
   "files": [
