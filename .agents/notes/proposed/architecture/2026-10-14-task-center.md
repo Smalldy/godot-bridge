@@ -235,6 +235,8 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 
 - **`godot-bridge`（单包）**：`plugin/godot-bridge.mjs` 1929 行（17 个工具 + 引擎路径配置表单）、`plugin/task-center/index.mjs`（`/task` 行：命令 + 板子摘要 + 注册 `task_center` 工具）、`plugin/task-center/board.mjs`（板子存储层：CAS + 冲突重放）、`plugin/task-center/service.mjs`（模型层：任务状态机 + 文件锁仲裁，纯函数）、`plugin/task-center/tool.mjs`（`task_center` 工具：薄外壳 + 权限边界）、`client/client.js` 2621 行（引擎路径表单 + 任务中心面板，一个 bundle）。patch 插入两个行。
 - **五套测试**（`scripts/test/`，`npm test` 跑全部，共 **302 项断言**；`npm run verify` = 契约检查 + 测试）：`client-bundle.test.mjs` 63 项、`board.test.mjs` 25 项、`service.test.mjs` 114 项、`task-tool.test.mjs` 66 项、`task-command.test.mjs` 34 项。共享的解析桩在 `scripts/test/stubs/`（`hooks.mjs` 把 `dsh-llm` / `dsh-tools` 映射到本地替身）。
+- **`task_center` 工具已在真运行时验证**（重启后由本会话直接调用，共 8 次）：`board` 起初报 `not created yet`；`lock scripts/core/damage.gd` 授予成功，租约正好 10 分钟（16:54:06 → 17:04:06），持有者标签 `@ef51d758` 与本会话 id 一致；`create` 建成草稿 T-1 并记录 `proposalRef`；**`claim` 被发布闸门拦住**（`not-released`）；**`publish` 被拒**并附"这是用户的决定"；`remove` + `unlock` 清理后 `board` 报 `.agents/tasks.json`、total 0、锁为空。落盘文件即设计形态（人类可读、可手改、ISO 时间戳），`git status` 干净（忽略规则命中）。
+- **平台的另一条实测**：工具注册表是**按调用解析**的，不是按会话冻结——本会话创建时 `task_center` 还不存在（初始 schema 里没有它），重启后可**直接调用**。故插件注册的工具无需新开会话即可用。这与"源码改动要重启才生效"并不矛盾：**注册表是活的，模块不是。**
 - **`task_center` 工具的权限边界**（有意为之，不是遗漏）：`publish` / `unpublish` / `complete` / `approve` / `set_status` / `reorder` / `force_unlock` 都在 action 枚举里**可见但被拒绝**，并附上"这是用户的决定、去面板"的理由。理由是：能自己发布草稿的 agent 会让发布队列变成装饰。写动作声明为**独占**（`isConcurrencySafe` 只对读动作返回 `true`）。
 - 测试 runner 用 `stdio: 'inherit'` 是**环境约束**而非风格选择：文件沙箱下子进程不能开命名管道，`stdio: 'pipe'`/`execFileSync` 会 EPERM（已实测踩到）。注释里写明了，免得后人"修"成管道。
 - 分支 `feat/task-center-ui-prototype`；`/task` 已实测可用（五次）；面板 slot 已实测注册且只占一个。
@@ -250,7 +252,7 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 | 1 | 宿主侧任务板：文件格式 + 读取 + `FsVersion` CAS 写入 | — | ✅ `plugin/task-center/board.mjs`，25 项断言 |
 | 2 | 客户端 store 从 mock 切到宿主通路（webServer 路由 + fetch），视图不动 | 1 | |
 | 3a | 模型层：任务状态机 + 文件锁仲裁（纯函数，不依赖 Cordis，可独立测试） | — | ✅ `plugin/task-center/service.mjs`，114 项断言 |
-| 3b | `task_center` 工具（单工具 + `action`，薄外壳，调 3a） | 3a | ✅ `plugin/task-center/tool.mjs`，66 项断言 |
+| 3b | `task_center` 工具（单工具 + `action`，薄外壳，调 3a） | 3a | ✅ `plugin/task-center/tool.mjs`，66 项断言 + 真运行时验证 |
 | 4 | `/task` 附任务板摘要 | 1 | ✅ 34 项断言（原以为依赖 3，实际只依赖 1） |
 | 5 | 方案文档层：typed markdown + front matter + 列表/详情 | — | |
 | 6 | 任务记 `proposal_ref` / `revision`；重新拆解与 stale 标记 | 5 | |
