@@ -28,7 +28,9 @@
     "ai-agent"
   ],
   "scripts": {
-    "check": "node scripts/check-plugin-contract.mjs"
+    "check": "node scripts/check-plugin-contract.mjs",
+    "test": "node scripts/test/run.mjs",
+    "verify": "npm run check && npm test"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-llm": ">=0.1.6-0",

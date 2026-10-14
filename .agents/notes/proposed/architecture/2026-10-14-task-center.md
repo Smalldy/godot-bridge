@@ -20,7 +20,6 @@ open_questions:
   - /task 信号的语种与长度
   - 释放锁后如何唤醒等待者（agent.followup 待验证）
   - 是否做对抗式拆解评审
-  - 三个探针是否提升为仓库测试
 ---
 
 # 任务中心 —— 方案（P-1）
@@ -187,7 +186,7 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 4. **`/task` 信号的语种与长度**：现在约 250 token 且中英双语、会永久留在会话历史里。倾向砍成一两句，把流程移入 **skill**。
 5. **释放锁后如何唤醒等待者**（`agent.followup()` 待验证；租约时长已按先例定为 300 秒起步）。
 6. **是否做对抗式拆解评审**（同一方既写方案又拆解又验收是自我确认）。
-7. **三个探针是否提升为仓库测试**（现在在 `.investigate/`，已 gitignore；共 122 项断言，会随临时目录一起消失）。
+7. ~~三个探针是否提升为仓库测试~~ —— **已定**：提升到 `scripts/test/`，`npm test` 跑全部、`npm run verify` 再带上契约检查（见第十一节）。
 
 ## 八、未验证的机制
 
@@ -225,7 +224,8 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 ## 十一、当前代码状态
 
 - **`godot-bridge`（单包）**：`plugin/godot-bridge.mjs` 1929 行（17 个工具 + 引擎路径配置表单）、`plugin/task-center/index.mjs`（`/task` 行：命令 + 板子摘要）、`plugin/task-center/board.mjs`（板子存储层）、`client/client.js` 2621 行（引擎路径表单 + 任务中心面板，一个 bundle）。patch 插入两个行。
-- **三套探针**（均在 `.investigate/`，gitignore，共 122 项断言）：`tc-probe.mjs` 63 项（两个 slot 注册、locale 键集、每个视图渲染、看板状态迁移、锁的仲裁规则）、`board-probe.mjs` 25 项（假文件系统按需制造版本竞争：重放变更而非回滚、重试用尽、坏文件不覆盖、并发不丢更新）、`task-row-probe.mjs` 34 项（用 `node:module` 解析钩子替身 `@deepseek-ai/dsh-llm`，捕获命令定义并调用其 handler：摘要文本、四种板子故障都不让命令失败）。
+- **三套测试**（`scripts/test/`，`npm test` 跑全部，共 122 项断言；`npm run verify` = 契约检查 + 测试）：`client-bundle.test.mjs` 63 项（两个 slot 注册、locale 键集、每个视图渲染、看板状态迁移、锁的仲裁规则）、`board.test.mjs` 25 项（假文件系统按需制造版本竞争：重放变更而非回滚、重试用尽、坏文件不覆盖、并发不丢更新）、`task-command.test.mjs` 34 项（用 `node:module` 解析钩子替身 `@deepseek-ai/dsh-llm`，捕获命令定义并调用其 handler：摘要文本、四种板子故障都不让命令失败）。
+- 测试 runner 用 `stdio: 'inherit'` 是**环境约束**而非风格选择：文件沙箱下子进程不能开命名管道，`stdio: 'pipe'` 会 EPERM（注释里写明了，免得后人"修"成管道）。
 - 分支 `feat/task-center-ui-prototype`；`/task` 已实测可用（四次）；面板 slot 已实测注册且只占一个。
 - 已安装的独立 bundle `dsh-task-center` 已从 profile 撤除（依赖与 `dsh.profile.bundles` 均无残留）。
 - **两个行已随重启进入 loader 树**并在插件页显示为「共 2 个 · 2 运行中」（用户截图确认）；`godot-bridge` = `schema`，`godot-bridge/task-center` = `absent`（没有 Config，正常）。
