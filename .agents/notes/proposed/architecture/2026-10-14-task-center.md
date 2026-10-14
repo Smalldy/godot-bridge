@@ -1,7 +1,7 @@
 ---
 type: proposal
 status: settled
-revision: 2
+revision: 3
 title: 任务中心（Task Center）
 sessions:
   - session-ef51d758-9155-48c9-ae94-fd86a5d21550
@@ -10,16 +10,17 @@ decisions:
   - 任务来源：原生会话讨论 → /task 授权 → agent 拆解成草稿 → 用户发布
   - 只有两个授权点：/task 与面板发布
   - 文件锁取代 write_scopes
-  - 任务板 = 项目内单个文件，FsVersion 做 CAS
+  - 多 agent 文件协作只用文件锁；git worktree 已评估并暂缓
+  - 任务板 = 项目内单个文件，FsVersion 做 CAS，且**不进 git**
   - 一个包、两个组件行（godot-bridge + godot-bridge/task-center）
   - 方案是一种文档类型，不是新存储
 open_questions:
   - 任务计划是否强制
   - 讨论期是否留痕
   - /task 信号的语种与长度
-  - 锁租约时长与释放后如何唤醒等待者
+  - 释放锁后如何唤醒等待者（agent.followup 待验证）
   - 是否做对抗式拆解评审
-  - 客户端探针是否提升为仓库测试
+  - 三个探针是否提升为仓库测试
 ---
 
 # 任务中心 —— 方案（P-1）
@@ -87,7 +88,8 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 - **并发**：`fs.stat` 取 `FsInfo.version`，写用 `fs.writeText(target, content, { kind: 'replaceIfVersion', version })`，冲突报 `FS_STALE_VERSION`。契约保证 mutation 是原子的。
 - **写入纪律**：进程内先串行化；收 `FS_STALE_VERSION` 时**重读并重放变更函数**（不是重放旧内容），重试 ≤3 次。这样用户手改板子或多个宿主同时写都不会互相覆盖。
 - **变更通知**：`fs.watch(board)` → 失效内存缓存 + 推给面板。它可能在 provider 不支持时 throw，必须降级成轮询。
-- 选文件而非 `storageDomain` 的理由：`storageDomain` 是 **profile 级**（不是项目级）、`domain/changed` **只在本进程可见**、且**没有数据迁移**（改 schema 直接拒绝开域）。文件还带来 git 可见、可移植、插件卸载后仍可读。
+- 选文件而非 `storageDomain` 的理由：`storageDomain` 是 **profile 级**（不是项目级）、`domain/changed` **只在本进程可见**、且**没有数据迁移**（改 schema 直接拒绝开域）。文件还带来可移植、插件卸载后仍可读。
+- **板子不进 git**（写进项目的 `.gitignore`）。它是**运行态**，不是源码：提交它会让它在分支间来回漂移，并在合并时制造我们正想避免的冲突。**进 git 的是方案文档**——那才是需要被 review、被版本化的产物。这条同时消掉了"板子只认主工作树"的复杂度：没有 worktree，就没有第二份检出。
 
 ### 文件锁（取代 write_scopes）
 
@@ -99,6 +101,28 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 - 对同一 agent **幂等**：已在队列中再申请，**保留原始请求时间**（否则反复询问会把自己的优先级洗掉）。
 - **读取不需要锁**，但任何 agent 都能查到"谁正在写"。
 - 锁**只存宿主内存**，不落文件：写频率高（agent 每动一个文件一次写），和任务记录挤同一文件会互相打断 CAS；宿主重启后持有者已不存在，锁本就该失效。代价是第二个宿主进程看不到它——与已声明的单进程假设一致。
+
+下面四条是检索外部先例后补进设计的（见「协作策略」一节的出处）：
+
+- **租约过期时通知持有者**（"你对 X 的锁已过期"）。不通知的话，agent 会以为自己仍独占而继续写——先例里明确做了这件事。
+- **agent 退出时 releaseAll**，不要指望它逐个释放。
+- **键支持目录/glob 前缀**（锁 `scripts/core/*` 挡住里面的文件）。原先把目录粒度推迟了，先例把它当基本功能。
+- **回收以 PID 存活为准，时间租约只作兜底**（宿主进程内可判；跨进程时退回 TTL）。
+
+### 协作策略：只用文件锁（worktree 已评估并暂缓）
+
+原先设想两种策略（文件锁 / git worktree）加一个「自动」（git 项目走 worktree，否则走锁）。**现决定只做文件锁**，worktree 暂缓；设置项也**先不做**——只有一个可选项时不值得建设置。检索到的依据（2026-10）：
+
+- [Claude Code 官方文档](https://code.claude.com/docs/en/worktrees)把 worktree 做成一等功能（"Isolate sessions with worktrees"），但需要**四道强制检查**——编辑目标落在主检出、命令 cwd 解析到主检出、把 git 重定向进主检出、以及无法从命令文本确认的命令，全部拦截。它同时**写明漏洞**：这些检查不追踪 shell 命令实际写了哪些文件，`cp` 或重定向写进主检出**不会被拦**。
+- [flightdeck 的协调层文档](https://github.com/justinchuby/flightdeck/blob/HEAD/packages/docs/guide/coordination.md)有完整的 `WorktreeManager` 实现却**至今未启用**，理由写在文档里："依赖 agent 环境有正确的 git 设置，这在所有部署上下文里不保证"（例如每个 worktree 要单独 `npm install`），并且**创建失败时回退到共享工作目录**；它实际在跑的是文件锁。
+- [一份事故驱动的 worktree 纪律文档](https://github.com/VMAFx/vmafx/blob/27f5a25fe42c88b5d1ba49e6634b6d230e7fc2f4/docs/development/agent-worktree-discipline.md)记录 worktree 的首要失败模式是 **drift**（agent 的 cwd 落到主检出，于是提交进用户的分支、冲掉未提交改动），**一个会话里五次事故**，最后靠宿主侧 pre-commit 闸门兜底。它的结论值得记住：只靠 agent 自律脆弱，只靠宿主闸门有窗口——两层都要。
+
+对我们是**放大器的两端**：worktree 顺利时并行度更高，出事时代价更大。Godot 特有的两件事让它更贵：
+
+- **`user://` 按项目名定位，不是路径。** 本机 `app_userdata` 下的目录名全是项目名，所以同项目的两个 worktree **共享存档与日志**——而本插件 `godot_run_project` 启动的游戏日志正写在 `user://logs/`。worktree 模式下跑游戏必须额外按项目名串行（一个新的锁种类），或给每棵树改 `application/config/name`。
+- **`.uid` 是入库文件**（本仓库自己就提交了 `plugin/godot_operations.gd.uid`）。检索到两篇专讲 Godot UID 在合并后错乱/重命名后冲突的文章，但**只拿到标题、未读到正文**，所以不作为证据；要下结论需自己实测（两棵 worktree 各建同名脚本，看 UID 是否相撞）。
+
+**若将来重启 worktree**，需要先具备这四条，它们都不便宜：主检出保护（拒绝写入）、板子从主工作树读取穿透（Claude Code 对 `.claude/skills`/settings 就是这么做的）、跑游戏按项目名串行、以及每棵树各自的 Godot 导入环境。所以"先只用锁"不是妥协，是排序。
 
 ### 方案文档
 
@@ -139,9 +163,9 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 2. **任务计划是否强制**（倾向不强制，只在界面显示"无计划"缺口）。
 3. **讨论期是否留痕**：零侵入（倾向）还是边谈边记。
 4. **`/task` 信号的语种与长度**：现在约 250 token 且中英双语、会永久留在会话历史里。倾向砍成一两句，把流程移入 **skill**。
-5. **锁租约时长**，以及"释放后如何唤醒等待者"。
+5. **释放锁后如何唤醒等待者**（`agent.followup()` 待验证；租约时长已按先例定为 300 秒起步）。
 6. **是否做对抗式拆解评审**（同一方既写方案又拆解又验收是自我确认）。
-7. **客户端探针是否提升为仓库测试**（现在在 `.investigate/`，已 gitignore）。
+7. **三个探针是否提升为仓库测试**（现在在 `.investigate/`，已 gitignore；共 122 项断言，会随临时目录一起消失）。
 
 ## 八、未验证的机制
 
@@ -178,26 +202,29 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 
 ## 十一、当前代码状态
 
-- **`godot-bridge`（单包）**：`plugin/godot-bridge.mjs` 1929 行（17 个工具 + 引擎路径配置表单）、`plugin/task-center.mjs` 126 行（`/task` 行）、`client/client.js` 2621 行（引擎路径表单 + 任务中心面板，一个 bundle）。patch 插入两个行。
-- **`.investigate/tc-probe.mjs`**（gitignore）：63 项断言，覆盖两个 slot 注册、locale 键集、每个视图渲染、看板状态迁移，以及锁的仲裁规则（授予等待最久者、未预约者什么都拿不到、空闲文件取用与释放、释放+授予同一提交）。
-- 分支 `feat/task-center-ui-prototype`；`/task` 已实测可用（三次）；面板 slot 已实测注册且只占一个。
+- **`godot-bridge`（单包）**：`plugin/godot-bridge.mjs` 1929 行（17 个工具 + 引擎路径配置表单）、`plugin/task-center/index.mjs`（`/task` 行：命令 + 板子摘要）、`plugin/task-center/board.mjs`（板子存储层）、`client/client.js` 2621 行（引擎路径表单 + 任务中心面板，一个 bundle）。patch 插入两个行。
+- **三套探针**（均在 `.investigate/`，gitignore，共 122 项断言）：`tc-probe.mjs` 63 项（两个 slot 注册、locale 键集、每个视图渲染、看板状态迁移、锁的仲裁规则）、`board-probe.mjs` 25 项（假文件系统按需制造版本竞争：重放变更而非回滚、重试用尽、坏文件不覆盖、并发不丢更新）、`task-row-probe.mjs` 34 项（用 `node:module` 解析钩子替身 `@deepseek-ai/dsh-llm`，捕获命令定义并调用其 handler：摘要文本、四种板子故障都不让命令失败）。
+- 分支 `feat/task-center-ui-prototype`；`/task` 已实测可用（四次）；面板 slot 已实测注册且只占一个。
 - 已安装的独立 bundle `dsh-task-center` 已从 profile 撤除（依赖与 `dsh.profile.bundles` 均无残留）。
-- **待重启**：bundle 自己的 patch 不在 HMR 监听范围内（`hmr` 以 `root: []` 启用，只监听 profile manifest 与两份用户 patch），所以第二个行 `task-center` 尚未进入 loader 树。重启后应出现 `godot-bridge` + `godot-bridge/task-center` 两行，且 `/task` 与面板恢复。
-- **面板的实际渲染在新结构下尚未在页面上确认。**
+- **两个行已随重启进入 loader 树**并在插件页显示为「共 2 个 · 2 运行中」（用户截图确认）；`godot-bridge` = `schema`，`godot-bridge/task-center` = `absent`（没有 Config，正常）。
+- **摘要尚未在真运行时验证**：它依赖真实 `fs.resolve()` 对**不存在路径**可用，这是假文件系统证明不了、而每次首次读取都要用的一件事。敲一次 `/task` 即可确认（应出现 `Board (.agents/tasks.json): not created yet`）。
+- **面板在新结构下只确认了注册**（`main` 的 occupant 是 `task-center`/`plugins`/`conversation`，无重复），页面上没有重新看过它的渲染。
 
 ## 十二、拆解（任务草稿）
 
-| # | 任务 | 依赖 |
-|---|---|---|
-| 1 | 宿主侧任务板：文件格式 + 读取 + `FsVersion` CAS 写入 | — |
-| 2 | 客户端 store 从 mock 切到宿主通路（webServer 路由 + fetch），视图不动 | 1 |
-| 3 | `task_center` 工具（单工具 + `action`，与宿主服务同一实现） | 1 |
-| 4 | `/task` 附任务板摘要 | 1, 3 |
-| 5 | 方案文档层：typed markdown + front matter + 列表/详情 | — |
-| 6 | 任务记 `proposal_ref` / `revision`；重新拆解与 stale 标记 | 5 |
-| 7 | skill：拆解流程与质量标准 | 3, 5 |
-| 8 | 文件锁落宿主：跨会话可见 + 释放后唤醒等待者 | 1 |
-| 9 | 会话跳转（宿主 session target）+ 命令行的自定义渲染 | 2 |
-| 10 | 发版：versions/双语 CHANGELOG/验收 | 全部 |
+| # | 任务 | 依赖 | 状态 |
+|---|---|---|---|
+| 1 | 宿主侧任务板：文件格式 + 读取 + `FsVersion` CAS 写入 | — | ✅ `plugin/task-center/board.mjs`，25 项断言 |
+| 2 | 客户端 store 从 mock 切到宿主通路（webServer 路由 + fetch），视图不动 | 1 | |
+| 3 | `task_center` 工具（单工具 + `action`，与宿主服务同一实现） | 1 | |
+| 4 | `/task` 附任务板摘要 | 1 | ✅ 34 项断言（原以为依赖 3，实际只依赖 1） |
+| 5 | 方案文档层：typed markdown + front matter + 列表/详情 | — | |
+| 6 | 任务记 `proposal_ref` / `revision`；重新拆解与 stale 标记 | 5 | |
+| 7 | skill：拆解流程与质量标准 | 3, 5 | |
+| 8 | 文件锁落宿主：跨会话可见 + 过期通知持有者 + 退出 releaseAll + 目录前缀 + PID 回收 | 1 | |
+| 9 | **工具边界强制**：目标被他人锁住时拒绝写入；commit 只 add 自有锁文件并事后校验 | 8 | |
+| 10 | 每 agent 摘要改为事件驱动 + 内容哈希去重（先例测到省 40–60% token） | 3, 8 | |
+| 11 | 会话跳转（宿主 session target）+ 命令行的自定义渲染 | 2 | |
+| 12 | 发版：versions / 双语 CHANGELOG / 验收 | 全部 | |
 
-任务 1 不受任何待定项阻塞。
+任务 1、4 已完成；**下一个是任务 3**（工具 + 模型），任务 2 紧随其后（面板显示真数据）。
