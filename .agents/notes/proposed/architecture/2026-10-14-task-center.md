@@ -226,7 +226,7 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 **宿主源码改动只能靠重启加载**，实测两条：
 
 - `hmr` 以 `root: []` 启用，只监听 profile manifest 与两份用户 patch，**不监听插件源码**。
-- **bundle 的 disable/enable 不能当重载用。** 提交 `bc5f68f`（给 `/task` 加板子摘要）之后做过一次 `set_bundle false` → `set_bundle true`，两次都报 `application: applied`；随后敲 `/task`，信号完整到达但**不带摘要**。推断是硬的：`await boardDigest()` 在 `agent.steer()` **之前**，若它抛异常就不会有任何消息被送出；消息到了 ⇒ 它返回了字符串；新代码若在内存里，摘要必然出现在消息末尾。**所以内存里仍是旧模块——结论是实测的。** 最可能的机制是旧那一代注册的 `/task` 未被销毁，新注册撞名后由本模块自己的 try/catch 记 warn 并跳过，于是旧 handler 继续应答；**机制是推测，结论不是**。
+- **bundle 的 disable/enable 不能当重载用。** 提交 `bc5f68f`（给 `/task` 加板子摘要）之后做过一次 `set_bundle false` → `set_bundle true`，两次都报 `application: applied`；随后敲 `/task`，信号完整到达但**不带摘要**。推断是硬的：`await boardDigest()` 在 `agent.steer()` **之前**，若它抛异常就不会有任何消息被送出；消息到了 ⇒ 它返回了字符串；新代码若在内存里，摘要必然出现在消息末尾。**所以内存里仍是旧模块——结论是实测的。** 最可能的机制是旧那一代注册的 `/task` 未被销毁，新注册撞名后由本模块自己的 try/catch 记 warn 并跳过，于是旧 handler 继续应答；**机制是推测，结论不是**。随后一次重启，同一敲法立刻带上了摘要——**换掉模块的唯一途径是重启**，闭环。
 
 推论：宿主源码的开发循环 = 每次重启，或打开 HMR 的源码监听（`root: ["."]`，注意插件是 `link:` 进来的，未必覆盖到）。bundle 自己的 patch 变化需要重启这一条，在第二个行出现时已单独确认过。
 
@@ -235,10 +235,10 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 - **`godot-bridge`（单包）**：`plugin/godot-bridge.mjs` 1929 行（17 个工具 + 引擎路径配置表单）、`plugin/task-center/index.mjs`（`/task` 行：命令 + 板子摘要）、`plugin/task-center/board.mjs`（板子存储层：CAS + 冲突重放）、`plugin/task-center/service.mjs`（模型层：任务状态机 + 文件锁仲裁，纯函数）、`client/client.js` 2621 行（引擎路径表单 + 任务中心面板，一个 bundle）。patch 插入两个行。
 - **四套测试**（`scripts/test/`，`npm test` 跑全部，共 **236 项断言**；`npm run verify` = 契约检查 + 测试）：`client-bundle.test.mjs` 63 项、`board.test.mjs` 25 项、`service.test.mjs` 114 项、`task-command.test.mjs` 34 项。
 - 测试 runner 用 `stdio: 'inherit'` 是**环境约束**而非风格选择：文件沙箱下子进程不能开命名管道，`stdio: 'pipe'`/`execFileSync` 会 EPERM（已实测踩到）。注释里写明了，免得后人"修"成管道。
-- 分支 `feat/task-center-ui-prototype`；`/task` 已实测可用（四次）；面板 slot 已实测注册且只占一个。
+- 分支 `feat/task-center-ui-prototype`；`/task` 已实测可用（五次）；面板 slot 已实测注册且只占一个。
 - 已安装的独立 bundle `dsh-task-center` 已从 profile 撤除（依赖与 `dsh.profile.bundles` 均无残留）。
 - **两个行已随重启进入 loader 树**并在插件页显示为「共 2 个 · 2 运行中」（用户截图确认）；`godot-bridge` = `schema`，`godot-bridge/task-center` = `absent`（没有 Config，正常）。
-- **摘要尚未在真运行时验证**：它依赖真实 `fs.resolve()` 对**不存在路径**可用，这是假文件系统证明不了、而每次首次读取都要用的一件事。敲一次 `/task` 即可确认（应出现 `Board (.agents/tasks.json): not created yet`）。
+- **摘要已在真运行时验证**，原文 `Board (.agents/tasks.json): not created yet; create it there.`，顺序为 信号 → 附注 → 摘要。这一敲同时验掉三件假 fs 证明不了的事：**真实 `fs.resolve()` 对不存在路径可用**（每次首次读取都依赖它）、命令调用里能取到会话工作区（`invocation.agent.session` 与工具用的 `exec.agent.session` 等价）、附注之后确实跟着摘要。
 - **面板在新结构下只确认了注册**（`main` 的 occupant 是 `task-center`/`plugins`/`conversation`，无重复），页面上没有重新看过它的渲染。
 
 ## 十二、拆解（任务草稿）
