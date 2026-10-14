@@ -28,10 +28,12 @@
  */
 
 import { readBoard } from './board.mjs'
+import { projectPathOf, registerTaskTool } from './tool.mjs'
 
-/** Services this row needs: the board is read through the filesystem, and the
- * project directory comes from the sandbox policy's session workspace. */
-export const inject = ['fs', 'sandboxPolicy']
+/** Services this row needs: the board is read through the filesystem, the project
+ * directory comes from the sandbox policy's session workspace, and the
+ * `task_center` tool registers in the tool registry. */
+export const inject = ['fs', 'sandboxPolicy', 'tools']
 
 /** How long the board digest may take before the signal goes out without it. */
 const DIGEST_BUDGET_MS = 2000
@@ -61,16 +63,9 @@ function agoOf(iso) {
  * @returns the digest line(s).
  */
 async function boardDigest(ctx, agent) {
-  let projectPath = null
-  try {
-    const policy = ctx.sandboxPolicy
-    const resolved = agent !== null && agent !== undefined && agent.session !== undefined
-      ? policy.resolve({ session: agent.session })
-      : policy.resolve()
-    if (resolved && typeof resolved.workspaceRoot === 'string' && resolved.workspaceRoot.length > 0) {
-      projectPath = resolved.workspaceRoot
-    }
-  } catch (error) {}
+  // One implementation of "where is the project", shared with the tool, so the
+  // digest and the tool can never disagree about which board they mean.
+  const projectPath = projectPathOf(ctx, agent)
   if (projectPath === null) {
     return 'Board (' + BOARD_RELATIVE + '): the project directory is unknown, so its state was not read.'
   }
@@ -225,4 +220,19 @@ export function apply(ctx) {
       }
     }, 'godot-bridge: /task command')
   })
+
+  // ── the agent-facing tool ─────────────────────────────────────────────────
+  // The write end of the loop: `/task` authorises creating tasks, this is how
+  // one gets created. Registration is guarded for the same reason the command's
+  // is — a failure here must cost the task center, not the whole plugin.
+  ctx.effect(function () {
+    try {
+      return registerTaskTool(ctx)
+    } catch (e) {
+      try {
+        ctx.logger.warn('[godot-bridge] task_center tool registration skipped: ' + String((e && e.message) || e))
+      } catch (e2) {}
+      return function () {}
+    }
+  }, 'godot-bridge: task_center tool')
 }

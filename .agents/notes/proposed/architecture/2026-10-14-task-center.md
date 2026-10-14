@@ -95,6 +95,7 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 `write_scopes` 已删除：**任务在执行前无法声明它会碰哪些文件**，那个声明永远无法被校验、也永远不真。文件锁是可确定、可观察、可排队的。
 
 - 键 = 项目相对**文件路径**；持有者 = **agent（会话）**，不是任务；锁上可带 `taskId` 只作展示标签。
+- **持有者标签由 session id 合成**（`@` + 去前缀后的前 8 位）。依据是 live `tools` 服务契约：`interface Agent { readonly id: SessionId }`——**agent 上没有名字**，面板 mock 里 `@fixer` 那种是 Agent Teams 名字，这一层看不到。已知限制，将来若有服务暴露名字可替换。
 - 每个锁带**租约**（见下）。
 - **预约**按请求时间排队；**释放时在同一提交内授予等待最久者**，文件永不出现"无人持有却有等待者"的中间态。
 - 对同一 agent **幂等**：已在队列中再申请，**保留原始请求时间**（否则反复询问会把自己的优先级洗掉）。
@@ -232,8 +233,9 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 
 ## 十一、当前代码状态
 
-- **`godot-bridge`（单包）**：`plugin/godot-bridge.mjs` 1929 行（17 个工具 + 引擎路径配置表单）、`plugin/task-center/index.mjs`（`/task` 行：命令 + 板子摘要）、`plugin/task-center/board.mjs`（板子存储层：CAS + 冲突重放）、`plugin/task-center/service.mjs`（模型层：任务状态机 + 文件锁仲裁，纯函数）、`client/client.js` 2621 行（引擎路径表单 + 任务中心面板，一个 bundle）。patch 插入两个行。
-- **四套测试**（`scripts/test/`，`npm test` 跑全部，共 **236 项断言**；`npm run verify` = 契约检查 + 测试）：`client-bundle.test.mjs` 63 项、`board.test.mjs` 25 项、`service.test.mjs` 114 项、`task-command.test.mjs` 34 项。
+- **`godot-bridge`（单包）**：`plugin/godot-bridge.mjs` 1929 行（17 个工具 + 引擎路径配置表单）、`plugin/task-center/index.mjs`（`/task` 行：命令 + 板子摘要 + 注册 `task_center` 工具）、`plugin/task-center/board.mjs`（板子存储层：CAS + 冲突重放）、`plugin/task-center/service.mjs`（模型层：任务状态机 + 文件锁仲裁，纯函数）、`plugin/task-center/tool.mjs`（`task_center` 工具：薄外壳 + 权限边界）、`client/client.js` 2621 行（引擎路径表单 + 任务中心面板，一个 bundle）。patch 插入两个行。
+- **五套测试**（`scripts/test/`，`npm test` 跑全部，共 **302 项断言**；`npm run verify` = 契约检查 + 测试）：`client-bundle.test.mjs` 63 项、`board.test.mjs` 25 项、`service.test.mjs` 114 项、`task-tool.test.mjs` 66 项、`task-command.test.mjs` 34 项。共享的解析桩在 `scripts/test/stubs/`（`hooks.mjs` 把 `dsh-llm` / `dsh-tools` 映射到本地替身）。
+- **`task_center` 工具的权限边界**（有意为之，不是遗漏）：`publish` / `unpublish` / `complete` / `approve` / `set_status` / `reorder` / `force_unlock` 都在 action 枚举里**可见但被拒绝**，并附上"这是用户的决定、去面板"的理由。理由是：能自己发布草稿的 agent 会让发布队列变成装饰。写动作声明为**独占**（`isConcurrencySafe` 只对读动作返回 `true`）。
 - 测试 runner 用 `stdio: 'inherit'` 是**环境约束**而非风格选择：文件沙箱下子进程不能开命名管道，`stdio: 'pipe'`/`execFileSync` 会 EPERM（已实测踩到）。注释里写明了，免得后人"修"成管道。
 - 分支 `feat/task-center-ui-prototype`；`/task` 已实测可用（五次）；面板 slot 已实测注册且只占一个。
 - 已安装的独立 bundle `dsh-task-center` 已从 profile 撤除（依赖与 `dsh.profile.bundles` 均无残留）。
@@ -248,7 +250,7 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 | 1 | 宿主侧任务板：文件格式 + 读取 + `FsVersion` CAS 写入 | — | ✅ `plugin/task-center/board.mjs`，25 项断言 |
 | 2 | 客户端 store 从 mock 切到宿主通路（webServer 路由 + fetch），视图不动 | 1 | |
 | 3a | 模型层：任务状态机 + 文件锁仲裁（纯函数，不依赖 Cordis，可独立测试） | — | ✅ `plugin/task-center/service.mjs`，114 项断言 |
-| 3b | `task_center` 工具（单工具 + `action`，薄外壳，调 3a） | 3a | |
+| 3b | `task_center` 工具（单工具 + `action`，薄外壳，调 3a） | 3a | ✅ `plugin/task-center/tool.mjs`，66 项断言 |
 | 4 | `/task` 附任务板摘要 | 1 | ✅ 34 项断言（原以为依赖 3，实际只依赖 1） |
 | 5 | 方案文档层：typed markdown + front matter + 列表/详情 | — | |
 | 6 | 任务记 `proposal_ref` / `revision`；重新拆解与 stale 标记 | 5 | |

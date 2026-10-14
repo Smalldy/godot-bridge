@@ -9,7 +9,7 @@
 // Run by `npm test` (see scripts/test/run.mjs); safe to run directly.
 import { register } from 'node:module'
 
-register('./stubs/llm-hooks.mjs', import.meta.url)
+register('./stubs/hooks.mjs', import.meta.url)
 
 const PROJECT = 'J:\\demo\\mm13d'
 let failures = 0
