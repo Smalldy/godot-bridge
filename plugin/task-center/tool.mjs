@@ -1,28 +1,26 @@
 /**
  * The `task_center` tool: the agent-facing side of the board.
  *
- * A thin shell over `service.mjs`. Everything that decides is in the model; this
- * module answers three questions and nothing else — who is calling, where the
- * project is, and what the caller is allowed to do.
+ * A thin shell. Everything that decides is elsewhere: the rules are in
+ * `service.mjs`, the storage discipline in `board.mjs`, and the state both
+ * surfaces share in `state.mjs`. This module decides only three things — who is
+ * calling, where the project is, and what the caller may do.
  *
  * WHAT THE AGENT MAY NOT DO is the important part of the contract. Two
  * authorisation points belong to the user — typing `/task` and releasing a draft
  * in the panel — and a third action, approval, is how the user accepts work. The
- * tool therefore has no `publish`, no `complete` and no `set_status`: asking for
- * one is refused with the reason and the next step, rather than quietly working
- * because the model layer would allow it. An agent that could release its own
- * drafts would make the release queue decorative.
+ * tool therefore has no working `publish`, no `complete` and no `set_status`:
+ * asking for one is refused with the reason and the next step, rather than
+ * quietly working because the model layer would allow it. An agent that could
+ * release its own drafts would make the release queue decorative.
  *
- * Writes go through the board's CAS every time, so a hand edit or a second host
- * landing in between is preserved and the model function is re-applied on top.
- *
- * Locks live in this module's memory, never on disk: they are written far too
- * often to share the board's file, and a lock whose holder died with the host
- * should be gone anyway.
+ * The same actions ARE available to the user, through the panel's route, which
+ * builds on the same state and the same model functions. Two surfaces, each
+ * accepting what its caller is allowed to do.
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { readBoard, updateBoard } from './board.mjs'
+import { createState, writePolicyFor } from './state.mjs'
 import {
   acquireLock,
   agentView,
@@ -30,8 +28,6 @@ import {
   cancelReservation,
   claimTask,
   createTask,
-  emptyLocks,
-  expireLocks,
   findTask,
   lockAt,
   lockedPaths,
@@ -49,8 +45,9 @@ import {
  * treated as parallel-safe by the registry. */
 export const READ_ACTIONS = ['board', 'show', 'locks', 'mine']
 
-/** Actions the user owns. Each is refused with the reason and where to go. */
-const USER_ONLY = {
+/** Actions the user owns. Each is refused with the reason and where to go.
+ * The panel's route is where they actually work. */
+export const USER_ONLY = {
   publish: 'Releasing a draft is the user\'s decision — ask them to release it in the task center panel.',
   unpublish: 'Withdrawing a task from the queue is the user\'s decision — ask them in the task center panel.',
   complete: 'Accepting work is the user\'s decision — move the task to review with `submit` and report instead.',
@@ -105,7 +102,7 @@ export function projectPathOf(ctx, agent) {
 }
 
 /** A compact one-line rendering of a task, for list results. */
-function summaryOf(task) {
+export function summaryOf(task) {
   return {
     id: task.id,
     title: task.title,
@@ -117,60 +114,62 @@ function summaryOf(task) {
 }
 
 /**
+ * The task-side actions, as a model mutation.
+ *
+ * Exported so the panel's route can map its own actions onto the very same model
+ * calls, instead of a second copy of the rules drifting away from this one.
+ * `by` is whoever is acting, and `allowRemove` decides whether the agent-side
+ * restriction on deletion applies.
+ */
+export function taskMutator(action, args, id, by, agent, now, options) {
+  const agentSide = options === undefined || options.allowRemove !== true
+  return (board) => {
+    if (action === 'update') {
+      return patchTask(
+        board,
+        id,
+        { title: args.title, spec: args.spec, acceptance: args.acceptance, evidence: args.evidence, planRef: args.planRef, note: args.note },
+        now,
+        by,
+      )
+    }
+    if (action === 'claim') return claimTask(board, id, { name: by, session: agent === undefined ? null : String(agent.id) }, now)
+    if (action === 'release') return releaseClaim(board, id, now, by)
+    if (action === 'start') return setTaskStatus(board, id, 'in_progress', now, by, args.note)
+    if (action === 'submit') {
+      const withEvidence = args.evidence === undefined ? board : patchTask(board, id, { evidence: args.evidence }, now, by).board || board
+      return setTaskStatus(withEvidence, id, 'review', now, by, args.note === undefined ? 'ready for review' : args.note)
+    }
+    if (action === 'block') return setTaskStatus(board, id, 'blocked', now, by, args.note)
+    if (action === 'unblock') return setTaskStatus(board, id, 'in_progress', now, by, args.note)
+    if (action === 'reopen') return setTaskStatus(board, id, 'in_progress', now, by, args.note)
+    if (action === 'remove') {
+      const task = findTask(board, id)
+      if (task === undefined) return { ok: false, code: 'unknown-task', message: 'No task with id ' + id }
+      if (agentSide && task.status !== 'draft' && task.status !== 'cancelled') {
+        return {
+          ok: false,
+          code: 'not-a-draft',
+          message: 'Only drafts and cancelled tasks can be removed by an agent; ask the user to delete ' + id,
+        }
+      }
+      return removeTask(board, id)
+    }
+    return { ok: false, code: 'unknown-action', message: 'Unknown action ' + action }
+  }
+}
+
+/**
  * Register the tool. Returns the registry's disposer.
  *
  * @param ctx - the row's context; needs `tools`, `fs`, `sandboxPolicy`.
- * @param options.now - clock injection, for tests.
+ * @param options.state - the shared state, so this tool and the panel agree about
+ *   the board and the locks. Built here when omitted, which keeps the tool usable
+ *   on its own (and is what the tests do).
  */
 export function registerTaskTool(ctx, options) {
-  const clock = options !== undefined && typeof options.now === 'function' ? options.now : Date.now
-  let locks = emptyLocks()
-
-  /**
-   * Apply a model function under the board's CAS.
-   *
-   * A refusal from the model aborts the write by returning `undefined`, which is
-   * the board module's own "abandon this update" convention, so a refused action
-   * never touches the file. On a lost version race the function runs again
-   * against freshly read content, which is why `outcome` is reassigned rather
-   * than captured once.
-   */
-  async function apply(projectPath, mutate, sandboxPolicy) {
-    let outcome = null
-    const written = await updateBoard(
-      { fs: ctx.fs },
-      {
-        projectPath: projectPath,
-        sandboxPolicy: sandboxPolicy,
-        mutate: function (board, attempt) {
-          const result = mutate(board, attempt)
-          outcome = result
-          return result !== null && result.ok === true ? result.board : undefined
-        },
-      },
-    )
-    if (outcome !== null && outcome.ok === false) return { failed: outcome }
-    if (written.ok === false) return { failed: { ok: false, code: written.code, message: written.message } }
-    return { failed: null, board: written.board, version: written.version, attempts: written.attempts, events: outcome === null ? [] : outcome.events }
-  }
-
-  async function readState(projectPath) {
-    const read = await readBoard({ fs: ctx.fs }, { projectPath: projectPath })
-    if (read.ok === false) return { failed: read }
-    return { failed: null, board: read.board, existed: read.existed }
-  }
-
-  /** Expire what is due, and report it. Targeted notification to the holder is
-   * task 8: this can only tell whoever's call triggered the sweep. */
-  function sweep() {
-    const result = expireLocks(locks, clock(), null)
-    locks = result.locks
-    return result.events
-  }
-
-  function failureText(failed) {
-    return failed.message === undefined ? String(failed.code) : failed.message
-  }
+  const state = options !== undefined && options.state !== undefined ? options.state : createState(ctx, options)
+  const locks = () => state.memory.locks
 
   const tool = defineTool({
     name: 'task_center',
@@ -224,25 +223,27 @@ export function registerTaskTool(ctx, options) {
       if (projectPath === null) {
         return { error: 'The project directory is unknown, so the task board cannot be located. Report this to the user.' }
       }
+      // The panel is not session-bound, so it learns the project from the calls
+      // that do resolve one.
+      state.noteProject(projectPath)
       // The board lives inside the project, which may sit outside the session
-      // workspace, so the write policy is widened to the project root exactly
-      // as the tool row does for project files — and only for this write.
-      const sandboxPolicy = { mode: 'workspace-write', workspaceRoot: projectPath }
+      // workspace, so the write policy is widened to the project root exactly as
+      // the tool row does for project files — and only for this write.
+      const sandboxPolicy = writePolicyFor(projectPath)
       if (Object.prototype.hasOwnProperty.call(USER_ONLY, action)) {
         return { refused: action, reason: USER_ONLY[action] }
       }
-      const expired = sweep()
-      const now = clock()
+      const expired = state.sweep()
+      const now = state.clock()
       const withExpired = (value) => (expired.length === 0 ? value : Object.assign({}, value, { leasesReaped: expired }))
 
       if (action === 'board') {
-        const state = await readState(projectPath)
-        if (state.failed !== null) return { error: failureText(state.failed), code: state.failed.code }
-        const tasks = state.board.tasks
+        const current = await state.read(projectPath)
+        if (current.failed !== null) return { error: current.failed.message, code: current.failed.code }
+        const tasks = current.board.tasks
         const by = (status) => tasks.filter((task) => task.status === status)
-        const mine = tasks.filter((task) => task.assignee !== null && task.assignee.name === me)
         return withExpired({
-          board: state.existed ? '.agents/tasks.json' : 'not created yet',
+          board: current.existed ? '.agents/tasks.json' : 'not created yet',
           total: tasks.length,
           counts: {
             draft: by('draft').length,
@@ -257,27 +258,27 @@ export function registerTaskTool(ctx, options) {
             .sort((a, b) => a.order - b.order)
             .map(summaryOf),
           review: by('review').map(summaryOf),
-          yours: mine.map(summaryOf),
-          locks: agentView(locks, me),
+          yours: tasks.filter((task) => task.assignee !== null && task.assignee.name === me).map(summaryOf),
+          locks: agentView(locks(), me),
         })
       }
 
       if (action === 'show') {
-        const state = await readState(projectPath)
-        if (state.failed !== null) return { error: failureText(state.failed), code: state.failed.code }
-        const task = findTask(state.board, String(args.id || ''))
+        const current = await state.read(projectPath)
+        if (current.failed !== null) return { error: current.failed.message, code: current.failed.code }
+        const task = findTask(current.board, String(args.id || ''))
         if (task === undefined) return { error: 'No task with id ' + String(args.id) }
         return withExpired({ task: task })
       }
 
       if (action === 'locks') {
-        const holder = args.path === undefined ? null : lockAt(locks, String(args.path))
+        const holder = args.path === undefined ? null : lockAt(locks(), String(args.path))
         return withExpired({
-          you: agentView(locks, me),
-          blockedPaths: blockedPaths(locks, me),
-          files: lockedPaths(locks).map((path) => {
-            const lock = lockAt(locks, path)
-            const winner = nextWinner(locks, path)
+          you: agentView(locks(), me),
+          blockedPaths: blockedPaths(locks(), me),
+          files: lockedPaths(locks()).map((path) => {
+            const lock = lockAt(locks(), path)
+            const winner = nextWinner(locks(), path)
             return {
               path: path,
               holder: lock.holder,
@@ -293,17 +294,17 @@ export function registerTaskTool(ctx, options) {
       }
 
       if (action === 'mine') {
-        const state = await readState(projectPath)
-        if (state.failed !== null) return { error: failureText(state.failed), code: state.failed.code }
+        const current = await state.read(projectPath)
+        if (current.failed !== null) return { error: current.failed.message, code: current.failed.code }
         return withExpired({
-          tasks: state.board.tasks.filter((task) => task.assignee !== null && task.assignee.name === me).map(summaryOf),
-          locks: agentView(locks, me),
+          tasks: current.board.tasks.filter((task) => task.assignee !== null && task.assignee.name === me).map(summaryOf),
+          locks: agentView(locks(), me),
         })
       }
 
       // ── writes ───────────────────────────────────────────────────────────
       if (action === 'create') {
-        const applied = await apply(
+        const applied = await state.apply(
           projectPath,
           (board) =>
             createTask(
@@ -321,20 +322,23 @@ export function registerTaskTool(ctx, options) {
             ),
           sandboxPolicy,
         )
-        if (applied.failed !== null) return { error: failureText(applied.failed), code: applied.failed.code }
-        return withExpired({ created: summaryOf(applied.board.tasks[applied.board.tasks.length - 1]), drafts: applied.board.tasks.filter((task) => task.status === 'draft').length, hint: 'Drafts reach the queue only when the user releases them in the task center panel.' })
+        if (applied.failed !== null) return { error: applied.failed.message, code: applied.failed.code }
+        return withExpired({
+          created: summaryOf(applied.board.tasks[applied.board.tasks.length - 1]),
+          drafts: applied.board.tasks.filter((task) => task.status === 'draft').length,
+          hint: 'Drafts reach the queue only when the user releases them in the task center panel.',
+        })
       }
 
       if (action === 'lock' || action === 'reserve') {
         const path = String(args.path || '')
         if (path === '') return { error: 'A path is required for ' + action }
         const call = action === 'lock' ? acquireLock : reserveLock
-        let held = null
-        const result = call(locks, path, me, args.id === undefined ? null : String(args.id), now)
-        locks = result.locks
+        const result = call(locks(), path, me, args.id === undefined ? null : String(args.id), now)
+        state.memory.locks = result.locks
         if (result.granted === true) return withExpired({ granted: true, path: path })
-        const lock = lockAt(locks, path)
-        const winner = nextWinner(locks, path)
+        const lock = lockAt(locks(), path)
+        const winner = nextWinner(locks(), path)
         return withExpired({
           granted: false,
           path: path,
@@ -347,54 +351,24 @@ export function registerTaskTool(ctx, options) {
 
       if (action === 'unlock') {
         const path = String(args.path || '')
-        const result = releaseLock(locks, path, me, now)
+        const result = releaseLock(locks(), path, me, now)
         if (result.ok === false) return { refused: result.code, reason: result.message }
-        locks = result.locks
+        state.memory.locks = result.locks
         return withExpired({ released: path, grantedTo: result.grantedTo })
       }
 
       if (action === 'cancel') {
         const path = String(args.path || '')
-        const result = cancelReservation(locks, path, me)
+        const result = cancelReservation(locks(), path, me)
         if (result.ok === false) return { refused: result.code, reason: result.message }
-        locks = result.locks
+        state.memory.locks = result.locks
         return withExpired({ withdrawn: path })
       }
 
       const id = String(args.id || '')
       if (id === '') return { error: 'A task id is required for ' + action }
-      const mutate = (board) => {
-        if (action === 'update') {
-          return patchTask(
-            board,
-            id,
-            { title: args.title, spec: args.spec, acceptance: args.acceptance, evidence: args.evidence, planRef: args.planRef, note: args.note },
-            now,
-            me,
-          )
-        }
-        if (action === 'claim') return claimTask(board, id, { name: me, session: agent === undefined ? null : String(agent.id) }, now)
-        if (action === 'release') return releaseClaim(board, id, now, me)
-        if (action === 'start') return setTaskStatus(board, id, 'in_progress', now, me, args.note)
-        if (action === 'submit') {
-          const withEvidence = args.evidence === undefined ? board : (patchTask(board, id, { evidence: args.evidence }, now, me).board || board)
-          return setTaskStatus(withEvidence, id, 'review', now, me, args.note === undefined ? 'ready for review' : args.note)
-        }
-        if (action === 'block') return setTaskStatus(board, id, 'blocked', now, me, args.note)
-        if (action === 'unblock') return setTaskStatus(board, id, 'in_progress', now, me, args.note)
-        if (action === 'reopen') return setTaskStatus(board, id, 'in_progress', now, me, args.note)
-        if (action === 'remove') {
-          const task = findTask(board, id)
-          if (task === undefined) return { ok: false, code: 'unknown-task', message: 'No task with id ' + id }
-          if (task.status !== 'draft' && task.status !== 'cancelled') {
-            return { ok: false, code: 'not-a-draft', message: 'Only drafts and cancelled tasks can be removed by an agent; ask the user to delete ' + id }
-          }
-          return removeTask(board, id)
-        }
-        return { ok: false, code: 'unknown-action', message: 'Unknown action ' + action }
-      }
-      const applied = await apply(projectPath, mutate, sandboxPolicy)
-      if (applied.failed !== null) return { error: failureText(applied.failed), code: applied.failed.code }
+      const applied = await state.apply(projectPath, taskMutator(action, args, id, me, agent, now), sandboxPolicy)
+      if (applied.failed !== null) return { error: applied.failed.message, code: applied.failed.code }
       const task = findTask(applied.board, id)
       return withExpired({
         task: task === undefined ? null : task,

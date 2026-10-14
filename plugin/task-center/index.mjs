@@ -29,11 +29,14 @@
 
 import { readBoard } from './board.mjs'
 import { projectPathOf, registerTaskTool } from './tool.mjs'
+import { registerTaskRoutes } from './routes.mjs'
+import { createState } from './state.mjs'
 
 /** Services this row needs: the board is read through the filesystem, the project
- * directory comes from the sandbox policy's session workspace, and the
- * `task_center` tool registers in the tool registry. */
-export const inject = ['fs', 'sandboxPolicy', 'tools']
+ * directory comes from the sandbox policy's session workspace, the
+ * `task_center` tool registers in the tool registry, and the panel's routes are
+ * registered on the browser's HTTP carrier. */
+export const inject = ['fs', 'sandboxPolicy', 'tools', 'webServer']
 
 /** How long the board digest may take before the signal goes out without it. */
 const DIGEST_BUDGET_MS = 2000
@@ -62,13 +65,14 @@ function agoOf(iso) {
  * @param agent - the receiving agent, whose session names the project.
  * @returns the digest line(s).
  */
-async function boardDigest(ctx, agent) {
+async function boardDigest(ctx, agent, state) {
   // One implementation of "where is the project", shared with the tool, so the
   // digest and the tool can never disagree about which board they mean.
   const projectPath = projectPathOf(ctx, agent)
   if (projectPath === null) {
     return 'Board (' + BOARD_RELATIVE + '): the project directory is unknown, so its state was not read.'
   }
+  if (state !== undefined) state.noteProject(projectPath)
   let timer = null
   const budget = new Promise(function (resolve) {
     timer = setTimeout(function () {
@@ -122,6 +126,15 @@ async function boardDigest(ctx, agent) {
 }
 
 export function apply(ctx) {
+  // ONE state for both surfaces. The locks are host memory, so two copies would
+  // mean the tool and the panel each seeing half the truth — and two agents both
+  // believing they hold the same file.
+  const state = createState(ctx)
+  /** The project the panel shows: whichever one the agents last resolved a board
+   * in, falling back to the ambient session workspace. */
+  const panelProject = () =>
+    state.memory.projectHint !== null ? state.memory.projectHint : projectPathOf(ctx, null)
+
   // ── /task: the human signal that authorises real task creation ───────────
   // A slash command cannot reach the model by itself: dsh-commands executes a
   // known command on the Host and ships no model message, and an UNKNOWN slash
@@ -197,7 +210,7 @@ export function apply(ctx) {
             const opening = extra === '' ? TASK_SIGNAL : TASK_SIGNAL + '\n\nThe user adds: ' + extra
             // The digest is awaited but never allowed to fail or to stall: the
             // signal is what the agent cannot get any other way.
-            const digest = await boardDigest(ctx, agent)
+            const digest = await boardDigest(ctx, agent, state)
             agent.steer(
               createUserMessage({
                 content: [{ type: 'text', text: opening + '\n\n' + digest }],
@@ -227,7 +240,7 @@ export function apply(ctx) {
   // is — a failure here must cost the task center, not the whole plugin.
   ctx.effect(function () {
     try {
-      return registerTaskTool(ctx)
+      return registerTaskTool(ctx, { state: state })
     } catch (e) {
       try {
         ctx.logger.warn('[godot-bridge] task_center tool registration skipped: ' + String((e && e.message) || e))
@@ -235,4 +248,19 @@ export function apply(ctx) {
       return function () {}
     }
   }, 'godot-bridge: task_center tool')
+
+  // ── the panel's surface ───────────────────────────────────────────────────
+  // Same state, same model functions, opposite permissions: what the tool refuses
+  // is exactly what this route accepts, because its caller is the person at the
+  // GUI. Guarded like the others so two bad routes cannot cost the plugin.
+  ctx.effect(function () {
+    try {
+      return registerTaskRoutes(ctx, { state: state, projectPath: panelProject })
+    } catch (e) {
+      try {
+        ctx.logger.warn('[godot-bridge] task center routes skipped: ' + String((e && e.message) || e))
+      } catch (e2) {}
+      return function () {}
+    }
+  }, 'godot-bridge: task center routes')
 }
