@@ -223,9 +223,9 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 
 ## 十一、当前代码状态
 
-- **`godot-bridge`（单包）**：`plugin/godot-bridge.mjs` 1929 行（17 个工具 + 引擎路径配置表单）、`plugin/task-center/index.mjs`（`/task` 行：命令 + 板子摘要）、`plugin/task-center/board.mjs`（板子存储层）、`client/client.js` 2621 行（引擎路径表单 + 任务中心面板，一个 bundle）。patch 插入两个行。
-- **三套测试**（`scripts/test/`，`npm test` 跑全部，共 122 项断言；`npm run verify` = 契约检查 + 测试）：`client-bundle.test.mjs` 63 项（两个 slot 注册、locale 键集、每个视图渲染、看板状态迁移、锁的仲裁规则）、`board.test.mjs` 25 项（假文件系统按需制造版本竞争：重放变更而非回滚、重试用尽、坏文件不覆盖、并发不丢更新）、`task-command.test.mjs` 34 项（用 `node:module` 解析钩子替身 `@deepseek-ai/dsh-llm`，捕获命令定义并调用其 handler：摘要文本、四种板子故障都不让命令失败）。
-- 测试 runner 用 `stdio: 'inherit'` 是**环境约束**而非风格选择：文件沙箱下子进程不能开命名管道，`stdio: 'pipe'` 会 EPERM（注释里写明了，免得后人"修"成管道）。
+- **`godot-bridge`（单包）**：`plugin/godot-bridge.mjs` 1929 行（17 个工具 + 引擎路径配置表单）、`plugin/task-center/index.mjs`（`/task` 行：命令 + 板子摘要）、`plugin/task-center/board.mjs`（板子存储层：CAS + 冲突重放）、`plugin/task-center/service.mjs`（模型层：任务状态机 + 文件锁仲裁，纯函数）、`client/client.js` 2621 行（引擎路径表单 + 任务中心面板，一个 bundle）。patch 插入两个行。
+- **四套测试**（`scripts/test/`，`npm test` 跑全部，共 **236 项断言**；`npm run verify` = 契约检查 + 测试）：`client-bundle.test.mjs` 63 项、`board.test.mjs` 25 项、`service.test.mjs` 114 项、`task-command.test.mjs` 34 项。
+- 测试 runner 用 `stdio: 'inherit'` 是**环境约束**而非风格选择：文件沙箱下子进程不能开命名管道，`stdio: 'pipe'`/`execFileSync` 会 EPERM（已实测踩到）。注释里写明了，免得后人"修"成管道。
 - 分支 `feat/task-center-ui-prototype`；`/task` 已实测可用（四次）；面板 slot 已实测注册且只占一个。
 - 已安装的独立 bundle `dsh-task-center` 已从 profile 撤除（依赖与 `dsh.profile.bundles` 均无残留）。
 - **两个行已随重启进入 loader 树**并在插件页显示为「共 2 个 · 2 运行中」（用户截图确认）；`godot-bridge` = `schema`，`godot-bridge/task-center` = `absent`（没有 Config，正常）。
@@ -238,7 +238,8 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 |---|---|---|---|
 | 1 | 宿主侧任务板：文件格式 + 读取 + `FsVersion` CAS 写入 | — | ✅ `plugin/task-center/board.mjs`，25 项断言 |
 | 2 | 客户端 store 从 mock 切到宿主通路（webServer 路由 + fetch），视图不动 | 1 | |
-| 3 | `task_center` 工具（单工具 + `action`，与宿主服务同一实现） | 1 | |
+| 3a | 模型层：任务状态机 + 文件锁仲裁（纯函数，不依赖 Cordis，可独立测试） | — | ✅ `plugin/task-center/service.mjs`，114 项断言 |
+| 3b | `task_center` 工具（单工具 + `action`，薄外壳，调 3a） | 3a | |
 | 4 | `/task` 附任务板摘要 | 1 | ✅ 34 项断言（原以为依赖 3，实际只依赖 1） |
 | 5 | 方案文档层：typed markdown + front matter + 列表/详情 | — | |
 | 6 | 任务记 `proposal_ref` / `revision`；重新拆解与 stale 标记 | 5 | |
