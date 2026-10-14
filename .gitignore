@@ -21,3 +21,9 @@ release-notes.md
 
 # Local investigation scratch (agent diagnostics, fixtures, extracted harness sources)
 .investigate/
+
+# Task center board: machine-local WORKING STATE, not source. Committing it would
+# let it drift between branches and manufacture the very merge conflicts the task
+# center exists to prevent. What gets versioned here is the proposals and skills
+# under .agents/, which are the artefacts worth reviewing.
+.agents/tasks.json
