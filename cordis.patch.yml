@@ -1,5 +1,18 @@
-# godot-bridge bundle layer: register the tool plugin row.
+# godot-bridge bundle layer: register this plugin's rows.
+#
 # Install with: dsh plugin --profile web add github:Smalldy/godot-bridge
+#
+# Two rows of the SAME package, which is what makes the task center a component
+# of this plugin instead of an independent plugin: the observation is that the
+# number of Plugins-page cards equals the number of bundles, while the number of
+# components equals the number of rows. A row may name a subpath export, which
+# is how the shipped composition mounts `@deepseek-ai/dsh-plugin-manager/tools`.
+#
+# The browser half cannot be split this way — a package resolves exactly one
+# `./client` bundle — so `client/client.js` carries both the engine-path form
+# and the task-center panel.
 - insert:
     - id: tool-godot-bridge
       name: godot-bridge
+    - id: task-center
+      name: godot-bridge/task-center

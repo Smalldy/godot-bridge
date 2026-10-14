@@ -188,7 +188,6 @@ export function apply(ctx, config) {
     } catch (e) {}
   }
 
-
   const GODOT_PATH_GUIDANCE = 'No Godot engine path is available. Ask the user where their Godot executable is and persist it with the godot_set_engine_path tool (it writes the profile patch and applies immediately on DSH 0.2+), set it in the GUI (Plugins -> godot-bridge -> the "Godot engine path" field on that card\'s page), add `godot` to PATH, pass the godot_path tool argument, or set `godotPath` by hand — a `config:` block on the `tool-godot-bridge` row of the profile\'s cordis.patch.yml on DSH 0.2+, the `godot-bridge:` section of settings.yaml on DSH 0.1.x.'
 
   // ── legacy-config migration ─────────────────────────────────────────────

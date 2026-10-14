@@ -6,6 +6,7 @@
   "main": "plugin/godot-bridge.mjs",
   "exports": {
     ".": "./plugin/godot-bridge.mjs",
+    "./task-center": "./plugin/task-center.mjs",
     "./client": "./client/client.js"
   },
   "files": [
@@ -30,10 +31,14 @@
     "check": "node scripts/check-plugin-contract.mjs"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.1.6-0",
     "@deepseek-ai/dsh-tools": ">=0.1.6-0",
     "@deepseek-ai/schemastery": "^3.18.0"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-tools": {
       "optional": true
     },

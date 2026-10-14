@@ -1,7 +1,7 @@
 ---
 type: proposal
 status: settled
-revision: 1
+revision: 2
 title: 任务中心（Task Center）
 sessions:
   - session-ef51d758-9155-48c9-ae94-fd86a5d21550
@@ -11,10 +11,9 @@ decisions:
   - 只有两个授权点：/task 与面板发布
   - 文件锁取代 write_scopes
   - 任务板 = 项目内单个文件，FsVersion 做 CAS
-  - 拆成独立包 dsh-task-center
+  - 一个包、两个组件行（godot-bridge + godot-bridge/task-center）
   - 方案是一种文档类型，不是新存储
 open_questions:
-  - 分发包的落地方式与是否摘掉 private
   - 任务计划是否强制
   - 讨论期是否留痕
   - /task 信号的语种与长度
@@ -136,7 +135,7 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 
 ## 七、待定
 
-1. **分发包的落地方式**：子目录安装 / 独立仓库 / 发 registry。新包不在根包 `files` 白名单里，所以 `dsh plugin add github:…` 仍只装 `godot-bridge`。`"private": true` 何时摘。
+1. ~~分发包的落地方式~~ —— **已定**：一个包，随 `godot-bridge` 一起安装/更新（见第十节）。
 2. **任务计划是否强制**（倾向不强制，只在界面显示"无计划"缺口）。
 3. **讨论期是否留痕**：零侵入（倾向）还是边谈边记。
 4. **`/task` 信号的语种与长度**：现在约 250 token 且中英双语、会永久留在会话历史里。倾向砍成一两句，把流程移入 **skill**。
@@ -153,14 +152,40 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 
 斜杠命令 token 曾变蓝且退格手感异常，之后无法复现。相关代码位置：`dsh-client-ui-commands/lib/client.js:874-880` 与 `:1123-1129`（`slash/input-consume-token`；`via === 'menu'` 消费 span，否则消费 bare-token）。最可能的触发是**认领发生时命令目录正好变更**（当时命令刚注册），使草稿里的记号变成孤儿。复现时请记录：斜杠菜单开/关、控制台告警、当时是否刚发生重载、截图。
 
-## 十、当前代码状态
+## 十、打包：一个包、两个组件行
 
-- **`task-center/`（dsh-task-center，独立包）**：`client/client.js` 2346 行（整个面板，数据来自 mock store）、`plugin/index.mjs` 123 行（`/task`）、自有 `package.json` / `cordis.patch.yml`。已安装到 desktop profile（`link:`，`application: applied`）。
-- **`godot-bridge`**：只剩 17 个工具与引擎路径表单，已无任务中心代码。
+**卡片数 = bundle 数；组件数 = 行数。** 这两件事是独立的，所以"任务中心是 godot-bridge 的一个组件、而不是一个独立插件"并不需要把代码合成一个文件：
+
+```yaml
+# godot-bridge/cordis.patch.yml
+- insert:
+    - id: tool-godot-bridge
+      name: godot-bridge
+    - id: task-center
+      name: godot-bridge/task-center      # 包内子路径行
+```
+
+行名可以是包内子路径——官方组合就是这么挂 `@deepseek-ai/dsh-plugin-manager/tools` 的，而那个行模块**只导出 `inject`/`apply`，没有 `name`**（插件身份由包入口持有）。所以宿主半可以按职责拆文件，客户端半不行。
+
+### 被否决的做法：拆成独立包
+
+曾实现过（提交 `6cd240c`，后被 `git revert` 退回），理由是"一包一个 client bundle"与"不把开销摊给所有用户"。**否决原因是分发**：`dsh plugin add github:Smalldy/godot-bridge` 只装一个包，独立包要求用户多装一次、或要求 godot-bridge 依赖一个必须另行发布的包。**"装/更新 godot-bridge 就能用"是硬要求**，它优先于上述工程偏好；而"不摊开销"这一点也因为任务中心今天只带来一条命令和一个面板而基本不成立。
+
+### 职责分离
+
+- **宿主半：可以真拆文件。** 宿主是真 ESM，相对导入随便用；每个职责还可以是独立的行、独立生命周期。`/task` 已在 `plugin/task-center.mjs`；将来任务板与 `task_center` 工具作为同目录兄弟模块相对导入。
+- **客户端半：机制上只能一个文件。** 一个包只解析一个 `exports["./client"]`，且它是 classic script——没有相对 require、没有动态 import（只有 9 个平台基座 specifier，或 `dsh.client.external` 里指名的**别的包**的 bundle）。所以要么用区域分段，要么引入构建步骤，要么**把逻辑搬到宿主**——最后这条才是真正的解法：客户端今天 2346 行里大半是 mock store（状态机、锁仲裁、种子数据），这些规则本来就该住在宿主，与将来的 `task_center` 工具共享、也才可测。任务 1+2 落地后客户端应缩到视图 + fetch（数百行），届时一个文件不再难受。
+
+## 十一、当前代码状态
+
+- **`godot-bridge`（单包）**：`plugin/godot-bridge.mjs` 1929 行（17 个工具 + 引擎路径配置表单）、`plugin/task-center.mjs` 126 行（`/task` 行）、`client/client.js` 2621 行（引擎路径表单 + 任务中心面板，一个 bundle）。patch 插入两个行。
 - **`.investigate/tc-probe.mjs`**（gitignore）：63 项断言，覆盖两个 slot 注册、locale 键集、每个视图渲染、看板状态迁移，以及锁的仲裁规则（授予等待最久者、未预约者什么都拿不到、空闲文件取用与释放、释放+授予同一提交）。
-- 分支 `feat/task-center-ui-prototype`；`/task` 已实测可用（三次），面板 slot 已实测注册且只占一个；**面板在新包下的实际渲染尚未在页面上确认**。
+- 分支 `feat/task-center-ui-prototype`；`/task` 已实测可用（三次）；面板 slot 已实测注册且只占一个。
+- 已安装的独立 bundle `dsh-task-center` 已从 profile 撤除（依赖与 `dsh.profile.bundles` 均无残留）。
+- **待重启**：bundle 自己的 patch 不在 HMR 监听范围内（`hmr` 以 `root: []` 启用，只监听 profile manifest 与两份用户 patch），所以第二个行 `task-center` 尚未进入 loader 树。重启后应出现 `godot-bridge` + `godot-bridge/task-center` 两行，且 `/task` 与面板恢复。
+- **面板的实际渲染在新结构下尚未在页面上确认。**
 
-## 十一、拆解（任务草稿）
+## 十二、拆解（任务草稿）
 
 | # | 任务 | 依赖 |
 |---|---|---|
@@ -173,6 +198,6 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 | 7 | skill：拆解流程与质量标准 | 3, 5 |
 | 8 | 文件锁落宿主：跨会话可见 + 释放后唤醒等待者 | 1 |
 | 9 | 会话跳转（宿主 session target）+ 命令行的自定义渲染 | 2 |
-| 10 | 分发包与发版 | 全部 |
+| 10 | 发版：versions/双语 CHANGELOG/验收 | 全部 |
 
 任务 1 不受任何待定项阻塞。

@@ -1,23 +1,26 @@
 /**
- * dsh-task-center — Host half.
+ * godot-bridge — the task-center row (`godot-bridge/task-center`).
  *
- * This package owns the project task center. Today the Host half carries one
- * thing: the `/task` command, the human signal that a discussion has converged
- * and real tasks may be created.
+ * A second Loader row of this same package, inserted by this bundle's patch,
+ * so the task center is a component of the godot-bridge plugin rather than an
+ * independent bundle. A row module may be a subpath export and needs no
+ * identity export of its own — `@deepseek-ai/dsh-plugin-manager/tools` in the
+ * shipped composition exports only inject/apply, and the package entry owns
+ * the plugin identity.
  *
- * Why a registered command: dsh-commands executes a known command on the Host
- * and ships NO model message, and an UNKNOWN slash line is rejected by the
- * adapter instead of becoming a prompt. The sanctioned carrier is the receiving
- * Agent, following the shipped precedent of dsh-plan-mode's `/plan <message>`:
+ * This row carries the `/task` command: the human signal that a discussion has
+ * converged and real tasks may now be created. It is a registered command
+ * because an UNKNOWN slash line is rejected by the adapter instead of becoming
+ * a prompt, and because a command ships no model message of its own — the
+ * signal travels on the receiving Agent:
  *
  *   agent.steer(createUserMessage({ content, source: { kind: 'user' } }))
  *
  * `createUserMessage` lives in @deepseek-ai/dsh-llm and is imported dynamically,
  * so a runtime where that peer does not resolve degrades to a readable `/task`
- * error instead of failing this plugin's module load.
+ * error instead of failing this row. The Host-side board and the `task_center`
+ * tool will land in sibling modules of this directory, imported relatively.
  */
-
-export const name = 'dsh-task-center'
 
 export function apply(ctx) {
   // ── /task: the human signal that authorises real task creation ───────────
@@ -66,7 +69,7 @@ export function apply(ctx) {
       return function () {
         abandoned = true
       }
-    }, 'dsh-task-center: /task message factory')
+    }, 'godot-bridge: /task message factory')
     ctx.effect(function () {
       try {
         return commandCtx.commands.register({
@@ -113,10 +116,10 @@ export function apply(ctx) {
         // A name collision (this scope already has `/task`) must degrade, not
         // take the whole plugin down with it.
         try {
-          ctx.logger.warn('[dsh-task-center] /task registration skipped: ' + String((e && e.message) || e))
+          ctx.logger.warn('[godot-bridge] /task registration skipped: ' + String((e && e.message) || e))
         } catch (e2) {}
         return function () {}
       }
-    }, 'dsh-task-center: /task command')
+    }, 'godot-bridge: /task command')
   })
 }

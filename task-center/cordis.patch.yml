@@ -1,8 +1,0 @@
-# dsh-task-center bundle layer: register the task-center plugin row.
-#
-# `install_bundle` performs the package installation and bundle selection; this
-# patch only inserts the row. The row carries no config today: the board is a
-# file inside the worked project, not a profile setting.
-- insert:
-    - id: task-center
-      name: dsh-task-center
