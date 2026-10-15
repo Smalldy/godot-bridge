@@ -155,6 +155,13 @@ check('patching cannot move a claim', result.ok === false && result.code === 'no
 check('and the assignee is still nobody', findTask(board, 'T-2').assignee === null, JSON.stringify(findTask(board, 'T-2').assignee))
 result = patchTask(board, 'T-2', { note: 'looked at it' }, T0, 'user')
 check('a note alone is applied', result.ok === true && result.task.history.length === 2)
+check('and the fields it did not mention survive', result.task.title === 'renamed', String(result.task.title))
+result = patchTask(result.board, 'T-2', { title: undefined, spec: '' }, T0, 'user')
+check('an undefined value is not a change', result.ok === true && result.task.title === 'renamed', String(result.task.title))
+check('while an empty string clears explicitly', result.task.spec === '')
+result = patchTask(result.board, 'T-2', { blockedBy: ['T-1'] }, T0, 'user')
+check('dependencies can be recorded without blocking the task', result.ok === true && result.task.blockedBy.join(',') === 'T-1')
+check('and the status is untouched by it', result.task.status === 'draft')
 board = result.board
 board = publishTask(board, 'T-1', T0, 'user').board
 board = publishTask(board, 'T-2', T0 + MIN, 'user').board

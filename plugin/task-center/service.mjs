@@ -98,6 +98,11 @@ export function findTask(board, id) {
  * given, so a pure field edit does not fill the timeline with noise. Fields in
  * OWNED_FIELDS are ignored, not an error: a caller that read a whole task and
  * wrote it back should not be able to move a claim by accident.
+ *
+ * A key whose value is `undefined` was NOT supplied, and is skipped. Callers pass
+ * their whole option object through, so keys the caller never mentioned arrive as
+ * undefined; writing those would wipe the fields, which means a partial update
+ * would erase a title. `null` or `''` clears a field explicitly.
  */
 export function patchTask(board, id, change, now, by) {
   const task = findTask(board, id)
@@ -108,6 +113,7 @@ export function patchTask(board, id, change, now, by) {
   for (const key of Object.keys(change)) {
     if (OWNED_FIELDS.indexOf(key) >= 0) continue
     if (key === 'note') continue
+    if (change[key] === undefined) continue
     target[key] = change[key]
     applied++
   }

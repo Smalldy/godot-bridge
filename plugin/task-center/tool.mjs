@@ -128,7 +128,7 @@ export function taskMutator(action, args, id, by, agent, now, options) {
       return patchTask(
         board,
         id,
-        { title: args.title, spec: args.spec, acceptance: args.acceptance, evidence: args.evidence, planRef: args.planRef, note: args.note },
+        { title: args.title, spec: args.spec, acceptance: args.acceptance, evidence: args.evidence, planRef: args.planRef, blockedBy: args.blockedBy, note: args.note },
         now,
         by,
       )
@@ -206,7 +206,7 @@ export function registerTaskTool(ctx, options) {
       note: { type: 'string', description: 'A line for the task timeline (update, block, submit).' },
       planRef: { type: 'string', description: 'Path of the task plan document, when one exists.' },
       proposalRef: { type: 'string', description: 'Path of the proposal this task came from (create).' },
-      blockedBy: { type: 'array', description: 'Task ids this task waits on (block).', items: { type: 'string' } },
+      blockedBy: { type: 'array', description: 'Task ids this task waits on (create, update, block). An empty array clears them.', items: { type: 'string' } },
     },
     isConcurrencySafe: (args) => READ_ACTIONS.indexOf(args !== null && args !== undefined ? args.action : undefined) >= 0,
     output: {
@@ -315,6 +315,10 @@ export function registerTaskTool(ctx, options) {
                 acceptance: args.acceptance,
                 planRef: args.planRef,
                 proposalRef: args.proposalRef,
+                // Declared as a parameter from the start and then dropped on the
+                // floor, which meant a dependency could only be recorded by
+                // BLOCKING the task. Passed through instead.
+                blockedBy: args.blockedBy,
                 note: args.note === undefined ? 'created by ' + me : args.note,
               },
               now,
