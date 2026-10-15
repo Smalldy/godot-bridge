@@ -1,27 +1,28 @@
 ---
 type: proposal
 status: settled
-revision: 4
+revision: 5
 title: 任务中心（Task Center）
+status: settled
 sessions:
   - session-ef51d758-9155-48c9-ae94-fd86a5d21550
 decisions:
   - 三模块拆分，先做任务管理
-  - 任务来源：原生会话讨论 → /task 授权 → agent 拆解成草稿 → 用户发布
-  - 草稿是**这场对话自己的工作清单**（由对话里的 agent 或用户完成），不进池子；发布后才进池子供其他 agent 领取
-  - 发布可由 agent 发起，但必须等用户确认；请求记在任务上
-  - 池内领取前检查前置，未完成则加入该任务的等待队列；前置完成后唤醒等待最久者
-  - 对话内领取不带租约，池内领取带租约
-  - 文件锁取代 write_scopes
-  - 多 agent 文件协作只用文件锁；git worktree 已评估并暂缓
-  - 任务板 = 项目内单个文件，FsVersion 做 CAS，且**不进 git**
+  - 任务系统的对外 API 只暴露"关于工作的决定"；领取/派发/租约/等待队列/唤醒是系统内部，客户端看不见也不调
+  - 用户与对话Agent 是同一 API 的两个客户端（面板 / 工具），因此共用一份状态与一套规则
+  - 草稿是对话自己的工作清单（由对话Agent 或用户完成），不进池；退队即「退回草稿」，没有「领取」
+  - 对话自己的活生命周期是 draft → done；池内的活由用户关闭
+  - 需同意是一条统一规则（返回 needs-consent + 计划），不是硬拒绝的例外表
+  - 发布是依赖闭包；调度器只派发前置全部 done 的任务；已派发 ≠ 已完成，前置可能永不完 → 下游标「依赖已破」交用户
+  - 文件锁取代 write_scopes；只用文件锁，worktree 已评估并暂缓
+  - 任务板 = 项目内单个文件，FsVersion 做 CAS，且不进 git
   - 一个包、两个组件行（godot-bridge + godot-bridge/task-center）
   - 方案是一种文档类型，不是新存储
 open_questions:
+  - 插件能否触达其他会话（WorkAgent）的 Agent 句柄——决定"任务系统→WorkAgent"那条边由谁实现
   - 任务计划是否强制
   - 讨论期是否留痕
   - /task 信号的语种与长度
-  - 是否存在区分 teammate 与 lead 的服务（决定"池内不得领草稿"能否被强制）
   - 是否做对抗式拆解评审
 ---
 
@@ -29,6 +30,33 @@ open_questions:
 
 > 本文档是「方案」这一文档类型的第一个实例：`status: settled` 指**方向已冻结**，不是细节已定。
 > 下面第七节列出的待定项属于实现选择，不构成方向变更。
+
+## 当前设计（一页版）
+
+> **本节是权威表述。** 第二节之后的细述是按时间累积的，其中若干处记录的是**当时被推翻的做法**；与之冲突时**以本节为准**。
+
+**参与者与边**。用户 · 对话Agent（与用户对话）· 任务系统（用户与它「交互」）· WorkAgent（住在任务系统里）。边：用户↔对话Agent（会话，✅）· 用户↔任务系统（面板路由，✅）· 对话Agent→任务系统（`task_center` 工具，✅）· 任务系统→对话Agent（推送/唤醒，机制已确认、未实现）· **任务系统→WorkAgent（框架触发，❌ 唯一缺失的边）**。
+
+**两个客户端，一个 API**。任务系统对外是一个 API；**用户（面板）与对话Agent（工具）是它的两个客户端**——所以两者必须共用一份状态与一套规则（实现上即 `state.mjs` + `service.mjs`）。
+
+**任务的归属与生命周期**。
+
+- **`draft` 是对话自己的工作清单**：由对话Agent 或用户完成，**不进池子**。它的生命周期就是 **draft → done**，不经过 queued/claimed/in_progress。
+- **发布（入队）** 才进池，需用户同意。`queued` = 在池里等人做。
+- **派发是系统内部机制**：把池里的任务交给某个 WorkAgent（选人、启动、交接）。客户端看不见也不调——`claim` / `release` / `reserve` 因此**不是 API 方法**，`in_progress`/`claimed` 只是派发在板上的**可见投影**。
+- **没有「领取」**：退队即**「退回草稿」**（queued → draft）。已派发的任务用「取消」。
+- 池内的活完成 → `review` → **由用户关闭**；对话自己的活 → **由对话Agent 标记完成**。
+
+**对外 API = 关于工作的决定**：`overview` / `list` / `show` · `create` / `update` / `cancel` / `reopen` / `block` / `unblock` · `close` · `publish` / `unqueue` / `reorder` · `locks` / `requestLock` / `releaseLock` / `forceRelease` · `getSettings` / `setSettings`。
+**需同意**是一条**统一规则**（对话Agent 调用 `publish`/`unqueue`/`reorder`/`forceRelease` 时返回 `needs-consent` + 计划，用户确认后生效；用户自己调用永不需同意），不是一张例外表。
+
+**内部职责 = 谁在什么时候做哪件事**：派发与触发 · 依赖就绪调度 · 租约与接管重试 · 并发预算与运行锁 · 锁仲裁与回收 · 唤醒 · 推送与去重 · 持久化与一致性 · 依赖校验 · 审计。
+
+**依赖**：发布是**依赖闭包**（只拉仍是草稿的前置；前置被取消或 id 悬挂则拒绝）。调度器只派发**前置全部 `done`** 的任务。**已派发 ≠ 已完成**，所以前置可能永远完不成 → 下游标「**依赖已破**」交用户决定（取消 / 改依赖 / 显式覆写强行放行，覆写记进审计）。派发门槛只解决"不能提前开工"，不解决"永远开不了工"。
+
+**文件协作**：只用**文件锁**（worktree 已评估并暂缓）。键 = 项目相对路径，持有者 = agent；预约按请求时间排队，**释放时在同一提交内授予等待最久者**；租约兜底、存活判断优先；**只存宿主内存**。
+
+**摘要与通知**：`/task` 给一次板子摘要（已实测）；事件驱动推送 + 内容哈希去重 = T-7；唤醒靠 `followup` / `send(…, wakeup)`——机制已代码级确认，实现未做，且**插件能否触达其他会话的 Agent 句柄仍待查**（它决定"任务系统→WorkAgent"那条边由谁实现）。
 
 ## 一、结论
 
@@ -441,23 +469,14 @@ POST {action:'publish', id:'T-2', confirm:true}
 - **摘要已在真运行时验证**，原文 `Board (.agents/tasks.json): not created yet; create it there.`，顺序为 信号 → 附注 → 摘要。这一敲同时验掉三件假 fs 证明不了的事：**真实 `fs.resolve()` 对不存在路径可用**（每次首次读取都依赖它）、命令调用里能取到会话工作区（`invocation.agent.session` 与工具用的 `exec.agent.session` 等价）、附注之后确实跟着摘要。
 - **面板在新结构下只确认了注册**（`main` 的 occupant 是 `task-center`/`plugins`/`conversation`，无重复），页面上没有重新看过它的渲染。
 
-## 十二、拆解（任务草稿）
+## 十二、拆解与任务清单
 
-| # | 任务 | 依赖 | 状态 |
-|---|---|---|---|
-| 1 | 宿主侧任务板：文件格式 + 读取 + `FsVersion` CAS 写入 | — | ✅ `plugin/task-center/board.mjs`，25 项断言 |
-| 2a | 宿主侧：共享状态 + 面板路由（用户表面，权限与工具镜像） | 1 | ✅ `state.mjs` + `routes.mjs`，42 项断言 |
-| 2b | 客户端 store 从 mock 切到 `fetch`，视图不动 | 2a | |
-| 3a | 模型层：任务状态机 + 文件锁仲裁（纯函数，不依赖 Cordis，可独立测试） | — | ✅ `plugin/task-center/service.mjs`，114 项断言 |
-| 3b | `task_center` 工具（单工具 + `action`，薄外壳，调 3a） | 3a | ✅ `plugin/task-center/tool.mjs`，66 项断言 + 真运行时验证 |
-| 4 | `/task` 附任务板摘要 | 1 | ✅ 34 项断言（原以为依赖 3，实际只依赖 1） |
-| 5 | 方案文档层：typed markdown + front matter + 列表/详情 | — | |
-| 6 | 任务记 `proposal_ref` / `revision`；重新拆解与 stale 标记 | 5 | |
-| 7 | skill：拆解流程与质量标准 | 3, 5 | |
-| 8 | 文件锁落宿主：跨会话可见 + 过期通知持有者 + 退出 releaseAll + 目录前缀 + PID 回收 | 1 | |
-| 9 | **工具边界强制**：目标被他人锁住时拒绝写入；commit 只 add 自有锁文件并事后校验 | 8 | |
-| 10 | 每 agent 摘要改为事件驱动 + 内容哈希去重（先例测到省 40–60% token） | 3, 8 | |
-| 11 | 会话跳转（宿主 session target）+ 命令行的自定义渲染 | 2 | |
-| 12 | 发版：versions / 双语 CHANGELOG / 验收 | 全部 | |
+**这份表已退役——任务清单现在活在板子上**（`<项目>/.agents/tasks.json`，面板可看可操作）。此处不再复制一份，以免两处漂移。
 
-任务 1、4 已完成；**下一个是任务 3**（工具 + 模型），任务 2 紧随其后（面板显示真数据）。
+已在板子上落地、可以从板上移除的：
+
+- 宿主侧任务板 `board.mjs`（25 项断言）· 共享状态与面板路由 `state.mjs` + `routes.mjs`（42 项）
+- 模型层 `service.mjs`（114 项）· `task_center` 工具 `tool.mjs`（66 项，含真运行时验证）
+- `/task` 板子摘要（34 项）· 客户端 store 接宿主（客户端 63 项断言保持全绿）
+
+**做哪一件由板子说了算，不由这份文档说了算。** 文档负责"设计与理由"，板子负责"现在做什么"。
