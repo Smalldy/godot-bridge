@@ -30,7 +30,7 @@
 import { readBoard } from './board.mjs'
 import { projectPathOf, registerTaskTool } from './tool.mjs'
 import { registerTaskRoutes } from './routes.mjs'
-import { probeDispatch, watchAgentStatus } from './dispatch.mjs'
+import { probeDispatch, watchAgentStatus, dispatchOne } from './dispatch.mjs'
 import { createState } from './state.mjs'
 
 /** Services this row needs: the board is read through the filesystem, the project
@@ -273,6 +273,9 @@ export function apply(ctx) {
         projectPath: panelProject,
         dispatchProbe: function () {
           return probeDispatch(ctx, statusWatcher)
+        },
+        dispatchOne: function (taskId) {
+          return dispatchOne(ctx, { state: state, projectPath: panelProject(), now: state.clock() }, taskId)
         },
       })
     } catch (e) {

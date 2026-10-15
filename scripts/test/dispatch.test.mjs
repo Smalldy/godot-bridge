@@ -12,9 +12,19 @@
 // channels, including the case where a channel cannot be used at all.
 //
 // Run by `npm test`.
-const { servicesFor, resolveLead, probeDispatch, watchAgentStatus } = await import(
-  '../../plugin/task-center/dispatch.mjs'
-)
+const {
+  servicesFor,
+  resolveLead,
+  probeDispatch,
+  watchAgentStatus,
+  dispatchableTasks,
+  unmetDependencies,
+  pickTarget,
+  briefFor,
+  dispatchOne,
+} = await import('../../plugin/task-center/dispatch.mjs')
+const { emptyBoard } = await import('../../plugin/task-center/board.mjs')
+const { createTask, findTask, publishTask, setTaskStatus, claimTask } = await import('../../plugin/task-center/service.mjs')
 
 let failures = 0
 function check(label, condition, detail) {
@@ -189,6 +199,195 @@ watchAgentStatus({
   },
 })
 check('the subscription is registered as an effect', typeof effectLabel === 'string' && effectLabel.includes('agent/status'))
+
+// ── dispatching: the invariants that keep work from being handed out twice ──
+//
+// These are the checks that matter most in the whole feature. A dispatch that runs
+// twice does not fail loudly — it quietly puts two agents on one task — so the tests
+// below are mostly about what must NOT happen.
+
+const NOW = Date.parse('2026-01-15T12:00:00.000Z')
+const PROJECT = 'J:\\demo\\mm13d'
+
+/** The board the dispatcher writes, plus a counter, so "no write happened" is
+ * assertable rather than assumed. */
+function makeState(seed) {
+  const holder = { board: seed, writes: 0 }
+  return {
+    holder,
+    async read() {
+      return { failed: null, board: holder.board, existed: true }
+    },
+    async apply(_projectPath, mutate) {
+      const outcome = mutate(holder.board, 1)
+      if (outcome === undefined) {
+        return { failed: { ok: false, code: 'abandoned', message: 'mutator abandoned the write' } }
+      }
+      if (outcome.ok !== true) return { failed: outcome }
+      holder.board = outcome.board
+      holder.writes++
+      return { failed: null, board: holder.board, version: 'v', attempts: 1, events: outcome.events || [] }
+    },
+  }
+}
+
+/** A board built through the real model, so dispatch is tested against real tasks. */
+function boardWith(specs) {
+  let board = emptyBoard()
+  const ids = []
+  for (const spec of specs) {
+    const created = createTask(board, spec, NOW, 'me')
+    board = created.board
+    ids.push(created.task.id)
+    if (spec.released !== false) board = publishTask(board, created.task.id, NOW, 'user').board
+  }
+  return { board: board, ids: ids }
+}
+
+/** A roster with one idle teammate, one busy teammate, and the Lead. */
+function teamWith(overrides) {
+  const opts = overrides || {}
+  const calls = []
+  const roster = opts.roster === undefined
+    ? [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-idle', name: 'fixer', role: 'teammate', status: 'inactive' },
+        { id: 'session-busy', name: 'tester', role: 'teammate', status: 'running' },
+      ]
+    : opts.roster
+  const teams = {
+    calls,
+    tryMembership: (candidate) => ({ role: candidate.id === 'session-lead' ? 'lead' : 'teammate', name: candidate.id }),
+    listMembers: () => roster,
+    async sendMessage(caller, request) {
+      calls.push({ caller: caller.id, target: request.target, text: request.content[0].text })
+      if (opts.sendThrows === true) throw new Error('mailbox full')
+      return { messageId: 'msg-1', status: opts.delivery === undefined ? 'accepted' : opts.delivery }
+    },
+  }
+  const ctx = {
+    get(key) {
+      if (key === 'agents') return { list: () => [agent('session-lead')] }
+      if (key === 'agentTeams') return opts.noTeamService === true ? undefined : teams
+      return undefined
+    },
+  }
+  return { ctx: ctx, teams: teams, calls: calls }
+}
+
+const optionsFor = (state) => ({ state: state, projectPath: PROJECT, now: NOW })
+
+// dependency arithmetic
+const pair = boardWith([
+  { title: 'first', spec: '' },
+  { title: 'second', spec: '', blockedBy: ['T-1'] },
+])
+check('a task waiting on an unfinished dependency is not dispatchable', dispatchableTasks(pair.board).length === 1, String(dispatchableTasks(pair.board).length))
+check('the one that is dispatchable is the prerequisite', dispatchableTasks(pair.board)[0].id === 'T-1')
+check('its dependency is reported as unmet', unmetDependencies(pair.board, findTask(pair.board, 'T-2')).length === 1)
+const finished = claimTask(pair.board, 'T-1', { name: 'someone' }, NOW).board
+const done = setTaskStatus(finished, 'T-1', 'review', NOW, 'someone').board
+const accepted = setTaskStatus(done, 'T-1', 'done', NOW, 'user').board
+check('with the dependency done it becomes dispatchable', unmetDependencies(accepted, findTask(accepted, 'T-2')).length === 0)
+check('queued to claimed is refused by the status table, so only claiming can do it', setTaskStatus(pair.board, 'T-1', 'claimed', NOW, 'x').code === 'illegal-transition')
+
+const missing = { tasks: [{ id: 'T-9', title: 'x', status: 'queued', blockedBy: ['T-404'] }] }
+check('a dependency that no longer exists counts as unmet', unmetDependencies(missing, missing.tasks[0]).length === 1)
+
+// choosing who
+const noTeam = pickTarget({ get: () => undefined })
+check('without the team services there is nobody to pick', noTeam.code === 'no-team-service')
+const leadOnly = teamWith({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] })
+check('a roster with only the Lead has no WorkAgent', pickTarget(leadOnly.ctx).code === 'no-teammates')
+check('and the Lead is never the answer', pickTarget(leadOnly.ctx).ok === false)
+const allBusy = teamWith({ roster: [
+  { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+  { id: 'session-busy', name: 'tester', role: 'teammate', status: 'running' },
+] })
+check('a busy teammate is not dispatched to', pickTarget(allBusy.ctx).code === 'no-idle-member')
+const idlePick = pickTarget(teamWith({}).ctx)
+check('an idle teammate is picked', idlePick.ok === true && idlePick.target.name === 'fixer', JSON.stringify(idlePick.target))
+check('and it is not the Lead', idlePick.target.role === 'teammate')
+
+// the brief stands alone
+const briefTask = { id: 'T-7', title: 'do the thing', spec: 'the spec', acceptance: 'the criteria', blockedBy: ['T-5'] }
+const brief = briefFor(briefTask, PROJECT + '\\.agents\\tasks.json')
+check('the brief names the task', brief.includes('T-7') && brief.includes('do the thing'))
+check('the brief carries the spec and the criteria', brief.includes('the spec') && brief.includes('the criteria'))
+check('the brief says where the board is', brief.includes('tasks.json'))
+check('the brief says how to report', brief.includes('task_center') && brief.includes('evidence'))
+check('the brief forbids the assignee from dispatching', brief.includes('Do NOT dispatch'))
+
+// dispatch: the refusals must not write anything
+let refused = await dispatchOne(teamWith({}).ctx, { state: makeState(boardWith([{ title: 'x' }]).board), projectPath: null, now: () => NOW }, 'T-1')
+check('an unknown project is refused', refused.code === 'unknown-project')
+
+const draftBoard = boardWith([{ title: 'x', released: false }])
+const draftState = makeState(draftBoard.board)
+refused = await dispatchOne(teamWith({}).ctx, optionsFor(draftState), 'T-1')
+check('a draft is not dispatched', refused.code === 'not-pooled', refused.code)
+check('and nothing was written', draftState.holder.writes === 0, String(draftState.holder.writes))
+
+refused = await dispatchOne(teamWith({}).ctx, optionsFor(makeState(pair.board)), 'T-2')
+check('a task whose dependency is unfinished is refused', refused.code === 'dependency-unmet')
+check('and it says what it is waiting for', Array.isArray(refused.waiting) && refused.waiting[0] === 'T-1')
+const waitingState = makeState(pair.board)
+await dispatchOne(teamWith({}).ctx, optionsFor(waitingState), 'T-2')
+check('a refused dispatch writes nothing', waitingState.holder.writes === 0)
+
+const noAgentState = makeState(boardWith([{ title: 'x' }]).board)
+refused = await dispatchOne(leadOnly.ctx, optionsFor(noAgentState), 'T-1')
+check('with no WorkAgent the dispatch is refused', refused.code === 'no-teammates')
+check('and the task is left in the pool', noAgentState.holder.writes === 0 && findTask(noAgentState.holder.board, 'T-1').status === 'queued')
+
+// dispatch: the success path
+const successBoard = boardWith([{ title: 'panel cleanup', spec: 'shrink it', acceptance: 'it is smaller' }])
+const successState = makeState(successBoard.board)
+const team = teamWith({})
+const result = await dispatchOne(team.ctx, optionsFor(successState), 'T-1')
+check('a dispatch reports success', result.ok === true, JSON.stringify(result))
+check('and names the assignee', result.target === 'fixer')
+check('and the message identity', result.messageId === 'msg-1')
+const dispatchedTask = findTask(successState.holder.board, 'T-1')
+check('the task is now claimed', dispatchedTask.status === 'claimed', dispatchedTask.status)
+check('and assigned to the target', dispatchedTask.assignee.name === 'fixer')
+check('and carries a lease', dispatchedTask.leaseUntil !== null)
+check('the dispatch is recorded with the delivery status', dispatchedTask.dispatch.status === 'accepted')
+check('the first attempt is numbered one', dispatchedTask.dispatch.attempts === 1)
+check('the message went to the idle teammate', team.calls.length === 1 && team.calls[0].target === 'fixer')
+check('the message carries the brief', team.calls[0].text.includes('Task T-1') && team.calls[0].text.includes('shrink it'))
+check('the sender credential is the Lead', team.calls[0].caller === 'session-lead')
+
+// the same task again: this is the failure the whole design guards
+const second = await dispatchOne(team.ctx, optionsFor(successState), 'T-1')
+check('a second dispatch of the same task is refused', second.ok === false && second.code === 'not-pooled', JSON.stringify(second))
+check('and NO second message is sent', team.calls.length === 1, String(team.calls.length))
+
+// a queued delivery is a success, and must not be retried
+const queuedTeam = teamWith({ delivery: 'queued' })
+const queuedState = makeState(boardWith([{ title: 'x' }]).board)
+const queuedResult = await dispatchOne(queuedTeam.ctx, optionsFor(queuedState), 'T-1')
+check('a queued delivery counts as dispatched', queuedResult.ok === true && queuedResult.delivery === 'queued')
+check('and is recorded as queued, not retried', findTask(queuedState.holder.board, 'T-1').dispatch.status === 'queued')
+
+// a failed send must not leave a task looking assigned
+const failingTeam = teamWith({ sendThrows: true })
+const failingState = makeState(boardWith([{ title: 'x' }]).board)
+const failed = await dispatchOne(failingTeam.ctx, optionsFor(failingState), 'T-1')
+check('a failing send is reported', failed.ok === false && failed.code === 'send-failed', JSON.stringify(failed))
+check('the failure names the reason', String(failed.message).includes('mailbox full'))
+check('the claim was rolled back', failed.rolledBack === true)
+const afterFailure = findTask(failingState.holder.board, 'T-1')
+check('the task is back in the pool', afterFailure.status === 'queued', afterFailure.status)
+check('with no assignee left behind', afterFailure.assignee === null)
+check('and the failed attempt is on the record', afterFailure.dispatch.status === 'failed')
+check('the attempt was counted', afterFailure.dispatch.attempts === 1)
+
+// a retry is allowed after a failure, and only after one
+const retryTeam = teamWith({})
+const retried = await dispatchOne(retryTeam.ctx, optionsFor(failingState), 'T-1')
+check('a task whose send failed can be dispatched again', retried.ok === true, JSON.stringify(retried))
+check('and the attempt count grows', findTask(failingState.holder.board, 'T-1').dispatch.attempts === 2)
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

@@ -140,6 +140,17 @@ export function registerTaskRoutes(ctx, options) {
     const now = state.clock()
     state.sweep()
 
+    // The only action here that LEAVES this process: it hands a pooled task to a
+    // WorkAgent. Kept as an explicit branch rather than a mutator because it is not a
+    // board write with a side note — the side effect IS the point, and it has to be
+    // possible to trigger it by hand before it is ever triggered automatically.
+    if (action === 'dispatch') {
+      if (options.dispatchOne === undefined) {
+        return { ok: false, code: 'no-dispatcher', message: 'Dispatch is not available in this profile.' }
+      }
+      return await options.dispatchOne(String(body.id === undefined ? '' : body.id))
+    }
+
     if (Object.prototype.hasOwnProperty.call(LOCK_ACTIONS, action)) {
       const path = String(body.path === undefined ? '' : body.path)
       const result =
