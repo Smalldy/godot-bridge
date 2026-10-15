@@ -151,6 +151,15 @@ export function registerTaskRoutes(ctx, options) {
       return await options.dispatchOne(String(body.id === undefined ? '' : body.id), body)
     }
 
+    // Force the automatic trigger by hand: the same sweep a board write or a status
+    // change runs, for when you want to see what it would find right now.
+    if (action === 'sweep') {
+      if (options.sweep === undefined) {
+        return { ok: false, code: 'no-dispatcher', message: 'Dispatch is not available in this profile.' }
+      }
+      return await options.sweep()
+    }
+
     if (Object.prototype.hasOwnProperty.call(LOCK_ACTIONS, action)) {
       const path = String(body.path === undefined ? '' : body.path)
       const result =

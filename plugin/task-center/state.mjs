@@ -25,6 +25,10 @@ import { emptyLocks, expireLocks } from './service.mjs'
 export function createState(ctx, options) {
   const clock = options !== undefined && typeof options.now === 'function' ? options.now : Date.now
   const memory = { locks: emptyLocks(), projectHint: null }
+  /** Told AFTER a board write lands, so the pool can react to it. Publishing a task
+   * is a board write, and that write is the event that should start the work — which
+   * is why this hook lives here rather than in whichever route happened to publish. */
+  const afterWrite = options !== undefined && typeof options.afterWrite === 'function' ? options.afterWrite : null
 
   /**
    * Remember which project the agents are working on.
@@ -70,6 +74,14 @@ export function createState(ctx, options) {
     )
     if (outcome !== null && outcome.ok === false) return { failed: outcome }
     if (written.ok === false) return { failed: { ok: false, code: written.code, message: written.message } }
+    if (afterWrite !== null) {
+      // Deliberately NOT awaited. The write has landed; whoever asked for it should
+      // get their answer, and a dispatch that fails must not fail their publish.
+      try {
+        const pending = afterWrite({ projectPath: projectPath, board: written.board })
+        if (pending !== undefined && pending !== null && typeof pending.catch === 'function') pending.catch(function () {})
+      } catch (error) {}
+    }
     return {
       failed: null,
       board: written.board,

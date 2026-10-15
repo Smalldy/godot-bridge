@@ -214,9 +214,10 @@ const PROJECT = 'J:\\demo\\mm13d'
 /** The board the dispatcher writes, plus a counter, so "no write happened" is
  * assertable rather than assumed. */
 function makeState(seed) {
-  const holder = { board: seed, writes: 0 }
+  const holder = { board: seed, writes: 0, now: NOW }
   return {
     holder,
+    clock: () => holder.now,
     async read() {
       return { failed: null, board: holder.board, existed: true }
     },
@@ -491,6 +492,97 @@ const noSpawnState = makeState(boardWith([{ title: 'x' }]).board)
 const notSpawned = await dispatchOne(noSpawnTeam.ctx, optionsFor(noSpawnState), 'T-1')
 check('without allowSpawn the dispatch is refused rather than spawning', notSpawned.code === 'no-teammates')
 check('and nothing was spawned', noSpawnTeam.spawns.length === 0)
+
+// ── the automatic trigger: publishing a task should be enough ──────────────
+//
+// This is the difference between HAVING the edge and the edge firing itself. If the
+// sweep is wrong, the failure is not a crash — it is a pool that sits still while
+// somebody keeps pressing a button, which is exactly what the pool was meant to end.
+
+const { createDispatcher } = await import('../../plugin/task-center/dispatch.mjs')
+
+const sweepState = makeState(boardWith([{ title: 'ready work' }]).board)
+const sweepTeam = teamWith({})
+const sweepDispatcher = createDispatcher(sweepTeam.ctx, {
+  state: sweepState,
+  projectPath: () => PROJECT,
+  allowSpawn: false,
+})
+const swept = await sweepDispatcher.sweep('test')
+check('a sweep finds the ready work', swept.ok === true && swept.ready === 1, JSON.stringify(swept))
+check('and dispatches it', swept.results.length === 1 && swept.results[0].ok === true, JSON.stringify(swept.results))
+check('so the task is claimed without anyone calling dispatch by hand', findTask(sweepState.holder.board, 'T-1').status === 'claimed')
+check('and the reason is on the record', swept.reason === 'test')
+
+// nothing ready: a draft is not work yet, and a task waiting on a dependency is not
+// work yet either. Both must be invisible to a sweep, or it would dispatch too early.
+const nothingReady = makeState(boardWith([
+  { title: 'draft', released: false },
+  { title: 'first' },
+  { title: 'second', blockedBy: ['T-2'] },
+]).board)
+const pickyDispatcher = createDispatcher(teamWith({}).ctx, {
+  state: nothingReady,
+  projectPath: () => PROJECT,
+  allowSpawn: false,
+  cooldownMs: 0,
+})
+const picky = await pickyDispatcher.sweep('test')
+check('a sweep only counts pooled tasks whose dependencies are done', picky.ready === 1, String(picky.ready))
+check('and dispatches exactly that one', picky.results.length === 1 && picky.results[0].id === 'T-2', JSON.stringify(picky.results))
+check('the draft is left alone', findTask(nothingReady.holder.board, 'T-1').status === 'draft')
+check('and the blocked one waits', findTask(nothingReady.holder.board, 'T-3').status === 'queued')
+
+// no project is not a failure: the pool simply has no board to read
+const noProject = createDispatcher(teamWith({}).ctx, { state: makeState(emptyBoard()), projectPath: () => null, allowSpawn: false })
+const skipped = await noProject.sweep('test')
+check('a sweep with no project skips rather than failing', skipped.ok === true && skipped.skipped === 'unknown-project')
+
+// cooldown, so an event storm cannot become a board-read storm
+const cooled = createDispatcher(teamWith({}).ctx, { state: makeState(emptyBoard()), projectPath: () => PROJECT, allowSpawn: false, cooldownMs: 5000 })
+await cooled.sweep('first')
+const again = await cooled.sweep('second')
+check('a second sweep inside the cooldown is skipped', again.skipped === 'cooldown', JSON.stringify(again))
+
+// re-entrancy: a sweep that writes to the board triggers a sweep
+const reentrant = createDispatcher(teamWith({}).ctx, {
+  state: makeState(boardWith([{ title: 'x' }]).board),
+  projectPath: () => PROJECT,
+  allowSpawn: false,
+  cooldownMs: 0,
+})
+const first = reentrant.sweep('first')
+const during = await reentrant.sweep('second')
+check('a sweep that overlaps another is skipped', during.skipped === 'already-sweeping', JSON.stringify(during))
+await first
+
+// a per-task refusal is reported, not thrown: one undispatchable task must not stop
+// the sweep from handing out the others
+const noWorkersState = makeState(boardWith([{ title: 'x' }]).board)
+const noWorkers = createDispatcher(
+  teamWith({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] }).ctx,
+  { state: noWorkersState, projectPath: () => PROJECT, allowSpawn: false, cooldownMs: 0 },
+)
+const refusedSweep = await noWorkers.sweep('test')
+check('a sweep survives a task it cannot dispatch', refusedSweep.ok === true, JSON.stringify(refusedSweep))
+check('and reports why', refusedSweep.results[0].code === 'no-teammates', JSON.stringify(refusedSweep.results[0]))
+check('leaving the task pooled', findTask(noWorkersState.holder.board, 'T-1').status === 'queued', findTask(noWorkersState.holder.board, 'T-1').status)
+check('and having written nothing', noWorkersState.holder.writes === 0, String(noWorkersState.holder.writes))
+
+// A refusal from one task must not stop the NEXT one from being dispatched. This is
+// the shape a real pool meets: more ready work than there are WorkAgents.
+const mixedRoster = teamWith({})
+const mixedState = makeState(boardWith([{ title: 'one' }, { title: 'two' }]).board)
+const mixedDispatcher = createDispatcher(mixedRoster.ctx, {
+  state: mixedState,
+  projectPath: () => PROJECT,
+  allowSpawn: false,
+  cooldownMs: 0,
+})
+const mixed = await mixedDispatcher.sweep('test')
+check('a sweep visits every ready task', mixed.results.length === 2, JSON.stringify(mixed.results.map((r) => r.id)))
+check('and fails independently per task', mixed.results.every((r) => r.ok === true || typeof r.code === 'string'))
+check('the one it could dispatch is claimed', findTask(mixedState.holder.board, 'T-1').status === 'claimed')
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

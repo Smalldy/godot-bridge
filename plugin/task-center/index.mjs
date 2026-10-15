@@ -30,7 +30,7 @@
 import { readBoard } from './board.mjs'
 import { projectPathOf, registerTaskTool } from './tool.mjs'
 import { registerTaskRoutes } from './routes.mjs'
-import { probeDispatch, watchAgentStatus, dispatchOne } from './dispatch.mjs'
+import { probeDispatch, watchAgentStatus, dispatchOne, createDispatcher } from './dispatch.mjs'
 import { createState } from './state.mjs'
 
 /** Services this row needs: the board is read through the filesystem, the project
@@ -130,7 +130,16 @@ export function apply(ctx) {
   // ONE state for both surfaces. The locks are host memory, so two copies would
   // mean the tool and the panel each seeing half the truth — and two agents both
   // believing they hold the same file.
-  const state = createState(ctx)
+  // The dispatcher is referenced by the state's after-write hook and built right
+  // after it, so the hook reads a `let` rather than a value that does not exist yet.
+  let dispatcher = null
+  const state = createState(ctx, {
+    afterWrite: function () {
+      // A board write is the event that should start work: publishing a task IS a
+      // write, so this is what makes "release it" sufficient.
+      return dispatcher === null ? undefined : dispatcher.sweep('board-write')
+    },
+  })
   /**
    * The project the panel shows: whichever one an agent last resolved a board in.
    *
@@ -147,6 +156,29 @@ export function apply(ctx) {
   // `agent/status` — the one part of the design that is inferred rather than
   // measured — and it costs nothing when nothing dispatches.
   const statusWatcher = watchAgentStatus(ctx)
+
+  dispatcher = createDispatcher(ctx, {
+    state: state,
+    projectPath: () => state.memory.projectHint,
+    allowSpawn: true,
+  })
+
+  // A WorkAgent going idle is a chance to hand out more work, and this subscription
+  // is why that needs no polling. The listener is registered as an effect so a reload
+  // does not accumulate them — and a context without event support degrades to
+  // board-write and manual sweeps rather than failing this whole row.
+  ctx.effect(function () {
+    if (typeof ctx.on !== 'function') return function () {}
+    const off = ctx.on('agent/status', function () {
+      try {
+        const pending = dispatcher.sweep('agent-status')
+        if (pending !== undefined && pending !== null && typeof pending.catch === 'function') pending.catch(function () {})
+      } catch (error) {}
+    })
+    return function () {
+      if (typeof off === 'function') off()
+    }
+  }, 'godot-bridge: dispatch on agent status')
 
   // ── /task: the human signal that authorises real task creation ───────────
   // A slash command cannot reach the model by itself: dsh-commands executes a
@@ -289,6 +321,9 @@ export function apply(ctx) {
             },
             taskId,
           )
+        },
+        sweep: function () {
+          return dispatcher.sweep('panel')
         },
       })
     } catch (e) {

@@ -521,3 +521,76 @@ export async function dispatchOne(ctx, options, taskId, request) {
     boardRecorded: recorded.failed === null,
   }
 }
+
+/**
+ * The automatic trigger, which is what makes the pool move on its own.
+ *
+ * Until this exists, dispatching is an API call somebody has to make — the panel's
+ * button, or the conversation agent. With it, PUBLISHING A TASK IS ENOUGH: the board
+ * write is noticed, the ready list is computed, and the system hands the work out.
+ * That is the difference between having the edge and the edge firing itself.
+ *
+ * Re-entrancy is the danger here, not concurrency. A sweep writes to the board
+ * (claiming, recording), and a write triggers a sweep — so unguarded, the system would
+ * dispatch in response to its own dispatch. Two things stop it: the flag below, and
+ * the claim itself, which makes an already-dispatched task stop being `queued` and so
+ * stop being ready. The flag is the cheap half; the claim is the half that holds even
+ * across processes.
+ */
+export function createDispatcher(ctx, options) {
+  const state = options.state
+  const projectOf = options.projectPath
+  const canSpawn = options.allowSpawn === true
+  const memory = { tasks: new Set(), sweeping: false, lastSweepAt: 0 }
+  // An event storm must not become a board-read storm: status events arrive on every
+  // turn boundary, and sweeping that often is pure waste.
+  const cooldownMs = typeof options.cooldownMs === 'number' ? options.cooldownMs : 1500
+
+  async function sweep(reason) {
+    if (memory.sweeping) return { ok: true, skipped: 'already-sweeping' }
+    const startedAt = state.clock()
+    if (startedAt - memory.lastSweepAt < cooldownMs) return { ok: true, skipped: 'cooldown' }
+    const projectPath = projectOf()
+    if (typeof projectPath !== 'string' || projectPath.length === 0) {
+      // Not an error: the pool simply has no board to read until something touches
+      // one, and the panel says so.
+      return { ok: true, skipped: 'unknown-project' }
+    }
+    memory.sweeping = true
+    memory.lastSweepAt = startedAt
+    try {
+      const read = await state.read(projectPath)
+      if (read.failed !== null) return read.failed
+      const ready = dispatchableTasks(read.board)
+      const results = []
+      for (const task of ready) {
+        if (memory.tasks.has(task.id)) continue
+        memory.tasks.add(task.id)
+        try {
+          results.push(
+            await dispatchOne(
+              ctx,
+              {
+                state: state,
+                projectPath: projectPath,
+                now: state.clock(),
+                allowSpawn: canSpawn,
+                maxWorkAgents: options.maxWorkAgents,
+              },
+              task.id,
+            ),
+          )
+        } catch (error) {
+          results.push({ ok: false, id: task.id, code: 'threw', message: String((error && error.message) || error) })
+        } finally {
+          memory.tasks.delete(task.id)
+        }
+      }
+      return { ok: true, reason: reason === undefined ? 'manual' : reason, ready: ready.length, results: results }
+    } finally {
+      memory.sweeping = false
+    }
+  }
+
+  return { sweep: sweep, memory: memory }
+}
