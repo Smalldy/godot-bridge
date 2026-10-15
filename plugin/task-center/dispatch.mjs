@@ -365,7 +365,10 @@ function claimMutator(board, taskId, target, now, via) {
         at: new Date(now).toISOString(),
         via: via,
         target: target.name,
-        targetId: String(target.id),
+        // A spawned target has no id yet — the board records the dispatch BEFORE the
+        // agent exists, which is the whole point of claiming first. `String(undefined)`
+        // would write the word "undefined" into the file.
+        targetId: target.id === undefined ? null : String(target.id),
         status: 'sending',
       }),
     },
@@ -424,6 +427,11 @@ export async function dispatchOne(ctx, options, taskId, request) {
   if (claimed.failed !== null) return claimed.failed
   const boardPath = projectPath + '\\.agents\\tasks.json'
   const brief = briefFor(task, boardPath)
+  // The service validates `signal` STRICTLY: passing `undefined` is not the same as
+  // omitting the field, and it answers "signals[0] is not of type AbortSignal." So the
+  // field is only added when there is a real one — which is the common case here, since
+  // a dispatch triggered by a sweep has no request to carry a signal.
+  const signalField = signal === undefined || signal === null ? {} : { signal: signal }
   let delivered = null
   let sendError = null
   try {
@@ -431,22 +439,32 @@ export async function dispatchOne(ctx, options, taskId, request) {
       // The prompt IS the delivery. A fresh WorkAgent starts on the task, so spawning
       // it and then sending the same brief would tell it twice — and the name it was
       // spawned under has to be the name the board already recorded.
-      delivered = await ctx.get('agentTeams').spawnTeammate(picked.lead, {
-        name: picked.target.name,
-        description: task.title,
-        prompt: [
-          { type: 'text', text: spawnPreamble(picked.target.name) },
-          { type: 'text', text: brief },
-        ],
-        context: 'fresh',
-        signal: signal,
-      })
+      delivered = await ctx.get('agentTeams').spawnTeammate(
+        picked.lead,
+        Object.assign(
+          {
+            name: picked.target.name,
+            description: task.title,
+            prompt: [
+              { type: 'text', text: spawnPreamble(picked.target.name) },
+              { type: 'text', text: brief },
+            ],
+            context: 'fresh',
+          },
+          signalField,
+        ),
+      )
     } else {
-      delivered = await ctx.get('agentTeams').sendMessage(picked.lead, {
-        target: picked.target.name,
-        content: [{ type: 'text', text: brief }],
-        signal: signal,
-      })
+      delivered = await ctx.get('agentTeams').sendMessage(
+        picked.lead,
+        Object.assign(
+          {
+            target: picked.target.name,
+            content: [{ type: 'text', text: brief }],
+          },
+          signalField,
+        ),
+      )
     }
   } catch (error) {
     sendError = String((error && error.message) || error)

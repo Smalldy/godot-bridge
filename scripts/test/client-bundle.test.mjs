@@ -94,8 +94,15 @@ const React = {
     hookIndex++
     return [initial, () => {}]
   },
-  useEffect() {
+  useEffect(fn) {
     hookIndex++
+    // Effects RUN here, deliberately. The panel asks the Host for its board on mount,
+    // and a no-op effect meant that request was never made — so the render assertions
+    // were reading the sample store's fallback and NEVER the path that ships.
+    if (typeof fn === 'function') {
+      const cleanup = fn()
+      if (typeof cleanup === 'function') effects.push(cleanup)
+    }
   },
   useMemo(factory) {
     return factory()
@@ -268,7 +275,52 @@ function snapshot() {
   return captured.getSnapshot()
 }
 
+// ── the Host the panel talks to ────────────────────────────────────────────
+//
+// The panel draws whatever the Host answers with, so the tests answer AS the Host.
+// They used to lean on the store's sample fallback, which meant every render
+// assertion below was reading data the shipped panel never shows — and a fabricated
+// board could reach a user without a single test noticing.
+globalThis.setInterval = () => 0
+globalThis.clearInterval = () => {}
+let hostLoads = 0
+const hostActions = []
+const HOST_PAYLOAD = {
+  ok: true,
+  project: 'J:\\demo\\mm13d',
+  seq: 16,
+  version: 'v1',
+  updatedAt: '2026-01-15T12:00:00.000Z',
+  tasks: plugin.__fixture.tasks(),
+  locks: plugin.__fixture.locks(),
+  statuses: ['draft', 'queued', 'claimed', 'in_progress', 'blocked', 'review', 'done', 'cancelled'],
+}
+globalThis.fetch = async function (url, options) {
+  // A POST is an action; anything else is the board read. Recording the actions is
+  // what lets the tests below assert the CLIENT's contract — which request it sends —
+  // instead of re-testing the model rules that service.test.mjs already covers
+  // against the real model rather than against a mock of it.
+  if (options !== undefined && options.method === 'POST') {
+    hostActions.push(JSON.parse(options.body))
+  } else {
+    hostLoads++
+  }
+  return { json: async () => HOST_PAYLOAD }
+}
+const flush = () =>
+  new Promise(function (resolve) {
+    setTimeout(resolve, 0)
+  })
+
 // ── board: cards in status columns ─────────────────────────────────────────
+// The first render is the mount: it starts the Host load. Flush it before asserting,
+// or the panel would be read while the answer is still in flight.
+render('board')
+await new Promise(function (resolve) {
+  setTimeout(resolve, 0)
+})
+check('the panel asked the Host for its board on mount', hostLoads >= 1, String(hostLoads))
+
 let tree = render('board')
 check('board renders without throwing', tree !== null && tree !== undefined)
 check('board renders six status columns', findAll(tree, className('gbt-col')).length === 6, String(findAll(tree, className('gbt-col')).length))
@@ -317,35 +369,61 @@ check('form renders', textIn(tree, '新建任务').length > 0)
 check('form requires a title', textIn(tree, '标题不能为空').length > 0)
 check('form no longer asks for write scopes', textIn(tree, '写入范围').length === 0)
 
-// ── board transitions ──────────────────────────────────────────────────────
-check('read path returns the seeded board', snapshot().tasks.length === 10, String(snapshot().tasks.length))
-tree = render('queue', null, null, null, new Set(['T-13']))
-buttonLabelled(tree, '发布到队列').props.onClick()
-check(
-  'publishing moves the draft into the queue',
-  snapshot().tasks.filter((t) => t.status === 'draft').length === 0 &&
-    snapshot().tasks.filter((t) => t.status === 'queued').length === 3,
-  JSON.stringify(snapshot().tasks.map((t) => t.id + ':' + t.status)),
-)
-check('publishing appends a history entry', snapshot().tasks.filter((t) => t.id === 'T-13')[0].history.length === 2)
-
+// ── what the panel SENDS ───────────────────────────────────────────────────
+//
+// The client's whole contract is two things: draw what the Host returned, and send
+// the right request when the user acts. These blocks used to assert the MODEL —
+// publishing moves a draft to the queue, release hands the file to the longest
+// waiter — by driving the sample store. That tested a mock of the rules instead of
+// the rules, and it only worked while the panel was drawing fabricated data. The
+// rules themselves live in service.test.mjs, against the real model.
+const lastAction = () => hostActions[hostActions.length - 1]
 const queuedIds = () =>
   snapshot()
     .tasks.filter((t) => t.status === 'queued')
     .sort((a, b) => a.order - b.order)
     .map((t) => t.id)
-const before = queuedIds().join(',')
+
+check('the board the panel draws is the Host board', snapshot().tasks.length === 10, String(snapshot().tasks.length))
+
+tree = render('queue', null, null, null, new Set(['T-13']))
+buttonLabelled(tree, '发布到队列').props.onClick()
+await flush()
+check(
+  'publishing sends a publish action for the selected draft',
+  lastAction().action === 'publish' && lastAction().id === 'T-13',
+  JSON.stringify(lastAction()),
+)
+
 findAll(render('queue'), (n) => n.type === 'button' && n.props.title === '上移' && n.props.disabled === false)[0].props.onClick()
-check('reordering swaps two queue positions', queuedIds().join(',') !== before, `${before} -> ${queuedIds().join(',')}`)
+await flush()
+check('reordering sends a move action with a delta', lastAction().action === 'move' && lastAction().delta === -1, JSON.stringify(lastAction()))
 
 buttonLabelled(render('queue'), '领取').props.onClick()
-const claimed = snapshot().tasks.filter((t) => t.status === 'in_progress')
-check('claiming assigns an owner and a lease', claimed.length === 4 && claimed.every((t) => t.assignee && t.leaseUntil))
+await flush()
+check('claiming sends a claim action', lastAction().action === 'claim' && typeof lastAction().id === 'string', JSON.stringify(lastAction()))
 
 buttonLabelled(render('board', 'T-10'), '验收通过').props.onClick()
-check('approval closes the task', snapshot().tasks.filter((t) => t.id === 'T-10')[0].status === 'done')
+await flush()
+// The panel says `setStatus ... done`, not `complete`. The client's vocabulary is its
+// own; T-14 owns aligning the surface, and until then the test asserts what is SENT
+// rather than what the design document calls it.
+check(
+  'approval sends a setStatus-to-done action',
+  lastAction().action === 'setStatus' && lastAction().status === 'done' && lastAction().id === 'T-10',
+  JSON.stringify(lastAction()),
+)
+
 buttonLabelled(render('board', 'T-11'), '解除阻塞').props.onClick()
-check('clearing a block returns it to progress', snapshot().tasks.filter((t) => t.id === 'T-11')[0].status === 'in_progress')
+await flush()
+// Worth a second look, and recorded rather than blessed: clearing a block sends
+// `blocked` with a falsy `blockedBy` instead of a distinct unblock action. If the host
+// writes that falsy value into the task, a cleared block leaves a non-list behind.
+check(
+  'clearing a block sends a blocked action for that task',
+  lastAction().action === 'blocked' && lastAction().id === 'T-11',
+  JSON.stringify(lastAction()),
+)
 
 // ── the lock arbitration rule ──────────────────────────────────────────────
 const path = 'scripts/core/damage.gd'
@@ -355,30 +433,13 @@ const waitedLongest = lockBefore.queue.slice().sort((a, b) => a.since - b.since)
 check('@fixer is the longest-waiting reservation', waitedLongest.who === '@fixer', waitedLongest.who)
 
 buttonLabelled(findAll(render('files'), className('gbt-lockrow'))[0], '释放').props.onClick()
-const lockAfter = snapshot().locks[path]
-check('release hands the file to the longest waiter', lockAfter.holder === '@fixer', String(lockAfter.holder))
-check('the shorter waiter stays queued', lockAfter.queue.length === 1 && lockAfter.queue[0].who === '@explore-3', JSON.stringify(lockAfter.queue))
+await flush()
+// The panel has no lock identity of its own, so its release IS a force release.
 check(
-  'release and grant are one commit',
-  snapshot().lastEvent.kind === 'granted' && snapshot().lastEvent.who === '@fixer',
-  JSON.stringify(snapshot().lastEvent),
+  'releasing a file from the panel sends a forceRelease for that path',
+  lastAction().action === 'forceRelease' && lastAction().path === path,
+  JSON.stringify(lastAction()),
 )
-check('an agent that never reserved gains nothing', lockAfter.holder !== '@combat-2')
-
-const freeRow = findAll(render('files'), className('gbt-lockrow')).filter((row) => textOf(row).indexOf('project.godot') >= 0)[0]
-buttonLabelled(freeRow, '模拟 agent 取用').props.onClick()
-check('taking a free file grants it outright', snapshot().locks['project.godot'].holder === '@sim-1', String(snapshot().locks['project.godot'].holder))
-check('taking a free file queues nobody', snapshot().locks['project.godot'].queue.length === 0)
-const takenRow = findAll(render('files'), className('gbt-lockrow')).filter((row) => textOf(row).indexOf('project.godot') >= 0)[0]
-buttonLabelled(takenRow, '释放').props.onClick()
-check('releasing a free-taken file leaves it unowned', snapshot().locks['project.godot'].holder === null)
-check('releasing with an empty queue reports a free file', snapshot().lastEvent.kind === 'freed', JSON.stringify(snapshot().lastEvent))
-
-// ── simulate ───────────────────────────────────────────────────────────────
-buttonLabelled(render('board'), '模拟 agent 活动').props.onClick()
-check('simulate produced an event', snapshot().lastEvent !== null, JSON.stringify(snapshot().lastEvent))
-buttonLabelled(render('board'), '重置演示数据').props.onClick()
-check('reset restores the seeded locks', snapshot().locks['scripts/core/damage.gd'].holder === '@combat-2')
 
 // ── teardown: unloading the row must withdraw slots and styles ─────────────
 let teardownError = null

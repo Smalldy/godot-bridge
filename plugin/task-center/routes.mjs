@@ -101,6 +101,40 @@ export function registerTaskRoutes(ctx, options) {
   const projectOf = options.projectPath
   const by = '@user'
 
+  /** The `?project=` a panel may send: the project it last showed. */
+  function projectFromUrl(req) {
+    try {
+      const url = new URL((req && req.url) || '/', 'http://localhost')
+      const value = url.searchParams.get('project')
+      return typeof value === 'string' && value.length > 0 ? value : null
+    } catch (error) {
+      return null
+    }
+  }
+
+  /**
+   * Let the panel name the project it wants, but only within limits.
+   *
+   * The Host's own hint wins outright: an agent that has just touched a board is
+   * better evidence than the browser's memory. Only when NOTHING is known does the
+   * panel's remembered project get considered, and then only if a board ALREADY
+   * EXISTS there — so a crafted URL cannot aim this route at an arbitrary directory
+   * and have it read or write a `.agents/tasks.json` inside.
+   *
+   * This exists because the Host's hint is memory-only and dies on every restart, at
+   * which point the panel used to fall back to fabricated data. Adopting the panel's
+   * memory is what lets it come back on its own.
+   */
+  async function adoptHintedProject(req) {
+    const known = projectOf()
+    if (typeof known === 'string' && known.length > 0) return
+    const hinted = projectFromUrl(req)
+    if (hinted === null) return
+    const probe = await state.read(hinted)
+    if (probe.failed !== null || probe.existed !== true) return
+    state.noteProject(hinted)
+  }
+
   async function currentState() {
     const projectPath = projectOf()
     if (projectPath === null || projectPath === undefined) {
@@ -192,6 +226,7 @@ export function registerTaskRoutes(ctx, options) {
       path: STATE_PATH,
       handler: async function (req, res) {
         try {
+          await adoptHintedProject(req)
           sendJson(res, 200, await currentState())
         } catch (error) {
           sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })

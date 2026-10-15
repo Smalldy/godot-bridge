@@ -254,7 +254,8 @@ window.__ModuleLoader__.load({
 				simIdle: 'Nothing for a simulated agent to pick up.',
 				lastEvent: 'Last simulated event',
 			sourceSample: 'sample data (no Host yet)',
-				prototype: 'Interactive prototype - mock data, nothing is persisted.',
+			sourceOffline: 'the Host is not answering, so this board is empty rather than invented',
+				prototype: 'Board data comes from the Host. Nothing here is simulated.',
 			},
 			zh: {
 				nav: '任务',
@@ -359,7 +360,8 @@ window.__ModuleLoader__.load({
 				simIdle: '没有可供模拟 agent 领取的任务。',
 				lastEvent: '最近一次模拟事件',
 			sourceSample: '示例数据（尚未接入宿主）',
-				prototype: '交互原型——假数据，不做任何持久化。',
+			sourceOffline: '宿主未响应——这里是空板子，而不是编造的板子',
+				prototype: '板子数据来自宿主，此处不模拟任何东西。',
 			},
 		}
 
@@ -1137,6 +1139,32 @@ window.__ModuleLoader__.load({
 		 */
 		const TC_STATE_URL = '/godot-bridge/task-center/state'
 		const TC_ACTION_URL = '/godot-bridge/task-center/action'
+		/**
+		 * The project the panel last showed, in the BROWSER.
+		 *
+		 * The Host's own hint lives in memory and is gone after every restart, which
+		 * used to leave the panel with no project at all — and a panel with no project
+		 * fell back to fabricated data. Remembering it here is what lets the panel come
+		 * back by itself, without an agent having to touch a board first. The Host
+		 * validates the path and prefers its own hint, so this can only ever be a
+		 * fallback, never an override.
+		 */
+		const TC_PROJECT_KEY = 'godotBridge.taskCenter.project'
+		function rememberedProject() {
+			try {
+				const value = window.localStorage.getItem(TC_PROJECT_KEY)
+				return typeof value === 'string' && value.length > 0 ? value : null
+			} catch (error) {
+				return null
+			}
+		}
+		function rememberProject(project) {
+			try {
+				if (typeof project === 'string' && project.length > 0) window.localStorage.setItem(TC_PROJECT_KEY, project)
+			} catch (error) {
+				/* private mode, or storage disabled: remembering is a convenience */
+			}
+		}
 
 		/** ISO-8601 (or null) to epoch milliseconds (or null). */
 		function tcMs(value) {
@@ -1214,32 +1242,62 @@ window.__ModuleLoader__.load({
 					listener()
 				})
 			}
+			/**
+			 * What the panel shows when the Host cannot answer.
+			 *
+			 * Deliberately NOT the sample board. The seeds look like real work —
+			 * plausible titles, agent names, lease countdowns, a plausible status
+			 * distribution — so falling back to them shows a working-looking board that
+			 * has nothing to do with the user's project. Measured live: after a Host
+			 * restart the panel displayed "进行中 3 · 队列 2 · 阻塞 1 · 待验收 1" of
+			 * fabricated tasks. An empty board plus the reason is less pretty and far
+			 * safer, because a believable lie is worse than a blank.
+			 */
+			function unavailable() {
+				return {
+					tasks: [],
+					locks: [],
+					seq: 1,
+					project: null,
+					scopePath: '',
+					lastEvent: null,
+					source: 'offline',
+					hostMessage: message,
+				}
+			}
 			function current() {
 				if (snapshot !== null) return snapshot
-				snapshot =
-					host !== null
-						? host
-						: Object.assign({}, sample.getSnapshot(), { source: 'sample', hostMessage: message, project: null })
+				snapshot = host !== null ? host : unavailable()
 				return snapshot
 			}
 			async function request(action, body) {
+				// The remembered project rides along on the state read. The Host prefers
+				// its own hint and only falls back to this one, so an agent that has just
+				// touched a board always wins over the browser's memory.
+				const url =
+					action === null && rememberedProject() !== null
+						? TC_STATE_URL + '?project=' + encodeURIComponent(rememberedProject())
+						: action === null
+							? TC_STATE_URL
+							: TC_ACTION_URL
 				const response =
 					action === null
-						? await fetch(TC_STATE_URL, { headers: { accept: 'application/json' } })
-						: await fetch(TC_ACTION_URL, {
+						? await fetch(url, { headers: { accept: 'application/json' } })
+						: await fetch(url, {
 								method: 'POST',
 								headers: { 'content-type': 'application/json' },
 								body: JSON.stringify(Object.assign({ action: action }, body || {})),
 							})
 				return await response.json()
 			}
-			/** Ask the Host where things stand; fall back to the sample when it cannot answer. */
+			/** Ask the Host where things stand. When it cannot answer, say so — never invent. */
 			async function load() {
 				try {
 					const payload = await request(null, null)
 					if (payload && payload.ok === true && Array.isArray(payload.tasks)) {
 						host = tcHostState(payload)
 						message = ''
+						rememberProject(host.project)
 					} else {
 						host = null
 						message = String((payload && payload.message) || 'the host did not answer')
@@ -2592,7 +2650,7 @@ window.__ModuleLoader__.load({
 						{ className: 'gbt-note' },
 						t('prototype') +
 							(snapshot.lastEvent ? ' · ' + t('lastEvent') + ': ' + eventText(snapshot.lastEvent) : '') +
-							(snapshot.source === 'sample' ? ' · ' + t('sourceSample') : '') +
+							(snapshot.source !== 'host' ? ' · ' + t('sourceOffline') : '') +
 							(snapshot.hostMessage ? ' · ' + snapshot.hostMessage : ''),
 					),
 					h('div', { className: 'gbt-body' }, body),
@@ -2780,6 +2838,17 @@ window.__ModuleLoader__.load({
 		return {
 			/** Cordis services this browser half needs; `slots` is mandatory here. */
 			inject: ['slots', 'locale'],
+			/**
+			 * TEMPORARY TEST SEAM, and deliberately ugly so it gets removed.
+			 *
+			 * The render tests need a board to draw. Until T-2 replaces the sample
+			 * store with a Host fixture, they take one from the same seed the sample
+			 * used — but they feed it in as a HOST PAYLOAD, so they exercise the path
+			 * that actually ships instead of the sample fallback. That fallback is what
+			 * let a fabricated board reach a user, so testing it was worse than
+			 * useless. Deleted together with the seeds.
+			 */
+			__fixture: { tasks: tcSeedTasks, locks: tcSeedLocks },
 			/**
 			 * Register the bundle's configuration section while the runtime serves
 			 * the 0.2 settings-form service, and keep the plugin's copy in the locale
