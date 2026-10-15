@@ -102,7 +102,11 @@ export function registerTaskRoutes(ctx, options) {
   async function currentState() {
     const projectPath = projectOf()
     if (projectPath === null || projectPath === undefined) {
-      return { ok: false, code: 'unknown-project', message: 'No project is known yet, so there is no board to show.' }
+      return {
+        ok: false,
+        code: 'unknown-project',
+        message: 'No project is known yet. An agent has to touch the board — or the user type /task — in a project first, so the panel knows which one to show.',
+      }
     }
     state.sweep()
     const current = await state.read(projectPath)

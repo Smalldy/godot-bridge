@@ -130,10 +130,17 @@ export function apply(ctx) {
   // mean the tool and the panel each seeing half the truth — and two agents both
   // believing they hold the same file.
   const state = createState(ctx)
-  /** The project the panel shows: whichever one the agents last resolved a board
-   * in, falling back to the ambient session workspace. */
-  const panelProject = () =>
-    state.memory.projectHint !== null ? state.memory.projectHint : projectPathOf(ctx, null)
+  /**
+   * The project the panel shows: whichever one an agent last resolved a board in.
+   *
+   * Deliberately NOT `policy.resolve()` with no session. Measured live, that
+   * answers with the PROFILE directory (`…/.dsh/profiles/desktop`), so the panel
+   * would quietly hunt for a board inside the profile and show an empty one — a
+   * wrong answer that looks like a right one. With no project known the route says
+   * so, and the next tool call or `/task` establishes it. A profile-level "which
+   * project does the panel watch" setting is the proper next step.
+   */
+  const panelProject = () => state.memory.projectHint
 
   // ── /task: the human signal that authorises real task creation ───────────
   // A slash command cannot reach the model by itself: dsh-commands executes a
