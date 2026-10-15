@@ -253,6 +253,7 @@ window.__ModuleLoader__.load({
 				simLease: 'Simulated lease running out on',
 				simIdle: 'Nothing for a simulated agent to pick up.',
 				lastEvent: 'Last simulated event',
+			sourceSample: 'sample data (no Host yet)',
 				prototype: 'Interactive prototype - mock data, nothing is persisted.',
 			},
 			zh: {
@@ -357,6 +358,7 @@ window.__ModuleLoader__.load({
 				simLease: '模拟租约即将耗尽：',
 				simIdle: '没有可供模拟 agent 领取的任务。',
 				lastEvent: '最近一次模拟事件',
+			sourceSample: '示例数据（尚未接入宿主）',
 				prototype: '交互原型——假数据，不做任何持久化。',
 			},
 		}
@@ -742,7 +744,7 @@ window.__ModuleLoader__.load({
 		 *
 		 * @returns the mock store: `subscribe`, `getSnapshot`, and the actions.
 		 */
-		function createTaskStore() {
+		function createSampleStore() {
 			const listeners = new Set()
 			let state = {
 				tasks: tcSeedTasks(),
@@ -1114,6 +1116,251 @@ window.__ModuleLoader__.load({
 				},
 				reset() {
 					put({ tasks: tcSeedTasks(), locks: tcSeedLocks(), seq: 16, lastEvent: null })
+				},
+			}
+		}
+
+		/**
+		 * The panel's store: the Host's board when there is one, the built-in sample
+		 * otherwise.
+		 *
+		 * The Host is the only writer — the rules, the leases and the file locks all
+		 * live there — so when a project is known every action goes over HTTP and the
+		 * panel renders what comes back. The sample remains for the two cases where
+		 * there is nothing to ask: no project is known yet, or a Host without the
+		 * route. `source` says which one is on screen, so sample data is never
+		 * mistaken for real work.
+		 *
+		 * Times are the one translation. The board stores ISO-8601 because a human
+		 * opens and edits that file, while the views count leases down in
+		 * milliseconds. The conversion happens here and nowhere else.
+		 */
+		const TC_STATE_URL = '/godot-bridge/task-center/state'
+		const TC_ACTION_URL = '/godot-bridge/task-center/action'
+
+		/** ISO-8601 (or null) to epoch milliseconds (or null). */
+		function tcMs(value) {
+			if (value === null || value === undefined) return null
+			if (typeof value !== 'string') return value
+			const at = Date.parse(value)
+			return Number.isFinite(at) ? at : null
+		}
+		function tcMsOrZero(value) {
+			const at = tcMs(value)
+			return at === null ? 0 : at
+		}
+
+		/** One task from the Host, in the shape the views already render. */
+		function tcHostTask(task) {
+			return Object.assign({}, task, {
+				createdAt: tcMsOrZero(task.createdAt),
+				updatedAt: tcMsOrZero(task.updatedAt),
+				leaseUntil: tcMs(task.leaseUntil),
+				history: (task.history || []).map(function (entry) {
+					return Object.assign({}, entry, { at: tcMsOrZero(entry.at) })
+				}),
+			})
+		}
+
+		/** One lock from the Host, in the shape the views already render. */
+		function tcHostLock(lock) {
+			return Object.assign({}, lock, {
+				since: tcMsOrZero(lock.since),
+				leaseUntil: tcMsOrZero(lock.leaseUntil),
+				queue: (lock.queue || []).map(function (entry) {
+					return Object.assign({}, entry, { since: tcMsOrZero(entry.since) })
+				}),
+			})
+		}
+
+		/** A whole Host payload as store state. */
+		function tcHostState(payload, lastEvent) {
+			const locks = {}
+			const source = payload.locks || {}
+			Object.keys(source).forEach(function (path) {
+				locks[path] = tcHostLock(source[path])
+			})
+			return {
+				tasks: (payload.tasks || []).map(tcHostTask),
+				locks: locks,
+				seq: typeof payload.seq === 'number' ? payload.seq : 1,
+				project: typeof payload.project === 'string' ? payload.project : null,
+				// The header renders `scopePath`; with a Host that IS the project.
+				scopePath: typeof payload.project === 'string' ? payload.project : '',
+				lastEvent: lastEvent === undefined ? null : lastEvent,
+				source: 'host',
+				hostMessage: '',
+			}
+		}
+
+		/**
+		 * Wraps the sample store, preferring the Host.
+		 *
+		 * `getSnapshot` is cached because React requires a stable reference between
+		 * changes; the cache is dropped whenever either side changes.
+		 */
+		function createTaskStore() {
+			const sample = createSampleStore()
+			const listeners = new Set()
+			let host = null
+			let message = ''
+			let snapshot = null
+			sample.subscribe(function () {
+				snapshot = null
+			})
+			function emit() {
+				snapshot = null
+				listeners.forEach(function (listener) {
+					listener()
+				})
+			}
+			function current() {
+				if (snapshot !== null) return snapshot
+				snapshot =
+					host !== null
+						? host
+						: Object.assign({}, sample.getSnapshot(), { source: 'sample', hostMessage: message, project: null })
+				return snapshot
+			}
+			async function request(action, body) {
+				const response =
+					action === null
+						? await fetch(TC_STATE_URL, { headers: { accept: 'application/json' } })
+						: await fetch(TC_ACTION_URL, {
+								method: 'POST',
+								headers: { 'content-type': 'application/json' },
+								body: JSON.stringify(Object.assign({ action: action }, body || {})),
+							})
+				return await response.json()
+			}
+			/** Ask the Host where things stand; fall back to the sample when it cannot answer. */
+			async function load() {
+				try {
+					const payload = await request(null, null)
+					if (payload && payload.ok === true && Array.isArray(payload.tasks)) {
+						host = tcHostState(payload)
+						message = ''
+					} else {
+						host = null
+						message = String((payload && payload.message) || 'the host did not answer')
+					}
+				} catch (error) {
+					host = null
+					message = String((error && error.message) || error)
+				}
+				emit()
+			}
+			/** One Host action, applied from its own answer: no optimistic guess to undo. */
+			async function send(action, body, fallback) {
+				if (host === null) {
+					fallback()
+					return
+				}
+				try {
+					const payload = await request(action, body)
+					if (payload && payload.ok === true && Array.isArray(payload.tasks)) {
+						const events = Array.isArray(payload.events) ? payload.events : []
+						const event = events.length > 0 ? { kind: events[0], path: (body || {}).path, who: '@user' } : host.lastEvent
+						host = tcHostState(payload, event)
+						message = ''
+					} else {
+						message = String((payload && payload.message) || 'the host refused that action')
+					}
+				} catch (error) {
+					message = String((error && error.message) || error)
+				}
+				emit()
+			}
+			return {
+				subscribe(listener) {
+					listeners.add(listener)
+					return function () {
+						listeners.delete(listener)
+					}
+				},
+				getSnapshot: current,
+				load: load,
+				move(id, direction) {
+					const delta = direction === 'up' || direction < 0 ? -1 : 1
+					return send('move', { id: id, delta: delta }, function () {
+						sample.move(id, direction)
+					})
+				},
+				claim(id, who) {
+					return send('claim', { id: id }, function () {
+						sample.claim(id, who)
+					})
+				},
+				publish(ids) {
+					if (host === null) {
+						sample.publish(ids)
+						return
+					}
+					// The panel releases a selection, the route takes one id at a time.
+					const queue = Array.isArray(ids) ? ids.slice() : [ids]
+					return (async function step() {
+						if (queue.length === 0) return
+						await send('publish', { id: queue.shift() }, function () {})
+						return step()
+					})()
+				},
+				update(id, change, note) {
+					return send('update', Object.assign({ id: id, note: note }, change), function () {
+						sample.update(id, change, note)
+					})
+				},
+				setStatus(id, status, note) {
+					return send('setStatus', { id: id, status: status, note: note }, function () {
+						sample.setStatus(id, status, note)
+					})
+				},
+				complete(id, note) {
+					return send('complete', { id: id, note: note }, function () {
+						sample.complete(id, note)
+					})
+				},
+				blocked(id, blockedBy, note) {
+					return send('blocked', { id: id, blockedBy: blockedBy, note: note }, function () {
+						sample.blocked(id, blockedBy, note)
+					})
+				},
+				unpublish(id) {
+					return send('unpublish', { id: id }, function () {
+						sample.unpublish(id)
+					})
+				},
+				remove(id) {
+					return send('remove', { id: id }, function () {
+						sample.remove(id)
+					})
+				},
+				/** Taking a file on an agent's behalf is sample-only: with a Host the
+				 *  agent does it through its tool, and the panel only shows it. */
+				acquireLock(path, who, taskId) {
+					if (host === null) sample.acquireLock(path, who, taskId)
+				},
+				/** Both of these are the same user action against a Host. */
+				releaseLock(path, who) {
+					return send('forceRelease', { path: path }, function () {
+						sample.releaseLock(path, who)
+					})
+				},
+				forceRelease(path) {
+					return send('forceRelease', { path: path }, function () {
+						sample.forceRelease(path)
+					})
+				},
+				cancelReservation(path, who) {
+					return send('cancelReservation', { path: path }, function () {
+						sample.cancelReservation(path, who)
+					})
+				},
+				simulate() {
+					if (host === null) sample.simulate()
+				},
+				reset() {
+					if (host === null) sample.reset()
+					else load()
 				},
 			}
 		}
@@ -2157,6 +2404,10 @@ window.__ModuleLoader__.load({
 				const t = useTranslate()
 				const snapshot = useTasks(store)
 				const now = useNow(15000)
+			// One question on mount; every action afterwards carries the answer back.
+			React.useEffect(function () {
+				store.load()
+			}, [])
 				const [view, setView] = React.useState('board')
 				const [selectedId, setSelectedId] = React.useState(null)
 				const [editing, setEditing] = React.useState(null)
@@ -2340,7 +2591,9 @@ window.__ModuleLoader__.load({
 						'div',
 						{ className: 'gbt-note' },
 						t('prototype') +
-							(snapshot.lastEvent ? ' · ' + t('lastEvent') + ': ' + eventText(snapshot.lastEvent) : ''),
+							(snapshot.lastEvent ? ' · ' + t('lastEvent') + ': ' + eventText(snapshot.lastEvent) : '') +
+							(snapshot.source === 'sample' ? ' · ' + t('sourceSample') : '') +
+							(snapshot.hostMessage ? ' · ' + snapshot.hostMessage : ''),
 					),
 					h('div', { className: 'gbt-body' }, body),
 				)
