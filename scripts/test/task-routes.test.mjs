@@ -98,7 +98,7 @@ function createWebServer() {
 async function loadSurfaces(fs, projectPath) {
   const { createState } = await import('../../plugin/task-center/state.mjs')
   const { registerTaskTool } = await import('../../plugin/task-center/tool.mjs')
-  const { registerTaskRoutes, STATE_PATH, ACTION_PATH } = await import('../../plugin/task-center/routes.mjs')
+  const { registerTaskRoutes, STATE_PATH, ACTION_PATH, DISPATCH_PATH } = await import('../../plugin/task-center/routes.mjs')
   const webServer = createWebServer()
   let tool = null
   const ctx = {
@@ -118,6 +118,7 @@ async function loadSurfaces(fs, projectPath) {
   registerTaskRoutes(ctx, {
     state: state,
     projectPath: projectPath === undefined ? () => PROJECT : projectPath,
+    dispatchProbe: () => ({ probed: true }),
   })
   const callTool = (action, extra, agent) =>
     tool.execute(Object.assign({ action: action }, extra || {}), { agent: agent === undefined ? { id: 'session-aaaaaaaa' } : agent })
@@ -126,16 +127,20 @@ async function loadSurfaces(fs, projectPath) {
     await webServer.routes.get(path).handler(fakeRequest(body), response)
     return { response: response, json: jsonOf(response) }
   }
-  return { state, webServer, tool, callTool, callRoute, STATE_PATH, ACTION_PATH }
+  return { state, webServer, tool, callTool, callRoute, STATE_PATH, ACTION_PATH, DISPATCH_PATH }
 }
 
 // ── body handling ──────────────────────────────────────────────────────────
 const fs0 = createFs()
 let surfaces = await loadSurfaces(fs0)
 const routesModule = await import('../../plugin/task-center/routes.mjs')
-check('both routes registered as exact paths', surfaces.webServer.routes.size === 2, String(surfaces.webServer.routes.size))
+check('every route registered as an exact path', surfaces.webServer.routes.size === 3, String(surfaces.webServer.routes.size))
 check('the state route is exact', surfaces.webServer.routes.get(surfaces.STATE_PATH).kind === 'exact')
 check('the action route is exact', surfaces.webServer.routes.get(surfaces.ACTION_PATH).kind === 'exact')
+check('the dispatch route is exact', surfaces.webServer.routes.get(surfaces.DISPATCH_PATH).kind === 'exact')
+const probeRead = await surfaces.callRoute(surfaces.DISPATCH_PATH, {})
+check('the dispatch route reports the probe', probeRead.json.dispatch.probed === true, JSON.stringify(probeRead.json))
+check('the dispatch route succeeds', probeRead.json.ok === true)
 
 let body = await routesModule.readJsonBody(fakeRequest({ a: 1 }))
 check('a JSON object body parses', body.a === 1)

@@ -30,6 +30,7 @@
 import { readBoard } from './board.mjs'
 import { projectPathOf, registerTaskTool } from './tool.mjs'
 import { registerTaskRoutes } from './routes.mjs'
+import { probeDispatch, watchAgentStatus } from './dispatch.mjs'
 import { createState } from './state.mjs'
 
 /** Services this row needs: the board is read through the filesystem, the project
@@ -141,6 +142,11 @@ export function apply(ctx) {
    * project does the panel watch" setting is the proper next step.
    */
   const panelProject = () => state.memory.projectHint
+
+  // The dispatch edge's probe. Subscribing records whether this row RECEIVES
+  // `agent/status` — the one part of the design that is inferred rather than
+  // measured — and it costs nothing when nothing dispatches.
+  const statusWatcher = watchAgentStatus(ctx)
 
   // ── /task: the human signal that authorises real task creation ───────────
   // A slash command cannot reach the model by itself: dsh-commands executes a
@@ -262,7 +268,13 @@ export function apply(ctx) {
   // GUI. Guarded like the others so two bad routes cannot cost the plugin.
   ctx.effect(function () {
     try {
-      return registerTaskRoutes(ctx, { state: state, projectPath: panelProject })
+      return registerTaskRoutes(ctx, {
+        state: state,
+        projectPath: panelProject,
+        dispatchProbe: function () {
+          return probeDispatch(ctx, statusWatcher)
+        },
+      })
     } catch (e) {
       try {
         ctx.logger.warn('[godot-bridge] task center routes skipped: ' + String((e && e.message) || e))

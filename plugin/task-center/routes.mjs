@@ -25,6 +25,8 @@ import { writePolicyFor } from './state.mjs'
 export const ROUTE_PREFIX = '/godot-bridge/task-center'
 export const STATE_PATH = ROUTE_PREFIX + '/state'
 export const ACTION_PATH = ROUTE_PREFIX + '/action'
+/** Read-only: what the dispatch edge can currently see. */
+export const DISPATCH_PATH = ROUTE_PREFIX + '/dispatch'
 
 /** The most a request body may be, in bytes. The board is small; a big body is a
  * mistake or an attack, and either way it is not this route's problem. */
@@ -190,6 +192,21 @@ export function registerTaskRoutes(ctx, options) {
         try {
           const outcome = await dispatch(body)
           sendJson(res, 200, outcome.ok === true ? Object.assign({}, outcome, await currentState()) : outcome)
+        } catch (error) {
+          sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
+        }
+      },
+    }),
+    // Read-only, and deliberately so: it reports what the dispatch edge can SEE
+    // (services reachable, who is idle, whether status events arrive) without
+    // sending anything to anyone. A GET is safe to poll while that is still unknown.
+    ctx.webServer.register({
+      kind: 'exact',
+      path: DISPATCH_PATH,
+      handler: async function (req, res) {
+        try {
+          const probe = options.dispatchProbe
+          sendJson(res, 200, { ok: true, dispatch: probe === undefined ? null : probe() })
         } catch (error) {
           sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
         }
