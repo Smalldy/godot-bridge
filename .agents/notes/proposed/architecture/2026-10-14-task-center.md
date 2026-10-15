@@ -358,7 +358,9 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 
 **防重复派发是这块的核心风险**（不是技术可行性）：幂等键 `taskId+attempt`；派发前先读 `task.dispatch`，`accepted|queued` 且租约未过期即**不重发**——**`queued` 也是成功**（官方原话："A successful send is already durable even when its result says queued; do not resend it."）；`inFlight` 集合与 `state.mjs` 的内存同级，让工具/面板/事件三条入口共享；`queued → claimed` 只做**一次性跃迁**；派发内容带 "Do NOT dispatch; you are the assignee"。
 
-**一处仍未验证**：`ctx.on('agent/status')` 在 profile 行能否收到事件（推断能——`TeamService` 自己就这么用且已出货；备选 `ctx.root.on`）。**一处待查**：`agentTeams.createTask` 与我们的板子是否是**两套重复**的任务概念（T-17）。
+**首次探测（已实测——一次重启后取 `GET /godot-bridge/task-center/dispatch`）**：`hasAgents: true` · `hasAgentTeams: true` · `agentCount: 1` · `membersReadable: true`；Lead 由 `tryMembership(…).role === 'lead'` 正确解析，**就是本对话所在的会话**；花名册 `[{name:'lead', role:'lead', status:'running'}]`。**那条唯一的推断已被证实**：`agent/status` 在 `ctx` 与 `ctx.root` **两个通道都到达**（同一事件、同一时间戳）——**profile 行确实能收到 agent 状态事件，所以派发可以做成反应式，不需要轮询**。
+
+仍未实测的只剩 **`sendMessage` 这个写动作**（探测刻意不发消息）——它是端到端实验的第一步。另一处（T-17）已有结论：`agentTeams.createTask` 与我们的板子是**不同层**，不合并，只复用其 `waitForChange` 一类的机制。
 
 ### 发布是依赖闭包
 
