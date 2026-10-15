@@ -341,6 +341,25 @@ agent 可以先报告打算建什么再等你确认，也可以先建后报：**
 
 即：**"派发门槛"只解决"不能提前开工"，它不解决"永远开不了工"。** 后者需要失败状态、重试上限、以及一条把"计划已坏"交回人手里的路径。
 
+### 派发怎么实现（调查结论，已可用）
+
+**判定：插件能直接触达并唤醒另一个会话**——不需要框架侧配合，也没有绕过授权。
+
+| 需要的能力 | 机制 |
+|---|---|
+| 找到能派发的人 | `ctx.agents.list()` + `agentTeams.tryMembership(a)?.role === 'lead'`（`tryMembership` 不抛） |
+| 知道谁空闲 | `agentTeams.listMembers(lead)` → `status: 'running' \| 'inactive' \| 'provisioning' \| 'failed'` |
+| 发消息并**叫醒它** | `agentTeams.sendMessage(lead, {target: name, content, signal})` → 目标空闲则 `coldResume`（从持久会话重建 Agent 并跑一轮） |
+| 不轮询地等变化 | `agentTeams.waitForChange(caller, timeoutMs)`（10s–1h） |
+
+**关键约束**：`caller` 必须是**真实的 live Agent 实例**（由 `ctx.agents.get()` 取得）——服务会校验 `agents.get(sender.id) === sender`，**传自造的 `{id}` 必失败**。**目标按名字解析**：每次派发前重新 `listMembers`，不缓存名字。信箱上限 **64 条**、单条 **65536B**。
+
+**三层路径**：**A** `agentTeams`（推荐；需 `include:agent-team` 行在，本 profile 已满足）→ **B** `subagents.prompt({parentSessionId, childSessionId, delivery:'queue'})`，只要两个字符串 id、覆盖面更广（不限 Team），但 `authorizeLineage` **只允许直接子级**、父须 live、one-shot 子级 `NOT_RESUMABLE` → **C** 把"可派发清单" `steer` 给 Lead，由 Lead 用它自己的 `spawn_teammate`/`send_message` 执行（永远可用，但**最易死循环**、可观测性最差）。三条路径写同一份 `dispatch` 字段，降级不需要迁移数据。
+
+**防重复派发是这块的核心风险**（不是技术可行性）：幂等键 `taskId+attempt`；派发前先读 `task.dispatch`，`accepted|queued` 且租约未过期即**不重发**——**`queued` 也是成功**（官方原话："A successful send is already durable even when its result says queued; do not resend it."）；`inFlight` 集合与 `state.mjs` 的内存同级，让工具/面板/事件三条入口共享；`queued → claimed` 只做**一次性跃迁**；派发内容带 "Do NOT dispatch; you are the assignee"。
+
+**一处仍未验证**：`ctx.on('agent/status')` 在 profile 行能否收到事件（推断能——`TeamService` 自己就这么用且已出货；备选 `ctx.root.on`）。**一处待查**：`agentTeams.createTask` 与我们的板子是否是**两套重复**的任务概念（T-17）。
+
 ### 发布是依赖闭包
 
 **发布一个任务 = 发布它的依赖闭包**，但只拉**还是草稿的**依赖（用户要求："若要发布任务，则要发布被其依赖的任务，要有明确展示和确认过程"）。逐状态：
