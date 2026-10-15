@@ -28,6 +28,11 @@ import { writePolicyFor } from './state.mjs'
 /** How many observed events to keep for the probe to report. */
 const EVENT_LOG_LIMIT = 20
 
+/** How many WorkAgents one dispatch may have running before it stops spawning more.
+ * A dispatcher may create agents — that is what makes a pool move — but not without
+ * a bound, or a queue with work in it becomes an unbounded supply of agents. */
+export const DEFAULT_MAX_WORK_AGENTS = 3
+
 /** The services this edge needs, fetched optionally so their absence degrades. */
 export function servicesFor(ctx) {
   const get = (key) => {
@@ -185,24 +190,35 @@ export function unmetDependencies(board, task) {
 // ── choosing who ───────────────────────────────────────────────────────────
 
 /**
- * Pick the member to hand a task to: an IDLE teammate.
+ * Pick the member to hand a task to: an IDLE teammate, or — when nothing is idle and
+ * spawning is allowed — a NEW one.
  *
  * The Lead is never a target. The Lead is the agent the user is talking to, and its
  * work arrives as conversation, not as a queued task; dispatching pool work to it
  * would put a task in the middle of somebody's dialogue.
  *
- * Spawning a teammate when none is idle is deliberately NOT done here. Spawning is a
- * decision about cost and lifetime, and a dispatcher that silently creates agents
- * whenever the pool has work is a dispatcher that can create them without bound.
+ * Spawning is bounded rather than forbidden. "The pool has work" must not mean
+ * "create an agent without bound", so a ceiling applies; but a dispatcher that refuses
+ * to start anything when the roster is empty makes the pool depend on a human being
+ * present, which is the same as having no pool.
  */
-export function pickTarget(ctx) {
+export function pickTarget(ctx, options) {
+  const opts = options === undefined ? {} : options
   const { agents, agentTeams } = servicesFor(ctx)
   if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
     return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
   }
   const lead = resolveLead(ctx)
   if (lead === null) {
-    return { ok: false, code: 'no-lead', message: 'no live Team Lead; the agent team has no roster to dispatch into' }
+    // Not an error state, and worth saying so plainly: the board does not need a Team
+    // at all. Only handing work to a WorkAgent does, because that is what the harness
+    // requires a credential for — and without a root session there is nobody to hold
+    // one, which is the same thing as nobody being around.
+    return {
+      ok: false,
+      code: 'no-lead',
+      message: 'no live Team root, so there is nobody to hand pooled work to; the board itself is unaffected and this task stays queued until a session exists',
+    }
   }
   let members = []
   try {
@@ -211,24 +227,64 @@ export function pickTarget(ctx) {
     return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
   }
   const teammates = members.filter((member) => member.role === 'teammate')
-  if (teammates.length === 0) {
-    return {
-      ok: false,
-      code: 'no-teammates',
-      message: 'the team has no WorkAgent yet; spawning one is a deliberate act, not something dispatch does on its own',
-      members: members,
-    }
-  }
   const idle = teammates.filter((member) => member.status === 'inactive' || member.status === 'provisioning')
-  if (idle.length === 0) {
+  if (idle.length > 0) return { ok: true, lead: lead, target: idle[0], members: members, spawn: false }
+  if (opts.spawn !== true) {
+    return teammates.length === 0
+      ? {
+          ok: false,
+          code: 'no-teammates',
+          message: 'the team has no WorkAgent yet, and spawning is not enabled for this dispatch',
+          members: members,
+        }
+      : {
+          ok: false,
+          code: 'no-idle-member',
+          message: 'every WorkAgent is busy; the next dispatch waits for one to go idle',
+          members: members,
+        }
+  }
+  if (typeof opts.name !== 'string' || opts.name.length === 0) {
+    return { ok: false, code: 'no-name', message: 'a spawned WorkAgent needs a name before the board can record the dispatch' }
+  }
+  const cap = typeof opts.maxWorkAgents === 'number' ? opts.maxWorkAgents : DEFAULT_MAX_WORK_AGENTS
+  if (teammates.length >= cap) {
     return {
       ok: false,
-      code: 'no-idle-member',
-      message: 'every WorkAgent is busy; the next dispatch waits for one to go idle',
+      code: 'workagent-budget',
+      message: 'already ' + teammates.length + ' WorkAgents, at the cap of ' + cap + '; not spawning another',
       members: members,
     }
   }
-  return { ok: true, lead: lead, target: idle[0], members: members }
+  // Named by the caller, because the board records the dispatch BEFORE the agent
+  // exists — the claim is the mutex and it has to be written first.
+  return { ok: true, lead: lead, target: { name: opts.name, role: 'teammate', status: 'provisioning' }, members: members, spawn: true }
+}
+
+/** A WorkAgent's name, derived from what it is for and which attempt this is. Names
+ * are immutable in the roster, so a retry after a dead agent needs a new one.
+ *
+ * Non-alphanumerics are STRIPPED rather than turned into dashes, so `T-5` becomes
+ * `t5` and not `t-5`; the result has to read as a lower-kebab name. Ids that differ
+ * only in punctuation would collide, and a collision fails loudly at spawn time
+ * rather than quietly reusing an agent. */
+export function workAgentName(taskId, attempt) {
+  const slug = String(taskId).toLowerCase().replace(/[^a-z0-9]+/g, '')
+  return 'work-' + (slug === '' ? 'task' : slug) + '-' + String(attempt)
+}
+
+/** The preamble a spawned WorkAgent needs. It wakes with no idea who it is or how to
+ * answer; spawning without this produces an agent that can work but cannot report. */
+export function spawnPreamble(name) {
+  return [
+    '<system-reminder>',
+    'You are teammate "' + name + '".',
+    'Your Team Lead is named "lead".',
+    'Use list_agents({}) to find your teammates and their names.',
+    'To message your Team Lead, use send_message({ target: "lead", message: "..." }).',
+    '</system-reminder>',
+    '',
+  ].join('\n')
 }
 
 // ── the brief ──────────────────────────────────────────────────────────────
@@ -354,27 +410,48 @@ export async function dispatchOne(ctx, options, taskId, request) {
   if (unmet.length > 0) {
     return { ok: false, code: 'dependency-unmet', message: task.id + ' is still waiting on ' + unmet.join(', '), waiting: unmet }
   }
-  const picked = pickTarget(ctx)
+  const attempt = (task.dispatch === undefined || task.dispatch === null || task.dispatch.attempts === undefined ? 0 : task.dispatch.attempts) + 1
+  const picked = pickTarget(
+    ctx,
+    options.allowSpawn === true ? { spawn: true, name: workAgentName(taskId, attempt), maxWorkAgents: options.maxWorkAgents } : {},
+  )
   if (picked.ok !== true) return picked
   const claimed = await state.apply(
     projectPath,
-    (board) => claimMutator(board, taskId, picked.target, now, 'agentTeams'),
+    (board) => claimMutator(board, taskId, picked.target, now, picked.spawn === true ? 'spawn' : 'message'),
     writePolicyFor(projectPath),
   )
   if (claimed.failed !== null) return claimed.failed
   const boardPath = projectPath + '\\.agents\\tasks.json'
-  let sent = null
+  const brief = briefFor(task, boardPath)
+  let delivered = null
   let sendError = null
   try {
-    sent = await ctx.get('agentTeams').sendMessage(picked.lead, {
-      target: picked.target.name,
-      content: [{ type: 'text', text: briefFor(task, boardPath) }],
-      signal: signal,
-    })
+    if (picked.spawn === true) {
+      // The prompt IS the delivery. A fresh WorkAgent starts on the task, so spawning
+      // it and then sending the same brief would tell it twice — and the name it was
+      // spawned under has to be the name the board already recorded.
+      delivered = await ctx.get('agentTeams').spawnTeammate(picked.lead, {
+        name: picked.target.name,
+        description: task.title,
+        prompt: [
+          { type: 'text', text: spawnPreamble(picked.target.name) },
+          { type: 'text', text: brief },
+        ],
+        context: 'fresh',
+        signal: signal,
+      })
+    } else {
+      delivered = await ctx.get('agentTeams').sendMessage(picked.lead, {
+        target: picked.target.name,
+        content: [{ type: 'text', text: brief }],
+        signal: signal,
+      })
+    }
   } catch (error) {
     sendError = String((error && error.message) || error)
   }
-  if (sendError !== null || sent === null) {
+  if (sendError !== null || delivered === null) {
     // Roll back: nobody should be holding a task they were never told about.
     const rolled = await state.apply(
       projectPath,
@@ -387,7 +464,7 @@ export async function dispatchOne(ctx, options, taskId, request) {
           {
             dispatch: mergeDispatch(board, taskId, {
               at: new Date(now).toISOString(),
-              via: 'agentTeams',
+              via: picked.spawn === true ? 'spawn' : 'message',
               target: picked.target.name,
               status: 'failed',
               error: sendError,
@@ -404,9 +481,15 @@ export async function dispatchOne(ctx, options, taskId, request) {
       code: 'send-failed',
       message: sendError === null ? 'the team service returned no result' : sendError,
       target: picked.target.name,
+      spawned: picked.spawn === true,
       rolledBack: rolled.failed === null,
     }
   }
+  // A spawn answers with the roster row it created; a message answers with its
+  // identity and how far it got. Both are recorded the same way, because the board's
+  // question is "was this handed over", not "by which mechanism".
+  const member = delivered.member === undefined || delivered.member === null ? null : delivered.member
+  const targetId = member !== null && member.id !== undefined ? String(member.id) : picked.target.id === undefined ? null : String(picked.target.id)
   const recorded = await state.apply(
     projectPath,
     (board) =>
@@ -416,11 +499,11 @@ export async function dispatchOne(ctx, options, taskId, request) {
         {
           dispatch: mergeDispatch(board, taskId, {
             at: new Date(now).toISOString(),
-            via: 'agentTeams',
-            target: picked.target.name,
-            targetId: String(picked.target.id),
-            status: sent.status === undefined ? 'accepted' : sent.status,
-            messageId: sent.messageId === undefined ? null : String(sent.messageId),
+            via: picked.spawn === true ? 'spawn' : 'message',
+            target: member !== null && member.name !== undefined ? member.name : picked.target.name,
+            targetId: targetId,
+            status: picked.spawn === true ? 'spawned' : delivered.status === undefined ? 'accepted' : delivered.status,
+            messageId: delivered.messageId === undefined ? null : String(delivered.messageId),
           }),
         },
         now,
@@ -431,9 +514,10 @@ export async function dispatchOne(ctx, options, taskId, request) {
   return {
     ok: true,
     id: taskId,
-    target: picked.target.name,
-    messageId: sent.messageId === undefined ? null : String(sent.messageId),
-    delivery: sent.status === undefined ? 'accepted' : sent.status,
+    target: member !== null && member.name !== undefined ? member.name : picked.target.name,
+    spawned: picked.spawn === true,
+    messageId: delivered.messageId === undefined ? null : String(delivered.messageId),
+    delivery: picked.spawn === true ? 'spawned' : delivered.status === undefined ? 'accepted' : delivered.status,
     boardRecorded: recorded.failed === null,
   }
 }

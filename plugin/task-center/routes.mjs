@@ -148,7 +148,7 @@ export function registerTaskRoutes(ctx, options) {
       if (options.dispatchOne === undefined) {
         return { ok: false, code: 'no-dispatcher', message: 'Dispatch is not available in this profile.' }
       }
-      return await options.dispatchOne(String(body.id === undefined ? '' : body.id))
+      return await options.dispatchOne(String(body.id === undefined ? '' : body.id), body)
     }
 
     if (Object.prototype.hasOwnProperty.call(LOCK_ACTIONS, action)) {

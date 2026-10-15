@@ -274,8 +274,21 @@ export function apply(ctx) {
         dispatchProbe: function () {
           return probeDispatch(ctx, statusWatcher)
         },
-        dispatchOne: function (taskId) {
-          return dispatchOne(ctx, { state: state, projectPath: panelProject(), now: state.clock() }, taskId)
+        dispatchOne: function (taskId, body) {
+          // Spawning is ON by default: a pool that only moves while a WorkAgent
+          // happens to be idle is a pool that depends on a human being present. The
+          // caller can opt out for one dispatch with `{ spawn: false }`, and the
+          // ceiling in dispatch.mjs bounds how many agents this can ever create.
+          return dispatchOne(
+            ctx,
+            {
+              state: state,
+              projectPath: panelProject(),
+              now: state.clock(),
+              allowSpawn: body === undefined || body === null || body.spawn !== false,
+            },
+            taskId,
+          )
         },
       })
     } catch (e) {

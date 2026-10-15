@@ -22,6 +22,8 @@ const {
   pickTarget,
   briefFor,
   dispatchOne,
+  workAgentName,
+  spawnPreamble,
 } = await import('../../plugin/task-center/dispatch.mjs')
 const { emptyBoard } = await import('../../plugin/task-center/board.mjs')
 const { createTask, findTask, publishTask, setTaskStatus, claimTask } = await import('../../plugin/task-center/service.mjs')
@@ -248,6 +250,7 @@ function boardWith(specs) {
 function teamWith(overrides) {
   const opts = overrides || {}
   const calls = []
+  const spawns = []
   const roster = opts.roster === undefined
     ? [
         { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
@@ -257,8 +260,20 @@ function teamWith(overrides) {
     : opts.roster
   const teams = {
     calls,
+    spawns,
     tryMembership: (candidate) => ({ role: candidate.id === 'session-lead' ? 'lead' : 'teammate', name: candidate.id }),
     listMembers: () => roster,
+    async spawnTeammate(caller, request) {
+      spawns.push({
+        caller: caller.id,
+        name: request.name,
+        description: request.description,
+        context: request.context,
+        text: request.prompt.map((block) => block.text).join('\n'),
+      })
+      if (opts.spawnThrows === true) throw new Error('spawn refused')
+      return { member: { id: 'session-new', name: request.name, role: 'teammate', status: 'provisioning' } }
+    },
     async sendMessage(caller, request) {
       calls.push({ caller: caller.id, target: request.target, text: request.content[0].text })
       if (opts.sendThrows === true) throw new Error('mailbox full')
@@ -272,7 +287,7 @@ function teamWith(overrides) {
       return undefined
     },
   }
-  return { ctx: ctx, teams: teams, calls: calls }
+  return { ctx: ctx, teams: teams, calls: calls, spawns: spawns }
 }
 
 const optionsFor = (state) => ({ state: state, projectPath: PROJECT, now: NOW })
@@ -388,6 +403,94 @@ const retryTeam = teamWith({})
 const retried = await dispatchOne(retryTeam.ctx, optionsFor(failingState), 'T-1')
 check('a task whose send failed can be dispatched again', retried.ok === true, JSON.stringify(retried))
 check('and the attempt count grows', findTask(failingState.holder.board, 'T-1').dispatch.attempts === 2)
+
+// ── spawning a WorkAgent, which is how a pool moves with nobody idle ───────
+//
+// The task system spawns its own WorkAgents. The bound is what makes that safe: a
+// dispatcher that creates an agent whenever there is work turns a queue into an
+// unbounded supply of agents.
+
+check('a WorkAgent name is lower-kebab and derived from the task', workAgentName('T-5', 1) === 'work-t5-1', workAgentName('T-5', 1))
+check('a retry gets a new name, because roster names are immutable', workAgentName('T-5', 2) === 'work-t5-2')
+const preamble = spawnPreamble('work-t5-1')
+check('the preamble names the agent', preamble.includes('work-t5-1'))
+check('the preamble tells it who its Lead is', preamble.includes('lead'))
+check('the preamble says how to report', preamble.includes('send_message'))
+
+const emptyRoster = teamWith({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] })
+check('without spawning enabled an empty roster is still refused', pickTarget(emptyRoster.ctx).code === 'no-teammates')
+const willSpawn = pickTarget(emptyRoster.ctx, { spawn: true, name: 'work-t1-1' })
+check('with spawning enabled an empty roster produces a target', willSpawn.ok === true && willSpawn.spawn === true)
+check('and the target carries the name the board will record', willSpawn.target.name === 'work-t1-1')
+check('picked before it exists, hence provisioning', willSpawn.target.status === 'provisioning')
+
+const spawnNoName = pickTarget(emptyRoster.ctx, { spawn: true })
+check('a spawn without a name is refused', spawnNoName.code === 'no-name')
+
+const alreadyIdle = pickTarget(teamWith({}).ctx, { spawn: true, name: 'work-t1-1' })
+check('an idle WorkAgent is preferred over spawning another', alreadyIdle.ok === true && alreadyIdle.spawn === false)
+check('and that one is the idle teammate', alreadyIdle.target.name === 'fixer')
+
+const busyPair = teamWith({ roster: [
+  { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+  { id: 'session-a', name: 'one', role: 'teammate', status: 'running' },
+  { id: 'session-b', name: 'two', role: 'teammate', status: 'running' },
+] })
+const overBudget = pickTarget(busyPair.ctx, { spawn: true, name: 'work-t1-1', maxWorkAgents: 2 })
+check('the spawn ceiling is enforced', overBudget.code === 'workagent-budget', overBudget.code)
+check('and the refusal says what the cap is', String(overBudget.message).includes('cap of 2'))
+const underBudget = pickTarget(busyPair.ctx, { spawn: true, name: 'work-t1-1', maxWorkAgents: 3 })
+check('under the cap it spawns instead of refusing', underBudget.ok === true && underBudget.spawn === true)
+
+// the whole path, end to end through dispatchOne
+const spawnState = makeState(boardWith([{ title: 'lock the files', spec: 'four items', acceptance: 'four assertions' }]).board)
+const spawnTeam = teamWith({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] })
+const spawned = await dispatchOne(
+  spawnTeam.ctx,
+  { state: spawnState, projectPath: PROJECT, now: NOW, allowSpawn: true },
+  'T-1',
+)
+check('a dispatch with nobody idle spawns a WorkAgent', spawned.ok === true && spawned.spawned === true, JSON.stringify(spawned))
+check('the spawn used the derived name', spawnTeam.spawns.length === 1 && spawnTeam.spawns[0].name === 'work-t1-1')
+check('the spawn asked for a fresh context, not a fork of this conversation', spawnTeam.spawns[0].context === 'fresh')
+check('the spawn prompt carries the preamble', spawnTeam.spawns[0].text.includes('You are teammate "work-t1-1"'))
+check('the spawn prompt carries the brief', spawnTeam.spawns[0].text.includes('Task T-1') && spawnTeam.spawns[0].text.includes('four items'))
+check('the spawn prompt forbids the assignee from dispatching', spawnTeam.spawns[0].text.includes('Do NOT dispatch'))
+check('no separate message is sent to a freshly spawned agent', spawnTeam.calls.length === 0)
+check('the delivery is reported as a spawn', spawned.delivery === 'spawned')
+const spawnedTask = findTask(spawnState.holder.board, 'T-1')
+check('the board records the spawn as the mechanism', spawnedTask.dispatch.via === 'spawn')
+check('and records the spawned name as the assignee', spawnedTask.assignee.name === 'work-t1-1')
+check('and the status is spawned, not accepted', spawnedTask.dispatch.status === 'spawned')
+check('the spawned member id is recorded', spawnedTask.dispatch.targetId === 'session-new')
+check('a spawn is still one attempt', spawnedTask.dispatch.attempts === 1)
+
+// a spawn that fails must roll back like any other delivery failure
+const spawnFailState = makeState(boardWith([{ title: 'x' }]).board)
+const spawnFailTeam = teamWith({
+  roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }],
+  spawnThrows: true,
+})
+const spawnFailed = await dispatchOne(
+  spawnFailTeam.ctx,
+  { state: spawnFailState, projectPath: PROJECT, now: NOW, allowSpawn: true },
+  'T-1',
+)
+check('a failed spawn is reported', spawnFailed.ok === false && spawnFailed.code === 'send-failed')
+check('and it is marked as a spawn failure', spawnFailed.spawned === true)
+check('and it names the reason', String(spawnFailed.message).includes('spawn refused'))
+check('a failed spawn rolls the claim back', spawnFailed.rolledBack === true)
+const afterSpawnFailure = findTask(spawnFailState.holder.board, 'T-1')
+check('so the task is back in the pool', afterSpawnFailure.status === 'queued')
+check('with the failure on the record', afterSpawnFailure.dispatch.status === 'failed' && afterSpawnFailure.dispatch.via === 'spawn')
+check('and the next attempt would use a new name', workAgentName('T-1', afterSpawnFailure.dispatch.attempts + 1) === 'work-t1-2')
+
+// without the option, nothing spawns — the behaviour stays opt-in per dispatch
+const noSpawnTeam = teamWith({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] })
+const noSpawnState = makeState(boardWith([{ title: 'x' }]).board)
+const notSpawned = await dispatchOne(noSpawnTeam.ctx, optionsFor(noSpawnState), 'T-1')
+check('without allowSpawn the dispatch is refused rather than spawning', notSpawned.code === 'no-teammates')
+check('and nothing was spawned', noSpawnTeam.spawns.length === 0)
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)
