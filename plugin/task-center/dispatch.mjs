@@ -48,6 +48,38 @@ export const DEFAULT_MAX_WORK_AGENTS = 3
  */
 export const DEFAULT_MAX_DISPATCH_ATTEMPTS = 3
 
+/**
+ * Which SUBAGENT provider to spawn on.
+ *
+ * This is NOT the LLM provider, and conflating the two is what broke dispatch for an
+ * entire evening: the Lead runs on an LLM provider (`opencode-go`), while spawning goes
+ * through a registry of SUBAGENT providers that has never heard of it — hence
+ * "no subagent provider registered for opencode-go". The two namespaces happen to share
+ * the word "provider" and nothing else.
+ *
+ * The harness registers one named `spawn` by default, but rather than hardcode that,
+ * ASK the registry (`subagents.list()`) and take the preferred name only if it is
+ * really there. A profile that names its provider differently then simply works.
+ */
+export function subagentProviderFor(ctx, preferred) {
+  const fallback = typeof preferred === 'string' && preferred.length > 0 ? preferred : 'spawn'
+  let subagents = null
+  try {
+    subagents = ctx.get('subagents')
+  } catch (error) {
+    return fallback
+  }
+  if (subagents === undefined || subagents === null || typeof subagents.list !== 'function') return fallback
+  let names = []
+  try {
+    names = subagents.list()
+  } catch (error) {
+    return fallback
+  }
+  if (!Array.isArray(names) || names.length === 0) return fallback
+  return names.indexOf(fallback) >= 0 ? fallback : String(names[0])
+}
+
 /** How long one hand-off may take before the service call is aborted. A dispatch that
  * hangs is worse than one that fails: it holds a claim, and the claim is what keeps
  * other sweeps off the task. */
@@ -511,11 +543,9 @@ export async function dispatchOne(ctx, options, taskId, request) {
   // is no signal to carry, make one — with a deadline, which also gives a dispatch
   // that hangs an ending.
   const signalForCall = signal === undefined || signal === null ? AbortSignal.timeout(DISPATCH_TIMEOUT_MS) : signal
-  // `provider` comes from the Lead: a fresh WorkAgent should run on the same provider
-  // the conversation does, and the plugin has no configuration of its own to read. The
-  // shipped spawn tool passes its row's configured provider; the Lead's own is the
-  // equivalent available here.
-  const providerForCall = picked.lead.options === undefined || picked.lead.options === null ? null : picked.lead.options.provider
+  // `provider` here is a SUBAGENT provider, from its own registry — not the LLM
+  // provider the Lead runs on. See subagentProviderFor.
+  const providerForCall = subagentProviderFor(ctx, options.workAgentProvider)
   let delivered = null
   let sendError = null
   try {
@@ -638,12 +668,20 @@ export async function probeSpawn(ctx) {
   const name = 'probe-' + Date.now().toString(36)
   const prompt = [{ type: 'text', text: 'You are a probe teammate. Reply with one short line and stop; nothing is expected of you.' }]
   const base = { name: name, description: 'dispatch probe', prompt: prompt, context: 'fresh' }
+  // The registry, asked directly. Had this been in the first probe, a day of guessing
+  // about which "provider" to pass would have been unnecessary.
+  let registered = []
+  try {
+    const subagents = ctx.get('subagents')
+    if (subagents !== undefined && subagents !== null && typeof subagents.list === 'function') registered = subagents.list()
+  } catch (error) {}
+  const subagentProvider = subagentProviderFor(ctx, undefined)
   const shapes = [
-    { label: 'signal only', request: Object.assign({}, base, { signal: AbortSignal.timeout(30000) }) },
     {
-      label: 'signal + provider',
-      request: Object.assign({}, base, { provider: leadOptions.provider, signal: AbortSignal.timeout(30000) }),
+      label: 'signal + subagent provider (' + subagentProvider + ')',
+      request: Object.assign({}, base, { provider: subagentProvider, signal: AbortSignal.timeout(30000) }),
     },
+    { label: 'signal only', request: Object.assign({}, base, { signal: AbortSignal.timeout(30000) }) },
   ]
   const tried = []
   for (const shape of shapes) {
@@ -654,6 +692,7 @@ export async function probeSpawn(ctx) {
         ok: true,
         shape: shape.label,
         member: member === null ? null : { id: String(member.id), name: member.name, status: member.status },
+        registeredSubagentProviders: registered,
         tried: tried,
       }
     } catch (error) {
@@ -664,8 +703,8 @@ export async function probeSpawn(ctx) {
     ok: false,
     code: 'every-shape-failed',
     leadId: String(lead.id),
-    leadProvider: leadOptions.provider === undefined ? null : String(leadOptions.provider),
-    leadOptionKeys: Object.keys(leadOptions),
+    leadLlmProvider: leadOptions.provider === undefined ? null : String(leadOptions.provider),
+    registeredSubagentProviders: registered,
     tried: tried,
   }
 }
