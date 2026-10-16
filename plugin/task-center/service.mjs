@@ -30,7 +30,12 @@ export const STATUSES = ['draft', 'queued', 'claimed', 'in_progress', 'blocked',
  * `claimed` because releaseClaim writes that move directly. */
 export const TRANSITIONS = {
   draft: ['queued', 'cancelled'],
-  queued: ['draft', 'cancelled'],
+  // `queued -> blocked` exists for exactly one reason: a pooled task whose dispatch
+  // keeps failing must become VISIBLE as stuck. Leaving it queued while the dispatcher
+  // refuses to touch it is invisible retention — it looks like work waiting its turn,
+  // forever. Blocking it names the problem where a human will see it, and
+  // `blocked -> claimed` already exists, so releasing it again is a normal move.
+  queued: ['draft', 'blocked', 'cancelled'],
   claimed: ['in_progress', 'blocked', 'review', 'queued', 'cancelled'],
   in_progress: ['blocked', 'review', 'cancelled'],
   blocked: ['claimed', 'in_progress', 'cancelled'],

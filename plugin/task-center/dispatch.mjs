@@ -22,7 +22,7 @@
  * tasks into the Team's own task list, and with it a whole class of sync bugs.
  */
 
-import { claimTask, findTask, patchTask, releaseClaim } from './service.mjs'
+import { claimTask, findTask, patchTask, releaseClaim, setTaskStatus } from './service.mjs'
 import { writePolicyFor } from './state.mjs'
 
 /** How many observed events to keep for the probe to report. */
@@ -32,6 +32,21 @@ const EVENT_LOG_LIMIT = 20
  * A dispatcher may create agents — that is what makes a pool move — but not without
  * a bound, or a queue with work in it becomes an unbounded supply of agents. */
 export const DEFAULT_MAX_WORK_AGENTS = 3
+
+/**
+ * How many times one task may be handed out before the dispatcher stops trying.
+ *
+ * A failed dispatch RELEASES its claim, which puts the task back in the pool as ready
+ * — and that release is itself a board write, which triggers another sweep. So a task
+ * that cannot be dispatched retries forever, at whatever pace the trigger fires, with
+ * nothing on the board to say so. Measured live: T-2 reached six attempts against a
+ * failing spawn before anybody noticed, and the only reason it stopped was the bug
+ * being fixed. This is the ceiling that stops it instead.
+ *
+ * It is the half of "retry, then stop" the first version was missing: the attempt
+ * counter existed, and nothing read it.
+ */
+export const DEFAULT_MAX_DISPATCH_ATTEMPTS = 3
 
 /** The services this edge needs, fetched optionally so their absence degrades. */
 export function servicesFor(ctx) {
@@ -330,6 +345,39 @@ function mergeDispatch(board, taskId, change) {
   return Object.assign({}, previous, change)
 }
 
+/**
+ * Say "this keeps failing" where a human will see it.
+ *
+ * Silent retention is the failure this avoids: a task left `queued` while the
+ * dispatcher refuses to touch it looks exactly like work waiting its turn, and no
+ * amount of waiting fixes it. Blocking names the problem, and `blocked -> claimed`
+ * already exists, so putting it back in the pool is an ordinary move afterwards.
+ */
+function exhaustMutator(board, taskId, now, limit) {
+  const task = findTask(board, taskId)
+  if (task === undefined) return { ok: false, code: 'unknown-task', message: 'no task with id ' + String(taskId) }
+  if (task.status !== 'queued') {
+    return { ok: false, code: 'not-pooled', message: task.id + ' is ' + task.status + ', not queued' }
+  }
+  const previous = task.dispatch === undefined || task.dispatch === null ? {} : task.dispatch
+  const reason =
+    'dispatch failed ' +
+    String(previous.attempts === undefined ? '?' : previous.attempts) +
+    ' times: ' +
+    String(previous.error === undefined ? 'no reason recorded' : previous.error)
+  const blocked = setTaskStatus(board, taskId, 'blocked', now, 'dispatcher', reason)
+  if (blocked.ok !== true) return blocked
+  const recorded = patchTask(
+    blocked.board,
+    taskId,
+    { dispatch: mergeDispatch(board, taskId, { status: 'exhausted', at: new Date(now).toISOString(), limit: limit }) },
+    now,
+    'dispatcher',
+  )
+  if (recorded.ok !== true) return recorded
+  return Object.assign({}, recorded, { events: blocked.events.concat(recorded.events || []) })
+}
+
 /** The claim IS the mutex. Only `claimTask` can produce `claimed`, so once it has
  * run, a second dispatch attempt finds a task that is no longer `queued` and stops —
  * which is why no separate dispatch lock is needed, and why the status gate below is
@@ -412,6 +460,29 @@ export async function dispatchOne(ctx, options, taskId, request) {
   const unmet = unmetDependencies(read.board, task)
   if (unmet.length > 0) {
     return { ok: false, code: 'dependency-unmet', message: task.id + ' is still waiting on ' + unmet.join(', '), waiting: unmet }
+  }
+  // Attempts are spent: stop, and say so on the board rather than retrying into the
+  // void. A failed dispatch releases its claim, which makes the task ready again — so
+  // without this, failure re-arms the very trigger that caused it.
+  const spent = task.dispatch === undefined || task.dispatch === null || task.dispatch.attempts === undefined ? 0 : task.dispatch.attempts
+  const limit = typeof options.maxDispatchAttempts === 'number' ? options.maxDispatchAttempts : DEFAULT_MAX_DISPATCH_ATTEMPTS
+  if (spent >= limit) {
+    const blocked = await state.apply(
+      projectPath,
+      (board) => exhaustMutator(board, taskId, now, limit),
+      writePolicyFor(projectPath),
+    )
+    return {
+      ok: false,
+      code: 'attempts-exhausted',
+      message:
+        taskId +
+        ' has been handed out ' +
+        spent +
+        ' times without success and is now blocked for a human to look at',
+      attempts: spent,
+      blocked: blocked.failed === null,
+    }
   }
   const attempt = (task.dispatch === undefined || task.dispatch === null || task.dispatch.attempts === undefined ? 0 : task.dispatch.attempts) + 1
   const picked = pickTarget(

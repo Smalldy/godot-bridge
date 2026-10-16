@@ -26,7 +26,7 @@ const {
   spawnPreamble,
 } = await import('../../plugin/task-center/dispatch.mjs')
 const { emptyBoard } = await import('../../plugin/task-center/board.mjs')
-const { createTask, findTask, publishTask, setTaskStatus, claimTask } = await import('../../plugin/task-center/service.mjs')
+const { createTask, findTask, publishTask, setTaskStatus, claimTask, patchTask } = await import('../../plugin/task-center/service.mjs')
 
 let failures = 0
 function check(label, condition, detail) {
@@ -599,6 +599,53 @@ const mixed = await mixedDispatcher.sweep('test')
 check('a sweep visits every ready task', mixed.results.length === 2, JSON.stringify(mixed.results.map((r) => r.id)))
 check('and fails independently per task', mixed.results.every((r) => r.ok === true || typeof r.code === 'string'))
 check('the one it could dispatch is claimed', findTask(mixedState.holder.board, 'T-1').status === 'claimed')
+
+// ── the retry ceiling: the half that stops a failing dispatch from looping ──
+//
+// Found live, not imagined. A dispatch that fails RELEASES its claim, which makes the
+// task ready again — and the release is a board write, which triggers another sweep. So
+// a task that cannot be dispatched retried forever: T-2 reached six attempts against a
+// failing spawn before anybody noticed, with nothing on the board saying so.
+
+const spentState = makeState(
+  patchTask(
+    boardWith([{ title: 'x' }]).board,
+    'T-1',
+    { dispatch: { attempts: 3, status: 'failed', error: 'boom' } },
+    NOW,
+    'dispatcher',
+  ).board,
+)
+const spentTeam = teamWith({})
+const spent = await dispatchOne(spentTeam.ctx, optionsFor(spentState), 'T-1')
+check('a task at the attempt limit is refused', spent.code === 'attempts-exhausted', JSON.stringify(spent))
+check('and no agent is asked to do it', spentTeam.calls.length === 0 && spentTeam.spawns.length === 0)
+check('and the refusal reports how many attempts were spent', spent.attempts === 3, String(spent.attempts))
+const spentTask = findTask(spentState.holder.board, 'T-1')
+check('it is blocked rather than left looking queued', spentTask.status === 'blocked', spentTask.status)
+check('and the exhaustion is on the record', spentTask.dispatch.status === 'exhausted', JSON.stringify(spentTask.dispatch))
+check('and the history says why', String(spentTask.history[spentTask.history.length - 1].note).includes('boom'))
+check('so a sweep will not pick it up again', dispatchableTasks(spentState.holder.board).length === 0)
+const alsoRefused = await dispatchOne(spentTeam.ctx, optionsFor(spentState), 'T-1')
+check('and a further dispatch is refused outright', alsoRefused.code === 'not-pooled', JSON.stringify(alsoRefused))
+
+// The loop itself, end to end: three failures, then a stop.
+const loopState = makeState(boardWith([{ title: 'cursed' }]).board)
+const loopTeam = teamWith({
+  roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }],
+  spawnThrows: true,
+})
+const attempt = () =>
+  dispatchOne(loopTeam.ctx, { state: loopState, projectPath: PROJECT, now: NOW, allowSpawn: true }, 'T-1')
+await attempt()
+await attempt()
+const third = await attempt()
+check('a failing dispatch is retried', third.ok === false && third.code === 'send-failed')
+check('and the attempt is counted', findTask(loopState.holder.board, 'T-1').dispatch.attempts === 3)
+const fourth = await attempt()
+check('the third failure does NOT arm a fourth attempt', fourth.code === 'attempts-exhausted', JSON.stringify(fourth))
+check('the dispatcher tried exactly three times', loopTeam.spawns.length === 3, String(loopTeam.spawns.length))
+check('and the task is now blocked for a human', findTask(loopState.holder.board, 'T-1').status === 'blocked')
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)
