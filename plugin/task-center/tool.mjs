@@ -55,6 +55,7 @@ export const USER_ONLY = {
   set_status: 'Status moves are named actions here (`start`, `submit`, `block`, `unblock`, `reopen`) so the legal ones are the only ones.',
   reorder: 'Queue order belongs to the user — ask them to reorder it in the task center panel.',
   force_unlock: 'Forcing a lock away from another agent is the user\'s call — report the block instead.',
+  retry: 'Putting a task the dispatcher gave up on back in the pool is the user\'s call — ask them in the task center panel.',
 }
 
 /**
@@ -133,8 +134,51 @@ export function taskMutator(action, args, id, by, agent, now, options) {
         by,
       )
     }
-    if (action === 'claim') return claimTask(board, id, { name: by, session: agent === undefined ? null : String(agent.id) }, now)
-    if (action === 'release') return releaseClaim(board, id, now, by)
+    // `claim` and `release` are GONE on purpose. Claiming is what dispatch does, and
+    // dispatch is the system's business; a client that could claim would be writing the
+    // mechanism's own record. The board SHOWS claimed/in_progress — nobody calls them.
+    if (action === 'close') {
+      const task = findTask(board, id)
+      if (task === undefined) return { ok: false, code: 'unknown-task', message: 'No task with id ' + id }
+      // The conversation's own work: a draft it did itself, marked complete by itself.
+      // Pool work is NOT closed from here — the worker submits it and the user accepts
+      // it from the panel, which is the review step this refusal protects.
+      if (agentSide && task.status !== 'draft') {
+        return {
+          ok: false,
+          code: 'not-yours',
+          message:
+            task.id +
+            ' is ' +
+            task.status +
+            '; pool work is accepted by the user, so `submit` it for review and report instead',
+        }
+      }
+      return setTaskStatus(board, id, 'done', now, by, args.note === undefined ? 'done by the conversation' : args.note)
+    }
+    if (action === 'retry') {
+      // Clear what the dispatcher recorded and put the task back in the pool. This
+      // exists because exceeding the retry ceiling used to be a ONE-WAY DOOR: the record
+      // could not be cleared (the update path does not accept `dispatch`, measured
+      // twice), and `blocked` led nowhere near the queue.
+      const task = findTask(board, id)
+      if (task === undefined) return { ok: false, code: 'unknown-task', message: 'No task with id ' + id }
+      if (task.status !== 'blocked' && task.status !== 'queued') {
+        return {
+          ok: false,
+          code: 'not-retryable',
+          message: task.id + ' is ' + task.status + '; only a blocked or pooled task is retried',
+        }
+      }
+      const requeued =
+        task.status === 'blocked'
+          ? setTaskStatus(board, id, 'queued', now, by, args.note === undefined ? 'retry requested' : args.note)
+          : { ok: true, board: board, events: [] }
+      if (requeued.ok !== true) return requeued
+      const cleared = patchTask(requeued.board, id, { dispatch: null }, now, by)
+      if (cleared.ok !== true) return cleared
+      return Object.assign({}, cleared, { events: (requeued.events || []).concat(cleared.events || []) })
+    }
     if (action === 'start') return setTaskStatus(board, id, 'in_progress', now, by, args.note)
     if (action === 'submit') {
       const withEvidence = args.evidence === undefined ? board : patchTask(board, id, { evidence: args.evidence }, now, by).board || board
@@ -174,7 +218,7 @@ export function registerTaskTool(ctx, options) {
   const tool = defineTool({
     name: 'task_center',
     description:
-      'Read and work the project task board (.agents/tasks.json) and its file locks. Actions: `board` (the whole board), `mine` (your tasks and locks), `show` (one task), `locks` (who is writing what), `create` (draft; only the user releases drafts), `update`, `claim`, `release`, `start`, `submit`, `block`, `unblock`, `reopen`, `remove` (drafts only), `lock`, `reserve`, `unlock`, `cancel` (withdraw a reservation). Releasing drafts, approving work and reordering the queue belong to the user and are refused here.',
+      'Read and work the project task board (.agents/tasks.json) and its file locks. Actions: `board` (the whole board), `mine` (your tasks and locks), `show` (one task), `locks` (who is writing what), `create` (draft; only the user releases drafts), `update`, `close` (YOUR OWN drafts only — pool work is accepted by the user), `start`, `submit`, `block`, `unblock`, `reopen`, `remove` (drafts only), `lock`, `reserve`, `unlock`, `cancel` (withdraw a reservation). Claiming and releasing a task are NOT here: dispatch does that, and the board only shows it. Releasing drafts, accepting work, reordering the queue and retrying a task the dispatcher gave up on all belong to the user and are refused here.',
     parameters: {
       action: {
         type: 'string',
@@ -183,8 +227,7 @@ export function registerTaskTool(ctx, options) {
         enum: READ_ACTIONS.concat([
           'create',
           'update',
-          'claim',
-          'release',
+          'close',
           'start',
           'submit',
           'block',

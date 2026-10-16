@@ -129,10 +129,14 @@ check('the draft records the author in history', boardOf(fs).tasks[0].history[0]
 check('creating is reported as a draft count', result.drafts === 1)
 check('and the result tells the agent who releases it', /user/.test(result.hint), result.hint)
 
-// ── the release gate is real ───────────────────────────────────────────────
+// ── claiming is not a client action at all ─────────────────────────────────
+// `claim` and `release` are gone rather than gated: claiming is what DISPATCH does, and
+// the board only shows the result. A client that could claim would be writing the
+// mechanism's own record — which is exactly what the API split forbids.
 result = await call(tool, 'claim', { id: 'T-1' })
-check('a draft cannot be claimed', result.code === 'not-released', JSON.stringify(result))
-check('the gate explains whose decision it is', /user has not released/.test(result.error), result.error)
+check('claiming is no longer a client action', result.code === 'unknown-action', JSON.stringify(result))
+result = await call(tool, 'release', { id: 'T-1' })
+check('releasing a task is not either', result.code === 'unknown-action', JSON.stringify(result))
 
 // The user releases it in the panel; emulate that with the same model function
 // the panel will use, through the same board layer.
@@ -142,14 +146,27 @@ const released = await updateBoard({ fs: fs }, { projectPath: PROJECT, mutate: (
 check('the emulated release succeeded', released.ok === true, JSON.stringify(released))
 check('the draft is now queued', boardOf(fs).tasks[0].status === 'queued')
 
-// ── claiming, working, submitting ──────────────────────────────────────────
-result = await call(tool, 'claim', { id: 'T-1' })
-check('a released task can be claimed', result.task.assignee.name === '@aaaaaaaa', JSON.stringify(result.task && result.task.assignee))
-check('claiming sets a lease', typeof result.task.leaseUntil === 'string')
-check('claiming reports its event', result.events.join(',') === 'claimed', JSON.stringify(result.events))
-
-result = await call(tool, 'claim', { id: 'T-1' }, BOB)
-check('another agent cannot take a live claim', result.code === 'held', JSON.stringify(result))
+// ── working, submitting ────────────────────────────────────────────────────
+// No client can claim any more: claiming is what DISPATCH does, and the board only
+// shows it. So the test produces the claimed state the way the SYSTEM does — through
+// the model — and then exercises the actions the tool still owns.
+const { claimTask } = await import('../../plugin/task-center/service.mjs')
+const CLAIM_AT = Date.parse('2026-01-01T00:00:00.000Z')
+await updateBoard(
+  { fs: fs },
+  {
+    projectPath: PROJECT,
+    sandboxPolicy: { mode: 'workspace-write', workspaceRoot: PROJECT },
+    mutate: (board) => claimTask(board, 'T-1', { name: '@aaaaaaaa', session: 'session-aaaaaaaa' }, CLAIM_AT).board,
+  },
+)
+const claimed = boardOf(fs).tasks[0]
+check('a dispatched task is claimed, with a lease', claimed.status === 'claimed' && typeof claimed.leaseUntil === 'string', JSON.stringify(claimed.status))
+check('and the holder is the dispatched agent', claimed.assignee.name === '@aaaaaaaa', JSON.stringify(claimed.assignee))
+// The rule that a live claim cannot be taken is a MODEL rule, and it is asserted where
+// the model lives. Here it is worth one line, because it is what makes dispatch the only
+// writer of this state.
+check('the model still refuses to take a live claim', claimTask(boardOf(fs), 'T-1', { name: '@bob', session: 's-bob' }, CLAIM_AT).code === 'held')
 result = await call(tool, 'start', { id: 'T-1' })
 check('the holder can start it', result.task.status === 'in_progress', JSON.stringify(result.task && result.task.status))
 result = await call(tool, 'submit', { id: 'T-1', evidence: 'tests/combat_test.gd 全绿' })
@@ -164,7 +181,7 @@ check('submitting again returns it to review', result.task.status === 'review')
 const probe = await call(tool, 'create', { title: 'rework probe' })
 result = await call(tool, 'start', { id: probe.created.id })
 check('a draft cannot be started', result.code === 'illegal-transition', JSON.stringify(result))
-check('and the refusal lists the legal moves', /allowed: queued, cancelled/.test(result.error), result.error)
+check('and the refusal lists the legal moves', /allowed: queued, done, cancelled/.test(result.error), result.error)
 
 result = await call(tool, 'mine')
 check('mine lists the tasks the agent holds', result.tasks.length === 1 && result.tasks[0].id === 'T-1', JSON.stringify(result.tasks))
@@ -234,7 +251,11 @@ check('an unnameable agent still gets a label', result.tasks !== undefined, JSON
 // ── a refused write never touches the file ─────────────────────────────────
 const snapshot = boardText(fs)
 result = await call(tool, 'claim', { id: 'T-404' })
-check('claiming an unknown task is refused', result.code === 'unknown-task', JSON.stringify(result))
+check('claiming an unknown task is refused as an unknown action', result.code === 'unknown-action', JSON.stringify(result))
+result = await call(tool, 'close', { id: 'T-404' })
+check('closing an unknown task is refused as unknown', result.code === 'unknown-task', JSON.stringify(result))
+result = await call(tool, 'retry', { id: 'T-404' })
+check('retrying is the user\'s call, refused before it even reads the board', result.refused === 'retry', JSON.stringify(result))
 check('and the file is byte-identical afterwards', boardText(fs) === snapshot)
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)

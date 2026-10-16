@@ -111,7 +111,7 @@ check('claimed → in_progress is legal', result.ok === true && result.task.stat
 board = result.board
 result = setTaskStatus(board, 'T-2', 'in_progress', T0, '@bob')
 check('a status jump from draft is refused', result.ok === false && result.code === 'illegal-transition', JSON.stringify(result))
-check('the refusal names the legal targets', /allowed: queued, cancelled/.test(result.message), result.message)
+check('the refusal names the legal targets', /allowed: queued, done, cancelled/.test(result.message), result.message)
 result = setTaskStatus(board, 'T-1', 'bogus', T0, '@bob')
 check('an unknown status is refused', result.ok === false && result.code === 'unknown-status')
 result = setTaskStatus(board, 'T-9', 'review', T0, '@bob')

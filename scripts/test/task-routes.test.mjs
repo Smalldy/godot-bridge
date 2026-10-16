@@ -192,12 +192,12 @@ check('the panel publishes it', outcome.json.ok === true, JSON.stringify(outcome
 check('and the board says released', boardOf(fs).tasks[0].status === 'queued')
 check('and the actor is the user', boardOf(fs).tasks[0].history.slice(-1)[0].by === '@user', boardOf(fs).tasks[0].history.slice(-1)[0].by)
 
-outcome = await surfaces.callRoute(surfaces.ACTION_PATH, { action: 'claim', id: 'T-1' })
-check('the panel can claim it', outcome.json.ok === true, JSON.stringify(outcome.json))
-check('and the holder is the user, not an invented agent', boardOf(fs).tasks[0].assignee.name === '@user')
+// There is no `claim` from the panel either. Claiming is what DISPATCH does; the panel
+// shows claimed/in_progress and never produces them. (The route's own claim branch is
+// removed with the panel's 领取 button — T-14 item 5.)
+check('the panel shows what the tool shows', typeof surfaces.STATE_PATH === 'string')
 
-// The panel's move: reorder the queue. T-1 left the queue when it was claimed, so
-// there has to be a second released task before there is a queue to reorder.
+// The panel's move: reorder the queue. A published task IS in the queue.
 await surfaces.callTool('create', { title: 'second' })
 await surfaces.callRoute(surfaces.ACTION_PATH, { action: 'publish', id: 'T-2' })
 await surfaces.callTool('create', { title: 'third' })
@@ -208,17 +208,17 @@ const queued = boardOf(fs)
   .tasks.filter((task) => task.status === 'queued')
   .sort((a, b) => a.order - b.order)
   .map((task) => task.id)
-check('and the order actually changed', queued.join(',') === 'T-3,T-2', queued.join(','))
+check('and the order actually changed', queued.join(',') === 'T-1,T-3,T-2', queued.join(','))
 
 outcome = await surfaces.callRoute(surfaces.ACTION_PATH, { action: 'setStatus', id: 'T-1', status: 'done' })
 check('an illegal transition is refused with its code', outcome.json.ok === false && outcome.json.code === 'illegal-transition', JSON.stringify(outcome.json))
 check('and names the legal targets', /allowed:/.test(outcome.json.message), outcome.json.message)
-check('and nothing was written', boardOf(fs).tasks.filter((task) => task.id === 'T-1')[0].status === 'claimed')
+check('and nothing was written', boardOf(fs).tasks.filter((task) => task.id === 'T-1')[0].status === 'queued')
 
-// The mirror, on deletion: the model rule "a held task cannot be deleted" binds
-// BOTH surfaces, so release it first — and then the difference shows, because the
-// tool only deletes drafts while the panel may delete anything unheld.
-await surfaces.callRoute(surfaces.ACTION_PATH, { action: 'release', id: 'T-1' })
+// The mirror, on deletion: the model rule "a held task cannot be deleted" binds BOTH
+// surfaces, and the difference that remains is that the tool only deletes drafts while
+// the panel may delete anything unheld. A pooled task is unheld — nobody claims it from
+// a client any more; dispatch does that.
 const toolRemove = await surfaces.callTool('remove', { id: 'T-1' })
 check('the tool refuses to delete a released task', toolRemove.code === 'not-a-draft', JSON.stringify(toolRemove))
 check('and it is still there', boardOf(fs).tasks.filter((task) => task.id === 'T-1').length === 1)

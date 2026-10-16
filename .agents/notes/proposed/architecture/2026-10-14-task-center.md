@@ -19,12 +19,14 @@ decisions:
   - 一个包、两个组件行（godot-bridge + godot-bridge/task-center）
   - 方案是一种文档类型，不是新存储
   - 系统 API 建全后，`.agents/` 下的**状态与文档**（板子 / 方案 / 设置）一律走 API，不再直接改文件；源码仍走文件与 git（过渡期例外见 API 一节）
+  - **实现期补上两条状态边**（记在此处，because 它们动的是模型而不是细节）：`draft → done`（对话自己的活——上面第 4 条早已冻结"draft → done"，只是这条边此前不存在，于是做完的草稿只能靠"发布进池子"来收尾，那扇门是错的）与 `blocked → queued`（人看过之后重试；与 `queued → blocked` 成对）。**`in_progress → done` 明确不加**——它会让任何人跳过提交就直接宣称完成，而待验收正是为此存在。
 open_questions:
-  - 插件能否触达其他会话（WorkAgent）的 Agent 句柄——决定"任务系统→WorkAgent"那条边由谁实现
   - 任务计划是否强制
   - 讨论期是否留痕
   - /task 信号的语种与长度
   - 是否做对抗式拆解评审
+answered:
+  - 插件能否触达其他会话（WorkAgent）的 Agent 句柄 → **能**（T-15 已实测：`agentTeams` + `ctx.agents` 句柄，空闲目标 `coldResume` 唤醒）。所以"任务系统→WorkAgent"那条边**由插件自己实现**，已实现并实测（见第八节「派发怎么实现」）。
 ---
 
 # 任务中心 —— 方案（P-1）
@@ -57,7 +59,7 @@ open_questions:
 
 **文件协作**：只用**文件锁**（worktree 已评估并暂缓）。键 = 项目相对路径，持有者 = agent；预约按请求时间排队，**释放时在同一提交内授予等待最久者**；租约兜底、存活判断优先；**只存宿主内存**。
 
-**摘要与通知**：`/task` 给一次板子摘要（已实测）；事件驱动推送 + 内容哈希去重 = T-7；唤醒靠 `followup` / `send(…, wakeup)`——机制已代码级确认，实现未做，且**插件能否触达其他会话的 Agent 句柄仍待查**（它决定"任务系统→WorkAgent"那条边由谁实现）。
+**摘要与通知**：`/task` 给一次板子摘要（已实测）；事件驱动推送 + 内容哈希去重 = T-7。**唤醒与派发已实现并实测**（`spawnTeammate` / `sendMessage`；空闲目标 `coldResume`；`agent/status` 事件确实到达 profile 行）——那条"任务系统→WorkAgent"的边**不再是缺失的**。仍缺的是**租约回收**：worker 做了一半沉默或死掉后，没有任何东西把任务收回池子（实测：两条任务的租约已过期，仍停在 claimed/in_progress）。
 
 ## 一、结论
 

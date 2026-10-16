@@ -29,16 +29,28 @@ export const STATUSES = ['draft', 'queued', 'claimed', 'in_progress', 'blocked',
  * task can never be `claimed` with nobody holding it. `queued` is listed on
  * `claimed` because releaseClaim writes that move directly. */
 export const TRANSITIONS = {
-  draft: ['queued', 'cancelled'],
+  // `draft -> done` is the conversation's own work: a draft is its work list, it does
+  // the work itself, and it marks it complete. This edge was DECIDED long before it
+  // existed (the proposal's frozen decision: 对话自己的活生命周期是 draft → done). Its
+  // absence is why a finished draft could only be closed by publishing it into the
+  // pool — the wrong door, which then had an agent start work that was already done.
+  draft: ['queued', 'done', 'cancelled'],
   // `queued -> blocked` exists for exactly one reason: a pooled task whose dispatch
   // keeps failing must become VISIBLE as stuck. Leaving it queued while the dispatcher
   // refuses to touch it is invisible retention — it looks like work waiting its turn,
-  // forever. Blocking it names the problem where a human will see it, and
-  // `blocked -> claimed` already exists, so releasing it again is a normal move.
+  // forever. Blocking it names the problem where a human will see it.
   queued: ['draft', 'blocked', 'cancelled'],
   claimed: ['in_progress', 'blocked', 'review', 'queued', 'cancelled'],
   in_progress: ['blocked', 'review', 'cancelled'],
-  blocked: ['claimed', 'in_progress', 'cancelled'],
+  // `blocked -> queued` is the way BACK, and it belongs with `queued -> blocked`: a
+  // human looked at a task the dispatcher gave up on and says "try again". Without it,
+  // exceeding the retry ceiling is a one-way door — blocked leads only to claimed,
+  // in_progress or cancelled, and reviving from cancelled takes three moves.
+  //
+  // NOTE: `in_progress -> done` is deliberately still ABSENT. It was proposed during
+  // this work and rejected: it would let anyone claim completion without submitting for
+  // review, which is the entire point of the review step.
+  blocked: ['claimed', 'in_progress', 'queued', 'cancelled'],
   review: ['in_progress', 'done', 'cancelled'],
   done: ['in_progress'],
   cancelled: ['draft'],
