@@ -48,6 +48,11 @@ export const DEFAULT_MAX_WORK_AGENTS = 3
  */
 export const DEFAULT_MAX_DISPATCH_ATTEMPTS = 3
 
+/** How long one hand-off may take before the service call is aborted. A dispatch that
+ * hangs is worse than one that fails: it holds a claim, and the claim is what keeps
+ * other sweeps off the task. */
+export const DISPATCH_TIMEOUT_MS = 60 * 1000
+
 /** The services this edge needs, fetched optionally so their absence degrades. */
 export function servicesFor(ctx) {
   const get = (key) => {
@@ -498,11 +503,19 @@ export async function dispatchOne(ctx, options, taskId, request) {
   if (claimed.failed !== null) return claimed.failed
   const boardPath = projectPath + '\\.agents\\tasks.json'
   const brief = briefFor(task, boardPath)
-  // The service validates `signal` STRICTLY: passing `undefined` is not the same as
-  // omitting the field, and it answers "signals[0] is not of type AbortSignal." So the
-  // field is only added when there is a real one — which is the common case here, since
-  // a dispatch triggered by a sweep has no request to carry a signal.
-  const signalField = signal === undefined || signal === null ? {} : { signal: signal }
+  // The service REQUIRES a real AbortSignal. Neither an absent field nor an explicit
+  // `undefined` satisfies it — both read back as undefined, and it answers
+  // "signals[0] is not of type AbortSignal." The first attempt at this only stopped
+  // passing `undefined`, which was NO FIX AT ALL: whether the field is present-as-
+  // undefined or absent changes nothing about what the validator sees. So when there
+  // is no signal to carry, make one — with a deadline, which also gives a dispatch
+  // that hangs an ending.
+  const signalForCall = signal === undefined || signal === null ? AbortSignal.timeout(DISPATCH_TIMEOUT_MS) : signal
+  // `provider` comes from the Lead: a fresh WorkAgent should run on the same provider
+  // the conversation does, and the plugin has no configuration of its own to read. The
+  // shipped spawn tool passes its row's configured provider; the Lead's own is the
+  // equivalent available here.
+  const providerForCall = picked.lead.options === undefined || picked.lead.options === null ? null : picked.lead.options.provider
   let delivered = null
   let sendError = null
   try {
@@ -510,32 +523,23 @@ export async function dispatchOne(ctx, options, taskId, request) {
       // The prompt IS the delivery. A fresh WorkAgent starts on the task, so spawning
       // it and then sending the same brief would tell it twice — and the name it was
       // spawned under has to be the name the board already recorded.
-      delivered = await ctx.get('agentTeams').spawnTeammate(
-        picked.lead,
-        Object.assign(
-          {
-            name: picked.target.name,
-            description: task.title,
-            prompt: [
-              { type: 'text', text: spawnPreamble(picked.target.name) },
-              { type: 'text', text: brief },
-            ],
-            context: 'fresh',
-          },
-          signalField,
-        ),
-      )
+      delivered = await ctx.get('agentTeams').spawnTeammate(picked.lead, {
+        name: picked.target.name,
+        description: task.title,
+        prompt: [
+          { type: 'text', text: spawnPreamble(picked.target.name) },
+          { type: 'text', text: brief },
+        ],
+        context: 'fresh',
+        provider: providerForCall,
+        signal: signalForCall,
+      })
     } else {
-      delivered = await ctx.get('agentTeams').sendMessage(
-        picked.lead,
-        Object.assign(
-          {
-            target: picked.target.name,
-            content: [{ type: 'text', text: brief }],
-          },
-          signalField,
-        ),
-      )
+      delivered = await ctx.get('agentTeams').sendMessage(picked.lead, {
+        target: picked.target.name,
+        content: [{ type: 'text', text: brief }],
+        signal: signalForCall,
+      })
     }
   } catch (error) {
     sendError = String((error && error.message) || error)
@@ -611,6 +615,60 @@ export async function dispatchOne(ctx, options, taskId, request) {
   }
 }
 
+/**
+ * Try the spawn primitive DIRECTLY, with several candidate request shapes.
+ *
+ * The pool has now failed at this one call many times, and every attempt cost a real
+ * task an attempt and a rollback. That is the wrong place to learn a service's
+ * requirements. This settles the primitive on its own: it tries the shapes in order,
+ * STOPS AT THE FIRST SUCCESS, and reports which shape worked — or every shape's error.
+ * One restart, one call, a definite answer.
+ *
+ * The first shape is what the code believed was enough; the second adds the field the
+ * shipped spawn tool passes and this plugin does not (the provider, taken from the Lead
+ * when the row has no configuration of its own).
+ */
+export async function probeSpawn(ctx) {
+  const { agentTeams, agents } = servicesFor(ctx)
+  if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service' }
+  if (agents === undefined || agents === null) return { ok: false, code: 'no-agents-service' }
+  const lead = resolveLead(ctx)
+  if (lead === null) return { ok: false, code: 'no-lead' }
+  const leadOptions = lead.options === undefined || lead.options === null ? {} : lead.options
+  const name = 'probe-' + Date.now().toString(36)
+  const prompt = [{ type: 'text', text: 'You are a probe teammate. Reply with one short line and stop; nothing is expected of you.' }]
+  const base = { name: name, description: 'dispatch probe', prompt: prompt, context: 'fresh' }
+  const shapes = [
+    { label: 'signal only', request: Object.assign({}, base, { signal: AbortSignal.timeout(30000) }) },
+    {
+      label: 'signal + provider',
+      request: Object.assign({}, base, { provider: leadOptions.provider, signal: AbortSignal.timeout(30000) }),
+    },
+  ]
+  const tried = []
+  for (const shape of shapes) {
+    try {
+      const result = await agentTeams.spawnTeammate(lead, shape.request)
+      const member = result === undefined || result === null || result.member === undefined ? null : result.member
+      return {
+        ok: true,
+        shape: shape.label,
+        member: member === null ? null : { id: String(member.id), name: member.name, status: member.status },
+        tried: tried,
+      }
+    } catch (error) {
+      tried.push({ shape: shape.label, error: String((error && error.message) || error) })
+    }
+  }
+  return {
+    ok: false,
+    code: 'every-shape-failed',
+    leadId: String(lead.id),
+    leadProvider: leadOptions.provider === undefined ? null : String(leadOptions.provider),
+    leadOptionKeys: Object.keys(leadOptions),
+    tried: tried,
+  }
+}
 /**
  * The automatic trigger, which is what makes the pool move on its own.
  *

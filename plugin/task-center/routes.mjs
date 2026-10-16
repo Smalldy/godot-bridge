@@ -194,6 +194,16 @@ export function registerTaskRoutes(ctx, options) {
       return await options.sweep()
     }
 
+    // Try the spawn primitive on its own, so learning what the service requires stops
+    // costing real tasks their attempts. Nearly read-only: it creates at most one
+    // teammate, and only if a candidate request shape actually works.
+    if (action === 'probeSpawn') {
+      if (options.probeSpawn === undefined) {
+        return { ok: false, code: 'no-dispatcher', message: 'Dispatch is not available in this profile.' }
+      }
+      return await options.probeSpawn()
+    }
+
     if (Object.prototype.hasOwnProperty.call(LOCK_ACTIONS, action)) {
       const path = String(body.path === undefined ? '' : body.path)
       const result =

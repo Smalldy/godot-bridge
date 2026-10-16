@@ -294,13 +294,14 @@ function teamWith(overrides) {
   return { ctx: ctx, teams: teams, calls: calls, spawns: spawns }
 }
 
-/** The real service validates `signal` strictly, and answers exactly this when the
- * field is present without being an AbortSignal. The stub used to accept anything,
- * which is how a live dispatch shipped with `signal: undefined` and failed on its
- * first real call with "signals[0] is not of type AbortSignal." A stub that is more
- * permissive than the service is a stub that lies. */
+/** The real service REQUIRES a real AbortSignal, and answers exactly this when the
+ * request's `signal` is anything else — including ABSENT, which reads back as undefined
+ * just like an explicit one. The stub first accepted anything; then it only rejected a
+ * present-but-wrong value. Both were more permissive than the service, and both let a
+ * dispatch ship that failed on its first real call. Twice. The stub now demands what
+ * the service demands. */
 function strictSignal(request) {
-  if ('signal' in request && !(request.signal instanceof AbortSignal)) {
+  if (!(request.signal instanceof AbortSignal)) {
     throw new Error('signals[0] is not of type AbortSignal.')
   }
 }
@@ -385,7 +386,7 @@ check('and carries a lease', dispatchedTask.leaseUntil !== null)
 check('the dispatch is recorded with the delivery status', dispatchedTask.dispatch.status === 'accepted')
 check('the first attempt is numbered one', dispatchedTask.dispatch.attempts === 1)
 check('the message went to the idle teammate', team.calls.length === 1 && team.calls[0].target === 'fixer')
-check('and carried no signal field, because there was no signal', team.calls[0].hasSignal === false)
+check('and carried a real AbortSignal, which the service requires', team.calls[0].hasSignal === true)
 check('the message carries the brief', team.calls[0].text.includes('Task T-1') && team.calls[0].text.includes('shrink it'))
 check('the sender credential is the Lead', team.calls[0].caller === 'session-lead')
 
@@ -468,7 +469,7 @@ const spawned = await dispatchOne(
 )
 check('a dispatch with nobody idle spawns a WorkAgent', spawned.ok === true && spawned.spawned === true, JSON.stringify(spawned))
 check('the spawn used the derived name', spawnTeam.spawns.length === 1 && spawnTeam.spawns[0].name === 'work-t1-1')
-check('and carried no signal field either', spawnTeam.spawns[0].hasSignal === false)
+check('and the spawn carried one too, made on the spot', spawnTeam.spawns[0].hasSignal === true)
 check('the spawn asked for a fresh context, not a fork of this conversation', spawnTeam.spawns[0].context === 'fresh')
 check('the spawn prompt carries the preamble', spawnTeam.spawns[0].text.includes('You are teammate "work-t1-1"'))
 check('the spawn prompt carries the brief', spawnTeam.spawns[0].text.includes('Task T-1') && spawnTeam.spawns[0].text.includes('four items'))

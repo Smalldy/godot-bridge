@@ -30,7 +30,7 @@
 import { readBoard } from './board.mjs'
 import { projectPathOf, registerTaskTool } from './tool.mjs'
 import { registerTaskRoutes } from './routes.mjs'
-import { probeDispatch, watchAgentStatus, dispatchOne, createDispatcher } from './dispatch.mjs'
+import { probeDispatch, watchAgentStatus, dispatchOne, createDispatcher, probeSpawn } from './dispatch.mjs'
 import { createState } from './state.mjs'
 
 /** Services this row needs: the board is read through the filesystem, the project
@@ -305,6 +305,9 @@ export function apply(ctx) {
         projectPath: panelProject,
         dispatchProbe: function () {
           return probeDispatch(ctx, statusWatcher)
+        },
+        probeSpawn: function () {
+          return probeSpawn(ctx)
         },
         dispatchOne: function (taskId, body) {
           // Spawning is ON by default: a pool that only moves while a WorkAgent
