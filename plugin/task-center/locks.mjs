@@ -3,7 +3,7 @@
  *
  * The point is to keep two workers from writing the same file at the same time.
  * A lock is therefore owned by a TASK while it runs, and released the moment the
- * task stops running (done / review / blocked / cancelled / lease expired).
+ * task stops running (done / blocked / cancelled / lease expired).
  * Agents may also lock extra files from their tool calls; those are owned by the
  * same task id, so finishing the task releases them too.
  *

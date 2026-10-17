@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Task Center v2**: a project-level task board (`<project>/.agents/tasks.json`), dependency-driven dispatch with explicit start/pause, priority ordering, concurrency and retry settings, 15-minute worker leases that return a dead worker's task to the pool, and recovery of claims left by a previous host process.
 - **File locks**: tasks declare `writeFiles`; the scheduler acquires all of them atomically before dispatch and releases them on completion, block, cancel or lease expiry. Paths canonicalise to project-relative POSIX paths, directory locks conflict with child paths, and an agent can lock extra files for its running task.
-- **One action API**: the `task_center` tool and the HTTP route call the same handlers (`create`, `update`, `delete`, `list`, `get`, `board`, `start`, `pause`, `settings`, `tick`, `submit`, `accept`, `reject`, `cancel`, `reopen`, `block`, `unblock`, `retry`, `lock`, `unlock`, `locks`, `forceUnlock`, `openProject`).
-- **Task Center GUI**: a rewritten panel with board, queue and lock views; start/pause, create/edit, review actions, dispatch settings, dependency and lease display, and a 2.5-second host snapshot poll.
+- **One action API**: the `task_center` tool and the HTTP route call the same handlers (`create`, `update`, `delete`, `list`, `get`, `board`, `start`, `pause`, `approveStart`, `rejectStart`, `cancelStartRequest`, `settings`, `tick`, `submit`, `cancel`, `reopen`, `block`, `unblock`, `retry`, `lock`, `unlock`, `locks`, `forceUnlock`, `openProject`).
+- **Task Center GUI**: a rewritten panel with board, queue and lock views; start/pause, create/edit, submit/retry/reopen, dispatch settings, dependency and lease display, a banner for a pending start request, and a 2.5-second host snapshot poll.
+- **Start consent**: an agent's `start` records `dispatch.request` instead of starting the scheduler; the panel shows who asked and why, with approve/reject. Only the user's `approveStart` runs dispatch. `pause` is immediate for either side; `settings` is user-only.
 
 ### Changed
 
@@ -20,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The browser half no longer contains a mock store. It fetches the host snapshot, sends one action and renders the answer, so a host failure can no longer reach a user as fabricated work.
 - The dispatch settings modal exposes a single value, maximum concurrency. The WorkAgent cap is derived as concurrency + 1, spawning is on, and the retry limit stays at its internal default of 3; the `settings` action still accepts the advanced knobs for tool and HTTP callers.
 - Dispatch claims a task before anything leaves the process, records the delivery result, and blocks a task after the configured attempt budget instead of retrying into the void.
+- The initial board has five columns and no review state: `submit` is completion, so `accept`, `reject` and `requiresReview` are gone. A board with an old `review` task migrates that task to `done`.
 
 ### Fixed
 

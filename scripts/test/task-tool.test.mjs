@@ -39,6 +39,8 @@ check('the tool exposes start and pause', actions.indexOf('start') >= 0 && actio
 check('the tool exposes create and submit', actions.indexOf('create') >= 0 && actions.indexOf('submit') >= 0)
 check('the old setStatus vocabulary is gone', actions.indexOf('setStatus') < 0, actions.join(','))
 check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && actions.indexOf('forceUnlock') >= 0)
+check('user-owned approval and settings are hidden from the tool', actions.indexOf('approveStart') < 0 && actions.indexOf('rejectStart') < 0 && actions.indexOf('settings') < 0, actions.join(','))
+check('the removed review actions are gone', actions.indexOf('accept') < 0 && actions.indexOf('reject') < 0, actions.join(','))
 
 // create + board
 {
@@ -55,11 +57,16 @@ check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && a
 {
   const created = await call({ action: 'create', title: 'pool work', priority: 99 })
   const id = created.task.id
-  const started = await call({ action: 'start' })
-  check('the tool starts dispatch', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started))
-  const board = await call({ action: 'board' })
+  const requested = await call({ action: 'start' })
+  check('an agent start is a request, not a start', requested.error !== undefined && requested.code === 'needs-consent' && requested.request !== null, JSON.stringify(requested))
+  let board = await call({ action: 'board' })
+  check('the request leaves dispatch paused', board.dispatch.state === 'paused', JSON.stringify(board.dispatch))
+  const cancelled = await call({ action: 'cancelStartRequest' })
+  check('the agent can withdraw its request', cancelled.ok === true && cancelled.dispatch.request === null, JSON.stringify(cancelled))
+  await rig.api.perform('start', {}, rig.user)
+  board = await call({ action: 'board' })
   const task = board.tasks.filter((entry) => entry.id === id)[0]
-  check('the task is dispatched to the idle teammate', task.status === 'running' && task.assignee.name === 'fixer', JSON.stringify(task && task.assignee))
+  check('the user start dispatches the task', task.status === 'running' && task.assignee.name === 'fixer', JSON.stringify(task && task.assignee))
   const wrong = await call({ action: 'submit', id: id, evidence: 'mine' }, other)
   check('a different agent cannot submit it', wrong.error !== undefined && wrong.code === 'not-assignee', JSON.stringify(wrong))
   const submitted = await call({ action: 'submit', id: id, evidence: 'tests pass' }, { id: 'session-idle' })
@@ -74,7 +81,7 @@ check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && a
   const created = await call({ action: 'create', title: 'locked work', writeFiles: [] })
   const id = created.task.id
   rig.team.setStatus('fixer', 'inactive')
-  await call({ action: 'start' })
+  await rig.api.perform('start', {}, rig.user)
   const locks = await call({ action: 'lock', paths: ['scripts/extra.gd'] }, { id: 'session-idle' })
   check('the assignee can lock an extra file', locks.ok === true && locks.granted === true, JSON.stringify(locks))
   check('the lock is attached to the running task', typeof locks.taskId === 'string' && locks.taskId.length > 0, String(locks.taskId))

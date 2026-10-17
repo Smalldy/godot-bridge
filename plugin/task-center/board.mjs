@@ -99,7 +99,7 @@ function normaliseTask(raw, index, now) {
   if (!/^T-\d+$/.test(id)) {
     return failure('invalid-task', 'task #' + String(index) + ' has no valid id (expected T-<number>, got ' + JSON.stringify(raw.id) + ')')
   }
-  const status = STATUSES.indexOf(raw.status) >= 0 ? raw.status : 'pending'
+  const status = STATUSES.indexOf(raw.status) >= 0 ? raw.status : raw.status === 'review' ? 'done' : 'pending'
   const dispatch =
     raw.dispatch !== null && typeof raw.dispatch === 'object' && !Array.isArray(raw.dispatch)
       ? {
@@ -154,7 +154,6 @@ function normaliseTask(raw, index, now) {
       assignee: assignee,
       attempts: attempts,
       maxAttempts: maxAttempts,
-      requiresReview: raw.requiresReview === true || status === 'review',
       evidence: stringOf(raw.evidence, ''),
       dispatch: dispatch,
       leaseUntil: isIso(raw.leaseUntil) ? raw.leaseUntil : null,
@@ -176,7 +175,7 @@ function migrateV1(parsed, now) {
     claimed: 'pending',
     in_progress: 'pending',
     blocked: 'blocked',
-    review: 'review',
+    review: 'done',
     done: 'done',
     cancelled: 'cancelled',
   }
@@ -188,7 +187,6 @@ function migrateV1(parsed, now) {
         next.status = statusOf[raw.status] === undefined ? 'pending' : statusOf[raw.status]
         next.dependsOn = Array.isArray(raw.dependsOn) ? raw.dependsOn : Array.isArray(raw.blockedBy) ? raw.blockedBy : []
         next.writeFiles = Array.isArray(raw.writeFiles) ? raw.writeFiles : []
-        next.requiresReview = raw.requiresReview === true || raw.status === 'review'
         next.attempts =
           raw.dispatch !== null && typeof raw.dispatch === 'object' && Number.isFinite(raw.dispatch.attempts)
             ? raw.dispatch.attempts

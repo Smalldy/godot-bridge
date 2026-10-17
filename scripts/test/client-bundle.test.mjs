@@ -145,7 +145,6 @@ const TASKS = [
     assignee: { name: 'fixer', session: 'session-idle' },
     attempts: 1,
     maxAttempts: 3,
-    requiresReview: false,
     leaseUntil: new Date(now + 600000).toISOString(),
     dispatch: { status: 'sent', target: 'fixer', error: null },
     createdAt: new Date(now - 60000).toISOString(),
@@ -166,7 +165,6 @@ const TASKS = [
     assignee: null,
     attempts: 0,
     maxAttempts: 3,
-    requiresReview: false,
     leaseUntil: null,
     dispatch: null,
     createdAt: new Date(now - 30000).toISOString(),
@@ -183,8 +181,8 @@ const HOST = {
   version: 2,
   seq: 3,
   updatedAt: new Date(now).toISOString(),
-  dispatch: { state: 'paused', maxConcurrent: 3, allowSpawn: true, maxWorkAgents: 4, maxAttempts: 3 },
-  counts: { total: 2, pending: 1, ready: 0, running: 1, review: 0, done: 0, blocked: 0, cancelled: 0 },
+  dispatch: { state: 'paused', maxConcurrent: 3, allowSpawn: true, maxWorkAgents: 4, maxAttempts: 3, request: { id: 'R-1', by: '@lead', at: new Date(now - 30000).toISOString(), note: 'deps are ready' } },
+  counts: { total: 2, pending: 1, ready: 0, running: 1, done: 0, blocked: 0, cancelled: 0 },
   queue: [],
   tasks: TASKS,
   locks: [],
@@ -237,16 +235,23 @@ check('the header names the panel', textOf(tree).indexOf('任务中心') >= 0, t
 check('the project path is shown', textOf(tree).indexOf(PROJECT) >= 0)
 check('the Host task title is rendered', textOf(tree).indexOf('Build damage system') >= 0)
 check('the waiting task is rendered', textOf(tree).indexOf('Enemy AI') >= 0)
-check('the board has six columns', findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length === 6, String(findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length))
+check('the board has five columns', findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length === 5, String(findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length))
 check('both cards are rendered', findAll(tree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card').length === 2)
 check('the dependency chip is rendered', textOf(tree).indexOf('T-1') >= 0)
 
 const startButton = findButton(tree, '开始派发')
 check('a start button is offered while paused', startButton !== undefined)
+check('a pending start request is shown', textOf(tree).indexOf('请求开始派发') >= 0 && textOf(tree).indexOf('deps are ready') >= 0)
+const approveButton = findButton(tree, '批准并开始')
+check('the request offers an approve action', approveButton !== undefined)
 startButton.props.onClick()
 await flush()
 check('start sends the start action', posts.length === 1 && posts[0].action === 'start', JSON.stringify(posts))
 check('and carries the project', posts[0].project === PROJECT, JSON.stringify(posts[0]))
+approveButton.props.onClick()
+await flush()
+check('approving sends approveStart', posts.length === 2 && posts[1].action === 'approveStart', JSON.stringify(posts))
+check('and carries the request id', posts[1].requestId === 'R-1', JSON.stringify(posts[1]))
 const loadsBeforeRefresh = loads
 findButton(tree, '刷新').props.onClick()
 await flush()

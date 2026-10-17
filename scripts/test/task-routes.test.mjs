@@ -112,6 +112,27 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
   check('spawning stays enabled by the same setting', payload.dispatch.allowSpawn === true, JSON.stringify(payload.dispatch))
 }
 
+// consent: an agent can request dispatch, but only the user starts it
+{
+  await post({ action: 'pause' })
+  const agent = { projectPath: PROJECT, by: '@agent', role: 'agent', agent: { id: 'session-agent' } }
+  const requested = await rig.api.perform('start', { note: 'deps are ready' }, agent)
+  check('an agent start returns needs-consent', requested.ok === false && requested.code === 'needs-consent', JSON.stringify(requested))
+  check('and records a request', requested.request !== null && requested.request.by === '@agent', JSON.stringify(requested.request))
+  const state = await call(surface, STATE_PATH, {})
+  check('the panel snapshot exposes the request', state.json().dispatch.request !== null && state.json().dispatch.request.note === 'deps are ready', state.text)
+  const approved = await post({ action: 'approveStart' })
+  check('the user can approve the request', approved.json().ok === true && approved.json().dispatch.state === 'running', approved.text)
+  check('approving clears the request', approved.json().dispatch.request === null, approved.text)
+  await post({ action: 'pause' })
+  await rig.api.perform('start', {}, agent)
+  const rejected = await post({ action: 'rejectStart' })
+  check('the user can reject the request', rejected.json().ok === true && rejected.json().dispatch.state === 'paused', rejected.text)
+  check('rejecting clears the request', rejected.json().dispatch.request === null, rejected.text)
+  const denied = await rig.api.perform('settings', { maxConcurrent: 2 }, agent)
+  check('an agent cannot change dispatch settings', denied.ok === false && denied.code === 'user-only', JSON.stringify(denied))
+}
+
 // transport hardening
 {
   const res = await post({ action: 'board' }, { 'content-type': 'text/plain' })

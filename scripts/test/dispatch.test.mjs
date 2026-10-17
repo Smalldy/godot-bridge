@@ -225,28 +225,6 @@ async function patchTask(rig, id, change) {
   rig.scheduler.dispose()
 }
 
-// ── review gates dependents until a human accepts ──────────────────────────
-{
-  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
-  const A = (await createTask(rig, { title: 'A', requiresReview: true })).id
-  const B = (await createTask(rig, { title: 'B', dependsOn: [A] })).id
-  await rig.action('start')
-  await rig.settle()
-  let snap = await snapshot(rig)
-  check('review-gated A is running first', byId(snap, A).status === 'running', JSON.stringify(ids(snap)))
-  await submitAsUser(rig, A, 'ready')
-  await rig.settle()
-  snap = await snapshot(rig)
-  check('A waits for review', byId(snap, A).status === 'review', JSON.stringify(ids(snap)))
-  check('B does not start before acceptance', byId(snap, B).status === 'pending', JSON.stringify(ids(snap)))
-  const accepted = await rig.action('accept', { id: A })
-  check('A can be accepted', accepted.ok === true && accepted.task.status === 'done')
-  await rig.settle()
-  snap = await snapshot(rig)
-  check('B starts after acceptance', byId(snap, B).status === 'running', JSON.stringify(ids(snap)))
-  rig.scheduler.dispose()
-}
-
 // ── no team services: the board still works and nothing crashes ────────────
 {
   const rig = createRig({ team: null })

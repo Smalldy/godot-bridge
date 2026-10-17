@@ -145,7 +145,6 @@ window.__ModuleLoader__.load({
 				title: '任务中心',
 				boardTab: '看板',
 				taskTitle: '标题',
-				requiresReview: '需要验收',
 				subtitle: '依赖驱动的派发 · 文件锁保护 · 跨会话共享',
 				project: '项目',
 				projectUnknown: '尚未选择项目',
@@ -170,8 +169,6 @@ window.__ModuleLoader__.load({
 				reopen: '重新打开',
 				submit: '提交完成',
 				submitEvidence: '提交证据',
-				accept: '接受',
-				reject: '打回',
 				note: '备注',
 				spec: '说明',
 				acceptance: '验收标准',
@@ -200,7 +197,6 @@ window.__ModuleLoader__.load({
 				waiting: '等待',
 				ready: '就绪',
 				runningCol: '进行中',
-				reviewCol: '待验收',
 				doneCol: '完成',
 				closedCol: '阻塞 / 取消',
 				emptyBoard: '还没有任务。点“新建任务”开始。',
@@ -210,6 +206,10 @@ window.__ModuleLoader__.load({
 				unknownProjectHint: '还没有项目。在会话里调用一次 task_center，或在下方填写项目目录。',
 				offline: '宿主没有响应',
 				error: '操作失败',
+				startRequestTitle: '请求开始派发',
+				startRequestHint: 'Agent 请求开始派发；批准后调度器才会运行。',
+				approveStart: '批准并开始',
+				rejectStart: '拒绝',
 				settingsTitle: '派发设置',
 				maxConcurrent: '最大并发',
 				concurrencyHint: '1–8。执行者上限自动设为并发 + 1；没有空闲执行者时会自动新建；连续失败 3 次后任务阻塞。',
@@ -225,7 +225,6 @@ window.__ModuleLoader__.load({
 				loading: '加载中…',
 				statusPending: '等待',
 				statusRunning: '进行中',
-				statusReview: '待验收',
 				statusDone: '完成',
 				statusBlocked: '阻塞',
 				statusCancelled: '取消',
@@ -246,7 +245,6 @@ window.__ModuleLoader__.load({
 				filesPlaceholder: '每行一个项目相对路径，例如 scripts/player.gd',
 				noTasks: '没有任务',
 				submittedOn: '提交于',
-				reviewHint: '验收通过后，依赖它的任务才会继续。',
 				spawned: '自动创建',
 				viaMessage: '复用空闲成员',
 				noScheduler: '调度器不可用',
@@ -259,7 +257,6 @@ window.__ModuleLoader__.load({
 				title: 'Task Center',
 				boardTab: 'Board',
 				taskTitle: 'Title',
-				requiresReview: 'Requires review',
 				subtitle: 'Dependency-driven dispatch · file locks · shared across sessions',
 				project: 'Project',
 				projectUnknown: 'No project selected',
@@ -284,8 +281,6 @@ window.__ModuleLoader__.load({
 				reopen: 'Reopen',
 				submit: 'Submit done',
 				submitEvidence: 'Submit evidence',
-				accept: 'Accept',
-				reject: 'Send back',
 				note: 'Note',
 				spec: 'Spec',
 				acceptance: 'Acceptance',
@@ -314,7 +309,6 @@ window.__ModuleLoader__.load({
 				waiting: 'Waiting',
 				ready: 'Ready',
 				runningCol: 'Running',
-				reviewCol: 'Review',
 				doneCol: 'Done',
 				closedCol: 'Blocked / cancelled',
 				emptyBoard: 'No tasks yet. Use “New task” to start.',
@@ -324,6 +318,10 @@ window.__ModuleLoader__.load({
 				unknownProjectHint: 'No project yet. Call task_center once in a session, or enter a project directory below.',
 				offline: 'The host did not answer',
 				error: 'Action failed',
+				startRequestTitle: 'Start requested',
+				startRequestHint: 'An agent asked to start dispatch; it runs only after you approve.',
+				approveStart: 'Approve and start',
+				rejectStart: 'Reject',
 				settingsTitle: 'Dispatch settings',
 				maxConcurrent: 'Maximum concurrency',
 				concurrencyHint: '1–8. The worker cap becomes concurrency + 1; a worker is spawned when none is idle; a task blocks after 3 consecutive failures.',
@@ -339,7 +337,6 @@ window.__ModuleLoader__.load({
 				loading: 'Loading…',
 				statusPending: 'Pending',
 				statusRunning: 'Running',
-				statusReview: 'Review',
 				statusDone: 'Done',
 				statusBlocked: 'Blocked',
 				statusCancelled: 'Cancelled',
@@ -360,7 +357,6 @@ window.__ModuleLoader__.load({
 				filesPlaceholder: 'One project-relative path per line, e.g. scripts/player.gd',
 				noTasks: 'No tasks',
 				submittedOn: 'submitted',
-				reviewHint: 'Dependents continue only after this is accepted.',
 				spawned: 'spawned',
 				viaMessage: 'idle member',
 				noScheduler: 'scheduler unavailable',
@@ -415,7 +411,6 @@ window.__ModuleLoader__.load({
 			'.gbt-chip[data-tone="waiting"]{background:rgba(245,159,0,.13);color:#b7791f}',
 			'.gbt-chip[data-tone="broken"]{background:rgba(229,72,77,.13);color:#d33}',
 			'.gbt-chip[data-tone="running"]{background:rgba(79,124,255,.13);color:#3b5bdb}',
-			'.gbt-chip[data-tone="review"]{background:rgba(245,159,0,.15);color:#b7791f}',
 			'.gbt-chip[data-tone="done"]{background:rgba(47,179,68,.13);color:#2f9e44}',
 			'.gbt-chip[data-tone="blocked"]{background:rgba(229,72,77,.13);color:#d33}',
 			'.gbt-chip[data-tone="cancelled"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-tertiary)}',
@@ -464,7 +459,6 @@ window.__ModuleLoader__.load({
 			'.gbt-footnote{font-size:10px;color:var(--dsw-alias-label-tertiary);margin:0}',
 			'.gbt-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:500;background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-secondary)}',
 			'.gbt-pill[data-status="running"]{background:rgba(79,124,255,.14);color:#3b5bdb}',
-			'.gbt-pill[data-status="review"]{background:rgba(245,159,0,.15);color:#b7791f}',
 			'.gbt-pill[data-status="done"]{background:rgba(47,179,68,.14);color:#2f9e44}',
 			'.gbt-pill[data-status="blocked"]{background:rgba(229,72,77,.14);color:#d33}',
 			'.gbt-pill[data-status="cancelled"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-tertiary)}',
@@ -786,7 +780,6 @@ window.__ModuleLoader__.load({
 					{ key: 'ready', label: props.t('ready'), tasks: ready },
 					{ key: 'waiting', label: props.t('waiting'), tasks: waiting },
 					{ key: 'running', label: props.t('runningCol'), tasks: tasks.filter(function (task) { return task.status === 'running' }) },
-					{ key: 'review', label: props.t('reviewCol'), tasks: tasks.filter(function (task) { return task.status === 'review' }) },
 					{ key: 'done', label: props.t('doneCol'), tasks: tasks.filter(function (task) { return task.status === 'done' }) },
 					{
 						key: 'closed',
@@ -1003,9 +996,6 @@ window.__ModuleLoader__.load({
 					actions.push(h('button', { key: 'edit', type: 'button', className: 'gbt-btn', onClick: function () { props.onEdit(task) } }, t('edit')))
 					actions.push(h('button', { key: 'block', type: 'button', className: 'gbt-btn', onClick: function () { run('block', { id: task.id, note: noteValue() }) } }, t('block')))
 					actions.push(h('button', { key: 'cancel', type: 'button', className: 'gbt-btn', 'data-variant': 'danger', onClick: function () { run('cancel', { id: task.id, note: noteValue() }) } }, t('cancel')))
-				} else if (task.status === 'review') {
-					actions.push(h('button', { key: 'accept', type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: function () { run('accept', { id: task.id, note: noteValue() }) } }, t('accept')))
-					actions.push(h('button', { key: 'reject', type: 'button', className: 'gbt-btn', onClick: function () { run('reject', { id: task.id, note: noteValue() }) } }, t('reject')))
 				} else if (task.status === 'blocked') {
 					actions.push(h('button', { key: 'retry', type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: function () { run('retry', { id: task.id }) } }, t('retry')))
 					actions.push(h('button', { key: 'cancel', type: 'button', className: 'gbt-btn', onClick: function () { run('cancel', { id: task.id, note: noteValue() }) } }, t('cancel')))
@@ -1066,10 +1056,6 @@ window.__ModuleLoader__.load({
 							),
 						),
 					)
-				}
-
-				if (task.requiresReview === true && task.status === 'review') {
-					blocks.push(h('p', { key: 'reviewhint', className: 'gbt-footnote' }, t('reviewHint')))
 				}
 
 				blocks.push(
@@ -1215,7 +1201,6 @@ window.__ModuleLoader__.load({
 				const priority = React.useRef(null)
 				const deps = React.useRef(null)
 				const files = React.useRef(null)
-				const review = React.useRef(null)
 				const note = React.useRef(null)
 				const [busy, setBusy] = React.useState(false)
 				const [error, setError] = React.useState('')
@@ -1243,7 +1228,6 @@ window.__ModuleLoader__.load({
 						spec: spec.current === null ? '' : String(spec.current.value || ''),
 						acceptance: acceptance.current === null ? '' : String(acceptance.current.value || ''),
 						priority: priority.current === null ? 0 : Number(priority.current.value || 0),
-						requiresReview: review.current === null ? false : review.current.checked === true,
 					}
 					if (!running) {
 						body.dependsOn = tcParseList(deps.current === null ? '' : deps.current.value)
@@ -1273,8 +1257,7 @@ window.__ModuleLoader__.load({
 						{ className: 'gbt-form' },
 						h('div', { className: 'gbt-field' }, h('label', null, t('taskTitle')), h('input', { className: 'gbt-input', ref: title, defaultValue: task === null ? '' : task.title, placeholder: t('titleRequired') })),
 						h('div', { className: 'gbt-row2' },
-							h('div', { className: 'gbt-field' }, h('label', null, t('priority')), h('input', { className: 'gbt-input', ref: priority, type: 'number', defaultValue: task === null ? 0 : task.priority })),
-							h('div', { className: 'gbt-field' }, h('label', null, t('requiresReview')), h('label', { className: 'gbt-check' }, h('input', { ref: review, type: 'checkbox', defaultChecked: task === null ? false : task.requiresReview === true }), t('requiresReview')))),
+							h('div', { className: 'gbt-field' }, h('label', null, t('priority')), h('input', { className: 'gbt-input', ref: priority, type: 'number', defaultValue: task === null ? 0 : task.priority }))),
 						h('div', { className: 'gbt-field' }, h('label', null, t('spec')), h('textarea', { className: 'gbt-area', ref: spec, defaultValue: task === null ? '' : task.spec })),
 						h('div', { className: 'gbt-field' }, h('label', null, t('acceptance')), h('textarea', { className: 'gbt-area', ref: acceptance, defaultValue: task === null ? '' : task.acceptance })),
 						h('div', { className: 'gbt-field' },
@@ -1431,7 +1414,7 @@ window.__ModuleLoader__.load({
 						{ className: 'gbt-counts' },
 						h('span', { className: 'gbt-count' }, t('ready'), h('b', null, String(counts.ready || 0))),
 						h('span', { className: 'gbt-count' }, t('runningCol'), h('b', null, String(counts.running || 0))),
-						h('span', { className: 'gbt-count' }, t('reviewCol'), h('b', null, String(counts.review || 0))),
+						h('span', { className: 'gbt-count' }, t('waiting'), h('b', null, String(Math.max(0, (counts.pending || 0) - (counts.ready || 0))))),
 						h('span', { className: 'gbt-count' }, t('statusBlocked'), h('b', null, String(counts.blocked || 0))),
 						h('span', { className: 'gbt-count' }, t('doneCol'), h('b', null, String(counts.done || 0))),
 					),
@@ -1472,6 +1455,48 @@ window.__ModuleLoader__.load({
 							? null
 							: h('div', { className: 'gbt-banner', 'data-tone': 'info' }, snapshot.message)
 
+				const startRequest = dispatch.request === null || dispatch.request === undefined ? null : dispatch.request
+				const requestBanner =
+					startRequest === null
+						? null
+						: h(
+								'div',
+								{ className: 'gbt-banner', 'data-tone': 'info' },
+								h(
+									'div',
+									{ style: { flex: '1', minWidth: '220px' } },
+									h('strong', null, t('startRequestTitle')),
+									' ',
+									h('span', { className: 'gbt-mono' }, String(startRequest.by)),
+									' · ',
+									h('span', null, tcAgo(startRequest.at, now)),
+									h('div', { className: 'gbt-footnote' }, startRequest.note === '' ? t('startRequestHint') : startRequest.note),
+								),
+								h(
+									'div',
+									{ className: 'gbt-actions' },
+									h(
+										'button',
+										{
+											type: 'button',
+											className: 'gbt-btn',
+											'data-variant': 'primary',
+											onClick: function () { void store.send('approveStart', { requestId: startRequest.id }) },
+										},
+										t('approveStart'),
+									),
+									h(
+										'button',
+										{
+											type: 'button',
+											className: 'gbt-btn',
+											onClick: function () { void store.send('rejectStart', { requestId: startRequest.id }) },
+										},
+										t('rejectStart'),
+									),
+								),
+							)
+
 				const content =
 					view === 'board'
 						? h(Board, { snapshot: snapshot, t: t, now: now, selectedId: selectedId, onOpen: openTask })
@@ -1500,6 +1525,7 @@ window.__ModuleLoader__.load({
 					header,
 					statusline,
 					banner,
+					requestBanner,
 					snapshot.project === null || snapshot.project === undefined
 						? h(
 								'div',

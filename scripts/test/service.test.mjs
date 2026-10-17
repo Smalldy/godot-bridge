@@ -4,10 +4,12 @@
 import { emptyBoard } from '../../plugin/task-center/board.mjs'
 import { TASK_LEASE_MS } from '../../plugin/task-center/schema.mjs'
 import {
-  acceptTask,
   blockTask,
   cancelTask,
   claimTask,
+  clearDispatchRequest,
+  approveDispatch,
+  requestDispatch,
   counts,
   createTask,
   dependencyInfo,
@@ -15,7 +17,6 @@ import {
   expireLeases,
   findTask,
   readyTasks,
-  rejectTask,
   renewLeases,
   reopenTask,
   retryTask,
@@ -151,24 +152,29 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('and says why', findTask(final.board, 'T-1').dispatch.error === 'lease expired')
 }
 
-// submit, review, accept, reject
+// submit is completion; there is no review status
 {
   let board = make(base(), 'A').board
   const early = submitTask(board, 'T-1', {}, T0, 'w')
   check('a pending task cannot be submitted', early.code === 'not-running')
   board = claimTask(board, 'T-1', { name: 'w' }, T0).board
   const done = submitTask(board, 'T-1', { evidence: 'tests pass' }, T0 + 1, 'w')
-  check('submit completes when review is not required', done.ok === true && done.task.status === 'done')
+  check('submit completes the task', done.ok === true && done.task.status === 'done')
   check('evidence is stored', done.task.evidence === 'tests pass')
-  let reviewBoard = make(base(), 'R', { requiresReview: true }).board
-  reviewBoard = claimTask(reviewBoard, 'T-1', { name: 'w' }, T0).board
-  reviewBoard = submitTask(reviewBoard, 'T-1', { evidence: 'e' }, T0 + 1, 'w').board
-  check('submit waits for review when required', findTask(reviewBoard, 'T-1').status === 'review')
-  const accepted = acceptTask(reviewBoard, 'T-1', T0 + 2, '@user')
-  check('review can be accepted', accepted.ok === true && accepted.task.status === 'done')
-  const rejected = rejectTask(reviewBoard, 'T-1', T0 + 2, '@user', 'redo')
-  check('review can be rejected', rejected.ok === true && findTask(rejected.board, 'T-1').status === 'pending')
-  check('rejection resets attempts', findTask(rejected.board, 'T-1').attempts === 0)
+  check('a submitted task reaches done without a review state', findTask(done.board, 'T-1').status === 'done')
+}
+
+// dispatch requests: an agent records a request; a user approves it
+{
+  const requested = requestDispatch(base(), { by: '@agent', note: 'deps ready' }, T0, '@agent')
+  check('a start request is recorded', requested.ok === true && requested.request !== null && requested.request.by === '@agent', JSON.stringify(requested))
+  check('a request does not start dispatch', requested.board.dispatch.state === 'paused')
+  check('the request keeps its note', requested.request.note === 'deps ready')
+  const approved = approveDispatch(requested.board, T0 + 1, '@user')
+  check('approving starts dispatch', approved.ok === true && approved.board.dispatch.state === 'running')
+  check('approving clears the request', approved.board.dispatch.request === null)
+  const rejected = clearDispatchRequest(requested.board, T0 + 1, '@user')
+  check('rejecting clears the request and leaves dispatch paused', rejected.board.dispatch.request === null && rejected.board.dispatch.state === 'paused')
 }
 
 // cancel, reopen, block, unblock, retry

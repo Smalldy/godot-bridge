@@ -7,7 +7,7 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { ACTIONS, READ_ACTIONS } from './api.mjs'
+import { AGENT_ACTIONS, READ_ACTIONS } from './api.mjs'
 
 /** A stable display label from the only identity the tool layer exposes. */
 export function agentLabel(agent) {
@@ -38,10 +38,10 @@ export function projectPathOf(ctx, agent) {
 const DESCRIPTION = [
   'Project task board with dependency-driven dispatch and file locks.',
   'Actions: board (overview), list, get, create, update, delete,',
-  'start / pause (dispatch), settings, tick (one scheduler pass),',
-  'submit (an assignee reports done), accept / reject (review),',
-  'cancel, reopen, block, unblock, retry,',
+  'pause (immediate), tick (one scheduler pass), submit (an assignee reports done),',
+  'cancel, reopen, block, unblock, retry, cancelStartRequest,',
   'lock / unlock / locks / forceUnlock, openProject.',
+  'start does not start dispatch for an agent: it records a request, and the user approves it in the task center panel.',
   'Dependencies: B.dependsOn=[A] means A must be done before B runs.',
   'A task only runs while dispatch is started; the scheduler acquires its writeFiles locks first.',
 ].join(' ')
@@ -58,7 +58,7 @@ export function registerTaskTool(ctx, options) {
         type: 'string',
         required: true,
         description: 'What to do.',
-        enum: ACTIONS,
+        enum: AGENT_ACTIONS,
       },
       id: { type: 'string', description: 'Task id, e.g. T-12.' },
       title: { type: 'string', description: 'Task title (create, update).' },
@@ -82,7 +82,6 @@ export function registerTaskTool(ctx, options) {
         items: { type: 'string' },
       },
       priority: { type: 'number', description: 'Higher runs first among ready tasks.' },
-      requiresReview: { type: 'boolean', description: 'When true, submit waits for a human accept.' },
       maxAttempts: { type: 'number', description: 'Dispatch attempts before the task blocks.' },
       maxConcurrent: { type: 'number', description: 'Concurrent running tasks (settings).' },
       allowSpawn: { type: 'boolean', description: 'Whether the scheduler may spawn a WorkAgent (settings).' },
@@ -107,7 +106,13 @@ export function registerTaskTool(ctx, options) {
       const context = { projectPath: projectPath, by: me, role: 'agent', agent: agent }
       const input = Object.assign({}, args)
       const result = await api.perform(action, input, context)
-      if (result.ok !== true) return { error: result.message, code: result.code }
+      if (result.ok !== true) {
+        return {
+          error: result.message,
+          code: result.code,
+          request: result.request === undefined ? null : result.request,
+        }
+      }
       if (result.board !== undefined) delete result.board
       return result
     },

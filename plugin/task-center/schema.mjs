@@ -24,7 +24,7 @@ export const MAX_HISTORY = 120
 
 /** Every status a task can be stored with. 'pending' means "not dispatched";
  * readiness is DERIVED from the dependency graph, never stored. */
-export const STATUSES = ['pending', 'running', 'review', 'done', 'blocked', 'cancelled']
+export const STATUSES = ['pending', 'running', 'done', 'blocked', 'cancelled']
 
 /** Statuses that no longer occupy a worker or a file lock. */
 export const CLOSED_STATUSES = ['done', 'cancelled']
@@ -42,6 +42,7 @@ export const DISPATCH_DEFAULTS = {
   allowSpawn: true,
   maxWorkAgents: 4,
   maxAttempts: 3,
+  request: null,
 }
 
 /** Upper bounds for user-provided dispatch settings. */
@@ -49,6 +50,17 @@ export const DISPATCH_LIMITS = {
   maxConcurrent: { min: 1, max: 8 },
   maxWorkAgents: { min: 1, max: 12 },
   maxAttempts: { min: 1, max: 10 },
+}
+
+/** A normalised pending start request, or null. */
+export function normaliseRequest(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  return {
+    id: typeof raw.id === 'string' ? raw.id : '',
+    by: typeof raw.by === 'string' ? raw.by : 'unknown',
+    at: typeof raw.at === 'string' ? raw.at : null,
+    note: typeof raw.note === 'string' ? raw.note : '',
+  }
 }
 
 /** A fresh dispatch record with every field present. */
@@ -65,5 +77,6 @@ export function normaliseDispatch(raw) {
     allowSpawn: source.allowSpawn === undefined ? DISPATCH_DEFAULTS.allowSpawn : source.allowSpawn === true,
     maxWorkAgents: clamp(source.maxWorkAgents, DISPATCH_LIMITS.maxWorkAgents, DISPATCH_DEFAULTS.maxWorkAgents),
     maxAttempts: clamp(source.maxAttempts, DISPATCH_LIMITS.maxAttempts, DISPATCH_DEFAULTS.maxAttempts),
+    request: normaliseRequest(source.request),
   }
 }

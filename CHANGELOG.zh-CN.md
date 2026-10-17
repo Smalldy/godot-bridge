@@ -11,8 +11,9 @@
 
 - **任务中心 v2**：项目级任务板（`<项目>/.agents/tasks.json`）、依赖驱动的派发（显式开始/暂停）、优先级排序、并发与重试设置、15 分钟 worker 租约（worker 死掉后任务自动回池），以及宿主重启后对上一进程 claim 的回收。
 - **文件锁**：任务用 `writeFiles` 声明要写的文件；调度器在派发前原子获取全部锁，任务完成/阻塞/取消/租约过期时释放。路径规范化为项目相对 POSIX 路径，目录锁与子路径冲突；agent 可以为自己的运行任务追加锁。
-- **统一动作 API**：`task_center` 工具与 HTTP 路由调用同一批处理器（`create`、`update`、`delete`、`list`、`get`、`board`、`start`、`pause`、`settings`、`tick`、`submit`、`accept`、`reject`、`cancel`、`reopen`、`block`、`unblock`、`retry`、`lock`、`unlock`、`locks`、`forceUnlock`、`openProject`）。
-- **任务中心 GUI**：重写面板，包含看板、队列、文件锁视图；开始/暂停、新建/编辑、验收动作、派发设置、依赖与租约展示，2.5 秒轮询宿主快照。
+- **统一动作 API**：`task_center` 工具与 HTTP 路由调用同一批处理器（`create`、`update`、`delete`、`list`、`get`、`board`、`start`、`pause`、`approveStart`、`rejectStart`、`cancelStartRequest`、`settings`、`tick`、`submit`、`cancel`、`reopen`、`block`、`unblock`、`retry`、`lock`、`unlock`、`locks`、`forceUnlock`、`openProject`）。
+- **任务中心 GUI**：重写面板，包含看板、队列、文件锁视图；开始/暂停、新建/编辑、提交/重试/重开、派发设置、依赖与租约展示，以及待批准 start 申请的横幅，2.5 秒轮询宿主快照。
+- **开始派发需要同意**：agent 调 `start` 只写入 `dispatch.request`，不会启动调度器；面板显示发起者和说明，并提供批准/拒绝。只有用户的 `approveStart` 才真正运行。`pause` 双方都可直接调；`settings` 仅用户可改。
 
 ### 变更
 
@@ -20,6 +21,7 @@
 - 浏览器半侧不再包含 mock store：只拉取宿主快照、发送一个动作、渲染宿主返回，因此宿主故障不会再以编造的任务呈现给用户。
 - 派发设置弹窗只暴露一个值：最大并发。执行者上限自动按并发 + 1 推导，自动新建开启，重试上限保持内部默认 3；工具/HTTP 的 `settings` 仍可覆盖这些高级参数。
 - 派发在发出任何东西之前先 claim，记录投递结果，并在达到尝试上限后把任务置为阻塞，而不是无限重试。
+- 初版看板只有五列，没有验收状态：`submit` 即完成，`accept`、`reject`、`requiresReview` 已移除；旧板子里的 `review` 任务会迁移为 `done`。
 
 ### 修复
 

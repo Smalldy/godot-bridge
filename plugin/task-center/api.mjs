@@ -31,8 +31,9 @@ export const ACTIONS = [
   'settings',
   'tick',
   'submit',
-  'accept',
-  'reject',
+  'approveStart',
+  'rejectStart',
+  'cancelStartRequest',
   'cancel',
   'reopen',
   'block',
@@ -45,10 +46,17 @@ export const ACTIONS = [
   'openProject',
 ]
 
+/** Actions that belong to the person at the GUI. The tool binding hides them,
+ * and perform() refuses them for an agent even if one is called directly. */
+export const USER_ONLY_ACTIONS = ['approveStart', 'rejectStart', 'settings']
+
+/** The tool's vocabulary: everything except the user-owned actions. */
+export const AGENT_ACTIONS = ACTIONS.filter((action) => USER_ONLY_ACTIONS.indexOf(action) < 0)
+
 /** Read-only actions; the tool may run them concurrently. */
 export const READ_ACTIONS = ['board', 'list', 'get', 'locks']
 
-const STATUS_RANK = { pending: 0, running: 1, review: 2, blocked: 3, done: 4, cancelled: 5 }
+const STATUS_RANK = { pending: 0, running: 1, blocked: 2, done: 3, cancelled: 4 }
 
 function failure(code, message, extra) {
   return Object.assign({ ok: false, code: code, message: message }, extra === undefined ? {} : extra)
@@ -221,7 +229,7 @@ export function createApi(ctx, options) {
     const files = canonicalFiles(projectPath, source.writeFiles)
     if (files.ok !== true) return files
     const result = {}
-    for (const key of ['title', 'spec', 'acceptance', 'priority', 'requiresReview', 'maxAttempts', 'dependsOn', 'note']) {
+    for (const key of ['title', 'spec', 'acceptance', 'priority', 'maxAttempts', 'dependsOn', 'note']) {
       if (source[key] !== undefined) result[key] = source[key]
     }
     if (files.files !== undefined) result.writeFiles = files.files
@@ -320,17 +328,79 @@ export function createApi(ctx, options) {
       if (released.ok === true) state.memory.locks = released.locks
       return ok({ deleted: id, events: result.events })
     }
-    if (action === 'start' || action === 'pause') {
+    if (action === 'start') {
+      if (context !== undefined && context !== null && context.role === 'agent') {
+        const read = await readBoardOrFail(projectPath)
+        if (read.failed !== undefined) return read.failed
+        if (read.board.dispatch.state === 'running') {
+          return ok({ dispatch: read.board.dispatch, alreadyRunning: true })
+        }
+        if (read.board.dispatch.request !== null) {
+          return failure(
+            'needs-consent',
+            'A start request is already pending. Ask the user to approve it in the task center panel; do not retry.',
+            { request: read.board.dispatch.request },
+          )
+        }
+        const requested = await mutate(
+          projectPath,
+          (board) => model.requestDispatch(board, { by: context.by, note: source.note }, clock(), context.by),
+          context,
+        )
+        if (requested.ok !== true) return requested
+        return failure(
+          'needs-consent',
+          'Dispatch was requested, not started. Ask the user to approve it in the task center panel; do not retry.',
+          { request: requested.board.dispatch.request },
+        )
+      }
       const result = await mutate(
         projectPath,
-        (board) => model.setDispatch(board, { state: action === 'start' ? 'running' : 'paused' }, clock(), context.by),
+        (board) => model.approveDispatch(board, clock(), context.by),
         context,
       )
       if (result.ok !== true) return result
-      if (action === 'start' && scheduler !== null) await scheduler.settle(projectPath)
+      if (scheduler !== null) await scheduler.settle(projectPath)
+      return ok({ dispatch: result.board.dispatch, events: result.events })
+    }
+    if (action === 'pause') {
+      const result = await mutate(
+        projectPath,
+        (board) => model.setDispatch(board, { state: 'paused' }, clock(), context.by),
+        context,
+      )
+      if (result.ok !== true) return result
+      return ok({ dispatch: result.board.dispatch, events: result.events })
+    }
+    if (action === 'approveStart' || action === 'rejectStart') {
+      if (context === undefined || context === null || context.role !== 'user') {
+        return failure('user-only', 'Starting dispatch is the user\'s decision; ask them to approve it in the task center panel.')
+      }
+      const result = await mutate(
+        projectPath,
+        (board) =>
+          action === 'approveStart'
+            ? model.approveDispatch(board, clock(), context.by)
+            : model.clearDispatchRequest(board, clock(), context.by),
+        context,
+      )
+      if (result.ok !== true) return result
+      if (action === 'approveStart' && scheduler !== null) await scheduler.settle(projectPath)
+      return ok({ dispatch: result.board.dispatch, events: result.events })
+    }
+    if (action === 'cancelStartRequest') {
+      const result = await mutate(
+        projectPath,
+        (board) => model.clearDispatchRequest(board, clock(), context.by),
+        context,
+      )
+      if (result.ok !== true) return result
       return ok({ dispatch: result.board.dispatch, events: result.events })
     }
     if (action === 'settings') {
+      if (context === undefined || context === null || context.role !== 'user') {
+        return failure('user-only', 'Dispatch settings belong to the user; ask them to change it in the task center panel.')
+      }
       const patch = {}
       for (const key of ['maxConcurrent', 'allowSpawn', 'maxWorkAgents', 'maxAttempts']) {
         if (source[key] !== undefined) patch[key] = source[key]
@@ -379,19 +449,6 @@ export function createApi(ctx, options) {
         if (released.ok === true) state.memory.locks = released.locks
       }
       return result
-    }
-    if (action === 'accept' || action === 'reject') {
-      const id = String(source.id === undefined ? '' : source.id)
-      if (id === '') return failure('missing-id', action + ' needs a task id')
-      return writeTask(
-        projectPath,
-        id,
-        (board) =>
-          action === 'accept'
-            ? model.acceptTask(board, id, clock(), context.by, source.note)
-            : model.rejectTask(board, id, clock(), context.by, source.note),
-        context,
-      )
     }
     if (action === 'cancel') {
       const id = String(source.id === undefined ? '' : source.id)

@@ -10,7 +10,6 @@
  * Statuses:
  *   pending    not dispatched; readiness is DERIVED from dependsOn
  *   running    owned by a worker, with a lease
- *   review     submitted and waiting for the user (only when requiresReview)
  *   done       finished; satisfies dependents
  *   blocked    needs a human: manual block, dead worker or exhausted attempts
  *   cancelled  abandoned
@@ -128,7 +127,6 @@ export function createTask(board, input, now, by) {
     assignee: null,
     attempts: 0,
     maxAttempts: Number.isFinite(input.maxAttempts) ? Math.min(10, Math.max(1, Math.floor(input.maxAttempts))) : 3,
-    requiresReview: input.requiresReview === true,
     evidence: '',
     dispatch: null,
     leaseUntil: null,
@@ -172,7 +170,6 @@ export function updateTask(board, id, input, now, by) {
   if (input.maxAttempts !== undefined && Number.isFinite(input.maxAttempts)) {
     target.maxAttempts = Math.min(10, Math.max(1, Math.floor(input.maxAttempts)))
   }
-  if (input.requiresReview !== undefined) target.requiresReview = input.requiresReview === true
   if (input.dependsOn !== undefined) {
     target.dependsOn = normaliseList(input.dependsOn)
     notes.push('dependencies: ' + (target.dependsOn.length === 0 ? 'none' : target.dependsOn.join(', ')))
@@ -221,6 +218,44 @@ export function deleteTask(board, id, now, by, options) {
 // ── dispatch state ─────────────────────────────────────────────────────────
 
 /** Start or pause dispatch, or change its settings. */
+/** Record an agent's request to start dispatch. The scheduler stays paused
+ * until a user approves it in the panel. */
+export function requestDispatch(board, request, now, by) {
+  const source = request === undefined || request === null ? {} : request
+  const at = iso(now)
+  const next = clone(board)
+  next.dispatch = normaliseDispatch(
+    Object.assign({}, next.dispatch, {
+      request: {
+        id: 'R-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+        by: source.by === undefined ? by : String(source.by),
+        at: at,
+        note: source.note === undefined ? '' : String(source.note),
+      },
+    }),
+  )
+  next.updatedAt = at
+  return done(next, [{ kind: 'dispatch-requested', by: by }], { request: next.dispatch.request })
+}
+
+/** Drop a pending start request without changing the dispatch state. */
+export function clearDispatchRequest(board, now, by) {
+  const next = clone(board)
+  next.dispatch = normaliseDispatch(Object.assign({}, next.dispatch, { request: null }))
+  next.updatedAt = iso(now)
+  return done(next, [{ kind: 'dispatch-request-cleared', who: by }], { request: null })
+}
+
+/** A user approved a start request: run, and clear the request in one write. */
+export function approveDispatch(board, now, by) {
+  const next = clone(board)
+  next.dispatch = normaliseDispatch(
+    Object.assign({}, next.dispatch, { state: 'running', request: null, since: iso(now), by: by }),
+  )
+  next.updatedAt = iso(now)
+  return done(next, [{ kind: 'dispatch', state: 'running', who: by }], { dispatch: next.dispatch })
+}
+
 export function setDispatch(board, patch, now, by) {
   const source = patch === undefined || patch === null ? {} : patch
   if (source.state !== undefined && source.state !== 'running' && source.state !== 'paused') {
@@ -409,8 +444,8 @@ export function expireLeases(board, now, maxAttempts) {
   return done(next, reaped.map((id) => ({ kind: 'lease-expired', id: id })), { reaped: reaped })
 }
 
-/** An agent reports the work finished. Without requiresReview this IS done, so
- * dependents start immediately; with it, a human accepts first. */
+/** An agent reports the work finished. There is no review step in this
+ * version: submission IS completion, so dependents are released immediately. */
 export function submitTask(board, id, input, now, by) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
@@ -418,7 +453,7 @@ export function submitTask(board, id, input, now, by) {
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   if (input !== undefined && input.evidence !== undefined) target.evidence = String(input.evidence)
-  target.status = target.requiresReview ? 'review' : 'done'
+  target.status = 'done'
   target.leaseUntil = null
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
     status: 'submitted',
@@ -429,47 +464,10 @@ export function submitTask(board, id, input, now, by) {
     at: iso(now),
     by: by,
     from: 'running',
-    to: target.status,
-    note:
-      input !== undefined && input.note !== undefined
-        ? String(input.note)
-        : target.requiresReview
-          ? 'submitted for review'
-          : 'completed',
+    to: 'done',
+    note: input !== undefined && input.note !== undefined ? String(input.note) : 'completed',
   })
-  return done(next, [{ kind: target.status === 'done' ? 'done' : 'submitted', id: id, who: by }], { task: target })
-}
-
-export function acceptTask(board, id, now, by, note) {
-  const task = findTask(board, id)
-  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
-  if (task.status !== 'review') return fail('not-review', id + ' is ' + task.status + ', not review')
-  const next = clone(board)
-  const target = findTaskIn(next.tasks, id)
-  target.status = 'done'
-  touch(target, now)
-  pushHistory(target, { at: iso(now), by: by, from: 'review', to: 'done', note: note === undefined ? 'accepted' : String(note) })
-  return done(next, [{ kind: 'accepted', id: id, who: by }], { task: target })
-}
-
-export function rejectTask(board, id, now, by, note) {
-  const task = findTask(board, id)
-  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
-  if (task.status !== 'review') return fail('not-review', id + ' is ' + task.status + ', not review')
-  const next = clone(board)
-  const target = findTaskIn(next.tasks, id)
-  target.status = 'pending'
-  target.attempts = 0
-  target.assignee = null
-  target.leaseUntil = null
-  target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
-    status: 'rejected',
-    error: note === undefined ? 'rejected by user' : String(note),
-    at: iso(now),
-  })
-  touch(target, now)
-  pushHistory(target, { at: iso(now), by: by, from: 'review', to: 'pending', note: note === undefined ? 'rejected' : String(note) })
-  return done(next, [{ kind: 'rejected', id: id, who: by }], { task: target })
+  return done(next, [{ kind: 'done', id: id, who: by }], { task: target })
 }
 
 export function cancelTask(board, id, now, by, note) {
@@ -566,7 +564,7 @@ export function renewLeases(board, owner, now) {
 // ── views ──────────────────────────────────────────────────────────────────
 
 export function counts(board) {
-  const out = { total: board.tasks.length, pending: 0, ready: 0, running: 0, review: 0, done: 0, blocked: 0, cancelled: 0 }
+  const out = { total: board.tasks.length, pending: 0, ready: 0, running: 0, done: 0, blocked: 0, cancelled: 0 }
   const ready = new Set(readyTasks(board).map((task) => task.id))
   for (const task of board.tasks) {
     out[task.status] = (out[task.status] || 0) + 1
@@ -589,7 +587,6 @@ export function summary(board, task, now) {
     assignee: task.assignee,
     attempts: task.attempts,
     maxAttempts: task.maxAttempts,
-    requiresReview: task.requiresReview,
     leaseUntil: task.leaseUntil,
     leaseExpired: task.leaseUntil !== null && Date.parse(task.leaseUntil) <= at,
     dispatch: task.dispatch,
