@@ -1,0 +1,174 @@
+/**
+ * Shared fixtures for the task-center tests.
+ *
+ * The fake filesystem has real FsVersion semantics, so a lost race can be
+ * provoked. The fake team has a mutable roster, so a test can decide when a
+ * WorkAgent becomes idle instead of hoping a real harness cooperates.
+ */
+
+import { join } from 'node:path'
+import { boardPath } from '../../../plugin/task-center/board.mjs'
+import { createState } from '../../../plugin/task-center/state.mjs'
+import { createDispatcher } from '../../../plugin/task-center/dispatch.mjs'
+import { createApi } from '../../../plugin/task-center/api.mjs'
+
+export const PROJECT = join(process.cwd(), 'demo-project')
+
+export function createFakeFs() {
+  const files = new Map()
+  const dirs = new Set()
+  const hooks = { beforeWrite: null }
+  let counter = 0
+  const bump = () => 'v' + String(++counter)
+  const fs = {
+    files,
+    dirs,
+    hooks,
+    async resolve(path) {
+      return { targetKey: path, displayPath: path }
+    },
+    async stat(target) {
+      const key = target.targetKey
+      if (dirs.has(key)) return { type: 'directory', version: 'dir', size: 0 }
+      const entry = files.get(key)
+      return entry === undefined ? undefined : { version: entry.version, type: 'file', size: entry.text.length }
+    },
+    async readText(target) {
+      const entry = files.get(target.targetKey)
+      if (entry === undefined) throw new Error('ENOENT')
+      return entry.text
+    },
+    async writeText(target, content, expected) {
+      const key = target.targetKey
+      const entry = files.get(key)
+      if (expected !== undefined && expected.kind === 'createIfAbsent' && entry !== undefined) {
+        throw Object.assign(new Error('FS_STALE_VERSION: exists'), { code: 'FS_STALE_VERSION' })
+      }
+      if (expected !== undefined && expected.kind === 'replaceIfVersion') {
+        if (entry === undefined || entry.version !== expected.version) {
+          throw Object.assign(new Error('FS_STALE_VERSION: moved'), { code: 'FS_STALE_VERSION' })
+        }
+      }
+      if (hooks.beforeWrite !== null) {
+        const verdict = hooks.beforeWrite({ key, content, write: (text) => files.set(key, { text, version: bump() }) })
+        if (verdict === 'stale') throw Object.assign(new Error('FS_STALE_VERSION: lost the race'), { code: 'FS_STALE_VERSION' })
+      }
+      const version = bump()
+      files.set(key, { text: content, version })
+      return { operation: entry === undefined ? 'create' : 'update', version }
+    },
+  }
+  return fs
+}
+
+export function seedBoard(fs, project, text) {
+  fs.dirs.add(project)
+  fs.files.set(boardPath(project), { text, version: 'seed' })
+}
+
+export function boardText(fs, project) {
+  const entry = fs.files.get(boardPath(project))
+  return entry === undefined ? null : entry.text
+}
+
+export function boardJson(fs, project) {
+  const text = boardText(fs, project)
+  return text === null ? null : JSON.parse(text)
+}
+
+export function createTeam(options) {
+  const opts = options === undefined ? {} : options
+  const calls = []
+  const roster =
+    opts.roster === undefined
+      ? [
+          { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+          { id: 'session-idle', name: 'fixer', role: 'teammate', status: 'inactive' },
+        ]
+      : opts.roster.map((member) => Object.assign({}, member))
+  const team = {
+    calls,
+    roster,
+    setStatus(name, status) {
+      const member = roster.filter((entry) => entry.name === name)[0]
+      if (member !== undefined) member.status = status
+    },
+    tryMembership(candidate) {
+      return { role: candidate.id === 'session-lead' ? 'lead' : 'teammate', name: candidate.id }
+    },
+    listMembers() {
+      return roster.map((member) => Object.assign({}, member))
+    },
+    async spawnTeammate(caller, request) {
+      calls.push({ kind: 'spawn', caller: caller.id, name: request.name, text: request.prompt.map((block) => block.text).join('\n') })
+      if (opts.spawnThrows === true) throw new Error('spawn refused')
+      const member = {
+        id: 'session-' + request.name,
+        name: request.name,
+        role: 'teammate',
+        status: opts.spawnedStatus === undefined ? 'running' : opts.spawnedStatus,
+      }
+      roster.push(member)
+      return { member: member }
+    },
+    async sendMessage(caller, request) {
+      calls.push({ kind: 'send', caller: caller.id, target: request.target, text: request.content[0].text })
+      if (opts.sendThrows === true) throw new Error('mailbox full')
+      if (opts.markRunningOnSend !== false) {
+        const member = roster.filter((entry) => entry.name === request.target)[0]
+        if (member !== undefined) member.status = 'running'
+      }
+      return { status: 'accepted', messageId: 'message-' + String(calls.length) }
+    },
+  }
+  return team
+}
+
+export function createRig(options) {
+  const opts = options === undefined ? {} : options
+  const project = opts.project === undefined ? PROJECT : opts.project
+  const fs = createFakeFs()
+  fs.dirs.add(project)
+  const team = opts.team === undefined ? createTeam(opts.teamOptions) : opts.team
+  const agents = opts.agents === undefined ? { list: () => [{ id: 'session-lead' }] } : opts.agents
+  const subagents = { list: () => ['spawn'] }
+  const ctx = {
+    fs,
+    sandboxPolicy: { resolve: () => ({ workspaceRoot: project }) },
+    get(key) {
+      if (key === 'agents') return agents
+      if (key === 'agentTeams') return team
+      if (key === 'subagents') return subagents
+      return undefined
+    },
+  }
+  const state = createState(ctx, { now: opts.now })
+  const scheduler = createDispatcher(ctx, {
+    state: state,
+    projectPath: () => project,
+    allowSpawn: opts.allowSpawn !== false,
+  })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, now: opts.now })
+  const user = { projectPath: project, by: '@user', role: 'user', agent: null }
+  async function action(name, body) {
+    return api.perform(name, body === undefined ? {} : body, user)
+  }
+  async function settle() {
+    return scheduler.settle(project)
+  }
+  return { project, fs, team, ctx, state, scheduler, api, user, action, settle }
+}
+
+export async function createTask(rig, input) {
+  const result = await rig.action('create', input)
+  if (result.ok !== true) throw new Error('create failed: ' + JSON.stringify(result))
+  return result.task
+}
+
+export async function submitAsUser(rig, id, evidence) {
+  return rig.action('submit', { id: id, evidence: evidence === undefined ? 'done' : evidence })
+}
+
+export function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}

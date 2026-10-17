@@ -1,262 +1,96 @@
-// Tests for the `task_center` tool: the agent-facing half of the board.
-//
-// The tool is deliberately thin, so what is worth testing is its CONTRACT rather
-// than its maths: that the two user-owned authorisation points are actually
-// refused instead of being quietly reachable through the model layer, that a
-// draft cannot be claimed before the user releases it, that locks arbitrate
-// between two different agents, and that a refusal never writes the file.
-//
-// Two agents are simulated by calling execute() with different `exec.agent`
-// objects, which is what really happens: one registered tool serves every agent.
-//
-// Run by `npm test`.
-import { register } from 'node:module'
+// Task tool tests: the model-facing binding of the same action API.
 
+import { register } from 'node:module'
 register('./stubs/hooks.mjs', import.meta.url)
 
-const PROJECT = 'J:\\demo\\mm13d'
+const { registerTaskTool, agentLabel, projectPathOf } = await import('../../plugin/task-center/tool.mjs')
+const { createRig, createTask } = await import('./support/fixtures.mjs')
+
 let failures = 0
 function check(label, condition, detail) {
   if (!condition) failures++
-  console.log(`${condition ? 'PASS' : 'FAIL'}  ${label}${condition || detail === undefined ? '' : '  -> ' + detail}`)
+  console.log((condition ? 'PASS' : 'FAIL') + '  ' + label + (condition || detail === undefined ? '' : '  -> ' + detail))
 }
 
-/** A filesystem with real FsVersion semantics, enough for the board's CAS. */
-function createFs() {
-  const files = new Map()
-  let counter = 0
-  const bump = () => 'v' + String(++counter)
-  return {
-    files,
-    async resolve(path) {
-      return { targetKey: path }
-    },
-    async stat(target) {
-      const entry = files.get(target.targetKey)
-      return entry === undefined ? undefined : { version: entry.version, type: 'file', size: entry.text.length }
-    },
-    async readText(target) {
-      const entry = files.get(target.targetKey)
-      if (entry === undefined) throw new Error('ENOENT')
-      return entry.text
-    },
-    async writeText(target, content, expected) {
-      const entry = files.get(target.targetKey)
-      if (expected !== undefined && expected.kind === 'createIfAbsent' && entry !== undefined) {
-        const error = new Error('FS_STALE_VERSION: exists')
-        error.code = 'FS_STALE_VERSION'
-        throw error
-      }
-      if (expected !== undefined && expected.kind === 'replaceIfVersion') {
-        if (entry === undefined || entry.version !== expected.version) {
-          const error = new Error('FS_STALE_VERSION: moved')
-          error.code = 'FS_STALE_VERSION'
-          throw error
-        }
-      }
-      const version = bump()
-      files.set(target.targetKey, { text: content, version: version })
-      return { operation: entry === undefined ? 'create' : 'update', version: version, before: null, after: content }
-    },
-  }
-}
-
-const boardText = (fs) => fs.files.get(PROJECT + '\\.agents\\tasks.json').text
-const boardOf = (fs) => JSON.parse(boardText(fs))
-
-/** Register the tool against a fake context and hand back the definition. */
-async function loadTool(fs, policy) {
-  const module = await import('../../plugin/task-center/tool.mjs')
-  let definition = null
-  const ctx = {
-    fs: fs,
-    sandboxPolicy: policy === undefined ? { resolve: () => ({ workspaceRoot: PROJECT }) } : policy,
-    logger: { warn() {} },
-    tools: {
-      register(value) {
-        definition = value
-        return () => {}
-      },
-    },
-  }
-  module.registerTaskTool(ctx)
-  return definition
-}
-
-const ALICE = { id: 'session-aaaaaaaa-1111' }
-const BOB = { id: 'session-bbbbbbbb-2222' }
-const call = (definition, action, extra, agent) =>
-  definition.execute(Object.assign({ action: action }, extra || {}), { agent: agent === undefined ? ALICE : agent })
-
-// ── the declaration ────────────────────────────────────────────────────────
-let fs = createFs()
-let tool = await loadTool(fs)
-check('the tool registers under one name', tool.name === 'task_center', tool.name)
-check('the tool declares an output, which ToolDefinition requires', tool.output !== undefined && typeof tool.output.render === 'function')
-check('the declaration lists an action enum', Array.isArray(tool.parameters.action.enum))
-check('reads are declared parallel-safe', tool.isConcurrencySafe({ action: 'board' }) === true)
-check('writes are not declared parallel-safe', tool.isConcurrencySafe({ action: 'create' }) !== true)
-check('claiming is not declared parallel-safe', tool.isConcurrencySafe({ action: 'claim' }) !== true)
-check('the user-owned actions are visible so they can be refused by name', tool.parameters.action.enum.indexOf('publish') >= 0 && tool.parameters.action.enum.indexOf('complete') >= 0)
-
-// ── the user's authorisation points are closed to the agent ────────────────
-let before = fs.files.size
-let result = await call(tool, 'publish', { id: 'T-1' })
-check('publishing is refused', result.refused === 'publish', JSON.stringify(result))
-check('and the refusal says who owns it', /user/.test(result.reason), result.reason)
-result = await call(tool, 'complete', { id: 'T-1' })
-check('completing is refused', result.refused === 'complete')
-result = await call(tool, 'set_status', { id: 'T-1', status: 'done' })
-check('a raw status write is refused', result.refused === 'set_status')
-result = await call(tool, 'force_unlock', { path: 'a.gd' })
-check('forcing another agent off a lock is refused', result.refused === 'force_unlock')
-check('none of those refusals wrote anything', fs.files.size === before, String(fs.files.size))
-
-// ── reading, and creating a draft ──────────────────────────────────────────
-result = await call(tool, 'board')
-check('an absent board reads as not created', result.board === 'not created yet', JSON.stringify(result.board))
-check('and reports zero everywhere', result.total === 0 && result.counts.draft === 0)
-
-result = await call(tool, 'create', { title: '   ' })
-check('a task without a title is refused', result.code === 'missing-title', JSON.stringify(result))
-check('and nothing was written', fs.files.size === 0, String(fs.files.size))
-
-result = await call(tool, 'create', { title: '伤害系统重构', spec: '收敛到 DamageContext', proposalRef: '.agents/notes/proposed/architecture/2026-10-14-task-center.md', blockedBy: ['T-9'] })
-check('the declared dependency reaches the board', boardOf(fs).tasks[0].blockedBy.join(',') === 'T-9', JSON.stringify(boardOf(fs).tasks[0].blockedBy))
-check('creating returns the new draft', result.created.id === 'T-1' && result.created.status === 'draft', JSON.stringify(result.created))
-check('the draft says where it came from', boardOf(fs).tasks[0].proposalRef === '.agents/notes/proposed/architecture/2026-10-14-task-center.md')
-check('the draft records the author in history', boardOf(fs).tasks[0].history[0].by === '@aaaaaaaa', boardOf(fs).tasks[0].history[0].by)
-check('creating is reported as a draft count', result.drafts === 1)
-check('and the result tells the agent who releases it', /user/.test(result.hint), result.hint)
-
-// ── claiming is not a client action at all ─────────────────────────────────
-// `claim` and `release` are gone rather than gated: claiming is what DISPATCH does, and
-// the board only shows the result. A client that could claim would be writing the
-// mechanism's own record — which is exactly what the API split forbids.
-result = await call(tool, 'claim', { id: 'T-1' })
-check('claiming is no longer a client action', result.code === 'unknown-action', JSON.stringify(result))
-result = await call(tool, 'release', { id: 'T-1' })
-check('releasing a task is not either', result.code === 'unknown-action', JSON.stringify(result))
-
-// The user releases it in the panel; emulate that with the same model function
-// the panel will use, through the same board layer.
-const { readBoard, updateBoard } = await import('../../plugin/task-center/board.mjs')
-const { publishTask } = await import('../../plugin/task-center/service.mjs')
-const released = await updateBoard({ fs: fs }, { projectPath: PROJECT, mutate: (board) => publishTask(board, 'T-1', Date.now(), 'user').board })
-check('the emulated release succeeded', released.ok === true, JSON.stringify(released))
-check('the draft is now queued', boardOf(fs).tasks[0].status === 'queued')
-
-// ── working, submitting ────────────────────────────────────────────────────
-// No client can claim any more: claiming is what DISPATCH does, and the board only
-// shows it. So the test produces the claimed state the way the SYSTEM does — through
-// the model — and then exercises the actions the tool still owns.
-const { claimTask } = await import('../../plugin/task-center/service.mjs')
-const CLAIM_AT = Date.parse('2026-01-01T00:00:00.000Z')
-await updateBoard(
-  { fs: fs },
-  {
-    projectPath: PROJECT,
-    sandboxPolicy: { mode: 'workspace-write', workspaceRoot: PROJECT },
-    mutate: (board) => claimTask(board, 'T-1', { name: '@aaaaaaaa', session: 'session-aaaaaaaa' }, CLAIM_AT).board,
+const rig = createRig({ allowSpawn: false })
+rig.ctx.tools = {
+  register(tool) {
+    rig.tool = tool
+    return tool
   },
-)
-const claimed = boardOf(fs).tasks[0]
-check('a dispatched task is claimed, with a lease', claimed.status === 'claimed' && typeof claimed.leaseUntil === 'string', JSON.stringify(claimed.status))
-check('and the holder is the dispatched agent', claimed.assignee.name === '@aaaaaaaa', JSON.stringify(claimed.assignee))
-// The rule that a live claim cannot be taken is a MODEL rule, and it is asserted where
-// the model lives. Here it is worth one line, because it is what makes dispatch the only
-// writer of this state.
-check('the model still refuses to take a live claim', claimTask(boardOf(fs), 'T-1', { name: '@bob', session: 's-bob' }, CLAIM_AT).code === 'held')
-result = await call(tool, 'start', { id: 'T-1' })
-check('the holder can start it', result.task.status === 'in_progress', JSON.stringify(result.task && result.task.status))
-result = await call(tool, 'submit', { id: 'T-1', evidence: 'tests/combat_test.gd 全绿' })
-check('the holder can submit for review', result.task.status === 'review', JSON.stringify(result.task && result.task.status))
-check('and the evidence is stored', boardOf(fs).tasks[0].evidence === 'tests/combat_test.gd 全绿')
-result = await call(tool, 'start', { id: 'T-1' })
-check('starting a submitted task sends it back for rework', result.task.status === 'in_progress', JSON.stringify(result.task && result.task.status))
-check('and the rework is recorded in history', boardOf(fs).tasks[0].history.slice(-1)[0].from === 'review')
-result = await call(tool, 'submit', { id: 'T-1', evidence: 'tests/combat_test.gd 全绿' })
-check('submitting again returns it to review', result.task.status === 'review')
+}
+const disposer = registerTaskTool(rig.ctx, { api: rig.api })
+check('the tool registers', rig.tool !== undefined && rig.tool.name === 'task_center', String(rig.tool && rig.tool.name))
 
-const probe = await call(tool, 'create', { title: 'rework probe' })
-result = await call(tool, 'start', { id: probe.created.id })
-check('a draft cannot be started', result.code === 'illegal-transition', JSON.stringify(result))
-check('and the refusal lists the legal moves', /allowed: queued, done, cancelled/.test(result.error), result.error)
+const agent = { id: 'session-abcdef12' }
+const other = { id: 'session-other' }
+async function call(args, who) {
+  return rig.tool.execute(args, { agent: who === undefined ? agent : who })
+}
 
-result = await call(tool, 'mine')
-check('mine lists the tasks the agent holds', result.tasks.length === 1 && result.tasks[0].id === 'T-1', JSON.stringify(result.tasks))
-result = await call(tool, 'mine', {}, BOB)
-check('and is empty for an agent that holds nothing', result.tasks.length === 0)
+// identity helpers
+check('agentLabel is stable', agentLabel(agent) === '@abcdef12', agentLabel(agent))
+check('an unnamed agent still has a label', agentLabel(undefined) === '@unknown')
+check('projectPathOf resolves the workspace', projectPathOf(rig.ctx, agent) === rig.project, projectPathOf(rig.ctx, agent))
 
-result = await call(tool, 'show', { id: 'T-9' })
-check('showing an unknown task is a readable error', /No task with id/.test(result.error), result.error)
+// the action vocabulary is the API's, not a hand-maintained second list
+const actions = rig.tool.parameters.action.enum
+check('the tool exposes start and pause', actions.indexOf('start') >= 0 && actions.indexOf('pause') >= 0, actions.join(','))
+check('the tool exposes create and submit', actions.indexOf('create') >= 0 && actions.indexOf('submit') >= 0)
+check('the old setStatus vocabulary is gone', actions.indexOf('setStatus') < 0, actions.join(','))
+check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && actions.indexOf('forceUnlock') >= 0)
 
-// ── locks arbitrate between two agents ─────────────────────────────────────
-result = await call(tool, 'lock', { path: 'scripts/core/damage.gd', id: 'T-1' })
-check('a free file is granted', result.granted === true, JSON.stringify(result))
-result = await call(tool, 'lock', { path: 'scripts/core/damage.gd' }, BOB)
-check('a held file is refused to the second agent', result.granted === false, JSON.stringify(result))
-check('the refusal names the holder', result.holder === '@aaaaaaaa', String(result.holder))
-check('the refusal gives a queue position', result.position === 1, String(result.position))
-check('the refusal tells the agent not to write', /Do not write it/.test(result.hint), result.hint)
+// create + board
+{
+  const result = await call({ action: 'create', title: 'from the model', dependsOn: [], writeFiles: ['scripts/a.gd'] })
+  check('the tool creates a task', result.ok === true && result.task.title === 'from the model', JSON.stringify(result))
+  check('a created task is pending', result.task.status === 'pending')
+  const board = await call({ action: 'board' })
+  check('the tool reads the board', board.ok === true && board.tasks.length === 1 && board.counts.pending === 1, JSON.stringify(board.counts))
+  const bad = await call({ action: 'create', title: 'bad dependency', dependsOn: ['T-99'] })
+  check('a refused create is a readable error', bad.error !== undefined && bad.code === 'unknown-dependency', JSON.stringify(bad))
+}
 
-result = await call(tool, 'locks')
-check('locks lists the writer', result.files.length === 1 && result.files[0].holder === '@aaaaaaaa', JSON.stringify(result.files))
-check('and names the next in line', result.files[0].next === '@bbbbbbbb', String(result.files[0].next))
-check('the first agent sees no blocked paths', result.blockedPaths.length === 0, JSON.stringify(result.blockedPaths))
-result = await call(tool, 'locks', {}, BOB)
-check('the waiting agent sees the file as blocked', result.blockedPaths.join(',') === 'scripts/core/damage.gd', JSON.stringify(result.blockedPaths))
-check('and sees itself queued', result.you.waiting.length === 1 && result.you.waiting[0].position === 1)
+// start / dispatch / submit ownership
+{
+  const created = await call({ action: 'create', title: 'pool work', priority: 99 })
+  const id = created.task.id
+  const started = await call({ action: 'start' })
+  check('the tool starts dispatch', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started))
+  const board = await call({ action: 'board' })
+  const task = board.tasks.filter((entry) => entry.id === id)[0]
+  check('the task is dispatched to the idle teammate', task.status === 'running' && task.assignee.name === 'fixer', JSON.stringify(task && task.assignee))
+  const wrong = await call({ action: 'submit', id: id, evidence: 'mine' }, other)
+  check('a different agent cannot submit it', wrong.error !== undefined && wrong.code === 'not-assignee', JSON.stringify(wrong))
+  const submitted = await call({ action: 'submit', id: id, evidence: 'tests pass' }, { id: 'session-idle' })
+  check('the assignee can submit it', submitted.ok === true && submitted.task.status === 'done', JSON.stringify(submitted))
+  check('and the evidence is stored', submitted.task.evidence === 'tests pass')
+  const paused = await call({ action: 'pause' })
+  check('the tool pauses dispatch', paused.dispatch.state === 'paused')
+}
 
-result = await call(tool, 'unlock', { path: 'scripts/core/damage.gd' }, BOB)
-check('a non-holder cannot unlock', result.refused === 'not-holder', JSON.stringify(result))
-result = await call(tool, 'unlock', { path: 'scripts/core/damage.gd' })
-check('the holder can unlock', result.released === 'scripts/core/damage.gd')
-check('and the longest waiter is granted', result.grantedTo === '@bbbbbbbb', String(result.grantedTo))
-result = await call(tool, 'locks')
-check('the file now belongs to the second agent', result.files[0].holder === '@bbbbbbbb', JSON.stringify(result.files[0]))
+// locks owned by the running task
+{
+  const created = await call({ action: 'create', title: 'locked work', writeFiles: [] })
+  const id = created.task.id
+  rig.team.setStatus('fixer', 'inactive')
+  await call({ action: 'start' })
+  const locks = await call({ action: 'lock', paths: ['scripts/extra.gd'] }, { id: 'session-idle' })
+  check('the assignee can lock an extra file', locks.ok === true && locks.granted === true, JSON.stringify(locks))
+  check('the lock is attached to the running task', typeof locks.taskId === 'string' && locks.taskId.length > 0, String(locks.taskId))
+  const listed = await call({ action: 'locks' })
+  check('locks lists the file', listed.locks.some((lock) => lock.path === 'scripts/extra.gd'), JSON.stringify(listed.locks))
+  const unlocked = await call({ action: 'unlock', paths: ['scripts/extra.gd'] }, { id: 'session-idle' })
+  check('the assignee can unlock it', unlocked.ok === true && unlocked.released.join(',') === 'scripts/extra.gd', JSON.stringify(unlocked))
+  await call({ action: 'submit', id: id, evidence: 'done' }, { id: 'session-idle' })
+  await call({ action: 'pause' })
+}
 
-result = await call(tool, 'lock', { path: '' })
-check('a lock without a path is refused', /path is required/.test(result.error), result.error)
+// read-only actions may run concurrently
+check('board is concurrency safe', rig.tool.isConcurrencySafe({ action: 'board' }) === true)
+check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'create' }) === false)
 
-// ── removal is limited to what an agent should be able to remove ───────────
-result = await call(tool, 'remove', { id: 'T-1' })
-check('a task in review cannot be removed', result.code === 'not-a-draft', JSON.stringify(result))
-const mistake = await call(tool, 'create', { title: 'mistake' })
-check('a fresh draft is created', mistake.created.status === 'draft', JSON.stringify(mistake.created))
-result = await call(tool, 'remove', { id: mistake.created.id })
-check('a draft can be removed', result.events.join(',') === 'removed', JSON.stringify(result.events))
-check('and it is gone from the board', boardOf(fs).tasks.filter((task) => task.id === mistake.created.id).length === 0)
-
-// ── identity and project resolution degrade instead of throwing ─────────────
-tool = await loadTool(fs, { resolve: () => ({}) })
-result = await call(tool, 'board')
-check('an unresolvable project is a sentence, not a crash', /project directory is unknown/.test(result.error), JSON.stringify(result))
-
-tool = await loadTool(fs, {
-  resolve(options) {
-    if (options === undefined || options.session === undefined) return {}
-    return { workspaceRoot: PROJECT }
-  },
-})
-const withSession = { session: 'session-cccccccc-3333' }
-result = await call(tool, 'create', { title: 'via session field' }, withSession)
-check('an agent exposing only `session` still resolves the project', result.created !== undefined, JSON.stringify(result))
-check('and its label comes from that field', boardOf(fs).tasks.filter((task) => task.title === 'via session field')[0].history[0].by === '@cccccccc', JSON.stringify(boardOf(fs).tasks.slice(-1)))
-
-const anonymous = { id: '!!!' }
-result = await call(tool, 'mine', {}, anonymous)
-check('an unnameable agent still gets a label', result.tasks !== undefined, JSON.stringify(result))
-
-// ── a refused write never touches the file ─────────────────────────────────
-const snapshot = boardText(fs)
-result = await call(tool, 'claim', { id: 'T-404' })
-check('claiming an unknown task is refused as an unknown action', result.code === 'unknown-action', JSON.stringify(result))
-result = await call(tool, 'close', { id: 'T-404' })
-check('closing an unknown task is refused as unknown', result.code === 'unknown-task', JSON.stringify(result))
-result = await call(tool, 'retry', { id: 'T-404' })
-check('retrying is the user\'s call, refused before it even reads the board', result.refused === 'retry', JSON.stringify(result))
-check('and the file is byte-identical afterwards', boardText(fs) === snapshot)
-
-console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)
+if (typeof disposer === 'function') disposer()
+rig.scheduler.dispose()
+console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
