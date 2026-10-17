@@ -33,6 +33,32 @@
 
 其余 godot-mcp 工具是在 MCP 服务器自己的 Node 进程里实现的：纯文件/编辑器操作由 DSH 原生文件工具覆盖；少数几个带 **Godot 特有写逻辑**（`manage_input_map`、`manage_export_presets`、`modify_project_settings`、项目/脚本模板生成等），通用编辑只能配合格式知识替代——完整对照见 [COVERAGE.md](COVERAGE.zh-CN.md)。
 
+## 任务中心（task-center）
+
+同一个包还会挂载第二个组件行 `godot-bridge/task-center`：项目级任务板 + 依赖驱动的派发器 + 文件锁，以及中栏 GUI 面板（左侧栏「任务」）。
+
+- **任务板**：`<项目>/.agents/tasks.json`。schema v2，读到 v1 会自动迁移；重复 id、非法条目、未来版本会被拒绝而不是覆盖；建议把该文件加入项目 `.gitignore`（它是运行态，不是源码）。
+- **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / settings / tick / submit / accept / reject / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject`。
+- **依赖**：`B.dependsOn = [A]` 表示 A 完成后才派发 B。就绪任务按 `priority` 降序、创建时间升序取。`A <- B <- C`、`D`、`E <- F` 会先派发 A、D、E；A 完成后派发 B，E 完成后派发 F。
+- **派发**：开始/暂停是项目级状态（持久化在板子里）；`maxConcurrent` 控制并发，`maxAttempts` 控制重试，`allowSpawn`/`maxWorkAgents` 控制是否允许自动创建 WorkAgent。每次派发先 `claim`（15 分钟租约）再交给 Agent Teams：优先 `sendMessage` 给空闲成员，否则 `spawnTeammate`。worker 死掉后租约到期自动回池；宿主重启会回收上一进程的 claim。
+- **文件锁**：任务用 `writeFiles` 声明要写的文件；调度器在派发前原子获取全部锁，任务完成/阻塞/取消/租约过期时释放。agent 也可以 `lock` 为自己的运行任务追加锁。路径规范化为项目相对路径，目录锁会与子路径冲突。
+- **GUI**：看板（就绪 / 等待 / 进行中 / 待验收 / 完成 / 阻塞）、队列、文件锁；开始/暂停、新建/编辑、验收/打回/重试/重开、派发设置。2.5 秒轮询宿主快照。
+- **安全**：HTTP 写动作要求 `application/json` 且校验同源 `Origin`；`?project=` 只是读提示，切换项目走 `openProject`（校验目录存在）。
+
+```sh
+# 在 GUI 之外创建任务（任意 HTTP 客户端）
+curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
+  -H 'content-type: application/json' \
+  -d '{"action":"create","project":"/path/to/game","title":"A","writeFiles":["scripts/a.gd"]}'
+# 开始 / 暂停派发
+curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
+  -H 'content-type: application/json' -d '{"action":"start","project":"/path/to/game"}'
+curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
+  -H 'content-type: application/json' -d '{"action":"pause","project":"/path/to/game"}'
+```
+
+运行 `npm test` 覆盖 board / service / locks / dispatch / routes / tool / activation / client。
+
 ## 工作原理
 
 ```
@@ -141,7 +167,8 @@ Godot 可执行文件解析顺序：每次调用的 `godot_path` 参数 → `god
 
 ```
 plugin/godot-bridge.mjs           # 插件本体（标准 DSH 模块，命名导出 name/inject/apply）
-client/client.js                  # 浏览器半侧：插件页上该行的配置页（dsh.client）
+plugin/task-center/               # 任务中心宿主半侧（board / service / locks / dispatch / api / tool / routes）
+client/client.js                  # 浏览器半侧：引擎路径配置 + 任务中心面板（dsh.client）
 plugin/mcp_interaction_server.gd  # 取自 godot-mcp（MIT）——游戏内 TCP 服务器 autoload
 plugin/godot_operations.gd        # 取自 godot-mcp（MIT）——headless 操作脚本
 plugin/validate_script.gd         # 取自 godot-mcp（MIT）——GDScript 编译检查

@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-18
+
+### Added
+
+- **Task Center v2**: a project-level task board (`<project>/.agents/tasks.json`), dependency-driven dispatch with explicit start/pause, priority ordering, concurrency and retry settings, 15-minute worker leases that return a dead worker's task to the pool, and recovery of claims left by a previous host process.
+- **File locks**: tasks declare `writeFiles`; the scheduler acquires all of them atomically before dispatch and releases them on completion, block, cancel or lease expiry. Paths canonicalise to project-relative POSIX paths, directory locks conflict with child paths, and an agent can lock extra files for its running task.
+- **One action API**: the `task_center` tool and the HTTP route call the same handlers (`create`, `update`, `delete`, `list`, `get`, `board`, `start`, `pause`, `settings`, `tick`, `submit`, `accept`, `reject`, `cancel`, `reopen`, `block`, `unblock`, `retry`, `lock`, `unlock`, `locks`, `forceUnlock`, `openProject`).
+- **Task Center GUI**: a rewritten panel with board, queue and lock views; start/pause, create/edit, review actions, dispatch settings, dependency and lease display, and a 2.5-second host snapshot poll.
+
+### Changed
+
+- The board schema is version 2. A version-1 board is migrated on read; a future version is refused rather than downgraded. Task ids are unique by construction, `seq` can never collide with an existing id, and history is capped.
+- The browser half no longer contains a mock store. It fetches the host snapshot, sends one action and renders the answer, so a host failure can no longer reach a user as fabricated work.
+- Dispatch claims a task before anything leaves the process, records the delivery result, and blocks a task after the configured attempt budget instead of retrying into the void.
+
+### Fixed
+
+- Dispatch ignored priority and could hand several ready tasks to the same idle teammate in one pass.
+- WorkAgent submissions could be rejected because the board stored a Team member name while the tool measured the session id; the identity is now recorded on both sides.
+- Expired task leases were never reaped, and the panel's create/release/submit/unblock/reopen actions did not match the host vocabulary.
+- A dependency that was deleted or cancelled made its dependents wait forever without a visible reason; broken dependencies are now reported.
+
+### Removed
+
+- The `/task` slash command and the `@deepseek-ai/dsh-llm` peer dependency.
+- The sample store, seed board, simulate/reset controls and the `__fixture` test seam.
+
 ## [0.2.0] - 2026-10-01
 
 ### Added

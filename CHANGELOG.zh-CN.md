@@ -5,6 +5,33 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-10-18
+
+### 新增
+
+- **任务中心 v2**：项目级任务板（`<项目>/.agents/tasks.json`）、依赖驱动的派发（显式开始/暂停）、优先级排序、并发与重试设置、15 分钟 worker 租约（worker 死掉后任务自动回池），以及宿主重启后对上一进程 claim 的回收。
+- **文件锁**：任务用 `writeFiles` 声明要写的文件；调度器在派发前原子获取全部锁，任务完成/阻塞/取消/租约过期时释放。路径规范化为项目相对 POSIX 路径，目录锁与子路径冲突；agent 可以为自己的运行任务追加锁。
+- **统一动作 API**：`task_center` 工具与 HTTP 路由调用同一批处理器（`create`、`update`、`delete`、`list`、`get`、`board`、`start`、`pause`、`settings`、`tick`、`submit`、`accept`、`reject`、`cancel`、`reopen`、`block`、`unblock`、`retry`、`lock`、`unlock`、`locks`、`forceUnlock`、`openProject`）。
+- **任务中心 GUI**：重写面板，包含看板、队列、文件锁视图；开始/暂停、新建/编辑、验收动作、派发设置、依赖与租约展示，2.5 秒轮询宿主快照。
+
+### 变更
+
+- 板子 schema 升到 v2。读到 v1 会自动迁移；未来版本会被拒绝而不是降级。任务 id 由构造保证唯一，`seq` 不会与已有 id 冲突，历史长度有上限。
+- 浏览器半侧不再包含 mock store：只拉取宿主快照、发送一个动作、渲染宿主返回，因此宿主故障不会再以编造的任务呈现给用户。
+- 派发在发出任何东西之前先 claim，记录投递结果，并在达到尝试上限后把任务置为阻塞，而不是无限重试。
+
+### 修复
+
+- 派发忽略优先级，且一次 pass 可能把多个就绪任务交给同一个空闲成员。
+- WorkAgent 提交可能被拒绝：板子存的是 Team 成员名，而工具侧量的是 session id；现在两边身份都会记录。
+- 任务租约过期从不回收；面板的新建/释放/提交/解除阻塞/重开动作与宿主词汇表不一致。
+- 依赖被删除或取消后，下游会无提示地永久等待；现在会报告“依赖已破”。
+
+### 移除
+
+- `/task` 斜杠命令与 `@deepseek-ai/dsh-llm` peer 依赖。
+- 示例 store、种子板、模拟/重置控件以及 `__fixture` 测试接缝。
+
 ## [0.2.0] - 2026-10-01
 
 ### 新增

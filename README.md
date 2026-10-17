@@ -33,6 +33,32 @@ No MCP protocol, no Python server, no editor addon. The game side is untouched: 
 
 The remaining godot-mcp tools were implemented in the MCP server's own Node process: pure file/editor operations are covered by DSH's native file tools, while a handful carry **Godot-specific write logic** (`manage_input_map`, `manage_export_presets`, `modify_project_settings`, project/script templates) that a generic edit replaces only with format knowledge — see [COVERAGE.md](COVERAGE.md) for the full breakdown.
 
+## Task Center
+
+The same package mounts a second component row, `godot-bridge/task-center`: a project task board, a dependency-driven dispatcher, file locks, and a centre-column GUI panel (sidebar entry “Tasks”).
+
+- **Board**: `<project>/.agents/tasks.json`. Schema v2; a v1 board migrates on read. Duplicate ids, malformed entries and future versions are refused instead of overwritten. Add the file to the project's `.gitignore` — it is working state, not source.
+- **Action API**: the `task_center` tool and `POST /godot-bridge/task-center/action` share one vocabulary: `create / update / delete / list / get / board / start / pause / settings / tick / submit / accept / reject / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject`.
+- **Dependencies**: `B.dependsOn = [A]` means B runs only after A is done. Ready tasks are ordered by `priority` descending, then creation time. `A <- B <- C`, `D`, `E <- F` dispatch A, D, E first; A's completion dispatches B, E's completion dispatches F.
+- **Dispatch**: start/pause is a project-level state persisted in the board. `maxConcurrent` bounds concurrency, `maxAttempts` bounds retries, `allowSpawn`/`maxWorkAgents` decide whether WorkAgents may be created. Every dispatch claims the task first (15-minute lease), then hands it to Agent Teams — `sendMessage` to an idle member, otherwise `spawnTeammate`. Expired leases return a task to the pool; a host restart recovers claims from the previous process.
+- **File locks**: `writeFiles` declares what a task will write. The scheduler acquires all of them atomically before dispatch and releases them on completion, block, cancel or lease expiry. An agent may `lock` extra files for its running task. Paths canonicalise to project-relative POSIX paths; a directory lock conflicts with every child path.
+- **GUI**: board (ready / waiting / running / review / done / blocked), queue and locks views; start/pause, create/edit, accept/send-back/retry/reopen, dispatch settings. It polls the host snapshot every 2.5 s.
+- **Safety**: HTTP writes require `application/json` and a same-origin `Origin`; `?project=` is only a read hint, while switching projects goes through `openProject` (which verifies the directory).
+
+```sh
+# create a task from outside the GUI (any HTTP client)
+curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
+  -H 'content-type: application/json' \
+  -d '{"action":"create","project":"/path/to/game","title":"A","writeFiles":["scripts/a.gd"]}'
+# start / pause dispatch
+curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
+  -H 'content-type: application/json' -d '{"action":"start","project":"/path/to/game"}'
+curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
+  -H 'content-type: application/json' -d '{"action":"pause","project":"/path/to/game"}'
+```
+
+`npm test` covers board, service, locks, dispatch, routes, tool, activation and client.
+
 ## How it works
 
 ```
