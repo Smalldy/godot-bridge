@@ -211,10 +211,9 @@ window.__ModuleLoader__.load({
 				offline: '宿主没有响应',
 				error: '操作失败',
 				settingsTitle: '派发设置',
-				maxConcurrent: '并发任务',
-				maxWorkAgents: '最多 WorkAgent',
-				maxAttempts: '重试上限',
-				allowSpawn: '允许自动创建 WorkAgent',
+				maxConcurrent: '最大并发',
+				concurrencyHint: '1–8。执行者上限自动设为并发 + 1；没有空闲执行者时会自动新建；连续失败 3 次后任务阻塞。',
+				invalidConcurrency: '并发必须是 1–8 的整数',
 				apply: '应用',
 				leaseLeft: '剩余',
 				leaseExpired: '已过期',
@@ -326,10 +325,9 @@ window.__ModuleLoader__.load({
 				offline: 'The host did not answer',
 				error: 'Action failed',
 				settingsTitle: 'Dispatch settings',
-				maxConcurrent: 'Concurrent tasks',
-				maxWorkAgents: 'Max WorkAgents',
-				maxAttempts: 'Retry limit',
-				allowSpawn: 'Allow spawning WorkAgents',
+				maxConcurrent: 'Maximum concurrency',
+				concurrencyHint: '1–8. The worker cap becomes concurrency + 1; a worker is spawned when none is idle; a task blocks after 3 consecutive failures.',
+				invalidConcurrency: 'Concurrency must be an integer from 1 to 8',
 				apply: 'Apply',
 				leaseLeft: 'left',
 				leaseExpired: 'expired',
@@ -1297,18 +1295,15 @@ window.__ModuleLoader__.load({
 				const t = props.t
 				const dispatch = props.dispatch
 				const concurrent = React.useRef(null)
-				const workers = React.useRef(null)
-				const attempts = React.useRef(null)
-				const spawn = React.useRef(null)
 				const [error, setError] = React.useState('')
 				function save() {
-					const body = {
-						maxConcurrent: Number(concurrent.current === null ? dispatch.maxConcurrent : concurrent.current.value),
-						maxWorkAgents: Number(workers.current === null ? dispatch.maxWorkAgents : workers.current.value),
-						maxAttempts: Number(attempts.current === null ? dispatch.maxAttempts : attempts.current.value),
-						allowSpawn: spawn.current === null ? dispatch.allowSpawn === true : spawn.current.checked === true,
+					const raw = concurrent.current === null ? dispatch.maxConcurrent : concurrent.current.value
+					const value = Number(raw)
+					if (!Number.isFinite(value) || value < 1 || value > 8 || Math.floor(value) !== value) {
+						setError(t('invalidConcurrency'))
+						return
 					}
-					void store.send('settings', body).then(function (result) {
+					void store.send('settings', { maxConcurrent: value }).then(function (result) {
 						if (result.ok === true) props.onClose()
 						else setError(t('error'))
 					})
@@ -1319,15 +1314,20 @@ window.__ModuleLoader__.load({
 					h(
 						'div',
 						{ className: 'gbt-form' },
-						h('div', { className: 'gbt-row2' },
-							h('div', { className: 'gbt-field' }, h('label', null, t('maxConcurrent')), h('input', { className: 'gbt-input', type: 'number', ref: concurrent, defaultValue: String(dispatch.maxConcurrent) })),
-							h('div', { className: 'gbt-field' }, h('label', null, t('maxWorkAgents')), h('input', { className: 'gbt-input', type: 'number', ref: workers, defaultValue: String(dispatch.maxWorkAgents) })),
-							h('div', { className: 'gbt-field' }, h('label', null, t('maxAttempts')), h('input', { className: 'gbt-input', type: 'number', ref: attempts, defaultValue: String(dispatch.maxAttempts) }))),
-						h('label', { className: 'gbt-check' }, h('input', { type: 'checkbox', ref: spawn, defaultChecked: dispatch.allowSpawn === true }), t('allowSpawn')),
-						error === '' ? null : h('p', { className: 'gbt-footnote' }, error),
-						h('div', { className: 'gbt-actions' },
+						h(
+							'div',
+							{ className: 'gbt-field' },
+							h('label', null, t('maxConcurrent')),
+							h('input', { className: 'gbt-input', type: 'number', min: 1, max: 8, step: 1, ref: concurrent, defaultValue: String(dispatch.maxConcurrent) }),
+						),
+						h('p', { className: 'gbt-footnote' }, t('concurrencyHint')),
+						error === '' ? null : h('p', { className: 'gbt-footnote', style: { color: 'var(--dsw-alias-label-error,#e5484d)' } }, error),
+						h(
+							'div',
+							{ className: 'gbt-actions' },
 							h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: save }, t('apply')),
-							h('button', { type: 'button', className: 'gbt-btn', onClick: props.onClose }, t('cancel'))),
+							h('button', { type: 'button', className: 'gbt-btn', onClick: props.onClose }, t('cancel')),
+						),
 					),
 				)
 			}
@@ -1454,6 +1454,7 @@ window.__ModuleLoader__.load({
 					h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }),
 					h('span', null, active ? t('running') : t('paused')),
 					h('span', null, '· ' + String(counts.total || tasks.length) + ' ' + t('taskCount')),
+					h('span', null, '· ' + t('maxConcurrent') + ' ' + String(dispatch.maxConcurrent === undefined ? 3 : dispatch.maxConcurrent)),
 					h('span', null, '· ' + t('queue') + ' ' + String(queue.length)),
 					scheduler !== null && scheduler !== undefined && scheduler.lastTickAt !== null
 						? h('span', null, '· tick ' + tcAgo(scheduler.lastTickAt, now))

@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The board schema is version 2. A version-1 board is migrated on read; a future version is refused rather than downgraded. Task ids are unique by construction, `seq` can never collide with an existing id, and history is capped.
 - The browser half no longer contains a mock store. It fetches the host snapshot, sends one action and renders the answer, so a host failure can no longer reach a user as fabricated work.
+- The dispatch settings modal exposes a single value, maximum concurrency. The WorkAgent cap is derived as concurrency + 1, spawning is on, and the retry limit stays at its internal default of 3; the `settings` action still accepts the advanced knobs for tool and HTTP callers.
 - Dispatch claims a task before anything leaves the process, records the delivery result, and blocks a task after the configured attempt budget instead of retrying into the void.
 
 ### Fixed

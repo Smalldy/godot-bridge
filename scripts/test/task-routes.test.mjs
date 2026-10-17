@@ -103,6 +103,15 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
   check('the route returns the board', res.json().ok === true && res.json().tasks.length === 1)
 }
 
+// one public setting: concurrency; the worker cap is derived
+{
+  const res = await post({ action: 'settings', maxConcurrent: 5 })
+  const payload = res.json()
+  check('settings accepts a single concurrency value', payload.ok === true && payload.dispatch.maxConcurrent === 5, res.text)
+  check('the worker cap derives as concurrency + 1', payload.dispatch.maxWorkAgents === 6, JSON.stringify(payload.dispatch))
+  check('spawning stays enabled by the same setting', payload.dispatch.allowSpawn === true, JSON.stringify(payload.dispatch))
+}
+
 // transport hardening
 {
   const res = await post({ action: 'board' }, { 'content-type': 'text/plain' })
