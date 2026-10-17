@@ -251,6 +251,10 @@ export function createApi(ctx, options) {
     }
     remember(projectPath)
     const now = clock()
+    if (READ_ACTIONS.indexOf(action) >= 0) {
+      const reader = ownerOf(context)
+      if (reader !== null) await heartbeat(projectPath, reader)
+    }
 
     if (action === 'board') return snapshot(projectPath)
     if (action === 'locks') {
