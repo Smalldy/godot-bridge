@@ -1,595 +1,610 @@
 /**
- * The task center's model: task transitions and file-lock arbitration.
+ * Task center — the pure model.
  *
- * Pure functions over plain data, with no Cordis and no filesystem, so the rules
- * can be tested directly and reused by both the `task_center` tool and (later)
- * the panel's host route. Every function takes the current state and returns the
- * next state plus the events it produced; nothing mutates in place, and every
- * refusal is a returned `{ ok: false, code }` rather than a throw, because the
- * caller has to turn it into something an agent or a user can read.
+ * No Cordis, no filesystem, no timers. Every function takes the current board,
+ * returns the next board plus the events it produced, and uses a returned
+ * { ok: false, code, message } for a refusal. The HTTP route, the tool and the
+ * scheduler all call these same functions, which keeps the three surfaces from
+ * inventing their own rules.
  *
- * STORED TIMES ARE ISO-8601 STRINGS. The board is a JSON file that users open and
- * hand-edit — the module even accepts a minimal hand-written board — and
- * `1780000000000` is not readable there. Countdowns therefore parse: the client
- * store converts to epoch milliseconds at its boundary, which is the one place
- * that should know about the difference.
+ * Statuses:
+ *   pending    not dispatched; readiness is DERIVED from dependsOn
+ *   running    owned by a worker, with a lease
+ *   review     submitted and waiting for the user (only when requiresReview)
+ *   done       finished; satisfies dependents
+ *   blocked    needs a human: manual block, dead worker or exhausted attempts
+ *   cancelled  abandoned
  *
- * WHO HOLDS A LOCK: the agent, not the task. A lock outlives no task on purpose —
- * `taskId` rides along only as a display label, because the file is held by
- * whoever is writing it right now.
+ * Dependencies point from a task to its prerequisites: B.dependsOn = [A] means
+ * A <- B (A must be done before B runs).
  */
 
-/** Task statuses, matching what the panel already renders as six columns. */
-export const STATUSES = ['draft', 'queued', 'claimed', 'in_progress', 'blocked', 'review', 'done', 'cancelled']
+import { CLOSED_STATUSES, TASK_LEASE_MS, normaliseDispatch } from './schema.mjs'
 
-/** Statuses a task may move to, per status. The panel can reach any state along
- * a legal path; an illegal move is refused with the list of legal targets.
- *
- * `claimed` is absent as a target on purpose: only claimTask produces it, so a
- * task can never be `claimed` with nobody holding it. `queued` is listed on
- * `claimed` because releaseClaim writes that move directly. */
-export const TRANSITIONS = {
-  // `draft -> done` is the conversation's own work: a draft is its work list, it does
-  // the work itself, and it marks it complete. This edge was DECIDED long before it
-  // existed (the proposal's frozen decision: 对话自己的活生命周期是 draft → done). Its
-  // absence is why a finished draft could only be closed by publishing it into the
-  // pool — the wrong door, which then had an agent start work that was already done.
-  draft: ['queued', 'done', 'cancelled'],
-  // `queued -> blocked` exists for exactly one reason: a pooled task whose dispatch
-  // keeps failing must become VISIBLE as stuck. Leaving it queued while the dispatcher
-  // refuses to touch it is invisible retention — it looks like work waiting its turn,
-  // forever. Blocking it names the problem where a human will see it.
-  queued: ['draft', 'blocked', 'cancelled'],
-  claimed: ['in_progress', 'blocked', 'review', 'queued', 'cancelled'],
-  in_progress: ['blocked', 'review', 'cancelled'],
-  // `blocked -> queued` is the way BACK, and it belongs with `queued -> blocked`: a
-  // human looked at a task the dispatcher gave up on and says "try again". Without it,
-  // exceeding the retry ceiling is a one-way door — blocked leads only to claimed,
-  // in_progress or cancelled, and reviving from cancelled takes three moves.
-  //
-  // NOTE: `in_progress -> done` is deliberately still ABSENT. It was proposed during
-  // this work and rejected: it would let anyone claim completion without submitting for
-  // review, which is the entire point of the review step.
-  blocked: ['claimed', 'in_progress', 'queued', 'cancelled'],
-  review: ['in_progress', 'done', 'cancelled'],
-  done: ['in_progress'],
-  cancelled: ['draft'],
-}
-
-/** Fields only their own operation may write: letting patchTask set `assignee`
- * or `leaseUntil` would walk around claiming, and `order` belongs to the queue. */
-const OWNED_FIELDS = ['id', 'status', 'history', 'assignee', 'leaseUntil', 'leaseExpired', 'order', 'createdAt']
-
-/** Default task lease: 10 minutes. See the proposal: liveness reaping handles a
- * dead holder immediately, so the lease only bounds "alive but idle", which is
- * why it can be generous rather than tight. */
-export const TASK_LEASE_MS = 10 * 60 * 1000
-
-const fail = (code, message) => ({ ok: false, code: code, message: message })
 const iso = (now) => new Date(now).toISOString()
 const clone = (value) => JSON.parse(JSON.stringify(value))
 
-/** A task that has never been touched beyond being created. */
-export function newTask(id, input, now, by) {
-  return {
-    id: id,
-    title: String(input.title || '').trim(),
-    spec: String(input.spec || ''),
-    status: 'draft',
-    priority: input.priority === undefined ? 'normal' : input.priority,
-    order: 0,
-    assignee: null,
-    leaseUntil: null,
-    leaseExpired: false,
-    blockedBy: Array.isArray(input.blockedBy) ? input.blockedBy.slice() : [],
-    acceptance: String(input.acceptance || ''),
-    evidence: String(input.evidence || ''),
-    planRef: String(input.planRef || ''),
-    proposalRef: input.proposalRef === undefined ? null : input.proposalRef,
-    proposalRevision: input.proposalRevision === undefined ? null : input.proposalRevision,
-    createdAt: iso(now),
-    updatedAt: iso(now),
-    history: [{ at: iso(now), by: by, from: null, to: 'draft', note: input.note === undefined ? '' : input.note }],
-  }
+function fail(code, message, extra) {
+  return Object.assign({ ok: false, code: code, message: message }, extra === undefined ? {} : extra)
 }
 
-/** Append a task, allocating the next `T-<n>` id. */
+function done(board, events, extra) {
+  return Object.assign({ ok: true, board: board, events: events === undefined ? [] : events }, extra === undefined ? {} : extra)
+}
+
+function findTaskIn(tasks, id) {
+  for (const task of tasks) if (task.id === id) return task
+  return undefined
+}
+
+export function findTask(board, id) {
+  return findTaskIn(board.tasks, id)
+}
+
+function pushHistory(task, entry) {
+  task.history.push({
+    at: entry.at,
+    by: entry.by,
+    from: entry.from === undefined ? task.status : entry.from,
+    to: entry.to === undefined ? task.status : entry.to,
+    note: entry.note === undefined ? '' : entry.note,
+  })
+}
+
+function touch(task, now) {
+  task.updatedAt = iso(now)
+}
+
+function normaliseList(value) {
+  if (!Array.isArray(value)) return []
+  const seen = new Set()
+  const out = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const text = item.trim()
+    if (text === '' || seen.has(text)) continue
+    seen.add(text)
+    out.push(text)
+  }
+  return out
+}
+
+/** True when start can reach target by following dependsOn edges. */
+function reaches(tasksById, start, target) {
+  const stack = [start]
+  const seen = new Set()
+  while (stack.length > 0) {
+    const id = stack.pop()
+    if (id === target) return true
+    if (seen.has(id)) continue
+    seen.add(id)
+    const task = tasksById.get(id)
+    if (task === undefined) continue
+    for (const dep of task.dependsOn) stack.push(dep)
+  }
+  return false
+}
+
+/**
+ * Validate a proposed dependsOn list for one task.
+ *
+ * @param board - current board.
+ * @param taskId - the task being written (undefined for a create whose id is
+ *   not allocated yet; self-reference is then impossible).
+ * @param dependsOn - proposed ids.
+ */
+export function validateDepends(board, taskId, dependsOn) {
+  const ids = normaliseList(dependsOn)
+  if (taskId !== undefined && ids.indexOf(taskId) >= 0) return fail('self-dependency', 'a task cannot depend on itself')
+  const byId = new Map(board.tasks.map((task) => [task.id, task]))
+  for (const id of ids) {
+    const task = byId.get(id)
+    if (task === undefined) return fail('unknown-dependency', 'depends on ' + id + ', which does not exist')
+    if (task.status === 'cancelled') return fail('cancelled-dependency', 'depends on ' + id + ', which is cancelled')
+    if (taskId !== undefined && reaches(byId, id, taskId)) {
+      return fail('dependency-cycle', 'depends on ' + id + ', which already depends on ' + taskId + ' (a cycle)')
+    }
+  }
+  return { ok: true, dependsOn: ids }
+}
+/** Create a task and allocate the next T-<n> id. */
 export function createTask(board, input, now, by) {
-  if (String(input.title || '').trim() === '') return fail('missing-title', 'a task needs a title')
+  const title = String(input.title === undefined ? '' : input.title).trim()
+  if (title === '') return fail('missing-title', 'a task needs a title')
+  const checked = validateDepends(board, undefined, input.dependsOn)
+  if (checked.ok !== true) return checked
   const next = clone(board)
   const id = 'T-' + String(next.seq)
   next.seq = next.seq + 1
-  const task = newTask(id, input, now, by)
-  task.order = next.tasks.length
+  const task = {
+    id: id,
+    title: title,
+    spec: String(input.spec === undefined ? '' : input.spec),
+    acceptance: String(input.acceptance === undefined ? '' : input.acceptance),
+    status: 'pending',
+    priority: Number.isFinite(input.priority) ? Math.floor(input.priority) : 0,
+    dependsOn: checked.dependsOn,
+    writeFiles: normaliseList(input.writeFiles),
+    assignee: null,
+    attempts: 0,
+    maxAttempts: Number.isFinite(input.maxAttempts) ? Math.min(10, Math.max(1, Math.floor(input.maxAttempts))) : 3,
+    requiresReview: input.requiresReview === true,
+    evidence: '',
+    dispatch: null,
+    leaseUntil: null,
+    createdBy: by,
+    createdAt: iso(now),
+    updatedAt: iso(now),
+    history: [
+      {
+        at: iso(now),
+        by: by,
+        from: null,
+        to: 'pending',
+        note: input.note === undefined ? 'created' : String(input.note),
+      },
+    ],
+  }
   next.tasks.push(task)
-  return { ok: true, board: next, task: task, events: [{ kind: 'created', id: id, who: by }] }
+  return done(next, [{ kind: 'created', id: id, who: by }], { task: task })
 }
 
-/** Find a task; `undefined` when absent, so callers can answer with their own code. */
-export function findTask(board, id) {
-  return board.tasks.filter((task) => task.id === id)[0]
-}
-
-/**
- * Change fields that are not status. `history` is appended only when a note is
- * given, so a pure field edit does not fill the timeline with noise. Fields in
- * OWNED_FIELDS are ignored, not an error: a caller that read a whole task and
- * wrote it back should not be able to move a claim by accident.
- *
- * A key whose value is `undefined` was NOT supplied, and is skipped. Callers pass
- * their whole option object through, so keys the caller never mentioned arrive as
- * undefined; writing those would wipe the fields, which means a partial update
- * would erase a title. `null` or `''` clears a field explicitly.
- */
-export function patchTask(board, id, change, now, by) {
+/** Change content or structure. Structural fields are frozen while running. */
+export function updateTask(board, id, input, now, by) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  const structural = input.dependsOn !== undefined || input.writeFiles !== undefined
+  if (structural && task.status === 'running') {
+    return fail('running-structural', id + ' is running; finish it or cancel it before changing dependencies or files')
+  }
+  if (input.dependsOn !== undefined) {
+    const checked = validateDepends(board, id, input.dependsOn)
+    if (checked.ok !== true) return checked
+  }
+  if (input.title !== undefined && String(input.title).trim() === '') return fail('missing-title', 'a task needs a title')
   const next = clone(board)
-  const target = findTask(next, id)
-  let applied = 0
-  for (const key of Object.keys(change)) {
-    if (OWNED_FIELDS.indexOf(key) >= 0) continue
-    if (key === 'note') continue
-    if (change[key] === undefined) continue
-    target[key] = change[key]
-    applied++
+  const target = findTaskIn(next.tasks, id)
+  const notes = []
+  if (input.title !== undefined) target.title = String(input.title).trim()
+  if (input.spec !== undefined) target.spec = String(input.spec)
+  if (input.acceptance !== undefined) target.acceptance = String(input.acceptance)
+  if (input.priority !== undefined && Number.isFinite(input.priority)) target.priority = Math.floor(input.priority)
+  if (input.maxAttempts !== undefined && Number.isFinite(input.maxAttempts)) {
+    target.maxAttempts = Math.min(10, Math.max(1, Math.floor(input.maxAttempts)))
   }
-  if (applied === 0 && change.note === undefined) {
-    return fail('no-change', 'nothing to change on ' + String(id) + ' (owned fields: ' + OWNED_FIELDS.join(', ') + ')')
+  if (input.requiresReview !== undefined) target.requiresReview = input.requiresReview === true
+  if (input.dependsOn !== undefined) {
+    target.dependsOn = normaliseList(input.dependsOn)
+    notes.push('dependencies: ' + (target.dependsOn.length === 0 ? 'none' : target.dependsOn.join(', ')))
   }
-  target.updatedAt = iso(now)
-  if (change.note !== undefined) {
-    target.history.push({ at: iso(now), by: by, from: target.status, to: target.status, note: String(change.note) })
+  if (input.writeFiles !== undefined) {
+    target.writeFiles = normaliseList(input.writeFiles)
+    notes.push('files: ' + (target.writeFiles.length === 0 ? 'none' : target.writeFiles.join(', ')))
   }
-  return { ok: true, board: next, task: target, events: [{ kind: 'updated', id: id, who: by }] }
-}
-
-/** Move a task along a legal edge, recording who moved it. */
-export function setTaskStatus(board, id, status, now, by, note) {
-  const task = findTask(board, id)
-  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
-  if (STATUSES.indexOf(status) < 0) {
-    return fail('unknown-status', 'unknown status ' + String(status) + '; known: ' + STATUSES.join(', '))
-  }
-  if (task.status === status) return fail('no-change', 'the task is already ' + status)
-  const allowed = TRANSITIONS[task.status] || []
-  if (allowed.indexOf(status) < 0) {
-    return fail(
-      'illegal-transition',
-      'cannot move ' + task.id + ' from ' + task.status + ' to ' + status + '; allowed: ' + (allowed.join(', ') || 'nothing'),
-    )
-  }
-  const next = clone(board)
-  const target = findTask(next, id)
-  const from = target.status
-  target.status = status
-  target.updatedAt = iso(now)
-  if (status === 'queued') {
-    // Appending to the queue must produce a DISTINCT order, otherwise a later
-    // swap is a no-op on two tasks that happen to share one.
-    const others = next.tasks.filter((entry) => entry.status === 'queued' && entry.id !== id)
-    target.order = others.reduce((highest, entry) => Math.max(highest, entry.order), -1) + 1
-  }
-  if (status === 'claimed' || status === 'in_progress') target.leaseExpired = false
-  // A lease is only live while somebody is on the task; the assignee stays as a
-  // record of who did the work.
-  if (status !== 'claimed' && status !== 'in_progress') target.leaseUntil = null
-  target.history.push({ at: iso(now), by: by, from: from, to: status, note: note === undefined ? '' : note })
-  return { ok: true, board: next, task: target, events: [{ kind: status === 'done' ? 'resolved' : 'moved', id: id, from: from, to: status, who: by }] }
-}
-
-/** draft → queued: the user's release, the second and last authorisation point. */
-export function publishTask(board, id, now, by) {
-  return setTaskStatus(board, id, 'queued', now, by, 'released')
-}
-
-/** queued → draft: withdraw from the queue before anyone claims it. */
-export function unpublishTask(board, id, now, by) {
-  return setTaskStatus(board, id, 'draft', now, by, 'withdrawn')
-}
-
-/**
- * Claim a task for an agent, with a lease.
- *
- * Claiming a task another agent holds with a live lease is refused; an expired
- * lease is taken over (and says so), because the previous holder is not coming
- * back — the same rule as a file lock, and for the same reason.
- */
-export function claimTask(board, id, agent, now) {
-  const task = findTask(board, id)
-  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
-  if (task.status === 'draft') return fail('not-released', task.id + ' is still a draft; the user has not released it')
-  if (task.status === 'done' || task.status === 'cancelled') return fail('closed', task.id + ' is ' + task.status)
-  if (task.assignee !== null && task.assignee.name !== agent.name) {
-    const held = task.leaseUntil !== null && Date.parse(task.leaseUntil) > now
-    if (held) {
-      return fail('held', task.id + ' is held by ' + task.assignee.name + ' until ' + task.leaseUntil)
-    }
-  }
-  const next = clone(board)
-  const target = findTask(next, id)
-  const takenOver = target.assignee !== null && target.assignee.name !== agent.name
-  target.assignee = { name: agent.name, session: agent.session === undefined ? null : agent.session }
-  target.leaseUntil = iso(now + TASK_LEASE_MS)
-  target.leaseExpired = false
-  target.updatedAt = iso(now)
-  if (target.status === 'queued') target.status = 'claimed'
-  target.history.push({
+  touch(target, now)
+  pushHistory(target, {
     at: iso(now),
-    by: agent.name,
+    by: by,
     from: target.status,
     to: target.status,
-    note: takenOver ? 'claimed (previous lease had expired)' : 'claimed',
+    note: input.note === undefined ? notes.join('; ') || 'updated' : String(input.note),
   })
+  return done(next, [{ kind: 'updated', id: id, who: by }], { task: target })
+}
+
+/** Remove a task. A task another live task depends on is refused, because
+ * deleting it would silently make the dependent never run. */
+export function deleteTask(board, id, now, by, options) {
+  const opts = options === undefined ? {} : options
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status === 'running') return fail('running', id + ' is running; cancel it first')
+  const referencedBy = board.tasks
+    .filter((other) => other.id !== id && other.dependsOn.indexOf(id) >= 0 && CLOSED_STATUSES.indexOf(other.status) < 0)
+    .map((other) => other.id)
+  if (referencedBy.length > 0 && opts.force !== true) {
+    return fail('referenced', id + ' is a dependency of ' + referencedBy.join(', ') + '; pass force to remove it from them', {
+      referencedBy: referencedBy,
+    })
+  }
+  const next = clone(board)
+  next.tasks = next.tasks.filter((other) => other.id !== id)
+  for (const other of next.tasks) {
+    if (other.dependsOn.indexOf(id) < 0) continue
+    other.dependsOn = other.dependsOn.filter((dep) => dep !== id)
+    touch(other, now)
+    pushHistory(other, { at: iso(now), by: by, note: 'dependency ' + id + ' deleted' })
+  }
+  return done(next, [{ kind: 'deleted', id: id, who: by }])
+}
+
+// ── dispatch state ─────────────────────────────────────────────────────────
+
+/** Start or pause dispatch, or change its settings. */
+export function setDispatch(board, patch, now, by) {
+  const source = patch === undefined || patch === null ? {} : patch
+  if (source.state !== undefined && source.state !== 'running' && source.state !== 'paused') {
+    return fail('invalid-dispatch', 'dispatch state must be running or paused')
+  }
+  const next = clone(board)
+  const merged = normaliseDispatch(Object.assign({}, next.dispatch, source))
+  const changedState = merged.state !== next.dispatch.state
+  next.dispatch = merged
+  if (changedState) {
+    next.dispatch.since = iso(now)
+    next.dispatch.by = by
+  }
+  next.updatedAt = iso(now)
+  return done(next, [{ kind: 'dispatch', state: merged.state, who: by }], { dispatch: merged })
+}
+
+// ── task lifecycle ─────────────────────────────────────────────────────────
+
+/** Dependencies that are missing or cancelled make the task BROKEN; a broken
+ * task is visible to the user instead of waiting forever. */
+export function dependencyInfo(board, task) {
+  const waitingOn = []
+  const brokenOn = []
+  for (const id of task.dependsOn) {
+    const dependency = findTask(board, id)
+    if (dependency === undefined || dependency.status === 'cancelled') {
+      brokenOn.push(id)
+      continue
+    }
+    if (dependency.status !== 'done') waitingOn.push(id)
+  }
   return {
-    ok: true,
-    board: next,
-    task: target,
-    events: [{ kind: takenOver ? 'lease' : 'claimed', id: id, who: agent.name }],
+    state: brokenOn.length > 0 ? 'broken' : waitingOn.length > 0 ? 'waiting' : 'ready',
+    waitingOn: waitingOn,
+    brokenOn: brokenOn,
   }
 }
 
-/** Extend a held lease; refusal when someone else holds it. */
-export function renewClaim(board, id, agent, now) {
+/** Pending tasks whose dependencies are all done, in dispatch order:
+ * priority desc, then creation time, then id. */
+export function readyTasks(board) {
+  return board.tasks
+    .filter((task) => task.status === 'pending' && dependencyInfo(board, task).state === 'ready')
+    .sort((left, right) => {
+      if (right.priority !== left.priority) return right.priority - left.priority
+      const created = Date.parse(left.createdAt) - Date.parse(right.createdAt)
+      if (created !== 0) return created
+      return left.id.localeCompare(right.id)
+    })
+}
+
+/** Claim a ready task for a worker. The claim is the mutex: only claimTask can
+ * produce status running, so a second dispatch of the same task fails on the
+ * status check. The attempt counter is incremented exactly here. */
+export function claimTask(board, id, worker, now) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
-  if (task.assignee === null || task.assignee.name !== agent.name) {
-    return fail('not-holder', 'no live claim by ' + agent.name + ' on ' + String(id))
+  if (task.status !== 'pending') return fail('not-pending', id + ' is ' + task.status + ', not pending')
+  const dependency = dependencyInfo(board, task)
+  if (dependency.state === 'broken') {
+    return fail('dependency-broken', id + ' waits on missing or cancelled tasks: ' + dependency.brokenOn.join(', '))
+  }
+  if (dependency.state !== 'ready') {
+    return fail('dependency-unmet', id + ' is still waiting on ' + dependency.waitingOn.join(', '))
   }
   const next = clone(board)
-  const target = findTask(next, id)
+  const target = findTaskIn(next.tasks, id)
+  target.status = 'running'
+  target.assignee = {
+    name: worker.name === undefined ? '@worker' : String(worker.name),
+    session: worker.session === undefined || worker.session === null ? null : String(worker.session),
+  }
   target.leaseUntil = iso(now + TASK_LEASE_MS)
-  target.leaseExpired = false
-  target.updatedAt = iso(now)
-  return { ok: true, board: next, task: target, events: [{ kind: 'lease', id: id, who: agent.name }] }
+  target.attempts = target.attempts + 1
+  target.dispatch = {
+    status: 'claimed',
+    at: iso(now),
+    target: target.assignee.name,
+    targetId: target.assignee.session,
+    via: worker.via === undefined ? null : String(worker.via),
+    error: null,
+    host: worker.host === undefined || worker.host === null ? null : String(worker.host),
+  }
+  touch(target, now)
+  pushHistory(target, {
+    at: iso(now),
+    by: 'scheduler',
+    from: 'pending',
+    to: 'running',
+    note: 'dispatched to ' + target.assignee.name + (target.attempts > 1 ? ' (attempt ' + String(target.attempts) + ')' : ''),
+  })
+  return done(next, [{ kind: 'claimed', id: id, who: target.assignee.name }], { task: target })
 }
 
-/** Give a task back to the queue. */
-export function releaseClaim(board, id, now, by) {
+/** Fill in the identity a spawn only learns after it happened. */
+export function attachWorker(board, id, worker, now) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
-  if (task.assignee === null) return fail('not-claimed', task.id + ' is not claimed')
   const next = clone(board)
-  const target = findTask(next, id)
-  const who = target.assignee.name
+  const target = findTaskIn(next.tasks, id)
+  if (target.assignee !== null) {
+    if (worker.session !== undefined && worker.session !== null) target.assignee.session = String(worker.session)
+    if (worker.name !== undefined && worker.name !== null) target.assignee.name = String(worker.name)
+  }
+  if (target.dispatch !== null) {
+    if (worker.session !== undefined && worker.session !== null) target.dispatch.targetId = String(worker.session)
+    if (worker.name !== undefined && worker.name !== null) target.dispatch.target = String(worker.name)
+    target.dispatch.status = 'spawned'
+  }
+  touch(target, now)
+  return done(next, [{ kind: 'attached', id: id, who: target.assignee === null ? null : target.assignee.name }])
+}
+
+/** Record the delivery result on the dispatch record. */
+export function recordDispatch(board, id, patch, now) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, patch)
+  touch(target, now)
+  return done(next, [{ kind: 'dispatched', id: id, status: patch.status }])
+}
+
+/** A dispatch that failed before or while delivering: drop the claim, count the
+ * attempt that was already spent, and block once the budget is gone. */
+export function failDispatch(board, id, error, now, maxAttempts) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  const limit = Number.isFinite(maxAttempts) ? maxAttempts : target.maxAttempts
+  const exhausted = target.attempts >= limit
+  target.status = exhausted ? 'blocked' : 'pending'
   target.assignee = null
   target.leaseUntil = null
-  target.leaseExpired = false
-  target.status = 'queued'
-  target.order = next.tasks.length
-  target.updatedAt = iso(now)
-  target.history.push({ at: iso(now), by: by, from: 'claimed', to: 'queued', note: 'released by ' + who })
-  return { ok: true, board: next, task: target, events: [{ kind: 'freed', id: id, who: who }] }
+  target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
+    status: exhausted ? 'exhausted' : 'failed',
+    error: error === null || error === undefined ? 'dispatch failed' : String(error),
+    at: iso(now),
+  })
+  touch(target, now)
+  pushHistory(target, {
+    at: iso(now),
+    by: 'scheduler',
+    from: 'running',
+    to: target.status,
+    note:
+      (exhausted ? 'dispatch gave up after ' + String(target.attempts) + ' attempts: ' : 'dispatch failed: ') +
+      String(target.dispatch.error),
+  })
+  return done(next, [{ kind: exhausted ? 'exhausted' : 'dispatch-failed', id: id }], { task: target })
 }
 
-/**
- * Flag expired task leases. It deliberately does NOT reassign.
- *
- * An expired file lock lets another writer in; an expired claim only makes the
- * task look stuck. Reassigning would take work away from an agent that may still
- * be at it, so the lease marks the task and leaves the decision to the user.
- */
-export function expireTaskLeases(board, now) {
-  const stale = board.tasks.filter(
-    (task) => task.assignee !== null && task.leaseUntil !== null && Date.parse(task.leaseUntil) <= now && !task.leaseExpired,
-  )
-  if (stale.length === 0) return { ok: true, board: board, events: [] }
+/** Running tasks whose lease expired come back to the pool; after the attempt
+ * budget they become blocked instead, so a crash loop is visible. */
+export function expireLeases(board, now, maxAttempts) {
   const next = clone(board)
-  for (const task of stale) {
-    const target = findTask(next, task.id)
-    target.leaseExpired = true
-    target.updatedAt = iso(now)
-    target.history.push({ at: iso(now), by: 'system', from: target.status, to: target.status, note: 'lease expired' })
+  const reaped = []
+  for (const target of next.tasks) {
+    if (target.status !== 'running') continue
+    if (target.leaseUntil !== null && Date.parse(target.leaseUntil) > now) continue
+    const limit = Number.isFinite(maxAttempts) ? maxAttempts : target.maxAttempts
+    const exhausted = target.attempts >= limit
+    const who = target.assignee === null ? 'unknown' : target.assignee.name
+    target.status = exhausted ? 'blocked' : 'pending'
+    target.assignee = null
+    target.leaseUntil = null
+    target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
+      status: exhausted ? 'exhausted' : 'lease-expired',
+      error: 'lease expired',
+      at: iso(now),
+    })
+    touch(target, now)
+    pushHistory(target, {
+      at: iso(now),
+      by: 'system',
+      from: 'running',
+      to: target.status,
+      note: 'lease expired for ' + who + (exhausted ? '; attempt budget spent' : '; returned to the pool'),
+    })
+    reaped.push(target.id)
   }
-  return {
-    ok: true,
-    board: next,
-    events: stale.map((task) => ({ kind: 'expired', id: task.id, who: task.assignee.name })),
-  }
+  if (reaped.length === 0) return done(board, [])
+  return done(next, reaped.map((id) => ({ kind: 'lease-expired', id: id })), { reaped: reaped })
 }
 
-/**
- * Queue order is user-owned: move a task up or down among the released ones.
- *
- * The queue is renumbered 0..n-1 on every move. `order` is a position, not a
- * timestamp, and normalising it is what keeps a swap meaningful when two tasks
- * were appended before anyone reordered anything.
- */
-export function reorderQueue(board, id, delta) {
+/** An agent reports the work finished. Without requiresReview this IS done, so
+ * dependents start immediately; with it, a human accepts first. */
+export function submitTask(board, id, input, now, by) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
-  const ordered = board.tasks.filter((entry) => entry.status === 'queued').sort((a, b) => a.order - b.order)
-  const at = ordered.map((entry) => entry.id).indexOf(id)
-  if (at < 0) return fail('not-queued', String(id) + ' is not in the queue')
-  const to = at + delta
-  if (to < 0 || to >= ordered.length) return fail('edge', 'the task is already at the ' + (delta < 0 ? 'top' : 'bottom'))
-  const moved = ordered.slice()
-  moved.splice(to, 0, moved.splice(at, 1)[0])
+  if (task.status !== 'running') return fail('not-running', id + ' is ' + task.status + ', not running')
   const next = clone(board)
-  moved.forEach((entry, index) => {
-    findTask(next, entry.id).order = index
+  const target = findTaskIn(next.tasks, id)
+  if (input !== undefined && input.evidence !== undefined) target.evidence = String(input.evidence)
+  target.status = target.requiresReview ? 'review' : 'done'
+  target.leaseUntil = null
+  target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
+    status: 'submitted',
+    at: iso(now),
   })
-  return { ok: true, board: next, queue: moved.map((entry) => entry.id), events: [{ kind: 'reordered', id: id, to: to }] }
+  touch(target, now)
+  pushHistory(target, {
+    at: iso(now),
+    by: by,
+    from: 'running',
+    to: target.status,
+    note:
+      input !== undefined && input.note !== undefined
+        ? String(input.note)
+        : target.requiresReview
+          ? 'submitted for review'
+          : 'completed',
+  })
+  return done(next, [{ kind: target.status === 'done' ? 'done' : 'submitted', id: id, who: by }], { task: target })
 }
 
-/** Delete a task. Refused while it is claimed, so work cannot vanish under an agent. */
-export function removeTask(board, id) {
+export function acceptTask(board, id, now, by, note) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
-  if (task.assignee !== null) return fail('claimed', task.id + ' is held by ' + task.assignee.name + '; release it first')
+  if (task.status !== 'review') return fail('not-review', id + ' is ' + task.status + ', not review')
   const next = clone(board)
-  next.tasks = next.tasks.filter((entry) => entry.id !== id)
-  return { ok: true, board: next, events: [{ kind: 'removed', id: id }] }
+  const target = findTaskIn(next.tasks, id)
+  target.status = 'done'
+  touch(target, now)
+  pushHistory(target, { at: iso(now), by: by, from: 'review', to: 'done', note: note === undefined ? 'accepted' : String(note) })
+  return done(next, [{ kind: 'accepted', id: id, who: by }], { task: target })
 }
 
-// ── file locks ─────────────────────────────────────────────────────────────
-//
-// A lock record: { holder, taskId, since, leaseUntil, queue: [{ who, taskId, since }] }
-// keyed by project-relative path. Locks live in host memory only: they are
-// written far too often to share the board's CAS, and a lock whose holder died
-// with the host should be gone anyway.
-
-/** Nothing locked. */
-export function emptyLocks() {
-  return {}
-}
-
-/** The lock on one path, or `undefined`. */
-export function lockAt(locks, path) {
-  return Object.prototype.hasOwnProperty.call(locks, path) ? locks[path] : undefined
-}
-
-/** Every path an agent holds, and every path it is queued for. */
-export function locksOfAgent(locks, agent) {
-  const held = []
-  const waiting = []
-  for (const path of Object.keys(locks)) {
-    const lock = locks[path]
-    if (lock.holder === agent) held.push(path)
-    if (lock.queue.some((entry) => entry.who === agent)) waiting.push(path)
-  }
-  return { held: held.sort(), waiting: waiting.sort() }
-}
-
-/** Paths with a live holder, contended ones first — the Files view's order. */
-export function lockedPaths(locks) {
-  return Object.keys(locks).sort((a, b) => {
-    const left = locks[a]
-    const right = locks[b]
-    if (left.queue.length !== right.queue.length) return right.queue.length - left.queue.length
-    return Date.parse(left.since) - Date.parse(right.since)
+export function rejectTask(board, id, now, by, note) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status !== 'review') return fail('not-review', id + ' is ' + task.status + ', not review')
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  target.status = 'pending'
+  target.attempts = 0
+  target.assignee = null
+  target.leaseUntil = null
+  target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
+    status: 'rejected',
+    error: note === undefined ? 'rejected by user' : String(note),
+    at: iso(now),
   })
+  touch(target, now)
+  pushHistory(target, { at: iso(now), by: by, from: 'review', to: 'pending', note: note === undefined ? 'rejected' : String(note) })
+  return done(next, [{ kind: 'rejected', id: id, who: by }], { task: target })
 }
 
-/** The reservation that has waited longest, which is who release will grant to. */
-export function nextWinner(locks, path) {
-  const lock = lockAt(locks, path)
-  if (lock === undefined || lock.queue.length === 0) return null
-  return lock.queue.slice().sort((a, b) => Date.parse(a.since) - Date.parse(b.since))[0]
+export function cancelTask(board, id, now, by, note) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status === 'cancelled') return fail('already-cancelled', id + ' is already cancelled')
+  if (task.status === 'done') return fail('done', id + ' is done; reopen it before cancelling')
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  target.status = 'cancelled'
+  target.assignee = null
+  target.leaseUntil = null
+  touch(target, now)
+  pushHistory(target, { at: iso(now), by: by, from: task.status, to: 'cancelled', note: note === undefined ? 'cancelled' : String(note) })
+  return done(next, [{ kind: 'cancelled', id: id, who: by }], { task: target })
 }
 
-/**
- * Ask for a file.
- *
- * Free → the agent holds it outright. Held by the agent itself → the lease is
- * renewed, because re-asking is not a new claim. Held by someone else → the agent
- * joins the queue, and re-asking keeps its ORIGINAL request time: otherwise
- * asking twice would cleanly wash away its own seniority.
- */
-export function acquireLock(locks, path, agent, taskId, now) {
-  const next = clone(locks)
-  const lock = lockAt(next, path)
-  if (lock === undefined) {
-    next[path] = { holder: agent, taskId: taskId === undefined ? null : taskId, since: iso(now), leaseUntil: iso(now + TASK_LEASE_MS), queue: [] }
-    return { ok: true, locks: next, granted: true, events: [{ kind: 'took', path: path, who: agent }] }
+export function reopenTask(board, id, now, by, note) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'blocked') {
+    return fail('not-closed', id + ' is ' + task.status + '; only done, cancelled or blocked tasks are reopened')
   }
-  if (lock.holder === agent) {
-    lock.leaseUntil = iso(now + TASK_LEASE_MS)
-    if (taskId !== undefined && taskId !== null) lock.taskId = taskId
-    return { ok: true, locks: next, granted: true, events: [{ kind: 'lease', path: path, who: agent }] }
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  target.status = 'pending'
+  target.assignee = null
+  target.leaseUntil = null
+  target.attempts = 0
+  target.dispatch = null
+  touch(target, now)
+  pushHistory(target, { at: iso(now), by: by, from: task.status, to: 'pending', note: note === undefined ? 'reopened' : String(note) })
+  return done(next, [{ kind: 'reopened', id: id, who: by }], { task: target })
+}
+
+export function blockTask(board, id, now, by, note) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status === 'done' || task.status === 'cancelled') return fail('closed', id + ' is ' + task.status)
+  if (task.status === 'blocked') return fail('already-blocked', id + ' is already blocked')
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  target.status = 'blocked'
+  target.assignee = null
+  target.leaseUntil = null
+  touch(target, now)
+  pushHistory(target, { at: iso(now), by: by, from: task.status, to: 'blocked', note: note === undefined ? 'blocked' : String(note) })
+  return done(next, [{ kind: 'blocked', id: id, who: by }], { task: target })
+}
+
+export function unblockTask(board, id, now, by, note) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status !== 'blocked') return fail('not-blocked', id + ' is ' + task.status + ', not blocked')
+  return reopenTask(board, id, now, by, note === undefined ? 'unblocked' : note)
+}
+
+export function retryTask(board, id, now, by, note) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status !== 'blocked' && task.status !== 'pending') {
+    return fail('not-retryable', id + ' is ' + task.status + '; only a blocked or pending task is retried')
   }
-  const existing = lock.queue.filter((entry) => entry.who === agent)[0]
-  if (existing !== undefined) {
-    if (taskId !== undefined && taskId !== null) existing.taskId = taskId
-    return {
-      ok: true,
-      locks: next,
-      granted: false,
-      position: lock.queue.slice().sort((a, b) => Date.parse(a.since) - Date.parse(b.since)).map((entry) => entry.who).indexOf(agent) + 1,
-      events: [{ kind: 'reserved', path: path, who: agent }],
-    }
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  target.status = 'pending'
+  target.assignee = null
+  target.leaseUntil = null
+  target.attempts = 0
+  target.dispatch = null
+  touch(target, now)
+  pushHistory(target, { at: iso(now), by: by, from: task.status, to: 'pending', note: note === undefined ? 'retry requested' : String(note) })
+  return done(next, [{ kind: 'retried', id: id, who: by }], { task: target })
+}
+
+/** Renew the lease of every running task owned by this identity. Any tool call
+ * by a worker is a heartbeat, which is why long tasks do not need a timer. */
+export function renewLeases(board, owner, now) {
+  const next = clone(board)
+  let renewed = 0
+  for (const target of next.tasks) {
+    if (target.status !== 'running' || target.assignee === null) continue
+    const sessionMatch = owner.session !== undefined && owner.session !== null && target.assignee.session === owner.session
+    const nameMatch = owner.name !== undefined && owner.name !== null && target.assignee.name === owner.name
+    if (!sessionMatch && !nameMatch) continue
+    target.leaseUntil = iso(now + TASK_LEASE_MS)
+    touch(target, now)
+    renewed += 1
   }
-  lock.queue.push({ who: agent, taskId: taskId === undefined ? null : taskId, since: iso(now) })
+  if (renewed === 0) return done(board, [])
+  return done(next, [], { renewed: renewed })
+}
+
+// ── views ──────────────────────────────────────────────────────────────────
+
+export function counts(board) {
+  const out = { total: board.tasks.length, pending: 0, ready: 0, running: 0, review: 0, done: 0, blocked: 0, cancelled: 0 }
+  const ready = new Set(readyTasks(board).map((task) => task.id))
+  for (const task of board.tasks) {
+    out[task.status] = (out[task.status] || 0) + 1
+    if (ready.has(task.id)) out.ready += 1
+  }
+  return out
+}
+
+export function summary(board, task, now) {
+  const dependency = dependencyInfo(board, task)
+  const at = typeof now === 'number' ? now : Date.now()
   return {
-    ok: true,
-    locks: next,
-    granted: false,
-    position: lock.queue.length,
-    events: [{ kind: 'reserved', path: path, who: agent }],
-    holder: lock.holder,
+    id: task.id,
+    title: task.title,
+    status: task.status,
+    priority: task.priority,
+    dependsOn: task.dependsOn,
+    dependency: dependency,
+    writeFiles: task.writeFiles,
+    assignee: task.assignee,
+    attempts: task.attempts,
+    maxAttempts: task.maxAttempts,
+    requiresReview: task.requiresReview,
+    leaseUntil: task.leaseUntil,
+    leaseExpired: task.leaseUntil !== null && Date.parse(task.leaseUntil) <= at,
+    dispatch: task.dispatch,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
   }
 }
 
-/** Reserve without taking: an explicit "I want this next". */
-export function reserveLock(locks, path, agent, taskId, now) {
-  const lock = lockAt(locks, path)
-  if (lock !== undefined && lock.holder === agent) {
-    return { ok: true, locks: clone(locks), granted: true, events: [{ kind: 'lease', path: path, who: agent }] }
-  }
-  return acquireLock(locks, path, agent, taskId, now)
-}
-
-/**
- * Give a file up.
- *
- * When anyone is queued, the longest-waiting reservation is granted IN THE SAME
- * COMMIT, so a path never exists in the intermediate state of being unheld with
- * waiters on it. Refuses when the agent does not hold the path, so a mistaken
- * release cannot silently free someone else's file.
- */
-export function releaseLock(locks, path, agent, now) {
-  const lock = lockAt(locks, path)
-  if (lock === undefined) return fail('not-held', path + ' is not held by anyone')
-  if (lock.holder !== agent) return fail('not-holder', path + ' is held by ' + lock.holder + ', not ' + agent)
-  const next = clone(locks)
-  const winner = nextWinner(next, path)
-  if (winner === null) {
-    delete next[path]
-    return { ok: true, locks: next, grantedTo: null, events: [{ kind: 'freed', path: path, who: agent }] }
-  }
-  next[path] = {
-    holder: winner.who,
-    taskId: winner.taskId,
-    since: iso(now),
-    leaseUntil: iso(now + TASK_LEASE_MS),
-    queue: next[path].queue.filter((entry) => entry.who !== winner.who),
-  }
-  return {
-    ok: true,
-    locks: next,
-    grantedTo: winner.who,
-    events: [
-      { kind: 'freed', path: path, who: agent },
-      { kind: 'granted', path: path, who: winner.who },
-    ],
-  }
-}
-
-/** The user's override: free a path regardless of who holds it. */
-export function forceReleaseLock(locks, path, now, by) {
-  if (lockAt(locks, path) === undefined) return fail('not-held', path + ' is not held by anyone')
-  const next = clone(locks)
-  const before = next[path]
-  const winner = nextWinner(next, path)
-  if (winner === null) {
-    delete next[path]
-    return { ok: true, locks: next, grantedTo: null, events: [{ kind: 'freed', path: path, who: before.holder, forced: by }] }
-  }
-  next[path] = {
-    holder: winner.who,
-    taskId: winner.taskId,
-    since: iso(now),
-    leaseUntil: iso(now + TASK_LEASE_MS),
-    queue: next[path].queue.filter((entry) => entry.who !== winner.who),
-  }
-  return {
-    ok: true,
-    locks: next,
-    grantedTo: winner.who,
-    events: [
-      { kind: 'freed', path: path, who: before.holder, forced: by },
-      { kind: 'granted', path: path, who: winner.who },
-    ],
-  }
-}
-
-/** Withdraw a reservation. */
-export function cancelReservation(locks, path, agent) {
-  const lock = lockAt(locks, path)
-  if (lock === undefined) return fail('not-held', path + ' is not held by anyone')
-  if (!lock.queue.some((entry) => entry.who === agent)) {
-    return fail('not-queued', agent + ' is not queued for ' + path)
-  }
-  const next = clone(locks)
-  next[path].queue = next[path].queue.filter((entry) => entry.who !== agent)
-  return { ok: true, locks: next, events: [{ kind: 'withdrawn', path: path, who: agent }] }
-}
-
-/** An agent's exit: drop everything it holds and every reservation it made. */
-export function releaseAllFor(locks, agent) {
-  const next = clone(locks)
-  const released = []
-  for (const path of Object.keys(next)) {
-    const lock = next[path]
-    lock.queue = lock.queue.filter((entry) => entry.who !== agent)
-    if (lock.holder !== agent) continue
-    released.push(path)
-    if (lock.queue.length === 0) {
-      delete next[path]
-      continue
-    }
-    const ordered = lock.queue.slice().sort((a, b) => Date.parse(a.since) - Date.parse(b.since))
-    const winner = ordered[0]
-    next[path] = {
-      holder: winner.who,
-      taskId: winner.taskId,
-      since: lock.since,
-      leaseUntil: lock.leaseUntil,
-      queue: ordered.slice(1),
-    }
-  }
-  return { ok: true, locks: next, released: released.sort(), events: released.map((path) => ({ kind: 'freed', path: path, who: agent })) }
-}
-
-/**
- * Expire leases. Returns the events a caller must act on: the holder is told it
- * lost exclusivity, because a lease that expires silently is how two writers end
- * up in one file.
- *
- * `alive` is the liveness oracle — a predicate over holder names. A holder that
- * is known dead is reaped immediately regardless of its lease, because the lease
- * only ever existed to bound the "alive but idle" case.
- */
-export function expireLocks(locks, now, alive) {
-  const next = clone(locks)
-  const expired = []
-  for (const path of Object.keys(next)) {
-    const lock = next[path]
-    const dead = typeof alive === 'function' && !alive(lock.holder)
-    const timedOut = lock.leaseUntil !== null && Date.parse(lock.leaseUntil) <= now
-    if (!dead && !timedOut) continue
-    expired.push({ path: path, who: lock.holder, reason: dead ? 'gone' : 'expired' })
-    const winner = nextWinner(next, path)
-    if (winner === null) {
-      delete next[path]
-      continue
-    }
-    next[path] = {
-      holder: winner.who,
-      taskId: winner.taskId,
-      since: iso(now),
-      leaseUntil: iso(now + TASK_LEASE_MS),
-      queue: next[path].queue.filter((entry) => entry.who !== winner.who),
-    }
-  }
-  return {
-    ok: true,
-    locks: next,
-    expired: expired,
-    events: expired.map((entry) => ({ kind: 'expired', path: entry.path, who: entry.who, reason: entry.reason })),
-  }
-}
-
-/**
- * The whole picture for one agent: what it holds, what it waits for, where it
- * stands in each queue, and who is writing what. This is what a waiting agent
- * needs in order to decide whether to wait or do something else.
- */
-export function agentView(locks, agent) {
-  const own = locksOfAgent(locks, agent)
-  return {
-    held: own.held,
-    waiting: own.waiting.map((path) => {
-      const lock = locks[path]
-      const ordered = lock.queue.slice().sort((a, b) => Date.parse(a.since) - Date.parse(b.since))
-      return {
-        path: path,
-        holder: lock.holder,
-        position: ordered.map((entry) => entry.who).indexOf(agent) + 1,
-        ahead: ordered.slice(0, ordered.map((entry) => entry.who).indexOf(agent)).map((entry) => entry.who),
-        since: lock.queue.filter((entry) => entry.who === agent)[0].since,
-      }
-    }),
-    writing: Object.keys(locks)
-      .filter((path) => locks[path].holder !== null && locks[path].holder !== undefined)
-      .sort()
-      .map((path) => ({ path: path, who: locks[path].holder, taskId: locks[path].taskId, leaseUntil: locks[path].leaseUntil })),
-  }
-}
-
-/** Paths an agent must not write to: held by someone else. */
-export function blockedPaths(locks, agent) {
-  return Object.keys(locks)
-    .filter((path) => locks[path].holder !== agent)
-    .sort()
+/** The whole picture for one task, with dependency states and history. */
+export function detail(board, task, now) {
+  return Object.assign(summary(board, task, now), {
+    spec: task.spec,
+    acceptance: task.acceptance,
+    evidence: task.evidence,
+    createdBy: task.createdBy,
+    history: task.history,
+  })
 }
