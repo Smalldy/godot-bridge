@@ -40,6 +40,78 @@ godot-bridge 走 harness 的**原始 `subprocess` 服务**——shell 执行器�
 
 所有工具原样返回游戏的 JSON 响应（规范化值按 `{type:'object', additionalProperties:true}` 校验），以文本渲染。工具调用默认排他（无 `isConcurrencySafe`），与单命令游戏服务器匹配。
 
+## 任务中心（第二个组件行）
+
+同一个包通过 `cordis.patch.yml` 挂载第二个 Loader 行：
+
+```yaml
+- insert:
+    - id: tool-godot-bridge
+      name: godot-bridge
+    - id: task-center
+      name: godot-bridge/task-center   # exports["./task-center"]
+```
+
+一个 bundle 对应插件页上的一张卡片，一个「行」对应一个组件——所以任务中心是本插件的一个组件，而不是要另外安装的独立包。浏览器半侧无法同样拆分（一个包只解析一个 `./client` bundle），所以 `client/client.js` 同时承载引擎路径表单和任务中心面板。
+
+一份动作注册表（`api.mjs`）是 `task_center` 工具与 `POST /godot-bridge/task-center/action` 共用的唯一词表；工具与面板是同一份状态（`state.mjs`）和同一套模型（`service.mjs`）的两个绑定，因此不会各自长出两套规则。
+
+### 任务板
+
+- **每个项目一个 JSON 文件**：`<项目>/.agents/tasks.json`，schema v2。它是运行态而不是源码：应当加入项目 `.gitignore`，插件卸载后仍可读。
+- 每次读取都会校验并规范化：未来版本会被拒绝而不是降级覆盖；重复或非法 id 会被拒绝；读到 v1 板子会自动迁移（旧状态坍缩成这五个，`blockedBy` 变成 `dependsOn`，旧 claim 被释放，因为持有它的进程已经不在了）。
+- 并发分三层：进程内按路径串行化、跨进程用 `replaceIfVersion`（FsVersion CAS），遇到 `FS_STALE_VERSION` 时重读并**重放变更函数**（不是重放上次结果），最多尝试三次。
+- 写入使用的沙箱策略以项目目录为根，因此落在会话 workspace 之外的任务板仍可写。
+
+### 状态
+
+存储的状态词表恰好五个，看板列由它们铺开：
+
+| 状态 | 含义 |
+| --- | --- |
+| `pending` | 未派发。就绪性由 `dependsOn` 推导、从不存储：**就绪**（前置全部完成）、**等待**（还有前置未完成）、**依赖已破**（前置缺失或被取消，需要人处理）。 |
+| `running` | 已被 worker claim，带 15 分钟租约。 |
+| `done` | 已完成。**没有 review/验收状态：`submit` 即完成**，下游任务立刻解除等待。 |
+| `blocked` | 需要人处理：手动阻塞、worker 死亡，或尝试预算耗尽。 |
+| `cancelled` | 已放弃。 |
+
+面板由这些状态渲染出五列：就绪、等待（二者都是 `pending`）、进行中、完成，以及同时容纳 `blocked` 与 `cancelled` 的「已关闭」列。
+
+### 依赖与派发
+
+- `B.dependsOn = [A]` 表示 A 必须 `done` 之后才派发 B。依赖图在写入时校验（不能依赖自己、不能依赖不存在或被取消的任务、不能成环）；删除一个仍被活跃任务依赖的任务会被拒绝，除非显式 force。
+- 派发是项目级状态：`start` / `pause` 持久化在 `board.dispatch`。一轮调度先回收上一宿主进程留下的 claim、再回收过期租约（即使派发处于暂停），然后在运行数少于 `maxConcurrent` 时把就绪任务交给 worker。
+- 就绪任务按 `priority` 降序、`createdAt` 升序、id 升序排列。
+- 每次派发都**先 claim 再向进程外发任何东西**：claim 就是互斥量，只有 `claimTask` 能产生 `running`。随后对空闲 teammate 调 `sendMessage`，没有空闲时才 `spawnTeammate` 新建。尝试计数恰好在 claim 时加一；尝试预算（默认 3）耗尽后任务转为 `blocked`，而不是无限重试。
+- 运行中的任务持有 **15 分钟租约**。assignee 的任意一次 `task_center` 调用都是心跳，租约过半时会续期；租约过期会把任务退回 `pending`（预算耗尽则转 `blocked`），宿主重启后下一次调度会回收其 claim。
+- WorkAgent 是**同一个解析出的 Team Lead 下的 Agent Teams teammate**。调度器优先复用空闲 teammate（`status: inactive`），没有空闲时才新建，且不超过 `maxWorkAgents`。
+- 每一轮调度串行执行（永不重叠），由 `start`、每次任务板写入、`agent/status` 事件以及 5 秒定时器触发。
+
+### 同意（consent）
+
+- **agent** 调 `start` 不会启动调度器：这次调用只写入 `dispatch.request` 并返回 `needs-consent`，请用户批准。
+- 面板把该申请显示为横幅。只有用户的 `approveStart` 才真正开始派发，并在同一次写入中清除申请；`rejectStart`（或 agent 的 `cancelStartRequest`）只清除申请、不启动任何东西。
+- `approveStart`、`rejectStart`、`settings` 仅限用户：工具的枚举不包含它们，API 对 agent 也会直接拒绝。`pause` 双方都可立即调用。
+
+### 设置
+
+- GUI 只暴露一个数字：**最大并发**（`maxConcurrent`，1–8，默认 3）。设置它会派生其余项——WorkAgent 上限变为并发 + 1（夹取到 1–12，默认 4），允许新建，重试预算设为 3——用户不必理解多个容量旋钮。
+- 高级 `settings` 动作（仅用户）仍可显式设置 `maxWorkAgents`、`allowSpawn` 与 `maxAttempts`；GUI 不暴露这些字段。
+
+### 文件锁
+
+- 任务用 `writeFiles` 声明要写的文件。路径规范化为项目相对 POSIX 路径、去重，并校验在项目根内——不能为一个项目外的路径造锁。
+- 锁只存宿主内存，以规范路径为键、由任务 id 持有。没有等待队列：文件冲突的任务在当轮被跳过、下一轮再试，冲突结果会点名持有者。
+- 派发前调度器**原子地获取该任务声明的全部路径，要么全拿要么全不拿**；选定 worker 后还会再检查一次。目录锁与其下所有路径冲突，按路径段判断（`scripts/core` 不与 `scripts/core2` 冲突）。
+- 任务到达 `done`、`blocked`、`cancelled` 时释放其锁，租约过期时也释放；派发失败与宿主重启回收同样会释放。agent 可为自己的运行任务 `lock` 追加文件；这些锁带同一个任务 id，随任务一起释放。
+- 锁租约同样是 15 分钟，与任务租约由同一次心跳续期。
+
+### 边界
+
+- **同一时刻只处理一个项目。** 共享状态只保留一个项目 hint；调度器跟随最近被写入的任务板，切换项目要走 `openProject`（会校验目录确实存在）。跨多个项目并行派发尚未实现。
+- **同一时刻只使用一个 Team/Lead。** 派发解析第一个活着的 Team Lead，只把工作交给该 Team 的 WorkAgent。没有按项目的 Team，也没有多 Team 扇出；缺少 Agent Teams 服务时任务保持 `pending` 并给出明确的 `no-lead` / `no-team-service` 原因，而不是让插件失败。
+- 任务板和面板不依赖 Team；只有真正的派发依赖它。
+
 ## 依赖契约与运行时解析
 
 要 import harness 包（`@deepseek-ai/dsh-tools`、`@deepseek-ai/schemastery` 等）的 DSH 插件，从不从 npm registry 解析这些包。launcher 会计算一份不可变的 **runtime resolution**——安装版自身的依赖闭包 + 已选 bundle——并把它装进 Node 的 ESM 与 CommonJS 解析器（DSH 0.2 是进程内实现，取代了 0.1.x 的物理 module-fallback 层；旧的 `.dsh-module-fallback` 目录只保留清理逻辑）。哪些模块能拿到这种路由，按「发起 import 的路径」决定：

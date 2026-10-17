@@ -40,6 +40,78 @@ godot-bridge spawns through the harness's **raw `subprocess` service** — the u
 
 All tools return the game's response JSON verbatim (canonical value validated against `{type:'object', additionalProperties:true}`), rendered as text. Tool calls are exclusive by default (no `isConcurrencySafe`), matching the single-command game server.
 
+## The task center (the second component row)
+
+The same package mounts a second Loader row through `cordis.patch.yml`:
+
+```yaml
+- insert:
+    - id: tool-godot-bridge
+      name: godot-bridge
+    - id: task-center
+      name: godot-bridge/task-center   # exports["./task-center"]
+```
+
+A bundle is one Plugins-page card and a row is one component, so the task center is a component of this plugin, not a separate package to install. The browser half cannot be split the same way — a package resolves exactly one `./client` bundle — so `client/client.js` carries both the engine-path form and the task-center panel.
+
+One action registry (`api.mjs`) is the single vocabulary behind the `task_center` tool and `POST /godot-bridge/task-center/action`; the tool and the panel are two bindings of the same state (`state.mjs`) and the same model (`service.mjs`), so they cannot drift into two rule sets.
+
+### Board
+
+- **One JSON file per project**: `<project>/.agents/tasks.json`, schema v2. It is working state, not source: it is expected to be gitignored and stays readable after the plugin is uninstalled.
+- Every read validates and normalises: a future version is refused rather than downgraded; duplicate or malformed ids are refused; a v1 board migrates on read (old statuses collapse into the five, `blockedBy` becomes `dependsOn`, a stale claim is released because the process that held it is gone).
+- Concurrency is three layers: an in-process promise chain per path, `replaceIfVersion` (FsVersion CAS) across processes, and on `FS_STALE_VERSION` a re-read that re-applies the mutation (not its previous result), up to three attempts.
+- Writes use a sandbox policy rooted at the project directory, so a board outside the session workspace is still writable.
+
+### Statuses
+
+The stored vocabulary is exactly five; the board columns are laid out from them:
+
+| status | meaning |
+| --- | --- |
+| `pending` | not dispatched. Readiness is derived from `dependsOn`, never stored: **ready** (all prerequisites done), **waiting** (a prerequisite is not done yet), **broken** (a prerequisite is missing or cancelled and needs a human). |
+| `running` | claimed by a worker, with a 15-minute lease. |
+| `done` | finished. **There is no review or acceptance state: `submit` is completion**, and dependents are released immediately. |
+| `blocked` | needs a human: a manual block, a dead worker, or an exhausted attempt budget. |
+| `cancelled` | abandoned. |
+
+The panel renders five columns from these: ready, waiting (both `pending`), running, done, and a closed column that holds `blocked` and `cancelled`.
+
+### Dependencies and dispatch
+
+- `B.dependsOn = [A]` means A must be `done` before B is dispatched. The graph is validated on write (no self-dependency, no unknown or cancelled prerequisite, no cycle); deleting a task another live task depends on is refused unless forced.
+- Dispatch is project-level: `start` / `pause` is persisted in `board.dispatch`. A pass reaps claims left by a previous host process, reaps expired leases (even while dispatch is paused), then hands ready tasks to workers while fewer than `maxConcurrent` tasks are running.
+- Ready tasks are ordered `priority` descending, then `createdAt` ascending, then id.
+- Every dispatch **claims the task before anything leaves the process**: the claim is the mutex and only `claimTask` produces `running`. It then calls `sendMessage` to an idle teammate, or `spawnTeammate` for a new one. The attempt counter increments exactly at claim; after the attempt budget (default 3) the task becomes `blocked` instead of retrying forever.
+- A running task holds a **15-minute lease**. Any `task_center` call by the assignee is a heartbeat and renews it when half spent; an expired lease returns the task to `pending` (or `blocked` once the budget is gone), and a host restart reaps its claims on the next pass.
+- WorkAgents are Agent Teams **teammates under the one resolved Team Lead**. The scheduler reuses an idle teammate (`status: inactive`) first and only spawns when none is idle, within `maxWorkAgents`.
+- Passes are serialised (never overlapping) and are triggered by `start`, every board write, `agent/status` events, and a five-second timer.
+
+### Consent
+
+- When an **agent** calls `start`, it does not start the scheduler: the call writes `dispatch.request` and returns `needs-consent`, asking the user to approve it.
+- The panel shows the request as a banner. Only the user's `approveStart` runs dispatch and clears the request in the same write; `rejectStart` (or the agent's `cancelStartRequest`) clears the request without starting anything.
+- `approveStart`, `rejectStart` and `settings` are user-only: the tool enum omits them and the API refuses them for an agent even if called directly. `pause` is immediate for either side.
+
+### Settings
+
+- The GUI exposes one number: **maximum concurrency** (`maxConcurrent`, 1–8; default 3). Setting it derives the rest — the WorkAgent cap becomes concurrency + 1 (clamped to 1–12; default 4), spawning is enabled, and the retry budget is set to 3 — so the user does not have to reason about several capacity knobs.
+- The advanced `settings` action (user-only) can still set `maxWorkAgents`, `allowSpawn` and `maxAttempts` explicitly; the GUI does not expose those fields.
+
+### File locks
+
+- A task declares what it will write with `writeFiles`. Paths canonicalise to project-relative POSIX paths, are de-duplicated, and are validated against the project root, so a lock cannot be conjured for a path outside the project.
+- Locks live in host memory, keyed by canonical path and owned by the task id. There is no wait queue: a task whose files conflict is skipped on that pass and retried on the next, and the conflict names the holder.
+- Before dispatch the scheduler acquires **all** of the task's declared paths or none of them (atomic), re-checking after it has chosen a worker. A directory lock conflicts with every path under it, segment-aware (`scripts/core` does not conflict with `scripts/core2`).
+- A task's locks are released when it reaches `done`, `blocked` or `cancelled`, and when its lease expires; a failed dispatch and a host-restart reap release them too. An agent may `lock` extra files for its running task; those carry the same task id and are released with it.
+- Lock leases are also 15 minutes, renewed by the same heartbeat that renews the task.
+
+### Boundaries
+
+- **One project at a time.** The shared state keeps a single project hint; the scheduler follows the board that was last touched, and switching projects goes through `openProject` (which verifies the directory). Parallel dispatch across several projects is not implemented.
+- **One Team / Lead at a time.** Dispatch resolves the first live Team Lead and hands work only to that team's WorkAgents. There is no per-project team and no multi-team fan-out; without the Agent Teams services, tasks stay `pending` with an explicit `no-lead` / `no-team-service` reason instead of failing the plugin.
+- The board and the panel do not depend on a Team; only actual dispatch does.
+
 ## Dependency contract and runtime resolution
 
 A DSH plugin that imports harness packages (`@deepseek-ai/dsh-tools`, `@deepseek-ai/schemastery`, …) never resolves them from the npm registry. The launcher computes one immutable **runtime resolution** — the dependency closure of the installation plus the selected bundles — and installs it into Node's ESM and CommonJS resolvers (DSH 0.2 does this in-process, replacing the 0.1.x physical module-fallback layer; the old `.dsh-module-fallback` directories are only cleaned up). Which modules get that routing is decided per importing path:
