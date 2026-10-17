@@ -121,6 +121,32 @@ export function createApi(ctx, options) {
     if (changed) state.memory.locks = next
   }
 
+  /**
+   * Why a pending task has not been dispatched yet. This is a REPORT: it mirrors
+   * the checks the scheduler makes (dispatch paused, dependency not ready, a
+   * file another owner holds, a full concurrency budget). Dispatch never reads
+   * it back, so it cannot change what runs — only explain what did not.
+   */
+  function waitingReasonOf(board, task) {
+    if (task.status !== 'pending') return null
+    const dispatch = board.dispatch === undefined || board.dispatch === null ? {} : board.dispatch
+    if (dispatch.state !== 'running') return 'dispatch-paused'
+    const dependency = model.dependencyInfo(board, task)
+    if (dependency.state === 'broken') return 'dependency-broken'
+    if (dependency.state === 'waiting') return 'dependency'
+    const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
+    if (files.length > 0 && locks.conflictsFor(state.memory.locks, files, 'task:' + task.id).length > 0) return 'file-lock'
+    const running = board.tasks.filter((other) => other.status === 'running').length
+    const limit = Number.isFinite(dispatch.maxConcurrent) ? dispatch.maxConcurrent : 1
+    if (running >= limit) return 'concurrency'
+    return null
+  }
+
+  /** model.detail plus the one report field this API adds on top of it. */
+  function detailOf(board, task, now) {
+    return Object.assign(model.detail(board, task, now), { waitingReason: waitingReasonOf(board, task) })
+  }
+
   async function snapshot(projectPath) {
     projectPath = resolve(projectPath)
     const read = await readBoardOrFail(projectPath)
@@ -135,7 +161,7 @@ export function createApi(ctx, options) {
         const rank = STATUS_RANK[left.status] - STATUS_RANK[right.status]
         return rank !== 0 ? rank : left.id.localeCompare(right.id)
       })
-      .map((task) => model.detail(board, task, now))
+      .map((task) => detailOf(board, task, now))
     return ok({
       project: projectPath,
       version: board.version,
@@ -209,7 +235,7 @@ export function createApi(ctx, options) {
     if (result.ok !== true) return result
     const task = model.findTask(result.board, id)
     return ok({
-      task: task === undefined ? null : model.detail(result.board, task, clock()),
+      task: task === undefined ? null : detailOf(result.board, task, clock()),
       events: result.events,
     })
   }
@@ -286,7 +312,7 @@ export function createApi(ctx, options) {
       const task = model.findTask(read.board, String(source.id === undefined ? '' : source.id))
       if (task === undefined) return failure('unknown-task', 'no task with id ' + String(source.id))
       return ok({
-        task: model.detail(read.board, task, now),
+        task: detailOf(read.board, task, now),
         locks: locks.view(state.memory.locks, read.board, now).filter((lock) => lock.taskId === task.id),
       })
     }
@@ -301,7 +327,7 @@ export function createApi(ctx, options) {
       if (result.ok !== true) return result
       const created = result.events.length === 0 ? null : result.events[0].id
       const task = created === null ? null : model.findTask(result.board, created)
-      return ok({ task: task === null ? null : model.detail(result.board, task, clock()), events: result.events })
+      return ok({ task: task === null ? null : detailOf(result.board, task, clock()), events: result.events })
     }
     if (action === 'update') {
       const id = String(source.id === undefined ? '' : source.id)

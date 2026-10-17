@@ -250,6 +250,11 @@ window.__ModuleLoader__.load({
 				noScheduler: '调度器不可用',
 				serverTime: '服务端时间',
 				waitingLocks: '文件锁冲突',
+				waitDispatchPaused: '派发已暂停',
+				waitDependency: '等待依赖',
+				waitDependencyBroken: '依赖已破',
+				waitFileLock: '等待文件锁',
+				waitConcurrency: '并发已满',
 				loadFailed: '读取失败',
 			},
 			en: {
@@ -362,6 +367,11 @@ window.__ModuleLoader__.load({
 				noScheduler: 'scheduler unavailable',
 				serverTime: 'server time',
 				waitingLocks: 'file lock conflict',
+				waitDispatchPaused: 'dispatch paused',
+				waitDependency: 'waiting on dependencies',
+				waitDependencyBroken: 'dependency broken',
+				waitFileLock: 'waiting for file lock',
+				waitConcurrency: 'concurrency full',
 				loadFailed: 'load failed',
 			},
 		}
@@ -691,6 +701,28 @@ window.__ModuleLoader__.load({
 				return 'waiting'
 			}
 
+			/**
+			 * The Host's report on why a pending task has not been dispatched. It
+			 * is informational only: the panel never decides readiness itself, it
+			 * renders the reason the Host computed.
+			 */
+			const WAITING_REASON = {
+				'dispatch-paused': { key: 'waitDispatchPaused', tone: 'waiting' },
+				dependency: { key: 'waitDependency', tone: 'waiting' },
+				'dependency-broken': { key: 'waitDependencyBroken', tone: 'broken' },
+				'file-lock': { key: 'waitFileLock', tone: 'waiting' },
+				concurrency: { key: 'waitConcurrency', tone: 'waiting' },
+			}
+
+			/** The waiting-reason chip, or null when the Host reported none. */
+			function waitingChip(task, t, key) {
+				const reason = task.waitingReason
+				if (typeof reason !== 'string') return null
+				const entry = WAITING_REASON[reason]
+				if (entry === undefined) return null
+				return h('span', { key: key, className: 'gbt-chip', 'data-tone': entry.tone, title: t(entry.key) }, '⏳ ' + t(entry.key))
+			}
+
 			function TaskCard(props) {
 				const task = props.task
 				const t = props.t
@@ -711,6 +743,8 @@ window.__ModuleLoader__.load({
 				if (lease !== null) meta.push(h('span', { key: 'lease', className: 'gbt-chip', 'data-tone': lease.warn ? 'blocked' : 'waiting' }, lease.text))
 				if (files.length > 0) meta.push(h('span', { key: 'files', className: 'gbt-chip' }, '🔒 ' + String(files.length)))
 				if (dispatchError !== null && task.status !== 'running') meta.push(h('span', { key: 'error', className: 'gbt-chip', 'data-tone': 'blocked', title: dispatchError }, '⚠ ' + t('dispatchError')))
+				const waiting = waitingChip(task, t, 'waiting')
+				if (waiting !== null) meta.push(waiting)
 				if (meta.length > 0) children.push(h('div', { key: 'meta', className: 'gbt-cardmeta' }, meta))
 				if (deps.length > 0) {
 					children.push(
@@ -1183,7 +1217,7 @@ window.__ModuleLoader__.load({
 						h(
 							'div',
 							null,
-							h('div', { className: 'gbt-cardmeta' }, h('span', { className: 'gbt-id' }, task.id), h('span', { className: 'gbt-pill', 'data-status': task.status }, t(tcStatusKey(task.status)))),
+							h('div', { className: 'gbt-cardmeta' }, h('span', { className: 'gbt-id' }, task.id), h('span', { className: 'gbt-pill', 'data-status': task.status }, t(tcStatusKey(task.status))), waitingChip(task, t, 'waiting')),
 							h('h2', { className: 'gbt-drawertitle' }, task.title),
 						),
 						h('button', { type: 'button', className: 'gbt-iconbtn', onClick: props.onClose, 'aria-label': t('close') }, '×'),

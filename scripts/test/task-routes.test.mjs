@@ -3,7 +3,7 @@
 
 import { join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH } from '../../plugin/task-center/routes.mjs'
-import { createRig, PROJECT } from './support/fixtures.mjs'
+import { createRig, PROJECT, seedBoard } from './support/fixtures.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -64,6 +64,8 @@ async function call(surface, url, options) {
 }
 const post = (body, headers) =>
   call(surface, ACTION_PATH, { method: 'POST', body: body, headers: Object.assign({ 'content-type': 'application/json' }, headers) })
+const postTo = (target, body) =>
+  call(target, ACTION_PATH, { method: 'POST', body: body, headers: { 'content-type': 'application/json' } })
 
 const rig = createRig({ allowSpawn: false })
 const surface = install(rig)
@@ -167,6 +169,100 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
   check('the lock is visible in the snapshot', payload.snapshot.locks.some((lock) => lock.path === 'scripts/a.gd'))
   const forced = await post({ action: 'forceUnlock', paths: ['scripts/a.gd'] })
   check('the route can force a lock away', forced.json().ok === true && forced.json().released.join(',') === 'scripts/a.gd', forced.text)
+}
+
+// waiting reasons: why a pending task has not been dispatched (report only)
+{
+  const stamp = new Date().toISOString()
+  const lease = new Date(Date.now() + 600000).toISOString()
+  const shared = {
+    priority: 0,
+    dependsOn: [],
+    writeFiles: [],
+    assignee: null,
+    attempts: 0,
+    maxAttempts: 3,
+    evidence: '',
+    dispatch: null,
+    leaseUntil: null,
+    createdBy: '@test',
+    createdAt: stamp,
+    updatedAt: stamp,
+    history: [],
+  }
+  const task = (id, title, status, extra) => Object.assign({ id: id, title: title, status: status }, shared, extra)
+  const waitingRig = createRig({
+    allowSpawn: false,
+    teamOptions: { roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] },
+  })
+  // maxConcurrent is 1 and one task is already running, so T-3 sits behind a
+  // full budget while T-2 sits behind T-1's file lock.
+  const board = {
+    version: 2,
+    seq: 7,
+    dispatch: { state: 'running', maxConcurrent: 1, allowSpawn: false, maxWorkAgents: 1, maxAttempts: 3, request: null },
+    updatedAt: stamp,
+    tasks: [
+      task('T-1', 'Running holder', 'running', {
+        writeFiles: ['scripts/shared.gd'],
+        assignee: { name: 'owner', session: 'session-owner' },
+        attempts: 1,
+        leaseUntil: lease,
+        dispatch: {
+          status: 'claimed',
+          at: stamp,
+          target: 'owner',
+          targetId: 'session-owner',
+          via: 'spawn',
+          error: null,
+          host: waitingRig.scheduler.boot,
+        },
+      }),
+      task('T-2', 'Blocked by a held file', 'pending', { writeFiles: ['scripts/shared.gd'] }),
+      task('T-3', 'Ready but the budget is full', 'pending'),
+      task('T-4', 'Missing dependency', 'pending', { dependsOn: ['T-99'] }),
+      task('T-5', 'Waiting on a running task', 'pending', { dependsOn: ['T-1'] }),
+      task('T-6', 'Already done', 'done'),
+    ],
+  }
+  seedBoard(waitingRig.fs, waitingRig.project, JSON.stringify(board))
+  const waitingSurface = install(waitingRig)
+  const projectUrl = STATE_PATH + '?project=' + encodeURIComponent(PROJECT)
+  const loaded = await call(waitingSurface, projectUrl, {})
+  check('a seeded board is read back', loaded.json().ok === true && loaded.json().tasks.length === 6, loaded.text)
+  const held = await postTo(waitingSurface, { action: 'lock', paths: ['scripts/shared.gd'], taskId: 'T-1' })
+  check('one task can hold the file another task declares', held.json().ok === true && held.json().granted === true, held.text)
+  const runningBoard = await postTo(waitingSurface, { action: 'board' })
+  const reasons = new Map(runningBoard.json().tasks.map((entry) => [entry.id, entry.waitingReason]))
+  check('a file lock another task holds reports file-lock', reasons.get('T-2') === 'file-lock', String(reasons.get('T-2')))
+  check('a full concurrency budget reports concurrency', reasons.get('T-3') === 'concurrency', String(reasons.get('T-3')))
+  check('a missing dependency reports dependency-broken', reasons.get('T-4') === 'dependency-broken', String(reasons.get('T-4')))
+  check('an unfinished dependency reports dependency', reasons.get('T-5') === 'dependency', String(reasons.get('T-5')))
+  check(
+    'a task that is not pending has no waiting reason',
+    reasons.get('T-1') === null && reasons.get('T-6') === null,
+    JSON.stringify([reasons.get('T-1'), reasons.get('T-6')]),
+  )
+  const detail = await postTo(waitingSurface, { action: 'get', id: 'T-2' })
+  check('the detail action carries the same reason', detail.json().task.waitingReason === 'file-lock', detail.text)
+  const roomy = await postTo(waitingSurface, { action: 'settings', maxConcurrent: 2 })
+  check('the concurrency budget can be raised', roomy.json().ok === true && roomy.json().dispatch.maxConcurrent === 2, roomy.text)
+  const roomyBoard = await postTo(waitingSurface, { action: 'board' })
+  const roomyReasons = new Map(roomyBoard.json().tasks.map((entry) => [entry.id, entry.waitingReason]))
+  check('a ready task with a free slot has no waiting reason', roomyReasons.get('T-3') === null, String(roomyReasons.get('T-3')))
+  check('a file lock still outranks a free slot', roomyReasons.get('T-2') === 'file-lock', String(roomyReasons.get('T-2')))
+  const paused = await postTo(waitingSurface, { action: 'pause' })
+  check('dispatch can be paused over this board', paused.json().ok === true && paused.json().dispatch.state === 'paused', paused.text)
+  const pausedBoard = await postTo(waitingSurface, { action: 'board' })
+  const pausedReasons = new Map(pausedBoard.json().tasks.map((entry) => [entry.id, entry.waitingReason]))
+  check(
+    'a paused dispatch outranks every other reason',
+    pausedReasons.get('T-2') === 'dispatch-paused' && pausedReasons.get('T-3') === 'dispatch-paused',
+    JSON.stringify([pausedReasons.get('T-2'), pausedReasons.get('T-3')]),
+  )
+  check('pausing adds no reason to a running task', pausedReasons.get('T-1') === null, String(pausedReasons.get('T-1')))
+  waitingSurface.dispose()
+  waitingRig.scheduler.dispose()
 }
 
 surface.dispose()

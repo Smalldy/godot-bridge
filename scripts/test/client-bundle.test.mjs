@@ -146,6 +146,7 @@ const TASKS = [
     attempts: 1,
     maxAttempts: 3,
     leaseUntil: new Date(now + 600000).toISOString(),
+    waitingReason: null,
     dispatch: { status: 'sent', target: 'fixer', error: null },
     createdAt: new Date(now - 60000).toISOString(),
     updatedAt: new Date(now - 1000).toISOString(),
@@ -166,6 +167,7 @@ const TASKS = [
     attempts: 0,
     maxAttempts: 3,
     leaseUntil: null,
+    waitingReason: 'dependency',
     dispatch: null,
     createdAt: new Date(now - 30000).toISOString(),
     updatedAt: new Date(now - 30000).toISOString(),
@@ -238,6 +240,8 @@ check('the waiting task is rendered', textOf(tree).indexOf('Enemy AI') >= 0)
 check('the board has five columns', findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length === 5, String(findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length))
 check('both cards are rendered', findAll(tree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card').length === 2)
 check('the dependency chip is rendered', textOf(tree).indexOf('T-1') >= 0)
+check('a pending task renders the reason it is waiting', textOf(tree).indexOf('等待依赖') >= 0, textOf(tree))
+check('a running task renders no waiting reason', textOf(tree).indexOf('派发已暂停') < 0 && textOf(tree).indexOf('并发已满') < 0, textOf(tree))
 
 const startButton = findButton(tree, '开始派发')
 check('a start button is offered while paused', startButton !== undefined)
