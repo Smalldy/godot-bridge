@@ -381,7 +381,10 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt) {
   const branch = 'task/' + String(task.id) + '-' + String(attempt)
   const settings = dispatch === undefined || dispatch === null ? null : dispatch.worktree
   const root = String(settings === null || settings === undefined || settings.root === undefined || settings.root === null ? '' : settings.root).trim()
-  const path = join(projectPath, root === '' ? '.worktrees' : root, String(task.id))
+  // The checkout directory carries the attempt number: a failed attempt keeps
+  // its worktree for inspection, so a retry must not try to re-add the same
+  // path. The branch already carries the attempt, so the two stay in step.
+  const path = join(projectPath, root === '' ? '.worktrees' : root, String(task.id) + '-' + String(attempt))
   const added = await git.worktreeAdd(projectPath, { path: path, branch: branch, base: base.hash })
   if (added.ok !== true) {
     // A refused add can still leave a directory or a registered worktree; force

@@ -311,7 +311,7 @@ function createWorktreeRig(options) {
   check('dispatch starts when the project can host a worktree', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started))
   await rig.settle()
   const branch = 'task/' + task.id + '-1'
-  const path = join(PROJECT, '.worktrees', task.id)
+  const path = join(PROJECT, '.worktrees', task.id + '-1')
   let snap = await snapshot(rig)
   let claimed = byId(snap, task.id)
   check('the task runs in its own worktree', claimed.status === 'running' && claimed.worktree === path, JSON.stringify({ status: claimed.status, worktree: claimed.worktree }))
@@ -407,6 +407,11 @@ function createWorktreeRig(options) {
   check('dispatch pauses instead of retrying every tick', snap.dispatch.state === 'paused', JSON.stringify(snap.dispatch))
   check('the file locks taken for the attempt are released', snap.locks.length === 0, JSON.stringify(snap.locks))
   check('the scheduler reports the refusal', String(rig.scheduler.status().lastError).indexOf('worktree refused') >= 0, String(rig.scheduler.status().lastError))
+  const addCall = git.calls.filter((call) => call.name === 'worktreeAdd')[0]
+  const removeCall = git.calls.filter((call) => call.name === 'worktreeRemove')[0]
+  const attemptedPath = join(PROJECT, '.worktrees', task.id + '-1')
+  check('the refused add targets the attempt-specific directory', addCall !== undefined && addCall.detail.path === attemptedPath, JSON.stringify(addCall && addCall.detail))
+  check('and the half-worktree cleanup targets the same directory', removeCall !== undefined && removeCall.detail === attemptedPath, JSON.stringify(removeCall && removeCall.detail))
   const adds = git.calls.filter((call) => call.name === 'worktreeAdd').length
   await rig.settle()
   await rig.settle()
@@ -418,8 +423,10 @@ function createWorktreeRig(options) {
 {
   const git = createFakeGit()
   let addFails = true
+  const attempted = []
   const realAdd = git.worktreeAdd
   git.worktreeAdd = function (root, input) {
+    attempted.push(input)
     if (addFails) return Promise.resolve({ ok: false, code: 'worktree-add-failed', message: 'boom' })
     return realAdd.call(git, root, input)
   }
@@ -434,8 +441,54 @@ function createWorktreeRig(options) {
   check('start works again once the environment is fixed', restarted.ok === true, JSON.stringify(restarted))
   await rig.settle()
   snap = await snapshot(rig)
-  check('and the task now runs in a worktree', byId(snap, task.id).status === 'running' && typeof byId(snap, task.id).worktree === 'string', JSON.stringify(byId(snap, task.id).worktree))
-  check('the failure reason is cleared on the new attempt', byId(snap, task.id).worktreeError === null, String(byId(snap, task.id).worktreeError))
+  const retried = byId(snap, task.id)
+  const firstPath = join(PROJECT, '.worktrees', task.id + '-1')
+  check('the retry runs in a worktree', retried.status === 'running' && typeof retried.worktree === 'string', JSON.stringify(retried.worktree))
+  check(
+    'a pre-claim refusal does not consume an attempt, so the retry reuses attempt 1',
+    attempted.length === 2 && attempted[0].path === firstPath && attempted[1].path === firstPath && retried.branch === 'task/' + task.id + '-1',
+    JSON.stringify(attempted.map((entry) => entry.path)),
+  )
+  check('and records the attempt-1 directory', retried.worktree === firstPath, String(retried.worktree))
+  check('the failure reason is cleared on the new attempt', retried.worktreeError === null, String(retried.worktreeError))
+  rig.scheduler.dispose()
+}
+
+// a retry after a CLAIMED attempt gets its own directory instead of colliding
+{
+  const git = createFakeGit()
+  const rig = createRig({ allowSpawn: false, git: git })
+  const task = await createTask(rig, { title: 'retried after delivery' })
+  const firstPath = join(PROJECT, '.worktrees', task.id + '-1')
+  // A claimed attempt 1 that failed delivery: the board keeps its worktree and
+  // its attempt count — exactly the state that used to collide on retry.
+  await patchTask(rig, task.id, (entry) => {
+    entry.attempts = 1
+    entry.worktree = firstPath
+    entry.branch = 'task/' + task.id + '-1'
+  })
+  await rig.action('start')
+  const snap = await snapshot(rig)
+  const retried = byId(snap, task.id)
+  const secondPath = join(PROJECT, '.worktrees', task.id + '-2')
+  const adds = git.calls.filter((call) => call.name === 'worktreeAdd').map((call) => call.detail.path)
+  check('the retry is attempt 2', retried.attempts === 2, String(retried.attempts))
+  check(
+    'the retry runs in the attempt-2 worktree',
+    retried.status === 'running' && retried.worktree === secondPath,
+    JSON.stringify({ status: retried.status, worktree: retried.worktree }),
+  )
+  check('with the matching attempt-2 branch', retried.branch === 'task/' + task.id + '-2', String(retried.branch))
+  check(
+    'attempt 1 and attempt 2 use different worktree directories',
+    adds.length === 1 && adds[0] === secondPath && firstPath !== secondPath,
+    JSON.stringify({ first: firstPath, adds: adds }),
+  )
+  check(
+    'the old attempt-1 worktree is left untouched',
+    git.calls.filter((call) => call.name === 'worktreeRemove').length === 0,
+    JSON.stringify(git.calls.filter((call) => call.name === 'worktreeRemove')),
+  )
   rig.scheduler.dispose()
 }
 
@@ -490,7 +543,7 @@ function createWorktreeRig(options) {
   check('start goes through the subprocess git runner', started.ok === true, JSON.stringify(started))
   await rig.settle()
   const claimed = byId(await snapshot(rig), task.id)
-  const path = join(PROJECT, '.worktrees', task.id)
+  const path = join(PROJECT, '.worktrees', task.id + '-1')
   check('the subprocess service is the git runner', claimed.worktree === path, String(claimed.worktree))
   check(
     'every git call is one unconfined spawn in the project',
@@ -527,7 +580,11 @@ function createWorktreeRig(options) {
   await rig.settle()
   const snap = await snapshot(rig)
   const claimed = byId(snap, task.id)
-  check('the task still runs in a worktree', claimed.status === 'running' && claimed.worktree === join(PROJECT, '.worktrees', task.id), String(claimed.worktree))
+  check(
+    'the task still runs in an attempt-specific worktree',
+    claimed.status === 'running' && claimed.worktree === join(PROJECT, '.worktrees', task.id + '-1'),
+    String(claimed.worktree),
+  )
   check('the dispatch record no longer carries an enabled flag', snap.dispatch.worktree.enabled === undefined && snap.dispatch.worktree.root === '.worktrees', JSON.stringify(snap.dispatch.worktree))
   rig.scheduler.dispose()
 }
