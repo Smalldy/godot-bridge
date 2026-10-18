@@ -502,7 +502,6 @@ const HOST = {
 let loads = 0
 let postGate = null
 let postReply = null
-let loadGate = null
 const posts = []
 globalThis.fetch = async function (url, options) {
   if (options !== undefined && options.method === 'POST') {
@@ -516,7 +515,6 @@ globalThis.fetch = async function (url, options) {
     return { json: async () => ({ ok: true, snapshot: HOST }) }
   }
   loads += 1
-  if (loadGate !== null) await loadGate
   return { json: async () => HOST }
 }
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -834,6 +832,7 @@ await flush()
   check('a system event is labelled system, not an agent', systemRow !== undefined && textOf(actorCell(systemRow)) === '系统' && textOf(systemRow).indexOf('reviewer-1') < 0, systemRow && textOf(systemRow))
   check('an agent event carries the agent name', agentRow !== undefined && textOf(actorCell(agentRow)) === 'reviewer-1', agentRow && textOf(agentRow))
   check('a host event is labelled host', hostRow !== undefined && textOf(actorCell(hostRow)) === '宿主', hostRow && textOf(hostRow))
+  check('the actor column has a neutral header, not an agent header', findAll(statusTree, (node) => node.type === 'th' && textOf(node) === '主体').length === 1 && findAll(statusTree, (node) => node.type === 'th' && textOf(node) === '代理').length === 0, statusText)
   check('the activity limit and count are visible', statusText.indexOf('上限') >= 0 && statusText.indexOf('100') >= 0 && statusText.indexOf('条数') >= 0, statusText)
   const activityAtCell = findAll(activityRows[0], (node) => node.props && node.props['data-col'] === 'activity-at')[0]
   check('activity times are rendered', activityAtCell !== undefined && textOf(activityAtCell) !== '—' && textOf(activityAtCell) !== '', activityAtCell && textOf(activityAtCell))
@@ -844,8 +843,13 @@ await flush()
   await flush()
   const noGitTree = withHooks(panel, { initialView: 'status' })
   check('a host without git says no-git-service instead of showing a blank table', textOf(noGitTree).indexOf('no-git-service') >= 0, textOf(noGitTree))
-  HOST.worktrees = savedWorktrees
+  HOST.worktrees = { available: true, error: null, total: 0, active: 0, counts: {}, worktrees: [] }
   findButton(noGitTree, '刷新').props.onClick()
+  await flush()
+  const emptyWorktreesTree = withHooks(panel, { initialView: 'status' })
+  check('an available but empty worktree inventory says so', textOf(emptyWorktreesTree).indexOf('没有工作树') >= 0, textOf(emptyWorktreesTree))
+  HOST.worktrees = savedWorktrees
+  findButton(emptyWorktreesTree, '刷新').props.onClick()
   await flush()
   if (savedNavigator === undefined) delete globalThis.navigator
   else Object.defineProperty(globalThis, 'navigator', savedNavigator)
@@ -879,6 +883,7 @@ await flush()
       customFields.prompt.props.defaultValue === 'Check Godot idioms.',
     JSON.stringify(Object.keys(customFields)),
   )
+  check('the profile stage column comes from profile.stage', findAll(customRow, (node) => node.props && node.props['data-col'] === 'profile-stage')[0] !== undefined && textOf(findAll(customRow, (node) => node.props && node.props['data-col'] === 'profile-stage')[0]) === '评审', textOf(customRow))
   const reviewStageRow = findAll(rolesTree, (node) => node.type === 'tr' && node.props && node.props['data-stage'] === 'review')[0]
   check('the review stage shows its bound custom profile', reviewStageRow !== undefined && textOf(reviewStageRow).indexOf('godot-reviewer') >= 0 && findAll(reviewStageRow, (node) => node.type === 'select')[0].props.children.length === 4, reviewStageRow && textOf(reviewStageRow))
   const workerProfileRow = profileRows.filter((row) => row.props['data-role-profile'] === 'worker')[0]
@@ -956,22 +961,30 @@ await flush()
   check('a replace shows drained/created and the waited/timedOut/waiting status', waitedText.indexOf('已排空') >= 0 && waitedText.indexOf('reviewer-2') >= 0 && waitedText.indexOf('120') >= 0 && waitedText.indexOf('等待超时') >= 0 && waitedText.indexOf('等待中') >= 0, waitedText)
   await flush()
 
-  // Server-side validation errors are readable in the panel. A follow-up poll
-  // must not wipe the refused action before the user sees why it failed.
+  // A reset that hits a host timeout is shown inside the result banner.
+  postReply = { ok: true, ensured: [{ ok: false, code: 'action-timeout', message: 'role reviewer provisioning timed out' }], snapshot: HOST }
+  findAll(rolesTree, (node) => node.props && node.props['data-action'] === 'rolesReset')[0].props.onClick()
+  await flush()
+  const ensuredTree = withHooks(panel, { initialView: 'roles' })
+  const ensuredText = textOf(ensuredTree)
+  check('a reset with a failed ensure reports the readable reason', ensuredText.indexOf('宿主操作超时') >= 0 && ensuredText.indexOf('role reviewer provisioning timed out') >= 0, ensuredText)
+
+  // Server-side validation errors are readable in the panel, and a completed
+  // 2.5s poll does not wipe them before the user has read them.
   postReply = { ok: false, code: 'invalid-role-instances', message: 'instances must be an integer from 1 to 8' }
-  let releaseLoad = null
-  loadGate = new Promise(function (resolveGate) { releaseLoad = resolveGate })
   const errorForm = findAll(withHooks(panel, { initialView: 'roles' }), (node) => node.props && node.props['data-form'] === 'role-create')[0]
   const errorFields = fieldsOf(errorForm)
   errorFields.name.props.ref.current = { value: 'bad-reviewer' }
   findAll(errorForm, (node) => node.props && node.props['data-action'] === 'rolesCreate')[0].props.onClick()
   await flush()
+  check('the refused action is recorded in the store', captured.getSnapshot().actionError !== null && captured.getSnapshot().actionError.code === 'invalid-role-instances', JSON.stringify(captured.getSnapshot().actionError))
+  // A full poll cycle runs here; the error must still be readable afterwards.
+  await flush()
+  await flush()
   const errorTree = withHooks(panel, { initialView: 'roles' })
   const errorText = textOf(errorTree)
-  check('a validation error maps to a readable message', errorText.indexOf('实例数必须是 1–8 的整数') >= 0 && errorText.indexOf('instances must be an integer from 1 to 8') >= 0, errorText)
-  loadGate = null
-  if (releaseLoad !== null) releaseLoad()
-  await flush()
+  check('a validation error stays readable after a poll and maps to a readable message', captured.getSnapshot().actionError !== null && errorText.indexOf('实例数必须是 1–8 的整数') >= 0 && errorText.indexOf('instances must be an integer from 1 to 8') >= 0, errorText)
+  check('a routine poll keeps the last action outcome until the next action', captured.getSnapshot().actionError !== null)
 }
 
 // File-lock view: waiters are advisory, not a queue.

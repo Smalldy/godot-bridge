@@ -349,6 +349,16 @@ window.__ModuleLoader__.load({
 				statusWorktreesUnavailable: '宿主没有提供工作树信息。',
 				statusNoGit: '没有 git 服务（no-git-service）。',
 				statusActivityUnavailable: '宿主没有提供活动记录。',
+				statusActor: '主体',
+				statusWorktreesEmpty: '没有工作树。',
+				statusActivityEmpty: '没有活动记录。',
+				roleInstancesEmpty: '没有角色实例。',
+				roleErrMissingName: '缺少角色名',
+				roleErrActionTimeout: '宿主操作超时',
+				roleErrQueueTimeout: '合并队列超时',
+				roleErrAbandoned: '合并队列已放弃该操作',
+				roleErrWriteFailed: '角色配置写入失败',
+				roleErrEnsureFailed: '角色实例准备失败',
 				statusActorAgent: '代理',
 				statusActorHost: '宿主',
 				statusActorSystem: '系统',
@@ -632,6 +642,16 @@ window.__ModuleLoader__.load({
 				statusWorktreesUnavailable: 'The host did not report worktrees.',
 				statusNoGit: 'No git service (no-git-service).',
 				statusActivityUnavailable: 'The host did not report activity.',
+				statusActor: 'Actor',
+				statusWorktreesEmpty: 'No worktrees.',
+				statusActivityEmpty: 'No activity entries.',
+				roleInstancesEmpty: 'No role instances.',
+				roleErrMissingName: 'missing role name',
+				roleErrActionTimeout: 'host action timed out',
+				roleErrQueueTimeout: 'merge queue timed out',
+				roleErrAbandoned: 'the merge queue abandoned that action',
+				roleErrWriteFailed: 'could not write the role config',
+				roleErrEnsureFailed: 'role provisioning failed',
 				statusActorAgent: 'agent',
 				statusActorHost: 'host',
 				statusActorSystem: 'system',
@@ -1546,6 +1566,7 @@ window.__ModuleLoader__.load({
 			const WORKTREE_TYPE_KEYS = { main: 'wtTypeMain', task: 'wtTypeTask', verify: 'wtTypeVerify', test: 'wtTypeTest', merge: 'wtTypeMerge', other: 'wtTypeOther' }
 			const AGENT_ERROR_KEYS = { 'no-team-service': 'workersErrNoService', 'no-lead': 'workersErrNoLead', 'roster-unreadable': 'workersErrRoster' }
 			const ROLE_ERROR_KEYS = {
+				'missing-name': 'roleErrMissingName',
 				'invalid-role-name': 'roleErrName',
 				'invalid-role-profile': 'roleErrProfile',
 				'invalid-role-kind': 'roleErrKind',
@@ -1564,6 +1585,11 @@ window.__ModuleLoader__.load({
 				'not-live': 'roleErrNotLive',
 				'roles-unavailable': 'roleErrUnavailable',
 				'user-only': 'roleErrUserOnly',
+				'action-timeout': 'roleErrActionTimeout',
+				'queue-timeout': 'roleErrQueueTimeout',
+				'action-abandoned': 'roleErrAbandoned',
+				'role-config-write-failed': 'roleErrWriteFailed',
+				'role-ensure-failed': 'roleErrEnsureFailed',
 			}
 
 			function roleKindLabel(kind, t) {
@@ -1836,7 +1862,11 @@ window.__ModuleLoader__.load({
 						const waiting = Array.isArray(waited.waiting) ? waited.waiting : []
 						if (waiting.length > 0) parts.push(t('roleWaiting') + ': ' + waiting.map(function (entry) { return typeof entry === 'string' ? entry : entry.name }).join(', '))
 					}
-					if (parts.length === 0 && Array.isArray(payload.ensured)) parts.push(t('roleCreated') + ': ' + payload.ensured.length)
+					if (Array.isArray(payload.ensured)) {
+						parts.push(t('roleCreated') + ': ' + String(payload.ensured.length))
+						const failed = payload.ensured.filter(function (entry) { return entry !== null && entry !== undefined && entry.ok !== true })
+						if (failed.length > 0) parts.push(t('roleActionFailed') + ': ' + failed.map(function (entry) { return roleErrorText(entry, t) }).join('; '))
+					}
 				}
 				return h('div', { className: 'gbt-banner', 'data-tone': 'info', 'data-role-result': 'ok' }, parts.length === 0 ? t('roleSave') + ' ✓' : parts.join(' · '))
 			}
@@ -1941,7 +1971,7 @@ window.__ModuleLoader__.load({
 					)
 					const list = Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
 					if (list.length === 0) {
-						blocks.push(h('div', { key: 'wt-empty', className: 'gbt-empty' }, t('noTasks')))
+						blocks.push(h('div', { key: 'wt-empty', className: 'gbt-empty' }, t('statusWorktreesEmpty')))
 					} else {
 						blocks.push(
 							h(
@@ -1984,13 +2014,13 @@ window.__ModuleLoader__.load({
 					)
 					const entries = Array.isArray(activity.entries) ? activity.entries : []
 					if (entries.length === 0) {
-						blocks.push(h('div', { key: 'activity-empty', className: 'gbt-empty' }, t('statusActivityUnavailable')))
+						blocks.push(h('div', { key: 'activity-empty', className: 'gbt-empty' }, t('statusActivityEmpty')))
 					} else {
 						blocks.push(
 							h(
 								'table',
 								{ key: 'activity-table', className: 'gbt-locktable', 'data-section': 'activity' },
-								h('thead', null, h('tr', null, h('th', null, t('submittedOn')), h('th', null, t('statusKind')), h('th', null, t('statusActorAgent')), h('th', null, t('wtTask')), h('th', null, t('statusDescription')))),
+								h('thead', null, h('tr', null, h('th', null, t('submittedOn')), h('th', null, t('statusKind')), h('th', null, t('statusActor')), h('th', null, t('wtTask')), h('th', null, t('statusDescription')))),
 								h(
 									'tbody',
 									null,
@@ -2126,7 +2156,7 @@ window.__ModuleLoader__.load({
 							'tbody',
 							null,
 							instances.length === 0
-								? h('tr', null, h('td', { colSpan: 4 }, t('workersEmpty')))
+								? h('tr', null, h('td', { colSpan: 4 }, t('roleInstancesEmpty')))
 								: instances.map(function (instance) {
 										return h(RoleInstanceRow, {
 											key: instance.name,
