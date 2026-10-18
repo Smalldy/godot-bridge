@@ -487,8 +487,16 @@ const MERGE = {
     profiles: { 'godot-reviewer': { role: 'reviewer', stage: 'review', instances: 2, skills: ['x'], context: 'fork', permissions: ['read-only'], prompt: 'p' } },
     stages: { review: 'godot-reviewer' },
   })
-  const written = await writeRoleConfig({ fs }, { projectPath: PROJECT, config: config })
+  const originalWrite = fs.writeText
+  let policySeen = null
+  fs.writeText = async function (target, text, expected, signal, policy) {
+    policySeen = policy
+    return originalWrite.call(this, target, text, expected)
+  }
+  const policy = { mode: 'workspace-write', workspaceRoot: PROJECT }
+  const written = await writeRoleConfig({ fs }, { projectPath: PROJECT, config: config, sandboxPolicy: policy })
   check('a role config is persisted to .agents/roles.json', written.ok === true && written.config.stages.review === 'godot-reviewer', JSON.stringify(written))
+  check('the role config write forwards the project sandbox policy', policySeen !== null && policySeen !== undefined && policySeen.workspaceRoot === PROJECT, JSON.stringify(policySeen))
   const text = fs.files.get(rolesPath(PROJECT))
   check('the file is JSON with the custom profile', text !== undefined && JSON.parse(text.text).profiles['godot-reviewer'].instances === 2, text === undefined ? 'missing' : text.text.slice(0, 200))
   const loaded = await readRoleConfig({ fs }, { projectPath: PROJECT })

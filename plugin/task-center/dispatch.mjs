@@ -323,14 +323,17 @@ export function workerPool(ctx, board, options) {
   if (roleConfig !== null && typeof roleConfig === 'object' && roleConfig.profiles !== null && typeof roleConfig.profiles === 'object') {
     const desired = { worker: 0, reviewer: 0, tester: 0 }
     const live = { worker: 0, reviewer: 0, tester: 0 }
+    const bound = { worker: null, reviewer: null, tester: null }
     for (const kind of ['worker', 'reviewer', 'tester']) {
-      const profile = roleConfig.profiles[kind]
+      const profile = profileForKind(roleConfig, kind)
       desired[kind] = profile !== null && profile !== undefined && Number.isFinite(profile.instances) ? Math.floor(profile.instances) : 0
+      bound[kind] = profile !== null && profile !== undefined && typeof profile.name === 'string' ? profile.name : null
     }
     report.roles = {
       desired: desired,
       live: live,
       missing: { worker: 0, reviewer: 0, tester: 0 },
+      bound: bound,
       profiles: roleConfig.profiles,
       stages: roleConfig.stages === undefined ? null : roleConfig.stages,
     }
@@ -1375,8 +1378,24 @@ export function createDispatcher(ctx, options) {
       return []
     }
     if (!Array.isArray(roster)) return []
+    let drained = []
+    if (roles !== null && typeof roles.status === 'function') {
+      try {
+        const status = roles.status()
+        drained = Array.isArray(status.drained) ? status.drained.map(String) : []
+      } catch (error) {
+        drained = []
+      }
+    }
     return roster
-      .filter((member) => member !== null && typeof member === 'object' && roleKindOf(member.name) === 'reviewer' && member.status !== 'failed')
+      .filter(
+        (member) =>
+          member !== null &&
+          typeof member === 'object' &&
+          roleKindOf(member.name) === 'reviewer' &&
+          member.status !== 'failed' &&
+          drained.indexOf(String(member.name)) < 0,
+      )
       .map((member) => String(member.name))
   }
 

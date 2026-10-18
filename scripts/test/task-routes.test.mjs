@@ -436,6 +436,8 @@ function createSubmitRig(options) {
     roles: roles,
     godotPath: opts.godotPath,
     activity: activity,
+    drainTimeoutMs: opts.drainTimeoutMs,
+    drainIntervalMs: opts.drainIntervalMs,
   })
   const user = { projectPath: PROJECT, by: '@user', role: 'user', agent: null }
   async function action(name, body) {
@@ -2601,6 +2603,12 @@ function acceptingTask(overrides) {
   const deniedCreate = await rig.api.perform('rolesCreate', { name: 'x', profile: { role: 'reviewer' } }, agent)
   check('an agent cannot create a role profile', deniedCreate.ok === false && deniedCreate.code === 'user-only', JSON.stringify(deniedCreate))
 
+  const originalWrite = rig.fs.writeText
+  let sandboxSeen = null
+  rig.fs.writeText = async function (target, text, expected, signal, policy) {
+    sandboxSeen = policy
+    return originalWrite.call(this, target, text, expected)
+  }
   const created = await rig.api.perform(
     'rolesCreate',
     {
@@ -2608,6 +2616,11 @@ function acceptingTask(overrides) {
       profile: { role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check idioms.' },
     },
     user,
+  )
+  check(
+    'role config writes carry the project sandbox policy',
+    sandboxSeen !== null && sandboxSeen !== undefined && sandboxSeen.workspaceRoot === PROJECT,
+    JSON.stringify(sandboxSeen),
   )
   check(
     'the user can create a custom profile',
@@ -2636,6 +2649,14 @@ function acceptingTask(overrides) {
   )
   const bound = await rig.api.perform('rolesBind', { stage: 'review', profile: 'godot-reviewer' }, user)
   check('the user can bind a stage to a profile', bound.ok === true && bound.config.stages.review === 'godot-reviewer', JSON.stringify(bound.ok ? bound.bound : bound))
+  const boundSnapshot = await rig.action('board')
+  check(
+    'the snapshot desired instances follow the bound profile',
+    boundSnapshot.agents.roles.desired.reviewer === 2 &&
+      boundSnapshot.agents.roles.bound.reviewer === 'godot-reviewer' &&
+      boundSnapshot.agents.roles.missing.reviewer === Math.max(0, 2 - boundSnapshot.agents.roles.live.reviewer),
+    JSON.stringify(boundSnapshot.agents.roles),
+  )
   const badBind = await rig.api.perform('rolesBind', { stage: 'test', profile: 'godot-reviewer' }, user)
   check('binding a profile to the wrong stage is refused', badBind.ok === false && badBind.code === 'stage-mismatch', JSON.stringify(badBind))
   const unknownBind = await rig.api.perform('rolesBind', { stage: 'review', profile: 'nope' }, user)
@@ -2649,6 +2670,30 @@ function acceptingTask(overrides) {
     replaced.ok === true && replaced.drained.join(',') === 'reviewer-1' && replaced.created.length >= 1 && replaced.created[0].name === 'reviewer-2',
     JSON.stringify(replaced.ok ? { drained: replaced.drained, created: replaced.created } : replaced),
   )
+  // A drained instance must no longer receive briefs: the next submit's review
+  // brief targets the replacement.
+  const seeded = runningWorktreeTask()
+  seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, seeded)
+  const submittedAfterReplace = await rig.api.perform('submit', { id: 'T-1', evidence: 'x' }, user)
+  check('the task enters review after the replacement', submittedAfterReplace.ok === true && submittedAfterReplace.task.status === 'reviewing', JSON.stringify(submittedAfterReplace.ok ? submittedAfterReplace.task.status : submittedAfterReplace))
+  const reviewerSends = rig.team.calls.filter((call) => call.kind === 'send' && String(call.target).indexOf('reviewer-') === 0)
+  check(
+    'the replacement reviewer receives the new brief, the drained one does not',
+    reviewerSends.length >= 1 && String(reviewerSends[reviewerSends.length - 1].target) === 'reviewer-2' && reviewerSends.every((call) => String(call.target) !== 'reviewer-1'),
+    JSON.stringify(reviewerSends.map((call) => call.target)),
+  )
+
+  // A replace waits for the old instance's in-flight turn before spawning.
+  rig.team.setStatus('reviewer-2', 'running')
+  setTimeout(() => rig.team.setStatus('reviewer-2', 'inactive'), 20)
+  const waitedReplace = await rig.api.perform('rolesReplace', { name: 'reviewer-2' }, user)
+  check(
+    'replace waits for the drained instance to go idle',
+    waitedReplace.ok === true && waitedReplace.waited.timedOut === false && waitedReplace.waited.waitedMs >= 15 && waitedReplace.created.length >= 1,
+    JSON.stringify(waitedReplace.ok ? waitedReplace.waited : waitedReplace),
+  )
+
   const drained = await rig.api.perform('rolesDrain', { name: 'tester-1' }, user)
   check('draining an instance marks it for replacement', drained.ok === true && drained.drained.join(',') === 'tester-1', JSON.stringify(drained.ok ? drained.drained : drained))
   const replacedKind = await rig.api.perform('rolesReplace', { name: 'tester' }, user)
@@ -2678,6 +2723,48 @@ function acceptingTask(overrides) {
   const listedAfter = await rig.api.perform('rolesList', {}, user)
   check('the defaults are unchanged after reset', listedAfter.ok === true && listedAfter.config.profiles.reviewer.role === 'reviewer' && listedAfter.config.profiles.tester.role === 'tester', JSON.stringify(listedAfter.ok ? listedAfter.config.profiles : listedAfter))
   rig.scheduler.dispose()
+}
+
+{
+  // A running instance that never goes idle is replaced after the bounded wait.
+  const team = roleTeam()
+  const rig = createSubmitRig({ team: team, roles: true, git: fakeGit().git, drainTimeoutMs: 40, drainIntervalMs: 5 })
+  rig.team.setStatus('reviewer-1', 'running')
+  const replaced = await rig.api.perform('rolesReplace', { name: 'reviewer-1' }, rig.user)
+  check(
+    'a stuck instance is replaced after the bounded wait',
+    replaced.ok === true && replaced.waited.timedOut === true && replaced.drained.join(',') === 'reviewer-1' && replaced.created.length >= 1,
+    JSON.stringify(replaced.ok ? { waited: replaced.waited, created: replaced.created } : replaced),
+  )
+  rig.scheduler.dispose()
+}
+{
+  // Unknown or dead instances are refused instead of faking a drain.
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git })
+  const unknownDrain = await rig.api.perform('rolesDrain', { name: 'reviewer-9' }, rig.user)
+  check('draining an unknown instance is refused', unknownDrain.ok === false && unknownDrain.code === 'unknown-role-instance', JSON.stringify(unknownDrain))
+  const unknownReplace = await rig.api.perform('rolesReplace', { name: 'reviewer-9' }, rig.user)
+  check('replacing an unknown instance is refused', unknownReplace.ok === false && unknownReplace.code === 'unknown-role-instance', JSON.stringify(unknownReplace))
+  const failedTeam = roleTeam()
+  failedTeam.setStatus('reviewer-1', 'failed')
+  const failedRig = createSubmitRig({ team: failedTeam, roles: true, git: fakeGit().git })
+  const dead = await failedRig.api.perform('rolesDrain', { name: 'reviewer-1' }, failedRig.user)
+  check('draining a failed instance is refused as not-live', dead.ok === false && dead.code === 'not-live', JSON.stringify(dead))
+  const emptyRig = createSubmitRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+    roles: true,
+    git: fakeGit().git,
+  })
+  const none = await emptyRig.api.perform('rolesReplace', { name: 'reviewer' }, emptyRig.user)
+  check('replacing a kind with no live instance is refused', none.ok === false && none.code === 'not-live', JSON.stringify(none))
+  rig.scheduler.dispose()
+  failedRig.scheduler.dispose()
+  emptyRig.scheduler.dispose()
 }
 
 surface.dispose()

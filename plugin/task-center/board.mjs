@@ -86,7 +86,7 @@ export async function writeRoleConfig(io, options) {
   try {
     const target = await io.fs.resolve(rolesPath(options.projectPath), { cwd: options.projectPath, signal: options.signal })
     const text = JSON.stringify(config, null, 2) + '\n'
-    const outcome = await io.fs.writeText(target, text, options.expected)
+    const outcome = await io.fs.writeText(target, text, options.expected, options.signal, options.sandboxPolicy)
     return { ok: true, config: config, path: rolesPath(options.projectPath), version: outcome === undefined || outcome === null ? null : outcome.version }
   } catch (error) {
     return { ok: false, code: 'role-config-write-failed', message: describe(error) }
