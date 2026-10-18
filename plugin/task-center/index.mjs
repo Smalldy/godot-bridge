@@ -19,7 +19,7 @@
  */
 
 import { createState } from './state.mjs'
-import { createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
+import { createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
 import { createMerger } from './merge.mjs'
 import { createHarness } from './harness.mjs'
 import { createApi } from './api.mjs'
@@ -48,6 +48,9 @@ export function apply(ctx) {
   // reviewer/tester through the live Lead and replaces a dead or timed-out one,
   // so no Lead prompt is required.
   const roles = createRoleManager(ctx)
+  // The in-memory activity ring the status snapshot shows. One ring is shared by
+  // the dispatcher and the API; it is pure memory and never writes the board.
+  const activity = createActivity({})
   scheduler = createDispatcher(ctx, {
     state: state,
     projectPath: function () {
@@ -56,6 +59,7 @@ export function apply(ctx) {
     allowSpawn: true,
     git: git,
     roles: roles,
+    activity: activity,
   })
   // The merge queue only integrates a candidate the independent tester already
   // accepted; the host no longer runs a third full verify of its own.
@@ -73,6 +77,7 @@ export function apply(ctx) {
     merger: merger,
     roles: roles,
     harness: harness,
+    activity: activity,
     autoMerge: true,
   })
 

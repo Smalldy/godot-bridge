@@ -97,6 +97,44 @@ function messageOf(error) {
   return String((error && error.message) || error)
 }
 
+/** Normalise a filesystem path for comparing worktree entries. */
+function normalizePath(path) {
+  return String(path === undefined || path === null ? '' : path).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+/** The task whose id is encoded in a worktree directory name, or undefined. */
+function taskByWorktreeSuffix(base, board) {
+  const name = String(base)
+  const candidates = []
+  if (name.startsWith('merge-')) candidates.push(name.slice('merge-'.length))
+  if (name.startsWith('verify-')) candidates.push(name.slice('verify-'.length))
+  if (name.startsWith('test-')) candidates.push(name.slice('test-'.length))
+  const taskMatch = /^(T-\d+)/.exec(name)
+  if (taskMatch !== null) candidates.push(taskMatch[1])
+  for (const id of candidates) {
+    const task = board.tasks.filter((entry) => entry.id === id)[0]
+    if (task !== undefined) return task
+  }
+  return undefined
+}
+
+/** True when a task currently occupies its worktree. */
+function worktreeTaskActive(task) {
+  return task !== undefined && task !== null && (task.status === 'running' || task.status === 'reviewing' || task.status === 'testing')
+}
+
+function emptyWorktrees(error) {
+  return {
+    available: false,
+    error: error === undefined ? null : error,
+    total: 0,
+    active: 0,
+    counts: { main: 0, task: 0, verify: 0, test: 0, merge: 0, other: 0 },
+    worktrees: [],
+  }
+}
+
+
 /**
  * Build the API over one state + scheduler.
  *
@@ -121,6 +159,8 @@ function messageOf(error) {
  * @param options.harness - the isolated DSH test instance manager (harness.mjs).
  *   When present, the tester (or the user) can start/stop/restart it and run the
  *   smoke checks; absent refuses readably.
+ * @param options.activity - the host activity ring (createActivity). The snapshot
+ *   exposes its recent entries; absent means the panel simply has no history.
  * @param options.now - clock, for tests.
  */
 export function createApi(ctx, options) {
@@ -136,6 +176,7 @@ export function createApi(ctx, options) {
   const candidateWorkflow = roles !== null && merger !== null && typeof merger.createCandidate === 'function'
   const godotPath = typeof opts.godotPath === 'string' && opts.godotPath.length > 0 ? opts.godotPath : null
   const harness = opts.harness === undefined ? null : opts.harness
+  const activity = opts.activity === undefined || opts.activity === null ? null : opts.activity
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
 
   /** Merge actions are one-at-a-time: the queue serialises the whole read+git+write. */
@@ -276,15 +317,23 @@ export function createApi(ctx, options) {
         (board) => recordMergeResult(board, id, { status: 'merged', mergeCommit: outcome.mergeCommit, conflict: null, output: null }, clock(), by),
         context,
       )
-      if (recorded.ok === true) await notifyMergeOutcome(projectPath, recorded.task)
       if (recorded.ok !== true) return recorded
+      await notifyMergeOutcome(projectPath, recorded.task)
+      emitActivity(context, 'merge', 'merged as ' + String(outcome.mergeCommit) + ' (tested candidate)', id)
+      emitActivity(null, 'worktree-remove', 'task worktree removed after merge', id, 'host')
+      emitActivity(null, 'worktree-remove', 'test candidate removed after merge', id, 'host')
       recorded.merged = true
       recorded.retest = false
       return recorded
     }
     if (outcome.status === 'stale') {
       await serialised(() => merger.discardCandidate(task, projectPath, { worktreeRoot: root }))
+      emitActivity(null, 'worktree-remove', 'stale test candidate discarded', id, 'system')
       const rebuilt = await serialised(() => merger.createCandidate(task, projectPath, { worktreeRoot: root }))
+      if (rebuilt !== null && rebuilt !== undefined && rebuilt.ok === true) {
+        emitActivity(null, 'worktree-create', 'rebuilt test candidate', id, 'system')
+        emitActivity(null, 'test-start', 'target moved; retest required', id, 'host')
+      }
       if (rebuilt === null || rebuilt === undefined || rebuilt.ok !== true) {
         return failure(
           rebuilt === null || rebuilt === undefined ? 'candidate-failed' : String(rebuilt.code),
@@ -327,7 +376,9 @@ export function createApi(ctx, options) {
     if (roles === null || typeof roles.ensure !== 'function') return null
     const config = await roleConfigFor(projectPath)
     try {
-      return await roles.ensure(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: clock() })
+      const ensured = await roles.ensure(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: clock() })
+      emitRoleProvision(ensured)
+      return ensured
     } catch (error) {
       return { ok: false, code: 'role-ensure-failed', message: messageOf(error) }
     }
@@ -554,6 +605,7 @@ export function createApi(ctx, options) {
       systemContext,
     )
     if (blocked.ok !== true) return null
+    emitActivity(null, 'error', 'review round limit reached; task blocked', task.id, 'system')
     const owner =
       task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' || task.assignee.name === ''
         ? null
@@ -571,6 +623,98 @@ export function createApi(ctx, options) {
   function releaseTaskLocks(taskId) {
     const released = locks.releaseTask(state.memory.locks, taskId)
     if (released.ok === true) state.memory.locks = released.locks
+  }
+
+  /**
+   * Record one host activity entry. Actors stay explicit: 'system' for host
+   * automation (sweeps, timeouts), 'host' for scheduler/host work, 'agent' for a
+   * model-driven action (with the agent's name). Never dresses System up as Agent.
+   */
+  function emitActivity(context, kind, detail, taskId, override) {
+    if (activity === null || typeof activity.push !== 'function') return
+    let actor = 'host'
+    if (override === 'system' || override === 'host' || override === 'agent') actor = override
+    else if (context !== undefined && context !== null && context.role === 'agent') actor = 'agent'
+    const agentName = context !== undefined && context !== null && typeof context.by === 'string' && context.by !== '' ? context.by : null
+    activity.push({
+      kind: kind,
+      actor: actor,
+      actorName: actor === 'agent' ? agentName : null,
+      taskId: typeof taskId === 'string' && taskId !== '' ? taskId : null,
+      detail: typeof detail === 'string' ? detail : null,
+    })
+  }
+
+  /** Role provisioning is a SYSTEM event. */
+  function emitRoleProvision(result) {
+    if (result === null || result === undefined) return
+    const created = Array.isArray(result.created) ? result.created.map((entry) => entry.name) : []
+    const replaced = Array.isArray(result.replaced) ? result.replaced.map((entry) => String(entry.name) + (entry.reason === undefined ? '' : ' (' + String(entry.reason) + ')')) : []
+    if (created.length > 0) emitActivity(null, 'role-provision', String(result.kind) + ' ' + created.join(', '), null, 'system')
+    if (replaced.length > 0) emitActivity(null, 'role-replace', String(result.kind) + ' ' + replaced.join(', '), null, 'system')
+  }
+
+  /**
+   * The git worktree inventory for the status panel, classified as
+   * main/task/verify/test/merge/other with branch/head and whether a task is
+   * currently occupying it. Degrades readably without a git facade.
+   */
+  async function worktreeSnapshot(projectPath, board) {
+    if (git === null || typeof git.worktreeList !== 'function') return emptyWorktrees('no-git-service')
+    let result = null
+    try {
+      result = await git.worktreeList(projectPath)
+    } catch (error) {
+      return emptyWorktrees('git-failed')
+    }
+    if (result === null || result === undefined || result.ok !== true) {
+      return emptyWorktrees(result !== null && result !== undefined && typeof result.code === 'string' ? result.code : 'worktree-list-failed')
+    }
+    const entries = Array.isArray(result.worktrees) ? result.worktrees : []
+    const main = normalizePath(projectPath)
+    const byPath = new Map()
+    for (const task of board.tasks) {
+      if (typeof task.worktree === 'string' && task.worktree !== '') byPath.set(normalizePath(task.worktree), task)
+    }
+    const worktrees = entries.map((entry) => {
+      const raw = typeof entry.path === 'string' ? entry.path : ''
+      const normalized = normalizePath(raw)
+      // Keep the basename's original case: task ids are case-sensitive.
+      const base = String(raw).replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || ''
+      const lowerBase = base.toLowerCase()
+      const byWorktree = byPath.get(normalized)
+      const task = byWorktree === undefined ? taskByWorktreeSuffix(base, board) : byWorktree
+      let type = 'other'
+      if (normalized === main) type = 'main'
+      else if (byWorktree !== undefined) type = 'task'
+      else if (lowerBase.startsWith('merge-')) type = 'merge'
+      else if (lowerBase.startsWith('verify-')) type = 'verify'
+      else if (lowerBase.startsWith('test-')) type = 'test'
+      else if (/^T-\d+(-\d+)?$/.test(base)) type = 'task'
+      return {
+        path: raw,
+        type: type,
+        branch: typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : null,
+        head: typeof entry.head === 'string' && entry.head !== '' ? entry.head : null,
+        taskId: task === undefined ? null : task.id,
+        active: type === 'main' ? true : worktreeTaskActive(task),
+      }
+    })
+    const counts = { main: 0, task: 0, verify: 0, test: 0, merge: 0, other: 0 }
+    let active = 0
+    for (const worktree of worktrees) {
+      counts[worktree.type] = (counts[worktree.type] === undefined ? 1 : counts[worktree.type] + 1)
+      if (worktree.active === true) active += 1
+    }
+    return { available: true, error: null, total: worktrees.length, active: active, counts: counts, worktrees: worktrees }
+  }
+
+  /** The in-memory activity ring for the snapshot (newest first). */
+  function activitySnapshot() {
+    if (activity === null || typeof activity.snapshot !== 'function') {
+      return { available: false, limit: 0, count: 0, pushed: 0, actors: { system: 0, host: 0, agent: 0 }, entries: [] }
+    }
+    return Object.assign({ available: true }, activity.snapshot())
   }
 
   function projectFrom(input, context) {
@@ -682,6 +826,8 @@ export function createApi(ctx, options) {
     const board = read.board
     const now = clock()
     const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
+    const workers = workerPool(ctx, board, { roleConfig: roleRead.config })
+    const worktrees = await worktreeSnapshot(projectPath, board)
     state.sweepLocks()
     reconcileLocks(board)
     const tasks = board.tasks
@@ -698,7 +844,17 @@ export function createApi(ctx, options) {
       updatedAt: board.updatedAt,
       dispatch: board.dispatch,
       roles: roleRead.config,
-      workers: workerPool(ctx, board),
+      workers: workers,
+      // Agents are the live Team members (lead + teammates), with their kind,
+      // session and current task. System/host work is NOT listed here.
+      agents: {
+        lead: workers.leadInfo,
+        members: workers.members,
+        kinds: workers.kinds,
+        roles: workers.roles,
+      },
+      worktrees: worktrees,
+      activity: activitySnapshot(),
       counts: model.counts(board),
       queue: model.readyTasks(board).map((task) => model.summary(board, task, now)),
       tasks: tasks,
@@ -891,7 +1047,7 @@ export function createApi(ctx, options) {
    * run the queue, record the outcome. Shared by the explicit mergeRequest
    * action and the host-driven sweep, so both follow exactly the same rules.
    */
-  async function mergeOne(projectPath, id, by, context) {
+  async function mergeOne(projectPath, id, by, context, actorOverride) {
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const task = model.findTask(read.board, id)
@@ -954,8 +1110,12 @@ export function createApi(ctx, options) {
     }
     const settings = read.board.dispatch === undefined || read.board.dispatch === null ? null : read.board.dispatch.worktree
     const worktreeRoot = settings !== null && settings !== undefined && typeof settings.root === 'string' ? settings.root : '.worktrees'
+    emitActivity(context, 'worktree-create', 'merge worktree for ' + id, id, actorOverride)
     const outcome = await merger.mergeRequest(task, projectPath, { worktreeRoot: worktreeRoot })
+    emitActivity(context, 'worktree-remove', 'merge worktree cleaned', id, actorOverride)
     if (outcome === null || outcome === undefined || outcome.ok !== true) {
+      const code = outcome === null || outcome === undefined ? 'merge-failed' : String(outcome.code)
+      emitActivity(context, 'error', 'merge failed: ' + (outcome === null || outcome === undefined ? 'no result' : String(outcome.message)), id, actorOverride)
       return failure(
         outcome === null || outcome === undefined ? 'merge-failed' : String(outcome.code),
         outcome === null || outcome === undefined ? 'the merge queue returned no result' : String(outcome.message),
@@ -963,6 +1123,8 @@ export function createApi(ctx, options) {
     }
     const recorded = await writeTask(projectPath, id, (board) => recordMergeResult(board, id, outcome, clock(), by), context)
     if (recorded.ok !== true) return recorded
+    emitActivity(context, 'merge', String(outcome.status) + (outcome.mergeCommit !== undefined && outcome.mergeCommit !== null ? ' as ' + String(outcome.mergeCommit) : ''), id, actorOverride)
+    if (outcome.status === 'merged') emitActivity(null, 'worktree-remove', 'task worktree removed after merge', id, 'host')
     return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
   }
   /**
@@ -987,7 +1149,7 @@ export function createApi(ctx, options) {
     for (const id of candidates) {
       let result = null
       try {
-        result = await serialised(() => mergeOne(projectPath, id, 'system', systemContext))
+        result = await serialised(() => mergeOne(projectPath, id, 'system', systemContext, 'system'))
       } catch (error) {
         result = failure('merge-error', messageOf(error))
       }
@@ -1002,6 +1164,7 @@ export function createApi(ctx, options) {
         skipped.push({ id: id, code: result.code === undefined || result.code === null ? 'merge-refused' : String(result.code) })
       }
     }
+    emitActivity(null, 'sweep', 'merge sweep: merged ' + (merged.length === 0 ? 'none' : merged.join(',')) + '; skipped ' + String(skipped.length), null, 'system')
     return ok({ merged: merged, skipped: skipped })
   }
 
@@ -1244,6 +1407,7 @@ export function createApi(ctx, options) {
           context,
         )
         if (recorded.ok !== true) return recorded
+        emitActivity(context, 'merge', 'rejected', id)
         return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
       })
     }
@@ -1319,6 +1483,8 @@ export function createApi(ctx, options) {
         // A refreshed head starts a fresh review round: ensure the reviewer and
         // send it the new brief, exactly like a submit would.
         if (recorded.task !== null && recorded.task !== undefined && recorded.task.status === 'reviewing') {
+          const round = recorded.task.review === null || recorded.task.review === undefined ? 1 : recorded.task.review.attempt
+          emitActivity(context, 'review-start', 'merge request refreshed; review round ' + String(round), id)
           const reviewer = roleSlotNameOf('reviewer')
           if (reviewer !== null) await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath))
           return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned })
@@ -1381,6 +1547,8 @@ export function createApi(ctx, options) {
             releaseTaskLocks(id)
             return overLimit
           }
+          const round = result.task.review === null || result.task.review === undefined ? 1 : result.task.review.attempt
+          emitActivity(context, 'review-start', 'submitted for review round ' + String(round), id)
           const reviewer = roleSlotNameOf('reviewer')
           if (reviewer !== null) await notifyMember(reviewer, reviewBriefFor(result.task, projectPath))
           if (provisioned !== null) result.provisioned = provisioned
@@ -1425,6 +1593,9 @@ export function createApi(ctx, options) {
         context,
       )
       if (result.ok !== true) return result
+      if (action === 'requestChanges') {
+        emitActivity(context, 'review-end', 'changes requested: ' + String(source.reasons || '').slice(0, 200), id)
+      }
       if (action === 'requestChanges' && result.task !== null && result.task !== undefined && result.task.status === 'running') {
         // Tell the worker what to fix and that it continues in its own worktree.
         const owner =
@@ -1434,6 +1605,9 @@ export function createApi(ctx, options) {
         if (owner !== null) await notifyMember(owner, reworkBriefFor(result.task, projectPath))
       }
       if (action === 'approveReview' && result.task !== null && result.task !== undefined && result.task.status === 'testing') {
+        emitActivity(context, 'review-end', 'approved', id)
+        emitActivity(null, 'test-start', 'test candidate stage started', id, 'host')
+        if (candidate !== null) emitActivity(null, 'worktree-create', 'test candidate ' + String(candidate.path), id, 'host')
         const provisioned = await provisionRole('tester', projectPath, result.task)
         if (provisioned !== null) result.provisioned = provisioned
         if (candidate !== null) {
@@ -1483,6 +1657,8 @@ export function createApi(ctx, options) {
         result.task.merge !== undefined &&
         typeof result.task.merge.mergeCommit === 'string' &&
         result.task.merge.mergeCommit.length > 0
+      if (action === 'passTest') emitActivity(context, 'test-end', 'passed', id)
+      if (action === 'failTest') emitActivity(context, 'test-end', 'failed', id)
       if (action === 'passTest' && candidateWorkflow && hasCandidate) {
         // The tester accepted the candidate: the host merges that exact tree now
         // (no separate verify). A moved target comes back as a retest.
@@ -1493,6 +1669,7 @@ export function createApi(ctx, options) {
       }
       if (action === 'failTest' && candidateWorkflow && hasCandidate) {
         await serialised(() => merger.discardCandidate(result.task, projectPath, { worktreeRoot: worktreeRootOf(read.board) }))
+        emitActivity(null, 'worktree-remove', 'test candidate discarded after a failed test', id, 'host')
         const owner =
           result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
             ? null

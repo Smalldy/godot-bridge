@@ -6,7 +6,7 @@ import { registerTaskRoutes, STATE_PATH, ACTION_PATH } from '../../plugin/task-c
 import { createFakeFs, createRig, createTeam, PROJECT, seedBoard } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
-import { createDispatcher, createRoleManager } from '../../plugin/task-center/dispatch.mjs'
+import { createActivity, createDispatcher, createRoleManager } from '../../plugin/task-center/dispatch.mjs'
 import { rolesPath } from '../../plugin/task-center/board.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
@@ -422,7 +422,8 @@ function createSubmitRig(options) {
   }
   const state = createState(ctx)
   const roles = opts.roles === true ? createRoleManager(ctx) : opts.roles === undefined ? null : opts.roles
-  const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: opts.git, roles: roles })
+  const activity = opts.activity === undefined ? null : opts.activity
+  const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: opts.git, roles: roles, activity: activity })
   const api = createApi(ctx, {
     state: state,
     scheduler: scheduler,
@@ -433,6 +434,7 @@ function createSubmitRig(options) {
     autoMerge: opts.autoMerge,
     roles: roles,
     godotPath: opts.godotPath,
+    activity: activity,
   })
   const user = { projectPath: PROJECT, by: '@user', role: 'user', agent: null }
   async function action(name, body) {
@@ -449,6 +451,13 @@ function fakeGit(options) {
     calls.push({ args: args.slice(), cwd: cwd })
     const key = args.join(' ')
     if (key === 'rev-parse HEAD') return { code: 0, stdout: String(opts.head === undefined ? 'head-sha' : opts.head) + '\n', stderr: '' }
+    if (key === 'worktree list --porcelain' && opts.worktrees !== undefined) {
+      const blocks = opts.worktrees.map(
+        (entry) =>
+          'worktree ' + entry.path + '\nHEAD ' + (entry.head === undefined ? 'head-sha' : entry.head) + '\n' + (entry.branch === undefined || entry.branch === null ? 'detached\n' : 'branch refs/heads/' + entry.branch + '\n'),
+      )
+      return { code: 0, stdout: blocks.join('\n'), stderr: '' }
+    }
     if (key.indexOf('diff --name-only ') === 0) {
       return opts.diff === undefined ? { code: 0, stdout: 'scripts/a.gd\nscripts/b.gd\n', stderr: '' } : opts.diff(args)
     }
@@ -675,7 +684,11 @@ function holdFile(rig, path) {
     payload.task.commit === null && payload.task.merge === null && payload.task.actualFiles.length === 0,
     JSON.stringify({ commit: payload.task.commit, merge: payload.task.merge, actualFiles: payload.task.actualFiles }),
   )
-  check('and git is never consulted', fake.calls.length === 0, JSON.stringify(fake.calls))
+  check(
+    'and git is never consulted for the commit',
+    fake.calls.every((entry) => entry.args.join(' ') === 'worktree list --porcelain'),
+    JSON.stringify(fake.calls),
+  )
   submitSurface.dispose()
   submitRig.scheduler.dispose()
 }
@@ -980,7 +993,11 @@ function seedMergeTask(rig, task) {
   const payload = res.json()
   check('rejectMerge closes an open request', payload.ok === true && payload.task.merge.status === 'rejected', res.text)
   check('rejection records the reviewer and time', payload.task.merge.reviewer === '@user' && typeof payload.task.merge.at === 'string', JSON.stringify(payload.task.merge))
-  check('rejection touches no git checkout', fake.calls.length === 0, JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check(
+    'rejection touches no git checkout',
+    fake.calls.every((entry) => entry.args.join(' ') === 'worktree list --porcelain'),
+    JSON.stringify(fake.calls.map((entry) => entry.args)),
+  )
   mergeSurface.dispose()
   mergeRig.scheduler.dispose()
 }
@@ -1359,7 +1376,7 @@ function driftRig(options) {
   )
   check(
     'refresh only reads: no commit, merge or push',
-    ctx.fake.calls.every((entry) => entry.args[0] === 'rev-parse' || entry.args[0] === 'diff'),
+    ctx.fake.calls.every((entry) => entry.args[0] === 'rev-parse' || entry.args[0] === 'diff' || entry.args.join(' ') === 'worktree list --porcelain'),
     JSON.stringify(ctx.fake.calls.map((entry) => entry.args)),
   )
   check(
@@ -2333,6 +2350,189 @@ function acceptingTask(overrides) {
   check('the tester is asked to retest', testerSends.length === 2 && testerSends[1].text.indexOf('Independent TEST round 2') >= 0, JSON.stringify(testerSends.map((call) => call.text.slice(0, 80))))
   surface.dispose()
   rig.scheduler.dispose()
+}
+
+// ── runtime snapshot: agents, worktrees, activity ─────────────────────────
+{
+  const fake = fakeGit({
+    worktrees: [
+      { path: PROJECT, branch: 'feat/task-center-v2', head: 'main-sha' },
+      { path: join(PROJECT, '.worktrees', 'T-1'), branch: 'task/T-1-1', head: 'head-sha' },
+      { path: join(PROJECT, '.worktrees', 'test-T-1'), branch: 'test/T-1', head: 'candidate-sha' },
+      { path: join(PROJECT, '.worktrees', 'verify-T-2') },
+      { path: join(PROJECT, '.worktrees', 'merge-T-2') },
+      { path: '/srv/other-checkout', branch: 'main' },
+    ],
+  })
+  const rig = createSubmitRig({ git: fake.git })
+  const running = runningWorktreeTask()
+  const done = runningWorktreeTask({ id: 'T-2', title: 'done task', status: 'done', worktree: join(PROJECT, '.worktrees', 'T-2'), branch: 'task/T-2-1' })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [running, done] }))
+  const snapshot = await rig.action('board')
+  const worktrees = snapshot.worktrees
+  check('the worktree inventory is available', worktrees.available === true && worktrees.error === null, JSON.stringify({ available: worktrees.available, error: worktrees.error }))
+  const byPath = {}
+  for (const entry of worktrees.worktrees) byPath[entry.path] = entry
+  check(
+    'worktrees are typed main/task/test/verify/merge/other',
+    byPath[PROJECT].type === 'main' &&
+      byPath[join(PROJECT, '.worktrees', 'T-1')].type === 'task' &&
+      byPath[join(PROJECT, '.worktrees', 'test-T-1')].type === 'test' &&
+      byPath[join(PROJECT, '.worktrees', 'verify-T-2')].type === 'verify' &&
+      byPath[join(PROJECT, '.worktrees', 'merge-T-2')].type === 'merge' &&
+      byPath['/srv/other-checkout'].type === 'other',
+    JSON.stringify(worktrees.worktrees.map((entry) => entry.type)),
+  )
+  check(
+    'the worktree keeps branch and head',
+    byPath[PROJECT].branch === 'feat/task-center-v2' &&
+      byPath[PROJECT].head === 'main-sha' &&
+      byPath[join(PROJECT, '.worktrees', 'T-1')].branch === 'task/T-1-1',
+    JSON.stringify({ main: byPath[PROJECT], task: byPath[join(PROJECT, '.worktrees', 'T-1')] }),
+  )
+  check(
+    'worktrees are associated with their tasks',
+    byPath[join(PROJECT, '.worktrees', 'T-1')].taskId === 'T-1' &&
+      byPath[join(PROJECT, '.worktrees', 'test-T-1')].taskId === 'T-1' &&
+      byPath[join(PROJECT, '.worktrees', 'verify-T-2')].taskId === 'T-2' &&
+      byPath[join(PROJECT, '.worktrees', 'merge-T-2')].taskId === 'T-2',
+    JSON.stringify(worktrees.worktrees.map((entry) => ({ path: entry.path, task: entry.taskId }))),
+  )
+  check(
+    'active means a task currently occupies it (main always)',
+    byPath[PROJECT].active === true &&
+      byPath[join(PROJECT, '.worktrees', 'T-1')].active === true &&
+      byPath[join(PROJECT, '.worktrees', 'test-T-1')].active === true &&
+      byPath[join(PROJECT, '.worktrees', 'verify-T-2')].active === false &&
+      byPath[join(PROJECT, '.worktrees', 'merge-T-2')].active === false &&
+      byPath['/srv/other-checkout'].active === false,
+    JSON.stringify(worktrees.worktrees.map((entry) => ({ path: entry.path, active: entry.active }))),
+  )
+  check(
+    'worktree counts add up',
+    worktrees.total === 6 &&
+      worktrees.active === 3 &&
+      worktrees.counts.main === 1 &&
+      worktrees.counts.task === 1 &&
+      worktrees.counts.test === 1 &&
+      worktrees.counts.verify === 1 &&
+      worktrees.counts.merge === 1 &&
+      worktrees.counts.other === 1,
+    JSON.stringify({ total: worktrees.total, active: worktrees.active, counts: worktrees.counts }),
+  )
+}
+
+{
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git })
+  seedRunningTask(rig, runningWorktreeTask())
+  const snapshot = await rig.action('board')
+  const agents = snapshot.agents
+  check('the lead is reported as the lead kind', agents.lead !== null && agents.lead.kind === 'lead' && agents.lead.description === 'Team lead', JSON.stringify(agents.lead))
+  const members = agents.members
+  const byName = {}
+  for (const member of members) byName[member.name] = member
+  check(
+    'teammates carry kind, description, session and currentTask',
+    byName['fixer'].kind === 'worker' &&
+      byName['fixer'].description === 'feature worker' &&
+      byName['fixer'].session === 'session-fixer' &&
+      byName['fixer'].currentTask !== null &&
+      byName['fixer'].currentTask.id === 'T-1' &&
+      byName['reviewer-1'].kind === 'reviewer' &&
+      byName['reviewer-1'].description === 'review role' &&
+      byName['reviewer-1'].currentTask === null &&
+      byName['tester-1'].kind === 'tester',
+    JSON.stringify(members),
+  )
+  check('agent kinds are counted', agents.kinds.lead === 1 && agents.kinds.worker === 1 && agents.kinds.reviewer === 1 && agents.kinds.tester === 1 && agents.kinds.merger === 0, JSON.stringify(agents.kinds))
+  check(
+    'the role config reports desired/live/missing instances',
+    agents.roles !== null &&
+      agents.roles.desired.worker === 1 &&
+      agents.roles.desired.reviewer === 1 &&
+      agents.roles.live.reviewer === 1 &&
+      agents.roles.missing.reviewer === 0,
+    JSON.stringify(agents.roles),
+  )
+  check('no System pseudo-agent is listed among the members', members.every((member) => member.kind !== 'system'), JSON.stringify(members.map((member) => member.kind)))
+}
+
+{
+  const activity = createActivity({ limit: 50 })
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git, activity: activity })
+  const seeded = runningWorktreeTask()
+  seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, seeded)
+  const submitted = await rig.api.perform('submit', { id: 'T-1', evidence: 'checked' }, agentCaller('session-fixer'))
+  check('the submit enters review', submitted.ok === true && submitted.task.status === 'reviewing', JSON.stringify(submitted.ok ? submitted.task.status : submitted))
+  const afterSubmit = activity.snapshot()
+  const reviewStart = afterSubmit.entries.filter((entry) => entry.kind === 'review-start')[0]
+  check(
+    'review start is an agent event with its name',
+    reviewStart !== undefined && reviewStart.actor === 'agent' && reviewStart.actorName === '@session-fixer' && reviewStart.taskId === 'T-1',
+    JSON.stringify(reviewStart),
+  )
+  const approved = await rig.api.perform('approveReview', { id: 'T-1' }, agentCaller('session-reviewer-1'))
+  check('the review is approved into testing', approved.ok === true && approved.task.status === 'testing', JSON.stringify(approved.ok ? approved.task.status : approved))
+  const afterApprove = activity.snapshot()
+  check(
+    'review end is an agent event and test start is a host event',
+    afterApprove.entries.some((entry) => entry.kind === 'review-end' && entry.actor === 'agent' && entry.actorName === '@session-reviewer-1') &&
+      afterApprove.entries.some((entry) => entry.kind === 'test-start' && entry.actor === 'host'),
+    JSON.stringify(afterApprove.entries.slice(0, 6)),
+  )
+  const tested = await rig.api.perform('passTest', { id: 'T-1', evidence: 'ok' }, agentCaller('session-tester-1'))
+  check('the test is passed', tested.ok === true && tested.task.test.status === 'passed', JSON.stringify(tested.ok ? tested.task.test : tested))
+  const afterTest = activity.snapshot()
+  const testEnd = afterTest.entries.filter((entry) => entry.kind === 'test-end')[0]
+  check('test end is an agent event from the tester', testEnd !== undefined && testEnd.actor === 'agent' && testEnd.actorName === '@session-tester-1', JSON.stringify(testEnd))
+  check('activity is newest-first', afterTest.entries[0].kind === 'test-end', JSON.stringify(afterTest.entries.slice(0, 3)))
+  check('activity counts its actors', afterTest.actors.agent >= 3 && afterTest.actors.host >= 1, JSON.stringify(afterTest.actors))
+  check(
+    'system events never masquerade as agents',
+    afterTest.entries.every((entry) => (entry.actor === 'agent' ? typeof entry.actorName === 'string' : entry.actorName === null)),
+    JSON.stringify(afterTest.entries.filter((entry) => entry.actor === 'system').slice(0, 3)),
+  )
+  const snapshot = await rig.action('board')
+  check(
+    'the snapshot exposes the activity ring',
+    snapshot.activity.available === true && snapshot.activity.entries.length >= 4 && snapshot.activity.limit === 50,
+    JSON.stringify({ available: snapshot.activity.available, count: snapshot.activity.count }),
+  )
+}
+
+{
+  // A missing reviewer is provisioned by the host: role provisioning is a SYSTEM
+  // event, never dressed up as an agent action.
+  const team = createTeam({
+    roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+    ],
+  })
+  const activity = createActivity({})
+  const rig = createSubmitRig({ team: team, roles: true, git: fakeGit().git, activity: activity })
+  const seeded = runningWorktreeTask()
+  seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, seeded)
+  const submitted = await rig.action('submit', { id: 'T-1', evidence: 'checked' })
+  check(
+    'a missing reviewer is provisioned on submit',
+    submitted.ok === true && submitted.provisioned !== undefined && submitted.provisioned.created[0].name === 'reviewer-1',
+    JSON.stringify(submitted.provisioned),
+  )
+  const provisioned = activity.snapshot()
+  const event = provisioned.entries.filter((entry) => entry.kind === 'role-provision')[0]
+  check('role provisioning is a system event with no agent name', event !== undefined && event.actor === 'system' && event.actorName === null && provisioned.actors.system >= 1, JSON.stringify(event))
+}
+
+{
+  const rig = createSubmitRig({ git: null, team: null })
+  seedRunningTask(rig, runningWorktreeTask())
+  const snapshot = await rig.action('board')
+  check('without git the worktree view degrades readably', snapshot.worktrees.available === false && snapshot.worktrees.error === 'no-git-service' && snapshot.worktrees.total === 0, JSON.stringify(snapshot.worktrees))
+  check('without a Team the agent view degrades readably', snapshot.workers.error === 'no-team-service' && snapshot.agents.lead === null && snapshot.agents.members.length === 0 && snapshot.agents.kinds.lead === 0, JSON.stringify(snapshot.agents))
+  check('without an activity ring the snapshot says so', snapshot.activity.available === false && snapshot.activity.entries.length === 0, JSON.stringify(snapshot.activity))
 }
 
 surface.dispose()

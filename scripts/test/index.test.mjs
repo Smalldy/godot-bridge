@@ -113,6 +113,33 @@ check(
   check('the role manager refuses readably without agent-team services', refused.ok === false && refused.code === 'no-team-service', JSON.stringify(refused))
 }
 
+{
+  // The state route is the panel's snapshot: it must expose the runtime views the
+  // row wired (agents, worktrees, activity) and degrade without services.
+  const { STATE_PATH } = await import('../../plugin/task-center/routes.mjs')
+  const stateRoute = routes.filter((route) => route.path === STATE_PATH)[0]
+  let payload = null
+  const res = {
+    writeHead() {},
+    end(body) {
+      payload = JSON.parse(String(body))
+    },
+  }
+  await stateRoute.handler({ url: STATE_PATH + '?project=' + encodeURIComponent(PROJECT), headers: {} }, res)
+  check(
+    'the state route exposes agents, worktrees and activity',
+    payload !== null && payload.ok === true && payload.agents !== undefined && payload.worktrees !== undefined && payload.activity !== undefined,
+    JSON.stringify(payload && Object.keys(payload)),
+  )
+  check('without a Team the agents view degrades readably', payload.agents.lead === null && payload.agents.members.length === 0, JSON.stringify(payload.agents))
+  check('without git the worktree view degrades readably', payload.worktrees.available === false && payload.worktrees.error === 'no-git-service', JSON.stringify(payload.worktrees))
+  check(
+    'the row wired one activity ring into the snapshot',
+    payload.activity.available === true && payload.activity.entries.length === 0 && payload.activity.limit > 0,
+    JSON.stringify(payload.activity),
+  )
+}
+
 let listenerError = null
 try {
   listeners.filter((entry) => entry.event === 'agent/status').forEach((entry) => entry.handler())

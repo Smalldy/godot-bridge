@@ -43,6 +43,61 @@ export const SEND_TIMEOUT_MS = 60 * 1000
  * user). A Team without one keeps merge requests open for the user to merge. */
 export const MERGER_NAME = 'merger'
 
+/** How many host activity entries the in-memory ring keeps by default. */
+export const ACTIVITY_LIMIT = 100
+
+/**
+ * The host's activity ring: recent events for the status panel. It is pure
+ * in-memory state (no board writes) and separates its actors explicitly:
+ * 'system' is host automation, 'host' is scheduler/host work on a task, and
+ * 'agent' is a model-driven action (with the agent's name). No System event is
+ * ever reported as an Agent event.
+ */
+export function createActivity(options) {
+  const opts = options === undefined || options === null ? {} : options
+  const limit = Number.isFinite(opts.limit) ? Math.max(1, Math.floor(opts.limit)) : ACTIVITY_LIMIT
+  const clock = typeof opts.now === 'function' ? opts.now : Date.now
+  let entries = []
+  let pushed = 0
+  function push(entry) {
+    const source = entry === undefined || entry === null ? {} : entry
+    const actor = source.actor === 'agent' || source.actor === 'host' ? source.actor : 'system'
+    const record = {
+      at: typeof source.at === 'string' && source.at !== '' ? source.at : new Date(clock()).toISOString(),
+      kind: typeof source.kind === 'string' && source.kind !== '' ? source.kind : 'event',
+      actor: actor,
+      actorName: actor === 'agent' && typeof source.actorName === 'string' && source.actorName !== '' ? source.actorName : null,
+      taskId: typeof source.taskId === 'string' && source.taskId !== '' ? source.taskId : null,
+      detail: typeof source.detail === 'string' && source.detail !== '' ? source.detail : null,
+    }
+    entries.push(record)
+    pushed += 1
+    if (entries.length > limit) entries = entries.slice(entries.length - limit)
+    return record
+  }
+  function list(amount) {
+    const wanted = Number.isFinite(amount) ? Math.max(1, Math.min(limit, Math.floor(amount))) : limit
+    return entries.slice(Math.max(0, entries.length - wanted))
+  }
+  function snapshot(amount) {
+    const recent = list(amount)
+    const actors = { system: 0, host: 0, agent: 0 }
+    for (const entry of recent) actors[entry.actor] += 1
+    return {
+      limit: limit,
+      count: entries.length,
+      pushed: pushed,
+      actors: actors,
+      // Newest first is what a panel shows.
+      entries: recent.slice().reverse(),
+    }
+  }
+  function clear() {
+    entries = []
+  }
+  return { push: push, list: list, snapshot: snapshot, clear: clear, limit: limit }
+}
+
 /** Review policy: a review that sits undecided for this long is reminded once,
  * then blocked on the next sweep so a silent reviewer cannot strand a task. */
 export const REVIEW_TIMEOUT_MS = 10 * 60 * 1000
@@ -216,11 +271,13 @@ export function pickTarget(ctx, options) {
  *   members holds only teammates, each with the running task it owns, and lead
  *   is the lead's name (or its id when the roster gives no name).
  */
-export function workerPool(ctx, board) {
+export function workerPool(ctx, board, options) {
+  const opts = options === undefined || options === null ? {} : options
   const current = board === undefined || board === null ? {} : board
   const dispatch = current.dispatch === undefined || current.dispatch === null ? {} : current.dispatch
   const report = {
     lead: null,
+    leadInfo: null,
     members: [],
     busy: 0,
     idle: 0,
@@ -228,6 +285,11 @@ export function workerPool(ctx, board) {
     failed: 0,
     cap: Number.isFinite(dispatch.maxWorkAgents) ? dispatch.maxWorkAgents : DEFAULT_MAX_WORK_AGENTS,
     error: null,
+    // Counts per agent kind; 'lead' is reported separately from the members so
+    // System work is never dressed up as an agent.
+    kinds: { lead: 0, worker: 0, reviewer: 0, tester: 0, merger: 0 },
+    // The role manager's desired instances (from the project role config).
+    roles: null,
   }
   const { agents, agentTeams } = servicesFor(ctx)
   if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
@@ -240,6 +302,16 @@ export function workerPool(ctx, board) {
     return report
   }
   report.lead = lead.name === undefined || lead.name === null ? String(lead.id) : String(lead.name)
+  report.leadInfo = {
+    id: String(lead.id),
+    name: report.lead,
+    kind: 'lead',
+    description: 'Team lead',
+    session: lead.id === undefined || lead.id === null ? null : String(lead.id),
+    status: String(lead.status === undefined || lead.status === null ? 'running' : lead.status),
+    currentTask: null,
+  }
+  report.kinds.lead = 1
   let roster = []
   try {
     roster = agentTeams.listMembers(lead)
@@ -247,10 +319,34 @@ export function workerPool(ctx, board) {
     report.error = 'roster-unreadable'
     return report
   }
+  const roleConfig = opts.roleConfig === undefined || opts.roleConfig === null ? null : opts.roleConfig
+  if (roleConfig !== null && typeof roleConfig === 'object' && roleConfig.profiles !== null && typeof roleConfig.profiles === 'object') {
+    const desired = { worker: 0, reviewer: 0, tester: 0 }
+    const live = { worker: 0, reviewer: 0, tester: 0 }
+    for (const kind of ['worker', 'reviewer', 'tester']) {
+      const profile = roleConfig.profiles[kind]
+      desired[kind] = profile !== null && profile !== undefined && Number.isFinite(profile.instances) ? Math.floor(profile.instances) : 0
+    }
+    report.roles = {
+      desired: desired,
+      live: live,
+      missing: { worker: 0, reviewer: 0, tester: 0 },
+      profiles: roleConfig.profiles,
+      stages: roleConfig.stages === undefined ? null : roleConfig.stages,
+    }
+  }
+  const descriptions = {
+    worker: 'feature worker',
+    reviewer: 'review role',
+    tester: 'test role',
+    merger: 'merge queue operator',
+    lead: 'Team lead',
+  }
   const tasks = Array.isArray(current.tasks) ? current.tasks : []
   for (const member of roster) {
     if (member === null || typeof member !== 'object' || member.role !== 'teammate') continue
     const status = String(member.status === undefined || member.status === null ? 'unknown' : member.status)
+    const kind = roleKindOf(member.name) === null ? (member.name === MERGER_NAME ? 'merger' : 'worker') : roleKindOf(member.name)
     const owned = tasks.filter((task) => {
       if (task.status !== 'running' || task.assignee === null || task.assignee === undefined) return false
       const sessionMatch =
@@ -262,16 +358,27 @@ export function workerPool(ctx, board) {
       const nameMatch = member.name !== undefined && member.name !== null && task.assignee.name === member.name
       return sessionMatch || nameMatch
     })[0]
+    const name = member.name === undefined || member.name === null ? null : String(member.name)
     report.members.push({
       id: String(member.id),
-      name: member.name === undefined || member.name === null ? null : String(member.name),
+      name: name,
+      kind: kind,
+      description: typeof member.description === 'string' && member.description !== '' ? member.description : descriptions[kind],
+      session: member.id === undefined || member.id === null ? (member.session === undefined ? null : String(member.session)) : String(member.id),
       status: status,
       currentTask: owned === undefined ? null : { id: owned.id, title: owned.title },
     })
+    report.kinds[kind] = (report.kinds[kind] === undefined ? 0 : report.kinds[kind]) + 1
+    if (report.roles !== null && report.roles.live[kind] !== undefined) report.roles.live[kind] += 1
     if (status === 'running') report.busy += 1
     else if (status === 'inactive') report.idle += 1
     else if (status === 'provisioning') report.provisioning += 1
     else if (status === 'failed') report.failed += 1
+  }
+  if (report.roles !== null) {
+    for (const kind of ['worker', 'reviewer', 'tester']) {
+      report.roles.missing[kind] = Math.max(0, report.roles.desired[kind] - report.roles.live[kind])
+    }
   }
   return report
 }
@@ -1006,8 +1113,28 @@ export function createDispatcher(ctx, options) {
   // The host-side role provisioner. Null means this caller did not opt into
   // role provisioning (older tests / direct API users); dispatch still works.
   const roles = opts.roles === undefined ? null : opts.roles
+  // The in-memory activity ring the snapshot exposes. Null is a normal setup
+  // (direct dispatcher users) and simply records nothing.
+  const activity = opts.activity === undefined || opts.activity === null ? null : opts.activity
   // Tests shorten the review timeout; production uses REVIEW_TIMEOUT_MS.
   const reviewTimeoutMs = Number.isFinite(opts.reviewTimeoutMs) ? opts.reviewTimeoutMs : REVIEW_TIMEOUT_MS
+
+  /** Push one host activity entry; never throws and never touches the board. */
+  function emit(kind, actor, fields) {
+    if (activity === null || typeof activity.push !== 'function') return
+    try {
+      activity.push(Object.assign({ kind: kind, actor: actor }, fields === undefined ? {} : fields))
+    } catch (error) {}
+  }
+
+  /** Role provisioning is a SYSTEM event, never an agent one. */
+  function emitRole(result) {
+    if (result === null || result === undefined) return
+    const created = Array.isArray(result.created) ? result.created.map((entry) => entry.name) : []
+    const replaced = Array.isArray(result.replaced) ? result.replaced.map((entry) => String(entry.name) + (entry.reason === undefined ? '' : ' (' + String(entry.reason) + ')')) : []
+    if (created.length > 0) emit('role-provision', 'system', { detail: String(result.kind) + ' ' + created.join(', ') })
+    if (replaced.length > 0) emit('role-replace', 'system', { detail: String(result.kind) + ' ' + replaced.join(', ') })
+  }
   const memory = {
     sweeping: false,
     rerun: null,
@@ -1198,9 +1325,13 @@ export function createDispatcher(ctx, options) {
     for (const kind of kinds) {
       const task = board.tasks.filter((entry) => (kind === 'reviewer' ? entry.status === 'reviewing' : entry.status === 'testing'))[0]
       try {
-        results.push(await roles.ensure(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: now }))
+        const ensured = await roles.ensure(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: now })
+        results.push(ensured)
+        emitRole(ensured)
       } catch (error) {
-        results.push({ ok: false, code: 'role-ensure-failed', message: String((error && error.message) || error) })
+        const failed = { ok: false, code: 'role-ensure-failed', message: String((error && error.message) || error) }
+        results.push(failed)
+        emit('error', 'system', { detail: 'role ' + String(kind) + ' ensure failed: ' + failed.message })
       }
     }
     return results
@@ -1273,6 +1404,7 @@ export function createDispatcher(ctx, options) {
         if (sent === true) {
           memory.reviewReminders.set(key, now)
           reminded.push(task.id)
+          emit('review-reminder', 'system', { taskId: task.id, detail: 'review still pending; reminded ' + names[0] })
         }
         continue
       }
@@ -1285,6 +1417,7 @@ export function createDispatcher(ctx, options) {
       nextBoard = applied
       memory.reviewReminders.delete(key)
       blocked.push(task.id)
+      emit('error', 'system', { taskId: task.id, detail: 'review timed out; task blocked for triage' })
       const owner = task.assignee === null || task.assignee === undefined ? null : task.assignee.name
       const notice =
         'Review for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
@@ -1393,6 +1526,7 @@ export function createDispatcher(ctx, options) {
           // environment and starts dispatch again.
           releaseTaskLocks(task.id)
           const message = 'worktree refused for ' + task.id + ' (' + worktree.error + '); dispatch paused until the environment is fixed'
+          emit('error', 'system', { taskId: task.id, detail: 'worktree refused: ' + String(worktree.error) })
           await pauseForWorktree(project, task.id, worktree.error, message)
           results.push({ id: task.id, error: message, code: 'worktree-unavailable' })
           paused = true
@@ -1420,10 +1554,12 @@ export function createDispatcher(ctx, options) {
           // The claim lost: a worktree made for a task that never started must
           // not be left behind.
           await removeWorktree(gitFacade(), project, worktree.path)
+          emit('worktree-remove', 'host', { taskId: task.id, detail: 'worktree removed after a lost claim' })
           results.push({ id: task.id, error: claimed.failed.message, code: claimed.failed.code })
           continue
         }
         current = claimed.board
+        emit('worktree-create', 'host', { taskId: task.id, detail: 'task worktree ' + String(worktree.path) })
         const claimedTask = model.findTask(current, task.id)
         const brief = briefFor(claimedTask, project)
         const leadName = picked.lead !== undefined && picked.lead !== null && picked.lead.name !== undefined ? picked.lead.name : 'lead'
@@ -1470,6 +1606,7 @@ export function createDispatcher(ctx, options) {
           if (failed.failed === null) current = failed.board
           releaseTaskLocks(task.id)
           memory.lastError = sendError === null ? 'the team service returned no result' : sendError
+          emit('error', 'system', { taskId: task.id, detail: 'dispatch delivery failed: ' + memory.lastError })
           results.push({ id: task.id, error: memory.lastError })
           continue
         }
