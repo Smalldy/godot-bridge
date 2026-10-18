@@ -265,6 +265,135 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
   waitingRig.scheduler.dispose()
 }
 
+// the worker pool and the tasks waiting on a held file (report only)
+{
+  const stamp = new Date().toISOString()
+  const lease = new Date(Date.now() + 600000).toISOString()
+  const shared = {
+    priority: 0,
+    dependsOn: [],
+    writeFiles: [],
+    assignee: null,
+    attempts: 0,
+    maxAttempts: 3,
+    evidence: '',
+    dispatch: null,
+    leaseUntil: null,
+    createdBy: '@test',
+    createdAt: stamp,
+    updatedAt: stamp,
+    history: [],
+  }
+  const task = (id, title, status, extra) => Object.assign({ id: id, title: title, status: status }, shared, extra)
+  const poolRig = createRig({
+    allowSpawn: false,
+    agents: { list: () => [{ id: 'session-lead', name: 'lead' }] },
+    teamOptions: {
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+        { id: 'session-idler', name: 'idler', role: 'teammate', status: 'inactive' },
+        { id: 'session-starter', name: 'starter', role: 'teammate', status: 'provisioning' },
+        { id: 'session-dead', name: 'dead', role: 'teammate', status: 'failed' },
+        { id: 'session-helper', name: 'helper', role: 'assistant', status: 'running' },
+      ],
+    },
+  })
+  const poolBoard = {
+    version: 2,
+    seq: 6,
+    dispatch: { state: 'running', maxConcurrent: 2, allowSpawn: true, maxWorkAgents: 4, maxAttempts: 3, request: null },
+    updatedAt: stamp,
+    tasks: [
+      task('T-1', 'Holds the shared file', 'running', {
+        writeFiles: ['scripts/shared.gd'],
+        assignee: { name: 'fixer', session: 'session-fixer' },
+        attempts: 1,
+        leaseUntil: lease,
+        dispatch: {
+          status: 'claimed',
+          at: stamp,
+          target: 'fixer',
+          targetId: 'session-fixer',
+          via: 'spawn',
+          error: null,
+          host: poolRig.scheduler.boot,
+        },
+      }),
+      task('T-2', 'Waits for the shared file', 'pending', { writeFiles: ['scripts/shared.gd'] }),
+      task('T-3', 'Waits on T-1 first', 'pending', { dependsOn: ['T-1'], writeFiles: ['scripts/shared.gd'] }),
+      task('T-4', 'Declares another file', 'pending', { writeFiles: ['scripts/other.gd'] }),
+      task('T-5', 'Already done', 'done'),
+    ],
+  }
+  seedBoard(poolRig.fs, poolRig.project, JSON.stringify(poolBoard))
+  const poolSurface = install(poolRig)
+  const projectUrl = STATE_PATH + '?project=' + encodeURIComponent(PROJECT)
+  const poolState = await call(poolSurface, projectUrl, {})
+  const workers = poolState.json().workers
+  check('the snapshot reports a worker pool', workers !== undefined && workers !== null, poolState.text)
+  check('the pool names its lead', workers.lead === 'lead', String(workers.lead))
+  check(
+    'only teammates are listed',
+    workers.members.map((member) => member.id).join(',') === 'session-fixer,session-idler,session-starter,session-dead',
+    JSON.stringify(workers.members.map((member) => member.id)),
+  )
+  check(
+    'the pool counts busy, idle, provisioning and failed workers',
+    workers.busy === 1 && workers.idle === 1 && workers.provisioning === 1 && workers.failed === 1,
+    JSON.stringify([workers.busy, workers.idle, workers.provisioning, workers.failed]),
+  )
+  check('the pool reports the spawn cap from the board', workers.cap === 4, String(workers.cap))
+  check('a complete pool reports no error', workers.error === null, String(workers.error))
+  check(
+    'a busy teammate names the task it runs',
+    JSON.stringify(workers.members[0].currentTask) === JSON.stringify({ id: 'T-1', title: 'Holds the shared file' }),
+    JSON.stringify(workers.members[0].currentTask),
+  )
+  check('an idle teammate owns no task', workers.members[1].currentTask === null, JSON.stringify(workers.members[1].currentTask))
+
+  const poolLock = await postTo(poolSurface, { action: 'lock', paths: ['scripts/shared.gd'], taskId: 'T-1' })
+  check('the running task holds its file', poolLock.json().ok === true && poolLock.json().granted === true, poolLock.text)
+  await postTo(poolSurface, { action: 'lock', paths: ['scripts/other.gd'] })
+  await postTo(poolSurface, { action: 'lock', paths: ['scripts/free.gd'] })
+  const lockedBoard = await postTo(poolSurface, { action: 'board' })
+  const lockRows = lockedBoard.json().locks
+  const sharedRow = lockRows.filter((row) => row.path === 'scripts/shared.gd')[0]
+  check('a held file lists the ready tasks that would wait for it', sharedRow !== undefined && sharedRow.waiters.map((waiter) => waiter.id).join(',') === 'T-2', JSON.stringify(sharedRow === undefined ? null : sharedRow.waiters))
+  check('a waiter carries the task title', sharedRow.waiters[0].title === 'Waits for the shared file', JSON.stringify(sharedRow.waiters[0]))
+  check('the holder is not its own waiter', sharedRow.waiters.some((waiter) => waiter.id === 'T-1') === false)
+  check('a task whose dependency is unfinished does not wait yet', sharedRow.waiters.some((waiter) => waiter.id === 'T-3') === false)
+  const otherRow = lockRows.filter((row) => row.path === 'scripts/other.gd')[0]
+  check('a runner-up file names the task that declares it', otherRow !== undefined && otherRow.waiters.map((waiter) => waiter.id).join(',') === 'T-4', JSON.stringify(otherRow === undefined ? null : otherRow.waiters))
+  const freeRow = lockRows.filter((row) => row.path === 'scripts/free.gd')[0]
+  check('a lock nobody declares has no waiters', freeRow !== undefined && freeRow.waiters.length === 0, JSON.stringify(freeRow === undefined ? null : freeRow.waiters))
+  poolSurface.dispose()
+  poolRig.scheduler.dispose()
+}
+
+// the pool degrades to a report when the team services are absent
+{
+  const noTeamRig = createRig({ allowSpawn: false, team: null })
+  const noTeamSurface = install(noTeamRig)
+  const projectUrl = STATE_PATH + '?project=' + encodeURIComponent(PROJECT)
+  const noTeamState = await call(noTeamSurface, projectUrl, {})
+  const workers = noTeamState.json().workers
+  check('a profile without team services still answers', noTeamState.json().ok === true && workers !== undefined, noTeamState.text)
+  check('and reports no members', workers.members.length === 0 && workers.busy === 0 && workers.idle === 0, JSON.stringify(workers.members))
+  check('and names the missing service', workers.error === 'no-team-service', String(workers.error))
+  check('and still reports the cap from the board', workers.cap === 4, String(workers.cap))
+  noTeamSurface.dispose()
+  noTeamRig.scheduler.dispose()
+
+  const leadlessRig = createRig({ allowSpawn: false, agents: { list: () => [] } })
+  const leadlessSurface = install(leadlessRig)
+  const leadlessState = await call(leadlessSurface, projectUrl, {})
+  const leadless = leadlessState.json().workers
+  check('a team with no live lead reports no-lead', leadless.error === 'no-lead' && leadless.lead === null && leadless.members.length === 0, JSON.stringify(leadless))
+  leadlessSurface.dispose()
+  leadlessRig.scheduler.dispose()
+}
+
 surface.dispose()
 rig.scheduler.dispose()
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

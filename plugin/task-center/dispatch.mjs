@@ -155,6 +155,80 @@ export function pickTarget(ctx, options) {
   }
 }
 
+/**
+ * What the worker pool looks like right now, for the panel's executor view.
+ *
+ * Read-only: it never claims, spawns or messages anyone. It answers "who could
+ * take work, who is busy with which task, and how many more may be spawned",
+ * so the board can show the pool the scheduler is choosing from. A profile
+ * without the agent-team services still gets a report instead of an error.
+ *
+ * @param ctx - the row context; 'agents' and 'agentTeams' are optional services.
+ * @param board - the current board (cap and current tasks).
+ * @returns { lead, members, busy, idle, provisioning, failed, cap, error } where
+ *   members holds only teammates, each with the running task it owns, and lead
+ *   is the lead's name (or its id when the roster gives no name).
+ */
+export function workerPool(ctx, board) {
+  const current = board === undefined || board === null ? {} : board
+  const dispatch = current.dispatch === undefined || current.dispatch === null ? {} : current.dispatch
+  const report = {
+    lead: null,
+    members: [],
+    busy: 0,
+    idle: 0,
+    provisioning: 0,
+    failed: 0,
+    cap: Number.isFinite(dispatch.maxWorkAgents) ? dispatch.maxWorkAgents : DEFAULT_MAX_WORK_AGENTS,
+    error: null,
+  }
+  const { agents, agentTeams } = servicesFor(ctx)
+  if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
+    report.error = 'no-team-service'
+    return report
+  }
+  const lead = resolveLead(ctx)
+  if (lead === null) {
+    report.error = 'no-lead'
+    return report
+  }
+  report.lead = lead.name === undefined || lead.name === null ? String(lead.id) : String(lead.name)
+  let roster = []
+  try {
+    roster = agentTeams.listMembers(lead)
+  } catch (error) {
+    report.error = 'roster-unreadable'
+    return report
+  }
+  const tasks = Array.isArray(current.tasks) ? current.tasks : []
+  for (const member of roster) {
+    if (member === null || typeof member !== 'object' || member.role !== 'teammate') continue
+    const status = String(member.status === undefined || member.status === null ? 'unknown' : member.status)
+    const owned = tasks.filter((task) => {
+      if (task.status !== 'running' || task.assignee === null || task.assignee === undefined) return false
+      const sessionMatch =
+        member.id !== undefined &&
+        member.id !== null &&
+        task.assignee.session !== undefined &&
+        task.assignee.session !== null &&
+        String(task.assignee.session) === String(member.id)
+      const nameMatch = member.name !== undefined && member.name !== null && task.assignee.name === member.name
+      return sessionMatch || nameMatch
+    })[0]
+    report.members.push({
+      id: String(member.id),
+      name: member.name === undefined || member.name === null ? null : String(member.name),
+      status: status,
+      currentTask: owned === undefined ? null : { id: owned.id, title: owned.title },
+    })
+    if (status === 'running') report.busy += 1
+    else if (status === 'inactive') report.idle += 1
+    else if (status === 'provisioning') report.provisioning += 1
+    else if (status === 'failed') report.failed += 1
+  }
+  return report
+}
+
 /** A worker name derived from the task and its attempt; names are immutable in
  * the roster, so a retry after a dead worker needs a new one. */
 export function workAgentName(taskId, attempt) {

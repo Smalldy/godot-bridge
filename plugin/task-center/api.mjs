@@ -15,6 +15,7 @@ import { resolve } from 'node:path'
 import { TASK_LEASE_MS } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
+import { workerPool } from './dispatch.mjs'
 import { writePolicyFor } from './state.mjs'
 
 /** Every action this API exposes. The tool enum and the route allowlist are
@@ -147,6 +148,27 @@ export function createApi(ctx, options) {
     return Object.assign(model.detail(board, task, now), { waitingReason: waitingReasonOf(board, task) })
   }
 
+  /**
+   * Which tasks would wait on one held file right now: pending, dependency
+   * ready, declaring a conflicting path, and not the holder itself. The
+   * scheduler has no FIFO lock queue, so this is a picture of contention, never
+   * an ordered promise — nothing reads it back.
+   */
+  function lockWaiters(board, lock) {
+    const out = []
+    for (const task of board.tasks) {
+      if (task.status !== 'pending') continue
+      if (lock.taskId !== null && lock.taskId !== undefined && String(task.id) === String(lock.taskId)) continue
+      const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
+      if (files.length === 0) continue
+      if (model.dependencyInfo(board, task).state !== 'ready') continue
+      if (!files.some((path) => locks.pathsConflict(path, lock.path))) continue
+      out.push({ id: task.id, title: task.title })
+    }
+    out.sort((left, right) => left.id.localeCompare(right.id))
+    return out
+  }
+
   async function snapshot(projectPath) {
     projectPath = resolve(projectPath)
     const read = await readBoardOrFail(projectPath)
@@ -168,10 +190,13 @@ export function createApi(ctx, options) {
       seq: board.seq,
       updatedAt: board.updatedAt,
       dispatch: board.dispatch,
+      workers: workerPool(ctx, board),
       counts: model.counts(board),
       queue: model.readyTasks(board).map((task) => model.summary(board, task, now)),
       tasks: tasks,
-      locks: locks.view(state.memory.locks, board, now),
+      locks: locks.view(state.memory.locks, board, now).map((lock) =>
+        Object.assign({}, lock, { waiters: lockWaiters(board, lock) }),
+      ),
       scheduler: scheduler === null ? null : scheduler.status(),
       serverTime: new Date(now).toISOString(),
     })
