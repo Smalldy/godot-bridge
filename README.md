@@ -37,6 +37,16 @@ The remaining godot-mcp tools were implemented in the MCP server's own Node proc
 
 The same package mounts a second component row, `godot-bridge/task-center`: a project task board, a dependency-driven dispatcher, file locks, and a centre-column GUI panel (sidebar entry “Tasks”).
 
+### Execution flow
+
+Every task runs in its own git worktree — `<project>/.worktrees/<taskId>-<attempt>` on branch `task/<taskId>-<attempt>`, created when the task is claimed. A task is never dispatched into the shared checkout; if the project cannot host a worktree, dispatch refuses to start instead.
+
+1. **Work**: the assignee edits only that checkout and runs the tests there.
+2. **Submit**: `submit` commits the worktree and opens a merge request (base = the current target head, head = the new commit, changed files = the base..head diff).
+3. **Testing**: with `testing = self` (the default) the assignee's own verification is the record; with `testing = independent` the host checks the branch out in a temporary `verify-<taskId>` worktree, runs `npm run verify` there, and writes the `verdict` itself — a request cannot be merged until that verdict passes. No agent decides pass/fail.
+4. **Merge**: a host sweep every 5 seconds enqueues ready requests into the serial merge queue, which integrates the branch in a throwaway worktree, runs the project verification there, and only when it is green fast-forwards the target branch and removes the now-merged task worktree.
+5. **Exceptions**: a conflict or a red verification marks the request and notifies the owner; the target branch is never touched. `mergeRequest` / `rejectMerge` / `refreshMerge` stay available to the user or the `merger` teammate for manual integration, audit or repair.
+
 - **Board**: `<project>/.agents/tasks.json`. Schema v2; a v1 board migrates on read. Duplicate ids, malformed entries and future versions are refused instead of overwritten. Add the file to the project's `.gitignore` — it is working state, not source.
 - **Action API**: the `task_center` tool and `POST /godot-bridge/task-center/action` share one vocabulary: `create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject`.
 - **Dependencies**: `B.dependsOn = [A]` means B runs only after A is done. Ready tasks are ordered by `priority` descending, then creation time. `A <- B <- C`, `D`, `E <- F` dispatch A, D, E first; A's completion dispatches B, E's completion dispatches F.
