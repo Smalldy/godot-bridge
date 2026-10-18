@@ -130,9 +130,17 @@ check('task center CSS is tagged', styleTags.some((tag) => (tag.attributes || {}
 const table = dicts.godotBridgeTaskCenter
 check('locale dictionary registered', table !== undefined)
 check('zh/en key sets match', Object.keys(table.zh).sort().join('|') === Object.keys(table.en).sort().join('|'))
+check(
+  'merge and verdict copy covers every state',
+  ['mergeOpen', 'mergeMerged', 'mergeConflict', 'mergeFailed', 'mergeRejected', 'verdictPending', 'verdictPassed', 'verdictFailed'].every(
+    (key) => table.zh[key] !== undefined && table.en[key] !== undefined,
+  ),
+  Object.keys(table.zh).filter((key) => key.indexOf('merge') === 0 || key.indexOf('verdict') === 0).join(','),
+)
 
 // Host payload
 const now = Date.now()
+const LONG_VERDICT_OUTPUT = 'P'.repeat(2600) + '\nFAIL  scripts/test/deep-tail.test.mjs\nError: deep stderr tail marker\n'
 const TASKS = [
   {
     id: 'T-1',
@@ -148,6 +156,11 @@ const TASKS = [
     leaseUntil: new Date(now + 600000).toISOString(),
     waitingReason: null,
     dispatch: { status: 'sent', target: 'fixer', error: null },
+    base: 'base-sha',
+    target: 'feat/task-center-v2',
+    branch: 'task/T-1-1',
+    worktree: PROJECT + '\\.worktrees\\T-1',
+    commit: null,
     createdAt: new Date(now - 60000).toISOString(),
     updatedAt: new Date(now - 1000).toISOString(),
     spec: '',
@@ -176,6 +189,49 @@ const TASKS = [
     evidence: '',
     history: [],
   },
+  {
+    id: 'T-3',
+    title: 'Tail output feature',
+    status: 'done',
+    priority: 0,
+    dependsOn: [],
+    dependency: { state: 'ready', waitingOn: [], brokenOn: [] },
+    writeFiles: ['scripts/a.gd'],
+    assignee: { name: 'fixer', session: 'session-fixer' },
+    attempts: 1,
+    maxAttempts: 3,
+    leaseUntil: null,
+    waitingReason: null,
+    dispatch: { status: 'submitted', target: 'fixer', error: null },
+    base: 'base-sha',
+    target: 'feat/task-center-v2',
+    branch: 'task/T-3-1',
+    worktree: PROJECT + '\\.worktrees\\T-3',
+    commit: 'abcdef1234567890',
+    actualFiles: ['scripts/a.gd'],
+    requiredRole: null,
+    merge: {
+      status: 'failed',
+      base: 'base-sha',
+      target: 'feat/task-center-v2',
+      head: 'abcdef1234567890',
+      mergeCommit: null,
+      declaredFiles: ['scripts/a.gd'],
+      actualFiles: ['scripts/a.gd'],
+      tests: 'npm run verify',
+      reviewer: '@user',
+      conflict: null,
+      output: '$ npm run verify  (exit 1)\nFAIL board.test.mjs',
+      at: new Date(now - 1000).toISOString(),
+      verdict: { status: 'failed', by: '@system', at: new Date(now - 900).toISOString(), output: LONG_VERDICT_OUTPUT },
+    },
+    createdAt: new Date(now - 120000).toISOString(),
+    updatedAt: new Date(now - 1000).toISOString(),
+    spec: '',
+    acceptance: '',
+    evidence: 'npm run verify',
+    history: [],
+  },
 ]
 const HOST = {
   ok: true,
@@ -183,8 +239,8 @@ const HOST = {
   version: 2,
   seq: 3,
   updatedAt: new Date(now).toISOString(),
-  dispatch: { state: 'paused', maxConcurrent: 3, allowSpawn: true, maxWorkAgents: 4, maxAttempts: 3, request: { id: 'R-1', by: '@lead', at: new Date(now - 30000).toISOString(), note: 'deps are ready' } },
-  counts: { total: 2, pending: 1, ready: 0, running: 1, done: 0, blocked: 0, cancelled: 0 },
+  dispatch: { state: 'paused', maxConcurrent: 3, allowSpawn: true, maxWorkAgents: 4, maxAttempts: 3, testing: 'self', request: { id: 'R-1', by: '@lead', at: new Date(now - 30000).toISOString(), note: 'deps are ready' } },
+  counts: { total: 3, pending: 1, ready: 0, running: 1, done: 1, blocked: 0, cancelled: 0 },
   queue: [],
   tasks: TASKS,
   workers: {
@@ -274,7 +330,7 @@ check('the project path is shown', textOf(tree).indexOf(PROJECT) >= 0)
 check('the Host task title is rendered', textOf(tree).indexOf('Build damage system') >= 0)
 check('the waiting task is rendered', textOf(tree).indexOf('Enemy AI') >= 0)
 check('the board has five columns', findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length === 5, String(findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length))
-check('both cards are rendered', findAll(tree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card').length === 2)
+check('all three cards are rendered', findAll(tree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card').length === 3)
 check('the dependency chip is rendered', textOf(tree).indexOf('T-1') >= 0)
 check('a pending task renders the reason it is waiting', textOf(tree).indexOf('等待依赖') >= 0, textOf(tree))
 check('a running task renders no waiting reason', textOf(tree).indexOf('派发已暂停') < 0 && textOf(tree).indexOf('并发已满') < 0, textOf(tree))
@@ -430,6 +486,100 @@ check(
     'the selected task survives a remount',
     findAll(afterSelection, (node) => node.props && node.props.className === 'gbt-drawer').length === 1,
   )
+}
+
+// Settings: independent testing is a user choice and travels as the testing field.
+{
+  const settingsTree = withHooks(panel, { initialView: 'board', initialSettingsOpen: true })
+  await flush()
+  const settingsText = textOf(settingsTree)
+  const select = findAll(settingsTree, (node) => node.type === 'select')[0]
+  check('the settings form offers a testing choice', select !== undefined)
+  const options = findAll(select, (node) => node.type === 'option')
+  check(
+    'the testing choice offers self and independent',
+    options.length === 2 && options[0].props.value === 'self' && options[1].props.value === 'independent',
+    JSON.stringify(options.map((option) => option.props.value)),
+  )
+  check('the independent choice is described as system verification', settingsText.indexOf('系统验证') >= 0, settingsText)
+  check('the testing setting says it is user-only', settingsText.indexOf('仅用户可修改') >= 0, settingsText)
+  check('the copy never calls it a manual test', settingsText.indexOf('人工测试') < 0, settingsText)
+
+  select.props.ref.current = { value: 'independent' }
+  findButton(settingsTree, '应用').props.onClick()
+  await flush()
+  const independentPost = posts[posts.length - 1]
+  check(
+    'applying sends the independent testing value',
+    independentPost.action === 'settings' && independentPost.testing === 'independent' && independentPost.maxConcurrent === 3,
+    JSON.stringify(independentPost),
+  )
+
+  const selfTree = withHooks(panel, { initialView: 'board', initialSettingsOpen: true })
+  await flush()
+  const selfSelect = findAll(selfTree, (node) => node.type === 'select')[0]
+  selfSelect.props.ref.current = { value: 'self' }
+  findButton(selfTree, '应用').props.onClick()
+  await flush()
+  const selfPost = posts[posts.length - 1]
+  check('the choice switches back to self testing', selfPost.action === 'settings' && selfPost.testing === 'self', JSON.stringify(selfPost))
+}
+
+// Merge request + system verdict state is visible on the card and in the drawer.
+{
+  const boardTree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  const cards = findAll(boardTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card')
+  const mergeCard = cards.filter((card) => textOf(card).indexOf('Tail output feature') >= 0)[0]
+  check('the merge-request task card is rendered', mergeCard !== undefined)
+  const cardText = textOf(mergeCard)
+  check('the card shows the merge status', cardText.indexOf('验证失败') >= 0, cardText)
+  check('the card shows the system verdict', cardText.indexOf('系统验证') >= 0 && cardText.indexOf('未通过') >= 0, cardText)
+  check('the card shows the branch and commit', cardText.indexOf('task/T-3-1') >= 0 && cardText.indexOf('abcdef1234') >= 0, cardText)
+  check('the card names the task worktree', cardText.indexOf('T-3') >= 0, cardText)
+
+  mergeCard.props.onClick()
+  const detailTree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  const drawer = findAll(detailTree, (node) => node.props && node.props.className === 'gbt-drawer')[0]
+  check('clicking the card opens its detail drawer', drawer !== undefined)
+  const detailText = textOf(drawer)
+  check('the detail shows the merge request section', detailText.indexOf('合并请求') >= 0 && detailText.indexOf('合并状态') >= 0, detailText.slice(0, 300))
+  check('the detail shows the merge status', detailText.indexOf('验证失败') >= 0, detailText)
+  check(
+    'the detail shows worktree, branch and commit',
+    detailText.indexOf('J:\\demo\\mm13d\\.worktrees\\T-3') >= 0 && detailText.indexOf('task/T-3-1') >= 0 && detailText.indexOf('abcdef1234567890') >= 0,
+    detailText,
+  )
+  check('the detail labels the verdict as a system verdict', detailText.indexOf('系统验证') >= 0, detailText)
+  check('the verdict records who and when', detailText.indexOf('@system') >= 0, detailText)
+  check(
+    'the verdict output keeps its tail',
+    detailText.indexOf('FAIL  scripts/test/deep-tail.test.mjs') >= 0 && detailText.indexOf('Error: deep stderr tail marker') >= 0,
+    detailText.slice(-600),
+  )
+  check('the verdict output head is truncated', detailText.indexOf('P'.repeat(1300)) < 0)
+  check('a tail hint marks the truncated output', detailText.indexOf('仅显示输出尾部') >= 0)
+  check('the merge verification output is shown too', detailText.indexOf('合并验证输出') >= 0 && detailText.indexOf('FAIL board.test.mjs') >= 0, detailText)
+}
+
+// A running task has a worktree/branch before any merge request exists.
+{
+  const boardTree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  const cards = findAll(boardTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card')
+  const runningCard = cards.filter((card) => textOf(card).indexOf('Build damage system') >= 0)[0]
+  check('the running task card is available', runningCard !== undefined)
+  const cardText = textOf(runningCard)
+  check('the running card shows its branch', cardText.indexOf('task/T-1-1') >= 0, cardText)
+  runningCard.props.onClick()
+  const detailTree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  const drawer = findAll(detailTree, (node) => node.props && node.props.className === 'gbt-drawer')[0]
+  const detailText = textOf(drawer)
+  check('the checkout section appears without a merge request', detailText.indexOf('执行工作树') >= 0, detailText)
+  check('and names the worktree and branch', detailText.indexOf('J:\\demo\\mm13d\\.worktrees\\T-1') >= 0 && detailText.indexOf('task/T-1-1') >= 0, detailText)
+  check('a task with no merge request has no merge section', detailText.indexOf('合并请求') < 0, detailText)
 }
 
 // teardown
