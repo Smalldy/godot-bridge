@@ -2177,6 +2177,22 @@ window.__ModuleLoader__.load({
 					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
 					setResult({ action: action, ok: outcome !== null && outcome !== undefined && outcome.ok === true, payload: payload })
 				}
+				// A successful create from a fork draft leaves fork mode: clear the
+				// draft so the form remounts blank (the success banner stays). A failed
+				// create keeps the draft and the user's edits for a retry.
+				async function createProfile(name, fields) {
+					// Capture the draft this request was submitted from: a Fork taken while
+					// the request is in flight must never be cleared by that response.
+					const submittedDraft = roleForkState.draft
+					const outcome = await store.send('rolesCreate', { name: name, profile: fields })
+					const ok = outcome !== null && outcome !== undefined && outcome.ok === true
+					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
+					setResult({ action: 'rolesCreate', ok: ok, payload: payload })
+					if (ok === true && submittedDraft !== null && roleForkState.draft === submittedDraft) {
+						roleForkState.draft = null
+						bumpFork()
+					}
+				}
 				function bind(stage, profile) {
 					void run('rolesBind', { stage: stage, profile: profile })
 				}
@@ -2385,7 +2401,7 @@ window.__ModuleLoader__.load({
 					roleCard({ id: 'stages', title: t('roleStages'), children: tableWrap('stage-table', stagesTable) }),
 					roleCard({ id: 'profiles', title: t('roleProfiles'), children: tableWrap('profile-table', profilesTable) }),
 					previewsCard,
-					roleCard({ id: 'create', title: t('roleCreate'), children: h(RoleCreateForm, { key: draft === null ? 'blank' : 'fork-' + draft.name, t: t, draft: draft, onCreate: function (name, fields) { void run('rolesCreate', { name: name, profile: fields }) }, onInvalid: function (code) { setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } }) } }) }),
+					roleCard({ id: 'create', title: t('roleCreate'), children: h(RoleCreateForm, { key: draft === null ? 'blank' : 'fork-' + draft.name, t: t, draft: draft, onCreate: function (name, fields) { void createProfile(name, fields) }, onInvalid: function (code) { setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } }) } }) }),
 					roleCard({ id: 'instances', title: t('roleInstances'), children: tableWrap('instance-table', instancesTable) }),
 					actionBar,
 				)
