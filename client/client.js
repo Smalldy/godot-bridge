@@ -399,6 +399,7 @@ window.__ModuleLoader__.load({
 				rolePermissions: '权限',
 				roleInstancesCount: '实例数',
 				roleReset: '恢复默认',
+				roleBatchActions: '批量操作',
 				roleRefresh: '读取角色配置',
 				roleSource: '来源',
 				roleDrain: '排空',
@@ -692,6 +693,7 @@ window.__ModuleLoader__.load({
 				rolePermissions: 'Permissions',
 				roleInstancesCount: 'Instances',
 				roleReset: 'Reset defaults',
+				roleBatchActions: 'Batch actions',
 				roleRefresh: 'Reload role profiles',
 				roleSource: 'Source',
 				roleDrain: 'Drain',
@@ -815,6 +817,21 @@ window.__ModuleLoader__.load({
 			'.gbt-modalhead{display:flex;align-items:flex-start;gap:10px;margin-bottom:2px}',
 			'.gbt-modalhead h2{margin:0;font-size:15px;font-weight:600;flex:1}',
 			'.gbt-form{display:flex;flex-direction:column;gap:10px;margin-top:12px}',
+'.gbt-rcard{border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;padding:12px;margin:0 0 12px;background:var(--dsw-alias-bg-layer-2);min-width:0}',
+'.gbt-rhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}',
+'.gbt-rtitle{margin:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+'.gbt-rbody{display:flex;flex-direction:column;gap:10px;min-width:0}',
+'.gbt-tablewrap{overflow-x:auto;width:100%;min-width:0}',
+'.gbt-roleprofiles{table-layout:auto;min-width:920px}',
+'.gbt-roleprofiles .gbt-input{width:100%;min-width:0;box-sizing:border-box}',
+'.gbt-rowactions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:nowrap;align-items:center}',
+'.gbt-formgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;align-items:start}',
+'.gbt-formgrid > label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dsw-alias-label-tertiary);min-width:0}',
+'.gbt-formgrid > label > input,.gbt-formgrid > label > select,.gbt-formgrid > label > textarea{width:100%;box-sizing:border-box}',
+'.gbt-formwide{grid-column:1 / -1}',
+'.gbt-formactions{grid-column:1 / -1;display:flex;justify-content:flex-end;gap:6px}',
+'.gbt-actionbar{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;margin:0 0 12px}',
+'@media (max-width: 720px){.gbt-formgrid{grid-template-columns:repeat(2,minmax(0,1fr))}.gbt-roleprofiles{min-width:760px}}',
 			'.gbt-field{display:flex;flex-direction:column;gap:4px}',
 			'.gbt-field label{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 			'.gbt-input,.gbt-area{box-sizing:border-box;width:100%;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;padding:6px 9px;height:32px}',
@@ -1781,22 +1798,26 @@ window.__ModuleLoader__.load({
 					h('td', { 'data-col': 'profile-prompt' }, cellInput(promptRef, 'prompt', profile.prompt || '')),
 					h(
 						'td',
-						null,
-						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-save', onClick: save }, t('roleSave')),
-						builtin
-							? null
-							: h(
-									'button',
-									{
-										type: 'button',
-										className: 'gbt-btn',
-										'data-action': 'rolesDelete',
-										onClick: function () {
-											props.onDelete(props.name)
+						{ 'data-col': 'profile-actions' },
+						h(
+							'div',
+							{ className: 'gbt-rowactions' },
+							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-save', onClick: save }, t('roleSave')),
+							builtin
+								? null
+								: h(
+										'button',
+										{
+											type: 'button',
+											className: 'gbt-btn',
+											'data-action': 'rolesDelete',
+											onClick: function () {
+												props.onDelete(props.name)
+											},
 										},
-									},
-									t('roleDelete'),
-								),
+										t('roleDelete'),
+									),
+						),
 					),
 				)
 			}
@@ -1831,16 +1852,15 @@ window.__ModuleLoader__.load({
 				}
 				return h(
 					'div',
-					{ className: 'gbt-form', 'data-form': 'role-create' },
-					h('h4', null, t('roleCreate')),
+					{ className: 'gbt-formgrid', 'data-form': 'role-create' },
 					h('label', null, t('roleName'), h('input', { ref: nameRef, className: 'gbt-input', 'data-field': 'name', defaultValue: '', spellCheck: false })),
 					h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: 'reviewer', 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
 					h('label', null, t('roleInstancesCount'), h('input', { ref: instancesRef, className: 'gbt-input', 'data-field': 'instances', type: 'number', min: 1, max: 8, defaultValue: '1' })),
 					h('label', null, t('roleSkills'), h('input', { ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: '', spellCheck: false })),
 					h('label', null, t('roleContext'), h('select', { ref: contextRef, defaultValue: 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')])),
 					h('label', null, t('rolePermissions'), h('input', { ref: permissionsRef, className: 'gbt-input', 'data-field': 'permissions', defaultValue: 'read-only', spellCheck: false })),
-					h('label', null, t('rolePrompt'), h('textarea', { ref: promptRef, className: 'gbt-input', 'data-field': 'prompt', defaultValue: '', rows: 2 })),
-					h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'rolesCreate', onClick: submit }, t('roleCreate')),
+					h('label', { className: 'gbt-formwide' }, t('rolePrompt'), h('textarea', { ref: promptRef, className: 'gbt-input', 'data-field': 'prompt', defaultValue: '', rows: 3 })),
+					h('div', { className: 'gbt-formactions' }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'rolesCreate', onClick: submit }, t('roleCreate'))),
 				)
 			}
 
@@ -1855,8 +1875,12 @@ window.__ModuleLoader__.load({
 					h(
 						'td',
 						null,
-						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesDrain', onClick: function () { props.onDrain(props.name) } }, t('roleDrain')),
-						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesReplace', onClick: function () { props.onReplace(props.name) } }, t('roleReplace')),
+						h(
+							'div',
+							{ className: 'gbt-rowactions' },
+							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesDrain', onClick: function () { props.onDrain(props.name) } }, t('roleDrain')),
+							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesReplace', onClick: function () { props.onReplace(props.name) } }, t('roleReplace')),
+						),
 					),
 				)
 			}
@@ -1893,6 +1917,21 @@ window.__ModuleLoader__.load({
 				return h('div', { className: 'gbt-banner', 'data-tone': 'info', 'data-role-result': 'ok' }, parts.length === 0 ? t('roleSave') + ' ✓' : parts.join(' · '))
 			}
 
+			/** One grouped card section with a title row. */
+			function roleCard(props) {
+				return h(
+					'section',
+					{ className: 'gbt-rcard', 'data-card': props.id },
+					h('div', { className: 'gbt-rhead' }, h('h3', { className: 'gbt-rtitle' }, props.title), props.aside === undefined ? null : props.aside),
+					h('div', { className: 'gbt-rbody' }, props.children),
+				)
+			}
+
+			/** Horizontal scrolling wrapper so narrow screens scroll, not squash. */
+			function tableWrap(key, table) {
+				return h('div', { key: key, className: 'gbt-tablewrap' }, table)
+			}
+
 			function StatusView(props) {
 				const t = props.t
 				const snapshot = props.snapshot
@@ -1924,12 +1963,12 @@ window.__ModuleLoader__.load({
 						blocks.push(h('div', { key: 'agents-empty', className: 'gbt-empty' }, t('workersEmpty')))
 					} else {
 						blocks.push(
-							h(
+							tableWrap('agents-table', h(
 								'table',
 								{ key: 'agents-table', className: 'gbt-locktable', 'data-section': 'agents' },
 								h('thead', null, h('tr', null, h('th', null, t('roleName')), h('th', null, t('statusKind')), h('th', null, t('statusDescription')), h('th', null, t('statusSession')), h('th', null, t('statusCurrentTask')))),
 								h('tbody', null, rows),
-							),
+							)),
 						)
 					}
 					const kinds = agents.kinds === undefined || agents.kinds === null ? {} : agents.kinds
@@ -1996,7 +2035,7 @@ window.__ModuleLoader__.load({
 						blocks.push(h('div', { key: 'wt-empty', className: 'gbt-empty' }, t('statusWorktreesEmpty')))
 					} else {
 						blocks.push(
-							h(
+							tableWrap('wt-table', h(
 								'table',
 								{ key: 'wt-table', className: 'gbt-locktable', 'data-section': 'worktrees' },
 								h('thead', null, h('tr', null, h('th', null, t('worktree')), h('th', null, t('statusKind')), h('th', null, t('branch')), h('th', null, t('wtHead')), h('th', null, t('wtTask')), h('th', null, t('wtActive')))),
@@ -2017,7 +2056,7 @@ window.__ModuleLoader__.load({
 										)
 									}),
 								),
-							),
+							)),
 						)
 					}
 				}
@@ -2039,7 +2078,7 @@ window.__ModuleLoader__.load({
 						blocks.push(h('div', { key: 'activity-empty', className: 'gbt-empty' }, t('statusActivityEmpty')))
 					} else {
 						blocks.push(
-							h(
+							tableWrap('activity-table', h(
 								'table',
 								{ key: 'activity-table', className: 'gbt-locktable', 'data-section': 'activity' },
 								h('thead', null, h('tr', null, h('th', null, t('submittedOn')), h('th', null, t('statusKind')), h('th', null, t('statusActor')), h('th', null, t('wtTask')), h('th', null, t('statusDescription')))),
@@ -2058,7 +2097,7 @@ window.__ModuleLoader__.load({
 										)
 									}),
 								),
-							),
+							)),
 						)
 					}
 				}
@@ -2115,119 +2154,123 @@ window.__ModuleLoader__.load({
 						},
 					})
 				})
+				const refreshButton = h(
+					'button',
+					{
+						type: 'button',
+						className: 'gbt-btn',
+						'data-action': 'rolesList',
+						onClick: function () {
+							void run('rolesList', {})
+						},
+					},
+					t('roleRefresh'),
+				)
+				const stagesTable = h(
+					'table',
+					{ className: 'gbt-locktable', 'data-section': 'role-stages' },
+					h('thead', null, h('tr', null, h('th', null, t('roleStage')), h('th', null, t('roleProfiles')), h('th', null, t('roleBind')))),
+					h(
+						'tbody',
+						null,
+						stageKeys.map(function (stage) {
+							return h(StageBindingRow, { key: stage, stage: stage, profile: stages[stage], names: names, t: t, onBind: bind })
+						}),
+					),
+				)
+				const profilesTable = h(
+					'table',
+					{ className: 'gbt-locktable gbt-roleprofiles', 'data-section': 'role-profiles' },
+					h(
+						'colgroup',
+						null,
+						h('col', { key: 'c-name', style: { width: '150px' } }),
+						h('col', { key: 'c-kind', style: { width: '90px' } }),
+						h('col', { key: 'c-stage', style: { width: '80px' } }),
+						h('col', { key: 'c-instances', style: { width: '80px' } }),
+						h('col', { key: 'c-skills', style: { width: '150px' } }),
+						h('col', { key: 'c-context', style: { width: '90px' } }),
+						h('col', { key: 'c-permissions', style: { width: '170px' } }),
+						h('col', { key: 'c-prompt' }),
+						h('col', { key: 'c-actions', style: { width: '130px' } }),
+					),
+					h(
+						'thead',
+						null,
+						h('tr', null, h('th', null, t('roleName')), h('th', null, t('roleKind')), h('th', null, t('roleStage')), h('th', null, t('roleInstancesCount')), h('th', null, t('roleSkills')), h('th', null, t('roleContext')), h('th', null, t('rolePermissions')), h('th', null, t('rolePrompt')), h('th', null, '')),
+					),
+					h('tbody', null, profileRows),
+				)
+				const instancesTable = h(
+					'table',
+					{ className: 'gbt-locktable', 'data-section': 'role-instances' },
+					h('thead', null, h('tr', null, h('th', null, t('roleName')), h('th', null, t('roleKind')), h('th', null, t('roleStatus')), h('th', null, ''))),
+					h(
+						'tbody',
+						null,
+						instances.length === 0
+							? h('tr', null, h('td', { colSpan: 4 }, t('roleInstancesEmpty')))
+							: instances.map(function (instance) {
+									return h(RoleInstanceRow, {
+										key: instance.name,
+										name: instance.name,
+										kind: instance.kind,
+										status: instance.status,
+										t: t,
+										onDrain: function (name) {
+											void run('rolesDrain', { name: name })
+										},
+										onReplace: function (name) {
+											void run('rolesReplace', { name: name })
+										},
+									})
+								}),
+					),
+				)
+				const actionBar = h(
+					'div',
+					{ className: 'gbt-actionbar', 'data-card': 'actionbar' },
+					h('h3', { className: 'gbt-rtitle', style: { marginRight: 'auto' } }, t('roleBatchActions')),
+					['worker', 'reviewer', 'tester'].map(function (kind) {
+						return h(
+							'button',
+							{
+								key: kind,
+								type: 'button',
+								className: 'gbt-btn',
+								'data-action': 'rolesReplace-kind',
+								'data-kind': kind,
+								onClick: function () {
+									void run('rolesReplace', { name: kind })
+								},
+							},
+							t('roleReplaceKind') + ' · ' + roleKindLabel(kind, t),
+						)
+					}),
+					h(
+						'button',
+						{
+							type: 'button',
+							className: 'gbt-btn',
+							'data-action': 'rolesReset',
+							onClick: function () {
+								void run('rolesReset', {})
+							},
+						},
+						t('roleReset'),
+					),
+				)
 				return h(
 					'div',
 					{ className: 'gbt-rolesview' },
-					h('p', { className: 'gbt-footnote' }, t('rolesHint')),
-					h(
-						'div',
-						{ className: 'gbt-actions' },
-						h(
-							'button',
-							{
-								type: 'button',
-								className: 'gbt-btn',
-								'data-action': 'rolesList',
-								onClick: function () {
-									void run('rolesList', {})
-								},
-							},
-							t('roleRefresh'),
-						),
-					),
+					h('p', { key: 'hint', className: 'gbt-footnote' }, t('rolesHint')),
 					roleResultBanner(result, t) || roleResultBanner(hostError, t) || roleResultBanner(hostResult, t),
-					h('h3', { className: 'gbt-subtitle' }, t('roleStages')),
-					h(
-						'table',
-						{ className: 'gbt-locktable', 'data-section': 'role-stages' },
-						h('thead', null, h('tr', null, h('th', null, t('roleStage')), h('th', null, t('roleProfiles')), h('th', null, t('roleBind')))),
-						h(
-							'tbody',
-							null,
-							stageKeys.map(function (stage) {
-								return h(StageBindingRow, { key: stage, stage: stage, profile: stages[stage], names: names, t: t, onBind: bind })
-							}),
-						),
-					),
-					h('h3', { className: 'gbt-subtitle' }, t('roleProfiles')),
-					h(
-						'table',
-						{ className: 'gbt-locktable', 'data-section': 'role-profiles' },
-						h(
-							'thead',
-							null,
-							h('tr', null, h('th', null, t('roleName')), h('th', null, t('roleKind')), h('th', null, t('roleStage')), h('th', null, t('roleInstancesCount')), h('th', null, t('roleSkills')), h('th', null, t('roleContext')), h('th', null, t('rolePermissions')), h('th', null, t('rolePrompt')), h('th', null, '')),
-						),
-						h('tbody', null, profileRows),
-					),
-					h(RoleCreateForm, {
-						t: t,
-						onCreate: function (name, fields) {
-							void run('rolesCreate', { name: name, profile: fields })
-						},
-						onInvalid: function (code) {
-							setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } })
-						},
-					}),
-					h('h3', { className: 'gbt-subtitle' }, t('roleInstances')),
-					h(
-						'table',
-						{ className: 'gbt-locktable', 'data-section': 'role-instances' },
-						h('thead', null, h('tr', null, h('th', null, t('roleName')), h('th', null, t('roleKind')), h('th', null, t('roleStatus')), h('th', null, ''))),
-						h(
-							'tbody',
-							null,
-							instances.length === 0
-								? h('tr', null, h('td', { colSpan: 4 }, t('roleInstancesEmpty')))
-								: instances.map(function (instance) {
-										return h(RoleInstanceRow, {
-											key: instance.name,
-											name: instance.name,
-											kind: instance.kind,
-											status: instance.status,
-											t: t,
-											onDrain: function (name) {
-												void run('rolesDrain', { name: name })
-											},
-											onReplace: function (name) {
-												void run('rolesReplace', { name: name })
-											},
-										})
-									}),
-						),
-					),
-					h(
-						'div',
-						{ className: 'gbt-actions' },
-						['worker', 'reviewer', 'tester'].map(function (kind) {
-							return h(
-								'button',
-								{
-									key: kind,
-									type: 'button',
-									className: 'gbt-btn',
-									'data-action': 'rolesReplace-kind',
-									'data-kind': kind,
-									onClick: function () {
-										void run('rolesReplace', { name: kind })
-									},
-								},
-								t('roleReplaceKind') + ' · ' + roleKindLabel(kind, t),
-							)
-						}),
-						h(
-							'button',
-							{
-								type: 'button',
-								className: 'gbt-btn',
-								'data-action': 'rolesReset',
-								onClick: function () {
-									void run('rolesReset', {})
-								},
-							},
-							t('roleReset'),
-						),
-					),
+					roleCard({ id: 'source', title: t('roleSource'), aside: refreshButton, children: [] }),
+					roleCard({ id: 'stages', title: t('roleStages'), children: tableWrap('stage-table', stagesTable) }),
+					roleCard({ id: 'profiles', title: t('roleProfiles'), children: tableWrap('profile-table', profilesTable) }),
+					roleCard({ id: 'create', title: t('roleCreate'), children: h(RoleCreateForm, { t: t, onCreate: function (name, fields) { void run('rolesCreate', { name: name, profile: fields }) }, onInvalid: function (code) { setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } }) } }) }),
+					roleCard({ id: 'instances', title: t('roleInstances'), children: tableWrap('instance-table', instancesTable) }),
+					actionBar,
 				)
 			}
 

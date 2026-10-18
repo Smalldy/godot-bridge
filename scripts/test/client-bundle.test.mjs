@@ -1035,6 +1035,83 @@ await flush()
   )
 }
 
+// ── Roles layout: cards, responsive create form, controlled tables ─────────
+{
+  const rolesTree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  const cards = findAll(rolesTree, (node) => node.props && typeof node.props.className === 'string' && node.props.className.indexOf('gbt-rcard') >= 0)
+  const cardIds = cards.map((node) => node.props['data-card'])
+  check(
+    'the roles view groups its sections into titled cards',
+    ['source', 'stages', 'profiles', 'create', 'instances'].every((id) => cardIds.indexOf(id) >= 0) && cards.length === 5,
+    JSON.stringify(cardIds),
+  )
+  check('every card has a title row', cards.every(function (card) { return findAll(card, (node) => node.props && node.props.className === 'gbt-rtitle').length === 1 }))
+  const actionBar = findAll(rolesTree, (node) => node.props && node.props['data-card'] === 'actionbar')[0]
+  check(
+    'batch actions live in a separate action bar',
+    actionBar !== undefined &&
+      findAll(actionBar, (node) => node.props && node.props.className === 'gbt-rtitle' && textOf(node).indexOf('批量操作') >= 0).length === 1 &&
+      findAll(actionBar, (node) => node.props && node.props['data-action'] === 'rolesReset').length === 1 &&
+      findAll(actionBar, (node) => node.props && node.props['data-action'] === 'rolesReplace-kind').length === 3 &&
+      findAll(actionBar, (node) => node.props && node.props['data-role-instance'] !== undefined).length === 0,
+    actionBar === undefined ? 'missing' : textOf(actionBar),
+  )
+
+  const form = findAll(rolesTree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  check('the create form uses the responsive grid class', form !== undefined && form.props.className === 'gbt-formgrid', form && form.props.className)
+  const formLabels = findAll(form, (node) => node.type === 'label')
+  check('the create form has a multi-field grid', formLabels.length === 7, String(formLabels.length))
+  const promptLabel = formLabels.filter((label) => label.props.className === 'gbt-formwide')[0]
+  check('the prompt field spans the full grid row', promptLabel !== undefined && findAll(promptLabel, (node) => node.type === 'textarea' && node.props['data-field'] === 'prompt').length === 1)
+  const formActions = findAll(form, (node) => node.props && node.props.className === 'gbt-formactions')[0]
+  check('the create button sits in a right-aligned action row', formActions !== undefined && findAll(formActions, (node) => node.props && node.props['data-action'] === 'rolesCreate').length === 1)
+  const css = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+  check(
+    'CSS gives the form a multi-column grid, a narrow variant and scrollable role tables',
+    css.indexOf('.gbt-formgrid') >= 0 &&
+      css.indexOf('grid-template-columns:repeat(3') >= 0 &&
+      css.indexOf('@media (max-width: 720px)') >= 0 &&
+      css.indexOf('.gbt-tablewrap{overflow-x:auto') >= 0 &&
+      css.indexOf('.gbt-roleprofiles') >= 0,
+    css.slice(0, 120),
+  )
+
+  const wraps = findAll(rolesTree, (node) => node.props && typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('gbt-tablewrap') >= 0)
+  check('role tables are wrapped in horizontal-scroll containers', wraps.length === 3 && wraps.some((wrap) => findAll(wrap, (node) => node.props && node.props['data-section'] === 'role-stages').length === 1) && wraps.some((wrap) => findAll(wrap, (node) => node.props && node.props['data-section'] === 'role-instances').length === 1), String(wraps.length))
+  const profileTable = findAll(rolesTree, (node) => node.props && node.props['data-section'] === 'role-profiles')[0]
+  check(
+    'the profile table declares fixed column widths with a flexible prompt and a fixed action column',
+    profileTable !== undefined &&
+      findAll(profileTable, (node) => node.type === 'col').length === 9 &&
+      findAll(profileTable, (node) => node.type === 'col').some((col) => col.props.style === undefined) &&
+      findAll(profileTable, (node) => node.type === 'col' && node.props.style !== undefined && node.props.style.width === '130px').length === 1,
+    profileTable && String(findAll(profileTable, (node) => node.type === 'col').length),
+  )
+  const instanceRow = findAll(rolesTree, (node) => node.type === 'tr' && node.props && node.props['data-role-instance'] !== undefined)[0]
+  check('drain/replace are grouped in a right-aligned row group', instanceRow !== undefined && findAll(instanceRow, (node) => node.props && node.props.className === 'gbt-rowactions').length === 1)
+  const statusTree = withHooks(panel, { initialView: 'status' })
+  const statusWrappers = findAll(statusTree, (node) => node.props && typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('gbt-tablewrap') >= 0)
+  const statusTables = ['agents', 'worktrees', 'activity'].map(function (section) {
+    return findAll(statusTree, (node) => node.type === 'table' && node.props && node.props['data-section'] === section)[0]
+  })
+  const ancestorCounts = statusTables.map(function (table) {
+    return statusWrappers.filter(function (wrapper) {
+      return findAll(wrapper, (node) => node === table).length > 0
+    }).length
+  })
+  check(
+    'each status table sits in exactly one scroll wrapper and no wrapper is nested',
+    statusTables.every((table) => table !== undefined) &&
+      statusWrappers.length === 3 &&
+      ancestorCounts.every((count) => count === 1) &&
+      statusWrappers.every(function (wrapper) {
+        return findAll(wrapper, (node) => node !== wrapper && node.props && typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('gbt-tablewrap') >= 0).length === 0
+      }),
+    JSON.stringify({ wrappers: statusWrappers.length, ancestors: ancestorCounts }),
+  )
+}
+
 // File-lock view: waiters are advisory, not a queue.
 const locksTree = withHooks(panel, { initialView: 'locks' })
 await flush()
