@@ -24,10 +24,12 @@ import {
   reworkBriefFor,
   roleKindOf,
   servicesFor,
+  testFailureBriefFor,
+  testerBriefFor,
   workerPool,
 } from './dispatch.mjs'
 import { readRoleConfig } from './board.mjs'
-import { mergeEligible, recordMergeResult, refreshMergeRequest } from './merge.mjs'
+import { mergeEligible, recordCandidate, recordMergeResult, refreshMergeRequest, testCandidateFor } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
 
 /** Every action this API exposes. The tool enum and the route allowlist are
@@ -109,6 +111,8 @@ function messageOf(error) {
  * @param options.autoMerge - true enables the host-driven merge sweep
  *   (autoMergePending): a ready open request is merged without any model
  *   action. Off by default so direct API users stay explicit.
+ * @param options.godotPath - engine path shown in the tester brief. Omitted means
+ *   "the godot-bridge godotPath setting, or godot on PATH".
  * @param options.now - clock, for tests.
  */
 export function createApi(ctx, options) {
@@ -119,6 +123,10 @@ export function createApi(ctx, options) {
   const merger = opts.merger === undefined ? null : opts.merger
   const roles = opts.roles === undefined ? null : opts.roles
   const autoMerge = opts.autoMerge === true
+  // The independent tester workflow (candidate checkout + host auto-merge) is
+  // active when the production row wires the role registry and merge queue.
+  const candidateWorkflow = roles !== null && merger !== null && typeof merger.createCandidate === 'function'
+  const godotPath = typeof opts.godotPath === 'string' && opts.godotPath.length > 0 ? opts.godotPath : null
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
 
   /** Merge actions are one-at-a-time: the queue serialises the whole read+git+write. */
@@ -199,6 +207,100 @@ export function createApi(ctx, options) {
       return failure('wrong-role', 'Only a ' + kind + ' role member or the user can record this verdict; ' + String(caller.member.name === undefined || caller.member.name === null ? 'this agent' : caller.member.name) + ' is not one.')
     }
     return null
+  }
+
+  /** The dispatch worktree root of one board. */
+  function worktreeRootOf(board) {
+    const settings = board === undefined || board === null || board.dispatch === undefined || board.dispatch === null ? null : board.dispatch.worktree
+    return settings !== null && settings !== undefined && typeof settings.root === 'string' && settings.root.length > 0 ? settings.root : '.worktrees'
+  }
+
+  /** The candidate checkout of a task in testing, for the panel and the brief. */
+  function candidateOf(projectPath, board, task) {
+    if (task === null || task === undefined || task.status !== 'testing') return null
+    const merge = task.merge
+    if (merge === null || merge === undefined || typeof merge !== 'object' || typeof merge.mergeCommit !== 'string' || merge.mergeCommit.length === 0) return null
+    const candidate = testCandidateFor(projectPath, worktreeRootOf(board), task.id)
+    return { path: candidate.path, branch: candidate.branch, base: typeof task.base === 'string' ? task.base : null, head: merge.mergeCommit }
+  }
+
+  /** Is the project (or its candidate checkout) a Godot project? Used by the tester brief. */
+  async function godotInfoFor(projectPath, candidatePath) {
+    const files = []
+    if (typeof candidatePath === 'string' && candidatePath.length > 0) files.push(join(candidatePath, 'project.godot'))
+    if (typeof projectPath === 'string' && projectPath.length > 0) files.push(join(projectPath, 'project.godot'))
+    if (ctx === undefined || ctx === null || ctx.fs === undefined || ctx.fs === null) return { project: false }
+    for (const file of files) {
+      try {
+        const target = await ctx.fs.resolve(file, { cwd: projectPath })
+        const info = await ctx.fs.stat(target)
+        if (info !== undefined) return { project: true, projectFile: file, enginePath: godotPath }
+      } catch (error) {
+        // Not there; try the next location.
+      }
+    }
+    return { project: false }
+  }
+
+  /**
+   * Merge the tester-accepted candidate. On a moved target the verdict is
+   * invalidated: the old candidate is discarded, a new one is built from the
+   * current target head, the test round resets and the tester is asked to retest.
+   */
+  async function mergeTestedCandidate(projectPath, id, by, context) {
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const task = model.findTask(read.board, id)
+    if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
+    const root = worktreeRootOf(read.board)
+    const outcome = await serialised(() => merger.mergeCandidate(task, projectPath, { worktreeRoot: root }))
+    if (outcome === null || outcome === undefined || outcome.ok !== true) {
+      return failure(
+        outcome === null || outcome === undefined ? 'merge-failed' : String(outcome.code),
+        outcome === null || outcome === undefined ? 'the merge queue returned no result' : String(outcome.message),
+      )
+    }
+    if (outcome.status === 'merged') {
+      const recorded = await writeTask(
+        projectPath,
+        id,
+        (board) => recordMergeResult(board, id, { status: 'merged', mergeCommit: outcome.mergeCommit, conflict: null, output: null }, clock(), by),
+        context,
+      )
+      if (recorded.ok === true) await notifyMergeOutcome(projectPath, recorded.task)
+      if (recorded.ok !== true) return recorded
+      recorded.merged = true
+      recorded.retest = false
+      return recorded
+    }
+    if (outcome.status === 'stale') {
+      await serialised(() => merger.discardCandidate(task, projectPath, { worktreeRoot: root }))
+      const rebuilt = await serialised(() => merger.createCandidate(task, projectPath, { worktreeRoot: root }))
+      if (rebuilt === null || rebuilt === undefined || rebuilt.ok !== true) {
+        return failure(
+          rebuilt === null || rebuilt === undefined ? 'candidate-failed' : String(rebuilt.code),
+          rebuilt === null || rebuilt === undefined ? 'could not rebuild the test candidate' : String(rebuilt.message),
+        )
+      }
+      const recorded = await writeTask(
+        projectPath,
+        id,
+        (board) => recordCandidate(board, id, rebuilt, clock(), { retest: true, by: by }),
+        context,
+      )
+      if (recorded.ok !== true) return recorded
+      recorded.merged = false
+      recorded.retest = true
+      recorded.candidate = rebuilt
+      const provisioned = await provisionRole('tester', projectPath, recorded.task)
+      if (provisioned !== null) recorded.provisioned = provisioned
+      const tester = roleSlotNameOf('tester')
+      if (tester !== null) {
+        await notifyMember(tester, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path) }))
+      }
+      return recorded
+    }
+    return failure('merge-failed', 'the candidate merge returned an unexpected status ' + String(outcome.status))
   }
 
   /** Read the project role config (defaults if absent/broken). */
@@ -561,7 +663,7 @@ export function createApi(ctx, options) {
         const rank = STATUS_RANK[left.status] - STATUS_RANK[right.status]
         return rank !== 0 ? rank : left.id.localeCompare(right.id)
       })
-      .map((task) => detailOf(board, task, now))
+      .map((task) => Object.assign(detailOf(board, task, now), { candidate: candidateOf(projectPath, board, task) }))
     return ok({
       project: projectPath,
       version: board.version,
@@ -771,8 +873,13 @@ export function createApi(ctx, options) {
     if (merge === null || merge === undefined || typeof merge !== 'object' || merge.status !== 'open') {
       return failure('no-open-merge', id + ' has no open merge request')
     }
-    if (merger === null || typeof merger.mergeRequest !== 'function') {
+    if (merger === null || (typeof merger.mergeRequest !== 'function' && typeof merger.mergeCandidate !== 'function')) {
       return failure('no-merge-service', 'the merge queue is not available in this profile')
+    }
+    // Tester workflow: the candidate was built at review approval and tested
+    // independently; a passed test now merges that exact tree (no verify).
+    if (candidateWorkflow && mergeEligible(task) && typeof merge.mergeCommit === 'string' && merge.mergeCommit.length > 0) {
+      return mergeTestedCandidate(projectPath, id, by, context)
     }
     // The phase machine is the merge gate: only a task in TESTING whose test
     // phase passed may reach the queue. A submission under review, or a failed
@@ -840,7 +947,7 @@ export function createApi(ctx, options) {
    */
   async function autoMergePending(projectPath) {
     if (autoMerge !== true) return ok({ merged: [], skipped: [], disabled: true })
-    if (merger === null || typeof merger.mergeRequest !== 'function') return ok({ merged: [], skipped: [], disabled: true })
+    if (merger === null) return ok({ merged: [], skipped: [], disabled: true })
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const candidates = read.board.tasks
@@ -856,6 +963,10 @@ export function createApi(ctx, options) {
         result = await serialised(() => mergeOne(projectPath, id, 'system', systemContext))
       } catch (error) {
         result = failure('merge-error', messageOf(error))
+      }
+      if (result.ok === true && result.merged === false) {
+        skipped.push({ id: id, code: result.retest === true ? 'retest' : 'merge-pending' })
+        continue
       }
       if (result.ok === true) {
         merged.push(id)
@@ -907,7 +1018,7 @@ export function createApi(ctx, options) {
       const task = model.findTask(read.board, String(source.id === undefined ? '' : source.id))
       if (task === undefined) return failure('unknown-task', 'no task with id ' + String(source.id))
       return ok({
-        task: detailOf(read.board, task, now),
+        task: Object.assign(detailOf(read.board, task, now), { candidate: candidateOf(projectPath, read.board, task) }),
         locks: locks.view(state.memory.locks, read.board, now).filter((lock) => lock.taskId === task.id),
       })
     }
@@ -1259,13 +1370,31 @@ export function createApi(ctx, options) {
       if (reviewTask === undefined) return failure('unknown-task', 'no task with id ' + id)
       const reviewRefused = verdictRefusal(context, reviewTask, 'reviewer')
       if (reviewRefused !== null) return reviewRefused
+      // Build the independent test candidate BEFORE the phase moves: a conflict
+      // is a readable refusal and the task stays in review for a changes request.
+      let candidate = null
+      if (action === 'approveReview' && candidateWorkflow) {
+        candidate = await serialised(() => merger.createCandidate(reviewTask, projectPath, { worktreeRoot: worktreeRootOf(read.board) }))
+        if (candidate === null || candidate === undefined || candidate.ok !== true) {
+          return failure(
+            candidate === null || candidate === undefined || candidate.code === undefined ? 'candidate-failed' : String(candidate.code),
+            candidate === null || candidate === undefined || candidate.message === undefined ? 'could not build the test candidate' : String(candidate.message),
+            candidate !== null && candidate !== undefined && candidate.conflict ? { conflict: candidate.conflict } : undefined,
+          )
+        }
+      }
       const result = await writeTask(
         projectPath,
         id,
-        (board) =>
-          action === 'approveReview'
-            ? model.approveReview(board, id, clock(), context.by)
-            : model.requestChanges(board, id, source.reasons, clock(), context.by),
+        (board) => {
+          const transitioned =
+            action === 'approveReview'
+              ? model.approveReview(board, id, clock(), context.by)
+              : model.requestChanges(board, id, source.reasons, clock(), context.by)
+          if (transitioned.ok !== true) return transitioned
+          if (candidate !== null) return recordCandidate(transitioned.board, id, candidate, clock(), { by: context.by })
+          return transitioned
+        },
         context,
       )
       if (result.ok !== true) return result
@@ -1280,8 +1409,15 @@ export function createApi(ctx, options) {
       if (action === 'approveReview' && result.task !== null && result.task !== undefined && result.task.status === 'testing') {
         const provisioned = await provisionRole('tester', projectPath, result.task)
         if (provisioned !== null) result.provisioned = provisioned
+        if (candidate !== null) {
+          result.candidate = candidate
+          const tester = roleSlotNameOf('tester')
+          if (tester !== null) {
+            await notifyMember(tester, testerBriefFor(result.task, projectPath, candidate, { godot: await godotInfoFor(projectPath, candidate.path) }))
+          }
+        }
       }
-      return ok({ task: result.task, events: result.events, provisioned: result.provisioned })
+      return ok({ task: result.task, events: result.events, provisioned: result.provisioned, candidate: result.candidate })
     }
     if (action === 'passTest' || action === 'failTest') {
       const id = String(source.id === undefined ? '' : source.id)
@@ -1295,14 +1431,47 @@ export function createApi(ctx, options) {
       const result = await writeTask(
         projectPath,
         id,
-        (board) =>
-          action === 'passTest'
-            ? model.passTest(board, id, clock(), context.by)
-            : model.failTest(board, id, source.evidence, clock(), context.by),
+        (board) => {
+          const decided =
+            action === 'passTest'
+              ? model.passTest(board, id, clock(), context.by)
+              : model.failTest(board, id, source.evidence, clock(), context.by)
+          if (decided.ok !== true) return decided
+          if (action === 'passTest' && source.evidence !== undefined && source.evidence !== null) {
+            const text = String(source.evidence).trim()
+            const task = model.findTask(decided.board, id)
+            if (task !== null && task !== undefined && task.test !== null && task.test !== undefined && text !== '') {
+              task.test.evidence = text
+            }
+          }
+          return decided
+        },
         context,
       )
       if (result.ok !== true) return result
-      // A passed test makes the request merge-eligible; the host sweep queues it.
+      const hasCandidate =
+        result.task !== null &&
+        result.task !== undefined &&
+        result.task.merge !== null &&
+        result.task.merge !== undefined &&
+        typeof result.task.merge.mergeCommit === 'string' &&
+        result.task.merge.mergeCommit.length > 0
+      if (action === 'passTest' && candidateWorkflow && hasCandidate) {
+        // The tester accepted the candidate: the host merges that exact tree now
+        // (no separate verify). A moved target comes back as a retest.
+        const merged = await mergeTestedCandidate(projectPath, id, context.by, context)
+        if (merged.ok === true) return merged
+        // The pass is recorded; a transient merge failure is retried by the sweep.
+        return ok({ task: result.task, events: result.events, mergeError: merged })
+      }
+      if (action === 'failTest' && candidateWorkflow && hasCandidate) {
+        await serialised(() => merger.discardCandidate(result.task, projectPath, { worktreeRoot: worktreeRootOf(read.board) }))
+        const owner =
+          result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
+            ? null
+            : result.task.assignee.name
+        if (owner !== null) await notifyMember(owner, testFailureBriefFor(result.task, projectPath))
+      }
       return ok({ task: result.task, events: result.events })
     }
     if (action === 'cancel') {

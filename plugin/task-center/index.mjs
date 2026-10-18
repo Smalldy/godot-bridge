@@ -20,7 +20,7 @@
 
 import { createState } from './state.mjs'
 import { createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
-import { createMerger, verifyFor } from './merge.mjs'
+import { createMerger } from './merge.mjs'
 import { createApi } from './api.mjs'
 import { registerTaskTool } from './tool.mjs'
 import { registerTaskRoutes } from './routes.mjs'
@@ -56,11 +56,9 @@ export function apply(ctx) {
     git: git,
     roles: roles,
   })
-  // The merge queue runs the project's verification through the unconfined
-  // subprocess service before fast-forwarding. Lazy — activation spawns nothing;
-  // a merge is the only thing that runs it.
-  const verify = verifyFor(ctx)
-  const merger = createMerger({ git: git, verify: verify })
+  // The merge queue only integrates a candidate the independent tester already
+  // accepted; the host no longer runs a third full verify of its own.
+  const merger = createMerger({ git: git })
   // autoMerge turns on the host-driven merge sweep below: a task that passed its
   // review and test phases must not wait for a merger model.
   const api = createApi(ctx, {
