@@ -203,6 +203,26 @@ window.__ModuleLoader__.load({
 				emptyQueue: '没有可派发的任务。',
 				emptyLocks: '当前没有文件锁。',
 				emptyHistory: '没有历史记录。',
+				workersTab: '执行者',
+				workersLead: 'Team Lead',
+				workersCap: '上限',
+				workersBusy: '执行中',
+				workersIdle: '空闲',
+				workersProvisioning: '启动中',
+				workersFailed: '失败',
+				workerName: '名称',
+				workerStatus: '状态',
+				workerCurrent: '当前任务',
+				workersHint: '执行者是当前 Team 的 WorkAgent：优先复用空闲成员，没有空闲时才新建；上限由派发设置决定（GUI 下默认是并发 + 1）。',
+				workersNoTeam: '没有可用的 Team Lead：任务会保持等待，直到有 Team 会话存在。',
+				workersEmpty: 'Team 里还没有 WorkAgent。',
+				workersUnavailable: '宿主没有提供执行者池信息。',
+				workersError: '执行者池不可读',
+				workersErrNoService: '当前 profile 没有 Agent Teams 服务',
+				workersErrNoLead: '没有活着的 Team Lead',
+				workersErrRoster: '花名册不可读',
+				waiters: '等待者',
+				locksWaitersHint: '等待者 = 当前会等这个文件的任务；这不是 FIFO 队列——调度器没有锁队列，只在每轮派发时重试。',
 				unknownProjectHint: '还没有项目。在会话里调用一次 task_center，或在下方填写项目目录。',
 				offline: '宿主没有响应',
 				error: '操作失败',
@@ -320,6 +340,26 @@ window.__ModuleLoader__.load({
 				emptyQueue: 'Nothing is ready to dispatch.',
 				emptyLocks: 'No file locks right now.',
 				emptyHistory: 'No history yet.',
+				workersTab: 'Workers',
+				workersLead: 'Team lead',
+				workersCap: 'Cap',
+				workersBusy: 'Busy',
+				workersIdle: 'Idle',
+				workersProvisioning: 'Starting',
+				workersFailed: 'Failed',
+				workerName: 'Name',
+				workerStatus: 'Status',
+				workerCurrent: 'Current task',
+				workersHint: 'Workers are the WorkAgents of the current Team: idle members are reused first and a new one is spawned only when none is idle; the cap comes from the dispatch settings (concurrency + 1 by default in the GUI).',
+				workersNoTeam: 'No live Team Lead: tasks stay pending until a Team session exists.',
+				workersEmpty: 'The team has no WorkAgent yet.',
+				workersUnavailable: 'The host did not report a worker pool.',
+				workersError: 'Worker pool unreadable',
+				workersErrNoService: 'this profile has no Agent Teams services',
+				workersErrNoLead: 'no live Team Lead',
+				workersErrRoster: 'the roster could not be read',
+				waiters: 'Waiters',
+				locksWaitersHint: 'Waiters are the tasks that would wait on this file right now. This is not a FIFO queue — the scheduler keeps no lock queue and simply retries on each dispatch pass.',
 				unknownProjectHint: 'No project yet. Call task_center once in a session, or enter a project directory below.',
 				offline: 'The host did not answer',
 				error: 'Action failed',
@@ -386,6 +426,7 @@ window.__ModuleLoader__.load({
 			'.gbt-counts{display:flex;gap:6px;flex-wrap:wrap}',
 			'.gbt-count{display:flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;background:var(--dsw-alias-bg-layer-4);font-size:11px;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-count b{font-weight:600;color:var(--dsw-alias-label-primary)}',
+			'.gbt-workermeta{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}',
 			'.gbt-controls{display:flex;gap:8px;margin-left:auto;align-items:center;flex-wrap:wrap}',
 			'.gbt-btn{appearance:none;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);height:30px;padding:0 12px;border-radius:8px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}',
 			'.gbt-btn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-4)}',
@@ -450,6 +491,7 @@ window.__ModuleLoader__.load({
 			'.gbt-locktable{width:100%;border-collapse:collapse;font-size:11px}',
 			'.gbt-locktable th{text-align:left;font-weight:500;color:var(--dsw-alias-label-tertiary);padding:6px 8px;border-bottom:0.5px solid var(--dsw-alias-border-l4);position:sticky;top:0;background:var(--dsw-alias-bg-layer-2);z-index:1}',
 			'.gbt-locktable td{padding:6px 8px;border-bottom:0.5px solid var(--dsw-alias-border-l4);vertical-align:middle;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-waiters{display:flex;gap:4px;flex-wrap:wrap}',
 			'.gbt-mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}',
 			'.gbt-overlay{position:fixed;inset:0;background:rgba(15,18,24,.42);display:grid;place-items:center;z-index:100;padding:20px}',
 			'.gbt-modal{width:min(580px,100%);max-height:86vh;overflow:auto;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.22),0 2px 8px rgba(0,0,0,.08);padding:18px}',
@@ -472,6 +514,9 @@ window.__ModuleLoader__.load({
 			'.gbt-pill[data-status="done"]{background:rgba(47,179,68,.14);color:#2f9e44}',
 			'.gbt-pill[data-status="blocked"]{background:rgba(229,72,77,.14);color:#d33}',
 			'.gbt-pill[data-status="cancelled"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-pill[data-status="inactive"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-pill[data-status="provisioning"]{background:rgba(245,159,0,.14);color:#b7791f}',
+			'.gbt-pill[data-status="failed"]{background:rgba(229,72,77,.14);color:#d33}',
 			'.gbt-iconbtn{appearance:none;border:none;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:16px;line-height:1;padding:2px 5px;border-radius:6px}',
 			'.gbt-iconbtn:hover{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-primary)}',
 			'.gbt-projectform{display:flex;gap:6px;align-items:center;margin-top:10px;flex-wrap:wrap}',
@@ -557,6 +602,7 @@ window.__ModuleLoader__.load({
 				queue: Array.isArray(payload.queue) ? payload.queue : [],
 				tasks: tasks,
 				locks: Array.isArray(payload.locks) ? payload.locks : [],
+				workers: payload.workers === undefined || payload.workers === null ? null : payload.workers,
 				scheduler: payload.scheduler === undefined ? null : payload.scheduler,
 				version: payload.version,
 				updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : null,
@@ -914,59 +960,170 @@ window.__ModuleLoader__.load({
 				return h('div', null, blocks)
 			}
 
-			function LocksView(props) {
-				const locks = props.snapshot.locks
-				if (locks.length === 0) return h('div', { className: 'gbt-empty' }, props.t('emptyLocks'))
-				return h(
-					'table',
-					{ className: 'gbt-locktable' },
+			function WorkersView(props) {
+				const t = props.t
+				const snapshot = props.snapshot
+				const workers = snapshot.workers
+				const blocks = []
+				blocks.push(h('p', { key: 'hint', className: 'gbt-footnote' }, t('workersHint')))
+				if (snapshot.source === 'error') {
+					blocks.push(h('div', { key: 'offline', className: 'gbt-empty' }, t('workersUnavailable')))
+					return h('div', null, blocks)
+				}
+				if (workers === null || workers === undefined) {
+					blocks.push(h('div', { key: 'unavailable', className: 'gbt-empty' }, t('workersUnavailable')))
+					return h('div', null, blocks)
+				}
+				if (typeof workers.error === 'string' && workers.error !== '') {
+					const errorKey = WORKER_ERROR[workers.error]
+					const explanation = errorKey === undefined ? workers.error : t(errorKey) + ' (' + workers.error + ')'
+					blocks.push(h('div', { key: 'error', className: 'gbt-banner', style: { margin: '0 0 12px' } }, h('span', null, t('workersError') + ': ' + explanation)))
+				}
+				const lead = typeof workers.lead === 'string' && workers.lead.length > 0 ? workers.lead : null
+				const countText = function (value) {
+					return Number.isFinite(value) ? String(value) : '—'
+				}
+				blocks.push(
 					h(
-						'thead',
-						null,
+						'div',
+						{ key: 'meta', className: 'gbt-workermeta' },
+						h('span', { key: 'lead', className: 'gbt-count' }, t('workersLead'), h('b', null, lead === null ? '—' : lead)),
+						h('span', { key: 'cap', className: 'gbt-count' }, t('workersCap'), h('b', null, countText(workers.cap))),
+						h('span', { key: 'busy', className: 'gbt-count' }, t('workersBusy'), h('b', null, countText(workers.busy))),
+						h('span', { key: 'idle', className: 'gbt-count' }, t('workersIdle'), h('b', null, countText(workers.idle))),
+						h('span', { key: 'provisioning', className: 'gbt-count' }, t('workersProvisioning'), h('b', null, countText(workers.provisioning))),
+						h('span', { key: 'failed', className: 'gbt-count' }, t('workersFailed'), h('b', null, countText(workers.failed))),
+					),
+				)
+				const members = Array.isArray(workers.members) ? workers.members : []
+				if (lead === null) blocks.push(h('div', { key: 'noteam', className: 'gbt-empty' }, t('workersNoTeam')))
+				if (members.length === 0) {
+					blocks.push(h('div', { key: 'empty', className: 'gbt-empty' }, t('workersEmpty')))
+					return h('div', null, blocks)
+				}
+				blocks.push(
+					h(
+						'table',
+						{ key: 'table', className: 'gbt-locktable' },
+						h('thead', null, h('tr', null, h('th', null, t('workerName')), h('th', null, t('workerStatus')), h('th', null, t('workerCurrent')))),
 						h(
-							'tr',
+							'tbody',
 							null,
-							h('th', null, props.t('lockPath')),
-							h('th', null, props.t('taskCount')),
-							h('th', null, props.t('lockHolder')),
-							h('th', null, props.t('lockLease')),
-							h('th', null, ''),
+							members.map(function (member, index) {
+								const name = typeof member.name === 'string' && member.name !== '' ? member.name : typeof member.id === 'string' && member.id !== '' ? member.id : '—'
+								const status = typeof member.status === 'string' ? member.status : null
+								const current = member.currentTask !== null && member.currentTask !== undefined ? member.currentTask : null
+								let task = '—'
+								if (current !== null && typeof current.id === 'string' && current.id !== '') {
+									task = typeof current.title === 'string' && current.title !== '' ? current.id + ' · ' + current.title : current.id
+								} else if (status === 'inactive') {
+									task = t('workersIdle')
+								}
+								return h(
+									'tr',
+									{ key: member.id === undefined || member.id === null ? String(index) : String(member.id), 'data-worker': name, 'data-status': status === null ? '' : status },
+									h('td', { className: 'gbt-mono', 'data-col': 'worker-name' }, name),
+									h('td', { 'data-col': 'worker-status' }, h('span', { className: 'gbt-pill', 'data-status': status === null ? '' : status }, status === null ? '—' : workerStatusLabel(status, t))),
+									h('td', { 'data-col': 'worker-task' }, task),
+								)
+							}),
 						),
 					),
+				)
+				return h('div', null, blocks)
+			}
+
+			/** Waiter chips read "T-3 · title"; a missing title must not invent one. */
+			function waiterLabel(waiter) {
+				if (waiter === null || waiter === undefined) return ''
+				const id = typeof waiter.id === 'string' ? waiter.id : ''
+				const title = typeof waiter.title === 'string' ? waiter.title : ''
+				if (id === '') return title
+				return title === '' ? id : id + ' · ' + title
+			}
+
+			const WORKER_STATUS = { running: 'workersBusy', inactive: 'workersIdle', provisioning: 'workersProvisioning', failed: 'workersFailed' }
+			const WORKER_ERROR = { 'no-team-service': 'workersErrNoService', 'no-lead': 'workersErrNoLead', 'roster-unreadable': 'workersErrRoster' }
+
+			/** A worker status label; an unknown status is shown raw rather than guessed. */
+			function workerStatusLabel(status, t) {
+				const key = WORKER_STATUS[status]
+				return key === undefined ? status : t(key)
+			}
+
+			function LocksView(props) {
+				const locks = props.snapshot.locks
+				const hint = h('p', { key: 'hint', className: 'gbt-footnote' }, props.t('locksWaitersHint'))
+				if (locks.length === 0) return h('div', null, hint, h('div', { key: 'empty', className: 'gbt-empty' }, props.t('emptyLocks')))
+				return h(
+					'div',
+					null,
+					hint,
 					h(
-						'tbody',
-						null,
-						locks.map(function (lock) {
-							const lease = tcLease(lock.leaseUntil, props.now, props.t)
-							return h(
+						'table',
+						{ className: 'gbt-locktable' },
+						h(
+							'thead',
+							null,
+							h(
 								'tr',
-								{ key: lock.path },
-								h('td', { className: 'gbt-mono' }, lock.path),
-								h('td', null, lock.taskId === null ? '—' : lock.taskId + (lock.taskTitle === null || lock.taskTitle === undefined ? '' : ' · ' + lock.taskTitle)),
-								h('td', null, lock.agent === null ? '—' : lock.agent),
-								h('td', { 'data-warn': lease !== null && lease.warn ? 'true' : 'false' }, lease === null ? '—' : lease.text),
-								h(
-									'td',
-									null,
+								null,
+								h('th', null, props.t('lockPath')),
+								h('th', null, props.t('taskCount')),
+								h('th', null, props.t('lockHolder')),
+								h('th', null, props.t('waiters')),
+								h('th', null, props.t('lockLease')),
+								h('th', null, ''),
+							),
+						),
+						h(
+							'tbody',
+							null,
+							locks.map(function (lock) {
+								const lease = tcLease(lock.leaseUntil, props.now, props.t)
+								const waiters = Array.isArray(lock.waiters) ? lock.waiters : []
+								return h(
+									'tr',
+									{ key: lock.path },
+									h('td', { className: 'gbt-mono' }, lock.path),
+									h('td', null, lock.taskId === null || lock.taskId === undefined ? '—' : lock.taskId + (lock.taskTitle === null || lock.taskTitle === undefined ? '' : ' · ' + lock.taskTitle)),
+									h('td', null, lock.agent === null || lock.agent === undefined ? '—' : lock.agent),
 									h(
-										'button',
-										{
-											type: 'button',
-											className: 'gbt-btn',
-											'data-size': 'sm',
-											onClick: function () {
-												void store.send('forceUnlock', { paths: [lock.path] })
-											},
-										},
-										props.t('release'),
+										'td',
+										{ 'data-col': 'waiters' },
+										waiters.length === 0
+											? '—'
+											: h(
+												'div',
+												{ className: 'gbt-waiters' },
+												waiters.map(function (waiter, index) {
+													return h('span', { key: waiter !== null && waiter !== undefined && waiter.id !== undefined ? String(waiter.id) : String(index), className: 'gbt-chip', 'data-tone': 'waiting' }, waiterLabel(waiter))
+												}),
+											),
 									),
-								),
-							)
-						}),
+									h('td', { 'data-warn': lease !== null && lease.warn ? 'true' : 'false' }, lease === null ? '—' : lease.text),
+									h(
+										'td',
+										null,
+										h(
+											'button',
+											{
+												type: 'button',
+												className: 'gbt-btn',
+												'data-size': 'sm',
+												onClick: function () {
+													void store.send('forceUnlock', { paths: [lock.path] })
+												},
+											},
+											props.t('release'),
+										),
+									),
+								)
+							}),
+						),
 					),
 				)
 			}
-
 
 			function Modal(props) {
 				return h(
@@ -1383,13 +1540,29 @@ window.__ModuleLoader__.load({
 				)
 			}
 
-			function TaskCenter() {
+			// The main slot unmounts when the user switches to the chat panel. React
+			// state alone therefore resets to the board on return; this object lives in
+			// the views closure (one per plugin activation) and carries the view and
+			// selected task across that remount. Modals are deliberately not here.
+			const panelState = { view: 'board', selectedId: null }
+
+			function TaskCenter(props) {
 				const t = useTranslate()
 				const snapshot = useSnapshot()
 				const now = useNow(5000)
-				const [view, setView] = React.useState('board')
-				const [selectedId, setSelectedId] = React.useState(null)
+				// Rendering tests may pick the first view; the production slot passes no props.
+				const initialView = props !== undefined && props !== null && ['board', 'queue', 'workers', 'locks'].indexOf(props.initialView) >= 0 ? props.initialView : panelState.view
+				const [view, setViewState] = React.useState(initialView)
+				const [selectedId, setSelectedIdState] = React.useState(panelState.selectedId)
 				const [editing, setEditing] = React.useState(null)
+				function setView(next) {
+					panelState.view = next
+					setViewState(next)
+				}
+				function setSelectedId(next) {
+					panelState.selectedId = next
+					setSelectedIdState(next)
+				}
 				const [settingsOpen, setSettingsOpen] = React.useState(false)
 				const [projectOpen, setProjectOpen] = React.useState(false)
 
@@ -1409,6 +1582,8 @@ window.__ModuleLoader__.load({
 				const editingTask = editing === null ? null : editing === 'new' ? null : tasks.filter(function (task) { return task.id === editing })[0] || null
 				const queue = snapshot.queue === undefined || snapshot.queue === null ? [] : snapshot.queue
 				const scheduler = snapshot.scheduler
+				const workersPool = snapshot.workers
+				const workerMembers = workersPool !== null && workersPool !== undefined && Array.isArray(workersPool.members) ? workersPool.members : null
 
 				function openTask(id) {
 					setSelectedId(id)
@@ -1426,6 +1601,7 @@ window.__ModuleLoader__.load({
 				const tabs = [
 					{ key: 'board', label: t('boardTab'), count: tasks.length },
 					{ key: 'queue', label: t('queue'), count: queue.length },
+					{ key: 'workers', label: t('workersTab'), count: workerMembers === null ? undefined : workerMembers.length },
 					{ key: 'locks', label: t('locks'), count: snapshot.locks.length },
 				]
 
@@ -1536,7 +1712,9 @@ window.__ModuleLoader__.load({
 						? h(Board, { snapshot: snapshot, t: t, now: now, selectedId: selectedId, onOpen: openTask })
 						: view === 'queue'
 							? h(QueueView, { snapshot: snapshot, t: t, onOpen: openTask })
-							: h(LocksView, { snapshot: snapshot, t: t, now: now })
+							: view === 'workers'
+								? h(WorkersView, { snapshot: snapshot, t: t })
+								: h(LocksView, { snapshot: snapshot, t: t, now: now })
 
 				const tabsView = h(
 					'div',

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **One action API**: the `task_center` tool and the HTTP route call the same handlers (`create`, `update`, `delete`, `list`, `get`, `board`, `start`, `pause`, `approveStart`, `rejectStart`, `cancelStartRequest`, `settings`, `tick`, `submit`, `cancel`, `reopen`, `block`, `unblock`, `retry`, `lock`, `unlock`, `locks`, `forceUnlock`, `openProject`).
 - **Task Center GUI**: a rewritten panel with board, queue and lock views; start/pause, create/edit, submit/retry/reopen, dispatch settings, dependency and lease display, a banner for a pending start request, and a 2.5-second host snapshot poll.
 - **Start consent**: an agent's `start` records `dispatch.request` instead of starting the scheduler; the panel shows who asked and why, with approve/reject. Only the user's `approveStart` runs dispatch. `pause` is immediate for either side; `settings` is user-only.
+- **Worker and lock visibility**: the panel has an executor view (lead, cap, busy/idle/provisioning/failed, current task per WorkAgent) and the lock view names the holder task/agent plus the pending ready tasks that would wait on the file. Waiters are an advisory contention picture, not a FIFO queue.
 
 ### Changed
 
@@ -29,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WorkAgent submissions could be rejected because the board stored a Team member name while the tool measured the session id; the identity is now recorded on both sides.
 - Expired task leases were never reaped, and the panel's create/release/submit/unblock/reopen actions did not match the host vocabulary.
 - A dependency that was deleted or cancelled made its dependents wait forever without a visible reason; broken dependencies are now reported.
+- Switching from the task center to the chat panel and back reset the view and the selected task to the board; both now survive the slot remount.
 
 ### Removed
 

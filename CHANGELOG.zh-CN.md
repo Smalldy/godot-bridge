@@ -14,6 +14,7 @@
 - **统一动作 API**：`task_center` 工具与 HTTP 路由调用同一批处理器（`create`、`update`、`delete`、`list`、`get`、`board`、`start`、`pause`、`approveStart`、`rejectStart`、`cancelStartRequest`、`settings`、`tick`、`submit`、`cancel`、`reopen`、`block`、`unblock`、`retry`、`lock`、`unlock`、`locks`、`forceUnlock`、`openProject`）。
 - **任务中心 GUI**：重写面板，包含看板、队列、文件锁视图；开始/暂停、新建/编辑、提交/重试/重开、派发设置、依赖与租约展示，以及待批准 start 申请的横幅，2.5 秒轮询宿主快照。
 - **开始派发需要同意**：agent 调 `start` 只写入 `dispatch.request`，不会启动调度器；面板显示发起者和说明，并提供批准/拒绝。只有用户的 `approveStart` 才真正运行。`pause` 双方都可直接调；`settings` 仅用户可改。
+- **执行者与文件锁可见**：面板新增执行者视图（Lead、上限、忙/闲/启动中/失败、每个 WorkAgent 的当前任务）；文件锁视图显示持有任务/Agent，以及“会等待该文件”的就绪任务。等待者是竞争提示，不是 FIFO 队列。
 
 ### 变更
 
@@ -29,6 +30,7 @@
 - WorkAgent 提交可能被拒绝：板子存的是 Team 成员名，而工具侧量的是 session id；现在两边身份都会记录。
 - 任务租约过期从不回收；面板的新建/释放/提交/解除阻塞/重开动作与宿主词汇表不一致。
 - 依赖被删除或取消后，下游会无提示地永久等待；现在会报告“依赖已破”。
+- 从任务中心切到对话页再切回来时，视图和选中的任务会重置回看板；现在两者都能跨 remount 保留。
 
 ### 移除
 
