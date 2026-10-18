@@ -840,7 +840,7 @@ window.__ModuleLoader__.load({
 '.gbt-tablewrap{overflow-x:auto;width:100%;min-width:0}',
 '.gbt-roleprofiles{table-layout:auto;min-width:920px}',
 '.gbt-roleprofiles .gbt-input{width:100%;min-width:0;box-sizing:border-box}',
-'.gbt-rowactions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:nowrap;align-items:center}',
+'.gbt-rowactions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;align-items:center}',
 '.gbt-formgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;align-items:start}',
 '.gbt-formgrid > label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dsw-alias-label-tertiary);min-width:0}',
 '.gbt-formgrid > label > input,.gbt-formgrid > label > select,.gbt-formgrid > label > textarea{width:100%;box-sizing:border-box}',
@@ -1858,6 +1858,19 @@ window.__ModuleLoader__.load({
 				const contextRef = React.useRef(null)
 				const permissionsRef = React.useRef(null)
 				const promptRef = React.useRef(null)
+				React.useEffect(function () {
+					if (draft === null) return
+					const fill = function (ref, value) {
+						if (ref.current !== null && ref.current !== undefined && typeof value === 'string') ref.current.value = value
+					}
+					fill(nameRef, draft.name)
+					fill(roleRef, draftProfile === null ? undefined : draftProfile.role)
+					fill(instancesRef, draftProfile === null ? undefined : String(draftProfile.instances))
+					fill(skillsRef, draftProfile === null ? undefined : (draftProfile.skills || []).join(', '))
+					fill(contextRef, draftProfile === null ? undefined : draftProfile.context || 'fresh')
+					fill(permissionsRef, draftProfile === null ? undefined : (draftProfile.permissions || []).join(', '))
+					fill(promptRef, draftProfile === null ? undefined : draftProfile.prompt || '')
+				}, [draft === null ? '' : draft.name])
 				function valueOf(ref, fallback) {
 					if (ref.current === null || ref.current === undefined) return fallback
 					return typeof ref.current.value === 'string' ? ref.current.value : fallback
@@ -2257,7 +2270,7 @@ window.__ModuleLoader__.load({
 						h('col', { key: 'c-context', style: { width: '90px' } }),
 						h('col', { key: 'c-permissions', style: { width: '170px' } }),
 						h('col', { key: 'c-prompt' }),
-						h('col', { key: 'c-actions', style: { width: '130px' } }),
+						h('col', { key: 'c-actions', style: { width: '200px' } }),
 					),
 					h(
 						'thead',
@@ -2372,7 +2385,7 @@ window.__ModuleLoader__.load({
 					roleCard({ id: 'stages', title: t('roleStages'), children: tableWrap('stage-table', stagesTable) }),
 					roleCard({ id: 'profiles', title: t('roleProfiles'), children: tableWrap('profile-table', profilesTable) }),
 					previewsCard,
-					roleCard({ id: 'create', title: t('roleCreate'), children: h(RoleCreateForm, { t: t, draft: draft, onCreate: function (name, fields) { void run('rolesCreate', { name: name, profile: fields }) }, onInvalid: function (code) { setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } }) } }) }),
+					roleCard({ id: 'create', title: t('roleCreate'), children: h(RoleCreateForm, { key: draft === null ? 'blank' : 'fork-' + draft.name, t: t, draft: draft, onCreate: function (name, fields) { void run('rolesCreate', { name: name, profile: fields }) }, onInvalid: function (code) { setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } }) } }) }),
 					roleCard({ id: 'instances', title: t('roleInstances'), children: tableWrap('instance-table', instancesTable) }),
 					actionBar,
 				)

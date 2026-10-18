@@ -62,7 +62,11 @@ const React = {
   createElement(type, props, ...children) {
     const merged = Object.assign({}, props)
     if (children.length > 0) merged.children = children.length === 1 ? children[0] : children
-    if (typeof type === 'function') return withHooks(type, merged)
+    if (typeof type === 'function') {
+    const out = withHooks(type, merged)
+    if (merged.key !== undefined && out !== null && typeof out === 'object') out.__testKey = merged.key
+    return out
+  }
     return { type, props: merged }
   },
   useState(initial) { hookIndex++; return [typeof initial === 'function' ? initial() : initial, () => {}] },
@@ -1138,7 +1142,7 @@ await flush()
     profileTable !== undefined &&
       findAll(profileTable, (node) => node.type === 'col').length === 9 &&
       findAll(profileTable, (node) => node.type === 'col').some((col) => col.props.style === undefined) &&
-      findAll(profileTable, (node) => node.type === 'col' && node.props.style !== undefined && node.props.style.width === '130px').length === 1,
+      findAll(profileTable, (node) => node.type === 'col' && node.props.style !== undefined && node.props.style.width === '200px').length === 1,
     profileTable && String(findAll(profileTable, (node) => node.type === 'col').length),
   )
   const instanceRow = findAll(rolesTree, (node) => node.type === 'tr' && node.props && node.props['data-role-instance'] !== undefined)[0]
@@ -1192,11 +1196,16 @@ await flush()
 
   // Fork the custom profile and check the draft prefill + dedupe.
   const customRow = findAll(rolesTree, (node) => node.type === 'tr' && node.props && node.props['data-role-profile'] === 'godot-reviewer')[0]
+  const blankForm = findAll(rolesTree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  const blankName = findAll(blankForm, (node) => node.props && node.props['data-field'] === 'name')[0]
+  blankName.props.ref.current = { value: 'stale-user-edit' }
+  check('the create form starts with the blank key', blankForm.__testKey === 'blank', String(blankForm.__testKey))
   findAll(customRow, (node) => node.props && node.props['data-action'] === 'role-fork')[0].props.onClick()
   let forkTree = withHooks(panel, { initialView: 'roles' })
   let forkForm = findAll(forkTree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
   let forkFields = {}
   findAll(forkForm, (node) => node.props && node.props['data-field'] !== undefined).forEach(function (node) { forkFields[node.props['data-field']] = node })
+  check('a fork remounts the create form under a draft-specific key', forkForm.__testKey === 'fork-godot-reviewer-fork', String(forkForm.__testKey))
   check(
     'fork prefills name and profile fields from the source',
     forkFields.name.props.defaultValue === 'godot-reviewer-fork' &&
@@ -1208,6 +1217,10 @@ await flush()
       forkFields.prompt.props.defaultValue === 'Check Godot idioms.',
     JSON.stringify({ name: forkFields.name.props.defaultValue, role: forkFields.role.props.defaultValue, prompt: forkFields.prompt.props.defaultValue }),
   )
+  check(
+    'a custom profile row offers Fork, Save and Delete in the widened action column',
+    findAll(customRow, (node) => node.props && ['role-fork', 'role-save', 'rolesDelete'].indexOf(node.props['data-action']) >= 0).length === 3,
+  )
   check('the fork draft says it only copies profile fields', textOf(forkForm).indexOf('仅复制 profile 字段') >= 0 && textOf(forkForm).indexOf('godot-reviewer') >= 0, textOf(forkForm))
   findAll(customRow, (node) => node.props && node.props['data-action'] === 'role-fork')[0].props.onClick()
   forkTree = withHooks(panel, { initialView: 'roles' })
@@ -1215,6 +1228,7 @@ await flush()
   forkFields = {}
   findAll(forkForm, (node) => node.props && node.props['data-field'] !== undefined).forEach(function (node) { forkFields[node.props['data-field']] = node })
   check('a second fork of the same profile gets a different draft name', forkFields.name.props.defaultValue === 'godot-reviewer-fork-2', forkFields.name.props.defaultValue)
+  check('each fork remounts the form again', forkForm.__testKey === 'fork-godot-reviewer-fork-2', String(forkForm.__testKey))
 
   // Creating from the draft sends the copied fields and leaves the source alone.
   const beforeForkCreate = posts.length
@@ -1233,6 +1247,25 @@ await flush()
       forkPost.profile.prompt === 'Check Godot idioms.',
     JSON.stringify(forkPost),
   )
+  // The form is remounted; simulate the user editing the mounted controls. Submit
+  // must use those real control values, not the draft fallback.
+  forkFields.name.props.ref.current = { value: 'my-edited-fork' }
+  forkFields.instances.props.ref.current = { value: '3' }
+  forkFields.context.props.ref.current = { value: 'fresh' }
+  forkFields.prompt.props.ref.current = { value: 'Edited prompt.' }
+  findAll(forkForm, (node) => node.props && node.props['data-action'] === 'rolesCreate')[0].props.onClick()
+  await flush()
+  const editedPost = posts[posts.length - 1]
+  check(
+    'an edited form submits the control values, not the draft fallback',
+    editedPost.action === 'rolesCreate' &&
+      editedPost.name === 'my-edited-fork' &&
+      editedPost.profile.instances === 3 &&
+      editedPost.profile.context === 'fresh' &&
+      editedPost.profile.prompt === 'Edited prompt.',
+    JSON.stringify(editedPost),
+  )
+
   const sourceAfterFork = HOST.roles.profiles['godot-reviewer']
   check(
     'the fork action never modifies the source profile',
