@@ -111,6 +111,7 @@ function normaliseTask(raw, index, now) {
           via: typeof raw.dispatch.via === 'string' ? raw.dispatch.via : null,
           error: typeof raw.dispatch.error === 'string' ? raw.dispatch.error : null,
           host: typeof raw.dispatch.host === 'string' ? raw.dispatch.host : null,
+          keep: raw.dispatch.keep === true,
         }
       : null
   const dependsOn = stringList(raw.dependsOn).filter((dep) => dep !== id)
@@ -162,6 +163,7 @@ function normaliseTask(raw, index, now) {
       target: typeof raw.target === 'string' ? raw.target : null,
       branch: typeof raw.branch === 'string' ? raw.branch : null,
       worktree: typeof raw.worktree === 'string' ? raw.worktree : null,
+      worktreeError: typeof raw.worktreeError === 'string' ? raw.worktreeError : null,
       commit: typeof raw.commit === 'string' ? raw.commit : null,
       actualFiles: actualFiles,
       requiredRole: requiredRole,

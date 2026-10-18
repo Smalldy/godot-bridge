@@ -86,5 +86,64 @@ try {
 }
 check('teardown runs without throwing', teardownError === null, teardownError && teardownError.message)
 
+// ── git wiring: optional, lazy, and never a reason to fail activation ───────
+{
+  const { gitFor } = await import('../../plugin/task-center/dispatch.mjs')
+  check('gitFor disables worktrees when the profile has no subprocess service', gitFor({ get: () => undefined }, {}) === null)
+  const fake = { isRepo: () => ({ ok: true, repo: true }) }
+  check('an injected git facade wins over the service', gitFor({ get: () => undefined }, { git: fake }) === fake)
+  const service = { spawn() { throw new Error('unexpected spawn') } }
+  check('gitFor builds a facade from the subprocess service', gitFor({ get: (key) => (key === 'subprocess' ? service : undefined) }, {}) !== null)
+}
+
+// ── a host WITH a subprocess service still activates without spawning git ───
+{
+  const spawned = []
+  const secondTools = []
+  const secondRoutes = []
+  const subprocess = {
+    async resolveExecutable(name) { return name },
+    spawn(config) {
+      spawned.push(config)
+      throw new Error('activation must not spawn git')
+    },
+  }
+  const secondCtx = {
+    fs: createFakeFs(),
+    sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+    logger: { warn() {} },
+    tools: {
+      register(tool) {
+        secondTools.push(tool)
+        return () => {}
+      },
+    },
+    webServer: {
+      register(spec) {
+        secondRoutes.push(spec)
+        return () => {}
+      },
+    },
+    on() { return () => {} },
+    effect(callback) { return callback() },
+    get(key) {
+      if (key === 'agents') return { list: () => [] }
+      if (key === 'agentTeams') return null
+      if (key === 'subagents') return { list: () => ['spawn'] }
+      if (key === 'subprocess') return subprocess
+      return undefined
+    },
+  }
+  let secondError = null
+  try {
+    apply(secondCtx)
+  } catch (error) {
+    secondError = error
+  }
+  check('the row activates with a subprocess service present', secondError === null, secondError && secondError.stack)
+  check('the tool and routes still wire up', secondTools.length === 1 && secondRoutes.length === 3, String(secondTools.length) + '/' + String(secondRoutes.length))
+  check('activation spawns no git process', spawned.length === 0, JSON.stringify(spawned))
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

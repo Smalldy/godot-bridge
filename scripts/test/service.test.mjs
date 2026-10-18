@@ -180,6 +180,63 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('submit completes the task', done.ok === true && done.task.status === 'done')
   check('evidence is stored', done.task.evidence === 'tests pass')
   check('a submitted task reaches done without a review state', findTask(done.board, 'T-1').status === 'done')
+  check(
+    'a task without a worktree has no merge request',
+    done.task.commit === null && done.task.merge === null && done.task.actualFiles.length === 0 && done.task.worktree === null,
+    JSON.stringify({ commit: done.task.commit, merge: done.task.merge, actualFiles: done.task.actualFiles, worktree: done.task.worktree }),
+  )
+}
+
+// a worktree task records the commit and merge request on submit
+{
+  let board = make(base(), 'MR task', { writeFiles: ['scripts/a.gd'] }).board
+  board = claimTask(board, 'T-1', {
+    name: 'w',
+    worktree: { base: 'base-sha', target: 'main', branch: 'task/T-1-1', path: '/worktrees/T-1', keep: true, error: null },
+  }, T0).board
+  const claimed = findTask(board, 'T-1')
+  check(
+    'the claim records the worktree identity',
+    claimed.worktree === '/worktrees/T-1' && claimed.base === 'base-sha' && claimed.target === 'main' && claimed.branch === 'task/T-1-1',
+    JSON.stringify({ worktree: claimed.worktree, base: claimed.base, target: claimed.target, branch: claimed.branch }),
+  )
+  check('and records that the worktree must be kept', claimed.dispatch.keep === true, JSON.stringify(claimed.dispatch))
+  const merge = {
+    status: 'open',
+    base: 'base-sha',
+    target: 'main',
+    head: 'head-sha',
+    declaredFiles: ['scripts/a.gd', 7, ' scripts/a.gd '],
+    actualFiles: ['scripts/a.gd', 'scripts/b.gd', 'scripts/a.gd'],
+    tests: 'npm run verify',
+    reviewer: null,
+    conflict: null,
+    at: '2026-01-01T00:00:00.000Z',
+  }
+  const submitted = submitTask(board, 'T-1', { evidence: 'npm run verify', commit: 'head-sha', actualFiles: ['scripts/a.gd', 'scripts/b.gd'], merge: merge }, T0 + 10, 'w')
+  check(
+    'submit records the commit and actual files',
+    submitted.ok === true && submitted.task.commit === 'head-sha' && submitted.task.actualFiles.join(',') === 'scripts/a.gd,scripts/b.gd',
+    JSON.stringify(submitted),
+  )
+  const stored = findTask(submitted.board, 'T-1')
+  check(
+    'submit records an open merge request',
+    stored.merge !== null && stored.merge.status === 'open' && stored.merge.base === 'base-sha' && stored.merge.target === 'main' && stored.merge.head === 'head-sha',
+    JSON.stringify(stored.merge),
+  )
+  check(
+    'the merge keeps declared and actual files apart',
+    stored.merge.declaredFiles.join(',') === 'scripts/a.gd' && stored.merge.actualFiles.join(',') === 'scripts/a.gd,scripts/b.gd',
+    JSON.stringify(stored.merge),
+  )
+  check(
+    'the merge carries the tests line, no reviewer and no conflict',
+    stored.merge.tests === 'npm run verify' && stored.merge.reviewer === null && stored.merge.conflict === null && stored.merge.at === '2026-01-01T00:00:00.000Z',
+    JSON.stringify(stored.merge),
+  )
+  check('submit still completes the task and clears its lease', stored.status === 'done' && stored.leaseUntil === null)
+  check('submit does not remove the worktree', stored.worktree === '/worktrees/T-1')
 }
 
 // dispatch requests: an agent records a request; a user approves it

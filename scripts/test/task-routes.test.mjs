@@ -3,7 +3,11 @@
 
 import { join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH } from '../../plugin/task-center/routes.mjs'
-import { createRig, PROJECT, seedBoard } from './support/fixtures.mjs'
+import { createFakeFs, createRig, PROJECT, seedBoard } from './support/fixtures.mjs'
+import { createGit } from '../../plugin/task-center/git.mjs'
+import { createState } from '../../plugin/task-center/state.mjs'
+import { createDispatcher } from '../../plugin/task-center/dispatch.mjs'
+import { createApi } from '../../plugin/task-center/api.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -392,6 +396,263 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
   check('a team with no live lead reports no-lead', leadless.error === 'no-lead' && leadless.lead === null && leadless.members.length === 0, JSON.stringify(leadless))
   leadlessSurface.dispose()
   leadlessRig.scheduler.dispose()
+}
+
+// ── submit commits a task worktree and opens a merge request ───────────────
+// The submit rig has an injectable git and NO Agent Teams service: producing a
+// merge request must not depend on a Lead.
+function createSubmitRig(options) {
+  const opts = options === undefined ? {} : options
+  const fs = createFakeFs()
+  fs.dirs.add(PROJECT)
+  const ctx = {
+    fs: fs,
+    sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+    get() {
+      return undefined
+    },
+  }
+  const state = createState(ctx)
+  const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: opts.git })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: opts.git })
+  return { project: PROJECT, fs: fs, ctx: ctx, state: state, scheduler: scheduler, api: api }
+}
+
+/** A fake git for commit/diff; every call is recorded, no process is started. */
+function fakeGit(options) {
+  const opts = options === undefined ? {} : options
+  const calls = []
+  const run = (args, cwd) => {
+    calls.push({ args: args.slice(), cwd: cwd })
+    const key = args.join(' ')
+    if (key === 'rev-parse HEAD') return { code: 0, stdout: String(opts.head === undefined ? 'head-sha' : opts.head) + '\n', stderr: '' }
+    if (key.indexOf('diff --name-only ') === 0) {
+      return opts.diff === undefined ? { code: 0, stdout: 'scripts/a.gd\nscripts/b.gd\n', stderr: '' } : opts.diff(args)
+    }
+    if (key.indexOf('commit -m ') === 0 && opts.commit !== undefined) return opts.commit
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  return { git: createGit({ run: run }), calls: calls }
+}
+
+function runningWorktreeTask(overrides) {
+  const now = Date.now()
+  return Object.assign(
+    {
+      id: 'T-1',
+      title: 'MR task',
+      status: 'running',
+      priority: 0,
+      dependsOn: [],
+      writeFiles: ['scripts/a.gd'],
+      base: 'base-sha',
+      target: 'main',
+      branch: 'task/T-1-1',
+      worktree: join(PROJECT, '.worktrees', 'T-1'),
+      assignee: { name: 'fixer', session: 'session-fixer' },
+      attempts: 1,
+      maxAttempts: 3,
+      leaseUntil: new Date(now + 600000).toISOString(),
+      dispatch: { status: 'sent', at: new Date(now).toISOString(), target: 'fixer', targetId: 'session-fixer', via: 'message', error: null, host: 'test' },
+      createdAt: new Date(now - 60000).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+      spec: '',
+      acceptance: '',
+      evidence: '',
+      history: [],
+    },
+    overrides === undefined ? {} : overrides,
+  )
+}
+
+function seedRunningTask(rig, task) {
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [task] }))
+}
+
+function holdFile(rig, path) {
+  rig.state.memory.locks = {
+    [path]: {
+      path: path,
+      taskId: 'T-1',
+      agent: 'fixer',
+      since: new Date().toISOString(),
+      leaseUntil: new Date(Date.now() + 600000).toISOString(),
+    },
+  }
+}
+
+{
+  const fake = fakeGit()
+  const submitRig = createSubmitRig({ git: fake.git })
+  const task = runningWorktreeTask()
+  seedRunningTask(submitRig, task)
+  holdFile(submitRig, 'scripts/a.gd')
+  const submitSurface = install(submitRig)
+  const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'npm run verify', note: 'MR ready' })
+  const payload = res.json()
+  check('submit succeeds in the task worktree without any Team service', payload.ok === true && payload.task.status === 'done', res.text)
+  check('submit records the commit hash', payload.task.commit === 'head-sha', JSON.stringify(payload.task))
+  check(
+    'submit records actual files beyond the declared list',
+    payload.task.actualFiles.join(',') === 'scripts/a.gd,scripts/b.gd',
+    JSON.stringify(payload.task.actualFiles),
+  )
+  const merge = payload.task.merge
+  check(
+    'submit opens a merge request against the recorded base and target',
+    merge !== null && merge.status === 'open' && merge.base === 'base-sha' && merge.target === 'main' && merge.head === 'head-sha',
+    JSON.stringify(merge),
+  )
+  check(
+    'the merge keeps declared and actual files separately',
+    merge.declaredFiles.join(',') === 'scripts/a.gd' && merge.actualFiles.join(',') === 'scripts/a.gd,scripts/b.gd',
+    JSON.stringify(merge),
+  )
+  check(
+    'the merge carries the evidence as tests and clears reviewer/conflict',
+    merge.tests === 'npm run verify' && merge.reviewer === null && merge.conflict === null && typeof merge.at === 'string',
+    JSON.stringify(merge),
+  )
+  check('submit keeps the worktree for the merge request', payload.task.worktree === task.worktree, String(payload.task.worktree))
+  const addCall = fake.calls.filter((entry) => entry.args.join(' ') === 'add -A')[0]
+  const commitCall = fake.calls.filter((entry) => entry.args[0] === 'commit')[0]
+  const diffCall = fake.calls.filter((entry) => entry.args[0] === 'diff')[0]
+  check(
+    'git commits only inside the task worktree',
+    addCall !== undefined && addCall.cwd === task.worktree && commitCall !== undefined && commitCall.cwd === task.worktree && diffCall !== undefined && diffCall.cwd === task.worktree,
+    JSON.stringify(fake.calls),
+  )
+  check(
+    'the commit message names the task',
+    commitCall !== undefined && commitCall.args.join(' ') === 'commit -m task-center: T-1 MR task',
+    JSON.stringify(commitCall && commitCall.args),
+  )
+  check(
+    'the diff spans the recorded base and the new head',
+    diffCall !== undefined && diffCall.args.join(' ') === 'diff --name-only base-sha head-sha',
+    JSON.stringify(diffCall && diffCall.args),
+  )
+  check('submit releases the task file locks', submitRig.state.memory.locks['scripts/a.gd'] === undefined, JSON.stringify(Object.keys(submitRig.state.memory.locks)))
+  submitSurface.dispose()
+  submitRig.scheduler.dispose()
+}
+
+{
+  // no changes to commit: readable error, task still running, locks untouched
+  const fake = fakeGit({ commit: { code: 1, stdout: 'nothing to commit, working tree clean\n', stderr: '' }, head: 'base-sha' })
+  const submitRig = createSubmitRig({ git: fake.git })
+  seedRunningTask(submitRig, runningWorktreeTask())
+  holdFile(submitRig, 'scripts/a.gd')
+  const submitSurface = install(submitRig)
+  const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'done' })
+  const payload = res.json()
+  check('a worktree with no changes refuses submit', payload.ok === false && payload.code === 'nothing-to-commit', res.text)
+  const after = await call(submitSurface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  const still = after.json().tasks.filter((item) => item.id === 'T-1')[0]
+  check('the task stays running', still !== undefined && still.status === 'running', after.text)
+  check('and no merge request is written', still.commit === null && still.merge === null, JSON.stringify({ commit: still.commit, merge: still.merge }))
+  check('and its file lock is still held', submitRig.state.memory.locks['scripts/a.gd'] !== undefined, JSON.stringify(Object.keys(submitRig.state.memory.locks)))
+  submitSurface.dispose()
+  submitRig.scheduler.dispose()
+}
+
+{
+  // git refuses the commit: the refusal stays readable and the task stays running
+  const fake = fakeGit({ commit: { code: 128, stdout: '', stderr: 'fatal: unable to write commit\n' } })
+  const submitRig = createSubmitRig({ git: fake.git })
+  seedRunningTask(submitRig, runningWorktreeTask())
+  const submitSurface = install(submitRig)
+  const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'done' })
+  const payload = res.json()
+  check(
+    'a git failure refuses submit with a readable error',
+    payload.ok === false && payload.code === 'commit-failed' && payload.message.indexOf('unable to write commit') >= 0,
+    res.text,
+  )
+  const after = await call(submitSurface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  check('the task is still running after a git failure', after.json().tasks[0].status === 'running', after.text)
+  submitSurface.dispose()
+  submitRig.scheduler.dispose()
+}
+
+{
+  // submit on a task that is not running must not touch its worktree
+  const fake = fakeGit()
+  const submitRig = createSubmitRig({ git: fake.git })
+  seedRunningTask(submitRig, runningWorktreeTask({ status: 'done' }))
+  const submitSurface = install(submitRig)
+  const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'again' })
+  const payload = res.json()
+  check('submit refuses a task that is not running', payload.ok === false && payload.code === 'not-running', res.text)
+  check('and never commits or diffs its worktree', fake.calls.length === 0, JSON.stringify(fake.calls))
+  submitSurface.dispose()
+  submitRig.scheduler.dispose()
+}
+
+
+{
+  // a prior submit committed the branch but the board write failed: reuse HEAD
+  const fake = fakeGit({ commit: { code: 1, stdout: 'nothing to commit, working tree clean\n', stderr: '' }, head: 'prior-sha' })
+  const submitRig = createSubmitRig({ git: fake.git })
+  seedRunningTask(submitRig, runningWorktreeTask())
+  holdFile(submitRig, 'scripts/a.gd')
+  const submitSurface = install(submitRig)
+  const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'retry' })
+  const payload = res.json()
+  check('a retry reuses an already committed worktree', payload.ok === true && payload.task.commit === 'prior-sha', res.text)
+  const diffCall = fake.calls.filter((entry) => entry.args[0] === 'diff')[0]
+  check(
+    'the retry diffs the recorded base against the existing head',
+    diffCall !== undefined && diffCall.args.join(' ') === 'diff --name-only base-sha prior-sha',
+    JSON.stringify(diffCall && diffCall.args),
+  )
+  submitSurface.dispose()
+  submitRig.scheduler.dispose()
+}
+{
+  // a throwing git facade becomes a readable refusal, not an unhandled error
+  const submitRig = createSubmitRig({
+    git: {
+      commitAll() {
+        throw new Error('runner exploded')
+      },
+      diffNameOnly() {
+        throw new Error('must not be reached')
+      },
+    },
+  })
+  seedRunningTask(submitRig, runningWorktreeTask())
+  const submitSurface = install(submitRig)
+  const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'done' })
+  const payload = res.json()
+  check(
+    'a thrown git error refuses submit readably',
+    res.status === 200 && payload.ok === false && payload.code === 'commit-failed' && payload.message.indexOf('runner exploded') >= 0,
+    res.text,
+  )
+  const after = await call(submitSurface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  check('the task stays running after a thrown git error', after.json().tasks[0].status === 'running', after.text)
+  submitSurface.dispose()
+  submitRig.scheduler.dispose()
+}
+
+{
+  // a task without a worktree keeps the old submit behavior and never calls git
+  const fake = fakeGit()
+  const submitRig = createSubmitRig({ git: fake.git })
+  seedRunningTask(submitRig, runningWorktreeTask({ base: null, target: null, branch: null, worktree: null }))
+  const submitSurface = install(submitRig)
+  const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'plain done' })
+  const payload = res.json()
+  check('a task without a worktree submits without a merge request', payload.ok === true && payload.task.status === 'done', res.text)
+  check(
+    'and records no commit, actual files or merge',
+    payload.task.commit === null && payload.task.merge === null && payload.task.actualFiles.length === 0,
+    JSON.stringify({ commit: payload.task.commit, merge: payload.task.merge, actualFiles: payload.task.actualFiles }),
+  )
+  check('and git is never consulted', fake.calls.length === 0, JSON.stringify(fake.calls))
+  submitSurface.dispose()
+  submitRig.scheduler.dispose()
 }
 
 surface.dispose()

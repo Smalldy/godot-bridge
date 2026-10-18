@@ -18,7 +18,7 @@
  */
 
 import { createState } from './state.mjs'
-import { createDispatcher } from './dispatch.mjs'
+import { createDispatcher, gitFor } from './dispatch.mjs'
 import { createApi } from './api.mjs'
 import { registerTaskTool } from './tool.mjs'
 import { registerTaskRoutes } from './routes.mjs'
@@ -34,14 +34,21 @@ export function apply(ctx) {
       return scheduler === null ? undefined : scheduler.kick(event.projectPath)
     },
   })
+  // Git comes from the host's unconfined subprocess service. When this profile
+  // has none, gitFor answers null and the worktree feature stays off instead of
+  // blocking activation: the scheduler falls back to the shared working area,
+  // and submit keeps working for tasks without a worktree. One facade is shared
+  // so the dispatcher and submit use the same runner.
+  const git = gitFor(ctx)
   scheduler = createDispatcher(ctx, {
     state: state,
     projectPath: function () {
       return state.memory.projectHint
     },
     allowSpawn: true,
+    git: git,
   })
-  const api = createApi(ctx, { state: state, scheduler: scheduler })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git })
 
   // An idle WorkAgent is a chance to hand out more work. A reload must not
   // accumulate listeners, so the subscription is an effect.

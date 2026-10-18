@@ -13,14 +13,23 @@
  *      dispatches ready tasks up to the concurrency budget, acquiring the task's
  *      declared file locks first. A task is claimed BEFORE anything leaves the
  *      process: the claim is the mutex that makes a second dispatch impossible.
+ *
+ * Worktrees are an OPTIONAL third piece: when the board enables them and the
+ * project is a clean git repository, an attempt is given its own checkout on a
+ * task branch, and the brief says so. Every failure — no git service, not a
+ * repository, a dirty tree, a refused add — falls back to the shared working
+ * area and records why on the task. A worktree is never a reason to stop
+ * dispatching.
  */
 
+import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { boardPath } from './board.mjs'
 import { writePolicyFor } from './state.mjs'
 import { TASK_LEASE_MS } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
+import { createGit } from './git.mjs'
 
 export const DEFAULT_MAX_WORK_AGENTS = 4
 export const DEFAULT_MAX_ATTEMPTS = 3
@@ -229,6 +238,132 @@ export function workerPool(ctx, board) {
   return report
 }
 
+/** The unconfined subprocess service as a createGit runner: one process per
+ * call, stdio collected through the service. */
+function runnerFromSubprocess(subprocess) {
+  return async function runGit(args, cwd) {
+    let executable = 'git'
+    if (typeof subprocess.resolveExecutable === 'function') {
+      try {
+        const resolved = await subprocess.resolveExecutable('git')
+        if (typeof resolved === 'string' && resolved.length > 0) executable = resolved
+      } catch (error) {
+        executable = 'git'
+      }
+    }
+    let handle
+    try {
+      handle = subprocess.spawn({
+        argv: [executable].concat(args),
+        cwd: cwd,
+        stdio: {
+          stdin: 'ignore',
+          stdout: { collect: { maxBytes: 8 * 1024 * 1024 } },
+          stderr: { collect: { maxBytes: 8 * 1024 * 1024 } },
+        },
+        graceMs: 3000,
+      })
+    } catch (error) {
+      return { code: 1, stdout: '', stderr: String((error && error.message) || error) }
+    }
+    let outcome = null
+    try {
+      outcome = await handle.done
+    } catch (error) {
+      return { code: 1, stdout: '', stderr: String((error && error.message) || error) }
+    }
+    let stdout = ''
+    let stderr = ''
+    try {
+      if (handle.collected && handle.collected.stdout && typeof handle.collected.stdout.readFrom === 'function') {
+        stdout = handle.collected.stdout.readFrom(0).text || ''
+      }
+      if (handle.collected && handle.collected.stderr && typeof handle.collected.stderr.readFrom === 'function') {
+        stderr = handle.collected.stderr.readFrom(0).text || ''
+      }
+    } catch (error) {}
+    const code = outcome !== null && outcome !== undefined && Number.isFinite(outcome.exitCode) ? outcome.exitCode : 1
+    return { code: code, stdout: stdout, stderr: stderr }
+  }
+}
+
+/**
+ * The Git facade this scheduler may use, or null when the profile has no
+ * subprocess service. Null is not an error: the worktree feature is simply off
+ * and tasks keep the behaviour they had before worktrees existed. An explicit
+ * `options.git` (a createGit result, or null to disable) always wins, which is
+ * how a test drives this without a git process.
+ */
+export function gitFor(ctx, options) {
+  const opts = options === undefined ? {} : options
+  if (opts.git !== undefined) return opts.git
+  let subprocess = null
+  try {
+    subprocess = ctx.get('subprocess')
+  } catch (error) {
+    return null
+  }
+  if (subprocess === undefined || subprocess === null || typeof subprocess.spawn !== 'function') return null
+  return createGit({ run: runnerFromSubprocess(subprocess) })
+}
+
+/** The descriptor a task records when no worktree could be made. */
+function worktreeFallback(error) {
+  return { base: null, target: null, branch: null, path: null, keep: false, error: error }
+}
+
+/**
+ * Prepare this attempt's worktree when the board asks for one.
+ *
+ * Returns `{ base, target, branch, path, keep, error }`: `path === null` means
+ * the task runs in the shared checkout and `error` says why. It never throws,
+ * and a failed add is force-removed so no half worktree is left behind.
+ */
+async function prepareWorktree(git, projectPath, task, dispatch, attempt) {
+  const settings = dispatch === undefined || dispatch === null ? null : dispatch.worktree
+  if (settings === undefined || settings === null || settings.enabled !== true) {
+    return { base: null, target: null, branch: null, path: null, keep: false, error: null }
+  }
+  if (git === undefined || git === null) return worktreeFallback('no-git-service')
+  const repo = await git.isRepo(projectPath)
+  if (repo.ok !== true) return worktreeFallback('git-unavailable: ' + String(repo.message))
+  if (repo.repo !== true) return worktreeFallback('not-a-git-repository')
+  const clean = await git.isClean(projectPath)
+  if (clean.ok !== true) return worktreeFallback('git-unavailable: ' + String(clean.message))
+  if (clean.clean !== true) return worktreeFallback('dirty-worktree')
+  const base = await git.head(projectPath)
+  if (base.ok !== true) return worktreeFallback('base-unreadable: ' + String(base.message))
+  const current = await git.currentBranch(projectPath)
+  const branch = 'task/' + String(task.id) + '-' + String(attempt)
+  const root = String(settings.root === undefined || settings.root === null ? '' : settings.root).trim()
+  const path = join(projectPath, root === '' ? '.worktrees' : root, String(task.id))
+  const added = await git.worktreeAdd(projectPath, { path: path, branch: branch, base: base.hash })
+  if (added.ok !== true) {
+    // A refused add can still leave a directory or a registered worktree; force
+    // it away so the next pass does not inherit a broken one.
+    await removeWorktree(git, projectPath, path)
+    return worktreeFallback('worktree-add-failed: ' + String(added.message))
+  }
+  return {
+    base: base.hash,
+    target: current.ok === true && typeof current.branch === 'string' ? current.branch : null,
+    branch: branch,
+    path: added.path,
+    keep: true,
+    error: null,
+  }
+}
+
+/** Force-remove one worktree, ignoring every failure: cleanup must never fail a
+ * dispatch. */
+async function removeWorktree(git, projectPath, path) {
+  if (git === undefined || git === null || typeof path !== 'string' || path === '') return
+  if (typeof git.worktreeRemove !== 'function') return
+  try {
+    await git.worktreeRemove(projectPath, path, { force: true })
+  } catch (error) {}
+}
+
 /** A worker name derived from the task and its attempt; names are immutable in
  * the roster, so a retry after a dead worker needs a new one. */
 export function workAgentName(taskId, attempt) {
@@ -256,6 +391,18 @@ export function briefFor(task, projectPath, leadName) {
   lines.push('')
   lines.push('Project: ' + projectPath)
   lines.push('You have been assigned this task. Do the work in that project.')
+  if (typeof task.worktree === 'string' && task.worktree.length > 0) {
+    lines.push(
+      '',
+      'Work in the git worktree created for this task:',
+      '  worktree: ' + task.worktree,
+      '  branch:   ' + String(task.branch === null || task.branch === undefined ? '' : task.branch),
+      '  base:     ' + String(task.base === null || task.base === undefined ? '' : task.base),
+      'Change files ONLY inside that worktree, and run the tests there.',
+      'The task board still lives in the main project — point task_center at',
+      'the main project ("' + projectPath + '"), not at the worktree.',
+    )
+  }
   if (task.spec !== '') lines.push('', 'What it involves:', task.spec)
   if (task.acceptance !== '') lines.push('', 'How it will be judged:', task.acceptance)
   if (task.dependsOn.length > 0) lines.push('', 'Completed prerequisites: ' + task.dependsOn.join(', '))
@@ -328,6 +475,16 @@ export function createDispatcher(ctx, options) {
   const boot = bootId()
   const spawnAllowed = opts.allowSpawn !== false
   const memory = { sweeping: false, rerun: null, timer: null, lastTickAt: null, lastError: null, lastResults: [], ticks: 0 }
+  // undefined means "ask the context"; null means "this host has no git runner,
+  // so worktrees stay off". Resolved lazily and cached for the dispatcher's life.
+  const injectedGit = opts.git
+  let gitCache
+
+  function gitFacade() {
+    if (injectedGit !== undefined) return injectedGit
+    if (gitCache === undefined) gitCache = gitFor(ctx, opts)
+    return gitCache
+  }
 
   function status() {
     return {
@@ -516,6 +673,16 @@ export function createDispatcher(ctx, options) {
           state.memory.locks = acquired.locks
           lockPaths = acquired.paths
         }
+        // The worktree is prepared before the claim so the brief can describe
+        // it, and so the fields land on the task in the same write that makes it
+        // running. A failure here is reported, never fatal — even an injected
+        // git facade that throws only costs this attempt its worktree.
+        let worktree
+        try {
+          worktree = await prepareWorktree(gitFacade(), project, task, dispatch, task.attempts + 1)
+        } catch (error) {
+          worktree = worktreeFallback('worktree-error: ' + String((error && error.message) || error))
+        }
         const claimed = await state.apply(
           project,
           (board) =>
@@ -527,6 +694,7 @@ export function createDispatcher(ctx, options) {
                 session: picked.target.id,
                 via: picked.spawn === true ? 'spawn' : 'message',
                 host: boot,
+                worktree: worktree,
               },
               state.clock(),
             ),
@@ -534,6 +702,9 @@ export function createDispatcher(ctx, options) {
         )
         if (claimed.failed !== null) {
           releaseTaskLocks(task.id)
+          // The claim lost: a worktree made for a task that never started must
+          // not be left behind.
+          await removeWorktree(gitFacade(), project, worktree.path)
           results.push({ id: task.id, error: claimed.failed.message, code: claimed.failed.code })
           continue
         }
@@ -625,6 +796,8 @@ export function createDispatcher(ctx, options) {
           target: picked.target.name,
           spawned: picked.spawn === true,
           files: lockPaths,
+          worktree: worktree.path,
+          worktreeError: worktree.error,
         })
       }
       return {

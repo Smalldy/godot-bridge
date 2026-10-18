@@ -18,7 +18,7 @@
  * A <- B (A must be done before B runs).
  */
 
-import { CLOSED_STATUSES, TASK_LEASE_MS, normaliseDispatch } from './schema.mjs'
+import { CLOSED_STATUSES, TASK_LEASE_MS, normaliseDispatch, normaliseMerge } from './schema.mjs'
 
 const iso = (now) => new Date(now).toISOString()
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -128,6 +128,7 @@ export function createTask(board, input, now, by) {
     target: null,
     branch: null,
     worktree: null,
+    worktreeError: null,
     commit: null,
     actualFiles: [],
     requiredRole: null,
@@ -345,6 +346,9 @@ export function claimTask(board, id, worker, now) {
   }
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
+  // What the scheduler prepared for THIS attempt. A fallback carries no
+  // worktree, so those fields are cleared and only the reason remains.
+  const worktree = worker.worktree === undefined || worker.worktree === null ? {} : worker.worktree
   target.status = 'running'
   target.assignee = {
     name: worker.name === undefined ? '@worker' : String(worker.name),
@@ -352,6 +356,11 @@ export function claimTask(board, id, worker, now) {
   }
   target.leaseUntil = iso(now + TASK_LEASE_MS)
   target.attempts = target.attempts + 1
+  target.base = typeof worktree.base === 'string' ? worktree.base : null
+  target.target = typeof worktree.target === 'string' ? worktree.target : null
+  target.branch = typeof worktree.branch === 'string' ? worktree.branch : null
+  target.worktree = typeof worktree.path === 'string' ? worktree.path : null
+  target.worktreeError = typeof worktree.error === 'string' ? worktree.error : null
   target.dispatch = {
     status: 'claimed',
     at: iso(now),
@@ -360,6 +369,7 @@ export function claimTask(board, id, worker, now) {
     via: worker.via === undefined ? null : String(worker.via),
     error: null,
     host: worker.host === undefined || worker.host === null ? null : String(worker.host),
+    keep: worktree.keep === true,
   }
   touch(target, now)
   pushHistory(target, {
@@ -465,8 +475,14 @@ export function expireLeases(board, now, maxAttempts) {
   return done(next, reaped.map((id) => ({ kind: 'lease-expired', id: id })), { reaped: reaped })
 }
 
-/** An agent reports the work finished. There is no review step in this
- * version: submission IS completion, so dependents are released immediately. */
+/**
+ * An agent reports the work finished. There is no review step in this version:
+ * submission IS completion, so dependents are released immediately.
+ *
+ * The API commits a task's worktree BEFORE calling this and passes the result
+ * (`commit`, `actualFiles`, `merge`); the model only records it, because
+ * service.mjs stays pure. A task without a worktree simply never carries them.
+ */
 export function submitTask(board, id, input, now, by) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
@@ -474,6 +490,9 @@ export function submitTask(board, id, input, now, by) {
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   if (input !== undefined && input.evidence !== undefined) target.evidence = String(input.evidence)
+  if (input !== undefined && input.commit !== undefined) target.commit = String(input.commit)
+  if (input !== undefined && input.actualFiles !== undefined) target.actualFiles = normaliseList(input.actualFiles)
+  if (input !== undefined && input.merge !== undefined) target.merge = normaliseMerge(input.merge)
   target.status = 'done'
   target.leaseUntil = null
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
@@ -606,6 +625,7 @@ export function summary(board, task, now) {
     dependency: dependency,
     writeFiles: task.writeFiles,
     worktree: task.worktree,
+    worktreeError: task.worktreeError,
     branch: task.branch,
     base: task.base,
     target: task.target,

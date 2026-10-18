@@ -77,12 +77,16 @@ function messageOf(error) {
  * @param ctx - the row context; needs fs for openProject.
  * @param options.state - the shared state.
  * @param options.scheduler - the dispatcher (optional; tick/start still work).
+ * @param options.git - the createGit facade used to commit a task worktree on
+ *   submit. Null/omitted means this profile has no git: submit still works for
+ *   tasks without a worktree and refuses those that have one, readably.
  * @param options.now - clock, for tests.
  */
 export function createApi(ctx, options) {
   const opts = options === undefined ? {} : options
   const state = opts.state
   const scheduler = opts.scheduler === undefined ? null : opts.scheduler
+  const git = opts.git === undefined ? null : opts.git
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
 
   function projectFrom(input, context) {
@@ -297,6 +301,87 @@ export function createApi(ctx, options) {
     return { ok: true, task: task }
   }
 
+  /**
+   * Commit a task's worktree and describe its merge request.
+   *
+   * A task without a worktree returns `{ ok: true, mr: null }`, which keeps the
+   * old submit behavior byte for byte. A task WITH one must commit first; any git
+   * refusal is returned as-is and nothing is written, so the task stays running,
+   * keeps its lease and keeps its file locks for a retry.
+   */
+  async function prepareMergeRequest(task, source, now) {
+    if (typeof task.worktree !== 'string' || task.worktree.length === 0) return { ok: true, mr: null }
+    if (git === null) {
+      return failure('no-git-service', task.id + ' has a worktree at ' + task.worktree + ' but this profile has no git service; submit it where git is available')
+    }
+    const base = typeof task.base === 'string' && task.base.length > 0 ? task.base : null
+    if (base === null) {
+      return failure('missing-base', task.id + ' has a worktree but no base commit, so its changes cannot be described')
+    }
+    let committed
+    try {
+      committed = await git.commitAll(task.worktree, 'task-center: ' + task.id + ' ' + task.title)
+    } catch (error) {
+      return failure('commit-failed', 'could not commit ' + task.id + ' in ' + task.worktree + ': ' + messageOf(error))
+    }
+    let head
+    if (committed !== null && committed !== undefined && committed.ok === true) {
+      head = String(committed.hash)
+    } else if (committed !== null && committed !== undefined && committed.code === 'nothing-to-commit') {
+      // A previous submit may have committed and then failed to write the board
+      // (CAS/lost race) or the process died. The worktree branch already carries
+      // the work; reuse its HEAD instead of dead-locking every later submit on
+      // "nothing to commit".
+      let current = null
+      try {
+        current = typeof git.head === 'function' ? await git.head(task.worktree) : null
+      } catch (error) {
+        current = null
+      }
+      if (current === null || current === undefined || current.ok !== true || String(current.hash) === base) {
+        return failure('nothing-to-commit', 'there were no changes to commit for ' + task.id)
+      }
+      head = String(current.hash)
+    } else {
+      const code = String(committed === null || committed === undefined || committed.code === undefined || committed.code === null ? 'commit-failed' : committed.code)
+      const detail = committed === null || committed === undefined ? 'git returned no result' : String(committed.message)
+      return failure(code, 'could not commit ' + task.id + ' in ' + task.worktree + ': ' + detail)
+    }
+    let diff
+    try {
+      diff = await git.diffNameOnly(task.worktree, base, head)
+    } catch (error) {
+      return failure('diff-failed', 'could not list the files ' + task.id + ' changed: ' + messageOf(error))
+    }
+    if (diff === null || diff === undefined || diff.ok !== true) {
+      const code = String(diff === null || diff === undefined || diff.code === undefined || diff.code === null ? 'diff-failed' : diff.code)
+      const detail = diff === null || diff === undefined ? 'git returned no result' : String(diff.message)
+      return failure(code, 'could not list the files ' + task.id + ' changed: ' + detail)
+    }
+    const actualFiles = Array.isArray(diff.files) ? diff.files : []
+    const evidence = source.evidence === undefined || source.evidence === null ? '' : String(source.evidence)
+    const note = source.note === undefined || source.note === null ? '' : String(source.note)
+    return {
+      ok: true,
+      mr: {
+        commit: head,
+        actualFiles: actualFiles,
+        merge: {
+          status: 'open',
+          base: base,
+          target: typeof task.target === 'string' ? task.target : null,
+          head: head,
+          declaredFiles: Array.isArray(task.writeFiles) ? task.writeFiles.slice() : [],
+          actualFiles: actualFiles,
+          tests: evidence !== '' ? evidence : note !== '' ? note : null,
+          reviewer: null,
+          conflict: null,
+          at: new Date(now).toISOString(),
+        },
+      },
+    }
+  }
+
   // ── actions ──────────────────────────────────────────────────────────────
 
   async function perform(action, input, context) {
@@ -489,10 +574,21 @@ export function createApi(ctx, options) {
       if (read.failed !== undefined) return read.failed
       const checked = taskForContext(read.board, id, context)
       if (checked.ok !== true) return checked
+      // Only a running task has a worktree worth committing; any other status
+      // must reach submitTask's own refusal without touching git.
+      const submittedAt = clock()
+      const prepared = checked.task.status === 'running' ? await prepareMergeRequest(checked.task, source, submittedAt) : { ok: true, mr: null }
+      if (prepared.ok !== true) return prepared
+      const input = { evidence: source.evidence, note: source.note }
+      if (prepared.mr !== null) {
+        input.commit = prepared.mr.commit
+        input.actualFiles = prepared.mr.actualFiles
+        input.merge = prepared.mr.merge
+      }
       const result = await writeTask(
         projectPath,
         id,
-        (board) => model.submitTask(board, id, { evidence: source.evidence, note: source.note }, clock(), context.by),
+        (board) => model.submitTask(board, id, input, clock(), context.by),
         context,
       )
       if (result.ok === true && result.task !== null && result.task.status !== 'running') {
