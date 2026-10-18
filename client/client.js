@@ -281,6 +281,36 @@ window.__ModuleLoader__.load({
 				waitFileLock: '等待文件锁',
 				waitConcurrency: '并发已满',
 				loadFailed: '读取失败',
+				testing: '独立测试',
+				testingSelf: '自测（执行者提交证据）',
+				testingIndependent: '系统验证（宿主独立运行项目验证）',
+				testingHint: '“系统验证”由宿主在临时 checkout 中运行项目验证并记录 verdict；不依赖其他 agent，也不改变任务动作语义。',
+				testingUserOnly: '仅用户可修改。',
+				checkoutTitle: '执行工作树',
+				mergeTitle: '合并请求',
+				mergeStatus: '合并状态',
+				mergeTarget: '目标分支',
+				worktree: '工作树',
+				branch: '分支',
+				commit: '提交',
+				mergeOpen: '待合并',
+				mergeMerged: '已合并',
+				mergeConflict: '冲突',
+				mergeFailed: '验证失败',
+				mergeRejected: '已拒绝',
+				verdict: '系统验证',
+				verdictPending: '待验证',
+				verdictPassed: '通过',
+				verdictFailed: '未通过',
+				verdictBy: '记录者',
+				verdictAt: '时间',
+				verdictHint: '由宿主在临时 checkout 中运行项目验证后记录；结论来自命令退出码，不来自模型判断。',
+				verdictNone: '尚未记录系统验证结果。',
+				verdictOutput: '验证输出',
+				verificationOutput: '合并验证输出',
+				noOutput: '（无输出）',
+				outputTailHint: '仅显示输出尾部',
+				conflictDetail: '冲突详情',
 			},
 			en: {
 				nav: 'Tasks',
@@ -423,6 +453,36 @@ window.__ModuleLoader__.load({
 				waitFileLock: 'waiting for file lock',
 				waitConcurrency: 'concurrency full',
 				loadFailed: 'load failed',
+				testing: 'Independent testing',
+				testingSelf: 'Self-test (the assignee submits its evidence)',
+				testingIndependent: 'System verification (the host runs the project verification itself)',
+				testingHint: '“System verification” runs the project verification in a throwaway checkout and records the verdict on the host; it needs no other agent and does not change task actions.',
+				testingUserOnly: 'User-only setting.',
+				checkoutTitle: 'Working checkout',
+				mergeTitle: 'Merge request',
+				mergeStatus: 'Merge status',
+				mergeTarget: 'Target branch',
+				worktree: 'Worktree',
+				branch: 'Branch',
+				commit: 'Commit',
+				mergeOpen: 'Open',
+				mergeMerged: 'Merged',
+				mergeConflict: 'Conflict',
+				mergeFailed: 'Verification failed',
+				mergeRejected: 'Rejected',
+				verdict: 'System verdict',
+				verdictPending: 'Pending',
+				verdictPassed: 'Passed',
+				verdictFailed: 'Failed',
+				verdictBy: 'Recorded by',
+				verdictAt: 'At',
+				verdictHint: 'Recorded by the host after running the project verification in a throwaway checkout; the result comes from the exit code, not from a model judgement.',
+				verdictNone: 'No system verdict recorded yet.',
+				verdictOutput: 'Verdict output',
+				verificationOutput: 'Merge verification output',
+				noOutput: '(no output)',
+				outputTailHint: 'tail of the output shown',
+				conflictDetail: 'Conflict details',
 			},
 		}
 
@@ -485,6 +545,9 @@ window.__ModuleLoader__.load({
 			'.gbt-section{margin:0 0 14px}',
 			'.gbt-section h3{margin:0 0 6px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dsw-alias-label-tertiary);font-weight:600}',
 			'.gbt-prose{margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;color:var(--dsw-alias-label-secondary);line-height:1.55}',
+			'.gbt-outputblock{margin-top:8px}',
+			'.gbt-subhead{margin:8px 0 4px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dsw-alias-label-tertiary);font-weight:600}',
+			'.gbt-output{margin:0;padding:8px 9px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;line-height:1.5;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto}',
 			'.gbt-drawer{width:368px;border-left:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);display:flex;flex-direction:column;min-height:0;flex:none}',
 			'.gbt-drawer[data-open="false"]{display:none}',
 			'.gbt-drawerhead{display:flex;align-items:flex-start;gap:8px;padding:14px 14px 10px;border-bottom:0.5px solid var(--dsw-alias-border-l4)}',
@@ -527,6 +590,8 @@ window.__ModuleLoader__.load({
 			'.gbt-pill[data-status="inactive"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-tertiary)}',
 			'.gbt-pill[data-status="provisioning"]{background:rgba(245,159,0,.14);color:#b7791f}',
 			'.gbt-pill[data-status="failed"]{background:rgba(229,72,77,.14);color:#d33}',
+			'.gbt-pill[data-status="pending"]{background:rgba(245,159,0,.14);color:#b7791f}',
+			'.gbt-pill[data-status="passed"]{background:rgba(47,179,68,.14);color:#2f9e44}',
 			'.gbt-iconbtn{appearance:none;border:none;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:16px;line-height:1;padding:2px 5px;border-radius:6px}',
 			'.gbt-iconbtn:hover{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-primary)}',
 			'.gbt-projectform{display:flex;gap:6px;align-items:center;margin-top:10px;flex-wrap:wrap}',
@@ -573,6 +638,66 @@ window.__ModuleLoader__.load({
 
 		function tcStatusKey(status) {
 			return 'status' + status.charAt(0).toUpperCase() + status.slice(1)
+		}
+
+		/** Merge/verdict vocabulary shared by the card and the detail drawer. */
+		const MERGE_LABELS = { open: 'mergeOpen', merged: 'mergeMerged', conflict: 'mergeConflict', failed: 'mergeFailed', rejected: 'mergeRejected' }
+		const MERGE_TONES = { open: 'running', merged: 'done', conflict: 'broken', failed: 'blocked', rejected: 'cancelled' }
+		const VERDICT_LABELS = { pending: 'verdictPending', passed: 'verdictPassed', failed: 'verdictFailed' }
+		const VERDICT_TONES = { pending: 'waiting', passed: 'done', failed: 'broken' }
+
+		function tcMergeOf(task) {
+			const merge = task === null || task === undefined ? null : task.merge
+			return merge !== null && merge !== undefined && typeof merge === 'object' && !Array.isArray(merge) ? merge : null
+		}
+
+		function tcVerdictOf(merge) {
+			const verdict = merge === null || merge === undefined ? null : merge.verdict
+			return verdict !== null && verdict !== undefined && typeof verdict === 'object' && !Array.isArray(verdict) ? verdict : null
+		}
+
+		function tcMergeLabel(status, t) {
+			const key = MERGE_LABELS[status]
+			return key === undefined ? String(status === undefined || status === null ? '—' : status) : t(key)
+		}
+
+		function tcMergeTone(status) {
+			return MERGE_TONES[status] || 'waiting'
+		}
+
+		function tcVerdictLabel(status, t) {
+			const key = VERDICT_LABELS[status]
+			return key === undefined ? String(status === undefined || status === null ? '—' : status) : t(key)
+		}
+
+		function tcVerdictTone(status) {
+			return VERDICT_TONES[status] || 'waiting'
+		}
+
+		/** The last max CHARACTERS (not UTF-16 units), so a surrogate pair survives. */
+		function tcTail(text, max) {
+			const value = String(text === undefined || text === null ? '' : text)
+			const characters = Array.from(value)
+			if (characters.length <= max) return { text: value, truncated: false }
+			return { text: characters.slice(characters.length - max).join(''), truncated: true }
+		}
+
+		function tcBaseName(path) {
+			const parts = String(path === undefined || path === null ? '' : path).split(/[\\/]/).filter(function (part) { return part !== '' })
+			return parts.length === 0 ? String(path) : parts[parts.length - 1]
+		}
+
+		/** One labelled tail-only output block inside the drawer. */
+		function outputBlock(key, label, text, t) {
+			const tail = tcTail(text, 1200)
+			return h(
+				'div',
+				{ key: key, className: 'gbt-outputblock' },
+				h('div', { className: 'gbt-subhead' }, label),
+				text === ''
+					? h('p', { className: 'gbt-footnote' }, t('noOutput'))
+					: h('pre', { className: 'gbt-output' }, (tail.truncated ? '… ' + t('outputTailHint') + '\n' : '') + tail.text),
+			)
 		}
 
 		function tcParseList(text) {
@@ -805,6 +930,11 @@ window.__ModuleLoader__.load({
 				const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
 				const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
 				const dispatchError = task.dispatch !== null && task.dispatch !== undefined ? task.dispatch.error : null
+				const merge = tcMergeOf(task)
+				const verdict = tcVerdictOf(merge)
+				const branch = typeof task.branch === 'string' ? task.branch : ''
+				const commit = typeof task.commit === 'string' ? task.commit : ''
+				const worktree = typeof task.worktree === 'string' ? task.worktree : ''
 				const children = []
 				const top = [h('span', { key: 'id', className: 'gbt-id' }, task.id)]
 				if (task.priority !== 0) top.push(h('span', { key: 'prio', className: 'gbt-chip', 'data-tone': 'running' }, 'P' + String(task.priority)))
@@ -816,6 +946,15 @@ window.__ModuleLoader__.load({
 				if (task.attempts > 0) meta.push(h('span', { key: 'attempts', className: 'gbt-chip' }, '↻ ' + String(task.attempts) + '/' + String(task.maxAttempts)))
 				if (lease !== null) meta.push(h('span', { key: 'lease', className: 'gbt-chip', 'data-tone': lease.warn ? 'blocked' : 'waiting' }, lease.text))
 				if (files.length > 0) meta.push(h('span', { key: 'files', className: 'gbt-chip' }, '🔒 ' + String(files.length)))
+				if (merge !== null) {
+					meta.push(h('span', { key: 'merge', className: 'gbt-chip', 'data-tone': tcMergeTone(merge.status), title: t('mergeTitle') }, '⇄ ' + tcMergeLabel(merge.status, t)))
+				}
+				if (verdict !== null) {
+					meta.push(h('span', { key: 'verdict', className: 'gbt-chip', 'data-tone': tcVerdictTone(verdict.status), title: t('verdict') }, t('verdict') + ' ' + tcVerdictLabel(verdict.status, t)))
+				}
+				if (branch !== '') meta.push(h('span', { key: 'branch', className: 'gbt-chip', title: branch }, '⎇ ' + branch))
+				if (commit !== '') meta.push(h('span', { key: 'commit', className: 'gbt-chip', title: commit }, '● ' + commit.slice(0, 10)))
+				if (worktree !== '') meta.push(h('span', { key: 'worktree', className: 'gbt-chip', title: worktree }, '🌿 ' + tcBaseName(worktree)))
 				if (dispatchError !== null && task.status !== 'running') meta.push(h('span', { key: 'error', className: 'gbt-chip', 'data-tone': 'blocked', title: dispatchError }, '⚠ ' + t('dispatchError')))
 				const waiting = waitingChip(task, t, 'waiting')
 				if (waiting !== null) meta.push(waiting)
@@ -1184,6 +1323,8 @@ window.__ModuleLoader__.load({
 				const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
 				const held = snapshot.locks.filter(function (lock) { return lock.taskId === task.id }).map(function (lock) { return lock.path })
 				const dispatch = task.dispatch === null || task.dispatch === undefined ? null : task.dispatch
+				const merge = tcMergeOf(task)
+				const verdict = tcVerdictOf(merge)
 
 				function noteValue() {
 					return note.current === null ? '' : String(note.current.value || '').trim()
@@ -1339,6 +1480,79 @@ window.__ModuleLoader__.load({
 								),
 					),
 				)
+
+				const checkoutParts = [
+					typeof task.worktree === 'string' ? task.worktree : '',
+					typeof task.branch === 'string' ? task.branch : '',
+					typeof task.commit === 'string' ? task.commit : '',
+				]
+				if (checkoutParts.some(function (value) { return value !== '' })) {
+					blocks.push(
+						h(
+							'section',
+							{ key: 'checkout', className: 'gbt-section' },
+							h('h3', null, t('checkoutTitle')),
+							h(
+								'dl',
+								{ className: 'gbt-meta' },
+								h('dt', null, t('worktree')),
+								h('dd', null, checkoutParts[0] === '' ? '—' : checkoutParts[0]),
+								h('dt', null, t('branch')),
+								h('dd', null, checkoutParts[1] === '' ? '—' : checkoutParts[1]),
+								h('dt', null, t('commit')),
+								h('dd', null, checkoutParts[2] === '' ? '—' : checkoutParts[2]),
+							),
+						),
+					)
+				}
+
+				if (merge !== null) {
+					const rows = [
+						h('dt', { key: 'ms-l' }, t('mergeStatus')),
+						h('dd', { key: 'ms-v' }, h('span', { className: 'gbt-pill', 'data-status': tcMergeTone(merge.status) }, tcMergeLabel(merge.status, t))),
+					]
+					if (typeof merge.target === 'string' && merge.target !== '') {
+						rows.push(h('dt', { key: 'tg-l' }, t('mergeTarget')), h('dd', { key: 'tg-v' }, merge.target))
+					}
+					if (merge.conflict !== null && merge.conflict !== undefined) {
+						rows.push(h('dt', { key: 'cf-l' }, t('conflictDetail')), h('dd', { key: 'cf-v' }, String(merge.conflict)))
+					}
+					blocks.push(
+						h(
+							'section',
+							{ key: 'merge', className: 'gbt-section' },
+							h('h3', null, t('mergeTitle')),
+							h('dl', { className: 'gbt-meta' }, rows),
+							verdict !== null
+								? h(
+										'div',
+										{ key: 'verdict' },
+										h('div', { className: 'gbt-subhead' }, t('verdict')),
+										h(
+											'dl',
+											{ className: 'gbt-meta' },
+											h('dt', null, t('verdict')),
+											h('dd', null, h('span', { className: 'gbt-pill', 'data-status': verdict.status }, tcVerdictLabel(verdict.status, t))),
+											h('dt', null, t('verdictBy')),
+											h('dd', null, typeof verdict.by === 'string' && verdict.by !== '' ? verdict.by : '—'),
+											h('dt', null, t('verdictAt')),
+											h('dd', null, typeof verdict.at === 'string' && verdict.at !== '' ? tcAgo(verdict.at, now) : '—'),
+										),
+										h('p', { className: 'gbt-footnote' }, t('verdictHint')),
+										outputBlock('verdict-out', t('verdictOutput'), typeof verdict.output === 'string' ? verdict.output : '', t),
+									)
+								: h(
+										'div',
+										{ key: 'verdict-none' },
+										h('div', { className: 'gbt-subhead' }, t('verdict')),
+										h('p', { className: 'gbt-footnote' }, t('verdictNone')),
+									),
+							typeof merge.output === 'string' && merge.output !== ''
+								? outputBlock('merge-out', t('verificationOutput'), merge.output, t)
+								: null,
+						),
+					)
+				}
 
 				if (dispatch !== null) {
 					blocks.push(
@@ -1497,6 +1711,8 @@ window.__ModuleLoader__.load({
 				const t = props.t
 				const dispatch = props.dispatch
 				const concurrent = React.useRef(null)
+				const testing = React.useRef(null)
+				const currentTesting = dispatch !== undefined && dispatch !== null && dispatch.testing === 'independent' ? 'independent' : 'self'
 				const [error, setError] = React.useState('')
 				function save() {
 					const raw = concurrent.current === null ? dispatch.maxConcurrent : concurrent.current.value
@@ -1505,7 +1721,7 @@ window.__ModuleLoader__.load({
 						setError(t('invalidConcurrency'))
 						return
 					}
-					void store.send('settings', { maxConcurrent: value }).then(function (result) {
+					void store.send('settings', { maxConcurrent: value, testing: testing.current === null ? currentTesting : String(testing.current.value || currentTesting) }).then(function (result) {
 						if (result.ok === true) props.onClose()
 						else setError(t('error'))
 					})
@@ -1523,6 +1739,19 @@ window.__ModuleLoader__.load({
 							h('input', { className: 'gbt-input', type: 'number', min: 1, max: 8, step: 1, ref: concurrent, defaultValue: String(dispatch.maxConcurrent) }),
 						),
 						h('p', { className: 'gbt-footnote' }, t('concurrencyHint')),
+						h(
+							'div',
+							{ className: 'gbt-field' },
+							h('label', null, t('testing')),
+							h(
+								'select',
+								{ className: 'gbt-input', ref: testing, defaultValue: currentTesting },
+								h('option', { value: 'self' }, t('testingSelf')),
+								h('option', { value: 'independent' }, t('testingIndependent')),
+							),
+						),
+						h('p', { className: 'gbt-footnote' }, t('testingHint')),
+						h('p', { className: 'gbt-footnote' }, t('testingUserOnly')),
 						error === '' ? null : h('p', { className: 'gbt-footnote', style: { color: 'var(--dsw-alias-label-error,#e5484d)' } }, error),
 						h(
 							'div',
@@ -1591,7 +1820,9 @@ window.__ModuleLoader__.load({
 					panelState.selectedId = next
 					setSelectedIdState(next)
 				}
-				const [settingsOpen, setSettingsOpen] = React.useState(false)
+				// Rendering tests may open the settings modal; the production slot passes no props.
+				const initialSettingsOpen = props !== undefined && props !== null && props.initialSettingsOpen === true
+				const [settingsOpen, setSettingsOpen] = React.useState(initialSettingsOpen)
 				const [projectOpen, setProjectOpen] = React.useState(false)
 
 				React.useEffect(function () {
