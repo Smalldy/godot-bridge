@@ -1027,6 +1027,8 @@ await flush()
     kind: 'reviewer',
     drained: ['reviewer-1'],
     created: [{ name: 'reviewer-2' }],
+    reused: ['reviewer-3'],
+    replaced: [{ name: 'reviewer-1', reason: 'drained' }],
     waited: { waitedMs: 120, timedOut: true, waiting: [{ name: 'reviewer-1' }] },
     snapshot: HOST,
   }
@@ -1035,6 +1037,7 @@ await flush()
   const waitedTree = withHooks(panel, { initialView: 'roles' })
   const waitedText = textOf(waitedTree)
   check('a replace shows drained/created and the waited/timedOut/waiting status', waitedText.indexOf('已排空') >= 0 && waitedText.indexOf('reviewer-2') >= 0 && waitedText.indexOf('120') >= 0 && waitedText.indexOf('等待超时') >= 0 && waitedText.indexOf('等待中') >= 0, waitedText)
+  check('a replace also reports the replaced and reused instances', waitedText.indexOf('已替换: reviewer-1') >= 0 && waitedText.indexOf('复用: reviewer-3') >= 0, waitedText)
   await flush()
 
   // A reset that hits a host timeout is shown inside the result banner. The real
@@ -1100,7 +1103,7 @@ await flush()
   const cardIds = cards.map((node) => node.props['data-card'])
   check(
     'the roles view groups its sections into titled cards',
-    ['source', 'stages', 'profiles', 'previews', 'create', 'instances'].every((id) => cardIds.indexOf(id) >= 0) && cards.length === 6,
+    ['editor', 'source', 'stages', 'profiles', 'previews', 'create', 'instances'].every((id) => cardIds.indexOf(id) >= 0) && cards.length === 7,
     JSON.stringify(cardIds),
   )
   check('every card has a title row', cards.every(function (card) { return findAll(card, (node) => node.props && node.props.className === 'gbt-rtitle').length === 1 }))
@@ -1383,6 +1386,246 @@ await flush()
     form.__testKey === 'fork-worker-fork' && findAll(form, (node) => node.props && node.props['data-field'] === 'name')[0].props.defaultValue === 'worker-fork' && textOf(tree).indexOf('保存 ✓') >= 0,
     JSON.stringify({ key: form.__testKey }),
   )
+}
+
+// ── role context editor: kind tabs, editable template, fixed blocks, skills ─
+{
+  const VARS = ['TASK_ID', 'TASK_TITLE', 'SPEC', 'COMPLETIONS_DEF', 'GIT_INFO', 'PROJECT', 'LEAD', 'ROLE', 'STAGE']
+  function editorPreview(name, kind, stage, prompt) {
+    return {
+      name: name,
+      kind: kind,
+      stage: stage,
+      placeholder: true,
+      placeholderTask: { id: 'T-?', title: 'Example task (placeholder)' },
+      profilePrompt: prompt,
+      variableCatalog: VARS.map(function (variable) {
+        return { name: variable, description: variable + ' description', sample: variable + '-sample' }
+      }),
+      templateVariables: prompt.indexOf('{{SPEC}}') >= 0 ? ['SPEC'] : [],
+      blocks: [
+        { key: 'header', type: 'fixed', title: 'Fixed header (host)', text: 'Task center role: ' + kind + '\nStage: ' + stage + '\nProject: ' + PROJECT, editable: false },
+        { key: 'meta', type: 'fixed', title: 'Fixed profile meta (host)', text: 'Profile permissions: read-only', editable: false },
+        { key: 'template', type: 'template', title: 'Editable template (profile.prompt)', text: prompt, editable: true },
+        { key: 'task', type: 'task', title: 'Task data (host)', text: 'Task T-?: Example task (placeholder)\nWhat it involves:\n<example spec>', editable: false },
+        { key: 'duties', type: 'fixed', title: 'Fixed duties / permission boundary / verdict (host)', text: 'Duties: review\nPermission boundary (hard):\n- READ-ONLY', editable: false },
+        { key: 'skills', type: 'fixed', title: 'Fixed skills injection (host)', text: 'Skills:', editable: false },
+      ],
+      entries: [{ key: 'role', label: 'Role brief (provisioning)', text: 'Task center role: ' + kind + '\nProfile instructions:\n' + prompt }],
+    }
+  }
+  HOST.rolePreviews = [
+    editorPreview('worker', 'worker', 'implement', ''),
+    editorPreview('reviewer', 'reviewer', 'review', ''),
+    editorPreview('tester', 'tester', 'test', ''),
+    editorPreview('godot-reviewer', 'reviewer', 'review', 'Review {{SPEC}} carefully.'),
+  ]
+  HOST.roles = Object.assign({}, HOST.roles, {
+    stages: { implement: 'worker', review: 'godot-reviewer', test: 'tester' },
+    profiles: Object.assign({}, HOST.roles.profiles, {
+      'godot-reviewer': Object.assign({}, HOST.roles.profiles['godot-reviewer'], { prompt: 'Review {{SPEC}} carefully.' }),
+    }),
+  })
+  let tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  const editorCard = findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0]
+  check('the roles view has a role context editor card', editorCard !== undefined && textOf(editorCard).indexOf('角色上下文编辑器') >= 0)
+  let editor = findAll(editorCard, (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const kindTabs = findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind')
+  check('the editor offers worker/tester/reviewer tabs', kindTabs.map((tab) => tab.props['data-kind']).join(',') === 'worker,tester,reviewer', JSON.stringify(kindTabs.map((tab) => tab.props['data-kind'])))
+  let identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
+  check('the worker tab shows its bound profile', identity.props['data-kind'] === 'worker' && identity.props['data-profile'] === 'worker' && identity.props['data-draft'] === 'false', JSON.stringify(identity.props))
+  check('the identity is read-only', findAll(identity, (node) => node.type === 'input' || node.type === 'select' || node.type === 'textarea').length === 0)
+
+  // The reviewer stage is bound to the custom profile.
+  kindTabs.filter((tab) => tab.props['data-kind'] === 'reviewer')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
+  check('switching tabs shows that kind’s bound profile', identity.props['data-profile'] === 'godot-reviewer' && identity.props['data-bound'] === 'godot-reviewer', JSON.stringify(identity.props))
+  const contextBlocks = findAll(editor, (node) => node.props && node.props['data-editor-block'] !== undefined)
+  check('every context block is rendered in order', contextBlocks.map((block) => block.props['data-editor-block']).join(',') === 'header,meta,template,task,duties,skills', JSON.stringify(contextBlocks.map((block) => block.props['data-editor-block'])))
+  const fixedBlocks = contextBlocks.filter((block) => block.props['data-editable'] === 'false')
+  check(
+    'the fixed blocks are labelled host-fixed and carry no control',
+    fixedBlocks.length === 5 && fixedBlocks.every((block) => textOf(block).indexOf('宿主固定，不可编辑') >= 0 && findAll(block, (node) => node.type === 'textarea' || node.type === 'input').length === 0),
+    String(fixedBlocks.length),
+  )
+  const dutiesBlock = contextBlocks.filter((block) => block.props['data-editor-block'] === 'duties')[0]
+  check('the fixed blocks show the host brief text', textOf(dutiesBlock).indexOf('Permission boundary (hard):') >= 0 && textOf(dutiesBlock).indexOf('READ-ONLY') >= 0, textOf(dutiesBlock))
+  const templateBlock = contextBlocks.filter((block) => block.props['data-editor-block'] === 'template')[0]
+  const templateArea = findAll(templateBlock, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0]
+  check('only the template block is editable', templateBlock.props['data-editable'] === 'true' && templateArea !== undefined && templateArea.props.defaultValue === 'Review {{SPEC}} carefully.', String(templateArea && templateArea.props.defaultValue))
+  const chips = findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-insert')
+  check('every host variable is an insert chip', chips.map((chip) => chip.props['data-variable']).join(',') === VARS.join(','), JSON.stringify(chips.map((chip) => chip.props['data-variable'])))
+  const legend = findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-varlist')[0]
+  check('the variable legend describes each variable', legend !== undefined && VARS.every((name) => textOf(legend).indexOf('{{' + name + '}}') >= 0))
+  templateArea.props.ref.current = { value: 'Review ' }
+  chips.filter((chip) => chip.props['data-variable'] === 'SPEC')[0].props.onClick()
+  check('a chip inserts the literal {{VAR}} token', templateArea.props.ref.current.value === 'Review {{SPEC}}', String(templateArea.props.ref.current && templateArea.props.ref.current.value))
+
+  // Save a custom profile: the template and skills go through rolesUpdate.
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  findAll(editor, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0].props.ref.current = { value: 'Review {{SPEC}} and {{SPEC}}.' }
+  findAll(editor, (node) => node.props && node.props['data-field'] === 'skills')[0].props.ref.current = { value: 'dsh-plugin-workflow' }
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
+  await flush()
+  const editorSave = posts[posts.length - 1]
+  check(
+    'saving a custom profile sends rolesUpdate with the template and skills',
+    editorSave.action === 'rolesUpdate' && editorSave.name === 'godot-reviewer' && editorSave.profile.prompt === 'Review {{SPEC}} and {{SPEC}}.' && editorSave.profile.skills.join(',') === 'dsh-plugin-workflow',
+    JSON.stringify(editorSave),
+  )
+
+  // Fork the bound profile, edit the draft, save it with rolesCreate. The count is
+  // taken here: the fork must not add a rolesUpdate of its own.
+  const sourceUpdatesBefore = posts.filter((post) => post.action === 'rolesUpdate' && post.name === 'godot-reviewer').length
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
+  check('Fork turns the current profile into an unsaved draft', identity.props['data-draft'] === 'true' && identity.props['data-profile'] === 'godot-reviewer-fork' && textOf(editor).indexOf('草稿（Fork，未保存）') >= 0, JSON.stringify(identity.props))
+  const forkArea = findAll(editor, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0]
+  check('the fork starts from the source template', forkArea.props.defaultValue === 'Review {{SPEC}} carefully.', String(forkArea.props.defaultValue))
+  forkArea.props.ref.current = { value: 'Forked {{TASK_ID}}.' }
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
+  await flush()
+  const editorFork = posts[posts.length - 1]
+  check(
+    'saving the draft creates the forked profile and copies the profile fields',
+    editorFork.action === 'rolesCreate' &&
+      editorFork.name === 'godot-reviewer-fork' &&
+      editorFork.profile.role === 'reviewer' &&
+      editorFork.profile.prompt === 'Forked {{TASK_ID}}.' &&
+      editorFork.profile.instances === 2 &&
+      editorFork.profile.context === 'fork' &&
+      editorFork.profile.skills.join(',') === 'dsh-plugin-workflow',
+    JSON.stringify(editorFork),
+  )
+  check('the fork never edits the source profile', posts.filter((post) => post.action === 'rolesUpdate' && post.name === 'godot-reviewer').length === sourceUpdatesBefore, String(posts.filter((post) => post.action === 'rolesUpdate').length))
+
+  // The host snapshot now carries the created profile: the editor targets it.
+  HOST.roles = Object.assign({}, HOST.roles, {
+    profiles: Object.assign({}, HOST.roles.profiles, { 'godot-reviewer-fork': Object.assign({ name: 'godot-reviewer-fork' }, editorFork.profile) }),
+  })
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
+  check('a successful draft save clears the draft and targets the new profile', identity.props['data-draft'] === 'false' && identity.props['data-profile'] === 'godot-reviewer-fork', JSON.stringify(identity.props))
+  check('a profile without a host preview still shows an editable template and says so', findAll(editor, (node) => node.props && node.props['data-editor-nopreview'] !== undefined).length === 1 && findAll(editor, (node) => node.type === 'textarea' && node.props['data-field'] === 'template').length === 1)
+
+  // Apply: bind the stage, then replace the running instances of the kind.
+  const beforeApply = posts.length
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-apply')[0].props.onClick()
+  for (let tick = 0; tick < 4; tick += 1) await flush()
+  const applyPosts = posts.slice(beforeApply)
+  check(
+    'Apply binds the stage and then replaces the running instance',
+    applyPosts.length === 2 &&
+      applyPosts[0].action === 'rolesBind' &&
+      applyPosts[0].stage === 'review' &&
+      applyPosts[0].profile === 'godot-reviewer-fork' &&
+      applyPosts[1].action === 'rolesReplace' &&
+      applyPosts[1].name === 'reviewer',
+    JSON.stringify(applyPosts),
+  )
+
+  // A built-in profile cannot be edited in place: the refusal is readable and
+  // no request is sent.
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'worker')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const beforeRefusal = posts.length
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
+  await flush()
+  check('saving a built-in profile is refused with no request', posts.length === beforeRefusal, JSON.stringify(posts.slice(beforeRefusal)))
+  tree = withHooks(panel, { initialView: 'roles' })
+  const refusalEditor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  check('the refusal is readable in the editor', textOf(refusalEditor).indexOf('内置 profile 不能直接修改，请先 Fork 再保存') >= 0, textOf(refusalEditor).slice(0, 400))
+
+  // Worker has no live instance in this fixture: Apply binds and says so.
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const beforeWorkerApply = posts.length
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-apply')[0].props.onClick()
+  for (let tick = 0; tick < 4; tick += 1) await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  check(
+    'Apply without a live instance only binds the stage and explains why',
+    posts.slice(beforeWorkerApply).length === 1 && posts[posts.length - 1].action === 'rolesBind' && posts[posts.length - 1].stage === 'implement' && textOf(editor).indexOf('没有在跑实例，只更新了阶段绑定。') >= 0,
+    JSON.stringify(posts.slice(beforeWorkerApply)),
+  )
+
+  // Skills dialog: the catalog comes from the host, the selection is written
+  // into profile.skills on the next save.
+  postReply = {
+    ok: true,
+    skills: [
+      { name: 'dsh-plugin-workflow', description: 'Plugin flow', invocation: { modelInvocable: true, userInvocable: true } },
+      { name: 'find-skills', description: 'Find skills', invocation: { modelInvocable: true, userInvocable: true } },
+      { name: 'user-only-skill', description: 'User only', invocation: { modelInvocable: false, userInvocable: true } },
+    ],
+    snapshot: HOST,
+  }
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  // Back to the reviewer tab, whose profile already uses dsh-plugin-workflow: the
+  // dialog seeds its selection from profile.skills.
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'reviewer')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-skills-manage')[0].props.onClick()
+  await flush()
+  check('managing skills asks the host for its catalog', posts[posts.length - 1].action === 'skillsCatalog', JSON.stringify(posts[posts.length - 1]))
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const modal = findAll(tree, (node) => node.props && node.props['data-modal'] === 'role-skills')[0]
+  check('the skills dialog lists the host catalog', modal !== undefined && textOf(modal).indexOf('dsh-plugin-workflow') >= 0 && textOf(modal).indexOf('find-skills') >= 0, modal && textOf(modal))
+  check(
+    'a skill the model cannot invoke is marked from its invocation policy',
+    findAll(modal, (node) => node.props && node.props['data-skill-user-only'] === 'user-only-skill').length === 1 &&
+      textOf(modal).indexOf('仅限用户调用') >= 0 &&
+      findAll(modal, (node) => node.props && node.props['data-skill-user-only'] === 'find-skills').length === 0,
+    modal && textOf(modal),
+  )
+  const findSkillsBox = findAll(modal, (node) => node.type === 'input' && node.props['data-skill'] === 'find-skills')[0]
+  check('a catalog skill the profile does not use is unchecked', findSkillsBox.props.checked === false, JSON.stringify(findSkillsBox.props))
+  findSkillsBox.props.onChange()
+  tree = withHooks(panel, { initialView: 'roles' })
+  const modalAfter = findAll(tree, (node) => node.props && node.props['data-modal'] === 'role-skills')[0]
+  check('checking a skill marks it', findAll(modalAfter, (node) => node.type === 'input' && node.props['data-skill'] === 'find-skills')[0].props.checked === true)
+  const editorInModalPass = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const skillsField = findAll(editorInModalPass, (node) => node.props && node.props['data-field'] === 'skills')[0]
+  // The fake React never attaches a DOM node to a ref; a real one holds the input.
+  skillsField.props.ref.current = { value: 'dsh-plugin-workflow' }
+  findAll(modalAfter, (node) => node.props && node.props['data-action'] === 'role-skills-save')[0].props.onClick()
+  check(
+    'saving the dialog writes the checked skills into the field',
+    skillsField.props.ref.current !== null && skillsField.props.ref.current !== undefined && String(skillsField.props.ref.current.value).indexOf('find-skills') >= 0 && String(skillsField.props.ref.current.value).indexOf('dsh-plugin-workflow') >= 0,
+    String(skillsField.props.ref.current && skillsField.props.ref.current.value),
+  )
+  tree = withHooks(panel, { initialView: 'roles' })
+  check('the dialog closes after saving', findAll(tree, (node) => node.props && node.props['data-modal'] === 'role-skills').length === 0)
+
+  // A host without a skills service degrades readably.
+  postReply = { ok: false, code: 'skills-unavailable', message: 'no skill registry' }
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-skills-manage')[0].props.onClick()
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  const unavailableModal = findAll(tree, (node) => node.props && node.props['data-modal'] === 'role-skills')[0]
+  check('an unavailable skill service is readable in the dialog', unavailableModal !== undefined && textOf(unavailableModal).indexOf('技能服务不可用（skills-unavailable）') >= 0 && textOf(unavailableModal).indexOf('no skill registry') >= 0, unavailableModal && textOf(unavailableModal))
+  findAll(unavailableModal, (node) => node.props && node.props['data-action'] === 'role-skills-close')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  check('the dialog can be closed', findAll(tree, (node) => node.props && node.props['data-modal'] === 'role-skills').length === 0)
 }
 
 // File-lock view: waiters are advisory, not a queue.

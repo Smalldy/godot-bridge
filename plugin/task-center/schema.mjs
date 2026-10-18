@@ -64,6 +64,69 @@ export const ROLE_PERMISSIONS = ['read-only', 'implement', 'review', 'test', 'me
 export const ROLE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}$/
 export const ROLE_PROMPT_MAX = 4000
 
+/**
+ * The variables a role prompt template may inject. The catalog is ONE list used
+ * three ways: validateRoleProfile refuses a template that mentions anything else,
+ * the brief builders substitute these tokens with the real task values, and the
+ * panel renders them as the variable legend. Keeping it here is what stops the
+ * editor, the validator and the brief from drifting apart.
+ */
+export const ROLE_TEMPLATE_VARIABLES = [
+  { name: 'TASK_ID', description: 'The id of the task this instance is dispatched for.', sample: 'T-36' },
+  { name: 'TASK_TITLE', description: 'The task title.', sample: 'Role context template editor' },
+  { name: 'SPEC', description: 'The task spec: what the task involves.', sample: 'Replace the read-only preview with an editor.' },
+  { name: 'COMPLETIONS_DEF', description: 'The task acceptance criteria: how completion is judged.', sample: 'Every suite passes.' },
+  { name: 'GIT_INFO', description: 'The task checkout: branch, worktree, base and head commit.', sample: 'branch task/T-36-1 · worktree <path> · base db548b4 · commit abc1234' },
+  { name: 'PROJECT', description: 'The project directory the board lives in.', sample: 'J:\\project' },
+  { name: 'LEAD', description: 'The Team Lead this instance reports to.', sample: 'lead' },
+  { name: 'ROLE', description: 'The role kind: worker, reviewer or tester.', sample: 'worker' },
+  { name: 'STAGE', description: 'The workflow stage this role owns.', sample: 'implement' },
+]
+
+/** Every allowed variable name, in catalog order. */
+export const ROLE_TEMPLATE_VARIABLE_NAMES = ROLE_TEMPLATE_VARIABLES.map((entry) => entry.name)
+
+/** A {{NAME}} token. Unknown names are reported, never silently ignored. */
+const ROLE_TEMPLATE_TOKEN = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g
+
+/** Every {{NAME}} a template mentions, in order, deduplicated. */
+export function roleTemplateVariables(template) {
+  const text = typeof template === 'string' ? template : ''
+  const found = []
+  const pattern = new RegExp(ROLE_TEMPLATE_TOKEN.source, 'g')
+  let match = pattern.exec(text)
+  while (match !== null) {
+    if (found.indexOf(match[1]) < 0) found.push(match[1])
+    match = pattern.exec(text)
+  }
+  return found
+}
+
+/** The variables a template mentions that are NOT in the catalog. */
+export function unknownRoleTemplateVariables(template) {
+  return roleTemplateVariables(template).filter((name) => ROLE_TEMPLATE_VARIABLE_NAMES.indexOf(name) < 0)
+}
+
+/**
+ * Substitute the known {{NAME}} tokens of a template with their values. An
+ * unknown token is left LITERAL: a hand-written roles.json must never be made
+ * unreadable by a stray token, and the save path is where unknowns are refused.
+ */
+export function renderRoleTemplate(template, values) {
+  const text = typeof template === 'string' ? template : ''
+  const table = values !== null && values !== undefined && typeof values === 'object' ? values : {}
+  return text.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, function (whole, name) {
+    if (!Object.prototype.hasOwnProperty.call(table, name)) return whole
+    const value = table[name]
+    return String(value === undefined || value === null ? '' : value)
+  })
+}
+
+/** The allowed variables as a readable {{A}}, {{B}} list, for an error message. */
+export function roleTemplateVariableList() {
+  return ROLE_TEMPLATE_VARIABLE_NAMES.map((name) => '{{' + name + '}}').join(', ')
+}
+
 /** A role that stays 'provisioning' this long is treated as dead and replaced. */
 export const ROLE_PROVISION_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -153,7 +216,8 @@ export function profileForKind(config, kind) {
  * Validate one role profile submitted through the API. Unlike the forgiving
  * normaliser, this REFUSES bad input: a name, a known kind, the kind's stage,
  * bounded instances, string skills, a known context, allowed permissions and a
- * bounded prompt. Returns { ok, profile } or { ok: false, code, message }.
+ * bounded prompt (whose {{VARIABLES}} must exist in ROLE_TEMPLATE_VARIABLES).
+ * Returns { ok, profile } or { ok: false, code, message }.
  */
 export function validateRoleProfile(name, raw) {
   if (typeof name !== 'string' || !ROLE_NAME_PATTERN.test(name)) {
@@ -190,6 +254,24 @@ export function validateRoleProfile(name, raw) {
   }
   if (raw.prompt !== undefined && (typeof raw.prompt !== 'string' || raw.prompt.length > ROLE_PROMPT_MAX)) {
     return { ok: false, code: 'invalid-role-prompt', message: 'prompt must be a string of at most ' + String(ROLE_PROMPT_MAX) + ' characters' }
+  }
+  // A template may only inject variables the host can fill. An unknown {{NAME}}
+  // is a typo that would otherwise reach the agent as literal text, so the save
+  // is refused with the allowed list. A blank template is legal.
+  if (typeof raw.prompt === 'string') {
+    const unknown = unknownRoleTemplateVariables(raw.prompt)
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        code: 'invalid-role-variable',
+        message:
+          'unknown template variable' + (unknown.length === 1 ? '' : 's') + ' ' +
+          unknown.map((token) => '{{' + token + '}}').join(', ') +
+          '; allowed variables are ' + roleTemplateVariableList(),
+        variables: ROLE_TEMPLATE_VARIABLE_NAMES.slice(),
+        unknown: unknown,
+      }
+    }
   }
   return { ok: true, profile: normaliseRoleProfile(raw, kind, name) }
 }
