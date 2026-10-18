@@ -16,10 +16,13 @@ import {
   reviewBriefFor,
   reworkBriefFor,
   roleBriefFor,
+  roleBriefSections,
+  roleContextPreview,
   roleKindOf,
+  roleTemplateValuesFor,
   workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
-import { ROLE_PROVISION_TIMEOUT_MS, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
+import { ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, createFakeGit, seedBoard, PROJECT } from './support/fixtures.mjs'
@@ -815,6 +818,95 @@ function roleTask(overrides) {
   const worker = roleBriefFor('worker', roleTask({ status: 'running', review: { status: 'changes-requested', by: 'reviewer-1', at: new Date().toISOString(), reasons: 'rename it', attempt: 1 } }), config, {})
   check('the worker brief forbids self-review', worker.indexOf('must NOT approve') >= 0, worker)
   check('a rework brief keeps the same worktree/context', worker.indexOf('REWORK') >= 0 && worker.indexOf('SAME worktree') >= 0 && worker.indexOf('SAME context') >= 0, worker)
+}
+
+// ── role prompt templates: variable substitution and fixed sections ────────
+{
+  const templated = 'Handle {{TASK_ID}} "{{TASK_TITLE}}".\nSpec: {{SPEC}}\nDone: {{COMPLETIONS_DEF}}\nGit: {{GIT_INFO}}\n{{PROJECT}} · {{LEAD}} · {{ROLE}}/{{STAGE}}\nObject: {{TEMPLATE_COPY_ATTEMPT}}'
+  const config = normaliseRoleConfig({ profiles: { reviewer: { prompt: templated } } })
+  const task = roleTask({
+    spec: 'Implement X',
+    acceptance: 'X works',
+    branch: 'task/T-1-1',
+    worktree: join(PROJECT, '.worktrees', 'T-1'),
+    commit: 'abc1234',
+    base: 'base-sha',
+  })
+  const brief = roleBriefFor('reviewer', task, config, { projectPath: PROJECT, leadName: 'lead' })
+  check(
+    'template variables resolve to the real task values',
+    brief.indexOf('Handle T-1 "Role task".') >= 0 && brief.indexOf('Spec: Implement X') >= 0 && brief.indexOf('Done: X works') >= 0,
+    brief.slice(0, 700),
+  )
+  check(
+    'GIT_INFO carries branch, worktree, base and commit',
+    brief.indexOf('branch task/T-1-1') >= 0 && brief.indexOf('commit abc1234') >= 0 && brief.indexOf('base base-sha') >= 0 && brief.indexOf(join(PROJECT, '.worktrees', 'T-1')) >= 0,
+    brief.slice(0, 700),
+  )
+  check('PROJECT, LEAD, ROLE and STAGE resolve', brief.indexOf(PROJECT + ' · lead · reviewer/review') >= 0, brief.slice(0, 700))
+  check('the template output sits under the profile instructions section', brief.indexOf('Profile instructions:') >= 0, brief.slice(0, 700))
+  check('an unknown variable stays literal at dispatch time (a legacy file keeps working)', brief.indexOf('{{TEMPLATE_COPY_ATTEMPT}}') >= 0, brief.slice(0, 900))
+  check(
+    'the fixed sections still come from the host brief',
+    brief.indexOf('Task center role: reviewer') >= 0 &&
+      brief.indexOf('Permission boundary (hard):') >= 0 &&
+      brief.indexOf('READ-ONLY') >= 0 &&
+      brief.indexOf('Verdict schema:') >= 0 &&
+      brief.indexOf('FRESH') >= 0,
+    brief,
+  )
+  check('a template cannot rewrite the fixed duties', brief.indexOf('Duties: review the submitted tree') >= 0, brief.slice(0, 400))
+  const values = roleTemplateValuesFor('reviewer', task, config, { projectPath: PROJECT, leadName: 'lead' })
+  check(
+    'the value map exposes every catalog variable',
+    ROLE_TEMPLATE_VARIABLE_NAMES.every((name) => Object.prototype.hasOwnProperty.call(values, name)) && values.ROLE === 'reviewer' && values.STAGE === 'review',
+    JSON.stringify(values),
+  )
+  check('without a task the task variables render empty', roleTemplateValuesFor('reviewer', null, config, { projectPath: PROJECT }).TASK_ID === '')
+  const bare = roleBriefFor('reviewer', task, normaliseRoleConfig({}), { projectPath: PROJECT, leadName: 'lead' })
+  check('a profile without a template keeps its brief shape', bare.indexOf('Profile instructions:') < 0 && bare.indexOf('Task center role: reviewer') >= 0, bare.slice(0, 300))
+  const sections = roleBriefSections('reviewer', task, config, { projectPath: PROJECT, leadName: 'lead' })
+  check(
+    'the split sections give the panel fixed parts and the raw template',
+    sections.template === templated &&
+      sections.templateRendered.indexOf('Handle T-1') >= 0 &&
+      sections.header.indexOf('Task center role: reviewer') >= 0 &&
+      sections.meta === '' &&
+      sections.taskData.indexOf('Acceptance:') >= 0 &&
+      sections.fixed.indexOf('READ-ONLY') >= 0 &&
+      sections.skills.indexOf('Skills:') >= 0,
+    JSON.stringify({ template: sections.template, header: sections.header, fixed: sections.fixed.slice(0, 80) }),
+  )
+  const preview = roleContextPreview(config, 'reviewer', { projectPath: PROJECT, profileName: 'reviewer' })
+  const byKey = {}
+  preview.blocks.forEach((entry) => {
+    byKey[entry.key] = entry
+  })
+  check(
+    'the preview exposes the variable catalog the editor renders',
+    preview.variableCatalog.length === ROLE_TEMPLATE_VARIABLE_NAMES.length &&
+      preview.variableCatalog.every((entry) => typeof entry.description === 'string' && typeof entry.sample === 'string'),
+    JSON.stringify(preview.variableCatalog),
+  )
+  check(
+    'the preview separates fixed, template and task blocks',
+    preview.blocks.map((entry) => entry.type).join(',') === 'fixed,fixed,template,task,fixed,fixed' &&
+      preview.blocks.filter((entry) => entry.editable === true).length === 1 &&
+      byKey.template.editable === true,
+    JSON.stringify(preview.blocks.map((entry) => [entry.key, entry.type, entry.editable])),
+  )
+  check('the template block keeps the literal {{VAR}} injection points', byKey.template.text === templated, byKey.template.text)
+  check('the preview marks the variables the template uses', preview.templateVariables.join(',') === 'TASK_ID,TASK_TITLE,SPEC,COMPLETIONS_DEF,GIT_INFO,PROJECT,LEAD,ROLE,STAGE,TEMPLATE_COPY_ATTEMPT', JSON.stringify(preview.templateVariables))
+  check(
+    'the fixed blocks are real brief text, not panel copy',
+    byKey.header.text.indexOf('Task center role: reviewer') >= 0 && byKey.duties.text.indexOf('Permission boundary (hard):') >= 0 && byKey.duties.text.indexOf('Verdict schema:') >= 0,
+    JSON.stringify({ header: byKey.header.text, duties: byKey.duties.text.slice(0, 120) }),
+  )
+  check('the rendered brief and the entry share one generation path', preview.entries[0].text.indexOf('Handle T-? "Example task (placeholder)".') >= 0, preview.entries[0].text.slice(0, 400))
+  const skilled = roleBriefFor('reviewer', task, normaliseRoleConfig({ profiles: { reviewer: { skills: ['skill-a'] } } }), {})
+  check('the skills injection is unchanged', skilled.indexOf('Load these project skills with the skill tool before acting: skill-a') >= 0, skilled.slice(-200))
+  const unskilled = roleBriefFor('reviewer', task, normaliseRoleConfig({}), {})
+  check('without skills the brief still asks for project skills', unskilled.indexOf('Load any project-specific skills with the skill tool before acting.') >= 0, unskilled.slice(-200))
 }
 
 {

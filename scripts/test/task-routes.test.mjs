@@ -10,7 +10,7 @@ import { createActivity, createDispatcher, createRoleManager } from '../../plugi
 import { rolesPath } from '../../plugin/task-center/board.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
-import { defaultRoleConfig } from '../../plugin/task-center/schema.mjs'
+import { ROLE_TEMPLATE_VARIABLE_NAMES, defaultRoleConfig } from '../../plugin/task-center/schema.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -2975,6 +2975,106 @@ async function withDeadline(promise, ms) {
       custom.entries[0].text.indexOf('Profile permissions: read-only, review') >= 0,
     custom === undefined ? 'missing' : custom.entries[0].text.slice(0, 400),
   )
+  check(
+    'a preview carries the variable catalog for the editor legend',
+    worker.variableCatalog.length === ROLE_TEMPLATE_VARIABLE_NAMES.length &&
+      worker.variableCatalog.map((entry) => entry.name).join(',') === ROLE_TEMPLATE_VARIABLE_NAMES.join(',') &&
+      worker.variableCatalog.every((entry) => typeof entry.description === 'string' && entry.description !== '' && typeof entry.sample === 'string' && entry.sample !== ''),
+    JSON.stringify(worker.variableCatalog),
+  )
+  const blockKeys = worker.blocks.map((entry) => entry.key)
+  check(
+    'a preview splits the brief into fixed, template and task blocks',
+    blockKeys.join(',') === 'header,meta,template,task,duties,skills' &&
+      worker.blocks.map((entry) => entry.type).join(',') === 'fixed,fixed,template,task,fixed,fixed' &&
+      worker.blocks.filter((entry) => entry.editable === true).map((entry) => entry.key).join(',') === 'template',
+    JSON.stringify(worker.blocks.map((entry) => [entry.key, entry.type, entry.editable])),
+  )
+  const workerBlock = {}
+  worker.blocks.forEach((entry) => {
+    workerBlock[entry.key] = entry
+  })
+  check(
+    'the fixed blocks are the real host brief, never panel copy',
+    workerBlock.header.text.indexOf('Task center role: worker') >= 0 &&
+      workerBlock.header.text.indexOf('Project: ' + PROJECT) >= 0 &&
+      workerBlock.duties.text.indexOf('Permission boundary (hard):') >= 0 &&
+      workerBlock.duties.text.indexOf('Verdict schema (your report):') >= 0 &&
+      workerBlock.duties.text.indexOf('submit') >= 0,
+    JSON.stringify(workerBlock.header.text),
+  )
+  check(
+    'the task block carries the placeholder task',
+    workerBlock.task.text.indexOf('<example spec: what this task involves>') >= 0 && workerBlock.task.text.indexOf('T-?') >= 0,
+    workerBlock.task.text.slice(0, 200),
+  )
+  check('the template block holds the literal profile prompt', workerBlock.template.text === '' && worker.profilePrompt === '', JSON.stringify(workerBlock.template))
+  const customBlock = {}
+  custom.blocks.forEach((entry) => {
+    customBlock[entry.key] = entry
+  })
+  check('a custom profile preview keeps its own template as the editable block', customBlock.template.text === 'Check Godot idioms.' && customBlock.template.editable === true, JSON.stringify(customBlock.template))
+  const refused = await rig.api.perform('rolesCreate', { name: 'bad-template', profile: { role: 'reviewer', prompt: 'Use {{NOPE}}' } }, rig.user)
+  check('saving an unknown template variable is refused with the allowed list', refused.ok === false && refused.code === 'invalid-role-variable' && refused.message.indexOf('{{NOPE}}') >= 0 && refused.message.indexOf('{{TASK_ID}}') >= 0, JSON.stringify(refused))
+  const madeTemplate = await rig.api.perform('rolesCreate', { name: 'templated-reviewer', profile: { role: 'reviewer', prompt: 'Templated {{TASK_ID}} for {{SPEC}}' } }, rig.user)
+  check('a templated profile is accepted', madeTemplate.ok === true && madeTemplate.config.profiles['templated-reviewer'].prompt === 'Templated {{TASK_ID}} for {{SPEC}}', JSON.stringify(madeTemplate.ok))
+  const templatedSnapshot = await rig.api.snapshot(PROJECT)
+  const templated = templatedSnapshot.rolePreviews.filter((preview) => preview.name === 'templated-reviewer')[0]
+  const templatedTemplate = templated.blocks.filter((entry) => entry.key === 'template')[0]
+  check('the preview keeps the injection point literal in the template block', templatedTemplate.text === 'Templated {{TASK_ID}} for {{SPEC}}', templatedTemplate.text)
+  check('and renders it in the real brief entry', templated.entries[0].text.indexOf('Templated T-? for <example spec: what this task involves>') >= 0, templated.entries[0].text.slice(0, 300))
+  check('the preview names the variables the template uses', templated.templateVariables.join(',') === 'TASK_ID,SPEC', JSON.stringify(templated.templateVariables))
+  rig.scheduler.dispose()
+}
+
+// ── skillsCatalog: user-only, read-only, degrades readably ────────────────
+{
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git })
+  const agent = { projectPath: PROJECT, by: '@agent', role: 'agent', agent: { id: 'session-agent' } }
+  const missing = await rig.api.perform('skillsCatalog', {}, rig.user)
+  check('a host without a skills service reports skills-unavailable', missing.ok === false && missing.code === 'skills-unavailable' && typeof missing.message === 'string' && missing.message !== '', JSON.stringify(missing))
+  const denied = await rig.api.perform('skillsCatalog', {}, agent)
+  check('an agent cannot read the skill catalog', denied.ok === false && denied.code === 'user-only', JSON.stringify(denied))
+  const calls = []
+  const originalGet = rig.ctx.get
+  rig.ctx.get = function (key) {
+    if (key !== 'skills') return originalGet.call(rig.ctx, key)
+    return {
+      async list(options) {
+        calls.push(options)
+        return [
+          { name: 'zeta-skill', description: 'Z', invocation: { modelInvocable: true, userInvocable: true } },
+          { name: 'alpha-skill', description: 'A', whenToUse: 'when A', invocation: { modelInvocable: true, userInvocable: false } },
+          { name: '', description: 'ignored', invocation: {} },
+          'nope',
+        ]
+      },
+    }
+  }
+  const catalog = await rig.api.perform('skillsCatalog', {}, rig.user)
+  check(
+    'the host catalog is listed sorted with its invocation policy',
+    catalog.ok === true &&
+      catalog.count === 2 &&
+      catalog.skills.map((entry) => entry.name).join(',') === 'alpha-skill,zeta-skill' &&
+      catalog.skills[0].description === 'A' &&
+      catalog.skills[0].whenToUse === 'when A' &&
+      catalog.skills[0].invocation.modelInvocable === true &&
+      catalog.skills[0].invocation.userInvocable === false &&
+      catalog.skills[1].invocation.userInvocable === true,
+    JSON.stringify(catalog),
+  )
+  check('the catalog is read from the project directory', calls.length === 1 && calls[0].cwd === PROJECT, JSON.stringify(calls))
+  rig.ctx.get = function (key) {
+    if (key !== 'skills') return originalGet.call(rig.ctx, key)
+    return {
+      list() {
+        throw new Error('registry exploded')
+      },
+    }
+  }
+  const failed = await rig.api.perform('skillsCatalog', {}, rig.user)
+  check('a failing registry is a readable skills-unavailable, never a throw', failed.ok === false && failed.code === 'skills-unavailable' && failed.message.indexOf('registry exploded') >= 0, JSON.stringify(failed))
   rig.scheduler.dispose()
 }
 

@@ -4,10 +4,15 @@
 import { join } from 'node:path'
 import { readBoard, updateBoard, emptyBoard, boardPath, MAX_HISTORY, readRoleConfig, writeRoleConfig, rolesPath } from '../../plugin/task-center/board.mjs'
 import {
+  ROLE_TEMPLATE_VARIABLES,
+  ROLE_TEMPLATE_VARIABLE_NAMES,
   defaultRoleConfig,
   normaliseDispatch,
   normaliseRoleConfig,
   normaliseWorktree,
+  renderRoleTemplate,
+  roleTemplateVariables,
+  unknownRoleTemplateVariables,
   validateRoleBinding,
   validateRoleProfile,
 } from '../../plugin/task-center/schema.mjs'
@@ -501,6 +506,78 @@ const MERGE = {
   check('the file is JSON with the custom profile', text !== undefined && JSON.parse(text.text).profiles['godot-reviewer'].instances === 2, text === undefined ? 'missing' : text.text.slice(0, 200))
   const loaded = await readRoleConfig({ fs }, { projectPath: PROJECT })
   check('the persisted config reads back with its stage binding', loaded.source === 'file' && loaded.config.stages.review === 'godot-reviewer' && loaded.config.profiles['godot-reviewer'].prompt === 'p', JSON.stringify(loaded))
+}
+
+// ── role prompt templates: variable catalog, refusal, round trip ──────────
+{
+  check(
+    'the variable catalog names every injectable variable',
+    ROLE_TEMPLATE_VARIABLE_NAMES.join(',') === 'TASK_ID,TASK_TITLE,SPEC,COMPLETIONS_DEF,GIT_INFO,PROJECT,LEAD,ROLE,STAGE',
+    ROLE_TEMPLATE_VARIABLE_NAMES.join(','),
+  )
+  check(
+    'every catalog entry carries a name, a description and a sample',
+    ROLE_TEMPLATE_VARIABLES.every(
+      (entry) => typeof entry.name === 'string' && entry.name !== '' && typeof entry.description === 'string' && entry.description !== '' && typeof entry.sample === 'string' && entry.sample !== '',
+    ),
+    JSON.stringify(ROLE_TEMPLATE_VARIABLES),
+  )
+  const template = 'Task {{TASK_ID}}: {{TASK_TITLE}}\n{{SPEC}}\nDone when {{COMPLETIONS_DEF}}\n{{GIT_INFO}}\n{{PROJECT}} · {{LEAD}} · {{ROLE}}/{{STAGE}}'
+  check('every catalog name is detected in a full template', roleTemplateVariables(template).length === ROLE_TEMPLATE_VARIABLE_NAMES.length, JSON.stringify(roleTemplateVariables(template)))
+  const rendered = renderRoleTemplate(template, {
+    TASK_ID: 'T-1',
+    TASK_TITLE: 'X',
+    SPEC: 'S',
+    COMPLETIONS_DEF: 'A',
+    GIT_INFO: 'G',
+    PROJECT: 'P',
+    LEAD: 'lead',
+    ROLE: 'worker',
+    STAGE: 'implement',
+  })
+  check('a template renders every variable', rendered.indexOf('Task T-1: X') >= 0 && rendered.indexOf('P · lead · worker/implement') >= 0, rendered)
+  check('an unknown variable is detected', unknownRoleTemplateVariables('hi {{NOPE}}').join(',') === 'NOPE')
+  check('an unknown token stays literal while known ones render', renderRoleTemplate('{{TASK_ID}} {{NOPE}}', { TASK_ID: 'T-2' }) === 'T-2 {{NOPE}}')
+  check('a blank template renders to the empty string', renderRoleTemplate('', { TASK_ID: 'T-3' }) === '')
+  const known = validateRoleProfile('templated', { role: 'worker', prompt: template })
+  check('a profile whose template uses known variables is accepted', known.ok === true && known.profile.prompt === template, JSON.stringify(known))
+  const unknown = validateRoleProfile('templated', { role: 'worker', prompt: 'Check {{UNKNOWN_ONE}} and {{UNKNOWN_TWO}}' })
+  check(
+    'saving a template with an unknown variable is refused with the allowed list',
+    unknown.ok === false &&
+      unknown.code === 'invalid-role-variable' &&
+      unknown.message.indexOf('{{UNKNOWN_ONE}}') >= 0 &&
+      unknown.message.indexOf('{{TASK_ID}}') >= 0 &&
+      Array.isArray(unknown.variables) &&
+      unknown.variables.join(',') === ROLE_TEMPLATE_VARIABLE_NAMES.join(','),
+    JSON.stringify(unknown),
+  )
+  check('a refused variable list never reaches the profile', unknown.profile === undefined)
+  const blank = validateRoleProfile('templated', { role: 'worker', prompt: '' })
+  check('an empty template is legal', blank.ok === true && blank.profile.prompt === '')
+  // A hand-written roles.json may already carry a stray token: normalising must
+  // keep it (a legacy file keeps working), and dispatch leaves it literal.
+  const legacy = normaliseRoleConfig({ profiles: { 'godot-reviewer': { role: 'reviewer', prompt: 'Legacy {{SOMETHING}}' } } })
+  check('an old roles.json with a stray token still normalises', legacy.profiles['godot-reviewer'].prompt === 'Legacy {{SOMETHING}}', JSON.stringify(legacy.profiles['godot-reviewer']))
+  check('and the stray token is not reported as a known one', unknownRoleTemplateVariables(legacy.profiles['godot-reviewer'].prompt).join(',') === 'SOMETHING')
+  check('a templated prompt survives the normaliser round trip', normaliseRoleConfig({ profiles: { reviewer: { prompt: template } } }).profiles.reviewer.prompt === template)
+}
+
+// ── a templated prompt round-trips through roles.json ─────────────────────
+{
+  const fs = createFakeFs()
+  const templated = normaliseRoleConfig({
+    profiles: { 'godot-reviewer': { role: 'reviewer', prompt: 'Task {{TASK_ID}}: {{SPEC}} ({{GIT_INFO}})' } },
+    stages: { review: 'godot-reviewer' },
+  })
+  const written = await writeRoleConfig({ fs }, { projectPath: PROJECT, config: templated, sandboxPolicy: { mode: 'workspace-write', workspaceRoot: PROJECT } })
+  const loaded = await readRoleConfig({ fs }, { projectPath: PROJECT })
+  check(
+    'a templated prompt round-trips through roles.json unchanged',
+    written.ok === true && loaded.source === 'file' && loaded.config.profiles['godot-reviewer'].prompt === 'Task {{TASK_ID}}: {{SPEC}} ({{GIT_INFO}})',
+    JSON.stringify(loaded.config.profiles['godot-reviewer']),
+  )
+  check('the round-tripped template still validates', validateRoleProfile('godot-reviewer', loaded.config.profiles['godot-reviewer']).ok === true)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

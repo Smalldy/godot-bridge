@@ -63,9 +63,23 @@ check('the old setStatus vocabulary is gone', actions.indexOf('setStatus') < 0, 
 check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && actions.indexOf('forceUnlock') >= 0)
 check(
   'user-only role administration is hidden from the tool',
-  ['rolesList', 'rolesCreate', 'rolesUpdate', 'rolesDelete', 'rolesBind', 'rolesDrain', 'rolesReplace', 'rolesReset'].every((action) => actions.indexOf(action) < 0),
+  ['rolesList', 'rolesCreate', 'rolesUpdate', 'rolesDelete', 'rolesBind', 'rolesDrain', 'rolesReplace', 'rolesReset', 'skillsCatalog'].every((action) => actions.indexOf(action) < 0),
   actions.join(','),
 )
+{
+  const description = String(rig.tool.description === undefined ? '' : rig.tool.description)
+  check(
+    'the tool documents the prompt template variables and the refusal code',
+    description.indexOf('{{TASK_ID}}') >= 0 && description.indexOf('{{SPEC}}') >= 0 && description.indexOf('invalid-role-variable') >= 0,
+    description.slice(-600),
+  )
+  check(
+    'the tool says the fixed brief sections are host-generated',
+    description.indexOf('host-generated') >= 0 && description.indexOf('never template output') >= 0,
+    description.slice(-600),
+  )
+  check('the tool names the read-only skills catalog for the panel', description.indexOf('skillsCatalog') >= 0 && description.indexOf('skills-unavailable') >= 0, description.slice(-500))
+}
 check(
   'the tool exposes the isolated DSH harness',
   ['harnessStart', 'harnessStop', 'harnessRestart', 'harnessStatus', 'harnessSmoke'].every((action) => actions.indexOf(action) >= 0),

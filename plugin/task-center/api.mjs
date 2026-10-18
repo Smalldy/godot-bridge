@@ -77,6 +77,7 @@ export const ACTIONS = [
   'rolesDrain',
   'rolesReplace',
   'rolesReset',
+  'skillsCatalog',
   'approveStart',
   'rejectStart',
   'cancelStartRequest',
@@ -106,13 +107,14 @@ export const USER_ONLY_ACTIONS = [
   'rolesDrain',
   'rolesReplace',
   'rolesReset',
+  'skillsCatalog',
 ]
 
 /** The tool's vocabulary: everything except the user-owned actions. */
 export const AGENT_ACTIONS = ACTIONS.filter((action) => USER_ONLY_ACTIONS.indexOf(action) < 0)
 
 /** Read-only actions; the tool may run them concurrently. */
-export const READ_ACTIONS = ['board', 'list', 'get', 'locks', 'harnessStatus']
+export const READ_ACTIONS = ['board', 'list', 'get', 'locks', 'harnessStatus', 'skillsCatalog']
 
 const STATUS_RANK = { pending: 0, running: 1, reviewing: 2, testing: 3, blocked: 4, done: 5, cancelled: 6 }
 
@@ -488,6 +490,42 @@ export function createApi(ctx, options) {
         return { name: name, kind: kind, stage: null, error: messageOf(error), placeholder: true, entries: [] }
       }
     })
+  }
+
+  /**
+   * The host skill registry, read-only. A profile's skills are chosen from the
+   * real catalog instead of typed blind, so this returns the same summaries the
+   * skill tool advertises: name, description and the invocation policy. A
+   * missing or failing service is a readable 'skills-unavailable', never a throw.
+   */
+  async function skillsCatalog(projectPath) {
+    let service = null
+    try {
+      service = typeof ctx.get === 'function' ? ctx.get('skills') : null
+    } catch (error) {
+      service = null
+    }
+    if (service === null || service === undefined || typeof service.list !== 'function') {
+      return failure('skills-unavailable', 'the host skill registry is not available in this profile')
+    }
+    try {
+      const listed = await service.list({ cwd: projectPath })
+      const skills = (Array.isArray(listed) ? listed : [])
+        .filter((skill) => skill !== null && typeof skill === 'object' && typeof skill.name === 'string' && skill.name !== '')
+        .map((skill) => {
+          const invocation = skill.invocation !== null && typeof skill.invocation === 'object' ? skill.invocation : {}
+          return {
+            name: skill.name,
+            description: typeof skill.description === 'string' ? skill.description : '',
+            whenToUse: typeof skill.whenToUse === 'string' ? skill.whenToUse : null,
+            invocation: { modelInvocable: invocation.modelInvocable === true, userInvocable: invocation.userInvocable === true },
+          }
+        })
+        .sort((left, right) => left.name.localeCompare(right.name))
+      return ok({ skills: skills, count: skills.length, project: projectPath })
+    } catch (error) {
+      return failure('skills-unavailable', 'the host skill registry could not list skills: ' + messageOf(error))
+    }
   }
 
   /** Read the project role config (defaults if absent/broken). */
@@ -977,9 +1015,9 @@ export function createApi(ctx, options) {
     return { ok: true, member: member }
   }
 
-  function roleAdminRefusal(context) {
+  function roleAdminRefusal(context, message) {
     if (context !== undefined && context !== null && context.role === 'user') return null
-    return failure('user-only', 'Role profiles belong to the user; manage them from the task center panel.')
+    return failure('user-only', message === undefined ? 'Role profiles belong to the user; manage them from the task center panel.' : message)
   }
 
   async function persistRoles(projectPath, config) {
@@ -1492,6 +1530,11 @@ export function createApi(ctx, options) {
       if (reader !== null) await heartbeat(projectPath, reader)
     }
 
+    if (action === 'skillsCatalog') {
+      const denied = roleAdminRefusal(context, 'The skill catalog belongs to the user; open it from the task center panel.')
+      if (denied !== null) return denied
+      return skillsCatalog(projectPath)
+    }
     if (action.indexOf('roles') === 0 && USER_ONLY_ACTIONS.indexOf(action) >= 0) {
       const denied = roleAdminRefusal(context)
       if (denied !== null) return denied

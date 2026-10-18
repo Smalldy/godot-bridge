@@ -32,11 +32,14 @@ import {
   ROLE_KINDS,
   ROLE_PROVISION_TIMEOUT_MS,
   ROLE_STAGE,
+  ROLE_TEMPLATE_VARIABLES,
   TASK_LEASE_MS,
   TEST_REMINDER_MS,
   TEST_TIMEOUT_MS,
   defaultRoleConfig,
   profileForKind,
+  renderRoleTemplate,
+  roleTemplateVariables,
 } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
@@ -654,52 +657,87 @@ export function briefFor(task, projectPath, leadName) {
 }
 
 /**
- * The brief a role teammate wakes with. It is self-contained: the role, the
- * stage it owns, the task it is being handed (when there is one), the hard
- * permission boundary, the exact verdict schema and the skills to load.
- *
- * Reviewer and tester briefs explicitly demand a FRESH independent context.
- * A worker brief on rework says to continue in the SAME worktree/context.
+ * The values a role prompt template's {{VARIABLES}} resolve to for one task. The
+ * brief substitutes them; the panel's template block keeps the literal {{NAME}}
+ * so the injection points stay visible. A value the task does not carry resolves
+ * to an empty string instead of a token the host cannot fill.
  */
-export function roleBriefFor(kind, task, config, options) {
+export function roleTemplateValuesFor(kind, task, config, options) {
   const opts = options === undefined || options === null ? {} : options
   const profile = config !== null && config !== undefined ? profileForKind(config, kind) : null
   const stage = profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
-  const lines = []
-  lines.push('Task center role: ' + String(kind))
-  lines.push('Stage: ' + stage + ' (this role owns the ' + stage + ' stage; role profiles replace manual Lead spawns).')
-  if (typeof opts.projectPath === 'string' && opts.projectPath.length > 0) lines.push('Project: ' + opts.projectPath)
-  if (typeof opts.leadName === 'string' && opts.leadName.length > 0) lines.push('Team Lead: ' + opts.leadName)
-  const rework =
-    task !== null &&
-    task !== undefined &&
-    ((task.review !== null && task.review !== undefined && task.review.status === 'changes-requested') ||
-      (task.test !== null && task.test !== undefined && task.test.status === 'failed'))
-  if (profile !== null && profile !== undefined && Array.isArray(profile.permissions) && profile.permissions.length > 0) {
-    lines.push('', 'Profile permissions: ' + profile.permissions.join(', '))
+  const source = task === null || task === undefined ? null : task
+  const text = (value) => (typeof value === 'string' ? value : '')
+  return {
+    TASK_ID: source === null ? '' : text(source.id),
+    TASK_TITLE: source === null ? '' : text(source.title),
+    SPEC: source === null ? '' : text(source.spec),
+    COMPLETIONS_DEF: source === null ? '' : text(source.acceptance),
+    GIT_INFO: gitInfoFor(source),
+    PROJECT: text(opts.projectPath),
+    LEAD: text(opts.leadName),
+    ROLE: String(kind),
+    STAGE: stage,
   }
-  if (profile !== null && profile !== undefined && typeof profile.prompt === 'string' && profile.prompt !== '') {
-    lines.push('', 'Profile instructions:', profile.prompt)
+}
+
+/** One line of task-checkout facts for {{GIT_INFO}}, or '' without a task. */
+function gitInfoFor(task) {
+  if (task === null || task === undefined) return ''
+  const value = (entry) => (typeof entry === 'string' && entry !== '' ? entry : '(none)')
+  return 'branch ' + value(task.branch) + ' · worktree ' + value(task.worktree) + ' · base ' + value(task.base) + ' · commit ' + value(task.commit)
+}
+
+/**
+ * The brief split into named parts, generated in ONE place so the model's brief
+ * and the panel's context editor can never disagree. The order is fixed:
+ *
+ *   header (role/stage/project/lead) → profile meta (permissions, fork note)
+ *   → the editable profile template (variables substituted)
+ *   → the task data → the host-fixed duties / permission boundary / verdict
+ *   → the host-fixed skills injection.
+ *
+ * Only 'template' is editable. Every other part is host copy: the panel renders
+ * those blocks read-only, and a template can never overwrite them.
+ */
+export function roleBriefSections(kind, task, config, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const profile = config !== null && config !== undefined ? profileForKind(config, kind) : null
+  const stage = profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
+  const header = []
+  header.push('Task center role: ' + String(kind))
+  header.push('Stage: ' + stage + ' (this role owns the ' + stage + ' stage; role profiles replace manual Lead spawns).')
+  if (typeof opts.projectPath === 'string' && opts.projectPath.length > 0) header.push('Project: ' + opts.projectPath)
+  if (typeof opts.leadName === 'string' && opts.leadName.length > 0) header.push('Team Lead: ' + opts.leadName)
+  const meta = []
+  if (profile !== null && profile !== undefined && Array.isArray(profile.permissions) && profile.permissions.length > 0) {
+    meta.push('Profile permissions: ' + profile.permissions.join(', '))
   }
   if (profile !== null && profile !== undefined && profile.context === 'fork') {
-    lines.push('', 'Profile context: forked from the Lead (not a fresh context).')
+    meta.push('Profile context: forked from the Lead (not a fresh context).')
   }
+  const template = profile !== null && profile !== undefined && typeof profile.prompt === 'string' ? profile.prompt : ''
+  const templateRendered = renderRoleTemplate(template, roleTemplateValuesFor(kind, task, config, opts))
+  const taskData = []
   if (task !== null && task !== undefined) {
-    lines.push('', 'Task ' + String(task.id) + ': ' + String(task.title))
-    if (typeof task.spec === 'string' && task.spec !== '') lines.push('', 'What it involves:', task.spec)
-    if (typeof task.acceptance === 'string' && task.acceptance !== '') lines.push('', 'Acceptance:', task.acceptance)
+    taskData.push('Task ' + String(task.id) + ': ' + String(task.title))
+    if (typeof task.spec === 'string' && task.spec !== '') taskData.push('', 'What it involves:', task.spec)
+    if (typeof task.acceptance === 'string' && task.acceptance !== '') taskData.push('', 'Acceptance:', task.acceptance)
     if (typeof task.worktree === 'string' && task.worktree !== '') {
-      lines.push('', 'Worktree: ' + task.worktree)
-      lines.push('Branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch))
-      lines.push('Commit: ' + String(task.commit === null || task.commit === undefined ? '' : task.commit))
+      taskData.push('', 'Worktree: ' + task.worktree)
+      taskData.push('Branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch))
+      taskData.push('Commit: ' + String(task.commit === null || task.commit === undefined ? '' : task.commit))
     }
+    const rework =
+      (task.review !== null && task.review !== undefined && task.review.status === 'changes-requested') ||
+      (task.test !== null && task.test !== undefined && task.test.status === 'failed')
     if (rework) {
-      lines.push('', 'This is REWORK: continue in the SAME worktree and the SAME context you used before; do not create a new branch or start from a fresh checkout.')
+      taskData.push('', 'This is REWORK: continue in the SAME worktree and the SAME context you used before; do not create a new branch or start from a fresh checkout.')
     }
   }
+  const fixed = []
   if (kind === 'worker') {
-    lines.push(
-      '',
+    fixed.push(
       'Duties: implement the task in its worktree, run the project tests there, and report with task_center submit.',
       '',
       'Permission boundary (hard):',
@@ -711,8 +749,7 @@ export function roleBriefFor(kind, task, config, options) {
       '  task_center { action: "submit", id: "<task>", evidence: "what changed and how you checked it" }',
     )
   } else if (kind === 'reviewer') {
-    lines.push(
-      '',
+    fixed.push(
       'Duties: review the submitted tree (the diff from its base to its head, the declared vs actual files, and the worker evidence). Approve it or request concrete changes.',
       '',
       'Permission boundary (hard):',
@@ -725,8 +762,7 @@ export function roleBriefFor(kind, task, config, options) {
       '  task_center { action: "requestChanges", id: "<task>", reasons: "concrete, actionable reasons (files/lines)" }',
     )
   } else if (kind === 'tester') {
-    lines.push(
-      '',
+    fixed.push(
       'Duties: independently test the candidate tree for the task and record a pass or a failure with evidence.',
       '',
       'Permission boundary (hard):',
@@ -739,13 +775,49 @@ export function roleBriefFor(kind, task, config, options) {
       '  task_center { action: "failTest", id: "<task>", evidence: "the failing command and its tail output" }',
     )
   } else {
-    lines.push('', 'Duties: follow the task center board for this role.')
+    fixed.push('Duties: follow the task center board for this role.')
   }
-  const skills = profile !== null && profile !== undefined && Array.isArray(profile.skills) ? profile.skills : []
-  lines.push('', 'Skills:')
-  lines.push('- task_center is your only interface to the board.')
-  if (skills.length > 0) lines.push('- Load these project skills with the skill tool before acting: ' + skills.join(', '))
-  else lines.push('- Load any project-specific skills with the skill tool before acting.')
+  const skills = []
+  skills.push('Skills:')
+  skills.push('- task_center is your only interface to the board.')
+  const listed = profile !== null && profile !== undefined && Array.isArray(profile.skills) ? profile.skills : []
+  if (listed.length > 0) skills.push('- Load these project skills with the skill tool before acting: ' + listed.join(', '))
+  else skills.push('- Load any project-specific skills with the skill tool before acting.')
+  return {
+    kind: String(kind),
+    stage: stage,
+    profileName: profile !== null && profile !== undefined && typeof profile.name === 'string' ? profile.name : String(kind),
+    header: header.join('\n'),
+    meta: meta.join('\n'),
+    template: template,
+    templateRendered: templateRendered,
+    taskData: taskData.join('\n'),
+    fixed: fixed.join('\n'),
+    skills: skills.join('\n'),
+  }
+}
+
+/**
+ * The brief a role teammate wakes with. It is self-contained: the role, the
+ * stage it owns, the task it is being handed (when there is one), the hard
+ * permission boundary, the exact verdict schema and the skills to load.
+ *
+ * The parts come from roleBriefSections in a fixed order: the host header and
+ * profile meta first, then the editable template with its variables substituted,
+ * then the task data, then the host-fixed duties/permission boundary/verdict and
+ * the skills injection. Only the template is user-editable.
+ *
+ * Reviewer and tester briefs explicitly demand a FRESH independent context.
+ * A worker brief on rework says to continue in the SAME worktree/context.
+ */
+export function roleBriefFor(kind, task, config, options) {
+  const sections = roleBriefSections(kind, task, config, options)
+  const lines = [sections.header]
+  if (sections.meta !== '') lines.push('', sections.meta)
+  if (sections.template !== '') lines.push('', 'Profile instructions:', sections.templateRendered)
+  if (sections.taskData !== '') lines.push('', sections.taskData)
+  lines.push('', sections.fixed)
+  lines.push('', sections.skills)
   if (kind === 'reviewer' || kind === 'tester') {
     lines.push('', 'You are an independent, FRESH context: do not assume the worker conversation, and do not reuse its unstated context.')
   }
@@ -757,6 +829,12 @@ export function roleBriefFor(kind, task, config, options) {
  * Read-only preview of the context the host actually injects for a role profile.
  * It calls the real brief builders with a clearly-marked placeholder task, so
  * the panel can show what the agent receives instead of an empty profile prompt.
+ *
+ * It also returns the same brief split into blocks — fixed host copy, the
+ * editable template and the task data — plus the variable catalog, which is what
+ * the context editor renders. The template block keeps its literal {{NAME}}
+ * tokens: the panel must show the injection points, and every fixed block is
+ * real host brief text rather than a hand-written copy of it.
  */
 export function roleContextPreview(config, kind, options) {
   const opts = options === undefined || options === null ? {} : options
@@ -790,11 +868,13 @@ export function roleContextPreview(config, kind, options) {
     merge: { status: 'open', base: '<base>', target: 'main', head: '<head>', mergeCommit: null },
     test: { status: 'pending', attempt: 1 },
   }
+  const briefOptions = { projectPath: opts.projectPath }
+  const sections = roleBriefSections(kind, placeholder, scoped, briefOptions)
   const entries = [
     {
       key: 'role',
       label: 'Role brief (provisioning)',
-      text: roleBriefFor(kind, placeholder, scoped, { projectPath: opts.projectPath }),
+      text: roleBriefFor(kind, placeholder, scoped, briefOptions),
     },
   ]
   if (kind === 'reviewer') {
@@ -807,12 +887,24 @@ export function roleContextPreview(config, kind, options) {
       text: testerBriefFor(placeholder, opts.projectPath, { path: '<test candidate worktree>', branch: 'test/T-?', base: '<base>', head: '<candidate head>' }, {}),
     })
   }
+  const variableCatalog = ROLE_TEMPLATE_VARIABLES.map((entry) => ({ name: entry.name, description: entry.description, sample: entry.sample }))
+  const blocks = [
+    { key: 'header', type: 'fixed', title: 'Fixed header (host: role, stage, project, lead)', text: sections.header, editable: false },
+    { key: 'meta', type: 'fixed', title: 'Fixed profile meta (host: permissions, context)', text: sections.meta, editable: false },
+    { key: 'template', type: 'template', title: 'Editable template (profile.prompt)', text: sections.template, editable: true },
+    { key: 'task', type: 'task', title: 'Task data (host: spec, acceptance, worktree)', text: sections.taskData, editable: false },
+    { key: 'duties', type: 'fixed', title: 'Fixed duties / permission boundary / verdict (host)', text: sections.fixed, editable: false },
+    { key: 'skills', type: 'fixed', title: 'Fixed skills injection (host)', text: sections.skills, editable: false },
+  ]
   return {
     name: named !== null ? String(opts.profileName) : profile !== null && profile !== undefined && typeof profile.name === 'string' ? profile.name : String(kind),
     kind: String(kind),
     stage: profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : null,
     placeholderTask: { id: placeholder.id, title: placeholder.title },
-    profilePrompt: profile !== null && profile !== undefined && typeof profile.prompt === 'string' ? profile.prompt : '',
+    profilePrompt: sections.template,
+    variableCatalog: variableCatalog,
+    templateVariables: roleTemplateVariables(sections.template),
+    blocks: blocks,
     placeholder: true,
     entries: entries,
   }
