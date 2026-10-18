@@ -46,6 +46,12 @@ check(
   const description = String(rig.tool.description === undefined ? '' : rig.tool.description)
   check('the tool says dependencies must be merged, not just done', description.indexOf('done and merged') >= 0, description.slice(0, 300))
   check('the tool says refreshMerge re-bases on the target head', description.indexOf('re-bases it on the target') >= 0, description.slice(0, 300))
+  check(
+    'the tool describes the reviewer hand-off',
+    description.indexOf('per-round brief') >= 0 && description.indexOf('read-only') >= 0,
+    description.slice(0, 600),
+  )
+  check('requestChanges carries explicit reasons', rig.tool.parameters.reasons !== undefined, JSON.stringify(rig.tool.parameters.reasons))
 }
 check('the old setStatus vocabulary is gone', actions.indexOf('setStatus') < 0, actions.join(','))
 check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && actions.indexOf('forceUnlock') >= 0)

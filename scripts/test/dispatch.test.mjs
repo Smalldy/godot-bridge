@@ -5,7 +5,18 @@ import { join } from 'node:path'
 import { readRoleConfig, rolesPath, updateBoard } from '../../plugin/task-center/board.mjs'
 import { createState, writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
-import { createDispatcher, createRoleManager, ensureRole, gitFor, isRoleName, pickTarget, roleBriefFor, roleKindOf } from '../../plugin/task-center/dispatch.mjs'
+import {
+  createDispatcher,
+  createRoleManager,
+  ensureRole,
+  gitFor,
+  isRoleName,
+  pickTarget,
+  reviewBriefFor,
+  reworkBriefFor,
+  roleBriefFor,
+  roleKindOf,
+} from '../../plugin/task-center/dispatch.mjs'
 import { ROLE_PROVISION_TIMEOUT_MS, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
@@ -951,6 +962,71 @@ function roleTask(overrides) {
   rig.team.setStatus('reviewer-1', 'failed')
   await scheduler.tick(PROJECT)
   check('a dead reviewer is replaced by the next tick', rig.team.calls.filter((call) => call.kind === 'spawn' && call.name === 'reviewer-2').length === 1, JSON.stringify(rig.team.calls.map((call) => call.name)))
+  scheduler.dispose()
+}
+
+// ── the per-round review brief and the rework brief ────────────────────────
+{
+  const task = roleTask({
+    status: null,
+    review: { status: 'changes-requested', by: 'reviewer-1', at: null, reasons: 'rename the helper in scripts/a.gd:12', attempt: 2 },
+    merge: { status: 'open', base: 'base-sha', target: 'feat/task-center-v2', head: 'head-sha', declaredFiles: ['scripts/a.gd'], actualFiles: ['scripts/a.gd', 'scripts/b.gd'], tests: 'npm run verify', reviewer: null, conflict: null, at: null },
+    actualFiles: ['scripts/a.gd', 'scripts/b.gd'],
+    evidence: 'node scripts/test/run.mjs passed',
+  })
+  const brief = reviewBriefFor(task, PROJECT)
+  check('the review brief names the round and the diff', brief.indexOf('Review round 2') >= 0 && brief.indexOf('base-sha..head-sha') >= 0, brief.slice(0, 400))
+  check(
+    'the review brief carries spec and acceptance',
+    brief.indexOf('Do the thing') >= 0 && brief.indexOf('The thing works') >= 0,
+    brief.slice(0, 600),
+  )
+  check(
+    'the review brief compares declared and actual files',
+    brief.indexOf('Declared files') >= 0 && brief.indexOf('Changed files from git') >= 0 && brief.indexOf('scripts/b.gd') >= 0 && brief.indexOf('beyond the declaration') >= 0,
+    brief.slice(0, 900),
+  )
+  check('the review brief carries the worker evidence', brief.indexOf('node scripts/test/run.mjs passed') >= 0, brief.slice(0, 900))
+  check('the review brief carries the previous reasons', brief.indexOf('rename the helper') >= 0, brief.slice(0, 900))
+  check('the review brief carries the conventions and checklist', brief.indexOf('Review checklist') >= 0 && brief.indexOf('Declared vs actual files') >= 0, brief.slice(-1200))
+  check('the review brief says the full test run is not needed here', brief.indexOf('do NOT need to run the full test suite') >= 0, brief.slice(-900))
+  check(
+    'the review brief states the read-only boundary and both verdicts',
+    brief.indexOf('READ-ONLY') >= 0 && brief.indexOf('approveReview') >= 0 && brief.indexOf('requestChanges') >= 0,
+    brief.slice(-900),
+  )
+
+  const rework = reworkBriefFor(task, PROJECT)
+  check('the rework brief carries the reviewer reasons', rework.indexOf('rename the helper in scripts/a.gd:12') >= 0, rework.slice(0, 500))
+  check('the rework brief keeps the same worktree and branch', rework.indexOf('SAME worktree') >= 0 && rework.indexOf('task/T-1-1') >= 0, rework.slice(0, 700))
+  check('the rework brief asks for a resubmission of the next round', rework.indexOf('submit') >= 0 && rework.indexOf('round 3') >= 0, rework.slice(-400))
+}
+
+// ── review timeout policy: remind once, then block for triage ──────────────
+{
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const state = createState(rig.ctx)
+  const stale = roleTask({ review: { status: 'pending', by: 'work-T-1-1', at: new Date(Date.now() - 60 * 60 * 1000).toISOString(), reasons: null, attempt: 1 } })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [stale] }))
+  const scheduler = createDispatcher(rig.ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: null, roles: rig.manager, reviewTimeoutMs: 25 })
+  await scheduler.tick(PROJECT)
+  const reminders = rig.team.calls.filter((call) => call.kind === 'send' && call.target === 'reviewer-1')
+  check('a stale review gets one reminder to the reviewer', reminders.length === 1 && reminders[0].text.indexOf('Reminder') >= 0 && reminders[0].text.indexOf('Review round 1') >= 0, JSON.stringify(reminders.map((call) => call.text.slice(0, 80))))
+  const firstRead = await state.read(PROJECT)
+  check('a reminder does not block the task yet', findTask(firstRead.board, 'T-1').status === 'reviewing', JSON.stringify(findTask(firstRead.board, 'T-1').status))
+  await sleep(40)
+  await scheduler.tick(PROJECT)
+  const secondRead = await state.read(PROJECT)
+  const blocked = findTask(secondRead.board, 'T-1')
+  check('a second silent timeout blocks the task for triage', blocked.status === 'blocked', blocked.status)
+  check('and records why', blocked.history.some((entry) => String(entry.note).indexOf('review timed out') >= 0), JSON.stringify(blocked.history.slice(-2)))
   scheduler.dispose()
 }
 

@@ -42,6 +42,13 @@ export const SEND_TIMEOUT_MS = 60 * 1000
  * hands it feature work, and the API accepts merge actions only from it (or the
  * user). A Team without one keeps merge requests open for the user to merge. */
 export const MERGER_NAME = 'merger'
+
+/** Review policy: a review that sits undecided for this long is reminded once,
+ * then blocked on the next sweep so a silent reviewer cannot strand a task. */
+export const REVIEW_TIMEOUT_MS = 10 * 60 * 1000
+/** Review rounds a task may go through before the host blocks it for triage. */
+export const REVIEW_MAX_ROUNDS = 3
+
 const RERUN_DELAY_MS = 250
 
 /** Role slot names are fixed per kind and index: worker-1, reviewer-1, tester-1. */
@@ -591,6 +598,79 @@ export function roleBriefFor(kind, task, config, options) {
   return lines.join('\n')
 }
 
+
+/**
+ * The per-round REVIEW brief the host sends the reviewer when a task enters
+ * review (submit, or a refreshed head/base). It is self-contained: what the
+ * task asked for, the tree under review, the worker's evidence, the project
+ * conventions and a checklist — no full test run is expected at this stage.
+ */
+export function reviewBriefFor(task, projectPath) {
+  const review = task.review === null || task.review === undefined ? {} : task.review
+  const merge = task.merge === null || task.merge === undefined ? {} : task.merge
+  const declared = Array.isArray(task.writeFiles) ? task.writeFiles : []
+  const actual = Array.isArray(task.actualFiles) ? task.actualFiles : []
+  const extras = actual.filter((path) => declared.indexOf(path) < 0)
+  const lines = []
+  lines.push('Review round ' + String(Number.isFinite(review.attempt) ? review.attempt : 1) + ' for ' + String(task.id) + ': ' + String(task.title))
+  if (typeof projectPath === 'string' && projectPath.length > 0) lines.push('Project: ' + projectPath)
+  lines.push('Branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch))
+  if (typeof task.worktree === 'string' && task.worktree.length > 0) lines.push('Worktree: ' + task.worktree)
+  lines.push(
+    'Diff under review: ' +
+      String(task.base === null || task.base === undefined ? '(unknown base)' : task.base) +
+      '..' +
+      String(merge.head === null || merge.head === undefined ? (task.commit === null || task.commit === undefined ? '(unknown head)' : task.commit) : merge.head),
+  )
+  if (typeof task.spec === 'string' && task.spec !== '') lines.push('', 'What it involves:', task.spec)
+  if (typeof task.acceptance === 'string' && task.acceptance !== '') lines.push('', 'Acceptance:', task.acceptance)
+  lines.push('', 'Declared files (' + String(declared.length) + '): ' + (declared.length === 0 ? '(none)' : declared.join(', ')))
+  lines.push('Changed files from git (' + String(actual.length) + '): ' + (actual.length === 0 ? '(none recorded)' : actual.join(', ')))
+  if (extras.length > 0) {
+    lines.push('Files changed beyond the declaration (ask why, or request changes): ' + extras.join(', '))
+  } else if (actual.length > 0) {
+    lines.push('Every changed file was declared.')
+  }
+  lines.push('', 'Worker self-test evidence:', typeof task.evidence === 'string' && task.evidence !== '' ? task.evidence : '(none recorded)')
+  if (typeof review.reasons === 'string' && review.reasons !== '') lines.push('', 'Previous review reasons:', review.reasons)
+  lines.push(
+    '',
+    'Review against the project conventions: keep the change consistent with the surrounding code and architecture, avoid unrelated rewrites and never restyle files the task did not touch.',
+    '',
+    'Review checklist:',
+    '- The diff matches the spec and the acceptance criteria, and nothing unrelated changed.',
+    '- Declared vs actual files match (or the extras are justified).',
+    '- No secrets, debug leftovers, dead code or commented-out blocks.',
+    '- The evidence plausibly matches the change (you do NOT need to run the full test suite; the test stage does that).',
+    '- Error handling and naming follow the code around it.',
+    '',
+    'You are READ-ONLY on implementation: do not edit files, commit, merge or push.',
+    'Record the verdict with task_center:',
+    '  { action: "approveReview", id: "' + task.id + '" }',
+    '  { action: "requestChanges", id: "' + task.id + '", reasons: "concrete, actionable reasons (files/lines)" }',
+  )
+  return lines.join('\n')
+}
+
+/** The rework brief the host sends the worker when its review requested
+ * changes: fix in the SAME worktree and submit again for the next round. */
+export function reworkBriefFor(task, projectPath) {
+  const review = task.review === null || task.review === undefined ? {} : task.review
+  const lines = []
+  lines.push('Review round ' + String(Number.isFinite(review.attempt) ? review.attempt : 1) + ' requested CHANGES on ' + String(task.id) + ': ' + String(task.title))
+  if (typeof projectPath === 'string' && projectPath.length > 0) lines.push('Project: ' + projectPath)
+  lines.push('', 'Reviewer reasons:')
+  lines.push(typeof review.reasons === 'string' && review.reasons !== '' ? review.reasons : '(the reviewer did not write reasons; ask the Lead)')
+  lines.push('')
+  lines.push('Fix it in the SAME worktree and branch you already used:')
+  lines.push('  worktree: ' + String(task.worktree === null || task.worktree === undefined ? '(unknown)' : task.worktree))
+  lines.push('  branch:   ' + String(task.branch === null || task.branch === undefined ? '(unknown)' : task.branch))
+  lines.push('Do not create a new branch or a fresh checkout; the task branch still holds your commit.')
+  lines.push('Run the tests there, then report again with task_center { action: "submit", id: "' + task.id + '", evidence: "what you fixed and how you checked it" }.')
+  lines.push('That opens review round ' + String((Number.isFinite(review.attempt) ? review.attempt : 1) + 1) + '.')
+  return lines.join('\n')
+}
+
 /**
  * The host-side role registry and provisioner.
  *
@@ -850,7 +930,19 @@ export function createDispatcher(ctx, options) {
   // The host-side role provisioner. Null means this caller did not opt into
   // role provisioning (older tests / direct API users); dispatch still works.
   const roles = opts.roles === undefined ? null : opts.roles
-  const memory = { sweeping: false, rerun: null, timer: null, lastTickAt: null, lastError: null, lastResults: [], ticks: 0 }
+  // Tests shorten the review timeout; production uses REVIEW_TIMEOUT_MS.
+  const reviewTimeoutMs = Number.isFinite(opts.reviewTimeoutMs) ? opts.reviewTimeoutMs : REVIEW_TIMEOUT_MS
+  const memory = {
+    sweeping: false,
+    rerun: null,
+    timer: null,
+    lastTickAt: null,
+    lastError: null,
+    lastResults: [],
+    ticks: 0,
+    // One reminder per review round: key id@review.at -> when the reminder went out.
+    reviewReminders: new Map(),
+  }
   // undefined means "ask the context"; null means "this host has no git runner",
   // which now means dispatch cannot start at all. Resolved lazily and cached for
   // the dispatcher's life.
@@ -1038,6 +1130,101 @@ export function createDispatcher(ctx, options) {
     return results
   }
 
+  /** Send one plain message to a Team member; a refusal is not an error. */
+  async function sendMemberMessage(lead, name, text) {
+    const team = ctx.get('agentTeams')
+    if (team === undefined || team === null || lead === null) return false
+    try {
+      const request = { target: name, content: [{ type: 'text', text: text }] }
+      if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+        request.signal = AbortSignal.timeout(SEND_TIMEOUT_MS)
+      }
+      await team.sendMessage(lead, request)
+      return true
+    } catch (error) {
+      return false
+    }
+  }
+
+  /** Live reviewer slot names (reviewer-1, reviewer-2, ...). */
+  function reviewerNames() {
+    const { agentTeams } = servicesFor(ctx)
+    if (agentTeams === undefined || agentTeams === null) return []
+    const lead = resolveLead(ctx)
+    if (lead === null) return []
+    let roster = []
+    try {
+      roster = agentTeams.listMembers(lead)
+    } catch (error) {
+      return []
+    }
+    if (!Array.isArray(roster)) return []
+    return roster
+      .filter((member) => member !== null && typeof member === 'object' && roleKindOf(member.name) === 'reviewer' && member.status !== 'failed')
+      .map((member) => String(member.name))
+  }
+
+  /**
+   * The review timeout policy, driven by the host tick: a review that stays
+   * undecided past REVIEW_TIMEOUT_MS gets one reminder to the reviewer; if it is
+   * still undecided a full timeout later, the task is blocked for triage (and
+   * the owner plus the Lead are told). Never blocks a dispatch pass.
+   */
+  async function sweepReviewTimeouts(projectPath, board, now) {
+    const pending = board.tasks.filter(
+      (task) =>
+        task.status === 'reviewing' &&
+        task.review !== null &&
+        task.review !== undefined &&
+        task.review.status === 'pending' &&
+        typeof task.review.at === 'string',
+    )
+    if (pending.length === 0) return { reminded: [], blocked: [], board: null }
+    const due = pending.filter((task) => now - Date.parse(task.review.at) >= reviewTimeoutMs)
+    if (due.length === 0) return { reminded: [], blocked: [], board: null }
+    const lead = resolveLead(ctx)
+    const names = reviewerNames()
+    const reminded = []
+    const blocked = []
+    let nextBoard = null
+    const pendingKeys = new Set(pending.map((task) => String(task.id) + '@' + String(task.review.at)))
+    for (const task of due) {
+      const key = String(task.id) + '@' + String(task.review.at)
+      const remindedAt = memory.reviewReminders.get(key)
+      if (!Number.isFinite(remindedAt)) {
+        if (names.length === 0 || lead === null) continue
+        const sent = await sendMemberMessage(lead, names[0], 'Reminder — review is still waiting.\n\n' + reviewBriefFor(task, projectPath))
+        if (sent === true) {
+          memory.reviewReminders.set(key, now)
+          reminded.push(task.id)
+        }
+        continue
+      }
+      if (now - remindedAt < reviewTimeoutMs) continue
+      const applied = await applyReap(projectPath, (value) => {
+        const blocked = model.blockTask(value, task.id, now, 'system', 'review timed out: no reviewer verdict after two reminders')
+        return blocked.ok === true ? blocked.board : value
+      })
+      if (applied === null) continue
+      nextBoard = applied
+      memory.reviewReminders.delete(key)
+      blocked.push(task.id)
+      const owner = task.assignee === null || task.assignee === undefined ? null : task.assignee.name
+      const notice =
+        'Review for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
+        '  project: ' + String(projectPath) + '\n' +
+        '  branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch) + '\n' +
+        '  worktree: ' + String(task.worktree === null || task.worktree === undefined ? '' : task.worktree)
+      if (typeof owner === 'string' && owner !== '') await sendMemberMessage(lead, owner, notice)
+      if (lead !== null && typeof lead.name === 'string' && lead.name !== '') await sendMemberMessage(lead, lead.name, notice)
+    }
+    // Forget reminders for reviews that were decided (or whose round moved on).
+    for (const key of Array.from(memory.reviewReminders.keys())) {
+      if (!pendingKeys.has(key)) memory.reviewReminders.delete(key)
+    }
+    return { reminded: reminded, blocked: blocked, board: nextBoard }
+  }
+
   async function tick(projectPath) {
     const project = typeof projectPath === 'string' && projectPath.length > 0 ? projectPath : projectOf()
     if (typeof project !== 'string' || project.length === 0) return { ok: true, skipped: 'unknown-project' }
@@ -1061,6 +1248,10 @@ export function createDispatcher(ctx, options) {
       // Roles are kept for tasks already in a review/test stage even while
       // dispatch is paused: a dead reviewer/tester must not strand a task.
       const roleResults = await ensureStageRoles(project, current, now)
+      const reviewSweep = await sweepReviewTimeouts(project, current, now)
+      if (reviewSweep.board !== null) current = reviewSweep.board
+      for (const id of reviewSweep.reminded) results.push({ id: id, review: 'reminded' })
+      for (const id of reviewSweep.blocked) results.push({ id: id, review: 'timed-out' })
       const dispatch = current.dispatch
       if (dispatch.state !== 'running') {
         return { ok: true, state: 'paused', tasks: current.tasks.length, results: results }
