@@ -12,7 +12,16 @@
  */
 
 import { join, resolve } from 'node:path'
-import { TASK_LEASE_MS } from './schema.mjs'
+import {
+  ROLE_KINDS,
+  ROLE_STAGE,
+  TASK_LEASE_MS,
+  WORKFLOW_STAGES,
+  defaultRoleConfig,
+  normaliseRoleConfig,
+  validateRoleBinding,
+  validateRoleProfile,
+} from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import {
@@ -28,7 +37,7 @@ import {
   testerBriefFor,
   workerPool,
 } from './dispatch.mjs'
-import { readRoleConfig } from './board.mjs'
+import { readRoleConfig, writeRoleConfig } from './board.mjs'
 import { mergeEligible, recordCandidate, recordMergeResult, refreshMergeRequest, testCandidateFor } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
 
@@ -58,6 +67,14 @@ export const ACTIONS = [
   'harnessRestart',
   'harnessStatus',
   'harnessSmoke',
+  'rolesList',
+  'rolesCreate',
+  'rolesUpdate',
+  'rolesDelete',
+  'rolesBind',
+  'rolesDrain',
+  'rolesReplace',
+  'rolesReset',
   'approveStart',
   'rejectStart',
   'cancelStartRequest',
@@ -75,7 +92,19 @@ export const ACTIONS = [
 
 /** Actions that belong to the person at the GUI. The tool binding hides them,
  * and perform() refuses them for an agent even if one is called directly. */
-export const USER_ONLY_ACTIONS = ['approveStart', 'rejectStart', 'settings']
+export const USER_ONLY_ACTIONS = [
+  'approveStart',
+  'rejectStart',
+  'settings',
+  'rolesList',
+  'rolesCreate',
+  'rolesUpdate',
+  'rolesDelete',
+  'rolesBind',
+  'rolesDrain',
+  'rolesReplace',
+  'rolesReset',
+]
 
 /** The tool's vocabulary: everything except the user-owned actions. */
 export const AGENT_ACTIONS = ACTIONS.filter((action) => USER_ONLY_ACTIONS.indexOf(action) < 0)
@@ -717,6 +746,40 @@ export function createApi(ctx, options) {
     return Object.assign({ available: true }, activity.snapshot())
   }
 
+  /** Live role-slot instances (worker-N/reviewer-N/tester-N) for the role panel. */
+  function roleInstanceList() {
+    const { agentTeams } = servicesFor(ctx)
+    if (agentTeams === undefined || agentTeams === null) return { available: false, error: 'no-team-service', instances: [], manager: null }
+    const lead = resolveLead(ctx)
+    if (lead === null) return { available: false, error: 'no-lead', instances: [], manager: null }
+    let roster = []
+    try {
+      roster = agentTeams.listMembers(lead)
+    } catch (error) {
+      return { available: false, error: 'roster-unreadable', instances: [], manager: null }
+    }
+    const instances = (Array.isArray(roster) ? roster : [])
+      .filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string' && roleKindOf(member.name) !== null)
+      .map((member) => ({
+        name: String(member.name),
+        kind: roleKindOf(member.name),
+        id: member.id === undefined || member.id === null ? null : String(member.id),
+        status: String(member.status === undefined || member.status === null ? 'unknown' : member.status),
+        description: typeof member.description === 'string' ? member.description : null,
+      }))
+    return { available: true, error: null, instances: instances, manager: roles === null ? null : roles.status() }
+  }
+
+  function roleAdminRefusal(context) {
+    if (context !== undefined && context !== null && context.role === 'user') return null
+    return failure('user-only', 'Role profiles belong to the user; manage them from the task center panel.')
+  }
+
+  async function persistRoles(projectPath, config) {
+    const written = await writeRoleConfig({ fs: ctx.fs }, { projectPath: projectPath, config: config })
+    return written
+  }
+
   function projectFrom(input, context) {
     const candidate =
       input !== undefined && input !== null && typeof input.project === 'string' && input.project.length > 0
@@ -1195,6 +1258,141 @@ export function createApi(ctx, options) {
       if (reader !== null) await heartbeat(projectPath, reader)
     }
 
+    if (action.indexOf('roles') === 0 && USER_ONLY_ACTIONS.indexOf(action) >= 0) {
+      const denied = roleAdminRefusal(context)
+      if (denied !== null) return denied
+      const read = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
+      const current = read.config
+      if (action === 'rolesList') {
+        return ok({
+          source: read.source,
+          error: read.error,
+          config: current,
+          stages: current.stages,
+          defaults: defaultRoleConfig(),
+          instances: roleInstanceList(),
+        })
+      }
+      if (action === 'rolesCreate' || action === 'rolesUpdate') {
+        const name = String(source.name === undefined ? '' : source.name)
+        const profileInput = source.profile !== undefined && source.profile !== null && typeof source.profile === 'object' && !Array.isArray(source.profile) ? source.profile : {}
+        let merged = null
+        if (action === 'rolesCreate') {
+          if (name === '') return failure('missing-name', 'rolesCreate needs a profile name')
+          if (current.profiles[name] !== undefined) return failure('role-exists', name + ' already exists; use rolesUpdate to edit it')
+          merged = Object.assign({}, profileInput)
+          if (merged.role === undefined && merged.kind === undefined && ROLE_KINDS.indexOf(name) >= 0) merged.role = name
+        } else {
+          if (current.profiles[name] === undefined) return failure('unknown-role-profile', 'no role profile named ' + name)
+          const existing = current.profiles[name]
+          merged = Object.assign(
+            {
+              role: existing.role,
+              stage: existing.stage,
+              instances: existing.instances,
+              skills: existing.skills,
+              context: existing.context,
+              permissions: existing.permissions,
+              prompt: existing.prompt,
+            },
+            profileInput,
+          )
+        }
+        const validated = validateRoleProfile(name, merged)
+        if (validated.ok !== true) return validated
+        const config = normaliseRoleConfig(
+          Object.assign({}, current, { profiles: Object.assign({}, current.profiles, { [name]: validated.profile }) }),
+        )
+        const written = await persistRoles(projectPath, config)
+        if (written.ok !== true) return written
+        emitActivity(context, 'role-config', action + ' ' + name, null)
+        return ok({ config: written.config, profile: written.config.profiles[name], source: 'file' })
+      }
+      if (action === 'rolesDelete') {
+        const name = String(source.name === undefined ? '' : source.name)
+        if (current.profiles[name] === undefined) return failure('unknown-role-profile', 'no role profile named ' + name)
+        if (ROLE_KINDS.indexOf(name) >= 0) {
+          return failure('default-profile', 'the built-in ' + name + ' profile cannot be deleted; update it or reset the defaults')
+        }
+        const profiles = Object.assign({}, current.profiles)
+        delete profiles[name]
+        const stages = Object.assign({}, current.stages)
+        for (const stage of WORKFLOW_STAGES) {
+          if (stages[stage] === name) stages[stage] = { implement: 'worker', review: 'reviewer', test: 'tester' }[stage]
+        }
+        const config = normaliseRoleConfig(Object.assign({}, current, { profiles: profiles, stages: stages }))
+        const written = await persistRoles(projectPath, config)
+        if (written.ok !== true) return written
+        emitActivity(context, 'role-config', 'deleted profile ' + name, null)
+        return ok({ config: written.config, deleted: name, source: 'file' })
+      }
+      if (action === 'rolesBind') {
+        const stage = String(source.stage === undefined ? '' : source.stage)
+        const name = String(source.profile !== undefined ? source.profile : source.name === undefined ? '' : source.name)
+        const validated = validateRoleBinding(current, stage, name)
+        if (validated.ok !== true) return validated
+        const config = normaliseRoleConfig(Object.assign({}, current, { stages: Object.assign({}, current.stages, { [stage]: name }) }))
+        const written = await persistRoles(projectPath, config)
+        if (written.ok !== true) return written
+        emitActivity(context, 'role-config', 'bound ' + stage + ' to ' + name, null)
+        return ok({ config: written.config, bound: { stage: stage, profile: name }, source: 'file' })
+      }
+      if (action === 'rolesDrain' || action === 'rolesReplace') {
+        if (roles === null || typeof roles.drain !== 'function') {
+          return failure('roles-unavailable', 'the role manager is not available in this profile')
+        }
+        const requested = String(source.name === undefined ? '' : source.name)
+        let kind = roleKindOf(requested)
+        let drained = []
+        if (kind !== null) {
+          const result = roles.drain(requested)
+          if (result.ok !== true) return result
+          drained = Array.isArray(result.drained) ? result.drained : [requested]
+        } else if (action === 'rolesReplace' && ROLE_KINDS.indexOf(requested) >= 0) {
+          kind = requested
+          if (typeof roles.drainKind === 'function') {
+            const result = await roles.drainKind(requested)
+            if (result.ok !== true) return result
+            drained = Array.isArray(result.drained) ? result.drained : []
+          }
+        } else {
+          return failure('invalid-role-instance', 'name a role instance (worker-1/reviewer-2/tester-3) or, for replace, a role kind')
+        }
+        if (action === 'rolesDrain') {
+          emitActivity(context, 'role-config', 'drained ' + requested, null)
+          return ok({ drained: drained, kind: kind, status: roles.status(), instances: roleInstanceList() })
+        }
+        const ensured = await roles.ensure(kind, { config: current, projectPath: projectPath, task: null, now: clock() })
+        emitRoleProvision(ensured)
+        if (ensured.ok !== true) return Object.assign({}, ensured, { drained: drained })
+        emitActivity(context, 'role-config', 'replaced ' + kind + ' instance(s)', null)
+        return ok({
+          kind: kind,
+          drained: drained,
+          created: ensured.created,
+          reused: ensured.reused,
+          replaced: ensured.replaced,
+          status: roles.status(),
+          instances: roleInstanceList(),
+        })
+      }
+      if (action === 'rolesReset') {
+        const config = defaultRoleConfig()
+        const written = await persistRoles(projectPath, config)
+        if (written.ok !== true) return written
+        emitActivity(context, 'role-config', 'reset role profiles to the defaults', null)
+        const ensured = []
+        if (roles !== null && typeof roles.ensure === 'function') {
+          for (const kind of ROLE_KINDS) {
+            const result = await roles.ensure(kind, { config: config, projectPath: projectPath, task: null, now: clock() })
+            emitRoleProvision(result)
+            ensured.push({ kind: kind, result: result })
+          }
+        }
+        return ok({ config: written.config, source: 'default', ensured: ensured, instances: roleInstanceList() })
+      }
+      return failure('unknown-action', 'unknown role action ' + String(action))
+    }
     if (action === 'board') return snapshot(projectPath)
     if (action === 'locks') {
       const read = await readBoardOrFail(projectPath)

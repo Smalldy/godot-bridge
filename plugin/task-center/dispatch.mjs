@@ -28,7 +28,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { boardPath, readRoleConfig } from './board.mjs'
 import { writePolicyFor } from './state.mjs'
-import { ROLE_KINDS, ROLE_PROVISION_TIMEOUT_MS, ROLE_STAGE, TASK_LEASE_MS, defaultRoleConfig } from './schema.mjs'
+import { ROLE_KINDS, ROLE_PROVISION_TIMEOUT_MS, ROLE_STAGE, TASK_LEASE_MS, defaultRoleConfig, profileForKind } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { createGit } from './git.mjs'
@@ -625,7 +625,7 @@ export function briefFor(task, projectPath, leadName) {
  */
 export function roleBriefFor(kind, task, config, options) {
   const opts = options === undefined || options === null ? {} : options
-  const profile = config !== null && config !== undefined && config.profiles !== undefined && config.profiles !== null ? config.profiles[kind] : null
+  const profile = config !== null && config !== undefined ? profileForKind(config, kind) : null
   const stage = profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
   const lines = []
   lines.push('Task center role: ' + String(kind))
@@ -637,6 +637,15 @@ export function roleBriefFor(kind, task, config, options) {
     task !== undefined &&
     ((task.review !== null && task.review !== undefined && task.review.status === 'changes-requested') ||
       (task.test !== null && task.test !== undefined && task.test.status === 'failed'))
+  if (profile !== null && profile !== undefined && Array.isArray(profile.permissions) && profile.permissions.length > 0) {
+    lines.push('', 'Profile permissions: ' + profile.permissions.join(', '))
+  }
+  if (profile !== null && profile !== undefined && typeof profile.prompt === 'string' && profile.prompt !== '') {
+    lines.push('', 'Profile instructions:', profile.prompt)
+  }
+  if (profile !== null && profile !== undefined && profile.context === 'fork') {
+    lines.push('', 'Profile context: forked from the Lead (not a fresh context).')
+  }
   if (task !== null && task !== undefined) {
     lines.push('', 'Task ' + String(task.id) + ': ' + String(task.title))
     if (typeof task.spec === 'string' && task.spec !== '') lines.push('', 'What it involves:', task.spec)
@@ -895,7 +904,7 @@ export function createRoleManager(ctx, options) {
     const req = request === undefined || request === null ? {} : request
     if (ROLE_KINDS.indexOf(kind) < 0) return { ok: false, code: 'invalid-role', message: 'unknown role kind ' + String(kind) }
     const config = req.config === undefined || req.config === null ? defaultRoleConfig() : req.config
-    const profile = config.profiles !== undefined && config.profiles !== null ? config.profiles[kind] : null
+    const profile = profileForKind(config, kind)
     const desired = profile !== null && profile !== undefined && Number.isFinite(profile.instances) ? Math.floor(profile.instances) : 1
     const { agents, agentTeams } = servicesFor(ctx)
     if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
@@ -959,7 +968,7 @@ export function createRoleManager(ctx, options) {
               { type: 'text', text: spawnPreamble(name, leadName) },
               { type: 'text', text: roleBriefFor(kind, req.task === undefined ? null : req.task, config, { projectPath: req.projectPath, leadName: leadName }) },
             ],
-            context: 'fresh',
+            context: profile !== null && profile !== undefined && profile.context === 'fork' ? 'fork' : 'fresh',
             provider: subagentProviderFor(ctx),
             signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
           })

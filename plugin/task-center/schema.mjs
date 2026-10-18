@@ -56,6 +56,13 @@ export const STAGE_ROLE = { implement: 'worker', review: 'reviewer', test: 'test
 export const ROLE_STAGE = { worker: 'implement', reviewer: 'review', tester: 'test' }
 export const ROLE_DEFAULT_INSTANCES = { worker: 1, reviewer: 1, tester: 1 }
 export const ROLE_INSTANCES_LIMITS = { min: 1, max: 8 }
+/** How a provisioned role instance starts: a fresh context (default) or a fork
+ * of the Lead's context. */
+export const ROLE_CONTEXTS = ['fresh', 'fork']
+/** The permissions a profile may declare; they gate what the brief allows. */
+export const ROLE_PERMISSIONS = ['read-only', 'implement', 'review', 'test', 'merge', 'admin']
+export const ROLE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}$/
+export const ROLE_PROMPT_MAX = 4000
 
 /** A role that stays 'provisioning' this long is treated as dead and replaced. */
 export const ROLE_PROVISION_TIMEOUT_MS = 5 * 60 * 1000
@@ -78,21 +85,36 @@ function roleStringList(value) {
   return out
 }
 
-/** One normalised role profile. Role kinds are fixed in this version. */
-export function normaliseRoleProfile(raw, kind) {
+/** One normalised role profile. A profile names one of the fixed role kinds;
+ * its stage is that kind's stage, and it may carry a context, permissions and a
+ * custom prompt. Malformed members fall back instead of throwing. */
+export function normaliseRoleProfile(raw, kind, name) {
   const source = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
-  const stage = WORKFLOW_STAGES.indexOf(source.stage) >= 0 ? source.stage : ROLE_STAGE[kind]
+  const stage = ROLE_STAGE[kind]
   const fallback = ROLE_DEFAULT_INSTANCES[kind] === undefined ? 1 : ROLE_DEFAULT_INSTANCES[kind]
-  const instances = Number.isFinite(source.instances)
-    ? Math.min(ROLE_INSTANCES_LIMITS.max, Math.max(ROLE_INSTANCES_LIMITS.min, Math.floor(source.instances)))
+  const requestedInstances = source.instances !== undefined ? source.instances : source.concurrency
+  const instances = Number.isFinite(requestedInstances)
+    ? Math.min(ROLE_INSTANCES_LIMITS.max, Math.max(ROLE_INSTANCES_LIMITS.min, Math.floor(requestedInstances)))
     : fallback
-  return { role: kind, stage: stage, instances: instances, skills: roleStringList(source.skills) }
+  const context = ROLE_CONTEXTS.indexOf(source.context) >= 0 ? source.context : 'fresh'
+  const permissions = roleStringList(source.permissions).filter((entry) => ROLE_PERMISSIONS.indexOf(entry) >= 0)
+  const prompt = typeof source.prompt === 'string' ? source.prompt.trim().slice(0, ROLE_PROMPT_MAX) : ''
+  return {
+    name: typeof name === 'string' && name !== '' ? name : kind,
+    role: kind,
+    stage: stage,
+    instances: instances,
+    skills: roleStringList(source.skills),
+    context: context,
+    permissions: permissions,
+    prompt: prompt,
+  }
 }
 
 /** The built-in profile set: one implement-stage worker, one reviewer, one tester. */
 export function defaultRoleConfig() {
   const profiles = {}
-  for (const kind of ROLE_KINDS) profiles[kind] = normaliseRoleProfile(null, kind)
+  for (const kind of ROLE_KINDS) profiles[kind] = normaliseRoleProfile(null, kind, kind)
   return {
     version: ROLE_CONFIG_VERSION,
     defaultProfile: 'worker',
@@ -101,25 +123,126 @@ export function defaultRoleConfig() {
   }
 }
 
+/** The profile bound to a kind's stage (a custom profile may replace the default
+ * without changing which kind owns the stage). Never throws. */
+export function profileForKind(config, kind) {
+  const stage = ROLE_STAGE[kind]
+  const bound = config !== null && config !== undefined && config.stages !== null && config.stages !== undefined ? config.stages[stage] : null
+  if (typeof bound === 'string' && config.profiles !== null && config.profiles !== undefined && config.profiles[bound] !== undefined) {
+    const profile = config.profiles[bound]
+    if (profile.stage === stage) return profile
+  }
+  if (config !== null && config !== undefined && config.profiles !== null && config.profiles !== undefined && config.profiles[kind] !== undefined) {
+    return config.profiles[kind]
+  }
+  return defaultRoleConfig().profiles[kind]
+}
+
+/**
+ * Validate one role profile submitted through the API. Unlike the forgiving
+ * normaliser, this REFUSES bad input: a name, a known kind, the kind's stage,
+ * bounded instances, string skills, a known context, allowed permissions and a
+ * bounded prompt. Returns { ok, profile } or { ok: false, code, message }.
+ */
+export function validateRoleProfile(name, raw) {
+  if (typeof name !== 'string' || !ROLE_NAME_PATTERN.test(name)) {
+    return { ok: false, code: 'invalid-role-name', message: 'a role profile name must match ' + String(ROLE_NAME_PATTERN) }
+  }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, code: 'invalid-role-profile', message: 'the profile body must be a JSON object' }
+  }
+  const kind = raw.role !== undefined ? raw.role : raw.kind
+  if (ROLE_KINDS.indexOf(kind) < 0) {
+    return { ok: false, code: 'invalid-role-kind', message: 'role must be one of ' + ROLE_KINDS.join(', ') }
+  }
+  if (raw.stage !== undefined && raw.stage !== ROLE_STAGE[kind]) {
+    return { ok: false, code: 'invalid-role-stage', message: 'a ' + kind + ' profile owns the ' + ROLE_STAGE[kind] + ' stage' }
+  }
+  const requestedInstances = raw.instances !== undefined ? raw.instances : raw.concurrency
+  if (requestedInstances !== undefined) {
+    if (!Number.isInteger(requestedInstances) || requestedInstances < ROLE_INSTANCES_LIMITS.min || requestedInstances > ROLE_INSTANCES_LIMITS.max) {
+      return { ok: false, code: 'invalid-role-instances', message: 'instances must be an integer between ' + String(ROLE_INSTANCES_LIMITS.min) + ' and ' + String(ROLE_INSTANCES_LIMITS.max) }
+    }
+  }
+  if (raw.skills !== undefined) {
+    if (!Array.isArray(raw.skills) || raw.skills.some((entry) => typeof entry !== 'string')) {
+      return { ok: false, code: 'invalid-role-skills', message: 'skills must be an array of strings' }
+    }
+  }
+  if (raw.context !== undefined && ROLE_CONTEXTS.indexOf(raw.context) < 0) {
+    return { ok: false, code: 'invalid-role-context', message: 'context must be one of ' + ROLE_CONTEXTS.join(', ') }
+  }
+  if (raw.permissions !== undefined) {
+    if (!Array.isArray(raw.permissions) || raw.permissions.some((entry) => ROLE_PERMISSIONS.indexOf(entry) < 0)) {
+      return { ok: false, code: 'invalid-role-permissions', message: 'permissions must be a subset of ' + ROLE_PERMISSIONS.join(', ') }
+    }
+  }
+  if (raw.prompt !== undefined && (typeof raw.prompt !== 'string' || raw.prompt.length > ROLE_PROMPT_MAX)) {
+    return { ok: false, code: 'invalid-role-prompt', message: 'prompt must be a string of at most ' + String(ROLE_PROMPT_MAX) + ' characters' }
+  }
+  return { ok: true, profile: normaliseRoleProfile(raw, kind, name) }
+}
+
+/** Validate a stage binding: the stage exists and the named profile owns it. */
+export function validateRoleBinding(config, stage, name) {
+  if (WORKFLOW_STAGES.indexOf(stage) < 0) {
+    return { ok: false, code: 'invalid-stage', message: 'stage must be one of ' + WORKFLOW_STAGES.join(', ') }
+  }
+  if (typeof name !== 'string' || name === '' || config === null || config === undefined || config.profiles === null || config.profiles === undefined || config.profiles[name] === undefined) {
+    return { ok: false, code: 'unknown-role-profile', message: 'no role profile named ' + String(name) }
+  }
+  const profile = config.profiles[name]
+  if (profile.stage !== stage) {
+    return { ok: false, code: 'stage-mismatch', message: name + ' owns the ' + profile.stage + ' stage, not ' + stage }
+  }
+  return { ok: true, profile: profile }
+}
+
 /**
  * Normalise a project role config. A hand-written or partial file is repaired
  * member by member; a garbage file falls back to the defaults instead of
- * blocking dispatch. Stage bindings are derived from the profiles, so a profile
- * that names a known stage owns it.
+ * blocking dispatch.
+ *
+ * The default worker/reviewer/tester profiles always exist. Additional profiles
+ * may be declared with a known role kind; a profile whose name/kind is invalid
+ * is dropped. Stage bindings come from the file when they point at an existing
+ * profile owning that stage; otherwise the kind's own profile (or the built-in
+ * stage owner) is used.
  */
 export function normaliseRoleConfig(raw) {
   const base = defaultRoleConfig()
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return base
   const sourceProfiles = raw.profiles !== null && typeof raw.profiles === 'object' && !Array.isArray(raw.profiles) ? raw.profiles : {}
   const profiles = {}
-  for (const kind of ROLE_KINDS) profiles[kind] = normaliseRoleProfile(sourceProfiles[kind], kind)
+  for (const kind of ROLE_KINDS) profiles[kind] = normaliseRoleProfile(sourceProfiles[kind], kind, kind)
+  for (const name of Object.keys(sourceProfiles)) {
+    if (ROLE_KINDS.indexOf(name) >= 0) continue
+    if (!ROLE_NAME_PATTERN.test(name)) continue
+    const candidate = sourceProfiles[name]
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) continue
+    const requested = candidate.role !== undefined ? candidate.role : candidate.kind
+    const kind = ROLE_KINDS.indexOf(requested) >= 0 ? requested : null
+    if (kind === null) continue
+    profiles[name] = normaliseRoleProfile(candidate, kind, name)
+  }
+  const requestedStages = raw.stages !== null && typeof raw.stages === 'object' && !Array.isArray(raw.stages) ? raw.stages : {}
   const stages = {}
   for (const stage of WORKFLOW_STAGES) {
-    const owner = ROLE_KINDS.filter((kind) => profiles[kind].stage === stage)[0]
+    const requested = requestedStages[stage]
+    if (typeof requested === 'string' && profiles[requested] !== undefined && profiles[requested].stage === stage) {
+      stages[stage] = requested
+      continue
+    }
+    const own = ROLE_KINDS.filter((kind) => kind === STAGE_ROLE[stage])[0]
+    if (own !== undefined && profiles[own] !== undefined && profiles[own].stage === stage) {
+      stages[stage] = own
+      continue
+    }
+    const owner = Object.keys(profiles).filter((name) => profiles[name].stage === stage)[0]
     stages[stage] = owner === undefined ? STAGE_ROLE[stage] : owner
   }
   const requestedDefault = typeof raw.defaultProfile === 'string' ? raw.defaultProfile : ''
-  const defaultProfile = ROLE_KINDS.indexOf(requestedDefault) >= 0 ? requestedDefault : base.defaultProfile
+  const defaultProfile = profiles[requestedDefault] !== undefined ? requestedDefault : base.defaultProfile
   return { version: ROLE_CONFIG_VERSION, defaultProfile: defaultProfile, stages: stages, profiles: profiles }
 }
 

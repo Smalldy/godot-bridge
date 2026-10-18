@@ -10,6 +10,7 @@ import { createActivity, createDispatcher, createRoleManager } from '../../plugi
 import { rolesPath } from '../../plugin/task-center/board.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
+import { defaultRoleConfig } from '../../plugin/task-center/schema.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -2573,6 +2574,110 @@ function acceptingTask(overrides) {
   check('the real integration worktree is recorded as created', create !== undefined && create.actor === 'system' && String(create.detail).indexOf('merge-T-1') >= 0, JSON.stringify(create))
   check('its cleanup and the task worktree removal are recorded', remove.length >= 2 && remove.some((entry) => entry.actor === 'host'), JSON.stringify(remove))
   check('the sweep path records no agent activity', entries.every((entry) => entry.actor !== 'agent'), JSON.stringify(entries.map((entry) => entry.actor)))
+}
+
+// ── role management API: user-only CRUD, binding, drain/replace, reset ─────
+{
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git })
+  const user = rig.user
+  const agent = agentCaller('session-fixer')
+  const listed = await rig.api.perform('rolesList', {}, user)
+  check(
+    'the user can list the default role profiles',
+    listed.ok === true &&
+      listed.source === 'default' &&
+      listed.config.profiles.worker.role === 'worker' &&
+      listed.config.stages.review === 'reviewer' &&
+      listed.defaults.profiles.tester.stage === 'test',
+    JSON.stringify({ source: listed.ok ? listed.source : listed.code }),
+  )
+  check(
+    'the live role instances are listed',
+    listed.instances.available === true && listed.instances.instances.map((entry) => entry.name).join(',') === 'reviewer-1,tester-1',
+    JSON.stringify(listed.instances),
+  )
+  const deniedList = await rig.api.perform('rolesList', {}, agent)
+  check('an agent cannot list role profiles', deniedList.ok === false && deniedList.code === 'user-only', JSON.stringify(deniedList))
+  const deniedCreate = await rig.api.perform('rolesCreate', { name: 'x', profile: { role: 'reviewer' } }, agent)
+  check('an agent cannot create a role profile', deniedCreate.ok === false && deniedCreate.code === 'user-only', JSON.stringify(deniedCreate))
+
+  const created = await rig.api.perform(
+    'rolesCreate',
+    {
+      name: 'godot-reviewer',
+      profile: { role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check idioms.' },
+    },
+    user,
+  )
+  check(
+    'the user can create a custom profile',
+    created.ok === true &&
+      created.config.profiles['godot-reviewer'].instances === 2 &&
+      created.config.profiles['godot-reviewer'].context === 'fork' &&
+      created.config.profiles['godot-reviewer'].permissions.join(',') === 'read-only,review',
+    JSON.stringify(created.ok ? created.profile : created),
+  )
+  const before = rig.fs.files.get(rolesPath(PROJECT)).text
+  check('creating persists roles.json', JSON.parse(before).profiles['godot-reviewer'].prompt === 'Check idioms.', before.slice(0, 300))
+  const invalid = await rig.api.perform('rolesCreate', { name: 'bad-reviewer', profile: { role: 'reviewer', instances: 99 } }, user)
+  check('an invalid profile is refused', invalid.ok === false && invalid.code === 'invalid-role-instances', JSON.stringify(invalid))
+  check('a refused profile is not persisted', rig.fs.files.get(rolesPath(PROJECT)).text === before)
+  const duplicate = await rig.api.perform('rolesCreate', { name: 'godot-reviewer', profile: { role: 'reviewer' } }, user)
+  check('creating an existing profile is refused', duplicate.ok === false && duplicate.code === 'role-exists', JSON.stringify(duplicate))
+
+  const updated = await rig.api.perform('rolesUpdate', { name: 'godot-reviewer', profile: { prompt: 'Updated prompt.' } }, user)
+  check(
+    'updating a profile keeps its other fields',
+    updated.ok === true &&
+      updated.config.profiles['godot-reviewer'].prompt === 'Updated prompt.' &&
+      updated.config.profiles['godot-reviewer'].instances === 2 &&
+      updated.config.profiles['godot-reviewer'].role === 'reviewer',
+    JSON.stringify(updated.ok ? updated.config.profiles['godot-reviewer'] : updated),
+  )
+  const bound = await rig.api.perform('rolesBind', { stage: 'review', profile: 'godot-reviewer' }, user)
+  check('the user can bind a stage to a profile', bound.ok === true && bound.config.stages.review === 'godot-reviewer', JSON.stringify(bound.ok ? bound.bound : bound))
+  const badBind = await rig.api.perform('rolesBind', { stage: 'test', profile: 'godot-reviewer' }, user)
+  check('binding a profile to the wrong stage is refused', badBind.ok === false && badBind.code === 'stage-mismatch', JSON.stringify(badBind))
+  const unknownBind = await rig.api.perform('rolesBind', { stage: 'review', profile: 'nope' }, user)
+  check('binding an unknown profile is refused', unknownBind.ok === false && unknownBind.code === 'unknown-role-profile', JSON.stringify(unknownBind))
+  const delDefault = await rig.api.perform('rolesDelete', { name: 'worker' }, user)
+  check('the built-in profiles cannot be deleted', delDefault.ok === false && delDefault.code === 'default-profile', JSON.stringify(delDefault))
+
+  const replaced = await rig.api.perform('rolesReplace', { name: 'reviewer-1' }, user)
+  check(
+    'replacing an instance drains it and spawns a replacement through the Lead',
+    replaced.ok === true && replaced.drained.join(',') === 'reviewer-1' && replaced.created.length >= 1 && replaced.created[0].name === 'reviewer-2',
+    JSON.stringify(replaced.ok ? { drained: replaced.drained, created: replaced.created } : replaced),
+  )
+  const drained = await rig.api.perform('rolesDrain', { name: 'tester-1' }, user)
+  check('draining an instance marks it for replacement', drained.ok === true && drained.drained.join(',') === 'tester-1', JSON.stringify(drained.ok ? drained.drained : drained))
+  const replacedKind = await rig.api.perform('rolesReplace', { name: 'tester' }, user)
+  check(
+    'replacing a role kind drains every instance and spawns replacements',
+    replacedKind.ok === true && replacedKind.drained.indexOf('tester-1') >= 0 && replacedKind.created.length === 1 && replacedKind.created[0].name === 'tester-2',
+    JSON.stringify(replacedKind.ok ? { drained: replacedKind.drained, created: replacedKind.created } : replacedKind),
+  )
+  const badInstance = await rig.api.perform('rolesDrain', { name: 'not-a-slot' }, user)
+  check('draining a non-instance name is refused', badInstance.ok === false && badInstance.code === 'invalid-role-instance', JSON.stringify(badInstance))
+
+  const reset = await rig.api.perform('rolesReset', {}, user)
+  const defaults = defaultRoleConfig()
+  check(
+    'resetting restores the default profiles and stages',
+    reset.ok === true &&
+      reset.source === 'default' &&
+      reset.config.stages.implement === defaults.stages.implement &&
+      reset.config.stages.review === defaults.stages.review &&
+      reset.config.stages.test === defaults.stages.test &&
+      reset.config.profiles['godot-reviewer'] === undefined &&
+      reset.config.profiles.worker.instances === 1,
+    JSON.stringify({ stages: reset.ok ? reset.config.stages : reset }),
+  )
+  const afterReset = JSON.parse(rig.fs.files.get(rolesPath(PROJECT)).text)
+  check('resetting persists the defaults', afterReset.profiles['godot-reviewer'] === undefined && afterReset.stages.review === 'reviewer', JSON.stringify(afterReset.stages))
+  const listedAfter = await rig.api.perform('rolesList', {}, user)
+  check('the defaults are unchanged after reset', listedAfter.ok === true && listedAfter.config.profiles.reviewer.role === 'reviewer' && listedAfter.config.profiles.tester.role === 'tester', JSON.stringify(listedAfter.ok ? listedAfter.config.profiles : listedAfter))
+  rig.scheduler.dispose()
 }
 
 surface.dispose()

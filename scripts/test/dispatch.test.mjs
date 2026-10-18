@@ -1191,5 +1191,69 @@ function roleTask(overrides) {
   scheduler.dispose()
 }
 
+// ── role profiles: custom fields, stage binding, drain/replace ────────────
+{
+  const config = normaliseRoleConfig({
+    profiles: {
+      'godot-reviewer': { role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Pay attention to Godot idioms.' },
+    },
+    stages: { review: 'godot-reviewer' },
+  })
+  const reviewer = roleBriefFor('reviewer', roleTask(), config, { projectPath: PROJECT, leadName: 'lead' })
+  check(
+    'the reviewer brief uses the bound custom profile',
+    reviewer.indexOf('Profile permissions: read-only, review') >= 0 &&
+      reviewer.indexOf('Pay attention to Godot idioms.') >= 0 &&
+      reviewer.indexOf('forked from the Lead') >= 0 &&
+      reviewer.indexOf('dsh-plugin-workflow') >= 0,
+    reviewer.slice(0, 900),
+  )
+  const worker = roleBriefFor('worker', roleTask({ status: 'running' }), config, {})
+  check('a kind without a bound custom profile keeps its own profile', worker.indexOf('Pay attention to Godot idioms.') < 0, worker.slice(0, 600))
+}
+
+{
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const config = normaliseRoleConfig({ profiles: { 'godot-reviewer': { role: 'reviewer', instances: 1 } }, stages: { review: 'godot-reviewer' } })
+  const first = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1000 })
+  check('a bound custom profile provisions its instances', first.ok === true && first.created.length === 0 && first.reused.join(',') === 'reviewer-1', JSON.stringify(first))
+  const drained = rig.manager.drain('reviewer-1')
+  check('draining a live instance is recorded', drained.ok === true && drained.drained && drained.drained.join(',') === 'reviewer-1', JSON.stringify(drained))
+  const replaced = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 2000 })
+  check(
+    'the next ensure drains and replaces the instance through the Lead',
+    replaced.ok === true && replaced.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drained') && replaced.created.length === 1 && replaced.created[0].name === 'reviewer-2',
+    JSON.stringify(replaced),
+  )
+  const defaults = await rig.manager.ensure('reviewer', { config: defaultRoleConfig(), projectPath: PROJECT, task: roleTask(), now: 3000 })
+  check('the default config reuses the live replacement', defaults.ok === true && defaults.created.length === 0 && defaults.reused.indexOf('reviewer-2') >= 0, JSON.stringify(defaults))
+}
+
+{
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-reviewer-2', name: 'reviewer-2', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const config = normaliseRoleConfig({ profiles: { 'godot-reviewer': { role: 'reviewer', instances: 2 } }, stages: { review: 'godot-reviewer' } })
+  const ensured = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1000 })
+  check('a custom instances count is honoured', ensured.ok === true && ensured.reused.length === 2, JSON.stringify(ensured))
+  const drained = await rig.manager.drainKind('reviewer')
+  check('drainKind drains every instance of the kind', drained.ok === true && drained.drained.length === 2, JSON.stringify(drained))
+  const replaced = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 2000 })
+  check('every drained slot is replaced', replaced.ok === true && replaced.created.length === 2 && replaced.created.map((entry) => entry.name).join(',') === 'reviewer-3,reviewer-4', JSON.stringify(replaced))
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
