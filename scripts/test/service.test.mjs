@@ -131,6 +131,51 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('a missing dependency is broken, not ready', info.state === 'broken' && info.brokenOn.join(',') === 'T-1', JSON.stringify(info))
 }
 
+// a done dependency only counts when its merge request is merged
+{
+  const doneWith = (status) => {
+    let board = make(base(), 'A').board
+    board = make(board, 'B', { dependsOn: ['T-1'] }).board
+    board = finish(board, 'T-1')
+    const dependency = findTask(board, 'T-1')
+    dependency.merge =
+      status === null
+        ? null
+        : {
+            status: status,
+            base: 'base-sha',
+            target: 'main',
+            head: 'head-sha',
+            declaredFiles: [],
+            actualFiles: [],
+            tests: null,
+            reviewer: null,
+            conflict: null,
+            output: null,
+            at: null,
+          }
+    return board
+  }
+  for (const status of ['open', 'conflict', 'failed', 'rejected']) {
+    const board = doneWith(status)
+    const info = dependencyInfo(board, findTask(board, 'T-2'))
+    check(
+      'a done dependency with a ' + status + ' merge request keeps its dependent waiting',
+      info.state === 'waiting' && info.waitingOn.join(',') === 'T-1' && info.brokenOn.length === 0,
+      JSON.stringify(info),
+    )
+    check('and is not ready to dispatch (' + status + ')', readyTasks(board).every((task) => task.id !== 'T-2'), JSON.stringify(readyTasks(board).map((task) => task.id)))
+    const refused = claimTask(board, 'T-2', { name: 'w' }, T0 + 100)
+    check('and cannot be claimed (' + status + ')', refused.code === 'dependency-unmet', JSON.stringify(refused))
+  }
+  const merged = doneWith('merged')
+  const info = dependencyInfo(merged, findTask(merged, 'T-2'))
+  check('a merged dependency releases its dependent', info.state === 'ready' && info.waitingOn.length === 0, JSON.stringify(info))
+  check('and the dependent is ready to dispatch', readyTasks(merged).map((task) => task.id).join(',') === 'T-2', JSON.stringify(readyTasks(merged).map((task) => task.id)))
+  const legacy = doneWith(null)
+  check('a legacy done dependency with no merge record is still ready', dependencyInfo(legacy, findTask(legacy, 'T-2')).state === 'ready')
+}
+
 // readiness order
 {
   let board = base()
