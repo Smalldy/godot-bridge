@@ -34,9 +34,10 @@ export const CLOSED_STATUSES = ['done', 'cancelled']
  * or silent worker, not a slow one. */
 export const TASK_LEASE_MS = 15 * 60 * 1000
 
-/** Worktree defaults. `root` is project-relative; a task checkout may only
- * live inside the project, exactly like a lock path. */
-export const WORKTREE_DEFAULTS = { enabled: false, root: '.worktrees' }
+/** Worktree layout. A task checkout may only live inside the project, exactly
+ * like a lock path; `root` is INTERNAL configuration, not a toggle. Worktrees
+ * are how every task runs, so there is no "enabled" flag to turn off. */
+export const WORKTREE_DEFAULTS = { root: '.worktrees' }
 
 /** Project-level dispatch defaults. Persisted in the board so the toggle,
  * concurrency and spawn policy survive a restart. */
@@ -47,7 +48,7 @@ export const DISPATCH_DEFAULTS = {
   maxWorkAgents: 4,
   maxAttempts: 3,
   request: null,
-  worktree: { enabled: false, root: '.worktrees' },
+  worktree: { root: '.worktrees' },
 }
 
 /** Upper bounds for user-provided dispatch settings. */
@@ -92,13 +93,14 @@ export function normaliseWorktreeRoot(raw) {
   return segments.join('/')
 }
 
-/** Normalised `dispatch.worktree`: enabled only on an explicit true. */
+/**
+ * Normalised `dispatch.worktree`. Only the internal checkout root survives: an
+ * old board's `enabled: false` is dropped, because dispatch now always creates
+ * a worktree and refuses to run when it cannot.
+ */
 export function normaliseWorktree(raw) {
   const source = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
-  return {
-    enabled: source.enabled === true,
-    root: normaliseWorktreeRoot(source.root),
-  }
+  return { root: normaliseWorktreeRoot(source.root) }
 }
 
 function mergeStringList(value) {

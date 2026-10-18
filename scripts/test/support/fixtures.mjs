@@ -124,6 +124,84 @@ export function createTeam(options) {
   return team
 }
 
+/**
+ * A git facade for tests: a clean repository by default, with the refusals a
+ * test needs behind options. Dispatch now REQUIRES a usable worktree
+ * environment, so every rig gets one unless it explicitly asks for a broken
+ * one — scheduling tests should fail on scheduling, not on git.
+ *
+ * Options: repo:false (not a repository), clean:false (dirty tree),
+ * addFails:true (worktree add refused), commitFails:true /
+ * nothingToCommit:true (submit), base/branch/commitHash/diffFiles (values).
+ */
+export function createFakeGit(options) {
+  const opts = options === undefined ? {} : options
+  const calls = []
+  const record = (name, detail) => {
+    calls.push({ name: name, detail: detail })
+  }
+  return {
+    calls: calls,
+    async isRepo() {
+      record('isRepo')
+      return { ok: true, repo: opts.repo !== false }
+    },
+    async isClean() {
+      record('isClean')
+      return { ok: true, clean: opts.clean !== false }
+    },
+    async head() {
+      record('head')
+      return { ok: true, hash: opts.base === undefined ? 'base-sha' : opts.base }
+    },
+    async currentBranch() {
+      record('currentBranch')
+      return { ok: true, branch: opts.branch === undefined ? 'main' : opts.branch }
+    },
+    async worktreeAdd(root, input) {
+      record('worktreeAdd', input)
+      if (opts.addFails === true) {
+        return { ok: false, code: 'worktree-add-failed', message: 'fatal: could not create work tree' }
+      }
+      return { ok: true, path: input.path, branch: input.branch, base: input.base }
+    },
+    async worktreeRemove(root, path) {
+      record('worktreeRemove', path)
+      return { ok: true, path: path }
+    },
+    async worktreeList() {
+      record('worktreeList')
+      return { ok: true, worktrees: [] }
+    },
+    async commitAll(cwd, message) {
+      record('commitAll', { cwd: cwd, message: message })
+      if (opts.commitFails === true) return { ok: false, code: 'commit-failed', message: 'fatal: commit refused' }
+      if (opts.nothingToCommit === true) return { ok: false, code: 'nothing-to-commit', message: 'nothing to commit' }
+      return { ok: true, hash: opts.commitHash === undefined ? 'commit-sha' : opts.commitHash }
+    },
+    async diffNameOnly(cwd, base, head) {
+      record('diffNameOnly', { cwd: cwd, base: base, head: head })
+      return { ok: true, files: Array.isArray(opts.diffFiles) ? opts.diffFiles.slice() : [] }
+    },
+    async revParse(root, ref) {
+      record('revParse', ref)
+      return { ok: true, hash: opts.base === undefined ? 'base-sha' : opts.base }
+    },
+    async branchExists() {
+      return { ok: true, exists: false }
+    },
+    async mergeNoFf() {
+      return { ok: true }
+    },
+    async mergeAbort() {
+      return { ok: true }
+    },
+    async rebaseOnto() {
+      return { ok: true }
+    },
+  }
+}
+
 export function createRig(options) {
   const opts = options === undefined ? {} : options
   const project = opts.project === undefined ? PROJECT : opts.project
@@ -143,12 +221,17 @@ export function createRig(options) {
     },
   }
   const state = createState(ctx, { now: opts.now })
+  // Worktrees are mandatory, so a rig that does not name a git facade gets a
+  // working fake one; pass { git: null } (or a broken createFakeGit) to test
+  // the refusal path.
+  const git = opts.git === undefined ? createFakeGit(opts.gitOptions) : opts.git
   const scheduler = createDispatcher(ctx, {
     state: state,
     projectPath: () => project,
     allowSpawn: opts.allowSpawn !== false,
+    git: git,
   })
-  const api = createApi(ctx, { state: state, scheduler: scheduler, now: opts.now })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, now: opts.now })
   const user = { projectPath: project, by: '@user', role: 'user', agent: null }
   async function action(name, body) {
     return api.perform(name, body === undefined ? {} : body, user)
@@ -156,7 +239,7 @@ export function createRig(options) {
   async function settle() {
     return scheduler.settle(project)
   }
-  return { project, fs, team, ctx, state, scheduler, api, user, action, settle }
+  return { project, fs, team, ctx, state, scheduler, api, git, user, action, settle }
 }
 
 export async function createTask(rig, input) {

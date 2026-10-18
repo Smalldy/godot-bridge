@@ -15,7 +15,7 @@ import { resolve } from 'node:path'
 import { TASK_LEASE_MS } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
-import { workerPool } from './dispatch.mjs'
+import { probeWorktree, workerPool } from './dispatch.mjs'
 import { writePolicyFor } from './state.mjs'
 
 /** Every action this API exposes. The tool enum and the route allowlist are
@@ -77,9 +77,10 @@ function messageOf(error) {
  * @param ctx - the row context; needs fs for openProject.
  * @param options.state - the shared state.
  * @param options.scheduler - the dispatcher (optional; tick/start still work).
- * @param options.git - the createGit facade used to commit a task worktree on
- *   submit. Null/omitted means this profile has no git: submit still works for
- *   tasks without a worktree and refuses those that have one, readably.
+ * @param options.git - the createGit facade shared with the dispatcher. Worktrees
+ *   are the execution model, so a null/omitted facade means dispatch cannot
+ *   start (start/approveStart refuse readably), and submit refuses a task whose
+ *   worktree cannot be committed.
  * @param options.now - clock, for tests.
  */
 export function createApi(ctx, options) {
@@ -171,6 +172,24 @@ export function createApi(ctx, options) {
     }
     out.sort((left, right) => left.id.localeCompare(right.id))
     return out
+  }
+
+  /**
+   * Refuse to enter running dispatch when the worktree environment cannot host
+   * it. Returns null when starting is allowed, or a readable refusal otherwise.
+   * Worktrees are the execution model, so this is a precondition of starting —
+   * not a per-task fallback.
+   */
+  async function worktreeRefusal(projectPath) {
+    const probe = await probeWorktree(git, projectPath)
+    if (probe.ok === true) return null
+    return failure(
+      'worktree-unavailable',
+      'Cannot start dispatch: every task runs in its own git worktree, and this project cannot host one right now — ' +
+        probe.message +
+        '. Fix the git environment (install/enable the subprocess service, initialise the repository, commit or stash the working tree), then start dispatch again.',
+      { worktree: probe.code },
+    )
   }
 
   async function snapshot(projectPath) {
@@ -478,6 +497,8 @@ export function createApi(ctx, options) {
             { request: read.board.dispatch.request },
           )
         }
+        const unavailable = await worktreeRefusal(projectPath)
+        if (unavailable !== null) return unavailable
         const requested = await mutate(
           projectPath,
           (board) => model.requestDispatch(board, { by: context.by, note: source.note }, clock(), context.by),
@@ -489,6 +510,12 @@ export function createApi(ctx, options) {
           'Dispatch was requested, not started. Ask the user to approve it in the task center panel; do not retry.',
           { request: requested.board.dispatch.request },
         )
+      }
+      const read = await readBoardOrFail(projectPath)
+      if (read.failed !== undefined) return read.failed
+      if (read.board.dispatch.state !== 'running') {
+        const unavailable = await worktreeRefusal(projectPath)
+        if (unavailable !== null) return unavailable
       }
       const result = await mutate(
         projectPath,
@@ -511,6 +538,14 @@ export function createApi(ctx, options) {
     if (action === 'approveStart' || action === 'rejectStart') {
       if (context === undefined || context === null || context.role !== 'user') {
         return failure('user-only', 'Starting dispatch is the user\'s decision; ask them to approve it in the task center panel.')
+      }
+      if (action === 'approveStart') {
+        const read = await readBoardOrFail(projectPath)
+        if (read.failed !== undefined) return read.failed
+        if (read.board.dispatch.state !== 'running') {
+          const unavailable = await worktreeRefusal(projectPath)
+          if (unavailable !== null) return unavailable
+        }
       }
       const result = await mutate(
         projectPath,

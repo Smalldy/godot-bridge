@@ -655,6 +655,80 @@ function holdFile(rig, path) {
   submitRig.scheduler.dispose()
 }
 
+// worktrees are the execution model: start refuses an unusable environment
+{
+  const noGit = createRig({ git: null })
+  const noGitSurface = install(noGit)
+  const projectUrl = STATE_PATH + '?project=' + encodeURIComponent(PROJECT)
+  await call(noGitSurface, projectUrl, {})
+  const created = await postTo(noGitSurface, { action: 'create', title: 'needs a worktree' })
+  const refused = await postTo(noGitSurface, { action: 'start' })
+  check('start refuses without a git service', refused.json().ok === false && refused.json().code === 'worktree-unavailable', refused.text)
+  check(
+    'and the refusal names the worktree problem',
+    refused.json().worktree === 'no-git-service' && String(refused.json().message).indexOf('worktree') >= 0,
+    refused.text,
+  )
+  const state = await call(noGitSurface, projectUrl, {})
+  check('dispatch stays paused after the refusal', state.json().dispatch.state === 'paused', state.text)
+  check('and the task stays pending', state.json().tasks[0].status === 'pending' && state.json().tasks[0].id === created.json().task.id, state.text)
+  const agentRequest = await noGit.api.perform('start', { note: 'try it' }, { projectPath: PROJECT, by: '@agent', role: 'agent', agent: { id: 'session-agent' } })
+  check('an agent start is refused for the same reason', agentRequest.ok === false && agentRequest.code === 'worktree-unavailable', JSON.stringify(agentRequest))
+  const agentState = await call(noGitSurface, projectUrl, {})
+  check('and no start request is recorded', agentState.json().dispatch.request === null, agentState.text)
+  const approved = await postTo(noGitSurface, { action: 'approveStart' })
+  check('approveStart refuses the same environment', approved.json().ok === false && approved.json().code === 'worktree-unavailable', approved.text)
+  check('and dispatch never enters running', approved.json().dispatch === undefined && (await call(noGitSurface, projectUrl, {})).json().dispatch.state === 'paused', approved.text)
+  noGitSurface.dispose()
+  noGit.scheduler.dispose()
+}
+
+{
+  const notRepo = createRig({ gitOptions: { repo: false } })
+  const notRepoSurface = install(notRepo)
+  const projectUrl = STATE_PATH + '?project=' + encodeURIComponent(PROJECT)
+  await call(notRepoSurface, projectUrl, {})
+  await postTo(notRepoSurface, { action: 'create', title: 'not a repo' })
+  const refused = await postTo(notRepoSurface, { action: 'start' })
+  check('start refuses a project that is not a git repository', refused.json().ok === false && refused.json().code === 'worktree-unavailable', refused.text)
+  check('and says so', refused.json().worktree === 'not-a-git-repository', refused.text)
+  notRepoSurface.dispose()
+  notRepo.scheduler.dispose()
+}
+
+{
+  const dirty = createRig({ gitOptions: { clean: false } })
+  const dirtySurface = install(dirty)
+  const projectUrl = STATE_PATH + '?project=' + encodeURIComponent(PROJECT)
+  await call(dirtySurface, projectUrl, {})
+  await postTo(dirtySurface, { action: 'create', title: 'dirty tree' })
+  const refused = await postTo(dirtySurface, { action: 'start' })
+  check('start refuses a dirty working tree', refused.json().ok === false && refused.json().code === 'worktree-unavailable', refused.text)
+  check('and says the tree is dirty', refused.json().worktree === 'dirty-worktree', refused.text)
+  const state = await call(dirtySurface, projectUrl, {})
+  check('a dirty tree keeps the board pending and paused', state.json().dispatch.state === 'paused' && state.json().tasks[0].status === 'pending', state.text)
+  dirtySurface.dispose()
+  dirty.scheduler.dispose()
+}
+
+{
+  const broken = createRig({ gitOptions: { addFails: true } })
+  const brokenSurface = install(broken)
+  const projectUrl = STATE_PATH + '?project=' + encodeURIComponent(PROJECT)
+  await call(brokenSurface, projectUrl, {})
+  await postTo(brokenSurface, { action: 'create', title: 'refused add', writeFiles: ['scripts/a.gd'] })
+  const started = await postTo(brokenSurface, { action: 'start' })
+  const payload = started.json()
+  check('start accepts a clean repository', payload.ok === true, started.text)
+  check('a claim-time worktree refusal pauses dispatch', payload.snapshot !== undefined && payload.snapshot.dispatch.state === 'paused', started.text)
+  check('the task stays pending', payload.snapshot.tasks[0].status === 'pending', started.text)
+  check('and records the worktree failure', String(payload.snapshot.tasks[0].worktreeError).indexOf('worktree-add-failed') === 0, String(payload.snapshot.tasks[0].worktreeError))
+  check('the scheduler explains the pause', String(payload.snapshot.scheduler && payload.snapshot.scheduler.lastError).indexOf('worktree refused') >= 0, JSON.stringify(payload.snapshot && payload.snapshot.scheduler))
+  check('the attempt released its file locks', payload.snapshot.locks.length === 0, JSON.stringify(payload.snapshot.locks))
+  brokenSurface.dispose()
+  broken.scheduler.dispose()
+}
+
 surface.dispose()
 rig.scheduler.dispose()
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

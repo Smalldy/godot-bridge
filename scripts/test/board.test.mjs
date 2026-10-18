@@ -151,8 +151,8 @@ check('empty board has a sequence', empty.seq === 1)
     JSON.stringify({ actualFiles: task.actualFiles, requiredRole: task.requiredRole, merge: task.merge }),
   )
   check(
-    'dispatch.worktree defaults off under .worktrees',
-    legacy.board.dispatch.worktree.enabled === false && legacy.board.dispatch.worktree.root === '.worktrees',
+    'dispatch.worktree defaults to the internal root with no enabled switch',
+    legacy.board.dispatch.worktree.root === '.worktrees' && legacy.board.dispatch.worktree.enabled === undefined,
     JSON.stringify(legacy.board.dispatch.worktree),
   )
 }
@@ -179,7 +179,7 @@ const MERGE = {
     JSON.stringify({
       version: 2,
       seq: 2,
-      dispatch: { state: 'paused', worktree: { enabled: true, root: 'build/worktrees' } },
+      dispatch: { state: 'paused', worktree: { root: 'build/worktrees' } },
       tasks: [
         {
           id: 'T-1',
@@ -221,8 +221,8 @@ const MERGE = {
     JSON.stringify(t.merge),
   )
   check(
-    'dispatch.worktree roundtrips',
-    loaded.board.dispatch.worktree.enabled === true && loaded.board.dispatch.worktree.root === 'build/worktrees',
+    'dispatch.worktree roundtrips its internal root',
+    loaded.board.dispatch.worktree.root === 'build/worktrees' && loaded.board.dispatch.worktree.enabled === undefined,
     JSON.stringify(loaded.board.dispatch.worktree),
   )
   const written = await updateBoard({ fs }, { projectPath: PROJECT, mutate: (board) => board })
@@ -263,20 +263,32 @@ const MERGE = {
 
 // dispatch.worktree normalisation: project-relative, never absolute or escaping
 {
-  check('worktree normalisation defaults an empty input', normaliseWorktree({}).enabled === false && normaliseWorktree({}).root === '.worktrees')
-  check('an absolute worktree root falls back', normaliseWorktree({ enabled: true, root: '/tmp/wt' }).root === '.worktrees')
-  check('a Windows drive worktree root falls back', normaliseWorktree({ enabled: true, root: 'C:/wt' }).root === '.worktrees')
-  check('an escaping worktree root falls back', normaliseWorktree({ enabled: true, root: '../outside' }).root === '.worktrees')
-  check('a nested worktree root is normalised to POSIX', normaliseWorktree({ enabled: true, root: 'tmp\\worktrees\\' }).root === 'tmp/worktrees')
-  check('an explicit false keeps worktrees disabled', normaliseWorktree({ enabled: false, root: 'wt' }).enabled === false)
+  check(
+    'worktree normalisation defaults an empty input',
+    normaliseWorktree({}).root === '.worktrees' && normaliseWorktree({}).enabled === undefined,
+    JSON.stringify(normaliseWorktree({})),
+  )
+  check('an absolute worktree root falls back', normaliseWorktree({ root: '/tmp/wt' }).root === '.worktrees')
+  check('a Windows drive worktree root falls back', normaliseWorktree({ root: 'C:/wt' }).root === '.worktrees')
+  check('an escaping worktree root falls back', normaliseWorktree({ root: '../outside' }).root === '.worktrees')
+  check('a nested worktree root is normalised to POSIX', normaliseWorktree({ root: 'tmp\\worktrees\\' }).root === 'tmp/worktrees')
+  check(
+    'a leftover enabled flag is dropped, not honoured',
+    normaliseWorktree({ enabled: false, root: 'wt' }).root === 'wt' && normaliseWorktree({ enabled: false, root: 'wt' }).enabled === undefined,
+    JSON.stringify(normaliseWorktree({ enabled: false, root: 'wt' })),
+  )
   const dispatch = normaliseDispatch({ worktree: { enabled: true, root: '/outside' }, maxConcurrent: 1 })
-  check('normaliseDispatch carries a normalised worktree', dispatch.worktree.enabled === true && dispatch.worktree.root === '.worktrees', JSON.stringify(dispatch.worktree))
+  check(
+    'normaliseDispatch carries a normalised worktree without an enabled switch',
+    dispatch.worktree.root === '.worktrees' && dispatch.worktree.enabled === undefined,
+    JSON.stringify(dispatch.worktree),
+  )
   const fs = createFakeFs()
   seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: 2, tasks: [], dispatch: { worktree: { enabled: true, root: '/etc/wt' } } }))
   const loaded = await read(fs)
   check(
-    'a board read normalises an absolute worktree root',
-    loaded.board.dispatch.worktree.enabled === true && loaded.board.dispatch.worktree.root === '.worktrees',
+    'a board read normalises an absolute worktree root and drops enabled',
+    loaded.board.dispatch.worktree.root === '.worktrees' && loaded.board.dispatch.worktree.enabled === undefined,
     JSON.stringify(loaded.board.dispatch.worktree),
   )
 }

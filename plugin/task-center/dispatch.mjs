@@ -14,12 +14,14 @@
  *      declared file locks first. A task is claimed BEFORE anything leaves the
  *      process: the claim is the mutex that makes a second dispatch impossible.
  *
- * Worktrees are an OPTIONAL third piece: when the board enables them and the
- * project is a clean git repository, an attempt is given its own checkout on a
- * task branch, and the brief says so. Every failure — no git service, not a
- * repository, a dirty tree, a refused add — falls back to the shared working
- * area and records why on the task. A worktree is never a reason to stop
- * dispatching.
+ * Worktrees are the execution model, not an option: every attempt runs in its
+ * own checkout on a task branch, and the brief says so. Dispatch therefore
+ * REQUIRES a usable worktree environment — a git service, a git repository and
+ * a clean working tree. When any of that is missing, or a checkout cannot be
+ * created, nothing is claimed: start refuses up front, and a claim-time failure
+ * releases the task's file locks, pauses dispatch and records why, so the
+ * five-second timer does not hammer a broken project. Fix the environment, then
+ * start dispatch again.
  */
 
 import { join } from 'node:path'
@@ -288,11 +290,11 @@ function runnerFromSubprocess(subprocess) {
 }
 
 /**
- * The Git facade this scheduler may use, or null when the profile has no
- * subprocess service. Null is not an error: the worktree feature is simply off
- * and tasks keep the behaviour they had before worktrees existed. An explicit
- * `options.git` (a createGit result, or null to disable) always wins, which is
- * how a test drives this without a git process.
+ * The Git facade this scheduler and the API commit through, or null when the
+ * profile has no subprocess service. Null means worktrees cannot be made, and
+ * therefore that dispatch cannot start. An explicit `options.git` (a createGit
+ * result, or null to stand in for a host without git) always wins, which is how
+ * a test drives this without starting a git process.
  */
 export function gitFor(ctx, options) {
   const opts = options === undefined ? {} : options
@@ -313,29 +315,60 @@ function worktreeFallback(error) {
 }
 
 /**
- * Prepare this attempt's worktree when the board asks for one.
+ * Can this project host task worktrees right now?
  *
- * Returns `{ base, target, branch, path, keep, error }`: `path === null` means
- * the task runs in the shared checkout and `error` says why. It never throws,
- * and a failed add is force-removed so no half worktree is left behind.
+ * The one check behind both the start/approve preflight and claim-time
+ * preparation: a git facade, a repository, and a clean working tree. It never
+ * throws and answers `{ ok: true }` or `{ ok: false, code, message }`.
+ */
+export async function probeWorktree(git, projectPath) {
+  if (git === undefined || git === null || typeof git.isRepo !== 'function') {
+    return {
+      ok: false,
+      code: 'no-git-service',
+      message: 'this profile has no git runner, so a task worktree cannot be created',
+    }
+  }
+  try {
+    const repo = await git.isRepo(projectPath)
+    if (repo.ok !== true) {
+      return { ok: false, code: 'git-unavailable', message: 'git could not be asked whether ' + projectPath + ' is a repository: ' + String(repo.message) }
+    }
+    if (repo.repo !== true) return { ok: false, code: 'not-a-git-repository', message: projectPath + ' is not a git repository' }
+    const clean = await git.isClean(projectPath)
+    if (clean.ok !== true) {
+      return { ok: false, code: 'git-unavailable', message: 'git status failed in ' + projectPath + ': ' + String(clean.message) }
+    }
+    if (clean.clean !== true) {
+      return {
+        ok: false,
+        code: 'dirty-worktree',
+        message: 'the working tree of ' + projectPath + ' has uncommitted changes; commit or stash them so a task worktree starts from a known commit',
+      }
+    }
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, code: 'git-unavailable', message: String((error && error.message) || error) }
+  }
+}
+
+/**
+ * Prepare this attempt's worktree. It is the only execution mode: no worktree
+ * means no claim, never a shared checkout.
+ *
+ * Returns `{ base, target, branch, path, keep, error }`; `error` is set when
+ * preparation refused and `path` is then null. It never throws, and a failed
+ * add is force-removed so no half worktree is left behind.
  */
 async function prepareWorktree(git, projectPath, task, dispatch, attempt) {
-  const settings = dispatch === undefined || dispatch === null ? null : dispatch.worktree
-  if (settings === undefined || settings === null || settings.enabled !== true) {
-    return { base: null, target: null, branch: null, path: null, keep: false, error: null }
-  }
-  if (git === undefined || git === null) return worktreeFallback('no-git-service')
-  const repo = await git.isRepo(projectPath)
-  if (repo.ok !== true) return worktreeFallback('git-unavailable: ' + String(repo.message))
-  if (repo.repo !== true) return worktreeFallback('not-a-git-repository')
-  const clean = await git.isClean(projectPath)
-  if (clean.ok !== true) return worktreeFallback('git-unavailable: ' + String(clean.message))
-  if (clean.clean !== true) return worktreeFallback('dirty-worktree')
+  const probe = await probeWorktree(git, projectPath)
+  if (probe.ok !== true) return worktreeFallback(probe.code + ': ' + probe.message)
   const base = await git.head(projectPath)
   if (base.ok !== true) return worktreeFallback('base-unreadable: ' + String(base.message))
   const current = await git.currentBranch(projectPath)
   const branch = 'task/' + String(task.id) + '-' + String(attempt)
-  const root = String(settings.root === undefined || settings.root === null ? '' : settings.root).trim()
+  const settings = dispatch === undefined || dispatch === null ? null : dispatch.worktree
+  const root = String(settings === null || settings === undefined || settings.root === undefined || settings.root === null ? '' : settings.root).trim()
   const path = join(projectPath, root === '' ? '.worktrees' : root, String(task.id))
   const added = await git.worktreeAdd(projectPath, { path: path, branch: branch, base: base.hash })
   if (added.ok !== true) {
@@ -475,8 +508,9 @@ export function createDispatcher(ctx, options) {
   const boot = bootId()
   const spawnAllowed = opts.allowSpawn !== false
   const memory = { sweeping: false, rerun: null, timer: null, lastTickAt: null, lastError: null, lastResults: [], ticks: 0 }
-  // undefined means "ask the context"; null means "this host has no git runner,
-  // so worktrees stay off". Resolved lazily and cached for the dispatcher's life.
+  // undefined means "ask the context"; null means "this host has no git runner",
+  // which now means dispatch cannot start at all. Resolved lazily and cached for
+  // the dispatcher's life.
   const injectedGit = opts.git
   let gitCache
 
@@ -541,6 +575,29 @@ export function createDispatcher(ctx, options) {
       return null
     }
     return applied.board
+  }
+
+  /**
+   * A worktree could not be prepared for this attempt: pause dispatch, record the
+   * reason on the task for the panel, and leave the task pending. Pausing is the
+   * backoff — a paused dispatcher is not retried by the timer, so a broken git
+   * environment cannot turn into a five-second retry storm.
+   */
+  async function pauseForWorktree(projectPath, taskId, reason, message) {
+    memory.lastError = message
+    const applied = await state.apply(
+      projectPath,
+      (board) => {
+        const next = model.setDispatch(board, { state: 'paused' }, state.clock(), 'scheduler')
+        if (next.ok !== true) return next
+        const task = model.findTask(next.board, taskId)
+        if (task !== undefined) task.worktreeError = reason
+        return { ok: true, board: next.board, events: next.events }
+      },
+      writePolicyFor(projectPath),
+    )
+    if (applied.failed !== null) memory.lastError = applied.failed.message
+    return applied
   }
 
   /** Restore the in-memory lock table from running tasks after a plugin reload
@@ -616,6 +673,7 @@ export function createDispatcher(ctx, options) {
     memory.sweeping = true
     const now = state.clock()
     const results = []
+    let paused = false
     try {
       state.sweepLocks()
       const read = await state.read(project)
@@ -675,13 +733,25 @@ export function createDispatcher(ctx, options) {
         }
         // The worktree is prepared before the claim so the brief can describe
         // it, and so the fields land on the task in the same write that makes it
-        // running. A failure here is reported, never fatal — even an injected
-        // git facade that throws only costs this attempt its worktree.
+        // running. There is no shared-tree fallback: a project that cannot host
+        // a worktree cannot run the task.
         let worktree
         try {
           worktree = await prepareWorktree(gitFacade(), project, task, dispatch, task.attempts + 1)
         } catch (error) {
           worktree = worktreeFallback('worktree-error: ' + String((error && error.message) || error))
+        }
+        if (worktree.error !== null) {
+          // Release what this attempt reserved, put the task back in the pool
+          // and stop the pass: pausing dispatch is what prevents the five-second
+          // timer from retrying a broken project forever. The user fixes the
+          // environment and starts dispatch again.
+          releaseTaskLocks(task.id)
+          const message = 'worktree refused for ' + task.id + ' (' + worktree.error + '); dispatch paused until the environment is fixed'
+          await pauseForWorktree(project, task.id, worktree.error, message)
+          results.push({ id: task.id, error: message, code: 'worktree-unavailable' })
+          paused = true
+          break
         }
         const claimed = await state.apply(
           project,
@@ -802,7 +872,8 @@ export function createDispatcher(ctx, options) {
       }
       return {
         ok: true,
-        state: 'running',
+        state: paused ? 'paused' : 'running',
+        paused: paused === true,
         dispatched: results.filter((entry) => entry.ok === true).length,
         results: results,
       }

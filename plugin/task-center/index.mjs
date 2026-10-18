@@ -34,11 +34,11 @@ export function apply(ctx) {
       return scheduler === null ? undefined : scheduler.kick(event.projectPath)
     },
   })
-  // Git comes from the host's unconfined subprocess service. When this profile
-  // has none, gitFor answers null and the worktree feature stays off instead of
-  // blocking activation: the scheduler falls back to the shared working area,
-  // and submit keeps working for tasks without a worktree. One facade is shared
-  // so the dispatcher and submit use the same runner.
+  // Git comes from the host's unconfined subprocess service. It is REQUIRED now:
+  // tasks run in git worktrees, so without a facade start/approveStart refuse
+  // with a readable worktree error instead of running tasks in the shared tree.
+  // One facade is shared so the dispatcher (claim), the API (start preflight and
+  // submit) and the merge-request record all use the same runner.
   const git = gitFor(ctx)
   scheduler = createDispatcher(ctx, {
     state: state,

@@ -5,10 +5,10 @@ import { join } from 'node:path'
 import { updateBoard } from '../../plugin/task-center/board.mjs'
 import { createState, writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
-import { createDispatcher } from '../../plugin/task-center/dispatch.mjs'
+import { createDispatcher, gitFor } from '../../plugin/task-center/dispatch.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
-import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, PROJECT } from './support/fixtures.mjs'
+import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, createFakeGit, PROJECT } from './support/fixtures.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -242,7 +242,7 @@ async function patchTask(rig, id, change) {
   rig.scheduler.dispose()
 }
 
-// ── worktrees at claim time ────────────────────────────────────────────────
+// ── mandatory worktrees at claim time ──────────────────────────────────────
 // A fake git that answers like a clean repository; every call is recorded so a
 // test can assert the exact command and cwd without starting git.
 function fakeRunner(replies) {
@@ -261,7 +261,8 @@ function fakeRunner(replies) {
   return run
 }
 
-/** A rig like createRig, but with an injectable git/subprocess seam. */
+/** A rig like createRig, with the git/subprocess seam resolved the way
+ * index.mjs resolves it: one facade shared by the dispatcher and the API. */
 function createWorktreeRig(options) {
   const opts = options === undefined ? {} : options
   const fs = createFakeFs()
@@ -279,56 +280,41 @@ function createWorktreeRig(options) {
     },
   }
   const state = createState(ctx)
+  const git = opts.git === undefined ? gitFor(ctx) : opts.git
   const scheduler = createDispatcher(ctx, {
     state: state,
     projectPath: () => PROJECT,
     allowSpawn: opts.allowSpawn !== false,
-    git: opts.git,
+    git: git,
   })
-  const api = createApi(ctx, { state: state, scheduler: scheduler, git: opts.git })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git })
   const user = { projectPath: PROJECT, by: '@user', role: 'user', agent: null }
-  const rig = {
+  return {
     project: PROJECT,
     fs: fs,
     team: team,
     state: state,
     scheduler: scheduler,
     api: api,
+    git: git,
     action: (name, body) => api.perform(name, body === undefined ? {} : body, user),
     settle: () => scheduler.settle(PROJECT),
   }
-  rig.enableWorktree = async function (root) {
-    const applied = await updateBoard(
-      { fs: fs },
-      {
-        projectPath: PROJECT,
-        sandboxPolicy: writePolicyFor(PROJECT),
-        mutate: (board) => {
-          board.dispatch = Object.assign({}, board.dispatch, {
-            worktree: { enabled: true, root: root === undefined ? '.worktrees' : root },
-          })
-          return board
-        },
-      },
-    )
-    if (applied.ok !== true) throw new Error('could not enable worktrees: ' + JSON.stringify(applied))
-  }
-  return rig
 }
 
-// enabled + clean repository: the task gets a worktree, fields and a brief
+// a clean git repository is the normal path: the task gets a worktree
 {
   const run = fakeRunner()
   const rig = createWorktreeRig({ git: createGit({ run: run }) })
-  await rig.enableWorktree()
   const task = await createTask(rig, { title: 'worktree task', writeFiles: ['scripts/a.gd'] })
-  await rig.action('start')
+  const started = await rig.action('start')
+  check('dispatch starts when the project can host a worktree', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started))
   await rig.settle()
   const branch = 'task/' + task.id + '-1'
   const path = join(PROJECT, '.worktrees', task.id)
   let snap = await snapshot(rig)
   let claimed = byId(snap, task.id)
-  check('an enabled clean repository gives the task a worktree', claimed.worktree === path, String(claimed.worktree))
+  check('the task runs in its own worktree', claimed.status === 'running' && claimed.worktree === path, JSON.stringify({ status: claimed.status, worktree: claimed.worktree }))
   check(
     'and records the base commit, target branch and task branch',
     claimed.base === 'base-sha' && claimed.target === 'main' && claimed.branch === branch,
@@ -350,128 +336,131 @@ function createWorktreeRig(options) {
     brief.slice(0, 500),
   )
   check('the brief says to edit and test only there', /ONLY inside that worktree/i.test(brief) && /run the tests there/i.test(brief), brief.slice(0, 500))
-  check(
-    'the brief points task_center back at the main project',
-    brief.indexOf('main project') >= 0 && brief.indexOf(PROJECT) >= 0,
-    brief.slice(0, 500),
-  )
+  check('the brief points task_center back at the main project', brief.indexOf('main project') >= 0 && brief.indexOf(PROJECT) >= 0, brief.slice(0, 500))
   await rig.action('submit', { id: task.id, evidence: 'done' })
   snap = await snapshot(rig)
   claimed = byId(snap, task.id)
   check('a completed task keeps its worktree for the merge request', claimed.status === 'done' && claimed.worktree === path, JSON.stringify({ status: claimed.status, worktree: claimed.worktree }))
+  check(
+    'and submit records an open merge request from that worktree',
+    claimed.commit !== null && claimed.merge !== null && claimed.merge.status === 'open' && claimed.merge.base === 'base-sha',
+    JSON.stringify({ commit: claimed.commit, merge: claimed.merge }),
+  )
   check('the scheduler never removes it', run.calls.every((call) => call.args[0] !== 'worktree' || call.args[1] !== 'remove'), JSON.stringify(run.calls.map((call) => call.args)))
   rig.scheduler.dispose()
 }
 
-// a dirty working tree falls back to the shared workspace
+// no git service: dispatch refuses to start, nothing runs in the shared tree
 {
-  const run = fakeRunner({
-    'status --porcelain': () => ({ code: 0, stdout: ' M scripts/a.gd\n', stderr: '' }),
-  })
-  const rig = createWorktreeRig({ git: createGit({ run: run }) })
-  await rig.enableWorktree()
-  const task = await createTask(rig, { title: 'dirty tree task' })
-  await rig.action('start')
-  await rig.settle()
-  const claimed = byId(await snapshot(rig), task.id)
-  check(
-    'a dirty tree falls back to the shared workspace',
-    claimed.status === 'running' && claimed.worktree === null && claimed.branch === null && claimed.base === null && claimed.target === null,
-    JSON.stringify({ status: claimed.status, worktree: claimed.worktree, branch: claimed.branch }),
-  )
-  check('and records why', claimed.worktreeError === 'dirty-worktree', String(claimed.worktreeError))
-  check('the claim keeps no worktree', claimed.dispatch.keep === false, JSON.stringify(claimed.dispatch))
-  check('no worktree was added', run.calls.every((call) => call.args[0] !== 'worktree' || call.args[1] !== 'add'), JSON.stringify(run.calls.map((call) => call.args)))
-  check('the brief does not mention a worktree', rig.team.calls[0].text.indexOf('worktree') < 0, rig.team.calls[0].text.slice(0, 400))
-  rig.scheduler.dispose()
-}
-
-// a project that is not a git repository falls back
-{
-  const run = fakeRunner({
-    'rev-parse --is-inside-work-tree': () => ({ code: 128, stdout: '', stderr: 'fatal: not a git repository' }),
-  })
-  const rig = createWorktreeRig({ git: createGit({ run: run }) })
-  await rig.enableWorktree()
-  const task = await createTask(rig, { title: 'not a repo task' })
-  await rig.action('start')
-  await rig.settle()
-  const claimed = byId(await snapshot(rig), task.id)
-  check('a non-repository project keeps the task running without a worktree', claimed.status === 'running' && claimed.worktree === null, JSON.stringify({ status: claimed.status, worktree: claimed.worktree }))
-  check('and records why', claimed.worktreeError === 'not-a-git-repository', String(claimed.worktreeError))
-  check('no worktree was added outside git', run.calls.every((call) => call.args[0] !== 'worktree'), JSON.stringify(run.calls.map((call) => call.args)))
-  rig.scheduler.dispose()
-}
-
-// a refused worktree add is cleaned up and the task still dispatches
-{
-  // The runner is swapped in after the task exists, so the exact add command
-  // (which contains the allocated task id) can be refused.
-  const holder = { run: null }
-  const rig = createWorktreeRig({ git: createGit({ run: (args, cwd) => holder.run(args, cwd) }) })
-  await rig.enableWorktree()
-  const task = await createTask(rig, { title: 'refused add task' })
-  const path = join(PROJECT, '.worktrees', task.id)
-  const run = fakeRunner({
-    ['worktree add -b task/' + task.id + '-1 ' + path + ' base-sha']: () => ({
-      code: 128,
-      stdout: '',
-      stderr: 'fatal: could not create work tree',
-    }),
-  })
-  holder.run = run
-  await rig.action('start')
-  await rig.settle()
-  const claimed = byId(await snapshot(rig), task.id)
-  check('a refused worktree add still dispatches the task', claimed.status === 'running' && claimed.worktree === null, JSON.stringify({ status: claimed.status, worktree: claimed.worktree }))
-  check('and records the git words', String(claimed.worktreeError).indexOf('worktree-add-failed') === 0 && String(claimed.worktreeError).indexOf('could not create work tree') >= 0, String(claimed.worktreeError))
-  const removes = run.calls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'remove')
-  check(
-    'a failed add is force-removed, leaving no half worktree',
-    removes.length >= 1 && removes[0].args.join(' ') === ['worktree', 'remove', '--force', path].join(' ') && removes[0].cwd === PROJECT,
-    JSON.stringify(removes.map((call) => call.args)),
-  )
-  check('the brief does not claim a worktree', rig.team.calls[0].text.indexOf('worktree') < 0, rig.team.calls[0].text.slice(0, 300))
-  rig.scheduler.dispose()
-}
-
-// no git service in the profile: the feature is off, dispatch still works
-{
-  const rig = createWorktreeRig({ git: undefined, subprocess: undefined })
-  await rig.enableWorktree()
+  const rig = createWorktreeRig({ git: null })
   const task = await createTask(rig, { title: 'no git service task' })
-  await rig.action('start')
+  const started = await rig.action('start')
+  check('start refuses without a git service', started.ok === false && started.code === 'worktree-unavailable', JSON.stringify(started))
+  check('and names the missing worktree capability', started.worktree === 'no-git-service', JSON.stringify(started))
   await rig.settle()
-  const claimed = byId(await snapshot(rig), task.id)
-  check('without a git service the task still dispatches', claimed.status === 'running', JSON.stringify(ids(await snapshot(rig))))
-  check('and reports the missing service instead of failing', claimed.worktreeError === 'no-git-service' && claimed.worktree === null, JSON.stringify({ worktree: claimed.worktree, error: claimed.worktreeError }))
+  const snap = await snapshot(rig)
+  check('dispatch stays paused', snap.dispatch.state === 'paused', JSON.stringify(snap.dispatch))
+  check('the task stays pending', byId(snap, task.id).status === 'pending', JSON.stringify(ids(snap)))
   rig.scheduler.dispose()
 }
 
-// a git facade that throws cannot stop a dispatch either
+// a project that is not a git repository cannot start dispatch
 {
-  const rig = createWorktreeRig({
-    git: {
-      isRepo() {
-        throw new Error('broken runner')
-      },
-    },
-  })
-  await rig.enableWorktree()
+  const rig = createWorktreeRig({ git: createFakeGit({ repo: false }) })
+  const task = await createTask(rig, { title: 'not a repo task' })
+  const started = await rig.action('start')
+  check('start refuses a non-repository project', started.ok === false && started.code === 'worktree-unavailable', JSON.stringify(started))
+  check('and explains it is not a git repository', started.worktree === 'not-a-git-repository', JSON.stringify(started))
+  await rig.settle()
+  const snap = await snapshot(rig)
+  check('nothing was claimed', byId(snap, task.id).status === 'pending' && snap.dispatch.state === 'paused', JSON.stringify(ids(snap)))
+  check('and no worktree was added', rig.git.calls.filter((call) => call.name === 'worktreeAdd').length === 0, JSON.stringify(rig.git.calls))
+  rig.scheduler.dispose()
+}
+
+// a dirty working tree cannot start dispatch
+{
+  const rig = createWorktreeRig({ git: createFakeGit({ clean: false }) })
+  const task = await createTask(rig, { title: 'dirty tree task' })
+  const started = await rig.action('start')
+  check('start refuses a dirty working tree', started.ok === false && started.code === 'worktree-unavailable', JSON.stringify(started))
+  check('and says the tree is dirty', started.worktree === 'dirty-worktree', JSON.stringify(started))
+  await rig.settle()
+  const snap = await snapshot(rig)
+  check('the dirty tree keeps every task pending', byId(snap, task.id).status === 'pending' && snap.dispatch.state === 'paused', JSON.stringify(ids(snap)))
+  check('and no worktree was added', rig.git.calls.filter((call) => call.name === 'worktreeAdd').length === 0, JSON.stringify(rig.git.calls))
+  rig.scheduler.dispose()
+}
+
+// a refused worktree add at claim time pauses dispatch instead of falling back
+{
+  const git = createFakeGit({ addFails: true })
+  const rig = createWorktreeRig({ git: git })
+  const task = await createTask(rig, { title: 'refused add task', writeFiles: ['scripts/a.gd'] })
+  const started = await rig.action('start')
+  check('start accepts a clean repository', started.ok === true, JSON.stringify(started))
+  await rig.settle()
+  let snap = await snapshot(rig)
+  const claimed = byId(snap, task.id)
+  check('a refused add does not dispatch into the shared tree', claimed.status === 'pending' && claimed.worktree === null, JSON.stringify({ status: claimed.status, worktree: claimed.worktree }))
+  check('and records the worktree failure on the task', String(claimed.worktreeError).indexOf('worktree-add-failed') === 0, String(claimed.worktreeError))
+  check('dispatch pauses instead of retrying every tick', snap.dispatch.state === 'paused', JSON.stringify(snap.dispatch))
+  check('the file locks taken for the attempt are released', snap.locks.length === 0, JSON.stringify(snap.locks))
+  check('the scheduler reports the refusal', String(rig.scheduler.status().lastError).indexOf('worktree refused') >= 0, String(rig.scheduler.status().lastError))
+  const adds = git.calls.filter((call) => call.name === 'worktreeAdd').length
+  await rig.settle()
+  await rig.settle()
+  check('a paused dispatcher does not retry the worktree', git.calls.filter((call) => call.name === 'worktreeAdd').length === adds, String(git.calls.filter((call) => call.name === 'worktreeAdd').length))
+  rig.scheduler.dispose()
+}
+
+// after the environment is fixed, start works again
+{
+  const git = createFakeGit()
+  let addFails = true
+  const realAdd = git.worktreeAdd
+  git.worktreeAdd = function (root, input) {
+    if (addFails) return Promise.resolve({ ok: false, code: 'worktree-add-failed', message: 'boom' })
+    return realAdd.call(git, root, input)
+  }
+  const rig = createWorktreeRig({ git: git })
+  const task = await createTask(rig, { title: 'fixable task' })
+  await rig.action('start')
+  await rig.settle()
+  let snap = await snapshot(rig)
+  check('the first attempt pauses dispatch', snap.dispatch.state === 'paused' && byId(snap, task.id).status === 'pending', JSON.stringify(ids(snap)))
+  addFails = false
+  const restarted = await rig.action('start')
+  check('start works again once the environment is fixed', restarted.ok === true, JSON.stringify(restarted))
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('and the task now runs in a worktree', byId(snap, task.id).status === 'running' && typeof byId(snap, task.id).worktree === 'string', JSON.stringify(byId(snap, task.id).worktree))
+  check('the failure reason is cleared on the new attempt', byId(snap, task.id).worktreeError === null, String(byId(snap, task.id).worktreeError))
+  rig.scheduler.dispose()
+}
+
+// a git facade that throws mid-preparation is a refusal, never a fallback
+{
+  const git = createFakeGit()
+  git.head = async () => {
+    throw new Error('head exploded')
+  }
+  const rig = createWorktreeRig({ git: git })
   const task = await createTask(rig, { title: 'throwing git task' })
   await rig.action('start')
   await rig.settle()
-  const claimed = byId(await snapshot(rig), task.id)
-  check('a throwing git facade still dispatches the task', claimed.status === 'running', JSON.stringify(ids(await snapshot(rig))))
+  const snap = await snapshot(rig)
+  const claimed = byId(snap, task.id)
+  check('a throwing git facade keeps the task pending', claimed.status === 'pending' && snap.dispatch.state === 'paused', JSON.stringify({ status: claimed.status, state: snap.dispatch.state }))
   check(
-    'and reports the worktree error',
-    String(claimed.worktreeError).indexOf('worktree-error') === 0 && String(claimed.worktreeError).indexOf('broken runner') >= 0,
+    'and records the worktree error',
+    String(claimed.worktreeError).indexOf('worktree-error') === 0 && String(claimed.worktreeError).indexOf('head exploded') >= 0,
     String(claimed.worktreeError),
   )
   rig.scheduler.dispose()
 }
 
-// the production path: git runs through ctx.get('subprocess')
+// the production path: git runs through ctx.get('subprocess'), one facade
 {
   const spawns = []
   const subprocess = {
@@ -496,16 +485,16 @@ function createWorktreeRig(options) {
     },
   }
   const rig = createWorktreeRig({ subprocess: subprocess })
-  await rig.enableWorktree()
   const task = await createTask(rig, { title: 'subprocess task' })
-  await rig.action('start')
+  const started = await rig.action('start')
+  check('start goes through the subprocess git runner', started.ok === true, JSON.stringify(started))
   await rig.settle()
   const claimed = byId(await snapshot(rig), task.id)
   const path = join(PROJECT, '.worktrees', task.id)
   check('the subprocess service is the git runner', claimed.worktree === path, String(claimed.worktree))
   check(
     'every git call is one unconfined spawn in the project',
-    spawns.length >= 4 && spawns.every((config) => config.argv[0] === 'C:\\tools\\git.exe' && config.cwd === PROJECT),
+    spawns.length >= 6 && spawns.every((config) => config.argv[0] === 'C:\\tools\\git.exe' && config.cwd === PROJECT),
     JSON.stringify(spawns.map((config) => config.argv.slice(0, 3))),
   )
   check(
@@ -516,40 +505,30 @@ function createWorktreeRig(options) {
   rig.scheduler.dispose()
 }
 
-// the feature stays off unless the board enables it
+// a leftover enabled flag is ignored: worktrees are not optional any more
 {
   const run = fakeRunner()
   const rig = createWorktreeRig({ git: createGit({ run: run }) })
-  const task = await createTask(rig, { title: 'disabled worktree task' })
-  await rig.action('start')
-  await rig.settle()
-  const claimed = byId(await snapshot(rig), task.id)
-  check('a disabled worktree setting changes nothing', claimed.status === 'running' && claimed.worktree === null && claimed.worktreeError === null && claimed.dispatch.keep === false, JSON.stringify({ worktree: claimed.worktree, error: claimed.worktreeError }))
-  check('git is not consulted at all when the feature is off', run.calls.length === 0, JSON.stringify(run.calls.map((call) => call.args)))
-  rig.scheduler.dispose()
-}
-
-// a worktree made for a claim that loses its race is removed again
-{
-  const run = fakeRunner()
-  const rig = createWorktreeRig({ git: createGit({ run: run }) })
-  await rig.enableWorktree()
-  const task = await createTask(rig, { title: 'claim race task' })
-  // Make every board write that would mark the task running lose the CAS race.
-  rig.fs.hooks.beforeWrite = (event) => (event.content.indexOf('"status": "running"') >= 0 ? 'stale' : undefined)
-  await rig.action('start')
-  await rig.settle()
-  rig.fs.hooks.beforeWrite = null
-  const claimed = byId(await snapshot(rig), task.id)
-  check('a lost claim leaves the task pending', claimed.status === 'pending', JSON.stringify(ids(await snapshot(rig))))
-  const path = join(PROJECT, '.worktrees', task.id)
-  const removes = run.calls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'remove')
-  check(
-    'and the prepared worktree is removed again',
-    removes.length >= 1 && removes[removes.length - 1].args.join(' ') === ['worktree', 'remove', '--force', path].join(' '),
-    JSON.stringify(removes.map((call) => call.args)),
+  const written = await updateBoard(
+    { fs: rig.fs },
+    {
+      projectPath: PROJECT,
+      sandboxPolicy: writePolicyFor(PROJECT),
+      mutate: (board) => {
+        board.dispatch = Object.assign({}, board.dispatch, { worktree: { enabled: false, root: '.worktrees' } })
+        return board
+      },
+    },
   )
-  check('the task records no worktree fields', claimed.worktree === null && claimed.branch === null && claimed.base === null, JSON.stringify({ worktree: claimed.worktree, branch: claimed.branch }))
+  check('the legacy board write succeeds', written.ok === true, JSON.stringify(written))
+  const task = await createTask(rig, { title: 'legacy flag task' })
+  const started = await rig.action('start')
+  check('a leftover enabled=false no longer disables worktrees', started.ok === true, JSON.stringify(started))
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const claimed = byId(snap, task.id)
+  check('the task still runs in a worktree', claimed.status === 'running' && claimed.worktree === join(PROJECT, '.worktrees', task.id), String(claimed.worktree))
+  check('the dispatch record no longer carries an enabled flag', snap.dispatch.worktree.enabled === undefined && snap.dispatch.worktree.root === '.worktrees', JSON.stringify(snap.dispatch.worktree))
   rig.scheduler.dispose()
 }
 

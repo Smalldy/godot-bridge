@@ -291,14 +291,14 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('settings are clamped', clamped.dispatch.maxConcurrent === 8 && clamped.dispatch.maxWorkAgents === 12 && clamped.dispatch.maxAttempts === 1)
   check('an invalid state is refused', setDispatch(board, { state: 'sometimes' }, T0, '@user').code === 'invalid-dispatch')
   check(
-    'dispatch.worktree defaults off',
-    board.dispatch.worktree.enabled === false && board.dispatch.worktree.root === '.worktrees',
+    'dispatch.worktree defaults to the internal root with no switch',
+    board.dispatch.worktree.root === '.worktrees' && board.dispatch.worktree.enabled === undefined,
     JSON.stringify(board.dispatch.worktree),
   )
   const worktree = setDispatch(board, { worktree: { enabled: true, root: '/tmp/wt' } }, T0, '@user')
   check(
-    'dispatch settings normalise the worktree root',
-    worktree.ok === true && worktree.dispatch.worktree.enabled === true && worktree.dispatch.worktree.root === '.worktrees',
+    'dispatch settings normalise the worktree root and drop enabled',
+    worktree.ok === true && worktree.dispatch.worktree.root === '.worktrees' && worktree.dispatch.worktree.enabled === undefined,
     JSON.stringify(worktree.dispatch && worktree.dispatch.worktree),
   )
 }

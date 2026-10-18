@@ -86,14 +86,20 @@ try {
 }
 check('teardown runs without throwing', teardownError === null, teardownError && teardownError.message)
 
-// ── git wiring: optional, lazy, and never a reason to fail activation ───────
+// ── git wiring: required for dispatch, lazy, never a reason to fail activation ─
 {
-  const { gitFor } = await import('../../plugin/task-center/dispatch.mjs')
-  check('gitFor disables worktrees when the profile has no subprocess service', gitFor({ get: () => undefined }, {}) === null)
+  const { gitFor, probeWorktree } = await import('../../plugin/task-center/dispatch.mjs')
+  check('gitFor answers null when the profile has no subprocess service', gitFor({ get: () => undefined }, {}) === null)
   const fake = { isRepo: () => ({ ok: true, repo: true }) }
   check('an injected git facade wins over the service', gitFor({ get: () => undefined }, { git: fake }) === fake)
   const service = { spawn() { throw new Error('unexpected spawn') } }
   check('gitFor builds a facade from the subprocess service', gitFor({ get: (key) => (key === 'subprocess' ? service : undefined) }, {}) !== null)
+  const missing = await probeWorktree(null, PROJECT)
+  check(
+    'probeWorktree reports a profile without git as a worktree problem',
+    missing.ok === false && missing.code === 'no-git-service',
+    JSON.stringify(missing),
+  )
 }
 
 // ── a host WITH a subprocess service still activates without spawning git ───
