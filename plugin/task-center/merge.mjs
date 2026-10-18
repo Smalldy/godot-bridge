@@ -463,6 +463,22 @@ export function recordVerdict(board, id, verdict, now) {
 }
 
 /**
+ * Is this task's merge request ready for the queue right now? The host-driven
+ * sweep uses exactly this rule: done + an open request, and — under independent
+ * testing — a passing system verdict. It touches nothing; the queue still
+ * re-validates when it actually merges.
+ */
+export function mergeEligible(task, testing) {
+  if (task === null || task === undefined) return false
+  if (task.status !== 'done') return false
+  const merge = task.merge
+  if (merge === null || merge === undefined || typeof merge !== 'object' || Array.isArray(merge)) return false
+  if (merge.status !== 'open') return false
+  if (testing !== 'independent') return true
+  return merge.verdict !== null && merge.verdict !== undefined && merge.verdict.status === 'passed'
+}
+
+/**
  * Refresh an open merge request to the task branch's current head AND current
  * base. Pure: the API applies it through the board's CAS after reading the
  * branch head, the target head and the diff itself.

@@ -56,7 +56,16 @@ export function apply(ctx) {
   // independent submit is the only thing that runs it.
   const verify = verifyFor(ctx)
   const merger = createMerger({ git: git, verify: verify })
-  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, merger: merger, verify: verify })
+  // autoMerge turns on the host-driven merge sweep below: the success path must
+  // not depend on a merger model noticing the request.
+  const api = createApi(ctx, {
+    state: state,
+    scheduler: scheduler,
+    git: git,
+    merger: merger,
+    verify: verify,
+    autoMerge: true,
+  })
 
   // An idle WorkAgent is a chance to hand out more work. A reload must not
   // accumulate listeners, so the subscription is an effect.
@@ -89,6 +98,25 @@ export function apply(ctx) {
       scheduler.dispose()
     }
   }, 'godot-bridge: task center tick')
+
+  // The merge queue is host-driven: every tick, an open request that is ready
+  // (self mode submitted, or an independent verdict passed) is merged through
+  // the same serial queue the manual action uses. Nothing here depends on a
+  // model acting; a failure leaves the request in its recorded state.
+  ctx.effect(function () {
+    const timer = setInterval(function () {
+      const project = state.memory.projectHint
+      if (typeof project !== 'string' || project.length === 0) return
+      try {
+        const pending = api.autoMergePending(project)
+        if (pending !== undefined && pending !== null && typeof pending.catch === 'function') pending.catch(function () {})
+      } catch (error) {}
+    }, TICK_MS)
+    if (timer !== null && typeof timer.unref === 'function') timer.unref()
+    return function () {
+      clearInterval(timer)
+    }
+  }, 'godot-bridge: auto-merge sweep')
 
   // The write end: the model's tool. Guarded so a registration failure costs the
   // tool, not the whole row.

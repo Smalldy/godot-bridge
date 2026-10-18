@@ -428,6 +428,7 @@ function createSubmitRig(options) {
     merger: opts.merger,
     verify: opts.verify,
     verifyCommand: opts.verifyCommand,
+    autoMerge: opts.autoMerge,
   })
   return { project: PROJECT, fs: fs, ctx: ctx, state: state, scheduler: scheduler, api: api, team: team }
 }
@@ -1837,6 +1838,123 @@ function seedRunningTaskWithTesting(rig, task, testing) {
   )
   const merged = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
   check('and the re-verified request merges', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── host-driven auto-merge: success does not need a model ──────────────────
+{
+  // self mode: submit opens the request, the host sweep integrates it, with no
+  // Team service at all — there is no merger agent in this rig.
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
+  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), autoMerge: true })
+  check('the sweep rig has no Team service', rig.team === null)
+  seedRunningTask(rig, runningWorktreeTask())
+  const surface = install(rig)
+  const submitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
+  check('self submit opens the request', submitted.json().ok === true && submitted.json().task.merge.status === 'open', submitted.text)
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  check('the host sweep merges a self-mode request without a merger agent', sweep.ok === true && sweep.merged.join(',') === 'T-1', JSON.stringify(sweep))
+  const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  check('the task is merged', after.json().tasks[0].merge.status === 'merged', after.text)
+  const forwards = () => fake.calls.filter((entry) => entry.args.join(' ') === 'merge --ff-only merge/T-1').length
+  check('main is fast-forwarded exactly once', forwards() === 1, String(forwards()))
+  const again = await rig.api.autoMergePending(PROJECT)
+  check('a second sweep is a no-op', again.ok === true && again.merged.length === 0, JSON.stringify(again))
+  const manual = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('the explicit action then sees no open request', manual.json().ok === false && manual.json().code === 'no-open-merge', manual.text)
+  check('and main was still fast-forwarded only once', forwards() === 1, String(forwards()))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // independent mode: the host verdict passes, then the host sweep merges.
+  const fake = mergeGit()
+  const verification = fakeVerify({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
+  const verifier = fakeVerifier({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
+  const rig = createSubmitRig({
+    git: fake.git,
+    merger: createMerger({ git: fake.git, verify: verifier.verify }),
+    verify: verification.verify,
+    autoMerge: true,
+  })
+  seedRunningTaskWithTesting(rig, runningWorktreeTask(), 'independent')
+  const surface = install(rig)
+  const submitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
+  check(
+    'a passed verdict is recorded before the sweep',
+    submitted.json().ok === true && submitted.json().task.merge.status === 'open' && submitted.json().task.merge.verdict.status === 'passed',
+    submitted.text,
+  )
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  check('the host sweep merges after a passed verdict', sweep.ok === true && sweep.merged.join(',') === 'T-1', JSON.stringify(sweep))
+  const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  check('the independent request is merged', after.json().tasks[0].merge.status === 'merged', after.text)
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // pending verdict: the sweep must never merge it.
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), autoMerge: true })
+  seedRunningTaskWithTesting(rig, runningWorktreeTask(), 'independent')
+  const surface = install(rig)
+  const submitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
+  check('without a verification runner the verdict stays pending', submitted.json().task.merge.verdict.status === 'pending', submitted.text)
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  check('a pending verdict is not merged', sweep.ok === true && sweep.merged.length === 0, JSON.stringify(sweep))
+  const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  check('the request stays open', after.json().tasks[0].merge.status === 'open', after.text)
+  const refused = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('and the manual gate still refuses it', refused.json().ok === false && refused.json().code === 'test-required', refused.text)
+  check('nothing is fast-forwarded', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // failed verdict: the sweep must never merge it either.
+  const fake = mergeGit()
+  const verification = fakeVerify({ code: 1, stdout: 'FAIL board.test.mjs', stderr: '' })
+  const rig = createSubmitRig({
+    git: fake.git,
+    merger: createMerger({ git: fake.git, verify: verification.verify }),
+    verify: verification.verify,
+    autoMerge: true,
+  })
+  seedRunningTaskWithTesting(rig, runningWorktreeTask(), 'independent')
+  const surface = install(rig)
+  const submitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
+  check('the failed verdict is recorded', submitted.json().task.merge.verdict.status === 'failed', submitted.text)
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  check('a failed verdict is not merged', sweep.ok === true && sweep.merged.length === 0, JSON.stringify(sweep))
+  const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  const refused = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check(
+    'the request stays open and main untouched',
+    after.json().tasks[0].merge.status === 'open' && fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'),
+    after.text,
+  )
+  check('and the manual gate reports the failed verdict', refused.json().ok === false && refused.json().code === 'test-failed', refused.text)
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // the sweep is opt-in: a direct API consumer stays explicit.
+  const fake = fakeGit()
+  const rig = createSubmitRig({ git: fake.git })
+  seedRunningTask(rig, runningWorktreeTask())
+  const surface = install(rig)
+  await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  check('the sweep is off unless the host enables it', sweep.ok === true && sweep.disabled === true && sweep.merged.length === 0, JSON.stringify(sweep))
+  const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  check('and the request remains open', after.json().tasks[0].merge.status === 'open', after.text)
   surface.dispose()
   rig.scheduler.dispose()
 }

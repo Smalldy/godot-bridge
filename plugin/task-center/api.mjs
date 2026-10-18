@@ -16,7 +16,7 @@ import { TASK_LEASE_MS } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { MERGER_NAME, probeWorktree, resolveLead, servicesFor, workerPool } from './dispatch.mjs'
-import { DEFAULT_VERIFY_COMMAND, formatVerificationOutput, recordMergeResult, recordVerdict, refreshMergeRequest } from './merge.mjs'
+import { DEFAULT_VERIFY_COMMAND, formatVerificationOutput, mergeEligible, recordMergeResult, recordVerdict, refreshMergeRequest } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
 
 /** Every action this API exposes. The tool enum and the route allowlist are
@@ -92,6 +92,9 @@ function messageOf(error) {
  *   profile cannot verify, and independent requests simply stay pending.
  * @param options.verifyCommand - the verification command; defaults to
  *   `npm run verify`.
+ * @param options.autoMerge - true enables the host-driven merge sweep
+ *   (autoMergePending): a ready open request is merged without any model
+ *   action. Off by default so direct API users stay explicit.
  * @param options.now - clock, for tests.
  */
 export function createApi(ctx, options) {
@@ -103,6 +106,7 @@ export function createApi(ctx, options) {
   const verify = typeof opts.verify === 'function' ? opts.verify : null
   const verifyCommand =
     typeof opts.verifyCommand === 'string' && opts.verifyCommand.trim() !== '' ? opts.verifyCommand : DEFAULT_VERIFY_COMMAND
+  const autoMerge = opts.autoMerge === true
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
 
   /** Merge actions are one-at-a-time: the queue serialises the whole read+git+write. */
@@ -733,6 +737,117 @@ export function createApi(ctx, options) {
     }
   }
 
+  /**
+   * One merge pipeline: re-read, validate, gate on the independent verdict,
+   * run the queue, record the outcome. Shared by the explicit mergeRequest
+   * action and the host-driven sweep, so both follow exactly the same rules.
+   */
+  async function mergeOne(projectPath, id, by, context) {
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const task = model.findTask(read.board, id)
+    if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
+    if (task.status !== 'done') return failure('not-done', id + ' is ' + task.status + '; only a done task has a merge request')
+    const merge = task.merge
+    if (merge === null || merge === undefined || typeof merge !== 'object' || merge.status !== 'open') {
+      return failure('no-open-merge', id + ' has no open merge request')
+    }
+    if (merger === null || typeof merger.mergeRequest !== 'function') {
+      return failure('no-merge-service', 'the merge queue is not available in this profile')
+    }
+    // The request records the head it was submitted at. If the branch moved
+    // after that submit, the merger would verify a tree nobody reviewed:
+    // refuse, touch nothing, and tell the owner to refresh explicitly.
+    const currentHead = await readBranchHead(projectPath, task)
+    if (currentHead.ok !== true) return currentHead
+    const recordedHead = typeof merge.head === 'string' ? merge.head : null
+    if (String(currentHead.head) !== String(recordedHead)) {
+      return failure(
+        'head-drift',
+        task.id +
+          "'s branch " +
+          String(task.branch) +
+          ' is now at ' +
+          String(currentHead.head) +
+          ', but its merge request records ' +
+          String(recordedHead) +
+          '; run task_center { action: "refreshMerge", id: "' +
+          task.id +
+          '" } to refresh the request, then retry the merge',
+      )
+    }
+    // Independent testing is a merge gate: without a passing verdict the
+    // request does not reach the queue at all — no integration worktree, no
+    // verification run, no change to main.
+    const testing = read.board.dispatch === undefined || read.board.dispatch === null ? 'self' : read.board.dispatch.testing
+    if (testing === 'independent') {
+      const verdict = merge.verdict === null || merge.verdict === undefined ? null : merge.verdict
+      const status = verdict === null ? 'pending' : String(verdict.status)
+      if (status === 'failed') {
+        const output = verdict !== null && typeof verdict.output === 'string' && verdict.output !== '' ? ' Reported output: ' + verdict.output : ''
+        return failure(
+          'test-failed',
+          id + ' failed independent testing; fix the branch and record a passing verdict before merging.' + output,
+        )
+      }
+      if (status !== 'passed') {
+        return failure(
+          'test-required',
+          id + ' needs a passing independent test verdict before it can be merged (current verdict: ' + status + ').',
+        )
+      }
+    }
+    const settings = read.board.dispatch === undefined || read.board.dispatch === null ? null : read.board.dispatch.worktree
+    const worktreeRoot = settings !== null && settings !== undefined && typeof settings.root === 'string' ? settings.root : '.worktrees'
+    const outcome = await merger.mergeRequest(task, projectPath, { worktreeRoot: worktreeRoot })
+    if (outcome === null || outcome === undefined || outcome.ok !== true) {
+      return failure(
+        outcome === null || outcome === undefined ? 'merge-failed' : String(outcome.code),
+        outcome === null || outcome === undefined ? 'the merge queue returned no result' : String(outcome.message),
+      )
+    }
+    const recorded = await writeTask(projectPath, id, (board) => recordMergeResult(board, id, outcome, clock(), by), context)
+    if (recorded.ok !== true) return recorded
+    return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
+  }
+
+  /**
+   * The host-driven merge sweep: merge every request that is ready RIGHT NOW.
+   * State-driven and idempotent — it re-reads the board, so an already merged
+   * (or no longer open, or still pending/failed verdict) request simply drops
+   * out. The index row calls this on a timer, which is what makes a successful
+   * submit or a passing verdict integrate without any model action.
+   */
+  async function autoMergePending(projectPath) {
+    if (autoMerge !== true) return ok({ merged: [], skipped: [], disabled: true })
+    if (merger === null || typeof merger.mergeRequest !== 'function') return ok({ merged: [], skipped: [], disabled: true })
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const testing = read.board.dispatch === undefined || read.board.dispatch === null ? 'self' : read.board.dispatch.testing
+    const candidates = read.board.tasks
+      .filter((task) => mergeEligible(task, testing))
+      .map((task) => task.id)
+      .sort()
+    const merged = []
+    const skipped = []
+    const systemContext = { projectPath: projectPath, by: 'system', role: 'user', agent: null }
+    for (const id of candidates) {
+      let result = null
+      try {
+        result = await serialised(() => mergeOne(projectPath, id, 'system', systemContext))
+      } catch (error) {
+        result = failure('merge-error', messageOf(error))
+      }
+      if (result.ok === true) {
+        merged.push(id)
+        if (result.task !== null && result.task !== undefined) await notifyMergeOutcome(projectPath, result.task)
+      } else {
+        skipped.push({ id: id, code: result.code === undefined || result.code === null ? 'merge-refused' : String(result.code) })
+      }
+    }
+    return ok({ merged: merged, skipped: skipped })
+  }
+
   // ── actions ──────────────────────────────────────────────────────────────
 
   async function perform(action, input, context) {
@@ -941,79 +1056,7 @@ export function createApi(ctx, options) {
       if (id === '') return failure('missing-id', 'mergeRequest needs a task id')
       // The whole pipeline (re-read, integrate, verify, record) runs inside the
       // queue so a second request sees the first one's result, never its state.
-      const result = await serialised(async function () {
-        const read = await readBoardOrFail(projectPath)
-        if (read.failed !== undefined) return read.failed
-        const task = model.findTask(read.board, id)
-        if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
-        if (task.status !== 'done') return failure('not-done', id + ' is ' + task.status + '; only a done task has a merge request')
-        const merge = task.merge
-        if (merge === null || merge === undefined || typeof merge !== 'object' || merge.status !== 'open') {
-          return failure('no-open-merge', id + ' has no open merge request')
-        }
-        if (merger === null || typeof merger.mergeRequest !== 'function') {
-          return failure('no-merge-service', 'the merge queue is not available in this profile')
-        }
-        // The request records the head it was submitted at. If the branch moved
-        // after that submit, the merger would verify a tree nobody reviewed:
-        // refuse, touch nothing, and tell the owner to refresh explicitly.
-        const currentHead = await readBranchHead(projectPath, task)
-        if (currentHead.ok !== true) return currentHead
-        const recordedHead = typeof merge.head === 'string' ? merge.head : null
-        if (String(currentHead.head) !== String(recordedHead)) {
-          return failure(
-            'head-drift',
-            task.id +
-              "'s branch " +
-              String(task.branch) +
-              ' is now at ' +
-              String(currentHead.head) +
-              ', but its merge request records ' +
-              String(recordedHead) +
-              '; run task_center { action: "refreshMerge", id: "' +
-              task.id +
-              '" } to refresh the request, then retry the merge',
-          )
-        }
-        // Independent testing is a merge gate: without a passing verdict the
-        // request does not reach the queue at all — no integration worktree, no
-        // verification run, no change to main.
-        const testing = read.board.dispatch === undefined || read.board.dispatch === null ? 'self' : read.board.dispatch.testing
-        if (testing === 'independent') {
-          const verdict = merge.verdict === null || merge.verdict === undefined ? null : merge.verdict
-          const status = verdict === null ? 'pending' : String(verdict.status)
-          if (status === 'failed') {
-            const output = verdict !== null && typeof verdict.output === 'string' && verdict.output !== '' ? ' Reported output: ' + verdict.output : ''
-            return failure(
-              'test-failed',
-              id + ' failed independent testing; fix the branch and record a passing verdict before merging.' + output,
-            )
-          }
-          if (status !== 'passed') {
-            return failure(
-              'test-required',
-              id + ' needs a passing independent test verdict before it can be merged (current verdict: ' + status + ').',
-            )
-          }
-        }
-        const settings = read.board.dispatch === undefined || read.board.dispatch === null ? null : read.board.dispatch.worktree
-        const worktreeRoot = settings !== null && settings !== undefined && typeof settings.root === 'string' ? settings.root : '.worktrees'
-        const outcome = await merger.mergeRequest(task, projectPath, { worktreeRoot: worktreeRoot })
-        if (outcome === null || outcome === undefined || outcome.ok !== true) {
-          return failure(
-            outcome === null || outcome === undefined ? 'merge-failed' : String(outcome.code),
-            outcome === null || outcome === undefined ? 'the merge queue returned no result' : String(outcome.message),
-          )
-        }
-        const recorded = await writeTask(
-          projectPath,
-          id,
-          (board) => recordMergeResult(board, id, outcome, clock(), context.by),
-          context,
-        )
-        if (recorded.ok !== true) return recorded
-        return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
-      })
+      const result = await serialised(() => mergeOne(projectPath, id, context.by, context))
       // Notifications happen after the queue releases, and never change the answer.
       if (result.ok === true && result.task !== null && result.task !== undefined) {
         await notifyMergeOutcome(projectPath, result.task)
@@ -1317,5 +1360,5 @@ export function createApi(ctx, options) {
     return snapshot(absolute)
   }
 
-  return { perform: perform, snapshot: snapshot, actions: ACTIONS, readActions: READ_ACTIONS }
+  return { perform: perform, snapshot: snapshot, autoMergePending: autoMergePending, actions: ACTIONS, readActions: READ_ACTIONS }
 }
