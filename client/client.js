@@ -328,6 +328,110 @@ window.__ModuleLoader__.load({
 				noOutput: '（无输出）',
 				outputTailHint: '仅显示输出尾部',
 				conflictDetail: '冲突详情',
+				statusTab: '状态',
+				rolesTab: '角色',
+				statusAgents: '执行代理',
+				statusWorktrees: '工作树',
+				statusActivity: '活动',
+				statusLead: 'Team Lead',
+				statusKind: '类型',
+				statusDescription: '描述',
+				statusSession: '会话',
+				statusCurrentTask: '当前任务',
+				statusSessionHint: '当前 DSH 没有可用的会话跳转 API：可以复制 session id，或从 Team 列表打开该会话。',
+				copySession: '复制会话',
+				sessionCopied: '已复制',
+				copyFailed: '复制失败',
+				statusKinds: '类型计数',
+				statusRoleInstances: '角色实例',
+				statusMissing: '缺',
+				statusAgentsUnavailable: '宿主没有提供执行代理信息。',
+				statusWorktreesUnavailable: '宿主没有提供工作树信息。',
+				statusNoGit: '没有 git 服务（no-git-service）。',
+				statusActivityUnavailable: '宿主没有提供活动记录。',
+				statusActor: '主体',
+				statusWorktreesEmpty: '没有工作树。',
+				statusActivityEmpty: '没有活动记录。',
+				roleInstancesEmpty: '没有角色实例。',
+				roleErrMissingName: '缺少角色名',
+				roleErrActionTimeout: '宿主操作超时',
+				roleErrQueueTimeout: '合并队列超时',
+				roleErrAbandoned: '合并队列已放弃该操作',
+				roleErrWriteFailed: '角色配置写入失败',
+				roleErrEnsureFailed: '角色实例准备失败',
+				statusActorAgent: '代理',
+				statusActorHost: '宿主',
+				statusActorSystem: '系统',
+				statusLimit: '上限',
+				statusCount: '条数',
+				wtTypeMain: '主',
+				wtTypeTask: '任务',
+				wtTypeVerify: '验证',
+				wtTypeTest: '测试',
+				wtTypeMerge: '合并',
+				wtTypeOther: '其他',
+				wtActive: '活跃',
+				wtIdle: '空闲',
+				wtHead: '提交',
+				wtTask: '任务',
+				rolesUnavailable: '宿主没有提供角色配置。',
+				rolesHint: '角色配置属于用户：可新增/修改/删除 profile、绑定阶段、排空或替换实例，或恢复默认。',
+				roleStages: '阶段绑定',
+				roleStatus: '状态',
+				roleProfiles: '角色 Profile',
+				roleInstances: '实例',
+				roleKindWorker: '实现',
+				roleKindReviewer: '评审',
+				roleKindTester: '测试',
+				roleKindMerger: '合并',
+				roleKindLead: 'Lead',
+				roleKindTeammate: '成员',
+				roleStageImplement: '实现',
+				roleStageReview: '评审',
+				roleStageTest: '测试',
+				roleBind: '绑定',
+				roleSave: '保存',
+				roleDelete: '删除',
+				roleCreate: '创建',
+				rolePrompt: '指令',
+				roleSkills: '技能',
+				roleContext: '上下文',
+				rolePermissions: '权限',
+				roleInstancesCount: '实例数',
+				roleReset: '恢复默认',
+				roleRefresh: '读取角色配置',
+				roleSource: '来源',
+				roleDrain: '排空',
+				roleReplace: '替换',
+				roleReplaceKind: '替换整类',
+				roleName: '名称',
+				roleKind: '种类',
+				roleStage: '阶段',
+				roleActionFailed: '操作失败',
+				roleDrained: '已排空',
+				roleCreated: '已创建',
+				roleWaited: '等待',
+				roleTimedOut: '等待超时',
+				roleWaiting: '等待中',
+				roleBuiltin: '内置',
+				roleCustom: '自定义',
+				roleErrName: '角色名不合法',
+				roleErrProfile: '角色配置不合法',
+				roleErrKind: '角色种类不合法',
+				roleErrStage: '阶段不合法',
+				roleErrInstances: '实例数必须是 1–8 的整数',
+				roleErrSkills: '技能必须是列表',
+				roleErrContext: '上下文必须是 fresh 或 fork',
+				roleErrPermissions: '权限不合法',
+				roleErrPrompt: '指令过长或不合法',
+				roleErrUnknownProfile: '未知角色 profile',
+				roleErrStageMismatch: '该 profile 不属于这个阶段',
+				roleErrExists: '角色已存在',
+				roleErrDefaultProfile: '内置角色不能删除',
+				roleErrUnknownInstance: '未知角色实例',
+				roleErrNotLive: '实例不可用（failed）',
+				roleErrUnavailable: '角色管理器不可用',
+				roleErrUserOnly: '仅限用户操作',
 			},
 			en: {
 				nav: 'Tasks',
@@ -517,6 +621,110 @@ window.__ModuleLoader__.load({
 				noOutput: '(no output)',
 				outputTailHint: 'tail of the output shown',
 				conflictDetail: 'Conflict details',
+				statusTab: 'Status',
+				rolesTab: 'Roles',
+				statusAgents: 'Agents',
+				statusWorktrees: 'Worktrees',
+				statusActivity: 'Activity',
+				statusLead: 'Team Lead',
+				statusKind: 'Kind',
+				statusDescription: 'Description',
+				statusSession: 'Session',
+				statusCurrentTask: 'Current task',
+				statusSessionHint: 'This DSH build has no jump-to-session API: copy the session id, or open the session from the Team list.',
+				copySession: 'Copy session',
+				sessionCopied: 'Copied',
+				copyFailed: 'Copy failed',
+				statusKinds: 'Kind counts',
+				statusRoleInstances: 'Role instances',
+				statusMissing: 'missing',
+				statusAgentsUnavailable: 'The host did not report agents.',
+				statusWorktreesUnavailable: 'The host did not report worktrees.',
+				statusNoGit: 'No git service (no-git-service).',
+				statusActivityUnavailable: 'The host did not report activity.',
+				statusActor: 'Actor',
+				statusWorktreesEmpty: 'No worktrees.',
+				statusActivityEmpty: 'No activity entries.',
+				roleInstancesEmpty: 'No role instances.',
+				roleErrMissingName: 'missing role name',
+				roleErrActionTimeout: 'host action timed out',
+				roleErrQueueTimeout: 'merge queue timed out',
+				roleErrAbandoned: 'the merge queue abandoned that action',
+				roleErrWriteFailed: 'could not write the role config',
+				roleErrEnsureFailed: 'role provisioning failed',
+				statusActorAgent: 'agent',
+				statusActorHost: 'host',
+				statusActorSystem: 'system',
+				statusLimit: 'limit',
+				statusCount: 'count',
+				wtTypeMain: 'main',
+				wtTypeTask: 'task',
+				wtTypeVerify: 'verify',
+				wtTypeTest: 'test',
+				wtTypeMerge: 'merge',
+				wtTypeOther: 'other',
+				wtActive: 'active',
+				wtIdle: 'idle',
+				wtHead: 'Head',
+				wtTask: 'Task',
+				rolesUnavailable: 'The host did not report role profiles.',
+				rolesHint: 'Role profiles belong to the user: create/update/delete a profile, bind a stage, drain or replace instances, or reset the defaults.',
+				roleStages: 'Stage bindings',
+				roleStatus: 'Status',
+				roleProfiles: 'Role profiles',
+				roleInstances: 'Instances',
+				roleKindWorker: 'worker',
+				roleKindReviewer: 'reviewer',
+				roleKindTester: 'tester',
+				roleKindMerger: 'merger',
+				roleKindLead: 'lead',
+				roleKindTeammate: 'teammate',
+				roleStageImplement: 'implement',
+				roleStageReview: 'review',
+				roleStageTest: 'test',
+				roleBind: 'Bind',
+				roleSave: 'Save',
+				roleDelete: 'Delete',
+				roleCreate: 'Create',
+				rolePrompt: 'Prompt',
+				roleSkills: 'Skills',
+				roleContext: 'Context',
+				rolePermissions: 'Permissions',
+				roleInstancesCount: 'Instances',
+				roleReset: 'Reset defaults',
+				roleRefresh: 'Reload role profiles',
+				roleSource: 'Source',
+				roleDrain: 'Drain',
+				roleReplace: 'Replace',
+				roleReplaceKind: 'Replace kind',
+				roleName: 'Name',
+				roleKind: 'Kind',
+				roleStage: 'Stage',
+				roleActionFailed: 'Action failed',
+				roleDrained: 'Drained',
+				roleCreated: 'Created',
+				roleWaited: 'Waited',
+				roleTimedOut: 'Timed out',
+				roleWaiting: 'Waiting',
+				roleBuiltin: 'built-in',
+				roleCustom: 'custom',
+				roleErrName: 'invalid role name',
+				roleErrProfile: 'invalid role profile',
+				roleErrKind: 'invalid role kind',
+				roleErrStage: 'invalid stage',
+				roleErrInstances: 'instances must be an integer from 1 to 8',
+				roleErrSkills: 'skills must be a list',
+				roleErrContext: 'context must be fresh or fork',
+				roleErrPermissions: 'invalid permissions',
+				roleErrPrompt: 'invalid prompt',
+				roleErrUnknownProfile: 'unknown role profile',
+				roleErrStageMismatch: 'that profile does not own this stage',
+				roleErrExists: 'role already exists',
+				roleErrDefaultProfile: 'a built-in profile cannot be deleted',
+				roleErrUnknownInstance: 'unknown role instance',
+				roleErrNotLive: 'instance is not live (failed)',
+				roleErrUnavailable: 'role manager unavailable',
+				roleErrUserOnly: 'user only',
 			},
 		}
 
@@ -831,7 +1039,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/** One shape for the view, whatever the Host answered. */
-		function tcSnapshot(payload, source, message) {
+		function tcSnapshot(payload, source, message, actionResult) {
 			const tasks = Array.isArray(payload.tasks) ? payload.tasks : []
 			return {
 				ok: payload.ok !== false,
@@ -844,7 +1052,13 @@ window.__ModuleLoader__.load({
 				tasks: tasks,
 				locks: Array.isArray(payload.locks) ? payload.locks : [],
 				workers: payload.workers === undefined || payload.workers === null ? null : payload.workers,
+				agents: payload.agents === undefined || payload.agents === null ? null : payload.agents,
+				worktrees: payload.worktrees === undefined || payload.worktrees === null ? null : payload.worktrees,
+				activity: payload.activity === undefined || payload.activity === null ? null : payload.activity,
+				roles: payload.roles === undefined || payload.roles === null ? null : payload.roles,
 				scheduler: payload.scheduler === undefined ? null : payload.scheduler,
+				actionResult: actionResult === undefined || actionResult === null ? null : actionResult,
+				actionError: payload.actionError === undefined || payload.actionError === null ? null : payload.actionError,
 				version: payload.version,
 				updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : null,
 				serverTime: payload.serverTime,
@@ -896,12 +1110,23 @@ window.__ModuleLoader__.load({
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
 						if (payload && payload.ok === true && Array.isArray(payload.tasks)) {
 							if (typeof payload.project === 'string') tcRememberProject(payload.project)
-							emit(tcSnapshot(payload, 'host', ''))
+							// A routine poll keeps the outcome of the user's last action until
+							// the next action replaces it; only the board data is refreshed.
+							const next = tcSnapshot(payload, 'host', '')
+							next.actionResult = snapshot.actionResult
+							next.actionError = snapshot.actionError
+							emit(next)
 						} else {
-							emit(tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', String((payload && payload.message) || 'the host did not answer')))
+							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', String((payload && payload.message) || 'the host did not answer'))
+							failed.actionResult = snapshot.actionResult
+							failed.actionError = snapshot.actionError
+							emit(failed)
 						}
 					} catch (error) {
-						emit(tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error)))
+						const offline = tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error))
+						offline.actionResult = snapshot.actionResult
+						offline.actionError = snapshot.actionError
+						emit(offline)
 					} finally {
 						loading = null
 					}
@@ -923,11 +1148,11 @@ window.__ModuleLoader__.load({
 					})
 					if (payload && payload.ok === true) {
 						const host = payload.snapshot !== undefined && payload.snapshot !== null ? payload.snapshot : payload
-						if (host && Array.isArray(host.tasks)) emit(tcSnapshot(host, 'host', ''))
+						if (host && Array.isArray(host.tasks)) emit(tcSnapshot(host, 'host', '', payload))
 						if (host && typeof host.project === 'string') tcRememberProject(host.project)
 						return { ok: true, payload: payload }
 					}
-					emit(Object.assign({}, snapshot, { message: String((payload && payload.message) || 'the host refused that action') }))
+					emit(Object.assign({}, snapshot, { message: String((payload && payload.message) || 'the host refused that action'), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
 					return { ok: false, payload: payload }
 				} catch (error) {
 					emit(Object.assign({}, snapshot, { message: String((error && error.message) || error) }))
@@ -1344,6 +1569,666 @@ window.__ModuleLoader__.load({
 			function workerStatusLabel(status, t) {
 				const key = WORKER_STATUS[status]
 				return key === undefined ? status : t(key)
+			}
+
+
+			// ── Roles / Status views: agents, worktrees, activity and role admin ──
+			const ROLE_KIND_KEYS = { worker: 'roleKindWorker', reviewer: 'roleKindReviewer', tester: 'roleKindTester', merger: 'roleKindMerger', lead: 'roleKindLead', teammate: 'roleKindTeammate' }
+			const WORKTREE_TYPE_KEYS = { main: 'wtTypeMain', task: 'wtTypeTask', verify: 'wtTypeVerify', test: 'wtTypeTest', merge: 'wtTypeMerge', other: 'wtTypeOther' }
+			const AGENT_ERROR_KEYS = { 'no-team-service': 'workersErrNoService', 'no-lead': 'workersErrNoLead', 'roster-unreadable': 'workersErrRoster' }
+			const ROLE_ERROR_KEYS = {
+				'missing-name': 'roleErrMissingName',
+				'invalid-role-name': 'roleErrName',
+				'invalid-role-profile': 'roleErrProfile',
+				'invalid-role-kind': 'roleErrKind',
+				'invalid-role-stage': 'roleErrStage',
+				'invalid-role-instances': 'roleErrInstances',
+				'invalid-role-skills': 'roleErrSkills',
+				'invalid-role-context': 'roleErrContext',
+				'invalid-role-permissions': 'roleErrPermissions',
+				'invalid-role-prompt': 'roleErrPrompt',
+				'unknown-role-profile': 'roleErrUnknownProfile',
+				'stage-mismatch': 'roleErrStageMismatch',
+				'invalid-stage': 'roleErrStage',
+				'role-exists': 'roleErrExists',
+				'default-profile': 'roleErrDefaultProfile',
+				'unknown-role-instance': 'roleErrUnknownInstance',
+				'not-live': 'roleErrNotLive',
+				'roles-unavailable': 'roleErrUnavailable',
+				'user-only': 'roleErrUserOnly',
+				'action-timeout': 'roleErrActionTimeout',
+				'queue-timeout': 'roleErrQueueTimeout',
+				'action-abandoned': 'roleErrAbandoned',
+				'role-config-write-failed': 'roleErrWriteFailed',
+				'role-ensure-failed': 'roleErrEnsureFailed',
+			}
+
+			function roleKindLabel(kind, t) {
+				const key = ROLE_KIND_KEYS[kind]
+				return key === undefined ? String(kind === undefined || kind === null ? '—' : kind) : t(key)
+			}
+
+			function roleStageLabel(stage, t) {
+				if (stage === 'implement') return t('roleStageImplement')
+				if (stage === 'review') return t('roleStageReview')
+				if (stage === 'test') return t('roleStageTest')
+				return String(stage === undefined || stage === null || stage === '' ? '—' : stage)
+			}
+
+			function worktreeTypeLabel(type, t) {
+				const key = WORKTREE_TYPE_KEYS[type]
+				return key === undefined ? String(type === undefined || type === null ? 'other' : type) : t(key)
+			}
+
+			/** Agent events carry the agent's name; host/system events never do. */
+			function actorLabel(entry, t) {
+				if (entry.actor === 'agent') {
+					return typeof entry.actorName === 'string' && entry.actorName !== '' ? entry.actorName : t('statusActorAgent')
+				}
+				if (entry.actor === 'host') return t('statusActorHost')
+				return t('statusActorSystem')
+			}
+
+			function roleErrorText(payload, t) {
+				if (payload === null || payload === undefined) return ''
+				const code = typeof payload.code === 'string' ? payload.code : ''
+				const key = ROLE_ERROR_KEYS[code]
+				const label = key === undefined ? (code === '' ? t('error') : code) : t(key)
+				const message = typeof payload.message === 'string' && payload.message !== '' ? ' — ' + payload.message : ''
+				return label + message
+			}
+
+			async function copyToClipboard(value) {
+				try {
+					if (typeof navigator !== 'undefined' && navigator !== null && navigator.clipboard !== undefined && navigator.clipboard !== null && typeof navigator.clipboard.writeText === 'function') {
+						await navigator.clipboard.writeText(value)
+						return true
+					}
+				} catch (_error) {}
+				return false
+			}
+
+			function tcSplitList(value) {
+				return String(value === undefined || value === null ? '' : value)
+					.split(',')
+					.map(function (part) { return part.trim() })
+					.filter(function (part) { return part !== '' })
+			}
+
+			/** One agent row: kind, description, session (copy only — no fake jump), current task. */
+			function AgentRow(props) {
+				const t = props.t
+				const member = props.member
+				const isLead = props.isLead === true
+				const [copied, setCopied] = React.useState(null)
+				const name = typeof member.name === 'string' && member.name !== '' ? member.name : typeof member.id === 'string' ? member.id : '—'
+				const kind = isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate'
+				const session = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' && member.id !== '' ? member.id : ''
+				const status = typeof member.status === 'string' ? member.status : 'unknown'
+				const current = member.currentTask !== null && member.currentTask !== undefined ? member.currentTask : null
+				let task = '—'
+				if (current !== null && typeof current.id === 'string' && current.id !== '') {
+					task = typeof current.title === 'string' && current.title !== '' ? current.id + ' · ' + current.title : current.id
+				} else if (status === 'inactive') {
+					task = t('workersIdle')
+				}
+				return h(
+					'tr',
+					{ 'data-agent': name, 'data-kind': kind, 'data-status': status },
+					h('td', { className: 'gbt-mono', 'data-col': 'agent-name' }, isLead ? name + ' · ' + t('statusLead') : name),
+					h('td', { 'data-col': 'agent-kind' }, roleKindLabel(kind, t)),
+					h('td', { 'data-col': 'agent-description' }, typeof member.description === 'string' && member.description !== '' ? member.description : '—'),
+					h(
+						'td',
+						{ 'data-col': 'agent-session' },
+						session === '' ? '—' : h('code', { className: 'gbt-mono' }, session),
+						session === ''
+							? null
+							: h(
+									'button',
+									{
+										type: 'button',
+										className: 'gbt-btn',
+										style: { marginLeft: '6px' },
+										'data-action': 'copy-session',
+										'data-session': session,
+										onClick: function () {
+											void copyToClipboard(session).then(function (ok) {
+												setCopied(ok === true ? session : 'failed')
+											})
+										},
+									},
+									copied === session ? t('sessionCopied') : t('copySession'),
+								),
+						copied === 'failed' ? h('span', { className: 'gbt-footnote' }, ' ' + t('copyFailed')) : null,
+					),
+					h('td', { 'data-col': 'agent-task' }, task),
+				)
+			}
+
+			/** One stage binding row: current profile plus a bind control. */
+			function StageBindingRow(props) {
+				const t = props.t
+				const names = props.names
+				const ref = React.useRef(null)
+				return h(
+					'tr',
+					{ 'data-stage': props.stage },
+					h('td', null, t('roleStage' + String(props.stage).charAt(0).toUpperCase() + String(props.stage).slice(1))),
+					h('td', { className: 'gbt-mono', 'data-col': 'stage-profile' }, typeof props.profile === 'string' && props.profile !== '' ? props.profile : '—'),
+					h(
+						'td',
+						null,
+						h('select', { ref: ref, defaultValue: props.profile === null || props.profile === undefined ? '' : props.profile, 'data-stage-select': props.stage }, names.map(function (name) { return h('option', { key: name, value: name }, name) })),
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'gbt-btn',
+								'data-action': 'rolesBind',
+								onClick: function () {
+									const chosen = ref.current !== null && ref.current !== undefined && typeof ref.current.value === 'string' && ref.current.value !== '' ? ref.current.value : props.profile
+									if (typeof chosen === 'string' && chosen !== '') props.onBind(props.stage, chosen)
+								},
+							},
+							t('roleBind'),
+						),
+					),
+				)
+			}
+
+			/** One stored profile: editable fields and save/delete actions. */
+			function RoleProfileRow(props) {
+				const t = props.t
+				const profile = props.profile
+				const builtin = props.builtin === true
+				const instancesRef = React.useRef(null)
+				const skillsRef = React.useRef(null)
+				const contextRef = React.useRef(null)
+				const permissionsRef = React.useRef(null)
+				const promptRef = React.useRef(null)
+				function inputValue(ref, fallback) {
+					if (ref.current === null || ref.current === undefined) return fallback
+					return typeof ref.current.value === 'string' ? ref.current.value : fallback
+				}
+				function save() {
+					props.onSave(props.name, {
+						role: profile.role,
+						instances: Number(inputValue(instancesRef, String(profile.instances))),
+						skills: tcSplitList(inputValue(skillsRef, (profile.skills || []).join(', '))),
+						context: inputValue(contextRef, profile.context || 'fresh'),
+						permissions: tcSplitList(inputValue(permissionsRef, (profile.permissions || []).join(', '))),
+						prompt: inputValue(promptRef, profile.prompt || ''),
+					})
+				}
+				const cellInput = function (ref, field, value, extra) {
+					return h('input', Object.assign({ ref: ref, className: 'gbt-input', 'data-field': field, defaultValue: value, spellCheck: false }, extra === undefined ? {} : extra))
+				}
+				return h(
+					'tr',
+					{ 'data-role-profile': props.name, 'data-builtin': builtin ? 'true' : 'false' },
+					h('td', { className: 'gbt-mono', 'data-col': 'profile-name' }, props.name, builtin ? h('span', { className: 'gbt-pill' }, ' ' + t('roleBuiltin')) : h('span', { className: 'gbt-pill' }, ' ' + t('roleCustom'))),
+					h('td', { className: 'gbt-mono', 'data-col': 'profile-kind' }, roleKindLabel(profile.role, t)),
+					h('td', { 'data-col': 'profile-stage' }, roleStageLabel(profile.stage, t)),
+					h('td', { 'data-col': 'profile-instances' }, cellInput(instancesRef, 'instances', String(profile.instances), { type: 'number', min: 1, max: 8 })),
+					h('td', { 'data-col': 'profile-skills' }, cellInput(skillsRef, 'skills', (profile.skills || []).join(', '))),
+					h(
+						'td',
+						{ 'data-col': 'profile-context' },
+						h('select', { ref: contextRef, defaultValue: profile.context || 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')]),
+					),
+					h('td', { 'data-col': 'profile-permissions' }, cellInput(permissionsRef, 'permissions', (profile.permissions || []).join(', '))),
+					h('td', { 'data-col': 'profile-prompt' }, cellInput(promptRef, 'prompt', profile.prompt || '')),
+					h(
+						'td',
+						null,
+						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-save', onClick: save }, t('roleSave')),
+						builtin
+							? null
+							: h(
+									'button',
+									{
+										type: 'button',
+										className: 'gbt-btn',
+										'data-action': 'rolesDelete',
+										onClick: function () {
+											props.onDelete(props.name)
+										},
+									},
+									t('roleDelete'),
+								),
+					),
+				)
+			}
+
+			function RoleCreateForm(props) {
+				const t = props.t
+				const nameRef = React.useRef(null)
+				const roleRef = React.useRef(null)
+				const instancesRef = React.useRef(null)
+				const skillsRef = React.useRef(null)
+				const contextRef = React.useRef(null)
+				const permissionsRef = React.useRef(null)
+				const promptRef = React.useRef(null)
+				function valueOf(ref, fallback) {
+					if (ref.current === null || ref.current === undefined) return fallback
+					return typeof ref.current.value === 'string' ? ref.current.value : fallback
+				}
+				function submit() {
+					const name = valueOf(nameRef, '').trim()
+					if (name === '') {
+						props.onInvalid('invalid-role-name')
+						return
+					}
+					props.onCreate(name, {
+						role: valueOf(roleRef, 'reviewer'),
+						instances: Number(valueOf(instancesRef, '1')),
+						skills: tcSplitList(valueOf(skillsRef, '')),
+						context: valueOf(contextRef, 'fresh'),
+						permissions: tcSplitList(valueOf(permissionsRef, 'read-only')),
+						prompt: valueOf(promptRef, ''),
+					})
+				}
+				return h(
+					'div',
+					{ className: 'gbt-form', 'data-form': 'role-create' },
+					h('h4', null, t('roleCreate')),
+					h('label', null, t('roleName'), h('input', { ref: nameRef, className: 'gbt-input', 'data-field': 'name', defaultValue: '', spellCheck: false })),
+					h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: 'reviewer', 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
+					h('label', null, t('roleInstancesCount'), h('input', { ref: instancesRef, className: 'gbt-input', 'data-field': 'instances', type: 'number', min: 1, max: 8, defaultValue: '1' })),
+					h('label', null, t('roleSkills'), h('input', { ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: '', spellCheck: false })),
+					h('label', null, t('roleContext'), h('select', { ref: contextRef, defaultValue: 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')])),
+					h('label', null, t('rolePermissions'), h('input', { ref: permissionsRef, className: 'gbt-input', 'data-field': 'permissions', defaultValue: 'read-only', spellCheck: false })),
+					h('label', null, t('rolePrompt'), h('textarea', { ref: promptRef, className: 'gbt-input', 'data-field': 'prompt', defaultValue: '', rows: 2 })),
+					h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'rolesCreate', onClick: submit }, t('roleCreate')),
+				)
+			}
+
+			function RoleInstanceRow(props) {
+				const t = props.t
+				return h(
+					'tr',
+					{ 'data-role-instance': props.name, 'data-kind': props.kind, 'data-status': props.status },
+					h('td', { className: 'gbt-mono', 'data-col': 'instance-name' }, props.name),
+					h('td', { 'data-col': 'instance-kind' }, roleKindLabel(props.kind, t)),
+					h('td', { 'data-col': 'instance-status' }, h('span', { className: 'gbt-pill' }, props.status)),
+					h(
+						'td',
+						null,
+						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesDrain', onClick: function () { props.onDrain(props.name) } }, t('roleDrain')),
+						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesReplace', onClick: function () { props.onReplace(props.name) } }, t('roleReplace')),
+					),
+				)
+			}
+
+			function roleResultBanner(result, t) {
+				if (result === null || result === undefined) return null
+				const payload = result.payload
+				if (result.ok !== true) {
+					return h('div', { className: 'gbt-banner', 'data-tone': 'error', 'data-role-result': 'error' }, t('roleActionFailed') + ': ' + roleErrorText(payload, t))
+				}
+				const parts = []
+				if (payload !== null && payload !== undefined) {
+					if (Array.isArray(payload.drained) && payload.drained.length > 0) parts.push(t('roleDrained') + ': ' + payload.drained.join(', '))
+					if (Array.isArray(payload.created) && payload.created.length > 0) parts.push(t('roleCreated') + ': ' + payload.created.map(function (entry) { return entry.name }).join(', '))
+					if (typeof payload.source === 'string') parts.push(t('roleSource') + ': ' + payload.source)
+					if (Array.isArray(payload.instances)) parts.push(t('roleInstances') + ': ' + String(payload.instances.length))
+					const waited = payload.waited === undefined || payload.waited === null ? null : payload.waited
+					if (waited !== null) {
+						parts.push(t('roleWaited') + ': ' + String(waited.waitedMs) + 'ms')
+						if (waited.timedOut === true) parts.push(t('roleTimedOut'))
+						const waiting = Array.isArray(waited.waiting) ? waited.waiting : []
+						if (waiting.length > 0) parts.push(t('roleWaiting') + ': ' + waiting.map(function (entry) { return typeof entry === 'string' ? entry : entry.name }).join(', '))
+					}
+					if (Array.isArray(payload.ensured)) {
+						parts.push(t('roleCreated') + ': ' + String(payload.ensured.length))
+						const failed = payload.ensured.filter(function (entry) {
+							return entry !== null && entry !== undefined && entry.result !== null && entry.result !== undefined && entry.result.ok !== true
+						})
+						if (failed.length > 0) {
+							parts.push(t('roleActionFailed') + ': ' + failed.map(function (entry) { return String(entry.kind) + ': ' + roleErrorText(entry.result, t) }).join('; '))
+						}
+					}
+				}
+				return h('div', { className: 'gbt-banner', 'data-tone': 'info', 'data-role-result': 'ok' }, parts.length === 0 ? t('roleSave') + ' ✓' : parts.join(' · '))
+			}
+
+			function StatusView(props) {
+				const t = props.t
+				const snapshot = props.snapshot
+				const now = props.now
+				const blocks = []
+				const agents = snapshot.agents
+				const worktrees = snapshot.worktrees
+				const activity = snapshot.activity
+				blocks.push(h('p', { key: 'sessions', className: 'gbt-footnote' }, t('statusSessionHint')))
+
+				blocks.push(h('h3', { key: 'agents-title', className: 'gbt-subtitle' }, t('statusAgents')))
+				if (agents === null || agents === undefined) {
+					blocks.push(h('div', { key: 'agents-unavailable', className: 'gbt-empty' }, t('statusAgentsUnavailable')))
+				} else {
+					if (typeof agents.error === 'string' && agents.error !== '') {
+						const errorKey = AGENT_ERROR_KEYS[agents.error]
+						const explanation = errorKey === undefined ? agents.error : t(errorKey) + ' (' + agents.error + ')'
+						blocks.push(h('div', { key: 'agents-error', className: 'gbt-banner', 'data-tone': 'error' }, explanation))
+					}
+					const lead = agents.lead === null || agents.lead === undefined ? null : agents.lead
+					const members = Array.isArray(agents.members) ? agents.members : []
+					const rows = []
+					if (lead !== null) rows.push(h(AgentRow, { key: 'lead', member: lead, t: t, isLead: true }))
+					members.forEach(function (member, index) {
+						const name = typeof member.name === 'string' ? member.name : typeof member.id === 'string' ? member.id : String(index)
+						rows.push(h(AgentRow, { key: 'm-' + name, member: member, t: t }))
+					})
+					if (rows.length === 0) {
+						blocks.push(h('div', { key: 'agents-empty', className: 'gbt-empty' }, t('workersEmpty')))
+					} else {
+						blocks.push(
+							h(
+								'table',
+								{ key: 'agents-table', className: 'gbt-locktable', 'data-section': 'agents' },
+								h('thead', null, h('tr', null, h('th', null, t('roleName')), h('th', null, t('statusKind')), h('th', null, t('statusDescription')), h('th', null, t('statusSession')), h('th', null, t('statusCurrentTask')))),
+								h('tbody', null, rows),
+							),
+						)
+					}
+					const kinds = agents.kinds === undefined || agents.kinds === null ? {} : agents.kinds
+					const kindKeys = ['lead', 'worker', 'reviewer', 'tester', 'merger']
+					blocks.push(
+						h(
+							'div',
+							{ key: 'agent-kinds', className: 'gbt-workermeta', 'data-section': 'agent-kinds' },
+							kindKeys.map(function (kind) {
+								return h('span', { key: kind, className: 'gbt-count', 'data-kind': kind }, roleKindLabel(kind, t), h('b', null, String(kinds[kind] || 0)))
+							}),
+						),
+					)
+					const roleInfo = agents.roles === undefined || agents.roles === null ? null : agents.roles
+					if (roleInfo !== null && roleInfo.desired !== undefined && roleInfo.desired !== null) {
+						blocks.push(
+							h(
+								'div',
+								{ key: 'role-instances', className: 'gbt-workermeta', 'data-section': 'role-instances' },
+								h('span', { className: 'gbt-footnote' }, t('statusRoleInstances')),
+								['worker', 'reviewer', 'tester'].map(function (kind) {
+									const bound = roleInfo.bound === undefined || roleInfo.bound === null || typeof roleInfo.bound[kind] !== 'string' ? '' : ' (' + roleInfo.bound[kind] + ')'
+									return h(
+										'span',
+										{ key: kind, className: 'gbt-count', 'data-role-kind': kind },
+										roleKindLabel(kind, t) +
+											' ' +
+											String(roleInfo.live === undefined || roleInfo.live === null ? 0 : roleInfo.live[kind] || 0) +
+											'/' +
+											String(roleInfo.desired[kind] || 0) +
+											' ' +
+											t('statusMissing') +
+											' ' +
+											String(roleInfo.missing === undefined || roleInfo.missing === null ? 0 : roleInfo.missing[kind] || 0) +
+											bound,
+									)
+								}),
+							),
+						)
+					}
+				}
+
+				blocks.push(h('h3', { key: 'wt-title', className: 'gbt-subtitle' }, t('statusWorktrees')))
+				if (worktrees === null || worktrees === undefined || worktrees.available !== true) {
+					const error = worktrees === null || worktrees === undefined ? null : worktrees.error
+					const message = error === 'no-git-service' ? t('statusNoGit') : error === null || error === undefined || error === '' ? t('statusWorktreesUnavailable') : t('statusWorktreesUnavailable') + ' (' + String(error) + ')'
+					blocks.push(h('div', { key: 'wt-unavailable', className: 'gbt-empty' }, message))
+				} else {
+					const counts = worktrees.counts === undefined || worktrees.counts === null ? {} : worktrees.counts
+					const typeKeys = ['main', 'task', 'verify', 'test', 'merge', 'other']
+					blocks.push(
+						h(
+							'div',
+							{ key: 'wt-summary', className: 'gbt-workermeta', 'data-section': 'worktrees' },
+							h('span', { className: 'gbt-count' }, t('statusCount'), h('b', null, String(worktrees.total || 0))),
+							h('span', { className: 'gbt-count' }, t('wtActive'), h('b', null, String(worktrees.active || 0))),
+							typeKeys.map(function (type) {
+								return h('span', { key: type, className: 'gbt-count', 'data-wt-type': type }, worktreeTypeLabel(type, t), h('b', null, String(counts[type] || 0)))
+							}),
+						),
+					)
+					const list = Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
+					if (list.length === 0) {
+						blocks.push(h('div', { key: 'wt-empty', className: 'gbt-empty' }, t('statusWorktreesEmpty')))
+					} else {
+						blocks.push(
+							h(
+								'table',
+								{ key: 'wt-table', className: 'gbt-locktable', 'data-section': 'worktrees' },
+								h('thead', null, h('tr', null, h('th', null, t('worktree')), h('th', null, t('statusKind')), h('th', null, t('branch')), h('th', null, t('wtHead')), h('th', null, t('wtTask')), h('th', null, t('wtActive')))),
+								h(
+									'tbody',
+									null,
+									list.map(function (entry, index) {
+										const path = typeof entry.path === 'string' ? entry.path : String(index)
+										return h(
+											'tr',
+											{ key: path, 'data-worktree': path, 'data-type': entry.type, 'data-active': entry.active === true ? 'true' : 'false' },
+											h('td', { className: 'gbt-mono', 'data-col': 'worktree-path' }, path),
+											h('td', { 'data-col': 'worktree-type' }, worktreeTypeLabel(entry.type, t)),
+											h('td', { className: 'gbt-mono', 'data-col': 'worktree-branch' }, typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : '—'),
+											h('td', { className: 'gbt-mono', 'data-col': 'worktree-head' }, typeof entry.head === 'string' && entry.head !== '' ? entry.head.slice(0, 10) : '—'),
+											h('td', { 'data-col': 'worktree-task' }, typeof entry.taskId === 'string' ? entry.taskId : '—'),
+											h('td', { 'data-col': 'worktree-active' }, entry.active === true ? t('wtActive') : t('wtIdle')),
+										)
+									}),
+								),
+							),
+						)
+					}
+				}
+
+				blocks.push(h('h3', { key: 'activity-title', className: 'gbt-subtitle' }, t('statusActivity')))
+				if (activity === null || activity === undefined || activity.available !== true) {
+					blocks.push(h('div', { key: 'activity-unavailable', className: 'gbt-empty' }, t('statusActivityUnavailable')))
+				} else {
+					blocks.push(
+						h(
+							'div',
+							{ key: 'activity-meta', className: 'gbt-workermeta', 'data-section': 'activity' },
+							h('span', { className: 'gbt-count' }, t('statusLimit') + ' ' + String(activity.limit === undefined ? 0 : activity.limit)),
+							h('span', { className: 'gbt-count' }, t('statusCount') + ' ' + String(activity.count === undefined ? 0 : activity.count)),
+						),
+					)
+					const entries = Array.isArray(activity.entries) ? activity.entries : []
+					if (entries.length === 0) {
+						blocks.push(h('div', { key: 'activity-empty', className: 'gbt-empty' }, t('statusActivityEmpty')))
+					} else {
+						blocks.push(
+							h(
+								'table',
+								{ key: 'activity-table', className: 'gbt-locktable', 'data-section': 'activity' },
+								h('thead', null, h('tr', null, h('th', null, t('submittedOn')), h('th', null, t('statusKind')), h('th', null, t('statusActor')), h('th', null, t('wtTask')), h('th', null, t('statusDescription')))),
+								h(
+									'tbody',
+									null,
+									entries.map(function (entry, index) {
+										return h(
+											'tr',
+											{ key: String(index), 'data-activity': String(index), 'data-actor': String(entry.actor) },
+											h('td', { 'data-col': 'activity-at' }, typeof entry.at === 'string' ? tcAgo(entry.at, now) : '—'),
+											h('td', { className: 'gbt-mono', 'data-col': 'activity-kind' }, String(entry.kind === undefined ? '' : entry.kind)),
+											h('td', { 'data-col': 'activity-actor' }, actorLabel(entry, t)),
+											h('td', { className: 'gbt-mono', 'data-col': 'activity-task' }, typeof entry.taskId === 'string' ? entry.taskId : '—'),
+											h('td', { 'data-col': 'activity-detail' }, typeof entry.detail === 'string' ? entry.detail : ''),
+										)
+									}),
+								),
+							),
+						)
+					}
+				}
+				return h('div', { className: 'gbt-statusview' }, blocks)
+			}
+
+			function RolesView(props) {
+				const t = props.t
+				const snapshot = props.snapshot
+				const store = props.store
+				const [result, setResult] = React.useState(null)
+				const hostResult = snapshot.actionResult === undefined || snapshot.actionResult === null ? null : { action: snapshot.actionResult.action, ok: snapshot.actionResult.ok !== false, payload: snapshot.actionResult }
+				const hostError = snapshot.actionError === undefined || snapshot.actionError === null ? null : { action: 'host', ok: false, payload: snapshot.actionError }
+				const config = snapshot.roles === undefined || snapshot.roles === null ? null : snapshot.roles
+				const agents = snapshot.agents
+				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+				const instances = members
+					.filter(function (member) {
+						return member !== null && typeof member === 'object' && typeof member.name === 'string' && /^(worker|reviewer|tester)-\d+$/.test(member.name)
+					})
+					.map(function (member) {
+						const match = /^(worker|reviewer|tester)-\d+$/.exec(member.name)
+						return { name: member.name, kind: match === null ? 'worker' : match[1], status: typeof member.status === 'string' ? member.status : 'unknown' }
+					})
+				async function run(action, body) {
+					const outcome = await store.send(action, body)
+					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
+					setResult({ action: action, ok: outcome !== null && outcome !== undefined && outcome.ok === true, payload: payload })
+				}
+				function bind(stage, profile) {
+					void run('rolesBind', { stage: stage, profile: profile })
+				}
+				if (config === null) {
+					return h('div', null, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
+				}
+				const profiles = config.profiles !== null && config.profiles !== undefined && typeof config.profiles === 'object' ? config.profiles : {}
+				const names = Object.keys(profiles)
+				const stages = config.stages !== null && config.stages !== undefined && typeof config.stages === 'object' ? config.stages : {}
+				const stageKeys = ['implement', 'review', 'test']
+				const profileRows = names.map(function (name) {
+					const profile = profiles[name]
+					const builtin = name === 'worker' || name === 'reviewer' || name === 'tester'
+					return h(RoleProfileRow, {
+						key: name,
+						name: name,
+						profile: profile,
+						builtin: builtin,
+						t: t,
+						onSave: function (profileName, fields) {
+							void run('rolesUpdate', { name: profileName, profile: fields })
+						},
+						onDelete: function (profileName) {
+							void run('rolesDelete', { name: profileName })
+						},
+					})
+				})
+				return h(
+					'div',
+					{ className: 'gbt-rolesview' },
+					h('p', { className: 'gbt-footnote' }, t('rolesHint')),
+					h(
+						'div',
+						{ className: 'gbt-actions' },
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'gbt-btn',
+								'data-action': 'rolesList',
+								onClick: function () {
+									void run('rolesList', {})
+								},
+							},
+							t('roleRefresh'),
+						),
+					),
+					roleResultBanner(result, t) || roleResultBanner(hostError, t) || roleResultBanner(hostResult, t),
+					h('h3', { className: 'gbt-subtitle' }, t('roleStages')),
+					h(
+						'table',
+						{ className: 'gbt-locktable', 'data-section': 'role-stages' },
+						h('thead', null, h('tr', null, h('th', null, t('roleStage')), h('th', null, t('roleProfiles')), h('th', null, t('roleBind')))),
+						h(
+							'tbody',
+							null,
+							stageKeys.map(function (stage) {
+								return h(StageBindingRow, { key: stage, stage: stage, profile: stages[stage], names: names, t: t, onBind: bind })
+							}),
+						),
+					),
+					h('h3', { className: 'gbt-subtitle' }, t('roleProfiles')),
+					h(
+						'table',
+						{ className: 'gbt-locktable', 'data-section': 'role-profiles' },
+						h(
+							'thead',
+							null,
+							h('tr', null, h('th', null, t('roleName')), h('th', null, t('roleKind')), h('th', null, t('roleStage')), h('th', null, t('roleInstancesCount')), h('th', null, t('roleSkills')), h('th', null, t('roleContext')), h('th', null, t('rolePermissions')), h('th', null, t('rolePrompt')), h('th', null, '')),
+						),
+						h('tbody', null, profileRows),
+					),
+					h(RoleCreateForm, {
+						t: t,
+						onCreate: function (name, fields) {
+							void run('rolesCreate', { name: name, profile: fields })
+						},
+						onInvalid: function (code) {
+							setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } })
+						},
+					}),
+					h('h3', { className: 'gbt-subtitle' }, t('roleInstances')),
+					h(
+						'table',
+						{ className: 'gbt-locktable', 'data-section': 'role-instances' },
+						h('thead', null, h('tr', null, h('th', null, t('roleName')), h('th', null, t('roleKind')), h('th', null, t('roleStatus')), h('th', null, ''))),
+						h(
+							'tbody',
+							null,
+							instances.length === 0
+								? h('tr', null, h('td', { colSpan: 4 }, t('roleInstancesEmpty')))
+								: instances.map(function (instance) {
+										return h(RoleInstanceRow, {
+											key: instance.name,
+											name: instance.name,
+											kind: instance.kind,
+											status: instance.status,
+											t: t,
+											onDrain: function (name) {
+												void run('rolesDrain', { name: name })
+											},
+											onReplace: function (name) {
+												void run('rolesReplace', { name: name })
+											},
+										})
+									}),
+						),
+					),
+					h(
+						'div',
+						{ className: 'gbt-actions' },
+						['worker', 'reviewer', 'tester'].map(function (kind) {
+							return h(
+								'button',
+								{
+									key: kind,
+									type: 'button',
+									className: 'gbt-btn',
+									'data-action': 'rolesReplace-kind',
+									'data-kind': kind,
+									onClick: function () {
+										void run('rolesReplace', { name: kind })
+									},
+								},
+								t('roleReplaceKind') + ' · ' + roleKindLabel(kind, t),
+							)
+						}),
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'gbt-btn',
+								'data-action': 'rolesReset',
+								onClick: function () {
+									void run('rolesReset', {})
+								},
+							},
+							t('roleReset'),
+						),
+					),
+				)
 			}
 
 			function LocksView(props) {
@@ -1973,7 +2858,7 @@ window.__ModuleLoader__.load({
 				const snapshot = useSnapshot()
 				const now = useNow(5000)
 				// Rendering tests may pick the first view; the production slot passes no props.
-				const initialView = props !== undefined && props !== null && ['board', 'queue', 'workers', 'locks'].indexOf(props.initialView) >= 0 ? props.initialView : panelState.view
+				const initialView = props !== undefined && props !== null && ['board', 'queue', 'workers', 'locks', 'status', 'roles'].indexOf(props.initialView) >= 0 ? props.initialView : panelState.view
 				const [view, setViewState] = React.useState(initialView)
 				const [selectedId, setSelectedIdState] = React.useState(panelState.selectedId)
 				const [editing, setEditing] = React.useState(null)
@@ -2032,6 +2917,8 @@ window.__ModuleLoader__.load({
 					{ key: 'queue', label: t('queue'), count: queue.length },
 					{ key: 'workers', label: t('workersTab'), count: workerMembers === null ? undefined : workerMembers.length },
 					{ key: 'locks', label: t('locks'), count: snapshot.locks.length },
+					{ key: 'status', label: t('statusTab'), count: snapshot.agents !== null && snapshot.agents !== undefined && Array.isArray(snapshot.agents.members) ? snapshot.agents.members.length + (snapshot.agents.lead === null || snapshot.agents.lead === undefined ? 0 : 1) : undefined },
+					{ key: 'roles', label: t('rolesTab'), count: snapshot.roles !== null && snapshot.roles !== undefined && snapshot.roles.profiles !== null && snapshot.roles.profiles !== undefined ? Object.keys(snapshot.roles.profiles).length : undefined },
 				]
 
 				const header = h(
@@ -2166,7 +3053,11 @@ window.__ModuleLoader__.load({
 							? h(QueueView, { snapshot: snapshot, t: t, onOpen: openTask })
 							: view === 'workers'
 								? h(WorkersView, { snapshot: snapshot, t: t })
-								: h(LocksView, { snapshot: snapshot, t: t, now: now })
+								: view === 'status'
+									? h(StatusView, { snapshot: snapshot, t: t, now: now })
+									: view === 'roles'
+										? h(RolesView, { snapshot: snapshot, t: t, store: store })
+										: h(LocksView, { snapshot: snapshot, t: t, now: now })
 
 				const tabsView = h(
 					'div',

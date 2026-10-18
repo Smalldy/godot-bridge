@@ -423,6 +423,59 @@ const HOST = {
     cap: 4,
     error: null,
   },
+  agents: {
+    lead: { id: 'session-lead', name: 'lead', kind: 'lead', description: 'Team lead', session: 'session-lead', status: 'running', currentTask: null },
+    members: [
+      { id: 'session-fixer', name: 'fixer', kind: 'worker', description: 'feature worker', session: 'session-fixer', status: 'running', currentTask: { id: 'T-1', title: 'Build damage system' } },
+      { id: 'session-reviewer-1', name: 'reviewer-1', kind: 'reviewer', description: 'review role', session: 'session-reviewer-1', status: 'inactive', currentTask: null },
+      { id: 'session-tester-1', name: 'tester-1', kind: 'tester', description: 'test role', session: 'session-tester-1', status: 'idle', currentTask: null },
+    ],
+    kinds: { lead: 1, worker: 1, reviewer: 1, tester: 1, merger: 0 },
+    roles: {
+      desired: { worker: 1, reviewer: 2, tester: 1 },
+      live: { worker: 1, reviewer: 1, tester: 1 },
+      missing: { worker: 0, reviewer: 1, tester: 0 },
+      bound: { worker: 'worker', reviewer: 'godot-reviewer', tester: 'tester' },
+      profiles: {},
+      stages: { implement: 'worker', review: 'godot-reviewer', test: 'tester' },
+    },
+  },
+  worktrees: {
+    available: true,
+    error: null,
+    total: 4,
+    active: 2,
+    counts: { main: 1, task: 1, verify: 0, test: 1, merge: 0, other: 1 },
+    worktrees: [
+      { path: PROJECT, branch: 'feat/task-center-v2', head: 'abcdef1234', type: 'main', taskId: null, active: false },
+      { path: PROJECT + '\\.worktrees\\T-1', branch: 'task/T-1-1', head: '1234567890', type: 'task', taskId: 'T-1', active: true },
+      { path: PROJECT + '\\.worktrees\\test-T-4', branch: 'test/T-4', head: 'aaaabbbbcc', type: 'test', taskId: 'T-4', active: true },
+      { path: PROJECT + '\\.worktrees\\scratch', branch: 'scratch', head: 'ffff000011', type: 'other', taskId: null, active: false },
+    ],
+  },
+  activity: {
+    available: true,
+    limit: 100,
+    count: 3,
+    pushed: 3,
+    actors: { system: 1, host: 1, agent: 1 },
+    entries: [
+      { kind: 'test-reminder', actor: 'system', actorName: null, taskId: 'T-1', detail: 'test phase still pending; reminded tester-1', at: new Date(now - 3000).toISOString() },
+      { kind: 'merge', actor: 'agent', actorName: 'reviewer-1', taskId: 'T-3', detail: 'merged as fedcba0987654321', at: new Date(now - 5000).toISOString() },
+      { kind: 'worktree-create', actor: 'host', actorName: null, taskId: 'T-4', detail: 'test candidate', at: new Date(now - 7000).toISOString() },
+    ],
+  },
+  roles: {
+    version: 1,
+    defaultProfile: 'worker',
+    stages: { implement: 'worker', review: 'godot-reviewer', test: 'tester' },
+    profiles: {
+      worker: { name: 'worker', role: 'worker', stage: 'implement', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: '' },
+      reviewer: { name: 'reviewer', role: 'reviewer', stage: 'review', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: '' },
+      tester: { name: 'tester', role: 'tester', stage: 'test', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: '' },
+      'godot-reviewer': { name: 'godot-reviewer', role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check Godot idioms.' },
+    },
+  },
   locks: [
     {
       path: 'scripts/damage.gd',
@@ -448,11 +501,17 @@ const HOST = {
 }
 let loads = 0
 let postGate = null
+let postReply = null
 const posts = []
 globalThis.fetch = async function (url, options) {
   if (options !== undefined && options.method === 'POST') {
     posts.push(JSON.parse(options.body))
     if (postGate !== null) await postGate
+    if (postReply !== null) {
+      const reply = postReply
+      postReply = null
+      return { json: async () => reply }
+    }
     return { json: async () => ({ ok: true, snapshot: HOST }) }
   }
   loads += 1
@@ -714,6 +773,267 @@ check(
 HOST.workers = savedWorkers
 findButton(poolErrorTree, '刷新').props.onClick()
 await flush()
+
+// ── Roles / Status views: agents, worktrees, activity and role admin ──────
+{
+  const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  let copied = null
+  try {
+    Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async function (value) { copied = value } } }, configurable: true })
+  } catch (_error) {}
+
+  let statusTree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  statusTree = withHooks(panel, { initialView: 'status' })
+  const statusText = textOf(statusTree)
+  check('the status tab is offered alongside the existing views', findButton(statusTree, '状态') !== undefined && findButton(statusTree, '角色') !== undefined, statusText.slice(0, 200))
+  check('the status view separates agents, worktrees and activity sections', ['执行代理', '工作树', '活动'].every((label) => statusText.indexOf(label) >= 0), statusText)
+  const agentRows = findAll(statusTree, (node) => node.type === 'tr' && node.props && node.props['data-agent'] !== undefined)
+  check('the agents table lists the lead and every teammate once', agentRows.length === 4, String(agentRows.length))
+  const leadRow = agentRows.filter((row) => row.props['data-agent'] === 'lead')[0]
+  const fixerRow = agentRows.filter((row) => row.props['data-agent'] === 'fixer')[0]
+  const reviewerRow = agentRows.filter((row) => row.props['data-agent'] === 'reviewer-1')[0]
+  const testerAgentRow = agentRows.filter((row) => row.props['data-agent'] === 'tester-1')[0]
+  check('the lead is a single row with the lead kind', leadRow !== undefined && leadRow.props['data-kind'] === 'lead' && textOf(leadRow).indexOf('Team Lead') >= 0, leadRow && textOf(leadRow))
+  check('teammate rows carry their kind, description and current task', fixerRow !== undefined && fixerRow.props['data-kind'] === 'worker' && textOf(fixerRow).indexOf('feature worker') >= 0 && textOf(fixerRow).indexOf('T-1 · Build damage system') >= 0, fixerRow && textOf(fixerRow))
+  check('reviewer and tester kinds are visible', reviewerRow !== undefined && textOf(reviewerRow).indexOf('评审') >= 0 && testerAgentRow !== undefined && textOf(testerAgentRow).indexOf('测试') >= 0, (reviewerRow && textOf(reviewerRow)) + ' | ' + (testerAgentRow && textOf(testerAgentRow)))
+  const kindCounts = findAll(statusTree, (node) => node.props && node.props['data-kind'] !== undefined && node.type === 'span')
+  check('kind counts are rendered for every role kind', ['lead', 'worker', 'reviewer', 'tester', 'merger'].every(function (kind) { return kindCounts.some(function (node) { return node.props['data-kind'] === kind }) }), String(kindCounts.length))
+  const roleKindStrip = findAll(statusTree, (node) => node.props && node.props['data-role-kind'] !== undefined)
+  check('desired/live/missing and the bound profile are shown', roleKindStrip.some(function (node) { return node.props['data-role-kind'] === 'reviewer' && textOf(node).indexOf('1/2') >= 0 && textOf(node).indexOf('godot-reviewer') >= 0 }), roleKindStrip.map(textOf).join(' | '))
+  check('session ids are shown with a copy control', textOf(fixerRow).indexOf('session-fixer') >= 0 && findAll(fixerRow, (node) => node.props && node.props['data-action'] === 'copy-session').length === 1, fixerRow && textOf(fixerRow))
+  check(
+    'no fake jump-to-session control is rendered (the hint acknowledges there is no API)',
+    findButton(statusTree, '查看会话') === undefined &&
+      findAll(statusTree, (node) => node.props && node.props['data-action'] === 'open-session').length === 0 &&
+      statusText.indexOf('会话跳转 API') >= 0,
+    statusText,
+  )
+  check('the session hint says to copy or open from the Team list', statusText.indexOf('复制') >= 0 && statusText.indexOf('Team 列表') >= 0, statusText)
+  const copyButton = findAll(fixerRow, (node) => node.props && node.props['data-action'] === 'copy-session')[0]
+  copyButton.props.onClick()
+  await flush()
+  check('copying puts the session id on the clipboard', copied === 'session-fixer', String(copied))
+
+  const worktreeRows = findAll(statusTree, (node) => node.type === 'tr' && node.props && node.props['data-worktree'] !== undefined)
+  check('the worktrees table lists every checkout', worktreeRows.length === 4, String(worktreeRows.length))
+  const taskWorktreeRow = worktreeRows.filter((row) => String(row.props['data-worktree']).indexOf('T-1') >= 0)[0]
+  check('a task checkout shows type, branch, head, task and active state', taskWorktreeRow !== undefined && taskWorktreeRow.props['data-type'] === 'task' && taskWorktreeRow.props['data-active'] === 'true' && textOf(taskWorktreeRow).indexOf('task/T-1-1') >= 0 && textOf(taskWorktreeRow).indexOf('T-1') >= 0, taskWorktreeRow && textOf(taskWorktreeRow))
+  const typeCounts = findAll(statusTree, (node) => node.props && node.props['data-wt-type'] !== undefined)
+  check('per-type worktree counts are rendered', typeCounts.length === 6 && typeCounts.some(function (node) { return node.props['data-wt-type'] === 'test' && textOf(node).indexOf('1') >= 0 }), typeCounts.map(textOf).join(' | '))
+  const activityRows = findAll(statusTree, (node) => node.type === 'tr' && node.props && node.props['data-activity'] !== undefined)
+  check('the activity table renders every entry', activityRows.length === 3, String(activityRows.length))
+  const actorCell = function (row) {
+    return findAll(row, (node) => node.props && node.props['data-col'] === 'activity-actor')[0]
+  }
+  const systemRow = activityRows.filter((row) => row.props['data-actor'] === 'system')[0]
+  const agentRow = activityRows.filter((row) => row.props['data-actor'] === 'agent')[0]
+  const hostRow = activityRows.filter((row) => row.props['data-actor'] === 'host')[0]
+  check('a system event is labelled system, not an agent', systemRow !== undefined && textOf(actorCell(systemRow)) === '系统' && textOf(systemRow).indexOf('reviewer-1') < 0, systemRow && textOf(systemRow))
+  check('an agent event carries the agent name', agentRow !== undefined && textOf(actorCell(agentRow)) === 'reviewer-1', agentRow && textOf(agentRow))
+  check('a host event is labelled host', hostRow !== undefined && textOf(actorCell(hostRow)) === '宿主', hostRow && textOf(hostRow))
+  check('the actor column has a neutral header, not an agent header', findAll(statusTree, (node) => node.type === 'th' && textOf(node) === '主体').length === 1 && findAll(statusTree, (node) => node.type === 'th' && textOf(node) === '代理').length === 0, statusText)
+  check('the activity limit and count are visible', statusText.indexOf('上限') >= 0 && statusText.indexOf('100') >= 0 && statusText.indexOf('条数') >= 0, statusText)
+  const activityAtCell = findAll(activityRows[0], (node) => node.props && node.props['data-col'] === 'activity-at')[0]
+  check('activity times are rendered', activityAtCell !== undefined && textOf(activityAtCell) !== '—' && textOf(activityAtCell) !== '', activityAtCell && textOf(activityAtCell))
+
+  const savedWorktrees = HOST.worktrees
+  HOST.worktrees = { available: false, error: 'no-git-service', total: 0, active: 0, counts: {}, worktrees: [] }
+  findButton(statusTree, '刷新').props.onClick()
+  await flush()
+  const noGitTree = withHooks(panel, { initialView: 'status' })
+  check('a host without git says no-git-service instead of showing a blank table', textOf(noGitTree).indexOf('no-git-service') >= 0, textOf(noGitTree))
+  HOST.worktrees = { available: true, error: null, total: 0, active: 0, counts: {}, worktrees: [] }
+  findButton(noGitTree, '刷新').props.onClick()
+  await flush()
+  const emptyWorktreesTree = withHooks(panel, { initialView: 'status' })
+  check('an available but empty worktree inventory says so', textOf(emptyWorktreesTree).indexOf('没有工作树') >= 0, textOf(emptyWorktreesTree))
+  HOST.worktrees = savedWorktrees
+  findButton(emptyWorktreesTree, '刷新').props.onClick()
+  await flush()
+  if (savedNavigator === undefined) delete globalThis.navigator
+  else Object.defineProperty(globalThis, 'navigator', savedNavigator)
+}
+
+// ── Roles view: profiles, stage binding, create/update/delete, drain/replace ─
+{
+  let rolesTree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  rolesTree = withHooks(panel, { initialView: 'roles' })
+  const rolesText = textOf(rolesTree)
+  check('the roles tab shows the built-in and custom profiles', ['worker', 'reviewer', 'tester', 'godot-reviewer'].every((name) => rolesText.indexOf(name) >= 0), rolesText)
+  const profileRows = findAll(rolesTree, (node) => node.type === 'tr' && node.props && node.props['data-role-profile'] !== undefined)
+  check('the roles table renders one row per profile', profileRows.length === 4, String(profileRows.length))
+  const customRow = profileRows.filter((row) => row.props['data-role-profile'] === 'godot-reviewer')[0]
+  const fieldsOf = function (row) {
+    const fields = {}
+    findAll(row, (node) => node.props && node.props['data-field'] !== undefined).forEach(function (node) {
+      fields[node.props['data-field']] = node
+    })
+    return fields
+  }
+  const customFields = fieldsOf(customRow)
+  check(
+    'a custom profile shows instances, skills, context, permissions and prompt',
+    customFields.instances !== undefined &&
+      customFields.instances.props.defaultValue === '2' &&
+      customFields.skills.props.defaultValue === 'dsh-plugin-workflow' &&
+      customFields.context.props.defaultValue === 'fork' &&
+      customFields.permissions.props.defaultValue === 'read-only, review' &&
+      customFields.prompt.props.defaultValue === 'Check Godot idioms.',
+    JSON.stringify(Object.keys(customFields)),
+  )
+  check('the profile stage column comes from profile.stage', findAll(customRow, (node) => node.props && node.props['data-col'] === 'profile-stage')[0] !== undefined && textOf(findAll(customRow, (node) => node.props && node.props['data-col'] === 'profile-stage')[0]) === '评审', textOf(customRow))
+  // The stage cell must come from profile.stage, not from the localized role label:
+  // an artificial profile with role 'worker' but stage 'review' renders 评审.
+  const savedProfiles = HOST.roles.profiles
+  const oddProfiles = Object.assign({}, savedProfiles)
+  oddProfiles['odd-stage'] = { name: 'odd-stage', role: 'worker', stage: 'review', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: '' }
+  HOST.roles = Object.assign({}, HOST.roles, { profiles: oddProfiles })
+  findButton(rolesTree, '刷新').props.onClick()
+  await flush()
+  const oddTree = withHooks(panel, { initialView: 'roles' })
+  const oddRow = findAll(oddTree, (node) => node.type === 'tr' && node.props && node.props['data-role-profile'] === 'odd-stage')[0]
+  const oddStageCell = oddRow === undefined ? undefined : findAll(oddRow, (node) => node.props && node.props['data-col'] === 'profile-stage')[0]
+  check(
+    'the profile stage column comes from profile.stage, independent of the role label',
+    oddStageCell !== undefined && textOf(oddStageCell) === '评审',
+    oddRow && textOf(oddRow),
+  )
+  HOST.roles = Object.assign({}, HOST.roles, { profiles: savedProfiles })
+  findButton(oddTree, '刷新').props.onClick()
+  await flush()
+  const reviewStageRow = findAll(rolesTree, (node) => node.type === 'tr' && node.props && node.props['data-stage'] === 'review')[0]
+  check('the review stage shows its bound custom profile', reviewStageRow !== undefined && textOf(reviewStageRow).indexOf('godot-reviewer') >= 0 && findAll(reviewStageRow, (node) => node.type === 'select')[0].props.children.length === 4, reviewStageRow && textOf(reviewStageRow))
+  const workerProfileRow = profileRows.filter((row) => row.props['data-role-profile'] === 'worker')[0]
+  check('built-in profiles cannot be deleted from the panel', findAll(workerProfileRow, (node) => node.props && node.props['data-action'] === 'rolesDelete').length === 0 && customRow !== undefined && findAll(customRow, (node) => node.props && node.props['data-action'] === 'rolesDelete').length === 1, String(findAll(workerProfileRow, (node) => node.props && node.props['data-action'] === 'rolesDelete').length))
+
+  // Reloading the profiles is an explicit user action (rolesList).
+  findAll(rolesTree, (node) => node.props && node.props['data-action'] === 'rolesList')[0].props.onClick()
+  await flush()
+  check('reloading the role profiles sends rolesList', posts[posts.length - 1].action === 'rolesList', JSON.stringify(posts[posts.length - 1]))
+
+  // Bind the review stage to another profile.
+  const stageSelect = findAll(reviewStageRow, (node) => node.type === 'select')[0]
+  stageSelect.props.ref.current = { value: 'reviewer' }
+  findAll(reviewStageRow, (node) => node.props && node.props['data-action'] === 'rolesBind')[0].props.onClick()
+  await flush()
+  const bindPost = posts[posts.length - 1]
+  check('binding a stage sends rolesBind with the chosen profile', bindPost.action === 'rolesBind' && bindPost.stage === 'review' && bindPost.profile === 'reviewer', JSON.stringify(bindPost))
+
+  // Update the custom profile's prompt.
+  customFields.prompt.props.ref.current = { value: 'Updated prompt.' }
+  findAll(customRow, (node) => node.props && node.props['data-action'] === 'role-save')[0].props.onClick()
+  await flush()
+  const updatePost = posts[posts.length - 1]
+  check(
+    'saving a profile sends rolesUpdate with its fields',
+    updatePost.action === 'rolesUpdate' && updatePost.name === 'godot-reviewer' && updatePost.profile.prompt === 'Updated prompt.' && updatePost.profile.instances === 2 && updatePost.profile.context === 'fork',
+    JSON.stringify(updatePost),
+  )
+
+  // Create a new profile from the form.
+  const createForm = findAll(rolesTree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  const createFields = fieldsOf(createForm)
+  createFields.name.props.ref.current = { value: 'godot-tester' }
+  createFields.instances.props.ref.current = { value: '1' }
+  findAll(createForm, (node) => node.props && node.props['data-action'] === 'rolesCreate')[0].props.onClick()
+  await flush()
+  const createPost = posts[posts.length - 1]
+  check('creating a profile sends rolesCreate', createPost.action === 'rolesCreate' && createPost.name === 'godot-tester' && createPost.profile.role === 'reviewer', JSON.stringify(createPost))
+
+  // Delete the custom profile.
+  findAll(customRow, (node) => node.props && node.props['data-action'] === 'rolesDelete')[0].props.onClick()
+  await flush()
+  check('deleting a profile sends rolesDelete', posts[posts.length - 1].action === 'rolesDelete' && posts[posts.length - 1].name === 'godot-reviewer', JSON.stringify(posts[posts.length - 1]))
+
+  // Drain and replace one instance, then replace a whole kind, then reset.
+  const instanceRows = findAll(rolesTree, (node) => node.type === 'tr' && node.props && node.props['data-role-instance'] !== undefined)
+  const reviewerInstance = instanceRows.filter((row) => row.props['data-role-instance'] === 'reviewer-1')[0]
+  findAll(reviewerInstance, (node) => node.props && node.props['data-action'] === 'rolesDrain')[0].props.onClick()
+  await flush()
+  check('draining an instance sends rolesDrain', posts[posts.length - 1].action === 'rolesDrain' && posts[posts.length - 1].name === 'reviewer-1', JSON.stringify(posts[posts.length - 1]))
+  findAll(reviewerInstance, (node) => node.props && node.props['data-action'] === 'rolesReplace')[0].props.onClick()
+  await flush()
+  check('replacing an instance sends rolesReplace', posts[posts.length - 1].action === 'rolesReplace' && posts[posts.length - 1].name === 'reviewer-1', JSON.stringify(posts[posts.length - 1]))
+  const kindReplace = findAll(rolesTree, (node) => node.props && node.props['data-action'] === 'rolesReplace-kind' && node.props['data-kind'] === 'reviewer')[0]
+  kindReplace.props.onClick()
+  await flush()
+  check('replacing a kind sends rolesReplace with the kind name', posts[posts.length - 1].action === 'rolesReplace' && posts[posts.length - 1].name === 'reviewer', JSON.stringify(posts[posts.length - 1]))
+  findAll(rolesTree, (node) => node.props && node.props['data-action'] === 'rolesReset')[0].props.onClick()
+  await flush()
+  check('resetting sends rolesReset', posts[posts.length - 1].action === 'rolesReset', JSON.stringify(posts[posts.length - 1]))
+
+  // A replace reports its wait status; it is not assumed to finish instantly.
+  postReply = {
+    ok: true,
+    kind: 'reviewer',
+    drained: ['reviewer-1'],
+    created: [{ name: 'reviewer-2' }],
+    waited: { waitedMs: 120, timedOut: true, waiting: [{ name: 'reviewer-1' }] },
+    snapshot: HOST,
+  }
+  findAll(reviewerInstance, (node) => node.props && node.props['data-action'] === 'rolesReplace')[0].props.onClick()
+  await flush()
+  const waitedTree = withHooks(panel, { initialView: 'roles' })
+  const waitedText = textOf(waitedTree)
+  check('a replace shows drained/created and the waited/timedOut/waiting status', waitedText.indexOf('已排空') >= 0 && waitedText.indexOf('reviewer-2') >= 0 && waitedText.indexOf('120') >= 0 && waitedText.indexOf('等待超时') >= 0 && waitedText.indexOf('等待中') >= 0, waitedText)
+  await flush()
+
+  // A reset that hits a host timeout is shown inside the result banner. The real
+  // API shape is ensured = [{ kind, result }]: only result carries ok/code/message.
+  postReply = { ok: true, ensured: [{ kind: 'reviewer', result: { ok: false, code: 'action-timeout', message: 'role reviewer provisioning timed out' } }], snapshot: HOST }
+  findAll(rolesTree, (node) => node.props && node.props['data-action'] === 'rolesReset')[0].props.onClick()
+  await flush()
+  const ensuredTree = withHooks(panel, { initialView: 'roles' })
+  const ensuredText = textOf(ensuredTree)
+  check(
+    'a reset with a failed ensure reports the kind and readable reason (real ensured shape)',
+    ensuredText.indexOf('宿主操作超时') >= 0 && ensuredText.indexOf('reviewer') >= 0 && ensuredText.indexOf('role reviewer provisioning timed out') >= 0,
+    ensuredText,
+  )
+
+  // All three ensures succeeded: the banner must not invent a failure.
+  postReply = {
+    ok: true,
+    ensured: [
+      { kind: 'worker', result: { ok: true } },
+      { kind: 'reviewer', result: { ok: true } },
+      { kind: 'tester', result: { ok: true } },
+    ],
+    snapshot: HOST,
+  }
+  findAll(ensuredTree, (node) => node.props && node.props['data-action'] === 'rolesReset')[0].props.onClick()
+  await flush()
+  const ensuredOkTree = withHooks(panel, { initialView: 'roles' })
+  const ensuredOkText = textOf(ensuredOkTree)
+  check('a fully successful reset shows no false failure', ensuredOkText.indexOf('已创建: 3') >= 0 && ensuredOkText.indexOf('操作失败') < 0, ensuredOkText)
+
+  // Server-side validation errors are readable in the panel, and a COMPLETED
+  // poll (the refresh button calls store.load) does not wipe them.
+  postReply = { ok: false, code: 'invalid-role-instances', message: 'instances must be an integer from 1 to 8' }
+  const errorForm = findAll(withHooks(panel, { initialView: 'roles' }), (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  const errorFields = fieldsOf(errorForm)
+  errorFields.name.props.ref.current = { value: 'bad-reviewer' }
+  findAll(errorForm, (node) => node.props && node.props['data-action'] === 'rolesCreate')[0].props.onClick()
+  await flush()
+  check('the refused action is recorded in the store', captured.getSnapshot().actionError !== null && captured.getSnapshot().actionError.code === 'invalid-role-instances', JSON.stringify(captured.getSnapshot().actionError))
+  const loadsBeforePoll = loads
+  findButton(ensuredOkTree, '刷新').props.onClick()
+  let pollGuard = 0
+  while (loads === loadsBeforePoll && pollGuard < 20) {
+    await flush()
+    pollGuard += 1
+  }
+  check('the poll really completed before the assertion', loads > loadsBeforePoll, String(loads - loadsBeforePoll))
+  const errorTree = withHooks(panel, { initialView: 'roles' })
+  const errorText = textOf(errorTree)
+  check(
+    'a validation error stays readable after a completed poll and maps to a readable message',
+    captured.getSnapshot().actionError !== null && errorText.indexOf('实例数必须是 1–8 的整数') >= 0 && errorText.indexOf('instances must be an integer from 1 to 8') >= 0,
+    errorText,
+  )
+}
 
 // File-lock view: waiters are advisory, not a queue.
 const locksTree = withHooks(panel, { initialView: 'locks' })
