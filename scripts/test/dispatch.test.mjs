@@ -37,6 +37,17 @@ async function patchTask(rig, id, change) {
     },
   )
 }
+/** Submit a task and record its merge request as merged — the state a dependent
+ * now waits for. Without a worktree the submit records no merge, which is the
+ * legacy "done is enough" case. */
+async function submitAndMerge(rig, id, evidence) {
+  const submitted = await submitAsUser(rig, id, evidence)
+  if (submitted.ok !== true) throw new Error('submit failed: ' + JSON.stringify(submitted))
+  await patchTask(rig, id, (task) => {
+    if (task.merge !== null && task.merge !== undefined) task.merge = Object.assign({}, task.merge, { status: 'merged' })
+  })
+  return submitted
+}
 
 // ── the dependency chain from the requirement ──────────────────────────────
 // A <- B <- C, D, E <- F: dispatch A, D, E; after A completes dispatch B,
@@ -57,19 +68,52 @@ async function patchTask(rig, id, change) {
   check('B, C and F wait', [B, C, F].every((id) => byId(snap, id).status === 'pending'), JSON.stringify(ids(snap)))
   check('C reports B as its waiting dependency', byId(snap, C).dependency.state === 'waiting' && byId(snap, C).dependency.waitingOn.join(',') === B, JSON.stringify(byId(snap, C).dependency))
 
-  await submitAsUser(rig, A, 'A done')
-  await submitAsUser(rig, E, 'E done')
+  await submitAndMerge(rig, A, 'A done')
+  await submitAndMerge(rig, E, 'E done')
   await rig.settle()
   snap = await snapshot(rig)
   check('after A is done, B is dispatched', byId(snap, B).status === 'running', JSON.stringify(ids(snap)))
   check('after E is done, F is dispatched', byId(snap, F).status === 'running', JSON.stringify(ids(snap)))
   check('C still waits on B', byId(snap, C).status === 'pending' && byId(snap, C).dependency.waitingOn.join(',') === B)
 
-  await submitAsUser(rig, B, 'B done')
+  await submitAndMerge(rig, B, 'B done')
   await rig.settle()
   snap = await snapshot(rig)
   check('after B is done, C is dispatched', byId(snap, C).status === 'running', JSON.stringify(ids(snap)))
   check('the chain leaves A, B, D, E, F running or done', ['done'].every((status) => byId(snap, A).status === status))
+  rig.scheduler.dispose()
+}
+
+// ── a dependent waits for its prerequisite's merge request ─────────────────
+{
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  const A = (await createTask(rig, { title: 'A' })).id
+  const B = (await createTask(rig, { title: 'B', dependsOn: [A] })).id
+  await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 4 })
+  await rig.action('start')
+  await rig.settle()
+  let snap = await snapshot(rig)
+  check('the prerequisite runs first', byId(snap, A).status === 'running' && byId(snap, B).status === 'pending', JSON.stringify(ids(snap)))
+  await submitAsUser(rig, A, 'A done')
+  await rig.settle()
+  snap = await snapshot(rig)
+  check(
+    'a done prerequisite with an open merge request does not release its dependent',
+    byId(snap, A).status === 'done' && byId(snap, B).status === 'pending',
+    JSON.stringify(ids(snap)),
+  )
+  check(
+    'the dependent is waiting, not broken',
+    byId(snap, B).dependency.state === 'waiting' && byId(snap, B).dependency.waitingOn.join(',') === A && byId(snap, B).dependency.brokenOn.length === 0,
+    JSON.stringify(byId(snap, B).dependency),
+  )
+  check('and reports the dependency waiting reason', byId(snap, B).waitingReason === 'dependency', String(byId(snap, B).waitingReason))
+  await patchTask(rig, A, (task) => {
+    task.merge = Object.assign({}, task.merge, { status: 'merged' })
+  })
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('merging the prerequisite releases the dependent', byId(snap, B).status === 'running', JSON.stringify(ids(snap)))
   rig.scheduler.dispose()
 }
 

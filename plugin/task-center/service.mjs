@@ -297,8 +297,23 @@ export function setDispatch(board, patch, now, by) {
 
 // ── task lifecycle ─────────────────────────────────────────────────────────
 
-/** Dependencies that are missing or cancelled make the task BROKEN; a broken
- * task is visible to the user instead of waiting forever. */
+/**
+ * Does this dependency satisfy its dependents?
+ *
+ * A task must be DONE and — when it has a merge request — MERGED. Starting a
+ * dependent on an unmerged branch gives that dependent a stale base and all but
+ * guarantees a conflict later. A legacy task with no merge record keeps the old
+ * "done is enough" behaviour, so historical tasks do not block the board.
+ */
+function dependencySatisfied(dependency) {
+  if (dependency.status !== 'done') return false
+  if (dependency.merge === null || dependency.merge === undefined) return true
+  return dependency.merge.status === 'merged'
+}
+
+/** Dependencies that are missing or cancelled make the task BROKEN (visible to
+ * the user instead of waiting forever). A done-but-unmerged dependency is not
+ * broken: it is still WAITING, and shows up in waitingOn. */
 export function dependencyInfo(board, task) {
   const waitingOn = []
   const brokenOn = []
@@ -308,7 +323,7 @@ export function dependencyInfo(board, task) {
       brokenOn.push(id)
       continue
     }
-    if (dependency.status !== 'done') waitingOn.push(id)
+    if (!dependencySatisfied(dependency)) waitingOn.push(id)
   }
   return {
     state: brokenOn.length > 0 ? 'broken' : waitingOn.length > 0 ? 'waiting' : 'ready',
@@ -317,8 +332,8 @@ export function dependencyInfo(board, task) {
   }
 }
 
-/** Pending tasks whose dependencies are all done, in dispatch order:
- * priority desc, then creation time, then id. */
+/** Pending tasks whose dependencies are all done (and merged, when they have a
+ * merge request), in dispatch order: priority desc, then creation time, then id. */
 export function readyTasks(board) {
   return board.tasks
     .filter((task) => task.status === 'pending' && dependencyInfo(board, task).state === 'ready')
