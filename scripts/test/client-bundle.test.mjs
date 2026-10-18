@@ -226,10 +226,12 @@ const HOST = {
   serverTime: new Date(now).toISOString(),
 }
 let loads = 0
+let postGate = null
 const posts = []
 globalThis.fetch = async function (url, options) {
   if (options !== undefined && options.method === 'POST') {
     posts.push(JSON.parse(options.body))
+    if (postGate !== null) await postGate
     return { json: async () => ({ ok: true, snapshot: HOST }) }
   }
   loads += 1
@@ -295,6 +297,26 @@ findButton(tree, '刷新').props.onClick()
 await flush()
 check('refresh asks the Host again', loads > loadsBeforeRefresh, String(loads))
 
+
+// A slow action must show a working indicator instead of appearing frozen.
+{
+  let releasePost = null
+  postGate = new Promise(function (resolve) { releasePost = resolve })
+  const before = withHooks(panel, {})
+  await flush()
+  const startNow = findButton(before, '开始派发')
+  check('the slow-action start button is available', startNow !== undefined)
+  startNow.props.onClick()
+  const pending = withHooks(panel, {})
+  check('a slow action renders a working indicator', textOf(pending).indexOf('启动中') >= 0, textOf(pending).slice(0, 200))
+  check('the action button reports busy', findAll(pending, (node) => node.type === 'button' && node.props && node.props['data-busy'] === 'true').length >= 1)
+  releasePost()
+  postGate = null
+  await flush()
+  await flush()
+  const settled = withHooks(panel, {})
+  check('the working indicator clears when the action answers', textOf(settled).indexOf('启动中') < 0, textOf(settled).slice(0, 200))
+}
 // Worker pool view. initialView is a render-test seam; the production slot passes no props.
 const workersTree = withHooks(panel, { initialView: 'workers' })
 await flush()

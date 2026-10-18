@@ -229,6 +229,11 @@ window.__ModuleLoader__.load({
 				startRequestTitle: '请求开始派发',
 				startRequestHint: 'Agent 请求开始派发；批准后调度器才会运行。',
 				approveStart: '批准并开始',
+				approving: '批准中…',
+				rejecting: '拒绝中…',
+				working: '处理中…',
+				starting: '启动中…',
+				pausing: '暂停中…',
 				rejectStart: '拒绝',
 				settingsTitle: '派发设置',
 				maxConcurrent: '最大并发',
@@ -366,6 +371,11 @@ window.__ModuleLoader__.load({
 				startRequestTitle: 'Start requested',
 				startRequestHint: 'An agent asked to start dispatch; it runs only after you approve.',
 				approveStart: 'Approve and start',
+				approving: 'Approving…',
+				rejecting: 'Rejecting…',
+				working: 'Working…',
+				starting: 'Starting…',
+				pausing: 'Pausing…',
 				rejectStart: 'Reject',
 				settingsTitle: 'Dispatch settings',
 				maxConcurrent: 'Maximum concurrency',
@@ -522,6 +532,13 @@ window.__ModuleLoader__.load({
 			'.gbt-projectform{display:flex;gap:6px;align-items:center;margin-top:10px;flex-wrap:wrap}',
 			'.gbt-projectform .gbt-input{flex:1;min-width:220px}',
 			'.gbt-busy{opacity:.6;pointer-events:none}',
+			'.gbt-btn[data-busy="true"]{opacity:.65;cursor:progress}',
+			'.gbt-progress{display:flex;align-items:center;gap:8px;margin:8px 18px 0;padding:6px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-3);border:0.5px solid var(--dsw-alias-border-l4);font-size:11px;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-progress .gbt-progressbar{position:relative;flex:1;height:2px;border-radius:2px;background:var(--dsw-alias-border-l4);overflow:hidden}',
+			'.gbt-progress .gbt-progressbar::after{content:"";position:absolute;left:-40%;top:0;bottom:0;width:40%;background:var(--dsw-alias-state-business-primary,#4f7cff);animation:gbt-slide 1.1s ease-in-out infinite}',
+			'.gbt-spinner{display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:gbt-spin .7s linear infinite;vertical-align:-1px;margin-right:6px}',
+			'@keyframes gbt-spin{to{transform:rotate(360deg)}}',
+			'@keyframes gbt-slide{0%{left:-40%}100%{left:100%}}',
 			'@media (max-width:900px){.gbt-drawer{position:fixed;right:0;top:0;bottom:0;z-index:40;box-shadow:-12px 0 40px rgba(0,0,0,.18)}.gbt-board{overflow-x:auto}.gbt-col{min-width:210px}}',
 		].join('')
 
@@ -626,12 +643,19 @@ window.__ModuleLoader__.load({
 			const listeners = new Set()
 			let loading = null
 			let timer = null
+			let busy = null
 
 			function emit(next) {
-				snapshot = next
+				snapshot = Object.assign({}, next, { busy: busy })
 				listeners.forEach(function (listener) {
 					listener()
 				})
+			}
+
+			function setBusy(next) {
+				if (busy === next) return
+				busy = next
+				emit(snapshot)
 			}
 
 			async function fetchJson(url, options) {
@@ -665,6 +689,8 @@ window.__ModuleLoader__.load({
 				const payloadBody = Object.assign({ action: action }, body === undefined ? {} : body)
 				const project = tcRememberedProject()
 				if (project !== null) payloadBody.project = project
+				const token = { action: action, id: body !== undefined && body !== null && (body.id !== undefined ? body.id : body.requestId !== undefined ? body.requestId : body.taskId !== undefined ? body.taskId : body.path !== undefined ? body.path : null) }
+				setBusy(token)
 				try {
 					const payload = await fetchJson(TC_ACTION_URL, {
 						method: 'POST',
@@ -682,6 +708,8 @@ window.__ModuleLoader__.load({
 				} catch (error) {
 					emit(Object.assign({}, snapshot, { message: String((error && error.message) || error) }))
 					return { ok: false, error: error }
+				} finally {
+					if (busy === token) setBusy(null)
 				}
 			}
 
@@ -1584,6 +1612,11 @@ window.__ModuleLoader__.load({
 				const scheduler = snapshot.scheduler
 				const workersPool = snapshot.workers
 				const workerMembers = workersPool !== null && workersPool !== undefined && Array.isArray(workersPool.members) ? workersPool.members : null
+				const busy = snapshot.busy === undefined || snapshot.busy === null ? null : snapshot.busy
+
+				function isBusy(action, id) {
+					return busy !== null && busy.action === action && (id === undefined || busy.id === id)
+				}
 
 				function openTask(id) {
 					setSelectedId(id)
@@ -1631,7 +1664,14 @@ window.__ModuleLoader__.load({
 					h(
 						'div',
 						{ className: 'gbt-controls' },
-						h('button', { type: 'button', className: 'gbt-btn', 'data-variant': active ? undefined : 'primary', onClick: toggleDispatch, disabled: snapshot.source === 'error' || snapshot.project === null }, active ? '⏸ ' + t('pause') : '▶ ' + t('start')),
+						h('button', {
+							type: 'button',
+							className: 'gbt-btn',
+							'data-variant': active ? undefined : 'primary',
+							'data-busy': isBusy('start') || isBusy('pause') ? 'true' : 'false',
+							onClick: toggleDispatch,
+							disabled: snapshot.source === 'error' || snapshot.project === null || busy !== null,
+						}, isBusy('start') || isBusy('pause') ? h('span', null, h('span', { className: 'gbt-spinner' }), active ? t('pausing') : t('starting')) : active ? '⏸ ' + t('pause') : '▶ ' + t('start')),
 						h('button', { type: 'button', className: 'gbt-btn', onClick: function () { startEdit(null) }, disabled: snapshot.project === null }, '+ ' + t('newTask')),
 						h('button', { type: 'button', className: 'gbt-btn', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
 						snapshot.project === null || snapshot.project === undefined
@@ -1657,6 +1697,16 @@ window.__ModuleLoader__.load({
 						: null,
 					h('span', { style: { marginLeft: 'auto' } }, t('subtitle')),
 				)
+
+				const busyBar = busy === null
+					? null
+					: h(
+							'div',
+							{ className: 'gbt-progress', role: 'status', 'aria-live': 'polite' },
+							h('span', { className: 'gbt-spinner' }),
+							h('span', null, busy.action === 'start' ? t('starting') : busy.action === 'pause' ? t('pausing') : busy.action === 'approveStart' ? t('approving') : busy.action === 'rejectStart' ? t('rejecting') : t('working')),
+							h('div', { className: 'gbt-progressbar' }),
+						)
 
 				const banner =
 					snapshot.source === 'error'
@@ -1692,8 +1742,10 @@ window.__ModuleLoader__.load({
 											className: 'gbt-btn',
 											'data-variant': 'primary',
 											onClick: function () { void store.send('approveStart', { requestId: startRequest.id }) },
+											'data-busy': isBusy('approveStart', startRequest.id) ? 'true' : 'false',
+											disabled: busy !== null,
 										},
-										t('approveStart'),
+										isBusy('approveStart', startRequest.id) ? h('span', null, h('span', { className: 'gbt-spinner' }), t('approving')) : t('approveStart'),
 									),
 									h(
 										'button',
@@ -1701,8 +1753,10 @@ window.__ModuleLoader__.load({
 											type: 'button',
 											className: 'gbt-btn',
 											onClick: function () { void store.send('rejectStart', { requestId: startRequest.id }) },
+											'data-busy': isBusy('rejectStart', startRequest.id) ? 'true' : 'false',
+											disabled: busy !== null,
 										},
-										t('rejectStart'),
+										isBusy('rejectStart', startRequest.id) ? h('span', null, h('span', { className: 'gbt-spinner' }), t('rejecting')) : t('rejectStart'),
 									),
 								),
 							)
@@ -1736,6 +1790,7 @@ window.__ModuleLoader__.load({
 					{ className: 'gbt-root' },
 					header,
 					statusline,
+					busyBar,
 					banner,
 					requestBanner,
 					snapshot.project === null || snapshot.project === undefined
