@@ -399,6 +399,7 @@ window.__ModuleLoader__.load({
 				rolePermissions: '权限',
 				roleInstancesCount: '实例数',
 				roleReset: '恢复默认',
+				roleBatchActions: '批量操作',
 				roleRefresh: '读取角色配置',
 				roleSource: '来源',
 				roleDrain: '排空',
@@ -692,6 +693,7 @@ window.__ModuleLoader__.load({
 				rolePermissions: 'Permissions',
 				roleInstancesCount: 'Instances',
 				roleReset: 'Reset defaults',
+				roleBatchActions: 'Batch actions',
 				roleRefresh: 'Reload role profiles',
 				roleSource: 'Source',
 				roleDrain: 'Drain',
@@ -1961,12 +1963,12 @@ window.__ModuleLoader__.load({
 						blocks.push(h('div', { key: 'agents-empty', className: 'gbt-empty' }, t('workersEmpty')))
 					} else {
 						blocks.push(
-							tableWrap('agents-table', tableWrap('wt-table', h(
+							tableWrap('agents-table', h(
 								'table',
 								{ key: 'agents-table', className: 'gbt-locktable', 'data-section': 'agents' },
 								h('thead', null, h('tr', null, h('th', null, t('roleName')), h('th', null, t('statusKind')), h('th', null, t('statusDescription')), h('th', null, t('statusSession')), h('th', null, t('statusCurrentTask')))),
 								h('tbody', null, rows),
-							))),
+							)),
 						)
 					}
 					const kinds = agents.kinds === undefined || agents.kinds === null ? {} : agents.kinds
@@ -2033,7 +2035,7 @@ window.__ModuleLoader__.load({
 						blocks.push(h('div', { key: 'wt-empty', className: 'gbt-empty' }, t('statusWorktreesEmpty')))
 					} else {
 						blocks.push(
-							tableWrap('activity-table', h(
+							tableWrap('wt-table', h(
 								'table',
 								{ key: 'wt-table', className: 'gbt-locktable', 'data-section': 'worktrees' },
 								h('thead', null, h('tr', null, h('th', null, t('worktree')), h('th', null, t('statusKind')), h('th', null, t('branch')), h('th', null, t('wtHead')), h('th', null, t('wtTask')), h('th', null, t('wtActive')))),
@@ -2076,7 +2078,7 @@ window.__ModuleLoader__.load({
 						blocks.push(h('div', { key: 'activity-empty', className: 'gbt-empty' }, t('statusActivityEmpty')))
 					} else {
 						blocks.push(
-							h(
+							tableWrap('activity-table', h(
 								'table',
 								{ key: 'activity-table', className: 'gbt-locktable', 'data-section': 'activity' },
 								h('thead', null, h('tr', null, h('th', null, t('submittedOn')), h('th', null, t('statusKind')), h('th', null, t('statusActor')), h('th', null, t('wtTask')), h('th', null, t('statusDescription')))),
@@ -2095,7 +2097,7 @@ window.__ModuleLoader__.load({
 										)
 									}),
 								),
-							),
+							)),
 						)
 					}
 				}
@@ -2228,6 +2230,7 @@ window.__ModuleLoader__.load({
 				const actionBar = h(
 					'div',
 					{ className: 'gbt-actionbar', 'data-card': 'actionbar' },
+					h('h3', { className: 'gbt-rtitle', style: { marginRight: 'auto' } }, t('roleBatchActions')),
 					['worker', 'reviewer', 'tester'].map(function (kind) {
 						return h(
 							'button',

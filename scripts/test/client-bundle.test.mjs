@@ -1046,11 +1046,12 @@ await flush()
     ['source', 'stages', 'profiles', 'create', 'instances'].every((id) => cardIds.indexOf(id) >= 0) && cards.length === 5,
     JSON.stringify(cardIds),
   )
-  check('every card has a title row', findAll(rolesTree, (node) => node.props && node.props.className === 'gbt-rtitle').length === 5)
+  check('every card has a title row', cards.every(function (card) { return findAll(card, (node) => node.props && node.props.className === 'gbt-rtitle').length === 1 }))
   const actionBar = findAll(rolesTree, (node) => node.props && node.props['data-card'] === 'actionbar')[0]
   check(
     'batch actions live in a separate action bar',
     actionBar !== undefined &&
+      findAll(actionBar, (node) => node.props && node.props.className === 'gbt-rtitle' && textOf(node).indexOf('批量操作') >= 0).length === 1 &&
       findAll(actionBar, (node) => node.props && node.props['data-action'] === 'rolesReset').length === 1 &&
       findAll(actionBar, (node) => node.props && node.props['data-action'] === 'rolesReplace-kind').length === 3 &&
       findAll(actionBar, (node) => node.props && node.props['data-role-instance'] !== undefined).length === 0,
@@ -1090,9 +1091,24 @@ await flush()
   const instanceRow = findAll(rolesTree, (node) => node.type === 'tr' && node.props && node.props['data-role-instance'] !== undefined)[0]
   check('drain/replace are grouped in a right-aligned row group', instanceRow !== undefined && findAll(instanceRow, (node) => node.props && node.props.className === 'gbt-rowactions').length === 1)
   const statusTree = withHooks(panel, { initialView: 'status' })
+  const statusWrappers = findAll(statusTree, (node) => node.props && typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('gbt-tablewrap') >= 0)
+  const statusTables = ['agents', 'worktrees', 'activity'].map(function (section) {
+    return findAll(statusTree, (node) => node.type === 'table' && node.props && node.props['data-section'] === section)[0]
+  })
+  const ancestorCounts = statusTables.map(function (table) {
+    return statusWrappers.filter(function (wrapper) {
+      return findAll(wrapper, (node) => node === table).length > 0
+    }).length
+  })
   check(
-    'status tables use the same horizontal-scroll wrapper',
-    findAll(statusTree, (node) => node.props && typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('gbt-tablewrap') >= 0).length >= 2,
+    'each status table sits in exactly one scroll wrapper and no wrapper is nested',
+    statusTables.every((table) => table !== undefined) &&
+      statusWrappers.length === 3 &&
+      ancestorCounts.every((count) => count === 1) &&
+      statusWrappers.every(function (wrapper) {
+        return findAll(wrapper, (node) => node !== wrapper && node.props && typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('gbt-tablewrap') >= 0).length === 0
+      }),
+    JSON.stringify({ wrappers: statusWrappers.length, ancestors: ancestorCounts }),
   )
 }
 
