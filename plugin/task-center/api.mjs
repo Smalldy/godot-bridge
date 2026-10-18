@@ -11,12 +11,12 @@
  * never throws; the caller turns it into a tool error or an HTTP body.
  */
 
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { TASK_LEASE_MS } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { MERGER_NAME, probeWorktree, resolveLead, servicesFor, workerPool } from './dispatch.mjs'
-import { recordMergeResult, refreshMergeRequest } from './merge.mjs'
+import { DEFAULT_VERIFY_COMMAND, formatVerificationOutput, recordMergeResult, recordVerdict, refreshMergeRequest } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
 
 /** Every action this API exposes. The tool enum and the route allowlist are
@@ -87,6 +87,11 @@ function messageOf(error) {
  *   worktree cannot be committed.
  * @param options.merger - the merge queue (merge.mjs). Merge actions refuse
  *   readably when it is absent; nothing else depends on it.
+ * @param options.verify - async ({ cwd, command, task }) -> { code, stdout, stderr }.
+ *   The HOST-side verifier for independent testing. Null/omitted means this
+ *   profile cannot verify, and independent requests simply stay pending.
+ * @param options.verifyCommand - the verification command; defaults to
+ *   `npm run verify`.
  * @param options.now - clock, for tests.
  */
 export function createApi(ctx, options) {
@@ -95,6 +100,9 @@ export function createApi(ctx, options) {
   const scheduler = opts.scheduler === undefined ? null : opts.scheduler
   const git = opts.git === undefined ? null : opts.git
   const merger = opts.merger === undefined ? null : opts.merger
+  const verify = typeof opts.verify === 'function' ? opts.verify : null
+  const verifyCommand =
+    typeof opts.verifyCommand === 'string' && opts.verifyCommand.trim() !== '' ? opts.verifyCommand : DEFAULT_VERIFY_COMMAND
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
 
   /** Merge actions are one-at-a-time: the queue serialises the whole read+git+write. */
@@ -302,6 +310,113 @@ export function createApi(ctx, options) {
         task.id +
         '" } and tell the Lead so it can be retried.',
     )
+  }
+
+  /** The temporary-checkout root from a board's settings. */
+  function worktreeRootOf(board) {
+    const settings =
+      board === undefined || board === null || board.dispatch === undefined || board.dispatch === null ? null : board.dispatch.worktree
+    return settings !== null && settings !== undefined && typeof settings.root === 'string' && settings.root.trim() !== ''
+      ? settings.root.trim()
+      : '.worktrees'
+  }
+
+  /**
+   * Run the project's verification in a THROWAWAY checkout of the task branch,
+   * then record the result as a system verdict.
+   *
+   * The pass/fail decision is the process EXIT CODE — no model is involved. The
+   * checkout (<root>/verify-<id>, branch verify/<id>) is always removed
+   * afterwards, and a checkout that cannot be made is a failed verdict rather
+   * than a silently open gate.
+   *
+   * Returns the refreshed task detail, or null when this profile has no
+   * verification runner (the request then simply stays pending).
+   */
+  async function verifyOnHost(projectPath, task, worktreeRoot) {
+    if (verify === null) return null
+    if (git === null) {
+      return recordVerifiedVerdict(projectPath, task, {
+        status: 'failed',
+        output: 'this profile has no git service, so the branch could not be checked out for verification',
+      })
+    }
+    if (typeof task.branch !== 'string' || task.branch.length === 0) {
+      return recordVerifiedVerdict(projectPath, task, { status: 'failed', output: 'the task has no branch to verify' })
+    }
+    const root = typeof worktreeRoot === 'string' && worktreeRoot.trim() !== '' ? worktreeRoot.trim() : '.worktrees'
+    const path = join(projectPath, root, 'verify-' + task.id)
+    const branch = 'verify/' + task.id
+    let added = null
+    try {
+      added = await git.worktreeAdd(projectPath, { path: path, branch: branch, base: task.branch })
+    } catch (error) {
+      added = null
+    }
+    if (added === null || added === undefined || added.ok !== true) {
+      const detail = added === null || added === undefined ? 'the git service returned no result' : String(added.message)
+      return recordVerifiedVerdict(projectPath, task, { status: 'failed', output: 'could not create the verification worktree: ' + detail })
+    }
+    let result = null
+    try {
+      result = await verify({ cwd: path, command: verifyCommand, task: task })
+    } catch (error) {
+      result = { code: 1, stdout: '', stderr: messageOf(error) }
+    }
+    // The checkout is temporary: remove it and its branch whatever happened.
+    try {
+      await git.worktreeRemove(projectPath, path, { force: true })
+    } catch (error) {}
+    if (typeof git.deleteBranch === 'function') {
+      try {
+        await git.deleteBranch(projectPath, branch, { force: true })
+      } catch (error) {}
+    }
+    const code = Number.isFinite(result === null || result === undefined ? NaN : result.code) ? result.code : 1
+    const output = formatVerificationOutput(verifyCommand, code, result)
+    return recordVerifiedVerdict(projectPath, task, { status: code === 0 ? 'passed' : 'failed', output: output })
+  }
+
+  /** Apply a host verdict, then tell the merger (pass) or the owner (fail). */
+  async function recordVerifiedVerdict(projectPath, task, verdict) {
+    const systemContext = { projectPath: projectPath, by: 'system', role: 'user', agent: null }
+    const recorded = await writeTask(projectPath, task.id, (board) => recordVerdict(board, task.id, verdict, clock()), systemContext)
+    if (recorded.ok !== true) return null
+    const verified = recorded.task
+    if (verified === null || verified === undefined) return null
+    const merge = verified.merge
+    if (verdict.status === 'passed') {
+      const lines = [
+        'Independent verification PASSED for ' + verified.id + ' (' + verified.title + ').',
+        '  branch: ' + String(verified.branch === null || verified.branch === undefined ? '' : verified.branch),
+        '  target: ' + String(merge !== null && merge !== undefined && merge.target !== null && merge.target !== undefined ? merge.target : ''),
+        '  project: ' + String(projectPath),
+        '  verdict: passed',
+        'The merge request is ready for the merge queue; do not push.',
+      ]
+      await notifyMember(MERGER_NAME, lines.join('\n'))
+    } else {
+      const owner =
+        verified.assignee === null || verified.assignee === undefined || typeof verified.assignee.name !== 'string' || verified.assignee.name === ''
+          ? null
+          : verified.assignee.name
+      if (owner !== null) {
+        await notifyMember(
+          owner,
+          'Independent verification FAILED for ' + verified.id + ' (' + verified.title + ').\n' +
+            '  project: ' + String(projectPath) + '\n' +
+            '  branch: ' + String(verified.branch === null || verified.branch === undefined ? '' : verified.branch) + '\n' +
+            '  output:\n' +
+            String(verdict.output === null || verdict.output === undefined ? '' : verdict.output) + '\n' +
+            'Fix it in your task worktree (' +
+            String(verified.worktree === null || verified.worktree === undefined ? '' : verified.worktree) +
+            '), then refresh the merge request with task_center { action: "refreshMerge", id: "' +
+            verified.id +
+            '" } to re-run verification.',
+        )
+      }
+    }
+    return verified
   }
 
   function projectFrom(input, context) {
@@ -999,6 +1114,12 @@ export function createApi(ctx, options) {
           context,
         )
         if (recorded.ok !== true) return recorded
+        // Independent testing re-runs on the refreshed head/base: the pending
+        // verdict above is temporary, replaced by the host's fresh result.
+        if (testing === 'independent') {
+          const verified = await verifyOnHost(projectPath, recorded.task, worktreeRootOf(read.board))
+          if (verified !== null) return ok({ task: verified, events: recorded.events, merge: verified.merge })
+        }
         return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
       })
     }
@@ -1032,10 +1153,16 @@ export function createApi(ctx, options) {
         const released = locks.releaseTask(state.memory.locks, id)
         if (released.ok === true) state.memory.locks = released.locks
       }
-      // An open merge request is an event for the dedicated merger; no merger,
-      // no team or a refused mailbox changes nothing about the submit itself.
+      // Independent testing: the HOST verifies the branch in a throwaway
+      // checkout and records the verdict; the merger hears about it only once it
+      // passes. Self mode keeps the old "MR is open" notification.
       if (result.ok === true && result.task !== null && result.task !== undefined) {
-        await notifyMergerOpened(projectPath, result.task)
+        if (testing === 'independent') {
+          const verified = await verifyOnHost(projectPath, result.task, worktreeRootOf(read.board))
+          if (verified !== null) return Object.assign({}, result, { task: verified, merge: verified.merge })
+        } else {
+          await notifyMergerOpened(projectPath, result.task)
+        }
       }
       return result
     }

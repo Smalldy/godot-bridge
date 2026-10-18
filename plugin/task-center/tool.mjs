@@ -48,7 +48,7 @@ const DESCRIPTION = [
   'lock / unlock / locks / forceUnlock, openProject.',
   'start does not start dispatch for an agent: it records a request, and the user approves it in the task center panel.',
   'Dependencies: B.dependsOn=[A] means A must be done and merged (when A has a merge request) before B runs.',
-  'The user\'s settings choose the testing strategy: "self" (the assignee reports its own verification, the default) or "independent" (a separate tester must record a passing verdict before mergeRequest will merge).',
+  'The user\'s settings choose the testing strategy: "self" (the assignee reports its own verification, the default) or "independent" (the HOST runs the project verification in a throwaway checkout of the task branch and records the verdict itself — no agent judgement — and mergeRequest refuses until it passes).',
   'A task only runs while dispatch is started; the scheduler acquires its writeFiles locks first.',
 ].join(' ')
 
@@ -94,7 +94,7 @@ export function registerTaskTool(ctx, options) {
         type: 'string',
         enum: ['self', 'independent'],
         description:
-          'Testing strategy (settings, user only): self = the assignee self-verifies; independent = a separate tester must record a passing verdict before a merge request can be merged.',
+          'Testing strategy (settings, user only): self = the assignee self-verifies; independent = the host runs the project verification in a temporary checkout and records the verdict, and a merge request cannot be merged until that verdict passes.',
       },
       allowSpawn: { type: 'boolean', description: 'Whether the scheduler may spawn a WorkAgent (settings).' },
       maxWorkAgents: { type: 'number', description: 'Maximum WorkAgents (settings).' },

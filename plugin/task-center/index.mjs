@@ -50,11 +50,13 @@ export function apply(ctx) {
     allowSpawn: true,
     git: git,
   })
-  // The merge queue: same git facade, plus the project's verification command run
-  // through the unconfined subprocess service. Both are lazy — activation spawns
-  // nothing; a merge request is the only thing that runs them.
-  const merger = createMerger({ git: git, verify: verifyFor(ctx) })
-  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, merger: merger })
+  // The merge queue and the host-side independent tester share one verification
+  // runner: the project's command executed through the unconfined subprocess
+  // service. Both are lazy — activation spawns nothing; a merge request or an
+  // independent submit is the only thing that runs it.
+  const verify = verifyFor(ctx)
+  const merger = createMerger({ git: git, verify: verify })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, merger: merger, verify: verify })
 
   // An idle WorkAgent is a chance to hand out more work. A reload must not
   // accumulate listeners, so the subscription is an effect.
