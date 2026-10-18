@@ -15,7 +15,17 @@ import { join, resolve } from 'node:path'
 import { TASK_LEASE_MS } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
-import { MERGER_NAME, probeWorktree, resolveLead, roleKindOf, servicesFor, workerPool } from './dispatch.mjs'
+import {
+  MERGER_NAME,
+  REVIEW_MAX_ROUNDS,
+  probeWorktree,
+  resolveLead,
+  reviewBriefFor,
+  reworkBriefFor,
+  roleKindOf,
+  servicesFor,
+  workerPool,
+} from './dispatch.mjs'
 import { readRoleConfig } from './board.mjs'
 import { mergeEligible, recordMergeResult, refreshMergeRequest } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
@@ -379,6 +389,61 @@ export function createApi(ctx, options) {
     )
   }
 
+  /** The live member of a role kind (reviewer, tester, worker), or null. */
+  function roleSlotNameOf(kind) {
+    const { agentTeams } = servicesFor(ctx)
+    if (agentTeams === undefined || agentTeams === null) return null
+    const lead = resolveLead(ctx)
+    if (lead === null) return null
+    let members = []
+    try {
+      members = agentTeams.listMembers(lead)
+    } catch (error) {
+      return null
+    }
+    if (!Array.isArray(members)) return null
+    const member = members.filter(
+      (entry) => entry !== null && typeof entry === 'object' && roleKindOf(entry.name) === kind && entry.status !== 'failed',
+    )[0]
+    return member === undefined ? null : String(member.name)
+  }
+
+  /**
+   * Host policy: a task that keeps coming back from review is blocked for
+   * triage instead of looping forever. Returns the blocked task detail or null
+   * when the task is within the round budget.
+   */
+  async function enforceReviewRoundLimit(projectPath, task) {
+    if (task === null || task === undefined || task.review === null || task.review === undefined) return null
+    if (!(task.review.attempt > REVIEW_MAX_ROUNDS)) return null
+    const systemContext = { projectPath: projectPath, by: 'system', role: 'user', agent: null }
+    const blocked = await writeTask(
+      projectPath,
+      task.id,
+      (board) =>
+        model.blockTask(board, task.id, clock(), 'system', 'review round limit reached (' + String(REVIEW_MAX_ROUNDS) + '); blocked for triage'),
+      systemContext,
+    )
+    if (blocked.ok !== true) return null
+    const owner =
+      task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' || task.assignee.name === ''
+        ? null
+        : task.assignee.name
+    if (owner !== null) {
+      await notifyMember(
+        owner,
+        'Task ' + task.id + ' was blocked after ' + String(REVIEW_MAX_ROUNDS) + ' review rounds without approval. Read the review reasons on the board and ask the Lead for triage.',
+      )
+    }
+    return blocked
+  }
+
+  /** Release the locks of a submitted task; called after any stage change. */
+  function releaseTaskLocks(taskId) {
+    const released = locks.releaseTask(state.memory.locks, taskId)
+    if (released.ok === true) state.memory.locks = released.locks
+  }
+
   function projectFrom(input, context) {
     const candidate =
       input !== undefined && input !== null && typeof input.project === 'string' && input.project.length > 0
@@ -718,6 +783,10 @@ export function createApi(ctx, options) {
         return failure('review-required', id + ' is still in review; approve the review and pass its tests before merging.')
       }
       if (task.status === 'testing') {
+        const review = task.review
+        if (review === null || review === undefined || review.status !== 'approved') {
+          return failure('review-required', id + ' is testing but its review was not approved; approve the review before merging.')
+        }
         const test = task.test
         const status = test === null || test === undefined ? 'pending' : String(test.status)
         if (status === 'failed') {
@@ -1099,7 +1168,9 @@ export function createApi(ctx, options) {
         }
         // A new head/base starts a fresh review round: the previous decisions
         // were taken on a different tree, so refreshMergeRequest resets the
-        // phases and the queue waits for review + tests again.
+        // phases and the queue waits for review + tests again. Ensure the
+        // reviewer before the write so the scheduler's stage pass cannot race.
+        const provisioned = await provisionRole('reviewer', projectPath, task)
         const recorded = await writeTask(
           projectPath,
           id,
@@ -1107,6 +1178,13 @@ export function createApi(ctx, options) {
           context,
         )
         if (recorded.ok !== true) return recorded
+        // A refreshed head starts a fresh review round: ensure the reviewer and
+        // send it the new brief, exactly like a submit would.
+        if (recorded.task !== null && recorded.task !== undefined && recorded.task.status === 'reviewing') {
+          const reviewer = roleSlotNameOf('reviewer')
+          if (reviewer !== null) await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath))
+          return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned })
+        }
         return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
       })
     }
@@ -1128,6 +1206,16 @@ export function createApi(ctx, options) {
       const submittedAt = clock()
       const prepared = checked.task.status === 'running' ? await prepareMergeRequest(checked.task, source, submittedAt) : { ok: true, mr: null }
       if (prepared.ok !== true) return prepared
+      // Ensure the reviewer BEFORE the stage write: the write kicks the scheduler,
+      // whose stage-role pass would otherwise race this provisioning and report
+      // "reused" to a caller that expects "created".
+      const willReview = checked.task.status === 'running'
+      const nextReviewAttempt =
+        checked.task.review === null || checked.task.review === undefined ? 1 : checked.task.review.attempt + 1
+      let provisioned = null
+      if (willReview && nextReviewAttempt <= REVIEW_MAX_ROUNDS) {
+        provisioned = await provisionRole('reviewer', projectPath, checked.task)
+      }
       const input = { evidence: source.evidence, note: source.note }
       if (prepared.mr !== null) {
         input.commit = prepared.mr.commit
@@ -1144,13 +1232,19 @@ export function createApi(ctx, options) {
         const released = locks.releaseTask(state.memory.locks, id)
         if (released.ok === true) state.memory.locks = released.locks
       }
-      // The request is now in review; the merger is told once the task passes
-      // testing and the host sweep merges it. Notification never changes the
-      // answer.
+      // The request is now in review: a task that exhausted its review rounds is
+      // blocked for triage, otherwise the host provisions the reviewer and hands
+      // it this round's brief. Notifications never change the answer.
       if (result.ok === true && result.task !== null && result.task !== undefined) {
         await notifyMergerOpened(projectPath, result.task)
         if (result.task.status === 'reviewing') {
-          const provisioned = await provisionRole('reviewer', projectPath, result.task)
+          const overLimit = await enforceReviewRoundLimit(projectPath, result.task)
+          if (overLimit !== null && overLimit.ok === true) {
+            releaseTaskLocks(id)
+            return overLimit
+          }
+          const reviewer = roleSlotNameOf('reviewer')
+          if (reviewer !== null) await notifyMember(reviewer, reviewBriefFor(result.task, projectPath))
           if (provisioned !== null) result.provisioned = provisioned
         }
       }
@@ -1175,7 +1269,15 @@ export function createApi(ctx, options) {
         context,
       )
       if (result.ok !== true) return result
-      if (result.task !== null && result.task !== undefined && result.task.status === 'testing') {
+      if (action === 'requestChanges' && result.task !== null && result.task !== undefined && result.task.status === 'running') {
+        // Tell the worker what to fix and that it continues in its own worktree.
+        const owner =
+          result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
+            ? null
+            : result.task.assignee.name
+        if (owner !== null) await notifyMember(owner, reworkBriefFor(result.task, projectPath))
+      }
+      if (action === 'approveReview' && result.task !== null && result.task !== undefined && result.task.status === 'testing') {
         const provisioned = await provisionRole('tester', projectPath, result.task)
         if (provisioned !== null) result.provisioned = provisioned
       }

@@ -438,6 +438,8 @@ export function recordMergeResult(board, id, outcome, now, by) {
 export function mergeEligible(task) {
   if (task === null || task === undefined) return false
   if (task.status !== 'testing') return false
+  if (task.review === null || task.review === undefined || typeof task.review !== 'object') return false
+  if (task.review.status !== 'approved') return false
   if (task.test === null || task.test === undefined || typeof task.test !== 'object') return false
   if (task.test.status !== 'passed') return false
   const merge = task.merge

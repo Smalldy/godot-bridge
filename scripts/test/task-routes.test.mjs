@@ -1986,6 +1986,158 @@ function testStageTask(overrides) {
   plain.scheduler.dispose()
 }
 
+// ── reviewer workflow: brief, hand-back and the round policy ───────────────
+{
+  const fake = fakeGit()
+  const team = roleTeam()
+  const rig = createSubmitRig({ team: team, roles: true, git: fake.git })
+  const seeded = runningWorktreeTask({ spec: 'Add a guard', acceptance: 'the guard holds', writeFiles: ['scripts/a.gd'] })
+  seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, seeded)
+  const submitted = await rig.action('submit', { id: 'T-1', evidence: 'unit tests passed' })
+  check('submit enters review with a live reviewer', submitted.ok === true && submitted.task.status === 'reviewing', JSON.stringify(submitted))
+  const sends = team.calls.filter((call) => call.kind === 'send' && call.target === 'reviewer-1')
+  check('the host sends the reviewer the round brief', sends.length >= 1, JSON.stringify(team.calls.map((call) => call.kind + ':' + call.target)))
+  const text = sends.length === 0 ? '' : sends[0].text
+  check('the brief names the round and the diff', text.indexOf('Review round 1') >= 0 && text.indexOf('base-sha..head-sha') >= 0, text.slice(0, 500))
+  check(
+    'the brief carries spec, acceptance, files and evidence',
+    text.indexOf('Add a guard') >= 0 && text.indexOf('the guard holds') >= 0 && text.indexOf('scripts/a.gd') >= 0 && text.indexOf('unit tests passed') >= 0,
+    text.slice(0, 900),
+  )
+  check(
+    'the brief carries the checklist and the no-full-test note',
+    text.indexOf('Review checklist') >= 0 && text.indexOf('do NOT need to run the full test suite') >= 0,
+    text.slice(-700),
+  )
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const team = createTeam({
+    roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }],
+  })
+  const rig = createSubmitRig({ team: team, roles: true, git: fake.git })
+  const seeded = runningWorktreeTask()
+  seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, seeded)
+  const submitted = await rig.action('submit', { id: 'T-1', evidence: 'checked' })
+  check(
+    'the host provisions a reviewer when the roster has none',
+    submitted.provisioned !== undefined && submitted.provisioned.created[0].name === 'reviewer-1',
+    JSON.stringify(submitted.provisioned),
+  )
+  const sends = team.calls.filter((call) => call.kind === 'send' && call.target === 'reviewer-1')
+  check('the new reviewer receives the round brief', sends.length >= 1 && sends[0].text.indexOf('Review round 1') >= 0, JSON.stringify(sends.map((call) => call.text.slice(0, 60))))
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const team = roleTeam()
+  const rig = createSubmitRig({ team: team, roles: true, git: fake.git })
+  const seeded = reviewStageTask()
+  seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, seeded)
+  const changed = await rig.api.perform('requestChanges', { id: 'T-1', reasons: 'rename the helper in scripts/a.gd:12' }, agentCaller('session-reviewer-1'))
+  check('the reviewer sends the task back to running', changed.ok === true && changed.task.status === 'running', JSON.stringify(changed))
+  const workerSends = team.calls.filter((call) => call.kind === 'send' && call.target === 'fixer')
+  check(
+    'the worker is told the reasons and keeps its worktree',
+    workerSends.some(
+      (call) => call.text.indexOf('rename the helper in scripts/a.gd:12') >= 0 && call.text.indexOf('SAME worktree') >= 0 && call.text.indexOf(join(PROJECT, '.worktrees', 'T-1')) >= 0,
+    ),
+    JSON.stringify(workerSends.map((call) => call.text.slice(0, 120))),
+  )
+  const resubmitted = await rig.api.perform('submit', { id: 'T-1', evidence: 'renamed and retested' }, agentCaller('session-fixer'))
+  check('the worker resubmits for the next round', resubmitted.ok === true && resubmitted.task.review.attempt === 2, JSON.stringify(resubmitted.ok ? resubmitted.task.review : resubmitted))
+  const reviewerSends = team.calls.filter((call) => call.kind === 'send' && call.target === 'reviewer-1')
+  check('round two sends the reviewer a fresh brief', reviewerSends.some((call) => call.text.indexOf('Review round 2') >= 0), JSON.stringify(reviewerSends.map((call) => call.text.slice(0, 80))))
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit({
+    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
+  })
+  const team = roleTeam()
+  const rig = createSubmitRig({ team: team, roles: true, git: fake.git })
+  const seedTask = reviewStageTask({
+    merge: {
+      status: 'open',
+      base: 'base-sha',
+      target: 'main',
+      head: 'head-sha',
+      mergeCommit: null,
+      declaredFiles: ['scripts/a.gd'],
+      actualFiles: ['scripts/a.gd'],
+      tests: 'npm run verify',
+      reviewer: null,
+      conflict: null,
+      output: null,
+      at: new Date().toISOString(),
+    },
+  })
+  seedMergeTask(rig, seedTask)
+  const surface2 = install(rig)
+  const res = await postTo(surface2, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  check('a refresh re-enters review', res.json().ok === true && res.json().task.status === 'reviewing' && res.json().task.review.attempt === 2, res.text)
+  const sends = team.calls.filter((call) => call.kind === 'send' && call.target === 'reviewer-1')
+  check('the refreshed round gets a new review brief', sends.some((call) => call.text.indexOf('Review round 2') >= 0), JSON.stringify(sends.map((call) => call.text.slice(0, 80))))
+  surface2.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const team = roleTeam()
+  const rig = createSubmitRig({ team: team, roles: true, git: fake.git })
+  const stamp = new Date().toISOString()
+  const seeded = runningWorktreeTask()
+  seeded.review = { status: 'changes-requested', by: 'reviewer-1', at: stamp, reasons: 'again', attempt: 3 }
+  seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, seeded)
+  const submitted = await rig.action('submit', { id: 'T-1', evidence: 'fourth round' })
+  check('a fourth review round is blocked for triage', submitted.ok === true && submitted.task.status === 'blocked', JSON.stringify(submitted.ok ? submitted.task.status : submitted))
+  check(
+    'and the block records the round policy',
+    submitted.task.history.some((entry) => String(entry.note).indexOf('review round limit') >= 0),
+    JSON.stringify(submitted.task.history.slice(-2)),
+  )
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const team = roleTeam()
+  const rig = createSubmitRig({ team: team, roles: true, git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(rig, openMergeTask())
+  const refused = await rig.api.perform('mergeRequest', { id: 'T-1' }, agentCaller('session-reviewer-1'))
+  check('a reviewer cannot merge', refused.ok === false && refused.code === 'merger-only', JSON.stringify(refused))
+  check('and the review slot never touched git', fake.calls.length === 0, JSON.stringify(fake.calls.map((entry) => entry.args)))
+  rig.scheduler.dispose()
+}
+
+{
+  // hand-written board: testing with a passed test but no approved review
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  const stamp = new Date().toISOString()
+  const task = openMergeTask({ status: 'testing' })
+  task.review = { status: 'pending', by: null, at: stamp, reasons: null, attempt: 1 }
+  task.test = { status: 'passed', by: 'tester-1', at: stamp, evidence: 'ok', attempt: 1 }
+  seedMergeTask(rig, task)
+  const surface2 = install(rig)
+  const res = await postTo(surface2, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('a testing task without an approved review cannot merge', res.json().ok === false && res.json().code === 'review-required', res.text)
+  check('and the merge gate reads no git', fake.calls.length === 0, JSON.stringify(fake.calls.map((entry) => entry.args)))
+  surface2.dispose()
+  rig.scheduler.dispose()
+}
+
 surface.dispose()
 rig.scheduler.dispose()
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
