@@ -22,9 +22,11 @@ export const MAX_BOARD_BYTES = 4 * 1024 * 1024
 /** Per-task history entries kept on disk (the creation entry plus the newest). */
 export const MAX_HISTORY = 120
 
-/** Every status a task can be stored with. 'pending' means "not dispatched";
- * readiness is DERIVED from the dependency graph, never stored. */
-export const STATUSES = ['pending', 'running', 'done', 'blocked', 'cancelled']
+/** Every status a task can be stored with. The phase machine is
+ * pending -> running -> reviewing -> testing -> done, with blocked/cancelled as
+ * exits. 'pending' means "not dispatched"; readiness is DERIVED from the
+ * dependency graph, never stored. */
+export const STATUSES = ['pending', 'running', 'reviewing', 'testing', 'done', 'blocked', 'cancelled']
 
 /** Statuses that no longer occupy a worker or a file lock. */
 export const CLOSED_STATUSES = ['done', 'cancelled']
@@ -39,23 +41,15 @@ export const TASK_LEASE_MS = 15 * 60 * 1000
  * are how every task runs, so there is no "enabled" flag to turn off. */
 export const WORKTREE_DEFAULTS = { root: '.worktrees' }
 
-/** How a merge request is verified before it may be merged. "self": the
- * assignee reports its own verification. "independent": a separate tester must
- * record a passing verdict first (recordVerification). Fixed vocabulary — an
- * unknown value falls back to "self". */
-export const TESTING_MODES = ['self', 'independent']
+/** Review-phase outcomes. 'pending' means the phase is open; the reviewer
+ * either approves or asks for changes. */
+export const REVIEW_STATUSES = ['pending', 'approved', 'changes-requested']
 
-/** Verdict statuses an independent tester may record. */
-export const VERDICT_STATUSES = ['pending', 'passed', 'failed']
-
-/** Normalised testing mode: only "independent" is special; everything else is
- * the default "self". */
-export function normaliseTesting(raw) {
-  return raw === 'independent' ? 'independent' : 'self'
-}
+/** Test-phase outcomes. 'pending' means the phase is open. */
+export const TEST_STATUSES = ['pending', 'passed', 'failed']
 
 /** Project-level dispatch defaults. Persisted in the board so the toggle,
- * concurrency, spawn policy and testing strategy survive a restart. */
+ * concurrency and spawn policy survive a restart. */
 export const DISPATCH_DEFAULTS = {
   state: 'paused',
   maxConcurrent: 3,
@@ -64,7 +58,6 @@ export const DISPATCH_DEFAULTS = {
   maxAttempts: 3,
   request: null,
   worktree: { root: '.worktrees' },
-  testing: 'self',
 }
 
 /** Upper bounds for user-provided dispatch settings. */
@@ -133,19 +126,34 @@ function mergeStringList(value) {
   return out
 }
 
+const phaseAttempt = (value) => (Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0)
+
 /**
- * An independent-test verdict, or null. A verdict needs a known status; an
- * unknown/garbage object is dropped (null) rather than made to look valid, so a
- * hand-written board cannot fake a pass.
+ * A review-phase record, or null. A record needs a known status; garbage is
+ * dropped (null) rather than made to look like a decision.
  */
-export function normaliseVerdict(raw) {
+export function normaliseReview(raw) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
-  if (VERDICT_STATUSES.indexOf(raw.status) < 0) return null
+  if (REVIEW_STATUSES.indexOf(raw.status) < 0) return null
   return {
     status: raw.status,
     by: typeof raw.by === 'string' ? raw.by : null,
     at: typeof raw.at === 'string' ? raw.at : null,
-    output: typeof raw.output === 'string' ? raw.output : null,
+    reasons: typeof raw.reasons === 'string' ? raw.reasons : null,
+    attempt: phaseAttempt(raw.attempt),
+  }
+}
+
+/** A test-phase record, or null. Mirrors normaliseReview with evidence. */
+export function normaliseTest(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  if (TEST_STATUSES.indexOf(raw.status) < 0) return null
+  return {
+    status: raw.status,
+    by: typeof raw.by === 'string' ? raw.by : null,
+    at: typeof raw.at === 'string' ? raw.at : null,
+    evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
+    attempt: phaseAttempt(raw.attempt),
   }
 }
 
@@ -169,7 +177,6 @@ export function normaliseMerge(raw) {
     conflict: typeof raw.conflict === 'string' || typeof raw.conflict === 'boolean' ? raw.conflict : null,
     output: typeof raw.output === 'string' ? raw.output : null,
     at: typeof raw.at === 'string' ? raw.at : null,
-    verdict: normaliseVerdict(raw.verdict),
   }
 }
 
@@ -189,6 +196,5 @@ export function normaliseDispatch(raw) {
     maxAttempts: clamp(source.maxAttempts, DISPATCH_LIMITS.maxAttempts, DISPATCH_DEFAULTS.maxAttempts),
     request: normaliseRequest(source.request),
     worktree: normaliseWorktree(source.worktree),
-    testing: normaliseTesting(source.testing),
   }
 }

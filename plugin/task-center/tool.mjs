@@ -38,17 +38,19 @@ export function projectPathOf(ctx, agent) {
 const DESCRIPTION = [
   'Project task board with dependency-driven dispatch and file locks.',
   'Actions: board (overview), list, get, create, update, delete,',
-  'pause (immediate), tick (one scheduler pass), submit (an assignee reports done),',
+  'pause (immediate), tick (one scheduler pass), submit (an assignee reports the work done and enters REVIEW),',
+  'approveReview (reviewer approves: the task enters TESTING), requestChanges (reviewer sends it back to running with reasons),',
+  'passTest (tester passes: the request becomes merge-eligible; the merge turns the task DONE), failTest (tester sends it back to running with evidence),',
   'mergeRequest (integrate an open MR into its target branch after verification) and rejectMerge —',
   'mergeRequest/rejectMerge are reserved for the user or the Team member named "merger" (every other agent gets merger-only);',
-  'mergeRequest refuses with head-drift when the task branch has moved past the head the merge request recorded,',
-  'and refreshMerge (its owner, the user or the merger) re-points an open request at the branch head and re-bases it on the target branch\'s current head, refreshing its commit and changed files, without committing, merging or pushing;',
+  'mergeRequest refuses with review-required/test-required/test-failed until the task is in TESTING with a passed test,',
+  'refuses with head-drift when the task branch has moved past the head the merge request recorded,',
+  'and refreshMerge (its owner, the user or the merger) re-points an open request at the branch head and re-bases it on the target branch\'s current head, refreshing its commit and changed files and starting a fresh review round, without committing, merging or pushing;',
   'when a submit opens a merge request the merger is notified directly,',
   'cancel, reopen, block, unblock, retry, cancelStartRequest,',
   'lock / unlock / locks / forceUnlock, openProject.',
   'start does not start dispatch for an agent: it records a request, and the user approves it in the task center panel.',
   'Dependencies: B.dependsOn=[A] means A must be done and merged (when A has a merge request) before B runs.',
-  'The user\'s settings choose the testing strategy: "self" (the assignee reports its own verification, the default) or "independent" (the HOST runs the project verification in a throwaway checkout of the task branch and records the verdict itself — no agent judgement — and mergeRequest refuses until it passes).',
   'A task only runs while dispatch is started; the scheduler acquires its writeFiles locks first.',
 ].join(' ')
 
@@ -70,7 +72,8 @@ export function registerTaskTool(ctx, options) {
       title: { type: 'string', description: 'Task title (create, update).' },
       spec: { type: 'string', description: 'What the task involves (create, update).' },
       acceptance: { type: 'string', description: 'How completion is judged (create, update).' },
-      evidence: { type: 'string', description: 'What was done and how it was checked (submit).' },
+      evidence: { type: 'string', description: 'What was done and how it was checked (submit); the failing evidence (failTest).' },
+      reasons: { type: 'string', description: 'What must change before the review can pass (requestChanges).' },
       note: { type: 'string', description: 'A line for the task history.' },
       dependsOn: {
         type: 'array',
@@ -90,12 +93,6 @@ export function registerTaskTool(ctx, options) {
       priority: { type: 'number', description: 'Higher runs first among ready tasks.' },
       maxAttempts: { type: 'number', description: 'Dispatch attempts before the task blocks.' },
       maxConcurrent: { type: 'number', description: 'Concurrent running tasks (settings).' },
-      testing: {
-        type: 'string',
-        enum: ['self', 'independent'],
-        description:
-          'Testing strategy (settings, user only): self = the assignee self-verifies; independent = the host runs the project verification in a temporary checkout and records the verdict, and a merge request cannot be merged until that verdict passes.',
-      },
       allowSpawn: { type: 'boolean', description: 'Whether the scheduler may spawn a WorkAgent (settings).' },
       maxWorkAgents: { type: 'number', description: 'Maximum WorkAgents (settings).' },
       status: { type: 'string', description: 'Filter for list.' },

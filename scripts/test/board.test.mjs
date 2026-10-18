@@ -220,7 +220,7 @@ const MERGE = {
       t.merge.at === '2026-01-01T00:00:00.000Z',
     JSON.stringify(t.merge),
   )
-  check('a merge record without a verdict normalises to null', t.merge.verdict === null, JSON.stringify(t.merge.verdict))
+  check('a merge record carries no phase decisions of its own', t.merge.verdict === undefined && t.review === null && t.test === null, JSON.stringify({ merge: t.merge.verdict, review: t.review, test: t.test }))
   check(
     'dispatch.worktree roundtrips its internal root',
     loaded.board.dispatch.worktree.root === 'build/worktrees' && loaded.board.dispatch.worktree.enabled === undefined,
@@ -262,7 +262,7 @@ const MERGE = {
   check('a non-object merge is null', loaded.board.tasks[1].merge === null)
 }
 
-// the independent-test verdict is a typed member
+// review/test phase records are typed members
 {
   const fs = createFakeFs()
   const when = '2026-02-01T00:00:00.000Z'
@@ -273,32 +273,87 @@ const MERGE = {
       version: 2,
       seq: 4,
       tasks: [
-        { id: 'T-1', merge: { status: 'open', base: BASE_SHA, head: HEAD_SHA, verdict: { status: 'passed', by: 'tester', at: when, output: 'ALL CHECKS PASSED' } } },
-        { id: 'T-2', merge: { status: 'open', verdict: { status: 'bogus', by: 7, at: 5 } } },
-        { id: 'T-3', merge: { status: 'open', verdict: 'passed' } },
+        {
+          id: 'T-1',
+          status: 'testing',
+          review: { status: 'approved', by: 'rev', at: when, reasons: 'looks good', attempt: 2 },
+          test: { status: 'passed', by: 'tester', at: when, evidence: 'npm run verify', attempt: 1 },
+        },
+        { id: 'T-2', status: 'reviewing', review: { status: 'changes-requested', by: 'rev', at: when, reasons: 'fix x', attempt: 1 }, test: { status: 'bogus' } },
+        { id: 'T-3', review: { status: 'bogus' }, test: 'passed' },
+        { id: 'T-4', status: 'done' },
       ],
     }),
   )
   const loaded = await read(fs)
-  const first = loaded.board.tasks[0].merge
+  const first = loaded.board.tasks[0]
   check(
-    'a passed verdict roundtrips',
-    first.verdict !== null &&
-      first.verdict.status === 'passed' &&
-      first.verdict.by === 'tester' &&
-      first.verdict.at === when &&
-      first.verdict.output === 'ALL CHECKS PASSED',
-    JSON.stringify(first.verdict),
+    'a review round trips',
+    first.review !== null &&
+      first.review.status === 'approved' &&
+      first.review.by === 'rev' &&
+      first.review.at === when &&
+      first.review.reasons === 'looks good' &&
+      first.review.attempt === 2,
+    JSON.stringify(first.review),
   )
-  check('an unknown verdict status is dropped', loaded.board.tasks[1].merge.verdict === null, JSON.stringify(loaded.board.tasks[1].merge.verdict))
-  check('a non-object verdict is null', loaded.board.tasks[2].merge.verdict === null, JSON.stringify(loaded.board.tasks[2].merge.verdict))
+  check(
+    'a test round trips',
+    first.test !== null &&
+      first.test.status === 'passed' &&
+      first.test.by === 'tester' &&
+      first.test.at === when &&
+      first.test.evidence === 'npm run verify' &&
+      first.test.attempt === 1,
+    JSON.stringify(first.test),
+  )
+  check('the testing phase is preserved', first.status === 'testing', first.status)
+  check('a changes-requested review round trips', loaded.board.tasks[1].review.status === 'changes-requested', JSON.stringify(loaded.board.tasks[1].review))
+  check('an unknown review status is dropped', loaded.board.tasks[2].review === null, JSON.stringify(loaded.board.tasks[2].review))
+  check('an unknown test status is dropped', loaded.board.tasks[1].test === null && loaded.board.tasks[2].test === null, JSON.stringify(loaded.board.tasks[1].test))
+  check(
+    'an old done task stays done without phase records',
+    loaded.board.tasks[3].status === 'done' && loaded.board.tasks[3].review === null && loaded.board.tasks[3].test === null,
+    loaded.board.tasks[3].status,
+  )
   const written = await updateBoard({ fs }, { projectPath: PROJECT, mutate: (board) => board })
   const again = await read(fs)
   check(
-    'the verdict survives a write',
-    written.ok === true && again.board.tasks[0].merge.verdict.status === 'passed',
+    'the phase records survive a write',
+    written.ok === true && again.board.tasks[0].review.status === 'approved' && again.board.tasks[0].test.status === 'passed',
     JSON.stringify(written),
   )
+}
+
+// the phase-machine statuses are all valid; unknown statuses fall back to pending
+{
+  const fs = createFakeFs()
+  seedBoard(
+    fs,
+    PROJECT,
+    JSON.stringify({
+      version: 2,
+      seq: 8,
+      tasks: [
+        { id: 'T-1', status: 'pending' },
+        { id: 'T-2', status: 'running' },
+        { id: 'T-3', status: 'reviewing' },
+        { id: 'T-4', status: 'testing' },
+        { id: 'T-5', status: 'done' },
+        { id: 'T-6', status: 'blocked' },
+        { id: 'T-7', status: 'cancelled' },
+        { id: 'T-8', status: 'shipped' },
+      ],
+    }),
+  )
+  const loaded = await read(fs)
+  const statuses = loaded.board.tasks.map((task) => task.status)
+  check(
+    'all seven phase statuses load',
+    statuses.slice(0, 7).join(',') === 'pending,running,reviewing,testing,done,blocked,cancelled',
+    statuses.join(','),
+  )
+  check('an unknown status falls back to pending', statuses[7] === 'pending', statuses[7])
 }
 
 // dispatch.worktree normalisation: project-relative, never absolute or escaping

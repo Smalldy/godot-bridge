@@ -80,7 +80,8 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
   const wrong = await call({ action: 'submit', id: id, evidence: 'mine' }, other)
   check('a different agent cannot submit it', wrong.error !== undefined && wrong.code === 'not-assignee', JSON.stringify(wrong))
   const submitted = await call({ action: 'submit', id: id, evidence: 'tests pass' }, { id: 'session-idle' })
-  check('the assignee can submit it', submitted.ok === true && submitted.task.status === 'done', JSON.stringify(submitted))
+  check('the assignee can submit it', submitted.ok === true && submitted.task.status === 'reviewing', JSON.stringify(submitted))
+  check('the submission opens the first review round', submitted.task.review !== null && submitted.task.review.status === 'pending' && submitted.task.review.attempt === 1, JSON.stringify(submitted.task.review))
   check('and the evidence is stored', submitted.task.evidence === 'tests pass')
   const paused = await call({ action: 'pause' })
   check('the tool pauses dispatch', paused.dispatch.state === 'paused')
@@ -158,6 +159,21 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   )
   const strangerRefresh = await toolCall({ action: 'refreshMerge', id: id }, { id: 'session-other' })
   check('another agent cannot refresh it', strangerRefresh.error !== undefined && strangerRefresh.code === 'not-assignee', JSON.stringify(strangerRefresh))
+  check('a refresh starts a new review round', refreshed.task.status === 'reviewing' && refreshed.task.review.attempt === 2, JSON.stringify(refreshed.task.review))
+  const approved = await toolCall({ action: 'approveReview', id: id }, { id: 'session-fixer' })
+  check(
+    'the tool approves a review into testing',
+    approved.ok === true && approved.task.status === 'testing' && approved.task.review.status === 'approved',
+    JSON.stringify(approved),
+  )
+  const passed = await toolCall({ action: 'passTest', id: id }, { id: 'session-merger' })
+  check(
+    'the tool passes the test phase',
+    passed.ok === true && passed.task.status === 'testing' && passed.task.test.status === 'passed',
+    JSON.stringify(passed),
+  )
+  const refusedMerge = await toolCall({ action: 'mergeRequest', id: id }, { id: 'session-merger' })
+  check('a passed test still needs the merge queue', refusedMerge.error !== undefined && refusedMerge.code === 'no-merge-service', JSON.stringify(refusedMerge))
   mergeRig.scheduler.dispose()
 }
 

@@ -19,7 +19,6 @@
  */
 
 import { join } from 'node:path'
-import { normaliseVerdict } from './schema.mjs'
 
 export const DEFAULT_VERIFY_COMMAND = 'npm run verify'
 
@@ -415,11 +414,15 @@ export function recordMergeResult(board, id, outcome, now, by) {
   if (outcome.conflict !== undefined) merge.conflict = outcome.conflict
   if (outcome.output !== undefined) merge.output = outcome.output
   task.merge = merge
+  const from = task.status
+  // The merge happens BEFORE done: a green merge is what completes a task that
+  // passed its test phase.
+  if (outcome.status === 'merged' && task.status === 'testing') task.status = 'done'
   task.updatedAt = at
   task.history.push({
     at: at,
     by: by,
-    from: task.status,
+    from: from,
     to: task.status,
     note: mergeNote(outcome),
   })
@@ -427,55 +430,19 @@ export function recordMergeResult(board, id, outcome, now, by) {
 }
 
 /**
- * Record a host-side (system) verification verdict on an open merge request.
- * Pure: the API applies it through the board's CAS after running the project's
- * verification in a throwaway checkout. The verdict is always attributed to
- * "system" — a model never writes it.
+ * Is this task's merge request ready for the queue right now? The phase machine
+ * decides: the task must be in TESTING with a passed test and an open request.
+ * A submission still under review is not eligible. Nothing here mutates; the
+ * queue re-validates when it actually merges.
  */
-export function recordVerdict(board, id, verdict, now) {
-  const next = JSON.parse(JSON.stringify(board))
-  const task = next.tasks.filter((candidate) => candidate.id === id)[0]
-  if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
-  if (task.merge === null || typeof task.merge !== 'object' || Array.isArray(task.merge)) {
-    return failure('no-merge-request', id + ' has no merge request to verify')
-  }
-  const source = verdict === null || verdict === undefined ? {} : verdict
-  const at = new Date(now).toISOString()
-  const normalised = normaliseVerdict({
-    status: source.status,
-    by: 'system',
-    at: at,
-    output: typeof source.output === 'string' ? source.output : null,
-  })
-  if (normalised === null) {
-    return failure('invalid-verdict', id + ' needs a pending/passed/failed verdict, got ' + String(source.status))
-  }
-  task.merge = Object.assign({}, task.merge, { verdict: normalised })
-  task.updatedAt = at
-  task.history.push({
-    at: at,
-    by: 'system',
-    from: task.status,
-    to: task.status,
-    note: 'system verification ' + normalised.status,
-  })
-  return { ok: true, board: next, events: [{ kind: 'verdict', id: id, status: normalised.status }] }
-}
-
-/**
- * Is this task's merge request ready for the queue right now? The host-driven
- * sweep uses exactly this rule: done + an open request, and — under independent
- * testing — a passing system verdict. It touches nothing; the queue still
- * re-validates when it actually merges.
- */
-export function mergeEligible(task, testing) {
+export function mergeEligible(task) {
   if (task === null || task === undefined) return false
-  if (task.status !== 'done') return false
+  if (task.status !== 'testing') return false
+  if (task.test === null || task.test === undefined || typeof task.test !== 'object') return false
+  if (task.test.status !== 'passed') return false
   const merge = task.merge
   if (merge === null || merge === undefined || typeof merge !== 'object' || Array.isArray(merge)) return false
-  if (merge.status !== 'open') return false
-  if (testing !== 'independent') return true
-  return merge.verdict !== null && merge.verdict !== undefined && merge.verdict.status === 'passed'
+  return merge.status === 'open'
 }
 
 /**
@@ -492,11 +459,12 @@ export function mergeEligible(task, testing) {
  *
  * @param base - the commit the diff was taken from (the API passes the target's
  *   current head, or the request's old base when the task has no target).
- * @param verdict - the verdict to record: a fresh `pending` one when independent
- *   testing is on (a new head invalidates any earlier pass), or null in self
- *   mode.
+ *
+ * A new head invalidates the review/test decisions taken on the old one, so the
+ * task returns to the REVIEW phase with a fresh round; the test record is
+ * cleared and is created again when the review is approved.
  */
-export function refreshMergeRequest(board, id, base, head, actualFiles, verdict, now, by) {
+export function refreshMergeRequest(board, id, base, head, actualFiles, now, by) {
   const next = JSON.parse(JSON.stringify(board))
   const task = next.tasks.filter((candidate) => candidate.id === id)[0]
   if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
@@ -520,15 +488,25 @@ export function refreshMergeRequest(board, id, base, head, actualFiles, verdict,
     conflict: null,
     output: null,
     reviewer: null,
-    verdict: normaliseVerdict(verdict),
     at: at,
   })
+  const previousReview = task.review
+  const from = task.status
+  task.status = 'reviewing'
+  task.review = {
+    status: 'pending',
+    by: by,
+    at: at,
+    reasons: null,
+    attempt: (previousReview === null || previousReview === undefined ? 0 : previousReview.attempt) + 1,
+  }
+  task.test = null
   task.updatedAt = at
   task.history.push({
     at: at,
     by: by,
-    from: task.status,
-    to: task.status,
+    from: from,
+    to: 'reviewing',
     note: 'merge request refreshed: base ' + String(previousBase) + ' -> ' + base + ', head ' + String(previousHead) + ' -> ' + head,
   })
   return { ok: true, board: next, events: [{ kind: 'merge-refreshed', id: id, base: base, head: head }] }

@@ -3,7 +3,9 @@
 
 import { emptyBoard } from '../../plugin/task-center/board.mjs'
 import { TASK_LEASE_MS } from '../../plugin/task-center/schema.mjs'
+import { mergeEligible, recordMergeResult } from '../../plugin/task-center/merge.mjs'
 import {
+  approveReview,
   blockTask,
   cancelTask,
   claimTask,
@@ -16,7 +18,10 @@ import {
   deleteTask,
   detail,
   expireLeases,
+  failTest,
   findTask,
+  passTest,
+  requestChanges,
   readyTasks,
   renewLeases,
   reopenTask,
@@ -38,11 +43,27 @@ const at = (offset) => T0 + (offset === undefined ? 0 : offset)
 const base = () => emptyBoard(T0)
 const make = (board, title, input) => createTask(board, Object.assign({ title }, input), T0, '@me')
 const finish = (board, id, offset) => {
-  const claimed = claimTask(board, id, { name: 'worker' }, at(offset === undefined ? 10 : offset))
+  const start = offset === undefined ? 10 : offset
+  const claimed = claimTask(board, id, { name: 'worker' }, at(start))
   if (claimed.ok !== true) throw new Error('claim failed: ' + JSON.stringify(claimed))
-  const submitted = submitTask(claimed.board, id, { evidence: 'done' }, at((offset === undefined ? 10 : offset) + 1), 'worker')
+  const submitted = submitTask(
+    claimed.board,
+    id,
+    {
+      evidence: 'done',
+      merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', declaredFiles: [], actualFiles: [] },
+    },
+    at(start + 1),
+    'worker',
+  )
   if (submitted.ok !== true) throw new Error('submit failed: ' + JSON.stringify(submitted))
-  return submitted.board
+  const approved = approveReview(submitted.board, id, at(start + 2), 'reviewer')
+  if (approved.ok !== true) throw new Error('review failed: ' + JSON.stringify(approved))
+  const tested = passTest(approved.board, id, at(start + 3), 'tester')
+  if (tested.ok !== true) throw new Error('test failed: ' + JSON.stringify(tested))
+  const merged = recordMergeResult(tested.board, id, { status: 'merged', mergeCommit: 'merge-sha' }, at(start + 4), 'merger')
+  if (merged.ok !== true) throw new Error('merge failed: ' + JSON.stringify(merged))
+  return merged.board
 }
 const ids = (board) => board.tasks.map((task) => task.id).join(',')
 
@@ -215,73 +236,141 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('and says why', findTask(final.board, 'T-1').dispatch.error === 'lease expired')
 }
 
-// submit is completion; there is no review status
+// submit enters the review phase: submission is not completion
 {
   let board = make(base(), 'A').board
   const early = submitTask(board, 'T-1', {}, T0, 'w')
   check('a pending task cannot be submitted', early.code === 'not-running')
   board = claimTask(board, 'T-1', { name: 'w' }, T0).board
-  const done = submitTask(board, 'T-1', { evidence: 'tests pass' }, T0 + 1, 'w')
-  check('submit completes the task', done.ok === true && done.task.status === 'done')
-  check('evidence is stored', done.task.evidence === 'tests pass')
-  check('a submitted task reaches done without a review state', findTask(done.board, 'T-1').status === 'done')
+  const submitted = submitTask(
+    board,
+    'T-1',
+    { evidence: 'tests pass', merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', declaredFiles: [], actualFiles: [] } },
+    T0 + 1,
+    'w',
+  )
+  check('submit moves the task to reviewing', submitted.ok === true && submitted.task.status === 'reviewing', JSON.stringify(submitted))
+  check('evidence is stored', submitted.task.evidence === 'tests pass')
   check(
-    'a task without a worktree has no merge request',
-    done.task.commit === null && done.task.merge === null && done.task.actualFiles.length === 0 && done.task.worktree === null,
-    JSON.stringify({ commit: done.task.commit, merge: done.task.merge, actualFiles: done.task.actualFiles, worktree: done.task.worktree }),
+    'the first review round is pending',
+    submitted.task.review !== null &&
+      submitted.task.review.status === 'pending' &&
+      submitted.task.review.attempt === 1 &&
+      submitted.task.review.by === 'w',
+    JSON.stringify(submitted.task.review),
+  )
+  check('submit clears the lease', submitted.task.leaseUntil === null)
+  check(
+    'a worktree submit records the open request',
+    submitted.task.merge !== null && submitted.task.merge.status === 'open',
+    JSON.stringify(submitted.task.merge),
+  )
+
+  const reviewingCounts = counts(submitted.board)
+  check('counts include the reviewing column', reviewingCounts.reviewing === 1 && reviewingCounts.running === 0, JSON.stringify(reviewingCounts))
+  const approved = approveReview(submitted.board, 'T-1', T0 + 2, 'reviewer')
+  check('approving the review moves to testing', approved.ok === true && approved.task.status === 'testing', JSON.stringify(approved))
+  check('the review records the approval', approved.task.review.status === 'approved' && approved.task.review.by === 'reviewer')
+  check(
+    'the approval opens the first test round',
+    approved.task.test !== null && approved.task.test.status === 'pending' && approved.task.test.attempt === 1,
+    JSON.stringify(approved.task.test),
+  )
+
+  const testingCounts = counts(approved.board)
+  check('counts include the testing column', testingCounts.testing === 1, JSON.stringify(testingCounts))
+  const passed = passTest(approved.board, 'T-1', T0 + 3, 'tester')
+  check('a passed test stays in testing until the merge', passed.ok === true && passed.task.status === 'testing' && passed.task.test.status === 'passed')
+
+  const merged = recordMergeResult(passed.board, 'T-1', { status: 'merged', mergeCommit: 'merge-sha' }, T0 + 4, 'merger')
+  const mergedTask = merged.ok === true ? findTask(merged.board, 'T-1') : null
+  check(
+    'the merge completes the task',
+    merged.ok === true && mergedTask.status === 'done' && mergedTask.merge.status === 'merged',
+    JSON.stringify(mergedTask && mergedTask.status),
+  )
+  check(
+    'the history shows the whole chain',
+    findTask(merged.board, 'T-1').history.map((entry) => entry.to).join(',') === 'pending,running,reviewing,testing,testing,done',
+    findTask(merged.board, 'T-1').history.map((entry) => entry.to).join(','),
   )
 }
 
-// a worktree task records the commit and merge request on submit
+// a submit without a merge record (no worktree) cannot reach a merge
 {
-  let board = make(base(), 'MR task', { writeFiles: ['scripts/a.gd'] }).board
-  board = claimTask(board, 'T-1', {
-    name: 'w',
-    worktree: { base: 'base-sha', target: 'main', branch: 'task/T-1-1', path: '/worktrees/T-1', keep: true, error: null },
-  }, T0).board
-  const claimed = findTask(board, 'T-1')
+  let board = make(base(), 'A').board
+  board = claimTask(board, 'T-1', { name: 'w' }, T0).board
+  const submitted = submitTask(board, 'T-1', { evidence: 'plain' }, T0 + 1, 'w')
   check(
-    'the claim records the worktree identity',
-    claimed.worktree === '/worktrees/T-1' && claimed.base === 'base-sha' && claimed.target === 'main' && claimed.branch === 'task/T-1-1',
-    JSON.stringify({ worktree: claimed.worktree, base: claimed.base, target: claimed.target, branch: claimed.branch }),
+    'a task without a worktree has no merge request',
+    submitted.task.commit === null && submitted.task.merge === null && submitted.task.actualFiles.length === 0 && submitted.task.worktree === null,
+    JSON.stringify({ commit: submitted.task.commit, merge: submitted.task.merge, worktree: submitted.task.worktree }),
   )
-  check('and records that the worktree must be kept', claimed.dispatch.keep === true, JSON.stringify(claimed.dispatch))
-  const merge = {
-    status: 'open',
-    base: 'base-sha',
-    target: 'main',
-    head: 'head-sha',
-    declaredFiles: ['scripts/a.gd', 7, ' scripts/a.gd '],
-    actualFiles: ['scripts/a.gd', 'scripts/b.gd', 'scripts/a.gd'],
-    tests: 'npm run verify',
-    reviewer: null,
-    conflict: null,
-    at: '2026-01-01T00:00:00.000Z',
-  }
-  const submitted = submitTask(board, 'T-1', { evidence: 'npm run verify', commit: 'head-sha', actualFiles: ['scripts/a.gd', 'scripts/b.gd'], merge: merge }, T0 + 10, 'w')
+  const approved = approveReview(submitted.board, 'T-1', T0 + 2, 'r')
+  const passed = passTest(approved.board, 'T-1', T0 + 3, 't')
+  const refused = recordMergeResult(passed.board, 'T-1', { status: 'merged' }, T0 + 4, 'm')
+  check('a task without a merge request cannot be merged', refused.code === 'no-merge-request', JSON.stringify(refused))
+}
+
+// phase attempts: rework opens a new review round, then a new test round
+{
+  let board = make(base(), 'A').board
+  board = claimTask(board, 'T-1', { name: 'w' }, T0).board
+  board = submitTask(board, 'T-1', { evidence: 'v1' }, T0 + 1, 'w').board
+  const changes = requestChanges(board, 'T-1', 'rename the helper', T0 + 2, 'reviewer')
+  check('changes-requested returns to running', changes.ok === true && changes.task.status === 'running', JSON.stringify(changes))
   check(
-    'submit records the commit and actual files',
-    submitted.ok === true && submitted.task.commit === 'head-sha' && submitted.task.actualFiles.join(',') === 'scripts/a.gd,scripts/b.gd',
-    JSON.stringify(submitted),
+    'the review keeps the reasons and the round',
+    changes.task.review.status === 'changes-requested' && changes.task.review.reasons === 'rename the helper' && changes.task.review.attempt === 1,
+    JSON.stringify(changes.task.review),
   )
-  const stored = findTask(submitted.board, 'T-1')
+  check('the rework renews the lease', changes.task.leaseUntil === new Date(T0 + 2 + TASK_LEASE_MS).toISOString(), String(changes.task.leaseUntil))
+  const resubmitted = submitTask(changes.board, 'T-1', { evidence: 'v2' }, T0 + 3, 'w')
   check(
-    'submit records an open merge request',
-    stored.merge !== null && stored.merge.status === 'open' && stored.merge.base === 'base-sha' && stored.merge.target === 'main' && stored.merge.head === 'head-sha',
-    JSON.stringify(stored.merge),
+    'the resubmission opens round two',
+    resubmitted.ok === true && resubmitted.task.status === 'reviewing' && resubmitted.task.review.attempt === 2,
+    JSON.stringify(resubmitted.task.review),
   )
+  const approved = approveReview(resubmitted.board, 'T-1', T0 + 4, 'reviewer')
+  check('an approval opens the first test round of this task', approved.ok === true && approved.task.test.attempt === 1, JSON.stringify(approved.task.test))
+  const failed = failTest(approved.board, 'T-1', 'test_board fails on line 3', T0 + 5, 'tester')
+  check('a failed test returns to running', failed.ok === true && failed.task.status === 'running', JSON.stringify(failed))
   check(
-    'the merge keeps declared and actual files apart',
-    stored.merge.declaredFiles.join(',') === 'scripts/a.gd' && stored.merge.actualFiles.join(',') === 'scripts/a.gd,scripts/b.gd',
-    JSON.stringify(stored.merge),
+    'the test keeps the evidence and the round',
+    failed.task.test.status === 'failed' && failed.task.test.evidence === 'test_board fails on line 3' && failed.task.test.attempt === 1,
+    JSON.stringify(failed.task.test),
   )
-  check(
-    'the merge carries the tests line, no reviewer and no conflict',
-    stored.merge.tests === 'npm run verify' && stored.merge.reviewer === null && stored.merge.conflict === null && stored.merge.at === '2026-01-01T00:00:00.000Z',
-    JSON.stringify(stored.merge),
-  )
-  check('submit still completes the task and clears its lease', stored.status === 'done' && stored.leaseUntil === null)
-  check('submit does not remove the worktree', stored.worktree === '/worktrees/T-1')
+  const again = submitTask(failed.board, 'T-1', { evidence: 'v3' }, T0 + 6, 'w')
+  check('the next round is round three for the review', again.ok === true && again.task.review.attempt === 3, JSON.stringify(again.task.review))
+  const approvedAgain = approveReview(again.board, 'T-1', T0 + 7, 'reviewer')
+  check('and the test round follows the review round', approvedAgain.ok === true && approvedAgain.task.test.attempt === 2, JSON.stringify(approvedAgain.task.test))
+}
+
+// review/test decisions need the matching phase and an open round
+{
+  let board = make(base(), 'A').board
+  board = claimTask(board, 'T-1', { name: 'w' }, T0).board
+  check('a task outside review cannot be approved', approveReview(board, 'T-1', T0, 'r').code === 'not-reviewing')
+  board = submitTask(board, 'T-1', {}, T0 + 1, 'w').board
+  check('a task outside testing cannot pass', passTest(board, 'T-1', T0 + 2, 't').code === 'not-testing')
+  check('changes need reasons', requestChanges(board, 'T-1', '  ', T0 + 2, 'r').code === 'missing-reasons')
+  board = approveReview(board, 'T-1', T0 + 2, 'r').board
+  check('a test failure needs evidence', failTest(board, 'T-1', '', T0 + 3, 't').code === 'missing-evidence')
+  check('a decided round cannot be re-approved', approveReview(board, 'T-1', T0 + 3, 'r').code === 'not-reviewing')
+}
+
+// merge eligibility follows the phases, never the old done shortcut
+{
+  let board = make(base(), 'A').board
+  board = claimTask(board, 'T-1', { name: 'w' }, T0).board
+  board = submitTask(board, 'T-1', { merge: { status: 'open', base: 'b', target: 'main', head: 'h' } }, T0 + 1, 'w').board
+  check('a reviewed-only task is not mergeable', mergeEligible(findTask(board, 'T-1')) === false)
+  board = approveReview(board, 'T-1', T0 + 2, 'r').board
+  check('a pending test is not mergeable', mergeEligible(findTask(board, 'T-1')) === false)
+  board = passTest(board, 'T-1', T0 + 3, 't').board
+  check('a passed test is mergeable', mergeEligible(findTask(board, 'T-1')) === true)
+  const notReviewing = approveReview(board, 'T-1', T0 + 4, 'r')
+  check('a testing task cannot be approved again', notReviewing.code === 'not-reviewing')
 }
 
 // dispatch requests: an agent records a request; a user approves it
@@ -346,15 +435,22 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
     worktree.ok === true && worktree.dispatch.worktree.root === '.worktrees' && worktree.dispatch.worktree.enabled === undefined,
     JSON.stringify(worktree.dispatch && worktree.dispatch.worktree),
   )
-  check('dispatch defaults testing to self', board.dispatch.testing === 'self', String(board.dispatch.testing))
-  const independent = setDispatch(board, { testing: 'independent' }, T0, '@user')
-  check(
-    'settings accept independent testing',
-    independent.ok === true && independent.dispatch.testing === 'independent',
-    JSON.stringify(independent.dispatch && independent.dispatch.testing),
+  check('dispatch no longer carries a testing switch', board.dispatch.testing === undefined, JSON.stringify(board.dispatch))
+  const ignored = setDispatch(board, { testing: 'independent' }, T0, '@user')
+  check('the old testing setting is ignored', ignored.ok === true && ignored.dispatch.testing === undefined, JSON.stringify(ignored.dispatch))
+  const merged = recordMergeResult(
+    approveReview(
+      submitTask(claimTask(make(base(), 'A').board, 'T-1', { name: 'w' }, T0).board, 'T-1', {}, T0 + 1, 'w').board,
+      'T-1',
+      T0 + 2,
+      'r',
+    ).board,
+    'T-1',
+    { status: 'merged' },
+    T0 + 3,
+    'm',
   )
-  const unknown = setDispatch(board, { testing: 'bogus' }, T0, '@user')
-  check('an unknown testing mode falls back to self', unknown.ok === true && unknown.dispatch.testing === 'self', JSON.stringify(unknown.dispatch && unknown.dispatch.testing))
+  check('a merge without a request is refused', merged.code === 'no-merge-request', JSON.stringify(merged))
 }
 
 // renewLeases

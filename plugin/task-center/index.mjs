@@ -50,20 +50,18 @@ export function apply(ctx) {
     allowSpawn: true,
     git: git,
   })
-  // The merge queue and the host-side independent tester share one verification
-  // runner: the project's command executed through the unconfined subprocess
-  // service. Both are lazy — activation spawns nothing; a merge request or an
-  // independent submit is the only thing that runs it.
+  // The merge queue runs the project's verification through the unconfined
+  // subprocess service before fast-forwarding. Lazy — activation spawns nothing;
+  // a merge is the only thing that runs it.
   const verify = verifyFor(ctx)
   const merger = createMerger({ git: git, verify: verify })
-  // autoMerge turns on the host-driven merge sweep below: the success path must
-  // not depend on a merger model noticing the request.
+  // autoMerge turns on the host-driven merge sweep below: a task that passed its
+  // review and test phases must not wait for a merger model.
   const api = createApi(ctx, {
     state: state,
     scheduler: scheduler,
     git: git,
     merger: merger,
-    verify: verify,
     autoMerge: true,
   })
 
@@ -99,10 +97,10 @@ export function apply(ctx) {
     }
   }, 'godot-bridge: task center tick')
 
-  // The merge queue is host-driven: every tick, an open request that is ready
-  // (self mode submitted, or an independent verdict passed) is merged through
-  // the same serial queue the manual action uses. Nothing here depends on a
-  // model acting; a failure leaves the request in its recorded state.
+  // The merge queue is host-driven: every tick, a request whose review was
+  // approved and whose test phase passed is merged through the same serial queue
+  // the manual action uses. Nothing here depends on a model acting; a failure
+  // leaves the request in its recorded state.
   ctx.effect(function () {
     const timer = setInterval(function () {
       const project = state.memory.projectHint
