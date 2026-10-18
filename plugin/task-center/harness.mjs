@@ -32,7 +32,8 @@ export const HARNESS_DEFAULTS = {
   healthPath: '/',
   healthTimeoutMs: 30000,
   healthIntervalMs: 250,
-  testTimeoutMs: 10 * 60 * 1000,
+  installTimeoutMs: 120000,
+  stopTimeoutMs: 5000,
 }
 
 /** Project config file (overridable per project, never required). */
@@ -56,8 +57,8 @@ async function readJson(fsOps, path) {
 
 /**
  * Resolve the harness configuration: defaults < project .agents/test-harness.json
- * < environment. Every field is optional, so a project that configures nothing
- * still gets an isolated instance.
+ * < environment (the environment always wins). Every field is optional, so a
+ * project that configures nothing still gets an isolated instance.
  */
 export async function resolveHarnessConfig(options) {
   const opts = options === undefined ? {} : options
@@ -69,8 +70,10 @@ export async function resolveHarnessConfig(options) {
   if (projectPath !== null) file = await readJson(fsOps, join(projectPath, HARNESS_CONFIG_FILE))
   const source = file !== null && typeof file === 'object' && !Array.isArray(file) ? file : {}
   const pick = (fileKey, envKey, fallback) => {
-    if (typeof source[fileKey] === 'string' && source[fileKey].trim() !== '') return source[fileKey].trim()
-    if (typeof env[envKey] === 'string' && env[envKey].trim() !== '') return env[envKey].trim()
+    const envValue = env[envKey]
+    if (typeof envValue === 'string' && envValue.trim() !== '') return envValue.trim()
+    const fileValue = source[fileKey]
+    if (typeof fileValue === 'string' && fileValue.trim() !== '') return fileValue.trim()
     return fallback
   }
   const number = (fileKey, envKey, fallback) => {
@@ -99,11 +102,14 @@ export async function resolveHarnessConfig(options) {
     healthPath: pick('healthPath', 'DSH_TEST_HARNESS_HEALTH_PATH', defaults.healthPath),
     healthTimeoutMs: number('healthTimeoutMs', 'DSH_TEST_HARNESS_HEALTH_TIMEOUT_MS', defaults.healthTimeoutMs),
     healthIntervalMs: number('healthIntervalMs', 'DSH_TEST_HARNESS_HEALTH_INTERVAL_MS', defaults.healthIntervalMs),
-    // A production port is never a candidate even when it looks free.
+    installTimeoutMs: number('installTimeoutMs', 'DSH_TEST_HARNESS_INSTALL_TIMEOUT_MS', defaults.installTimeoutMs),
+    stopTimeoutMs: number('stopTimeoutMs', 'DSH_TEST_HARNESS_STOP_TIMEOUT_MS', defaults.stopTimeoutMs),
     productionPort: number('productionPort', 'DSH_TEST_HARNESS_PRODUCTION_PORT', null),
     productionVersion: pick('productionVersion', 'DSH_TEST_HARNESS_PRODUCTION_VERSION', null),
   }
   config.portRange = Math.max(1, Math.min(1000, config.portRange))
+  config.installTimeoutMs = Math.max(1, config.installTimeoutMs)
+  config.stopTimeoutMs = Math.max(1, config.stopTimeoutMs)
   return config
 }
 
@@ -194,6 +200,9 @@ export function defaultProbePort(port) {
 /**
  * The isolated instance manager. One instance at a time; every start allocates
  * a fresh temp root and free port.
+ *
+ * Termination uses the host subprocess handle's real contract:
+ * terminate() then waitForExit(AbortSignal) — never a made-up kill().
  */
 export function createHarness(options) {
   const opts = options === undefined ? {} : options
@@ -223,12 +232,30 @@ export function createHarness(options) {
     status: 'stopped',
     instance: null,
     lastError: null,
+    lastLogs: '',
     restarts: 0,
-    startedAt: null,
   }
 
   function failure(code, message, extra) {
     return Object.assign({ ok: false, code: code, message: message }, extra === undefined ? {} : extra)
+  }
+
+  function logsText() {
+    const instance = state.instance
+    if (instance === null || instance.process === null) return state.lastLogs
+    const handle = instance.process
+    let text = ''
+    try {
+      if (handle.collected && handle.collected.stdout && typeof handle.collected.stdout.readFrom === 'function') {
+        text = String(handle.collected.stdout.readFrom(0).text || '')
+      }
+    } catch (error) {}
+    try {
+      if (handle.collected && handle.collected.stderr && typeof handle.collected.stderr.readFrom === 'function') {
+        text += String(handle.collected.stderr.readFrom(0).text || '')
+      }
+    } catch (error) {}
+    return text.length > MAX_LOG_TAIL_BYTES ? text.slice(text.length - MAX_LOG_TAIL_BYTES) : text
   }
 
   function snapshot() {
@@ -239,6 +266,7 @@ export function createHarness(options) {
         status: state.status,
         running: false,
         lastError: state.lastError,
+        lastLogs: state.lastLogs,
         restarts: state.restarts,
       }
     }
@@ -260,32 +288,15 @@ export function createHarness(options) {
       startedAt: instance.startedAt,
       pluginInstalled: instance.pluginInstalled,
       lastError: state.lastError,
+      lastLogs: state.lastLogs,
     }
   }
 
   function logs() {
-    const instance = state.instance
-    if (instance === null || instance.process === null) return { ok: true, logs: '' }
-    const handle = instance.process
-    let text = ''
-    try {
-      if (handle.collected && handle.collected.stdout && typeof handle.collected.stdout.readFrom === 'function') {
-        text = String(handle.collected.stdout.readFrom(0).text || '')
-      }
-    } catch (error) {}
-    try {
-      if (handle.collected && handle.collected.stderr && typeof handle.collected.stderr.readFrom === 'function') {
-        text += String(handle.collected.stderr.readFrom(0).text || '')
-      }
-    } catch (error) {}
-    return { ok: true, logs: text.length > MAX_LOG_TAIL_BYTES ? text.slice(text.length - MAX_LOG_TAIL_BYTES) : text }
+    return { ok: true, logs: logsText() }
   }
 
   async function allocatePort(config) {
-    if (Number.isFinite(config.productionPort) && config.productionPort > 0) {
-      // The production port is not a candidate; probing would skip it anyway,
-      // but a closed production instance must not be borrowed either.
-    }
     const first = Number.isFinite(config.portBase) ? config.portBase : HARNESS_DEFAULTS.portBase
     const range = Number.isFinite(config.portRange) ? config.portRange : HARNESS_DEFAULTS.portRange
     for (let offset = 0; offset < range; offset += 1) {
@@ -302,23 +313,19 @@ export function createHarness(options) {
     return null
   }
 
-  function readJsonText(path) {
-    return readJson(fsOps, path)
-  }
-
-  function spawnProcess(parts, cwd, extraEnv) {
+  function spawnProcess(parts, cwd, extraEnv, graceMs) {
     const argv = shellCommand(parts, platform)
     try {
       const handle = subprocess.spawn({
         argv: argv,
         cwd: cwd,
-        env: Object.assign({}, env, extraEnv === undefined ? {} : extraEnv),
+        env: Object.assign({}, extraEnv === undefined ? {} : extraEnv),
         stdio: {
           stdin: 'ignore',
           stdout: { collect: { maxBytes: MAX_LOG_BYTES } },
           stderr: { collect: { maxBytes: MAX_LOG_BYTES } },
         },
-        graceMs: HARNESS_DEFAULTS.testTimeoutMs,
+        graceMs: graceMs,
       })
       return { ok: true, handle: handle }
     } catch (error) {
@@ -326,15 +333,58 @@ export function createHarness(options) {
     }
   }
 
-  async function runCommand(parts, cwd, extraEnv) {
-    const spawned = spawnProcess(parts, cwd, extraEnv)
+  async function terminateProcess(handle, timeoutMs) {
+    if (handle === null || handle === undefined || typeof handle !== 'object') return { exited: true, terminated: false }
+    let terminated = false
+    try {
+      if (typeof handle.terminate === 'function') {
+        handle.terminate()
+        terminated = true
+      }
+    } catch (error) {}
+    if (typeof handle.waitForExit === 'function') {
+      try {
+        const exited = await handle.waitForExit(AbortSignal.timeout(timeoutMs))
+        return { exited: exited === true, terminated: terminated }
+      } catch (error) {
+        return { exited: false, terminated: terminated, error: String((error && error.message) || error) }
+      }
+    }
+    try {
+      await Promise.race([handle.done, sleep(timeoutMs)])
+      return { exited: true, terminated: terminated }
+    } catch (error) {
+      return { exited: false, terminated: terminated }
+    }
+  }
+
+  async function runInstall(config, projectPath, home) {
+    const spawned = spawnProcess(
+      [config.dshCommand, 'plugin', '--profile', config.profile, 'add', config.candidatePlugin],
+      projectPath,
+      { DSH_HOME: home, DSH_PROFILE: config.profile },
+      config.stopTimeoutMs,
+    )
     if (spawned.ok !== true) return spawned
     const handle = spawned.handle
     let outcome = null
+    let timedOut = false
     try {
-      outcome = await handle.done
+      outcome = await Promise.race([
+        handle.done,
+        new Promise((resolveTimeout) => {
+          setTimeout(() => {
+            timedOut = true
+            resolveTimeout({ __timeout: true })
+          }, config.installTimeoutMs)
+        }),
+      ])
     } catch (error) {
-      return { ok: false, code: 'spawn-failed', message: String((error && error.message) || error), handle: handle }
+      return { ok: false, code: 'install-failed', message: String((error && error.message) || error) }
+    }
+    if (timedOut === true) {
+      await terminateProcess(handle, config.stopTimeoutMs)
+      return { ok: false, code: 'install-timeout', message: 'dsh plugin add did not finish within ' + String(config.installTimeoutMs) + 'ms' }
     }
     const exitCode = outcome !== null && outcome !== undefined && Number.isFinite(outcome.exitCode) ? outcome.exitCode : 1
     let stdout = ''
@@ -347,25 +397,7 @@ export function createHarness(options) {
         stderr = String(handle.collected.stderr.readFrom(0).text || '')
       }
     } catch (error) {}
-    return { ok: exitCode === 0, code: exitCode === 0 ? null : 'command-failed', exitCode: exitCode, stdout: stdout, stderr: stderr, handle: handle }
-  }
-
-  async function killProcess(handle) {
-    if (handle === null || handle === undefined) return
-    try {
-      if (typeof handle.kill === 'function') {
-        await handle.kill({ graceMs: 5000 })
-        return
-      }
-      if (subprocess !== null && subprocess !== undefined && typeof subprocess.kill === 'function') {
-        await subprocess.kill(handle, { graceMs: 5000 })
-        return
-      }
-    } catch (error) {}
-    // The handle's done promise is the remaining signal; never throw here.
-    try {
-      await Promise.race([handle.done, sleep(5000)])
-    } catch (error) {}
+    return { ok: exitCode === 0, code: exitCode === 0 ? null : 'plugin-install-failed', exitCode: exitCode, stdout: stdout, stderr: stderr }
   }
 
   async function cleanRoot(root) {
@@ -373,7 +405,6 @@ export function createHarness(options) {
     const base = resolve(tmpBase)
     const target = resolve(root)
     if (target !== base && !target.startsWith(base + sep)) {
-      // Never rm anything outside the temp base, even with a corrupted state.
       return
     }
     try {
@@ -438,24 +469,25 @@ export function createHarness(options) {
       process: null,
       config: config,
       startedAt: new Date(clock()).toISOString(),
-      logs: '',
     }
     state.instance = instance
     state.status = 'starting'
     state.lastError = null
-    state.startedAt = instance.startedAt
+    state.lastLogs = ''
     const fail = async (code, message) => {
       state.status = 'failed'
       state.lastError = message
-      await killProcess(instance.process)
-      await cleanRoot(root)
-      state.instance = null
-      return failure(code, message)
+      state.lastLogs = logsText()
+      const kill = await terminateProcess(instance.process, config.stopTimeoutMs)
+      if (kill.exited === true) {
+        await cleanRoot(root)
+        state.instance = null
+      }
+      return failure(code, message, { lastLogs: state.lastLogs, processExited: kill.exited === true })
     }
     try {
       await fsOps.mkdir(home, { recursive: true })
       await fsOps.mkdir(projectCopy, { recursive: true })
-      // The project copy keeps the run away from the production board/state.
       await fsOps.cp(projectPath, projectCopy, {
         recursive: true,
         force: true,
@@ -465,25 +497,21 @@ export function createHarness(options) {
         },
       })
     } catch (error) {
-      state.instance = null
-      await cleanRoot(root)
-      state.status = 'failed'
-      state.lastError = String((error && error.message) || error)
-      return failure('copy-failed', state.lastError)
+      return fail('copy-failed', String((error && error.message) || error))
     }
-    const install = await runCommand(
-      [config.dshCommand, 'plugin', '--profile', config.profile, 'add', config.candidatePlugin],
-      projectCopy,
-      { DSH_HOME: home, DSH_PROFILE: config.profile },
-    )
+    const install = await runInstall(config, projectCopy, home)
     if (install.ok !== true) {
-      return fail('plugin-install-failed', 'could not install the candidate plugin: ' + String(install.stderr || install.stdout || install.message || 'exit ' + String(install.exitCode)))
+      return fail(
+        install.code === 'install-timeout' ? 'install-timeout' : 'plugin-install-failed',
+        install.code === 'install-timeout' ? install.message : 'could not install the candidate plugin: ' + String(install.stderr || install.stdout || install.message || 'exit ' + String(install.exitCode)),
+      )
     }
     instance.pluginInstalled = true
     const web = spawnProcess(
-      [config.dshCommand, 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'],
+      [config.dshCommand, '--profile', config.profile, '--host', '127.0.0.1', '--port', String(port), '--no-open'],
       projectCopy,
       { DSH_HOME: home, DSH_PROFILE: config.profile },
+      config.stopTimeoutMs,
     )
     if (web.ok !== true) {
       return fail(web.code, web.message)
@@ -517,7 +545,7 @@ export function createHarness(options) {
     } catch (error) {
       state.status = 'failed'
       state.lastError = String((error && error.message) || error)
-      return failure('harness-error', state.lastError)
+      return failure('harness-error', state.lastError, { lastLogs: state.lastLogs })
     }
   }
 
@@ -541,11 +569,21 @@ export function createHarness(options) {
       return { ok: true, stopped: true, alreadyStopped: true }
     }
     state.status = 'stopping'
-    await killProcess(instance.process)
+    state.lastLogs = logsText()
+    const kill = await terminateProcess(instance.process, instance.config.stopTimeoutMs)
+    if (kill.exited !== true) {
+      state.status = 'running'
+      state.lastError = 'the isolated DSH did not exit within ' + String(instance.config.stopTimeoutMs) + 'ms'
+      return failure('stop-timeout', 'the isolated DSH process did not exit within ' + String(instance.config.stopTimeoutMs) + 'ms; it is still running on port ' + String(instance.port), {
+        port: instance.port,
+        terminated: kill.terminated === true,
+        lastLogs: state.lastLogs,
+      })
+    }
     await cleanRoot(instance.root)
     state.instance = null
     state.status = 'stopped'
-    return { ok: true, stopped: true }
+    return { ok: true, stopped: true, processExited: true }
   }
 
   async function stop() {
@@ -554,7 +592,7 @@ export function createHarness(options) {
     } catch (error) {
       state.status = 'failed'
       state.lastError = String((error && error.message) || error)
-      return failure('harness-error', state.lastError)
+      return failure('harness-error', state.lastError, { lastLogs: state.lastLogs })
     }
   }
 

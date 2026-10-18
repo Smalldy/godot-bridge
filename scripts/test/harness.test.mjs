@@ -1,5 +1,7 @@
 // Harness tests: an isolated DSH instance driven entirely through fakes (no
-// real process, no real port, no real HTTP). The real smoke is an optional
+// real process, no real port, no real HTTP). The fakes mirror the REAL host
+// subprocess contract — terminate() + waitForExit(signal) — so a harness that
+// used a made-up kill() would fail here. The real smoke is an optional
 // integration check, not part of npm test.
 
 import { join } from 'node:path'
@@ -13,7 +15,7 @@ import {
 } from '../../plugin/task-center/harness.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createRoleManager } from '../../plugin/task-center/dispatch.mjs'
-import { createRig, createTeam, PROJECT as RIG_PROJECT } from './support/fixtures.mjs'
+import { createRig, createTeam } from './support/fixtures.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -28,22 +30,18 @@ const CANDIDATE = '/work/godot-bridge'
 const norm = (path) => String(path).replace(/\\/g, '/')
 const commandOf = (call) => String(call.argv[call.argv.length - 1])
 
-function fakeFs(options) {
-  const opts = options === undefined ? {} : options
+function fakeFs() {
   const files = new Map()
-  const dirs = new Set()
-  const calls = { mkdtemp: [], mkdir: [], cp: [], rm: [], readFile: [], writeFile: [] }
+  const calls = { mkdtemp: [], mkdir: [], cp: [], rm: [], readFile: [] }
   let sequence = 0
-  const fs = {
+  return {
     async mkdtemp(prefix) {
       sequence += 1
       const path = String(prefix) + String(sequence)
-      dirs.add(path)
       calls.mkdtemp.push(path)
       return path
     },
     async mkdir(path) {
-      dirs.add(String(path))
       calls.mkdir.push(String(path))
     },
     async cp(from, to, options) {
@@ -51,9 +49,6 @@ function fakeFs(options) {
     },
     async rm(path) {
       calls.rm.push(String(path))
-      for (const key of Array.from(files.keys())) {
-        if (key === norm(path) || key.startsWith(norm(path) + '/')) files.delete(key)
-      }
     },
     async readFile(path) {
       calls.readFile.push(String(path))
@@ -61,64 +56,72 @@ function fakeFs(options) {
       if (!files.has(key)) throw new Error('ENOENT ' + path)
       return files.get(key)
     },
-    async writeFile(path, text) {
-      calls.writeFile.push({ path: String(path), text: String(text) })
+    setFile(path, text) {
       files.set(norm(path), String(text))
     },
-    async unlink(path) {
-      files.delete(norm(path))
-    },
-    tmpdir: () => TMP,
-    setFile: (path, text) => files.set(norm(path), String(text)),
-    files: files,
     calls: calls,
   }
-  return fs
 }
 
+/**
+ * A fake host subprocess service whose handles implement the REAL contract:
+ * terminate(): void and waitForExit(signal): Promise<boolean>. There is no
+ * kill(), so the harness cannot pass these tests with an invented API.
+ */
 function fakeProcess(options) {
   const opts = options === undefined ? {} : options
   const calls = []
+  const handles = []
   let pid = 1000
   const spawn = (request) => {
+    const command = String(request.argv[request.argv.length - 1])
+    const isWeb = command.indexOf('--no-open') >= 0
     calls.push({
+      command: command,
       argv: request.argv.slice(),
       cwd: request.cwd,
       env: Object.assign({}, request.env),
       graceMs: request.graceMs,
-      stdio: request.stdio,
+      web: isWeb,
     })
-    const text = request.argv[request.argv.length - 1]
-    const isWeb = /^dsh web\b/.test(String(text))
-    const log = isWeb ? opts.webOutput || 'dsh web ready\n' : 'plugin installed\n'
     pid += 1
     let finish = null
     const done = new Promise((resolveDone) => {
       finish = resolveDone
     })
     const collector = {
-      readFrom() {
-        return { text: log }
+      text: isWeb ? opts.webOutput || 'dsh web ready\n' : 'plugin installed\n',
+      readFrom: function () {
+        return { text: this.text }
       },
     }
     const handle = {
       pid: pid,
       done: done,
+      web: isWeb,
+      terminated: false,
+      waitCalls: 0,
       collected: { stdout: collector, stderr: { readFrom: () => ({ text: '' }) } },
-      killed: false,
-      async kill() {
-        handle.killed = true
+      terminate() {
+        handle.terminated = true
+        if (opts.noExit === true) return
         finish({ exitCode: 0 })
       },
+      waitForExit() {
+        handle.waitCalls += 1
+        if (opts.noExit === true) return new Promise((resolveWait) => setTimeout(() => resolveWait(false), 5))
+        return done.then(() => true)
+      },
     }
+    handles.push(handle)
     if (isWeb === false) {
-      finish({ exitCode: opts.installExit === undefined ? 0 : opts.installExit })
+      if (opts.installHangs !== true) finish({ exitCode: opts.installExit === undefined ? 0 : opts.installExit })
     } else if (opts.webExits === true) {
       finish({ exitCode: 1 })
     }
     return handle
   }
-  return { calls: calls, spawn: spawn, subprocess: { spawn: spawn } }
+  return { calls: calls, handles: handles, spawn: spawn, subprocess: { spawn: spawn } }
 }
 
 function fakeHttp(options) {
@@ -153,7 +156,23 @@ function baseOptions(extra) {
   fs.setFile(join(SOURCE, 'package.json'), JSON.stringify({ version: opts.sourceVersion === undefined ? '1.2.3' : opts.sourceVersion }))
   fs.setFile(
     join(PROJECT, HARNESS_CONFIG_FILE),
-    JSON.stringify({ dshSource: SOURCE, candidatePlugin: CANDIDATE, dshCommand: 'dsh', profile: 'web', portBase: 39000, portRange: 5, healthTimeoutMs: 30, healthIntervalMs: 5 }),
+    JSON.stringify(
+      Object.assign(
+        {
+          dshSource: SOURCE,
+          candidatePlugin: CANDIDATE,
+          dshCommand: 'dsh',
+          profile: 'web',
+          portBase: 39000,
+          portRange: 5,
+          healthTimeoutMs: 30,
+          healthIntervalMs: 5,
+          installTimeoutMs: 50,
+          stopTimeoutMs: 20,
+        },
+        opts.config === undefined ? {} : opts.config,
+      ),
+    ),
   )
   const harness = createHarness({
     ctx: { get: (key) => (key === 'subprocess' ? proc.subprocess : undefined) },
@@ -174,15 +193,24 @@ function baseOptions(extra) {
   const fs = fakeFs()
   fs.setFile(
     join(PROJECT, HARNESS_CONFIG_FILE),
-    JSON.stringify({ dshSource: '/cfg/source', candidatePlugin: '/cfg/candidate', portBase: 41000, profile: 'test-web' }),
+    JSON.stringify({ dshSource: '/cfg/source', candidatePlugin: '/cfg/candidate', portBase: 41000, profile: 'test-web', healthPath: '/health' }),
   )
-  const config = await resolveHarnessConfig({ projectPath: PROJECT, fsOps: fs, env: { DSH_TEST_HARNESS_SOURCE: '/env/source', DSH_TEST_HARNESS_PORT_BASE: '42000' } })
-  check('the project file overrides the default source', config.dshSource === '/cfg/source', config.dshSource)
-  check('the environment overrides the project file', config.portBase === 42000, String(config.portBase))
-  check('unset fields keep the project file value', config.candidatePlugin === '/cfg/candidate' && config.profile === 'test-web', JSON.stringify({ candidate: config.candidatePlugin, profile: config.profile }))
+  const config = await resolveHarnessConfig({
+    projectPath: PROJECT,
+    fsOps: fs,
+    env: { DSH_TEST_HARNESS_SOURCE: '/env/source', DSH_TEST_HARNESS_PORT_BASE: '42000', DSH_TEST_HARNESS_PROFILE: 'env-profile', DSH_TEST_HARNESS_HEALTH_PATH: '/ready' },
+  })
+  check(
+    'the environment overrides the project file for strings',
+    config.dshSource === '/env/source' && config.profile === 'env-profile' && config.healthPath === '/ready',
+    JSON.stringify({ source: config.dshSource, profile: config.profile, health: config.healthPath }),
+  )
+  check('the environment overrides the project file for numbers', config.portBase === 42000, String(config.portBase))
+  check('unset fields keep the project file value', config.candidatePlugin === '/cfg/candidate', config.candidatePlugin)
   const fallback = await resolveHarnessConfig({ projectPath: '/none', fsOps: fs, env: {} })
   check('a project without config uses the DSH source default', fallback.dshSource === 'J:\\workspace\\HARNESS\\deepseek-harness', fallback.dshSource)
   check('the candidate defaults to this plugin package', fallback.candidatePlugin.length > 0 && fallback.candidatePlugin.indexOf('godot-bridge') > 0, fallback.candidatePlugin)
+  check('install and stop timeouts have defaults', fallback.installTimeoutMs === 120000 && fallback.stopTimeoutMs === 5000, JSON.stringify({ install: fallback.installTimeoutMs, stop: fallback.stopTimeoutMs }))
 }
 
 // ── version comparison ─────────────────────────────────────────────────────
@@ -196,7 +224,7 @@ function baseOptions(extra) {
 }
 check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', '--port', '39000'], 'linux').join(' ').indexOf('dsh web --port 39000') > 0)
 
-// ── start: isolated home/profile/port and the candidate plugin ────────────
+// ── start: isolated home/profile/port, candidate plugin, real argv ────────
 {
   const rig = baseOptions()
   const started = await rig.harness.start(PROJECT)
@@ -204,21 +232,40 @@ check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', 
   check('the instance home is under the temp root, not the production home', norm(started.home).indexOf(norm(TMP) + '/godot-bridge-harness-') === 0, started.home)
   check('the project is an independent copy', norm(started.projectCopy).indexOf(norm(TMP)) === 0 && norm(started.projectCopy) !== norm(PROJECT), started.projectCopy)
   check('the temp root was created and the project copied', rig.fs.calls.mkdtemp.length === 1 && rig.fs.calls.cp.length === 1 && rig.fs.calls.cp[0].from === PROJECT, JSON.stringify(rig.fs.calls.cp))
-  const install = rig.proc.calls.filter((call) => commandOf(call).indexOf(' plugin ') >= 0)[0]
-  const web = rig.proc.calls.filter((call) => commandOf(call).indexOf('dsh web ') === 0)[0]
+  const install = rig.proc.calls.filter((call) => call.command.indexOf(' plugin ') >= 0)[0]
+  const web = rig.proc.calls.filter((call) => call.web === true)[0]
   check(
     'the candidate plugin is installed into the isolated profile',
-    install !== undefined && commandOf(install).indexOf('--profile web add ' + CANDIDATE) >= 0 && install.env.DSH_HOME === started.home,
-    JSON.stringify(install && install.argv),
+    install !== undefined && install.command.indexOf('dsh plugin --profile web add ' + CANDIDATE) >= 0,
+    JSON.stringify(install && install.command),
   )
   check(
-    'the web process starts on the allocated port with --no-open',
-    web !== undefined && commandOf(web).indexOf('dsh web --host 127.0.0.1 --port ' + String(started.port) + ' --no-open') >= 0,
-    JSON.stringify(web && web.argv),
+    'the web profile is selected on the launcher, before the app args',
+    web !== undefined && web.command.indexOf('dsh --profile web --host 127.0.0.1 --port ' + String(started.port) + ' --no-open') === 0,
+    JSON.stringify(web && web.command),
   )
-  check('the web process gets the isolated DSH_HOME', web !== undefined && web.env.DSH_HOME === started.home && web.env.DSH_PROFILE === 'web', JSON.stringify(web && web.env))
+  check(
+    'the child gets only the isolated DSH_HOME/DSH_PROFILE override',
+    web !== undefined &&
+      Object.keys(web.env).sort().join(',') === 'DSH_HOME,DSH_PROFILE' &&
+      web.env.DSH_HOME === started.home &&
+      web.env.DSH_PROFILE === 'web',
+    JSON.stringify(web && web.env),
+  )
   check('the versions match', started.sourceVersion === '1.2.3' && started.productionVersion === '1.2.3' && started.versionStatus === 'match' && started.versionMismatch === false, JSON.stringify(started))
   check('logs capture the process output', rig.harness.logs().logs.indexOf('dsh web ready') >= 0, rig.harness.logs().logs)
+  await rig.harness.stop()
+}
+{
+  // a non-default profile must reach the launcher, not just the plugin install
+  const rig = baseOptions({ config: { profile: 'test-web' } })
+  const started = await rig.harness.start(PROJECT)
+  const web = rig.proc.calls.filter((call) => call.web === true)[0]
+  check(
+    'a custom profile is carried by the web command',
+    started.ok === true && web !== undefined && web.command.indexOf('dsh --profile test-web --host 127.0.0.1 --port ') === 0,
+    JSON.stringify(web && web.command),
+  )
   await rig.harness.stop()
 }
 
@@ -231,18 +278,13 @@ check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', 
   await rig.harness.stop()
 }
 {
-  const rig = baseOptions({ probePort: async () => true })
-  // productionPort comes from config; point it at the first candidate.
-  rig.fs.setFile(
-    join(PROJECT, HARNESS_CONFIG_FILE),
-    JSON.stringify({ dshSource: SOURCE, candidatePlugin: CANDIDATE, dshCommand: 'dsh', profile: 'web', portBase: 39000, portRange: 5, productionPort: 39000, healthTimeoutMs: 30, healthIntervalMs: 5 }),
-  )
+  const rig = baseOptions({ config: { productionPort: 39000 } })
   const started = await rig.harness.start(PROJECT)
   check('the production port is never a candidate', started.ok === true && started.port === 39001, String(started.port))
   await rig.harness.stop()
 }
 
-// ── install failure: readable and cleaned up ──────────────────────────────
+// ── install failure and install timeout: terminated, cleaned, logs kept ────
 {
   const rig = baseOptions({ process: { installExit: 1 } })
   const started = await rig.harness.start(PROJECT)
@@ -250,35 +292,45 @@ check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', 
   check('the temp root is cleaned after a failed install', rig.fs.calls.rm.length === 1, JSON.stringify(rig.fs.calls.rm))
   check('no instance is reported', rig.harness.status().running === false, JSON.stringify(rig.harness.status()))
 }
+{
+  const rig = baseOptions({ process: { installHangs: true }, config: { installTimeoutMs: 15 } })
+  const started = await rig.harness.start(PROJECT)
+  check('a hung install times out instead of hanging the start', started.ok === false && started.code === 'install-timeout', JSON.stringify(started))
+  const handle = rig.proc.handles.filter((entry) => entry.web === false)[0]
+  check('the hung install is terminated and waited on', handle !== undefined && handle.terminated === true && handle.waitCalls >= 1, JSON.stringify(handle && { terminated: handle.terminated, waits: handle.waitCalls }))
+  check('and the temp root is cleaned', rig.fs.calls.rm.length === 1, JSON.stringify(rig.fs.calls.rm))
+}
 
-// ── web exits immediately: not a running instance ─────────────────────────
+// ── web exits immediately and health timeout: terminated and cleaned ──────
 {
   const rig = baseOptions({ process: { webExits: true } })
   const started = await rig.harness.start(PROJECT)
   check('a web process that exits is a failed start', started.ok === false && started.code === 'server-exited', JSON.stringify(started))
   check('and its temp root is cleaned', rig.fs.calls.rm.length === 1, JSON.stringify(rig.fs.calls.rm))
 }
-
-// ── health timeout: killed and cleaned ────────────────────────────────────
 {
   const rig = baseOptions({ http: { failAll: true } })
   const started = await rig.harness.start(PROJECT)
   check('an unhealthy instance refuses the start', started.ok === false && started.code === 'health-timeout', JSON.stringify(started))
-  const webCall = rig.proc.calls.filter((call) => commandOf(call).indexOf('dsh web ') === 0)[0]
-  check('the failed process is killed', rig.proc.calls.length >= 2 && rig.harness.state.instance === null, JSON.stringify(rig.proc.calls.length))
+  const web = rig.proc.handles.filter((entry) => entry.web === true)[0]
+  check('the failed web process is terminated and waited on', web !== undefined && web.terminated === true && web.waitCalls >= 1, JSON.stringify(web && { terminated: web.terminated, waits: web.waitCalls }))
   check('and the temp root is removed', rig.fs.calls.rm.length === 1, JSON.stringify(rig.fs.calls.rm))
+  check('the failure keeps the process logs for diagnosis', String(started.lastLogs).indexOf('dsh web ready') >= 0, String(started.lastLogs))
+  check('and status exposes the last logs after the instance is gone', rig.harness.status().lastLogs.indexOf('dsh web ready') >= 0, rig.harness.status().lastLogs)
 }
 
-// ── restart: stop, clean, start again, new port ───────────────────────────
+// ── restart: stop, clean, start again on a new port ──────────────────────
 {
   const busy = new Set()
   const rig = baseOptions({ probePort: async (port) => busy.has(port) === false })
   const started = await rig.harness.start(PROJECT)
   check('the first start runs', started.ok === true, JSON.stringify(started))
   const firstHome = started.home
+  const firstWeb = rig.proc.handles.filter((entry) => entry.web === true)[0]
   busy.add(started.port)
   const restarted = await rig.harness.restart(PROJECT)
   check('restart reports a running instance on a new port', restarted.ok === true && restarted.status === 'running' && restarted.port !== started.port, JSON.stringify(restarted))
+  check('restart terminates the old process before starting again', firstWeb !== undefined && firstWeb.terminated === true && firstWeb.waitCalls >= 1, JSON.stringify(firstWeb && { terminated: firstWeb.terminated, waits: firstWeb.waitCalls }))
   check('restart counts the restart', rig.harness.status().restarts === 1, JSON.stringify(rig.harness.status()))
   check(
     'the old temp root was removed',
@@ -288,12 +340,14 @@ check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', 
   await rig.harness.stop()
 }
 
-// ── stop: idempotent, kills and removes the temp root ─────────────────────
+// ── stop: terminate + waitForExit, clean, idempotent ─────────────────────
 {
   const rig = baseOptions()
   const started = await rig.harness.start(PROJECT)
+  const web = rig.proc.handles.filter((entry) => entry.web === true)[0]
   const stopped = await rig.harness.stop()
   check('stop reports the instance stopped', stopped.ok === true && stopped.stopped === true, JSON.stringify(stopped))
+  check('stop terminates and waits for the process', web !== undefined && web.terminated === true && web.waitCalls >= 1, JSON.stringify(web && { terminated: web.terminated, waits: web.waitCalls }))
   check('the temp root is removed on stop', rig.fs.calls.rm.length === 1, JSON.stringify(rig.fs.calls.rm))
   check('status is stopped', rig.harness.status().status === 'stopped' && rig.harness.status().running === false, JSON.stringify(rig.harness.status()))
   const again = await rig.harness.stop()
@@ -301,7 +355,18 @@ check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', 
   check('the first home was under the temp root', norm(started.home).indexOf(norm(TMP)) === 0, started.home)
 }
 
-// ── smoke: page, plugin row and the task-center API ───────────────────────
+// ── a process that refuses to exit is reported, root kept ─────────────────
+{
+  const rig = baseOptions({ process: { noExit: true } })
+  await rig.harness.start(PROJECT)
+  const web = rig.proc.handles.filter((entry) => entry.web === true)[0]
+  const stopped = await rig.harness.stop()
+  check('a process that will not exit refuses the stop', stopped.ok === false && stopped.code === 'stop-timeout', JSON.stringify(stopped))
+  check('termination was requested and waited on', web !== undefined && web.terminated === true && web.waitCalls >= 1, JSON.stringify(web && { terminated: web.terminated, waits: web.waitCalls }))
+  check('the still-live process keeps its temp root and port', rig.fs.calls.rm.length === 0 && rig.harness.status().running === true, JSON.stringify({ rm: rig.fs.calls.rm, status: rig.harness.status() }))
+}
+
+// ── smoke: page, health, plugin row and the task-center API ──────────────
 {
   const rig = baseOptions()
   await rig.harness.start(PROJECT)
@@ -347,7 +412,7 @@ check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', 
   await rig.harness.stop()
 }
 
-// ── no subprocess service: readable refusal, nothing created ──────────────
+// ── no subprocess service: readable refusal, nothing created ─────────────
 {
   const rg = baseOptions()
   const harness = createHarness({ ctx: { get: () => undefined }, fsOps: rg.fs, http: rg.http.http, tmpdir: () => TMP, platform: 'linux', env: {} })
@@ -356,7 +421,7 @@ check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', 
   check('and nothing was copied or spawned', rg.fs.calls.cp.length === 0 && rg.proc.calls.length === 0, JSON.stringify({ cp: rg.fs.calls.cp.length, spawn: rg.proc.calls.length }))
 }
 
-// ── host actions: only the tester (or the user) drives the harness ─────────
+// ── host actions: only the tester (or the user) drives the harness ────────
 function harnessRig(options) {
   const opts = options === undefined ? {} : options
   const team = createTeam({
