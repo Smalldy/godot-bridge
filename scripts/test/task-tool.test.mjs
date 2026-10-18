@@ -42,6 +42,11 @@ check(
   actions.indexOf('mergeRequest') >= 0 && actions.indexOf('rejectMerge') >= 0 && actions.indexOf('refreshMerge') >= 0,
   actions.join(','),
 )
+{
+  const description = String(rig.tool.description === undefined ? '' : rig.tool.description)
+  check('the tool says dependencies must be merged, not just done', description.indexOf('done and merged') >= 0, description.slice(0, 300))
+  check('the tool says refreshMerge re-bases on the target head', description.indexOf('re-bases it on the target') >= 0, description.slice(0, 300))
+}
 check('the old setStatus vocabulary is gone', actions.indexOf('setStatus') < 0, actions.join(','))
 check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && actions.indexOf('forceUnlock') >= 0)
 check('user-owned approval and settings are hidden from the tool', actions.indexOf('approveStart') < 0 && actions.indexOf('rejectStart') < 0 && actions.indexOf('settings') < 0, actions.join(','))
@@ -144,7 +149,11 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   const refreshed = await toolCall({ action: 'refreshMerge', id: id }, { id: 'session-fixer' })
   check(
     'the owner can refresh the merge request from the tool',
-    refreshed.ok === true && refreshed.task.merge.status === 'open' && refreshed.task.merge.head === 'base-sha' && refreshed.task.commit === 'base-sha',
+    refreshed.ok === true &&
+      refreshed.task.merge.status === 'open' &&
+      refreshed.task.merge.head === 'base-sha' &&
+      refreshed.task.merge.base === 'base-sha' &&
+      refreshed.task.commit === 'base-sha',
     JSON.stringify(refreshed),
   )
   const strangerRefresh = await toolCall({ action: 'refreshMerge', id: id }, { id: 'session-other' })
