@@ -424,3 +424,48 @@ export function recordMergeResult(board, id, outcome, now, by) {
   })
   return { ok: true, board: next, events: [{ kind: 'merge', id: id, status: outcome.status }] }
 }
+
+/**
+ * Refresh an open merge request to the task branch's current head. Pure: the
+ * API applies it through the board's CAS after reading the head and diffing the
+ * branch itself.
+ *
+ * A submit records the head it committed; an agent that commits again AFTER the
+ * submit makes that record stale, and the merger would verify an old tree. This
+ * is the explicit repair: it re-points the request at the branch's real head,
+ * refreshes the changed-file list, re-opens a failed/conflicted request and
+ * clears the previous outcome. It never commits, merges or pushes.
+ */
+export function refreshMergeRequest(board, id, head, actualFiles, now, by) {
+  const next = JSON.parse(JSON.stringify(board))
+  const task = next.tasks.filter((candidate) => candidate.id === id)[0]
+  if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
+  if (task.merge === null || typeof task.merge !== 'object' || Array.isArray(task.merge)) {
+    return failure('no-merge-request', id + ' has no merge request to refresh')
+  }
+  if (typeof head !== 'string' || head.length === 0) return failure('missing-head', id + ' has no branch head to record')
+  const at = new Date(now).toISOString()
+  const files = Array.isArray(actualFiles) ? actualFiles.slice() : []
+  const previous = typeof task.merge.head === 'string' ? task.merge.head : null
+  task.commit = head
+  task.actualFiles = files.slice()
+  task.merge = Object.assign({}, task.merge, {
+    status: 'open',
+    head: head,
+    actualFiles: files.slice(),
+    mergeCommit: null,
+    conflict: null,
+    output: null,
+    reviewer: null,
+    at: at,
+  })
+  task.updatedAt = at
+  task.history.push({
+    at: at,
+    by: by,
+    from: task.status,
+    to: task.status,
+    note: 'merge request refreshed: ' + String(previous) + ' -> ' + head,
+  })
+  return { ok: true, board: next, events: [{ kind: 'merge-refreshed', id: id, head: head }] }
+}
