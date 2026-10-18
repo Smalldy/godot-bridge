@@ -335,6 +335,44 @@ check('the dependency chip is rendered', textOf(tree).indexOf('T-1') >= 0)
 check('a pending task renders the reason it is waiting', textOf(tree).indexOf('等待依赖') >= 0, textOf(tree))
 check('a running task renders no waiting reason', textOf(tree).indexOf('派发已暂停') < 0 && textOf(tree).indexOf('并发已满') < 0, textOf(tree))
 
+
+// The done column is newest-first; a reader looks for the latest completion.
+{
+  const savedTasks = TASKS.slice()
+  const savedCounts = HOST.counts
+  const now2 = Date.now()
+  const doneTask = function (id, title, ageMs) {
+    return Object.assign({}, TASKS[2], {
+      id: id,
+      title: title,
+      status: 'done',
+      merge: null,
+      waitingReason: null,
+      createdAt: new Date(now2 - 120000).toISOString(),
+      updatedAt: new Date(now2 - ageMs).toISOString(),
+    })
+  }
+  TASKS.push(doneTask('T-4', 'Newest done', 100), doneTask('T-5', 'Older done', 5000))
+  HOST.counts = Object.assign({}, savedCounts, { total: 5, done: 3 })
+  findButton(tree, '刷新').props.onClick()
+  await flush()
+  tree = withHooks(panel, {})
+  const doneCol = findAll(tree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done')[0]
+  const doneCards = findAll(doneCol, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card')
+  const doneText = doneCards.map(textOf).join(' | ')
+  check(
+    'done cards are newest-first',
+    doneCards.length === 3 && doneText.indexOf('Newest done') < doneText.indexOf('Tail output feature') && doneText.indexOf('Tail output feature') < doneText.indexOf('Older done'),
+    doneText,
+  )
+  TASKS.length = 0
+  savedTasks.forEach((task) => TASKS.push(task))
+  HOST.counts = savedCounts
+  findButton(tree, '刷新').props.onClick()
+  await flush()
+  tree = withHooks(panel, {})
+}
+
 const startButton = findButton(tree, '开始派发')
 check('a start button is offered while paused', startButton !== undefined)
 check('a pending start request is shown', textOf(tree).indexOf('请求开始派发') >= 0 && textOf(tree).indexOf('deps are ready') >= 0)

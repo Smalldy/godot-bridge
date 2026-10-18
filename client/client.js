@@ -1021,17 +1021,26 @@ window.__ModuleLoader__.load({
 
 			function Board(props) {
 				const tasks = props.snapshot.tasks
+				// Recently finished work is the first thing a reader looks for; the done
+				// and closed columns are therefore newest-first. The other columns keep
+				// the host's scheduling order (priority, then age).
+				function recentFirst(left, right) {
+					const leftAt = tcTime(left.updatedAt) === null ? tcTime(left.createdAt) : tcTime(left.updatedAt)
+					const rightAt = tcTime(right.updatedAt) === null ? tcTime(right.createdAt) : tcTime(right.updatedAt)
+					const delta = (rightAt === null ? 0 : rightAt) - (leftAt === null ? 0 : leftAt)
+					return delta !== 0 ? delta : String(right.id).localeCompare(String(left.id))
+				}
 				const ready = tasks.filter(function (task) { return task.status === 'pending' && task.dependency !== undefined && task.dependency.state === 'ready' })
 				const waiting = tasks.filter(function (task) { return task.status === 'pending' && (task.dependency === undefined || task.dependency.state !== 'ready') })
 				const groups = [
 					{ key: 'ready', label: props.t('ready'), tasks: ready },
 					{ key: 'waiting', label: props.t('waiting'), tasks: waiting },
 					{ key: 'running', label: props.t('runningCol'), tasks: tasks.filter(function (task) { return task.status === 'running' }) },
-					{ key: 'done', label: props.t('doneCol'), tasks: tasks.filter(function (task) { return task.status === 'done' }) },
+					{ key: 'done', label: props.t('doneCol'), tasks: tasks.filter(function (task) { return task.status === 'done' }).slice().sort(recentFirst) },
 					{
 						key: 'closed',
 						label: props.t('closedCol'),
-						tasks: tasks.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }),
+						tasks: tasks.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst),
 					},
 				]
 				if (tasks.length === 0) return h('div', { className: 'gbt-empty' }, props.t('emptyBoard'))
