@@ -24,18 +24,60 @@ import {
   DISPATCH_DEFAULTS,
   MAX_BOARD_BYTES,
   MAX_HISTORY,
+  ROLE_CONFIG_FILENAME,
   STATUSES,
+  defaultRoleConfig,
   normaliseDispatch,
   normaliseMerge,
   normaliseReview,
+  normaliseRoleConfig,
   normaliseTest,
 } from './schema.mjs'
 
-export { BOARD_DIRECTORY, BOARD_FILENAME, BOARD_VERSION, MAX_BOARD_BYTES, MAX_HISTORY }
+export { BOARD_DIRECTORY, BOARD_FILENAME, BOARD_VERSION, MAX_BOARD_BYTES, MAX_HISTORY, ROLE_CONFIG_FILENAME }
 
 /** Absolute path of the board inside one project. */
 export function boardPath(projectPath) {
   return join(projectPath, BOARD_DIRECTORY, BOARD_FILENAME)
+}
+
+/** Refuse a role config large enough to be a mistake. */
+export const MAX_ROLE_CONFIG_BYTES = 256 * 1024
+
+/** Absolute path of the optional project role profile file. */
+export function rolesPath(projectPath) {
+  return join(projectPath, BOARD_DIRECTORY, ROLE_CONFIG_FILENAME)
+}
+
+/**
+ * Read and normalise `<project>/.agents/roles.json`.
+ *
+ * The file is optional configuration, not working state: absent, unreadable or
+ * malformed input falls back to the built-in default profiles and reports why,
+ * instead of blocking dispatch. A partial file is repaired member by member by
+ * normaliseRoleConfig.
+ */
+export async function readRoleConfig(io, options) {
+  const fallback = defaultRoleConfig()
+  const projectPath = options.projectPath
+  try {
+    const target = await io.fs.resolve(rolesPath(projectPath), { cwd: projectPath, signal: options.signal })
+    const info = await io.fs.stat(target, options.signal)
+    if (info === undefined) return { ok: true, config: fallback, source: 'default', error: null }
+    if (Number.isFinite(info.size) && info.size > MAX_ROLE_CONFIG_BYTES) {
+      return { ok: true, config: fallback, source: 'default', error: 'roles.json is larger than ' + String(MAX_ROLE_CONFIG_BYTES) + ' bytes; using the default role profiles' }
+    }
+    const text = await io.fs.readText(target, options.signal)
+    let parsed
+    try {
+      parsed = JSON.parse(text)
+    } catch (error) {
+      return { ok: true, config: fallback, source: 'default', error: 'roles.json is not valid JSON, so the default role profiles apply: ' + describe(error) }
+    }
+    return { ok: true, config: normaliseRoleConfig(parsed), source: 'file', error: null }
+  } catch (error) {
+    return { ok: true, config: fallback, source: 'default', error: describe(error) }
+  }
 }
 
 /** A fresh, empty board. */

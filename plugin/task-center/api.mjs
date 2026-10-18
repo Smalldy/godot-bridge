@@ -15,7 +15,8 @@ import { join, resolve } from 'node:path'
 import { TASK_LEASE_MS } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
-import { MERGER_NAME, probeWorktree, resolveLead, servicesFor, workerPool } from './dispatch.mjs'
+import { MERGER_NAME, probeWorktree, resolveLead, roleKindOf, servicesFor, workerPool } from './dispatch.mjs'
+import { readRoleConfig } from './board.mjs'
 import { mergeEligible, recordMergeResult, refreshMergeRequest } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
 
@@ -91,6 +92,10 @@ function messageOf(error) {
  *   worktree cannot be committed.
  * @param options.merger - the merge queue (merge.mjs). Merge actions refuse
  *   readably when it is absent; nothing else depends on it.
+ * @param options.roles - the role registry/provisioner (createRoleManager). When
+ *   present, review/test verdicts are role-gated and stage transitions provision
+ *   the reviewer/tester role; absent keeps the legacy permissive surface used by
+ *   direct API callers.
  * @param options.autoMerge - true enables the host-driven merge sweep
  *   (autoMergePending): a ready open request is merged without any model
  *   action. Off by default so direct API users stay explicit.
@@ -102,6 +107,7 @@ export function createApi(ctx, options) {
   const scheduler = opts.scheduler === undefined ? null : opts.scheduler
   const git = opts.git === undefined ? null : opts.git
   const merger = opts.merger === undefined ? null : opts.merger
+  const roles = opts.roles === undefined ? null : opts.roles
   const autoMerge = opts.autoMerge === true
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
 
@@ -144,6 +150,66 @@ export function createApi(ctx, options) {
       if (match !== undefined) return match
     }
     return null
+  }
+
+  /** The caller's Team membership and role kind, when the registry is active. */
+  function callerRole(context) {
+    const member = callerMemberOf(context)
+    if (member === null) return null
+    return { member: member, kind: roleKindOf(member.name) }
+  }
+
+  function isAssignee(task, member) {
+    if (task === null || task === undefined || task.assignee === null || task.assignee === undefined || member === null) return false
+    const sessionMatch = member.id !== undefined && member.id !== null && task.assignee.session !== null && task.assignee.session !== undefined && String(member.id) === String(task.assignee.session)
+    const nameMatch = member.name !== undefined && member.name !== null && task.assignee.name === member.name
+    return sessionMatch || nameMatch
+  }
+
+  /**
+   * A review/test verdict belongs to the corresponding role (or the user).
+   * This is the role gate: a worker cannot approve its own work, a reviewer
+   * cannot pass tests, and a tester cannot review. Only active when the role
+   * registry is wired in (the production row always does).
+   */
+  function verdictRefusal(context, task, kind) {
+    if (roles === null) return null
+    if (context !== undefined && context !== null && context.role === 'user') return null
+    const caller = callerRole(context)
+    if (caller === null) {
+      return failure('role-required', 'Only a ' + kind + ' role member or the user can record this verdict.')
+    }
+    if (isAssignee(task, caller.member)) {
+      return failure(
+        kind === 'reviewer' ? 'worker-cannot-self-review' : 'worker-cannot-self-test',
+        'The assignee cannot record its own ' + (kind === 'reviewer' ? 'review' : 'test') + ' verdict; an independent ' + kind + ' must.',
+      )
+    }
+    if (caller.kind !== kind) {
+      return failure('wrong-role', 'Only a ' + kind + ' role member or the user can record this verdict; ' + String(caller.member.name === undefined || caller.member.name === null ? 'this agent' : caller.member.name) + ' is not one.')
+    }
+    return null
+  }
+
+  /** Read the project role config (defaults if absent/broken). */
+  async function roleConfigFor(projectPath) {
+    try {
+      const read = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
+      return read.config
+    } catch (error) {
+      return null
+    }
+  }
+
+  /** Best-effort host provisioning for one stage role. Never blocks the action. */
+  async function provisionRole(kind, projectPath, task) {
+    if (roles === null || typeof roles.ensure !== 'function') return null
+    const config = await roleConfigFor(projectPath)
+    try {
+      return await roles.ensure(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: clock() })
+    } catch (error) {
+      return { ok: false, code: 'role-ensure-failed', message: messageOf(error) }
+    }
   }
 
   /**
@@ -421,6 +487,7 @@ export function createApi(ctx, options) {
     if (read.failed !== undefined) return read.failed
     const board = read.board
     const now = clock()
+    const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
     state.sweepLocks()
     reconcileLocks(board)
     const tasks = board.tasks
@@ -436,6 +503,7 @@ export function createApi(ctx, options) {
       seq: board.seq,
       updatedAt: board.updatedAt,
       dispatch: board.dispatch,
+      roles: roleRead.config,
       workers: workerPool(ctx, board),
       counts: model.counts(board),
       queue: model.readyTasks(board).map((task) => model.summary(board, task, now)),
@@ -1045,6 +1113,12 @@ export function createApi(ctx, options) {
     if (action === 'submit') {
       const id = String(source.id === undefined ? '' : source.id)
       if (id === '') return failure('missing-id', 'submit needs a task id')
+      if (roles !== null) {
+        const caller = callerRole(context)
+        if (caller !== null && (caller.kind === 'reviewer' || caller.kind === 'tester')) {
+          return failure('role-cannot-implement', 'A ' + caller.kind + ' role cannot submit implementation work; only the task\'s worker may submit.')
+        }
+      }
       const read = await readBoardOrFail(projectPath)
       if (read.failed !== undefined) return read.failed
       const checked = taskForContext(read.board, id, context)
@@ -1075,12 +1149,22 @@ export function createApi(ctx, options) {
       // answer.
       if (result.ok === true && result.task !== null && result.task !== undefined) {
         await notifyMergerOpened(projectPath, result.task)
+        if (result.task.status === 'reviewing') {
+          const provisioned = await provisionRole('reviewer', projectPath, result.task)
+          if (provisioned !== null) result.provisioned = provisioned
+        }
       }
       return result
     }
     if (action === 'approveReview' || action === 'requestChanges') {
       const id = String(source.id === undefined ? '' : source.id)
       if (id === '') return failure('missing-id', action + ' needs a task id')
+      const read = await readBoardOrFail(projectPath)
+      if (read.failed !== undefined) return read.failed
+      const reviewTask = model.findTask(read.board, id)
+      if (reviewTask === undefined) return failure('unknown-task', 'no task with id ' + id)
+      const reviewRefused = verdictRefusal(context, reviewTask, 'reviewer')
+      if (reviewRefused !== null) return reviewRefused
       const result = await writeTask(
         projectPath,
         id,
@@ -1091,11 +1175,21 @@ export function createApi(ctx, options) {
         context,
       )
       if (result.ok !== true) return result
-      return ok({ task: result.task, events: result.events })
+      if (result.task !== null && result.task !== undefined && result.task.status === 'testing') {
+        const provisioned = await provisionRole('tester', projectPath, result.task)
+        if (provisioned !== null) result.provisioned = provisioned
+      }
+      return ok({ task: result.task, events: result.events, provisioned: result.provisioned })
     }
     if (action === 'passTest' || action === 'failTest') {
       const id = String(source.id === undefined ? '' : source.id)
       if (id === '') return failure('missing-id', action + ' needs a task id')
+      const read = await readBoardOrFail(projectPath)
+      if (read.failed !== undefined) return read.failed
+      const testTask = model.findTask(read.board, id)
+      if (testTask === undefined) return failure('unknown-task', 'no task with id ' + id)
+      const testRefused = verdictRefusal(context, testTask, 'tester')
+      if (testRefused !== null) return testRefused
       const result = await writeTask(
         projectPath,
         id,

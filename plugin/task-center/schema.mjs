@@ -48,6 +48,81 @@ export const REVIEW_STATUSES = ['pending', 'approved', 'changes-requested']
 /** Test-phase outcomes. 'pending' means the phase is open. */
 export const TEST_STATUSES = ['pending', 'passed', 'failed']
 
+
+/** The three role kinds the host provisions, and the stage each one owns. */
+export const ROLE_KINDS = ['worker', 'reviewer', 'tester']
+export const WORKFLOW_STAGES = ['implement', 'review', 'test']
+export const STAGE_ROLE = { implement: 'worker', review: 'reviewer', test: 'tester' }
+export const ROLE_STAGE = { worker: 'implement', reviewer: 'review', tester: 'test' }
+export const ROLE_DEFAULT_INSTANCES = { worker: 1, reviewer: 1, tester: 1 }
+export const ROLE_INSTANCES_LIMITS = { min: 1, max: 8 }
+
+/** A role that stays 'provisioning' this long is treated as dead and replaced. */
+export const ROLE_PROVISION_TIMEOUT_MS = 5 * 60 * 1000
+
+/** The project-level role profile file (optional; defaults apply when absent). */
+export const ROLE_CONFIG_FILENAME = 'roles.json'
+export const ROLE_CONFIG_VERSION = 1
+
+function roleStringList(value) {
+  if (!Array.isArray(value)) return []
+  const seen = new Set()
+  const out = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const text = item.trim()
+    if (text === '' || seen.has(text)) continue
+    seen.add(text)
+    out.push(text)
+  }
+  return out
+}
+
+/** One normalised role profile. Role kinds are fixed in this version. */
+export function normaliseRoleProfile(raw, kind) {
+  const source = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  const stage = WORKFLOW_STAGES.indexOf(source.stage) >= 0 ? source.stage : ROLE_STAGE[kind]
+  const fallback = ROLE_DEFAULT_INSTANCES[kind] === undefined ? 1 : ROLE_DEFAULT_INSTANCES[kind]
+  const instances = Number.isFinite(source.instances)
+    ? Math.min(ROLE_INSTANCES_LIMITS.max, Math.max(ROLE_INSTANCES_LIMITS.min, Math.floor(source.instances)))
+    : fallback
+  return { role: kind, stage: stage, instances: instances, skills: roleStringList(source.skills) }
+}
+
+/** The built-in profile set: one implement-stage worker, one reviewer, one tester. */
+export function defaultRoleConfig() {
+  const profiles = {}
+  for (const kind of ROLE_KINDS) profiles[kind] = normaliseRoleProfile(null, kind)
+  return {
+    version: ROLE_CONFIG_VERSION,
+    defaultProfile: 'worker',
+    stages: Object.assign({}, STAGE_ROLE),
+    profiles: profiles,
+  }
+}
+
+/**
+ * Normalise a project role config. A hand-written or partial file is repaired
+ * member by member; a garbage file falls back to the defaults instead of
+ * blocking dispatch. Stage bindings are derived from the profiles, so a profile
+ * that names a known stage owns it.
+ */
+export function normaliseRoleConfig(raw) {
+  const base = defaultRoleConfig()
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return base
+  const sourceProfiles = raw.profiles !== null && typeof raw.profiles === 'object' && !Array.isArray(raw.profiles) ? raw.profiles : {}
+  const profiles = {}
+  for (const kind of ROLE_KINDS) profiles[kind] = normaliseRoleProfile(sourceProfiles[kind], kind)
+  const stages = {}
+  for (const stage of WORKFLOW_STAGES) {
+    const owner = ROLE_KINDS.filter((kind) => profiles[kind].stage === stage)[0]
+    stages[stage] = owner === undefined ? STAGE_ROLE[stage] : owner
+  }
+  const requestedDefault = typeof raw.defaultProfile === 'string' ? raw.defaultProfile : ''
+  const defaultProfile = ROLE_KINDS.indexOf(requestedDefault) >= 0 ? requestedDefault : base.defaultProfile
+  return { version: ROLE_CONFIG_VERSION, defaultProfile: defaultProfile, stages: stages, profiles: profiles }
+}
+
 /** Project-level dispatch defaults. Persisted in the board so the toggle,
  * concurrency and spawn policy survive a restart. */
 export const DISPATCH_DEFAULTS = {

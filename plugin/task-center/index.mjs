@@ -19,7 +19,7 @@
  */
 
 import { createState } from './state.mjs'
-import { createDispatcher, gitFor } from './dispatch.mjs'
+import { createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
 import { createMerger, verifyFor } from './merge.mjs'
 import { createApi } from './api.mjs'
 import { registerTaskTool } from './tool.mjs'
@@ -42,6 +42,11 @@ export function apply(ctx) {
   // One facade is shared so the dispatcher (claim), the API (start preflight and
   // submit) and the merge-request record all use the same runner.
   const git = gitFor(ctx)
+  // The host-side role registry: worker/reviewer/tester profiles, one instance
+  // each by default, bound to implement/review/test. It provisions a missing
+  // reviewer/tester through the live Lead and replaces a dead or timed-out one,
+  // so no Lead prompt is required.
+  const roles = createRoleManager(ctx)
   scheduler = createDispatcher(ctx, {
     state: state,
     projectPath: function () {
@@ -49,6 +54,7 @@ export function apply(ctx) {
     },
     allowSpawn: true,
     git: git,
+    roles: roles,
   })
   // The merge queue runs the project's verification through the unconfined
   // subprocess service before fast-forwarding. Lazy — activation spawns nothing;
@@ -62,6 +68,7 @@ export function apply(ctx) {
     scheduler: scheduler,
     git: git,
     merger: merger,
+    roles: roles,
     autoMerge: true,
   })
 

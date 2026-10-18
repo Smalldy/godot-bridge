@@ -2,13 +2,14 @@
 // reservation, file locks, retry, lease reaping and host restart recovery.
 
 import { join } from 'node:path'
-import { updateBoard } from '../../plugin/task-center/board.mjs'
+import { readRoleConfig, rolesPath, updateBoard } from '../../plugin/task-center/board.mjs'
 import { createState, writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
-import { createDispatcher, gitFor } from '../../plugin/task-center/dispatch.mjs'
+import { createDispatcher, createRoleManager, ensureRole, gitFor, isRoleName, pickTarget, roleBriefFor, roleKindOf } from '../../plugin/task-center/dispatch.mjs'
+import { ROLE_PROVISION_TIMEOUT_MS, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
-import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, createFakeGit, PROJECT } from './support/fixtures.mjs'
+import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, createFakeGit, seedBoard, PROJECT } from './support/fixtures.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -679,6 +680,278 @@ function createWorktreeRig(options) {
   check('a feature task goes to the ordinary worker', task.status === 'running' && task.assignee.name === 'fixer', JSON.stringify(task.assignee))
   check('and the merger is not chosen', rig.team.calls.every((call) => call.target !== 'merger'), JSON.stringify(rig.team.calls))
   rig.scheduler.dispose()
+}
+
+// ── role registry: profiles, stage bindings, briefs, provisioning ──────────
+function createRoleRig(options) {
+  const opts = options === undefined ? {} : options
+  const fs = createFakeFs()
+  fs.dirs.add(PROJECT)
+  const team =
+    opts.team === undefined
+      ? createTeam({
+          roster: [
+            { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+            { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
+          ],
+          spawnThrows: opts.spawnThrows === true,
+        })
+      : opts.team
+  const agents = opts.agents === undefined ? { list: () => [{ id: 'session-lead' }] } : opts.agents
+  const ctx = {
+    fs: fs,
+    sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+    get(key) {
+      if (key === 'agents') return agents
+      if (key === 'agentTeams') return team
+      if (key === 'subagents') return { list: () => ['spawn'] }
+      return undefined
+    },
+  }
+  return { fs: fs, team: team, ctx: ctx, manager: createRoleManager(ctx) }
+}
+
+function roleTask(overrides) {
+  const stamp = new Date().toISOString()
+  return Object.assign(
+    {
+      id: 'T-1',
+      title: 'Role task',
+      status: 'reviewing',
+      priority: 0,
+      dependsOn: [],
+      writeFiles: ['scripts/a.gd'],
+      base: 'base-sha',
+      target: 'feat/task-center-v2',
+      branch: 'task/T-1-1',
+      worktree: join(PROJECT, '.worktrees', 'T-1'),
+      commit: 'head-sha',
+      actualFiles: ['scripts/a.gd'],
+      requiredRole: null,
+      merge: null,
+      assignee: { name: 'work-T-1-1', session: 'session-work-T-1-1' },
+      attempts: 1,
+      maxAttempts: 3,
+      review: { status: 'pending', by: '@work', at: stamp, reasons: null, attempt: 1 },
+      test: null,
+      dispatch: null,
+      leaseUntil: null,
+      createdBy: '@me',
+      createdAt: stamp,
+      updatedAt: stamp,
+      spec: 'Do the thing',
+      acceptance: 'The thing works',
+      evidence: '',
+      history: [],
+    },
+    overrides === undefined ? {} : overrides,
+  )
+}
+
+{
+  const config = defaultRoleConfig()
+  check(
+    'the built-in registry has worker/reviewer/tester',
+    config.profiles.worker !== undefined && config.profiles.reviewer !== undefined && config.profiles.tester !== undefined,
+    Object.keys(config.profiles).join(','),
+  )
+  check('each default role has one instance', config.profiles.worker.instances === 1 && config.profiles.reviewer.instances === 1 && config.profiles.tester.instances === 1)
+  check(
+    'stages bind implement to worker, review to reviewer, test to tester',
+    config.stages.implement === 'worker' && config.stages.review === 'reviewer' && config.stages.test === 'tester',
+    JSON.stringify(config.stages),
+  )
+  check('the default profile is worker', config.defaultProfile === 'worker', config.defaultProfile)
+  const partial = normaliseRoleConfig({ defaultProfile: 'tester', profiles: { reviewer: { instances: 3, skills: ['dsh-plugin-workflow', 'dsh-plugin-workflow', ''] } } })
+  check(
+    'a partial config repairs around the defaults',
+    partial.profiles.worker.instances === 1 && partial.profiles.reviewer.instances === 3 && partial.profiles.tester.stage === 'test',
+    JSON.stringify(partial.profiles),
+  )
+  check('skill lists are deduplicated and trimmed', partial.profiles.reviewer.skills.join(',') === 'dsh-plugin-workflow', JSON.stringify(partial.profiles.reviewer.skills))
+  check('instances are clamped to the limit', normaliseRoleConfig({ profiles: { worker: { instances: 99 } } }).profiles.worker.instances === 8)
+  check('the default profile accepts a known role only', partial.defaultProfile === 'tester' && normaliseRoleConfig({ defaultProfile: 'nobody' }).defaultProfile === 'worker')
+}
+
+{
+  check('role slot names map to kinds', roleKindOf('reviewer-1') === 'reviewer' && roleKindOf('tester-12') === 'tester' && roleKindOf('worker-2') === 'worker')
+  check('feature workers and the merger are not role slots', isRoleName('work-T-1-1') === false && isRoleName('merger') === false && isRoleName('reviewer') === false)
+  const task = roleTask()
+  const config = normaliseRoleConfig({ profiles: { reviewer: { skills: ['dsh-plugin-workflow'] } } })
+  const reviewer = roleBriefFor('reviewer', task, config, { projectPath: PROJECT, leadName: 'lead' })
+  check('the reviewer brief names the role and stage', reviewer.indexOf('Task center role: reviewer') >= 0 && reviewer.indexOf('Stage: review') >= 0, reviewer)
+  check(
+    'the reviewer brief carries spec, acceptance, worktree and branch',
+    reviewer.indexOf('Do the thing') >= 0 && reviewer.indexOf('The thing works') >= 0 && reviewer.indexOf(join(PROJECT, '.worktrees', 'T-1')) >= 0 && reviewer.indexOf('task/T-1-1') >= 0,
+    reviewer,
+  )
+  check(
+    'the reviewer brief states the read-only boundary',
+    reviewer.indexOf('READ-ONLY') >= 0 && reviewer.indexOf('do NOT edit files') >= 0 && reviewer.indexOf('do NOT commit') >= 0,
+    reviewer,
+  )
+  check(
+    'the reviewer brief carries the verdict schema',
+    reviewer.indexOf('approveReview') >= 0 && reviewer.indexOf('requestChanges') >= 0 && reviewer.indexOf('reasons') >= 0,
+    reviewer,
+  )
+  check('the reviewer brief requires a fresh independent context', reviewer.indexOf('FRESH') >= 0 && reviewer.indexOf('independent') >= 0, reviewer)
+  check('the reviewer brief references the configured skill', reviewer.indexOf('dsh-plugin-workflow') >= 0, reviewer)
+  const tester = roleBriefFor('tester', task, config, {})
+  check('the tester brief carries the test verdict schema', tester.indexOf('passTest') >= 0 && tester.indexOf('failTest') >= 0 && tester.indexOf('evidence') >= 0, tester)
+  const worker = roleBriefFor('worker', roleTask({ status: 'running', review: { status: 'changes-requested', by: 'reviewer-1', at: new Date().toISOString(), reasons: 'rename it', attempt: 1 } }), config, {})
+  check('the worker brief forbids self-review', worker.indexOf('must NOT approve') >= 0, worker)
+  check('a rework brief keeps the same worktree/context', worker.indexOf('REWORK') >= 0 && worker.indexOf('SAME worktree') >= 0 && worker.indexOf('SAME context') >= 0, worker)
+}
+
+{
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-idle', name: 'fixer', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const picked = pickTarget(rig.ctx, { spawn: false })
+  check('a feature task prefers the ordinary worker over role slots', picked.ok === true && picked.target.name === 'fixer', JSON.stringify(picked))
+  const rolesOnly = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-merger', name: 'merger', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const none = pickTarget(rolesOnly.ctx, { spawn: false })
+  check('role slots are never feature workers', none.ok === false && none.code === 'no-teammates', JSON.stringify(none))
+}
+
+{
+  const rig = createRoleRig()
+  const config = defaultRoleConfig()
+  const task = roleTask()
+  const first = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 1000 })
+  check('ensureRole spawns the missing reviewer', first.ok === true && first.created.length === 1 && first.created[0].name === 'reviewer-1', JSON.stringify(first))
+  const spawnCall = rig.team.calls.filter((call) => call.kind === 'spawn')[0]
+  check(
+    'the spawn carries the reviewer role brief',
+    spawnCall !== undefined && spawnCall.name === 'reviewer-1' && spawnCall.text.indexOf('Task center role: reviewer') >= 0 && spawnCall.text.indexOf('Do the thing') >= 0 && spawnCall.text.indexOf('READ-ONLY') >= 0,
+    spawnCall === undefined ? '' : spawnCall.text.slice(0, 500),
+  )
+  const again = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 2000 })
+  check('an existing live reviewer is reused, not respawned', again.ok === true && again.created.length === 0 && again.reused.indexOf('reviewer-1') >= 0, JSON.stringify(again))
+  check('and no second spawn happened', rig.team.calls.filter((call) => call.kind === 'spawn').length === 1, JSON.stringify(rig.team.calls.map((call) => call.kind + ':' + call.name)))
+  const tester = await rig.manager.ensure('tester', { config: config, projectPath: PROJECT, task: task, now: 2000 })
+  check('the tester role is provisioned too', tester.ok === true && tester.created[0].name === 'tester-1', JSON.stringify(tester))
+  const viaName = await ensureRole(rig.ctx, 'tester', { config: config, projectPath: PROJECT, task: task, now: 2500 })
+  check('ensureRole is exposed as a host function', viaName.ok === true && viaName.created.length === 0 && viaName.reused.indexOf('tester-1') >= 0, JSON.stringify(viaName))
+}
+
+{
+  const rig = createRoleRig()
+  const config = defaultRoleConfig()
+  const task = roleTask()
+  await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 1000 })
+  rig.team.setStatus('reviewer-1', 'failed')
+  const replaced = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 2000 })
+  check(
+    'a failed reviewer is replaced on the next ensure',
+    replaced.ok === true && replaced.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'failed') && replaced.created[0].name === 'reviewer-2',
+    JSON.stringify(replaced),
+  )
+  rig.team.setStatus('reviewer-2', 'provisioning')
+  const timedOut = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 2000 + ROLE_PROVISION_TIMEOUT_MS + 1 })
+  check(
+    'a provisioning timeout is replaced',
+    timedOut.ok === true && timedOut.replaced.some((entry) => entry.name === 'reviewer-2' && entry.reason === 'timeout') && timedOut.created[0].name === 'reviewer-3',
+    JSON.stringify(timedOut),
+  )
+}
+
+{
+  const rig = createRoleRig()
+  const config = defaultRoleConfig()
+  const task = roleTask()
+  await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 1000 })
+  const drained = rig.manager.drain('reviewer-1')
+  check('drain marks a slot for replacement', drained.ok === true, JSON.stringify(drained))
+  const afterDrain = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 2000 })
+  check(
+    'a drained reviewer is replaced',
+    afterDrain.ok === true && afterDrain.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drained') && afterDrain.created[0].name === 'reviewer-2',
+    JSON.stringify(afterDrain),
+  )
+}
+
+{
+  const rig = createRoleRig()
+  const config = defaultRoleConfig()
+  const invalid = await rig.manager.ensure('nobody', { config: config })
+  check('an unknown role kind is a readable refusal', invalid.ok === false && invalid.code === 'invalid-role', JSON.stringify(invalid))
+  const noTeam = await createRoleRig({ team: null }).manager.ensure('reviewer', { config: config })
+  check('a profile without agent-team services refuses readably', noTeam.ok === false && noTeam.code === 'no-team-service', JSON.stringify(noTeam))
+  const noLead = await createRoleRig({ agents: { list: () => [] } }).manager.ensure('reviewer', { config: config })
+  check('a profile without a Lead refuses readably', noLead.ok === false && noLead.code === 'no-lead', JSON.stringify(noLead))
+  const spawnFailed = await createRoleRig({ spawnThrows: true }).manager.ensure('reviewer', { config: config })
+  check('a refused spawn is reported, not thrown', spawnFailed.ok === false && spawnFailed.code === 'spawn-failed', JSON.stringify(spawnFailed))
+  const two = createRoleRig()
+  const config2 = normaliseRoleConfig({ profiles: { reviewer: { instances: 2, skills: ['skill-a'] } } })
+  const doubled = await two.manager.ensure('reviewer', { config: config2, projectPath: PROJECT, task: roleTask(), now: 1000 })
+  check(
+    'configured instances are filled with fixed slot names',
+    doubled.ok === true && doubled.created.map((entry) => entry.name).join(',') === 'reviewer-1,reviewer-2',
+    JSON.stringify(doubled.created),
+  )
+  check(
+    'each spawned brief carries the configured skill',
+    two.team.calls.filter((call) => call.kind === 'spawn').every((call) => call.text.indexOf('skill-a') >= 0),
+    JSON.stringify(two.team.calls.map((call) => call.text.slice(0, 120))),
+  )
+}
+
+{
+  const rig = createRoleRig()
+  rig.fs.files.set(
+    rolesPath(PROJECT),
+    { text: JSON.stringify({ defaultProfile: 'tester', profiles: { reviewer: { instances: 2, skills: ['dsh-plugin-workflow'] } } }), version: 'seed' },
+  )
+  const read = await readRoleConfig({ fs: rig.fs }, { projectPath: PROJECT })
+  check(
+    'roles.json is read from the project',
+    read.source === 'file' && read.config.profiles.reviewer.instances === 2 && read.config.profiles.reviewer.stage === 'review' && read.config.profiles.reviewer.skills.join(',') === 'dsh-plugin-workflow',
+    JSON.stringify(read.config),
+  )
+  check('and its default profile is honoured', read.config.defaultProfile === 'tester', read.config.defaultProfile)
+  const absent = createRoleRig()
+  const missing = await readRoleConfig({ fs: absent.fs }, { projectPath: PROJECT })
+  check('an absent roles.json uses the defaults', missing.source === 'default' && missing.config.defaultProfile === 'worker' && missing.error === null, JSON.stringify(missing))
+  absent.fs.files.set(rolesPath(PROJECT), { text: '{ not json', version: 'seed' })
+  const broken = await readRoleConfig({ fs: absent.fs }, { projectPath: PROJECT })
+  check('a broken roles.json falls back instead of failing dispatch', broken.source === 'default' && String(broken.error).indexOf('not valid JSON') >= 0, JSON.stringify(broken))
+}
+
+{
+  const rig = createRoleRig()
+  const state = createState(rig.ctx)
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [roleTask()] }))
+  const scheduler = createDispatcher(rig.ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: null, roles: rig.manager })
+  const first = await scheduler.tick(PROJECT)
+  check(
+    'the tick provisions the reviewer for a reviewing task',
+    first.ok === true && rig.team.calls.filter((call) => call.kind === 'spawn' && call.name === 'reviewer-1').length === 1,
+    JSON.stringify(first.roles),
+  )
+  await scheduler.tick(PROJECT)
+  check('a second tick reuses the live reviewer', rig.team.calls.filter((call) => call.kind === 'spawn').length === 1, JSON.stringify(rig.team.calls.map((call) => call.name)))
+  rig.team.setStatus('reviewer-1', 'failed')
+  await scheduler.tick(PROJECT)
+  check('a dead reviewer is replaced by the next tick', rig.team.calls.filter((call) => call.kind === 'spawn' && call.name === 'reviewer-2').length === 1, JSON.stringify(rig.team.calls.map((call) => call.name)))
+  scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
