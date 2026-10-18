@@ -67,6 +67,7 @@ check('three routes are registered', routes.length === 3, routes.map((route) => 
 check('the routes include state, action and diagnostics', routes.map((route) => route.path).join(',').indexOf('/state') >= 0 && routes.map((route) => route.path).join(',').indexOf('/action') >= 0)
 check('an agent status listener is installed', listeners.some((entry) => entry.event === 'agent/status'))
 check('the effects are labelled', effects.some((label) => label.indexOf('task center') >= 0) && effects.some((label) => label.indexOf('task_center') >= 0), effects.join(' | '))
+check('a host-driven auto-merge sweep is installed', effects.some((label) => label.indexOf('auto-merge') >= 0), effects.join(' | '))
 check('the tool action enum includes start and pause', tools[0].parameters.action.enum.indexOf('start') >= 0 && tools[0].parameters.action.enum.indexOf('pause') >= 0)
 check('the tool action enum no longer includes setStatus', tools[0].parameters.action.enum.indexOf('setStatus') < 0)
 check(
