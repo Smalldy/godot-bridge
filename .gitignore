@@ -22,6 +22,11 @@ release-notes.md
 # Local investigation scratch (agent diagnostics, fixtures, extracted harness sources)
 .investigate/
 
+# Task center worktrees: one disposable checkout per running task, created under
+# this directory by plugin/task-center/git.mjs. Machine-local working state, like
+# the board below — never committed.
+.worktrees/
+
 # Task center board: machine-local WORKING STATE, not source. Committing it would
 # let it drift between branches and manufacture the very merge conflicts the task
 # center exists to prevent. What gets versioned here is the proposals and skills
