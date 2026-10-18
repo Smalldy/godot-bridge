@@ -27,6 +27,8 @@ import {
   STATUSES,
   normaliseDispatch,
   normaliseMerge,
+  normaliseReview,
+  normaliseTest,
 } from './schema.mjs'
 
 export { BOARD_DIRECTORY, BOARD_FILENAME, BOARD_VERSION, MAX_BOARD_BYTES, MAX_HISTORY }
@@ -148,6 +150,8 @@ function normaliseTask(raw, index, now) {
   const actualFiles = stringList(raw.actualFiles)
   const requiredRole = typeof raw.requiredRole === 'string' ? raw.requiredRole : null
   const merge = normaliseMerge(raw.merge)
+  const review = normaliseReview(raw.review)
+  const test = normaliseTest(raw.test)
   return {
     ok: true,
     task: {
@@ -168,6 +172,8 @@ function normaliseTask(raw, index, now) {
       actualFiles: actualFiles,
       requiredRole: requiredRole,
       merge: merge,
+      review: review,
+      test: test,
       assignee: assignee,
       attempts: attempts,
       maxAttempts: maxAttempts,

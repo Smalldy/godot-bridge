@@ -505,7 +505,7 @@ function holdFile(rig, path) {
   const submitSurface = install(submitRig)
   const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'npm run verify', note: 'MR ready' })
   const payload = res.json()
-  check('submit succeeds in the task worktree without any Team service', payload.ok === true && payload.task.status === 'done', res.text)
+  check('submit succeeds in the task worktree without any Team service', payload.ok === true && payload.task.status === 'reviewing', res.text)
   check('submit records the commit hash', payload.task.commit === 'head-sha', JSON.stringify(payload.task))
   check(
     'submit records actual files beyond the declared list',
@@ -528,7 +528,8 @@ function holdFile(rig, path) {
     merge.tests === 'npm run verify' && merge.reviewer === null && merge.conflict === null && typeof merge.at === 'string',
     JSON.stringify(merge),
   )
-  check('self testing records no verdict', merge.verdict === null, JSON.stringify(merge.verdict))
+  check('submit opens the first review round', payload.task.review !== null && payload.task.review.status === 'pending' && payload.task.review.attempt === 1, JSON.stringify(payload.task.review))
+  check('and records no verdict on the merge', merge.verdict === undefined, JSON.stringify(merge.verdict))
   check('submit keeps the worktree for the merge request', payload.task.worktree === task.worktree, String(payload.task.worktree))
   const addCall = fake.calls.filter((entry) => entry.args.join(' ') === 'add -A')[0]
   const commitCall = fake.calls.filter((entry) => entry.args[0] === 'commit')[0]
@@ -660,7 +661,7 @@ function holdFile(rig, path) {
   const submitSurface = install(submitRig)
   const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'plain done' })
   const payload = res.json()
-  check('a task without a worktree submits without a merge request', payload.ok === true && payload.task.status === 'done', res.text)
+  check('a task without a worktree submits without a merge request', payload.ok === true && payload.task.status === 'reviewing', res.text)
   check(
     'and records no commit, actual files or merge',
     payload.task.commit === null && payload.task.merge === null && payload.task.actualFiles.length === 0,
@@ -794,7 +795,9 @@ function openMergeTask(overrides) {
     {
       id: 'T-1',
       title: 'MR task',
-      status: 'done',
+      status: 'testing',
+      review: { status: 'approved', by: 'reviewer', at: stamp, reasons: null, attempt: 1 },
+      test: { status: 'passed', by: 'tester', at: stamp, evidence: 'npm run verify', attempt: 1 },
       priority: 0,
       dependsOn: [],
       writeFiles: ['scripts/a.gd'],
@@ -996,7 +999,7 @@ function seedMergeTask(rig, task) {
   seedMergeTask(mergeRig, openMergeTask({ status: 'running' }))
   const mergeSurface = install(mergeRig)
   const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('a task that is not done cannot be merged', res.json().ok === false && res.json().code === 'not-done', res.text)
+  check('a running task cannot be merged', res.json().ok === false && res.json().code === 'not-mergeable-phase', res.text)
   check('and its worktree is left alone', fake.calls.length === 0, JSON.stringify(fake.calls))
   mergeSurface.dispose()
   mergeRig.scheduler.dispose()
@@ -1101,7 +1104,7 @@ function mergerTeam(options) {
   const submitSurface = install(submitRig)
   const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'npm run verify' })
   const payload = res.json()
-  check('submit still succeeds with a merger in the team', payload.ok === true && payload.task.status === 'done' && payload.task.merge.status === 'open', res.text)
+  check('submit still succeeds with a merger in the team', payload.ok === true && payload.task.status === 'reviewing' && payload.task.merge.status === 'open', res.text)
   const sent = team.calls.filter((call) => call.kind === 'send')
   check('the merger is notified about the open request', sent.length === 1 && sent[0].target === 'merger', JSON.stringify(sent))
   const text = sent.length === 0 ? '' : sent[0].text
@@ -1138,7 +1141,7 @@ function mergerTeam(options) {
   const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'done' })
   check(
     'a refused merger notification does not fail the submit',
-    res.json().ok === true && res.json().task.status === 'done' && res.json().task.merge.status === 'open',
+    res.json().ok === true && res.json().task.status === 'reviewing' && res.json().task.merge.status === 'open',
     res.text,
   )
   submitSurface.dispose()
@@ -1269,8 +1272,9 @@ function driftRig(options) {
   await rig.settle()
   const sent = rig.team.calls.filter((call) => call.kind === 'send')[0]
   const text = sent === undefined ? '' : sent.text
-  check('the brief says submit is the last step', /submit is your LAST step/i.test(text), text.slice(0, 400))
-  check('and warns against committing after it', /do not commit again/i.test(text), text.slice(0, 400))
+  check('the brief says submit is the last step of the round', /submit is the last step/i.test(text), text.slice(0, 400))
+  check('and names the review and test phases after it', /REVIEW/i.test(text) && /TESTING/i.test(text), text.slice(0, 400))
+  check('and warns against committing after a passing test', /Do not commit after a passing test/i.test(text), text.slice(0, 400))
   check('and points at refreshMerge for a late commit', text.indexOf('refreshMerge') >= 0, text.slice(0, 400))
   rig.scheduler.dispose()
 }
@@ -1350,9 +1354,18 @@ function driftRig(options) {
     ctx.fake.calls.every((entry) => entry.args[0] === 'rev-parse' || entry.args[0] === 'diff'),
     JSON.stringify(ctx.fake.calls.map((entry) => entry.args)),
   )
-  // The refreshed head is now mergeable.
+  check(
+    'the refresh starts a new review round',
+    payload.task.status === 'reviewing' && payload.task.review.attempt === 2 && payload.task.test === null,
+    JSON.stringify({ status: payload.task.status, review: payload.task.review }),
+  )
+  // The refreshed head is now mergeable once the phases pass again.
+  const refusedAgain = await postTo(ctx.surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('a refreshed head cannot merge before review', refusedAgain.json().ok === false && refusedAgain.json().code === 'review-required', refusedAgain.text)
+  await postTo(ctx.surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  await postTo(ctx.surface, { action: 'passTest', project: PROJECT, id: 'T-1' })
   const merged = await postTo(ctx.surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('after a refresh the merge succeeds', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
+  check('after a refresh and a fresh pass the merge succeeds', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
   ctx.surface.dispose()
   ctx.rig.scheduler.dispose()
 }
@@ -1392,7 +1405,7 @@ function driftRig(options) {
 
   const running = driftRig({ task: openMergeTask({ status: 'running' }) })
   const notDone = await postTo(running.surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
-  check('only a done task has a request to refresh', notDone.json().ok === false && notDone.json().code === 'not-done', notDone.text)
+  check('a running task has no submitted request to refresh', notDone.json().ok === false && notDone.json().code === 'not-mergeable-phase', notDone.text)
   running.surface.dispose()
   running.rig.scheduler.dispose()
 
@@ -1500,8 +1513,10 @@ function driftRig(options) {
       ),
     JSON.stringify(payload.task && payload.task.history.slice(-2)),
   )
+  await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  await postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1' })
   const merged = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('the refreshed request merges', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
+  check('the refreshed request merges after a fresh pass', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
   surface.dispose()
   rig.scheduler.dispose()
 }
@@ -1551,301 +1566,80 @@ function driftRig(options) {
   rig.scheduler.dispose()
 }
 
-// ── independent testing: settings, verdict and the merge gate ──────────────
-/** Rewrite one task on the seeded fake board — stands in for recordVerification
- * (T-18) when a test needs a given verdict. */
-function patchSeededMerge(rig, id, change) {
-  const key = [...rig.fs.files.keys()].find((entry) => String(entry).endsWith('tasks.json'))
-  const board = JSON.parse(rig.fs.files.get(key).text)
-  const task = board.tasks.filter((entry) => entry.id === id)[0]
-  change(task)
-  seedBoard(rig.fs, rig.project, JSON.stringify(board))
-}
-
+// ── the phase machine is the merge gate: review -> testing -> done ─────────
 {
-  const fake = fakeGit()
-  const rig = createSubmitRig({ git: fake.git })
-  const surface = install(rig)
-  const projectUrl = STATE_PATH + '?project=' + encodeURIComponent(PROJECT)
-  await call(surface, projectUrl, {})
-  const res = await postTo(surface, { action: 'settings', project: PROJECT, testing: 'independent' })
-  check('settings accept independent testing', res.json().ok === true && res.json().dispatch.testing === 'independent', res.text)
-  const unknown = await postTo(surface, { action: 'settings', project: PROJECT, testing: 'weird' })
-  check('an unknown testing mode falls back to self', unknown.json().ok === true && unknown.json().dispatch.testing === 'self', unknown.text)
-  surface.dispose()
-  rig.scheduler.dispose()
-}
-
-{
-  const fake = fakeGit()
-  const rig = createSubmitRig({ git: fake.git })
-  // The settings write kicks the scheduler, so the seeded claim must belong to
-  // this boot or the reaper would return it to pending.
-  const seeded = runningWorktreeTask()
-  seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
-  seedRunningTask(rig, seeded)
-  const surface = install(rig)
-  await postTo(surface, { action: 'settings', project: PROJECT, testing: 'independent' })
-  const res = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
-  const merge = res.json().task === undefined || res.json().task === null ? null : res.json().task.merge
-  check(
-    'an independent submit opens a pending verdict',
-    res.json().ok === true && merge !== null && merge.status === 'open' && merge.verdict !== null && merge.verdict.status === 'pending',
-    JSON.stringify(merge),
-  )
-  surface.dispose()
-  rig.scheduler.dispose()
-}
-
-{
-  const seed = openMergeTask()
-  seed.merge = Object.assign({}, seed.merge, { verdict: { status: 'pending', by: null, at: null, output: null } })
+  // a request still in review is refused, and neither git nor verification runs
   const fake = mergeGit()
   const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
   const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
-  seedMergeTask(rig, seed)
+  const task = openMergeTask({ status: 'reviewing' })
+  task.test = null
+  task.review = { status: 'pending', by: 'worker', at: new Date().toISOString(), reasons: null, attempt: 1 }
+  seedMergeTask(rig, task)
   const surface = install(rig)
-  await postTo(surface, { action: 'settings', project: PROJECT, testing: 'independent' })
   const res = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('independent testing refuses a pending verdict', res.json().ok === false && res.json().code === 'test-required', res.text)
-  check('no integration worktree is created', fake.calls.every((entry) => !(entry.args[0] === 'worktree' && entry.args[1] === 'add')), JSON.stringify(fake.calls.map((entry) => entry.args)))
-  check('main is not fast-forwarded', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
-  check('and no verification runs', verifier.calls.length === 0, String(verifier.calls.length))
-  const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
-  check('the request stays open', after.json().tasks[0].merge.status === 'open', after.text)
+  check('a request under review cannot merge', res.json().ok === false && res.json().code === 'review-required', res.text)
+  check('and no git runs for it', fake.calls.length === 0, JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check('and verification does not run', verifier.calls.length === 0, JSON.stringify(verifier.calls))
   surface.dispose()
   rig.scheduler.dispose()
 }
 
 {
-  const seed = openMergeTask()
-  seed.merge = Object.assign({}, seed.merge, { verdict: { status: 'failed', by: 'tester', at: null, output: 'FAIL board.test.mjs' } })
+  // testing with a pending test is refused
   const fake = mergeGit()
   const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
   const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
-  seedMergeTask(rig, seed)
+  const task = openMergeTask({ status: 'testing' })
+  task.test = { status: 'pending', by: null, at: new Date().toISOString(), evidence: null, attempt: 1 }
+  seedMergeTask(rig, task)
   const surface = install(rig)
-  await postTo(surface, { action: 'settings', project: PROJECT, testing: 'independent' })
   const res = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('a failed verdict refuses with test-failed', res.json().ok === false && res.json().code === 'test-failed', res.text)
-  check('and reports the tester output', String(res.json().message).indexOf('FAIL board.test.mjs') >= 0, res.text)
-  check('and nothing reaches git', fake.calls.every((entry) => entry.args[0] === 'rev-parse'), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check('a pending test is not mergeable', res.json().ok === false && res.json().code === 'test-required', res.text)
+  check('and a pending test never reaches git', fake.calls.length === 0, JSON.stringify(fake.calls.map((entry) => entry.args)))
   surface.dispose()
   rig.scheduler.dispose()
 }
 
 {
-  const seed = openMergeTask()
-  seed.merge = Object.assign({}, seed.merge, { verdict: { status: 'passed', by: 'tester', at: null, output: 'ok' } })
+  // a hand-written board with a failed test reports the evidence
   const fake = mergeGit()
   const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
   const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
-  seedMergeTask(rig, seed)
+  const task = openMergeTask({ status: 'testing' })
+  task.test = { status: 'failed', by: 'tester', at: new Date().toISOString(), evidence: 'FAIL board.test.mjs', attempt: 1 }
+  seedMergeTask(rig, task)
   const surface = install(rig)
-  await postTo(surface, { action: 'settings', project: PROJECT, testing: 'independent' })
   const res = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('a passed verdict lets the merge through', res.json().ok === true && res.json().task.merge.status === 'merged', res.text)
-  check(
-    'and the verdict is kept on the merged record',
-    res.json().task.merge.verdict !== null && res.json().task.merge.verdict.status === 'passed',
-    JSON.stringify(res.json().task.merge.verdict),
-  )
+  check('a failed test refuses with test-failed', res.json().ok === false && res.json().code === 'test-failed', res.text)
+  check('and the refusal carries the evidence', String(res.json().message).indexOf('FAIL board.test.mjs') >= 0, res.text)
+  check('and a failed test never reaches git', fake.calls.length === 0, JSON.stringify(fake.calls.map((entry) => entry.args)))
   surface.dispose()
   rig.scheduler.dispose()
 }
 
 {
-  const seed = openMergeTask()
-  seed.merge = Object.assign({}, seed.merge, { verdict: { status: 'passed', by: 'tester', at: null, output: 'ok' } })
-  const fake = mergeGit({
-    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
-  })
-  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  // a passed test merges, and the merge is what completes the task
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
   const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
-  seedMergeTask(rig, seed)
+  seedMergeTask(rig, openMergeTask())
   const surface = install(rig)
-  await postTo(surface, { action: 'settings', project: PROJECT, testing: 'independent' })
-  const refreshed = await postTo(surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  const res = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('a passed test merges', res.json().ok === true && res.json().task.merge.status === 'merged', res.text)
+  check('and the merge completes the task', res.json().task.status === 'done', res.text)
   check(
-    'refreshMerge puts an independent verdict back to pending',
-    refreshed.json().ok === true && refreshed.json().task.merge.verdict !== null && refreshed.json().task.merge.verdict.status === 'pending',
-    refreshed.text,
-  )
-  const refused = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('the refreshed request needs a fresh verdict', refused.json().ok === false && refused.json().code === 'test-required', refused.text)
-  patchSeededMerge(rig, 'T-1', (task) => {
-    task.merge.verdict = { status: 'passed', by: 'tester', at: new Date().toISOString(), output: 're-verified' }
-  })
-  const merged = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('a fresh pass lets the refreshed request merge', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
-  surface.dispose()
-  rig.scheduler.dispose()
-}
-
-// ── host-side independent verification (no model in the loop) ──────────────
-/** A verify runner whose calls and result a test controls. */
-function fakeVerify(result) {
-  const calls = []
-  return {
-    calls: calls,
-    verify: async function verify(request) {
-      calls.push(request)
-      return typeof result === 'function' ? result(request) : result
-    },
-  }
-}
-
-/** Seed one running task with an explicit testing strategy. */
-function seedRunningTaskWithTesting(rig, task, testing) {
-  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused', testing: testing }, tasks: [task] }))
-}
-
-{
-  const fake = fakeGit()
-  const verification = fakeVerify({ code: 0, stdout: 'PASS board.test.mjs\nALL CHECKS PASSED', stderr: '' })
-  const team = mergerTeam()
-  const rig = createSubmitRig({ git: fake.git, team: team, verify: verification.verify })
-  seedRunningTaskWithTesting(rig, runningWorktreeTask(), 'independent')
-  const surface = install(rig)
-  const res = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
-  const payload = res.json()
-  const merge = payload.task === undefined || payload.task === null ? null : payload.task.merge
-  const verifyPath = join(PROJECT, '.worktrees', 'verify-T-1')
-  check(
-    'an independent submit runs verification on the host in a temporary checkout',
-    payload.ok === true && verification.calls.length === 1 && verification.calls[0].cwd === verifyPath && verification.calls[0].command === 'npm run verify',
-    JSON.stringify(verification.calls),
-  )
-  check(
-    'and records a passed system verdict with the output',
-    merge !== null &&
-      merge.verdict !== null &&
-      merge.verdict.status === 'passed' &&
-      merge.verdict.by === 'system' &&
-      typeof merge.verdict.at === 'string' &&
-      String(merge.verdict.output).indexOf('ALL CHECKS PASSED') >= 0,
-    JSON.stringify(merge && merge.verdict),
-  )
-  const addCall = fake.calls.filter((entry) => entry.args[0] === 'worktree' && entry.args[1] === 'add')[0]
-  check(
-    'the checkout is created from the task branch',
-    addCall !== undefined && addCall.args.join(' ') === ['worktree', 'add', '-b', 'verify/T-1', verifyPath, 'task/T-1-1'].join(' ') && addCall.cwd === PROJECT,
-    JSON.stringify(addCall && addCall.args),
-  )
-  check(
-    'and removed together with its branch afterwards',
-    fake.calls.some((entry) => entry.args.join(' ') === ['worktree', 'remove', '--force', verifyPath].join(' ')) &&
-      fake.calls.some((entry) => entry.args.join(' ') === ['branch', '-D', 'verify/T-1'].join(' ')),
-    JSON.stringify(fake.calls.map((entry) => entry.args)),
-  )
-  const sent = team.calls.filter((call) => call.kind === 'send')
-  check('a pass notifies the merger', sent.some((call) => call.target === 'merger' && call.text.indexOf('PASSED') >= 0), JSON.stringify(sent))
-  check('and nothing is pushed', fake.calls.every((entry) => entry.args[0] !== 'push'), JSON.stringify(fake.calls.map((entry) => entry.args)))
-  surface.dispose()
-  rig.scheduler.dispose()
-}
-
-{
-  const fake = fakeGit()
-  const noise = Array.from({ length: 60 }, (_, index) => 'detail line ' + String(index + 1)).join('\n')
-  const verification = fakeVerify({ code: 1, stdout: 'FAIL board.test.mjs\n' + noise + '\nfinal tail line', stderr: '' })
-  const team = mergerTeam()
-  const rig = createSubmitRig({
-    git: fake.git,
-    merger: createMerger({ git: fake.git, verify: verification.verify }),
-    team: team,
-    verify: verification.verify,
-  })
-  seedRunningTaskWithTesting(rig, runningWorktreeTask(), 'independent')
-  const surface = install(rig)
-  const res = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
-  const merge = res.json().task === undefined ? null : res.json().task.merge
-  check(
-    'a failed verification records a failed system verdict',
-    merge !== null && merge.verdict !== null && merge.verdict.status === 'failed' && merge.verdict.by === 'system',
-    JSON.stringify(merge && merge.verdict),
-  )
-  check(
-    'the output keeps the failure line and the exit code despite a long log',
-    merge !== null && String(merge.verdict.output).indexOf('FAIL board.test.mjs') >= 0 && String(merge.verdict.output).indexOf('exit 1') >= 0,
-    merge === null ? '' : String(merge.verdict.output).slice(0, 800),
-  )
-  const sent = team.calls.filter((call) => call.kind === 'send')
-  check(
-    'a failure notifies the owner with the output',
-    sent.some((call) => call.target === 'fixer' && call.text.indexOf('FAILED') >= 0 && call.text.indexOf('FAIL board.test.mjs') >= 0),
-    JSON.stringify(sent),
-  )
-  check(
-    'the temporary checkout is removed on failure too',
-    fake.calls.some((entry) => entry.args.join(' ') === ['worktree', 'remove', '--force', join(PROJECT, '.worktrees', 'verify-T-1')].join(' ')),
-    JSON.stringify(fake.calls.map((entry) => entry.args)),
-  )
-  check('main is not touched by a failed verification', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
-  const refused = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('the failed verdict keeps the merge gate shut', refused.json().ok === false && refused.json().code === 'test-failed', refused.text)
-  surface.dispose()
-  rig.scheduler.dispose()
-}
-
-{
-  const fake = fakeGit()
-  const verification = fakeVerify({ code: 0, stdout: 'should not run', stderr: '' })
-  const rig = createSubmitRig({ git: fake.git, verify: verification.verify })
-  seedRunningTask(rig, runningWorktreeTask())
-  const surface = install(rig)
-  const res = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
-  const merge = res.json().task === undefined ? null : res.json().task.merge
-  check(
-    'self mode never runs host verification',
-    verification.calls.length === 0 && merge !== null && merge.verdict === null,
-    JSON.stringify({ calls: verification.calls.length, verdict: merge && merge.verdict }),
-  )
-  check(
-    'and never creates a verification checkout',
-    fake.calls.every((entry) => !(entry.args[0] === 'worktree' && entry.args[1] === 'add' && String(entry.args[3]).indexOf('verify-') >= 0)),
-    JSON.stringify(fake.calls.map((entry) => entry.args)),
+    'the history records testing -> done',
+    res.json().task.history.some((entry) => entry.from === 'testing' && entry.to === 'done'),
+    JSON.stringify(res.json().task.history.slice(-2)),
   )
   surface.dispose()
   rig.scheduler.dispose()
 }
 
+// ── the phase actions drive the machine, then the host sweep merges ────────
 {
-  const fake = mergeGit({
-    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
-  })
-  const verification = fakeVerify({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
-  const team = mergerTeam()
-  const seedTask = openMergeTask({ assignee: { name: 'fixer', session: 'session-fixer' } })
-  seedTask.merge = Object.assign({}, seedTask.merge, {
-    verdict: { status: 'failed', by: 'system', at: null, output: 'old failure' },
-  })
-  const rig = createSubmitRig({
-    git: fake.git,
-    merger: createMerger({ git: fake.git, verify: verification.verify }),
-    team: team,
-    verify: verification.verify,
-  })
-  seedMergeTask(rig, seedTask)
-  const surface = install(rig)
-  await postTo(surface, { action: 'settings', project: PROJECT, testing: 'independent' })
-  const res = await postTo(surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
-  const merge = res.json().task === undefined ? null : res.json().task.merge
-  check(
-    'a refresh re-runs host verification and replaces the verdict',
-    verification.calls.length === 1 && merge !== null && merge.verdict.status === 'passed' && merge.verdict.by === 'system',
-    JSON.stringify(merge && merge.verdict),
-  )
-  const merged = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('and the re-verified request merges', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
-  surface.dispose()
-  rig.scheduler.dispose()
-}
-
-// ── host-driven auto-merge: success does not need a model ──────────────────
-{
-  // self mode: submit opens the request, the host sweep integrates it, with no
-  // Team service at all — there is no merger agent in this rig.
+  // no Team service at all: submit -> review -> approve -> test -> sweep -> done
   const fake = mergeGit()
   const verifier = fakeVerifier({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
   const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), autoMerge: true })
@@ -1853,11 +1647,37 @@ function seedRunningTaskWithTesting(rig, task, testing) {
   seedRunningTask(rig, runningWorktreeTask())
   const surface = install(rig)
   const submitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
-  check('self submit opens the request', submitted.json().ok === true && submitted.json().task.merge.status === 'open', submitted.text)
+  check(
+    'submit enters review with an open request',
+    submitted.json().ok === true &&
+      submitted.json().task.status === 'reviewing' &&
+      submitted.json().task.merge.status === 'open' &&
+      submitted.json().task.review.attempt === 1,
+    submitted.text,
+  )
+  const sweepBeforeReview = await rig.api.autoMergePending(PROJECT)
+  check('a request under review is not merged by the sweep', sweepBeforeReview.ok === true && sweepBeforeReview.merged.length === 0, JSON.stringify(sweepBeforeReview))
+  const approved = await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  check(
+    'approveReview moves to testing and opens the test round',
+    approved.json().ok === true &&
+      approved.json().task.status === 'testing' &&
+      approved.json().task.review.status === 'approved' &&
+      approved.json().task.test.attempt === 1,
+    approved.text,
+  )
+  const pending = await rig.api.autoMergePending(PROJECT)
+  check('a pending test is not merged by the sweep', pending.ok === true && pending.merged.length === 0, JSON.stringify(pending))
+  const passed = await postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1' })
+  check(
+    'passTest records the pass without completing the task',
+    passed.json().ok === true && passed.json().task.status === 'testing' && passed.json().task.test.status === 'passed',
+    passed.text,
+  )
   const sweep = await rig.api.autoMergePending(PROJECT)
-  check('the host sweep merges a self-mode request without a merger agent', sweep.ok === true && sweep.merged.join(',') === 'T-1', JSON.stringify(sweep))
+  check('the host sweep merges after a passed test without a merger agent', sweep.ok === true && sweep.merged.join(',') === 'T-1', JSON.stringify(sweep))
   const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
-  check('the task is merged', after.json().tasks[0].merge.status === 'merged', after.text)
+  check('the task is done and merged', after.json().tasks[0].status === 'done' && after.json().tasks[0].merge.status === 'merged', after.text)
   const forwards = () => fake.calls.filter((entry) => entry.args.join(' ') === 'merge --ff-only merge/T-1').length
   check('main is fast-forwarded exactly once', forwards() === 1, String(forwards()))
   const again = await rig.api.autoMergePending(PROJECT)
@@ -1869,83 +1689,45 @@ function seedRunningTaskWithTesting(rig, task, testing) {
   rig.scheduler.dispose()
 }
 
+// ── rework: changes-requested and a failed test return to running ──────────
 {
-  // independent mode: the host verdict passes, then the host sweep merges.
-  const fake = mergeGit()
-  const verification = fakeVerify({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
-  const verifier = fakeVerifier({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
-  const rig = createSubmitRig({
-    git: fake.git,
-    merger: createMerger({ git: fake.git, verify: verifier.verify }),
-    verify: verification.verify,
-    autoMerge: true,
-  })
-  seedRunningTaskWithTesting(rig, runningWorktreeTask(), 'independent')
-  const surface = install(rig)
-  const submitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
-  check(
-    'a passed verdict is recorded before the sweep',
-    submitted.json().ok === true && submitted.json().task.merge.status === 'open' && submitted.json().task.merge.verdict.status === 'passed',
-    submitted.text,
-  )
-  const sweep = await rig.api.autoMergePending(PROJECT)
-  check('the host sweep merges after a passed verdict', sweep.ok === true && sweep.merged.join(',') === 'T-1', JSON.stringify(sweep))
-  const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
-  check('the independent request is merged', after.json().tasks[0].merge.status === 'merged', after.text)
-  surface.dispose()
-  rig.scheduler.dispose()
-}
-
-{
-  // pending verdict: the sweep must never merge it.
-  const fake = mergeGit()
+  const fake = fakeGit()
   const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
-  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), autoMerge: true })
-  seedRunningTaskWithTesting(rig, runningWorktreeTask(), 'independent')
+  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  const seeded = runningWorktreeTask()
+  seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, seeded)
   const surface = install(rig)
-  const submitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
-  check('without a verification runner the verdict stays pending', submitted.json().task.merge.verdict.status === 'pending', submitted.text)
-  const sweep = await rig.api.autoMergePending(PROJECT)
-  check('a pending verdict is not merged', sweep.ok === true && sweep.merged.length === 0, JSON.stringify(sweep))
-  const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
-  check('the request stays open', after.json().tasks[0].merge.status === 'open', after.text)
-  const refused = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
-  check('and the manual gate still refuses it', refused.json().ok === false && refused.json().code === 'test-required', refused.text)
-  check('nothing is fast-forwarded', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
-  surface.dispose()
-  rig.scheduler.dispose()
-}
-
-{
-  // failed verdict: the sweep must never merge it either.
-  const fake = mergeGit()
-  const verification = fakeVerify({ code: 1, stdout: 'FAIL board.test.mjs', stderr: '' })
-  const rig = createSubmitRig({
-    git: fake.git,
-    merger: createMerger({ git: fake.git, verify: verification.verify }),
-    verify: verification.verify,
-    autoMerge: true,
-  })
-  seedRunningTaskWithTesting(rig, runningWorktreeTask(), 'independent')
-  const surface = install(rig)
-  const submitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
-  check('the failed verdict is recorded', submitted.json().task.merge.verdict.status === 'failed', submitted.text)
-  const sweep = await rig.api.autoMergePending(PROJECT)
-  check('a failed verdict is not merged', sweep.ok === true && sweep.merged.length === 0, JSON.stringify(sweep))
-  const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
-  const refused = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  const submitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'v1' })
+  check('the first submission opens review round one', submitted.json().task.review.attempt === 1, submitted.text)
+  const changes = await postTo(surface, { action: 'requestChanges', project: PROJECT, id: 'T-1', reasons: 'rename the helper' })
+  check('requestChanges returns the task to running', changes.json().ok === true && changes.json().task.status === 'running', changes.text)
   check(
-    'the request stays open and main untouched',
-    after.json().tasks[0].merge.status === 'open' && fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'),
-    after.text,
+    'and keeps the reasons',
+    changes.json().task.review.status === 'changes-requested' && changes.json().task.review.reasons === 'rename the helper',
+    changes.text,
   )
-  check('and the manual gate reports the failed verdict', refused.json().ok === false && refused.json().code === 'test-failed', refused.text)
+  const resubmitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'v2' })
+  check('the resubmission opens review round two', resubmitted.json().ok === true && resubmitted.json().task.review.attempt === 2, resubmitted.text)
+  const approved = await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  const failed = await postTo(surface, { action: 'failTest', project: PROJECT, id: 'T-1', evidence: 'FAIL board.test.mjs' })
+  check(
+    'failTest returns the task to running with evidence',
+    failed.json().ok === true && failed.json().task.status === 'running' && failed.json().task.test.status === 'failed' && failed.json().task.test.evidence === 'FAIL board.test.mjs',
+    failed.text,
+  )
+  const refused = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('a reworked task is not mergeable', refused.json().ok === false && refused.json().code === 'not-mergeable-phase', refused.text)
+  const again = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'v3' })
+  check('the next submission opens round three', again.json().ok === true && again.json().task.review.attempt === 3, again.text)
+  const approvedAgain = await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  check('and the test round follows the review round', approvedAgain.json().ok === true && approvedAgain.json().task.test.attempt === 2, approvedAgain.text)
   surface.dispose()
   rig.scheduler.dispose()
 }
 
+// ── the sweep is opt-in: a direct API consumer stays explicit ──────────────
 {
-  // the sweep is opt-in: a direct API consumer stays explicit.
   const fake = fakeGit()
   const rig = createSubmitRig({ git: fake.git })
   seedRunningTask(rig, runningWorktreeTask())
@@ -1956,6 +1738,54 @@ function seedRunningTaskWithTesting(rig, task, testing) {
   const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
   check('and the request remains open', after.json().tasks[0].merge.status === 'open', after.text)
   surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── seven-column board: counts and phase order ────────────────────────────
+{
+  const rig = createSubmitRig({ git: fakeGit().git })
+  const stamp = new Date().toISOString()
+  const tasks = ['done', 'testing', 'cancelled', 'pending', 'blocked', 'reviewing', 'running'].map((status, index) => ({
+    id: 'T-' + String(index + 1),
+    title: status,
+    status: status,
+    priority: 0,
+    dependsOn: [],
+    writeFiles: [],
+    base: null,
+    target: null,
+    branch: null,
+    worktree: null,
+    worktreeError: null,
+    commit: null,
+    actualFiles: [],
+    requiredRole: null,
+    merge: null,
+    assignee: null,
+    attempts: 0,
+    maxAttempts: 3,
+    evidence: '',
+    dispatch: null,
+    leaseUntil: null,
+    createdBy: '@me',
+    createdAt: stamp,
+    updatedAt: stamp,
+    history: [],
+  }))
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 8, dispatch: { state: 'paused' }, tasks: tasks }))
+  const surface2 = install(rig)
+  const res = await call(surface2, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  check(
+    'the board lists the seven phases in rank order',
+    res.json().tasks.map((task) => task.status).join(',') === 'pending,running,reviewing,testing,blocked,done,cancelled',
+    res.json().tasks.map((task) => task.status).join(','),
+  )
+  check(
+    'counts expose all seven columns',
+    ['pending', 'running', 'reviewing', 'testing', 'blocked', 'done', 'cancelled'].every((key) => res.json().counts[key] === 1) && res.json().counts.total === 7,
+    JSON.stringify(res.json().counts),
+  )
+  surface2.dispose()
   rig.scheduler.dispose()
 }
 

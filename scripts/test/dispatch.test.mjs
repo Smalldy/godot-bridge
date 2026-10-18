@@ -37,14 +37,20 @@ async function patchTask(rig, id, change) {
     },
   )
 }
-/** Submit a task and record its merge request as merged — the state a dependent
- * now waits for. Without a worktree the submit records no merge, which is the
- * legacy "done is enough" case. */
+/** Submit a task and bring it through review/testing to done+merged — the state
+ * a dependent now waits for. The phases are recorded directly: these tests are
+ * about dispatch, not about who approves. */
 async function submitAndMerge(rig, id, evidence) {
   const submitted = await submitAsUser(rig, id, evidence)
   if (submitted.ok !== true) throw new Error('submit failed: ' + JSON.stringify(submitted))
   await patchTask(rig, id, (task) => {
     if (task.merge !== null && task.merge !== undefined) task.merge = Object.assign({}, task.merge, { status: 'merged' })
+    if (task.review === null || task.review === undefined) {
+      task.review = { status: 'pending', by: 'worker', at: new Date().toISOString(), reasons: null, attempt: 1 }
+    }
+    task.review = Object.assign({}, task.review, { status: 'approved' })
+    task.test = { status: 'passed', by: 'tester', at: new Date().toISOString(), evidence: 'tests pass', attempt: 1 }
+    task.status = 'done'
   })
   return submitted
 }
@@ -98,8 +104,8 @@ async function submitAndMerge(rig, id, evidence) {
   await rig.settle()
   snap = await snapshot(rig)
   check(
-    'a done prerequisite with an open merge request does not release its dependent',
-    byId(snap, A).status === 'done' && byId(snap, B).status === 'pending',
+    'a submitted prerequisite with an open merge request does not release its dependent',
+    byId(snap, A).status === 'reviewing' && byId(snap, B).status === 'pending',
     JSON.stringify(ids(snap)),
   )
   check(
@@ -110,6 +116,7 @@ async function submitAndMerge(rig, id, evidence) {
   check('and reports the dependency waiting reason', byId(snap, B).waitingReason === 'dependency', String(byId(snap, B).waitingReason))
   await patchTask(rig, A, (task) => {
     task.merge = Object.assign({}, task.merge, { status: 'merged' })
+    task.status = 'done'
   })
   await rig.settle()
   snap = await snapshot(rig)
@@ -269,7 +276,7 @@ async function submitAndMerge(rig, id, evidence) {
   const wrong = await rig.api.perform('submit', { id: A, evidence: 'mine' }, { projectPath: rig.project, by: '@other', role: 'agent', agent: { id: 'session-other' } })
   check('a different session cannot submit the spawned task', wrong.ok === false && wrong.code === 'not-assignee', JSON.stringify(wrong))
   const submitted = await rig.api.perform('submit', { id: A, evidence: 'done' }, { projectPath: rig.project, by: '@worker', role: 'agent', agent: { id: task.assignee.session } })
-  check('the spawned worker submits under its session', submitted.ok === true && submitted.task.status === 'done', JSON.stringify(submitted))
+  check('the spawned worker submits under its session', submitted.ok === true && submitted.task.status === 'reviewing', JSON.stringify(submitted))
   rig.scheduler.dispose()
 }
 
@@ -384,7 +391,7 @@ function createWorktreeRig(options) {
   await rig.action('submit', { id: task.id, evidence: 'done' })
   snap = await snapshot(rig)
   claimed = byId(snap, task.id)
-  check('a completed task keeps its worktree for the merge request', claimed.status === 'done' && claimed.worktree === path, JSON.stringify({ status: claimed.status, worktree: claimed.worktree }))
+  check('a submitted task keeps its worktree for the merge request', claimed.status === 'reviewing' && claimed.worktree === path, JSON.stringify({ status: claimed.status, worktree: claimed.worktree }))
   check(
     'and submit records an open merge request from that worktree',
     claimed.commit !== null && claimed.merge !== null && claimed.merge.status === 'open' && claimed.merge.base === 'base-sha',
