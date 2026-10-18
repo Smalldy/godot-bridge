@@ -1032,6 +1032,136 @@ function roleTask(overrides) {
   scheduler.dispose()
 }
 
+// ── test timeout policy: remind once, then block; passed/failed untouched ──
+{
+  const activity = createActivity({ limit: 40 })
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+      ],
+    }),
+    agents: { list: () => [{ id: 'session-lead', name: 'lead' }] },
+  })
+  const state = createState(rig.ctx)
+  const reminderAt = new Date(Date.now() - 15 * 1000).toISOString()
+  const testingTask = roleTask({
+    status: 'testing',
+    assignee: { name: 'fixer', session: 'session-fixer' },
+    review: { status: 'approved', by: 'reviewer-1', at: reminderAt, reasons: null, attempt: 1 },
+    test: { status: 'pending', by: null, at: reminderAt, evidence: null, attempt: 1 },
+    merge: {
+      status: 'open',
+      base: 'base-sha',
+      target: 'feat/task-center-v2',
+      head: 'head-sha',
+      mergeCommit: 'candidate-sha',
+      declaredFiles: ['scripts/a.gd'],
+      actualFiles: ['scripts/a.gd'],
+      tests: 'npm test',
+      reviewer: null,
+      conflict: null,
+      output: null,
+      at: reminderAt,
+    },
+  })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [testingTask] }))
+  const scheduler = createDispatcher(rig.ctx, {
+    state: state,
+    projectPath: () => PROJECT,
+    allowSpawn: false,
+    git: null,
+    roles: rig.manager,
+    activity: activity,
+    testReminderMs: 10 * 1000,
+    testTimeoutMs: 20 * 1000,
+    reviewTimeoutMs: 60 * 60 * 1000,
+  })
+  await scheduler.tick(PROJECT)
+  const reminders = rig.team.calls.filter((call) => call.kind === 'send' && call.target === 'tester-1' && call.text.indexOf('Reminder') >= 0)
+  check('a pending test round gets one reminder to the tester', reminders.length === 1 && reminders[0].text.indexOf('candidate candidate-sha') >= 0, JSON.stringify(reminders.map((call) => call.text.slice(0, 120))))
+  const firstRead = await state.read(PROJECT)
+  check('the reminder does not block the task yet', findTask(firstRead.board, 'T-1').status === 'testing', findTask(firstRead.board, 'T-1').status)
+  const reminderEvents = activity.list(40).filter((entry) => entry.kind === 'test-reminder')
+  check('the reminder is recorded as SYSTEM activity', reminderEvents.length === 1 && reminderEvents[0].actor === 'system' && reminderEvents[0].taskId === 'T-1', JSON.stringify(reminderEvents))
+  await scheduler.tick(PROJECT)
+  const again = rig.team.calls.filter((call) => call.kind === 'send' && call.target === 'tester-1' && call.text.indexOf('Reminder') >= 0)
+  check('the reminder is sent only once', again.length === 1, String(again.length))
+
+  // Hard timeout: move the test round past TEST_TIMEOUT_MS and tick again.
+  const hardAt = new Date(Date.now() - 25 * 1000).toISOString()
+  await updateBoard(
+    { fs: rig.fs },
+    {
+      projectPath: PROJECT,
+      sandboxPolicy: writePolicyFor(PROJECT),
+      mutate: (board) => {
+        const task = findTask(board, 'T-1')
+        task.test.at = hardAt
+        return board
+      },
+    },
+  )
+  await scheduler.tick(PROJECT)
+  const hardRead = await state.read(PROJECT)
+  const blocked = findTask(hardRead.board, 'T-1')
+  check('a hard test timeout blocks the task for triage', blocked.status === 'blocked', blocked.status)
+  check(
+    'the block records the tester, elapsed time and candidate state',
+    blocked.history.some((entry) => String(entry.note).indexOf('test timeout') >= 0 && String(entry.note).indexOf('tester-1') >= 0 && String(entry.note).indexOf('candidate candidate-sha') >= 0),
+    JSON.stringify(blocked.history.slice(-2)),
+  )
+  const timeoutEvents = activity.list(40).filter((entry) => entry.kind === 'error' && String(entry.detail).indexOf('test timeout') >= 0)
+  check('the block is recorded as SYSTEM activity', timeoutEvents.length === 1 && timeoutEvents[0].actor === 'system', JSON.stringify(timeoutEvents))
+  const notices = rig.team.calls.filter((call) => call.kind === 'send' && (call.target === 'fixer' || call.target === 'lead') && call.text.indexOf('timed out') >= 0)
+  check('the owner and the Lead are told about the blocked test', notices.length >= 2, JSON.stringify(notices.map((call) => call.target)))
+  scheduler.dispose()
+}
+
+{
+  // Passed or failed test rounds are never reminded or blocked.
+  for (const status of ['passed', 'failed']) {
+    const activity = createActivity({ limit: 20 })
+    const rig = createRoleRig({
+      team: createTeam({
+        roster: [
+          { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+          { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+        ],
+      }),
+    })
+    const state = createState(rig.ctx)
+    const old = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+    const task = roleTask({
+      status: 'testing',
+      review: { status: 'approved', by: 'reviewer-1', at: old, reasons: null, attempt: 1 },
+      test: { status: status, by: 'tester-1', at: old, evidence: status === 'passed' ? 'PASS' : 'FAIL', attempt: 1 },
+      merge: { status: 'open', base: 'base-sha', target: 'feat/task-center-v2', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: 'npm test', reviewer: null, conflict: null, output: null, at: old },
+    })
+    seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [task] }))
+    const scheduler = createDispatcher(rig.ctx, {
+      state: state,
+      projectPath: () => PROJECT,
+      allowSpawn: false,
+      git: null,
+      roles: rig.manager,
+      activity: activity,
+      testReminderMs: 10,
+      testTimeoutMs: 20,
+      reviewTimeoutMs: 60 * 60 * 1000,
+    })
+    await scheduler.tick(PROJECT)
+    const read = await state.read(PROJECT)
+    const current = findTask(read.board, 'T-1')
+    const sends = rig.team.calls.filter((call) => call.kind === 'send')
+    const testEvents = activity.list(20).filter((entry) => entry.kind === 'test-reminder' || entry.kind === 'error')
+    check('a ' + status + ' test round is never reminded or blocked', current.status === 'testing' && sends.length === 0 && testEvents.length === 0, JSON.stringify({ status: current.status, sends: sends.length, events: testEvents.length }))
+    scheduler.dispose()
+  }
+}
+
 // ── runtime snapshot sources: workerPool kinds and the activity ring ───────
 {
   const rig = createRoleRig({

@@ -19,6 +19,7 @@
  */
 
 import { join } from 'node:path'
+import { HOST_ACTION_TIMEOUT_MS } from './schema.mjs'
 
 export const DEFAULT_VERIFY_COMMAND = 'npm run verify'
 
@@ -225,16 +226,45 @@ export function createMerger(options) {
   const verify = typeof opts.verify === 'function' ? opts.verify : null
   const verifyCommand = typeof opts.verifyCommand === 'string' && opts.verifyCommand.trim() !== '' ? opts.verifyCommand : DEFAULT_VERIFY_COMMAND
   const clock = typeof opts.now === 'function' ? opts.now : Date.now
+  // One hung queue unit must not hold the merge queue forever: bound each unit
+  // and RESET the chain when it times out, so later merges still run.
+  // The action-level bound should fire first; the queue guard is the backstop for
+  // a hung unit that is not waiting on an action (e.g. a sweep turn).
+  const enqueueTimeoutMs = Number.isFinite(opts.enqueueTimeoutMs) ? Math.max(1, Math.floor(opts.enqueueTimeoutMs)) : HOST_ACTION_TIMEOUT_MS + 15 * 1000
+  const QUEUE_TIMEOUT = Symbol('queue-timeout')
   let chain = Promise.resolve()
 
   /** Run one unit of merge work; every caller queues behind the previous one. */
   function enqueue(work) {
     const run = chain.then(work, work)
-    chain = run.then(
+    let timer = null
+    const timeout = new Promise(function (resolveTimeout) {
+      timer = setTimeout(function () {
+        resolveTimeout(QUEUE_TIMEOUT)
+      }, enqueueTimeoutMs)
+    })
+    const guarded = Promise.race([run, timeout]).then(
+      function (value) {
+        if (timer !== null) clearTimeout(timer)
+        if (value === QUEUE_TIMEOUT) {
+          // The unit hung: free the chain so the next caller is not stuck behind
+          // it. The hung work may still finish its own git cleanup, but it can no
+          // longer write any board state (the queue never writes the board).
+          chain = Promise.resolve()
+          return failure('queue-timeout', 'the merge queue unit exceeded ' + String(enqueueTimeoutMs) + 'ms and was abandoned')
+        }
+        return value
+      },
+      function (error) {
+        if (timer !== null) clearTimeout(timer)
+        return failure('queue-failed', messageOf(error))
+      },
+    )
+    chain = guarded.then(
       function () {},
       function () {},
     )
-    return run
+    return guarded
   }
 
   async function callGit(action, args) {

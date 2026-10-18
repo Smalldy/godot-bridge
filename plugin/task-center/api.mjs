@@ -13,6 +13,7 @@
 
 import { join, resolve } from 'node:path'
 import {
+  HOST_ACTION_TIMEOUT_MS,
   ROLE_KINDS,
   ROLE_STAGE,
   TASK_LEASE_MS,
@@ -212,12 +213,17 @@ export function createApi(ctx, options) {
   const activity = opts.activity === undefined || opts.activity === null ? null : opts.activity
   const drainTimeoutMs = Number.isFinite(opts.drainTimeoutMs) ? Math.max(0, Math.floor(opts.drainTimeoutMs)) : 30 * 1000
   const drainIntervalMs = Number.isFinite(opts.drainIntervalMs) ? Math.max(1, Math.floor(opts.drainIntervalMs)) : 250
+  // Host bounds: one async host action (candidate build/merge, queue turn, role
+  // ensure, notification) must not hold the action or the serialised queue.
+  const actionTimeoutMs = Number.isFinite(opts.actionTimeoutMs) ? Math.max(1, Math.floor(opts.actionTimeoutMs)) : HOST_ACTION_TIMEOUT_MS
+  const notifyTimeoutMs = Number.isFinite(opts.notifyTimeoutMs) ? Math.max(1, Math.floor(opts.notifyTimeoutMs)) : 15 * 1000
   const sleep = typeof opts.sleep === 'function' ? opts.sleep : (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
   // A task can be merged by both the tester's passTest and the host sweep. The
   // second caller must not take the stale branch and rebuild a candidate for a
   // task that is already done; one in-process claim per task makes merging idempotent.
   const mergingCandidates = new Set()
+  const BOUNDED_TIMEOUT = Symbol('bounded-timeout')
   // The status panel polls every few seconds; worktree inventory is read-only and
   // can be reused briefly instead of starting a git process on every poll.
   let worktreeCache = { at: -Infinity, project: null, value: null }
@@ -340,7 +346,11 @@ export function createApi(ctx, options) {
    * invalidated: the old candidate is discarded, a new one is built from the
    * current target head, the test round resets and the tester is asked to retest.
    */
-  async function mergeTestedCandidate(projectPath, id, by, context) {
+  async function mergeTestedCandidate(projectPath, id, by, context, options) {
+    const mergeOptions = options === undefined || options === null ? {} : options
+    // When the caller already holds the merge-queue turn (mergeOne inside
+    // serialised), enqueueing again would deadlock: run the queue methods inline.
+    const viaQueue = mergeOptions.inQueue === true ? function (work) { return work() } : function (work) { return serialised(work) }
     if (mergingCandidates.has(id)) return failure('merge-in-flight', id + ' is already being merged by the host')
     mergingCandidates.add(id)
     try {
@@ -351,8 +361,21 @@ export function createApi(ctx, options) {
     if (task.status !== 'testing' || !mergeEligible(task)) {
       return failure('no-open-merge', id + ' is no longer waiting to merge')
     }
+    const startedAt = Date.now()
+    const deadlineAt = startedAt + actionTimeoutMs
     const root = worktreeRootOf(read.board)
-    const outcome = await serialised(() => merger.mergeCandidate(task, projectPath, { worktreeRoot: root }))
+    const boundedMerge = await boundedAwait(
+      () => viaQueue(() => merger.mergeCandidate(task, projectPath, { worktreeRoot: root })),
+      Math.max(1, deadlineAt - Date.now()),
+    )
+    if (boundedMerge.timedOut === true) {
+      // The awaiting action returns now; the claim must not outlive it (the
+      // hung queue unit may never settle). The deadline guards below stop any
+      // late write from that abandoned unit.
+      mergingCandidates.delete(id)
+      return actionTimeoutFailure('mergeTestedCandidate merge', id, startedAt)
+    }
+    const outcome = boundedMerge.value
     if (outcome === null || outcome === undefined || outcome.ok !== true) {
       return failure(
         outcome === null || outcome === undefined ? 'merge-failed' : String(outcome.code),
@@ -360,6 +383,7 @@ export function createApi(ctx, options) {
       )
     }
     if (outcome.status === 'merged') {
+      if (Date.now() > deadlineAt) return actionTimeoutFailure('mergeTestedCandidate record', id, startedAt)
       const recorded = await writeTask(
         projectPath,
         id,
@@ -393,9 +417,24 @@ export function createApi(ctx, options) {
         return failure('no-open-merge', id + ' is no longer waiting to merge; nothing was rebuilt')
       }
       const latestRoot = worktreeRootOf(latestRead.board)
-      await serialised(() => merger.discardCandidate(latestTask, projectPath, { worktreeRoot: latestRoot }))
+      const boundedDiscard = await boundedAwait(
+        () => viaQueue(() => merger.discardCandidate(latestTask, projectPath, { worktreeRoot: latestRoot })),
+        Math.max(1, deadlineAt - Date.now()),
+      )
+      if (boundedDiscard.timedOut === true) {
+        mergingCandidates.delete(id)
+        return actionTimeoutFailure('mergeTestedCandidate discard stale candidate', id, startedAt)
+      }
       emitActivity(null, 'worktree-remove', 'stale test candidate discarded', id, 'system')
-      const rebuilt = await serialised(() => merger.createCandidate(latestTask, projectPath, { worktreeRoot: latestRoot }))
+      const boundedRebuild = await boundedAwait(
+        () => viaQueue(() => merger.createCandidate(latestTask, projectPath, { worktreeRoot: latestRoot })),
+        Math.max(1, deadlineAt - Date.now()),
+      )
+      if (boundedRebuild.timedOut === true) {
+        mergingCandidates.delete(id)
+        return actionTimeoutFailure('mergeTestedCandidate rebuild candidate', id, startedAt)
+      }
+      const rebuilt = boundedRebuild.value
       if (rebuilt !== null && rebuilt !== undefined && rebuilt.ok === true) {
         emitActivity(null, 'worktree-create', 'rebuilt test candidate', id, 'system')
         emitActivity(null, 'test-start', 'target moved; retest required', id, 'host')
@@ -406,6 +445,7 @@ export function createApi(ctx, options) {
           rebuilt === null || rebuilt === undefined ? 'could not rebuild the test candidate' : String(rebuilt.message),
         )
       }
+      if (Date.now() > deadlineAt) return actionTimeoutFailure('mergeTestedCandidate record retest', id, startedAt)
       const recorded = await writeTask(
         projectPath,
         id,
@@ -445,7 +485,7 @@ export function createApi(ctx, options) {
     if (roles === null || typeof roles.ensure !== 'function') return null
     const config = await roleConfigFor(projectPath)
     try {
-      const ensured = await roles.ensure(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: clock() })
+      const ensured = await ensureRoleBounded(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: clock() })
       emitRoleProvision(ensured)
       return ensured
     } catch (error) {
@@ -569,9 +609,14 @@ export function createApi(ctx, options) {
       if (member === undefined) return null
       const request = { target: name, content: [{ type: 'text', text: text }] }
       if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-        request.signal = AbortSignal.timeout(15000)
+        request.signal = AbortSignal.timeout(notifyTimeoutMs)
       }
-      await agentTeams.sendMessage(lead, request)
+      const sent = await boundedAwait(() => agentTeams.sendMessage(lead, request), notifyTimeoutMs)
+      if (sent.timedOut === true) {
+        emitActivity(null, 'host-action-timeout', 'notification to ' + name + ' exceeded ' + String(notifyTimeoutMs) + 'ms', null, 'system')
+        return null
+      }
+      if (sent.value !== null && typeof sent.value === 'object' && sent.value.ok === false && sent.value.code === 'action-failed') return null
       return member
     } catch (error) {
       return null
@@ -730,6 +775,50 @@ export function createApi(ctx, options) {
       taskId: typeof taskId === 'string' && taskId !== '' ? taskId : null,
       detail: typeof detail === 'string' ? detail : null,
     })
+  }
+
+  /** Race one host await against a bound, with error capture and no unhandled
+   * rejection. Returns { timedOut: true } or { timedOut: false, value }. */
+  async function boundedAwait(work, timeoutMs) {
+    let timer = null
+    const timeout = new Promise((resolveTimeout) => {
+      timer = setTimeout(() => resolveTimeout(BOUNDED_TIMEOUT), Math.max(1, timeoutMs))
+    })
+    let value = null
+    try {
+      value = await Promise.race([Promise.resolve().then(work), timeout])
+    } catch (error) {
+      value = { __boundedError: messageOf(error) }
+    }
+    if (timer !== null) clearTimeout(timer)
+    if (value === BOUNDED_TIMEOUT) return { timedOut: true }
+    if (value !== null && typeof value === 'object' && value.__boundedError !== undefined) {
+      return { timedOut: false, value: { ok: false, code: 'action-failed', message: value.__boundedError } }
+    }
+    return { timedOut: false, value: value }
+  }
+
+  /** Readable host-action timeout: keeps the task phase, records system activity,
+   * and tells the caller the action can be retried. */
+  function actionTimeoutFailure(label, taskId, startedAt) {
+    const elapsedMs = Date.now() - startedAt
+    emitActivity(null, 'host-action-timeout', label + ' exceeded ' + String(actionTimeoutMs) + 'ms after ' + String(elapsedMs) + 'ms' + (taskId ? ' for ' + taskId : ''), taskId, 'system')
+    return failure(
+      'action-timeout',
+      label + ' exceeded ' + String(actionTimeoutMs) + 'ms' + (taskId ? ' for ' + taskId : '') + '; the task phase is unchanged and the action can be retried',
+      { taskId: taskId, elapsedMs: elapsedMs },
+    )
+  }
+
+  /** Role provisioning with a bound: a hung ensure must not hold the action. */
+  async function ensureRoleBounded(kind, request) {
+    const startedAt = Date.now()
+    const bounded = await boundedAwait(() => roles.ensure(kind, request), actionTimeoutMs)
+    if (bounded.timedOut) {
+      actionTimeoutFailure('role ensure ' + kind, request !== undefined && request !== null && request.task ? request.task.id : null, startedAt)
+      return { ok: false, code: 'action-timeout', message: 'role ' + String(kind) + ' provisioning timed out' }
+    }
+    return bounded.value
   }
 
   /** Role provisioning is a SYSTEM event. */
@@ -1235,7 +1324,7 @@ export function createApi(ctx, options) {
     // Tester workflow: the candidate was built at review approval and tested
     // independently; a passed test now merges that exact tree (no verify).
     if (candidateWorkflow && mergeEligible(task) && typeof merge.mergeCommit === 'string' && merge.mergeCommit.length > 0) {
-      return mergeTestedCandidate(projectPath, id, by, context)
+      return mergeTestedCandidate(projectPath, id, by, context, { inQueue: true })
     }
     // The phase machine is the merge gate: only a task in TESTING whose test
     // phase passed may reach the queue. A submission under review, or a failed
@@ -1263,7 +1352,10 @@ export function createApi(ctx, options) {
     // The request records the head it was submitted at. If the branch moved
     // after that submit, the merger would verify a tree nobody reviewed:
     // refuse, touch nothing, and tell the owner to refresh explicitly.
-    const currentHead = await readBranchHead(projectPath, task)
+    const startedAt = Date.now()
+    const boundedHead = await boundedAwait(() => readBranchHead(projectPath, task), actionTimeoutMs)
+    if (boundedHead.timedOut === true) return actionTimeoutFailure('mergeRequest branch head', id, startedAt)
+    const currentHead = boundedHead.value
     if (currentHead.ok !== true) return currentHead
     const recordedHead = typeof merge.head === 'string' ? merge.head : null
     if (String(currentHead.head) !== String(recordedHead)) {
@@ -1283,7 +1375,13 @@ export function createApi(ctx, options) {
     }
     const settings = read.board.dispatch === undefined || read.board.dispatch === null ? null : read.board.dispatch.worktree
     const worktreeRoot = settings !== null && settings !== undefined && typeof settings.root === 'string' ? settings.root : '.worktrees'
-    const outcome = await merger.mergeRequest(task, projectPath, { worktreeRoot: worktreeRoot })
+    const boundedQueue = await boundedAwait(() => merger.mergeRequest(task, projectPath, { worktreeRoot: worktreeRoot }), actionTimeoutMs)
+    if (boundedQueue.timedOut === true) {
+      // Nothing was recorded; the task is still testing and the merge can be
+      // retried (the queue resets its chain on a hung unit).
+      return actionTimeoutFailure('mergeRequest queue', id, startedAt)
+    }
+    const outcome = boundedQueue.value
     if (outcome === null || outcome === undefined || outcome.ok !== true) {
       emitActivity(context, 'error', 'merge failed: ' + (outcome === null || outcome === undefined ? 'no result' : String(outcome.message)), id, actorOverride)
       return failure(
@@ -1297,6 +1395,10 @@ export function createApi(ctx, options) {
     if (integration !== null && integration.created === true) {
       emitActivity(context, 'worktree-create', 'merge worktree ' + String(integration.path), id, actorOverride)
       emitActivity(context, 'worktree-remove', 'merge worktree cleaned', id, actorOverride)
+    }
+    if (Date.now() - startedAt > actionTimeoutMs) {
+      // The queue overran the action bound: do not record a late result.
+      return actionTimeoutFailure('mergeRequest record', id, startedAt)
     }
     const recorded = await writeTask(projectPath, id, (board) => recordMergeResult(board, id, outcome, clock(), by), context)
     if (recorded.ok !== true) return recorded
@@ -1484,7 +1586,7 @@ export function createApi(ctx, options) {
         let ensured = null
         let waiting = []
         while (true) {
-          ensured = await roles.ensure(kind, { config: current, projectPath: projectPath, task: null, now: clock() })
+          ensured = await ensureRoleBounded(kind, { config: current, projectPath: projectPath, task: null, now: clock() })
           if (ensured.ok !== true) break
           waiting = Array.isArray(ensured.waiting) ? ensured.waiting : []
           if (waiting.length === 0) break
@@ -1519,7 +1621,7 @@ export function createApi(ctx, options) {
         const ensured = []
         if (roles !== null && typeof roles.ensure === 'function') {
           for (const kind of ROLE_KINDS) {
-            const result = await roles.ensure(kind, { config: config, projectPath: projectPath, task: null, now: clock() })
+            const result = await ensureRoleBounded(kind, { config: config, projectPath: projectPath, task: null, now: clock() })
             emitRoleProvision(result)
             ensured.push({ kind: kind, result: result })
           }
@@ -1911,7 +2013,17 @@ export function createApi(ctx, options) {
       // is a readable refusal and the task stays in review for a changes request.
       let candidate = null
       if (action === 'approveReview' && candidateWorkflow) {
-        candidate = await serialised(() => merger.createCandidate(reviewTask, projectPath, { worktreeRoot: worktreeRootOf(read.board) }))
+        const candidateStarted = Date.now()
+        const boundedCandidate = await boundedAwait(
+          () => serialised(() => merger.createCandidate(reviewTask, projectPath, { worktreeRoot: worktreeRootOf(read.board) })),
+          actionTimeoutMs,
+        )
+        if (boundedCandidate.timedOut === true) {
+          // No board write happened, so the task stays in review and the action
+          // can simply be retried (the orphan candidate, if any, is discardable).
+          return actionTimeoutFailure('approveReview createCandidate', id, candidateStarted)
+        }
+        candidate = boundedCandidate.value
         if (candidate === null || candidate === undefined || candidate.ok !== true) {
           return failure(
             candidate === null || candidate === undefined || candidate.code === undefined ? 'candidate-failed' : String(candidate.code),
@@ -2003,14 +2115,26 @@ export function createApi(ctx, options) {
       if (action === 'failTest') emitActivity(context, 'test-end', 'failed', id)
       if (action === 'passTest' && candidateWorkflow && hasCandidate) {
         // The tester accepted the candidate: the host merges that exact tree now
-        // (no separate verify). A moved target comes back as a retest.
-        const merged = await mergeTestedCandidate(projectPath, id, context.by, context)
+        // (no separate verify). A moved target comes back as a retest. The merge
+        // itself is bounded: a stuck queue must not hold this action forever.
+        const mergeStarted = Date.now()
+        const boundedMerge = await boundedAwait(() => mergeTestedCandidate(projectPath, id, context.by, context), actionTimeoutMs)
+        if (boundedMerge.timedOut === true) {
+          const timedOutFailure = actionTimeoutFailure('passTest merge candidate', id, mergeStarted)
+          return ok({ task: result.task, events: result.events, mergeError: timedOutFailure })
+        }
+        const merged = boundedMerge.value
         if (merged.ok === true) return merged
         // The pass is recorded; a transient merge failure is retried by the sweep.
         return ok({ task: result.task, events: result.events, mergeError: merged })
       }
       if (action === 'failTest' && candidateWorkflow && hasCandidate) {
-        await serialised(() => merger.discardCandidate(result.task, projectPath, { worktreeRoot: worktreeRootOf(read.board) }))
+        const discardStarted = Date.now()
+        const boundedDiscard = await boundedAwait(
+          () => serialised(() => merger.discardCandidate(result.task, projectPath, { worktreeRoot: worktreeRootOf(read.board) })),
+          actionTimeoutMs,
+        )
+        if (boundedDiscard.timedOut === true) actionTimeoutFailure('failTest discard candidate', id, discardStarted)
         emitActivity(null, 'worktree-remove', 'test candidate discarded after a failed test', id, 'host')
         const owner =
           result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'

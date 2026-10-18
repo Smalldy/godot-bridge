@@ -3,7 +3,7 @@
 
 import { join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH } from '../../plugin/task-center/routes.mjs'
-import { createFakeFs, createRig, createTeam, PROJECT, seedBoard } from './support/fixtures.mjs'
+import { createFakeFs, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
 import { createActivity, createDispatcher, createRoleManager } from '../../plugin/task-center/dispatch.mjs'
@@ -438,6 +438,8 @@ function createSubmitRig(options) {
     activity: activity,
     drainTimeoutMs: opts.drainTimeoutMs,
     drainIntervalMs: opts.drainIntervalMs,
+    actionTimeoutMs: opts.actionTimeoutMs,
+    notifyTimeoutMs: opts.notifyTimeoutMs,
   })
   const user = { projectPath: PROJECT, by: '@user', role: 'user', agent: null }
   async function action(name, body) {
@@ -2206,6 +2208,9 @@ function createTesterRig(options) {
     git: fake.git,
     merger: merger,
     autoMerge: opts.autoMerge === true,
+    activity: opts.activity,
+    actionTimeoutMs: opts.actionTimeoutMs,
+    notifyTimeoutMs: opts.notifyTimeoutMs,
     godotPath: 'C:/fake/godot.exe',
   })
   // A Godot marker so the tester brief carries the launch/runbook section.
@@ -2613,6 +2618,223 @@ async function withDeadline(promise, ms) {
   )
   const next = await withDeadline(rig.api.perform('approveReview', { id: 'T-2' }, rig.user), 2000)
   check('the merge queue is free after the race', next !== null && next.__timedOut !== true && next.ok === true && next.task.status === 'testing', JSON.stringify(next === null || next.__timedOut === true ? next : { ok: next.ok, status: next.task && next.task.status }))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── host action watchdog: bounded awaits keep phase and free the queue ─────
+{
+  // approveReview's createCandidate hangs: the action times out readably, the task
+  // stays in review, the queue resets and a retry succeeds.
+  const activity = createActivity({ limit: 40 })
+  let createCalls = 0
+  const ctx = createTesterRig({
+    autoMerge: true,
+    actionTimeoutMs: 40,
+    activity: activity,
+    makeMerger: (git) => {
+      const base = createMerger({ git: git, enqueueTimeoutMs: 200 })
+      const merger = Object.assign({}, base)
+      merger.createCandidate = async function () {
+        createCalls += 1
+        if (createCalls === 1) return new Promise(function () {})
+        return base.createCandidate.apply(base, arguments)
+      }
+      return merger
+    },
+  })
+  const rig = ctx.rig
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask()] }))
+  const surface = install(rig)
+  const first = await withDeadline(rig.api.perform('approveReview', { id: 'T-1' }, rig.user), 2500)
+  check(
+    'a hung candidate build returns a readable action timeout',
+    first !== null && first.__timedOut !== true && first.ok === false && first.code === 'action-timeout' && String(first.message).indexOf('approveReview createCandidate') >= 0,
+    JSON.stringify(first),
+  )
+  const afterTimeout = await rig.api.snapshot(PROJECT)
+  check('the task phase is unchanged after the candidate timeout', afterTimeout.tasks[0].status === 'reviewing', afterTimeout.tasks[0].status)
+  const timeoutEvents = activity.list(40).filter((entry) => entry.kind === 'host-action-timeout')
+  check('the timeout is recorded as SYSTEM activity', timeoutEvents.length === 1 && timeoutEvents[0].actor === 'system' && timeoutEvents[0].taskId === 'T-1', JSON.stringify(timeoutEvents))
+  await sleep(250)
+  const retry = await withDeadline(rig.api.perform('approveReview', { id: 'T-1' }, rig.user), 2500)
+  check(
+    'the retry succeeds after the merge queue chain resets',
+    retry !== null && retry.__timedOut !== true && retry.ok === true && retry.task.status === 'testing' && createCalls === 2,
+    JSON.stringify(retry === null ? retry : { ok: retry.ok, status: retry.task && retry.task.status, creates: createCalls }),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // passTest's candidate merge hangs: the pass is recorded, a readable
+  // action-timeout mergeError comes back, and a later merge still completes.
+  const activity = createActivity({ limit: 40 })
+  let mergeCalls = 0
+  const ctx = createTesterRig({
+    autoMerge: true,
+    actionTimeoutMs: 40,
+    activity: activity,
+    makeMerger: (git) => {
+      const base = createMerger({ git: git, enqueueTimeoutMs: 200 })
+      const merger = Object.assign({}, base)
+      merger.mergeCandidate = async function () {
+        mergeCalls += 1
+        if (mergeCalls === 1) return new Promise(function () {})
+        return base.mergeCandidate.apply(base, arguments)
+      }
+      return merger
+    },
+  })
+  const rig = ctx.rig
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask()] }))
+  const surface = install(rig)
+  await rig.api.perform('approveReview', { id: 'T-1' }, rig.user)
+  const passed = await withDeadline(rig.api.perform('passTest', { id: 'T-1', evidence: 'PASS' }, rig.user), 2500)
+  check(
+    'a hung candidate merge returns an action-timeout merge error',
+    passed !== null && passed.__timedOut !== true && passed.ok === true && passed.mergeError !== undefined && passed.mergeError !== null && passed.mergeError.code === 'action-timeout',
+    JSON.stringify(passed),
+  )
+  const stillTesting = await rig.api.snapshot(PROJECT)
+  check('the test pass is recorded and the task stays in testing', stillTesting.tasks[0].status === 'testing' && stillTesting.tasks[0].test.status === 'passed', JSON.stringify({ status: stillTesting.tasks[0].status, test: stillTesting.tasks[0].test.status }))
+  const mergeEvents = activity.list(40).filter((entry) => entry.kind === 'host-action-timeout')
+  check('the merge timeout is recorded as SYSTEM activity', mergeEvents.length === 1 && mergeEvents[0].actor === 'system', JSON.stringify(mergeEvents))
+  const retried = await withDeadline(rig.api.perform('mergeRequest', { id: 'T-1' }, rig.user), 3000)
+  check(
+    'a merge request after the timeout still merges the task',
+    retried !== null && retried.__timedOut !== true && retried.ok === true && retried.task.status === 'done' && retried.task.merge.status === 'merged' && mergeCalls === 2,
+    JSON.stringify(retried === null ? retried : { ok: retried.ok, status: retried.task && retried.task.status, merges: mergeCalls }),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // mergeRequest itself is bounded too: a hung candidate merge returns the error
+  // and leaves the task's phase untouched.
+  const activity = createActivity({ limit: 40 })
+  let mergeCalls = 0
+  const ctx = createTesterRig({
+    autoMerge: false,
+    actionTimeoutMs: 40,
+    activity: activity,
+    makeMerger: (git) => {
+      const base = createMerger({ git: git, enqueueTimeoutMs: 200 })
+      const merger = Object.assign({}, base)
+      merger.mergeCandidate = async function () {
+        mergeCalls += 1
+        if (mergeCalls === 1) return new Promise(function () {})
+        return base.mergeCandidate.apply(base, arguments)
+      }
+      return merger
+    },
+  })
+  const rig = ctx.rig
+  const stamp = new Date().toISOString()
+  const tested = acceptingTask({
+    status: 'testing',
+    base: 'target-sha',
+    review: { status: 'approved', by: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
+    test: { status: 'passed', by: 'tester-1', at: stamp, evidence: 'PASS', attempt: 1 },
+    merge: Object.assign({}, acceptingTask().merge, { base: 'target-sha', mergeCommit: 'candidate-sha' }),
+  })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [tested] }))
+  const surface = install(rig)
+  const timedOut = await withDeadline(rig.api.perform('mergeRequest', { id: 'T-1' }, rig.user), 2500)
+  check(
+    'mergeRequest returns an action timeout without recording anything',
+    timedOut !== null && timedOut.__timedOut !== true && timedOut.ok === false && (timedOut.code === 'action-timeout' || timedOut.code === 'queue-timeout'),
+    JSON.stringify(timedOut),
+  )
+  const unchanged = await rig.api.snapshot(PROJECT)
+  check('mergeRequest left the task in testing', unchanged.tasks[0].status === 'testing' && unchanged.tasks[0].merge.status === 'open', JSON.stringify({ status: unchanged.tasks[0].status, merge: unchanged.tasks[0].merge.status }))
+  await sleep(250)
+  const retried = await withDeadline(rig.api.perform('mergeRequest', { id: 'T-1' }, rig.user), 3000)
+  check('the next mergeRequest completes after the queue reset', retried !== null && retried.__timedOut !== true && retried.ok === true && retried.task.status === 'done' && mergeCalls === 2, JSON.stringify(retried))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // Non-git awaits are bounded: a hung tester spawn and a hung notification do
+  // not hold approveReview (the task still reaches testing).
+  const activity = createActivity({ limit: 40 })
+  const team = createTeam({
+    roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+    ],
+    spawnThrows: false,
+  })
+  const originalSpawn = team.spawnTeammate.bind(team)
+  team.spawnTeammate = async function (caller, request) {
+    if (request.name.indexOf('tester') === 0) return new Promise(function () {})
+    return originalSpawn(caller, request)
+  }
+  const ctx = createTesterRig({ team: team, autoMerge: false, actionTimeoutMs: 40, notifyTimeoutMs: 40, activity: activity })
+  const rig = ctx.rig
+  rig.ctx.get = function (key) {
+    if (key === 'agents') return { list: () => [{ id: 'session-lead', name: 'lead' }] }
+    if (key === 'agentTeams') return team
+    if (key === 'subagents') return { list: () => ['spawn'] }
+    return undefined
+  }
+  const reviewTask = acceptingTask()
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [reviewTask] }))
+  const surface = install(rig)
+  const approved = await withDeadline(rig.api.perform('approveReview', { id: 'T-1' }, rig.user), 2500)
+  check(
+    'a hung role provision does not hold approveReview',
+    approved !== null && approved.__timedOut !== true && approved.ok === true && approved.task.status === 'testing',
+    JSON.stringify(approved === null ? approved : { ok: approved.ok, status: approved.task && approved.task.status }),
+  )
+  check(
+    'the timed-out provisioning is reported on the result',
+    approved !== null && approved.provisioned !== undefined && approved.provisioned !== null && approved.provisioned.code === 'action-timeout',
+    JSON.stringify(approved === null ? approved : approved.provisioned),
+  )
+  const events = activity.list(40).filter((entry) => entry.kind === 'host-action-timeout')
+  check('the provisioning timeout is recorded as SYSTEM activity', events.length >= 1 && events.some((entry) => String(entry.detail).indexOf('role ensure tester') >= 0), JSON.stringify(events))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // A hung mailbox notification is bounded too: approveReview still completes
+  // and the timeout is recorded.
+  const activity = createActivity({ limit: 40 })
+  const team = createTeam({
+    roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+    ],
+  })
+  const originalSend = team.sendMessage.bind(team)
+  team.sendMessage = async function (caller, request) {
+    if (request.target === 'tester-1') return new Promise(function () {})
+    return originalSend(caller, request)
+  }
+  const ctx = createTesterRig({ team: team, autoMerge: false, actionTimeoutMs: 40, notifyTimeoutMs: 40, activity: activity })
+  const rig = ctx.rig
+  rig.ctx.get = function (key) {
+    if (key === 'agents') return { list: () => [{ id: 'session-lead', name: 'lead' }] }
+    if (key === 'agentTeams') return team
+    if (key === 'subagents') return { list: () => ['spawn'] }
+    return undefined
+  }
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask()] }))
+  const surface = install(rig)
+  const approved = await withDeadline(rig.api.perform('approveReview', { id: 'T-1' }, rig.user), 2500)
+  check(
+    'a hung notification does not hold approveReview',
+    approved !== null && approved.__timedOut !== true && approved.ok === true && approved.task.status === 'testing',
+    JSON.stringify(approved === null ? approved : { ok: approved.ok, status: approved.task && approved.task.status }),
+  )
+  const notifyEvents = activity.list(40).filter((entry) => entry.kind === 'host-action-timeout' && String(entry.detail).indexOf('notification to tester-1') >= 0)
+  check('the notification timeout is recorded as SYSTEM activity', notifyEvents.length === 1 && notifyEvents[0].actor === 'system', JSON.stringify(notifyEvents))
   surface.dispose()
   rig.scheduler.dispose()
 }
