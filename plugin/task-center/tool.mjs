@@ -52,6 +52,7 @@ const DESCRIPTION = [
   'start does not start dispatch for an agent: it records a request, and the user approves it in the task center panel.',
   'Dependencies: B.dependsOn=[A] means A must be done and merged (when A has a merge request) before B runs.',
   'A task only runs while dispatch is started; the scheduler acquires its writeFiles locks first.',
+  'Roles: the host keeps worker/reviewer/tester profiles (implement/review/test stages, one instance each by default, configurable in the project .agents/roles.json and the default profile is worker). It provisions a missing role through the live Lead automatically and replaces a dead or timed-out one — no manual spawn is needed. Reviewer and tester are read-only independent contexts: only a reviewer may approveReview/requestChanges and only a tester may passTest/failTest (the user may do either); a worker must never review or test its own task, and a reviewer/tester cannot commit, merge or change implementation.',
 ].join(' ')
 
 export function registerTaskTool(ctx, options) {

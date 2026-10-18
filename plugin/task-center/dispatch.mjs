@@ -26,9 +26,9 @@
 
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { boardPath } from './board.mjs'
+import { boardPath, readRoleConfig } from './board.mjs'
 import { writePolicyFor } from './state.mjs'
-import { TASK_LEASE_MS } from './schema.mjs'
+import { ROLE_KINDS, ROLE_PROVISION_TIMEOUT_MS, ROLE_STAGE, TASK_LEASE_MS, defaultRoleConfig } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { createGit } from './git.mjs'
@@ -43,6 +43,23 @@ export const SEND_TIMEOUT_MS = 60 * 1000
  * user). A Team without one keeps merge requests open for the user to merge. */
 export const MERGER_NAME = 'merger'
 const RERUN_DELAY_MS = 250
+
+/** Role slot names are fixed per kind and index: worker-1, reviewer-1, tester-1. */
+export function roleSlotName(kind, index) {
+  return String(kind) + '-' + String(index)
+}
+
+/** The role kind of a teammate name, or null. Feature workers are work-<task>-<n>,
+ * so they never match; role slots are worker-<n>/reviewer-<n>/tester-<n>. */
+export function roleKindOf(name) {
+  if (typeof name !== 'string') return null
+  const match = /^(worker|reviewer|tester)-(\d+)$/.exec(name)
+  return match === null ? null : match[1]
+}
+
+export function isRoleName(name) {
+  return roleKindOf(name) !== null
+}
 
 /** A process-stable boot id. globalThis survives a plugin reload in the same
  * process, so a reload does not mistake live workers for dead ones; a real host
@@ -140,7 +157,7 @@ export function pickTarget(ctx, options) {
   }
   const reserved = opts.reserved instanceof Set ? opts.reserved : new Set()
   const teammates = members.filter(
-    (member) => member.role === 'teammate' && member.status !== 'failed' && member.name !== MERGER_NAME,
+    (member) => member.role === 'teammate' && member.status !== 'failed' && member.name !== MERGER_NAME && !isRoleName(member.name),
   )
   const idle = teammates.filter((member) => member.status === 'inactive' && !reserved.has(member.name))
   if (idle.length > 0) {
@@ -484,6 +501,302 @@ export function briefFor(task, projectPath, leadName) {
   return lines.join('\n')
 }
 
+/**
+ * The brief a role teammate wakes with. It is self-contained: the role, the
+ * stage it owns, the task it is being handed (when there is one), the hard
+ * permission boundary, the exact verdict schema and the skills to load.
+ *
+ * Reviewer and tester briefs explicitly demand a FRESH independent context.
+ * A worker brief on rework says to continue in the SAME worktree/context.
+ */
+export function roleBriefFor(kind, task, config, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const profile = config !== null && config !== undefined && config.profiles !== undefined && config.profiles !== null ? config.profiles[kind] : null
+  const stage = profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
+  const lines = []
+  lines.push('Task center role: ' + String(kind))
+  lines.push('Stage: ' + stage + ' (this role owns the ' + stage + ' stage; role profiles replace manual Lead spawns).')
+  if (typeof opts.projectPath === 'string' && opts.projectPath.length > 0) lines.push('Project: ' + opts.projectPath)
+  if (typeof opts.leadName === 'string' && opts.leadName.length > 0) lines.push('Team Lead: ' + opts.leadName)
+  const rework =
+    task !== null &&
+    task !== undefined &&
+    ((task.review !== null && task.review !== undefined && task.review.status === 'changes-requested') ||
+      (task.test !== null && task.test !== undefined && task.test.status === 'failed'))
+  if (task !== null && task !== undefined) {
+    lines.push('', 'Task ' + String(task.id) + ': ' + String(task.title))
+    if (typeof task.spec === 'string' && task.spec !== '') lines.push('', 'What it involves:', task.spec)
+    if (typeof task.acceptance === 'string' && task.acceptance !== '') lines.push('', 'Acceptance:', task.acceptance)
+    if (typeof task.worktree === 'string' && task.worktree !== '') {
+      lines.push('', 'Worktree: ' + task.worktree)
+      lines.push('Branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch))
+      lines.push('Commit: ' + String(task.commit === null || task.commit === undefined ? '' : task.commit))
+    }
+    if (rework) {
+      lines.push('', 'This is REWORK: continue in the SAME worktree and the SAME context you used before; do not create a new branch or start from a fresh checkout.')
+    }
+  }
+  if (kind === 'worker') {
+    lines.push(
+      '',
+      'Duties: implement the task in its worktree, run the project tests there, and report with task_center submit.',
+      '',
+      'Permission boundary (hard):',
+      '- You may edit files and commit only inside the task worktree.',
+      '- You must NOT approve or reject the review or test verdict for your own task; a separate reviewer and tester decide those.',
+      '- A reviewer or tester never asks you to write their verdict, and you must not write it for them.',
+      '',
+      'Verdict schema (your report):',
+      '  task_center { action: "submit", id: "<task>", evidence: "what changed and how you checked it" }',
+    )
+  } else if (kind === 'reviewer') {
+    lines.push(
+      '',
+      'Duties: review the submitted tree (the diff from its base to its head, the declared vs actual files, and the worker evidence). Approve it or request concrete changes.',
+      '',
+      'Permission boundary (hard):',
+      '- READ-ONLY on implementation: do NOT edit files, do NOT commit, do NOT merge or push, do NOT change the task branch.',
+      '- The only task actions you may call are approveReview and requestChanges.',
+      '- A worker can never review its own task; you are the independent reviewer.',
+      '',
+      'Verdict schema:',
+      '  task_center { action: "approveReview", id: "<task>" }',
+      '  task_center { action: "requestChanges", id: "<task>", reasons: "concrete, actionable reasons (files/lines)" }',
+    )
+  } else if (kind === 'tester') {
+    lines.push(
+      '',
+      'Duties: independently test the candidate tree for the task and record a pass or a failure with evidence.',
+      '',
+      'Permission boundary (hard):',
+      '- READ-ONLY on implementation: do NOT edit files, do NOT commit, do NOT merge or push, do NOT change the task branch.',
+      '- The only task actions you may call are passTest and failTest.',
+      '- A worker can never test its own task; you are the independent tester.',
+      '',
+      'Verdict schema:',
+      '  task_center { action: "passTest", id: "<task>", evidence: "commands/logs that passed" }',
+      '  task_center { action: "failTest", id: "<task>", evidence: "the failing command and its tail output" }',
+    )
+  } else {
+    lines.push('', 'Duties: follow the task center board for this role.')
+  }
+  const skills = profile !== null && profile !== undefined && Array.isArray(profile.skills) ? profile.skills : []
+  lines.push('', 'Skills:')
+  lines.push('- task_center is your only interface to the board.')
+  if (skills.length > 0) lines.push('- Load these project skills with the skill tool before acting: ' + skills.join(', '))
+  else lines.push('- Load any project-specific skills with the skill tool before acting.')
+  if (kind === 'reviewer' || kind === 'tester') {
+    lines.push('', 'You are an independent, FRESH context: do not assume the worker conversation, and do not reuse its unstated context.')
+  }
+  return lines.join('\n')
+}
+
+/**
+ * The host-side role registry and provisioner.
+ *
+ * ensure(kind, { config, task, projectPath, now }) makes the configured number of
+ * instances of a role exist in the live Team: it reuses live slots, forgets and
+ * replaces failed/timed-out/drained ones, and spawns the missing fixed-named
+ * slots through the Lead's spawnTeammate. No model decision is involved.
+ *
+ * All state is per manager (one per plugin row), so a plugin reload does not
+ * mistake another process's fake/failed roster for its own bookkeeping.
+ */
+export function createRoleManager(ctx, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const clock = typeof opts.now === 'function' ? opts.now : Date.now
+  const memory = { spawnedAt: new Map(), drained: new Set(), pending: new Set(), last: null }
+  // One ensure pass at a time: the API (submit/approveReview) and the scheduler
+  // tick can ask for the same role concurrently, and interleaving them would
+  // read the same roster twice and over-spawn.
+  let chain = Promise.resolve()
+  function serialise(work) {
+    const run = chain.then(work, work)
+    chain = run.then(function () {}, function () {})
+    return run
+  }
+
+  function nextSlotName(kind, roster) {
+    const used = new Set(memory.pending)
+    for (const member of roster) {
+      if (member !== null && typeof member === 'object' && typeof member.name === 'string') used.add(member.name)
+    }
+    for (let index = 1; index <= 999; index += 1) {
+      const name = roleSlotName(kind, index)
+      if (!used.has(name)) return name
+    }
+    return null
+  }
+
+  async function ensureNow(kind, request) {
+    const req = request === undefined || request === null ? {} : request
+    if (ROLE_KINDS.indexOf(kind) < 0) return { ok: false, code: 'invalid-role', message: 'unknown role kind ' + String(kind) }
+    const config = req.config === undefined || req.config === null ? defaultRoleConfig() : req.config
+    const profile = config.profiles !== undefined && config.profiles !== null ? config.profiles[kind] : null
+    const desired = profile !== null && profile !== undefined && Number.isFinite(profile.instances) ? Math.floor(profile.instances) : 1
+    const { agents, agentTeams } = servicesFor(ctx)
+    if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
+      return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
+    }
+    const lead = req.lead === undefined || req.lead === null ? resolveLead(ctx) : req.lead
+    if (lead === null) return { ok: false, code: 'no-lead', message: 'no live Team root, so the ' + String(kind) + ' role cannot be provisioned' }
+    let roster = []
+    try {
+      roster = agentTeams.listMembers(lead)
+    } catch (error) {
+      return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
+    }
+    if (!Array.isArray(roster)) roster = []
+    const now = Number.isFinite(req.now) ? req.now : clock()
+    const reused = []
+    const replaced = []
+    for (const member of roster) {
+      if (member === null || typeof member !== 'object' || member.role !== 'teammate') continue
+      if (roleKindOf(member.name) !== kind) continue
+      const name = String(member.name)
+      if (memory.drained.has(name)) {
+        replaced.push({ name: name, reason: 'drained' })
+        continue
+      }
+      const status = String(member.status === undefined || member.status === null ? 'unknown' : member.status)
+      if (status === 'failed') {
+        replaced.push({ name: name, reason: 'failed' })
+        continue
+      }
+      if (status === 'provisioning') {
+        const spawnedAt = memory.spawnedAt.get(name)
+        if (!Number.isFinite(spawnedAt)) {
+          // First sighting (e.g. after a plugin reload): start the clock so a
+          // permanently provisioning role is eventually replaced.
+          memory.spawnedAt.set(name, now)
+        } else if (now - spawnedAt > ROLE_PROVISION_TIMEOUT_MS) {
+          replaced.push({ name: name, reason: 'timeout' })
+          continue
+        }
+      }
+      reused.push(name)
+    }
+    const missing = Math.max(0, desired - reused.length)
+    const created = []
+    if (missing > 0) {
+      const leadName = lead.name === undefined || lead.name === null ? String(lead.id) : String(lead.name)
+      for (let slot = 0; slot < missing; slot += 1) {
+        const name = nextSlotName(kind, roster)
+        if (name === null) {
+          return { ok: false, code: 'no-name', message: 'no free ' + String(kind) + ' role slot name', created: created, reused: reused, replaced: replaced }
+        }
+        memory.pending.add(name)
+        let delivered = null
+        let spawnError = null
+        try {
+          delivered = await agentTeams.spawnTeammate(lead, {
+            name: name,
+            description: 'task-center ' + String(kind) + ' role',
+            prompt: [
+              { type: 'text', text: spawnPreamble(name, leadName) },
+              { type: 'text', text: roleBriefFor(kind, req.task === undefined ? null : req.task, config, { projectPath: req.projectPath, leadName: leadName }) },
+            ],
+            context: 'fresh',
+            provider: subagentProviderFor(ctx),
+            signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+          })
+        } catch (error) {
+          spawnError = String((error && error.message) || error)
+        }
+        memory.pending.delete(name)
+        if (spawnError !== null || delivered === null || delivered === undefined || delivered.member === undefined || delivered.member === null) {
+          return {
+            ok: false,
+            code: 'spawn-failed',
+            message: 'could not provision ' + String(kind) + ' role ' + name + ': ' + (spawnError === null ? 'the team service returned no member' : spawnError),
+            created: created,
+            reused: reused,
+            replaced: replaced,
+          }
+        }
+        memory.spawnedAt.set(name, now)
+        memory.drained.delete(name)
+        created.push({ name: name, id: delivered.member.id === undefined ? null : String(delivered.member.id) })
+        roster.push(Object.assign({}, delivered.member))
+      }
+    }
+    const result = { ok: true, kind: kind, profile: profile, desired: desired, created: created, reused: reused, replaced: replaced, ready: reused.length + created.length }
+    memory.last = result
+    return result
+  }
+
+  /** Serialised entry point: every caller queues behind the previous ensure. */
+  function ensure(kind, request) {
+    return serialise(function () {
+      return ensureNow(kind, request)
+    })
+  }
+
+  /** Mark one role instance for draining; the next ensure spawns a replacement. */
+  function drain(name) {
+    const text = typeof name === 'string' ? name : ''
+    if (roleKindOf(text) === null) return { ok: false, code: 'invalid-role-name', message: 'not a role slot name: ' + text }
+    memory.drained.add(text)
+    return { ok: true, drained: [text] }
+  }
+
+  /** Drain every current instance of one kind (replacement happens on ensure). */
+  async function drainKind(kind) {
+    const { agentTeams } = servicesFor(ctx)
+    if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
+    const lead = resolveLead(ctx)
+    if (lead === null) return { ok: false, code: 'no-lead', message: 'no live Team root' }
+    let roster = []
+    try {
+      roster = agentTeams.listMembers(lead)
+    } catch (error) {
+      return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
+    }
+    const names = roster
+      .filter((member) => member !== null && typeof member === 'object' && roleKindOf(member.name) === kind)
+      .map((member) => String(member.name))
+    for (const name of names) memory.drained.add(name)
+    return { ok: true, drained: names }
+  }
+
+  function status() {
+    return { spawned: Array.from(memory.spawnedAt.keys()), drained: Array.from(memory.drained), last: memory.last }
+  }
+
+  return { ensure: ensure, drain: drain, drainKind: drainKind, status: status, memory: memory }
+}
+
+/** One implicit manager per context, so the named host helpers share state. */
+const DEFAULT_ROLE_MANAGERS = new WeakMap()
+
+function defaultRoleManager(ctx) {
+  if (ctx === null || ctx === undefined || typeof ctx !== 'object') return null
+  let manager = DEFAULT_ROLE_MANAGERS.get(ctx)
+  if (manager === undefined) {
+    manager = createRoleManager(ctx)
+    DEFAULT_ROLE_MANAGERS.set(ctx, manager)
+  }
+  return manager
+}
+
+/**
+ * Host entry point: ensure the configured instances of one role exist. The row
+ * shares a manager (createRoleManager) so the dispatcher and the API serialise
+ * together; this named helper is for host code that only has the ctx.
+ */
+export function ensureRole(ctx, kind, request) {
+  const manager = defaultRoleManager(ctx)
+  if (manager === null) return Promise.resolve({ ok: false, code: 'no-team-service', message: 'no context to provision roles from' })
+  return manager.ensure(kind, request)
+}
+
+/** Host entry point: mark a role slot for replacement on the next ensure. */
+export function drainRole(ctx, name) {
+  const manager = defaultRoleManager(ctx)
+  if (manager === null) return { ok: false, code: 'no-team-service', message: 'no context to drain roles from' }
+  return manager.drain(name)
+}
+
 /** What the dispatch edge looks like right now. Read-only. */
 export function probeDispatch(ctx) {
   const { agents, agentTeams } = servicesFor(ctx)
@@ -534,6 +847,9 @@ export function createDispatcher(ctx, options) {
   const projectOf = typeof opts.projectPath === 'function' ? opts.projectPath : () => state.memory.projectHint
   const boot = bootId()
   const spawnAllowed = opts.allowSpawn !== false
+  // The host-side role provisioner. Null means this caller did not opt into
+  // role provisioning (older tests / direct API users); dispatch still works.
+  const roles = opts.roles === undefined ? null : opts.roles
   const memory = { sweeping: false, rerun: null, timer: null, lastTickAt: null, lastError: null, lastResults: [], ticks: 0 }
   // undefined means "ask the context"; null means "this host has no git runner",
   // which now means dispatch cannot start at all. Resolved lazily and cached for
@@ -690,6 +1006,38 @@ export function createDispatcher(ctx, options) {
     return current
   }
 
+  /**
+   * Keep a live instance of every role a current stage needs. This is what
+   * replaces a reviewer/tester that died or timed out, without a Lead prompt.
+   * Best effort: a provisioning failure never blocks the dispatch pass.
+   */
+  async function ensureStageRoles(projectPath, board, now) {
+    if (roles === null || typeof roles.ensure !== 'function') return []
+    const kinds = []
+    for (const task of board.tasks) {
+      if (task.status === 'reviewing' && kinds.indexOf('reviewer') < 0) kinds.push('reviewer')
+      if (task.status === 'testing' && kinds.indexOf('tester') < 0) kinds.push('tester')
+    }
+    if (kinds.length === 0) return []
+    let config = null
+    try {
+      const fs = ctx.fs
+      if (fs !== undefined && fs !== null) config = (await readRoleConfig({ fs: fs }, { projectPath: projectPath })).config
+    } catch (error) {
+      config = null
+    }
+    const results = []
+    for (const kind of kinds) {
+      const task = board.tasks.filter((entry) => (kind === 'reviewer' ? entry.status === 'reviewing' : entry.status === 'testing'))[0]
+      try {
+        results.push(await roles.ensure(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: now }))
+      } catch (error) {
+        results.push({ ok: false, code: 'role-ensure-failed', message: String((error && error.message) || error) })
+      }
+    }
+    return results
+  }
+
   async function tick(projectPath) {
     const project = typeof projectPath === 'string' && projectPath.length > 0 ? projectPath : projectOf()
     if (typeof project !== 'string' || project.length === 0) return { ok: true, skipped: 'unknown-project' }
@@ -710,6 +1058,9 @@ export function createDispatcher(ctx, options) {
       }
       restoreLocks(read.board)
       let current = await reap(project, read.board, now)
+      // Roles are kept for tasks already in a review/test stage even while
+      // dispatch is paused: a dead reviewer/tester must not strand a task.
+      const roleResults = await ensureStageRoles(project, current, now)
       const dispatch = current.dispatch
       if (dispatch.state !== 'running') {
         return { ok: true, state: 'paused', tasks: current.tasks.length, results: results }
@@ -903,6 +1254,7 @@ export function createDispatcher(ctx, options) {
         paused: paused === true,
         dispatched: results.filter((entry) => entry.ok === true).length,
         results: results,
+        roles: roleResults,
       }
     } catch (error) {
       memory.lastError = String((error && error.message) || error)

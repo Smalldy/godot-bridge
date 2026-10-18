@@ -6,7 +6,8 @@ import { registerTaskRoutes, STATE_PATH, ACTION_PATH } from '../../plugin/task-c
 import { createFakeFs, createRig, createTeam, PROJECT, seedBoard } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
-import { createDispatcher } from '../../plugin/task-center/dispatch.mjs'
+import { createDispatcher, createRoleManager } from '../../plugin/task-center/dispatch.mjs'
+import { rolesPath } from '../../plugin/task-center/board.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
 
@@ -420,7 +421,8 @@ function createSubmitRig(options) {
     },
   }
   const state = createState(ctx)
-  const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: opts.git })
+  const roles = opts.roles === true ? createRoleManager(ctx) : opts.roles === undefined ? null : opts.roles
+  const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: opts.git, roles: roles })
   const api = createApi(ctx, {
     state: state,
     scheduler: scheduler,
@@ -429,8 +431,13 @@ function createSubmitRig(options) {
     verify: opts.verify,
     verifyCommand: opts.verifyCommand,
     autoMerge: opts.autoMerge,
+    roles: roles,
   })
-  return { project: PROJECT, fs: fs, ctx: ctx, state: state, scheduler: scheduler, api: api, team: team }
+  const user = { projectPath: PROJECT, by: '@user', role: 'user', agent: null }
+  async function action(name, body) {
+    return api.perform(name, body === undefined ? {} : body, user)
+  }
+  return { project: PROJECT, fs: fs, ctx: ctx, state: state, scheduler: scheduler, api: api, team: team, user: user, action: action }
 }
 
 /** A fake git for commit/diff; every call is recorded, no process is started. */
@@ -1787,6 +1794,196 @@ function driftRig(options) {
   )
   surface2.dispose()
   rig.scheduler.dispose()
+}
+
+// ── role permission gates and host provisioning ───────────────────────────
+function roleTeam() {
+  return createTeam({
+    roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+      { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+    ],
+  })
+}
+
+function agentCaller(id) {
+  return { projectPath: PROJECT, by: '@' + id, role: 'agent', agent: { id: id } }
+}
+
+function reviewStageTask(overrides) {
+  const stamp = new Date().toISOString()
+  return runningWorktreeTask(
+    Object.assign(
+      {
+        status: 'reviewing',
+        leaseUntil: null,
+        review: { status: 'pending', by: '@fixer', at: stamp, reasons: null, attempt: 1 },
+        test: null,
+      },
+      overrides === undefined ? {} : overrides,
+    ),
+  )
+}
+
+function testStageTask(overrides) {
+  const stamp = new Date().toISOString()
+  return reviewStageTask(
+    Object.assign(
+      {
+        status: 'testing',
+        review: { status: 'approved', by: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
+        test: { status: 'pending', by: null, at: stamp, evidence: null, attempt: 1 },
+      },
+      overrides === undefined ? {} : overrides,
+    ),
+  )
+}
+
+{
+  const fake = fakeGit()
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fake.git })
+  seedRunningTask(rig, reviewStageTask())
+  const workerReview = await rig.api.perform('approveReview', { id: 'T-1' }, agentCaller('session-fixer'))
+  check('a worker cannot review its own task', workerReview.ok === false && workerReview.code === 'worker-cannot-self-review', JSON.stringify(workerReview))
+  const testerReview = await rig.api.perform('approveReview', { id: 'T-1' }, agentCaller('session-tester-1'))
+  check('a tester cannot approve a review', testerReview.ok === false && testerReview.code === 'wrong-role', JSON.stringify(testerReview))
+  const reviewerApprove = await rig.api.perform('approveReview', { id: 'T-1' }, agentCaller('session-reviewer-1'))
+  check('a reviewer approves the review', reviewerApprove.ok === true && reviewerApprove.task.status === 'testing', JSON.stringify(reviewerApprove))
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fake.git })
+  seedRunningTask(rig, testStageTask())
+  const reviewerPass = await rig.api.perform('passTest', { id: 'T-1', evidence: 'ok' }, agentCaller('session-reviewer-1'))
+  check('a reviewer cannot pass tests', reviewerPass.ok === false && reviewerPass.code === 'wrong-role', JSON.stringify(reviewerPass))
+  const workerPass = await rig.api.perform('passTest', { id: 'T-1', evidence: 'ok' }, agentCaller('session-fixer'))
+  check('a worker cannot test its own task', workerPass.ok === false && workerPass.code === 'worker-cannot-self-test', JSON.stringify(workerPass))
+  const testerPass = await rig.api.perform('passTest', { id: 'T-1', evidence: 'ok' }, agentCaller('session-tester-1'))
+  check('a tester passes the test phase', testerPass.ok === true && testerPass.task.test.status === 'passed', JSON.stringify(testerPass))
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fake.git })
+  seedRunningTask(rig, runningWorktreeTask())
+  const reviewerSubmit = await rig.api.perform('submit', { id: 'T-1', evidence: 'x' }, agentCaller('session-reviewer-1'))
+  check('a reviewer cannot submit implementation work', reviewerSubmit.ok === false && reviewerSubmit.code === 'role-cannot-implement', JSON.stringify(reviewerSubmit))
+  const testerSubmit = await rig.api.perform('submit', { id: 'T-1', evidence: 'x' }, agentCaller('session-tester-1'))
+  check('a tester cannot submit implementation work', testerSubmit.ok === false && testerSubmit.code === 'role-cannot-implement', JSON.stringify(testerSubmit))
+  check('a refused role submit never touches git', fake.calls.length === 0, JSON.stringify(fake.calls))
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const team = createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+  ] })
+  const rig = createSubmitRig({ team: team, roles: true, git: fake.git })
+  seedRunningTask(rig, runningWorktreeTask({ title: 'Auto role task', spec: 'Implement X', acceptance: 'X works' }))
+  const submitted = await rig.action('submit', { id: 'T-1', evidence: 'unit tests' })
+  check(
+    'submit enters review and provisions a reviewer',
+    submitted.ok === true && submitted.task.status === 'reviewing' && submitted.provisioned !== undefined && submitted.provisioned.created[0].name === 'reviewer-1',
+    JSON.stringify(submitted.provisioned),
+  )
+  const spawns = team.calls.filter((call) => call.kind === 'spawn').map((call) => call.name)
+  check('the host spawned the reviewer without a Lead prompt', spawns.join(',') === 'reviewer-1', JSON.stringify(spawns))
+  const reviewerCall = team.calls.filter((call) => call.kind === 'spawn' && call.name === 'reviewer-1')[0]
+  check(
+    'the spawned reviewer brief carries the task and the boundary',
+    reviewerCall !== undefined &&
+      reviewerCall.text.indexOf('Auto role task') >= 0 &&
+      reviewerCall.text.indexOf('Implement X') >= 0 &&
+      reviewerCall.text.indexOf('X works') >= 0 &&
+      reviewerCall.text.indexOf('READ-ONLY') >= 0 &&
+      reviewerCall.text.indexOf('approveReview') >= 0,
+    reviewerCall === undefined ? '' : reviewerCall.text.slice(0, 600),
+  )
+  const approved = await rig.action('approveReview', { id: 'T-1' })
+  check(
+    'approving the review provisions a tester',
+    approved.ok === true && approved.task.status === 'testing' && approved.provisioned !== undefined && approved.provisioned.created[0].name === 'tester-1',
+    JSON.stringify(approved.provisioned),
+  )
+  const names = team.calls.filter((call) => call.kind === 'spawn').map((call) => call.name)
+  check('both stage roles are live', names.join(',') === 'reviewer-1,tester-1', JSON.stringify(names))
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const team = createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+  ] })
+  const rig = createSubmitRig({ team: team, roles: true, git: fake.git })
+  rig.fs.files.set(
+    rolesPath(PROJECT),
+    { text: JSON.stringify({ defaultProfile: 'worker', profiles: { reviewer: { instances: 2, skills: ['dsh-plugin-workflow'] } } }), version: 'seed' },
+  )
+  seedRunningTask(rig, runningWorktreeTask({ spec: 'Config task' }))
+  const submitted = await rig.action('submit', { id: 'T-1', evidence: 'x' })
+  check(
+    'the project role config fills two reviewer instances',
+    submitted.provisioned !== undefined && submitted.provisioned.created.map((entry) => entry.name).join(',') === 'reviewer-1,reviewer-2',
+    JSON.stringify(submitted.provisioned && submitted.provisioned.created),
+  )
+  const reviewerCalls = team.calls.filter((call) => call.kind === 'spawn' && call.name.indexOf('reviewer-') === 0)
+  check(
+    'the configured skill is referenced in every reviewer brief',
+    reviewerCalls.length === 2 && reviewerCalls.every((call) => call.text.indexOf('dsh-plugin-workflow') >= 0),
+    JSON.stringify(reviewerCalls.map((call) => call.name)),
+  )
+  const snapshot = await rig.api.snapshot(PROJECT)
+  check(
+    'the snapshot exposes the project role config',
+    snapshot.roles !== undefined && snapshot.roles.profiles.reviewer.instances === 2 && snapshot.roles.profiles.reviewer.stage === 'review' && snapshot.roles.stages.review === 'reviewer',
+    JSON.stringify(snapshot.roles),
+  )
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const team = createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+  ] })
+  const rig = createSubmitRig({ team: team, roles: true, git: fake.git })
+  const host = rig.scheduler.boot
+  const first = runningWorktreeTask({ id: 'T-1', title: 'First' })
+  first.dispatch = Object.assign({}, first.dispatch, { host: host })
+  const second = runningWorktreeTask({ id: 'T-2', title: 'Second', worktree: join(PROJECT, '.worktrees', 'T-2'), branch: 'task/T-2-1' })
+  second.dispatch = Object.assign({}, second.dispatch, { host: host })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [first, second] }))
+  const one = await rig.action('submit', { id: 'T-1', evidence: 'x' })
+  check('the first submit spawns one reviewer', one.provisioned !== undefined && one.provisioned.created.length === 1, JSON.stringify(one.provisioned))
+  const two = await rig.action('submit', { id: 'T-2', evidence: 'y' })
+  check(
+    'the second submit reuses the live reviewer',
+    two.provisioned !== undefined && two.provisioned.created.length === 0 && two.provisioned.reused.indexOf('reviewer-1') >= 0,
+    JSON.stringify({ ok: two.ok, status: two.task && two.task.status, code: two.code, provisioned: two.provisioned }),
+  )
+  check('only one reviewer was spawned', team.calls.filter((call) => call.kind === 'spawn' && call.name === 'reviewer-1').length === 1, JSON.stringify(team.calls.map((call) => call.name)))
+  rig.scheduler.dispose()
+}
+
+{
+  const plain = createRig({ allowSpawn: false })
+  const snapshot = await plain.api.snapshot(PROJECT)
+  check(
+    'a project without roles.json exposes the default profiles',
+    snapshot.roles !== undefined && snapshot.roles.defaultProfile === 'worker' && snapshot.roles.stages.implement === 'worker' && snapshot.roles.profiles.tester.instances === 1,
+    JSON.stringify(snapshot.roles),
+  )
+  plain.scheduler.dispose()
 }
 
 surface.dispose()

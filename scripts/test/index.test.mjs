@@ -76,7 +76,7 @@ check(
   tools[0].parameters.action.enum.join(','),
 )
 {
-  const { MERGER_NAME } = await import('../../plugin/task-center/dispatch.mjs')
+  const { MERGER_NAME, createRoleManager, roleKindOf } = await import('../../plugin/task-center/dispatch.mjs')
   check('the merger is a fixed role name', MERGER_NAME === 'merger', String(MERGER_NAME))
   const description = String(tools[0].description === undefined ? '' : tools[0].description)
   check(
@@ -84,6 +84,22 @@ check(
     description.indexOf('merger') >= 0 && description.indexOf('merger-only') >= 0,
     description.slice(0, 200),
   )
+  check(
+    'the tool description explains the worker/reviewer/tester profiles',
+    description.indexOf('worker/reviewer/tester') >= 0 && description.indexOf('implement/review/test') >= 0,
+    description.slice(-700),
+  )
+  check(
+    'the tool description says the host provisions roles, not the Lead',
+    description.indexOf('provisions a missing role') >= 0 && description.indexOf('no manual spawn') >= 0,
+    description.slice(-700),
+  )
+  check('the tool description names the project role file', description.indexOf('.agents/roles.json') >= 0, description.slice(-700))
+  check('the tool description states the hard verdict gates', description.indexOf('worker must never review or test its own task') >= 0, description.slice(-700))
+  check('role names map to kinds', roleKindOf('reviewer-1') === 'reviewer' && roleKindOf('tester-12') === 'tester' && roleKindOf('work-T-1-1') === null)
+  const noService = createRoleManager({ get: () => undefined })
+  const refused = await noService.ensure('reviewer', {})
+  check('the role manager refuses readably without agent-team services', refused.ok === false && refused.code === 'no-team-service', JSON.stringify(refused))
 }
 
 let listenerError = null
