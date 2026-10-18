@@ -2196,11 +2196,16 @@ function createTesterRig(options) {
   const fake = testerGit(opts)
   const team = testerTeam()
   const verifier = opts.verifier === undefined ? null : opts.verifier
+  const merger =
+    opts.makeMerger === undefined
+      ? createMerger({ git: fake.git, verify: verifier === null ? undefined : verifier.verify })
+      : opts.makeMerger(fake.git, verifier)
   const rig = createSubmitRig({
     team: team,
     roles: true,
     git: fake.git,
-    merger: createMerger({ git: fake.git, verify: verifier === null ? undefined : verifier.verify }),
+    merger: merger,
+    autoMerge: opts.autoMerge === true,
     godotPath: 'C:/fake/godot.exe',
   })
   // A Godot marker so the tester brief carries the launch/runbook section.
@@ -2351,6 +2356,263 @@ function acceptingTask(overrides) {
   check('the candidate is rebuilt from the moved target', adds.length === 2 && adds[1].args.join(' ') === 'worktree add -b test/T-1 ' + join(PROJECT, '.worktrees', 'test-T-1') + ' moved-sha', JSON.stringify(adds.map((call) => call.args)))
   const testerSends = ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'tester-1')
   check('the tester is asked to retest', testerSends.length === 2 && testerSends[1].text.indexOf('Independent TEST round 2') >= 0, JSON.stringify(testerSends.map((call) => call.text.slice(0, 80))))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── merge-queue idempotency: repeated merges never rebuild a candidate ──────
+async function withDeadline(promise, ms) {
+  let timer = null
+  const guard = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ __timedOut: true }), ms)
+  })
+  const result = await Promise.race([promise, guard])
+  if (timer !== null) clearTimeout(timer)
+  return result
+}
+
+{
+  // passTest and the auto-merge sweep race on the SAME testing+passed task. Only
+  // one merge may run; the other must be merge-in-flight/no-op, no candidate is
+  // rebuilt and the queue must stay usable afterwards.
+  const counts = { createCandidate: 0, discardCandidate: 0, mergeCandidate: 0 }
+  let releaseFirst = null
+  let startedResolve = null
+  const started = new Promise((resolveStarted) => {
+    startedResolve = resolveStarted
+  })
+  const ctx = createTesterRig({
+    autoMerge: true,
+    makeMerger: (git) => {
+      const base = createMerger({ git: git })
+      const merger = Object.assign({}, base)
+      merger.createCandidate = async function (task, project, request) {
+        counts.createCandidate += 1
+        return base.createCandidate(task, project, request)
+      }
+      merger.discardCandidate = async function (task, project, request) {
+        counts.discardCandidate += 1
+        return base.discardCandidate(task, project, request)
+      }
+      merger.mergeCandidate = async function (task, project, request) {
+        counts.mergeCandidate += 1
+        if (counts.mergeCandidate === 1) {
+          startedResolve(true)
+          await new Promise((resolveGate) => {
+            releaseFirst = resolveGate
+          })
+        }
+        return base.mergeCandidate(task, project, request)
+      }
+      merger.mergeRequest = base.mergeRequest
+      return merger
+    },
+  })
+  const rig = ctx.rig
+  const fake = ctx.fake
+  const first = acceptingTask()
+  const second = acceptingTask({ id: 'T-2', title: 'Second task', worktree: join(PROJECT, '.worktrees', 'T-2'), branch: 'task/T-2-1' })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [first, second] }))
+  const surface = install(rig)
+  const approved = await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  check('the candidate is built once for the review approval', approved.json().ok === true && counts.createCandidate === 1, JSON.stringify(counts))
+  const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
+
+  const firstPromise = rig.api.perform('passTest', { id: 'T-1', evidence: 'PASS' }, rig.user)
+  const startedResult = await withDeadline(started, 1000)
+  check('the first merge holds the in-flight claim', startedResult === true, JSON.stringify(startedResult))
+  // Fire the host sweep at the same task while the first merge is still queued.
+  const sweepPromise = rig.api.autoMergePending(PROJECT)
+  await new Promise((resolveTick) => setTimeout(resolveTick, 25))
+  if (releaseFirst !== null) releaseFirst()
+  const merged = await withDeadline(firstPromise, 2000)
+  const sweepWhileMerging = await withDeadline(sweepPromise, 2000)
+  check(
+    'the sweep racing the same task never merges it a second time',
+    sweepWhileMerging !== null &&
+      sweepWhileMerging.__timedOut !== true &&
+      sweepWhileMerging.ok === true &&
+      sweepWhileMerging.merged.length === 0 &&
+      (sweepWhileMerging.skipped.length === 0 || sweepWhileMerging.skipped.some((entry) => entry.id === 'T-1' && ['no-open-merge', 'not-mergeable-phase', 'merge-in-flight', 'test-required'].indexOf(entry.code) >= 0)),
+    JSON.stringify(sweepWhileMerging),
+  )
+  check('the concurrent sweep never rebuilds the candidate', counts.createCandidate === 1 && counts.discardCandidate === 0, JSON.stringify(counts))
+  check(
+    'the first caller merges the task exactly once',
+    merged !== null && merged.__timedOut !== true && merged.ok === true && merged.task.status === 'done' && merged.task.merge.status === 'merged',
+    JSON.stringify(merged === null || merged.__timedOut === true ? merged : { ok: merged.ok, status: merged.task && merged.task.status }),
+  )
+  const forwards = fake.calls.filter((call) => call.args.join(' ') === 'merge --ff-only test/T-1')
+  check('the target is fast-forwarded exactly once', forwards.length === 1 && forwards[0].cwd === PROJECT, JSON.stringify(forwards.map((call) => call.args)))
+  check('the candidate is not rebuilt during or after the merge', counts.createCandidate === 1 && counts.discardCandidate === 0, JSON.stringify(counts))
+  check(
+    'the candidate worktree and branch are cleaned up',
+    fake.calls.some((call) => call.args.join(' ') === 'worktree remove --force ' + candidatePath) && fake.calls.some((call) => call.args.join(' ') === 'branch -D test/T-1'),
+    JSON.stringify(fake.calls.map((call) => call.args)),
+  )
+
+  // Repeating the merge path on the now-done task is a no-op, not a stale rebuild.
+  const repeatSweep = await withDeadline(rig.api.autoMergePending(PROJECT), 1500)
+  check('a sweep after the merge is a no-op', repeatSweep !== null && repeatSweep.__timedOut !== true && repeatSweep.ok === true && repeatSweep.merged.length === 0, JSON.stringify(repeatSweep))
+  const repeatPass = await withDeadline(rig.api.perform('passTest', { id: 'T-1', evidence: 'again' }, rig.user), 1500)
+  check('passing the finished task is refused without touching candidates', repeatPass !== null && repeatPass.ok === false && repeatPass.code === 'not-testing', JSON.stringify(repeatPass))
+  check('the repeated calls still never rebuild a candidate', counts.createCandidate === 1 && counts.discardCandidate === 0, JSON.stringify(counts))
+  const after = await rig.api.snapshot(PROJECT)
+  const afterTask = after.tasks.filter((entry) => entry.id === 'T-1')[0]
+  check(
+    'the finished task stays done and merged',
+    afterTask.status === 'done' && afterTask.merge.status === 'merged' && afterTask.test.status === 'passed',
+    JSON.stringify({ status: afterTask.status, merge: afterTask.merge.status, test: afterTask.test.status }),
+  )
+
+  // The queue is not stuck: the next review approval still provisions promptly.
+  const next = await withDeadline(rig.api.perform('approveReview', { id: 'T-2' }, rig.user), 2000)
+  check(
+    'the next approveReview does not hang behind the finished merge',
+    next !== null && next.__timedOut !== true && next.ok === true && next.task.status === 'testing',
+    JSON.stringify(next === null || next.__timedOut === true ? next : { ok: next.ok, status: next.task && next.task.status }),
+  )
+  check('the second task got its own single candidate', counts.createCandidate === 2, JSON.stringify(counts))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // A merge that is already closed while the task is still testing must refuse
+  // with no-open-merge and never rebuild a candidate or flip the board to retest.
+  const counts = { createCandidate: 0, discardCandidate: 0 }
+  const ctx = createTesterRig({
+    autoMerge: true,
+    makeMerger: (git) => {
+      const base = createMerger({ git: git })
+      const merger = Object.assign({}, base)
+      merger.createCandidate = async function (task, project, request) {
+        counts.createCandidate += 1
+        return base.createCandidate(task, project, request)
+      }
+      merger.discardCandidate = async function (task, project, request) {
+        counts.discardCandidate += 1
+        return base.discardCandidate(task, project, request)
+      }
+      merger.mergeCandidate = base.mergeCandidate
+      merger.mergeRequest = base.mergeRequest
+      return merger
+    },
+  })
+  const rig = ctx.rig
+  const stamp = new Date().toISOString()
+  const closed = acceptingTask({
+    status: 'testing',
+    review: { status: 'approved', by: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
+    test: { status: 'pending', by: null, at: stamp, evidence: null, attempt: 1 },
+    merge: Object.assign({}, acceptingTask().merge, { status: 'merged', mergeCommit: 'candidate-sha' }),
+  })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [closed] }))
+  const surface = install(rig)
+  const passed = await withDeadline(postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1', evidence: 'PASS' }), 2000)
+  const payload = passed === null || passed.__timedOut === true ? null : passed.json()
+  check(
+    'a closed merge request refuses the merge instead of rebuilding the candidate',
+    payload !== null && payload.ok === true && payload.mergeError !== undefined && payload.mergeError !== null && payload.mergeError.code === 'no-open-merge',
+    JSON.stringify(payload && { ok: payload.ok, code: payload.code, mergeError: payload.mergeError }),
+  )
+  check('the closed-merge path never creates a candidate', counts.createCandidate === 0 && counts.discardCandidate === 0, JSON.stringify(counts))
+  const after = await rig.api.snapshot(PROJECT)
+  const afterTask = after.tasks.filter((entry) => entry.id === 'T-1')[0]
+  check(
+    'the board is not rewritten to a retest',
+    afterTask.status === 'testing' && afterTask.merge.status === 'merged' && afterTask.test.status === 'passed',
+    JSON.stringify({ status: afterTask.status, merge: afterTask.merge.status, test: afterTask.test.status }),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // The regression window: while the first merge has finished its queue turn but
+  // has not yet written the merged board, the host sweep runs. Old code took the
+  // stale branch here and rebuilt a candidate for a task about to be done; the
+  // hotfix's claim returns merge-in-flight instead.
+  const counts = { createCandidate: 0, discardCandidate: 0 }
+  const ctx = createTesterRig({
+    autoMerge: true,
+    makeMerger: (git) => {
+      const base = createMerger({ git: git })
+      const merger = Object.assign({}, base)
+      merger.createCandidate = async function (task, project, request) {
+        counts.createCandidate += 1
+        return base.createCandidate(task, project, request)
+      }
+      merger.discardCandidate = async function (task, project, request) {
+        counts.discardCandidate += 1
+        return base.discardCandidate(task, project, request)
+      }
+      merger.mergeCandidate = base.mergeCandidate
+      merger.mergeRequest = base.mergeRequest
+      return merger
+    },
+  })
+  const rig = ctx.rig
+  const fake = ctx.fake
+  const first = acceptingTask()
+  const second = acceptingTask({ id: 'T-2', title: 'Second task', worktree: join(PROJECT, '.worktrees', 'T-2'), branch: 'task/T-2-1' })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [first, second] }))
+  const surface = install(rig)
+  await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  check('the candidate exists before the merge race', counts.createCandidate === 1, JSON.stringify(counts))
+
+  // Hold the board write that records the merge, so the sweep runs in the gap
+  // between the fast-forward and the task being marked done.
+  const originalWrite = rig.fs.writeText
+  let gateStartedResolve = null
+  let gateRelease = null
+  const gateStarted = new Promise((resolveGate) => {
+    gateStartedResolve = resolveGate
+  })
+  let gated = false
+  rig.fs.writeText = async function (target, content, expected) {
+    const isBoard = String(target && target.targetKey ? target.targetKey : '').indexOf('tasks.json') >= 0
+    if (gated === false && isBoard && String(content).indexOf('"status": "merged"') >= 0) {
+      gated = true
+      gateStartedResolve(true)
+      await new Promise((resolveWrite) => {
+        gateRelease = resolveWrite
+      })
+    }
+    return originalWrite.call(this, target, content, expected)
+  }
+
+  const mergePromise = rig.api.perform('passTest', { id: 'T-1', evidence: 'PASS' }, rig.user)
+  const raceStarted = await withDeadline(gateStarted, 1500)
+  check('the merge record write is paused for the race window', raceStarted === true, JSON.stringify(raceStarted))
+  const sweepDuringWrite = await withDeadline(rig.api.autoMergePending(PROJECT), 1500)
+  check(
+    'a sweep in the merge-write window is refused as merge-in-flight',
+    sweepDuringWrite !== null &&
+      sweepDuringWrite.__timedOut !== true &&
+      sweepDuringWrite.ok === true &&
+      sweepDuringWrite.merged.length === 0 &&
+      sweepDuringWrite.skipped.some((entry) => entry.id === 'T-1' && entry.code === 'merge-in-flight'),
+    JSON.stringify(sweepDuringWrite),
+  )
+  check('the sweep in the gap never rebuilds the candidate', counts.createCandidate === 1 && counts.discardCandidate === 0, JSON.stringify(counts))
+  if (gateRelease !== null) gateRelease()
+  const merged = await withDeadline(mergePromise, 2000)
+  check('the paused merge still completes', merged !== null && merged.__timedOut !== true && merged.ok === true && merged.task.status === 'done', JSON.stringify(merged === null || merged.__timedOut === true ? merged : { ok: merged.ok, status: merged.task && merged.task.status }))
+  const forwards = fake.calls.filter((call) => call.args.join(' ') === 'merge --ff-only test/T-1')
+  check('the race window produced exactly one fast-forward', forwards.length === 1, JSON.stringify(forwards.map((call) => call.args)))
+  check('the merge-write window produced no other candidate', counts.createCandidate === 1 && counts.discardCandidate === 0, JSON.stringify(counts))
+  const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
+  const candidateAdds = fake.calls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'add' && call.args.join(' ').indexOf('test/T-1') >= 0)
+  check(
+    'the candidate was built once and cleaned up, with no leftover merge worktree',
+    candidateAdds.length === 1 &&
+      fake.calls.some((call) => call.args.join(' ') === 'worktree remove --force ' + candidatePath) &&
+      fake.calls.some((call) => call.args.join(' ') === 'branch -D test/T-1'),
+    JSON.stringify(fake.calls.map((call) => call.args)),
+  )
+  const next = await withDeadline(rig.api.perform('approveReview', { id: 'T-2' }, rig.user), 2000)
+  check('the merge queue is free after the race', next !== null && next.__timedOut !== true && next.ok === true && next.task.status === 'testing', JSON.stringify(next === null || next.__timedOut === true ? next : { ok: next.ok, status: next.task && next.task.status }))
   surface.dispose()
   rig.scheduler.dispose()
 }
