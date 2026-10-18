@@ -37,6 +37,16 @@
 
 同一个包还会挂载第二个组件行 `godot-bridge/task-center`：项目级任务板 + 依赖驱动的派发器 + 文件锁，以及中栏 GUI 面板（左侧栏「任务」）。
 
+### 执行流程
+
+每个任务都在自己的 git worktree 中执行——`<项目>/.worktrees/<taskId>-<attempt>`，分支 `task/<taskId>-<attempt>`，在任务被 claim 时创建。任务绝不会派发到共享工作区；项目无法承载 worktree 时，派发会直接拒绝开始。
+
+1. **执行**：assignee 只在该 checkout 内修改文件，并在那里运行测试。
+2. **提交**：`submit` 在 worktree 内提交并生成 merge request（base = 当前 target head，head = 新提交，changed files = base..head 的 diff）。
+3. **验证**：`testing = self`（默认）以 assignee 的自测为准；`testing = independent` 时，宿主把分支检出到临时 `verify-<taskId>` worktree，在其中运行 `npm run verify` 并自行写入 `verdict`——verdict 未通过就不能合并。通过与否不由模型判断。
+4. **合并**：宿主每 5 秒扫描一次，把就绪的 merge request 送入串行合并队列：在一次性 worktree 中整合分支、运行项目验证，只有全绿才 fast-forward target 分支并删除已合并任务的 worktree。
+5. **异常**：冲突或验证失败会标记该申请并通知 owner，target 分支保持不变。`mergeRequest` / `rejectMerge` / `refreshMerge` 仍保留给用户或 `merger` 队友，用于手动整合、审计或修复。
+
 - **任务板**：`<项目>/.agents/tasks.json`。schema v2，读到 v1 会自动迁移；重复 id、非法条目、未来版本会被拒绝而不是覆盖；建议把该文件加入项目 `.gitignore`（它是运行态，不是源码）。
 - **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject`。
 - **依赖**：`B.dependsOn = [A]` 表示 A 完成后才派发 B。就绪任务按 `priority` 降序、创建时间升序取。`A <- B <- C`、`D`、`E <- F` 会先派发 A、D、E；A 完成后派发 B，E 完成后派发 F。
