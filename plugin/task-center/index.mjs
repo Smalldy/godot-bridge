@@ -21,6 +21,7 @@
 import { createState } from './state.mjs'
 import { createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
 import { createMerger } from './merge.mjs'
+import { createHarness } from './harness.mjs'
 import { createApi } from './api.mjs'
 import { registerTaskTool } from './tool.mjs'
 import { registerTaskRoutes } from './routes.mjs'
@@ -59,6 +60,10 @@ export function apply(ctx) {
   // The merge queue only integrates a candidate the independent tester already
   // accepted; the host no longer runs a third full verify of its own.
   const merger = createMerger({ git: git })
+  // The isolated DSH test instance the tester drives (harness.mjs): a throwaway
+  // DSH_HOME/profile, its own free port and its own project copy. Constructing
+  // it starts nothing; only a harnessStart action does.
+  const harness = createHarness({ ctx: ctx })
   // autoMerge turns on the host-driven merge sweep below: a task that passed its
   // review and test phases must not wait for a merger model.
   const api = createApi(ctx, {
@@ -67,6 +72,7 @@ export function apply(ctx) {
     git: git,
     merger: merger,
     roles: roles,
+    harness: harness,
     autoMerge: true,
   })
 

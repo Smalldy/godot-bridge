@@ -71,6 +71,11 @@ check('a host-driven auto-merge sweep is installed', effects.some((label) => lab
 check('the tool action enum includes start and pause', tools[0].parameters.action.enum.indexOf('start') >= 0 && tools[0].parameters.action.enum.indexOf('pause') >= 0)
 check('the tool action enum no longer includes setStatus', tools[0].parameters.action.enum.indexOf('setStatus') < 0)
 check(
+  'the tool action enum includes the isolated DSH harness',
+  ['harnessStart', 'harnessStop', 'harnessRestart', 'harnessStatus', 'harnessSmoke'].every((action) => tools[0].parameters.action.enum.indexOf(action) >= 0),
+  tools[0].parameters.action.enum.join(','),
+)
+check(
   'the tool action enum includes the merge queue',
   tools[0].parameters.action.enum.indexOf('mergeRequest') >= 0 && tools[0].parameters.action.enum.indexOf('rejectMerge') >= 0,
   tools[0].parameters.action.enum.join(','),
