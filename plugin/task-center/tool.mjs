@@ -42,12 +42,12 @@ const DESCRIPTION = [
   'mergeRequest (integrate an open MR into its target branch after verification) and rejectMerge —',
   'mergeRequest/rejectMerge are reserved for the user or the Team member named "merger" (every other agent gets merger-only);',
   'mergeRequest refuses with head-drift when the task branch has moved past the head the merge request recorded,',
-  'and refreshMerge (its owner, the user or the merger) re-points an open request at the branch head, refreshing its commit and changed files, without committing, merging or pushing;',
+  'and refreshMerge (its owner, the user or the merger) re-points an open request at the branch head and re-bases it on the target branch\'s current head, refreshing its commit and changed files, without committing, merging or pushing;',
   'when a submit opens a merge request the merger is notified directly,',
   'cancel, reopen, block, unblock, retry, cancelStartRequest,',
   'lock / unlock / locks / forceUnlock, openProject.',
   'start does not start dispatch for an agent: it records a request, and the user approves it in the task center panel.',
-  'Dependencies: B.dependsOn=[A] means A must be done before B runs.',
+  'Dependencies: B.dependsOn=[A] means A must be done and merged (when A has a merge request) before B runs.',
   'A task only runs while dispatch is started; the scheduler acquires its writeFiles locks first.',
 ].join(' ')
 

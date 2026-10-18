@@ -192,6 +192,27 @@ export function createApi(ctx, options) {
   }
 
   /**
+   * The head of the merge TARGET branch, resolved in the main checkout. A
+   * refresh re-bases a request on this commit, so its failure is a readable
+   * refusal (never a silent no-op). Never throws.
+   */
+  async function readTargetHead(projectPath, ref) {
+    if (git === null) {
+      return failure('no-git-service', 'this profile has no git service, so the target branch ' + ref + ' cannot be read')
+    }
+    try {
+      const resolved = await git.revParse(projectPath, ref)
+      if (resolved !== null && resolved !== undefined && resolved.ok === true && typeof resolved.hash === 'string' && resolved.hash.length > 0) {
+        return ok({ head: String(resolved.hash) })
+      }
+      const detail = resolved !== null && resolved !== undefined && typeof resolved.message === 'string' ? resolved.message : 'git returned no hash'
+      return failure('target-unreadable', 'could not read the head of the target branch ' + ref + ': ' + detail)
+    } catch (error) {
+      return failure('target-unreadable', 'could not read the head of the target branch ' + ref + ': ' + messageOf(error))
+    }
+  }
+
+  /**
    * Best-effort message to one Team member by name. Every failure — no team
    * service, no lead, no such member, a refused mailbox — is swallowed: a
    * notification must never fail a submit or a merge.
@@ -916,14 +937,24 @@ export function createApi(ctx, options) {
           )
         }
         if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', id + ' has no branch to read')
-        if (typeof merge.base !== 'string' || merge.base.length === 0) {
-          return failure('missing-base', id + ' has no base commit, so the refresh cannot diff its branch')
+        // Re-base on the target's CURRENT head, not the commit recorded at
+        // submit: when the target advanced (or the branch merged it in while
+        // resolving a conflict), diffing from the old base would report
+        // upstream files as this task's work. A task with no target branch keeps
+        // its recorded base (legacy behaviour).
+        let base = typeof merge.base === 'string' && merge.base.length > 0 ? merge.base : null
+        if (typeof task.target === 'string' && task.target.length > 0) {
+          const targetHead = await readTargetHead(projectPath, task.target)
+          if (targetHead.ok !== true) return targetHead
+          base = targetHead.head
+        } else if (base === null) {
+          return failure('missing-base', id + ' has no base commit and no target branch to resolve one from')
         }
         const current = await readBranchHead(projectPath, task)
         if (current.ok !== true) return current
         let diff
         try {
-          diff = await git.diffNameOnly(projectPath, merge.base, current.head)
+          diff = await git.diffNameOnly(projectPath, base, current.head)
         } catch (error) {
           return failure('diff-failed', 'could not list the files ' + id + ' changed: ' + messageOf(error))
         }
@@ -935,7 +966,7 @@ export function createApi(ctx, options) {
         const recorded = await writeTask(
           projectPath,
           id,
-          (board) => refreshMergeRequest(board, id, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by),
+          (board) => refreshMergeRequest(board, id, base, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by),
           context,
         )
         if (recorded.ok !== true) return recorded

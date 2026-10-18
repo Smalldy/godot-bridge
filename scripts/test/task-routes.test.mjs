@@ -1236,6 +1236,9 @@ function driftRig(options) {
       stdout: (cwd === integration ? 'merge-sha' : cwd === worktree ? worktreeHead : 'target-sha') + '\n',
       stderr: '',
     }),
+    // A refresh re-bases on the target's current head, then diffs from it.
+    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
+    ['diff --name-only target-sha ' + worktreeHead]: () => ({ code: 0, stdout: 'scripts/a.gd\nscripts/b.gd\n', stderr: '' }),
     ['diff --name-only base-sha ' + worktreeHead]: () => ({ code: 0, stdout: 'scripts/a.gd\nscripts/b.gd\n', stderr: '' }),
   })
   const verifier = fakeVerifier({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
@@ -1306,6 +1309,11 @@ function driftRig(options) {
   const payload = res.json()
   check('refreshMerge succeeds for the user', payload.ok === true, res.text)
   check('it re-points the request at the branch head', payload.task !== undefined && payload.task.merge.head === 'new-head-sha' && payload.task.commit === 'new-head-sha', JSON.stringify(payload.task && { head: payload.task.merge.head, commit: payload.task.commit }))
+  check(
+    'and re-bases it on the target head',
+    payload.task !== undefined && payload.task.merge.base === 'target-sha',
+    JSON.stringify(payload.task && { base: payload.task.merge.base }),
+  )
   check(
     'it refreshes the changed files on both records',
     payload.task !== undefined &&
@@ -1414,6 +1422,121 @@ function driftRig(options) {
     'the fallback resolves the branch in the main checkout',
     fake.calls.some((entry) => entry.cwd === PROJECT && entry.args.join(' ') === 'rev-parse --verify task/T-1-1'),
     JSON.stringify(fake.calls.filter((entry) => entry.args[0] === 'rev-parse').map((entry) => ({ cwd: entry.cwd, args: entry.args }))),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── refreshMerge re-bases the request on the target's current head ─────────
+{
+  // The branch merged the target in while resolving a conflict: diffing from
+  // the OLD base would count upstream files as this task's work.
+  const seedTask = openMergeTask({ assignee: { name: 'fixer', session: 'session-fixer' } })
+  seedTask.commit = 'old-head-sha'
+  seedTask.actualFiles = ['scripts/a.gd', 'dependency/file.gd']
+  seedTask.merge = Object.assign({}, seedTask.merge, {
+    status: 'open',
+    base: 'old-base-sha',
+    head: 'old-head-sha',
+    actualFiles: ['scripts/a.gd', 'dependency/file.gd'],
+  })
+  const worktree = join(PROJECT, '.worktrees', 'T-1')
+  const integration = join(PROJECT, '.worktrees', 'merge-T-1')
+  const fake = mergeGit({
+    'rev-parse HEAD': (args, cwd) => ({
+      code: 0,
+      stdout: (cwd === integration ? 'merge-sha' : cwd === worktree ? 'branch-new-sha' : 'target-sha') + '\n',
+      stderr: '',
+    }),
+    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-new-sha\n', stderr: '' }),
+    'diff --name-only target-new-sha branch-new-sha': () => ({ code: 0, stdout: 'scripts/a.gd\n', stderr: '' }),
+    'diff --name-only old-base-sha branch-new-sha': () => ({ code: 0, stdout: 'scripts/a.gd\ndependency/file.gd\n', stderr: '' }),
+  })
+  const verifier = fakeVerifier({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
+  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(rig, seedTask)
+  const surface = install(rig)
+  const res = await postTo(surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  const payload = res.json()
+  check('a refresh after a target merge succeeds', payload.ok === true, res.text)
+  check(
+    'the base moves to the target head',
+    payload.task !== undefined && payload.task.merge.base === 'target-new-sha',
+    JSON.stringify(payload.task && { base: payload.task.merge.base }),
+  )
+  check(
+    'the head and commit move to the branch head',
+    payload.task !== undefined && payload.task.merge.head === 'branch-new-sha' && payload.task.commit === 'branch-new-sha',
+    JSON.stringify(payload.task && { head: payload.task.merge.head, commit: payload.task.commit }),
+  )
+  check(
+    'actualFiles only contain this task effects, not upstream files',
+    payload.task !== undefined &&
+      payload.task.actualFiles.join(',') === 'scripts/a.gd' &&
+      payload.task.merge.actualFiles.join(',') === 'scripts/a.gd',
+    JSON.stringify(payload.task && { task: payload.task.actualFiles, merge: payload.task.merge.actualFiles }),
+  )
+  check(
+    'the refresh never diffs from the stale base',
+    fake.calls.every((entry) => !(entry.args[0] === 'diff' && entry.args[2] === 'old-base-sha')),
+    JSON.stringify(fake.calls.filter((entry) => entry.args[0] === 'diff').map((entry) => entry.args)),
+  )
+  check(
+    'the history records both base and head moves',
+    payload.task !== undefined &&
+      payload.task.history.some(
+        (entry) =>
+          String(entry.note).indexOf('base old-base-sha -> target-new-sha') >= 0 &&
+          String(entry.note).indexOf('head old-head-sha -> branch-new-sha') >= 0,
+      ),
+    JSON.stringify(payload.task && payload.task.history.slice(-2)),
+  )
+  const merged = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('the refreshed request merges', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// an unreadable target refuses the refresh and rewrites nothing
+{
+  const seedTask = openMergeTask({ assignee: { name: 'fixer', session: 'session-fixer' } })
+  const worktree = join(PROJECT, '.worktrees', 'T-1')
+  const fake = mergeGit({
+    'rev-parse HEAD': (args, cwd) => ({ code: 0, stdout: (cwd === worktree ? 'new-head-sha' : 'target-sha') + '\n', stderr: '' }),
+  })
+  const rig = createSubmitRig({ git: fake.git, merger: null })
+  seedMergeTask(rig, seedTask)
+  const surface = install(rig)
+  const res = await postTo(surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  check('an unreadable target refuses the refresh', res.json().ok === false && res.json().code === 'target-unreadable', res.text)
+  const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  const task = after.json().tasks[0]
+  check(
+    'and nothing is rewritten',
+    task.merge.base === 'base-sha' && task.merge.head === 'head-sha' && task.merge.status === 'open' && task.commit === 'head-sha',
+    JSON.stringify({ base: task.merge.base, head: task.merge.head, status: task.merge.status, commit: task.commit }),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// a legacy request with no target keeps its recorded base
+{
+  const seedTask = openMergeTask({ target: null, assignee: { name: 'fixer', session: 'session-fixer' } })
+  seedTask.merge = Object.assign({}, seedTask.merge, { target: null, base: 'base-sha', head: 'head-sha' })
+  const fake = mergeGit({
+    'diff --name-only base-sha head-sha': () => ({ code: 0, stdout: 'scripts/a.gd\n', stderr: '' }),
+  })
+  const rig = createSubmitRig({ git: fake.git, merger: null })
+  seedMergeTask(rig, seedTask)
+  const surface = install(rig)
+  const res = await postTo(surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  const payload = res.json()
+  check('a request without a target still refreshes', payload.ok === true, res.text)
+  check(
+    'and keeps its recorded base',
+    payload.task !== undefined && payload.task.merge.base === 'base-sha' && payload.task.actualFiles.join(',') === 'scripts/a.gd',
+    JSON.stringify(payload.task && { base: payload.task.merge.base, files: payload.task.actualFiles }),
   )
   surface.dispose()
   rig.scheduler.dispose()

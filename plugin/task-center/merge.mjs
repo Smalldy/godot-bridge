@@ -426,31 +426,38 @@ export function recordMergeResult(board, id, outcome, now, by) {
 }
 
 /**
- * Refresh an open merge request to the task branch's current head. Pure: the
- * API applies it through the board's CAS after reading the head and diffing the
- * branch itself.
+ * Refresh an open merge request to the task branch's current head AND current
+ * base. Pure: the API applies it through the board's CAS after reading the
+ * branch head, the target head and the diff itself.
  *
- * A submit records the head it committed; an agent that commits again AFTER the
- * submit makes that record stale, and the merger would verify an old tree. This
- * is the explicit repair: it re-points the request at the branch's real head,
- * refreshes the changed-file list, re-opens a failed/conflicted request and
- * clears the previous outcome. It never commits, merges or pushes.
+ * A submit records the base and head it saw; if the branch moves, or the target
+ * branch advances (or the branch merges the target in while resolving a
+ * conflict), that record goes stale. This is the explicit repair: it re-bases
+ * the request on the target's current head, re-points it at the branch's real
+ * head, refreshes the changed-file list, re-opens a failed/conflicted request
+ * and clears the previous outcome. It never commits, merges or pushes.
+ *
+ * @param base - the commit the diff was taken from (the API passes the target's
+ *   current head, or the request's old base when the task has no target).
  */
-export function refreshMergeRequest(board, id, head, actualFiles, now, by) {
+export function refreshMergeRequest(board, id, base, head, actualFiles, now, by) {
   const next = JSON.parse(JSON.stringify(board))
   const task = next.tasks.filter((candidate) => candidate.id === id)[0]
   if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
   if (task.merge === null || typeof task.merge !== 'object' || Array.isArray(task.merge)) {
     return failure('no-merge-request', id + ' has no merge request to refresh')
   }
+  if (typeof base !== 'string' || base.length === 0) return failure('missing-base', id + ' has no base commit to record')
   if (typeof head !== 'string' || head.length === 0) return failure('missing-head', id + ' has no branch head to record')
   const at = new Date(now).toISOString()
   const files = Array.isArray(actualFiles) ? actualFiles.slice() : []
-  const previous = typeof task.merge.head === 'string' ? task.merge.head : null
+  const previousBase = typeof task.merge.base === 'string' ? task.merge.base : null
+  const previousHead = typeof task.merge.head === 'string' ? task.merge.head : null
   task.commit = head
   task.actualFiles = files.slice()
   task.merge = Object.assign({}, task.merge, {
     status: 'open',
+    base: base,
     head: head,
     actualFiles: files.slice(),
     mergeCommit: null,
@@ -465,7 +472,7 @@ export function refreshMergeRequest(board, id, head, actualFiles, now, by) {
     by: by,
     from: task.status,
     to: task.status,
-    note: 'merge request refreshed: ' + String(previous) + ' -> ' + head,
+    note: 'merge request refreshed: base ' + String(previousBase) + ' -> ' + base + ', head ' + String(previousHead) + ' -> ' + head,
   })
-  return { ok: true, board: next, events: [{ kind: 'merge-refreshed', id: id, head: head }] }
+  return { ok: true, board: next, events: [{ kind: 'merge-refreshed', id: id, base: base, head: head }] }
 }
