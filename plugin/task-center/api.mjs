@@ -214,6 +214,13 @@ export function createApi(ctx, options) {
   const drainIntervalMs = Number.isFinite(opts.drainIntervalMs) ? Math.max(1, Math.floor(opts.drainIntervalMs)) : 250
   const sleep = typeof opts.sleep === 'function' ? opts.sleep : (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
+  // A task can be merged by both the tester's passTest and the host sweep. The
+  // second caller must not take the stale branch and rebuild a candidate for a
+  // task that is already done; one in-process claim per task makes merging idempotent.
+  const mergingCandidates = new Set()
+  // The status panel polls every few seconds; worktree inventory is read-only and
+  // can be reused briefly instead of starting a git process on every poll.
+  let worktreeCache = { at: -Infinity, project: null, value: null }
 
   /** Merge actions are one-at-a-time: the queue serialises the whole read+git+write. */
   function serialised(work) {
@@ -334,10 +341,16 @@ export function createApi(ctx, options) {
    * current target head, the test round resets and the tester is asked to retest.
    */
   async function mergeTestedCandidate(projectPath, id, by, context) {
+    if (mergingCandidates.has(id)) return failure('merge-in-flight', id + ' is already being merged by the host')
+    mergingCandidates.add(id)
+    try {
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const task = model.findTask(read.board, id)
     if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
+    if (task.status !== 'testing' || !mergeEligible(task)) {
+      return failure('no-open-merge', id + ' is no longer waiting to merge')
+    }
     const root = worktreeRootOf(read.board)
     const outcome = await serialised(() => merger.mergeCandidate(task, projectPath, { worktreeRoot: root }))
     if (outcome === null || outcome === undefined || outcome.ok !== true) {
@@ -363,9 +376,26 @@ export function createApi(ctx, options) {
       return recorded
     }
     if (outcome.status === 'stale') {
-      await serialised(() => merger.discardCandidate(task, projectPath, { worktreeRoot: root }))
+      // Re-read inside the queue turn: another merge may have completed while
+      // this caller waited. Never rebuild a candidate for a task that is already
+      // done; that is what left the merge queue permanently occupied.
+      const latestRead = await readBoardOrFail(projectPath)
+      if (latestRead.failed !== undefined) return latestRead.failed
+      const latestTask = model.findTask(latestRead.board, id)
+      if (
+        latestTask === undefined ||
+        latestTask.status !== 'testing' ||
+        !mergeEligible(latestTask) ||
+        latestTask.merge === null ||
+        latestTask.merge === undefined ||
+        latestTask.merge.status !== 'open'
+      ) {
+        return failure('no-open-merge', id + ' is no longer waiting to merge; nothing was rebuilt')
+      }
+      const latestRoot = worktreeRootOf(latestRead.board)
+      await serialised(() => merger.discardCandidate(latestTask, projectPath, { worktreeRoot: latestRoot }))
       emitActivity(null, 'worktree-remove', 'stale test candidate discarded', id, 'system')
-      const rebuilt = await serialised(() => merger.createCandidate(task, projectPath, { worktreeRoot: root }))
+      const rebuilt = await serialised(() => merger.createCandidate(latestTask, projectPath, { worktreeRoot: latestRoot }))
       if (rebuilt !== null && rebuilt !== undefined && rebuilt.ok === true) {
         emitActivity(null, 'worktree-create', 'rebuilt test candidate', id, 'system')
         emitActivity(null, 'test-start', 'target moved; retest required', id, 'host')
@@ -395,6 +425,9 @@ export function createApi(ctx, options) {
       return recorded
     }
     return failure('merge-failed', 'the candidate merge returned an unexpected status ' + String(outcome.status))
+    } finally {
+      mergingCandidates.delete(id)
+    }
   }
 
   /** Read the project role config (defaults if absent/broken). */
@@ -963,7 +996,13 @@ export function createApi(ctx, options) {
     reconcileLocks(board)
     const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
     const workers = workerPool(ctx, board, { roleConfig: roleRead.config })
-    const worktrees = await worktreeSnapshot(projectPath, board)
+    let worktrees = null
+    if (worktreeCache.project === projectPath && worktreeCache.value !== null && now - worktreeCache.at < 5000) {
+      worktrees = worktreeCache.value
+    } else {
+      worktrees = await worktreeSnapshot(projectPath, board)
+      worktreeCache = { at: now, project: projectPath, value: worktrees }
+    }
     const tasks = board.tasks
       .slice()
       .sort((left, right) => {

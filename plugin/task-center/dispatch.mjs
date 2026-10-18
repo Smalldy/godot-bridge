@@ -414,12 +414,38 @@ function runnerFromSubprocess(subprocess) {
     } catch (error) {
       return { code: 1, stdout: '', stderr: String((error && error.message) || error) }
     }
+    // A git process must never pin the shared merge queue forever. A dropped
+    // handle or an unobservable process range would otherwise make every later
+    // action wait on this one. done is bounded; a timed-out handle is terminated
+    // and its managed range is awaited before reporting failure.
+    const timeoutMs = 60 * 1000
+    const exitGraceMs = 5 * 1000
     let outcome = null
+    let timer
     try {
-      outcome = await handle.done
+      outcome = await Promise.race([
+        handle.done,
+        new Promise((resolveTimeout) => {
+          timer = setTimeout(() => resolveTimeout(null), timeoutMs)
+        }),
+      ])
     } catch (error) {
       return { code: 1, stdout: '', stderr: String((error && error.message) || error) }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
     }
+    if (outcome === null) {
+      try {
+        handle.terminate()
+      } catch (error) {}
+      try {
+        if (typeof handle.waitForExit === 'function') await handle.waitForExit(AbortSignal.timeout(exitGraceMs))
+      } catch (error) {}
+      return { code: 1, stdout: '', stderr: 'git ' + args.join(' ') + ' timed out after ' + String(timeoutMs) + 'ms' }
+    }
+    try {
+      if (typeof handle.waitForExit === 'function') await handle.waitForExit(AbortSignal.timeout(exitGraceMs))
+    } catch (error) {}
     let stdout = ''
     let stderr = ''
     try {
