@@ -821,37 +821,18 @@ export function createApi(ctx, options) {
     return { ok: true, names: names }
   }
 
-  /** One live role instance by name, or a readable failure. */
-  function roleMemberNamed(name) {
+  /** One role instance by name, or a readable failure. Failed instances are
+   * returned only when the caller can replace them (replace skips the drain). */
+  function roleMemberNamed(name, options) {
+    const opts = options === undefined ? {} : options
     const roster = roleRoster()
     if (roster.ok !== true) return roster
     const member = roster.members.filter((entry) => entry !== null && typeof entry === 'object' && String(entry.name) === name)[0]
     if (member === undefined) return { ok: false, code: 'unknown-role-instance', message: 'no live role instance named ' + name }
-    if (member.status === 'failed') return { ok: false, code: 'not-live', message: name + ' has failed; replace it instead' }
-    return { ok: true, member: member }
-  }
-
-  /**
-   * Wait until none of these drained instances is still running an in-flight
-   * turn, bounded by options.drainTimeoutMs. Returns the readable wait result so
-   * the caller can report whether the replacement had to wait or timed out.
-   */
-  async function waitForRoleIdle(names) {
-    const startedAt = Date.now()
-    const deadline = startedAt + drainTimeoutMs
-    let busy = []
-    while (true) {
-      const roster = roleRoster()
-      if (roster.ok !== true) return { ok: true, timedOut: false, waitedMs: Date.now() - startedAt, error: roster.code }
-      busy = names.filter((name) => {
-        const member = roster.members.filter((entry) => entry !== null && typeof entry === 'object' && String(entry.name) === name)[0]
-        return member !== undefined && String(member.status) === 'running'
-      })
-      if (busy.length === 0) return { ok: true, timedOut: false, waitedMs: Date.now() - startedAt }
-      if (Date.now() >= deadline) return { ok: true, timedOut: true, waitedMs: Date.now() - startedAt, busy: busy }
-      const remaining = Math.max(1, deadline - Date.now())
-      await sleep(Math.min(drainIntervalMs, remaining))
+    if (member.status === 'failed' && opts.allowFailed !== true) {
+      return { ok: false, code: 'not-live', message: name + ' has failed; the host auto-provisioning will replace it (or replace the role kind)' }
     }
+    return { ok: true, member: member }
   }
 
   function roleAdminRefusal(context) {
@@ -1432,9 +1413,11 @@ export function createApi(ctx, options) {
         let kind = roleKindOf(requested)
         let targets = []
         if (kind !== null) {
-          const member = roleMemberNamed(requested)
+          const member = roleMemberNamed(requested, { allowFailed: action === 'rolesReplace' })
           if (member.ok !== true) return member
-          targets = [requested]
+          // A failed instance is already replaced by ensure (failed slot), so a
+          // replace skips the drain; a live one is drained with the wait deadline.
+          targets = String(member.member.status) === 'failed' && action === 'rolesReplace' ? [] : [requested]
         } else if (action === 'rolesReplace' && ROLE_KINDS.indexOf(requested) >= 0) {
           kind = requested
           const live = liveRoleNames(kind)
@@ -1446,7 +1429,7 @@ export function createApi(ctx, options) {
         }
         const drained = []
         for (const name of targets) {
-          const result = roles.drain(name)
+          const result = roles.drain(name, { timeoutMs: action === 'rolesReplace' ? drainTimeoutMs : undefined, now: clock() })
           if (result.ok !== true) return result
           drained.push(name)
         }
@@ -1454,12 +1437,28 @@ export function createApi(ctx, options) {
           emitActivity(context, 'role-config', 'drained ' + drained.join(', '), null)
           return ok({ drained: drained, kind: kind, status: roles.status(), instances: roleInstanceList() })
         }
-        // "Drain first, then spawn": wait for the old instances' in-flight work to
-        // finish (bounded); the replacement is spawned regardless on timeout.
-        const waited = await waitForRoleIdle(drained)
-        const ensured = await roles.ensure(kind, { config: current, projectPath: projectPath, task: null, now: clock() })
+        // "Drain first, then spawn": the role manager defers a running drained
+        // instance until it is idle or its deadline passes, so no ensure pass
+        // (including the scheduler tick) spawns a replacement early. We poll the
+        // manager's ensure until it no longer reports a deferred instance.
+        const startedAt = Date.now()
+        let ensured = null
+        let waiting = []
+        while (true) {
+          ensured = await roles.ensure(kind, { config: current, projectPath: projectPath, task: null, now: clock() })
+          if (ensured.ok !== true) break
+          waiting = Array.isArray(ensured.waiting) ? ensured.waiting : []
+          if (waiting.length === 0) break
+          const elapsed = Date.now() - startedAt
+          if (elapsed >= drainTimeoutMs) break
+          await sleep(Math.min(drainIntervalMs, Math.max(1, drainTimeoutMs - elapsed)))
+        }
+        const waitedMs = Date.now() - startedAt
+        // Timed out when the wait consumed the full budget before the old instance
+        // went idle; the replacement was then spawned by the manager anyway.
+        const waited = { waitedMs: waitedMs, timedOut: waitedMs >= drainTimeoutMs, waiting: waiting }
         emitRoleProvision(ensured)
-        if (ensured.ok !== true) return Object.assign({}, ensured, { drained: drained, waited: waited })
+        if (ensured === null || ensured.ok !== true) return Object.assign({}, ensured, { drained: drained, waited: waited })
         emitActivity(context, 'role-config', 'replaced ' + kind + ' instance(s)' + (waited.timedOut === true ? ' (wait timed out)' : ''), null)
         return ok({
           kind: kind,
@@ -1468,6 +1467,7 @@ export function createApi(ctx, options) {
           created: ensured.created,
           reused: ensured.reused,
           replaced: ensured.replaced,
+          waiting: ensured.waiting,
           status: roles.status(),
           instances: roleInstanceList(),
         })

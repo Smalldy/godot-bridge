@@ -1255,5 +1255,55 @@ function roleTask(overrides) {
   check('every drained slot is replaced', replaced.ok === true && replaced.created.length === 2 && replaced.created.map((entry) => entry.name).join(',') === 'reviewer-3,reviewer-4', JSON.stringify(replaced))
 }
 
+{
+  // The role manager itself defers a running drained instance: no ensure pass
+  // (API, submit provisioning or the scheduler tick) may spawn early.
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const config = defaultRoleConfig()
+  const drained = rig.manager.drain('reviewer-1', { timeoutMs: 100, now: 1000 })
+  check('draining with a timeout records the deadline', drained.ok === true && drained.deadline === 1100, JSON.stringify(drained))
+  const early = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1050 })
+  check(
+    'a running drained instance is deferred, not replaced early',
+    early.ok === true && early.created.length === 0 && early.replaced.length === 0 && early.waiting.length === 1 && early.waiting[0].name === 'reviewer-1',
+    JSON.stringify({ created: early.created, replaced: early.replaced, waiting: early.waiting }),
+  )
+  const stillEarly = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1099 })
+  check('the deferral lasts until the deadline', stillEarly.created.length === 0 && stillEarly.waiting.length === 1, JSON.stringify({ created: stillEarly.created, waiting: stillEarly.waiting }))
+  check('the deferred state is visible in the manager status', rig.manager.status().pending.some((entry) => entry.name === 'reviewer-1'), JSON.stringify(rig.manager.status().pending))
+  rig.team.setStatus('reviewer-1', 'inactive')
+  const idle = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1060 })
+  check('an idle drained instance is replaced before its deadline', idle.created.length === 1 && idle.created[0].name === 'reviewer-2', JSON.stringify({ created: idle.created, waiting: idle.waiting }))
+}
+
+{
+  // A still-running drained instance is replaced once the deadline passes.
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const config = defaultRoleConfig()
+  rig.manager.drain('reviewer-1', { timeoutMs: 50, now: 1000 })
+  const before = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1020 })
+  check('the instance is still deferred before the deadline', before.created.length === 0 && before.waiting.length === 1, JSON.stringify(before))
+  const after = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1060 })
+  check(
+    'after the deadline the instance is replaced',
+    after.ok === true && after.created.length === 1 && after.created[0].name === 'reviewer-2' && after.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drain-timeout'),
+    JSON.stringify({ created: after.created, replaced: after.replaced }),
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

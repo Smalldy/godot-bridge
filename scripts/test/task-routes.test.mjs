@@ -2767,6 +2767,52 @@ function acceptingTask(overrides) {
   emptyRig.scheduler.dispose()
 }
 
+{
+  // During the drain wait no ensure pass — including a scheduler tick — spawns the
+  // replacement early; it appears only after the old instance is idle.
+  const team = roleTeam()
+  const rig = createSubmitRig({ team: team, roles: true, git: fakeGit().git, drainTimeoutMs: 400, drainIntervalMs: 10 })
+  const task = reviewStageTask()
+  task.dispatch = Object.assign({}, task.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, task)
+  rig.team.setStatus('reviewer-1', 'running')
+  const spawnsBefore = rig.team.calls.filter((call) => call.kind === 'spawn').length
+  const replacePromise = rig.api.perform('rolesReplace', { name: 'reviewer-1' }, rig.user)
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, 25))
+  await rig.scheduler.tick(PROJECT)
+  const spawnsDuring = rig.team.calls.filter((call) => call.kind === 'spawn').length
+  check('a tick during the drain wait does not spawn early', spawnsDuring === spawnsBefore, JSON.stringify({ before: spawnsBefore, during: spawnsDuring }))
+  rig.team.setStatus('reviewer-1', 'inactive')
+  const replaced = await replacePromise
+  check(
+    'after the old instance goes idle the replacement is spawned',
+    replaced.ok === true && replaced.created.length >= 1 && replaced.waited.timedOut === false,
+    JSON.stringify(replaced.ok ? { created: replaced.created, waited: replaced.waited } : replaced),
+  )
+  rig.scheduler.dispose()
+}
+
+{
+  // A failed instance cannot be drained, but it CAN be replaced (ensure replaces
+  // failed slots); the drain refusal points at that.
+  const team = roleTeam()
+  team.setStatus('reviewer-1', 'failed')
+  const rig = createSubmitRig({ team: team, roles: true, git: fakeGit().git })
+  const drainFailed = await rig.api.perform('rolesDrain', { name: 'reviewer-1' }, rig.user)
+  check(
+    'draining a failed instance explains that auto-provisioning will replace it',
+    drainFailed.ok === false && drainFailed.code === 'not-live' && String(drainFailed.message).indexOf('auto-provisioning') >= 0,
+    JSON.stringify(drainFailed),
+  )
+  const replacedFailed = await rig.api.perform('rolesReplace', { name: 'reviewer-1' }, rig.user)
+  check(
+    'a failed instance can be replaced directly',
+    replacedFailed.ok === true && replacedFailed.drained.length === 0 && replacedFailed.created.length >= 1 && replacedFailed.created[0].name === 'reviewer-2',
+    JSON.stringify(replacedFailed.ok ? { drained: replacedFailed.drained, created: replacedFailed.created } : replacedFailed),
+  )
+  rig.scheduler.dispose()
+}
+
 surface.dispose()
 rig.scheduler.dispose()
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
