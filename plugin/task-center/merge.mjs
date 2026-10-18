@@ -105,7 +105,7 @@ function tailSection(label, text, budget) {
  * and the TAILS of stdout and stderr — the head of a 20 MB PASS log is the one
  * part that never explains a failure.
  */
-function formatVerificationOutput(command, code, result) {
+export function formatVerificationOutput(command, code, result) {
   const header = '$ ' + command + '  (exit ' + String(code) + ')'
   const stdout = result !== null && result !== undefined && typeof result.stdout === 'string' ? result.stdout.trim() : ''
   const stderr = result !== null && result !== undefined && typeof result.stderr === 'string' ? result.stderr.trim() : ''
@@ -424,6 +424,42 @@ export function recordMergeResult(board, id, outcome, now, by) {
     note: mergeNote(outcome),
   })
   return { ok: true, board: next, events: [{ kind: 'merge', id: id, status: outcome.status }] }
+}
+
+/**
+ * Record a host-side (system) verification verdict on an open merge request.
+ * Pure: the API applies it through the board's CAS after running the project's
+ * verification in a throwaway checkout. The verdict is always attributed to
+ * "system" — a model never writes it.
+ */
+export function recordVerdict(board, id, verdict, now) {
+  const next = JSON.parse(JSON.stringify(board))
+  const task = next.tasks.filter((candidate) => candidate.id === id)[0]
+  if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
+  if (task.merge === null || typeof task.merge !== 'object' || Array.isArray(task.merge)) {
+    return failure('no-merge-request', id + ' has no merge request to verify')
+  }
+  const source = verdict === null || verdict === undefined ? {} : verdict
+  const at = new Date(now).toISOString()
+  const normalised = normaliseVerdict({
+    status: source.status,
+    by: 'system',
+    at: at,
+    output: typeof source.output === 'string' ? source.output : null,
+  })
+  if (normalised === null) {
+    return failure('invalid-verdict', id + ' needs a pending/passed/failed verdict, got ' + String(source.status))
+  }
+  task.merge = Object.assign({}, task.merge, { verdict: normalised })
+  task.updatedAt = at
+  task.history.push({
+    at: at,
+    by: 'system',
+    from: task.status,
+    to: task.status,
+    note: 'system verification ' + normalised.status,
+  })
+  return { ok: true, board: next, events: [{ kind: 'verdict', id: id, status: normalised.status }] }
 }
 
 /**

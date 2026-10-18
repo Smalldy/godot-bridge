@@ -421,7 +421,14 @@ function createSubmitRig(options) {
   }
   const state = createState(ctx)
   const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: opts.git })
-  const api = createApi(ctx, { state: state, scheduler: scheduler, git: opts.git, merger: opts.merger })
+  const api = createApi(ctx, {
+    state: state,
+    scheduler: scheduler,
+    git: opts.git,
+    merger: opts.merger,
+    verify: opts.verify,
+    verifyCommand: opts.verifyCommand,
+  })
   return { project: PROJECT, fs: fs, ctx: ctx, state: state, scheduler: scheduler, api: api, team: team }
 }
 
@@ -1670,6 +1677,166 @@ function patchSeededMerge(rig, id, change) {
   })
   const merged = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
   check('a fresh pass lets the refreshed request merge', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── host-side independent verification (no model in the loop) ──────────────
+/** A verify runner whose calls and result a test controls. */
+function fakeVerify(result) {
+  const calls = []
+  return {
+    calls: calls,
+    verify: async function verify(request) {
+      calls.push(request)
+      return typeof result === 'function' ? result(request) : result
+    },
+  }
+}
+
+/** Seed one running task with an explicit testing strategy. */
+function seedRunningTaskWithTesting(rig, task, testing) {
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused', testing: testing }, tasks: [task] }))
+}
+
+{
+  const fake = fakeGit()
+  const verification = fakeVerify({ code: 0, stdout: 'PASS board.test.mjs\nALL CHECKS PASSED', stderr: '' })
+  const team = mergerTeam()
+  const rig = createSubmitRig({ git: fake.git, team: team, verify: verification.verify })
+  seedRunningTaskWithTesting(rig, runningWorktreeTask(), 'independent')
+  const surface = install(rig)
+  const res = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
+  const payload = res.json()
+  const merge = payload.task === undefined || payload.task === null ? null : payload.task.merge
+  const verifyPath = join(PROJECT, '.worktrees', 'verify-T-1')
+  check(
+    'an independent submit runs verification on the host in a temporary checkout',
+    payload.ok === true && verification.calls.length === 1 && verification.calls[0].cwd === verifyPath && verification.calls[0].command === 'npm run verify',
+    JSON.stringify(verification.calls),
+  )
+  check(
+    'and records a passed system verdict with the output',
+    merge !== null &&
+      merge.verdict !== null &&
+      merge.verdict.status === 'passed' &&
+      merge.verdict.by === 'system' &&
+      typeof merge.verdict.at === 'string' &&
+      String(merge.verdict.output).indexOf('ALL CHECKS PASSED') >= 0,
+    JSON.stringify(merge && merge.verdict),
+  )
+  const addCall = fake.calls.filter((entry) => entry.args[0] === 'worktree' && entry.args[1] === 'add')[0]
+  check(
+    'the checkout is created from the task branch',
+    addCall !== undefined && addCall.args.join(' ') === ['worktree', 'add', '-b', 'verify/T-1', verifyPath, 'task/T-1-1'].join(' ') && addCall.cwd === PROJECT,
+    JSON.stringify(addCall && addCall.args),
+  )
+  check(
+    'and removed together with its branch afterwards',
+    fake.calls.some((entry) => entry.args.join(' ') === ['worktree', 'remove', '--force', verifyPath].join(' ')) &&
+      fake.calls.some((entry) => entry.args.join(' ') === ['branch', '-D', 'verify/T-1'].join(' ')),
+    JSON.stringify(fake.calls.map((entry) => entry.args)),
+  )
+  const sent = team.calls.filter((call) => call.kind === 'send')
+  check('a pass notifies the merger', sent.some((call) => call.target === 'merger' && call.text.indexOf('PASSED') >= 0), JSON.stringify(sent))
+  check('and nothing is pushed', fake.calls.every((entry) => entry.args[0] !== 'push'), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const noise = Array.from({ length: 60 }, (_, index) => 'detail line ' + String(index + 1)).join('\n')
+  const verification = fakeVerify({ code: 1, stdout: 'FAIL board.test.mjs\n' + noise + '\nfinal tail line', stderr: '' })
+  const team = mergerTeam()
+  const rig = createSubmitRig({
+    git: fake.git,
+    merger: createMerger({ git: fake.git, verify: verification.verify }),
+    team: team,
+    verify: verification.verify,
+  })
+  seedRunningTaskWithTesting(rig, runningWorktreeTask(), 'independent')
+  const surface = install(rig)
+  const res = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
+  const merge = res.json().task === undefined ? null : res.json().task.merge
+  check(
+    'a failed verification records a failed system verdict',
+    merge !== null && merge.verdict !== null && merge.verdict.status === 'failed' && merge.verdict.by === 'system',
+    JSON.stringify(merge && merge.verdict),
+  )
+  check(
+    'the output keeps the failure line and the exit code despite a long log',
+    merge !== null && String(merge.verdict.output).indexOf('FAIL board.test.mjs') >= 0 && String(merge.verdict.output).indexOf('exit 1') >= 0,
+    merge === null ? '' : String(merge.verdict.output).slice(0, 800),
+  )
+  const sent = team.calls.filter((call) => call.kind === 'send')
+  check(
+    'a failure notifies the owner with the output',
+    sent.some((call) => call.target === 'fixer' && call.text.indexOf('FAILED') >= 0 && call.text.indexOf('FAIL board.test.mjs') >= 0),
+    JSON.stringify(sent),
+  )
+  check(
+    'the temporary checkout is removed on failure too',
+    fake.calls.some((entry) => entry.args.join(' ') === ['worktree', 'remove', '--force', join(PROJECT, '.worktrees', 'verify-T-1')].join(' ')),
+    JSON.stringify(fake.calls.map((entry) => entry.args)),
+  )
+  check('main is not touched by a failed verification', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  const refused = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('the failed verdict keeps the merge gate shut', refused.json().ok === false && refused.json().code === 'test-failed', refused.text)
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const verification = fakeVerify({ code: 0, stdout: 'should not run', stderr: '' })
+  const rig = createSubmitRig({ git: fake.git, verify: verification.verify })
+  seedRunningTask(rig, runningWorktreeTask())
+  const surface = install(rig)
+  const res = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'verify' })
+  const merge = res.json().task === undefined ? null : res.json().task.merge
+  check(
+    'self mode never runs host verification',
+    verification.calls.length === 0 && merge !== null && merge.verdict === null,
+    JSON.stringify({ calls: verification.calls.length, verdict: merge && merge.verdict }),
+  )
+  check(
+    'and never creates a verification checkout',
+    fake.calls.every((entry) => !(entry.args[0] === 'worktree' && entry.args[1] === 'add' && String(entry.args[3]).indexOf('verify-') >= 0)),
+    JSON.stringify(fake.calls.map((entry) => entry.args)),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit({
+    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
+  })
+  const verification = fakeVerify({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
+  const team = mergerTeam()
+  const seedTask = openMergeTask({ assignee: { name: 'fixer', session: 'session-fixer' } })
+  seedTask.merge = Object.assign({}, seedTask.merge, {
+    verdict: { status: 'failed', by: 'system', at: null, output: 'old failure' },
+  })
+  const rig = createSubmitRig({
+    git: fake.git,
+    merger: createMerger({ git: fake.git, verify: verification.verify }),
+    team: team,
+    verify: verification.verify,
+  })
+  seedMergeTask(rig, seedTask)
+  const surface = install(rig)
+  await postTo(surface, { action: 'settings', project: PROJECT, testing: 'independent' })
+  const res = await postTo(surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  const merge = res.json().task === undefined ? null : res.json().task.merge
+  check(
+    'a refresh re-runs host verification and replaces the verdict',
+    verification.calls.length === 1 && merge !== null && merge.verdict.status === 'passed' && merge.verdict.by === 'system',
+    JSON.stringify(merge && merge.verdict),
+  )
+  const merged = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('and the re-verified request merges', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
   surface.dispose()
   rig.scheduler.dispose()
 }
