@@ -39,8 +39,23 @@ export const TASK_LEASE_MS = 15 * 60 * 1000
  * are how every task runs, so there is no "enabled" flag to turn off. */
 export const WORKTREE_DEFAULTS = { root: '.worktrees' }
 
+/** How a merge request is verified before it may be merged. "self": the
+ * assignee reports its own verification. "independent": a separate tester must
+ * record a passing verdict first (recordVerification). Fixed vocabulary — an
+ * unknown value falls back to "self". */
+export const TESTING_MODES = ['self', 'independent']
+
+/** Verdict statuses an independent tester may record. */
+export const VERDICT_STATUSES = ['pending', 'passed', 'failed']
+
+/** Normalised testing mode: only "independent" is special; everything else is
+ * the default "self". */
+export function normaliseTesting(raw) {
+  return raw === 'independent' ? 'independent' : 'self'
+}
+
 /** Project-level dispatch defaults. Persisted in the board so the toggle,
- * concurrency and spawn policy survive a restart. */
+ * concurrency, spawn policy and testing strategy survive a restart. */
 export const DISPATCH_DEFAULTS = {
   state: 'paused',
   maxConcurrent: 3,
@@ -49,6 +64,7 @@ export const DISPATCH_DEFAULTS = {
   maxAttempts: 3,
   request: null,
   worktree: { root: '.worktrees' },
+  testing: 'self',
 }
 
 /** Upper bounds for user-provided dispatch settings. */
@@ -118,6 +134,22 @@ function mergeStringList(value) {
 }
 
 /**
+ * An independent-test verdict, or null. A verdict needs a known status; an
+ * unknown/garbage object is dropped (null) rather than made to look valid, so a
+ * hand-written board cannot fake a pass.
+ */
+export function normaliseVerdict(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  if (VERDICT_STATUSES.indexOf(raw.status) < 0) return null
+  return {
+    status: raw.status,
+    by: typeof raw.by === 'string' ? raw.by : null,
+    at: typeof raw.at === 'string' ? raw.at : null,
+    output: typeof raw.output === 'string' ? raw.output : null,
+  }
+}
+
+/**
  * A merge-request record, or null. Every member is optional so a hand-written
  * board survives; `conflict` keeps a boolean or a description, whichever a
  * future merger wrote, instead of silently dropping it.
@@ -137,6 +169,7 @@ export function normaliseMerge(raw) {
     conflict: typeof raw.conflict === 'string' || typeof raw.conflict === 'boolean' ? raw.conflict : null,
     output: typeof raw.output === 'string' ? raw.output : null,
     at: typeof raw.at === 'string' ? raw.at : null,
+    verdict: normaliseVerdict(raw.verdict),
   }
 }
 
@@ -156,5 +189,6 @@ export function normaliseDispatch(raw) {
     maxAttempts: clamp(source.maxAttempts, DISPATCH_LIMITS.maxAttempts, DISPATCH_DEFAULTS.maxAttempts),
     request: normaliseRequest(source.request),
     worktree: normaliseWorktree(source.worktree),
+    testing: normaliseTesting(source.testing),
   }
 }

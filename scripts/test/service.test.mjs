@@ -346,6 +346,15 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
     worktree.ok === true && worktree.dispatch.worktree.root === '.worktrees' && worktree.dispatch.worktree.enabled === undefined,
     JSON.stringify(worktree.dispatch && worktree.dispatch.worktree),
   )
+  check('dispatch defaults testing to self', board.dispatch.testing === 'self', String(board.dispatch.testing))
+  const independent = setDispatch(board, { testing: 'independent' }, T0, '@user')
+  check(
+    'settings accept independent testing',
+    independent.ok === true && independent.dispatch.testing === 'independent',
+    JSON.stringify(independent.dispatch && independent.dispatch.testing),
+  )
+  const unknown = setDispatch(board, { testing: 'bogus' }, T0, '@user')
+  check('an unknown testing mode falls back to self', unknown.ok === true && unknown.dispatch.testing === 'self', JSON.stringify(unknown.dispatch && unknown.dispatch.testing))
 }
 
 // renewLeases

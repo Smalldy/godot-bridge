@@ -220,6 +220,7 @@ const MERGE = {
       t.merge.at === '2026-01-01T00:00:00.000Z',
     JSON.stringify(t.merge),
   )
+  check('a merge record without a verdict normalises to null', t.merge.verdict === null, JSON.stringify(t.merge.verdict))
   check(
     'dispatch.worktree roundtrips its internal root',
     loaded.board.dispatch.worktree.root === 'build/worktrees' && loaded.board.dispatch.worktree.enabled === undefined,
@@ -259,6 +260,45 @@ const MERGE = {
   check('merge file lists are cleaned', first.declaredFiles.join(',') === 'scripts/a.gd' && first.actualFiles.length === 0, JSON.stringify(first))
   check('a boolean merge conflict is preserved', first.conflict === true)
   check('a non-object merge is null', loaded.board.tasks[1].merge === null)
+}
+
+// the independent-test verdict is a typed member
+{
+  const fs = createFakeFs()
+  const when = '2026-02-01T00:00:00.000Z'
+  seedBoard(
+    fs,
+    PROJECT,
+    JSON.stringify({
+      version: 2,
+      seq: 4,
+      tasks: [
+        { id: 'T-1', merge: { status: 'open', base: BASE_SHA, head: HEAD_SHA, verdict: { status: 'passed', by: 'tester', at: when, output: 'ALL CHECKS PASSED' } } },
+        { id: 'T-2', merge: { status: 'open', verdict: { status: 'bogus', by: 7, at: 5 } } },
+        { id: 'T-3', merge: { status: 'open', verdict: 'passed' } },
+      ],
+    }),
+  )
+  const loaded = await read(fs)
+  const first = loaded.board.tasks[0].merge
+  check(
+    'a passed verdict roundtrips',
+    first.verdict !== null &&
+      first.verdict.status === 'passed' &&
+      first.verdict.by === 'tester' &&
+      first.verdict.at === when &&
+      first.verdict.output === 'ALL CHECKS PASSED',
+    JSON.stringify(first.verdict),
+  )
+  check('an unknown verdict status is dropped', loaded.board.tasks[1].merge.verdict === null, JSON.stringify(loaded.board.tasks[1].merge.verdict))
+  check('a non-object verdict is null', loaded.board.tasks[2].merge.verdict === null, JSON.stringify(loaded.board.tasks[2].merge.verdict))
+  const written = await updateBoard({ fs }, { projectPath: PROJECT, mutate: (board) => board })
+  const again = await read(fs)
+  check(
+    'the verdict survives a write',
+    written.ok === true && again.board.tasks[0].merge.verdict.status === 'passed',
+    JSON.stringify(written),
+  )
 }
 
 // dispatch.worktree normalisation: project-relative, never absolute or escaping
