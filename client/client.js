@@ -2318,6 +2318,13 @@ window.__ModuleLoader__.load({
 				const catalog = Array.isArray(roleEditorState.skills) ? roleEditorState.skills : []
 				const templateRef = React.useRef(null)
 				const skillsRef = React.useRef(null)
+				// Real React reuses a host node across renders, so an uncontrolled control
+				// only takes a new defaultValue when it REMOUNTS. The key therefore carries
+				// the editor identity: switching kind, forking or saving forces the template
+				// and skills controls to remount with the new profile's values instead of
+				// silently keeping the previous profile's text (which would be saved onto
+				// the wrong profile).
+				const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName))
 
 				function currentTemplate() {
 					const node = templateRef.current
@@ -2352,9 +2359,12 @@ window.__ModuleLoader__.load({
 					roleEditorState.used.add(candidate)
 					roleEditorState.draft = { source: String(selectedName), name: candidate, profile: roleProfileCopy(target) }
 					roleEditorState.applySkipped = false
+					roleEditorState.notice = null
 					bump()
 				}
 				async function save() {
+					// A stale banner must never be read as this attempt's outcome; report() replaces it.
+					roleEditorState.notice = null
 					const template = currentTemplate()
 					const skills = currentSkills()
 					if (draft !== null) {
@@ -2380,6 +2390,7 @@ window.__ModuleLoader__.load({
 					await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills } })
 				}
 				async function apply() {
+					roleEditorState.notice = null
 					if (draft !== null) {
 						report('rolesBind', false, { code: 'role-unsaved' })
 						return
@@ -2455,9 +2466,9 @@ window.__ModuleLoader__.load({
 								])
 				}
 				function templateBlock() {
-					return h('div', { key: 'template', className: 'gbt-editorblock', 'data-editor-block': 'template', 'data-block-type': 'template', 'data-editable': 'true', 'data-host-block': hostBlocks.length === 0 ? 'missing' : 'present' },
+					return h('div', { key: 'template:' + controlKey, className: 'gbt-editorblock', 'data-editor-block': 'template', 'data-block-type': 'template', 'data-editable': 'true', 'data-host-block': hostBlocks.length === 0 ? 'missing' : 'present' },
 						h('div', { className: 'gbt-subhead' }, t('roleEditorTemplate') + ' · ' + t('roleProfilePrompt')),
-						h('textarea', { ref: templateRef, className: 'gbt-input gbt-editorarea', 'data-field': 'template', rows: 8, defaultValue: templateText, placeholder: t('rolePromptEmpty'), spellCheck: false }))
+						h('textarea', { key: 'template-field:' + controlKey, ref: templateRef, className: 'gbt-input gbt-editorarea', 'data-field': 'template', rows: 8, defaultValue: templateText, placeholder: t('rolePromptEmpty'), spellCheck: false }))
 				}
 				const blocks = []
 				if (hostBlocks.length > 0) {
@@ -2479,7 +2490,7 @@ window.__ModuleLoader__.load({
 					blocks.push(h('div', { key: 'no-preview', className: 'gbt-footnote', 'data-editor-nopreview': 'true' }, t('roleEditorNoPreview')))
 				}
 				const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
-					h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
+					h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
 					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
 				const modal = roleEditorState.skillsOpen === true
 					? h('div', { className: 'gbt-overlay', 'data-modal': 'role-skills' },
@@ -2512,6 +2523,8 @@ window.__ModuleLoader__.load({
 							roleEditorState.draft = null
 							roleEditorState.selected = null
 							roleEditorState.applySkipped = false
+							// The previous identity's outcome must not linger over a new profile.
+							roleEditorState.notice = null
 							bump()
 						} }, roleKindLabel(entry, t))
 					})),

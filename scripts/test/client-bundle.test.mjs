@@ -1820,6 +1820,265 @@ check(
   check('a task with no merge request has no merge section', detailText.indexOf('合并请求') < 0, detailText)
 }
 
+// ── uncontrolled-control reuse: a reconciler-faithful harness ──────────────
+// The stub above cannot see THIS class of bug: it hands a fresh ref object to
+// every render and always reports defaultValue, so a stale uncontrolled control
+// is invisible. This second harness models what React really does — a host node
+// is REUSED while its (type, key) identity at the same position is unchanged, so
+// a defaultValue is applied only on MOUNT and a user-typed value survives a
+// plain re-render — and it drives a second, independent instance of the same
+// bundle through a second factory call.
+{
+  function createReuseReact() {
+    const hooks = new Map()
+    const dom = new Map()
+    let slot = '@'
+    const seenHooks = new Set()
+    const seenDom = new Set()
+    const pending = []
+
+    function childSlotOf(parentSlot, child, index) {
+      const key = child !== null && typeof child === 'object' && child.props !== undefined ? child.props.key : undefined
+      return parentSlot + '/' + (key === undefined || key === null ? '#' + String(index) : 'k:' + String(key))
+    }
+
+    function mountDom(nodeSlot, props) {
+      seenDom.add(nodeSlot)
+      const nextDefault = props.defaultValue === undefined || props.defaultValue === null ? '' : String(props.defaultValue)
+      let node = dom.get(nodeSlot)
+      if (node === undefined) {
+        let value = nextDefault
+        node = { dirty: false, checked: props.checked === true }
+        Object.defineProperty(node, 'value', {
+          get() { return value },
+          set(updated) { value = String(updated); node.dirty = true },
+          enumerable: true,
+          configurable: true,
+        })
+        node.setClean = function (updated) { value = String(updated) }
+        dom.set(nodeSlot, node)
+        return node
+      }
+      // A matched node keeps its typed value; React only re-applies defaultValue
+      // while the control is still pristine. A remount (changed key) is what
+      // resets it, which is exactly the contract the editor relies on.
+      if (node.dirty !== true && String(node.value) !== nextDefault) node.setClean(nextDefault)
+      return node
+    }
+
+    function hookCell(init) {
+      let entry = hooks.get(slot)
+      if (entry === undefined) {
+        entry = { list: [], index: 0 }
+        hooks.set(slot, entry)
+      }
+      const index = entry.index
+      entry.index += 1
+      if (entry.list.length <= index) entry.list[index] = init()
+      return { entry: entry, index: index, value: entry.list[index] }
+    }
+
+    const React = {
+      createElement(type, props) {
+        const merged = Object.assign({}, props)
+        const children = Array.prototype.slice.call(arguments, 2)
+        if (children.length > 0) merged.children = children.length === 1 ? children[0] : children
+        return { type: type, props: merged }
+      },
+      useState(initial) {
+        const cell = hookCell(function () { return typeof initial === 'function' ? initial() : initial })
+        return [cell.value, function (updated) {
+          cell.entry.list[cell.index] = typeof updated === 'function' ? updated(cell.entry.list[cell.index]) : updated
+        }]
+      },
+      useReducer(reducer, initial) {
+        const cell = hookCell(function () { return initial })
+        return [cell.value, function (action) {
+          cell.entry.list[cell.index] = reducer(cell.entry.list[cell.index], action)
+        }]
+      },
+      useRef(initial) { return hookCell(function () { return { current: initial } }).value },
+      useEffect(fn) { hookCell(function () { return {} }); pending.push(fn) },
+      useMemo(factory) { return factory() },
+      useCallback(fn) { return fn },
+      useSyncExternalStore(subscribe, getSnapshot) { hookCell(function () { return true }); return getSnapshot() },
+      Fragment: Symbol('Fragment'),
+    }
+
+    function renderNode(node, parentSlot, index) {
+      if (node === null || node === undefined || typeof node !== 'object') return node
+      if (Array.isArray(node)) return node.map(function (child, childIndex) { return renderNode(child, parentSlot, childIndex) })
+      if (node.type === undefined) return node
+      const nodeSlot = childSlotOf(parentSlot, node, index)
+      if (typeof node.type === 'function') {
+        const saved = slot
+        slot = nodeSlot
+        seenHooks.add(nodeSlot)
+        let entry = hooks.get(nodeSlot)
+        if (entry === undefined) {
+          entry = { list: [], index: 0 }
+          hooks.set(nodeSlot, entry)
+        }
+        entry.index = 0
+        const out = node.type(node.props)
+        slot = saved
+        return renderNode(out, nodeSlot, 0)
+      }
+      const element = { type: node.type, props: Object.assign({}, node.props) }
+      if (node.type === 'input' || node.type === 'textarea' || node.type === 'select') {
+        const domNode = mountDom(nodeSlot, node.props)
+        if (node.props.ref !== null && node.props.ref !== undefined && typeof node.props.ref === 'object') node.props.ref.current = domNode
+      }
+      element.props.children = renderNode(node.props.children, nodeSlot, 0)
+      return element
+    }
+
+    return {
+      React: React,
+      /** One render pass: reconcile, run effects, then drop unmounted state. */
+      render(component, props) {
+        seenHooks.clear()
+        seenDom.clear()
+        pending.length = 0
+        slot = '@'
+        const tree = renderNode({ type: component, props: props === undefined ? {} : props }, '@root', 0)
+        Array.from(hooks.keys()).forEach(function (key) { if (!seenHooks.has(key)) hooks.delete(key) })
+        Array.from(dom.keys()).forEach(function (key) { if (!seenDom.has(key)) dom.delete(key) })
+        pending.slice().forEach(function (fn) { fn() })
+        return tree
+      },
+    }
+  }
+
+  postReply = null
+  // Deterministic profiles for this harness.
+  HOST.roles = Object.assign({}, HOST.roles, {
+    stages: { implement: 'worker', review: 'godot-reviewer', test: 'tester' },
+    profiles: Object.assign({}, HOST.roles.profiles, {
+      'godot-reviewer': Object.assign({}, HOST.roles.profiles['godot-reviewer'], { prompt: 'Reviewer template body.', skills: ['dsh-plugin-workflow'] }),
+    }),
+  })
+  const dicts2 = {}
+  const registrations2 = []
+  const disposers2 = []
+  const ctx2 = {
+    locale: {
+      register(ns, table) { dicts2[ns] = table; return function () {} },
+      bind(ns) {
+        const table = dicts2[ns]
+        return function (key) { return table !== undefined && table.zh !== undefined && table.zh[key] !== undefined ? table.zh[key] : key }
+      },
+      subscribe() { return function () {} },
+      getSnapshot() { return { id: 'zh' } },
+    },
+    slots: {
+      inject(slotName, callback) { const disposer = callback(); return typeof disposer === 'function' ? disposer : function () {} },
+      register(meta, component) { registrations2.push({ meta: meta, component: component }); return function () {} },
+    },
+    effect(callback) { const disposer = callback(); if (typeof disposer === 'function') disposers2.push(disposer); return typeof disposer === 'function' ? disposer : function () {} },
+    inject() { return function () {} },
+  }
+  const reuse = createReuseReact()
+  const plugin2 = registration.factory(function (specifier) {
+    if (specifier === 'react') return reuse.React
+    throw new Error('unexpected require: ' + specifier)
+  })
+  plugin2.apply(ctx2)
+  const panel2 = registrations2.filter(function (entry) { return entry.meta.name === 'main' })[0].component
+
+  function editorOf(tree) {
+    const card = findAll(tree, function (node) { return node.props && node.props['data-card'] === 'editor' })[0]
+    return card === undefined ? undefined : findAll(card, function (node) { return node.props && node.props['data-editor'] === 'true' })[0]
+  }
+  function fieldOf(tree, field) {
+    const editor = editorOf(tree)
+    return editor === undefined ? undefined : findAll(editor, function (node) { return node.props && node.props['data-field'] === field })[0]
+  }
+  function valueOf(node) {
+    const ref = node === undefined ? undefined : node.props.ref
+    return ref === null || ref === undefined || ref.current === null || ref.current === undefined ? null : String(ref.current.value)
+  }
+  function dirtyOf(node) {
+    return node !== undefined && node.props.ref !== null && node.props.ref !== undefined && node.props.ref.current !== null && node.props.ref.current !== undefined
+      ? node.props.ref.current.dirty === true
+      : null
+  }
+  function clickAction(tree, action, attr, value) {
+    const editor = editorOf(tree)
+    const node = findAll(editor, function (candidate) {
+      return candidate.props && candidate.props['data-action'] === action && (attr === undefined || candidate.props[attr] === value)
+    })[0]
+    node.props.onClick()
+  }
+
+  let rtree = reuse.render(panel2, { initialView: 'roles' })
+  await flush()
+  rtree = reuse.render(panel2, { initialView: 'roles' })
+  check('the reuse harness renders a second, independent editor', editorOf(rtree) !== undefined)
+  check('the reuse harness starts on the bound worker profile', editorOf(rtree).props['data-kind'] === 'worker' && valueOf(fieldOf(rtree, 'template')) === '', JSON.stringify({ kind: editorOf(rtree).props['data-kind'], value: valueOf(fieldOf(rtree, 'template')) }))
+
+  // A user types into the worker template (a variable chip writes the same DOM
+  // value), then switches identity.
+  let area = fieldOf(rtree, 'template')
+  area.props.ref.current.value = 'stale worker text'
+  fieldOf(rtree, 'skills').props.ref.current.value = 'stale-skills'
+  check('typing marks the reused control dirty', dirtyOf(area) === true)
+  clickAction(rtree, 'role-editor-kind', 'data-kind', 'reviewer')
+  rtree = reuse.render(panel2, { initialView: 'roles' })
+  area = fieldOf(rtree, 'template')
+  check('the worker text never leaks onto the reviewer profile', valueOf(area) !== 'stale worker text', String(valueOf(area)))
+  check(
+    'switching kind remounts the template control on the reviewer template',
+    valueOf(area) === 'Reviewer template body.' && dirtyOf(area) === false,
+    JSON.stringify({ value: valueOf(area), dirty: dirtyOf(area) }),
+  )
+  check('switching kind remounts the skills control on the reviewer skills', valueOf(fieldOf(rtree, 'skills')) === 'dsh-plugin-workflow', String(valueOf(fieldOf(rtree, 'skills'))))
+
+  // Fork: the draft is a copy of the reviewer profile, so the control must come
+  // back on the SOURCE template, not on the text just typed.
+  area.props.ref.current.value = 'edited before fork'
+  clickAction(rtree, 'role-editor-fork')
+  rtree = reuse.render(panel2, { initialView: 'roles' })
+  area = fieldOf(rtree, 'template')
+  check(
+    'Fork remounts the template control on the source template',
+    valueOf(area) === 'Reviewer template body.' && dirtyOf(area) === false,
+    JSON.stringify({ value: valueOf(area), dirty: dirtyOf(area) }),
+  )
+
+  // Save the draft, then let the host report the created profile: a stale value
+  // from before the save must not survive it.
+  area.props.ref.current.value = 'forked body'
+  clickAction(rtree, 'role-editor-save')
+  await flush()
+  const created = posts[posts.length - 1]
+  check('the reuse harness saved the draft as a create', created.action === 'rolesCreate' && created.name.indexOf('godot-reviewer-fork') === 0 && created.profile.prompt === 'forked body', JSON.stringify(created))
+  HOST.roles = Object.assign({}, HOST.roles, {
+    profiles: Object.assign({}, HOST.roles.profiles, {
+      [created.name]: { name: created.name, role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'forked body' },
+    }),
+  })
+  rtree = reuse.render(panel2, { initialView: 'roles' })
+  await flush()
+  rtree = reuse.render(panel2, { initialView: 'roles' })
+  area = fieldOf(rtree, 'template')
+  const reuseIdentity = findAll(editorOf(rtree), function (node) { return node.props && node.props['data-editor-identity'] === 'true' })[0]
+  check('a successful draft save retargets the editor at the created profile', reuseIdentity.props['data-profile'] === created.name && reuseIdentity.props['data-draft'] === 'false', JSON.stringify(reuseIdentity.props))
+  check(
+    'the template control shows the saved profile after the save',
+    valueOf(area) === 'forked body' && dirtyOf(area) === false,
+    JSON.stringify({ value: valueOf(area), dirty: dirtyOf(area) }),
+  )
+
+  // The editor-local banner belongs to one identity: a kind switch clears it.
+  check('the saved outcome is shown inside the editor', textOf(editorOf(rtree)).indexOf('保存 ✓') >= 0, textOf(editorOf(rtree)).slice(0, 200))
+  clickAction(rtree, 'role-editor-kind', 'data-kind', 'tester')
+  rtree = reuse.render(panel2, { initialView: 'roles' })
+  check('switching kind clears the previous identity banner', textOf(editorOf(rtree)).indexOf('保存 ✓') < 0, textOf(editorOf(rtree)).slice(0, 200))
+
+  disposers2.slice().reverse().forEach(function (disposer) { disposer() })
+}
+
 // teardown
 let teardownError = null
 try {
