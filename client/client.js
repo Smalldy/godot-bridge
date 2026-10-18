@@ -196,9 +196,11 @@ window.__ModuleLoader__.load({
 				queueHint: '派发从这个顺序取任务；完成后自动补位。',
 				waiting: '等待',
 				ready: '就绪',
-				runningCol: '进行中',
+				runningCol: '实现中',
+				reviewingCol: '评审中',
+				testingCol: '测试中',
 				doneCol: '完成',
-				closedCol: '阻塞 / 取消',
+				blockedCol: '阻塞',
 				emptyBoard: '还没有任务。点“新建任务”开始。',
 				emptyQueue: '没有可派发的任务。',
 				emptyLocks: '当前没有文件锁。',
@@ -249,7 +251,9 @@ window.__ModuleLoader__.load({
 				titleRequired: '标题不能为空',
 				loading: '加载中…',
 				statusPending: '等待',
-				statusRunning: '进行中',
+				statusRunning: '实现中',
+				statusReviewing: '评审中',
+				statusTesting: '测试中',
 				statusDone: '完成',
 				statusBlocked: '阻塞',
 				statusCancelled: '取消',
@@ -281,11 +285,6 @@ window.__ModuleLoader__.load({
 				waitFileLock: '等待文件锁',
 				waitConcurrency: '并发已满',
 				loadFailed: '读取失败',
-				testing: '独立测试',
-				testingSelf: '自测（执行者提交证据）',
-				testingIndependent: '系统验证（宿主独立运行项目验证）',
-				testingHint: '“系统验证”由宿主在临时 checkout 中运行项目验证并记录 verdict；不依赖其他 agent，也不改变任务动作语义。',
-				testingUserOnly: '仅用户可修改。',
 				checkoutTitle: '执行工作树',
 				mergeTitle: '合并请求',
 				mergeStatus: '合并状态',
@@ -298,15 +297,33 @@ window.__ModuleLoader__.load({
 				mergeConflict: '冲突',
 				mergeFailed: '验证失败',
 				mergeRejected: '已拒绝',
-				verdict: '系统验证',
-				verdictPending: '待验证',
-				verdictPassed: '通过',
-				verdictFailed: '未通过',
-				verdictBy: '记录者',
-				verdictAt: '时间',
-				verdictHint: '由宿主在临时 checkout 中运行项目验证后记录；结论来自命令退出码，不来自模型判断。',
-				verdictNone: '尚未记录系统验证结果。',
-				verdictOutput: '验证输出',
+				phaseTitle: '阶段',
+				phaseCurrent: '当前阶段',
+				phaseAt: '时间',
+				phaseAttempts: '阶段轮次',
+				requiredRole: '需要角色',
+				review: '评审',
+				reviewStatus: '评审状态',
+				reviewer: '评审者',
+				submitter: '提交者',
+				reviewAttempt: '评审轮次',
+				reviewReasons: '打回原因',
+				reviewPending: '待评审',
+				reviewApproved: '评审通过',
+				reviewChanges: '已打回',
+				noReview: '尚未提交评审。',
+				reviewHint: '评审通过后进入测试阶段；打回会退回实现中。',
+				test: '测试',
+				testStatus: '测试状态',
+				tester: '测试者',
+				testAttempt: '测试轮次',
+				testEvidence: '测试证据',
+				testCandidate: '候选工作树',
+				testPending: '待测试',
+				testPassed: '测试通过',
+				testFailed: '测试未通过',
+				noTest: '尚未进入测试。',
+				testHint: '测试通过后由宿主自动合并；未通过会退回实现中。',
 				verificationOutput: '合并验证输出',
 				noOutput: '（无输出）',
 				outputTailHint: '仅显示输出尾部',
@@ -368,9 +385,11 @@ window.__ModuleLoader__.load({
 				queueHint: 'Dispatch takes tasks in this order; completion refills the slot.',
 				waiting: 'Waiting',
 				ready: 'Ready',
-				runningCol: 'Running',
+				runningCol: 'Implementing',
+				reviewingCol: 'Reviewing',
+				testingCol: 'Testing',
 				doneCol: 'Done',
-				closedCol: 'Blocked / cancelled',
+				blockedCol: 'Blocked',
 				emptyBoard: 'No tasks yet. Use “New task” to start.',
 				emptyQueue: 'Nothing is ready to dispatch.',
 				emptyLocks: 'No file locks right now.',
@@ -421,7 +440,9 @@ window.__ModuleLoader__.load({
 				titleRequired: 'A title is required',
 				loading: 'Loading…',
 				statusPending: 'Pending',
-				statusRunning: 'Running',
+				statusRunning: 'Implementing',
+				statusReviewing: 'Reviewing',
+				statusTesting: 'Testing',
 				statusDone: 'Done',
 				statusBlocked: 'Blocked',
 				statusCancelled: 'Cancelled',
@@ -453,11 +474,6 @@ window.__ModuleLoader__.load({
 				waitFileLock: 'waiting for file lock',
 				waitConcurrency: 'concurrency full',
 				loadFailed: 'load failed',
-				testing: 'Independent testing',
-				testingSelf: 'Self-test (the assignee submits its evidence)',
-				testingIndependent: 'System verification (the host runs the project verification itself)',
-				testingHint: '“System verification” runs the project verification in a throwaway checkout and records the verdict on the host; it needs no other agent and does not change task actions.',
-				testingUserOnly: 'User-only setting.',
 				checkoutTitle: 'Working checkout',
 				mergeTitle: 'Merge request',
 				mergeStatus: 'Merge status',
@@ -470,15 +486,33 @@ window.__ModuleLoader__.load({
 				mergeConflict: 'Conflict',
 				mergeFailed: 'Verification failed',
 				mergeRejected: 'Rejected',
-				verdict: 'System verdict',
-				verdictPending: 'Pending',
-				verdictPassed: 'Passed',
-				verdictFailed: 'Failed',
-				verdictBy: 'Recorded by',
-				verdictAt: 'At',
-				verdictHint: 'Recorded by the host after running the project verification in a throwaway checkout; the result comes from the exit code, not from a model judgement.',
-				verdictNone: 'No system verdict recorded yet.',
-				verdictOutput: 'Verdict output',
+				phaseTitle: 'Phase',
+				phaseCurrent: 'Current phase',
+				phaseAt: 'At',
+				phaseAttempts: 'Phase rounds',
+				requiredRole: 'Required role',
+				review: 'Review',
+				reviewStatus: 'Review status',
+				reviewer: 'Reviewer',
+				submitter: 'Submitted by',
+				reviewAttempt: 'Review round',
+				reviewReasons: 'Review reasons',
+				reviewPending: 'Awaiting review',
+				reviewApproved: 'Review approved',
+				reviewChanges: 'Changes requested',
+				noReview: 'Not submitted for review yet.',
+				reviewHint: 'An approval moves the task to testing; changes requested send it back to implementing.',
+				test: 'Test',
+				testStatus: 'Test status',
+				tester: 'Tester',
+				testAttempt: 'Test round',
+				testEvidence: 'Test evidence',
+				testCandidate: 'Candidate worktree',
+				testPending: 'Awaiting test',
+				testPassed: 'Test passed',
+				testFailed: 'Test failed',
+				noTest: 'Not entered testing yet.',
+				testHint: 'A passing test lets the host merge automatically; a failed test sends the task back to implementing.',
 				verificationOutput: 'Merge verification output',
 				noOutput: '(no output)',
 				outputTailHint: 'tail of the output shown',
@@ -516,7 +550,7 @@ window.__ModuleLoader__.load({
 			'.gbt-tab[data-active="true"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-primary);font-weight:600}',
 			'.gbt-view{flex:1;min-height:0;overflow:auto;padding:12px 18px 18px}',
 			'.gbt-board{display:flex;gap:12px;align-items:stretch;min-height:100%}',
-			'.gbt-col{flex:1 1 0;min-width:196px;max-width:330px;background:var(--dsw-alias-bg-layer-3);border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;display:flex;flex-direction:column;max-height:100%;min-height:120px}',
+			'.gbt-col{flex:1 1 0;min-width:172px;max-width:330px;background:var(--dsw-alias-bg-layer-3);border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;display:flex;flex-direction:column;max-height:100%;min-height:120px}',
 			'.gbt-colhead{display:flex;align-items:center;gap:7px;padding:9px 11px;border-bottom:0.5px solid var(--dsw-alias-border-l4);font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary);letter-spacing:.04em;text-transform:uppercase}',
 			'.gbt-colcount{margin-left:auto;font-weight:500;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-4);border-radius:999px;padding:0 7px;font-size:10px}',
 			'.gbt-cards{display:flex;flex-direction:column;gap:8px;padding:9px;overflow:auto;min-height:40px}',
@@ -532,6 +566,8 @@ window.__ModuleLoader__.load({
 			'.gbt-chip[data-tone="waiting"]{background:rgba(245,159,0,.13);color:#b7791f}',
 			'.gbt-chip[data-tone="broken"]{background:rgba(229,72,77,.13);color:#d33}',
 			'.gbt-chip[data-tone="running"]{background:rgba(79,124,255,.13);color:#3b5bdb}',
+			'.gbt-chip[data-tone="reviewing"]{background:rgba(121,80,242,.13);color:#7048e8}',
+			'.gbt-chip[data-tone="testing"]{background:rgba(245,159,0,.13);color:#b7791f}',
 			'.gbt-chip[data-tone="done"]{background:rgba(47,179,68,.13);color:#2f9e44}',
 			'.gbt-chip[data-tone="blocked"]{background:rgba(229,72,77,.13);color:#d33}',
 			'.gbt-chip[data-tone="cancelled"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-tertiary)}',
@@ -584,6 +620,10 @@ window.__ModuleLoader__.load({
 			'.gbt-footnote{font-size:10px;color:var(--dsw-alias-label-tertiary);margin:0}',
 			'.gbt-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:500;background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-secondary)}',
 			'.gbt-pill[data-status="running"]{background:rgba(79,124,255,.14);color:#3b5bdb}',
+			'.gbt-pill[data-status="reviewing"]{background:rgba(121,80,242,.14);color:#7048e8}',
+			'.gbt-pill[data-status="testing"]{background:rgba(245,159,0,.14);color:#b7791f}',
+			'.gbt-pill[data-status="approved"]{background:rgba(47,179,68,.14);color:#2f9e44}',
+			'.gbt-pill[data-status="changes-requested"]{background:rgba(229,72,77,.14);color:#d33}',
 			'.gbt-pill[data-status="done"]{background:rgba(47,179,68,.14);color:#2f9e44}',
 			'.gbt-pill[data-status="blocked"]{background:rgba(229,72,77,.14);color:#d33}',
 			'.gbt-pill[data-status="cancelled"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-tertiary)}',
@@ -640,20 +680,64 @@ window.__ModuleLoader__.load({
 			return 'status' + status.charAt(0).toUpperCase() + status.slice(1)
 		}
 
-		/** Merge/verdict vocabulary shared by the card and the detail drawer. */
+		/** Merge/review/test vocabulary shared by the card and the detail drawer. */
 		const MERGE_LABELS = { open: 'mergeOpen', merged: 'mergeMerged', conflict: 'mergeConflict', failed: 'mergeFailed', rejected: 'mergeRejected' }
 		const MERGE_TONES = { open: 'running', merged: 'done', conflict: 'broken', failed: 'blocked', rejected: 'cancelled' }
-		const VERDICT_LABELS = { pending: 'verdictPending', passed: 'verdictPassed', failed: 'verdictFailed' }
-		const VERDICT_TONES = { pending: 'waiting', passed: 'done', failed: 'broken' }
+		const REVIEW_LABELS = { pending: 'reviewPending', approved: 'reviewApproved', 'changes-requested': 'reviewChanges' }
+		const REVIEW_TONES = { pending: 'waiting', approved: 'done', 'changes-requested': 'broken' }
+		const TEST_LABELS = { pending: 'testPending', passed: 'testPassed', failed: 'testFailed' }
+		const TEST_TONES = { pending: 'waiting', passed: 'done', failed: 'broken' }
+		const PHASE_LABELS = {
+			running: 'runningCol',
+			reviewing: 'reviewingCol',
+			testing: 'testingCol',
+			done: 'doneCol',
+			blocked: 'statusBlocked',
+			cancelled: 'statusCancelled',
+		}
+		const PHASE_TONES = { running: 'running', reviewing: 'reviewing', testing: 'testing', done: 'done', blocked: 'blocked', cancelled: 'cancelled' }
 
 		function tcMergeOf(task) {
 			const merge = task === null || task === undefined ? null : task.merge
 			return merge !== null && merge !== undefined && typeof merge === 'object' && !Array.isArray(merge) ? merge : null
 		}
 
-		function tcVerdictOf(merge) {
-			const verdict = merge === null || merge === undefined ? null : merge.verdict
-			return verdict !== null && verdict !== undefined && typeof verdict === 'object' && !Array.isArray(verdict) ? verdict : null
+		function tcReviewOf(task) {
+			const review = task === null || task === undefined ? null : task.review
+			return review !== null && review !== undefined && typeof review === 'object' && !Array.isArray(review) ? review : null
+		}
+
+		function tcTestOf(task) {
+			const test = task === null || task === undefined ? null : task.test
+			return test !== null && test !== undefined && typeof test === 'object' && !Array.isArray(test) ? test : null
+		}
+
+		/**
+		 * The current phase as the board shows it. A pending task is either READY
+		 * or WAITING; that split is derived from the Host's dependency report, not
+		 * guessed from the dependency list.
+		 */
+		function tcPhaseOf(task) {
+			const status = task === null || task === undefined ? 'pending' : task.status
+			if (status === 'pending') {
+				const dependency = task.dependency
+				return dependency !== undefined && dependency !== null && dependency.state === 'ready' ? 'ready' : 'waiting'
+			}
+			return typeof status === 'string' && PHASE_LABELS[status] !== undefined ? status : 'waiting'
+		}
+
+		function tcPhaseLabel(task, t) {
+			const phase = tcPhaseOf(task)
+			if (phase === 'ready') return t('ready')
+			if (phase === 'waiting') return t('waiting')
+			return t(PHASE_LABELS[phase])
+		}
+
+		function tcPhaseTone(task) {
+			const phase = tcPhaseOf(task)
+			if (phase === 'ready') return 'ready'
+			if (phase === 'waiting') return 'waiting'
+			return PHASE_TONES[phase] || 'waiting'
 		}
 
 		function tcMergeLabel(status, t) {
@@ -665,13 +749,28 @@ window.__ModuleLoader__.load({
 			return MERGE_TONES[status] || 'waiting'
 		}
 
-		function tcVerdictLabel(status, t) {
-			const key = VERDICT_LABELS[status]
+		function tcReviewLabel(status, t) {
+			const key = REVIEW_LABELS[status]
 			return key === undefined ? String(status === undefined || status === null ? '—' : status) : t(key)
 		}
 
-		function tcVerdictTone(status) {
-			return VERDICT_TONES[status] || 'waiting'
+		function tcReviewTone(status) {
+			return REVIEW_TONES[status] || 'waiting'
+		}
+
+		function tcTestLabel(status, t) {
+			const key = TEST_LABELS[status]
+			return key === undefined ? String(status === undefined || status === null ? '—' : status) : t(key)
+		}
+
+		function tcTestTone(status) {
+			return TEST_TONES[status] || 'waiting'
+		}
+
+		/** The round counter on a phase record; a missing count reads as round 0. */
+		function tcRound(record) {
+			const value = record === null || record === undefined ? 0 : record.attempt
+			return Number.isFinite(value) ? Math.floor(value) : 0
 		}
 
 		/** The last max CHARACTERS (not UTF-16 units), so a surrogate pair survives. */
@@ -931,7 +1030,8 @@ window.__ModuleLoader__.load({
 				const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
 				const dispatchError = task.dispatch !== null && task.dispatch !== undefined ? task.dispatch.error : null
 				const merge = tcMergeOf(task)
-				const verdict = tcVerdictOf(merge)
+				const review = tcReviewOf(task)
+				const test = tcTestOf(task)
 				const branch = typeof task.branch === 'string' ? task.branch : ''
 				const commit = typeof task.commit === 'string' ? task.commit : ''
 				const worktree = typeof task.worktree === 'string' ? task.worktree : ''
@@ -942,15 +1042,32 @@ window.__ModuleLoader__.load({
 				children.push(h('div', { key: 'top', className: 'gbt-cardtop' }, top))
 				children.push(h('div', { key: 'title', className: 'gbt-cardtitle' }, task.title))
 				const meta = []
+				meta.push(h('span', { key: 'phase', className: 'gbt-chip', 'data-tone': tcPhaseTone(task), title: t('phaseCurrent') }, '▸ ' + tcPhaseLabel(task, t)))
 				if (task.assignee !== null && task.assignee !== undefined) meta.push(h('span', { key: 'who', className: 'gbt-chip', 'data-tone': 'running' }, task.assignee.name))
-				if (task.attempts > 0) meta.push(h('span', { key: 'attempts', className: 'gbt-chip' }, '↻ ' + String(task.attempts) + '/' + String(task.maxAttempts)))
+				if (typeof task.requiredRole === 'string' && task.requiredRole !== '') {
+					meta.push(h('span', { key: 'role', className: 'gbt-chip', title: t('requiredRole') }, '🧩 ' + task.requiredRole))
+				}
+				if (task.attempts > 0) meta.push(h('span', { key: 'attempts', className: 'gbt-chip', title: t('attempts') }, '↻ ' + String(task.attempts) + '/' + String(task.maxAttempts)))
+				if (review !== null) {
+					meta.push(
+						h('span', { key: 'review', className: 'gbt-chip', 'data-tone': tcReviewTone(review.status), title: t('reviewStatus') + ' · ' + t('reviewAttempt') + ' ' + String(tcRound(review)) }, '👁 ' + tcReviewLabel(review.status, t) + ' · #' + String(tcRound(review))),
+					)
+					if (review.status !== 'pending' && typeof review.by === 'string' && review.by !== '') {
+						meta.push(h('span', { key: 'reviewer', className: 'gbt-chip', title: t('reviewer') }, '👤 ' + review.by))
+					}
+				}
+				if (test !== null) {
+					meta.push(
+						h('span', { key: 'test', className: 'gbt-chip', 'data-tone': tcTestTone(test.status), title: t('testStatus') + ' · ' + t('testAttempt') + ' ' + String(tcRound(test)) }, '🧪 ' + tcTestLabel(test.status, t) + ' · #' + String(tcRound(test))),
+					)
+					if (typeof test.by === 'string' && test.by !== '') {
+						meta.push(h('span', { key: 'tester', className: 'gbt-chip', title: t('tester') }, '👤 ' + test.by))
+					}
+				}
 				if (lease !== null) meta.push(h('span', { key: 'lease', className: 'gbt-chip', 'data-tone': lease.warn ? 'blocked' : 'waiting' }, lease.text))
 				if (files.length > 0) meta.push(h('span', { key: 'files', className: 'gbt-chip' }, '🔒 ' + String(files.length)))
 				if (merge !== null) {
 					meta.push(h('span', { key: 'merge', className: 'gbt-chip', 'data-tone': tcMergeTone(merge.status), title: t('mergeTitle') }, '⇄ ' + tcMergeLabel(merge.status, t)))
-				}
-				if (verdict !== null) {
-					meta.push(h('span', { key: 'verdict', className: 'gbt-chip', 'data-tone': tcVerdictTone(verdict.status), title: t('verdict') }, t('verdict') + ' ' + tcVerdictLabel(verdict.status, t)))
 				}
 				if (branch !== '') meta.push(h('span', { key: 'branch', className: 'gbt-chip', title: branch }, '⎇ ' + branch))
 				if (commit !== '') meta.push(h('span', { key: 'commit', className: 'gbt-chip', title: commit }, '● ' + commit.slice(0, 10)))
@@ -1022,7 +1139,7 @@ window.__ModuleLoader__.load({
 			function Board(props) {
 				const tasks = props.snapshot.tasks
 				// Recently finished work is the first thing a reader looks for; the done
-				// and closed columns are therefore newest-first. The other columns keep
+				// and blocked columns are therefore newest-first. The other columns keep
 				// the host's scheduling order (priority, then age).
 				function recentFirst(left, right) {
 					const leftAt = tcTime(left.updatedAt) === null ? tcTime(left.createdAt) : tcTime(left.updatedAt)
@@ -1036,10 +1153,12 @@ window.__ModuleLoader__.load({
 					{ key: 'ready', label: props.t('ready'), tasks: ready },
 					{ key: 'waiting', label: props.t('waiting'), tasks: waiting },
 					{ key: 'running', label: props.t('runningCol'), tasks: tasks.filter(function (task) { return task.status === 'running' }) },
+					{ key: 'reviewing', label: props.t('reviewingCol'), tasks: tasks.filter(function (task) { return task.status === 'reviewing' }) },
+					{ key: 'testing', label: props.t('testingCol'), tasks: tasks.filter(function (task) { return task.status === 'testing' }) },
 					{ key: 'done', label: props.t('doneCol'), tasks: tasks.filter(function (task) { return task.status === 'done' }).slice().sort(recentFirst) },
 					{
-						key: 'closed',
-						label: props.t('closedCol'),
+						key: 'blocked',
+						label: props.t('blockedCol'),
 						tasks: tasks.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst),
 					},
 				]
@@ -1333,7 +1452,8 @@ window.__ModuleLoader__.load({
 				const held = snapshot.locks.filter(function (lock) { return lock.taskId === task.id }).map(function (lock) { return lock.path })
 				const dispatch = task.dispatch === null || task.dispatch === undefined ? null : task.dispatch
 				const merge = tcMergeOf(task)
-				const verdict = tcVerdictOf(merge)
+				const review = tcReviewOf(task)
+				const test = tcTestOf(task)
 
 				function noteValue() {
 					return note.current === null ? '' : String(note.current.value || '').trim()
@@ -1407,6 +1527,81 @@ window.__ModuleLoader__.load({
 							h('dd', null, tcAgo(task.createdAt, now)),
 							h('dt', null, t('updated')),
 							h('dd', null, tcAgo(task.updatedAt, now)),
+						),
+					),
+				)
+
+				// The phase machine is the spine of a task: its review and test
+				// rounds decide whether the host may merge. The panel only renders
+				// the records the Host returned; it never derives a verdict.
+				blocks.push(
+					h(
+						'section',
+						{ key: 'phase', className: 'gbt-section' },
+						h('h3', null, t('phaseTitle')),
+						h(
+							'dl',
+							{ className: 'gbt-meta' },
+							h('dt', null, t('phaseCurrent')),
+							h('dd', null, h('span', { className: 'gbt-pill', 'data-status': task.status }, tcPhaseLabel(task, t))),
+							h('dt', null, t('requiredRole')),
+							h('dd', null, typeof task.requiredRole === 'string' && task.requiredRole !== '' ? task.requiredRole : '—'),
+							h('dt', null, t('phaseAttempts')),
+							h('dd', null, String(task.attempts) + ' / ' + String(task.maxAttempts)),
+						),
+						h(
+							'div',
+							{ className: 'gbt-outputblock' },
+							h('div', { className: 'gbt-subhead' }, t('review')),
+							review === null
+								? h('p', { className: 'gbt-footnote' }, t('noReview'))
+								: h(
+										'div',
+										null,
+										h(
+											'dl',
+											{ className: 'gbt-meta' },
+											h('dt', null, t('reviewStatus')),
+											h('dd', null, h('span', { className: 'gbt-pill', 'data-status': review.status }, tcReviewLabel(review.status, t))),
+											h('dt', null, review.status === 'pending' ? t('submitter') : t('reviewer')),
+											h('dd', null, typeof review.by === 'string' && review.by !== '' ? review.by : '—'),
+											h('dt', null, t('reviewAttempt')),
+											h('dd', null, String(tcRound(review))),
+											h('dt', null, t('phaseAt')),
+											h('dd', null, tcAgo(review.at, now)),
+										),
+										h('p', { className: 'gbt-footnote' }, t('reviewHint')),
+										review.reasons === null || review.reasons === undefined || review.reasons === ''
+											? null
+											: outputBlock('review-reasons', t('reviewReasons'), review.reasons, t),
+									),
+						),
+						h(
+							'div',
+							{ className: 'gbt-outputblock' },
+							h('div', { className: 'gbt-subhead' }, t('test')),
+							test === null
+								? h('p', { className: 'gbt-footnote' }, t('noTest'))
+								: h(
+										'div',
+										null,
+										h(
+											'dl',
+											{ className: 'gbt-meta' },
+											h('dt', null, t('testStatus')),
+											h('dd', null, h('span', { className: 'gbt-pill', 'data-status': test.status }, tcTestLabel(test.status, t))),
+											h('dt', null, t('tester')),
+											h('dd', null, typeof test.by === 'string' && test.by !== '' ? test.by : '—'),
+											h('dt', null, t('testAttempt')),
+											h('dd', null, String(tcRound(test))),
+											h('dt', null, t('phaseAt')),
+											h('dd', null, tcAgo(test.at, now)),
+											h('dt', null, t('testCandidate')),
+											h('dd', null, typeof task.worktree === 'string' && task.worktree !== '' ? task.worktree : '—'),
+										),
+										h('p', { className: 'gbt-footnote' }, t('testHint')),
+										outputBlock('test-evidence', t('testEvidence'), typeof test.evidence === 'string' ? test.evidence : '', t),
+									),
 						),
 					),
 				)
@@ -1532,30 +1727,6 @@ window.__ModuleLoader__.load({
 							{ key: 'merge', className: 'gbt-section' },
 							h('h3', null, t('mergeTitle')),
 							h('dl', { className: 'gbt-meta' }, rows),
-							verdict !== null
-								? h(
-										'div',
-										{ key: 'verdict' },
-										h('div', { className: 'gbt-subhead' }, t('verdict')),
-										h(
-											'dl',
-											{ className: 'gbt-meta' },
-											h('dt', null, t('verdict')),
-											h('dd', null, h('span', { className: 'gbt-pill', 'data-status': verdict.status }, tcVerdictLabel(verdict.status, t))),
-											h('dt', null, t('verdictBy')),
-											h('dd', null, typeof verdict.by === 'string' && verdict.by !== '' ? verdict.by : '—'),
-											h('dt', null, t('verdictAt')),
-											h('dd', null, typeof verdict.at === 'string' && verdict.at !== '' ? tcAgo(verdict.at, now) : '—'),
-										),
-										h('p', { className: 'gbt-footnote' }, t('verdictHint')),
-										outputBlock('verdict-out', t('verdictOutput'), typeof verdict.output === 'string' ? verdict.output : '', t),
-									)
-								: h(
-										'div',
-										{ key: 'verdict-none' },
-										h('div', { className: 'gbt-subhead' }, t('verdict')),
-										h('p', { className: 'gbt-footnote' }, t('verdictNone')),
-									),
 							typeof merge.output === 'string' && merge.output !== ''
 								? outputBlock('merge-out', t('verificationOutput'), merge.output, t)
 								: null,
@@ -1720,8 +1891,6 @@ window.__ModuleLoader__.load({
 				const t = props.t
 				const dispatch = props.dispatch
 				const concurrent = React.useRef(null)
-				const testing = React.useRef(null)
-				const currentTesting = dispatch !== undefined && dispatch !== null && dispatch.testing === 'independent' ? 'independent' : 'self'
 				const [error, setError] = React.useState('')
 				function save() {
 					const raw = concurrent.current === null ? dispatch.maxConcurrent : concurrent.current.value
@@ -1730,7 +1899,7 @@ window.__ModuleLoader__.load({
 						setError(t('invalidConcurrency'))
 						return
 					}
-					void store.send('settings', { maxConcurrent: value, testing: testing.current === null ? currentTesting : String(testing.current.value || currentTesting) }).then(function (result) {
+					void store.send('settings', { maxConcurrent: value }).then(function (result) {
 						if (result.ok === true) props.onClose()
 						else setError(t('error'))
 					})
@@ -1748,19 +1917,6 @@ window.__ModuleLoader__.load({
 							h('input', { className: 'gbt-input', type: 'number', min: 1, max: 8, step: 1, ref: concurrent, defaultValue: String(dispatch.maxConcurrent) }),
 						),
 						h('p', { className: 'gbt-footnote' }, t('concurrencyHint')),
-						h(
-							'div',
-							{ className: 'gbt-field' },
-							h('label', null, t('testing')),
-							h(
-								'select',
-								{ className: 'gbt-input', ref: testing, defaultValue: currentTesting },
-								h('option', { value: 'self' }, t('testingSelf')),
-								h('option', { value: 'independent' }, t('testingIndependent')),
-							),
-						),
-						h('p', { className: 'gbt-footnote' }, t('testingHint')),
-						h('p', { className: 'gbt-footnote' }, t('testingUserOnly')),
 						error === '' ? null : h('p', { className: 'gbt-footnote', style: { color: 'var(--dsw-alias-label-error,#e5484d)' } }, error),
 						h(
 							'div',
@@ -1896,10 +2052,12 @@ window.__ModuleLoader__.load({
 						'div',
 						{ className: 'gbt-counts' },
 						h('span', { className: 'gbt-count' }, t('ready'), h('b', null, String(counts.ready || 0))),
-						h('span', { className: 'gbt-count' }, t('runningCol'), h('b', null, String(counts.running || 0))),
 						h('span', { className: 'gbt-count' }, t('waiting'), h('b', null, String(Math.max(0, (counts.pending || 0) - (counts.ready || 0))))),
-						h('span', { className: 'gbt-count' }, t('statusBlocked'), h('b', null, String(counts.blocked || 0))),
+						h('span', { className: 'gbt-count' }, t('runningCol'), h('b', null, String(counts.running || 0))),
+						h('span', { className: 'gbt-count' }, t('reviewingCol'), h('b', null, String(counts.reviewing || 0))),
+						h('span', { className: 'gbt-count' }, t('testingCol'), h('b', null, String(counts.testing || 0))),
 						h('span', { className: 'gbt-count' }, t('doneCol'), h('b', null, String(counts.done || 0))),
+						h('span', { className: 'gbt-count' }, t('blockedCol'), h('b', null, String((counts.blocked || 0) + (counts.cancelled || 0)))),
 					),
 					h(
 						'div',
