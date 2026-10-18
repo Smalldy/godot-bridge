@@ -25,6 +25,13 @@ export const DEFAULT_VERIFY_COMMAND = 'npm run verify'
 /** Keep a failed verification readable without letting the board grow forever. */
 const MAX_OUTPUT_BYTES = 8 * 1024
 
+/** Collect far more than we record: the diagnosis lives at the END of a long run. */
+const MAX_COLLECT_BYTES = 4 * 1024 * 1024
+
+/** Room reserved for the extracted failure lines at the head of the output body. */
+const MAX_FAILURE_SUMMARY_BYTES = 2048
+const MAX_FAILURE_LINES = 12
+
 function failure(code, message) {
   return { ok: false, code: code, message: message }
 }
@@ -43,11 +50,99 @@ function clip(text) {
   return Buffer.from(value, 'utf8').subarray(0, MAX_OUTPUT_BYTES).toString('utf8')
 }
 
-function outputOf(result) {
-  const stdout = result === null || result === undefined || typeof result.stdout !== 'string' ? '' : result.stdout
-  const stderr = result === null || result === undefined || typeof result.stderr !== 'string' ? '' : result.stderr
-  const text = (stdout + (stderr === '' ? '' : (stdout === '' ? '' : '\n') + stderr)).trim()
-  return clip(text)
+function bytesOf(text) {
+  return Buffer.byteLength(String(text === undefined || text === null ? '' : text), 'utf8')
+}
+
+/**
+ * The longest SUFFIX that fits a byte budget, starting on a UTF-8 code point.
+ *
+ * A buffer cut at an arbitrary byte offset can start inside a multi-byte
+ * character (a 4-byte surrogate pair included), and decoding that produces
+ * U+FFFD garbage. Stepping back over continuation bytes (10xxxxxx) lands on the
+ * character's first byte, so the tail is always valid UTF-8.
+ */
+function tailOf(text, maxBytes) {
+  const value = String(text === undefined || text === null ? '' : text)
+  const buffer = Buffer.from(value, 'utf8')
+  const total = buffer.length
+  if (total <= maxBytes) return { text: value, truncated: false, total: total, kept: total }
+  if (maxBytes <= 0) return { text: '', truncated: true, total: total, kept: 0 }
+  let start = total - Math.floor(maxBytes)
+  while (start > 0 && (buffer[start] & 0xc0) === 0x80) start--
+  return { text: buffer.subarray(start).toString('utf8'), truncated: true, total: total, kept: total - start }
+}
+
+/** The diagnostic lines of a long run: FAIL/FAILED/Error, in order. */
+function failureLines(text) {
+  return String(text === undefined || text === null ? '' : text)
+    .split(/\r?\n/)
+    .filter((line) => /(FAIL|FAILED|Error)/.test(line))
+}
+
+/** A labelled tail section that never exceeds its byte budget. */
+function tailSection(label, text, budget) {
+  if (text === '' || budget <= 0) return ''
+  const marker = '--- ' + label + ' (tail) ---\n'
+  let tail = tailOf(text, Math.max(0, budget - bytesOf(marker)))
+  if (tail.text === '') return ''
+  if (tail.truncated) {
+    const note = '… truncated: showing last ' + String(tail.kept) + ' of ' + String(tail.total) + ' bytes …\n'
+    const contentBudget = Math.max(0, budget - bytesOf(marker) - bytesOf(note))
+    tail = tailOf(text, contentBudget)
+    if (tail.text === '') return ''
+    return marker + note + tail.text
+  }
+  return marker + tail.text
+}
+
+/**
+ * Format one verification run for the board.
+ *
+ * The pass/fail decision is the exit code and nothing else. What we RETAIN for
+ * a human is the header (command + exit code), the last failure-looking lines,
+ * and the TAILS of stdout and stderr — the head of a 20 MB PASS log is the one
+ * part that never explains a failure.
+ */
+function formatVerificationOutput(command, code, result) {
+  const header = '$ ' + command + '  (exit ' + String(code) + ')'
+  const stdout = result !== null && result !== undefined && typeof result.stdout === 'string' ? result.stdout.trim() : ''
+  const stderr = result !== null && result !== undefined && typeof result.stderr === 'string' ? result.stderr.trim() : ''
+  const combined = stdout === '' ? stderr : stderr === '' ? stdout : stdout + '\n' + stderr
+  // Reserve the header, its newline and the joins between up to three sections.
+  const totalBudget = MAX_OUTPUT_BYTES - bytesOf(header) - 1 - 8
+  if (totalBudget <= 0) return header
+  if (bytesOf(combined) <= totalBudget) return combined === '' ? header : header + '\n' + combined
+
+  const sections = []
+  let used = 0
+  const matched = failureLines(combined)
+  if (matched.length > 0) {
+    const summary = matched.slice(-MAX_FAILURE_LINES).join('\n')
+    const budget = Math.min(MAX_FAILURE_SUMMARY_BYTES, Math.max(0, totalBudget - 1024))
+    const section = tailSection('failure lines', summary, budget)
+    sections.push(section)
+    used += bytesOf(section)
+  }
+  let remaining = totalBudget - used
+  if (stdout !== '' && stderr !== '' && remaining > 0) {
+    // Give stderr a guaranteed share, then spend what is left on stdout.
+    const stderrBudget = Math.min(remaining, Math.max(512, Math.floor(remaining * 0.45)))
+    const stdoutSection = tailSection('stdout', stdout, remaining - stderrBudget)
+    sections.push(stdoutSection)
+    remaining -= bytesOf(stdoutSection)
+    sections.push(tailSection('stderr', stderr, Math.max(0, remaining)))
+  } else if (stderr !== '') {
+    sections.push(tailSection('stderr', stderr, remaining))
+  } else {
+    sections.push(tailSection('stdout', stdout, remaining))
+  }
+  const body = sections.filter((section) => section !== '').join('\n')
+  const output = body === '' ? header : header + '\n' + body
+  if (bytesOf(output) <= MAX_OUTPUT_BYTES) return output
+  // Safety net only: budgets should never get here; keep the header regardless.
+  const kept = tailOf(body, Math.max(0, MAX_OUTPUT_BYTES - bytesOf(header) - 1))
+  return kept.text === '' ? header : header + '\n' + kept.text
 }
 
 /**
@@ -79,8 +174,8 @@ export function verifyFor(ctx) {
         cwd: request === undefined ? undefined : request.cwd,
         stdio: {
           stdin: 'ignore',
-          stdout: { collect: { maxBytes: MAX_OUTPUT_BYTES } },
-          stderr: { collect: { maxBytes: MAX_OUTPUT_BYTES } },
+          stdout: { collect: { maxBytes: MAX_COLLECT_BYTES } },
+          stderr: { collect: { maxBytes: MAX_COLLECT_BYTES } },
         },
         graceMs: 120000,
       })
@@ -188,9 +283,7 @@ export function createMerger(options) {
     }
     const code = Number.isFinite(result.code) ? Math.floor(result.code) : null
     if (code === null) return { ok: false, output: 'verification runner returned no exit code' }
-    const body = outputOf(result)
-    const header = '$ ' + verifyCommand + '  (exit ' + String(code) + ')'
-    return { ok: code === 0, output: clip(header + (body === '' ? '' : '\n' + body)) }
+    return { ok: code === 0, output: formatVerificationOutput(verifyCommand, code, result) }
   }
 
   /**

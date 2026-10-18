@@ -1190,6 +1190,39 @@ function mergerTeam(options) {
   mergeRig.scheduler.dispose()
 }
 
+// ── a long failed verification keeps its tail, not the opening PASS wall ────
+{
+  const fake = mergeGit()
+  const headLines = []
+  for (let index = 0; index < 200; index++) headLines.push('PASS  head check ' + String(index) + ' ' + 'x'.repeat(40))
+  // 'A' shifts the byte grid so the stdout tail boundary lands INSIDE a 4-byte
+  // emoji instead of exactly on a character boundary.
+  const stdout = headLines.join('\n') + '\nA' + '😀'.repeat(3000) + '\nFAIL  scripts/test/deep-tail.test.mjs\n'
+  const stderr = 'stderr head ' + 'y'.repeat(9000) + '\nError: deep stderr tail marker\n'
+  const verifier = fakeVerifier({ code: 1, stdout: stdout, stderr: stderr })
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(mergeRig, openMergeTask())
+  const mergeSurface = install(mergeRig)
+  const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  const payload = res.json()
+  const output = String(payload.task.merge.output)
+  check('a long red verification is still judged failed', payload.ok === true && payload.task.merge.status === 'failed', res.text)
+  check(
+    'the output keeps the verify command and exit code header',
+    output.indexOf('$ npm run verify') === 0 && output.indexOf('(exit 1)') >= 0,
+    output.slice(0, 160),
+  )
+  check('the output keeps the tail FAIL line', output.indexOf('FAIL  scripts/test/deep-tail.test.mjs') >= 0, output.slice(-400))
+  check('the output keeps the stderr tail', output.indexOf('Error: deep stderr tail marker') >= 0, output.slice(-400))
+  check('the output does not dump the opening PASS wall', output.indexOf('PASS  head check 0 ') < 0, output.slice(0, 400))
+  check('the output stays capped near 8 KiB', Buffer.byteLength(output, 'utf8') <= 8 * 1024, String(Buffer.byteLength(output, 'utf8')))
+  check('the truncated output never splits a UTF-8 character', output.indexOf('\uFFFD') < 0, output.slice(-400))
+  check('the long red verification still never fast-forwards main', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'))
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+
 // ── MR head drift: explicit refreshMerge and a pre-merge check ─────────────
 /** A merge rig whose task-worktree HEAD can be made to drift from the MR. */
 function driftRig(options) {
