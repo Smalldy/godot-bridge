@@ -2,8 +2,15 @@
 // hand-edited board from corrupting the model.
 
 import { join } from 'node:path'
-import { readBoard, updateBoard, emptyBoard, boardPath, MAX_HISTORY } from '../../plugin/task-center/board.mjs'
-import { normaliseDispatch, normaliseWorktree } from '../../plugin/task-center/schema.mjs'
+import { readBoard, updateBoard, emptyBoard, boardPath, MAX_HISTORY, readRoleConfig, writeRoleConfig, rolesPath } from '../../plugin/task-center/board.mjs'
+import {
+  defaultRoleConfig,
+  normaliseDispatch,
+  normaliseRoleConfig,
+  normaliseWorktree,
+  validateRoleBinding,
+  validateRoleProfile,
+} from '../../plugin/task-center/schema.mjs'
 import { createFakeFs, seedBoard, boardText, PROJECT } from './support/fixtures.mjs'
 
 let failures = 0
@@ -386,6 +393,114 @@ const MERGE = {
     loaded.board.dispatch.worktree.root === '.worktrees' && loaded.board.dispatch.worktree.enabled === undefined,
     JSON.stringify(loaded.board.dispatch.worktree),
   )
+}
+
+// ── role profiles: defaults, custom profiles, validation, persistence ─────
+{
+  const fs = createFakeFs()
+  const missing = await readRoleConfig({ fs }, { projectPath: PROJECT })
+  check(
+    'an absent roles.json exposes the default worker/reviewer/tester profiles',
+    missing.source === 'default' &&
+      missing.error === null &&
+      missing.config.profiles.worker.role === 'worker' &&
+      missing.config.profiles.reviewer.stage === 'review' &&
+      missing.config.profiles.tester.stage === 'test' &&
+      missing.config.stages.review === 'reviewer' &&
+      missing.config.defaultProfile === 'worker',
+    JSON.stringify(missing.config),
+  )
+  check(
+    'the default profile carries context, permissions and prompt',
+    missing.config.profiles.reviewer.context === 'fresh' &&
+      Array.isArray(missing.config.profiles.reviewer.permissions) &&
+      missing.config.profiles.reviewer.prompt === '' &&
+      missing.config.profiles.reviewer.instances === 1,
+    JSON.stringify(missing.config.profiles.reviewer),
+  )
+
+  const custom = normaliseRoleConfig({
+    profiles: {
+      worker: { instances: 2, skills: ['base'] },
+      'godot-reviewer': { role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check Godot idioms.' },
+    },
+    stages: { review: 'godot-reviewer' },
+    defaultProfile: 'godot-reviewer',
+  })
+  check(
+    'a custom profile is kept and bound to its stage',
+    custom.profiles['godot-reviewer'].role === 'reviewer' &&
+      custom.profiles['godot-reviewer'].instances === 2 &&
+      custom.profiles['godot-reviewer'].context === 'fork' &&
+      custom.profiles['godot-reviewer'].permissions.join(',') === 'read-only,review' &&
+      custom.profiles['godot-reviewer'].prompt === 'Check Godot idioms.' &&
+      custom.stages.review === 'godot-reviewer' &&
+      custom.stages.implement === 'worker' &&
+      custom.stages.test === 'tester',
+    JSON.stringify({ stages: custom.stages, profile: custom.profiles['godot-reviewer'] }),
+  )
+  check('the defaults survive alongside the custom profile', custom.profiles.worker.instances === 2 && custom.profiles.tester.role === 'tester', JSON.stringify(custom.profiles))
+  check('the default profile may name a custom profile', custom.defaultProfile === 'godot-reviewer', custom.defaultProfile)
+
+  const garbage = normaliseRoleConfig({ profiles: { 'Bad Name': { role: 'reviewer' }, 'godot-x': { role: 'nope' }, 'godot-y': 'nope' } })
+  check(
+    'invalid custom profiles are dropped without touching the defaults',
+    garbage.profiles['godot-x'] === undefined &&
+      garbage.profiles['godot-y'] === undefined &&
+      garbage.profiles.worker.role === 'worker' &&
+      garbage.profiles.reviewer.role === 'reviewer' &&
+      garbage.stages.review === 'reviewer',
+    JSON.stringify(garbage),
+  )
+}
+
+{
+  const valid = validateRoleProfile('godot-reviewer', { role: 'reviewer', instances: 2, skills: ['x'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'p' })
+  check('a valid profile passes strict validation', valid.ok === true && valid.profile.instances === 2 && valid.profile.stage === 'review', JSON.stringify(valid))
+  const alias = validateRoleProfile('godot-reviewer', { kind: 'reviewer', concurrency: 3 })
+  check('kind and concurrency are accepted aliases', alias.ok === true && alias.profile.role === 'reviewer' && alias.profile.instances === 3, JSON.stringify(alias))
+  const bads = [
+    ['Bad Name', { role: 'reviewer' }, 'invalid-role-name'],
+    ['ok', {}, 'invalid-role-kind'],
+    ['ok', { role: 'reviewer', stage: 'test' }, 'invalid-role-stage'],
+    ['ok', { role: 'reviewer', instances: 0 }, 'invalid-role-instances'],
+    ['ok', { role: 'reviewer', instances: 99 }, 'invalid-role-instances'],
+    ['ok', { role: 'reviewer', skills: 'nope' }, 'invalid-role-skills'],
+    ['ok', { role: 'reviewer', context: 'warm' }, 'invalid-role-context'],
+    ['ok', { role: 'reviewer', permissions: ['admin', 'nope'] }, 'invalid-role-permissions'],
+    ['ok', { role: 'reviewer', prompt: 5 }, 'invalid-role-prompt'],
+  ]
+  for (const entry of bads) {
+    const result = validateRoleProfile(entry[0], entry[1])
+    check('validation refuses ' + entry[2], result.ok === false && result.code === entry[2], JSON.stringify(result))
+  }
+  const base = defaultRoleConfig()
+  check('binding a profile to its own stage passes', validateRoleBinding(base, 'review', 'reviewer').ok === true)
+  check('binding a stage to a profile of another kind is refused', validateRoleBinding(base, 'test', 'reviewer').code === 'stage-mismatch')
+  check('binding an unknown profile is refused', validateRoleBinding(base, 'review', 'nope').code === 'unknown-role-profile')
+  check('binding an unknown stage is refused', validateRoleBinding(base, 'ship', 'reviewer').code === 'invalid-stage')
+}
+
+{
+  const fs = createFakeFs()
+  const config = normaliseRoleConfig({
+    profiles: { 'godot-reviewer': { role: 'reviewer', stage: 'review', instances: 2, skills: ['x'], context: 'fork', permissions: ['read-only'], prompt: 'p' } },
+    stages: { review: 'godot-reviewer' },
+  })
+  const originalWrite = fs.writeText
+  let policySeen = null
+  fs.writeText = async function (target, text, expected, signal, policy) {
+    policySeen = policy
+    return originalWrite.call(this, target, text, expected)
+  }
+  const policy = { mode: 'workspace-write', workspaceRoot: PROJECT }
+  const written = await writeRoleConfig({ fs }, { projectPath: PROJECT, config: config, sandboxPolicy: policy })
+  check('a role config is persisted to .agents/roles.json', written.ok === true && written.config.stages.review === 'godot-reviewer', JSON.stringify(written))
+  check('the role config write forwards the project sandbox policy', policySeen !== null && policySeen !== undefined && policySeen.workspaceRoot === PROJECT, JSON.stringify(policySeen))
+  const text = fs.files.get(rolesPath(PROJECT))
+  check('the file is JSON with the custom profile', text !== undefined && JSON.parse(text.text).profiles['godot-reviewer'].instances === 2, text === undefined ? 'missing' : text.text.slice(0, 200))
+  const loaded = await readRoleConfig({ fs }, { projectPath: PROJECT })
+  check('the persisted config reads back with its stage binding', loaded.source === 'file' && loaded.config.stages.review === 'godot-reviewer' && loaded.config.profiles['godot-reviewer'].prompt === 'p', JSON.stringify(loaded))
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

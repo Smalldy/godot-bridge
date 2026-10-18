@@ -1191,5 +1191,119 @@ function roleTask(overrides) {
   scheduler.dispose()
 }
 
+// ── role profiles: custom fields, stage binding, drain/replace ────────────
+{
+  const config = normaliseRoleConfig({
+    profiles: {
+      'godot-reviewer': { role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Pay attention to Godot idioms.' },
+    },
+    stages: { review: 'godot-reviewer' },
+  })
+  const reviewer = roleBriefFor('reviewer', roleTask(), config, { projectPath: PROJECT, leadName: 'lead' })
+  check(
+    'the reviewer brief uses the bound custom profile',
+    reviewer.indexOf('Profile permissions: read-only, review') >= 0 &&
+      reviewer.indexOf('Pay attention to Godot idioms.') >= 0 &&
+      reviewer.indexOf('forked from the Lead') >= 0 &&
+      reviewer.indexOf('dsh-plugin-workflow') >= 0,
+    reviewer.slice(0, 900),
+  )
+  const worker = roleBriefFor('worker', roleTask({ status: 'running' }), config, {})
+  check('a kind without a bound custom profile keeps its own profile', worker.indexOf('Pay attention to Godot idioms.') < 0, worker.slice(0, 600))
+}
+
+{
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const config = normaliseRoleConfig({ profiles: { 'godot-reviewer': { role: 'reviewer', instances: 1 } }, stages: { review: 'godot-reviewer' } })
+  const first = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1000 })
+  check('a bound custom profile provisions its instances', first.ok === true && first.created.length === 0 && first.reused.join(',') === 'reviewer-1', JSON.stringify(first))
+  const drained = rig.manager.drain('reviewer-1')
+  check('draining a live instance is recorded', drained.ok === true && drained.drained && drained.drained.join(',') === 'reviewer-1', JSON.stringify(drained))
+  const replaced = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 2000 })
+  check(
+    'the next ensure drains and replaces the instance through the Lead',
+    replaced.ok === true && replaced.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drained') && replaced.created.length === 1 && replaced.created[0].name === 'reviewer-2',
+    JSON.stringify(replaced),
+  )
+  const defaults = await rig.manager.ensure('reviewer', { config: defaultRoleConfig(), projectPath: PROJECT, task: roleTask(), now: 3000 })
+  check('the default config reuses the live replacement', defaults.ok === true && defaults.created.length === 0 && defaults.reused.indexOf('reviewer-2') >= 0, JSON.stringify(defaults))
+}
+
+{
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-reviewer-2', name: 'reviewer-2', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const config = normaliseRoleConfig({ profiles: { 'godot-reviewer': { role: 'reviewer', instances: 2 } }, stages: { review: 'godot-reviewer' } })
+  const ensured = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1000 })
+  check('a custom instances count is honoured', ensured.ok === true && ensured.reused.length === 2, JSON.stringify(ensured))
+  const drained = await rig.manager.drainKind('reviewer')
+  check('drainKind drains every instance of the kind', drained.ok === true && drained.drained.length === 2, JSON.stringify(drained))
+  const replaced = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 2000 })
+  check('every drained slot is replaced', replaced.ok === true && replaced.created.length === 2 && replaced.created.map((entry) => entry.name).join(',') === 'reviewer-3,reviewer-4', JSON.stringify(replaced))
+}
+
+{
+  // The role manager itself defers a running drained instance: no ensure pass
+  // (API, submit provisioning or the scheduler tick) may spawn early.
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const config = defaultRoleConfig()
+  const drained = rig.manager.drain('reviewer-1', { timeoutMs: 100, now: 1000 })
+  check('draining with a timeout records the deadline', drained.ok === true && drained.deadline === 1100, JSON.stringify(drained))
+  const early = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1050 })
+  check(
+    'a running drained instance is deferred, not replaced early',
+    early.ok === true && early.created.length === 0 && early.replaced.length === 0 && early.waiting.length === 1 && early.waiting[0].name === 'reviewer-1',
+    JSON.stringify({ created: early.created, replaced: early.replaced, waiting: early.waiting }),
+  )
+  const stillEarly = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1099 })
+  check('the deferral lasts until the deadline', stillEarly.created.length === 0 && stillEarly.waiting.length === 1, JSON.stringify({ created: stillEarly.created, waiting: stillEarly.waiting }))
+  check('the deferred state is visible in the manager status', rig.manager.status().pending.some((entry) => entry.name === 'reviewer-1'), JSON.stringify(rig.manager.status().pending))
+  rig.team.setStatus('reviewer-1', 'inactive')
+  const idle = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1060 })
+  check('an idle drained instance is replaced before its deadline', idle.created.length === 1 && idle.created[0].name === 'reviewer-2', JSON.stringify({ created: idle.created, waiting: idle.waiting }))
+}
+
+{
+  // A still-running drained instance is replaced once the deadline passes.
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const config = defaultRoleConfig()
+  rig.manager.drain('reviewer-1', { timeoutMs: 50, now: 1000 })
+  const before = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1020 })
+  check('the instance is still deferred before the deadline', before.created.length === 0 && before.waiting.length === 1, JSON.stringify(before))
+  const after = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1060 })
+  check(
+    'after the deadline the instance is replaced',
+    after.ok === true && after.created.length === 1 && after.created[0].name === 'reviewer-2' && after.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drain-timeout'),
+    JSON.stringify({ created: after.created, replaced: after.replaced }),
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

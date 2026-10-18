@@ -80,6 +80,19 @@ export async function readRoleConfig(io, options) {
   }
 }
 
+/** Persist a normalised project role config to .agents/roles.json. */
+export async function writeRoleConfig(io, options) {
+  const config = normaliseRoleConfig(options.config)
+  try {
+    const target = await io.fs.resolve(rolesPath(options.projectPath), { cwd: options.projectPath, signal: options.signal })
+    const text = JSON.stringify(config, null, 2) + '\n'
+    const outcome = await io.fs.writeText(target, text, options.expected, options.signal, options.sandboxPolicy)
+    return { ok: true, config: config, path: rolesPath(options.projectPath), version: outcome === undefined || outcome === null ? null : outcome.version }
+  } catch (error) {
+    return { ok: false, code: 'role-config-write-failed', message: describe(error) }
+  }
+}
+
 /** A fresh, empty board. */
 export function emptyBoard(now) {
   const at = new Date(typeof now === 'number' ? now : Date.now()).toISOString()

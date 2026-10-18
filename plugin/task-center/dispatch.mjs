@@ -28,7 +28,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { boardPath, readRoleConfig } from './board.mjs'
 import { writePolicyFor } from './state.mjs'
-import { ROLE_KINDS, ROLE_PROVISION_TIMEOUT_MS, ROLE_STAGE, TASK_LEASE_MS, defaultRoleConfig } from './schema.mjs'
+import { ROLE_KINDS, ROLE_PROVISION_TIMEOUT_MS, ROLE_STAGE, TASK_LEASE_MS, defaultRoleConfig, profileForKind } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { createGit } from './git.mjs'
@@ -323,14 +323,17 @@ export function workerPool(ctx, board, options) {
   if (roleConfig !== null && typeof roleConfig === 'object' && roleConfig.profiles !== null && typeof roleConfig.profiles === 'object') {
     const desired = { worker: 0, reviewer: 0, tester: 0 }
     const live = { worker: 0, reviewer: 0, tester: 0 }
+    const bound = { worker: null, reviewer: null, tester: null }
     for (const kind of ['worker', 'reviewer', 'tester']) {
-      const profile = roleConfig.profiles[kind]
+      const profile = profileForKind(roleConfig, kind)
       desired[kind] = profile !== null && profile !== undefined && Number.isFinite(profile.instances) ? Math.floor(profile.instances) : 0
+      bound[kind] = profile !== null && profile !== undefined && typeof profile.name === 'string' ? profile.name : null
     }
     report.roles = {
       desired: desired,
       live: live,
       missing: { worker: 0, reviewer: 0, tester: 0 },
+      bound: bound,
       profiles: roleConfig.profiles,
       stages: roleConfig.stages === undefined ? null : roleConfig.stages,
     }
@@ -625,7 +628,7 @@ export function briefFor(task, projectPath, leadName) {
  */
 export function roleBriefFor(kind, task, config, options) {
   const opts = options === undefined || options === null ? {} : options
-  const profile = config !== null && config !== undefined && config.profiles !== undefined && config.profiles !== null ? config.profiles[kind] : null
+  const profile = config !== null && config !== undefined ? profileForKind(config, kind) : null
   const stage = profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
   const lines = []
   lines.push('Task center role: ' + String(kind))
@@ -637,6 +640,15 @@ export function roleBriefFor(kind, task, config, options) {
     task !== undefined &&
     ((task.review !== null && task.review !== undefined && task.review.status === 'changes-requested') ||
       (task.test !== null && task.test !== undefined && task.test.status === 'failed'))
+  if (profile !== null && profile !== undefined && Array.isArray(profile.permissions) && profile.permissions.length > 0) {
+    lines.push('', 'Profile permissions: ' + profile.permissions.join(', '))
+  }
+  if (profile !== null && profile !== undefined && typeof profile.prompt === 'string' && profile.prompt !== '') {
+    lines.push('', 'Profile instructions:', profile.prompt)
+  }
+  if (profile !== null && profile !== undefined && profile.context === 'fork') {
+    lines.push('', 'Profile context: forked from the Lead (not a fresh context).')
+  }
   if (task !== null && task !== undefined) {
     lines.push('', 'Task ' + String(task.id) + ': ' + String(task.title))
     if (typeof task.spec === 'string' && task.spec !== '') lines.push('', 'What it involves:', task.spec)
@@ -868,7 +880,7 @@ export function testFailureBriefFor(task, projectPath) {
 export function createRoleManager(ctx, options) {
   const opts = options === undefined || options === null ? {} : options
   const clock = typeof opts.now === 'function' ? opts.now : Date.now
-  const memory = { spawnedAt: new Map(), drained: new Set(), pending: new Set(), last: null }
+  const memory = { spawnedAt: new Map(), drained: new Set(), drainUntil: new Map(), pending: new Set(), last: null }
   // One ensure pass at a time: the API (submit/approveReview) and the scheduler
   // tick can ask for the same role concurrently, and interleaving them would
   // read the same roster twice and over-spawn.
@@ -895,7 +907,7 @@ export function createRoleManager(ctx, options) {
     const req = request === undefined || request === null ? {} : request
     if (ROLE_KINDS.indexOf(kind) < 0) return { ok: false, code: 'invalid-role', message: 'unknown role kind ' + String(kind) }
     const config = req.config === undefined || req.config === null ? defaultRoleConfig() : req.config
-    const profile = config.profiles !== undefined && config.profiles !== null ? config.profiles[kind] : null
+    const profile = profileForKind(config, kind)
     const desired = profile !== null && profile !== undefined && Number.isFinite(profile.instances) ? Math.floor(profile.instances) : 1
     const { agents, agentTeams } = servicesFor(ctx)
     if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
@@ -913,15 +925,25 @@ export function createRoleManager(ctx, options) {
     const now = Number.isFinite(req.now) ? req.now : clock()
     const reused = []
     const replaced = []
+    const waiting = []
     for (const member of roster) {
       if (member === null || typeof member !== 'object' || member.role !== 'teammate') continue
       if (roleKindOf(member.name) !== kind) continue
       const name = String(member.name)
+      const status = String(member.status === undefined || member.status === null ? 'unknown' : member.status)
       if (memory.drained.has(name)) {
-        replaced.push({ name: name, reason: 'drained' })
+        const until = memory.drainUntil.get(name)
+        // Drain first, then spawn: a running instance with a deadline still in
+        // the future is DEFERRED — it keeps its capacity, and no replacement is
+        // spawned early (even by the scheduler tick).
+        if (until !== undefined && status === 'running' && now < until.deadline) {
+          waiting.push({ name: name, deadline: until.deadline })
+          continue
+        }
+        memory.drainUntil.delete(name)
+        replaced.push({ name: name, reason: until !== undefined && now >= until.deadline ? 'drain-timeout' : 'drained' })
         continue
       }
-      const status = String(member.status === undefined || member.status === null ? 'unknown' : member.status)
       if (status === 'failed') {
         replaced.push({ name: name, reason: 'failed' })
         continue
@@ -939,7 +961,7 @@ export function createRoleManager(ctx, options) {
       }
       reused.push(name)
     }
-    const missing = Math.max(0, desired - reused.length)
+    const missing = Math.max(0, desired - reused.length - waiting.length)
     const created = []
     if (missing > 0) {
       const leadName = lead.name === undefined || lead.name === null ? String(lead.id) : String(lead.name)
@@ -959,7 +981,7 @@ export function createRoleManager(ctx, options) {
               { type: 'text', text: spawnPreamble(name, leadName) },
               { type: 'text', text: roleBriefFor(kind, req.task === undefined ? null : req.task, config, { projectPath: req.projectPath, leadName: leadName }) },
             ],
-            context: 'fresh',
+            context: profile !== null && profile !== undefined && profile.context === 'fork' ? 'fork' : 'fresh',
             provider: subagentProviderFor(ctx),
             signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
           })
@@ -983,7 +1005,17 @@ export function createRoleManager(ctx, options) {
         roster.push(Object.assign({}, delivered.member))
       }
     }
-    const result = { ok: true, kind: kind, profile: profile, desired: desired, created: created, reused: reused, replaced: replaced, ready: reused.length + created.length }
+    const result = {
+      ok: true,
+      kind: kind,
+      profile: profile,
+      desired: desired,
+      created: created,
+      reused: reused,
+      replaced: replaced,
+      waiting: waiting,
+      ready: reused.length + created.length + waiting.length,
+    }
     memory.last = result
     return result
   }
@@ -995,16 +1027,29 @@ export function createRoleManager(ctx, options) {
     })
   }
 
-  /** Mark one role instance for draining; the next ensure spawns a replacement. */
-  function drain(name) {
+  /**
+   * Mark one role instance for draining. With options.timeoutMs the instance is
+   * DEFERRED while its in-flight turn runs (up to the deadline); without it the
+   * next ensure replaces the instance immediately (legacy drain).
+   */
+  function drain(name, options) {
+    const opts = options === undefined || options === null ? {} : options
     const text = typeof name === 'string' ? name : ''
     if (roleKindOf(text) === null) return { ok: false, code: 'invalid-role-name', message: 'not a role slot name: ' + text }
     memory.drained.add(text)
-    return { ok: true, drained: [text] }
+    if (Number.isFinite(opts.timeoutMs)) {
+      const at = Number.isFinite(opts.now) ? opts.now : clock()
+      memory.drainUntil.set(text, { drainedAt: at, deadline: at + Math.max(0, Math.floor(opts.timeoutMs)) })
+    } else {
+      memory.drainUntil.delete(text)
+    }
+    const until = memory.drainUntil.get(text)
+    return { ok: true, drained: [text], deadline: until === undefined ? null : until.deadline }
   }
 
   /** Drain every current instance of one kind (replacement happens on ensure). */
-  async function drainKind(kind) {
+  async function drainKind(kind, options) {
+    const opts = options === undefined || options === null ? {} : options
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
     const lead = resolveLead(ctx)
@@ -1018,12 +1063,26 @@ export function createRoleManager(ctx, options) {
     const names = roster
       .filter((member) => member !== null && typeof member === 'object' && roleKindOf(member.name) === kind)
       .map((member) => String(member.name))
-    for (const name of names) memory.drained.add(name)
-    return { ok: true, drained: names }
+    const deadlines = []
+    for (const name of names) {
+      const result = drain(name, opts)
+      if (result.ok !== true) return result
+      deadlines.push({ name: name, deadline: result.deadline })
+    }
+    return { ok: true, drained: names, deadlines: deadlines }
   }
 
   function status() {
-    return { spawned: Array.from(memory.spawnedAt.keys()), drained: Array.from(memory.drained), last: memory.last }
+    const pendingDrains = []
+    for (const [name, until] of memory.drainUntil.entries()) {
+      pendingDrains.push({ name: name, drainedAt: until.drainedAt, deadline: until.deadline })
+    }
+    return {
+      spawned: Array.from(memory.spawnedAt.keys()),
+      drained: Array.from(memory.drained),
+      pending: pendingDrains,
+      last: memory.last,
+    }
   }
 
   return { ensure: ensure, drain: drain, drainKind: drainKind, status: status, memory: memory }
@@ -1366,8 +1425,24 @@ export function createDispatcher(ctx, options) {
       return []
     }
     if (!Array.isArray(roster)) return []
+    let drained = []
+    if (roles !== null && typeof roles.status === 'function') {
+      try {
+        const status = roles.status()
+        drained = Array.isArray(status.drained) ? status.drained.map(String) : []
+      } catch (error) {
+        drained = []
+      }
+    }
     return roster
-      .filter((member) => member !== null && typeof member === 'object' && roleKindOf(member.name) === 'reviewer' && member.status !== 'failed')
+      .filter(
+        (member) =>
+          member !== null &&
+          typeof member === 'object' &&
+          roleKindOf(member.name) === 'reviewer' &&
+          member.status !== 'failed' &&
+          drained.indexOf(String(member.name)) < 0,
+      )
       .map((member) => String(member.name))
   }
 
