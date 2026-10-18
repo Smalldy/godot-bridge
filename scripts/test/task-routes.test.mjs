@@ -737,8 +737,17 @@ function holdFile(rig, path) {
 }
 
 // ── the merge queue: integration worktree, verification, fast-forward ────────
-/** A fake git for the merge pipeline; unmatched commands succeed silently. */
+/**
+ * A fake git for the merge pipeline; unmatched commands succeed silently.
+ *
+ * The integration checkout is recognised by its EXACT path. Matching a substring
+ * of the current directory looked equivalent, but the merger runs this suite
+ * inside its own merge-<taskId> worktree, so the harness path itself contains
+ * "merge-T-1" for task ids T-1, T-10, T-11, T-12... and the fake then reported
+ * the integration HEAD for the main checkout too.
+ */
 function mergeGit(replies) {
+  const integration = join(PROJECT, '.worktrees', 'merge-T-1')
   const calls = []
   const run = (args, cwd) => {
     calls.push({ args: args.slice(), cwd: cwd })
@@ -747,7 +756,7 @@ function mergeGit(replies) {
     if (key === 'branch --show-current') return { code: 0, stdout: 'main\n', stderr: '' }
     if (key === 'status --porcelain') return { code: 0, stdout: '', stderr: '' }
     if (key === 'rev-parse HEAD') {
-      return { code: 0, stdout: (cwd.indexOf('merge-T-1') >= 0 ? 'merge-sha' : 'target-sha') + '\n', stderr: '' }
+      return { code: 0, stdout: (cwd === integration ? 'merge-sha' : 'target-sha') + '\n', stderr: '' }
     }
     return { code: 0, stdout: '', stderr: '' }
   }
