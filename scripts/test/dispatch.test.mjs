@@ -1149,5 +1149,47 @@ function roleTask(overrides) {
   scheduler.dispose()
 }
 
+{
+  // A replaced role slot is a SYSTEM activity event ('role-replace'), distinct
+  // from a fresh provision.
+  const activity = createActivity({ limit: 20 })
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const state = createState(rig.ctx)
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [roleTask()] }))
+  const scheduler = createDispatcher(rig.ctx, {
+    state: state,
+    projectPath: () => PROJECT,
+    allowSpawn: false,
+    git: createFakeGit(),
+    roles: rig.manager,
+    activity: activity,
+    reviewTimeoutMs: 60 * 60 * 1000,
+  })
+  await scheduler.tick(PROJECT)
+  check('a live reviewer is reused without a provisioning event', activity.list(20).every((entry) => entry.kind !== 'role-provision'), JSON.stringify(activity.list(20)))
+  rig.team.setStatus('reviewer-1', 'failed')
+  await scheduler.tick(PROJECT)
+  const entries = activity.list(20)
+  const replace = entries.filter((entry) => entry.kind === 'role-replace')[0]
+  check(
+    'a replaced role is a system role-replace event with no agent name',
+    replace !== undefined && replace.actor === 'system' && replace.actorName === null && String(replace.detail).indexOf('reviewer-1') >= 0,
+    JSON.stringify(entries.filter((entry) => entry.kind === 'role-replace' || entry.kind === 'role-provision')),
+  )
+  check(
+    'the replacement slot is provisioned as a system event too',
+    entries.some((entry) => entry.kind === 'role-provision' && entry.actor === 'system' && String(entry.detail).indexOf('reviewer-2') >= 0),
+    JSON.stringify(entries.filter((entry) => entry.kind === 'role-provision')),
+  )
+  scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

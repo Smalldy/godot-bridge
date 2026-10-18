@@ -2535,6 +2535,46 @@ function acceptingTask(overrides) {
   check('without an activity ring the snapshot says so', snapshot.activity.available === false && snapshot.activity.entries.length === 0, JSON.stringify(snapshot.activity))
 }
 
+{
+  // Activity must reflect what the merge queue actually did: a dirty worktree is
+  // refused before the integration checkout exists, so there is NO worktree-create.
+  const activity = createActivity({ limit: 30 })
+  const fake = mergeGit({
+    'status --porcelain': () => ({ code: 0, stdout: ' M scripts/a.gd\n', stderr: '' }),
+    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
+  })
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), activity: activity })
+  seedMergeTask(rig, openMergeTask())
+  const res = await rig.api.perform('mergeRequest', { id: 'T-1' }, { projectPath: PROJECT, by: '@user', role: 'user', agent: null })
+  check('a dirty worktree refuses the merge', res.ok === false && res.code === 'dirty-worktree', JSON.stringify(res))
+  const entries = activity.list(30)
+  check('a refused merge records an error event', entries.some((entry) => entry.kind === 'error' && entry.actor === 'host'), JSON.stringify(entries))
+  check('a refused merge records NO phantom merge worktree', entries.every((entry) => entry.kind !== 'worktree-create'), JSON.stringify(entries))
+}
+
+{
+  // A successful sweep merge records: sweep (system), merge (system), the real
+  // integration worktree create/remove (system) and the task worktree removal (host).
+  const activity = createActivity({ limit: 40 })
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
+  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), activity: activity, autoMerge: true })
+  seedMergeTask(rig, openMergeTask())
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  check('the sweep merges the eligible request', sweep.ok === true && sweep.merged.join(',') === 'T-1', JSON.stringify(sweep))
+  const entries = activity.list(40)
+  const sweepEvent = entries.filter((entry) => entry.kind === 'sweep')[0]
+  check('the sweep is a system event', sweepEvent !== undefined && sweepEvent.actor === 'system' && sweepEvent.actorName === null, JSON.stringify(sweepEvent))
+  const mergeEvent = entries.filter((entry) => entry.kind === 'merge')[0]
+  check('the merge outcome is a system event on the sweep path', mergeEvent !== undefined && mergeEvent.actor === 'system' && String(mergeEvent.detail).indexOf('merged') >= 0, JSON.stringify(mergeEvent))
+  const create = entries.filter((entry) => entry.kind === 'worktree-create')[0]
+  const remove = entries.filter((entry) => entry.kind === 'worktree-remove')
+  check('the real integration worktree is recorded as created', create !== undefined && create.actor === 'system' && String(create.detail).indexOf('merge-T-1') >= 0, JSON.stringify(create))
+  check('its cleanup and the task worktree removal are recorded', remove.length >= 2 && remove.some((entry) => entry.actor === 'host'), JSON.stringify(remove))
+  check('the sweep path records no agent activity', entries.every((entry) => entry.actor !== 'agent'), JSON.stringify(entries.map((entry) => entry.actor)))
+}
+
 surface.dispose()
 rig.scheduler.dispose()
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

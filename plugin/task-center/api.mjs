@@ -320,8 +320,8 @@ export function createApi(ctx, options) {
       if (recorded.ok !== true) return recorded
       await notifyMergeOutcome(projectPath, recorded.task)
       emitActivity(context, 'merge', 'merged as ' + String(outcome.mergeCommit) + ' (tested candidate)', id)
-      emitActivity(null, 'worktree-remove', 'task worktree removed after merge', id, 'host')
-      emitActivity(null, 'worktree-remove', 'test candidate removed after merge', id, 'host')
+      if (outcome.candidateRemoved === true) emitActivity(null, 'worktree-remove', 'test candidate removed after merge', id, 'host')
+      if (outcome.taskWorktreeRemoved === true) emitActivity(null, 'worktree-remove', 'task worktree removed after merge', id, 'host')
       recorded.merged = true
       recorded.retest = false
       return recorded
@@ -825,11 +825,14 @@ export function createApi(ctx, options) {
     if (read.failed !== undefined) return read.failed
     const board = read.board
     const now = clock()
+    // Reconcile the in-memory locks against THIS board read before doing any
+    // further await: a long git/fs read in between could let the dispatcher claim
+    // a pending task, and the stale board would then drop its locks.
+    state.sweepLocks()
+    reconcileLocks(board)
     const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
     const workers = workerPool(ctx, board, { roleConfig: roleRead.config })
     const worktrees = await worktreeSnapshot(projectPath, board)
-    state.sweepLocks()
-    reconcileLocks(board)
     const tasks = board.tasks
       .slice()
       .sort((left, right) => {
@@ -1110,21 +1113,27 @@ export function createApi(ctx, options) {
     }
     const settings = read.board.dispatch === undefined || read.board.dispatch === null ? null : read.board.dispatch.worktree
     const worktreeRoot = settings !== null && settings !== undefined && typeof settings.root === 'string' ? settings.root : '.worktrees'
-    emitActivity(context, 'worktree-create', 'merge worktree for ' + id, id, actorOverride)
     const outcome = await merger.mergeRequest(task, projectPath, { worktreeRoot: worktreeRoot })
-    emitActivity(context, 'worktree-remove', 'merge worktree cleaned', id, actorOverride)
     if (outcome === null || outcome === undefined || outcome.ok !== true) {
-      const code = outcome === null || outcome === undefined ? 'merge-failed' : String(outcome.code)
       emitActivity(context, 'error', 'merge failed: ' + (outcome === null || outcome === undefined ? 'no result' : String(outcome.message)), id, actorOverride)
       return failure(
         outcome === null || outcome === undefined ? 'merge-failed' : String(outcome.code),
         outcome === null || outcome === undefined ? 'the merge queue returned no result' : String(outcome.message),
       )
     }
+    // Only a queue outcome that actually created the integration checkout reports
+    // worktree activity; preconditions that refuse before creating it report none.
+    const integration = outcome.integration !== undefined && outcome.integration !== null ? outcome.integration : null
+    if (integration !== null && integration.created === true) {
+      emitActivity(context, 'worktree-create', 'merge worktree ' + String(integration.path), id, actorOverride)
+      emitActivity(context, 'worktree-remove', 'merge worktree cleaned', id, actorOverride)
+    }
     const recorded = await writeTask(projectPath, id, (board) => recordMergeResult(board, id, outcome, clock(), by), context)
     if (recorded.ok !== true) return recorded
     emitActivity(context, 'merge', String(outcome.status) + (outcome.mergeCommit !== undefined && outcome.mergeCommit !== null ? ' as ' + String(outcome.mergeCommit) : ''), id, actorOverride)
-    if (outcome.status === 'merged') emitActivity(null, 'worktree-remove', 'task worktree removed after merge', id, 'host')
+    if (outcome.status === 'merged' && outcome.taskWorktreeRemoved === true) {
+      emitActivity(null, 'worktree-remove', 'task worktree removed after merge', id, 'host')
+    }
     return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
   }
   /**
