@@ -1110,12 +1110,23 @@ window.__ModuleLoader__.load({
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
 						if (payload && payload.ok === true && Array.isArray(payload.tasks)) {
 							if (typeof payload.project === 'string') tcRememberProject(payload.project)
-							emit(tcSnapshot(payload, 'host', ''))
+							// A routine poll keeps the outcome of the user's last action until
+							// the next action replaces it; only the board data is refreshed.
+							const next = tcSnapshot(payload, 'host', '')
+							next.actionResult = snapshot.actionResult
+							next.actionError = snapshot.actionError
+							emit(next)
 						} else {
-							emit(tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', String((payload && payload.message) || 'the host did not answer')))
+							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', String((payload && payload.message) || 'the host did not answer'))
+							failed.actionResult = snapshot.actionResult
+							failed.actionError = snapshot.actionError
+							emit(failed)
 						}
 					} catch (error) {
-						emit(tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error)))
+						const offline = tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error))
+						offline.actionResult = snapshot.actionResult
+						offline.actionError = snapshot.actionError
+						emit(offline)
 					} finally {
 						loading = null
 					}
@@ -1141,7 +1152,7 @@ window.__ModuleLoader__.load({
 						if (host && typeof host.project === 'string') tcRememberProject(host.project)
 						return { ok: true, payload: payload }
 					}
-					emit(Object.assign({}, snapshot, { message: String((payload && payload.message) || 'the host refused that action'), actionError: payload === undefined || payload === null ? null : payload }))
+					emit(Object.assign({}, snapshot, { message: String((payload && payload.message) || 'the host refused that action'), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
 					return { ok: false, payload: payload }
 				} catch (error) {
 					emit(Object.assign({}, snapshot, { message: String((error && error.message) || error) }))
@@ -1597,6 +1608,13 @@ window.__ModuleLoader__.load({
 				return key === undefined ? String(kind === undefined || kind === null ? '—' : kind) : t(key)
 			}
 
+			function roleStageLabel(stage, t) {
+				if (stage === 'implement') return t('roleStageImplement')
+				if (stage === 'review') return t('roleStageReview')
+				if (stage === 'test') return t('roleStageTest')
+				return String(stage === undefined || stage === null || stage === '' ? '—' : stage)
+			}
+
 			function worktreeTypeLabel(type, t) {
 				const key = WORKTREE_TYPE_KEYS[type]
 				return key === undefined ? String(type === undefined || type === null ? 'other' : type) : t(key)
@@ -1751,7 +1769,7 @@ window.__ModuleLoader__.load({
 					{ 'data-role-profile': props.name, 'data-builtin': builtin ? 'true' : 'false' },
 					h('td', { className: 'gbt-mono', 'data-col': 'profile-name' }, props.name, builtin ? h('span', { className: 'gbt-pill' }, ' ' + t('roleBuiltin')) : h('span', { className: 'gbt-pill' }, ' ' + t('roleCustom'))),
 					h('td', { className: 'gbt-mono', 'data-col': 'profile-kind' }, roleKindLabel(profile.role, t)),
-					h('td', { 'data-col': 'profile-stage' }, roleKindLabel(profile.role, t) === t('roleKindReviewer') ? t('roleStageReview') : profile.role === 'tester' ? t('roleStageTest') : t('roleStageImplement')),
+					h('td', { 'data-col': 'profile-stage' }, roleStageLabel(profile.stage, t)),
 					h('td', { 'data-col': 'profile-instances' }, cellInput(instancesRef, 'instances', String(profile.instances), { type: 'number', min: 1, max: 8 })),
 					h('td', { 'data-col': 'profile-skills' }, cellInput(skillsRef, 'skills', (profile.skills || []).join(', '))),
 					h(
@@ -1864,8 +1882,12 @@ window.__ModuleLoader__.load({
 					}
 					if (Array.isArray(payload.ensured)) {
 						parts.push(t('roleCreated') + ': ' + String(payload.ensured.length))
-						const failed = payload.ensured.filter(function (entry) { return entry !== null && entry !== undefined && entry.ok !== true })
-						if (failed.length > 0) parts.push(t('roleActionFailed') + ': ' + failed.map(function (entry) { return roleErrorText(entry, t) }).join('; '))
+						const failed = payload.ensured.filter(function (entry) {
+							return entry !== null && entry !== undefined && entry.result !== null && entry.result !== undefined && entry.result.ok !== true
+						})
+						if (failed.length > 0) {
+							parts.push(t('roleActionFailed') + ': ' + failed.map(function (entry) { return String(entry.kind) + ': ' + roleErrorText(entry.result, t) }).join('; '))
+						}
 					}
 				}
 				return h('div', { className: 'gbt-banner', 'data-tone': 'info', 'data-role-result': 'ok' }, parts.length === 0 ? t('roleSave') + ' ✓' : parts.join(' · '))
@@ -2113,7 +2135,7 @@ window.__ModuleLoader__.load({
 							t('roleRefresh'),
 						),
 					),
-					roleResultBanner(result, t) || roleResultBanner(hostResult, t) || roleResultBanner(hostError, t),
+					roleResultBanner(result, t) || roleResultBanner(hostError, t) || roleResultBanner(hostResult, t),
 					h('h3', { className: 'gbt-subtitle' }, t('roleStages')),
 					h(
 						'table',

@@ -884,6 +884,25 @@ await flush()
     JSON.stringify(Object.keys(customFields)),
   )
   check('the profile stage column comes from profile.stage', findAll(customRow, (node) => node.props && node.props['data-col'] === 'profile-stage')[0] !== undefined && textOf(findAll(customRow, (node) => node.props && node.props['data-col'] === 'profile-stage')[0]) === '评审', textOf(customRow))
+  // The stage cell must come from profile.stage, not from the localized role label:
+  // an artificial profile with role 'worker' but stage 'review' renders 评审.
+  const savedProfiles = HOST.roles.profiles
+  const oddProfiles = Object.assign({}, savedProfiles)
+  oddProfiles['odd-stage'] = { name: 'odd-stage', role: 'worker', stage: 'review', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: '' }
+  HOST.roles = Object.assign({}, HOST.roles, { profiles: oddProfiles })
+  findButton(rolesTree, '刷新').props.onClick()
+  await flush()
+  const oddTree = withHooks(panel, { initialView: 'roles' })
+  const oddRow = findAll(oddTree, (node) => node.type === 'tr' && node.props && node.props['data-role-profile'] === 'odd-stage')[0]
+  const oddStageCell = oddRow === undefined ? undefined : findAll(oddRow, (node) => node.props && node.props['data-col'] === 'profile-stage')[0]
+  check(
+    'the profile stage column comes from profile.stage, independent of the role label',
+    oddStageCell !== undefined && textOf(oddStageCell) === '评审',
+    oddRow && textOf(oddRow),
+  )
+  HOST.roles = Object.assign({}, HOST.roles, { profiles: savedProfiles })
+  findButton(oddTree, '刷新').props.onClick()
+  await flush()
   const reviewStageRow = findAll(rolesTree, (node) => node.type === 'tr' && node.props && node.props['data-stage'] === 'review')[0]
   check('the review stage shows its bound custom profile', reviewStageRow !== undefined && textOf(reviewStageRow).indexOf('godot-reviewer') >= 0 && findAll(reviewStageRow, (node) => node.type === 'select')[0].props.children.length === 4, reviewStageRow && textOf(reviewStageRow))
   const workerProfileRow = profileRows.filter((row) => row.props['data-role-profile'] === 'worker')[0]
@@ -961,16 +980,37 @@ await flush()
   check('a replace shows drained/created and the waited/timedOut/waiting status', waitedText.indexOf('已排空') >= 0 && waitedText.indexOf('reviewer-2') >= 0 && waitedText.indexOf('120') >= 0 && waitedText.indexOf('等待超时') >= 0 && waitedText.indexOf('等待中') >= 0, waitedText)
   await flush()
 
-  // A reset that hits a host timeout is shown inside the result banner.
-  postReply = { ok: true, ensured: [{ ok: false, code: 'action-timeout', message: 'role reviewer provisioning timed out' }], snapshot: HOST }
+  // A reset that hits a host timeout is shown inside the result banner. The real
+  // API shape is ensured = [{ kind, result }]: only result carries ok/code/message.
+  postReply = { ok: true, ensured: [{ kind: 'reviewer', result: { ok: false, code: 'action-timeout', message: 'role reviewer provisioning timed out' } }], snapshot: HOST }
   findAll(rolesTree, (node) => node.props && node.props['data-action'] === 'rolesReset')[0].props.onClick()
   await flush()
   const ensuredTree = withHooks(panel, { initialView: 'roles' })
   const ensuredText = textOf(ensuredTree)
-  check('a reset with a failed ensure reports the readable reason', ensuredText.indexOf('宿主操作超时') >= 0 && ensuredText.indexOf('role reviewer provisioning timed out') >= 0, ensuredText)
+  check(
+    'a reset with a failed ensure reports the kind and readable reason (real ensured shape)',
+    ensuredText.indexOf('宿主操作超时') >= 0 && ensuredText.indexOf('reviewer') >= 0 && ensuredText.indexOf('role reviewer provisioning timed out') >= 0,
+    ensuredText,
+  )
 
-  // Server-side validation errors are readable in the panel, and a completed
-  // 2.5s poll does not wipe them before the user has read them.
+  // All three ensures succeeded: the banner must not invent a failure.
+  postReply = {
+    ok: true,
+    ensured: [
+      { kind: 'worker', result: { ok: true } },
+      { kind: 'reviewer', result: { ok: true } },
+      { kind: 'tester', result: { ok: true } },
+    ],
+    snapshot: HOST,
+  }
+  findAll(ensuredTree, (node) => node.props && node.props['data-action'] === 'rolesReset')[0].props.onClick()
+  await flush()
+  const ensuredOkTree = withHooks(panel, { initialView: 'roles' })
+  const ensuredOkText = textOf(ensuredOkTree)
+  check('a fully successful reset shows no false failure', ensuredOkText.indexOf('已创建: 3') >= 0 && ensuredOkText.indexOf('操作失败') < 0, ensuredOkText)
+
+  // Server-side validation errors are readable in the panel, and a COMPLETED
+  // poll (the refresh button calls store.load) does not wipe them.
   postReply = { ok: false, code: 'invalid-role-instances', message: 'instances must be an integer from 1 to 8' }
   const errorForm = findAll(withHooks(panel, { initialView: 'roles' }), (node) => node.props && node.props['data-form'] === 'role-create')[0]
   const errorFields = fieldsOf(errorForm)
@@ -978,13 +1018,21 @@ await flush()
   findAll(errorForm, (node) => node.props && node.props['data-action'] === 'rolesCreate')[0].props.onClick()
   await flush()
   check('the refused action is recorded in the store', captured.getSnapshot().actionError !== null && captured.getSnapshot().actionError.code === 'invalid-role-instances', JSON.stringify(captured.getSnapshot().actionError))
-  // A full poll cycle runs here; the error must still be readable afterwards.
-  await flush()
-  await flush()
+  const loadsBeforePoll = loads
+  findButton(ensuredOkTree, '刷新').props.onClick()
+  let pollGuard = 0
+  while (loads === loadsBeforePoll && pollGuard < 20) {
+    await flush()
+    pollGuard += 1
+  }
+  check('the poll really completed before the assertion', loads > loadsBeforePoll, String(loads - loadsBeforePoll))
   const errorTree = withHooks(panel, { initialView: 'roles' })
   const errorText = textOf(errorTree)
-  check('a validation error stays readable after a poll and maps to a readable message', captured.getSnapshot().actionError !== null && errorText.indexOf('实例数必须是 1–8 的整数') >= 0 && errorText.indexOf('instances must be an integer from 1 to 8') >= 0, errorText)
-  check('a routine poll keeps the last action outcome until the next action', captured.getSnapshot().actionError !== null)
+  check(
+    'a validation error stays readable after a completed poll and maps to a readable message',
+    captured.getSnapshot().actionError !== null && errorText.indexOf('实例数必须是 1–8 的整数') >= 0 && errorText.indexOf('instances must be an integer from 1 to 8') >= 0,
+    errorText,
+  )
 }
 
 // File-lock view: waiters are advisory, not a queue.
