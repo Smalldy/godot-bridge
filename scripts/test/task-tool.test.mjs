@@ -97,6 +97,48 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
 check('board is concurrency safe', rig.tool.isConcurrencySafe({ action: 'board' }) === true)
 check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'create' }) === false)
 
+// ── the merger role at the tool boundary ───────────────────────────────────
+{
+  const mergeRig = createRig({
+    allowSpawn: false,
+    teamOptions: {
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-merger', name: 'merger', role: 'teammate', status: 'inactive' },
+        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
+      ],
+    },
+  })
+  mergeRig.ctx.tools = {
+    register(tool) {
+      mergeRig.tool = tool
+      return tool
+    },
+  }
+  registerTaskTool(mergeRig.ctx, { api: mergeRig.api })
+  const toolCall = (args, who) => mergeRig.tool.execute(args, { agent: who })
+  const created = await toolCall({ action: 'create', title: 'tool MR' })
+  const id = created.task.id
+  await mergeRig.action('start')
+  await mergeRig.settle()
+  const submitted = await toolCall({ action: 'submit', id: id, evidence: 'done' }, { id: 'session-fixer' })
+  check(
+    'the assignee submits into an open merge request',
+    submitted.ok === true && submitted.task.merge !== null && submitted.task.merge.status === 'open',
+    JSON.stringify(submitted),
+  )
+  const sends = mergeRig.team.calls.filter((call) => call.kind === 'send')
+  check('the submit notified the merger', sends.some((call) => call.target === 'merger' && call.text.indexOf(id) >= 0), JSON.stringify(sends))
+  const other = await toolCall({ action: 'mergeRequest', id: id }, { id: 'session-fixer' })
+  check('another agent cannot merge from the tool', other.error !== undefined && other.code === 'merger-only', JSON.stringify(other))
+  const otherReject = await toolCall({ action: 'rejectMerge', id: id }, { id: 'session-fixer' })
+  check('and cannot reject either', otherReject.error !== undefined && otherReject.code === 'merger-only', JSON.stringify(otherReject))
+  const merger = await toolCall({ action: 'mergeRequest', id: id }, { id: 'session-merger' })
+  check('the merger passes the gate', merger.code !== 'merger-only', JSON.stringify(merger))
+  check('and reaches the merge queue', merger.error !== undefined && merger.code === 'no-merge-service', JSON.stringify(merger))
+  mergeRig.scheduler.dispose()
+}
+
 if (typeof disposer === 'function') disposer()
 rig.scheduler.dispose()
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

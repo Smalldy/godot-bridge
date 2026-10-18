@@ -15,7 +15,7 @@ import { resolve } from 'node:path'
 import { TASK_LEASE_MS } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
-import { probeWorktree, workerPool } from './dispatch.mjs'
+import { MERGER_NAME, probeWorktree, resolveLead, servicesFor, workerPool } from './dispatch.mjs'
 import { recordMergeResult } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
 
@@ -100,6 +100,148 @@ export function createApi(ctx, options) {
   function serialised(work) {
     if (merger !== null && typeof merger.enqueue === 'function') return merger.enqueue(work)
     return work()
+  }
+
+  /**
+   * The Team member this call comes from, or null. Resolution starts from the
+   * agent id the tool layer hands over, then falls back to the display label, so
+   * an older caller that only sends a name still resolves.
+   */
+  function callerMemberOf(context) {
+    if (context === undefined || context === null) return null
+    const agent = context.agent === undefined || context.agent === null ? null : context.agent
+    const by = typeof context.by === 'string' && context.by.length > 0 ? context.by : null
+    if (agent === null && by === null) return null
+    const { agentTeams } = servicesFor(ctx)
+    if (agentTeams === undefined || agentTeams === null) return null
+    const lead = resolveLead(ctx)
+    if (lead === null) return null
+    let members = []
+    try {
+      members = agentTeams.listMembers(lead)
+    } catch (error) {
+      return null
+    }
+    if (!Array.isArray(members)) return null
+    if (agent !== null && agent.id !== undefined && agent.id !== null) {
+      const match = members.filter(
+        (member) =>
+          member !== null && typeof member === 'object' && member.id !== undefined && member.id !== null && String(member.id) === String(agent.id),
+      )[0]
+      if (match !== undefined) return match
+    }
+    if (by !== null) {
+      const match = members.filter((member) => member !== null && typeof member === 'object' && member.name === by)[0]
+      if (match !== undefined) return match
+    }
+    return null
+  }
+
+  /**
+   * Merge actions belong to the user, or to the Team member named exactly
+   * "merger" — a fixed role the Lead spawns, not a permission switch. Every
+   * other agent is refused before the queue is touched.
+   */
+  function mergeRefusal(context) {
+    if (context !== undefined && context !== null && context.role === 'user') return null
+    const member = callerMemberOf(context)
+    if (member !== null && member.name === MERGER_NAME) return null
+    return failure(
+      'merger-only',
+      'Only the user or the Team member named "' +
+        MERGER_NAME +
+        '" can merge or reject merge requests; everyone else reports done and lets the merger integrate.',
+    )
+  }
+
+  /**
+   * Best-effort message to one Team member by name. Every failure — no team
+   * service, no lead, no such member, a refused mailbox — is swallowed: a
+   * notification must never fail a submit or a merge.
+   */
+  async function notifyMember(target, text) {
+    const name = typeof target === 'string' ? target.trim() : ''
+    if (name === '' || typeof text !== 'string' || text === '') return null
+    try {
+      const { agentTeams } = servicesFor(ctx)
+      if (agentTeams === undefined || agentTeams === null) return null
+      const lead = resolveLead(ctx)
+      if (lead === null) return null
+      let members = []
+      try {
+        members = agentTeams.listMembers(lead)
+      } catch (error) {
+        return null
+      }
+      if (!Array.isArray(members)) return null
+      const member = members.filter((entry) => entry !== null && typeof entry === 'object' && entry.name === name)[0]
+      if (member === undefined) return null
+      const request = { target: name, content: [{ type: 'text', text: text }] }
+      if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+        request.signal = AbortSignal.timeout(15000)
+      }
+      await agentTeams.sendMessage(lead, request)
+      return member
+    } catch (error) {
+      return null
+    }
+  }
+
+  /** Tell the merger a merge request is open. No merger is a normal outcome. */
+  async function notifyMergerOpened(projectPath, task) {
+    if (task === null || task === undefined) return
+    const merge = task.merge
+    if (merge === null || merge === undefined || typeof merge !== 'object' || merge.status !== 'open') return
+    const owner =
+      task.assignee === null || task.assignee === undefined || task.assignee.name === null || task.assignee.name === undefined
+        ? 'the task owner'
+        : String(task.assignee.name)
+    const lines = [
+      'Merge request ' + task.id + ' (' + task.title + ') is open.',
+      '  branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch),
+      '  target: ' + String(merge.target === null || merge.target === undefined ? '' : merge.target),
+      '  project: ' + String(projectPath),
+      '  owner: ' + owner,
+      '',
+      'Review it with task_center { action: "board" } or { action: "get", id: "' + task.id + '" },',
+      'then integrate it with task_center { action: "mergeRequest", id: "' + task.id + '" } (or rejectMerge).',
+      'Do not push. If it conflicts or verification fails, leave the repair to the task owner.',
+    ]
+    await notifyMember(MERGER_NAME, lines.join('\n'))
+  }
+
+  /** Tell the owner what a merge outcome needs from them; skipped without an owner or a team. */
+  async function notifyMergeOutcome(projectPath, task) {
+    if (task === null || task === undefined) return
+    const merge = task.merge
+    if (merge === null || merge === undefined || typeof merge !== 'object') return
+    const status = merge.status
+    const owner =
+      task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' || task.assignee.name === ''
+        ? null
+        : task.assignee.name
+    if (status === 'merged') {
+      if (owner === null) return
+      const commit = merge.mergeCommit === null || merge.mergeCommit === undefined ? '' : ' as ' + String(merge.mergeCommit)
+      const target = merge.target === null || merge.target === undefined ? '' : String(merge.target)
+      await notifyMember(owner, 'Merge request ' + task.id + ' (' + task.title + ') was merged into ' + target + commit + '.')
+      return
+    }
+    if ((status !== 'conflict' && status !== 'failed') || owner === null) return
+    const detail =
+      status === 'conflict'
+        ? 'conflict: ' + String(merge.conflict === null || merge.conflict === undefined ? 'unknown conflicted files' : merge.conflict)
+        : 'verification output:\n' + String(merge.output === null || merge.output === undefined ? '' : merge.output)
+    await notifyMember(
+      owner,
+      'Merge request ' + task.id + ' (' + task.title + ') needs repair (' + status + ').\n' +
+        '  project: ' + String(projectPath) + '\n' +
+        '  branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch) + '\n' +
+        '  ' + detail + '\n' +
+        'Fix it in your task worktree (' +
+        String(task.worktree === null || task.worktree === undefined ? '' : task.worktree) +
+        '), then tell the Lead so the request can be retried.',
+    )
   }
 
   function projectFrom(input, context) {
@@ -615,11 +757,13 @@ export function createApi(ctx, options) {
       return ok({ tick: await scheduler.settle(projectPath) })
     }
     if (action === 'mergeRequest') {
+      const denied = mergeRefusal(context)
+      if (denied !== null) return denied
       const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
       if (id === '') return failure('missing-id', 'mergeRequest needs a task id')
       // The whole pipeline (re-read, integrate, verify, record) runs inside the
       // queue so a second request sees the first one's result, never its state.
-      return serialised(async function () {
+      const result = await serialised(async function () {
         const read = await readBoardOrFail(projectPath)
         if (read.failed !== undefined) return read.failed
         const task = model.findTask(read.board, id)
@@ -650,8 +794,15 @@ export function createApi(ctx, options) {
         if (recorded.ok !== true) return recorded
         return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
       })
+      // Notifications happen after the queue releases, and never change the answer.
+      if (result.ok === true && result.task !== null && result.task !== undefined) {
+        await notifyMergeOutcome(projectPath, result.task)
+      }
+      return result
     }
     if (action === 'rejectMerge') {
+      const denied = mergeRefusal(context)
+      if (denied !== null) return denied
       const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
       if (id === '') return failure('missing-id', 'rejectMerge needs a task id')
       return serialised(async function () {
@@ -701,6 +852,11 @@ export function createApi(ctx, options) {
       if (result.ok === true && result.task !== null && result.task.status !== 'running') {
         const released = locks.releaseTask(state.memory.locks, id)
         if (released.ok === true) state.memory.locks = released.locks
+      }
+      // An open merge request is an event for the dedicated merger; no merger,
+      // no team or a refused mailbox changes nothing about the submit itself.
+      if (result.ok === true && result.task !== null && result.task !== undefined) {
+        await notifyMergerOpened(projectPath, result.task)
       }
       return result
     }

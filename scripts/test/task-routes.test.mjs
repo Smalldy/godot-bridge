@@ -3,7 +3,7 @@
 
 import { join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH } from '../../plugin/task-center/routes.mjs'
-import { createFakeFs, createRig, PROJECT, seedBoard } from './support/fixtures.mjs'
+import { createFakeFs, createRig, createTeam, PROJECT, seedBoard } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
 import { createDispatcher } from '../../plugin/task-center/dispatch.mjs'
@@ -406,17 +406,23 @@ function createSubmitRig(options) {
   const opts = options === undefined ? {} : options
   const fs = createFakeFs()
   fs.dirs.add(PROJECT)
+  const team = opts.team === undefined || opts.team === null ? null : opts.team
+  // A team service is optional: the commit path must work without one, and the
+  // notification path is exactly what a team adds.
+  const agents = opts.agents === undefined ? (team === null ? undefined : { list: () => [{ id: 'session-lead' }] }) : opts.agents
   const ctx = {
     fs: fs,
     sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
-    get() {
+    get(key) {
+      if (key === 'agents') return agents
+      if (key === 'agentTeams') return team
       return undefined
     },
   }
   const state = createState(ctx)
   const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: opts.git })
   const api = createApi(ctx, { state: state, scheduler: scheduler, git: opts.git, merger: opts.merger })
-  return { project: PROJECT, fs: fs, ctx: ctx, state: state, scheduler: scheduler, api: api }
+  return { project: PROJECT, fs: fs, ctx: ctx, state: state, scheduler: scheduler, api: api, team: team }
 }
 
 /** A fake git for commit/diff; every call is recorded, no process is started. */
@@ -1006,6 +1012,166 @@ function seedMergeTask(rig, task) {
     JSON.stringify(results),
   )
   check('and verification runs exactly once', verifier.calls.length === 1, String(verifier.calls.length))
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+// ── the dedicated merger role ──────────────────────────────────────────────
+// A Team with the fixed merger teammate plus an ordinary worker and its owner.
+function mergerTeam(options) {
+  const opts = options === undefined ? {} : options
+  return createTeam({
+    roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-merger', name: 'merger', role: 'teammate', status: 'inactive' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
+    ],
+    sendThrows: opts.sendThrows === true,
+  })
+}
+
+{
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const team = mergerTeam()
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), team: team })
+  seedMergeTask(mergeRig, openMergeTask({ assignee: { name: 'fixer', session: 'session-fixer' } }))
+  const asAgent = (id) => ({ projectPath: PROJECT, by: '@' + id, role: 'agent', agent: { id: id } })
+  const other = await mergeRig.api.perform('mergeRequest', { id: 'T-1' }, asAgent('session-fixer'))
+  check('another agent cannot merge', other.ok === false && other.code === 'merger-only', JSON.stringify(other))
+  check('and git is not consulted for a refused caller', fake.calls.length === 0, JSON.stringify(fake.calls))
+  const otherReject = await mergeRig.api.perform('rejectMerge', { id: 'T-1' }, asAgent('session-fixer'))
+  check('another agent cannot reject either', otherReject.ok === false && otherReject.code === 'merger-only', JSON.stringify(otherReject))
+  const asUser = await mergeRig.api.perform('mergeRequest', { id: 'T-1' }, { projectPath: PROJECT, by: '@user', role: 'user', agent: null })
+  check('the user can still merge', asUser.ok === true && asUser.task.merge.status === 'merged', JSON.stringify(asUser))
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const team = mergerTeam()
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), team: team })
+  seedMergeTask(mergeRig, openMergeTask())
+  const asMerger = await mergeRig.api.perform('mergeRequest', { id: 'T-1' }, { projectPath: PROJECT, by: '@merger', role: 'agent', agent: { id: 'session-merger' } })
+  check('the merger can merge', asMerger.ok === true && asMerger.task.merge.status === 'merged', JSON.stringify(asMerger))
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const team = mergerTeam()
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), team: team })
+  seedMergeTask(mergeRig, openMergeTask())
+  const asMerger = await mergeRig.api.perform('rejectMerge', { id: 'T-1' }, { projectPath: PROJECT, by: '@merger', role: 'agent', agent: { id: 'session-merger' } })
+  check('the merger can reject', asMerger.ok === true && asMerger.task.merge.status === 'rejected', JSON.stringify(asMerger))
+  mergeRig.scheduler.dispose()
+}
+
+// submit opens an MR and tells the merger about it
+{
+  const fake = fakeGit()
+  const team = mergerTeam()
+  const submitRig = createSubmitRig({ git: fake.git, team: team })
+  seedRunningTask(submitRig, runningWorktreeTask())
+  const submitSurface = install(submitRig)
+  const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'npm run verify' })
+  const payload = res.json()
+  check('submit still succeeds with a merger in the team', payload.ok === true && payload.task.status === 'done' && payload.task.merge.status === 'open', res.text)
+  const sent = team.calls.filter((call) => call.kind === 'send')
+  check('the merger is notified about the open request', sent.length === 1 && sent[0].target === 'merger', JSON.stringify(sent))
+  const text = sent.length === 0 ? '' : sent[0].text
+  check(
+    'the notice names the task, branch, target and main project',
+    text.indexOf('T-1') >= 0 && text.indexOf('task/T-1-1') >= 0 && text.indexOf('main') >= 0 && text.indexOf(PROJECT) >= 0,
+    text,
+  )
+  check('and tells the merger to use task_center and not to push', text.indexOf('mergeRequest') >= 0 && text.indexOf('Do not push') >= 0, text)
+  check('and leaves conflicts to the task owner', text.indexOf('owner') >= 0, text)
+  submitSurface.dispose()
+  submitRig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const team = createTeam()
+  const submitRig = createSubmitRig({ git: fake.git, team: team })
+  seedRunningTask(submitRig, runningWorktreeTask())
+  const submitSurface = install(submitRig)
+  const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'done' })
+  check('submit works when the team has no merger', res.json().ok === true && res.json().task.merge.status === 'open', res.text)
+  check('and nobody is messaged', team.calls.length === 0, JSON.stringify(team.calls))
+  submitSurface.dispose()
+  submitRig.scheduler.dispose()
+}
+
+{
+  const fake = fakeGit()
+  const team = mergerTeam({ sendThrows: true })
+  const submitRig = createSubmitRig({ git: fake.git, team: team })
+  seedRunningTask(submitRig, runningWorktreeTask())
+  const submitSurface = install(submitRig)
+  const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'done' })
+  check(
+    'a refused merger notification does not fail the submit',
+    res.json().ok === true && res.json().task.status === 'done' && res.json().task.merge.status === 'open',
+    res.text,
+  )
+  submitSurface.dispose()
+  submitRig.scheduler.dispose()
+}
+
+// a conflict or a red verification is reported back to the task owner
+{
+  const fake = mergeGit({
+    'merge --no-ff --no-edit task/T-1-1': () => ({ code: 1, stdout: 'CONFLICT (content): Merge conflict in scripts/a.gd', stderr: '' }),
+    'diff --name-only --diff-filter=U': () => ({ code: 0, stdout: 'scripts/a.gd\n', stderr: '' }),
+  })
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const team = mergerTeam()
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), team: team })
+  seedMergeTask(mergeRig, openMergeTask({ assignee: { name: 'fixer', session: 'session-fixer' } }))
+  const mergeSurface = install(mergeRig)
+  const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('a conflicted merge is still recorded', res.json().ok === true && res.json().task.merge.status === 'conflict', res.text)
+  const sent = team.calls.filter((call) => call.kind === 'send')
+  check('the owner is told about the conflict', sent.length === 1 && sent[0].target === 'fixer', JSON.stringify(sent))
+  const text = sent.length === 0 ? '' : sent[0].text
+  check('and the notice names the conflicted files', text.indexOf('scripts/a.gd') >= 0 && text.indexOf('conflict') >= 0, text)
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 1, stdout: 'FAIL board.test.mjs', stderr: '' })
+  const team = mergerTeam()
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), team: team })
+  seedMergeTask(mergeRig, openMergeTask({ assignee: { name: 'fixer', session: 'session-fixer' } }))
+  const mergeSurface = install(mergeRig)
+  const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('a red verification is recorded as failed', res.json().ok === true && res.json().task.merge.status === 'failed', res.text)
+  const sent = team.calls.filter((call) => call.kind === 'send')
+  check('the owner is told about the failure', sent.length === 1 && sent[0].target === 'fixer', JSON.stringify(sent))
+  check('and the notice carries the verification output', sent.length > 0 && sent[0].text.indexOf('FAIL board.test.mjs') >= 0, sent.length === 0 ? '' : sent[0].text)
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit({
+    'merge --no-ff --no-edit task/T-1-1': () => ({ code: 1, stdout: 'CONFLICT (content): Merge conflict in scripts/a.gd', stderr: '' }),
+    'diff --name-only --diff-filter=U': () => ({ code: 0, stdout: 'scripts/a.gd\n', stderr: '' }),
+  })
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const team = mergerTeam()
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), team: team })
+  seedMergeTask(mergeRig, openMergeTask())
+  const mergeSurface = install(mergeRig)
+  const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('a request without an owner still conflicts', res.json().ok === true && res.json().task.merge.status === 'conflict', res.text)
+  check('and no owner notification is attempted', team.calls.length === 0, JSON.stringify(team.calls))
   mergeSurface.dispose()
   mergeRig.scheduler.dispose()
 }

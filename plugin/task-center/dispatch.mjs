@@ -36,6 +36,12 @@ import { createGit } from './git.mjs'
 export const DEFAULT_MAX_WORK_AGENTS = 4
 export const DEFAULT_MAX_ATTEMPTS = 3
 export const SEND_TIMEOUT_MS = 60 * 1000
+
+/** The one teammate that merges merge requests. It is a FIXED ROLE, not a
+ * switch: the Lead spawns a member with exactly this name, the scheduler never
+ * hands it feature work, and the API accepts merge actions only from it (or the
+ * user). A Team without one keeps merge requests open for the user to merge. */
+export const MERGER_NAME = 'merger'
 const RERUN_DELAY_MS = 250
 
 /** A process-stable boot id. globalThis survives a plugin reload in the same
@@ -107,6 +113,10 @@ export function subagentProviderFor(ctx, preferred) {
  * mailbox. The caller reserves the chosen name for the rest of the pass, so one
  * worker gets at most one task per tick even though the roster does not update
  * synchronously after sendMessage.
+ *
+ * The dedicated MERGER_NAME teammate is never a feature worker: it is reserved
+ * for merge requests, so it is excluded from idle, from the spawn cap and from
+ * the roster this function chooses from.
  */
 export function pickTarget(ctx, options) {
   const opts = options === undefined ? {} : options
@@ -129,7 +139,9 @@ export function pickTarget(ctx, options) {
     return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
   }
   const reserved = opts.reserved instanceof Set ? opts.reserved : new Set()
-  const teammates = members.filter((member) => member.role === 'teammate' && member.status !== 'failed')
+  const teammates = members.filter(
+    (member) => member.role === 'teammate' && member.status !== 'failed' && member.name !== MERGER_NAME,
+  )
   const idle = teammates.filter((member) => member.status === 'inactive' && !reserved.has(member.name))
   if (idle.length > 0) {
     return { ok: true, lead: lead, spawn: false, target: { name: idle[0].name, id: idle[0].id, status: idle[0].status }, members: members }

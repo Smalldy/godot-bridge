@@ -74,6 +74,16 @@ check(
   tools[0].parameters.action.enum.indexOf('mergeRequest') >= 0 && tools[0].parameters.action.enum.indexOf('rejectMerge') >= 0,
   tools[0].parameters.action.enum.join(','),
 )
+{
+  const { MERGER_NAME } = await import('../../plugin/task-center/dispatch.mjs')
+  check('the merger is a fixed role name', MERGER_NAME === 'merger', String(MERGER_NAME))
+  const description = String(tools[0].description === undefined ? '' : tools[0].description)
+  check(
+    'the tool description tells agents the merge actions are merger-only',
+    description.indexOf('merger') >= 0 && description.indexOf('merger-only') >= 0,
+    description.slice(0, 200),
+  )
+}
 
 let listenerError = null
 try {

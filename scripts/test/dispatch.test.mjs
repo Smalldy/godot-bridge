@@ -532,5 +532,46 @@ function createWorktreeRig(options) {
   rig.scheduler.dispose()
 }
 
+// ── the dedicated merger is never a feature worker ─────────────────────────
+{
+  const rig = createRig({
+    allowSpawn: false,
+    teamOptions: {
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-merger', name: 'merger', role: 'teammate', status: 'inactive' },
+      ],
+    },
+  })
+  const A = (await createTask(rig, { title: 'merger only' })).id
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  check('a team whose only idle teammate is the merger dispatches nothing', byId(snap, A).status === 'pending', JSON.stringify(ids(snap)))
+  check('and the merger is never handed feature work', rig.team.calls.length === 0, JSON.stringify(rig.team.calls))
+  rig.scheduler.dispose()
+}
+
+{
+  const rig = createRig({
+    allowSpawn: false,
+    teamOptions: {
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-merger', name: 'merger', role: 'teammate', status: 'inactive' },
+        { id: 'session-idle', name: 'fixer', role: 'teammate', status: 'inactive' },
+      ],
+    },
+  })
+  const A = (await createTask(rig, { title: 'fixer takes it' })).id
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const task = byId(snap, A)
+  check('a feature task goes to the ordinary worker', task.status === 'running' && task.assignee.name === 'fixer', JSON.stringify(task.assignee))
+  check('and the merger is not chosen', rig.team.calls.every((call) => call.target !== 'merger'), JSON.stringify(rig.team.calls))
+  rig.scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
