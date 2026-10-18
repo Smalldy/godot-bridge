@@ -28,7 +28,16 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { boardPath, readRoleConfig } from './board.mjs'
 import { writePolicyFor } from './state.mjs'
-import { ROLE_KINDS, ROLE_PROVISION_TIMEOUT_MS, ROLE_STAGE, TASK_LEASE_MS, defaultRoleConfig, profileForKind } from './schema.mjs'
+import {
+  ROLE_KINDS,
+  ROLE_PROVISION_TIMEOUT_MS,
+  ROLE_STAGE,
+  TASK_LEASE_MS,
+  TEST_REMINDER_MS,
+  TEST_TIMEOUT_MS,
+  defaultRoleConfig,
+  profileForKind,
+} from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { createGit } from './git.mjs'
@@ -1201,8 +1210,10 @@ export function createDispatcher(ctx, options) {
   // The in-memory activity ring the snapshot exposes. Null is a normal setup
   // (direct dispatcher users) and simply records nothing.
   const activity = opts.activity === undefined || opts.activity === null ? null : opts.activity
-  // Tests shorten the review timeout; production uses REVIEW_TIMEOUT_MS.
+  // Tests shorten the review/test timeouts; production uses the schema defaults.
   const reviewTimeoutMs = Number.isFinite(opts.reviewTimeoutMs) ? opts.reviewTimeoutMs : REVIEW_TIMEOUT_MS
+  const testReminderMs = Number.isFinite(opts.testReminderMs) ? Math.max(1, Math.floor(opts.testReminderMs)) : TEST_REMINDER_MS
+  const testTimeoutMs = Number.isFinite(opts.testTimeoutMs) ? Math.max(1, Math.floor(opts.testTimeoutMs)) : TEST_TIMEOUT_MS
 
   /** Push one host activity entry; never throws and never touches the board. */
   function emit(kind, actor, fields) {
@@ -1230,6 +1241,8 @@ export function createDispatcher(ctx, options) {
     ticks: 0,
     // One reminder per review round: key id@review.at -> when the reminder went out.
     reviewReminders: new Map(),
+    // One reminder per test round: key id@test.at -> when the reminder went out.
+    testReminders: new Map(),
   }
   // undefined means "ask the context"; null means "this host has no git runner",
   // which now means dispatch cannot start at all. Resolved lazily and cached for
@@ -1472,6 +1485,41 @@ export function createDispatcher(ctx, options) {
       .map((member) => String(member.name))
   }
 
+
+  /** Live tester slot names (tester-1, tester-2, ...). */
+  function testerNames() {
+    const { agentTeams } = servicesFor(ctx)
+    if (agentTeams === undefined || agentTeams === null) return []
+    const lead = resolveLead(ctx)
+    if (lead === null) return []
+    let roster = []
+    try {
+      roster = agentTeams.listMembers(lead)
+    } catch (error) {
+      return []
+    }
+    if (!Array.isArray(roster)) return []
+    let drained = []
+    if (roles !== null && typeof roles.status === 'function') {
+      try {
+        const status = roles.status()
+        drained = Array.isArray(status.drained) ? status.drained.map(String) : []
+      } catch (error) {
+        drained = []
+      }
+    }
+    return roster
+      .filter(
+        (member) =>
+          member !== null &&
+          typeof member === 'object' &&
+          roleKindOf(member.name) === 'tester' &&
+          member.status !== 'failed' &&
+          drained.indexOf(String(member.name)) < 0,
+      )
+      .map((member) => String(member.name))
+  }
+
   /**
    * The review timeout policy, driven by the host tick: a review that stays
    * undecided past REVIEW_TIMEOUT_MS gets one reminder to the reviewer; if it is
@@ -1535,6 +1583,105 @@ export function createDispatcher(ctx, options) {
     return { reminded: reminded, blocked: blocked, board: nextBoard }
   }
 
+  /**
+   * The TEST phase bounds, driven by the host tick: a pending test round gets
+   * ONE reminder at testReminderMs, then the task is blocked for triage at
+   * testTimeoutMs (tester, elapsed time and candidate state recorded). Passed or
+   * failed rounds and done/blocked tasks are never touched, and the normal test
+   * phase has no added delay.
+   */
+  async function sweepTestTimeouts(projectPath, board, now) {
+    const pending = board.tasks.filter(
+      (task) =>
+        task.status === 'testing' &&
+        task.test !== null &&
+        task.test !== undefined &&
+        task.test.status === 'pending' &&
+        typeof task.test.at === 'string',
+    )
+    if (pending.length === 0) return { reminded: [], blocked: [], board: null }
+    const pendingKeys = new Set(pending.map((task) => String(task.id) + '@' + String(task.test.at)))
+    const lead = resolveLead(ctx)
+    const names = testerNames()
+    const reminded = []
+    const blocked = []
+    let nextBoard = null
+    for (const task of pending) {
+      const age = now - Date.parse(task.test.at)
+      if (!Number.isFinite(age)) continue
+      const key = String(task.id) + '@' + String(task.test.at)
+      const candidate =
+        task.merge !== null && task.merge !== undefined && typeof task.merge.mergeCommit === 'string' && task.merge.mergeCommit !== ''
+          ? 'candidate ' + String(task.merge.mergeCommit)
+          : 'no candidate recorded'
+      if (age >= testTimeoutMs) {
+        const tester = names.length > 0 ? names[0] : 'the tester'
+        let blockNote = null
+        const applied = await applyReap(projectPath, (value) => {
+          // Re-read inside the mutation: applyReap may re-run it on a fresh board
+          // after a CAS race, and a tester verdict may have landed meanwhile. Only
+          // the SAME pending test round may be blocked; passed/failed is never
+          // touched.
+          const fresh = model.findTask(value, task.id)
+          if (
+            fresh === undefined ||
+            fresh === null ||
+            fresh.status !== 'testing' ||
+            fresh.test === null ||
+            fresh.test === undefined ||
+            fresh.test.status !== 'pending' ||
+            String(fresh.test.at) !== String(task.test.at)
+          ) {
+            return value
+          }
+          const freshCandidate =
+            fresh.merge !== null && fresh.merge !== undefined && typeof fresh.merge.mergeCommit === 'string' && fresh.merge.mergeCommit !== ''
+              ? 'candidate ' + String(fresh.merge.mergeCommit)
+              : 'no candidate recorded'
+          const freshMinutes = Math.round((now - Date.parse(fresh.test.at)) / 60000)
+          blockNote = 'test timeout: no verdict after ' + String(freshMinutes) + 'min (' + tester + '; ' + freshCandidate + ')'
+          const result = model.blockTask(value, fresh.id, now, 'system', blockNote + '; blocked for triage')
+          return result.ok === true ? result.board : value
+        })
+        if (applied === null) continue
+        const appliedTask = model.findTask(applied, task.id)
+        if (appliedTask === undefined || appliedTask === null || appliedTask.status !== 'blocked') continue
+        nextBoard = applied
+        memory.testReminders.delete(key)
+        blocked.push(task.id)
+        emit('error', 'system', { taskId: task.id, detail: (blockNote === null ? 'test timeout' : blockNote) + '; task blocked for triage' })
+        const owner = task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' ? null : task.assignee.name
+        const notice =
+          'Test for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
+          '  project: ' + String(projectPath) + '\n' +
+          '  ' + (blockNote === null ? 'tester: ' + String(tester) : blockNote)
+        if (owner !== null && owner !== '') await sendMemberMessage(lead, owner, notice)
+        if (lead !== null && typeof lead.name === 'string' && lead.name !== '') await sendMemberMessage(lead, lead.name, notice)
+        continue
+      }
+
+      if (age >= testReminderMs && memory.testReminders.has(key) === false) {
+        if (names.length === 0 || lead === null) continue
+        const tester = names[0]
+        const text =
+          'Reminder — the test phase is still waiting for a verdict.\n' +
+          '  task: ' + String(task.id) + ' ' + String(task.title) + '\n' +
+          '  ' + candidate + '\n' +
+          'Record passTest or failTest with task_center; do not leave the round pending.'
+        const sent = await sendMemberMessage(lead, tester, text)
+        if (sent === true) {
+          memory.testReminders.set(key, now)
+          reminded.push(task.id)
+          emit('test-reminder', 'system', { taskId: task.id, detail: 'test phase still pending; reminded ' + tester })
+        }
+      }
+    }
+    for (const key of Array.from(memory.testReminders.keys())) {
+      if (!pendingKeys.has(key)) memory.testReminders.delete(key)
+    }
+    return { reminded: reminded, blocked: blocked, board: nextBoard }
+  }
+
   async function tick(projectPath) {
     const project = typeof projectPath === 'string' && projectPath.length > 0 ? projectPath : projectOf()
     if (typeof project !== 'string' || project.length === 0) return { ok: true, skipped: 'unknown-project' }
@@ -1562,6 +1709,10 @@ export function createDispatcher(ctx, options) {
       if (reviewSweep.board !== null) current = reviewSweep.board
       for (const id of reviewSweep.reminded) results.push({ id: id, review: 'reminded' })
       for (const id of reviewSweep.blocked) results.push({ id: id, review: 'timed-out' })
+      const testSweep = await sweepTestTimeouts(project, current, now)
+      if (testSweep.board !== null) current = testSweep.board
+      for (const id of testSweep.reminded) results.push({ id: id, test: 'reminded' })
+      for (const id of testSweep.blocked) results.push({ id: id, test: 'timed-out' })
       const dispatch = current.dispatch
       if (dispatch.state !== 'running') {
         return { ok: true, state: 'paused', tasks: current.tasks.length, results: results }

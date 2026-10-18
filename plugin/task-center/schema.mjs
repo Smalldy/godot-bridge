@@ -67,6 +67,17 @@ export const ROLE_PROMPT_MAX = 4000
 /** A role that stays 'provisioning' this long is treated as dead and replaced. */
 export const ROLE_PROVISION_TIMEOUT_MS = 5 * 60 * 1000
 
+/** The test phase has two bounds, like the review phase: a reminder after
+ * TEST_REMINDER_MS and a hard block after TEST_TIMEOUT_MS without a verdict.
+ * Both are overridable through the host options (dispatcher/API) for tests. */
+export const TEST_REMINDER_MS = 10 * 60 * 1000
+export const TEST_TIMEOUT_MS = 20 * 60 * 1000
+
+/** The host bounds one async action (candidate build / candidate merge / merge
+ * request / role provisioning / notification) so a stuck await cannot hold the
+ * action or the serialised merge queue forever. */
+export const HOST_ACTION_TIMEOUT_MS = 2 * 60 * 1000
+
 /** The project-level role profile file (optional; defaults apply when absent). */
 export const ROLE_CONFIG_FILENAME = 'roles.json'
 export const ROLE_CONFIG_VERSION = 1
