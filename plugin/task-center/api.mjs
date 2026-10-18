@@ -53,6 +53,11 @@ export const ACTIONS = [
   'mergeRequest',
   'refreshMerge',
   'rejectMerge',
+  'harnessStart',
+  'harnessStop',
+  'harnessRestart',
+  'harnessStatus',
+  'harnessSmoke',
   'approveStart',
   'rejectStart',
   'cancelStartRequest',
@@ -76,7 +81,7 @@ export const USER_ONLY_ACTIONS = ['approveStart', 'rejectStart', 'settings']
 export const AGENT_ACTIONS = ACTIONS.filter((action) => USER_ONLY_ACTIONS.indexOf(action) < 0)
 
 /** Read-only actions; the tool may run them concurrently. */
-export const READ_ACTIONS = ['board', 'list', 'get', 'locks']
+export const READ_ACTIONS = ['board', 'list', 'get', 'locks', 'harnessStatus']
 
 const STATUS_RANK = { pending: 0, running: 1, reviewing: 2, testing: 3, blocked: 4, done: 5, cancelled: 6 }
 
@@ -113,6 +118,9 @@ function messageOf(error) {
  *   action. Off by default so direct API users stay explicit.
  * @param options.godotPath - engine path shown in the tester brief. Omitted means
  *   "the godot-bridge godotPath setting, or godot on PATH".
+ * @param options.harness - the isolated DSH test instance manager (harness.mjs).
+ *   When present, the tester (or the user) can start/stop/restart it and run the
+ *   smoke checks; absent refuses readably.
  * @param options.now - clock, for tests.
  */
 export function createApi(ctx, options) {
@@ -127,6 +135,7 @@ export function createApi(ctx, options) {
   // active when the production row wires the role registry and merge queue.
   const candidateWorkflow = roles !== null && merger !== null && typeof merger.createCandidate === 'function'
   const godotPath = typeof opts.godotPath === 'string' && opts.godotPath.length > 0 ? opts.godotPath : null
+  const harness = opts.harness === undefined ? null : opts.harness
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
 
   /** Merge actions are one-at-a-time: the queue serialises the whole read+git+write. */
@@ -339,6 +348,24 @@ export function createApi(ctx, options) {
         MERGER_NAME +
         '" can merge or reject merge requests; everyone else reports done and lets the merger integrate.',
     )
+  }
+
+  /**
+   * The isolated DSH harness belongs to the tester (or the user). No other agent
+   * can start, stop or probe it; without a role registry only the user may.
+   */
+  function harnessRefusal(context) {
+    if (context !== undefined && context !== null && context.role === 'user') return null
+    if (roles === null) {
+      return failure('tester-only', 'The isolated DSH harness is driven by the tester role (or the user); this profile has no role registry.')
+    }
+    const caller = callerRole(context)
+    if (caller === null) return failure('role-required', 'Only a tester role member or the user can drive the isolated DSH harness.')
+    if (caller.kind !== 'tester') {
+      const name = caller.member.name === undefined || caller.member.name === null ? 'this agent' : String(caller.member.name)
+      return failure('tester-only', 'Only a tester role member or the user can drive the isolated DSH harness; ' + name + ' is not one.')
+    }
+    return null
   }
 
   /**
@@ -1473,6 +1500,24 @@ export function createApi(ctx, options) {
         if (owner !== null) await notifyMember(owner, testFailureBriefFor(result.task, projectPath))
       }
       return ok({ task: result.task, events: result.events })
+    }
+    if (
+      action === 'harnessStart' ||
+      action === 'harnessStop' ||
+      action === 'harnessRestart' ||
+      action === 'harnessStatus' ||
+      action === 'harnessSmoke'
+    ) {
+      const denied = harnessRefusal(context)
+      if (denied !== null) return denied
+      if (harness === null || typeof harness.start !== 'function') {
+        return failure('harness-unavailable', 'the isolated DSH harness is not available in this profile')
+      }
+      if (action === 'harnessStatus') return ok({ harness: harness.status(), logs: harness.logs() })
+      if (action === 'harnessStop') return harness.stop()
+      if (action === 'harnessStart') return harness.start(projectPath)
+      if (action === 'harnessRestart') return harness.restart(projectPath)
+      return harness.smoke(projectPath)
     }
     if (action === 'cancel') {
       const id = String(source.id === undefined ? '' : source.id)
