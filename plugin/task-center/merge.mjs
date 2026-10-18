@@ -19,6 +19,7 @@
  */
 
 import { join } from 'node:path'
+import { normaliseVerdict } from './schema.mjs'
 
 export const DEFAULT_VERIFY_COMMAND = 'npm run verify'
 
@@ -439,8 +440,11 @@ export function recordMergeResult(board, id, outcome, now, by) {
  *
  * @param base - the commit the diff was taken from (the API passes the target's
  *   current head, or the request's old base when the task has no target).
+ * @param verdict - the verdict to record: a fresh `pending` one when independent
+ *   testing is on (a new head invalidates any earlier pass), or null in self
+ *   mode.
  */
-export function refreshMergeRequest(board, id, base, head, actualFiles, now, by) {
+export function refreshMergeRequest(board, id, base, head, actualFiles, verdict, now, by) {
   const next = JSON.parse(JSON.stringify(board))
   const task = next.tasks.filter((candidate) => candidate.id === id)[0]
   if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
@@ -464,6 +468,7 @@ export function refreshMergeRequest(board, id, base, head, actualFiles, now, by)
     conflict: null,
     output: null,
     reviewer: null,
+    verdict: normaliseVerdict(verdict),
     at: at,
   })
   task.updatedAt = at

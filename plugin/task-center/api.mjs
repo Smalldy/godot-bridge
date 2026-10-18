@@ -542,7 +542,7 @@ export function createApi(ctx, options) {
    * refusal is returned as-is and nothing is written, so the task stays running,
    * keeps its lease and keeps its file locks for a retry.
    */
-  async function prepareMergeRequest(task, source, now) {
+  async function prepareMergeRequest(task, source, now, testing) {
     if (typeof task.worktree !== 'string' || task.worktree.length === 0) return { ok: true, mr: null }
     if (git === null) {
       return failure('no-git-service', task.id + ' has a worktree at ' + task.worktree + ' but this profile has no git service; submit it where git is available')
@@ -610,6 +610,9 @@ export function createApi(ctx, options) {
           reviewer: null,
           conflict: null,
           at: new Date(now).toISOString(),
+          // Independent testing starts every request as "pending": a separate
+          // tester must record a passing verdict before the merge gate opens.
+          verdict: testing === 'independent' ? { status: 'pending', by: null, at: new Date(now).toISOString(), output: null } : null,
         },
       },
     }
@@ -787,7 +790,7 @@ export function createApi(ctx, options) {
         return failure('user-only', 'Dispatch settings belong to the user; ask them to change it in the task center panel.')
       }
       const patch = {}
-      for (const key of ['maxConcurrent', 'allowSpawn', 'maxWorkAgents', 'maxAttempts']) {
+      for (const key of ['maxConcurrent', 'allowSpawn', 'maxWorkAgents', 'maxAttempts', 'testing']) {
         if (source[key] !== undefined) patch[key] = source[key]
       }
       // The GUI exposes a single number: maximum concurrency. The worker cap
@@ -856,6 +859,27 @@ export function createApi(ctx, options) {
               task.id +
               '" } to refresh the request, then retry the merge',
           )
+        }
+        // Independent testing is a merge gate: without a passing verdict the
+        // request does not reach the queue at all — no integration worktree, no
+        // verification run, no change to main.
+        const testing = read.board.dispatch === undefined || read.board.dispatch === null ? 'self' : read.board.dispatch.testing
+        if (testing === 'independent') {
+          const verdict = merge.verdict === null || merge.verdict === undefined ? null : merge.verdict
+          const status = verdict === null ? 'pending' : String(verdict.status)
+          if (status === 'failed') {
+            const output = verdict !== null && typeof verdict.output === 'string' && verdict.output !== '' ? ' Reported output: ' + verdict.output : ''
+            return failure(
+              'test-failed',
+              id + ' failed independent testing; fix the branch and record a passing verdict before merging.' + output,
+            )
+          }
+          if (status !== 'passed') {
+            return failure(
+              'test-required',
+              id + ' needs a passing independent test verdict before it can be merged (current verdict: ' + status + ').',
+            )
+          }
         }
         const settings = read.board.dispatch === undefined || read.board.dispatch === null ? null : read.board.dispatch.worktree
         const worktreeRoot = settings !== null && settings !== undefined && typeof settings.root === 'string' ? settings.root : '.worktrees'
@@ -963,10 +987,15 @@ export function createApi(ctx, options) {
           const detail = diff === null || diff === undefined ? 'git returned no result' : String(diff.message)
           return failure(code, 'could not list the files ' + id + ' changed: ' + detail)
         }
+        // A moved head invalidates any earlier independent-test verdict: put it
+        // back to pending so the merge gate demands a fresh pass.
+        const testing = read.board.dispatch === undefined || read.board.dispatch === null ? 'self' : read.board.dispatch.testing
+        const verdict =
+          testing === 'independent' ? { status: 'pending', by: null, at: new Date(clock()).toISOString(), output: null } : null
         const recorded = await writeTask(
           projectPath,
           id,
-          (board) => refreshMergeRequest(board, id, base, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by),
+          (board) => refreshMergeRequest(board, id, base, current.head, Array.isArray(diff.files) ? diff.files : [], verdict, clock(), context.by),
           context,
         )
         if (recorded.ok !== true) return recorded
@@ -983,7 +1012,9 @@ export function createApi(ctx, options) {
       // Only a running task has a worktree worth committing; any other status
       // must reach submitTask's own refusal without touching git.
       const submittedAt = clock()
-      const prepared = checked.task.status === 'running' ? await prepareMergeRequest(checked.task, source, submittedAt) : { ok: true, mr: null }
+      const testing = read.board.dispatch === undefined || read.board.dispatch === null ? 'self' : read.board.dispatch.testing
+      const prepared =
+        checked.task.status === 'running' ? await prepareMergeRequest(checked.task, source, submittedAt, testing) : { ok: true, mr: null }
       if (prepared.ok !== true) return prepared
       const input = { evidence: source.evidence, note: source.note }
       if (prepared.mr !== null) {
