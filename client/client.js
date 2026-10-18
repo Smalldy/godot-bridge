@@ -2181,11 +2181,14 @@ window.__ModuleLoader__.load({
 				// draft so the form remounts blank (the success banner stays). A failed
 				// create keeps the draft and the user's edits for a retry.
 				async function createProfile(name, fields) {
+					// Capture the draft this request was submitted from: a Fork taken while
+					// the request is in flight must never be cleared by that response.
+					const submittedDraft = roleForkState.draft
 					const outcome = await store.send('rolesCreate', { name: name, profile: fields })
 					const ok = outcome !== null && outcome !== undefined && outcome.ok === true
 					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
 					setResult({ action: 'rolesCreate', ok: ok, payload: payload })
-					if (ok === true && roleForkState.draft !== null) {
+					if (ok === true && submittedDraft !== null && roleForkState.draft === submittedDraft) {
 						roleForkState.draft = null
 						bumpFork()
 					}

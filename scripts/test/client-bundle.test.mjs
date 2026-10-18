@@ -1333,6 +1333,58 @@ await flush()
   check('the fork retry never edits the source profile', posts.filter((post) => post.action === 'rolesUpdate').length === updatesBeforeRetry && HOST.roles.profiles['godot-reviewer'].prompt === 'Check Godot idioms.', JSON.stringify(HOST.roles.profiles['godot-reviewer']))
 }
 
+// ── an in-flight create must not clear a newer Fork draft ─────────────────
+{
+  let releasePost = null
+  postGate = new Promise(function (resolveGate) { releasePost = resolveGate })
+  let tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  let form = findAll(tree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  check('the gated blank create starts in blank mode', form.__testKey === 'blank', String(form.__testKey))
+  const nameField = findAll(form, (node) => node.props && node.props['data-field'] === 'name')[0]
+  nameField.props.ref.current = { value: 'blank-in-flight' }
+  findAll(form, (node) => node.props && node.props['data-action'] === 'rolesCreate')[0].props.onClick()
+  // While the blank create is in flight, fork the custom profile.
+  const customRow = findAll(tree, (node) => node.type === 'tr' && node.props && node.props['data-role-profile'] === 'godot-reviewer')[0]
+  findAll(customRow, (node) => node.props && node.props['data-action'] === 'role-fork')[0].props.onClick()
+  const forkTree = withHooks(panel, { initialView: 'roles' })
+  const forkForm = findAll(forkTree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  const forkedName = findAll(forkForm, (node) => node.props && node.props['data-field'] === 'name')[0].props.defaultValue
+  check('a fork while a blank create is in flight uses the new draft', forkForm.__testKey === 'fork-' + forkedName, String(forkForm.__testKey))
+  releasePost()
+  postGate = null
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  form = findAll(tree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  check(
+    'the completed blank create does not clear a newer fork draft',
+    form.__testKey === 'fork-' + forkedName && findAll(form, (node) => node.props && node.props['data-field'] === 'name')[0].props.defaultValue === forkedName && textOf(tree).indexOf('保存 ✓') >= 0,
+    JSON.stringify({ key: form.__testKey, name: forkedName }),
+  )
+
+  // The same with a fork create in flight: fork another profile before it resolves.
+  releasePost = null
+  postGate = new Promise(function (resolveGate) { releasePost = resolveGate })
+  form = findAll(tree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  findAll(form, (node) => node.props && node.props['data-action'] === 'rolesCreate')[0].props.onClick()
+  const workerRow = findAll(tree, (node) => node.type === 'tr' && node.props && node.props['data-role-profile'] === 'worker')[0]
+  findAll(workerRow, (node) => node.props && node.props['data-action'] === 'role-fork')[0].props.onClick()
+  const secondForkTree = withHooks(panel, { initialView: 'roles' })
+  const secondForkForm = findAll(secondForkTree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  check('a second fork during the create is shown immediately', secondForkForm.__testKey === 'fork-worker-fork', String(secondForkForm.__testKey))
+  releasePost()
+  postGate = null
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  form = findAll(tree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  check(
+    'the completed fork create does not clear the newer worker fork',
+    form.__testKey === 'fork-worker-fork' && findAll(form, (node) => node.props && node.props['data-field'] === 'name')[0].props.defaultValue === 'worker-fork' && textOf(tree).indexOf('保存 ✓') >= 0,
+    JSON.stringify({ key: form.__testKey }),
+  )
+}
+
 // File-lock view: waiters are advisory, not a queue.
 const locksTree = withHooks(panel, { initialView: 'locks' })
 await flush()
