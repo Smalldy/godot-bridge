@@ -400,6 +400,14 @@ window.__ModuleLoader__.load({
 				roleInstancesCount: '实例数',
 				roleReset: '恢复默认',
 				roleBatchActions: '批量操作',
+				rolePreviews: '上下文预览',
+				rolePreviewsUnavailable: '宿主没有提供上下文预览。',
+				rolePreviewHostNote: '宿主生成，随任务变化',
+				roleProfilePrompt: 'Profile prompt（可修改）',
+				rolePromptEmpty: '（空 —— 内置角色的上下文由宿主 brief 补齐）',
+				roleFork: 'Fork',
+				roleForkNote: 'Fork 自',
+				roleForkCopyNote: '仅复制 profile 字段；宿主 brief 会按任务重新生成。',
 				roleRefresh: '读取角色配置',
 				roleSource: '来源',
 				roleDrain: '排空',
@@ -694,6 +702,14 @@ window.__ModuleLoader__.load({
 				roleInstancesCount: 'Instances',
 				roleReset: 'Reset defaults',
 				roleBatchActions: 'Batch actions',
+				rolePreviews: 'Context preview',
+				rolePreviewsUnavailable: 'The host did not report context previews.',
+				rolePreviewHostNote: 'Host-generated; varies per task',
+				roleProfilePrompt: 'Profile prompt (editable)',
+				rolePromptEmpty: '(empty — the host brief fills the context for built-in roles)',
+				roleFork: 'Fork',
+				roleForkNote: 'Forked from',
+				roleForkCopyNote: 'Only the profile fields are copied; the host brief is regenerated per task.',
 				roleRefresh: 'Reload role profiles',
 				roleSource: 'Source',
 				roleDrain: 'Drain',
@@ -831,6 +847,13 @@ window.__ModuleLoader__.load({
 '.gbt-formwide{grid-column:1 / -1}',
 '.gbt-formactions{grid-column:1 / -1;display:flex;justify-content:flex-end;gap:6px}',
 '.gbt-actionbar{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;margin:0 0 12px}',
+'.gbt-preview{border:0.5px solid var(--dsw-alias-border-l4);border-radius:6px;padding:8px 10px;margin:0 0 8px;background:var(--dsw-alias-bg-layer-1)}',
+'.gbt-preview summary{cursor:pointer;font-size:11px;font-weight:500;color:var(--dsw-alias-label-primary)}',
+'.gbt-preview .gbt-rbody{padding-top:8px}',
+'.gbt-previewprompt{font-size:11px;color:var(--dsw-alias-label-secondary);margin:0 0 8px}',
+'.gbt-previewentry{margin:0 0 8px}',
+'.gbt-previewtext{max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-family:var(--dsw-font-mono,monospace);font-size:10px;line-height:1.55;background:var(--dsw-alias-bg-layer-2);border-radius:6px;padding:8px;margin:4px 0 0;color:var(--dsw-alias-label-secondary)}',
+'.gbt-forknote{font-size:11px;color:var(--dsw-alias-label-tertiary);margin:0 0 8px}',
 '@media (max-width: 720px){.gbt-formgrid{grid-template-columns:repeat(2,minmax(0,1fr))}.gbt-roleprofiles{min-width:760px}}',
 			'.gbt-field{display:flex;flex-direction:column;gap:4px}',
 			'.gbt-field label{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
@@ -1073,6 +1096,7 @@ window.__ModuleLoader__.load({
 				worktrees: payload.worktrees === undefined || payload.worktrees === null ? null : payload.worktrees,
 				activity: payload.activity === undefined || payload.activity === null ? null : payload.activity,
 				roles: payload.roles === undefined || payload.roles === null ? null : payload.roles,
+				rolePreviews: Array.isArray(payload.rolePreviews) ? payload.rolePreviews : [],
 				scheduler: payload.scheduler === undefined ? null : payload.scheduler,
 				actionResult: actionResult === undefined || actionResult === null ? null : actionResult,
 				actionError: payload.actionError === undefined || payload.actionError === null ? null : payload.actionError,
@@ -1802,6 +1826,7 @@ window.__ModuleLoader__.load({
 						h(
 							'div',
 							{ className: 'gbt-rowactions' },
+							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-fork', onClick: function () { props.onFork(props.name) } }, t('roleFork')),
 							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-save', onClick: save }, t('roleSave')),
 							builtin
 								? null
@@ -1824,6 +1849,8 @@ window.__ModuleLoader__.load({
 
 			function RoleCreateForm(props) {
 				const t = props.t
+				const draft = props.draft === undefined || props.draft === null ? null : props.draft
+				const draftProfile = draft === null ? null : draft.profile
 				const nameRef = React.useRef(null)
 				const roleRef = React.useRef(null)
 				const instancesRef = React.useRef(null)
@@ -1836,30 +1863,33 @@ window.__ModuleLoader__.load({
 					return typeof ref.current.value === 'string' ? ref.current.value : fallback
 				}
 				function submit() {
-					const name = valueOf(nameRef, '').trim()
+					const name = valueOf(nameRef, draft === null ? '' : draft.name).trim()
 					if (name === '') {
 						props.onInvalid('invalid-role-name')
 						return
 					}
 					props.onCreate(name, {
-						role: valueOf(roleRef, 'reviewer'),
-						instances: Number(valueOf(instancesRef, '1')),
-						skills: tcSplitList(valueOf(skillsRef, '')),
-						context: valueOf(contextRef, 'fresh'),
-						permissions: tcSplitList(valueOf(permissionsRef, 'read-only')),
-						prompt: valueOf(promptRef, ''),
+						role: valueOf(roleRef, draftProfile === null ? 'reviewer' : draftProfile.role),
+						instances: Number(valueOf(instancesRef, draftProfile === null ? '1' : String(draftProfile.instances))),
+						skills: tcSplitList(valueOf(skillsRef, draftProfile === null ? '' : (draftProfile.skills || []).join(', '))),
+						context: valueOf(contextRef, draftProfile === null ? 'fresh' : draftProfile.context || 'fresh'),
+						permissions: tcSplitList(valueOf(permissionsRef, draftProfile === null ? 'read-only' : (draftProfile.permissions || []).join(', '))),
+						prompt: valueOf(promptRef, draftProfile === null ? '' : draftProfile.prompt || ''),
 					})
 				}
 				return h(
 					'div',
 					{ className: 'gbt-formgrid', 'data-form': 'role-create' },
-					h('label', null, t('roleName'), h('input', { ref: nameRef, className: 'gbt-input', 'data-field': 'name', defaultValue: '', spellCheck: false })),
-					h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: 'reviewer', 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
-					h('label', null, t('roleInstancesCount'), h('input', { ref: instancesRef, className: 'gbt-input', 'data-field': 'instances', type: 'number', min: 1, max: 8, defaultValue: '1' })),
-					h('label', null, t('roleSkills'), h('input', { ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: '', spellCheck: false })),
-					h('label', null, t('roleContext'), h('select', { ref: contextRef, defaultValue: 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')])),
-					h('label', null, t('rolePermissions'), h('input', { ref: permissionsRef, className: 'gbt-input', 'data-field': 'permissions', defaultValue: 'read-only', spellCheck: false })),
-					h('label', { className: 'gbt-formwide' }, t('rolePrompt'), h('textarea', { ref: promptRef, className: 'gbt-input', 'data-field': 'prompt', defaultValue: '', rows: 3 })),
+					draft === null
+						? null
+						: h('div', { className: 'gbt-forknote gbt-formwide', 'data-fork-source': draft.source }, t('roleForkNote') + ' ' + String(draft.source) + ' · ' + t('roleForkCopyNote')),
+					h('label', null, t('roleName'), h('input', { ref: nameRef, className: 'gbt-input', 'data-field': 'name', defaultValue: draft === null ? '' : draft.name, spellCheck: false })),
+					h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: draftProfile === null ? 'reviewer' : draftProfile.role, 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
+					h('label', null, t('roleInstancesCount'), h('input', { ref: instancesRef, className: 'gbt-input', 'data-field': 'instances', type: 'number', min: 1, max: 8, defaultValue: draftProfile === null ? '1' : String(draftProfile.instances) })),
+					h('label', null, t('roleSkills'), h('input', { ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: draftProfile === null ? '' : (draftProfile.skills || []).join(', '), spellCheck: false })),
+					h('label', null, t('roleContext'), h('select', { ref: contextRef, defaultValue: draftProfile === null ? 'fresh' : draftProfile.context || 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')])),
+					h('label', null, t('rolePermissions'), h('input', { ref: permissionsRef, className: 'gbt-input', 'data-field': 'permissions', defaultValue: draftProfile === null ? 'read-only' : (draftProfile.permissions || []).join(', '), spellCheck: false })),
+					h('label', { className: 'gbt-formwide' }, t('rolePrompt'), h('textarea', { ref: promptRef, className: 'gbt-input', 'data-field': 'prompt', defaultValue: draftProfile === null ? '' : draftProfile.prompt || '', rows: 3 })),
 					h('div', { className: 'gbt-formactions' }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'rolesCreate', onClick: submit }, t('roleCreate'))),
 				)
 			}
@@ -2104,11 +2134,18 @@ window.__ModuleLoader__.load({
 				return h('div', { className: 'gbt-statusview' }, blocks)
 			}
 
+			// A fork draft is module-level so it survives the panel's re-render and
+			// pre-fills the create form; the used set keeps successive forks unique.
+			const roleForkState = { draft: null, used: new Set() }
+
 			function RolesView(props) {
 				const t = props.t
 				const snapshot = props.snapshot
 				const store = props.store
 				const [result, setResult] = React.useState(null)
+				const [, bumpFork] = React.useReducer(function (count) { return count + 1 }, 0)
+				const draft = roleForkState.draft
+				const previews = Array.isArray(snapshot.rolePreviews) ? snapshot.rolePreviews : []
 				const hostResult = snapshot.actionResult === undefined || snapshot.actionResult === null ? null : { action: snapshot.actionResult.action, ok: snapshot.actionResult.ok !== false, payload: snapshot.actionResult }
 				const hostError = snapshot.actionError === undefined || snapshot.actionError === null ? null : { action: 'host', ok: false, payload: snapshot.actionError }
 				const config = snapshot.roles === undefined || snapshot.roles === null ? null : snapshot.roles
@@ -2137,6 +2174,31 @@ window.__ModuleLoader__.load({
 				const names = Object.keys(profiles)
 				const stages = config.stages !== null && config.stages !== undefined && typeof config.stages === 'object' ? config.stages : {}
 				const stageKeys = ['implement', 'review', 'test']
+				function forkProfile(sourceName) {
+					const profile = profiles[sourceName]
+					if (profile === null || profile === undefined) return
+					let candidate = String(sourceName) + '-fork'
+					let index = 2
+					while (profiles[candidate] !== undefined || roleForkState.used.has(candidate)) {
+						candidate = String(sourceName) + '-fork-' + String(index)
+						index += 1
+					}
+					roleForkState.used.add(candidate)
+					roleForkState.draft = {
+						source: String(sourceName),
+						name: candidate,
+						profile: {
+							role: profile.role,
+							stage: profile.stage,
+							instances: profile.instances,
+							skills: (Array.isArray(profile.skills) ? profile.skills : []).slice(),
+							context: profile.context || 'fresh',
+							permissions: (Array.isArray(profile.permissions) ? profile.permissions : []).slice(),
+							prompt: typeof profile.prompt === 'string' ? profile.prompt : '',
+						},
+					}
+					bumpFork()
+				}
 				const profileRows = names.map(function (name) {
 					const profile = profiles[name]
 					const builtin = name === 'worker' || name === 'reviewer' || name === 'tester'
@@ -2151,6 +2213,9 @@ window.__ModuleLoader__.load({
 						},
 						onDelete: function (profileName) {
 							void run('rolesDelete', { name: profileName })
+						},
+						onFork: function (profileName) {
+							forkProfile(profileName)
 						},
 					})
 				})
@@ -2201,6 +2266,44 @@ window.__ModuleLoader__.load({
 					),
 					h('tbody', null, profileRows),
 				)
+				const previewsCard = roleCard({
+					id: 'previews',
+					title: t('rolePreviews'),
+					children:
+						previews.length === 0
+							? h('div', { className: 'gbt-empty' }, t('rolePreviewsUnavailable'))
+							: previews.map(function (preview) {
+									const previewName = typeof preview.name === 'string' ? preview.name : String(preview.kind)
+									const entries = Array.isArray(preview.entries) ? preview.entries : []
+									return h(
+										'details',
+										{ key: previewName, className: 'gbt-preview', 'data-role-preview': previewName, 'data-kind': preview.kind, 'data-placeholder': preview.placeholder === true ? 'true' : 'false' },
+										h(
+											'summary',
+											null,
+											previewName + ' · ' + roleKindLabel(preview.kind, t) + (typeof preview.stage === 'string' ? ' · ' + roleStageLabel(preview.stage, t) : ''),
+										),
+										h(
+											'div',
+											{ className: 'gbt-rbody' },
+											h('div', { className: 'gbt-footnote', 'data-preview-note': 'host' }, t('rolePreviewHostNote') + ' · ' + String(preview.placeholderTask !== null && preview.placeholderTask !== undefined && preview.placeholderTask.id !== undefined ? preview.placeholderTask.id : 'T-?')),
+											h(
+												'div',
+												{ className: 'gbt-previewprompt', 'data-preview-prompt': previewName },
+												t('roleProfilePrompt') + ': ' + (typeof preview.profilePrompt === 'string' && preview.profilePrompt !== '' ? preview.profilePrompt : t('rolePromptEmpty')),
+											),
+											entries.map(function (entry) {
+												return h(
+													'div',
+													{ key: String(entry.key), className: 'gbt-previewentry', 'data-brief': String(entry.key) },
+													h('div', { className: 'gbt-footnote' }, String(entry.label) + ' · ' + t('rolePreviewHostNote')),
+													h('pre', { className: 'gbt-previewtext' }, String(entry.text)),
+												)
+											}),
+										),
+									)
+								}),
+				})
 				const instancesTable = h(
 					'table',
 					{ className: 'gbt-locktable', 'data-section': 'role-instances' },
@@ -2268,7 +2371,8 @@ window.__ModuleLoader__.load({
 					roleCard({ id: 'source', title: t('roleSource'), aside: refreshButton, children: [] }),
 					roleCard({ id: 'stages', title: t('roleStages'), children: tableWrap('stage-table', stagesTable) }),
 					roleCard({ id: 'profiles', title: t('roleProfiles'), children: tableWrap('profile-table', profilesTable) }),
-					roleCard({ id: 'create', title: t('roleCreate'), children: h(RoleCreateForm, { t: t, onCreate: function (name, fields) { void run('rolesCreate', { name: name, profile: fields }) }, onInvalid: function (code) { setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } }) } }) }),
+					previewsCard,
+					roleCard({ id: 'create', title: t('roleCreate'), children: h(RoleCreateForm, { t: t, draft: draft, onCreate: function (name, fields) { void run('rolesCreate', { name: name, profile: fields }) }, onInvalid: function (code) { setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } }) } }) }),
 					roleCard({ id: 'instances', title: t('roleInstances'), children: tableWrap('instance-table', instancesTable) }),
 					actionBar,
 				)

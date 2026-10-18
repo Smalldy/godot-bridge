@@ -754,6 +754,71 @@ export function roleBriefFor(kind, task, config, options) {
 
 
 /**
+ * Read-only preview of the context the host actually injects for a role profile.
+ * It calls the real brief builders with a clearly-marked placeholder task, so
+ * the panel can show what the agent receives instead of an empty profile prompt.
+ */
+export function roleContextPreview(config, kind, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const named =
+    typeof opts.profileName === 'string' && config !== null && config !== undefined && config.profiles !== null && config.profiles !== undefined && config.profiles[opts.profileName] !== undefined
+      ? config.profiles[opts.profileName]
+      : null
+  let profile = config !== null && config !== undefined ? profileForKind(config, kind) : null
+  let scoped = config
+  if (named !== null) {
+    profile = named
+    const stage = typeof profile.stage === 'string' ? profile.stage : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
+    scoped = Object.assign({}, config, { stages: Object.assign({}, config.stages, { [stage]: opts.profileName }) })
+  }
+  const placeholder = {
+    id: 'T-?',
+    title: 'Example task (placeholder)',
+    status: 'running',
+    priority: 0,
+    spec: '<example spec: what this task involves>',
+    acceptance: '<example acceptance: how completion is judged>',
+    writeFiles: ['scripts/example.gd'],
+    actualFiles: ['scripts/example.gd'],
+    branch: 'task/T-?-1',
+    worktree: '<task worktree>',
+    commit: '<commit>',
+    base: '<base>',
+    target: 'main',
+    evidence: '<worker evidence would appear here>',
+    review: { status: 'pending', attempt: 1 },
+    merge: { status: 'open', base: '<base>', target: 'main', head: '<head>', mergeCommit: null },
+    test: { status: 'pending', attempt: 1 },
+  }
+  const entries = [
+    {
+      key: 'role',
+      label: 'Role brief (provisioning)',
+      text: roleBriefFor(kind, placeholder, scoped, { projectPath: opts.projectPath }),
+    },
+  ]
+  if (kind === 'reviewer') {
+    entries.push({ key: 'stage', label: 'Review round brief', text: reviewBriefFor(placeholder, opts.projectPath) })
+  }
+  if (kind === 'tester') {
+    entries.push({
+      key: 'stage',
+      label: 'Test round brief',
+      text: testerBriefFor(placeholder, opts.projectPath, { path: '<test candidate worktree>', branch: 'test/T-?', base: '<base>', head: '<candidate head>' }, {}),
+    })
+  }
+  return {
+    name: named !== null ? String(opts.profileName) : profile !== null && profile !== undefined && typeof profile.name === 'string' ? profile.name : String(kind),
+    kind: String(kind),
+    stage: profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : null,
+    placeholderTask: { id: placeholder.id, title: placeholder.title },
+    profilePrompt: profile !== null && profile !== undefined && typeof profile.prompt === 'string' ? profile.prompt : '',
+    placeholder: true,
+    entries: entries,
+  }
+}
+
+/**
  * The per-round REVIEW brief the host sends the reviewer when a task enters
  * review (submit, or a refreshed head/base). It is self-contained: what the
  * task asked for, the tree under review, the worker's evidence, the project

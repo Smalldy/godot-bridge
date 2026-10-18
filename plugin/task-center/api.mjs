@@ -32,6 +32,7 @@ import {
   resolveLead,
   reviewBriefFor,
   reworkBriefFor,
+  roleContextPreview,
   roleKindOf,
   servicesFor,
   testFailureBriefFor,
@@ -473,6 +474,20 @@ export function createApi(ctx, options) {
     } finally {
       mergingCandidates.delete(id)
     }
+  }
+
+  /** Read-only brief previews for every configured role profile. */
+  function rolePreviewsFor(projectPath, config) {
+    if (config === null || config === undefined || config.profiles === null || config.profiles === undefined || typeof config.profiles !== 'object') return []
+    return Object.keys(config.profiles).map(function (name) {
+      const profile = config.profiles[name]
+      const kind = profile !== null && profile !== undefined && typeof profile.role === 'string' ? profile.role : 'worker'
+      try {
+        return roleContextPreview(config, kind, { projectPath: projectPath, profileName: name })
+      } catch (error) {
+        return { name: name, kind: kind, stage: null, error: messageOf(error), placeholder: true, entries: [] }
+      }
+    })
   }
 
   /** Read the project role config (defaults if absent/broken). */
@@ -1111,6 +1126,7 @@ export function createApi(ctx, options) {
       updatedAt: board.updatedAt,
       dispatch: board.dispatch,
       roles: roleRead.config,
+      rolePreviews: rolePreviewsFor(projectPath, roleRead.config),
       workers: workers,
       // Agents are the live Team members (lead + teammates), with their kind,
       // session and current task. System/host work is NOT listed here.

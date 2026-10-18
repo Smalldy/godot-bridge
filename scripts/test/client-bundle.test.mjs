@@ -476,6 +476,59 @@ const HOST = {
       'godot-reviewer': { name: 'godot-reviewer', role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check Godot idioms.' },
     },
   },
+  rolePreviews: [
+    {
+      name: 'worker',
+      kind: 'worker',
+      stage: 'implement',
+      placeholder: true,
+      placeholderTask: { id: 'T-?', title: 'Example task (placeholder)' },
+      profilePrompt: '',
+      entries: [
+        {
+          key: 'role',
+          label: 'Role brief (provisioning)',
+          text: 'Task center role: worker\nStage: implement (this role owns the implement stage; role profiles replace manual Lead spawns.)\n\nTask T-?: Example task (placeholder)\n\nWhat it involves:\n<example spec: what this task involves>\n\nPermission boundary (hard):\n- You may edit files and commit only inside the task worktree.',
+        },
+      ],
+    },
+    {
+      name: 'reviewer',
+      kind: 'reviewer',
+      stage: 'review',
+      placeholder: true,
+      placeholderTask: { id: 'T-?', title: 'Example task (placeholder)' },
+      profilePrompt: '',
+      entries: [
+        { key: 'role', label: 'Role brief (provisioning)', text: 'Task center role: reviewer\nStage: review\n\nPermission boundary (hard):\n- READ-ONLY on implementation.' },
+        { key: 'stage', label: 'Review round brief', text: 'Review round 1 for T-?: Example task (placeholder)\nProject: ' + PROJECT },
+      ],
+    },
+    {
+      name: 'tester',
+      kind: 'tester',
+      stage: 'test',
+      placeholder: true,
+      placeholderTask: { id: 'T-?', title: 'Example task (placeholder)' },
+      profilePrompt: '',
+      entries: [
+        { key: 'role', label: 'Role brief (provisioning)', text: 'Task center role: tester\nStage: test\n\nPermission boundary (hard):\n- READ-ONLY on implementation.' },
+        { key: 'stage', label: 'Test round brief', text: 'Independent TEST round 1 for T-?: Example task (placeholder)' },
+      ],
+    },
+    {
+      name: 'godot-reviewer',
+      kind: 'reviewer',
+      stage: 'review',
+      placeholder: true,
+      placeholderTask: { id: 'T-?', title: 'Example task (placeholder)' },
+      profilePrompt: 'Check Godot idioms.',
+      entries: [
+        { key: 'role', label: 'Role brief (provisioning)', text: 'Task center role: reviewer\nStage: review\n\nProfile instructions:\nCheck Godot idioms.' },
+        { key: 'stage', label: 'Review round brief', text: 'Review round 1 for T-?: Example task (placeholder)' },
+      ],
+    },
+  ],
   locks: [
     {
       path: 'scripts/damage.gd',
@@ -1043,7 +1096,7 @@ await flush()
   const cardIds = cards.map((node) => node.props['data-card'])
   check(
     'the roles view groups its sections into titled cards',
-    ['source', 'stages', 'profiles', 'create', 'instances'].every((id) => cardIds.indexOf(id) >= 0) && cards.length === 5,
+    ['source', 'stages', 'profiles', 'previews', 'create', 'instances'].every((id) => cardIds.indexOf(id) >= 0) && cards.length === 6,
     JSON.stringify(cardIds),
   )
   check('every card has a title row', cards.every(function (card) { return findAll(card, (node) => node.props && node.props.className === 'gbt-rtitle').length === 1 }))
@@ -1110,6 +1163,91 @@ await flush()
       }),
     JSON.stringify({ wrappers: statusWrappers.length, ancestors: ancestorCounts }),
   )
+}
+
+// ── Role context preview + fork workflow ───────────────────────────────────
+{
+  let rolesTree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  rolesTree = withHooks(panel, { initialView: 'roles' })
+  const previewCard = findAll(rolesTree, (node) => node.props && node.props['data-card'] === 'previews')[0]
+  check('the roles view has a context preview card', previewCard !== undefined && textOf(previewCard).indexOf('上下文预览') >= 0)
+  const previews = findAll(rolesTree, (node) => node.props && node.props['data-role-preview'] !== undefined)
+  check('every profile has a preview block', previews.length === 4 && ['worker', 'reviewer', 'tester', 'godot-reviewer'].every((name) => previews.some((block) => block.props['data-role-preview'] === name)), String(previews.length))
+  const workerPreview = previews.filter((block) => block.props['data-role-preview'] === 'worker')[0]
+  const workerPreviewText = textOf(workerPreview)
+  check(
+    'a built-in preview shows the host-generated brief, not an empty context',
+    workerPreviewText.indexOf('宿主生成，随任务变化') >= 0 && workerPreviewText.indexOf('Task center role: worker') >= 0 && workerPreviewText.indexOf('Permission boundary (hard)') >= 0 && workerPreviewText.indexOf('（空') >= 0,
+    workerPreviewText,
+  )
+  const customPreview = previews.filter((block) => block.props['data-role-preview'] === 'godot-reviewer')[0]
+  const customPreviewText = textOf(customPreview)
+  check(
+    'a custom preview separates the editable profile prompt from the host brief',
+    customPreviewText.indexOf('Profile prompt（可修改）') >= 0 && customPreviewText.indexOf('Check Godot idioms.') >= 0 && customPreviewText.indexOf('Review round brief') >= 0 && customPreviewText.indexOf('Review round 1 for T-?') >= 0,
+    customPreviewText,
+  )
+  check('the reviewer preview contains both the role brief and the review brief', findAll(customPreview, (node) => node.props && node.props['data-brief'] !== undefined).length === 2)
+
+  // Fork the custom profile and check the draft prefill + dedupe.
+  const customRow = findAll(rolesTree, (node) => node.type === 'tr' && node.props && node.props['data-role-profile'] === 'godot-reviewer')[0]
+  findAll(customRow, (node) => node.props && node.props['data-action'] === 'role-fork')[0].props.onClick()
+  let forkTree = withHooks(panel, { initialView: 'roles' })
+  let forkForm = findAll(forkTree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  let forkFields = {}
+  findAll(forkForm, (node) => node.props && node.props['data-field'] !== undefined).forEach(function (node) { forkFields[node.props['data-field']] = node })
+  check(
+    'fork prefills name and profile fields from the source',
+    forkFields.name.props.defaultValue === 'godot-reviewer-fork' &&
+      forkFields.role.props.defaultValue === 'reviewer' &&
+      forkFields.instances.props.defaultValue === '2' &&
+      forkFields.skills.props.defaultValue === 'dsh-plugin-workflow' &&
+      forkFields.context.props.defaultValue === 'fork' &&
+      forkFields.permissions.props.defaultValue === 'read-only, review' &&
+      forkFields.prompt.props.defaultValue === 'Check Godot idioms.',
+    JSON.stringify({ name: forkFields.name.props.defaultValue, role: forkFields.role.props.defaultValue, prompt: forkFields.prompt.props.defaultValue }),
+  )
+  check('the fork draft says it only copies profile fields', textOf(forkForm).indexOf('仅复制 profile 字段') >= 0 && textOf(forkForm).indexOf('godot-reviewer') >= 0, textOf(forkForm))
+  findAll(customRow, (node) => node.props && node.props['data-action'] === 'role-fork')[0].props.onClick()
+  forkTree = withHooks(panel, { initialView: 'roles' })
+  forkForm = findAll(forkTree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
+  forkFields = {}
+  findAll(forkForm, (node) => node.props && node.props['data-field'] !== undefined).forEach(function (node) { forkFields[node.props['data-field']] = node })
+  check('a second fork of the same profile gets a different draft name', forkFields.name.props.defaultValue === 'godot-reviewer-fork-2', forkFields.name.props.defaultValue)
+
+  // Creating from the draft sends the copied fields and leaves the source alone.
+  const beforeForkCreate = posts.length
+  const updatesBeforeFork = posts.filter((post) => post.action === 'rolesUpdate').length
+  findAll(forkForm, (node) => node.props && node.props['data-action'] === 'rolesCreate')[0].props.onClick()
+  await flush()
+  const forkPost = posts[posts.length - 1]
+  check(
+    'creating from a fork sends rolesCreate with the copied fields',
+    posts.length === beforeForkCreate + 1 &&
+      forkPost.action === 'rolesCreate' &&
+      forkPost.name === 'godot-reviewer-fork-2' &&
+      forkPost.profile.role === 'reviewer' &&
+      forkPost.profile.instances === 2 &&
+      forkPost.profile.context === 'fork' &&
+      forkPost.profile.prompt === 'Check Godot idioms.',
+    JSON.stringify(forkPost),
+  )
+  const sourceAfterFork = HOST.roles.profiles['godot-reviewer']
+  check(
+    'the fork action never modifies the source profile',
+    sourceAfterFork.instances === 2 && sourceAfterFork.prompt === 'Check Godot idioms.' && posts.filter((post) => post.action === 'rolesUpdate').length === updatesBeforeFork,
+    JSON.stringify(sourceAfterFork),
+  )
+
+  // Bind the forked name to its stage through the existing bind control.
+  const stageRow = findAll(forkTree, (node) => node.type === 'tr' && node.props && node.props['data-stage'] === 'review')[0]
+  const stageSelect = findAll(stageRow, (node) => node.type === 'select')[0]
+  stageSelect.props.ref.current = { value: 'godot-reviewer-fork-2' }
+  findAll(stageRow, (node) => node.props && node.props['data-action'] === 'rolesBind')[0].props.onClick()
+  await flush()
+  const bindPost = posts[posts.length - 1]
+  check('a forked profile can be bound to its stage', bindPost.action === 'rolesBind' && bindPost.stage === 'review' && bindPost.profile === 'godot-reviewer-fork-2', JSON.stringify(bindPost))
 }
 
 // File-lock view: waiters are advisory, not a queue.

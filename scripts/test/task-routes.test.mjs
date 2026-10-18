@@ -2915,6 +2915,69 @@ async function withDeadline(promise, ms) {
   rig.scheduler.dispose()
 }
 
+// ── role context previews: host-generated briefs, not client copy ──────────
+{
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git })
+  const created = await rig.api.perform(
+    'rolesCreate',
+    { name: 'godot-reviewer', profile: { role: 'reviewer', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check Godot idioms.' } },
+    rig.user,
+  )
+  check('the custom profile exists before the preview', created.ok === true && created.config.profiles['godot-reviewer'].prompt === 'Check Godot idioms.')
+  const snapshot = await rig.api.snapshot(PROJECT)
+  const previews = snapshot.rolePreviews
+  check(
+    'the snapshot carries one preview per configured profile',
+    Array.isArray(previews) && previews.length === 4 && ['worker', 'reviewer', 'tester', 'godot-reviewer'].every((name) => previews.some((preview) => preview.name === name)),
+    JSON.stringify(Array.isArray(previews) ? previews.map((preview) => preview.name) : previews),
+  )
+  const byName = new Map((Array.isArray(previews) ? previews : []).map((preview) => [preview.name, preview]))
+  const worker = byName.get('worker')
+  check(
+    'the worker preview is the real host role brief with a placeholder task',
+    worker !== undefined &&
+      worker.placeholder === true &&
+      worker.placeholderTask.id === 'T-?' &&
+      worker.profilePrompt === '' &&
+      worker.entries.length === 1 &&
+      worker.entries[0].text.indexOf('Task center role: worker') >= 0 &&
+      worker.entries[0].text.indexOf('Permission boundary (hard)') >= 0 &&
+      worker.entries[0].text.indexOf('Verdict schema (your report):') >= 0 &&
+      worker.entries[0].text.indexOf('<example spec: what this task involves>') >= 0,
+    worker === undefined ? 'missing' : worker.entries[0].text.slice(0, 300),
+  )
+  const reviewer = byName.get('reviewer')
+  check(
+    'a reviewer preview includes the generated review-round brief too',
+    reviewer !== undefined &&
+      reviewer.entries.length === 2 &&
+      reviewer.entries[0].text.indexOf('READ-ONLY on implementation') >= 0 &&
+      reviewer.entries[1].key === 'stage' &&
+      reviewer.entries[1].text.indexOf('Review round 1 for T-?') >= 0 &&
+      reviewer.entries[1].text.indexOf('Review checklist') >= 0,
+    reviewer === undefined ? 'missing' : JSON.stringify(reviewer.entries.map((entry) => entry.key)),
+  )
+  const tester = byName.get('tester')
+  check(
+    'a tester preview includes the generated test-round brief too',
+    tester !== undefined && tester.entries.length === 2 && tester.entries[1].text.indexOf('Independent TEST round 1 for T-?') >= 0,
+    tester === undefined ? 'missing' : JSON.stringify(tester.entries.map((entry) => entry.key)),
+  )
+  const custom = byName.get('godot-reviewer')
+  check(
+    'a custom profile preview uses its own prompt and fork context',
+    custom !== undefined &&
+      custom.placeholder === true &&
+      custom.profilePrompt === 'Check Godot idioms.' &&
+      custom.entries[0].text.indexOf('Profile instructions:') >= 0 &&
+      custom.entries[0].text.indexOf('Check Godot idioms.') >= 0 &&
+      custom.entries[0].text.indexOf('forked from the Lead') >= 0 &&
+      custom.entries[0].text.indexOf('Profile permissions: read-only, review') >= 0,
+    custom === undefined ? 'missing' : custom.entries[0].text.slice(0, 400),
+  )
+  rig.scheduler.dispose()
+}
+
 // ── runtime snapshot: agents, worktrees, activity ─────────────────────────
 {
   const fake = fakeGit({
