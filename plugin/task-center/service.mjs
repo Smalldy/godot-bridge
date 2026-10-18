@@ -124,6 +124,14 @@ export function createTask(board, input, now, by) {
     priority: Number.isFinite(input.priority) ? Math.floor(input.priority) : 0,
     dependsOn: checked.dependsOn,
     writeFiles: normaliseList(input.writeFiles),
+    base: null,
+    target: null,
+    branch: null,
+    worktree: null,
+    commit: null,
+    actualFiles: [],
+    requiredRole: null,
+    merge: null,
     assignee: null,
     attempts: 0,
     maxAttempts: Number.isFinite(input.maxAttempts) ? Math.min(10, Math.max(1, Math.floor(input.maxAttempts))) : 3,
@@ -147,13 +155,26 @@ export function createTask(board, input, now, by) {
   return done(next, [{ kind: 'created', id: id, who: by }], { task: task })
 }
 
-/** Change content or structure. Structural fields are frozen while running. */
+/** Git-derived fields the host writes; an ordinary update may not forge them. */
+const HOST_ONLY_FIELDS = ['base', 'target', 'branch', 'worktree', 'commit', 'actualFiles', 'merge']
+
+/**
+ * Change content or structure.
+ *
+ * A running task freezes only its DEPENDENCIES: moving them could strand a
+ * dependent. writeFiles stays editable while running — it is a reservation/hint
+ * for the dispatcher, not a hard gate. Git identity (base/target/branch/
+ * worktree/commit/merge) is host-written and refused here even if supplied.
+ */
 export function updateTask(board, id, input, now, by) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
-  const structural = input.dependsOn !== undefined || input.writeFiles !== undefined
-  if (structural && task.status === 'running') {
-    return fail('running-structural', id + ' is running; finish it or cancel it before changing dependencies or files')
+  const hostOnly = HOST_ONLY_FIELDS.filter((key) => input[key] !== undefined)
+  if (hostOnly.length > 0) {
+    return fail('host-only', 'the host writes ' + hostOnly.join(', ') + '; an ordinary update cannot set them')
+  }
+  if (input.dependsOn !== undefined && task.status === 'running') {
+    return fail('running-structural', id + ' is running; finish it or cancel it before changing dependencies')
   }
   if (input.dependsOn !== undefined) {
     const checked = validateDepends(board, id, input.dependsOn)
@@ -584,6 +605,14 @@ export function summary(board, task, now) {
     dependsOn: task.dependsOn,
     dependency: dependency,
     writeFiles: task.writeFiles,
+    worktree: task.worktree,
+    branch: task.branch,
+    base: task.base,
+    target: task.target,
+    commit: task.commit,
+    actualFiles: task.actualFiles,
+    requiredRole: task.requiredRole,
+    merge: task.merge,
     assignee: task.assignee,
     attempts: task.attempts,
     maxAttempts: task.maxAttempts,

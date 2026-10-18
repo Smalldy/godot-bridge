@@ -34,6 +34,10 @@ export const CLOSED_STATUSES = ['done', 'cancelled']
  * or silent worker, not a slow one. */
 export const TASK_LEASE_MS = 15 * 60 * 1000
 
+/** Worktree defaults. `root` is project-relative; a task checkout may only
+ * live inside the project, exactly like a lock path. */
+export const WORKTREE_DEFAULTS = { enabled: false, root: '.worktrees' }
+
 /** Project-level dispatch defaults. Persisted in the board so the toggle,
  * concurrency and spawn policy survive a restart. */
 export const DISPATCH_DEFAULTS = {
@@ -43,6 +47,7 @@ export const DISPATCH_DEFAULTS = {
   maxWorkAgents: 4,
   maxAttempts: 3,
   request: null,
+  worktree: { enabled: false, root: '.worktrees' },
 }
 
 /** Upper bounds for user-provided dispatch settings. */
@@ -63,6 +68,74 @@ export function normaliseRequest(raw) {
   }
 }
 
+/**
+ * A project-relative directory for task worktrees, as POSIX text.
+ *
+ * Anything absolute, escaping (`..`) or unusable falls back to the default:
+ * normalisation must never make a board unreadable, and a root outside the
+ * project would escape the sandbox every path check in the task center relies on.
+ */
+export function normaliseWorktreeRoot(raw) {
+  const fallback = WORKTREE_DEFAULTS.root
+  if (typeof raw !== 'string') return fallback
+  const text = raw.trim()
+  if (text === '' || text.indexOf('\u0000') >= 0) return fallback
+  // POSIX-absolute, Windows drive-absolute or UNC: none is project-relative.
+  if (text.startsWith('/') || text.startsWith('\\') || /^[a-zA-Z]:/.test(text)) return fallback
+  const segments = []
+  for (const segment of text.split(/[\\/]+/)) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') return fallback
+    segments.push(segment)
+  }
+  if (segments.length === 0) return fallback
+  return segments.join('/')
+}
+
+/** Normalised `dispatch.worktree`: enabled only on an explicit true. */
+export function normaliseWorktree(raw) {
+  const source = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  return {
+    enabled: source.enabled === true,
+    root: normaliseWorktreeRoot(source.root),
+  }
+}
+
+function mergeStringList(value) {
+  if (!Array.isArray(value)) return []
+  const seen = new Set()
+  const out = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const text = item.trim()
+    if (text === '' || seen.has(text)) continue
+    seen.add(text)
+    out.push(text)
+  }
+  return out
+}
+
+/**
+ * A merge-request record, or null. Every member is optional so a hand-written
+ * board survives; `conflict` keeps a boolean or a description, whichever a
+ * future merger wrote, instead of silently dropping it.
+ */
+export function normaliseMerge(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  return {
+    status: typeof raw.status === 'string' ? raw.status : null,
+    base: typeof raw.base === 'string' ? raw.base : null,
+    target: typeof raw.target === 'string' ? raw.target : null,
+    head: typeof raw.head === 'string' ? raw.head : null,
+    declaredFiles: mergeStringList(raw.declaredFiles),
+    actualFiles: mergeStringList(raw.actualFiles),
+    tests: typeof raw.tests === 'string' ? raw.tests : null,
+    reviewer: typeof raw.reviewer === 'string' ? raw.reviewer : null,
+    conflict: typeof raw.conflict === 'string' || typeof raw.conflict === 'boolean' ? raw.conflict : null,
+    at: typeof raw.at === 'string' ? raw.at : null,
+  }
+}
+
 /** A fresh dispatch record with every field present. */
 export function normaliseDispatch(raw) {
   const source = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
@@ -78,5 +151,6 @@ export function normaliseDispatch(raw) {
     maxWorkAgents: clamp(source.maxWorkAgents, DISPATCH_LIMITS.maxWorkAgents, DISPATCH_DEFAULTS.maxWorkAgents),
     maxAttempts: clamp(source.maxAttempts, DISPATCH_LIMITS.maxAttempts, DISPATCH_DEFAULTS.maxAttempts),
     request: normaliseRequest(source.request),
+    worktree: normaliseWorktree(source.worktree),
   }
 }

@@ -3,6 +3,7 @@
 
 import { join } from 'node:path'
 import { readBoard, updateBoard, emptyBoard, boardPath, MAX_HISTORY } from '../../plugin/task-center/board.mjs'
+import { normaliseDispatch, normaliseWorktree } from '../../plugin/task-center/schema.mjs'
 import { createFakeFs, seedBoard, boardText, PROJECT } from './support/fixtures.mjs'
 
 let failures = 0
@@ -131,6 +132,153 @@ check('empty board has a sequence', empty.seq === 1)
   check('history is capped', kept.length === MAX_HISTORY, String(kept.length))
   check('the creation entry is kept', kept[0].note === 'entry 0', kept[0].note)
   check('the newest entry is kept', kept[kept.length - 1].note === 'entry ' + String(history.length - 1))
+}
+
+// worktree / merge-request fields: defaults and roundtrip
+{
+  const fs = createFakeFs()
+  seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: 2, tasks: [{ id: 'T-1', title: 'legacy' }] }))
+  const legacy = await read(fs)
+  const task = legacy.board.tasks[0]
+  check(
+    'a legacy task defaults the worktree fields',
+    task.base === null && task.target === null && task.branch === null && task.worktree === null && task.commit === null,
+    JSON.stringify({ base: task.base, target: task.target, branch: task.branch, worktree: task.worktree, commit: task.commit }),
+  )
+  check(
+    'a legacy task defaults actualFiles, requiredRole and merge',
+    Array.isArray(task.actualFiles) && task.actualFiles.length === 0 && task.requiredRole === null && task.merge === null,
+    JSON.stringify({ actualFiles: task.actualFiles, requiredRole: task.requiredRole, merge: task.merge }),
+  )
+  check(
+    'dispatch.worktree defaults off under .worktrees',
+    legacy.board.dispatch.worktree.enabled === false && legacy.board.dispatch.worktree.root === '.worktrees',
+    JSON.stringify(legacy.board.dispatch.worktree),
+  )
+}
+
+const BASE_SHA = 'a'.repeat(40)
+const HEAD_SHA = 'b'.repeat(40)
+const MERGE = {
+  status: 'open',
+  base: BASE_SHA,
+  target: 'main',
+  head: HEAD_SHA,
+  declaredFiles: ['scripts/a.gd'],
+  actualFiles: ['scripts/a.gd', 'scripts/b.gd'],
+  tests: 'npm run verify',
+  reviewer: null,
+  conflict: null,
+  at: '2026-01-01T00:00:00.000Z',
+}
+{
+  const fs = createFakeFs()
+  seedBoard(
+    fs,
+    PROJECT,
+    JSON.stringify({
+      version: 2,
+      seq: 2,
+      dispatch: { state: 'paused', worktree: { enabled: true, root: 'build/worktrees' } },
+      tasks: [
+        {
+          id: 'T-1',
+          title: 'worktree task',
+          base: BASE_SHA,
+          target: 'main',
+          branch: 'task/T-1',
+          worktree: 'C:/demo/mm13d/.worktrees/T-1',
+          commit: HEAD_SHA,
+          actualFiles: ['scripts/a.gd', 'scripts/a.gd', ' scripts/b.gd '],
+          requiredRole: 'reviewer',
+          merge: MERGE,
+        },
+      ],
+    }),
+  )
+  const loaded = await read(fs)
+  const t = loaded.board.tasks[0]
+  check(
+    'task worktree fields roundtrip',
+    t.base === BASE_SHA && t.target === 'main' && t.branch === 'task/T-1' && t.worktree === 'C:/demo/mm13d/.worktrees/T-1' && t.commit === HEAD_SHA,
+    JSON.stringify(t),
+  )
+  check('actualFiles are deduplicated and trimmed', t.actualFiles.join('|') === 'scripts/a.gd|scripts/b.gd', JSON.stringify(t.actualFiles))
+  check('requiredRole roundtrips', t.requiredRole === 'reviewer', String(t.requiredRole))
+  check(
+    'the merge record roundtrips',
+    t.merge !== null &&
+      t.merge.status === 'open' &&
+      t.merge.base === BASE_SHA &&
+      t.merge.target === 'main' &&
+      t.merge.head === HEAD_SHA &&
+      t.merge.declaredFiles.join(',') === 'scripts/a.gd' &&
+      t.merge.actualFiles.join(',') === 'scripts/a.gd,scripts/b.gd' &&
+      t.merge.tests === 'npm run verify' &&
+      t.merge.reviewer === null &&
+      t.merge.conflict === null &&
+      t.merge.at === '2026-01-01T00:00:00.000Z',
+    JSON.stringify(t.merge),
+  )
+  check(
+    'dispatch.worktree roundtrips',
+    loaded.board.dispatch.worktree.enabled === true && loaded.board.dispatch.worktree.root === 'build/worktrees',
+    JSON.stringify(loaded.board.dispatch.worktree),
+  )
+  const written = await updateBoard({ fs }, { projectPath: PROJECT, mutate: (board) => board })
+  check('a worktree/MR board writes back through the CAS', written.ok === true, JSON.stringify(written))
+  const again = await read(fs)
+  check(
+    'the worktree/MR fields survive a write',
+    again.board.tasks[0].merge !== null && again.board.tasks[0].worktree === t.worktree && again.board.dispatch.worktree.root === 'build/worktrees',
+  )
+}
+
+// merge objects are repaired member by member, never dropped wholesale
+{
+  const fs = createFakeFs()
+  seedBoard(
+    fs,
+    PROJECT,
+    JSON.stringify({
+      version: 2,
+      seq: 3,
+      tasks: [
+        { id: 'T-1', merge: { status: 7, base: 3, declaredFiles: ['scripts/a.gd', 5, ' scripts/a.gd '], actualFiles: 'nope', tests: {}, reviewer: 9, conflict: true, at: 5 } },
+        { id: 'T-2', merge: 'open' },
+      ],
+    }),
+  )
+  const loaded = await read(fs)
+  const first = loaded.board.tasks[0].merge
+  check(
+    'a malformed merge keeps only typed members',
+    first.status === null && first.base === null && first.target === null && first.head === null && first.tests === null && first.reviewer === null && first.at === null,
+    JSON.stringify(first),
+  )
+  check('merge file lists are cleaned', first.declaredFiles.join(',') === 'scripts/a.gd' && first.actualFiles.length === 0, JSON.stringify(first))
+  check('a boolean merge conflict is preserved', first.conflict === true)
+  check('a non-object merge is null', loaded.board.tasks[1].merge === null)
+}
+
+// dispatch.worktree normalisation: project-relative, never absolute or escaping
+{
+  check('worktree normalisation defaults an empty input', normaliseWorktree({}).enabled === false && normaliseWorktree({}).root === '.worktrees')
+  check('an absolute worktree root falls back', normaliseWorktree({ enabled: true, root: '/tmp/wt' }).root === '.worktrees')
+  check('a Windows drive worktree root falls back', normaliseWorktree({ enabled: true, root: 'C:/wt' }).root === '.worktrees')
+  check('an escaping worktree root falls back', normaliseWorktree({ enabled: true, root: '../outside' }).root === '.worktrees')
+  check('a nested worktree root is normalised to POSIX', normaliseWorktree({ enabled: true, root: 'tmp\\worktrees\\' }).root === 'tmp/worktrees')
+  check('an explicit false keeps worktrees disabled', normaliseWorktree({ enabled: false, root: 'wt' }).enabled === false)
+  const dispatch = normaliseDispatch({ worktree: { enabled: true, root: '/outside' }, maxConcurrent: 1 })
+  check('normaliseDispatch carries a normalised worktree', dispatch.worktree.enabled === true && dispatch.worktree.root === '.worktrees', JSON.stringify(dispatch.worktree))
+  const fs = createFakeFs()
+  seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: 2, tasks: [], dispatch: { worktree: { enabled: true, root: '/etc/wt' } } }))
+  const loaded = await read(fs)
+  check(
+    'a board read normalises an absolute worktree root',
+    loaded.board.dispatch.worktree.enabled === true && loaded.board.dispatch.worktree.root === '.worktrees',
+    JSON.stringify(loaded.board.dispatch.worktree),
+  )
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

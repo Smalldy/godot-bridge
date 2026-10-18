@@ -14,6 +14,7 @@ import {
   createTask,
   dependencyInfo,
   deleteTask,
+  detail,
   expireLeases,
   findTask,
   readyTasks,
@@ -22,6 +23,7 @@ import {
   retryTask,
   setDispatch,
   submitTask,
+  summary as taskSummary,
   unblockTask,
   updateTask,
 } from '../../plugin/task-center/service.mjs'
@@ -51,6 +53,19 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   const created = make(board, 'A')
   check('creating allocates T-1', created.ok === true && created.task.id === 'T-1', JSON.stringify(created))
   check('a new task is pending', created.task.status === 'pending')
+  check(
+    'a new task defaults the worktree/MR fields',
+    created.task.base === null &&
+      created.task.target === null &&
+      created.task.branch === null &&
+      created.task.worktree === null &&
+      created.task.commit === null &&
+      created.task.requiredRole === null &&
+      created.task.merge === null &&
+      Array.isArray(created.task.actualFiles) &&
+      created.task.actualFiles.length === 0,
+    JSON.stringify(created.task),
+  )
   check('creation is recorded', created.task.history[0].to === 'pending' && created.task.history[0].by === '@me')
   board = created.board
   const second = make(board, 'B')
@@ -84,6 +99,9 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('structural changes are frozen while running', structural.code === 'running-structural', JSON.stringify(structural))
   const content = updateTask(claimed.board, 'T-1', { title: 'A3' }, T0, '@me')
   check('content changes are allowed while running', content.ok === true)
+  const files = updateTask(claimed.board, 'T-1', { writeFiles: ['scripts/live.gd'] }, T0, '@me')
+  check('a running task may still change writeFiles', files.ok === true && files.task.writeFiles.join(',') === 'scripts/live.gd', JSON.stringify(files))
+  check('the writeFiles change is recorded', files.task.history[files.task.history.length - 1].note.indexOf('files') >= 0)
 }
 
 // delete
@@ -215,6 +233,17 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   const clamped = setDispatch(started.board, { maxConcurrent: 99, maxWorkAgents: 99, maxAttempts: 0 }, T0, '@user')
   check('settings are clamped', clamped.dispatch.maxConcurrent === 8 && clamped.dispatch.maxWorkAgents === 12 && clamped.dispatch.maxAttempts === 1)
   check('an invalid state is refused', setDispatch(board, { state: 'sometimes' }, T0, '@user').code === 'invalid-dispatch')
+  check(
+    'dispatch.worktree defaults off',
+    board.dispatch.worktree.enabled === false && board.dispatch.worktree.root === '.worktrees',
+    JSON.stringify(board.dispatch.worktree),
+  )
+  const worktree = setDispatch(board, { worktree: { enabled: true, root: '/tmp/wt' } }, T0, '@user')
+  check(
+    'dispatch settings normalise the worktree root',
+    worktree.ok === true && worktree.dispatch.worktree.enabled === true && worktree.dispatch.worktree.root === '.worktrees',
+    JSON.stringify(worktree.dispatch && worktree.dispatch.worktree),
+  )
 }
 
 // renewLeases
@@ -225,6 +254,52 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('the owner can renew', renewed.ok === true && Date.parse(findTask(renewed.board, 'T-1').leaseUntil) === T0 + 1000 + TASK_LEASE_MS)
   const stranger = renewLeases(board, { session: 's-2', name: '@x' }, T0 + 1000)
   check('a stranger does not renew', Date.parse(findTask(stranger.board, 'T-1').leaseUntil) === T0 + TASK_LEASE_MS)
+}
+
+// git-derived identity is host-only
+{
+  const board = make(base(), 'A').board
+  for (const field of ['base', 'target', 'branch', 'worktree', 'commit', 'actualFiles']) {
+    const refused = updateTask(board, 'T-1', { [field]: field === 'actualFiles' ? ['x'] : 'x' }, T0, '@me')
+    check('update refuses host-written ' + field, refused.code === 'host-only', JSON.stringify(refused))
+  }
+  const merge = updateTask(board, 'T-1', { merge: { status: 'open' } }, T0, '@me')
+  check('update refuses a host-written merge', merge.code === 'host-only', JSON.stringify(merge))
+  check('a refused update leaves the task untouched', findTask(board, 'T-1').base === null && findTask(board, 'T-1').merge === null)
+}
+
+// summary/detail carry the worktree and merge-request fields
+{
+  const board = make(base(), 'A').board
+  const task = findTask(board, 'T-1')
+  task.base = 'base-sha'
+  task.target = 'main'
+  task.branch = 'task/T-1'
+  task.worktree = 'C:/proj/.worktrees/T-1'
+  task.commit = 'commit-sha'
+  task.actualFiles = ['scripts/a.gd']
+  task.requiredRole = 'reviewer'
+  task.merge = {
+    status: 'open',
+    base: 'base-sha',
+    target: 'main',
+    head: 'commit-sha',
+    declaredFiles: ['scripts/a.gd'],
+    actualFiles: ['scripts/a.gd'],
+    tests: 'verify',
+    reviewer: null,
+    conflict: null,
+    at: '2026-01-01T00:00:00.000Z',
+  }
+  const view = taskSummary(board, task, T0)
+  check(
+    'summary carries the worktree fields',
+    view.worktree === task.worktree && view.branch === 'task/T-1' && view.base === 'base-sha' && view.target === 'main' && view.commit === 'commit-sha' && view.requiredRole === 'reviewer',
+    JSON.stringify(view),
+  )
+  check('summary carries actualFiles and merge', view.actualFiles.join(',') === 'scripts/a.gd' && view.merge.status === 'open', JSON.stringify(view))
+  const full = detail(board, task, T0)
+  check('detail carries the merge record', full.merge.head === 'commit-sha' && full.merge.declaredFiles.join(',') === 'scripts/a.gd' && full.worktree === task.worktree)
 }
 
 // counts

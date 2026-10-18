@@ -26,6 +26,7 @@ import {
   MAX_HISTORY,
   STATUSES,
   normaliseDispatch,
+  normaliseMerge,
 } from './schema.mjs'
 
 export { BOARD_DIRECTORY, BOARD_FILENAME, BOARD_VERSION, MAX_BOARD_BYTES, MAX_HISTORY }
@@ -140,6 +141,12 @@ function normaliseTask(raw, index, now) {
     history.length > MAX_HISTORY ? [history[0]].concat(history.slice(history.length - (MAX_HISTORY - 1))) : history
   const attempts = Number.isFinite(raw.attempts) ? Math.max(0, Math.floor(raw.attempts)) : 0
   const maxAttempts = Number.isFinite(raw.maxAttempts) ? Math.min(10, Math.max(1, Math.floor(raw.maxAttempts))) : 3
+  // Worktree / merge-request fields are written by the HOST (claim, submit,
+  // merge), never by a normal update; here they are only typed and defaulted so
+  // an older or hand-written board stays readable.
+  const actualFiles = stringList(raw.actualFiles)
+  const requiredRole = typeof raw.requiredRole === 'string' ? raw.requiredRole : null
+  const merge = normaliseMerge(raw.merge)
   return {
     ok: true,
     task: {
@@ -151,6 +158,14 @@ function normaliseTask(raw, index, now) {
       priority: Number.isFinite(raw.priority) ? Math.floor(raw.priority) : 0,
       dependsOn: dependsOn,
       writeFiles: writeFiles,
+      base: typeof raw.base === 'string' ? raw.base : null,
+      target: typeof raw.target === 'string' ? raw.target : null,
+      branch: typeof raw.branch === 'string' ? raw.branch : null,
+      worktree: typeof raw.worktree === 'string' ? raw.worktree : null,
+      commit: typeof raw.commit === 'string' ? raw.commit : null,
+      actualFiles: actualFiles,
+      requiredRole: requiredRole,
+      merge: merge,
       assignee: assignee,
       attempts: attempts,
       maxAttempts: maxAttempts,
