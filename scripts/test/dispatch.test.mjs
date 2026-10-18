@@ -6,6 +6,7 @@ import { readRoleConfig, rolesPath, updateBoard } from '../../plugin/task-center
 import { createState, writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
 import {
+  createActivity,
   createDispatcher,
   createRoleManager,
   ensureRole,
@@ -16,6 +17,7 @@ import {
   reworkBriefFor,
   roleBriefFor,
   roleKindOf,
+  workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
 import { ROLE_PROVISION_TIMEOUT_MS, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
@@ -1027,6 +1029,165 @@ function roleTask(overrides) {
   const blocked = findTask(secondRead.board, 'T-1')
   check('a second silent timeout blocks the task for triage', blocked.status === 'blocked', blocked.status)
   check('and records why', blocked.history.some((entry) => String(entry.note).indexOf('review timed out') >= 0), JSON.stringify(blocked.history.slice(-2)))
+  scheduler.dispose()
+}
+
+// ── runtime snapshot sources: workerPool kinds and the activity ring ───────
+{
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-merger', name: 'merger', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const board = {
+    tasks: [{ id: 'T-1', title: 'Feature', status: 'running', assignee: { name: 'fixer', session: 'session-fixer' } }],
+    dispatch: { maxWorkAgents: 4 },
+  }
+  const report = workerPool(rig.ctx, board, { roleConfig: normaliseRoleConfig({ profiles: { reviewer: { instances: 2 } } }) })
+  const byName = {}
+  for (const member of report.members) byName[member.name] = member
+  check(
+    'every teammate has a kind, description, session and currentTask',
+    byName['fixer'].kind === 'worker' &&
+      byName['fixer'].description === 'feature worker' &&
+      byName['fixer'].session === 'session-fixer' &&
+      byName['fixer'].currentTask !== null &&
+      byName['fixer'].currentTask.id === 'T-1' &&
+      byName['reviewer-1'].kind === 'reviewer' &&
+      byName['reviewer-1'].description === 'review role' &&
+      byName['tester-1'].kind === 'tester' &&
+      byName['merger'].kind === 'merger' &&
+      byName['merger'].description === 'merge queue operator',
+    JSON.stringify(report.members),
+  )
+  check('kinds are counted', report.kinds.lead === 1 && report.kinds.worker === 1 && report.kinds.reviewer === 1 && report.kinds.tester === 1 && report.kinds.merger === 1, JSON.stringify(report.kinds))
+  check('the lead is a separate lead entry, not a teammate', report.leadInfo !== null && report.leadInfo.kind === 'lead' && report.members.filter((member) => member.kind === 'lead').length === 0, JSON.stringify(report.leadInfo))
+  check(
+    'the role config reports desired/live/missing',
+    report.roles !== null &&
+      report.roles.desired.reviewer === 2 &&
+      report.roles.live.reviewer === 1 &&
+      report.roles.missing.reviewer === 1 &&
+      report.roles.desired.tester === 1 &&
+      report.roles.missing.tester === 0,
+    JSON.stringify(report.roles),
+  )
+  const noTeam = workerPool({ get: () => undefined }, board)
+  check('without a Team the pool degrades readably', noTeam.error === 'no-team-service' && noTeam.members.length === 0 && noTeam.kinds.lead === 0, JSON.stringify(noTeam))
+}
+
+{
+  const activity = createActivity({ limit: 3, now: () => 1000 })
+  activity.push({ kind: 'worktree-create', actor: 'host', taskId: 'T-1', detail: 'created' })
+  activity.push({ kind: 'merge', actor: 'agent', actorName: '@fixer', taskId: 'T-1', detail: 'merged' })
+  activity.push({ kind: 'mystery', actor: 'somebody', taskId: 'T-2' })
+  activity.push({ kind: 'role-provision', actor: 'system', detail: 'reviewer-1' })
+  const snap = activity.snapshot()
+  check('the ring keeps only its limit', snap.count === 3 && snap.pushed === 4 && snap.entries.length === 3, JSON.stringify(snap))
+  check('entries are newest first', snap.entries[0].kind === 'role-provision' && snap.entries[2].kind === 'merge', JSON.stringify(snap.entries.map((entry) => entry.kind)))
+  check(
+    'an unknown actor is system, never an agent',
+    activity.list(4)[1].kind === 'mystery' && activity.list(4)[1].actor === 'system' && activity.list(4)[1].actorName === null,
+    JSON.stringify(activity.list(4)),
+  )
+  check('an agent event keeps its name; a system event never has one', snap.entries[2].actor === 'agent' && snap.entries[2].actorName === '@fixer' && snap.entries.filter((entry) => entry.actor !== 'agent').every((entry) => entry.actorName === null), JSON.stringify(snap.entries))
+  check('timestamps and actor counts are reported', typeof snap.entries[0].at === 'string' && snap.actors.system >= 1 && snap.actors.host === 0, JSON.stringify(snap.actors))
+}
+
+{
+  // The dispatcher records host work (worktree create) and System provisioning.
+  const activity = createActivity({ limit: 20 })
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const state = createState(rig.ctx)
+  const reviewing = roleTask()
+  const pending = roleTask({
+    id: 'T-2',
+    title: 'Pending task',
+    status: 'pending',
+    assignee: null,
+    worktree: null,
+    branch: null,
+    base: null,
+    target: null,
+    commit: null,
+    actualFiles: [],
+    review: null,
+    test: null,
+    dispatch: null,
+    leaseUntil: null,
+  })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'running' }, tasks: [reviewing, pending] }))
+  const scheduler = createDispatcher(rig.ctx, {
+    state: state,
+    projectPath: () => PROJECT,
+    allowSpawn: false,
+    git: createFakeGit(),
+    roles: rig.manager,
+    activity: activity,
+    reviewTimeoutMs: 30,
+  })
+  await scheduler.tick(PROJECT)
+  const entries = activity.list(20)
+  const create = entries.filter((entry) => entry.kind === 'worktree-create')[0]
+  check('the dispatcher records the worktree it creates as host work', create !== undefined && create.actor === 'host' && create.taskId === 'T-2', JSON.stringify(entries))
+  const provision = entries.filter((entry) => entry.kind === 'role-provision')[0]
+  check('role provisioning is a system event', provision !== undefined && provision.actor === 'system' && provision.actorName === null, JSON.stringify(entries.filter((entry) => entry.kind === 'role-provision')))
+  check('the dispatcher records no agent activity (it is not a model)', entries.every((entry) => entry.actor !== 'agent'), JSON.stringify(entries))
+  scheduler.dispose()
+}
+
+{
+  // A replaced role slot is a SYSTEM activity event ('role-replace'), distinct
+  // from a fresh provision.
+  const activity = createActivity({ limit: 20 })
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const state = createState(rig.ctx)
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [roleTask()] }))
+  const scheduler = createDispatcher(rig.ctx, {
+    state: state,
+    projectPath: () => PROJECT,
+    allowSpawn: false,
+    git: createFakeGit(),
+    roles: rig.manager,
+    activity: activity,
+    reviewTimeoutMs: 60 * 60 * 1000,
+  })
+  await scheduler.tick(PROJECT)
+  check('a live reviewer is reused without a provisioning event', activity.list(20).every((entry) => entry.kind !== 'role-provision'), JSON.stringify(activity.list(20)))
+  rig.team.setStatus('reviewer-1', 'failed')
+  await scheduler.tick(PROJECT)
+  const entries = activity.list(20)
+  const replace = entries.filter((entry) => entry.kind === 'role-replace')[0]
+  check(
+    'a replaced role is a system role-replace event with no agent name',
+    replace !== undefined && replace.actor === 'system' && replace.actorName === null && String(replace.detail).indexOf('reviewer-1') >= 0,
+    JSON.stringify(entries.filter((entry) => entry.kind === 'role-replace' || entry.kind === 'role-provision')),
+  )
+  check(
+    'the replacement slot is provisioned as a system event too',
+    entries.some((entry) => entry.kind === 'role-provision' && entry.actor === 'system' && String(entry.detail).indexOf('reviewer-2') >= 0),
+    JSON.stringify(entries.filter((entry) => entry.kind === 'role-provision')),
+  )
   scheduler.dispose()
 }
 

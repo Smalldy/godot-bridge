@@ -328,7 +328,14 @@ export function createMerger(options) {
       // A refused add may leave a stale integration checkout/branch behind from
       // an earlier crash; discard it so the next attempt can start clean.
       await discardIntegration(projectPath, integrationPath, mergeBranch)
-      return { ok: true, status: 'failed', mergeCommit: null, conflict: null, output: clip('could not create the integration worktree: ' + messageOf(added)) }
+      return {
+        ok: true,
+        status: 'failed',
+        mergeCommit: null,
+        conflict: null,
+        output: clip('could not create the integration worktree: ' + messageOf(added)),
+        integration: { created: false, path: integrationPath },
+      }
     }
 
     const merged = await callGit('mergeNoFf', [projectPath, integrationPath, task.branch])
@@ -347,6 +354,7 @@ export function createMerger(options) {
         mergeCommit: null,
         conflict: conflict,
         output: conflicted ? null : clip('the merge failed: ' + messageOf(merged)),
+        integration: { created: true, path: integrationPath },
       }
     }
 
@@ -360,7 +368,14 @@ export function createMerger(options) {
       if (verified.ok !== true) {
         await callGit('resetHard', [integrationPath])
         await discardIntegration(projectPath, integrationPath, mergeBranch)
-        return { ok: true, status: 'failed', mergeCommit: null, conflict: null, output: clip(verified.output) }
+        return {
+          ok: true,
+          status: 'failed',
+          mergeCommit: null,
+          conflict: null,
+          output: clip(verified.output),
+          integration: { created: true, path: integrationPath },
+        }
       }
       verifiedOutput = verified.output
     }
@@ -370,26 +385,57 @@ export function createMerger(options) {
     const stillClean = await cleanOf(projectPath)
     if (stillClean.ok !== true || stillClean.clean !== true) {
       await discardIntegration(projectPath, integrationPath, mergeBranch)
-      return { ok: true, status: 'failed', mergeCommit: null, conflict: null, output: clip('the main working tree became dirty during verification; nothing was merged') }
+      return {
+        ok: true,
+        status: 'failed',
+        mergeCommit: null,
+        conflict: null,
+        output: clip('the main working tree became dirty during verification; nothing was merged'),
+        integration: { created: true, path: integrationPath },
+      }
     }
     const stillOnTarget = await currentBranchOf(projectPath)
     if (stillOnTarget.ok !== true || stillOnTarget.branch !== task.target) {
       await discardIntegration(projectPath, integrationPath, mergeBranch)
-      return { ok: true, status: 'failed', mergeCommit: null, conflict: null, output: clip('the main checkout left ' + task.target + ' during verification; nothing was merged') }
+      return {
+        ok: true,
+        status: 'failed',
+        mergeCommit: null,
+        conflict: null,
+        output: clip('the main checkout left ' + task.target + ' during verification; nothing was merged'),
+        integration: { created: true, path: integrationPath },
+      }
     }
 
     const forwarded = await callGit('mergeFfOnly', [projectPath, mergeBranch])
     if (forwarded === null || forwarded === undefined || forwarded.ok !== true) {
       await discardIntegration(projectPath, integrationPath, mergeBranch)
-      return { ok: true, status: 'failed', mergeCommit: null, conflict: null, output: clip('could not fast-forward ' + task.target + ': ' + messageOf(forwarded)) }
+      return {
+        ok: true,
+        status: 'failed',
+        mergeCommit: null,
+        conflict: null,
+        output: clip('could not fast-forward ' + task.target + ': ' + messageOf(forwarded)),
+        integration: { created: true, path: integrationPath },
+      }
     }
 
     await callGit('worktreeRemove', [projectPath, integrationPath, { force: true }])
     await callGit('deleteBranch', [projectPath, mergeBranch, { force: false }])
+    let taskWorktreeRemoved = false
     if (typeof task.worktree === 'string' && task.worktree.length > 0) {
       await callGit('worktreeRemove', [projectPath, task.worktree, { force: true }])
+      taskWorktreeRemoved = true
     }
-    return { ok: true, status: 'merged', mergeCommit: mergeCommit, conflict: null, output: verifiedOutput }
+    return {
+      ok: true,
+      status: 'merged',
+      mergeCommit: mergeCommit,
+      conflict: null,
+      output: verifiedOutput,
+      integration: { created: true, path: integrationPath },
+      taskWorktreeRemoved: taskWorktreeRemoved,
+    }
   }
 
   /** Where a task's test candidate lives. Derived from the task id, never stored. */
@@ -485,10 +531,19 @@ export function createMerger(options) {
       return failure('candidate-merge-failed', 'could not fast-forward ' + task.target + ' to the tested candidate: ' + messageOf(forwarded))
     }
     await discardCandidateAt(projectPath, candidate)
+    let taskWorktreeRemoved = false
     if (typeof task.worktree === 'string' && task.worktree.length > 0) {
       await callGit('worktreeRemove', [projectPath, task.worktree, { force: true }])
+      taskWorktreeRemoved = true
     }
-    return { ok: true, status: 'merged', mergeCommit: mergeCommit, base: base }
+    return {
+      ok: true,
+      status: 'merged',
+      mergeCommit: mergeCommit,
+      base: base,
+      candidateRemoved: true,
+      taskWorktreeRemoved: taskWorktreeRemoved,
+    }
   }
 
   /** Remove the test candidate (failed test, or before rebuilding it). */
