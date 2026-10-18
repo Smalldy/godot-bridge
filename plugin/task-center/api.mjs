@@ -16,6 +16,7 @@ import { TASK_LEASE_MS } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { probeWorktree, workerPool } from './dispatch.mjs'
+import { recordMergeResult } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
 
 /** Every action this API exposes. The tool enum and the route allowlist are
@@ -32,6 +33,8 @@ export const ACTIONS = [
   'settings',
   'tick',
   'submit',
+  'mergeRequest',
+  'rejectMerge',
   'approveStart',
   'rejectStart',
   'cancelStartRequest',
@@ -81,6 +84,8 @@ function messageOf(error) {
  *   are the execution model, so a null/omitted facade means dispatch cannot
  *   start (start/approveStart refuse readably), and submit refuses a task whose
  *   worktree cannot be committed.
+ * @param options.merger - the merge queue (merge.mjs). Merge actions refuse
+ *   readably when it is absent; nothing else depends on it.
  * @param options.now - clock, for tests.
  */
 export function createApi(ctx, options) {
@@ -88,7 +93,14 @@ export function createApi(ctx, options) {
   const state = opts.state
   const scheduler = opts.scheduler === undefined ? null : opts.scheduler
   const git = opts.git === undefined ? null : opts.git
+  const merger = opts.merger === undefined ? null : opts.merger
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
+
+  /** Merge actions are one-at-a-time: the queue serialises the whole read+git+write. */
+  function serialised(work) {
+    if (merger !== null && typeof merger.enqueue === 'function') return merger.enqueue(work)
+    return work()
+  }
 
   function projectFrom(input, context) {
     const candidate =
@@ -601,6 +613,66 @@ export function createApi(ctx, options) {
     if (action === 'tick') {
       if (scheduler === null) return failure('no-scheduler', 'the dispatcher is not available in this profile')
       return ok({ tick: await scheduler.settle(projectPath) })
+    }
+    if (action === 'mergeRequest') {
+      const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
+      if (id === '') return failure('missing-id', 'mergeRequest needs a task id')
+      // The whole pipeline (re-read, integrate, verify, record) runs inside the
+      // queue so a second request sees the first one's result, never its state.
+      return serialised(async function () {
+        const read = await readBoardOrFail(projectPath)
+        if (read.failed !== undefined) return read.failed
+        const task = model.findTask(read.board, id)
+        if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
+        if (task.status !== 'done') return failure('not-done', id + ' is ' + task.status + '; only a done task has a merge request')
+        const merge = task.merge
+        if (merge === null || merge === undefined || typeof merge !== 'object' || merge.status !== 'open') {
+          return failure('no-open-merge', id + ' has no open merge request')
+        }
+        if (merger === null || typeof merger.mergeRequest !== 'function') {
+          return failure('no-merge-service', 'the merge queue is not available in this profile')
+        }
+        const settings = read.board.dispatch === undefined || read.board.dispatch === null ? null : read.board.dispatch.worktree
+        const worktreeRoot = settings !== null && settings !== undefined && typeof settings.root === 'string' ? settings.root : '.worktrees'
+        const outcome = await merger.mergeRequest(task, projectPath, { worktreeRoot: worktreeRoot })
+        if (outcome === null || outcome === undefined || outcome.ok !== true) {
+          return failure(
+            outcome === null || outcome === undefined ? 'merge-failed' : String(outcome.code),
+            outcome === null || outcome === undefined ? 'the merge queue returned no result' : String(outcome.message),
+          )
+        }
+        const recorded = await writeTask(
+          projectPath,
+          id,
+          (board) => recordMergeResult(board, id, outcome, clock(), context.by),
+          context,
+        )
+        if (recorded.ok !== true) return recorded
+        return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
+      })
+    }
+    if (action === 'rejectMerge') {
+      const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
+      if (id === '') return failure('missing-id', 'rejectMerge needs a task id')
+      return serialised(async function () {
+        const read = await readBoardOrFail(projectPath)
+        if (read.failed !== undefined) return read.failed
+        const task = model.findTask(read.board, id)
+        if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
+        if (task.status !== 'done') return failure('not-done', id + ' is ' + task.status + '; only a done task has a merge request')
+        const merge = task.merge
+        if (merge === null || merge === undefined || typeof merge !== 'object' || merge.status !== 'open') {
+          return failure('no-open-merge', id + ' has no open merge request to reject')
+        }
+        const recorded = await writeTask(
+          projectPath,
+          id,
+          (board) => recordMergeResult(board, id, { status: 'rejected' }, clock(), context.by),
+          context,
+        )
+        if (recorded.ok !== true) return recorded
+        return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
+      })
     }
     if (action === 'submit') {
       const id = String(source.id === undefined ? '' : source.id)

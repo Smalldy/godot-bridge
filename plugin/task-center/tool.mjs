@@ -39,6 +39,7 @@ const DESCRIPTION = [
   'Project task board with dependency-driven dispatch and file locks.',
   'Actions: board (overview), list, get, create, update, delete,',
   'pause (immediate), tick (one scheduler pass), submit (an assignee reports done),',
+  'mergeRequest (integrate an open MR into its target branch after verification), rejectMerge,',
   'cancel, reopen, block, unblock, retry, cancelStartRequest,',
   'lock / unlock / locks / forceUnlock, openProject.',
   'start does not start dispatch for an agent: it records a request, and the user approves it in the task center panel.',

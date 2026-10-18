@@ -354,6 +354,55 @@ export function createGit(options) {
     return ok({ aborted: true })
   }
 
+  /**
+   * Fast-forward `root` to `branch` (`merge --ff-only`). Used only on the main
+   * checkout: it can never rewrite history, and it refuses when the worktree is
+   * dirty or the branch has diverged.
+   */
+  async function mergeFfOnly(root, branch) {
+    const base = rootOf(root)
+    if (base.ok !== true) return base
+    const merged = branchName(branch, 'the branch to fast-forward to')
+    if (merged.ok !== true) return merged
+    const result = await exec(['merge', '--ff-only', merged.name], base.path)
+    if (result.code !== 0) return failed(result, 'merge-fast-forward-failed', 'git merge --ff-only failed')
+    return ok({ branch: merged.name })
+  }
+
+  /** Discard the working-tree state of a THROWAWAY checkout (`reset --hard HEAD`). */
+  async function resetHard(root) {
+    const base = rootOf(root)
+    if (base.ok !== true) return base
+    const result = await exec(['reset', '--hard', 'HEAD'], base.path)
+    if (result.code !== 0) return failed(result, 'reset-failed', 'git reset --hard failed')
+    return ok({ reset: true })
+  }
+
+  /** Delete one local branch; `force` uses -D (a throwaway integration branch). */
+  async function deleteBranch(root, name, options) {
+    const base = rootOf(root)
+    if (base.ok !== true) return base
+    const branch = branchName(name, 'the branch to delete')
+    if (branch.ok !== true) return branch
+    const force = options !== undefined && options !== null && options.force === true
+    const result = await exec(['branch', force ? '-D' : '-d', branch.name], base.path)
+    if (result.code !== 0) return failed(result, 'branch-delete-failed', 'git branch ' + (force ? '-D' : '-d') + ' failed')
+    return ok({ branch: branch.name, force: force })
+  }
+
+  /** The files git could not merge automatically in a conflicted checkout. */
+  async function conflictedFiles(root) {
+    const base = rootOf(root)
+    if (base.ok !== true) return base
+    const result = await exec(['diff', '--name-only', '--diff-filter=U'], base.path)
+    if (result.code !== 0) return failed(result, 'conflict-list-failed', 'git could not list conflicted files')
+    const files = result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== '')
+    return ok({ files: files })
+  }
+
   /** Rebase the current branch onto `onto`; a conflict is left for the caller. */
   async function rebaseOnto(root, onto) {
     const base = rootOf(root)
@@ -384,6 +433,10 @@ export function createGit(options) {
     diffNameOnly: diffNameOnly,
     mergeNoFf: mergeNoFf,
     mergeAbort: mergeAbort,
+    mergeFfOnly: mergeFfOnly,
+    resetHard: resetHard,
+    deleteBranch: deleteBranch,
+    conflictedFiles: conflictedFiles,
     rebaseOnto: rebaseOnto,
   }
 }

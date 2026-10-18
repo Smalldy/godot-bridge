@@ -129,11 +129,13 @@ export function normaliseMerge(raw) {
     base: typeof raw.base === 'string' ? raw.base : null,
     target: typeof raw.target === 'string' ? raw.target : null,
     head: typeof raw.head === 'string' ? raw.head : null,
+    mergeCommit: typeof raw.mergeCommit === 'string' ? raw.mergeCommit : null,
     declaredFiles: mergeStringList(raw.declaredFiles),
     actualFiles: mergeStringList(raw.actualFiles),
     tests: typeof raw.tests === 'string' ? raw.tests : null,
     reviewer: typeof raw.reviewer === 'string' ? raw.reviewer : null,
     conflict: typeof raw.conflict === 'string' || typeof raw.conflict === 'boolean' ? raw.conflict : null,
+    output: typeof raw.output === 'string' ? raw.output : null,
     at: typeof raw.at === 'string' ? raw.at : null,
   }
 }

@@ -8,6 +8,7 @@ import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
 import { createDispatcher } from '../../plugin/task-center/dispatch.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
+import { createMerger } from '../../plugin/task-center/merge.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -414,7 +415,7 @@ function createSubmitRig(options) {
   }
   const state = createState(ctx)
   const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: opts.git })
-  const api = createApi(ctx, { state: state, scheduler: scheduler, git: opts.git })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: opts.git, merger: opts.merger })
   return { project: PROJECT, fs: fs, ctx: ctx, state: state, scheduler: scheduler, api: api }
 }
 
@@ -727,6 +728,286 @@ function holdFile(rig, path) {
   check('the attempt released its file locks', payload.snapshot.locks.length === 0, JSON.stringify(payload.snapshot.locks))
   brokenSurface.dispose()
   broken.scheduler.dispose()
+}
+
+// ── the merge queue: integration worktree, verification, fast-forward ────────
+/** A fake git for the merge pipeline; unmatched commands succeed silently. */
+function mergeGit(replies) {
+  const calls = []
+  const run = (args, cwd) => {
+    calls.push({ args: args.slice(), cwd: cwd })
+    const key = args.join(' ')
+    if (replies !== undefined && replies[key] !== undefined) return replies[key](args, cwd)
+    if (key === 'branch --show-current') return { code: 0, stdout: 'main\n', stderr: '' }
+    if (key === 'status --porcelain') return { code: 0, stdout: '', stderr: '' }
+    if (key === 'rev-parse HEAD') {
+      return { code: 0, stdout: (cwd.indexOf('merge-T-1') >= 0 ? 'merge-sha' : 'target-sha') + '\n', stderr: '' }
+    }
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  return { git: createGit({ run: run }), calls: calls }
+}
+
+function fakeVerifier(result) {
+  const calls = []
+  return {
+    calls: calls,
+    verify: async function verify(request) {
+      calls.push(request)
+      return result
+    },
+  }
+}
+
+function openMergeTask(overrides) {
+  const stamp = new Date().toISOString()
+  return Object.assign(
+    {
+      id: 'T-1',
+      title: 'MR task',
+      status: 'done',
+      priority: 0,
+      dependsOn: [],
+      writeFiles: ['scripts/a.gd'],
+      base: 'base-sha',
+      target: 'main',
+      branch: 'task/T-1-1',
+      worktree: join(PROJECT, '.worktrees', 'T-1'),
+      worktreeError: null,
+      commit: 'head-sha',
+      actualFiles: ['scripts/a.gd'],
+      requiredRole: null,
+      merge: {
+        status: 'open',
+        base: 'base-sha',
+        target: 'main',
+        head: 'head-sha',
+        mergeCommit: null,
+        declaredFiles: ['scripts/a.gd'],
+        actualFiles: ['scripts/a.gd'],
+        tests: 'npm run verify',
+        reviewer: null,
+        conflict: null,
+        output: null,
+        at: stamp,
+      },
+      assignee: null,
+      attempts: 1,
+      maxAttempts: 3,
+      evidence: '',
+      dispatch: null,
+      leaseUntil: null,
+      createdBy: '@me',
+      createdAt: stamp,
+      updatedAt: stamp,
+      history: [],
+    },
+    overrides === undefined ? {} : overrides,
+  )
+}
+
+function seedMergeTask(rig, task) {
+  seedBoard(
+    rig.fs,
+    PROJECT,
+    JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused', worktree: { root: '.worktrees' } }, tasks: [task] }),
+  )
+}
+
+{
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(mergeRig, openMergeTask())
+  const mergeSurface = install(mergeRig)
+  const integration = join(PROJECT, '.worktrees', 'merge-T-1')
+  const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  const payload = res.json()
+  check('mergeRequest merges an open request', payload.ok === true && payload.task.merge.status === 'merged', res.text)
+  check(
+    'the merged record names the merge commit, reviewer and time',
+    payload.task.merge.mergeCommit === 'merge-sha' && payload.task.merge.reviewer === '@user' && typeof payload.task.merge.at === 'string',
+    JSON.stringify(payload.task.merge),
+  )
+  check('the merged record keeps the verification output', String(payload.task.merge.output).indexOf('ALL CHECKS PASSED') >= 0, JSON.stringify(payload.task.merge.output))
+  check(
+    'verification runs inside the integration worktree with the default command',
+    verifier.calls.length === 1 && verifier.calls[0].cwd === integration && verifier.calls[0].command === 'npm run verify',
+    JSON.stringify(verifier.calls),
+  )
+  const byCommand = (label) => fake.calls.filter((entry) => entry.args.join(' ') === label)
+  const addCall = fake.calls.filter((entry) => entry.args[0] === 'worktree' && entry.args[1] === 'add')[0]
+  check(
+    'the integration worktree is created from the target HEAD on merge/<id>',
+    addCall !== undefined && addCall.cwd === PROJECT && addCall.args.join(' ') === 'worktree add -b merge/T-1 ' + integration + ' target-sha',
+    JSON.stringify(addCall && addCall.args),
+  )
+  const candidate = fake.calls.filter((entry) => entry.args[0] === 'merge' && entry.args[1] === '--no-ff')[0]
+  check(
+    'the candidate branch is merged inside the integration worktree',
+    candidate !== undefined && candidate.cwd === integration && candidate.args.join(' ') === 'merge --no-ff --no-edit task/T-1-1',
+    JSON.stringify(candidate && candidate.args),
+  )
+  const forward = byCommand('merge --ff-only merge/T-1')[0]
+  check('main is fast-forwarded to the integration branch', forward !== undefined && forward.cwd === PROJECT, JSON.stringify(forward))
+  check(
+    'the temporary integration checkout and branch are cleaned up',
+    byCommand('worktree remove --force ' + integration).length === 1 && byCommand('branch -d merge/T-1').length === 1,
+    JSON.stringify(fake.calls.map((entry) => entry.args)),
+  )
+  check(
+    'the task worktree is deleted after a successful merge',
+    byCommand('worktree remove --force ' + join(PROJECT, '.worktrees', 'T-1')).length === 1,
+    JSON.stringify(fake.calls.map((entry) => entry.args)),
+  )
+  check(
+    'no git command pushes or rewrites the main checkout',
+    fake.calls.every((entry) => entry.args[0] !== 'push' && !(entry.args[0] === 'reset' && entry.cwd === PROJECT)),
+    JSON.stringify(fake.calls.map((entry) => entry.args)),
+  )
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const integration = join(PROJECT, '.worktrees', 'merge-T-1')
+  const fake = mergeGit({
+    'merge --no-ff --no-edit task/T-1-1': () => ({
+      code: 1,
+      stdout: 'CONFLICT (content): Merge conflict in scripts/a.gd\nAutomatic merge failed; fix conflicts and then commit the result.',
+      stderr: '',
+    }),
+    'diff --name-only --diff-filter=U': () => ({ code: 0, stdout: 'scripts/a.gd\n', stderr: '' }),
+  })
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(mergeRig, openMergeTask())
+  const mergeSurface = install(mergeRig)
+  const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  const payload = res.json()
+  check('a conflicted merge is recorded as conflict', payload.ok === true && payload.task.merge.status === 'conflict', res.text)
+  check('the conflict names the unmerged files', String(payload.task.merge.conflict).indexOf('scripts/a.gd') >= 0, JSON.stringify(payload.task.merge.conflict))
+  const abort = fake.calls.filter((entry) => entry.args[0] === 'merge' && entry.args[1] === '--abort')[0]
+  check('the integration merge is aborted', abort !== undefined && abort.cwd === integration, JSON.stringify(abort))
+  check('main is never fast-forwarded on a conflict', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check(
+    'the temporary checkout and branch are cleaned up after a conflict',
+    fake.calls.some((entry) => entry.args.join(' ') === 'worktree remove --force ' + integration) &&
+      fake.calls.some((entry) => entry.args.join(' ') === 'branch -D merge/T-1'),
+    JSON.stringify(fake.calls.map((entry) => entry.args)),
+  )
+  check(
+    'the task worktree is kept for the owner',
+    fake.calls.every((entry) => entry.args.join(' ') !== 'worktree remove --force ' + join(PROJECT, '.worktrees', 'T-1')),
+    JSON.stringify(fake.calls.map((entry) => entry.args)),
+  )
+  check('verification does not run on a conflicted merge', verifier.calls.length === 0, JSON.stringify(verifier.calls))
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const integration = join(PROJECT, '.worktrees', 'merge-T-1')
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 1, stdout: 'FAIL board.test.mjs', stderr: 'stderr detail' })
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(mergeRig, openMergeTask())
+  const mergeSurface = install(mergeRig)
+  const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  const payload = res.json()
+  check('a red verification marks the merge failed', payload.ok === true && payload.task.merge.status === 'failed', res.text)
+  check('the failure keeps the verification output', String(payload.task.merge.output).indexOf('FAIL board.test.mjs') >= 0, JSON.stringify(payload.task.merge.output))
+  check('the failed merge records no merge commit', payload.task.merge.mergeCommit === null, JSON.stringify(payload.task.merge))
+  const reset = fake.calls.filter((entry) => entry.args[0] === 'reset')[0]
+  check('the integration checkout is reset', reset !== undefined && reset.cwd === integration && reset.args.join(' ') === 'reset --hard HEAD', JSON.stringify(reset))
+  check('main is never fast-forwarded on a red verification', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check(
+    'the task worktree is kept for repair',
+    fake.calls.every((entry) => entry.args.join(' ') !== 'worktree remove --force ' + join(PROJECT, '.worktrees', 'T-1')),
+    JSON.stringify(fake.calls.map((entry) => entry.args)),
+  )
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(mergeRig, openMergeTask())
+  const mergeSurface = install(mergeRig)
+  const res = await postTo(mergeSurface, { action: 'rejectMerge', project: PROJECT, id: 'T-1' })
+  const payload = res.json()
+  check('rejectMerge closes an open request', payload.ok === true && payload.task.merge.status === 'rejected', res.text)
+  check('rejection records the reviewer and time', payload.task.merge.reviewer === '@user' && typeof payload.task.merge.at === 'string', JSON.stringify(payload.task.merge))
+  check('rejection touches no git checkout', fake.calls.length === 0, JSON.stringify(fake.calls.map((entry) => entry.args)))
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  const closed = openMergeTask()
+  closed.merge = Object.assign({}, closed.merge, { status: 'merged' })
+  seedMergeTask(mergeRig, closed)
+  const mergeSurface = install(mergeRig)
+  const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('only an open merge request can be merged', res.json().ok === false && res.json().code === 'no-open-merge', res.text)
+  check('and git is not consulted for a closed request', fake.calls.length === 0, JSON.stringify(fake.calls))
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(mergeRig, openMergeTask({ status: 'running' }))
+  const mergeSurface = install(mergeRig)
+  const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('a task that is not done cannot be merged', res.json().ok === false && res.json().code === 'not-done', res.text)
+  check('and its worktree is left alone', fake.calls.length === 0, JSON.stringify(fake.calls))
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const mergeRig = createSubmitRig({ git: null, merger: createMerger({ git: null, verify: verifier.verify }) })
+  seedMergeTask(mergeRig, openMergeTask())
+  const mergeSurface = install(mergeRig)
+  const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('without git the merge refuses readably', res.json().ok === false && res.json().code === 'no-git-service', res.text)
+  const after = await call(mergeSurface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  check('the request stays open when git is unavailable', after.json().tasks[0].merge.status === 'open', after.text)
+  check('and no verification starts', verifier.calls.length === 0, JSON.stringify(verifier.calls))
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
+}
+
+{
+  const fake = mergeGit()
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const mergeRig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(mergeRig, openMergeTask())
+  const mergeSurface = install(mergeRig)
+  const [first, second] = await Promise.all([
+    postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' }),
+    postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' }),
+  ])
+  const results = [first.json(), second.json()]
+  const successful = results.filter((entry) => entry.ok === true)
+  const refused = results.filter((entry) => entry.ok === false)[0]
+  check(
+    'the merge queue handles one request at a time',
+    successful.length === 1 && refused !== undefined && refused.code === 'no-open-merge',
+    JSON.stringify(results),
+  )
+  check('and verification runs exactly once', verifier.calls.length === 1, String(verifier.calls.length))
+  mergeSurface.dispose()
+  mergeRig.scheduler.dispose()
 }
 
 surface.dispose()

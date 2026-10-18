@@ -46,6 +46,10 @@ function recorder(handler) {
     'diffNameOnly',
     'mergeNoFf',
     'mergeAbort',
+    'mergeFfOnly',
+    'resetHard',
+    'deleteBranch',
+    'conflictedFiles',
     'rebaseOnto',
   ]
   check(
@@ -308,6 +312,73 @@ function recorder(handler) {
   check('rebaseOnto reports a conflict', isFailure(conflict, 'rebase-conflict'), JSON.stringify(conflict))
   const other = await createGit({ run: recorder(() => ({ code: 128, stdout: '', stderr: 'fatal: invalid upstream' })) }).rebaseOnto(ROOT, 'nope')
   check('rebaseOnto reports any other rebase failure', isFailure(other, 'rebase-failed'), JSON.stringify(other))
+}
+
+// mergeFfOnly
+{
+  const run = recorder(() => ({ code: 0, stdout: 'Updating abc..def\nFast-forward\n', stderr: '' }))
+  const result = await createGit({ run }).mergeFfOnly(ROOT, 'merge/T-1')
+  check(
+    'mergeFfOnly fast-forwards the main checkout',
+    isOk(result) && result.branch === 'merge/T-1' && run.calls[0].args.join(' ') === 'merge --ff-only merge/T-1' && run.calls[0].cwd === ROOT,
+    JSON.stringify(run.calls[0]),
+  )
+  const refused = await createGit({
+    run: recorder(() => ({ code: 128, stdout: '', stderr: 'fatal: Not possible to fast-forward, aborting.' })),
+  }).mergeFfOnly(ROOT, 'merge/T-1')
+  check('mergeFfOnly reports a refused fast-forward', isFailure(refused, 'merge-fast-forward-failed') && refused.message.indexOf('Not possible') >= 0, JSON.stringify(refused))
+  const option = await createGit({ run: recorder() }).mergeFfOnly(ROOT, '--force')
+  check('mergeFfOnly refuses an option-shaped branch', isFailure(option, 'invalid-branch'), JSON.stringify(option))
+}
+
+// resetHard
+{
+  const run = recorder(() => ({ code: 0, stdout: 'HEAD is now at abc\n', stderr: '' }))
+  const result = await createGit({ run }).resetHard(INSIDE)
+  check(
+    'resetHard resets a throwaway checkout',
+    isOk(result) && result.reset === true && run.calls[0].args.join(' ') === 'reset --hard HEAD' && run.calls[0].cwd === INSIDE,
+    JSON.stringify(run.calls[0]),
+  )
+  const refused = await createGit({ run: recorder(() => ({ code: 128, stdout: '', stderr: 'fatal: bad revision' })) }).resetHard(INSIDE)
+  check('resetHard reports a failed reset', isFailure(refused, 'reset-failed'), JSON.stringify(refused))
+}
+
+// deleteBranch
+{
+  const run = recorder(() => ({ code: 0, stdout: 'Deleted branch merge/T-1\n', stderr: '' }))
+  const result = await createGit({ run }).deleteBranch(ROOT, 'merge/T-1')
+  check(
+    'deleteBranch uses -d by default',
+    isOk(result) && result.force === false && run.calls[0].args.join(' ') === 'branch -d merge/T-1' && run.calls[0].cwd === ROOT,
+    JSON.stringify(run.calls[0]),
+  )
+  const forced = recorder(() => ({ code: 0, stdout: '', stderr: '' }))
+  const forcedResult = await createGit({ run: forced }).deleteBranch(ROOT, 'merge/T-1', { force: true })
+  check(
+    'deleteBranch can force-delete a throwaway branch',
+    isOk(forcedResult) && forcedResult.force === true && forced.calls[0].args.join(' ') === 'branch -D merge/T-1',
+    JSON.stringify(forced.calls[0]),
+  )
+  const refused = await createGit({
+    run: recorder(() => ({ code: 1, stdout: '', stderr: "error: the branch 'merge/T-1' is not fully merged" })),
+  }).deleteBranch(ROOT, 'merge/T-1')
+  check('deleteBranch reports an unmerged branch', isFailure(refused, 'branch-delete-failed'), JSON.stringify(refused))
+  const option = await createGit({ run: recorder() }).deleteBranch(ROOT, '-D')
+  check('deleteBranch refuses an option-shaped name', isFailure(option, 'invalid-branch'), JSON.stringify(option))
+}
+
+// conflictedFiles
+{
+  const run = recorder(() => ({ code: 0, stdout: 'scripts/a.gd\nscripts/b.gd\n', stderr: '' }))
+  const result = await createGit({ run }).conflictedFiles(INSIDE)
+  check(
+    'conflictedFiles lists unmerged paths',
+    isOk(result) && result.files.join(',') === 'scripts/a.gd,scripts/b.gd' && run.calls[0].args.join(' ') === 'diff --name-only --diff-filter=U' && run.calls[0].cwd === INSIDE,
+    JSON.stringify(run.calls[0]),
+  )
+  const refused = await createGit({ run: recorder(() => ({ code: 128, stdout: '', stderr: 'fatal: not a git repository' })) }).conflictedFiles(INSIDE)
+  check('conflictedFiles reports a failed listing', isFailure(refused, 'conflict-list-failed'), JSON.stringify(refused))
 }
 
 // a runner that misbehaves is a failure, never an exception

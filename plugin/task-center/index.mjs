@@ -8,6 +8,7 @@
  *   service.mjs    the pure model (tasks, dependencies, transitions, leases)
  *   locks.mjs      canonical project paths and atomic file locks
  *   dispatch.mjs   the scheduler and the Agent Teams edge
+ *   merge.mjs      the serial merge queue (integration worktree + verification)
  *   api.mjs        one action registry shared by the tool and the route
  *   state.mjs      the board + lock memory both surfaces share
  *   tool.mjs       the model's binding
@@ -19,6 +20,7 @@
 
 import { createState } from './state.mjs'
 import { createDispatcher, gitFor } from './dispatch.mjs'
+import { createMerger, verifyFor } from './merge.mjs'
 import { createApi } from './api.mjs'
 import { registerTaskTool } from './tool.mjs'
 import { registerTaskRoutes } from './routes.mjs'
@@ -48,7 +50,11 @@ export function apply(ctx) {
     allowSpawn: true,
     git: git,
   })
-  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git })
+  // The merge queue: same git facade, plus the project's verification command run
+  // through the unconfined subprocess service. Both are lazy — activation spawns
+  // nothing; a merge request is the only thing that runs them.
+  const merger = createMerger({ git: git, verify: verifyFor(ctx) })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, merger: merger })
 
   // An idle WorkAgent is a chance to hand out more work. A reload must not
   // accumulate listeners, so the subscription is an effect.

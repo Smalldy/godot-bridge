@@ -69,6 +69,11 @@ check('an agent status listener is installed', listeners.some((entry) => entry.e
 check('the effects are labelled', effects.some((label) => label.indexOf('task center') >= 0) && effects.some((label) => label.indexOf('task_center') >= 0), effects.join(' | '))
 check('the tool action enum includes start and pause', tools[0].parameters.action.enum.indexOf('start') >= 0 && tools[0].parameters.action.enum.indexOf('pause') >= 0)
 check('the tool action enum no longer includes setStatus', tools[0].parameters.action.enum.indexOf('setStatus') < 0)
+check(
+  'the tool action enum includes the merge queue',
+  tools[0].parameters.action.enum.indexOf('mergeRequest') >= 0 && tools[0].parameters.action.enum.indexOf('rejectMerge') >= 0,
+  tools[0].parameters.action.enum.join(','),
+)
 
 let listenerError = null
 try {
@@ -89,6 +94,7 @@ check('teardown runs without throwing', teardownError === null, teardownError &&
 // ── git wiring: required for dispatch, lazy, never a reason to fail activation ─
 {
   const { gitFor, probeWorktree } = await import('../../plugin/task-center/dispatch.mjs')
+  const { createMerger, verifyFor } = await import('../../plugin/task-center/merge.mjs')
   check('gitFor answers null when the profile has no subprocess service', gitFor({ get: () => undefined }, {}) === null)
   const fake = { isRepo: () => ({ ok: true, repo: true }) }
   check('an injected git facade wins over the service', gitFor({ get: () => undefined }, { git: fake }) === fake)
@@ -100,6 +106,15 @@ check('teardown runs without throwing', teardownError === null, teardownError &&
     missing.ok === false && missing.code === 'no-git-service',
     JSON.stringify(missing),
   )
+  check('verifyFor answers null when the profile has no subprocess service', verifyFor({ get: () => undefined }) === null)
+  const mergeService = { spawn() { throw new Error('unexpected spawn') } }
+  check(
+    'verifyFor builds a runner from the subprocess service',
+    typeof verifyFor({ get: (key) => (key === 'subprocess' ? mergeService : undefined) }) === 'function',
+  )
+  const noGitMerger = createMerger({ git: null, verify: null })
+  const refusedMerge = await noGitMerger.mergeRequest({ id: 'T-1', branch: 'task/T-1', target: 'main' }, PROJECT, {})
+  check('the merge queue refuses readably without git', refusedMerge.ok === false && refusedMerge.code === 'no-git-service', JSON.stringify(refusedMerge))
 }
 
 // ── a host WITH a subprocess service still activates without spawning git ───
