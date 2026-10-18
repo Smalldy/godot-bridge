@@ -748,6 +748,7 @@ function holdFile(rig, path) {
  */
 function mergeGit(replies) {
   const integration = join(PROJECT, '.worktrees', 'merge-T-1')
+  const taskWorktree = join(PROJECT, '.worktrees', 'T-1')
   const calls = []
   const run = (args, cwd) => {
     calls.push({ args: args.slice(), cwd: cwd })
@@ -756,7 +757,11 @@ function mergeGit(replies) {
     if (key === 'branch --show-current') return { code: 0, stdout: 'main\n', stderr: '' }
     if (key === 'status --porcelain') return { code: 0, stdout: '', stderr: '' }
     if (key === 'rev-parse HEAD') {
-      return { code: 0, stdout: (cwd === integration ? 'merge-sha' : 'target-sha') + '\n', stderr: '' }
+      // Each checkout has its own HEAD: the task worktree carries the submitted
+      // commit, the integration checkout its merge commit, the main tree the
+      // target's head.
+      const hash = cwd === integration ? 'merge-sha' : cwd === taskWorktree ? 'head-sha' : 'target-sha'
+      return { code: 0, stdout: hash + '\n', stderr: '' }
     }
     return { code: 0, stdout: '', stderr: '' }
   }
@@ -1183,6 +1188,202 @@ function mergerTeam(options) {
   check('and no owner notification is attempted', team.calls.length === 0, JSON.stringify(team.calls))
   mergeSurface.dispose()
   mergeRig.scheduler.dispose()
+}
+
+// ── MR head drift: explicit refreshMerge and a pre-merge check ─────────────
+/** A merge rig whose task-worktree HEAD can be made to drift from the MR. */
+function driftRig(options) {
+  const opts = options === undefined ? {} : options
+  const worktreeHead = opts.head === undefined ? 'new-head-sha' : opts.head
+  const worktree = join(PROJECT, '.worktrees', 'T-1')
+  const integration = join(PROJECT, '.worktrees', 'merge-T-1')
+  const fake = mergeGit({
+    'rev-parse HEAD': (args, cwd) => ({
+      code: 0,
+      stdout: (cwd === integration ? 'merge-sha' : cwd === worktree ? worktreeHead : 'target-sha') + '\n',
+      stderr: '',
+    }),
+    ['diff --name-only base-sha ' + worktreeHead]: () => ({ code: 0, stdout: 'scripts/a.gd\nscripts/b.gd\n', stderr: '' }),
+  })
+  const verifier = fakeVerifier({ code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' })
+  const rig = createSubmitRig({
+    git: fake.git,
+    merger: opts.merger === undefined ? createMerger({ git: fake.git, verify: verifier.verify }) : opts.merger,
+    team: opts.team,
+  })
+  seedMergeTask(rig, opts.task === undefined ? openMergeTask({ assignee: { name: 'fixer', session: 'session-fixer' } }) : opts.task)
+  const surface = install(rig)
+  return { rig: rig, surface: surface, fake: fake, verifier: verifier, worktree: worktree, integration: integration }
+}
+
+// the brief makes submit the last step and points at refreshMerge
+{
+  const rig = createRig({ allowSpawn: false })
+  await rig.action('create', { title: 'brief check' })
+  await rig.action('start')
+  await rig.settle()
+  const sent = rig.team.calls.filter((call) => call.kind === 'send')[0]
+  const text = sent === undefined ? '' : sent.text
+  check('the brief says submit is the last step', /submit is your LAST step/i.test(text), text.slice(0, 400))
+  check('and warns against committing after it', /do not commit again/i.test(text), text.slice(0, 400))
+  check('and points at refreshMerge for a late commit', text.indexOf('refreshMerge') >= 0, text.slice(0, 400))
+  rig.scheduler.dispose()
+}
+
+// a branch that moved past the recorded head refuses the merge and touches nothing
+{
+  const ctx = driftRig({ head: 'new-head-sha' })
+  const res = await postTo(ctx.surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  const payload = res.json()
+  check('a moved branch is refused as head-drift', payload.ok === false && payload.code === 'head-drift', res.text)
+  check(
+    'the refusal names both heads and the refresh action',
+    String(payload.message).indexOf('new-head-sha') >= 0 &&
+      String(payload.message).indexOf('head-sha') >= 0 &&
+      String(payload.message).indexOf('refreshMerge') >= 0,
+    res.text,
+  )
+  check('no integration worktree is created on drift', ctx.fake.calls.every((entry) => !(entry.args[0] === 'worktree' && entry.args[1] === 'add')), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
+  check('main is never fast-forwarded on drift', ctx.fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
+  check('no verification starts on drift', ctx.verifier.calls.length === 0, String(ctx.verifier.calls.length))
+  const after = await call(ctx.surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  check(
+    'the request stays open at its recorded head',
+    after.json().tasks[0].merge.status === 'open' && after.json().tasks[0].merge.head === 'head-sha',
+    JSON.stringify(after.json().tasks[0].merge),
+  )
+  ctx.surface.dispose()
+  ctx.rig.scheduler.dispose()
+}
+
+// refreshMerge re-points the request at the branch head and re-opens it
+{
+  const seedTask = openMergeTask({ assignee: { name: 'fixer', session: 'session-fixer' } })
+  seedTask.commit = 'old-commit'
+  seedTask.actualFiles = ['scripts/a.gd']
+  seedTask.merge = Object.assign({}, seedTask.merge, {
+    status: 'failed',
+    reviewer: '@user',
+    output: 'old failure output',
+    conflict: null,
+    mergeCommit: null,
+  })
+  const ctx = driftRig({ head: 'new-head-sha', task: seedTask })
+  const res = await postTo(ctx.surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  const payload = res.json()
+  check('refreshMerge succeeds for the user', payload.ok === true, res.text)
+  check('it re-points the request at the branch head', payload.task !== undefined && payload.task.merge.head === 'new-head-sha' && payload.task.commit === 'new-head-sha', JSON.stringify(payload.task && { head: payload.task.merge.head, commit: payload.task.commit }))
+  check(
+    'it refreshes the changed files on both records',
+    payload.task !== undefined &&
+      payload.task.actualFiles.join(',') === 'scripts/a.gd,scripts/b.gd' &&
+      payload.task.merge.actualFiles.join(',') === 'scripts/a.gd,scripts/b.gd',
+    JSON.stringify(payload.task && { actualFiles: payload.task.actualFiles, mergeFiles: payload.task.merge.actualFiles }),
+  )
+  check(
+    'it re-opens the request and clears the old outcome',
+    payload.task !== undefined &&
+      payload.task.merge.status === 'open' &&
+      payload.task.merge.mergeCommit === null &&
+      payload.task.merge.conflict === null &&
+      payload.task.merge.output === null &&
+      payload.task.merge.reviewer === null,
+    JSON.stringify(payload.task && payload.task.merge),
+  )
+  check(
+    'it writes a history entry',
+    payload.task !== undefined && payload.task.history.some((entry) => String(entry.note).indexOf('merge request refreshed') >= 0),
+    JSON.stringify(payload.task && payload.task.history.slice(-2)),
+  )
+  check(
+    'refresh only reads: no commit, merge or push',
+    ctx.fake.calls.every((entry) => entry.args[0] === 'rev-parse' || entry.args[0] === 'diff'),
+    JSON.stringify(ctx.fake.calls.map((entry) => entry.args)),
+  )
+  // The refreshed head is now mergeable.
+  const merged = await postTo(ctx.surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('after a refresh the merge succeeds', merged.json().ok === true && merged.json().task.merge.status === 'merged', merged.text)
+  ctx.surface.dispose()
+  ctx.rig.scheduler.dispose()
+}
+
+// refreshMerge is for the owner, the user and the merger
+{
+  const ownerCall = await (async () => {
+    const ctx = driftRig({ team: mergerTeam() })
+    const result = await ctx.rig.api.perform('refreshMerge', { id: 'T-1' }, { projectPath: PROJECT, by: '@fixer', role: 'agent', agent: { id: 'session-fixer' } })
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+    return result
+  })()
+  check('the task owner can refresh its request', ownerCall.ok === true && ownerCall.task.merge.head === 'new-head-sha', JSON.stringify(ownerCall.ok && ownerCall.task && ownerCall.task.merge.head))
+  const mergerCall = await (async () => {
+    const ctx = driftRig({ team: mergerTeam() })
+    const result = await ctx.rig.api.perform('refreshMerge', { id: 'T-1' }, { projectPath: PROJECT, by: '@merger', role: 'agent', agent: { id: 'session-merger' } })
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+    return result
+  })()
+  check('the merger can refresh a request', mergerCall.ok === true, JSON.stringify(mergerCall))
+  const strangerCtx = driftRig({ team: mergerTeam() })
+  const stranger = await strangerCtx.rig.api.perform('refreshMerge', { id: 'T-1' }, { projectPath: PROJECT, by: '@other', role: 'agent', agent: { id: 'session-other' } })
+  check('another agent cannot refresh', stranger.ok === false && stranger.code === 'not-assignee', JSON.stringify(stranger))
+  strangerCtx.surface.dispose()
+  strangerCtx.rig.scheduler.dispose()
+}
+
+// refreshMerge refuses readably when there is nothing to refresh
+{
+  const noMerge = driftRig({ task: openMergeTask({ merge: null }) })
+  const refused = await postTo(noMerge.surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  check('a task without a merge request cannot be refreshed', refused.json().ok === false && refused.json().code === 'no-merge-request', refused.text)
+  noMerge.surface.dispose()
+  noMerge.rig.scheduler.dispose()
+
+  const running = driftRig({ task: openMergeTask({ status: 'running' }) })
+  const notDone = await postTo(running.surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  check('only a done task has a request to refresh', notDone.json().ok === false && notDone.json().code === 'not-done', notDone.text)
+  running.surface.dispose()
+  running.rig.scheduler.dispose()
+
+  const noGit = driftRig({ merger: null, task: openMergeTask() })
+  const noGitRig = createSubmitRig({ git: null, merger: null })
+  seedMergeTask(noGitRig, openMergeTask())
+  const noGitSurface = install(noGitRig)
+  const noService = await postTo(noGitSurface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  check('without git the refresh refuses readably', noService.json().ok === false && noService.json().code === 'no-git-service', noService.text)
+  noGitSurface.dispose()
+  noGitRig.scheduler.dispose()
+  noGit.surface.dispose()
+  noGit.rig.scheduler.dispose()
+
+  const noBranch = driftRig({ task: openMergeTask({ branch: null }) })
+  const missing = await postTo(noBranch.surface, { action: 'refreshMerge', project: PROJECT, id: 'T-1' })
+  check('a task without a branch refuses readably', missing.json().ok === false && missing.json().code === 'missing-branch', missing.text)
+  noBranch.surface.dispose()
+  noBranch.rig.scheduler.dispose()
+}
+
+// without a task worktree the branch head is resolved in the main checkout
+{
+  const seedTask = openMergeTask({ worktree: null, branch: 'task/T-1-1' })
+  seedTask.merge = Object.assign({}, seedTask.merge, { head: 'branch-sha' })
+  const fake = mergeGit({
+    'rev-parse --verify task/T-1-1': () => ({ code: 0, stdout: 'branch-sha\n', stderr: '' }),
+  })
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(rig, seedTask)
+  const surface = install(rig)
+  const res = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  check('a missing worktree falls back to the branch head', res.json().ok === true && res.json().task.merge.status === 'merged', res.text)
+  check(
+    'the fallback resolves the branch in the main checkout',
+    fake.calls.some((entry) => entry.cwd === PROJECT && entry.args.join(' ') === 'rev-parse --verify task/T-1-1'),
+    JSON.stringify(fake.calls.filter((entry) => entry.args[0] === 'rev-parse').map((entry) => ({ cwd: entry.cwd, args: entry.args }))),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
 }
 
 surface.dispose()

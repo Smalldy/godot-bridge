@@ -16,7 +16,7 @@ import { TASK_LEASE_MS } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { MERGER_NAME, probeWorktree, resolveLead, servicesFor, workerPool } from './dispatch.mjs'
-import { recordMergeResult } from './merge.mjs'
+import { recordMergeResult, refreshMergeRequest } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
 
 /** Every action this API exposes. The tool enum and the route allowlist are
@@ -34,6 +34,7 @@ export const ACTIONS = [
   'tick',
   'submit',
   'mergeRequest',
+  'refreshMerge',
   'rejectMerge',
   'approveStart',
   'rejectStart',
@@ -155,6 +156,42 @@ export function createApi(ctx, options) {
   }
 
   /**
+   * The task branch's CURRENT head, independent of what the merge request
+   * recorded. The task worktree is authoritative when it still exists (that is
+   * where the agent committed); otherwise the branch is resolved in the main
+   * checkout. Never throws; a missing branch or git is a readable failure.
+   */
+  async function readBranchHead(projectPath, task) {
+    if (git === null) {
+      return failure('no-git-service', 'this profile has no git service, so the branch head of ' + task.id + ' cannot be read')
+    }
+    const worktree = typeof task.worktree === 'string' && task.worktree.length > 0 ? task.worktree : ''
+    if (worktree !== '') {
+      try {
+        const viaWorktree = await git.head(worktree)
+        if (viaWorktree !== null && viaWorktree !== undefined && viaWorktree.ok === true && typeof viaWorktree.hash === 'string' && viaWorktree.hash.length > 0) {
+          return ok({ head: String(viaWorktree.hash) })
+        }
+      } catch (error) {
+        // The worktree may already be gone; fall through to the branch.
+      }
+    }
+    if (typeof task.branch !== 'string' || task.branch.length === 0) {
+      return failure('missing-branch', task.id + ' has no branch, so its head cannot be read')
+    }
+    try {
+      const viaBranch = await git.revParse(projectPath, task.branch)
+      if (viaBranch !== null && viaBranch !== undefined && viaBranch.ok === true && typeof viaBranch.hash === 'string' && viaBranch.hash.length > 0) {
+        return ok({ head: String(viaBranch.hash) })
+      }
+      const detail = viaBranch !== null && viaBranch !== undefined && typeof viaBranch.message === 'string' ? viaBranch.message : 'git returned no hash'
+      return failure('head-unreadable', 'could not read the head of ' + task.branch + ': ' + detail)
+    } catch (error) {
+      return failure('head-unreadable', 'could not read the head of ' + task.branch + ': ' + messageOf(error))
+    }
+  }
+
+  /**
    * Best-effort message to one Team member by name. Every failure — no team
    * service, no lead, no such member, a refused mailbox — is swallowed: a
    * notification must never fail a submit or a merge.
@@ -240,7 +277,9 @@ export function createApi(ctx, options) {
         '  ' + detail + '\n' +
         'Fix it in your task worktree (' +
         String(task.worktree === null || task.worktree === undefined ? '' : task.worktree) +
-        '), then tell the Lead so the request can be retried.',
+        '), then refresh the merge request with task_center { action: "refreshMerge", id: "' +
+        task.id +
+        '" } and tell the Lead so it can be retried.',
     )
   }
 
@@ -776,6 +815,27 @@ export function createApi(ctx, options) {
         if (merger === null || typeof merger.mergeRequest !== 'function') {
           return failure('no-merge-service', 'the merge queue is not available in this profile')
         }
+        // The request records the head it was submitted at. If the branch moved
+        // after that submit, the merger would verify a tree nobody reviewed:
+        // refuse, touch nothing, and tell the owner to refresh explicitly.
+        const currentHead = await readBranchHead(projectPath, task)
+        if (currentHead.ok !== true) return currentHead
+        const recordedHead = typeof merge.head === 'string' ? merge.head : null
+        if (String(currentHead.head) !== String(recordedHead)) {
+          return failure(
+            'head-drift',
+            task.id +
+              "'s branch " +
+              String(task.branch) +
+              ' is now at ' +
+              String(currentHead.head) +
+              ', but its merge request records ' +
+              String(recordedHead) +
+              '; run task_center { action: "refreshMerge", id: "' +
+              task.id +
+              '" } to refresh the request, then retry the merge',
+          )
+        }
         const settings = read.board.dispatch === undefined || read.board.dispatch === null ? null : read.board.dispatch.worktree
         const worktreeRoot = settings !== null && settings !== undefined && typeof settings.root === 'string' ? settings.root : '.worktrees'
         const outcome = await merger.mergeRequest(task, projectPath, { worktreeRoot: worktreeRoot })
@@ -819,6 +879,63 @@ export function createApi(ctx, options) {
           projectPath,
           id,
           (board) => recordMergeResult(board, id, { status: 'rejected' }, clock(), context.by),
+          context,
+        )
+        if (recorded.ok !== true) return recorded
+        return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
+      })
+    }
+    if (action === 'refreshMerge') {
+      const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
+      if (id === '') return failure('missing-id', 'refreshMerge needs a task id')
+      // Reads the branch head and the base diff, then rewrites the request in
+      // one board write. It never commits, merges or pushes.
+      return serialised(async function () {
+        const read = await readBoardOrFail(projectPath)
+        if (read.failed !== undefined) return read.failed
+        const task = model.findTask(read.board, id)
+        if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
+        if (task.status !== 'done') {
+          return failure('not-done', id + ' is ' + task.status + '; only a done task has a merge request to refresh')
+        }
+        const merge = task.merge
+        if (merge === null || merge === undefined || typeof merge !== 'object' || Array.isArray(merge)) {
+          return failure('no-merge-request', id + ' has no merge request to refresh')
+        }
+        const owner = ownerOf(context)
+        const asUser = context !== undefined && context !== null && context.role === 'user'
+        const asOwner = owner !== null && task.assignee !== null && task.assignee !== undefined && assigneeMatches(task, owner)
+        const member = asUser || asOwner ? null : callerMemberOf(context)
+        if (!asUser && !asOwner && (member === null || member.name !== MERGER_NAME)) {
+          return failure(
+            'not-assignee',
+            id +
+              ' belongs to ' +
+              (task.assignee === null || task.assignee === undefined ? 'nobody' : String(task.assignee.name)) +
+              '; only its owner, the user or the merger may refresh its merge request',
+          )
+        }
+        if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', id + ' has no branch to read')
+        if (typeof merge.base !== 'string' || merge.base.length === 0) {
+          return failure('missing-base', id + ' has no base commit, so the refresh cannot diff its branch')
+        }
+        const current = await readBranchHead(projectPath, task)
+        if (current.ok !== true) return current
+        let diff
+        try {
+          diff = await git.diffNameOnly(projectPath, merge.base, current.head)
+        } catch (error) {
+          return failure('diff-failed', 'could not list the files ' + id + ' changed: ' + messageOf(error))
+        }
+        if (diff === null || diff === undefined || diff.ok !== true) {
+          const code = diff !== null && diff !== undefined && diff.code !== undefined && diff.code !== null ? String(diff.code) : 'diff-failed'
+          const detail = diff === null || diff === undefined ? 'git returned no result' : String(diff.message)
+          return failure(code, 'could not list the files ' + id + ' changed: ' + detail)
+        }
+        const recorded = await writeTask(
+          projectPath,
+          id,
+          (board) => refreshMergeRequest(board, id, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by),
           context,
         )
         if (recorded.ok !== true) return recorded
