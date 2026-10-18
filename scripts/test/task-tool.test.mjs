@@ -37,6 +37,11 @@ check('projectPathOf resolves the workspace', projectPathOf(rig.ctx, agent) === 
 const actions = rig.tool.parameters.action.enum
 check('the tool exposes start and pause', actions.indexOf('start') >= 0 && actions.indexOf('pause') >= 0, actions.join(','))
 check('the tool exposes create and submit', actions.indexOf('create') >= 0 && actions.indexOf('submit') >= 0)
+check(
+  'the tool exposes the merge queue and its refresh',
+  actions.indexOf('mergeRequest') >= 0 && actions.indexOf('rejectMerge') >= 0 && actions.indexOf('refreshMerge') >= 0,
+  actions.join(','),
+)
 check('the old setStatus vocabulary is gone', actions.indexOf('setStatus') < 0, actions.join(','))
 check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && actions.indexOf('forceUnlock') >= 0)
 check('user-owned approval and settings are hidden from the tool', actions.indexOf('approveStart') < 0 && actions.indexOf('rejectStart') < 0 && actions.indexOf('settings') < 0, actions.join(','))
@@ -136,6 +141,14 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   const merger = await toolCall({ action: 'mergeRequest', id: id }, { id: 'session-merger' })
   check('the merger passes the gate', merger.code !== 'merger-only', JSON.stringify(merger))
   check('and reaches the merge queue', merger.error !== undefined && merger.code === 'no-merge-service', JSON.stringify(merger))
+  const refreshed = await toolCall({ action: 'refreshMerge', id: id }, { id: 'session-fixer' })
+  check(
+    'the owner can refresh the merge request from the tool',
+    refreshed.ok === true && refreshed.task.merge.status === 'open' && refreshed.task.merge.head === 'base-sha' && refreshed.task.commit === 'base-sha',
+    JSON.stringify(refreshed),
+  )
+  const strangerRefresh = await toolCall({ action: 'refreshMerge', id: id }, { id: 'session-other' })
+  check('another agent cannot refresh it', strangerRefresh.error !== undefined && strangerRefresh.code === 'not-assignee', JSON.stringify(strangerRefresh))
   mergeRig.scheduler.dispose()
 }
 
