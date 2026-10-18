@@ -672,6 +672,82 @@ export function reworkBriefFor(task, projectPath) {
 }
 
 /**
+ * The per-round TEST brief the host sends the tester once the review is approved
+ * and the candidate checkout exists. It carries the acceptance criteria, the
+ * candidate path/branch, a test plan/runbook (including how to launch a Godot
+ * project from the candidate), the evidence format and the read-only boundary.
+ */
+export function testerBriefFor(task, projectPath, candidate, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const test = task.test === null || task.test === undefined ? {} : task.test
+  const godot = opts.godot === undefined || opts.godot === null ? null : opts.godot
+  const lines = []
+  lines.push('Independent TEST round ' + String(Number.isFinite(test.attempt) ? test.attempt : 1) + ' for ' + String(task.id) + ': ' + String(task.title))
+  if (typeof projectPath === 'string' && projectPath.length > 0) lines.push('Project: ' + projectPath)
+  lines.push('', 'Candidate worktree: ' + String(candidate.path))
+  lines.push('Candidate branch: ' + String(candidate.branch))
+  lines.push('Candidate base: ' + String(candidate.base) + ' (the ' + String(task.target) + ' head when the candidate was built)')
+  lines.push('Candidate head: ' + String(candidate.head))
+  lines.push('Task branch merged into it: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch))
+  if (typeof task.spec === 'string' && task.spec !== '') lines.push('', 'What it involves:', task.spec)
+  if (typeof task.acceptance === 'string' && task.acceptance !== '') lines.push('', 'Acceptance:', task.acceptance)
+  lines.push('', 'Worker self-test evidence (do NOT just repeat it — test independently):', typeof task.evidence === 'string' && task.evidence !== '' ? task.evidence : '(none recorded)')
+  lines.push(
+    '',
+    'Test plan / runbook:',
+    '- Work ONLY inside the candidate worktree above. Do not edit implementation files, commit, merge or push.',
+    '- Run the project test commands there from the candidate checkout and record the exact command and exit code.',
+    '- Exercise the acceptance criteria directly; a green unit suite is not a substitute for the acceptance check.',
+  )
+  if (godot !== null && godot !== undefined && godot.project === true) {
+    lines.push(
+      '- This is a Godot project (' + String(godot.projectFile) + ').',
+      '  Engine path: ' + String(godot.enginePath === undefined || godot.enginePath === null || godot.enginePath === '' ? 'the godot-bridge godotPath setting (Godot engine path card) or the godot command on PATH' : godot.enginePath) + '.',
+      '  Headless smoke test from the candidate:',
+      '    godot_run_headless({ project_path: "' + String(candidate.path) + '", quit_after: 120 })',
+      '  Interactive smoke test from the candidate:',
+      '    godot_run_project({ project_path: "' + String(candidate.path) + '" })',
+      '  Never launch Godot through pwsh/bash (the file sandbox kills it). Stop with godot_stop_project and read godot_get_debug_output for logs.',
+    )
+  } else {
+    lines.push(
+      '- If this is a Godot project, launch the CANDIDATE with godot_run_headless / godot_run_project using project_path="' + String(candidate.path) + '"; never through pwsh/bash.',
+    )
+  }
+  lines.push(
+    '',
+    'Evidence format (required for the verdict):',
+    '- commands run and their exit codes;',
+    '- the failing output tail (not the head of the log) for a failure;',
+    '- screenshot paths for visual checks;',
+    '- relevant Godot output (startup errors, scene load, crash lines).',
+    '',
+    'Permission boundary (hard): the candidate is READ-ONLY implementation; you may only record the verdict:',
+    '  task_center { action: "passTest", id: "' + task.id + '", evidence: "commands/logs that passed" }',
+    '  task_center { action: "failTest", id: "' + task.id + '", evidence: "the failing command and its tail output" }',
+    '',
+    'You are an independent, FRESH context: the worker self-test does not count as your verdict.',
+  )
+  return lines.join('\n')
+}
+
+/** Tell the worker a test failed, with the evidence, and that it continues in its own worktree. */
+export function testFailureBriefFor(task, projectPath) {
+  const test = task.test === null || task.test === undefined ? {} : task.test
+  const lines = []
+  lines.push('Test round ' + String(Number.isFinite(test.attempt) ? test.attempt : 1) + ' FAILED for ' + String(task.id) + ': ' + String(task.title))
+  if (typeof projectPath === 'string' && projectPath.length > 0) lines.push('Project: ' + projectPath)
+  lines.push('', 'Tester evidence:')
+  lines.push(typeof test.evidence === 'string' && test.evidence !== '' ? test.evidence : '(the tester did not write evidence; ask the Lead)')
+  lines.push('', 'Fix it in the SAME worktree and branch you already used:')
+  lines.push('  worktree: ' + String(task.worktree === null || task.worktree === undefined ? '(unknown)' : task.worktree))
+  lines.push('  branch:   ' + String(task.branch === null || task.branch === undefined ? '(unknown)' : task.branch))
+  lines.push('Do not create a new branch or a fresh checkout.')
+  lines.push('Run the tests there, then submit again with task_center { action: "submit", id: "' + task.id + '", evidence: "what you fixed and how you checked it" }.')
+  return lines.join('\n')
+}
+
+/**
  * The host-side role registry and provisioner.
  *
  * ensure(kind, { config, task, projectPath, now }) makes the configured number of

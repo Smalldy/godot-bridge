@@ -52,6 +52,12 @@ check(
     description.slice(0, 600),
   )
   check('requestChanges carries explicit reasons', rig.tool.parameters.reasons !== undefined, JSON.stringify(rig.tool.parameters.reasons))
+  check(
+    'the tool describes the candidate tester workflow and Godot launches',
+    description.indexOf('test candidate') >= 0 && description.indexOf('godot_run_headless') >= 0 && description.indexOf('passTest') >= 0,
+    description.slice(0, 1400),
+  )
+  check('the tool no longer describes a host verification gate', description.indexOf('after verification') < 0, description.slice(0, 1400))
 }
 check('the old setStatus vocabulary is gone', actions.indexOf('setStatus') < 0, actions.join(','))
 check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && actions.indexOf('forceUnlock') >= 0)

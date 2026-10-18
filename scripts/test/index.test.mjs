@@ -95,6 +95,12 @@ check(
     description.slice(-700),
   )
   check('the tool description names the project role file', description.indexOf('.agents/roles.json') >= 0, description.slice(-700))
+  check(
+    'the tool description explains the tester candidate workflow',
+    description.indexOf('test candidate') >= 0 && description.indexOf('godot_run_headless') >= 0 && description.indexOf('host merges the accepted candidate') >= 0,
+    description.slice(0, 1400),
+  )
+  check('the tool description no longer claims a host verification gate', description.indexOf('after verification') < 0, description.slice(0, 1400))
   check('the tool description states the hard verdict gates', description.indexOf('worker must never review or test its own task') >= 0, description.slice(-700))
   check('role names map to kinds', roleKindOf('reviewer-1') === 'reviewer' && roleKindOf('tester-12') === 'tester' && roleKindOf('work-T-1-1') === null)
   const noService = createRoleManager({ get: () => undefined })
@@ -121,7 +127,7 @@ check('teardown runs without throwing', teardownError === null, teardownError &&
 // ── git wiring: required for dispatch, lazy, never a reason to fail activation ─
 {
   const { gitFor, probeWorktree } = await import('../../plugin/task-center/dispatch.mjs')
-  const { createMerger, verifyFor } = await import('../../plugin/task-center/merge.mjs')
+  const { createMerger } = await import('../../plugin/task-center/merge.mjs')
   check('gitFor answers null when the profile has no subprocess service', gitFor({ get: () => undefined }, {}) === null)
   const fake = { isRepo: () => ({ ok: true, repo: true }) }
   check('an injected git facade wins over the service', gitFor({ get: () => undefined }, { git: fake }) === fake)
@@ -133,13 +139,14 @@ check('teardown runs without throwing', teardownError === null, teardownError &&
     missing.ok === false && missing.code === 'no-git-service',
     JSON.stringify(missing),
   )
-  check('verifyFor answers null when the profile has no subprocess service', verifyFor({ get: () => undefined }) === null)
-  const mergeService = { spawn() { throw new Error('unexpected spawn') } }
+  const noGitMerger = createMerger({ git: null })
   check(
-    'verifyFor builds a runner from the subprocess service',
-    typeof verifyFor({ get: (key) => (key === 'subprocess' ? mergeService : undefined) }) === 'function',
+    'the merge queue exposes the tester candidate workflow',
+    typeof noGitMerger.createCandidate === 'function' && typeof noGitMerger.mergeCandidate === 'function' && typeof noGitMerger.discardCandidate === 'function',
+    Object.keys(noGitMerger).join(','),
   )
-  const noGitMerger = createMerger({ git: null, verify: null })
+  const refusedCandidate = await noGitMerger.createCandidate({ id: 'T-1', branch: 'task/T-1', target: 'main' }, PROJECT, {})
+  check('candidate creation refuses readably without git', refusedCandidate.ok === false && refusedCandidate.code === 'no-git-service', JSON.stringify(refusedCandidate))
   const refusedMerge = await noGitMerger.mergeRequest({ id: 'T-1', branch: 'task/T-1', target: 'main' }, PROJECT, {})
   check('the merge queue refuses readably without git', refusedMerge.ok === false && refusedMerge.code === 'no-git-service', JSON.stringify(refusedMerge))
 }

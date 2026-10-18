@@ -22,6 +22,12 @@ import { join } from 'node:path'
 
 export const DEFAULT_VERIFY_COMMAND = 'npm run verify'
 
+/** The candidate checkout for a task's independent test: <root>/test-<id>. */
+export function testCandidateFor(projectPath, root, taskId) {
+  const base = typeof root === 'string' && root.length > 0 ? root : '.worktrees'
+  return { path: join(projectPath, base, 'test-' + String(taskId)), branch: 'test/' + String(taskId) }
+}
+
 /** Keep a failed verification readable without letting the board grow forever. */
 const MAX_OUTPUT_BYTES = 8 * 1024
 
@@ -299,7 +305,6 @@ export function createMerger(options) {
     if (git === null) return failure('no-git-service', 'the merge queue needs the git service, and this profile has none; merging is unavailable')
     if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', task.id + ' has no candidate branch to merge')
     if (typeof task.target !== 'string' || task.target.length === 0) return failure('missing-target', task.id + ' has no target branch to merge into')
-    if (verify === null) return failure('no-verifier', 'the merge queue needs a verification runner, and this profile has none; merging is unavailable')
     const current = await currentBranchOf(projectPath)
     if (current.ok !== true) return failure('branch-unreadable', 'could not read the branch of ' + projectPath + ': ' + current.message)
     if (current.branch !== task.target) {
@@ -346,11 +351,18 @@ export function createMerger(options) {
     }
 
     const mergeCommit = (await headOf(integrationPath)) || (await headOf(projectPath))
-    const verified = await runVerification(integrationPath, task)
-    if (verified.ok !== true) {
-      await callGit('resetHard', [integrationPath])
-      await discardIntegration(projectPath, integrationPath, mergeBranch)
-      return { ok: true, status: 'failed', mergeCommit: null, conflict: null, output: clip(verified.output) }
+    // The tester already ran the project's verification on the candidate tree.
+    // A legacy/manual merge may still inject a runner; the auto path never does
+    // (T-25 removed the host's third verify gate).
+    let verifiedOutput = null
+    if (verify !== null) {
+      const verified = await runVerification(integrationPath, task)
+      if (verified.ok !== true) {
+        await callGit('resetHard', [integrationPath])
+        await discardIntegration(projectPath, integrationPath, mergeBranch)
+        return { ok: true, status: 'failed', mergeCommit: null, conflict: null, output: clip(verified.output) }
+      }
+      verifiedOutput = verified.output
     }
 
     // Verify did not touch the main checkout, but a person or another tool could
@@ -377,10 +389,178 @@ export function createMerger(options) {
     if (typeof task.worktree === 'string' && task.worktree.length > 0) {
       await callGit('worktreeRemove', [projectPath, task.worktree, { force: true }])
     }
-    return { ok: true, status: 'merged', mergeCommit: mergeCommit, conflict: null, output: clip(verified.output) }
+    return { ok: true, status: 'merged', mergeCommit: mergeCommit, conflict: null, output: verifiedOutput }
   }
 
-  return { enqueue: enqueue, mergeRequest: mergeRequest, verifyCommand: verifyCommand, now: clock }
+  /** Where a task's test candidate lives. Derived from the task id, never stored. */
+  function candidateAt(projectPath, root, taskId) {
+    return testCandidateFor(projectPath, root, taskId)
+  }
+
+  async function discardCandidateAt(projectPath, candidate) {
+    await callGit('worktreeRemove', [projectPath, candidate.path, { force: true }])
+    await callGit('deleteBranch', [projectPath, candidate.branch, { force: true }])
+  }
+
+  /**
+   * Build the independent test candidate: a throwaway checkout of the target's
+   * CURRENT head with the task branch merged into it (branch test/<id>). Nothing
+   * in the main checkout moves; a conflict is a refusal the caller reports.
+   */
+  async function createCandidate(task, projectPath, request) {
+    const req = request === undefined || request === null ? {} : request
+    if (git === null) return failure('no-git-service', 'the tester workflow needs the git service, and this profile has none')
+    if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', task.id + ' has no candidate branch to test')
+    if (typeof task.target !== 'string' || task.target.length === 0) return failure('missing-target', task.id + ' has no target branch to test against')
+    const current = await currentBranchOf(projectPath)
+    if (current.ok !== true) return failure('branch-unreadable', 'could not read the branch of ' + projectPath + ': ' + current.message)
+    if (current.branch !== task.target) {
+      return failure('target-mismatch', task.id + ' targets ' + task.target + ', but ' + projectPath + ' is on ' + (current.branch === null ? 'a detached HEAD' : current.branch))
+    }
+    const clean = await cleanOf(projectPath)
+    if (clean.ok !== true) return failure('clean-unreadable', 'could not check whether ' + projectPath + ' is clean: ' + clean.message)
+    if (clean.clean !== true) return failure('dirty-worktree', 'the main working tree is not clean; commit or stash it before building a test candidate for ' + task.id)
+    const targetHead = await headOf(projectPath)
+    if (targetHead === null) return failure('head-unreadable', 'could not read the target HEAD of ' + projectPath)
+    const candidate = candidateAt(projectPath, req.worktreeRoot, task.id)
+    await discardCandidateAt(projectPath, candidate)
+    const added = await callGit('worktreeAdd', [projectPath, { path: candidate.path, branch: candidate.branch, base: targetHead }])
+    if (added === null || added === undefined || added.ok !== true) {
+      await discardCandidateAt(projectPath, candidate)
+      return failure('candidate-unavailable', 'could not create the test candidate for ' + task.id + ': ' + messageOf(added))
+    }
+    const merged = await callGit('mergeNoFf', [projectPath, candidate.path, task.branch])
+    if (merged === null || merged === undefined || merged.ok !== true) {
+      const conflicted = merged !== null && merged !== undefined && merged.code === 'merge-conflict'
+      const files = conflicted ? await conflictedOf(candidate.path) : []
+      await callGit('mergeAbort', [candidate.path])
+      await discardCandidateAt(projectPath, candidate)
+      return {
+        ok: false,
+        code: conflicted ? 'candidate-conflict' : 'candidate-failed',
+        message: conflicted
+          ? 'the test candidate for ' + task.id + ' conflicts with ' + task.target + ': ' + (files.length > 0 ? files.join(', ') : messageOf(merged))
+          : 'could not merge ' + task.branch + ' into the test candidate for ' + task.id + ': ' + messageOf(merged),
+        conflict: conflicted && files.length > 0 ? 'conflicted files: ' + files.join(', ') : null,
+      }
+    }
+    const candidateHead = await headOf(candidate.path)
+    if (candidateHead === null) {
+      await discardCandidateAt(projectPath, candidate)
+      return failure('candidate-unreadable', 'could not read the head of the test candidate for ' + task.id)
+    }
+    return { ok: true, path: candidate.path, branch: candidate.branch, base: targetHead, head: candidateHead }
+  }
+
+  /**
+   * Merge the ACCEPTED candidate: only if the target still points at the base the
+   * candidate was built from. The candidate was already review-approved and
+   * tester-passed, so there is no verification here. Fast-forward only; main is
+   * never rewritten and a moved target returns status 'stale' for a retest.
+   */
+  async function mergeCandidate(task, projectPath, request) {
+    const req = request === undefined || request === null ? {} : request
+    if (git === null) return failure('no-git-service', 'the tester workflow needs the git service, and this profile has none')
+    if (typeof task.target !== 'string' || task.target.length === 0) return failure('missing-target', task.id + ' has no target branch')
+    const merge = task.merge === null || task.merge === undefined ? {} : task.merge
+    const base = typeof task.base === 'string' && task.base.length > 0 ? task.base : typeof merge.base === 'string' ? merge.base : null
+    const mergeCommit = typeof merge.mergeCommit === 'string' && merge.mergeCommit.length > 0 ? merge.mergeCommit : null
+    if (base === null || mergeCommit === null) return failure('no-candidate', task.id + ' has no recorded test candidate to merge')
+    const current = await currentBranchOf(projectPath)
+    if (current.ok !== true) return failure('branch-unreadable', 'could not read the branch of ' + projectPath + ': ' + current.message)
+    if (current.branch !== task.target) {
+      return failure('target-mismatch', task.id + ' targets ' + task.target + ', but ' + projectPath + ' is on ' + (current.branch === null ? 'a detached HEAD' : current.branch))
+    }
+    const clean = await cleanOf(projectPath)
+    if (clean.ok !== true) return failure('clean-unreadable', 'could not check whether ' + projectPath + ' is clean: ' + clean.message)
+    if (clean.clean !== true) return failure('dirty-worktree', 'the main working tree is not clean; the tested candidate cannot be merged right now')
+    const currentHead = await headOf(projectPath)
+    if (currentHead === null) return failure('head-unreadable', 'could not read the target HEAD of ' + projectPath)
+    if (currentHead !== base) {
+      return { ok: true, status: 'stale', base: base, currentHead: currentHead, mergeCommit: mergeCommit }
+    }
+    const candidate = candidateAt(projectPath, req.worktreeRoot, task.id)
+    const forwarded = await callGit('mergeFfOnly', [projectPath, candidate.branch])
+    if (forwarded === null || forwarded === undefined || forwarded.ok !== true) {
+      return failure('candidate-merge-failed', 'could not fast-forward ' + task.target + ' to the tested candidate: ' + messageOf(forwarded))
+    }
+    await discardCandidateAt(projectPath, candidate)
+    if (typeof task.worktree === 'string' && task.worktree.length > 0) {
+      await callGit('worktreeRemove', [projectPath, task.worktree, { force: true }])
+    }
+    return { ok: true, status: 'merged', mergeCommit: mergeCommit, base: base }
+  }
+
+  /** Remove the test candidate (failed test, or before rebuilding it). */
+  async function discardCandidate(task, projectPath, request) {
+    const req = request === undefined || request === null ? {} : request
+    if (git === null) return { ok: true }
+    await discardCandidateAt(projectPath, candidateAt(projectPath, req.worktreeRoot, task.id))
+    return { ok: true }
+  }
+
+  return {
+    enqueue: enqueue,
+    mergeRequest: mergeRequest,
+    createCandidate: createCandidate,
+    mergeCandidate: mergeCandidate,
+    discardCandidate: discardCandidate,
+    verifyCommand: verifyCommand,
+    now: clock,
+  }
+}
+
+/**
+ * Record a freshly built test candidate on the board. Pure: the API applies it
+ * through the board's CAS. Retest resets the test round (a moved target
+ * invalidates the tester verdict), otherwise the review approval already opened
+ * the pending test round.
+ */
+export function recordCandidate(board, id, candidate, now, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const next = JSON.parse(JSON.stringify(board))
+  const task = next.tasks.filter((entry) => entry.id === id)[0]
+  if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
+  if (task.merge === null || typeof task.merge !== 'object' || Array.isArray(task.merge)) {
+    return failure('no-merge-request', id + ' has no merge request to attach a test candidate to')
+  }
+  if (candidate === null || typeof candidate !== 'object' || typeof candidate.base !== 'string' || typeof candidate.head !== 'string') {
+    return failure('invalid-candidate', id + ' needs a base and a head for its test candidate')
+  }
+  const at = new Date(now).toISOString()
+  task.base = candidate.base
+  task.merge = Object.assign({}, task.merge, {
+    status: 'open',
+    base: candidate.base,
+    mergeCommit: candidate.head,
+    conflict: null,
+    output: null,
+    at: at,
+  })
+  if (opts.retest === true) {
+    const previous = task.test === null || task.test === undefined ? null : task.test
+    task.test = {
+      status: 'pending',
+      by: null,
+      at: at,
+      evidence: null,
+      attempt: (previous === null || !Number.isFinite(previous.attempt) ? 0 : previous.attempt) + 1,
+    }
+    task.status = 'testing'
+  }
+  task.updatedAt = at
+  task.history.push({
+    at: at,
+    by: opts.by === undefined ? 'system' : opts.by,
+    from: task.status,
+    to: task.status,
+    note:
+      (opts.retest === true ? 'test verdict invalidated (target moved); new candidate ' : 'test candidate built at ') +
+      String(candidate.head) +
+      ' for ' +
+      String(candidate.base),
+  })
+  return { ok: true, board: next, events: [{ kind: 'candidate', id: id, head: candidate.head }] }
 }
 
 function mergeNote(outcome) {

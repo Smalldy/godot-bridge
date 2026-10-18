@@ -432,6 +432,7 @@ function createSubmitRig(options) {
     verifyCommand: opts.verifyCommand,
     autoMerge: opts.autoMerge,
     roles: roles,
+    godotPath: opts.godotPath,
   })
   const user = { projectPath: PROJECT, by: '@user', role: 'user', agent: null }
   async function action(name, body) {
@@ -2135,6 +2136,202 @@ function testStageTask(overrides) {
   check('a testing task without an approved review cannot merge', res.json().ok === false && res.json().code === 'review-required', res.text)
   check('and the merge gate reads no git', fake.calls.length === 0, JSON.stringify(fake.calls.map((entry) => entry.args)))
   surface2.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── tester workflow: candidate checkout, Godot brief, pass/fail/auto-merge ─
+function testerGit(options) {
+  const opts = options === undefined ? {} : options
+  const calls = []
+  let targetHead = opts.targetHead === undefined ? 'target-sha' : opts.targetHead
+  const run = (args, cwd) => {
+    calls.push({ args: args.slice(), cwd: cwd })
+    const key = args.join(' ')
+    if (key === 'branch --show-current') return { code: 0, stdout: 'main\n', stderr: '' }
+    if (key === 'status --porcelain') return { code: 0, stdout: '', stderr: '' }
+    if (key === 'rev-parse HEAD') {
+      return { code: 0, stdout: (String(cwd).indexOf('test-T-1') >= 0 ? 'candidate-sha' : targetHead) + '\n', stderr: '' }
+    }
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  run.calls = calls
+  run.setTargetHead = function (value) {
+    targetHead = value
+  }
+  return { git: createGit({ run: run }), calls: calls, setTargetHead: run.setTargetHead }
+}
+
+function testerTeam() {
+  return createTeam({
+    roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+    ],
+  })
+}
+
+function createTesterRig(options) {
+  const opts = options === undefined ? {} : options
+  const fake = testerGit(opts)
+  const team = testerTeam()
+  const verifier = opts.verifier === undefined ? null : opts.verifier
+  const rig = createSubmitRig({
+    team: team,
+    roles: true,
+    git: fake.git,
+    merger: createMerger({ git: fake.git, verify: verifier === null ? undefined : verifier.verify }),
+    godotPath: 'C:/fake/godot.exe',
+  })
+  // A Godot marker so the tester brief carries the launch/runbook section.
+  rig.fs.files.set(join(PROJECT, 'project.godot'), { text: 'config_version=5', version: 'seed' })
+  return { rig: rig, fake: fake, team: team, verifier: verifier }
+}
+
+function acceptingTask(overrides) {
+  const stamp = new Date().toISOString()
+  return reviewStageTask(
+    Object.assign(
+      {
+        title: 'Tester task',
+        spec: 'Implement the tester feature',
+        acceptance: 'The feature works end to end',
+        merge: {
+          status: 'open',
+          base: 'base-sha',
+          target: 'main',
+          head: 'head-sha',
+          mergeCommit: null,
+          declaredFiles: ['scripts/a.gd'],
+          actualFiles: ['scripts/a.gd'],
+          tests: 'npm test',
+          reviewer: null,
+          conflict: null,
+          output: null,
+          at: stamp,
+        },
+      },
+      overrides === undefined ? {} : overrides,
+    ),
+  )
+}
+
+{
+  const ctx = createTesterRig()
+  const rig = ctx.rig
+  const fake = ctx.fake
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask()] }))
+  const surface = install(rig)
+  const approved = await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  const payload = approved.json()
+  check('approveReview builds the test candidate', payload.ok === true && payload.task.status === 'testing', approved.text)
+  check(
+    'the candidate base is the target head and its head is the merge commit',
+    payload.task !== undefined && payload.task.base === 'target-sha' && payload.task.merge.mergeCommit === 'candidate-sha',
+    JSON.stringify(payload.task && { base: payload.task.base, merge: payload.task.merge }),
+  )
+  const addCall = fake.calls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'add')[0]
+  const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
+  check(
+    'the candidate is created from the target head on test/<id>',
+    addCall !== undefined && addCall.args.join(' ') === 'worktree add -b test/T-1 ' + candidatePath + ' target-sha' && addCall.cwd === PROJECT,
+    JSON.stringify(addCall && addCall.args),
+  )
+  const mergeCall = fake.calls.filter((call) => call.args[0] === 'merge' && call.args[1] === '--no-ff')[0]
+  check(
+    'the task branch is merged inside the candidate',
+    mergeCall !== undefined && mergeCall.cwd === candidatePath && mergeCall.args.join(' ') === 'merge --no-ff --no-edit task/T-1-1',
+    JSON.stringify(mergeCall && mergeCall.args),
+  )
+  const sent = ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'tester-1')
+  check('the tester receives the test brief', sent.length === 1, JSON.stringify(ctx.team.calls.map((call) => call.target)))
+  const brief = sent.length === 0 ? '' : sent[0].text
+  check('the tester brief carries the candidate path and branch', brief.indexOf(candidatePath) >= 0 && brief.indexOf('test/T-1') >= 0, brief.slice(0, 600))
+  check('the tester brief carries acceptance and the test plan', brief.indexOf('The feature works end to end') >= 0 && brief.indexOf('Test plan / runbook') >= 0, brief.slice(0, 800))
+  check('the Godot brief names the fake engine path and launch calls', brief.indexOf('C:/fake/godot.exe') >= 0 && brief.indexOf('godot_run_headless') >= 0 && brief.indexOf('godot_run_project') >= 0, brief.slice(0, 1200))
+  check('the Godot brief forbids launching through a shell', brief.indexOf('pwsh/bash') >= 0, brief.slice(0, 1200))
+  check('the tester brief carries the evidence format and both verdict actions', brief.indexOf('Evidence format') >= 0 && brief.indexOf('passTest') >= 0 && brief.indexOf('failTest') >= 0, brief.slice(-600))
+  const snapshot = await rig.api.snapshot(PROJECT)
+  check(
+    'the snapshot exposes the active test candidate',
+    snapshot.tasks[0].candidate !== null && snapshot.tasks[0].candidate.path === candidatePath && snapshot.tasks[0].candidate.branch === 'test/T-1' && snapshot.tasks[0].candidate.head === 'candidate-sha',
+    JSON.stringify(snapshot.tasks[0].candidate),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  const verifier = fakeVerifier({ code: 0, stdout: 'HOST VERIFY SHOULD NOT RUN', stderr: '' })
+  const ctx = createTesterRig({ verifier: verifier })
+  const rig = ctx.rig
+  const fake = ctx.fake
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask()] }))
+  const surface = install(rig)
+  await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  const passed = await postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1', evidence: 'npm test: PASS' })
+  const payload = passed.json()
+  check('a passed test merges the candidate automatically', payload.ok === true && payload.task.status === 'done' && payload.task.merge.status === 'merged', passed.text)
+  check('the passed verdict keeps the tester evidence', payload.task.test.status === 'passed' && payload.task.test.evidence === 'npm test: PASS', JSON.stringify(payload.task.test))
+  check('the merged record names the candidate commit', payload.task.merge.mergeCommit === 'candidate-sha', JSON.stringify(payload.task.merge))
+  const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
+  const forward = fake.calls.filter((call) => call.args.join(' ') === 'merge --ff-only test/T-1')[0]
+  check('main is fast-forwarded to the candidate', forward !== undefined && forward.cwd === PROJECT, JSON.stringify(forward))
+  check(
+    'the candidate checkout and branch are cleaned up',
+    fake.calls.some((call) => call.args.join(' ') === 'worktree remove --force ' + candidatePath) && fake.calls.some((call) => call.args.join(' ') === 'branch -D test/T-1'),
+    JSON.stringify(fake.calls.map((call) => call.args)),
+  )
+  check('the task worktree is removed after the merge', fake.calls.some((call) => call.args.join(' ') === 'worktree remove --force ' + join(PROJECT, '.worktrees', 'T-1')))
+  const after = await rig.api.snapshot(PROJECT)
+  check('no candidate remains after the merge', after.tasks[0].candidate === null, JSON.stringify(after.tasks[0].candidate))
+  check('the host does not run a third full verify before merging', verifier.calls.length === 0, JSON.stringify(verifier.calls))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  const ctx = createTesterRig()
+  const rig = ctx.rig
+  const fake = ctx.fake
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask()] }))
+  const surface = install(rig)
+  await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  const failed = await postTo(surface, { action: 'failTest', project: PROJECT, id: 'T-1', evidence: 'FAIL scripts/test/game.test.mjs: boss room does not load' })
+  const payload = failed.json()
+  check('a failed test returns the task to running with evidence', payload.ok === true && payload.task.status === 'running' && payload.task.test.status === 'failed' && payload.task.test.evidence.indexOf('boss room') >= 0, failed.text)
+  const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
+  check(
+    'a failed test cleans up the candidate',
+    fake.calls.some((call) => call.args.join(' ') === 'worktree remove --force ' + candidatePath) && fake.calls.some((call) => call.args.join(' ') === 'branch -D test/T-1'),
+    JSON.stringify(fake.calls.map((call) => call.args)),
+  )
+  check('main is never fast-forwarded on a failed test', fake.calls.every((call) => call.args.join(' ') !== 'merge --ff-only test/T-1'), JSON.stringify(fake.calls.map((call) => call.args)))
+  const ownerSent = ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'fixer')
+  check('the worker is told what failed, with the evidence', ownerSent.length === 1 && ownerSent[0].text.indexOf('boss room') >= 0, JSON.stringify(ownerSent))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  const ctx = createTesterRig()
+  const rig = ctx.rig
+  const fake = ctx.fake
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask()] }))
+  const surface = install(rig)
+  await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  fake.setTargetHead('moved-sha')
+  const passed = await postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1', evidence: 'PASS on the old candidate' })
+  const payload = passed.json()
+  check('a moved target invalidates the verdict and keeps testing', payload.ok === true && payload.task.status === 'testing' && payload.task.test.status === 'pending', passed.text)
+  check('a new test round starts', payload.task.test.attempt === 2, JSON.stringify(payload.task.test))
+  check('the stale candidate was replaced from the new target head', payload.task.base === 'moved-sha' && payload.task.merge.mergeCommit === 'candidate-sha', JSON.stringify({ base: payload.task.base, merge: payload.task.merge }))
+  check('main is never fast-forwarded for a stale verdict', fake.calls.every((call) => call.args.join(' ') !== 'merge --ff-only test/T-1'), JSON.stringify(fake.calls.map((call) => call.args)))
+  const adds = fake.calls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'add')
+  check('the candidate is rebuilt from the moved target', adds.length === 2 && adds[1].args.join(' ') === 'worktree add -b test/T-1 ' + join(PROJECT, '.worktrees', 'test-T-1') + ' moved-sha', JSON.stringify(adds.map((call) => call.args)))
+  const testerSends = ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'tester-1')
+  check('the tester is asked to retest', testerSends.length === 2 && testerSends[1].text.indexOf('Independent TEST round 2') >= 0, JSON.stringify(testerSends.map((call) => call.text.slice(0, 80))))
+  surface.dispose()
   rig.scheduler.dispose()
 }
 
