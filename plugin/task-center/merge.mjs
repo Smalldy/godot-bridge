@@ -234,37 +234,52 @@ export function createMerger(options) {
   const QUEUE_TIMEOUT = Symbol('queue-timeout')
   let chain = Promise.resolve()
 
-  /** Run one unit of merge work; every caller queues behind the previous one. */
+  /**
+   * Run one unit of merge work; every caller queues behind the previous one.
+   * A unit that exceeds enqueueTimeoutMs is ABANDONED: the token turns aborted
+   * and the queue turn resolves (so the next queued unit runs), but the chain is
+   * NOT reset — resetting would let a later caller run concurrently with units
+   * already queued. The work itself may still finish its git cleanup, yet the
+   * api checks the token before writing the board, so an abandoned turn cannot
+   * record a late result.
+   */
   function enqueue(work) {
-    const run = chain.then(work, work)
-    let timer = null
-    const timeout = new Promise(function (resolveTimeout) {
-      timer = setTimeout(function () {
-        resolveTimeout(QUEUE_TIMEOUT)
-      }, enqueueTimeoutMs)
-    })
-    const guarded = Promise.race([run, timeout]).then(
-      function (value) {
-        if (timer !== null) clearTimeout(timer)
-        if (value === QUEUE_TIMEOUT) {
-          // The unit hung: free the chain so the next caller is not stuck behind
-          // it. The hung work may still finish its own git cleanup, but it can no
-          // longer write any board state (the queue never writes the board).
-          chain = Promise.resolve()
-          return failure('queue-timeout', 'the merge queue unit exceeded ' + String(enqueueTimeoutMs) + 'ms and was abandoned')
-        }
-        return value
-      },
-      function (error) {
-        if (timer !== null) clearTimeout(timer)
-        return failure('queue-failed', messageOf(error))
-      },
-    )
-    chain = guarded.then(
+    const token = { aborted: false }
+    // The bound covers EXECUTION, not time spent waiting in the queue: it starts
+    // when the unit begins. A timeout abandons the unit (token) and resolves the
+    // queue turn so the next unit runs; the chain is never reset, so units that
+    // were already queued keep their order.
+    function guardUnit() {
+      let timer = null
+      const timeout = new Promise(function (resolveTimeout) {
+        timer = setTimeout(function () {
+          resolveTimeout(QUEUE_TIMEOUT)
+        }, enqueueTimeoutMs)
+      })
+      const execution = Promise.resolve().then(function () {
+        return work(token)
+      })
+      return Promise.race([execution, timeout]).then(
+        function (value) {
+          if (timer !== null) clearTimeout(timer)
+          if (value === QUEUE_TIMEOUT) {
+            token.aborted = true
+            return failure('queue-timeout', 'the merge queue unit exceeded ' + String(enqueueTimeoutMs) + 'ms and was abandoned')
+          }
+          return value
+        },
+        function (error) {
+          if (timer !== null) clearTimeout(timer)
+          return failure('queue-failed', messageOf(error))
+        },
+      )
+    }
+    const run = chain.then(guardUnit, guardUnit)
+    chain = run.then(
       function () {},
       function () {},
     )
-    return guarded
+    return run
   }
 
   async function callGit(action, args) {

@@ -1162,6 +1162,64 @@ function roleTask(overrides) {
   }
 }
 
+{
+  // A tester verdict landing between the tick's read and the block write wins:
+  // the CAS re-run must re-check the pending round and skip the block.
+  const activity = createActivity({ limit: 20 })
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const state = createState(rig.ctx)
+  const old = new Date(Date.now() - 60 * 1000).toISOString()
+  const task = roleTask({
+    status: 'testing',
+    review: { status: 'approved', by: 'reviewer-1', at: old, reasons: null, attempt: 1 },
+    test: { status: 'pending', by: null, at: old, evidence: null, attempt: 1 },
+    merge: { status: 'open', base: 'base-sha', target: 'feat/task-center-v2', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: 'npm test', reviewer: null, conflict: null, output: null, at: old },
+  })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [task] }))
+  let injected = false
+  rig.fs.hooks.beforeWrite = function (event) {
+    if (injected || String(event.key).indexOf('tasks.json') < 0 || String(event.content).indexOf('"status": "blocked"') < 0) return undefined
+    injected = true
+    const board = JSON.parse(event.content)
+    const fresh = findTask(board, 'T-1')
+    fresh.status = 'testing'
+    fresh.test.status = 'passed'
+    fresh.test.by = 'tester-1'
+    fresh.test.evidence = 'PASS'
+    event.write(JSON.stringify(board, null, 2) + '\n')
+    return 'stale'
+  }
+  const scheduler = createDispatcher(rig.ctx, {
+    state: state,
+    projectPath: () => PROJECT,
+    allowSpawn: false,
+    git: null,
+    roles: rig.manager,
+    activity: activity,
+    testReminderMs: 10,
+    testTimeoutMs: 20,
+    reviewTimeoutMs: 60 * 60 * 1000,
+  })
+  await scheduler.tick(PROJECT)
+  const read = await state.read(PROJECT)
+  const current = findTask(read.board, 'T-1')
+  check(
+    'a passing verdict that lands before the block write is not overwritten',
+    injected === true && current.status === 'testing' && current.test.status === 'passed',
+    JSON.stringify({ injected: injected, status: current.status, test: current.test.status }),
+  )
+  check('the skipped block records no timeout activity', activity.list(20).every((entry) => entry.kind !== 'error' && String(entry.detail).indexOf('test timeout') < 0), JSON.stringify(activity.list(20)))
+  check('the skipped block sends no notices', rig.team.calls.filter((call) => call.kind === 'send').length === 0, JSON.stringify(rig.team.calls.map((call) => call.target)))
+  scheduler.dispose()
+}
+
 // ── runtime snapshot sources: workerPool kinds and the activity ring ───────
 {
   const rig = createRoleRig({

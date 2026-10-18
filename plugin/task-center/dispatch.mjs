@@ -1616,28 +1616,50 @@ export function createDispatcher(ctx, options) {
           : 'no candidate recorded'
       if (age >= testTimeoutMs) {
         const tester = names.length > 0 ? names[0] : 'the tester'
-        const minutes = Math.round(age / 60000)
-        const note = 'test timeout: no verdict after ' + String(minutes) + 'min (' + tester + '; ' + candidate + ')'
+        let blockNote = null
         const applied = await applyReap(projectPath, (value) => {
-          const result = model.blockTask(value, task.id, now, 'system', note + '; blocked for triage')
+          // Re-read inside the mutation: applyReap may re-run it on a fresh board
+          // after a CAS race, and a tester verdict may have landed meanwhile. Only
+          // the SAME pending test round may be blocked; passed/failed is never
+          // touched.
+          const fresh = model.findTask(value, task.id)
+          if (
+            fresh === undefined ||
+            fresh === null ||
+            fresh.status !== 'testing' ||
+            fresh.test === null ||
+            fresh.test === undefined ||
+            fresh.test.status !== 'pending' ||
+            String(fresh.test.at) !== String(task.test.at)
+          ) {
+            return value
+          }
+          const freshCandidate =
+            fresh.merge !== null && fresh.merge !== undefined && typeof fresh.merge.mergeCommit === 'string' && fresh.merge.mergeCommit !== ''
+              ? 'candidate ' + String(fresh.merge.mergeCommit)
+              : 'no candidate recorded'
+          const freshMinutes = Math.round((now - Date.parse(fresh.test.at)) / 60000)
+          blockNote = 'test timeout: no verdict after ' + String(freshMinutes) + 'min (' + tester + '; ' + freshCandidate + ')'
+          const result = model.blockTask(value, fresh.id, now, 'system', blockNote + '; blocked for triage')
           return result.ok === true ? result.board : value
         })
         if (applied === null) continue
+        const appliedTask = model.findTask(applied, task.id)
+        if (appliedTask === undefined || appliedTask === null || appliedTask.status !== 'blocked') continue
         nextBoard = applied
         memory.testReminders.delete(key)
         blocked.push(task.id)
-        emit('error', 'system', { taskId: task.id, detail: note + '; task blocked for triage' })
+        emit('error', 'system', { taskId: task.id, detail: (blockNote === null ? 'test timeout' : blockNote) + '; task blocked for triage' })
         const owner = task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' ? null : task.assignee.name
         const notice =
           'Test for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
           '  project: ' + String(projectPath) + '\n' +
-          '  tester: ' + String(tester) + '\n' +
-          '  elapsed: ' + String(minutes) + 'min\n' +
-          '  ' + candidate
+          '  ' + (blockNote === null ? 'tester: ' + String(tester) : blockNote)
         if (owner !== null && owner !== '') await sendMemberMessage(lead, owner, notice)
         if (lead !== null && typeof lead.name === 'string' && lead.name !== '') await sendMemberMessage(lead, lead.name, notice)
         continue
       }
+
       if (age >= testReminderMs && memory.testReminders.has(key) === false) {
         if (names.length === 0 || lead === null) continue
         const tester = names[0]

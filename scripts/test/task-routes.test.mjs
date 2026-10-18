@@ -2839,6 +2839,82 @@ async function withDeadline(promise, ms) {
   rig.scheduler.dispose()
 }
 
+{
+  // A hung queue unit must not let units queued before its timeout run
+  // concurrently with units queued after it.
+  const merger = createMerger({ git: createGit({ run: () => ({ code: 0, stdout: '', stderr: '' }) }), enqueueTimeoutMs: 50 })
+  const log = []
+  const first = merger.enqueue(() => new Promise(function () {}))
+  const second = merger.enqueue(async function () {
+    log.push('B-start')
+    await sleep(30)
+    log.push('B-end')
+    return { ok: true }
+  })
+  await sleep(70)
+  const third = merger.enqueue(async function () {
+    log.push('C-start')
+    log.push('C-end')
+    return { ok: true }
+  })
+  const results = await withDeadline(Promise.all([first, second, third]), 3000)
+  check(
+    'queued units stay serialised after a unit timeout',
+    results !== null && results.__timedOut !== true && log.join(',') === 'B-start,B-end,C-start,C-end' && results[0].code === 'queue-timeout',
+    JSON.stringify({ log: log, first: results === null ? null : results[0] }),
+  )
+}
+
+{
+  // An abandoned queue turn must never write the board, even if its gated host
+  // await resolves after the queue watchdog gave up on it.
+  let releaseMerge = null
+  const ctx = createTesterRig({
+    autoMerge: false,
+    actionTimeoutMs: 5000,
+    makeMerger: (git) => {
+      const base = createMerger({ git: git, enqueueTimeoutMs: 40 })
+      const merger = Object.assign({}, base)
+      merger.mergeRequest = function () {
+        return new Promise(function (resolveGate) {
+          releaseMerge = function () {
+            resolveGate({ ok: true, status: 'merged', mergeCommit: 'late-commit', candidateRemoved: false, taskWorktreeRemoved: false })
+          }
+        })
+      }
+      return merger
+    },
+  })
+  const rig = ctx.rig
+  const stamp = new Date().toISOString()
+  const tested = acceptingTask({
+    status: 'testing',
+    base: 'target-sha',
+    review: { status: 'approved', by: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
+    test: { status: 'passed', by: 'tester-1', at: stamp, evidence: 'PASS', attempt: 1 },
+    merge: Object.assign({}, acceptingTask().merge, { head: 'target-sha', mergeCommit: null }),
+  })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [tested] }))
+  const surface = install(rig)
+  const timed = await withDeadline(rig.api.perform('mergeRequest', { id: 'T-1' }, rig.user), 2500)
+  check(
+    'the abandoned merge turn reports the queue timeout',
+    timed !== null && timed.__timedOut !== true && timed.ok === false && (timed.code === 'queue-timeout' || timed.code === 'action-timeout'),
+    JSON.stringify(timed),
+  )
+  check('the gated merge await was reached', releaseMerge !== null, String(releaseMerge))
+  if (releaseMerge !== null) releaseMerge()
+  await sleep(80)
+  const after = await rig.api.snapshot(PROJECT)
+  check(
+    'an abandoned merge turn never writes the board',
+    after.tasks[0].status === 'testing' && after.tasks[0].merge.status === 'open' && after.tasks[0].merge.mergeCommit === null,
+    JSON.stringify({ status: after.tasks[0].status, merge: after.tasks[0].merge.status, commit: after.tasks[0].merge.mergeCommit }),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
 // ── runtime snapshot: agents, worktrees, activity ─────────────────────────
 {
   const fake = fakeGit({

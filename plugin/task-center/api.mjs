@@ -351,6 +351,9 @@ export function createApi(ctx, options) {
     // When the caller already holds the merge-queue turn (mergeOne inside
     // serialised), enqueueing again would deadlock: run the queue methods inline.
     const viaQueue = mergeOptions.inQueue === true ? function (work) { return work() } : function (work) { return serialised(work) }
+    const isAbandoned = function () {
+      return mergeOptions.token !== undefined && mergeOptions.token !== null && mergeOptions.token.aborted === true
+    }
     if (mergingCandidates.has(id)) return failure('merge-in-flight', id + ' is already being merged by the host')
     mergingCandidates.add(id)
     try {
@@ -383,6 +386,7 @@ export function createApi(ctx, options) {
       )
     }
     if (outcome.status === 'merged') {
+      if (isAbandoned()) return failure('action-abandoned', 'the merge queue turn for ' + id + ' was abandoned after its bound; nothing was recorded')
       if (Date.now() > deadlineAt) return actionTimeoutFailure('mergeTestedCandidate record', id, startedAt)
       const recorded = await writeTask(
         projectPath,
@@ -445,6 +449,7 @@ export function createApi(ctx, options) {
           rebuilt === null || rebuilt === undefined ? 'could not rebuild the test candidate' : String(rebuilt.message),
         )
       }
+      if (isAbandoned()) return failure('action-abandoned', 'the merge queue turn for ' + id + ' was abandoned after its bound; nothing was recorded')
       if (Date.now() > deadlineAt) return actionTimeoutFailure('mergeTestedCandidate record retest', id, startedAt)
       const recorded = await writeTask(
         projectPath,
@@ -1309,7 +1314,10 @@ export function createApi(ctx, options) {
    * run the queue, record the outcome. Shared by the explicit mergeRequest
    * action and the host-driven sweep, so both follow exactly the same rules.
    */
-  async function mergeOne(projectPath, id, by, context, actorOverride) {
+  async function mergeOne(projectPath, id, by, context, actorOverride, token) {
+    const isAbandoned = function () {
+      return token !== undefined && token !== null && token.aborted === true
+    }
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const task = model.findTask(read.board, id)
@@ -1324,7 +1332,7 @@ export function createApi(ctx, options) {
     // Tester workflow: the candidate was built at review approval and tested
     // independently; a passed test now merges that exact tree (no verify).
     if (candidateWorkflow && mergeEligible(task) && typeof merge.mergeCommit === 'string' && merge.mergeCommit.length > 0) {
-      return mergeTestedCandidate(projectPath, id, by, context, { inQueue: true })
+      return mergeTestedCandidate(projectPath, id, by, context, { inQueue: true, token: token })
     }
     // The phase machine is the merge gate: only a task in TESTING whose test
     // phase passed may reach the queue. A submission under review, or a failed
@@ -1396,9 +1404,10 @@ export function createApi(ctx, options) {
       emitActivity(context, 'worktree-create', 'merge worktree ' + String(integration.path), id, actorOverride)
       emitActivity(context, 'worktree-remove', 'merge worktree cleaned', id, actorOverride)
     }
-    if (Date.now() - startedAt > actionTimeoutMs) {
-      // The queue overran the action bound: do not record a late result.
-      return actionTimeoutFailure('mergeRequest record', id, startedAt)
+    if (isAbandoned() || Date.now() - startedAt > actionTimeoutMs) {
+      // The queue turn was abandoned (or overran the action bound): never record
+      // a late result for it.
+      return failure('action-abandoned', 'the merge queue turn for ' + id + ' was abandoned after its bound; nothing was recorded')
     }
     const recorded = await writeTask(projectPath, id, (board) => recordMergeResult(board, id, outcome, clock(), by), context)
     if (recorded.ok !== true) return recorded
@@ -1430,7 +1439,7 @@ export function createApi(ctx, options) {
     for (const id of candidates) {
       let result = null
       try {
-        result = await serialised(() => mergeOne(projectPath, id, 'system', systemContext, 'system'))
+        result = await serialised((token) => mergeOne(projectPath, id, 'system', systemContext, 'system', token))
       } catch (error) {
         result = failure('merge-error', messageOf(error))
       }
@@ -1820,7 +1829,7 @@ export function createApi(ctx, options) {
       if (id === '') return failure('missing-id', 'mergeRequest needs a task id')
       // The whole pipeline (re-read, integrate, verify, record) runs inside the
       // queue so a second request sees the first one's result, never its state.
-      const result = await serialised(() => mergeOne(projectPath, id, context.by, context))
+      const result = await serialised((token) => mergeOne(projectPath, id, context.by, context, undefined, token))
       // Notifications happen after the queue releases, and never change the answer.
       if (result.ok === true && result.task !== null && result.task !== undefined) {
         await notifyMergeOutcome(projectPath, result.task)
