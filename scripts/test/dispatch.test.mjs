@@ -20,6 +20,7 @@ import {
   roleContextPreview,
   roleKindOf,
   roleTemplateValuesFor,
+  serialiseWorktreeCreate,
   workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
 import { ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
@@ -837,6 +838,13 @@ function createWorktreeRig(options) {
   await rig.settle()
   let snap = await snapshot(rig)
   check('the first attempt pauses dispatch', snap.dispatch.state === 'paused' && byId(snap, task.id).status === 'pending', JSON.stringify(ids(snap)))
+  // T-43: a refused add is cleaned up and retried once inside the same tick, so
+  // the pause only happens after TWO failures on the same directory.
+  check(
+    'the refused add is retried once in the same tick',
+    attempted.length === 2 && attempted[0].path === attempted[1].path,
+    JSON.stringify(attempted.map((entry) => entry.path)),
+  )
   addFails = false
   const restarted = await rig.action('start')
   check('start works again once the environment is fixed', restarted.ok === true, JSON.stringify(restarted))
@@ -847,12 +855,138 @@ function createWorktreeRig(options) {
   check('the retry runs in a worktree', retried.status === 'running' && typeof retried.worktree === 'string', JSON.stringify(retried.worktree))
   check(
     'a pre-claim refusal does not consume an attempt, so the retry reuses attempt 1',
-    attempted.length === 2 && attempted[0].path === firstPath && attempted[1].path === firstPath && retried.branch === 'task/' + task.id + '-1',
+    attempted.length === 3 && attempted.every((entry) => entry.path === firstPath) && retried.branch === 'task/' + task.id + '-1',
     JSON.stringify(attempted.map((entry) => entry.path)),
   )
   check('and records the attempt-1 directory', retried.worktree === firstPath, String(retried.worktree))
   check('the failure reason is cleared on the new attempt', retried.worktreeError === null, String(retried.worktreeError))
   rig.scheduler.dispose()
+}
+
+// ── T-43 worktree creation: own budget, rollback, one retry, serialisation ──
+// The T-41 incident: a concurrent `git worktree add` was killed by the generic
+// 60 s runner timeout, left a registered LOCKED checkout, and the scheduler
+// paused with no cleanup and no retry. These cases pin the recovery path.
+{
+  const git = createFakeGit()
+  const trace = []
+  const realAdd = git.worktreeAdd
+  const realRemove = git.worktreeRemove
+  let adds = 0
+  git.worktreeAdd = async function (root, input) {
+    adds += 1
+    trace.push(adds === 1 ? 'add:timeout' : 'add:ok')
+    if (adds === 1) return { ok: false, code: 'worktree-add-failed', message: 'git worktree add failed (budget 180000ms): timed out after 180000ms' }
+    return realAdd.call(git, root, input)
+  }
+  git.worktreeRemove = async function (root, path) {
+    trace.push('remove')
+    return realRemove.call(git, root, path)
+  }
+  git.worktreeUnlock = async function () {
+    trace.push('unlock')
+    return { ok: true, unlocked: true }
+  }
+  git.deleteBranch = async function () {
+    trace.push('branch-delete')
+    return { ok: true }
+  }
+  git.worktreePrune = async function () {
+    trace.push('prune')
+    return { ok: true, pruned: [] }
+  }
+  const rig = createRig({ git: git })
+  const task = await createTask(rig, { title: 'timed out once', writeFiles: ['scripts/a.gd'] })
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const entry = byId(snap, task.id)
+  check('a timed-out add is cleaned up and retried instead of pausing', entry.status === 'running' && snap.dispatch.state === 'running', JSON.stringify({ status: entry.status, dispatch: snap.dispatch.state }))
+  check('the rollback unlocks, removes, deletes the branch and prunes before the retry', trace.join(',') === 'add:timeout,unlock,remove,branch-delete,prune,add:ok', JSON.stringify(trace))
+  check('and the retry lands in the same attempt directory and branch', entry.worktree === join(PROJECT, '.worktrees', task.id + '-1') && entry.branch === 'task/' + task.id + '-1', JSON.stringify({ worktree: entry.worktree, branch: entry.branch }))
+  check('no worktree error is left on the running task', entry.worktreeError === null, String(entry.worktreeError))
+  rig.scheduler.dispose()
+}
+
+// A hanging git never settles: the scheduler deadline bounds it, the attempt is
+// rolled back twice and only then does dispatch pause — with a readable note.
+{
+  const git = createFakeGit()
+  const calls = []
+  git.worktreeAdd = async function () {
+    calls.push('add')
+    return new Promise(() => {})
+  }
+  git.worktreeRemove = async function (root, path) {
+    calls.push('remove')
+    return { ok: true, path: path }
+  }
+  git.worktreeUnlock = async function () {
+    calls.push('unlock')
+    return { ok: true, unlocked: true }
+  }
+  git.deleteBranch = async function () {
+    calls.push('branch-delete')
+    return { ok: true }
+  }
+  git.worktreePrune = async function () {
+    calls.push('prune')
+    return { ok: true, pruned: [] }
+  }
+  const rig = createRig({ git: git, worktreeDeadlineMs: 40 })
+  const task = await createTask(rig, { title: 'hanging add' })
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const entry = byId(snap, task.id)
+  check('a hanging worktree add is bounded by the deadline and pauses dispatch', snap.dispatch.state === 'paused' && entry.status === 'pending', JSON.stringify(ids(snap)))
+  const note = String(entry.worktreeError)
+  check('the note names the path, the command result, both attempts and the cleanup', note.indexOf('2 attempts') >= 0 && note.indexOf('.worktrees') >= 0 && note.indexOf('did not finish within') >= 0 && note.indexOf('cleanup:') >= 0, note)
+  check('and the percent-elapsed time is recorded', /\d+ms/.test(note), note)
+  check('the rollback ran for both attempts', calls.filter((value) => value === 'unlock').length === 2 && calls.filter((value) => value === 'prune').length === 2, JSON.stringify(calls))
+  check('and nothing is reported as left behind', note.indexOf('leftovers: none') >= 0, note)
+  rig.scheduler.dispose()
+}
+
+// The per-repository queue: concurrent creates never overlap, and a failure does
+// not poison the next one.
+{
+  const order = []
+  let running = 0
+  let peak = 0
+  const work = (name) => async () => {
+    running += 1
+    peak = Math.max(peak, running)
+    order.push('start:' + name)
+    await sleep(15)
+    order.push('end:' + name)
+    running -= 1
+    return name
+  }
+  const results = await Promise.all([
+    serialiseWorktreeCreate(PROJECT, work('a')),
+    serialiseWorktreeCreate(PROJECT, work('b')),
+    serialiseWorktreeCreate(PROJECT, work('c')),
+  ])
+  check('worktree creates for one repository are serialised in order', peak === 1 && order.join(',') === 'start:a,end:a,start:b,end:b,start:c,end:c', JSON.stringify({ order: order, peak: peak }))
+  check('and every caller still gets its own result', results.join(',') === 'a,b,c', JSON.stringify(results))
+  const rejected = await serialiseWorktreeCreate(PROJECT, async () => { throw new Error('boom') }).then(() => 'resolved', () => 'rejected')
+  const afterFailure = await serialiseWorktreeCreate(PROJECT, async () => 'after')
+  check('a failed create does not poison the next one for that repository', rejected === 'rejected' && afterFailure === 'after', JSON.stringify({ rejected: rejected, after: afterFailure }))
+  // Independent repositories are not blocked by each other.
+  const otherOrder = []
+  await Promise.all([
+    serialiseWorktreeCreate('/repo/one', async () => {
+      otherOrder.push('one:start')
+      await sleep(20)
+      otherOrder.push('one:end')
+    }),
+    serialiseWorktreeCreate('/repo/two', async () => {
+      otherOrder.push('two:start')
+      otherOrder.push('two:end')
+    }),
+  ])
+  check('two repositories do not queue behind each other', otherOrder.join(',') === 'one:start,two:start,two:end,one:end', JSON.stringify(otherOrder))
 }
 
 // a retry after a CLAIMED attempt gets its own directory instead of colliding

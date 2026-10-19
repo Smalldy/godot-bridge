@@ -3,7 +3,7 @@
 // every case injects a fake runner.
 
 import { join, resolve } from 'node:path'
-import { createGit } from '../../plugin/task-center/git.mjs'
+import { DEFAULT_WORKTREE_TIMEOUT_MS, createGit } from '../../plugin/task-center/git.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -20,10 +20,10 @@ const INSIDE = join(ROOT, '.worktrees', 'T-1')
 /** A recording fake runner: handler(args, cwd) decides each reply. */
 function recorder(handler) {
   const calls = []
-  const run = (args, cwd) => {
-    calls.push({ args: args.slice(), cwd: cwd })
+  const run = (args, cwd, options) => {
+    calls.push({ args: args.slice(), cwd: cwd, options: options })
     if (handler === undefined) return { code: 0, stdout: '', stderr: '' }
-    return handler(args, cwd)
+    return handler(args, cwd, options)
   }
   run.calls = calls
   return run
@@ -42,6 +42,8 @@ function recorder(handler) {
     'worktreeAdd',
     'worktreeRemove',
     'worktreeList',
+    'worktreeUnlock',
+    'worktreePrune',
     'commitAll',
     'diffNameOnly',
     'mergeNoFf',
@@ -130,6 +132,45 @@ function recorder(handler) {
   check('revParse reports an unknown ref', isFailure(missing, 'unknown-ref'), JSON.stringify(missing))
   const bad = await createGit({ run: recorder() }).revParse(ROOT, '')
   check('revParse refuses an empty ref', isFailure(bad, 'invalid-ref'), JSON.stringify(bad))
+}
+
+// worktreeAdd — its own budget (T-43)
+//
+// Creating a checkout is the one call that legitimately runs for minutes, so it
+// must ask the runner for a wider budget than a read. A generic 60 s runner
+// timeout once killed an add half-way and left a registered, locked worktree.
+{
+  const run = recorder(() => ({ code: 0, stdout: "", stderr: "" }))
+  await createGit({ run }).worktreeAdd(ROOT, { path: '.worktrees/T-1', branch: 'feat/T-1', base: 'main' })
+  const add = run.calls[0]
+  check('a worktree add asks the runner for its own wide budget', add.options !== undefined && add.options.op === 'worktree-add' && add.options.timeoutMs === DEFAULT_WORKTREE_TIMEOUT_MS, JSON.stringify(add.options))
+  check('and the default budget is minutes, not the 60 s read budget', DEFAULT_WORKTREE_TIMEOUT_MS >= 120 * 1000, String(DEFAULT_WORKTREE_TIMEOUT_MS))
+
+  const read = recorder(() => ({ code: 0, stdout: "abc", stderr: "" }))
+  const reader = createGit({ run: read })
+  await reader.head(ROOT)
+  check('an ordinary read does not ask for a budget', read.calls[0].options === undefined, JSON.stringify(read.calls[0].options))
+
+  const custom = recorder(() => ({ code: 0, stdout: "", stderr: "" }))
+  await createGit({ run: custom, worktreeTimeoutMs: 9 * 1000 }).worktreeAdd(ROOT, { path: '.worktrees/T-1', branch: 'feat/T-1' })
+  check('createGit accepts a configured worktree budget', custom.calls[0].options.timeoutMs === 9 * 1000, JSON.stringify(custom.calls[0].options))
+  await createGit({ run: custom }).worktreeAdd(ROOT, { path: '.worktrees/T-2', branch: 'feat/T-2', timeoutMs: 5 * 1000 })
+  check('and a per-call override wins', custom.calls[1].options.timeoutMs === 5 * 1000, JSON.stringify(custom.calls[1].options))
+}
+
+// worktreeUnlock / worktreePrune — the rollback primitives (T-43)
+{
+  const unlockRun = recorder(() => ({ code: 0, stdout: "", stderr: "" }))
+  const unlocked = await createGit({ run: unlockRun }).worktreeUnlock(ROOT, '.worktrees/T-1')
+  check('unlock runs git worktree unlock on the checkout', isOk(unlocked) && unlocked.unlocked === true && unlockRun.calls[0].args.join(' ') === 'worktree unlock ' + INSIDE, JSON.stringify(unlockRun.calls[0] && unlockRun.calls[0].args))
+
+  const notLocked = createGit({ run: recorder(() => ({ code: 128, stdout: '', stderr: 'fatal: not locked' })) })
+  const idle = await notLocked.worktreeUnlock(ROOT, '.worktrees/T-1')
+  check('unlocking an unlocked checkout is not an error for a rollback', isOk(idle) && idle.unlocked === false, JSON.stringify(idle))
+
+  const pruneRun = recorder(() => ({ code: 0, stdout: 'Removing worktrees/T-1: gitdir file points to non-existent location\n', stderr: '' }))
+  const pruned = await createGit({ run: pruneRun }).worktreePrune(ROOT)
+  check('prune drops stale administrative entries', isOk(pruned) && pruned.pruned.length === 1 && pruneRun.calls[0].args.join(' ') === 'worktree prune -v', JSON.stringify(pruned))
 }
 
 // worktreeAdd

@@ -21,13 +21,28 @@
 import { execFile } from 'node:child_process'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
-/** The production runner: one git process per call, never a shell. */
-function runGit(args, cwd) {
+/**
+ * The worktree-add budget. Creating a checkout is the one git call this module
+ * makes that can legitimately run for minutes (a large repository, an antivirus
+ * scan, a slow disk), so it must not share the short budget a read uses: a
+ * generic 60 s runner timeout once killed a worktree add half-way and left a
+ * registered, locked checkout behind. Callers may override it per call.
+ */
+export const DEFAULT_WORKTREE_TIMEOUT_MS = 180 * 1000
+
+/** The production runner: one git process per call, never a shell. A per-call
+ * `options.timeoutMs` bounds the child; a timed-out child is reported as a
+ * failed command, never as an exception. */
+function runGit(args, cwd, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const timeoutMs = Number.isFinite(opts.timeoutMs) ? Math.max(1, Math.floor(opts.timeoutMs)) : undefined
   return new Promise((done) => {
     execFile(
       'git',
       args,
-      { cwd: cwd, windowsHide: true, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 },
+      timeoutMs === undefined
+        ? { cwd: cwd, windowsHide: true, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }
+        : { cwd: cwd, windowsHide: true, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs, killSignal: 'SIGTERM' },
       (error, stdout, stderr) => {
         const code = error === null || error === undefined ? 0 : typeof error.code === 'number' ? error.code : 1
         done({
@@ -126,13 +141,15 @@ function refName(value, label) {
 export function createGit(options) {
   const opts = options === undefined ? {} : options
   const run = typeof opts.run === 'function' ? opts.run : runGit
+  const worktreeTimeoutMs = Number.isFinite(opts.worktreeTimeoutMs) ? Math.max(1, Math.floor(opts.worktreeTimeoutMs)) : DEFAULT_WORKTREE_TIMEOUT_MS
 
   /** One git call, normalised. A runner that throws is a failed command, not an
-   * exception the caller has to catch. */
-  async function exec(args, cwd) {
+   * exception the caller has to catch. `callOptions` is forwarded to the runner
+   * so a slow operation can ask for its own budget. */
+  async function exec(args, cwd, callOptions) {
     let raw
     try {
-      raw = await run(args, cwd)
+      raw = await run(args, cwd, callOptions)
     } catch (error) {
       return { code: 1, stdout: '', stderr: String((error && error.message) || error) }
     }
@@ -230,9 +247,12 @@ export function createGit(options) {
       from = ref.name
       args.push(from)
     }
-    const result = await exec(args, base.path)
-    if (result.code !== 0) return failed(result, 'worktree-add-failed', 'git worktree add failed')
-    return ok({ path: target.path, branch: branch.name, base: from })
+    const timeoutMs = Number.isFinite(source.timeoutMs) ? Math.max(1, Math.floor(source.timeoutMs)) : worktreeTimeoutMs
+    const result = await exec(args, base.path, { op: 'worktree-add', timeoutMs: timeoutMs })
+    if (result.code !== 0) {
+      return failed(result, 'worktree-add-failed', 'git worktree add failed (budget ' + String(timeoutMs) + 'ms)')
+    }
+    return ok({ path: target.path, branch: branch.name, base: from, timeoutMs: timeoutMs })
   }
 
   /** Remove one worktree; `force` also discards local changes in it. */
@@ -248,6 +268,40 @@ export function createGit(options) {
     const result = await exec(args, base.path)
     if (result.code !== 0) return failed(result, 'worktree-remove-failed', 'git worktree remove failed')
     return ok({ path: target.path, force: force })
+  }
+
+  /**
+   * Unlock one worktree. A rollback has to unlock before it can remove: git
+   * registers a worktree as locked when an add was interrupted, and
+   * `worktree remove` then refuses ("is locked"). "Not locked" is success for a
+   * rollback, so it is reported as `unlocked: false` instead of an error.
+   */
+  async function worktreeUnlock(root, path) {
+    const base = rootOf(root)
+    if (base.ok !== true) return base
+    const target = insideRepo(base.path, path)
+    if (target.ok !== true) return target
+    const result = await exec(['worktree', 'unlock', target.path], base.path)
+    if (result.code !== 0) {
+      const detail = outputOf(result)
+      if (/not locked/i.test(detail)) return ok({ path: target.path, unlocked: false })
+      return failed(result, 'worktree-unlock-failed', 'git worktree unlock failed')
+    }
+    return ok({ path: target.path, unlocked: true })
+  }
+
+  /** Drop stale administrative entries (`.git/worktrees/<name>`) for worktrees
+   * whose directory is gone. Never fatal: a prune failure only leaves metadata. */
+  async function worktreePrune(root) {
+    const base = rootOf(root)
+    if (base.ok !== true) return base
+    const result = await exec(['worktree', 'prune', '-v'], base.path)
+    if (result.code !== 0) return failed(result, 'worktree-prune-failed', 'git worktree prune failed')
+    const pruned = outputOf(result)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== '')
+    return ok({ pruned: pruned })
   }
 
   /** Every worktree git knows about, parsed from `worktree list --porcelain`. */
@@ -429,6 +483,8 @@ export function createGit(options) {
     worktreeAdd: worktreeAdd,
     worktreeRemove: worktreeRemove,
     worktreeList: worktreeList,
+    worktreeUnlock: worktreeUnlock,
+    worktreePrune: worktreePrune,
     commitAll: commitAll,
     diffNameOnly: diffNameOnly,
     mergeNoFf: mergeNoFf,

@@ -46,7 +46,7 @@ import {
 } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
-import { createGit } from './git.mjs'
+import { DEFAULT_WORKTREE_TIMEOUT_MS, createGit } from './git.mjs'
 
 export const DEFAULT_MAX_WORK_AGENTS = 4
 export const DEFAULT_MAX_ATTEMPTS = 3
@@ -403,8 +403,14 @@ export function workerPool(ctx, board, options) {
 
 /** The unconfined subprocess service as a createGit runner: one process per
  * call, stdio collected through the service. */
-function runnerFromSubprocess(subprocess) {
-  return async function runGit(args, cwd) {
+function runnerFromSubprocess(subprocess, options) {
+  const settings = options === undefined || options === null ? {} : options
+  const defaultTimeoutMs = Number.isFinite(settings.timeoutMs) ? Math.max(1, Math.floor(settings.timeoutMs)) : 60 * 1000
+  return async function runGit(args, cwd, callOptions) {
+    // A caller may bring its own budget (worktree add does); everything else
+    // keeps the short default so one stuck read cannot pin the merge queue.
+    const requested = callOptions === undefined || callOptions === null ? undefined : callOptions.timeoutMs
+    const timeoutMs = Number.isFinite(requested) ? Math.max(1, Math.floor(requested)) : defaultTimeoutMs
     let executable = 'git'
     if (typeof subprocess.resolveExecutable === 'function') {
       try {
@@ -431,9 +437,9 @@ function runnerFromSubprocess(subprocess) {
     }
     // A git process must never pin the shared merge queue forever. A dropped
     // handle or an unobservable process range would otherwise make every later
-    // action wait on this one. done is bounded; a timed-out handle is terminated
-    // and its managed range is awaited before reporting failure.
-    const timeoutMs = 60 * 1000
+    // action wait on this one. done is bounded by the caller's budget; a
+    // timed-out handle is terminated and its managed range is awaited before
+    // reporting failure.
     const exitGraceMs = 5 * 1000
     let outcome = null
     let timer
@@ -493,7 +499,9 @@ export function gitFor(ctx, options) {
     return null
   }
   if (subprocess === undefined || subprocess === null || typeof subprocess.spawn !== 'function') return null
-  return createGit({ run: runnerFromSubprocess(subprocess) })
+  // The worktree budget is configured once here: worktree add asks for it per
+  // call, every other git command keeps the short default.
+  return createGit({ run: runnerFromSubprocess(subprocess), worktreeTimeoutMs: opts.worktreeTimeoutMs })
 }
 
 /** The descriptor a task records when no worktree could be made. */
@@ -540,6 +548,59 @@ export async function probeWorktree(git, projectPath) {
 }
 
 /**
+ * The scheduler's own bound on ONE worktree creation. The git facade already
+ * asks the runner for DEFAULT_WORKTREE_TIMEOUT_MS; this adds a grace margin and
+ * is the belt-and-braces bound (a runner that ignores its timeout, or a promise
+ * that never settles, must not hang a scheduler pass forever). Past it the
+ * attempt is rolled back and retried like any other failure.
+ */
+export const WORKTREE_CREATE_DEADLINE_MS = DEFAULT_WORKTREE_TIMEOUT_MS + 15 * 1000
+
+/** A sentinel for "the work did not settle before its deadline". */
+const WORKTREE_DEADLINE_HIT = Object.freeze({ ok: false, code: 'worktree-add-timeout', message: null })
+
+/** Run one piece of work with a hard deadline. Never rejects for the timeout: a
+ * late finish is simply ignored, which is what the caller wants. */
+async function withinWorktreeDeadline(work, timeoutMs) {
+  let timer
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => work()),
+      new Promise((resolveTimeout) => {
+        timer = setTimeout(() => resolveTimeout(WORKTREE_DEADLINE_HIT), Math.max(1, Math.floor(timeoutMs)))
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
+ * One worktree add per repository at a time. A scheduler pass is serialised, but
+ * the API, a role repair and a second dispatcher instance in the same profile can
+ * all create a checkout for one repository at the same moment; git then contends
+ * for index.lock and a slow add can be killed half-way (T-41 left a registered,
+ * locked checkout exactly that way). A per-project promise chain keeps the adds
+ * ordered without blocking unrelated repositories.
+ */
+const worktreeGates = new Map()
+
+function noopGate() {
+  return undefined
+}
+
+/** Run `work` after every earlier worktree creation for the same project. The
+ * chain survives a rejection, so one failed add cannot poison the next. */
+export function serialiseWorktreeCreate(projectPath, work) {
+  const key = String(projectPath === undefined || projectPath === null ? '' : projectPath)
+  const previous = worktreeGates.get(key)
+  const start = previous === undefined ? Promise.resolve() : previous.then(noopGate, noopGate)
+  const run = start.then(() => work())
+  worktreeGates.set(key, run.then(noopGate, noopGate))
+  return run
+}
+
+/**
  * Prepare this attempt's worktree. It is the only execution mode: no worktree
  * means no claim, never a shared checkout.
  *
@@ -547,7 +608,7 @@ export async function probeWorktree(git, projectPath) {
  * preparation refused and `path` is then null. It never throws, and a failed
  * add is force-removed so no half worktree is left behind.
  */
-async function prepareWorktree(git, projectPath, task, dispatch, attempt) {
+async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadlineMs) {
   const probe = await probeWorktree(git, projectPath)
   if (probe.ok !== true) return worktreeFallback(probe.code + ': ' + probe.message)
   const base = await git.head(projectPath)
@@ -579,21 +640,62 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt) {
   // its worktree for inspection, so a retry must not try to re-add the same
   // path. The branch already carries the attempt, so the two stay in step.
   const path = join(projectPath, root === '' ? '.worktrees' : root, String(task.id) + '-' + String(attempt))
-  const added = await git.worktreeAdd(projectPath, { path: path, branch: branch, base: base.hash })
-  if (added.ok !== true) {
-    // A refused add can still leave a directory or a registered worktree; force
-    // it away so the next pass does not inherit a broken one.
-    await removeWorktree(git, projectPath, path)
-    return worktreeFallback('worktree-add-failed: ' + String(added.message))
+  const startedAt = Date.now()
+  const budget = Number.isFinite(deadlineMs) && deadlineMs > 0 ? Math.floor(deadlineMs) : WORKTREE_CREATE_DEADLINE_MS
+  // Serialised per repository, with its own (wider) budget and a hard deadline:
+  // see DEFAULT_WORKTREE_TIMEOUT_MS in git.mjs and serialiseWorktreeCreate above.
+  const attemptAdd = async () => {
+    const added = await serialiseWorktreeCreate(projectPath, () =>
+      withinWorktreeDeadline(() => git.worktreeAdd(projectPath, { path: path, branch: branch, base: base.hash }), budget),
+    )
+    if (added === WORKTREE_DEADLINE_HIT) {
+      return { ok: false, code: 'worktree-add-timeout', message: 'git worktree add did not finish within ' + String(budget) + 'ms' }
+    }
+    return added
   }
-  return {
-    base: base.hash,
-    target: current.ok === true && typeof current.branch === 'string' ? current.branch : null,
-    branch: branch,
-    path: added.path,
-    keep: true,
-    error: null,
+  const first = await attemptAdd()
+  if (first.ok === true) {
+    return {
+      base: base.hash,
+      target: targetBranch,
+      branch: branch,
+      path: first.path === undefined || first.path === null ? path : first.path,
+      keep: true,
+      error: null,
+      retried: false,
+      cleanup: null,
+      elapsedMs: Date.now() - startedAt,
+    }
   }
+  // A refused or timed-out add can register a LOCKED worktree and leave the
+  // directory behind. Roll the whole attempt back before trying once more, so
+  // the retry starts from a clean repository instead of tripping over its own
+  // leftovers (the half-built, locked checkout T-41 was paused on).
+  const cleanup = await rollbackWorktree(git, projectPath, { path: path, branch: branch })
+  const second = await attemptAdd()
+  const elapsedMs = Date.now() - startedAt
+  if (second.ok === true) {
+    return {
+      base: base.hash,
+      target: targetBranch,
+      branch: branch,
+      path: second.path === undefined || second.path === null ? path : second.path,
+      keep: true,
+      error: null,
+      retried: true,
+      cleanup: cleanup,
+      elapsedMs: elapsedMs,
+    }
+  }
+  // The retry failed too: roll its own half-built checkout back as well, so a
+  // paused dispatch never inherits a locked worktree from either attempt.
+  const lastCleanup = await rollbackWorktree(git, projectPath, { path: path, branch: branch })
+  const cleanupNote = cleanup.summary === lastCleanup.summary ? lastCleanup.summary : cleanup.summary + ' | retry: ' + lastCleanup.summary
+  return worktreeFallback(
+    'worktree-add-failed after 2 attempts: ' +
+      String(second.message) +
+      ' (path ' + path + ', branch ' + branch + ', ' + String(elapsedMs) + 'ms; cleanup: ' + cleanupNote + ')',
+  )
 }
 
 /** A path compared the way git reports it, for the worktree-list check. */
@@ -637,14 +739,82 @@ async function adoptionCandidate(git, projectPath, task, attempt) {
   return { branch: task.branch, path: task.worktree, fromAttempt: task.attempts, head: task.commit }
 }
 
-/** Force-remove one worktree, ignoring every failure: cleanup must never fail a
- * dispatch. */
+/** Force-remove one worktree, ignoring every failure: a cleanup path must never
+ * fail a dispatch. Creation-time rollback is `rollbackWorktree` below. */
 async function removeWorktree(git, projectPath, path) {
   if (git === undefined || git === null || typeof path !== 'string' || path === '') return
   if (typeof git.worktreeRemove !== 'function') return
   try {
     await git.worktreeRemove(projectPath, path, { force: true })
   } catch (error) {}
+}
+
+/**
+ * Best-effort rollback of a failed worktree attempt, in the order that actually
+ * works: unlock (git registers a checkout as locked when an add is interrupted)
+ * -> force-remove the directory -> delete the attempt branch -> prune the
+ * administrative entry. Every step is optional and a failure is RECORDED, never
+ * thrown: the caller needs a report it can put in the note, not a crash. The
+ * leftover check is what proves the half-built checkout is really gone.
+ */
+async function rollbackWorktree(git, projectPath, options) {
+  const path = String(options.path)
+  const branch = String(options.branch)
+  const steps = []
+  const step = (name, ok, detail) => {
+    steps.push({ name: name, ok: ok === true, detail: detail === undefined || detail === null ? null : String(detail) })
+  }
+
+  if (typeof git.worktreeUnlock === 'function') {
+    try {
+      const unlocked = await git.worktreeUnlock(projectPath, path)
+      // "not locked" is a success for a rollback, not a failure.
+      step('unlock', unlocked !== null && unlocked !== undefined && (unlocked.ok === true || unlocked.unlocked === false), unlocked === undefined ? null : unlocked.message)
+    } catch (error) {
+      step('unlock', false, (error && error.message) || error)
+    }
+  }
+  if (typeof git.worktreeRemove === 'function') {
+    try {
+      const removed = await git.worktreeRemove(projectPath, path, { force: true })
+      step('remove', removed !== null && removed !== undefined && removed.ok === true, removed === undefined ? null : removed.message)
+    } catch (error) {
+      step('remove', false, (error && error.message) || error)
+    }
+  }
+  if (typeof git.deleteBranch === 'function') {
+    try {
+      const deleted = await git.deleteBranch(projectPath, branch, { force: true })
+      step('branch-delete', deleted !== null && deleted !== undefined && deleted.ok === true, deleted === undefined ? null : deleted.message)
+    } catch (error) {
+      step('branch-delete', false, (error && error.message) || error)
+    }
+  }
+  if (typeof git.worktreePrune === 'function') {
+    try {
+      const pruned = await git.worktreePrune(projectPath)
+      step('prune', pruned !== null && pruned !== undefined && pruned.ok === true, pruned === undefined ? null : pruned.message)
+    } catch (error) {
+      step('prune', false, (error && error.message) || error)
+    }
+  }
+
+  // Did anything survive? Reported in the note so "cleaned up" is verifiable.
+  let leftovers = 'unchecked'
+  if (typeof git.worktreeList === 'function') {
+    try {
+      const listed = await git.worktreeList(projectPath)
+      if (listed !== null && listed !== undefined && listed.ok === true && Array.isArray(listed.worktrees)) {
+        const surviving = listed.worktrees.filter((entry) => entry !== null && typeof entry === 'object' && sameWorktreePath(entry.path, path))
+        leftovers = surviving.length === 0 ? 'none' : surviving.map((entry) => String(entry.path)).join(', ')
+      }
+    } catch (error) {
+      leftovers = 'unknown'
+    }
+  }
+  const summary =
+    steps.length === 0 ? 'no cleanup command available; leftovers: ' + leftovers : steps.map((entry) => entry.name + '=' + (entry.ok ? 'ok' : 'failed')).join(' ') + '; leftovers: ' + leftovers
+  return { ok: leftovers === 'none', steps: steps, leftovers: leftovers, summary: summary }
 }
 
 /** A worker name derived from the task and its attempt; names are immutable in
@@ -1434,6 +1604,9 @@ export function createDispatcher(ctx, options) {
   // be before the scheduler extends it. Tests shorten it; production uses the
   // schema default. Deliberately independent of TASK_LEASE_MS.
   const heartbeatMs = Number.isFinite(opts.heartbeatMs) ? Math.max(1, Math.floor(opts.heartbeatMs)) : TASK_HEARTBEAT_MS
+  // How long ONE worktree creation may take before this scheduler gives up on the
+  // attempt (the git facade has its own runner budget; this is the outer bound).
+  const worktreeDeadlineMs = Number.isFinite(opts.worktreeDeadlineMs) ? Math.max(1, Math.floor(opts.worktreeDeadlineMs)) : WORKTREE_CREATE_DEADLINE_MS
   // Tests shorten the review/test timeouts; production uses the schema defaults.
   const reviewTimeoutMs = Number.isFinite(opts.reviewTimeoutMs) ? opts.reviewTimeoutMs : REVIEW_TIMEOUT_MS
   const testReminderMs = Number.isFinite(opts.testReminderMs) ? Math.max(1, Math.floor(opts.testReminderMs)) : TEST_REMINDER_MS
@@ -2150,7 +2323,7 @@ export function createDispatcher(ctx, options) {
         // a worktree cannot run the task.
         let worktree
         try {
-          worktree = await prepareWorktree(gitFacade(), project, task, dispatch, task.attempts + 1)
+          worktree = await prepareWorktree(gitFacade(), project, task, dispatch, task.attempts + 1, worktreeDeadlineMs)
         } catch (error) {
           worktree = worktreeFallback('worktree-error: ' + String((error && error.message) || error))
         }
@@ -2166,6 +2339,16 @@ export function createDispatcher(ctx, options) {
           results.push({ id: task.id, error: message, code: 'worktree-unavailable' })
           paused = true
           break
+        }
+        if (worktree.retried === true) {
+          // The add failed once, was rolled back and succeeded on the retry in the
+          // same tick: worth a panel entry, because it means the git environment is
+          // slow or contended even though this attempt recovered.
+          const summary = worktree.cleanup === null || worktree.cleanup === undefined ? 'no cleanup' : worktree.cleanup.summary
+          emit('worktree-retry', 'host', {
+            taskId: task.id,
+            detail: 'worktree add for ' + String(worktree.path) + ' succeeded on retry (' + String(worktree.elapsedMs) + 'ms; cleanup: ' + summary + ')',
+          })
         }
         const claimed = await state.apply(
           project,

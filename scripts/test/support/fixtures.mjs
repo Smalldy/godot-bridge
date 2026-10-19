@@ -230,6 +230,9 @@ export function createRig(options) {
     projectPath: () => project,
     allowSpawn: opts.allowSpawn !== false,
     git: git,
+    // T-43: tests bound ONE worktree creation (a hanging git must not hang the
+    // pass). Production uses the dispatcher default.
+    worktreeDeadlineMs: opts.worktreeDeadlineMs,
   })
   const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, now: opts.now })
   const user = { projectPath: project, by: '@user', role: 'user', agent: null }
