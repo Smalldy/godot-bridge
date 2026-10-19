@@ -377,9 +377,7 @@ window.__ModuleLoader__.load({
 				wtTask: '任务',
 				rolesUnavailable: '宿主没有提供角色配置。',
 				rolesHint: '角色配置属于用户：可新增/修改/删除 profile、绑定阶段、排空或替换实例，或恢复默认。',
-				roleStages: '阶段绑定',
 				roleStatus: '状态',
-				roleProfiles: '角色 Profile',
 				roleInstances: '实例',
 				roleKindWorker: '实现',
 				roleKindReviewer: '评审',
@@ -387,9 +385,6 @@ window.__ModuleLoader__.load({
 				roleKindMerger: '合并',
 				roleKindLead: 'Lead',
 				roleKindTeammate: '成员',
-				roleStageImplement: '实现',
-				roleStageReview: '评审',
-				roleStageTest: '测试',
 				roleBind: '绑定',
 				roleSave: '保存',
 				roleDelete: '删除',
@@ -400,15 +395,9 @@ window.__ModuleLoader__.load({
 				rolePermissions: '权限',
 				roleInstancesCount: '实例数',
 				roleReset: '恢复默认',
-				roleBatchActions: '批量操作',
-				rolePreviews: '上下文预览',
-				rolePreviewsUnavailable: '宿主没有提供上下文预览。',
-				rolePreviewHostNote: '宿主生成，随任务变化',
 				roleProfilePrompt: 'Profile prompt（可修改）',
 				rolePromptEmpty: '（空 —— 内置角色的上下文由宿主 brief 补齐）',
 				roleFork: 'Fork',
-				roleForkNote: 'Fork 自',
-				roleForkCopyNote: '仅复制 profile 字段；宿主 brief 会按任务重新生成。',
 				roleRefresh: '读取角色配置',
 				roleSource: '来源',
 				roleDrain: '排空',
@@ -416,7 +405,6 @@ window.__ModuleLoader__.load({
 				roleReplaceKind: '替换整类',
 				roleName: '名称',
 				roleKind: '种类',
-				roleStage: '阶段',
 				roleActionFailed: '操作失败',
 				roleDrained: '已排空',
 				roleCreated: '已创建',
@@ -449,7 +437,12 @@ window.__ModuleLoader__.load({
 				roleEditor: '角色上下文编辑器',
 				roleEditorHint: '选择角色 → 查看宿主真实的上下文分块 → Fork → 编辑模板与技能 → 保存 → 应用（绑定并替换在跑实例）。',
 				roleEditorDraft: '草稿（Fork，未保存）',
-				roleEditorIdentityNote: '角色种类与 profile 名只读；改名请用上方的创建表单。',
+				roleEditorTabsLabel: '角色种类',
+				roleEditorBoundProfile: '当前绑定',
+				roleEditorSelectProfile: 'Profile',
+				roleEditorCreateBlank: '空白新建 profile（次要入口）',
+				roleEditorInstances: '实例',
+				roleEditorBindHint: '选择后点“绑定”只改阶段绑定，点“应用”会同时替换在跑实例。',
 				roleEditorTemplate: '可编辑模板',
 				roleEditorInsert: '插入变量',
 				roleEditorFixedNote: '宿主固定，不可编辑',
@@ -705,9 +698,7 @@ window.__ModuleLoader__.load({
 				wtTask: 'Task',
 				rolesUnavailable: 'The host did not report role profiles.',
 				rolesHint: 'Role profiles belong to the user: create/update/delete a profile, bind a stage, drain or replace instances, or reset the defaults.',
-				roleStages: 'Stage bindings',
 				roleStatus: 'Status',
-				roleProfiles: 'Role profiles',
 				roleInstances: 'Instances',
 				roleKindWorker: 'worker',
 				roleKindReviewer: 'reviewer',
@@ -715,9 +706,6 @@ window.__ModuleLoader__.load({
 				roleKindMerger: 'merger',
 				roleKindLead: 'lead',
 				roleKindTeammate: 'teammate',
-				roleStageImplement: 'implement',
-				roleStageReview: 'review',
-				roleStageTest: 'test',
 				roleBind: 'Bind',
 				roleSave: 'Save',
 				roleDelete: 'Delete',
@@ -728,15 +716,9 @@ window.__ModuleLoader__.load({
 				rolePermissions: 'Permissions',
 				roleInstancesCount: 'Instances',
 				roleReset: 'Reset defaults',
-				roleBatchActions: 'Batch actions',
-				rolePreviews: 'Context preview',
-				rolePreviewsUnavailable: 'The host did not report context previews.',
-				rolePreviewHostNote: 'Host-generated; varies per task',
 				roleProfilePrompt: 'Profile prompt (editable)',
 				rolePromptEmpty: '(empty — the host brief fills the context for built-in roles)',
 				roleFork: 'Fork',
-				roleForkNote: 'Forked from',
-				roleForkCopyNote: 'Only the profile fields are copied; the host brief is regenerated per task.',
 				roleRefresh: 'Reload role profiles',
 				roleSource: 'Source',
 				roleDrain: 'Drain',
@@ -744,7 +726,6 @@ window.__ModuleLoader__.load({
 				roleReplaceKind: 'Replace kind',
 				roleName: 'Name',
 				roleKind: 'Kind',
-				roleStage: 'Stage',
 				roleActionFailed: 'Action failed',
 				roleDrained: 'Drained',
 				roleCreated: 'Created',
@@ -777,7 +758,12 @@ window.__ModuleLoader__.load({
 				roleEditor: 'Role context editor',
 				roleEditorHint: 'Pick a role → read the host’s real context blocks → Fork → edit the template and skills → Save → Apply (bind and replace the running instance).',
 				roleEditorDraft: 'draft (forked, unsaved)',
-				roleEditorIdentityNote: 'Role kind and profile name are read-only; rename through the create form above.',
+				roleEditorTabsLabel: 'Role kind',
+				roleEditorBoundProfile: 'Bound',
+				roleEditorSelectProfile: 'Profile',
+				roleEditorCreateBlank: 'New blank profile (secondary)',
+				roleEditorInstances: 'Instances',
+				roleEditorBindHint: 'Bind changes the stage binding only; Apply also replaces the running instances.',
 				roleEditorTemplate: 'Editable template',
 				roleEditorInsert: 'Insert variable',
 				roleEditorFixedNote: 'host-fixed, not editable',
@@ -922,6 +908,18 @@ window.__ModuleLoader__.load({
 '.gbt-editorskills-field{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dsw-alias-label-tertiary);flex:1;min-width:0}',
 '.gbt-skillrow{display:flex;align-items:center;gap:6px;padding:3px 0}',
 '.gbt-skillrow span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-segmented{display:inline-flex;gap:2px;padding:3px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;background:var(--dsw-alias-bg-layer-3);flex-wrap:wrap}',
+'.gbt-seg{appearance:none;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;padding:5px 14px;border-radius:8px;cursor:pointer;min-width:64px}',
+'.gbt-seg:hover{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-primary)}',
+'.gbt-seg:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4f7cff);outline-offset:1px}',
+'.gbt-seg[aria-selected="false"]{opacity:.7}',
+'.gbt-seg[aria-selected="true"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-primary);font-weight:600;border-bottom-color:var(--dsw-alias-state-business-primary,#4f7cff)}',
+'.gbt-editor-select{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+'.gbt-editor-select .gbt-input{width:auto;min-width:170px;height:30px}',
+'.gbt-editorinstances{display:flex;flex-direction:column;gap:4px}',
+'.gbt-createblank{margin-top:2px;border:0.5px dashed var(--dsw-alias-border-l4);border-radius:8px;padding:6px 10px}',
+'.gbt-createblank summary{cursor:pointer;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+'.gbt-rheadactions{display:flex;gap:6px;align-items:center}',
 			'.gbt-field{display:flex;flex-direction:column;gap:4px}',
 			'.gbt-field label{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 			'.gbt-input,.gbt-area{box-sizing:border-box;width:100%;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;padding:6px 9px;height:32px}',
@@ -1741,13 +1739,6 @@ window.__ModuleLoader__.load({
 				return key === undefined ? String(kind === undefined || kind === null ? '—' : kind) : t(key)
 			}
 
-			function roleStageLabel(stage, t) {
-				if (stage === 'implement') return t('roleStageImplement')
-				if (stage === 'review') return t('roleStageReview')
-				if (stage === 'test') return t('roleStageTest')
-				return String(stage === undefined || stage === null || stage === '' ? '—' : stage)
-			}
-
 			function worktreeTypeLabel(type, t) {
 				const key = WORKTREE_TYPE_KEYS[type]
 				return key === undefined ? String(type === undefined || type === null ? 'other' : type) : t(key)
@@ -1840,109 +1831,13 @@ window.__ModuleLoader__.load({
 			}
 
 			/** One stage binding row: current profile plus a bind control. */
-			function StageBindingRow(props) {
-				const t = props.t
-				const names = props.names
-				const ref = React.useRef(null)
-				return h(
-					'tr',
-					{ 'data-stage': props.stage },
-					h('td', null, t('roleStage' + String(props.stage).charAt(0).toUpperCase() + String(props.stage).slice(1))),
-					h('td', { className: 'gbt-mono', 'data-col': 'stage-profile' }, typeof props.profile === 'string' && props.profile !== '' ? props.profile : '—'),
-					h(
-						'td',
-						null,
-						h('select', { ref: ref, defaultValue: props.profile === null || props.profile === undefined ? '' : props.profile, 'data-stage-select': props.stage }, names.map(function (name) { return h('option', { key: name, value: name }, name) })),
-						h(
-							'button',
-							{
-								type: 'button',
-								className: 'gbt-btn',
-								'data-action': 'rolesBind',
-								onClick: function () {
-									const chosen = ref.current !== null && ref.current !== undefined && typeof ref.current.value === 'string' && ref.current.value !== '' ? ref.current.value : props.profile
-									if (typeof chosen === 'string' && chosen !== '') props.onBind(props.stage, chosen)
-								},
-							},
-							t('roleBind'),
-						),
-					),
-				)
-			}
-
-			/** One stored profile: editable fields and save/delete actions. */
-			function RoleProfileRow(props) {
-				const t = props.t
-				const profile = props.profile
-				const builtin = props.builtin === true
-				const instancesRef = React.useRef(null)
-				const skillsRef = React.useRef(null)
-				const contextRef = React.useRef(null)
-				const permissionsRef = React.useRef(null)
-				const promptRef = React.useRef(null)
-				function inputValue(ref, fallback) {
-					if (ref.current === null || ref.current === undefined) return fallback
-					return typeof ref.current.value === 'string' ? ref.current.value : fallback
-				}
-				function save() {
-					props.onSave(props.name, {
-						role: profile.role,
-						instances: Number(inputValue(instancesRef, String(profile.instances))),
-						skills: tcSplitList(inputValue(skillsRef, (profile.skills || []).join(', '))),
-						context: inputValue(contextRef, profile.context || 'fresh'),
-						permissions: tcSplitList(inputValue(permissionsRef, (profile.permissions || []).join(', '))),
-						prompt: inputValue(promptRef, profile.prompt || ''),
-					})
-				}
-				const cellInput = function (ref, field, value, extra) {
-					return h('input', Object.assign({ ref: ref, className: 'gbt-input', 'data-field': field, defaultValue: value, spellCheck: false }, extra === undefined ? {} : extra))
-				}
-				return h(
-					'tr',
-					{ 'data-role-profile': props.name, 'data-builtin': builtin ? 'true' : 'false' },
-					h('td', { className: 'gbt-mono', 'data-col': 'profile-name' }, props.name, builtin ? h('span', { className: 'gbt-pill' }, ' ' + t('roleBuiltin')) : h('span', { className: 'gbt-pill' }, ' ' + t('roleCustom'))),
-					h('td', { className: 'gbt-mono', 'data-col': 'profile-kind' }, roleKindLabel(profile.role, t)),
-					h('td', { 'data-col': 'profile-stage' }, roleStageLabel(profile.stage, t)),
-					h('td', { 'data-col': 'profile-instances' }, cellInput(instancesRef, 'instances', String(profile.instances), { type: 'number', min: 1, max: 8 })),
-					h('td', { 'data-col': 'profile-skills' }, cellInput(skillsRef, 'skills', (profile.skills || []).join(', '))),
-					h(
-						'td',
-						{ 'data-col': 'profile-context' },
-						h('select', { ref: contextRef, defaultValue: profile.context || 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')]),
-					),
-					h('td', { 'data-col': 'profile-permissions' }, cellInput(permissionsRef, 'permissions', (profile.permissions || []).join(', '))),
-					h('td', { 'data-col': 'profile-prompt' }, cellInput(promptRef, 'prompt', profile.prompt || '')),
-					h(
-						'td',
-						{ 'data-col': 'profile-actions' },
-						h(
-							'div',
-							{ className: 'gbt-rowactions' },
-							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-fork', onClick: function () { props.onFork(props.name) } }, t('roleFork')),
-							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-save', onClick: save }, t('roleSave')),
-							builtin
-								? null
-								: h(
-										'button',
-										{
-											type: 'button',
-											className: 'gbt-btn',
-											'data-action': 'rolesDelete',
-											onClick: function () {
-												props.onDelete(props.name)
-											},
-										},
-										t('roleDelete'),
-									),
-						),
-					),
-				)
-			}
-
+			/**
+			 * The blank-create form. Fork is the primary path to a new profile; this
+			 * stays as the secondary entry for one that is not a copy of anything.
+			 * It lives inside the editor card, collapsed.
+			 */
 			function RoleCreateForm(props) {
 				const t = props.t
-				const draft = props.draft === undefined || props.draft === null ? null : props.draft
-				const draftProfile = draft === null ? null : draft.profile
 				const nameRef = React.useRef(null)
 				const roleRef = React.useRef(null)
 				const instancesRef = React.useRef(null)
@@ -1950,55 +1845,40 @@ window.__ModuleLoader__.load({
 				const contextRef = React.useRef(null)
 				const permissionsRef = React.useRef(null)
 				const promptRef = React.useRef(null)
-				React.useEffect(function () {
-					if (draft === null) return
-					const fill = function (ref, value) {
-						if (ref.current !== null && ref.current !== undefined && typeof value === 'string') ref.current.value = value
-					}
-					fill(nameRef, draft.name)
-					fill(roleRef, draftProfile === null ? undefined : draftProfile.role)
-					fill(instancesRef, draftProfile === null ? undefined : String(draftProfile.instances))
-					fill(skillsRef, draftProfile === null ? undefined : (draftProfile.skills || []).join(', '))
-					fill(contextRef, draftProfile === null ? undefined : draftProfile.context || 'fresh')
-					fill(permissionsRef, draftProfile === null ? undefined : (draftProfile.permissions || []).join(', '))
-					fill(promptRef, draftProfile === null ? undefined : draftProfile.prompt || '')
-				}, [draft === null ? '' : draft.name])
 				function valueOf(ref, fallback) {
 					if (ref.current === null || ref.current === undefined) return fallback
 					return typeof ref.current.value === 'string' ? ref.current.value : fallback
 				}
 				function submit() {
-					const name = valueOf(nameRef, draft === null ? '' : draft.name).trim()
+					const name = valueOf(nameRef, '').trim()
 					if (name === '') {
 						props.onInvalid('invalid-role-name')
 						return
 					}
 					props.onCreate(name, {
-						role: valueOf(roleRef, draftProfile === null ? 'reviewer' : draftProfile.role),
-						instances: Number(valueOf(instancesRef, draftProfile === null ? '1' : String(draftProfile.instances))),
-						skills: tcSplitList(valueOf(skillsRef, draftProfile === null ? '' : (draftProfile.skills || []).join(', '))),
-						context: valueOf(contextRef, draftProfile === null ? 'fresh' : draftProfile.context || 'fresh'),
-						permissions: tcSplitList(valueOf(permissionsRef, draftProfile === null ? 'read-only' : (draftProfile.permissions || []).join(', '))),
-						prompt: valueOf(promptRef, draftProfile === null ? '' : draftProfile.prompt || ''),
+						role: valueOf(roleRef, 'reviewer'),
+						instances: Number(valueOf(instancesRef, '1')),
+						skills: tcSplitList(valueOf(skillsRef, '')),
+						context: valueOf(contextRef, 'fresh'),
+						permissions: tcSplitList(valueOf(permissionsRef, 'read-only')),
+						prompt: valueOf(promptRef, ''),
 					})
 				}
 				return h(
 					'div',
 					{ className: 'gbt-formgrid', 'data-form': 'role-create' },
-					draft === null
-						? null
-						: h('div', { className: 'gbt-forknote gbt-formwide', 'data-fork-source': draft.source }, t('roleForkNote') + ' ' + String(draft.source) + ' · ' + t('roleForkCopyNote')),
-					h('label', null, t('roleName'), h('input', { ref: nameRef, className: 'gbt-input', 'data-field': 'name', defaultValue: draft === null ? '' : draft.name, spellCheck: false })),
-					h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: draftProfile === null ? 'reviewer' : draftProfile.role, 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
-					h('label', null, t('roleInstancesCount'), h('input', { ref: instancesRef, className: 'gbt-input', 'data-field': 'instances', type: 'number', min: 1, max: 8, defaultValue: draftProfile === null ? '1' : String(draftProfile.instances) })),
-					h('label', null, t('roleSkills'), h('input', { ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: draftProfile === null ? '' : (draftProfile.skills || []).join(', '), spellCheck: false })),
-					h('label', null, t('roleContext'), h('select', { ref: contextRef, defaultValue: draftProfile === null ? 'fresh' : draftProfile.context || 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')])),
-					h('label', null, t('rolePermissions'), h('input', { ref: permissionsRef, className: 'gbt-input', 'data-field': 'permissions', defaultValue: draftProfile === null ? 'read-only' : (draftProfile.permissions || []).join(', '), spellCheck: false })),
-					h('label', { className: 'gbt-formwide' }, t('rolePrompt'), h('textarea', { ref: promptRef, className: 'gbt-input', 'data-field': 'prompt', defaultValue: draftProfile === null ? '' : draftProfile.prompt || '', rows: 3 })),
+					h('label', null, t('roleName'), h('input', { ref: nameRef, className: 'gbt-input', 'data-field': 'name', defaultValue: '', spellCheck: false })),
+					h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: 'reviewer', 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
+					h('label', null, t('roleInstancesCount'), h('input', { ref: instancesRef, className: 'gbt-input', 'data-field': 'instances', type: 'number', min: 1, max: 8, defaultValue: '1' })),
+					h('label', null, t('roleSkills'), h('input', { ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: '', spellCheck: false })),
+					h('label', null, t('roleContext'), h('select', { ref: contextRef, defaultValue: 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')])),
+					h('label', null, t('rolePermissions'), h('input', { ref: permissionsRef, className: 'gbt-input', 'data-field': 'permissions', defaultValue: 'read-only', spellCheck: false })),
+					h('label', { className: 'gbt-formwide' }, t('rolePrompt'), h('textarea', { ref: promptRef, className: 'gbt-input', 'data-field': 'prompt', defaultValue: '', rows: 3 })),
 					h('div', { className: 'gbt-formactions' }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'rolesCreate', onClick: submit }, t('roleCreate'))),
 				)
 			}
 
+			/** One provisioned role instance: drain and replace in place. */
 			function RoleInstanceRow(props) {
 				const t = props.t
 				return h(
@@ -2067,6 +1947,554 @@ window.__ModuleLoader__.load({
 			/** Horizontal scrolling wrapper so narrow screens scroll, not squash. */
 			function tableWrap(key, table) {
 				return h('div', { key: key, className: 'gbt-tablewrap' }, table)
+			}
+
+			/**
+			 * The context editor's state, module-level for the same reason the panel
+			 * keeps its view: the main slot unmounts on a view switch, and a
+			 * half-finished fork draft or a skills selection must survive. It is
+			 * deliberately not React state, so a button click mutates it and forces a
+			 * re-render.
+			 */
+			const roleEditorState = {
+				kind: 'worker',
+				draft: null,
+				selected: null,
+				saved: null,
+				used: new Set(),
+				skillsOpen: false,
+				skills: null,
+				skillsError: null,
+				skillsSelected: new Set(),
+				applySkipped: false,
+				notice: null,
+			}
+
+			const ROLE_EDITOR_KINDS = ['worker', 'tester', 'reviewer']
+			const ROLE_EDITOR_STAGES = { worker: 'implement', reviewer: 'review', tester: 'test' }
+
+			/** The profile bound to a kind's stage, mirroring schema.profileForKind. */
+			function roleBoundProfile(config, kind) {
+				if (config === null || config === undefined) return null
+				const profiles = config.profiles !== null && config.profiles !== undefined && typeof config.profiles === 'object' ? config.profiles : {}
+				const stages = config.stages !== null && config.stages !== undefined && typeof config.stages === 'object' ? config.stages : {}
+				const stage = ROLE_EDITOR_STAGES[kind]
+				const bound = stages[stage]
+				if (typeof bound === 'string' && profiles[bound] !== undefined && profiles[bound].stage === stage) return profiles[bound]
+				return profiles[kind] === undefined ? null : profiles[kind]
+			}
+
+			/** The profiles a kind's identity selector offers: the stage's owners. */
+			function roleSelectableProfiles(config, kind) {
+				if (config === null || config === undefined) return []
+				const profiles = config.profiles !== null && config.profiles !== undefined && typeof config.profiles === 'object' ? config.profiles : {}
+				const stage = ROLE_EDITOR_STAGES[kind]
+				return Object.keys(profiles).filter(function (name) {
+					const profile = profiles[name]
+					return profile !== null && profile !== undefined && profile.stage === stage
+				})
+			}
+
+			function rolePreviewNamed(snapshot, name) {
+				const list = Array.isArray(snapshot.rolePreviews) ? snapshot.rolePreviews : []
+				return list.filter(function (preview) { return preview !== null && typeof preview === 'object' && preview.name === name })[0] || null
+			}
+
+			/** The variable catalog is the same for every profile; use the first the host sent. */
+			function roleVariableCatalogOf(snapshot) {
+				const list = Array.isArray(snapshot.rolePreviews) ? snapshot.rolePreviews : []
+				for (let index = 0; index < list.length; index += 1) {
+					const preview = list[index]
+					if (preview !== null && preview !== undefined && Array.isArray(preview.variableCatalog) && preview.variableCatalog.length > 0) return preview.variableCatalog
+				}
+				return []
+			}
+
+			/** Only the profile fields a fork copies; the source is never written. */
+			function roleProfileCopy(profile) {
+				return {
+					role: profile.role,
+					stage: profile.stage,
+					instances: profile.instances,
+					skills: (Array.isArray(profile.skills) ? profile.skills : []).slice(),
+					context: profile.context || 'fresh',
+					permissions: (Array.isArray(profile.permissions) ? profile.permissions : []).slice(),
+					prompt: typeof profile.prompt === 'string' ? profile.prompt : '',
+				}
+			}
+
+			/**
+			 * The role context editor — the whole Roles tab. The host owns the
+			 * context: the fixed header, task data, duties, permission boundary and
+			 * verdict schema are read-only blocks generated by the real brief
+			 * builders, and only the profile template is editable, with the variable
+			 * chips the host's catalog advertises. The identity row owns the profile
+			 * selection and the stage binding; the kind's instances live in a compact
+			 * block inside the same card.
+			 */
+			function RolesEditor(props) {
+				const t = props.t
+				const snapshot = props.snapshot
+				const store = props.store
+				const bump = props.bump
+				const config = snapshot.roles
+				const kind = roleEditorState.kind
+				const stage = ROLE_EDITOR_STAGES[kind]
+				const profiles = config !== null && config !== undefined && config.profiles !== null && config.profiles !== undefined && typeof config.profiles === 'object' ? config.profiles : {}
+				const bound = roleBoundProfile(config, kind)
+				const boundName = bound !== null && typeof bound.name === 'string' ? bound.name : null
+				const draft = roleEditorState.draft
+				const draftProfile = draft === null ? null : draft.profile
+				const saved = roleEditorState.saved
+				const options = roleSelectableProfiles(config, kind)
+				// The selected name is honoured even before the host snapshot carries the
+				// profile: a just-saved Fork must be targetable by Apply immediately,
+				// without waiting for the next poll.
+				const selectedName = draft !== null ? draft.name : roleEditorState.selected !== null ? roleEditorState.selected : boundName
+				const target =
+					draftProfile !== null
+						? draftProfile
+						: selectedName !== null && profiles[selectedName] !== undefined
+							? profiles[selectedName]
+							: saved !== null && saved.name === selectedName
+								? saved.profile
+								: null
+				const builtin = selectedName === 'worker' || selectedName === 'reviewer' || selectedName === 'tester'
+				const preview = selectedName === null ? null : rolePreviewNamed(snapshot, selectedName)
+				const hostBlocks = preview !== null && Array.isArray(preview.blocks) ? preview.blocks : []
+				const variableCatalog = roleVariableCatalogOf(snapshot)
+				const templateText = target !== null && typeof target.prompt === 'string' ? target.prompt : ''
+				const skillsText = target !== null && Array.isArray(target.skills) ? target.skills.join(', ') : ''
+				const catalog = Array.isArray(roleEditorState.skills) ? roleEditorState.skills : []
+				const instances = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
+				const templateRef = React.useRef(null)
+				const skillsRef = React.useRef(null)
+				const selectRef = React.useRef(null)
+				// Real React reuses a host node across renders, so an uncontrolled control
+				// only takes a new defaultValue when it REMOUNTS. The key carries the editor
+				// identity AND whether the identity is still a draft: switching kind,
+				// forking and a successful save all remount the controls on the right
+				// profile instead of silently keeping the previous profile's text (which
+				// would then be saved onto the wrong profile).
+				const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved')
+
+				function currentTemplate() {
+					const node = templateRef.current
+					return node !== null && node !== undefined && typeof node.value === 'string' ? node.value : templateText
+				}
+				function currentSkills() {
+					const node = skillsRef.current
+					if (node !== null && node !== undefined && typeof node.value === 'string') return tcSplitList(node.value)
+					return target !== null && Array.isArray(target.skills) ? target.skills.slice() : []
+				}
+				function chosenName() {
+					const node = selectRef.current
+					if (node !== null && node !== undefined && typeof node.value === 'string' && node.value !== '') return node.value
+					return selectedName
+				}
+				// The editor reports its own outcome: a client-side refusal has no store
+				// event, and the banner must survive the panel's re-render.
+				function report(action, ok, payload) {
+					roleEditorState.notice = { action: action, ok: ok, payload: payload }
+					bump()
+				}
+				async function send(action, body) {
+					const outcome = await store.send(action, body)
+					const ok = outcome !== null && outcome !== undefined && outcome.ok === true
+					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
+					report(action, ok, payload)
+					return { ok: ok, payload: payload }
+				}
+				/** Switch kind: no draft, no selection and no banner may leak across. */
+				function switchKind(next) {
+					roleEditorState.kind = next
+					roleEditorState.draft = null
+					roleEditorState.selected = null
+					roleEditorState.saved = null
+					roleEditorState.applySkipped = false
+					roleEditorState.notice = null
+					bump()
+				}
+				/** Pick another profile of this kind in the identity selector. */
+				function selectProfile(name) {
+					if (typeof name !== 'string' || name === '') return
+					roleEditorState.selected = name
+					roleEditorState.draft = null
+					roleEditorState.saved = null
+					roleEditorState.applySkipped = false
+					roleEditorState.notice = null
+					bump()
+				}
+				function fork() {
+					if (target === null || selectedName === null) return
+					let candidate = String(selectedName) + '-fork'
+					let index = 2
+					while (profiles[candidate] !== undefined || roleEditorState.used.has(candidate)) {
+						candidate = String(selectedName) + '-fork-' + String(index)
+						index += 1
+					}
+					roleEditorState.used.add(candidate)
+					roleEditorState.draft = { source: String(selectedName), name: candidate, profile: roleProfileCopy(target) }
+					roleEditorState.saved = null
+					roleEditorState.applySkipped = false
+					roleEditorState.notice = null
+					bump()
+				}
+				async function save() {
+					// A stale banner must never be read as this attempt's outcome; report() replaces it.
+					roleEditorState.notice = null
+					const template = currentTemplate()
+					const skills = currentSkills()
+					if (draft !== null) {
+						// T-35 rule: a successful create clears the draft, a refused one keeps
+						// it (and the user's edits) for a retry.
+						const submitted = draft
+						const body = Object.assign({}, submitted.profile, { prompt: template, skills: skills })
+						const outcome = await send('rolesCreate', { name: submitted.name, profile: body })
+						if (outcome.ok === true && roleEditorState.draft === submitted) {
+							// Target the created profile IMMEDIATELY: the panel must not need the
+							// next 2.5s poll before Apply can bind it.
+							roleEditorState.draft = null
+							roleEditorState.selected = submitted.name
+							roleEditorState.saved = { name: submitted.name, profile: Object.assign({}, body, { name: submitted.name }) }
+							bump()
+						}
+						return
+					}
+					if (selectedName === null) return
+					if (builtin) {
+						// The built-in profiles are the defaults; editing one in place would
+						// be lost by the next reset. Fork it instead.
+						report('rolesUpdate', false, { code: 'builtin-profile-readonly' })
+						return
+					}
+					const outcome = await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills } })
+					if (outcome.ok === true) {
+						// Keep the saved values visible until the host snapshot catches up.
+						roleEditorState.saved = { name: selectedName, profile: Object.assign({}, target === null ? {} : target, { prompt: template, skills: skills }) }
+						bump()
+					}
+				}
+				async function remove() {
+					roleEditorState.notice = null
+					if (selectedName === null || builtin) return
+					const outcome = await send('rolesDelete', { name: selectedName })
+					if (outcome.ok === true) {
+						roleEditorState.selected = null
+						roleEditorState.saved = null
+						bump()
+					}
+				}
+				async function bind() {
+					roleEditorState.notice = null
+					const chosen = chosenName()
+					if (chosen === null) {
+						report('rolesBind', false, { code: 'unknown-role-profile' })
+						return
+					}
+					await send('rolesBind', { stage: stage, profile: chosen })
+				}
+				async function apply() {
+					roleEditorState.notice = null
+					if (draft !== null) {
+						report('rolesBind', false, { code: 'role-unsaved' })
+						return
+					}
+					const chosen = chosenName()
+					if (chosen === null) {
+						report('rolesBind', false, { code: 'unknown-role-profile' })
+						return
+					}
+					roleEditorState.applySkipped = false
+					const boundResult = await send('rolesBind', { stage: stage, profile: chosen })
+					if (boundResult.ok !== true) return
+					const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
+					if (live.length === 0) {
+						roleEditorState.applySkipped = true
+						bump()
+						return
+					}
+					await send('rolesReplace', { name: kind })
+				}
+				function insertVariable(name) {
+					const node = templateRef.current
+					if (node === null || node === undefined) return
+					const value = typeof node.value === 'string' ? node.value : ''
+					node.value = value + '{{' + String(name) + '}}'
+					bump()
+				}
+				async function openSkills() {
+					roleEditorState.skillsOpen = true
+					roleEditorState.skillsError = null
+					roleEditorState.skillsSelected = new Set(currentSkills())
+					bump()
+					const outcome = await store.send('skillsCatalog', {})
+					const ok = outcome !== null && outcome !== undefined && outcome.ok === true
+					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined ? outcome.payload : null
+					if (ok === true) {
+						roleEditorState.skills = payload !== null && payload !== undefined && Array.isArray(payload.skills) ? payload.skills : []
+						roleEditorState.skillsError = null
+					} else {
+						roleEditorState.skills = null
+						roleEditorState.skillsError = payload === null || payload === undefined ? { code: 'skills-unavailable' } : payload
+					}
+					bump()
+				}
+				function toggleSkill(name) {
+					if (roleEditorState.skillsSelected.has(name)) roleEditorState.skillsSelected.delete(name)
+					else roleEditorState.skillsSelected.add(name)
+					bump()
+				}
+				function saveSkills() {
+					const names = Array.from(roleEditorState.skillsSelected)
+					const node = skillsRef.current
+					if (node !== null && node !== undefined) node.value = names.join(', ')
+					if (draft !== null) draft.profile.skills = names.slice()
+					roleEditorState.skillsOpen = false
+					bump()
+				}
+				function variableLegend() {
+					return h('div', { key: 'variables', className: 'gbt-editorvars', 'data-section': 'role-editor-variables' },
+						variableCatalog.length === 0
+							? h('div', { className: 'gbt-footnote' }, t('roleEditorNoVariables'))
+							: [
+									h('div', { key: 'chips', className: 'gbt-varchips', 'data-section': 'role-editor-varchips' },
+										h('span', { className: 'gbt-footnote' }, t('roleEditorInsert')),
+										variableCatalog.map(function (entry) {
+											return h('button', { key: entry.name, type: 'button', className: 'gbt-varchip', 'data-action': 'role-editor-insert', 'data-variable': entry.name, onClick: function () { insertVariable(entry.name) } }, '{{' + entry.name + '}}')
+										})),
+									h('div', { key: 'list', className: 'gbt-varlist', 'data-section': 'role-editor-varlist' }, variableCatalog.map(function (entry) {
+										return h('div', { key: entry.name, className: 'gbt-varitem', 'data-variable': entry.name },
+											h('code', { className: 'gbt-mono' }, '{{' + entry.name + '}}'),
+											h('span', null, ' ' + String(entry.description === undefined ? '' : entry.description)),
+											h('span', { className: 'gbt-footnote' }, ' · ' + t('roleEditorVariableSample') + ' ' + String(entry.sample === undefined ? '' : entry.sample)))
+									})),
+								])
+				}
+				function templateBlock() {
+					return h('div', { key: 'template:' + controlKey, className: 'gbt-editorblock', 'data-editor-block': 'template', 'data-block-type': 'template', 'data-editable': 'true', 'data-host-block': hostBlocks.length === 0 ? 'missing' : 'present' },
+						h('div', { className: 'gbt-subhead' }, t('roleEditorTemplate') + ' · ' + t('roleProfilePrompt')),
+						h('textarea', { key: 'template-field:' + controlKey, ref: templateRef, className: 'gbt-input gbt-editorarea', 'data-field': 'template', rows: 8, defaultValue: templateText, placeholder: t('rolePromptEmpty'), spellCheck: false }))
+				}
+				const blocks = []
+				if (hostBlocks.length > 0) {
+					hostBlocks.forEach(function (block) {
+						const key = String(block.key === undefined || block.key === null ? block.type : block.key)
+						if (block.type === 'template' && block.editable === true) {
+							blocks.push(templateBlock())
+							blocks.push(variableLegend())
+							return
+						}
+						const editable = block.editable === true
+						blocks.push(h('div', { key: key, className: 'gbt-editorblock', 'data-editor-block': key, 'data-block-type': String(block.type), 'data-editable': editable ? 'true' : 'false' },
+							h('div', { className: 'gbt-subhead' }, String(block.title === undefined ? key : block.title) + (editable ? '' : ' · ' + t('roleEditorFixedNote'))),
+							h('pre', { className: 'gbt-previewtext' }, typeof block.text === 'string' ? block.text : '')))
+					})
+				} else {
+					blocks.push(templateBlock())
+					blocks.push(variableLegend())
+					blocks.push(h('div', { key: 'no-preview', className: 'gbt-footnote', 'data-editor-nopreview': 'true' }, t('roleEditorNoPreview')))
+				}
+				const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
+					h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
+				const instanceRows = instances.map(function (instance) {
+					return h(RoleInstanceRow, {
+						key: instance.name,
+						name: instance.name,
+						kind: instance.kind,
+						status: instance.status,
+						t: t,
+						onDrain: function (name) {
+							void send('rolesDrain', { name: name })
+						},
+						onReplace: function (name) {
+							void send('rolesReplace', { name: name })
+						},
+					})
+				})
+				const instancesBlock = h(
+					'div',
+					{ key: 'instances', className: 'gbt-editorinstances', 'data-section': 'role-editor-instances' },
+					h('div', { className: 'gbt-subhead' }, t('roleEditorInstances') + ' · ' + roleKindLabel(kind, t)),
+					h(
+						'div',
+						{ className: 'gbt-tablewrap' },
+						h(
+							'table',
+							{ className: 'gbt-locktable', 'data-section': 'role-instances' },
+							h('thead', null, h('tr', null, h('th', null, t('roleName')), h('th', null, t('roleKind')), h('th', null, t('roleStatus')), h('th', null, ''))),
+							h('tbody', null, instanceRows.length === 0 ? h('tr', null, h('td', { colSpan: 4 }, t('roleInstancesEmpty'))) : instanceRows),
+						),
+					),
+				)
+				const blankCreate = h(
+					'details',
+					{ key: 'blank-create', className: 'gbt-createblank', 'data-section': 'role-create-blank' },
+					h('summary', null, t('roleEditorCreateBlank')),
+					h(RoleCreateForm, { t: t, onCreate: props.onCreateProfile, onInvalid: props.onCreateInvalid }),
+				)
+				const modal = roleEditorState.skillsOpen === true
+					? h('div', { className: 'gbt-overlay', 'data-modal': 'role-skills' },
+							h('div', { className: 'gbt-modal' },
+								h('div', { className: 'gbt-modalhead' },
+									h('h2', null, t('roleEditorSkillsTitle') + (selectedName === null ? '' : ' · ' + String(selectedName))),
+									h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'role-skills-close', onClick: function () { roleEditorState.skillsOpen = false; bump() } }, '×')),
+								roleEditorState.skillsError !== null
+									? h('div', { className: 'gbt-banner', 'data-tone': 'error', 'data-skills-unavailable': String(roleEditorState.skillsError.code === undefined || roleEditorState.skillsError.code === null ? 'skills-unavailable' : roleEditorState.skillsError.code) }, t('roleEditorSkillsUnavailable') + (typeof roleEditorState.skillsError.message === 'string' && roleEditorState.skillsError.message !== '' ? ' — ' + roleEditorState.skillsError.message : ''))
+									: null,
+								roleEditorState.skillsError === null && catalog.length === 0 ? h('div', { className: 'gbt-empty' }, t('roleEditorSkillsEmpty')) : null,
+								catalog.map(function (skill) {
+									const name = String(skill.name)
+									return h('label', { key: name, className: 'gbt-check gbt-skillrow', 'data-skill-row': name },
+										h('input', { type: 'checkbox', 'data-skill': name, checked: roleEditorState.skillsSelected.has(name), onChange: function () { toggleSkill(name) } }),
+										h('span', { className: 'gbt-mono' }, name),
+										h('span', { className: 'gbt-footnote' }, ' ' + String(skill.description === undefined || skill.description === null ? '' : skill.description)),
+										skill.invocation !== null && skill.invocation !== undefined && skill.invocation.modelInvocable === false
+											? h('span', { className: 'gbt-pill', 'data-skill-user-only': name }, t('roleEditorSkillUserOnly'))
+											: null)
+								}),
+								h('div', { className: 'gbt-formactions' }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-skills-save', onClick: saveSkills }, t('roleEditorSkillsSave')))))
+					: null
+				const selectOptions = options.slice()
+				if (selectedName !== null && selectOptions.indexOf(String(selectedName)) < 0) selectOptions.push(String(selectedName))
+				const selectValue = draft !== null ? draft.name : selectedName === null ? '' : String(selectedName)
+				const identityRow = h(
+					'div',
+					{ className: 'gbt-editor-identity', 'data-editor-identity': 'true', 'data-kind': kind, 'data-profile': selectedName === null ? '' : String(selectedName), 'data-bound': boundName === null ? '' : String(boundName), 'data-draft': draft === null ? 'false' : 'true' },
+					h('span', { className: 'gbt-pill' }, t('roleKind') + ' · ' + roleKindLabel(kind, t)),
+					h('span', { className: 'gbt-pill gbt-mono', 'data-editor-bound': 'true' }, t('roleEditorBoundProfile') + ' · ' + (boundName === null ? t('roleEditorNoProfile') : String(boundName))),
+					h('span', { className: 'gbt-pill' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')),
+					h(
+						'label',
+						{ className: 'gbt-editor-select' },
+						t('roleEditorSelectProfile'),
+						h(
+							'select',
+							{
+								key: 'identity-select:' + controlKey,
+								ref: selectRef,
+								className: 'gbt-input',
+								'data-stage-select': stage,
+								'data-field': 'profile-select',
+								defaultValue: selectValue,
+								onChange: function () {
+									const node = selectRef.current
+									selectProfile(node === null || node === undefined ? '' : node.value)
+								},
+							},
+							selectOptions.length === 0
+								? h('option', { key: 'none', value: '' }, t('roleEditorNoProfile'))
+								: selectOptions.map(function (name) { return h('option', { key: name, value: name }, name) }),
+						),
+					),
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesBind', onClick: function () { void bind() } }, t('roleBind')),
+					builtin || draft !== null || selectedName === null || profiles[selectedName] === undefined
+						? null
+						: h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesDelete', onClick: function () { void remove() } }, t('roleDelete')),
+					h('span', { className: 'gbt-footnote' }, t('roleEditorBindHint')),
+				)
+				const actions = h(
+					'div',
+					{ className: 'gbt-rowactions', 'data-section': 'role-editor-actions' },
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-fork', onClick: fork }, t('roleFork')),
+					h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-editor-save', onClick: function () { void save() } }, t('roleSave')),
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-apply', onClick: function () { void apply() } }, t('roleEditorApply')),
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesReplace-kind', 'data-kind': kind, onClick: function () { void send('rolesReplace', { name: kind }) } }, t('roleReplaceKind') + ' · ' + roleKindLabel(kind, t)),
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesReset', onClick: function () { void send('rolesReset', {}) } }, t('roleReset')),
+				)
+				return h('div', { className: 'gbt-roleeditor', 'data-editor': 'true', 'data-kind': kind },
+					h('p', { className: 'gbt-footnote' }, t('roleEditorHint')),
+					roleEditorState.notice === null ? null : roleResultBanner(roleEditorState.notice, t),
+					h('div', { className: 'gbt-segmented', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-section': 'role-editor-kinds' }, ROLE_EDITOR_KINDS.map(function (entry) {
+						return h('button', { key: entry, type: 'button', className: 'gbt-seg', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
+					})),
+					identityRow,
+					actions,
+					roleEditorState.applySkipped === true ? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleEditorApplySkipped')) : null,
+					blocks,
+					skillsRow,
+					instancesBlock,
+					blankCreate,
+					modal)
+			}
+
+			/**
+			 * The Roles tab: ONE card, the context editor. Reloading the profiles is an
+			 * explicit action in the card header, and the batch actions (replace kind /
+			 * reset defaults) live next to the primary editor actions. The old
+			 * stand-alone stages/profiles/previews/create cards are gone — this editor
+			 * replaced them.
+			 */
+			function RolesView(props) {
+				const t = props.t
+				const snapshot = props.snapshot
+				const store = props.store
+				const [result, setResult] = React.useState(null)
+				const [, bumpEditor] = React.useReducer(function (count) { return count + 1 }, 0)
+				const hostResult = snapshot.actionResult === undefined || snapshot.actionResult === null ? null : { action: snapshot.actionResult.action, ok: snapshot.actionResult.ok !== false, payload: snapshot.actionResult }
+				const hostError = snapshot.actionError === undefined || snapshot.actionError === null ? null : { action: 'host', ok: false, payload: snapshot.actionError }
+				const config = snapshot.roles === undefined || snapshot.roles === null ? null : snapshot.roles
+				const agents = snapshot.agents
+				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+				const instances = members
+					.filter(function (member) {
+						return member !== null && typeof member === 'object' && typeof member.name === 'string' && /^(worker|reviewer|tester)-\d+$/.test(member.name)
+					})
+					.map(function (member) {
+						const match = /^(worker|reviewer|tester)-\d+$/.exec(member.name)
+						return { name: member.name, kind: match === null ? 'worker' : match[1], status: typeof member.status === 'string' ? member.status : 'unknown' }
+					})
+				async function run(action, body) {
+					const outcome = await store.send(action, body)
+					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
+					setResult({ action: action, ok: outcome !== null && outcome !== undefined && outcome.ok === true, payload: payload })
+				}
+				async function createProfile(name, fields) {
+					const outcome = await store.send('rolesCreate', { name: name, profile: fields })
+					const ok = outcome !== null && outcome !== undefined && outcome.ok === true
+					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
+					setResult({ action: 'rolesCreate', ok: ok, payload: payload })
+				}
+				if (config === null) {
+					return h('div', null, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
+				}
+				const refreshButton = h(
+					'button',
+					{
+						type: 'button',
+						className: 'gbt-btn',
+						'data-action': 'rolesList',
+						onClick: function () {
+							void run('rolesList', {})
+						},
+					},
+					t('roleRefresh'),
+				)
+				return h(
+					'div',
+					{ className: 'gbt-rolesview' },
+					h('p', { key: 'hint', className: 'gbt-footnote' }, t('rolesHint')),
+					roleResultBanner(result, t) || roleResultBanner(hostError, t) || roleResultBanner(hostResult, t),
+					roleCard({
+						id: 'editor',
+						title: t('roleEditor'),
+						aside: h('div', { className: 'gbt-rheadactions' }, refreshButton),
+						children: h(RolesEditor, {
+							t: t,
+							snapshot: snapshot,
+							store: store,
+							instances: instances,
+							bump: bumpEditor,
+							onCreateProfile: function (name, fields) {
+								void createProfile(name, fields)
+							},
+							onCreateInvalid: function (code) {
+								setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } })
+							},
+						}),
+					}),
+				)
 			}
 
 			function StatusView(props) {
@@ -2239,589 +2667,6 @@ window.__ModuleLoader__.load({
 					}
 				}
 				return h('div', { className: 'gbt-statusview' }, blocks)
-			}
-
-			// A fork draft is module-level so it survives the panel's re-render and
-			// pre-fills the create form; the used set keeps successive forks unique.
-			const roleForkState = { draft: null, used: new Set() }
-
-			/**
-			 * The context editor's state, module-level for the same reason: the main
-			 * slot unmounts on a view switch, and a half-finished fork draft or a
-			 * skills selection must survive. It is deliberately not React state, so a
-			 * button click mutates it and forces a re-render.
-			 */
-			const roleEditorState = {
-				kind: 'worker',
-				draft: null,
-				selected: null,
-				used: new Set(),
-				skillsOpen: false,
-				skills: null,
-				skillsError: null,
-				skillsSelected: new Set(),
-				applySkipped: false,
-				notice: null,
-			}
-
-			const ROLE_EDITOR_KINDS = ['worker', 'tester', 'reviewer']
-			const ROLE_EDITOR_STAGES = { worker: 'implement', reviewer: 'review', tester: 'test' }
-
-			/** The profile bound to a kind's stage, mirroring schema.profileForKind. */
-			function roleBoundProfile(config, kind) {
-				if (config === null || config === undefined) return null
-				const profiles = config.profiles !== null && config.profiles !== undefined && typeof config.profiles === 'object' ? config.profiles : {}
-				const stages = config.stages !== null && config.stages !== undefined && typeof config.stages === 'object' ? config.stages : {}
-				const stage = ROLE_EDITOR_STAGES[kind]
-				const bound = stages[stage]
-				if (typeof bound === 'string' && profiles[bound] !== undefined && profiles[bound].stage === stage) return profiles[bound]
-				return profiles[kind] === undefined ? null : profiles[kind]
-			}
-
-			function rolePreviewNamed(snapshot, name) {
-				const list = Array.isArray(snapshot.rolePreviews) ? snapshot.rolePreviews : []
-				return list.filter(function (preview) { return preview !== null && typeof preview === 'object' && preview.name === name })[0] || null
-			}
-
-			/** The variable catalog is the same for every profile; use the first the host sent. */
-			function roleVariableCatalogOf(snapshot) {
-				const list = Array.isArray(snapshot.rolePreviews) ? snapshot.rolePreviews : []
-				for (let index = 0; index < list.length; index += 1) {
-					const preview = list[index]
-					if (preview !== null && preview !== undefined && Array.isArray(preview.variableCatalog) && preview.variableCatalog.length > 0) return preview.variableCatalog
-				}
-				return []
-			}
-
-			/** Only the profile fields a fork copies; the source is never written. */
-			function roleProfileCopy(profile) {
-				return {
-					role: profile.role,
-					stage: profile.stage,
-					instances: profile.instances,
-					skills: (Array.isArray(profile.skills) ? profile.skills : []).slice(),
-					context: profile.context || 'fresh',
-					permissions: (Array.isArray(profile.permissions) ? profile.permissions : []).slice(),
-					prompt: typeof profile.prompt === 'string' ? profile.prompt : '',
-				}
-			}
-
-			/**
-			 * The semi-editable role context editor. The host owns the context: the
-			 * fixed header, task data, duties, permission boundary and verdict schema
-			 * are read-only blocks generated by the real brief builders, and only the
-			 * profile template is editable — with the variable chips the host's
-			 * catalog advertises. Identity (role kind + profile name) is read-only.
-			 */
-			function RolesEditor(props) {
-				const t = props.t
-				const snapshot = props.snapshot
-				const store = props.store
-				const bump = props.bump
-				const config = snapshot.roles
-				const kind = roleEditorState.kind
-				const profiles = config !== null && config !== undefined && config.profiles !== null && config.profiles !== undefined && typeof config.profiles === 'object' ? config.profiles : {}
-				const bound = roleBoundProfile(config, kind)
-				const boundName = bound !== null && typeof bound.name === 'string' ? bound.name : null
-				const draft = roleEditorState.draft
-				const draftProfile = draft === null ? null : draft.profile
-				const selectedName =
-					draft !== null
-						? draft.name
-						: roleEditorState.selected !== null && profiles[roleEditorState.selected] !== undefined
-							? roleEditorState.selected
-							: boundName
-				const target = draftProfile !== null ? draftProfile : selectedName === null || profiles[selectedName] === undefined ? null : profiles[selectedName]
-				const builtin = selectedName === 'worker' || selectedName === 'reviewer' || selectedName === 'tester'
-				const preview = selectedName === null ? null : rolePreviewNamed(snapshot, selectedName)
-				const hostBlocks = preview !== null && Array.isArray(preview.blocks) ? preview.blocks : []
-				const variableCatalog = roleVariableCatalogOf(snapshot)
-				const templateText = target !== null && typeof target.prompt === 'string' ? target.prompt : ''
-				const skillsText = target !== null && Array.isArray(target.skills) ? target.skills.join(', ') : ''
-				const catalog = Array.isArray(roleEditorState.skills) ? roleEditorState.skills : []
-				const templateRef = React.useRef(null)
-				const skillsRef = React.useRef(null)
-				// Real React reuses a host node across renders, so an uncontrolled control
-				// only takes a new defaultValue when it REMOUNTS. The key therefore carries
-				// the editor identity: switching kind, forking or saving forces the template
-				// and skills controls to remount with the new profile's values instead of
-				// silently keeping the previous profile's text (which would be saved onto
-				// the wrong profile).
-				const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName))
-
-				function currentTemplate() {
-					const node = templateRef.current
-					return node !== null && node !== undefined && typeof node.value === 'string' ? node.value : templateText
-				}
-				function currentSkills() {
-					const node = skillsRef.current
-					if (node !== null && node !== undefined && typeof node.value === 'string') return tcSplitList(node.value)
-					return target !== null && Array.isArray(target.skills) ? target.skills.slice() : []
-				}
-				// The editor reports its own outcome: a client-side refusal has no store
-				// event, and the banner must survive the panel's re-render.
-				function report(action, ok, payload) {
-					roleEditorState.notice = { action: action, ok: ok, payload: payload }
-					bump()
-				}
-				async function send(action, body) {
-					const outcome = await store.send(action, body)
-					const ok = outcome !== null && outcome !== undefined && outcome.ok === true
-					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
-					report(action, ok, payload)
-					return { ok: ok, payload: payload }
-				}
-				function fork() {
-					if (target === null || selectedName === null) return
-					let candidate = String(selectedName) + '-fork'
-					let index = 2
-					while (profiles[candidate] !== undefined || roleEditorState.used.has(candidate)) {
-						candidate = String(selectedName) + '-fork-' + String(index)
-						index += 1
-					}
-					roleEditorState.used.add(candidate)
-					roleEditorState.draft = { source: String(selectedName), name: candidate, profile: roleProfileCopy(target) }
-					roleEditorState.applySkipped = false
-					roleEditorState.notice = null
-					bump()
-				}
-				async function save() {
-					// A stale banner must never be read as this attempt's outcome; report() replaces it.
-					roleEditorState.notice = null
-					const template = currentTemplate()
-					const skills = currentSkills()
-					if (draft !== null) {
-						// T-35 rule: a successful create clears the draft, a refused one keeps
-						// it (and the user's edits) for a retry.
-						const submitted = draft
-						const body = Object.assign({}, submitted.profile, { prompt: template, skills: skills })
-						const outcome = await send('rolesCreate', { name: submitted.name, profile: body })
-						if (outcome.ok === true && roleEditorState.draft === submitted) {
-							roleEditorState.draft = null
-							roleEditorState.selected = submitted.name
-							bump()
-						}
-						return
-					}
-					if (selectedName === null) return
-					if (builtin) {
-						// The built-in profiles are the defaults; editing one in place would
-						// be lost by the next reset. Fork it instead.
-						report('rolesUpdate', false, { code: 'builtin-profile-readonly' })
-						return
-					}
-					await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills } })
-				}
-				async function apply() {
-					roleEditorState.notice = null
-					if (draft !== null) {
-						report('rolesBind', false, { code: 'role-unsaved' })
-						return
-					}
-					if (selectedName === null) {
-						report('rolesBind', false, { code: 'unknown-role-profile' })
-						return
-					}
-					roleEditorState.applySkipped = false
-					const boundResult = await send('rolesBind', { stage: ROLE_EDITOR_STAGES[kind], profile: selectedName })
-					if (boundResult.ok !== true) return
-					const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
-					if (live.length === 0) {
-						roleEditorState.applySkipped = true
-						bump()
-						return
-					}
-					await send('rolesReplace', { name: kind })
-				}
-				function insertVariable(name) {
-					const node = templateRef.current
-					if (node === null || node === undefined) return
-					const value = typeof node.value === 'string' ? node.value : ''
-					node.value = value + '{{' + String(name) + '}}'
-					bump()
-				}
-				async function openSkills() {
-					roleEditorState.skillsOpen = true
-					roleEditorState.skillsError = null
-					roleEditorState.skillsSelected = new Set(currentSkills())
-					bump()
-					const outcome = await store.send('skillsCatalog', {})
-					const ok = outcome !== null && outcome !== undefined && outcome.ok === true
-					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined ? outcome.payload : null
-					if (ok === true) {
-						roleEditorState.skills = payload !== null && payload !== undefined && Array.isArray(payload.skills) ? payload.skills : []
-						roleEditorState.skillsError = null
-					} else {
-						roleEditorState.skills = null
-						roleEditorState.skillsError = payload === null || payload === undefined ? { code: 'skills-unavailable' } : payload
-					}
-					bump()
-				}
-				function toggleSkill(name) {
-					if (roleEditorState.skillsSelected.has(name)) roleEditorState.skillsSelected.delete(name)
-					else roleEditorState.skillsSelected.add(name)
-					bump()
-				}
-				function saveSkills() {
-					const names = Array.from(roleEditorState.skillsSelected)
-					const node = skillsRef.current
-					if (node !== null && node !== undefined) node.value = names.join(', ')
-					if (draft !== null) draft.profile.skills = names.slice()
-					roleEditorState.skillsOpen = false
-					bump()
-				}
-				function variableLegend() {
-					return h('div', { key: 'variables', className: 'gbt-editorvars', 'data-section': 'role-editor-variables' },
-						variableCatalog.length === 0
-							? h('div', { className: 'gbt-footnote' }, t('roleEditorNoVariables'))
-							: [
-									h('div', { key: 'chips', className: 'gbt-varchips', 'data-section': 'role-editor-varchips' },
-										h('span', { className: 'gbt-footnote' }, t('roleEditorInsert')),
-										variableCatalog.map(function (entry) {
-											return h('button', { key: entry.name, type: 'button', className: 'gbt-varchip', 'data-action': 'role-editor-insert', 'data-variable': entry.name, onClick: function () { insertVariable(entry.name) } }, '{{' + entry.name + '}}')
-										})),
-									h('div', { key: 'list', className: 'gbt-varlist', 'data-section': 'role-editor-varlist' }, variableCatalog.map(function (entry) {
-										return h('div', { key: entry.name, className: 'gbt-varitem', 'data-variable': entry.name },
-											h('code', { className: 'gbt-mono' }, '{{' + entry.name + '}}'),
-											h('span', null, ' ' + String(entry.description === undefined ? '' : entry.description)),
-											h('span', { className: 'gbt-footnote' }, ' · ' + t('roleEditorVariableSample') + ' ' + String(entry.sample === undefined ? '' : entry.sample)))
-									})),
-								])
-				}
-				function templateBlock() {
-					return h('div', { key: 'template:' + controlKey, className: 'gbt-editorblock', 'data-editor-block': 'template', 'data-block-type': 'template', 'data-editable': 'true', 'data-host-block': hostBlocks.length === 0 ? 'missing' : 'present' },
-						h('div', { className: 'gbt-subhead' }, t('roleEditorTemplate') + ' · ' + t('roleProfilePrompt')),
-						h('textarea', { key: 'template-field:' + controlKey, ref: templateRef, className: 'gbt-input gbt-editorarea', 'data-field': 'template', rows: 8, defaultValue: templateText, placeholder: t('rolePromptEmpty'), spellCheck: false }))
-				}
-				const blocks = []
-				if (hostBlocks.length > 0) {
-					hostBlocks.forEach(function (block) {
-						const key = String(block.key === undefined || block.key === null ? block.type : block.key)
-						if (block.type === 'template' && block.editable === true) {
-							blocks.push(templateBlock())
-							blocks.push(variableLegend())
-							return
-						}
-						const editable = block.editable === true
-						blocks.push(h('div', { key: key, className: 'gbt-editorblock', 'data-editor-block': key, 'data-block-type': String(block.type), 'data-editable': editable ? 'true' : 'false' },
-							h('div', { className: 'gbt-subhead' }, String(block.title === undefined ? key : block.title) + (editable ? '' : ' · ' + t('roleEditorFixedNote'))),
-							h('pre', { className: 'gbt-previewtext' }, typeof block.text === 'string' ? block.text : '')))
-					})
-				} else {
-					blocks.push(templateBlock())
-					blocks.push(variableLegend())
-					blocks.push(h('div', { key: 'no-preview', className: 'gbt-footnote', 'data-editor-nopreview': 'true' }, t('roleEditorNoPreview')))
-				}
-				const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
-					h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
-					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
-				const modal = roleEditorState.skillsOpen === true
-					? h('div', { className: 'gbt-overlay', 'data-modal': 'role-skills' },
-							h('div', { className: 'gbt-modal' },
-								h('div', { className: 'gbt-modalhead' },
-									h('h2', null, t('roleEditorSkillsTitle') + (selectedName === null ? '' : ' · ' + String(selectedName))),
-									h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'role-skills-close', onClick: function () { roleEditorState.skillsOpen = false; bump() } }, '×')),
-								roleEditorState.skillsError !== null
-									? h('div', { className: 'gbt-banner', 'data-tone': 'error', 'data-skills-unavailable': String(roleEditorState.skillsError.code === undefined || roleEditorState.skillsError.code === null ? 'skills-unavailable' : roleEditorState.skillsError.code) }, t('roleEditorSkillsUnavailable') + (typeof roleEditorState.skillsError.message === 'string' && roleEditorState.skillsError.message !== '' ? ' — ' + roleEditorState.skillsError.message : ''))
-									: null,
-								roleEditorState.skillsError === null && catalog.length === 0 ? h('div', { className: 'gbt-empty' }, t('roleEditorSkillsEmpty')) : null,
-								catalog.map(function (skill) {
-									const name = String(skill.name)
-									return h('label', { key: name, className: 'gbt-check gbt-skillrow', 'data-skill-row': name },
-										h('input', { type: 'checkbox', 'data-skill': name, checked: roleEditorState.skillsSelected.has(name), onChange: function () { toggleSkill(name) } }),
-										h('span', { className: 'gbt-mono' }, name),
-										h('span', { className: 'gbt-footnote' }, ' ' + String(skill.description === undefined || skill.description === null ? '' : skill.description)),
-										skill.invocation !== null && skill.invocation !== undefined && skill.invocation.modelInvocable === false
-											? h('span', { className: 'gbt-pill', 'data-skill-user-only': name }, t('roleEditorSkillUserOnly'))
-											: null)
-								}),
-								h('div', { className: 'gbt-formactions' }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-skills-save', onClick: saveSkills }, t('roleEditorSkillsSave')))))
-					: null
-				return h('div', { className: 'gbt-roleeditor', 'data-editor': 'true', 'data-kind': kind },
-					h('p', { className: 'gbt-footnote' }, t('roleEditorHint')),
-					roleEditorState.notice === null ? null : roleResultBanner(roleEditorState.notice, t),
-					h('div', { className: 'gbt-tabs', 'data-section': 'role-editor-kinds' }, ROLE_EDITOR_KINDS.map(function (entry) {
-						return h('button', { key: entry, type: 'button', className: 'gbt-tab', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () {
-							roleEditorState.kind = entry
-							roleEditorState.draft = null
-							roleEditorState.selected = null
-							roleEditorState.applySkipped = false
-							// The previous identity's outcome must not linger over a new profile.
-							roleEditorState.notice = null
-							bump()
-						} }, roleKindLabel(entry, t))
-					})),
-					h('div', { className: 'gbt-editor-identity', 'data-editor-identity': 'true', 'data-kind': kind, 'data-profile': selectedName === null ? '' : String(selectedName), 'data-bound': boundName === null ? '' : String(boundName), 'data-draft': draft === null ? 'false' : 'true' },
-						h('span', { className: 'gbt-pill' }, t('roleKind') + ' · ' + roleKindLabel(kind, t)),
-						h('span', { className: 'gbt-pill gbt-mono', 'data-editor-profile': 'true' }, t('roleName') + ' · ' + (selectedName === null ? t('roleEditorNoProfile') : String(selectedName))),
-						h('span', { className: 'gbt-pill' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')),
-						h('span', { className: 'gbt-footnote' }, t('roleEditorIdentityNote'))),
-					h('div', { className: 'gbt-rowactions', 'data-section': 'role-editor-actions' },
-						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-fork', onClick: fork }, t('roleFork')),
-						h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-editor-save', onClick: function () { void save() } }, t('roleSave')),
-						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-apply', onClick: function () { void apply() } }, t('roleEditorApply'))),
-					roleEditorState.applySkipped === true ? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleEditorApplySkipped')) : null,
-					blocks,
-					skillsRow,
-					modal)
-			}
-
-			function RolesView(props) {
-				const t = props.t
-				const snapshot = props.snapshot
-				const store = props.store
-				const [result, setResult] = React.useState(null)
-				const [, bumpFork] = React.useReducer(function (count) { return count + 1 }, 0)
-				const [, bumpEditor] = React.useReducer(function (count) { return count + 1 }, 0)
-				const draft = roleForkState.draft
-				const previews = Array.isArray(snapshot.rolePreviews) ? snapshot.rolePreviews : []
-				const hostResult = snapshot.actionResult === undefined || snapshot.actionResult === null ? null : { action: snapshot.actionResult.action, ok: snapshot.actionResult.ok !== false, payload: snapshot.actionResult }
-				const hostError = snapshot.actionError === undefined || snapshot.actionError === null ? null : { action: 'host', ok: false, payload: snapshot.actionError }
-				const config = snapshot.roles === undefined || snapshot.roles === null ? null : snapshot.roles
-				const agents = snapshot.agents
-				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
-				const instances = members
-					.filter(function (member) {
-						return member !== null && typeof member === 'object' && typeof member.name === 'string' && /^(worker|reviewer|tester)-\d+$/.test(member.name)
-					})
-					.map(function (member) {
-						const match = /^(worker|reviewer|tester)-\d+$/.exec(member.name)
-						return { name: member.name, kind: match === null ? 'worker' : match[1], status: typeof member.status === 'string' ? member.status : 'unknown' }
-					})
-				async function run(action, body) {
-					const outcome = await store.send(action, body)
-					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
-					setResult({ action: action, ok: outcome !== null && outcome !== undefined && outcome.ok === true, payload: payload })
-				}
-				// A successful create from a fork draft leaves fork mode: clear the
-				// draft so the form remounts blank (the success banner stays). A failed
-				// create keeps the draft and the user's edits for a retry.
-				async function createProfile(name, fields) {
-					// Capture the draft this request was submitted from: a Fork taken while
-					// the request is in flight must never be cleared by that response.
-					const submittedDraft = roleForkState.draft
-					const outcome = await store.send('rolesCreate', { name: name, profile: fields })
-					const ok = outcome !== null && outcome !== undefined && outcome.ok === true
-					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
-					setResult({ action: 'rolesCreate', ok: ok, payload: payload })
-					if (ok === true && submittedDraft !== null && roleForkState.draft === submittedDraft) {
-						roleForkState.draft = null
-						bumpFork()
-					}
-				}
-				function bind(stage, profile) {
-					void run('rolesBind', { stage: stage, profile: profile })
-				}
-				if (config === null) {
-					return h('div', null, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
-				}
-				const profiles = config.profiles !== null && config.profiles !== undefined && typeof config.profiles === 'object' ? config.profiles : {}
-				const names = Object.keys(profiles)
-				const stages = config.stages !== null && config.stages !== undefined && typeof config.stages === 'object' ? config.stages : {}
-				const stageKeys = ['implement', 'review', 'test']
-				function forkProfile(sourceName) {
-					const profile = profiles[sourceName]
-					if (profile === null || profile === undefined) return
-					let candidate = String(sourceName) + '-fork'
-					let index = 2
-					while (profiles[candidate] !== undefined || roleForkState.used.has(candidate)) {
-						candidate = String(sourceName) + '-fork-' + String(index)
-						index += 1
-					}
-					roleForkState.used.add(candidate)
-					roleForkState.draft = {
-						source: String(sourceName),
-						name: candidate,
-						profile: {
-							role: profile.role,
-							stage: profile.stage,
-							instances: profile.instances,
-							skills: (Array.isArray(profile.skills) ? profile.skills : []).slice(),
-							context: profile.context || 'fresh',
-							permissions: (Array.isArray(profile.permissions) ? profile.permissions : []).slice(),
-							prompt: typeof profile.prompt === 'string' ? profile.prompt : '',
-						},
-					}
-					bumpFork()
-				}
-				const profileRows = names.map(function (name) {
-					const profile = profiles[name]
-					const builtin = name === 'worker' || name === 'reviewer' || name === 'tester'
-					return h(RoleProfileRow, {
-						key: name,
-						name: name,
-						profile: profile,
-						builtin: builtin,
-						t: t,
-						onSave: function (profileName, fields) {
-							void run('rolesUpdate', { name: profileName, profile: fields })
-						},
-						onDelete: function (profileName) {
-							void run('rolesDelete', { name: profileName })
-						},
-						onFork: function (profileName) {
-							forkProfile(profileName)
-						},
-					})
-				})
-				const refreshButton = h(
-					'button',
-					{
-						type: 'button',
-						className: 'gbt-btn',
-						'data-action': 'rolesList',
-						onClick: function () {
-							void run('rolesList', {})
-						},
-					},
-					t('roleRefresh'),
-				)
-				const stagesTable = h(
-					'table',
-					{ className: 'gbt-locktable', 'data-section': 'role-stages' },
-					h('thead', null, h('tr', null, h('th', null, t('roleStage')), h('th', null, t('roleProfiles')), h('th', null, t('roleBind')))),
-					h(
-						'tbody',
-						null,
-						stageKeys.map(function (stage) {
-							return h(StageBindingRow, { key: stage, stage: stage, profile: stages[stage], names: names, t: t, onBind: bind })
-						}),
-					),
-				)
-				const profilesTable = h(
-					'table',
-					{ className: 'gbt-locktable gbt-roleprofiles', 'data-section': 'role-profiles' },
-					h(
-						'colgroup',
-						null,
-						h('col', { key: 'c-name', style: { width: '150px' } }),
-						h('col', { key: 'c-kind', style: { width: '90px' } }),
-						h('col', { key: 'c-stage', style: { width: '80px' } }),
-						h('col', { key: 'c-instances', style: { width: '80px' } }),
-						h('col', { key: 'c-skills', style: { width: '150px' } }),
-						h('col', { key: 'c-context', style: { width: '90px' } }),
-						h('col', { key: 'c-permissions', style: { width: '170px' } }),
-						h('col', { key: 'c-prompt' }),
-						h('col', { key: 'c-actions', style: { width: '200px' } }),
-					),
-					h(
-						'thead',
-						null,
-						h('tr', null, h('th', null, t('roleName')), h('th', null, t('roleKind')), h('th', null, t('roleStage')), h('th', null, t('roleInstancesCount')), h('th', null, t('roleSkills')), h('th', null, t('roleContext')), h('th', null, t('rolePermissions')), h('th', null, t('rolePrompt')), h('th', null, '')),
-					),
-					h('tbody', null, profileRows),
-				)
-				const previewsCard = roleCard({
-					id: 'previews',
-					title: t('rolePreviews'),
-					children:
-						previews.length === 0
-							? h('div', { className: 'gbt-empty' }, t('rolePreviewsUnavailable'))
-							: previews.map(function (preview) {
-									const previewName = typeof preview.name === 'string' ? preview.name : String(preview.kind)
-									const entries = Array.isArray(preview.entries) ? preview.entries : []
-									return h(
-										'details',
-										{ key: previewName, className: 'gbt-preview', 'data-role-preview': previewName, 'data-kind': preview.kind, 'data-placeholder': preview.placeholder === true ? 'true' : 'false' },
-										h(
-											'summary',
-											null,
-											previewName + ' · ' + roleKindLabel(preview.kind, t) + (typeof preview.stage === 'string' ? ' · ' + roleStageLabel(preview.stage, t) : ''),
-										),
-										h(
-											'div',
-											{ className: 'gbt-rbody' },
-											h('div', { className: 'gbt-footnote', 'data-preview-note': 'host' }, t('rolePreviewHostNote') + ' · ' + String(preview.placeholderTask !== null && preview.placeholderTask !== undefined && preview.placeholderTask.id !== undefined ? preview.placeholderTask.id : 'T-?')),
-											h(
-												'div',
-												{ className: 'gbt-previewprompt', 'data-preview-prompt': previewName },
-												t('roleProfilePrompt') + ': ' + (typeof preview.profilePrompt === 'string' && preview.profilePrompt !== '' ? preview.profilePrompt : t('rolePromptEmpty')),
-											),
-											entries.map(function (entry) {
-												return h(
-													'div',
-													{ key: String(entry.key), className: 'gbt-previewentry', 'data-brief': String(entry.key) },
-													h('div', { className: 'gbt-footnote' }, String(entry.label) + ' · ' + t('rolePreviewHostNote')),
-													h('pre', { className: 'gbt-previewtext' }, String(entry.text)),
-												)
-											}),
-										),
-									)
-								}),
-				})
-				const instancesTable = h(
-					'table',
-					{ className: 'gbt-locktable', 'data-section': 'role-instances' },
-					h('thead', null, h('tr', null, h('th', null, t('roleName')), h('th', null, t('roleKind')), h('th', null, t('roleStatus')), h('th', null, ''))),
-					h(
-						'tbody',
-						null,
-						instances.length === 0
-							? h('tr', null, h('td', { colSpan: 4 }, t('roleInstancesEmpty')))
-							: instances.map(function (instance) {
-									return h(RoleInstanceRow, {
-										key: instance.name,
-										name: instance.name,
-										kind: instance.kind,
-										status: instance.status,
-										t: t,
-										onDrain: function (name) {
-											void run('rolesDrain', { name: name })
-										},
-										onReplace: function (name) {
-											void run('rolesReplace', { name: name })
-										},
-									})
-								}),
-					),
-				)
-				const actionBar = h(
-					'div',
-					{ className: 'gbt-actionbar', 'data-card': 'actionbar' },
-					h('h3', { className: 'gbt-rtitle', style: { marginRight: 'auto' } }, t('roleBatchActions')),
-					['worker', 'reviewer', 'tester'].map(function (kind) {
-						return h(
-							'button',
-							{
-								key: kind,
-								type: 'button',
-								className: 'gbt-btn',
-								'data-action': 'rolesReplace-kind',
-								'data-kind': kind,
-								onClick: function () {
-									void run('rolesReplace', { name: kind })
-								},
-							},
-							t('roleReplaceKind') + ' · ' + roleKindLabel(kind, t),
-						)
-					}),
-					h(
-						'button',
-						{
-							type: 'button',
-							className: 'gbt-btn',
-							'data-action': 'rolesReset',
-							onClick: function () {
-								void run('rolesReset', {})
-							},
-						},
-						t('roleReset'),
-					),
-				)
-				return h(
-					'div',
-					{ className: 'gbt-rolesview' },
-					h('p', { key: 'hint', className: 'gbt-footnote' }, t('rolesHint')),
-					roleResultBanner(result, t) || roleResultBanner(hostError, t) || roleResultBanner(hostResult, t),
-					roleCard({ id: 'editor', title: t('roleEditor'), children: h(RolesEditor, { t: t, snapshot: snapshot, store: store, instances: instances, bump: bumpEditor }) }),
-					roleCard({ id: 'source', title: t('roleSource'), aside: refreshButton, children: [] }),
-					roleCard({ id: 'stages', title: t('roleStages'), children: tableWrap('stage-table', stagesTable) }),
-					roleCard({ id: 'profiles', title: t('roleProfiles'), children: tableWrap('profile-table', profilesTable) }),
-					previewsCard,
-					roleCard({ id: 'create', title: t('roleCreate'), children: h(RoleCreateForm, { key: draft === null ? 'blank' : 'fork-' + draft.name, t: t, draft: draft, onCreate: function (name, fields) { void createProfile(name, fields) }, onInvalid: function (code) { setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } }) } }) }),
-					roleCard({ id: 'instances', title: t('roleInstances'), children: tableWrap('instance-table', instancesTable) }),
-					actionBar,
-				)
 			}
 
 			function LocksView(props) {
