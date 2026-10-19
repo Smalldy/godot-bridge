@@ -35,26 +35,41 @@
 
 ## 任务中心（task-center）
 
-同一个包还会挂载第二个组件行 `godot-bridge/task-center`：项目级任务板 + 依赖驱动的派发器 + 文件锁，以及中栏 GUI 面板（左侧栏「任务」）。
+同一个包还会挂载第二个组件行 `godot-bridge/task-center`：项目级任务板 + 阶段驱动的派发器（含独立评审与测试）+ 文件锁 + 角色系统，以及中栏 GUI 面板（左侧栏「任务」）。
 
 ### 执行流程
 
-每个任务都在自己的 git worktree 中执行——`<项目>/.worktrees/<taskId>-<attempt>`，分支 `task/<taskId>-<attempt>`，在任务被 claim 时创建。任务绝不会派发到共享工作区；项目无法承载 worktree 时，派发会直接拒绝开始。
+每个任务都在自己的 git worktree 中执行——`<项目>/.worktrees/<taskId>-<attempt>`，分支 `task/<taskId>-<attempt>`，在任务被 claim 时创建。任务绝不会派发到共享工作区；项目无法承载 worktree 时，派发会直接拒绝开始。每个任务都走同一条阶段机——`pending → running → reviewing → testing → done`，以 `blocked`/`cancelled` 作为出口：
 
-1. **执行**：assignee 只在该 checkout 内修改文件，并在那里运行测试。
-2. **提交**：`submit` 在 worktree 内提交并生成 merge request（base = 当前 target head，head = 新提交，changed files = base..head 的 diff）。
-3. **验证**：`testing = self`（默认）以 assignee 的自测为准；`testing = independent` 时，宿主把分支检出到临时 `verify-<taskId>` worktree，在其中运行 `npm run verify` 并自行写入 `verdict`——verdict 未通过就不能合并。通过与否不由模型判断。
-4. **合并**：宿主每 5 秒扫描一次，把就绪的 merge request 送入串行合并队列：在一次性 worktree 中整合分支、运行项目验证，只有全绿才 fast-forward target 分支并删除已合并任务的 worktree。
-5. **异常**：冲突或验证失败会标记该申请并通知 owner，target 分支保持不变。`mergeRequest` / `rejectMerge` / `refreshMerge` 仍保留给用户或 `merger` 队友，用于手动整合、审计或修复。
+1. **执行**：assignee 只在该 checkout 内修改文件，在那里运行项目测试，并可加载角色 profile 声明的技能。
+2. **提交**：`submit` 在 worktree 内提交、记录 base..head diff，并把任务推进到 REVIEW。submit 不是完成。
+3. **评审**：宿主准备 reviewer 角色（只读、独立上下文），并发送每轮 brief——spec 与验收标准、diff、声明 vs 实际文件、worker 证据以及评审清单。`approveReview` 进入 TESTING；`requestChanges` 带着具体原因退回 running。连续 3 轮未通过则阻塞；评审 10 分钟无结论先提醒，再过 10 分钟阻塞。
+4. **测试**：评审通过时，以当前 target head + 任务分支构建一次性候选 `<项目>/.worktrees/test-<id>`（分支 `test/<id>`），连同自包含 brief（验收标准、候选路径/分支、运行手册、证据格式）交给 tester 角色。tester 在那里完成验收并记录 `passTest` 或 `failTest`（含证据）；失败会带着证据退回 running。测试轮 10 分钟提醒、20 分钟阻塞。
+5. **合并**：测试通过后由宿主的串行合并队列（每 5 秒扫描）合并——每个任务只有一个被接受的候选，在一次性 `merge-<id>` worktree 中整合，且最多合并一次。若 verdict 之后 target head 又移动，则从新 head 重建候选并重开测试轮，绝不合并过期树。
+6. **异常**：冲突或 target 移动会标记该申请并通知 owner，target 分支保持不变。`mergeRequest` / `rejectMerge` / `refreshMerge` 仍保留给用户或 `merger` 队友，用于手动整合、审计或修复。
 
-- **任务板**：`<项目>/.agents/tasks.json`。schema v2，读到 v1 会自动迁移；重复 id、非法条目、未来版本会被拒绝而不是覆盖；建议把该文件加入项目 `.gitignore`（它是运行态，不是源码）。
-- **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`。
-- **依赖**：`B.dependsOn = [A]` 表示 A 完成后才派发 B。就绪任务按 `priority` 降序、创建时间升序取。`A <- B <- C`、`D`、`E <- F` 会先派发 A、D、E；A 完成后派发 B，E 完成后派发 F。
-- **派发**：开始/暂停是项目级状态（持久化在板子里）。GUI 只暴露**最大并发**：最多同时跑这么多个任务；执行者上限自动设为并发 + 1，没有空闲执行者时会自动新建，连续失败 3 次后任务阻塞（高级调用仍可用 `settings` 覆盖）。每次派发先 `claim`（60 分钟租约；assignee 任何活动都会续租，另有固定节奏的宿主心跳）再交给 Agent Teams：优先 `sendMessage` 给空闲成员，否则 `spawnTeammate`。租约失效按 liveness 判定：holder 仍活着就保住任务，只有 session 消失/failed（或超过单次 4 小时硬上限）才交接，且下一次尝试会 adopt 上一份 checkout 而不是重做；宿主重启会回收上一进程的 claim。
+- **任务板**：`<项目>/.agents/tasks.json`。schema v2；读到 v1 会自动迁移（旧状态映射到当前词表、`blockedBy` 变成 `dependsOn`、旧 claim 被释放）。重复 id、非法条目、未来版本会被拒绝而不是覆盖。建议把该文件加入项目 `.gitignore`（它是运行态，不是源码）。
+- **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / approveReview / requestChanges / passTest / failTest / mergeRequest / refreshMerge / rejectMerge / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject / rolesList / rolesCreate / rolesUpdate / rolesDelete / rolesBind / rolesDrain / rolesReplace / rolesReset / skillsCatalog / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`。
+- **依赖**：`B.dependsOn = [A]` 表示 A 完成**且已合并**后才派发 B。就绪任务按 `priority` 降序、创建时间升序取。`A <- B <- C`、`D`、`E <- F` 会先派发 A、D、E；A 完成后派发 B，E 完成后派发 F。
+- **派发**：开始/暂停是项目级状态（持久化在板子里）。GUI 只暴露**最大并发**：最多同时跑这么多个任务；执行者上限自动设为并发 + 1，没有空闲执行者时会自动新建，连续失败 3 次后任务阻塞（高级调用仍可用 `settings` 覆盖）。每次派发先 claim（60 分钟租约；assignee 任何活动都会续租，另有固定节奏的宿主心跳）再交给 Agent Teams：优先 `sendMessage` 给空闲成员，否则 `spawnTeammate`。
+- **租约与 liveness**：运行中的任务持有 **60 分钟租约**。assignee 的任意一次 `task_center` 调用都会**无条件续租**，且每轮调度都有宿主心跳按固定 5 分钟节奏续租，因此长时间工具运行不会丢 claim。失效租约按 **liveness** 判定而非只看时钟：holder 仍活着就保住任务（单次尝试 4 小时硬上限），只有 session 消失/failed 才在中断后交接。同一任务绝不会有两条活跃 agent；交接时若上一尝试留有 commit，则 adopt 其 worktree 与分支。看板暴露 `leaseRemaining`/`leaseReminder`，并记录 `lease-extended`/`lease-handover`/`attempt-adopt` 事件。
+- **角色**：`<项目>/.agents/roles.json`（version 1；规范化的 `worker`/`reviewer`/`tester` profile 始终存在）。一个 profile 指定三种固定角色之一、阶段绑定（implement / review / test）、1–8 个实例、允许的权限、fresh 或 fork 上下文、要加载的技能，以及一个 prompt **模板**。宿主通过活着的 Lead 自动补齐缺失的阶段角色、替换死亡或超时的实例；reviewer 与 tester 是只读独立上下文，worker 永远不能裁决自己的任务。
+  - 在 GUI **角色**页管理：选择 实现 / 测试 / 评审，查看绑定 profile 的宿主上下文，**Fork** 它，编辑模板与技能，**保存**，再**应用**（绑定阶段并替换在跑实例）。`rolesList` / `rolesCreate` / `rolesUpdate` / `rolesDelete` / `rolesBind` / `rolesDrain` / `rolesReplace` / `rolesReset` 通过动作 API 做同样的事。所有角色管理与 `skillsCatalog` 都是**仅限用户**（工具枚举中隐藏，对 agent 直接拒绝）。
+  - 模板可注入 `{{TASK_ID}}`、`{{TASK_TITLE}}`、`{{SPEC}}`、`{{COMPLETIONS_DEF}}`、`{{GIT_INFO}}`、`{{PROJECT}}`、`{{LEAD}}`、`{{ROLE}}`、`{{STAGE}}`。出现其它 `{{NAME}}` 时保存会被 `invalid-role-variable` 拒绝并列出允许变量；空模板合法。固定头部、任务数据、职责/权限边界/结论格式都由宿主生成，绝不是模板输出。
 - **文件锁**：任务用 `writeFiles` 声明要写的文件；调度器在派发前原子获取全部锁，任务完成/阻塞/取消/租约交接时释放。agent 也可以 `lock` 为自己的运行任务追加锁。路径规范化为项目相对路径，目录锁会与子路径冲突。
-- **GUI**：看板（就绪 / 等待 / 进行中 / 完成 / 阻塞）、队列、执行者、文件锁；开始/暂停、新建/编辑、提交/重试/重开、派发设置。执行者页显示 Lead、上限、忙/闲/启动中/失败计数以及每个 WorkAgent 的当前任务；文件锁页显示持有任务/Agent、租约和“会等待该文件”的就绪任务（是竞争提示，不是 FIFO 队列）。Agent 的 start 申请会显示为一条带“批准并开始 / 拒绝”的横幅。2.5 秒轮询宿主快照。
+- **GUI**：六个页签——看板（七列：就绪、等待、进行中、评审中、测试中、完成、阻塞）、队列、执行者、文件锁、状态、角色。执行者页显示 Lead、上限、忙/闲/启动中/失败计数以及每个 WorkAgent 的当前任务；文件锁页显示持有任务/Agent 与“会等待该文件”的就绪任务（竞争提示，不是 FIFO 队列）；状态页列出在线 agent、工作树清单与宿主活动环；角色页就是上面那张唯一的角色上下文编辑器。Agent 的 start 申请显示为带“批准并开始 / 拒绝”的横幅。2.5 秒轮询宿主快照。
 - **同意**：agent 调 `start` 只写入 `dispatch.request`，不会启动调度器；面板显示申请，只有用户的 `approveStart` 才真正开始。`pause` 双方都可直接调；`settings` 仅用户可改。
+- **超时与宿主动作看门狗**：评审 10 分钟无结论提醒一次、再过 10 分钟阻塞待人工处理；测试轮 10 分钟提醒、20 分钟阻塞；连续 3 轮评审未通过同样阻塞。每个异步宿主动作（候选构建、候选合并、merge request、角色准备、通知）上限 2 分钟：卡住的动作用 `queue-timeout`/`action-timeout` 返回，被放弃单元的迟到写入会被拒绝，因此一个挂起的 await 无法永久占住动作或合并队列。
+- **worktree 健壮性**：每次 `git worktree add` 使用独立的 180 秒超时（不与通用 git/发送预算共用）；超时或失败会回滚它可能登记的一切（worktree 条目、分支、锁、已 prune 的元数据），失败后重试一次，且同一仓库内的创建串行执行，两个任务不会争抢同一份 worktree 元数据。
 - **安全**：HTTP 写动作要求 `application/json` 且校验同源 `Origin`；`?project=` 只是读提示，切换项目走 `openProject`（校验目录存在）。
+
+### 已知限制
+
+- 没有会话跳转 API：状态页可以复制 session id，但打开该会话仍需在 Team 列表中手动操作。
+- Godot 必须通过 `godot_*` 工具启动，绝不能走 shell 工具（文件沙箱会让它崩溃——见「坑」）。
+- 隔离 harness 需要配置 `dshCommand`（通常还有 `dshArgs`）；CLI 不可用时 smoke 会返回可读失败，而不是算通过。
+- 同一时刻只处理一个项目、只使用一个 Team/Lead：共享状态只保留一个项目 hint，派发解析第一个活着的 Lead。缺少 Agent Teams 服务时任务保持 pending 并给出明确原因。
+- verdict 之后 target 分支若又移动，会按设计触发「重建 + 重测」；合并绝不会落到过期树上。
 
 ```sh
 # 在 GUI 之外创建任务（任意 HTTP 客户端）
@@ -68,7 +83,7 @@ curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
   -H 'content-type: application/json' -d '{"action":"pause","project":"/path/to/game"}'
 ```
 
-运行 `npm test` 覆盖 board / service / locks / dispatch / routes / tool / activation / client。
+运行 `npm test` 覆盖 board / service / locks / dispatch / git / harness / routes / tool / activation / target 历史 与浏览器半侧。
 
 ## 隔离 DSH 测试 harness
 
@@ -234,8 +249,8 @@ Godot 可执行文件解析顺序：每次调用的 `godot_path` 参数 → `god
 ## 项目结构
 
 ```
-plugin/godot-bridge.mjs           # 插件本体（标准 DSH 模块，命名导出 name/inject/apply）
-plugin/task-center/               # 任务中心宿主半侧（board / service / locks / dispatch / api / tool / routes）
+plugin/godot-bridge.mjs           # 插件入口（标准 DSH 模块，命名导出 name/inject/apply）
+plugin/task-center/               # 任务中心宿主半侧（board / service / locks / dispatch / merge / api / tool / routes / roles / harness）
 client/client.js                  # 浏览器半侧：引擎路径配置 + 任务中心面板（dsh.client）
 plugin/mcp_interaction_server.gd  # 取自 godot-mcp（MIT）——游戏内 TCP 服务器 autoload
 plugin/godot_operations.gd        # 取自 godot-mcp（MIT）——headless 操作脚本
@@ -247,8 +262,12 @@ ARCHITECTURE.md / ARCHITECTURE.zh-CN.md  # 如何取代 godot-mcp + 协议细节
 COVERAGE.md / COVERAGE.zh-CN.md   # 与 godot-mcp 的逐工具对比
 CHANGELOG.md / CHANGELOG.zh-CN.md  # 版本发布记录
 scripts/check-plugin-contract.mjs  # 静态依赖契约检查（`npm run check`）
+scripts/check-target-history.mjs   # 分支保护历史守卫（`npm run check:target`）
+scripts/setup-hooks.mjs            # 安装 pre-commit target 守卫（`npm run hooks:install`）
 scripts/diagnose-dsh-resolution.mjs  # 可重跑的 DSH 运行时解析诊断（仅开发用）
 ```
+
+任务中心会在 `<项目>/.agents/` 下写项目级运行态文件：`tasks.json`（任务板）、`roles.json`（角色 profile），以及可选的 `test-harness.json`（机器本地的 harness 路径）。它们是运行态而非源码——请加入 `.gitignore`。
 
 `mcp_interaction_server.gd`、`godot_operations.gd` 与 `validate_script.gd` 取自 [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp)（MIT，随包内置）。插件通过模块相对路径定位这些脚本（`import.meta.url`）；传显式 `ops_script` / `validate_script` 参数可覆盖。
 

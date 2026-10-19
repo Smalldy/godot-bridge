@@ -59,46 +59,96 @@ One action registry (`api.mjs`) is the single vocabulary behind the `task_center
 ### Board
 
 - **One JSON file per project**: `<project>/.agents/tasks.json`, schema v2. It is working state, not source: it is expected to be gitignored and stays readable after the plugin is uninstalled.
-- Every read validates and normalises: a future version is refused rather than downgraded; duplicate or malformed ids are refused; a v1 board migrates on read (old statuses collapse into the five, `blockedBy` becomes `dependsOn`, a stale claim is released because the process that held it is gone).
+- Every read validates and normalises: a future version is refused rather than downgraded; duplicate or malformed ids are refused; a v1 board migrates on read (its old statuses collapse into the current vocabulary, `blockedBy` becomes `dependsOn`, and a stale claim is released because the process that held it is gone).
 - Concurrency is three layers: an in-process promise chain per path, `replaceIfVersion` (FsVersion CAS) across processes, and on `FS_STALE_VERSION` a re-read that re-applies the mutation (not its previous result), up to three attempts.
 - Writes use a sandbox policy rooted at the project directory, so a board outside the session workspace is still writable.
+- `<project>/.agents/roles.json` holds the role profiles (see **Roles**) and `<project>/.agents/test-harness.json` the machine-local harness paths (see the README). Both are optional project-local runtime files.
 
-### Statuses
+### Phase machine
 
-The stored vocabulary is exactly five; the board columns are laid out from them:
+A task walks exactly one machine: `pending → running → reviewing → testing → done`, with `blocked` and `cancelled` as exits. Readiness is still derived, never stored.
 
 | status | meaning |
 | --- | --- |
-| `pending` | not dispatched. Readiness is derived from `dependsOn`, never stored: **ready** (all prerequisites done), **waiting** (a prerequisite is not done yet), **broken** (a prerequisite is missing or cancelled and needs a human). |
-| `running` | claimed by a worker, with a 60-minute lease that any assignee activity renews. |
-| `done` | finished. **There is no review or acceptance state: `submit` is completion**, and dependents are released immediately. |
-| `blocked` | needs a human: a manual block, a dead worker, or an exhausted attempt budget. |
+| `pending` | not dispatched. Readiness comes from `dependsOn`: **ready** (every prerequisite done and merged), **waiting** (a prerequisite is not done yet), **broken** (a prerequisite is missing or cancelled and needs a human). |
+| `running` | claimed by a worker, with a 60-minute lease that any assignee activity renews. `submit` leaves this phase. |
+| `reviewing` | submitted and waiting for the reviewer's verdict; the record carries the round, the actor, the diff and the reasons of a previous round. |
+| `testing` | review approved; an independent candidate exists and the tester owes a verdict. The record carries the round, the actor and the evidence. |
+| `done` | merged into the target (or manually completed by the user/merger). Dependents are released only now. |
+| `blocked` | needs a human: a manual block, a dead worker, an exhausted attempt budget, three review rounds, or a review/test timeout. |
 | `cancelled` | abandoned. |
 
-The panel renders five columns from these: ready, waiting (both `pending`), running, done, and a closed column that holds `blocked` and `cancelled`.
+`reopen` returns a closed task to `pending` and clears its lease; `retry` re-queues a blocked one. The board keeps every phase record — `review`, `test` and `merge` — so a reopened task still explains what happened before.
+
+### Review
+
+- `submit` commits the task worktree, opens a merge request (base = current target head, head = the new commit, changed files = the base..head diff) and moves the task to REVIEW in the same write.
+- The host provisions the reviewer role and sends it a **self-contained per-round brief**: what the task asked for (spec/acceptance), the tree under review (base..head, declared vs actual files), the worker evidence, the project conventions and a review checklist. The reviewer is a read-only, independent context.
+- `approveReview` (reviewer, or the user) moves the task to TESTING; `requestChanges` (with concrete reasons) returns it to RUNNING and sends the worker a rework brief that points at the same worktree and context. A worker can never review its own task.
+- The review round counter caps at **3**. A review that stays undecided past 10 minutes is reminded once and, if it is still undecided a full timeout later, the task is blocked for triage (owner and Lead are told). The sweep is driven by the host tick, so it works with dispatch paused.
+
+### Test and the candidate
+
+- `approveReview` builds the candidate **before** the phase moves: a throwaway checkout `<project>/.worktrees/test-<id>` on branch `test/<id>`, created from the current target head and merged with the task branch (`--no-ff`). A conflict or an unmergeable branch is a readable `candidate-conflict` / `candidate-failed` refusal and the task stays in REVIEW for a changes request — nothing is half-transitioned.
+- On success the task enters TESTING with the candidate recorded (path, branch, base, head) and the tester receives a self-contained brief: acceptance criteria, the candidate path and branch, the runbook (how to verify in that tree) and the evidence format. The tester is read-only on implementation and may launch the candidate's Godot project through the `godot_*` tools.
+- `passTest` records the verdict and hands the accepted candidate to the merge queue (see below). `failTest` records the evidence, discards the candidate and returns the task to RUNNING so the worker fixes it in the same worktree.
+- A test round that stays undecided is reminded at 10 minutes and blocked at 20, recording the tester, the elapsed time and the candidate state.
+
+### Merge queue and auto-merge
+
+- One **serialised** merge queue owns every integration. A five-second host sweep enqueues every task that is in TESTING with a passed test and an open request; the same path serves the manual `mergeRequest`. Nothing merges outside that queue.
+- Merging is **idempotent**: the queue holds one in-flight merge per task, refuses a task whose request is already merged, re-reads the board inside the queue turn, and refuses to rebuild a candidate for a task that is no longer testing. A duplicated sweep, a duplicated request or a host restart cannot double-merge.
+- The accepted candidate is integrated in a throwaway `merge-<id>` worktree. The merge only proceeds while the target still points at the base the candidate was built from; a moved target invalidates the verdict — the old candidate is discarded, a new one is built from the current head, the test round restarts and the tester is asked to retest. A conflict is recorded readably and the target branch is never touched.
+- A merged task turns DONE, its task worktree and test candidate are removed, and dependents are released. `mergeRequest` / `rejectMerge` / `refreshMerge` stay available to the user or the `merger` teammate for manual integration, audit or repair; no other agent may merge.
+
+### Timeouts and the host watchdog
+
+- **Review**: reminder after 10 minutes, block after another full timeout.
+- **Test**: reminder at 10 minutes, block at 20.
+- **Round cap**: three review rounds without approval block the task.
+- **Host actions**: every async host action (candidate build, candidate merge, merge request, role provisioning, notification) is bounded at **2 minutes**. A stuck action answers `queue-timeout` / `action-timeout`, and the deadline also guards the write: an abandoned unit that settles late can no longer record anything.
+- All of these are driven by the host tick, never by a model action, so a silent agent cannot strand a task.
 
 ### Dependencies and dispatch
 
-- `B.dependsOn = [A]` means A must be `done` before B is dispatched. The graph is validated on write (no self-dependency, no unknown or cancelled prerequisite, no cycle); deleting a task another live task depends on is refused unless forced.
-- Dispatch is project-level: `start` / `pause` is persisted in `board.dispatch`. A pass reaps claims left by a previous host process, then settles lapsed leases by **liveness** (extend while the holder is alive, hand over when it is gone) even while dispatch is paused, and finally hands ready tasks to workers while fewer than `maxConcurrent` tasks are running.
+- `B.dependsOn = [A]` means A must be `done` (and merged, when it has a merge request) before B is dispatched. The graph is validated on write (no self-dependency, no unknown or cancelled prerequisite, no cycle); deleting a task another live task depends on is refused unless forced.
+- Dispatch is project-level: `start` / `pause` is persisted in `board.dispatch`. A pass reaps claims left by a previous host process, then settles lapsed leases by **liveness** even while dispatch is paused, then hands ready tasks to workers while fewer than `maxConcurrent` tasks are running.
 - Ready tasks are ordered `priority` descending, then `createdAt` ascending, then id.
 - Every dispatch **claims the task before anything leaves the process**: the claim is the mutex and only `claimTask` produces `running`. It then calls `sendMessage` to an idle teammate, or `spawnTeammate` for a new one. The attempt counter increments exactly at claim; after the attempt budget (default 3) the task becomes `blocked` instead of retrying forever.
-- A running task holds a **60-minute lease**. Every `task_center` call by the assignee renews it **unconditionally** (there is no "half spent" gate) and a host heartbeat in every pass renews it on a fixed five-minute cadence, so a long tool run cannot lose its claim.
-- A lapsed lease is judged by **liveness**, not by the clock: while the assignee session still exists the host extends the lease (bounded by a four-hour per-attempt hard cap) and records a `lease-extended` event — **a live holder is never replaced**. When the session is gone or failed, or the cap is reached, the task is handed over: the old agent is interrupted, the task returns to `pending` (or `blocked` once the budget is gone), and the next attempt **adopts the previous attempt's worktree and branch** when it left a commit instead of restarting from the target. A host restart reaps its claims on the next pass.
+- Passes are serialised (never overlapping) and triggered by `start`, every board write, `agent/status` events, and a five-second timer.
+
+### Leases and liveness
+
+- A running task holds a **60-minute lease**. Every `task_center` call by the assignee renews it **unconditionally** — there is no "half spent" gate — and a host heartbeat in every pass renews it on a fixed five-minute cadence, so a long tool run cannot lose its claim.
+- A lapsed lease is judged by **liveness**, not by the clock: while the assignee session still exists the host extends the lease (bounded by a four-hour per-attempt hard cap) and records a `lease-extended` event — **a live holder is never replaced**. When the session is gone or failed, or the cap is reached, the task is handed over: the old agent is interrupted, the task returns to `pending` (or `blocked` once the budget is gone), and the next attempt **adopts the previous attempt's worktree and branch** when it left a commit instead of restarting from the target.
 - One task has at most one live agent: a requeued task is not dispatched while its previous holder is still alive (only a liveness-capped handover may proceed, because that holder was told to stop).
+- The board exposes `leaseRemaining` / `leaseReminder` and records `lease-handover` / `attempt-adopt` events. A host restart reaps its claims on the next pass.
 - WorkAgents are Agent Teams **teammates under the one resolved Team Lead**. The scheduler reuses an idle teammate (`status: inactive`) first and only spawns when none is idle, within `maxWorkAgents`.
-- Passes are serialised (never overlapping) and are triggered by `start`, every board write, `agent/status` events, and a five-second timer.
 
-### Consent
+### Worktree creation and robustness
 
-- When an **agent** calls `start`, it does not start the scheduler: the call writes `dispatch.request` and returns `needs-consent`, asking the user to approve it.
-- The panel shows the request as a banner. Only the user's `approveStart` runs dispatch and clears the request in the same write; `rejectStart` (or the agent's `cancelStartRequest`) clears the request without starting anything.
-- `approveStart`, `rejectStart` and `settings` are user-only: the tool enum omits them and the API refuses them for an agent even if called directly. `pause` is immediate for either side.
+- A task checkout lives at `<project>/.worktrees/<taskId>-<attempt>` on branch `task/<taskId>-<attempt>`. The execution model requires it: dispatch refuses to start when the project cannot host a worktree, and a claim-time failure releases the task's locks, pauses dispatch and records why.
+- Every `git worktree add` has its **own 180-second timeout** instead of sharing the general git/send budget. A timeout or a failed add **rolls back** everything it may have registered — the worktree entry, the half-created branch, the lock file and the pruned metadata — then retries **once**.
+- Creation is **serialised per repository**, so two tasks (or a task and a candidate build) cannot race the same worktree metadata. If the retry also fails, the failure is reported readably instead of leaving a half-registered checkout that would break every later dispatch.
+
+### Roles
+
+- Three fixed kinds, each owning one workflow stage: `worker` → `implement`, `reviewer` → `review`, `tester` → `test`. A role instance is a real Agent Teams teammate slot (`worker-1`, `reviewer-2`, …) under the resolved Lead; the host provisions a missing stage role and replaces a dead or timed-out one (a five-minute provisioning timeout).
+- Profiles live in `<project>/.agents/roles.json` (version 1). The built-in `worker` / `reviewer` / `tester` profiles always exist; custom profiles add a name, one of the three kinds, the kind's stage, 1–8 instances, allowed permissions (`read-only`, `implement`, `review`, `test`, `merge`, `admin`), a `fresh` or `fork` context, the skills to load and a prompt template. Stage bindings map each stage to a profile that owns it; a malformed or stale binding falls back to the kind's own profile.
+- A profile prompt is a **template**: it may inject `{{TASK_ID}}`, `{{TASK_TITLE}}`, `{{SPEC}}`, `{{COMPLETIONS_DEF}}`, `{{GIT_INFO}}`, `{{PROJECT}}`, `{{LEAD}}`, `{{ROLE}}` and `{{STAGE}}`. `validateRoleProfile` refuses any other `{{NAME}}` with `invalid-role-variable` and the allowed list; an empty template is legal. The brief composes, in order: the host header (role, stage, project, Lead, permissions, fork note) → the rendered template → the task data → the host-fixed duties / permission boundary / verdict schema → the skills injection. A template can add to the brief but never rewrite the fixed parts.
+- Reviewer and tester are read-only independent contexts (their brief says so and their verdict schema is the only task action they may call); a worker must never review or test its own task. The verdict gate lives in the API: only a reviewer (or the user) may `approveReview` / `requestChanges`, only a tester (or the user) may `passTest` / `failTest`.
+- Role administration is **user-only**: `rolesList` / `rolesCreate` / `rolesUpdate` / `rolesDelete` / `rolesBind` / `rolesDrain` / `rolesReplace` / `rolesReset` and the read-only `skillsCatalog` are hidden from the tool enum and refused for agents. `rolesDrain` stops scheduling an instance and `rolesReplace` waits for it to go idle before spawning its replacement, reporting `waited` / `timedOut` / `drained` / `created` / `replaced` / `reused`.
 
 ### Settings
 
 - The GUI exposes one number: **maximum concurrency** (`maxConcurrent`, 1–8; default 3). Setting it derives the rest — the WorkAgent cap becomes concurrency + 1 (clamped to 1–12; default 4), spawning is enabled, and the retry budget is set to 3 — so the user does not have to reason about several capacity knobs.
 - The advanced `settings` action (user-only) can still set `maxWorkAgents`, `allowSpawn` and `maxAttempts` explicitly; the GUI does not expose those fields.
+
+### Consent
+
+- When an **agent** calls `start`, it does not start the scheduler: the call writes `dispatch.request` and returns `needs-consent`, asking the user to approve it.
+- The panel shows the request as a banner. Only the user's `approveStart` runs dispatch and clears the request in the same write; `rejectStart` (or the agent's `cancelStartRequest`) clears the request without starting anything.
+- `approveStart`, `rejectStart`, `settings` and every role action are user-only: the tool enum omits them and the API refuses them for an agent even if called directly. `pause` is immediate for either side.
 
 ### File locks
 
@@ -118,17 +168,24 @@ The task center is the only way work reaches the protected target branch (`feat/
 
 Anything else is reported with its hash and subject and the check exits non-zero. History before the recorded `LEGACY_UP_TO` commit predates the policy — it is reported as skipped, never rewritten, and the guard protects every commit after it. A missing target ref (shallow CI checkout) is reported and skipped instead of failing.
 
-**Emergency hotfix process.** An out-of-band fix may reach the target with `TASK_CENTER_MERGE=1`; doing so requires all three of: a retro task card covering the fix (with a regression test), a CHANGELOG entry naming the commits, and an `EMERGENCY_EXCEPTIONS` entry with the reason and card ids. The two merge-queue hotfixes are recorded that way: `1695506` (the merge) and `2c895b4` (the fix — idempotent candidate merging and bounded git subprocesses), covered retroactively by T-30's regression tests and the bounded-action work that T-38's lease/tick handling relies on.
+**Emergency hotfix process.** An out-of-band fix may reach the target with `TASK_CENTER_MERGE=1`; doing so requires all three of: a retro task card covering the fix (with a regression test), a CHANGELOG entry naming the commits, and an `EMERGENCY_EXCEPTIONS` entry with the reason and card ids. The two merge-queue hotfixes are recorded that way: `1695506` (the merge) and `2c895b4` (the fix — idempotent candidate merging and bounded git subprocesses), covered retroactively by T-30's regression tests and the bounded host-action path the watchdog enforces.
 
 **Local hook.** `node scripts/setup-hooks.mjs` writes `.githooks/pre-commit` and sets `core.hooksPath=.githooks`, so a direct commit on the target is refused with a pointer at the task center; `TASK_CENTER_MERGE=1` is the explicit bypass, and a detached HEAD is not attributed to the target. The hook only reads the current branch, so it never interferes with task branches or with the host's merge flow.
 
 **Known limitations.** The guard recognises merge subjects of the `Merge branch '<branch>' ...` and `Merge <branch>: ...` form the task center writes; a hosting-provider wording (for example `Merge pull request #N from ...`) would not identify the side branch, so such a merge shows up as untraceable commits and needs an exception until the parser learns the wording. A missing target ref (shallow CI checkout) is reported and skipped rather than failed, so a CI job should keep or fetch the target ref and treat a skip as a signal that protection was not exercised. `npm run hooks:install` writes `.githooks/` inside the repository while that directory stays untracked by design: add it to `.gitignore`, or commit it if the team wants the hook shared.
+
+### Isolated DSH harness
+
+The tester (or the user) can drive a disposable DSH instance through `harnessStart` / `harnessStatus` / `harnessSmoke` / `harnessRestart` / `harnessStop`. It gets its own `DSH_HOME`, profile, free port and project copy, installs the candidate plugin there and proves the page, health, plugin row and task-center routes answer — never touching the production profile, session or port. A version mismatch (or an unverifiable version) fails the smoke; an unreachable instance reports `health-timeout` with the last health state and log tail. Configuration and the real smoke transcript are in the README.
 
 ### Boundaries
 
 - **One project at a time.** The shared state keeps a single project hint; the scheduler follows the board that was last touched, and switching projects goes through `openProject` (which verifies the directory). Parallel dispatch across several projects is not implemented.
 - **One Team / Lead at a time.** Dispatch resolves the first live Team Lead and hands work only to that team's WorkAgents. There is no per-project team and no multi-team fan-out; without the Agent Teams services, tasks stay `pending` with an explicit `no-lead` / `no-team-service` reason instead of failing the plugin.
 - The board and the panel do not depend on a Team; only actual dispatch does.
+- **No session-jump API.** The status view can copy a session id, but opening that session remains a manual step in the Team list.
+- **Godot launch channel.** A role that needs the game (typically the tester) must use the `godot_*` tools; launching Godot through a shell tool crashes it under the file sandbox (see above).
+- **A moved target invalidates a verdict by design.** The host rebuilds the candidate and restarts the test round rather than merging a tree that no longer matches what was tested.
 
 ## Dependency contract and runtime resolution
 
