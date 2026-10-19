@@ -122,6 +122,8 @@ Anything else is reported with its hash and subject and the check exits non-zero
 
 **Local hook.** `node scripts/setup-hooks.mjs` writes `.githooks/pre-commit` and sets `core.hooksPath=.githooks`, so a direct commit on the target is refused with a pointer at the task center; `TASK_CENTER_MERGE=1` is the explicit bypass, and a detached HEAD is not attributed to the target. The hook only reads the current branch, so it never interferes with task branches or with the host's merge flow.
 
+**Known limitations.** The guard recognises merge subjects of the `Merge branch '<branch>' ...` and `Merge <branch>: ...` form the task center writes; a hosting-provider wording (for example `Merge pull request #N from ...`) would not identify the side branch, so such a merge shows up as untraceable commits and needs an exception until the parser learns the wording. A missing target ref (shallow CI checkout) is reported and skipped rather than failed, so a CI job should keep or fetch the target ref and treat a skip as a signal that protection was not exercised. `npm run hooks:install` writes `.githooks/` inside the repository while that directory stays untracked by design: add it to `.gitignore`, or commit it if the team wants the hook shared.
+
 ### Boundaries
 
 - **One project at a time.** The shared state keeps a single project hint; the scheduler follows the board that was last touched, and switching projects goes through `openProject` (which verifies the directory). Parallel dispatch across several projects is not implemented.

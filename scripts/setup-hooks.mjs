@@ -17,6 +17,7 @@
  */
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { DEFAULT_TARGET, runGit } from './check-target-history.mjs'
 
 export const HOOK_DIRECTORY = '.githooks'
@@ -112,7 +113,11 @@ export function main(argv = process.argv.slice(2)) {
   return 0
 }
 
-const invokedDirectly = process.argv[1] !== undefined && import.meta.url === new URL('file:///' + process.argv[1].replace(/\\/g, '/')).href
+// The same entry-point test the other scripts in this directory use: pathToFileURL
+// keeps the slash count right on POSIX *and* Windows. Hand-building
+// 'file:///' + argv[1] produced four slashes on POSIX (file:////home/...), so the
+// CLI silently did nothing there: no hook file, no core.hooksPath, exit 0.
+const invokedDirectly = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
 if (invokedDirectly) {
   process.exit(main())
 }

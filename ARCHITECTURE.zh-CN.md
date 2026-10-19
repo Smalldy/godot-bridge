@@ -122,6 +122,8 @@ godot-bridge 走 harness 的**原始 `subprocess` 服务**——shell 执行器�
 
 **本地钩子**：`node scripts/setup-hooks.mjs` 写入 `.githooks/pre-commit` 并设置 `core.hooksPath=.githooks`，在 target 上直接提交会被拒绝并指向任务中心；`TASK_CENTER_MERGE=1` 是显式绕过，detached HEAD 不会被归到 target。钩子只读当前分支，因此不影响 task 分支，也不影响宿主的合并流程。
 
+**已知限制**：守卫识别的是任务中心写入的 `Merge branch '<分支>' …` 与 `Merge <分支>: …` 两种合并文案；托管平台自己的措辞（例如 `Merge pull request #N from …`）无法识别侧分支，这类合并会表现为不可追溯 commit，需要先登记例外，直到解析器支持该文案。target ref 缺失（浅克隆 CI）只会报告并跳过、不会失败，因此 CI 应保留或先 fetch target ref，并把“跳过”视为本次保护未被真正执行的信号。`npm run hooks:install` 会在仓库内写入 `.githooks/`，该目录按设计不入库：请把它加入 `.gitignore`，或团队希望共享钩子时直接提交它。
+
 ### 边界
 
 - **同一时刻只处理一个项目。** 共享状态只保留一个项目 hint；调度器跟随最近被写入的任务板，切换项目要走 `openProject`（会校验目录确实存在）。跨多个项目并行派发尚未实现。

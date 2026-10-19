@@ -1,7 +1,8 @@
 // Target-branch history guard: traceable vs untraceable fixtures, the board as a
 // second source, explicit emergency exceptions, the legacy cut-off, and the hook.
 
-import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,6 +48,26 @@ function rootOf(directory) {
 function mergeInto(directory, branch, message) {
   runGit(directory, IDENTITY.concat(['merge', '--no-ff', '-q', '-m', message, branch]))
 }
+/** Run node with file-backed stdio (pipes are unavailable in confined sandboxes). */
+function captureNode(args) {
+  const directory = mkdtempSync(join(tmpdir(), 't40-node-'))
+  const output = join(directory, 'out.txt')
+  let fd
+  try {
+    fd = openSync(output, 'w')
+    try {
+      execFileSync(process.execPath, args, { stdio: ['ignore', fd, fd] })
+      return { ok: true, text: readFileSync(output, 'utf8') }
+    } catch (error) {
+      return { ok: false, text: readFileSync(output, 'utf8') }
+    } finally {
+      closeSync(fd)
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
 function captureConsole(run) {
   const logs = []
   const errors = []
@@ -207,6 +228,35 @@ function captureConsole(run) {
     'and the policy refuses a commit there while allowing the bypass',
     hookDecision({ branch: protectedBranch, target: 'feat/task-center-v2' }).blocked === true &&
       hookDecision({ branch: protectedBranch, target: 'feat/task-center-v2', merge: true }).blocked === false,
+  )
+}
+
+// ── the CLI entry points must actually run ─────────────────────────────────
+// These spawn node itself (not git). setup-hooks.mjs once compared a hand-built
+// "file:///" URL against import.meta.url, which is equal only on Windows: on
+// Linux/macOS `node scripts/setup-hooks.mjs` exited 0 having written nothing.
+{
+  const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  const script = join(repository, 'scripts', 'setup-hooks.mjs')
+  const dry = captureNode([script, '--dry-run'])
+  check(
+    'the setup-hooks CLI runs on this platform and prints the hook',
+    dry.ok === true && dry.text.indexOf('#!/bin/sh') >= 0 && dry.text.indexOf('TASK_CENTER_MERGE') >= 0 && dry.text.indexOf('exit 1') >= 0,
+    JSON.stringify(dry.text.slice(0, 160)),
+  )
+  const directory = fixtureRepo()
+  const install = captureNode([script, '--target', 'feat/task-center-v2', '--cwd', directory])
+  check(
+    'the CLI really installs the hook into --cwd',
+    install.ok === true && install.text.indexOf('installed') >= 0 && existsSync(join(directory, '.githooks', 'pre-commit')) && runGit(directory, ['config', 'core.hooksPath']) === '.githooks',
+    JSON.stringify(install.text.slice(0, 200)),
+  )
+  const guard = join(repository, 'scripts', 'check-target-history.mjs')
+  const targetDry = captureNode([guard, '--cwd', directory, '--target', 'main', '--legacy', rootOf(directory)])
+  check(
+    'the check-target-history CLI also runs through its entry point',
+    targetDry.ok === true && targetDry.text.indexOf('target history traceable') >= 0,
+    JSON.stringify(targetDry.text.slice(0, 200)),
   )
 }
 
