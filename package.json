@@ -28,7 +28,9 @@
     "ai-agent"
   ],
   "scripts": {
-    "check": "node scripts/check-plugin-contract.mjs",
+    "check": "node scripts/check-plugin-contract.mjs && node scripts/check-target-history.mjs",
+    "check:target": "node scripts/check-target-history.mjs",
+    "hooks:install": "node scripts/setup-hooks.mjs",
     "test": "node scripts/test/run.mjs",
     "verify": "npm run check && npm test"
   },

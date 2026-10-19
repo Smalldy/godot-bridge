@@ -108,6 +108,22 @@ godot-bridge 走 harness 的**原始 `subprocess` 服务**——shell 执行器�
 - 任务到达 `done`、`blocked`、`cancelled` 时释放其锁，租约交接时也释放；派发失败与宿主重启回收同样会释放。agent 可为自己的运行任务 `lock` 追加文件；这些锁带同一个任务 id，随任务一起释放。
 - 锁租约同样是 60 分钟，与任务租约由同一次心跳（以及宿主 tick）续期。
 
+### 分支保护
+
+任务中心是工作进入 target 分支（`feat/task-center-v2`）的唯一通道。`scripts/check-target-history.mjs`（`npm run check:target`，也已接入 `npm run check`）会遍历 target 历史，为每个**非 merge** commit 给出三种来源之一的解释：
+
+1. `task/<id>-<n>`、`test/<id>` 或 `merge/<id>` 分支的合并记录——该 commit 来自这次合并的侧分支；
+2. `<项目>/.agents/tasks.json` 中 `done` **且**已合并的任务，其记录的 commit（或 merge head）就是该 commit；
+3. 脚本里声明的**紧急例外**（`EMERGENCY_EXCEPTIONS`），必须写明原因与事后追溯的任务卡。
+
+其余 commit 会连同 hash 与 subject 一起报错并非零退出。`LEGACY_UP_TO` 之前的历史早于本策略，只报告为跳过、绝不改写；守卫保护它之后的每一个 commit。target ref 缺失（浅克隆 CI）只报告并跳过，不会让检查失败。
+
+**紧急 hotfix 流程**：允许用 `TASK_CENTER_MERGE=1` 把线上修复直接落到 target，但必须同时满足三条——补一张覆盖该修复（含回归测试）的追溯任务卡、在 CHANGELOG 写明涉及的 commit、在 `EMERGENCY_EXCEPTIONS` 中登记原因与任务卡号。两次 merge-queue hotfix 就是这样记录的：`1695506`（合并）与 `2c895b4`（修复——候选合并幂等 + 限制 git 子进程），由 T-30 的回归测试与 T-38 租约/心跳所依赖的有界动作机制追溯覆盖。
+
+**本地钩子**：`node scripts/setup-hooks.mjs` 写入 `.githooks/pre-commit` 并设置 `core.hooksPath=.githooks`，在 target 上直接提交会被拒绝并指向任务中心；`TASK_CENTER_MERGE=1` 是显式绕过，detached HEAD 不会被归到 target。钩子只读当前分支，因此不影响 task 分支，也不影响宿主的合并流程。
+
+**已知限制**：守卫识别的是任务中心写入的 `Merge branch '<分支>' …` 与 `Merge <分支>: …` 两种合并文案；托管平台自己的措辞（例如 `Merge pull request #N from …`）无法识别侧分支，这类合并会表现为不可追溯 commit，需要先登记例外，直到解析器支持该文案。target ref 缺失（浅克隆 CI）只会报告并跳过、不会失败，因此 CI 应保留或先 fetch target ref，并把“跳过”视为本次保护未被真正执行的信号。`npm run hooks:install` 会在仓库内写入 `.githooks/`，该目录按设计不入库：请把它加入 `.gitignore`，或团队希望共享钩子时直接提交它。
+
 ### 边界
 
 - **同一时刻只处理一个项目。** 共享状态只保留一个项目 hint；调度器跟随最近被写入的任务板，切换项目要走 `openProject`（会校验目录确实存在）。跨多个项目并行派发尚未实现。

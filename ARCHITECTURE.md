@@ -108,6 +108,22 @@ The panel renders five columns from these: ready, waiting (both `pending`), runn
 - A task's locks are released when it reaches `done`, `blocked` or `cancelled`, and when its lease is handed over; a failed dispatch and a host-restart reap release them too. An agent may `lock` extra files for its running task; those carry the same task id and are released with it.
 - Lock leases are also 60 minutes, renewed by the same heartbeat (and host tick) that renews the task.
 
+### Branch protection
+
+The task center is the only way work reaches the protected target branch (`feat/task-center-v2`). `scripts/check-target-history.mjs` (`npm run check:target`, also part of `npm run check`) walks the target history and explains every **non-merge** commit by one of three sources:
+
+1. a merge of a `task/<id>-<n>`, `test/<id>` or `merge/<id>` branch — the commit arrived on the side of that merge;
+2. a task in `<project>/.agents/tasks.json` that is `done` **and** merged, whose recorded commit (or merge head) is that commit;
+3. an **emergency exception** declared in the script (`EMERGENCY_EXCEPTIONS`), which must name the reason and the task cards that retro-cover it.
+
+Anything else is reported with its hash and subject and the check exits non-zero. History before the recorded `LEGACY_UP_TO` commit predates the policy — it is reported as skipped, never rewritten, and the guard protects every commit after it. A missing target ref (shallow CI checkout) is reported and skipped instead of failing.
+
+**Emergency hotfix process.** An out-of-band fix may reach the target with `TASK_CENTER_MERGE=1`; doing so requires all three of: a retro task card covering the fix (with a regression test), a CHANGELOG entry naming the commits, and an `EMERGENCY_EXCEPTIONS` entry with the reason and card ids. The two merge-queue hotfixes are recorded that way: `1695506` (the merge) and `2c895b4` (the fix — idempotent candidate merging and bounded git subprocesses), covered retroactively by T-30's regression tests and the bounded-action work that T-38's lease/tick handling relies on.
+
+**Local hook.** `node scripts/setup-hooks.mjs` writes `.githooks/pre-commit` and sets `core.hooksPath=.githooks`, so a direct commit on the target is refused with a pointer at the task center; `TASK_CENTER_MERGE=1` is the explicit bypass, and a detached HEAD is not attributed to the target. The hook only reads the current branch, so it never interferes with task branches or with the host's merge flow.
+
+**Known limitations.** The guard recognises merge subjects of the `Merge branch '<branch>' ...` and `Merge <branch>: ...` form the task center writes; a hosting-provider wording (for example `Merge pull request #N from ...`) would not identify the side branch, so such a merge shows up as untraceable commits and needs an exception until the parser learns the wording. A missing target ref (shallow CI checkout) is reported and skipped rather than failed, so a CI job should keep or fetch the target ref and treat a skip as a signal that protection was not exercised. `npm run hooks:install` writes `.githooks/` inside the repository while that directory stays untracked by design: add it to `.gitignore`, or commit it if the team wants the hook shared.
+
 ### Boundaries
 
 - **One project at a time.** The shared state keeps a single project hint; the scheduler follows the board that was last touched, and switching projects goes through `openProject` (which verifies the directory). Parallel dispatch across several projects is not implemented.
