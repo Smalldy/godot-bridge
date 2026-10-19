@@ -21,6 +21,7 @@
 - 板子 schema 升到 v2。读到 v1 会自动迁移；未来版本会被拒绝而不是降级。任务 id 由构造保证唯一，`seq` 不会与已有 id 冲突，历史长度有上限。
 - 浏览器半侧不再包含 mock store：只拉取宿主快照、发送一个动作、渲染宿主返回，因此宿主故障不会再以编造的任务呈现给用户。
 - **租约 liveness 与单任务单 agent**：assignee 的任何活动都会无条件续租 60 分钟租约，宿主心跳按固定节奏续租，长时间工具运行不再丢 claim。失效租约按 liveness 处理——holder 仍活着就保住任务（单次尝试 4 小时硬上限），已消失/failed 的先中断再交接——因此同一任务绝不会有两个活跃 agent。交接时若上一尝试留有 commit，下一次尝试会 adopt 其 worktree/branch，而不是从 target 重做；看板暴露 `leaseRemaining`/`leaseReminder`，并记录 `lease-extended`/`lease-handover`/`attempt-adopt` 事件。
+- **分支保护与 hotfix 追溯**：`scripts/check-target-history.mjs`（`npm run check:target`，已接入 `npm run check`）会拒绝这样的 target 历史——其中存在既不能由 `task/`/`test/`/`merge/` 合并解释、也不在板子中 done+merged、更不是已声明紧急例外的非 merge commit；`scripts/setup-hooks.mjs` 安装 `pre-commit` 钩子，禁止在 target 上直接提交，除非设置 `TASK_CENTER_MERGE=1`。两次 merge-queue hotfix 以紧急例外记录：`1695506`（合并）与 `2c895b4`（候选合并幂等 + 限制 git 子进程），由 T-30 的回归测试与 T-38 租约/心跳依赖的有界动作路径追溯覆盖。
 - 派发设置弹窗只暴露一个值：最大并发。执行者上限自动按并发 + 1 推导，自动新建开启，重试上限保持内部默认 3；工具/HTTP 的 `settings` 仍可覆盖这些高级参数。
 - 派发在发出任何东西之前先 claim，记录投递结果，并在达到尝试上限后把任务置为阻塞，而不是无限重试。
 - 初版看板只有五列，没有验收状态：`submit` 即完成，`accept`、`reject`、`requiresReview` 已移除；旧板子里的 `review` 任务会迁移为 `done`。
