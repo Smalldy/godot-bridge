@@ -6,7 +6,7 @@
 
 ```
 plugin/godot-bridge.mjs           # 插件的工具行（标准 DSH 模块：命名导出 name/inject/apply）
-plugin/task-center/*.mjs          # 任务中心 host 半侧（board、schema、service、dispatch、api、git、roles、harness）
+plugin/task-center/*.mjs          # 任务中心 host 半侧（任务板、派发、合并队列、API 路由与工具）
 client/client.js                  # 浏览器半侧：引擎路径配置页 + 任务中心面板（同一个 dsh.client bundle）
 plugin/mcp_interaction_server.gd  # 取自 godot-mcp（MIT）——游戏内 TCP 服务器 autoload
 plugin/godot_operations.gd        # 取自 godot-mcp（MIT）——headless 操作脚本
@@ -37,14 +37,14 @@ dsh plugin --profile web add github:Smalldy/godot-bridge
 
 ```sh
 dsh plugin --profile web add ./path/to/godot-bridge     # 本地 checkout
-dsh plugin --profile web add ./godot-bridge-0.2.0.tgz   # pnpm pack 产物
+dsh plugin --profile web add ./godot-bridge-0.3.0.tgz   # pnpm pack 产物
 ```
 
 ### 本地开发（`link:`）
 
 `link:` 依赖（`"godot-bridge": "link:/path/to/godot-bridge"`，即把本地 checkout 加进 profile 时 pnpm 写下的形式）会把 profile 的 `node_modules/godot-bridge` 变成指向你工作副本的符号链接，因此改代码无需重装即可生效：浏览器半侧（`client/client.js`）由宿主按产物文件轮询在约一秒内热换，插件 host 半侧在重载 profile 时重新 import。唯一的例外是 `package.json`——见下一条。它同时也是 launcher 的 runtime resolution 唯一无法自动路由的安装形态：插件真实路径在 profiles 树之外，而 *linked root* 只有在插件 `peerDependencies` 里声明了该包名时才会拿到 harness 包。这次正是为此补上声明——没有它，整个 bundle 会 import 失败（`ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-tools' imported from …godot-bridge.mjs`），17 个 `godot_*` 工具（以及 `task_center`）一个都注册不上。
 
-- 不需要「改完即生效」时，优先用非符号链接安装：`pnpm pack` 后 `dsh plugin --profile web add ./godot-bridge-0.2.0.tgz`（每次改动后重装）。
+- 不需要「改完即生效」时，优先用非符号链接安装：`pnpm pack` 后 `dsh plugin --profile web add ./godot-bridge-0.3.0.tgz`（每次改动后重装）。
 - 改完插件的 host 半侧后，重新加载 profile（插件页）或重启 DSH，确认 17 个 `godot_*` 工具与任务中心面板都在。改完 `package.json`（`dsh.client` 声明、`exports`、`files`）则**必须重启 DSH**：客户端模块扫描对每个 Loader 行只读一次该包的 manifest，并缓存到宿主重启为止，重载 profile 不够。`npm run check` 守护依赖契约，`scripts/diagnose-dsh-resolution.mjs` 会报告 launcher 实际路由了什么——见 [README → DSH 0.2+ 兼容性与故障排查](README.zh-CN.md#dsh-02-兼容性与故障排查)。
 
 ## 移除
