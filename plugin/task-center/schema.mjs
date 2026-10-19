@@ -32,9 +32,17 @@ export const STATUSES = ['pending', 'running', 'reviewing', 'testing', 'done', '
 export const CLOSED_STATUSES = ['done', 'cancelled']
 
 /** How long a claimed task stays owned by a worker before the scheduler may
- * take it back. Any tool call by the assignee renews it, so this bounds a dead
- * or silent worker, not a slow one. */
-export const TASK_LEASE_MS = 15 * 60 * 1000
+ * take it back. Any activity by the assignee renews it UNCONDITIONALLY (no
+ * "half spent" gate), so this bounds a worker that vanished, not one that is
+ * busy in a long tool run. */
+export const TASK_LEASE_MS = 60 * 60 * 1000
+
+/** The host's own renewal cadence for a running task. The scheduler extends a
+ * lease once it is inside this window of lapsing — a FIXED interval, never "half
+ * the lease" — so a task stays claimed through a long silent stretch. A lease
+ * that already lapsed is never revived: telling a busy worker from a dead one is
+ * a liveness check, which this stopgap deliberately does not do. */
+export const TASK_HEARTBEAT_MS = 5 * 60 * 1000
 
 /** Worktree layout. A task checkout may only live inside the project, exactly
  * like a lock path; `root` is INTERNAL configuration, not a toggle. Worktrees

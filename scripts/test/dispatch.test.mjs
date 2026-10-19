@@ -22,7 +22,7 @@ import {
   roleTemplateValuesFor,
   workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
-import { ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
+import { ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, createFakeGit, seedBoard, PROJECT } from './support/fixtures.mjs'
@@ -257,6 +257,79 @@ async function submitAndMerge(rig, id, evidence) {
   check('an expired lease returns the task to pending', byId(snap, A).status === 'pending', JSON.stringify(ids(snap)))
   check('and the expiry is visible', byId(snap, A).dispatch.status === 'lease-expired', JSON.stringify(byId(snap, A).dispatch))
   check('and no file lock is left behind', snap.locks.length === 0, JSON.stringify(snap.locks))
+  rig.scheduler.dispose()
+}
+
+// ── lease mitigation: activity renews unconditionally, the host heartbeat
+// keeps a lease that is still valid alive without any tool call ────────────
+{
+  let clock = 1_700_000_000_000
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' }, now: () => clock })
+  const A = (await createTask(rig, { title: 'long run', writeFiles: ['scripts/a.gd'] })).id
+  await rig.action('start')
+  await rig.settle()
+  let snap = await snapshot(rig)
+  const claimed = byId(snap, A)
+  check(
+    'a claimed task gets the full 60 minute lease',
+    claimed.status === 'running' && Date.parse(claimed.leaseUntil) === clock + TASK_LEASE_MS,
+    JSON.stringify({ leaseUntil: claimed.leaseUntil, clock: clock }),
+  )
+  const owner = { name: claimed.assignee.name, session: claimed.assignee.session }
+  const asAssignee = { projectPath: rig.project, by: owner.name, role: 'agent', agent: { id: owner.session } }
+
+  // Past the OLD 15 minute bound, one activity call renews with no "half spent"
+  // gate at all.
+  clock += 16 * 60 * 1000
+  const read = await rig.api.perform('get', { id: A }, asAssignee)
+  check(
+    'activity past the old 15 minute bound renews the lease unconditionally',
+    read.ok === true && Date.parse(read.task.leaseUntil) === clock + TASK_LEASE_MS,
+    JSON.stringify({ leaseUntil: read.task.leaseUntil, clock: clock }),
+  )
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('the task is still running after a settle sixteen minutes in', byId(snap, A).status === 'running', JSON.stringify(ids(snap)))
+  check('and its file lock is still held sixteen minutes in', snap.locks.some((lock) => lock.taskId === A), JSON.stringify(snap.locks))
+
+  // The host heartbeat: NO tool call at all, but the scheduler extends the lease
+  // once it is inside the fixed window.
+  clock = Date.parse(byId(snap, A).leaseUntil) - TASK_HEARTBEAT_MS + 1000
+  await rig.settle()
+  snap = await snapshot(rig)
+  const hostRenewed = byId(snap, A)
+  check(
+    'the host tick renews a valid lease with no tool call at all',
+    hostRenewed.status === 'running' && Date.parse(hostRenewed.leaseUntil) === clock + TASK_LEASE_MS,
+    JSON.stringify({ leaseUntil: hostRenewed.leaseUntil, clock: clock }),
+  )
+  check(
+    'the host tick renews the file lock together with the lease',
+    snap.locks.some((lock) => lock.taskId === A && Date.parse(lock.leaseUntil) === clock + TASK_LEASE_MS),
+    JSON.stringify(snap.locks),
+  )
+
+  // Leaving running releases the lease: a submit must not carry one into review.
+  const B = (await createTask(rig, { title: 'submitted run' })).id
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('a second task is claimed with a lease of its own', byId(snap, B).status === 'running' && byId(snap, B).leaseUntil !== null, JSON.stringify(byId(snap, B).leaseUntil))
+  const submitted = await submitAsUser(rig, B, 'done')
+  check('submit releases the lease of the task it moves out of running', submitted.ok === true && submitted.task.leaseUntil === null, JSON.stringify(submitted.task && submitted.task.leaseUntil))
+
+  // A lease that already lapsed is never revived by the heartbeat: only a
+  // liveness check (T-37) could tell a dead worker from a silent one. Dispatch is
+  // paused first so the reap is observed instead of an immediate re-dispatch.
+  await rig.action('pause')
+  clock = Date.parse(hostRenewed.leaseUntil) + 1
+  await rig.settle()
+  snap = await snapshot(rig)
+  check(
+    'a lapsed lease is reaped, never revived by the host heartbeat',
+    byId(snap, A).status === 'pending' && byId(snap, A).dispatch.status === 'lease-expired',
+    JSON.stringify(byId(snap, A).dispatch),
+  )
+  check('and the reaped task releases its file lock', snap.locks.length === 0, JSON.stringify(snap.locks))
   rig.scheduler.dispose()
 }
 

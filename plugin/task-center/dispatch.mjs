@@ -33,6 +33,7 @@ import {
   ROLE_PROVISION_TIMEOUT_MS,
   ROLE_STAGE,
   ROLE_TEMPLATE_VARIABLES,
+  TASK_HEARTBEAT_MS,
   TASK_LEASE_MS,
   TEST_REMINDER_MS,
   TEST_TIMEOUT_MS,
@@ -1367,6 +1368,10 @@ export function createDispatcher(ctx, options) {
   // The in-memory activity ring the snapshot exposes. Null is a normal setup
   // (direct dispatcher users) and simply records nothing.
   const activity = opts.activity === undefined || opts.activity === null ? null : opts.activity
+  // The host heartbeat window: how close to lapsing a running task's lease must
+  // be before the scheduler extends it. Tests shorten it; production uses the
+  // schema default. Deliberately independent of TASK_LEASE_MS.
+  const heartbeatMs = Number.isFinite(opts.heartbeatMs) ? Math.max(1, Math.floor(opts.heartbeatMs)) : TASK_HEARTBEAT_MS
   // Tests shorten the review/test timeouts; production uses the schema defaults.
   const reviewTimeoutMs = Number.isFinite(opts.reviewTimeoutMs) ? opts.reviewTimeoutMs : REVIEW_TIMEOUT_MS
   const testReminderMs = Number.isFinite(opts.testReminderMs) ? Math.max(1, Math.floor(opts.testReminderMs)) : TEST_REMINDER_MS
@@ -1468,6 +1473,30 @@ export function createDispatcher(ctx, options) {
       return null
     }
     return applied.board
+  }
+
+  /**
+   * The host heartbeat: one board write that extends every running task whose
+   * lease is inside the heartbeat window, renewing its file locks with it. It
+   * runs before the reap so a task that is still inside its lease is never
+   * mistaken for a dead one just because its worker is silent for a long tool
+   * run. A lease that already lapsed is left alone on purpose: reviving it would
+   * disable lease expiry entirely, and telling a busy worker from a dead one is
+   * the liveness check T-37 owns.
+   */
+  async function applyHeartbeat(projectPath, board, now) {
+    const planned = model.renewRunningLeases(board, now, { windowMs: heartbeatMs })
+    if (planned.ok !== true || planned.renewed.length === 0) return board
+    const next = await applyReap(projectPath, (value) => {
+      const result = model.renewRunningLeases(value, now, { windowMs: heartbeatMs })
+      return result.ok === true && result.renewed.length > 0 ? result.board : null
+    })
+    if (next === null) return board
+    for (const id of planned.renewed) {
+      const renewed = locks.renewTask(state.memory.locks, id, now, TASK_LEASE_MS)
+      if (renewed.ok === true) state.memory.locks = renewed.locks
+    }
+    return next
   }
 
   /**
@@ -1858,7 +1887,10 @@ export function createDispatcher(ctx, options) {
         return { ok: false, code: read.failed.code, message: read.failed.message }
       }
       restoreLocks(read.board)
-      let current = await reap(project, read.board, now)
+      // The host heartbeat runs FIRST: a task still inside its lease must not be
+      // reaped merely because its worker produced no tool calls for a while.
+      let current = await applyHeartbeat(project, read.board, now)
+      current = await reap(project, current, now)
       // Roles are kept for tasks already in a review/test stage even while
       // dispatch is paused: a dead reviewer/tester must not strand a task.
       const roleResults = await ensureStageRoles(project, current, now)

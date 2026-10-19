@@ -18,7 +18,7 @@
  * A <- B (A must be done before B runs).
  */
 
-import { CLOSED_STATUSES, TASK_LEASE_MS, normaliseDispatch, normaliseMerge } from './schema.mjs'
+import { CLOSED_STATUSES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, normaliseDispatch, normaliseMerge } from './schema.mjs'
 
 const iso = (now) => new Date(now).toISOString()
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -729,6 +729,34 @@ export function renewLeases(board, owner, now) {
     renewed += 1
   }
   if (renewed === 0) return done(board, [])
+  return done(next, [], { renewed: renewed })
+}
+
+/**
+ * The host heartbeat: extend the lease of every running task that still has a
+ * known assignee once its lease is inside the heartbeat window. It never touches
+ * a lease that already lapsed (that task is reaped, not revived), and it does not
+ * decide whether the assignee is alive — that liveness check belongs to the
+ * dispatch follow-up, not to this stopgap. Renewing only inside the window keeps
+ * the writes bounded to one per lease period per task.
+ */
+export function renewRunningLeases(board, now, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const windowMs = Number.isFinite(opts.windowMs) ? Math.max(1, Math.floor(opts.windowMs)) : TASK_HEARTBEAT_MS
+  const next = clone(board)
+  const renewed = []
+  for (const target of next.tasks) {
+    if (target.status !== 'running' || target.assignee === null) continue
+    if (target.leaseUntil === null) continue
+    const until = Date.parse(target.leaseUntil)
+    if (!Number.isFinite(until)) continue
+    if (until <= now) continue
+    if (until - now > windowMs) continue
+    target.leaseUntil = iso(now + TASK_LEASE_MS)
+    touch(target, now)
+    renewed.push(target.id)
+  }
+  if (renewed.length === 0) return done(board, [], { renewed: [] })
   return done(next, [], { renewed: renewed })
 }
 

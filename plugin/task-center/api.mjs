@@ -1187,8 +1187,10 @@ export function createApi(ctx, options) {
     })
   }
 
-  /** Renew the lease of the caller's running tasks when it is half spent. A
-   * tool call is a heartbeat; there is no separate timer. */
+  /** Renew the lease of every running task the caller owns. Any activity by the
+   * assignee is a heartbeat and renews UNCONDITIONALLY — there is no "lease is
+   * half spent" gate, so a long task cannot drift into expiry between two calls.
+   * The scheduler's host tick covers an assignee that produces no calls at all. */
   async function heartbeat(projectPath, owner) {
     if (owner === null || owner === undefined) return
     const read = await readBoardOrFail(projectPath)
@@ -1198,7 +1200,7 @@ export function createApi(ctx, options) {
       if (task.status !== 'running' || task.assignee === null) return false
       const sessionMatch = owner.session !== null && owner.session !== undefined && task.assignee.session === owner.session
       const nameMatch = owner.name !== null && owner.name !== undefined && task.assignee.name === owner.name
-      return (sessionMatch || nameMatch) && task.leaseUntil !== null && Date.parse(task.leaseUntil) - now < TASK_LEASE_MS / 2
+      return sessionMatch || nameMatch
     })
     if (owned.length === 0) return
     const applied = await state.apply(
