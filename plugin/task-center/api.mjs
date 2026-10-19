@@ -1219,7 +1219,10 @@ export function createApi(ctx, options) {
   function ownerOf(context) {
     if (context === undefined || context === null) return null
     if (context.role === 'user') return null
-    return { session: context.agent === undefined ? null : context.agent.id, name: context.by }
+    // The unified heartbeat path calls this for EVERY action, so an explicit
+    // "no agent" (null) must read as "no owner" instead of throwing.
+    const agent = context.agent === undefined || context.agent === null ? null : context.agent
+    return { session: agent === null || agent.id === undefined || agent.id === null ? null : agent.id, name: context.by }
   }
 
   function assigneeMatches(task, owner) {
@@ -1232,9 +1235,9 @@ export function createApi(ctx, options) {
     return task.assignee.session === null || task.assignee.session === undefined
   }
 
+  /** One board write. The heartbeat is NOT repeated here: perform() already ran it
+   * for this call, so re-running it would double-write for every write action. */
   async function mutate(projectPath, mutator, context) {
-    const owner = ownerOf(context)
-    if (owner !== null) await heartbeat(projectPath, owner)
     const applied = await state.apply(projectPath, mutator, writePolicyFor(projectPath))
     if (applied.failed !== null) return applied.failed
     reconcileLocks(applied.board)
@@ -1527,10 +1530,13 @@ export function createApi(ctx, options) {
     }
     remember(projectPath)
     const now = clock()
-    if (READ_ACTIONS.indexOf(action) >= 0) {
-      const reader = ownerOf(context)
-      if (reader !== null) await heartbeat(projectPath, reader)
-    }
+    // Any activity by the assignee renews its lease and file locks, so the
+    // heartbeat runs ONCE here, before the action, for every action an agent can
+    // call. Routing it through one place is what keeps 'lock' and 'unlock' (which
+    // never write the board and used to bypass mutate()) from silently drifting
+    // into expiry, and it stops an action from renewing twice.
+    const owner = ownerOf(context)
+    if (owner !== null) await heartbeat(projectPath, owner)
 
     if (action === 'skillsCatalog') {
       const denied = roleAdminRefusal(context, 'The skill catalog belongs to the user; open it from the task center panel.')
