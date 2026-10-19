@@ -244,6 +244,7 @@ window.__ModuleLoader__.load({
 				apply: '应用',
 				leaseLeft: '剩余',
 				leaseExpired: '已过期',
+				leaseReminder: '即将到期',
 				noProject: '未选择项目',
 				openProject: '打开项目',
 				projectPlaceholder: '项目目录的绝对路径',
@@ -571,6 +572,7 @@ window.__ModuleLoader__.load({
 				apply: 'Apply',
 				leaseLeft: 'left',
 				leaseExpired: 'expired',
+				leaseReminder: 'expiring',
 				noProject: 'No project',
 				openProject: 'Open project',
 				projectPlaceholder: 'Absolute path to the project directory',
@@ -979,14 +981,21 @@ window.__ModuleLoader__.load({
 			return String(Math.round(hours / 24)) + 'd'
 		}
 
-		function tcLease(value, now, t) {
+		/**
+		 * The lease chip. It prefers the host's own leaseRemaining/leaseExpired/
+		 * leaseReminder (the host is the authority on liveness) and falls back to
+		 * the raw leaseUntil for callers that only have the timestamp.
+		 */
+		function tcLease(value, now, t, task) {
+			const record = task === undefined || task === null ? null : task
 			const at = tcTime(value)
-			if (at === null) return null
-			const remaining = at - now
-			if (remaining <= 0) return { text: t('leaseExpired'), warn: true }
+			const remaining = record !== null && Number.isFinite(record.leaseRemaining) ? record.leaseRemaining : at === null ? null : at - now
+			if (remaining === null) return null
+			if (remaining <= 0 || (record !== null && record.leaseExpired === true)) return { text: t('leaseExpired'), warn: true, expired: true }
 			const minutes = Math.max(0, Math.ceil(remaining / 60000))
 			const text = minutes < 60 ? String(minutes) + 'm' : String(Math.round(minutes / 60)) + 'h'
-			return { text: t('leaseLeft') + ' ' + text, warn: minutes <= 3 }
+			const remind = record !== null && record.leaseReminder === true
+			return { text: t('leaseLeft') + ' ' + text, warn: remind === true || minutes <= 3, remind: remind }
 		}
 
 		function tcStatusKey(status) {
@@ -1356,7 +1365,7 @@ window.__ModuleLoader__.load({
 				const task = props.task
 				const t = props.t
 				const now = props.now
-				const lease = task.status === 'running' ? tcLease(task.leaseUntil, now, t) : null
+				const lease = task.status === 'running' ? tcLease(task.leaseUntil, now, t, task) : null
 				const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
 				const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
 				const dispatchError = task.dispatch !== null && task.dispatch !== undefined ? task.dispatch.error : null
@@ -1395,7 +1404,21 @@ window.__ModuleLoader__.load({
 						meta.push(h('span', { key: 'tester', className: 'gbt-chip', title: t('tester') }, '👤 ' + test.by))
 					}
 				}
-				if (lease !== null) meta.push(h('span', { key: 'lease', className: 'gbt-chip', 'data-tone': lease.warn ? 'blocked' : 'waiting' }, lease.text))
+				if (lease !== null) {
+					meta.push(
+						h(
+							'span',
+							{
+								key: 'lease',
+								className: 'gbt-chip',
+								'data-tone': lease.warn ? 'blocked' : 'waiting',
+								'data-lease': lease.expired === true ? 'expired' : lease.remind === true ? 'reminder' : 'ok',
+								title: lease.remind === true ? t('leaseReminder') : t('leaseLeft'),
+							},
+							lease.text,
+						),
+					)
+				}
 				if (files.length > 0) meta.push(h('span', { key: 'files', className: 'gbt-chip' }, '🔒 ' + String(files.length)))
 				if (merge !== null) {
 					meta.push(h('span', { key: 'merge', className: 'gbt-chip', 'data-tone': tcMergeTone(merge.status), title: t('mergeTitle') }, '⇄ ' + tcMergeLabel(merge.status, t)))

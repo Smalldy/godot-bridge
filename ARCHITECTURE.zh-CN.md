@@ -70,7 +70,7 @@ godot-bridge 走 harness 的**原始 `subprocess` 服务**——shell 执行器�
 | 状态 | 含义 |
 | --- | --- |
 | `pending` | 未派发。就绪性由 `dependsOn` 推导、从不存储：**就绪**（前置全部完成）、**等待**（还有前置未完成）、**依赖已破**（前置缺失或被取消，需要人处理）。 |
-| `running` | 已被 worker claim，带 15 分钟租约。 |
+| `running` | 已被 worker claim，带 60 分钟租约；assignee 的任何活动都会续租。 |
 | `done` | 已完成。**没有 review/验收状态：`submit` 即完成**，下游任务立刻解除等待。 |
 | `blocked` | 需要人处理：手动阻塞、worker 死亡，或尝试预算耗尽。 |
 | `cancelled` | 已放弃。 |
@@ -80,10 +80,12 @@ godot-bridge 走 harness 的**原始 `subprocess` 服务**——shell 执行器�
 ### 依赖与派发
 
 - `B.dependsOn = [A]` 表示 A 必须 `done` 之后才派发 B。依赖图在写入时校验（不能依赖自己、不能依赖不存在或被取消的任务、不能成环）；删除一个仍被活跃任务依赖的任务会被拒绝，除非显式 force。
-- 派发是项目级状态：`start` / `pause` 持久化在 `board.dispatch`。一轮调度先回收上一宿主进程留下的 claim、再回收过期租约（即使派发处于暂停），然后在运行数少于 `maxConcurrent` 时把就绪任务交给 worker。
+- 派发是项目级状态：`start` / `pause` 持久化在 `board.dispatch`。一轮调度先回收上一宿主进程留下的 claim，再按 **liveness** 处理失效租约（holder 仍活着就续租、已消失才交接，即使派发处于暂停），最后在运行数少于 `maxConcurrent` 时把就绪任务交给 worker。
 - 就绪任务按 `priority` 降序、`createdAt` 升序、id 升序排列。
 - 每次派发都**先 claim 再向进程外发任何东西**：claim 就是互斥量，只有 `claimTask` 能产生 `running`。随后对空闲 teammate 调 `sendMessage`，没有空闲时才 `spawnTeammate` 新建。尝试计数恰好在 claim 时加一；尝试预算（默认 3）耗尽后任务转为 `blocked`，而不是无限重试。
-- 运行中的任务持有 **15 分钟租约**。assignee 的任意一次 `task_center` 调用都是心跳，租约过半时会续期；租约过期会把任务退回 `pending`（预算耗尽则转 `blocked`），宿主重启后下一次调度会回收其 claim。
+- 运行中的任务持有 **60 分钟租约**。assignee 的任意一次 `task_center` 调用都会**无条件续租**（不再有“过半才续”），且每轮调度都有宿主心跳按固定 5 分钟节奏续租，因此长时间工具运行不会丢掉 claim。
+- 租约失效按 **liveness** 判定而非只看时间：assignee session 仍在，宿主就续租（单次尝试有 4 小时硬上限）并记 `lease-extended` 事件——**活着的 holder 绝不被顶替**。session 消失/failed 或到达硬上限时才交接：先中断旧 agent，任务回到 `pending`（预算耗尽转 `blocked`），下一次尝试在上一尝试留有 commit 时**adopt 其 worktree/branch**，而不是从 target 重做。宿主重启后下一次调度回收其 claim。
+- 同一任务最多只有一个活跃 agent：上一 holder 仍活着时，被退回的任务不会被再次派发（唯一例外是按硬上限强行交接，该 holder 已被明确要求停止）。
 - WorkAgent 是**同一个解析出的 Team Lead 下的 Agent Teams teammate**。调度器优先复用空闲 teammate（`status: inactive`），没有空闲时才新建，且不超过 `maxWorkAgents`。
 - 每一轮调度串行执行（永不重叠），由 `start`、每次任务板写入、`agent/status` 事件以及 5 秒定时器触发。
 
@@ -103,8 +105,8 @@ godot-bridge 走 harness 的**原始 `subprocess` 服务**——shell 执行器�
 - 任务用 `writeFiles` 声明要写的文件。路径规范化为项目相对 POSIX 路径、去重，并校验在项目根内——不能为一个项目外的路径造锁。
 - 锁只存宿主内存，以规范路径为键、由任务 id 持有。没有等待队列：文件冲突的任务在当轮被跳过、下一轮再试，冲突结果会点名持有者。
 - 派发前调度器**原子地获取该任务声明的全部路径，要么全拿要么全不拿**；选定 worker 后还会再检查一次。目录锁与其下所有路径冲突，按路径段判断（`scripts/core` 不与 `scripts/core2` 冲突）。
-- 任务到达 `done`、`blocked`、`cancelled` 时释放其锁，租约过期时也释放；派发失败与宿主重启回收同样会释放。agent 可为自己的运行任务 `lock` 追加文件；这些锁带同一个任务 id，随任务一起释放。
-- 锁租约同样是 15 分钟，与任务租约由同一次心跳续期。
+- 任务到达 `done`、`blocked`、`cancelled` 时释放其锁，租约交接时也释放；派发失败与宿主重启回收同样会释放。agent 可为自己的运行任务 `lock` 追加文件；这些锁带同一个任务 id，随任务一起释放。
+- 锁租约同样是 60 分钟，与任务租约由同一次心跳（以及宿主 tick）续期。
 
 ### 边界
 

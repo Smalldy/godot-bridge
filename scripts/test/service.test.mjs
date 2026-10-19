@@ -2,7 +2,7 @@
 // settings. No filesystem and no Cordis — service.mjs is pure.
 
 import { emptyBoard } from '../../plugin/task-center/board.mjs'
-import { TASK_HEARTBEAT_MS, TASK_LEASE_MS } from '../../plugin/task-center/schema.mjs'
+import { TASK_HEARTBEAT_MS, TASK_LEASE_EXTENSION_MAX_MS, TASK_LEASE_MS, TASK_LEASE_REMINDER_MS } from '../../plugin/task-center/schema.mjs'
 import { mergeEligible, recordMergeResult } from '../../plugin/task-center/merge.mjs'
 import {
   approveReview,
@@ -25,6 +25,8 @@ import {
   readyTasks,
   renewLeases,
   renewRunningLeases,
+  attemptStartedAt,
+  extendLease,
   reopenTask,
   retryTask,
   setDispatch,
@@ -567,6 +569,66 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   const summary = counts(board)
   check('counts know what is ready', summary.ready === 2, JSON.stringify(summary))
   check('counts know what is done', summary.done === 1 && summary.total === 3, JSON.stringify(summary))
+}
+
+// ── T-37 liveness: extension, handover options, adoption, views ────────────
+{
+  let board = make(base(), 'A').board
+  board = claimTask(board, 'T-1', { name: 'w', session: 's-w' }, T0).board
+  const claimed = findTask(board, 'T-1')
+
+  // extendLease
+  const extended = extendLease(board, 'T-1', T0 + 1000, { reason: 'holder alive' })
+  const after = findTask(extended.board, 'T-1')
+  check('extendLease pushes the lease by a full period', after.leaseUntil === new Date(T0 + 1000 + TASK_LEASE_MS).toISOString(), String(after.leaseUntil))
+  check('extendLease keeps the assignee and the attempt', after.assignee.name === claimed.assignee.name && after.assignee.session === claimed.assignee.session && after.attempts === claimed.attempts, JSON.stringify({ assignee: after.assignee, attempts: after.attempts }))
+  check('extendLease records the reason in history', String(after.history.slice(-1)[0].note).indexOf('holder alive') >= 0, JSON.stringify(after.history.slice(-1)))
+  check('extendLease refuses a task that is not running', extendLease(make(base(), 'B').board, 'T-1', T0).code === 'not-running')
+
+  // attemptStartedAt — the cap needs a claim time, and a missing/broken one must
+  // read as "unknown" instead of silently capping at zero.
+  check('attemptStartedAt reads the claim time', attemptStartedAt(after) === T0, String(attemptStartedAt(after)))
+  const noClaim = JSON.parse(JSON.stringify(after)); noClaim.dispatch = null
+  check('attemptStartedAt is null without a claim record', attemptStartedAt(noClaim) === null)
+  const badClaim = JSON.parse(JSON.stringify(after)); badClaim.dispatch.at = 'not-a-date'
+  check('attemptStartedAt is null for an unreadable claim time', attemptStartedAt(badClaim) === null)
+
+  // expireLeases per-task options keep the claim identity the guard needs.
+  const expired = expireLeases(board, T0 + TASK_LEASE_MS + 1, 3, { id: 'T-1', error: 'lease expired (liveness cap)', reason: 'alive but past the liveness cap' })
+  const gone = findTask(expired.board, 'T-1')
+  check('a per-task expiry writes the caller error and reason', gone.dispatch.error === 'lease expired (liveness cap)' && String(gone.history.slice(-1)[0].note).indexOf('past the liveness cap') >= 0, JSON.stringify({ error: gone.dispatch.error, note: gone.history.slice(-1)[0].note }))
+  check('and keeps the previous claim identity for the guard', gone.dispatch.target === 'w' && gone.dispatch.targetId === 's-w', JSON.stringify(gone.dispatch))
+  check('and only the named task is reaped', expireLeases(board, T0 + TASK_LEASE_MS + 1, 3, { id: 'T-9' }).events.length === 0)
+
+  // claimTask records adoption instead of pretending it is a fresh attempt.
+  const adopted = claimTask(
+    expired.board,
+    'T-1',
+    { name: 'w2', session: 's-2', worktree: { base: 'base-sha', target: 'main', branch: 'task/T-1-1', path: '/tmp/wt', keep: true }, adopt: { fromAttempt: 1, branch: 'task/T-1-1', head: 'old-commit-sha' } },
+    T0 + TASK_LEASE_MS + 2,
+  )
+  const next = findTask(adopted.board, 'T-1')
+  check("an adopting claim records via='adopt'", next.dispatch.via === 'adopt', JSON.stringify(next.dispatch))
+  check('and says what it adopted', String(next.history.slice(-1)[0].note).indexOf('adopting task/T-1-1 @ old-commit') >= 0 && String(next.history.slice(-1)[0].note).indexOf('from attempt 1') >= 0, JSON.stringify(next.history.slice(-1)))
+  check('and keeps the adopted branch and base', next.branch === 'task/T-1-1' && next.base === 'base-sha', JSON.stringify({ branch: next.branch, base: next.base }))
+
+  // Views: the panel needs the remainder and the reminder flag.
+  const view = taskSummary(board, findTask(board, 'T-1'), T0 + 1000)
+  check('the view exposes the lease remainder', view.leaseRemaining === TASK_LEASE_MS - 1000 && view.leaseExpired === false && view.leaseReminder === false, JSON.stringify({ remaining: view.leaseRemaining, expired: view.leaseExpired }))
+  const soon = taskSummary(board, findTask(board, 'T-1'), T0 + TASK_LEASE_MS - 1000)
+  check('and flags a lease inside the reminder window', soon.leaseReminder === true && soon.leaseExpired === false && soon.leaseRemaining <= TASK_LEASE_REMINDER_MS, JSON.stringify({ remaining: soon.leaseRemaining, reminder: soon.leaseReminder }))
+  const lapsedView = taskSummary(board, findTask(board, 'T-1'), T0 + TASK_LEASE_MS + 1)
+  check('and an expired lease reads as expired with nothing left', lapsedView.leaseExpired === true && lapsedView.leaseRemaining === 0, JSON.stringify({ expired: lapsedView.leaseExpired, remaining: lapsedView.leaseRemaining }))
+
+  // The heartbeat policy: liveness gate and hard cap.
+  const windowAt = T0 + TASK_LEASE_MS - 1000
+  check('the heartbeat renews a live holder inside the window', renewRunningLeases(board, windowAt, { allow: () => true }).renewed.join(',') === 'T-1')
+  check('the heartbeat refuses a holder the liveness check rejects', renewRunningLeases(board, windowAt, { allow: () => false }).renewed.length === 0)
+  check('the heartbeat stops at the extension cap', renewRunningLeases(board, windowAt, { allow: () => true, maxExtensionMs: 10 * 60 * 1000 }).renewed.length === 0)
+  check('the default cap is the schema cap', renewRunningLeases(board, windowAt, { allow: () => true }).renewed.length === 1 && TASK_LEASE_EXTENSION_MAX_MS === 4 * 60 * 60 * 1000)
+  const noAtBoard = JSON.parse(JSON.stringify(board))
+  noAtBoard.tasks[0].dispatch = null
+  check('a task with no claim time cannot be capped, so a live holder is still renewed', renewRunningLeases(noAtBoard, windowAt, { allow: () => true }).renewed.join(',') === 'T-1')
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

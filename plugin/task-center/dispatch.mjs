@@ -34,6 +34,8 @@ import {
   ROLE_STAGE,
   ROLE_TEMPLATE_VARIABLES,
   TASK_HEARTBEAT_MS,
+  TASK_LEASE_CAP_ERROR,
+  TASK_LEASE_EXTENSION_MAX_MS,
   TASK_LEASE_MS,
   TEST_REMINDER_MS,
   TEST_TIMEOUT_MS,
@@ -551,6 +553,25 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt) {
   const base = await git.head(projectPath)
   if (base.ok !== true) return worktreeFallback('base-unreadable: ' + String(base.message))
   const current = await git.currentBranch(projectPath)
+  const targetBranch = current.ok === true && typeof current.branch === 'string' ? current.branch : null
+  // Handover adoption: a previous attempt that left a COMMIT keeps its checkout,
+  // so the next attempt continues that work instead of restarting from the
+  // target. The branch must still resolve; anything else falls through to a
+  // fresh add, so adoption can never strand a task on a checkout git lost.
+  const adopted = await adoptionCandidate(git, projectPath, task, attempt)
+  if (adopted !== null) {
+    return {
+      base: typeof task.base === 'string' && task.base !== '' ? task.base : base.hash,
+      target: targetBranch,
+      branch: adopted.branch,
+      path: adopted.path,
+      keep: true,
+      error: null,
+      adopted: true,
+      fromAttempt: adopted.fromAttempt,
+      head: adopted.head,
+    }
+  }
   const branch = 'task/' + String(task.id) + '-' + String(attempt)
   const settings = dispatch === undefined || dispatch === null ? null : dispatch.worktree
   const root = String(settings === null || settings === undefined || settings.root === undefined || settings.root === null ? '' : settings.root).trim()
@@ -573,6 +594,47 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt) {
     keep: true,
     error: null,
   }
+}
+
+/** A path compared the way git reports it, for the worktree-list check. */
+function sameWorktreePath(left, right) {
+  const normalize = (value) => String(value === undefined || value === null ? '' : value).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  return normalize(left) === normalize(right)
+}
+
+/**
+ * The checkout a handover may reuse: the previous attempt path/branch when that
+ * attempt left a commit and git still resolves the branch (and, when the facade
+ * can list worktrees, still has the directory registered). Returns null when
+ * there is nothing to adopt, which is the signal to prepare a fresh worktree.
+ */
+async function adoptionCandidate(git, projectPath, task, attempt) {
+  if (Number.isFinite(attempt) && attempt <= 1) return null
+  if (typeof task.commit !== 'string' || task.commit === '') return null
+  if (typeof task.branch !== 'string' || task.branch === '') return null
+  if (typeof task.worktree !== 'string' || task.worktree === '') return null
+  if (git === null || git === undefined) return null
+  let resolved = null
+  try {
+    resolved = typeof git.revParse === 'function' ? await git.revParse(projectPath, task.branch) : null
+  } catch (error) {
+    return null
+  }
+  if (resolved === null || resolved === undefined || resolved.ok !== true) return null
+  if (typeof git.worktreeList === 'function') {
+    try {
+      const listed = await git.worktreeList(projectPath)
+      if (listed !== null && listed !== undefined && listed.ok === true) {
+        const entries = Array.isArray(listed.worktrees) ? listed.worktrees : []
+        // An empty list means this facade does not report worktrees; only a
+        // non-empty list can prove the directory is gone.
+        if (entries.length > 0 && !entries.some((entry) => entry !== null && typeof entry === 'object' && sameWorktreePath(entry.path, task.worktree))) return null
+      }
+    } catch (error) {
+      /* a listing failure is not proof the checkout is gone */
+    }
+  }
+  return { branch: task.branch, path: task.worktree, fromAttempt: task.attempts, head: task.commit }
 }
 
 /** Force-remove one worktree, ignoring every failure: cleanup must never fail a
@@ -1480,15 +1542,17 @@ export function createDispatcher(ctx, options) {
    * lease is inside the heartbeat window, renewing its file locks with it. It
    * runs before the reap so a task that is still inside its lease is never
    * mistaken for a dead one just because its worker is silent for a long tool
-   * run. A lease that already lapsed is left alone on purpose: reviving it would
-   * disable lease expiry entirely, and telling a busy worker from a dead one is
-   * the liveness check T-37 owns.
+   * run. It renews ONLY a holder the Team still lists and only while the attempt
+   * is inside the extension cap, so a dead holder (or one past the cap) lapses
+   * into the handover path on schedule instead of being kept alive forever. A
+   * lease that already lapsed is never revived here.
    */
   async function applyHeartbeat(projectPath, board, now) {
-    const planned = model.renewRunningLeases(board, now, { windowMs: heartbeatMs })
+    const plan = { windowMs: heartbeatMs, maxExtensionMs: TASK_LEASE_EXTENSION_MAX_MS, allow: holderIsAlive }
+    const planned = model.renewRunningLeases(board, now, plan)
     if (planned.ok !== true || planned.renewed.length === 0) return board
     const next = await applyReap(projectPath, (value) => {
-      const result = model.renewRunningLeases(value, now, { windowMs: heartbeatMs })
+      const result = model.renewRunningLeases(value, now, plan)
       return result.ok === true && result.renewed.length > 0 ? result.board : null
     })
     if (next === null) return board
@@ -1545,6 +1609,72 @@ export function createDispatcher(ctx, options) {
     }
   }
 
+  /**
+   * Whether the member recorded for a task is still alive. known:false means
+   * this host cannot tell (no Agent Teams edge) and counts as NOT alive, so a
+   * lease still lapses instead of living forever. An existing member that is not
+   * 'failed' counts as alive — including 'inactive', which is how a teammate
+   * between turns looks.
+   */
+  function memberLiveness(identity) {
+    const who = identity === null || identity === undefined ? {} : identity
+    const session = typeof who.session === 'string' && who.session !== '' ? who.session : null
+    const name = typeof who.name === 'string' && who.name !== '' ? who.name : null
+    if (session === null && name === null) return { known: false, alive: false, status: null, name: null }
+    const team = ctx.get('agentTeams')
+    const lead = resolveLead(ctx)
+    if (team === null || team === undefined || typeof team.listMembers !== 'function' || lead === null) {
+      return { known: false, alive: false, status: null, name: name }
+    }
+    let members = []
+    try {
+      members = team.listMembers(lead)
+    } catch (error) {
+      return { known: false, alive: false, status: null, name: name }
+    }
+    if (!Array.isArray(members)) return { known: false, alive: false, status: null, name: name }
+    const match = members.filter(
+      (member) =>
+        member !== null &&
+        typeof member === 'object' &&
+        ((session !== null && String(member.id) === session) || (name !== null && String(member.name) === name)),
+    )[0]
+    if (match === undefined) return { known: true, alive: false, status: 'gone', name: name }
+    const status = match.status === undefined || match.status === null || match.status === '' ? 'unknown' : String(match.status)
+    return { known: true, alive: status !== 'failed', status: status, name: typeof match.name === 'string' ? match.name : name }
+  }
+
+  /** The heartbeat gate: only a holder the Team still lists is renewed, so a dead
+   * worker's lease lapses into the handover path instead of living forever. */
+  function holderIsAlive(task) {
+    if (task === null || task === undefined || task.assignee === null) return false
+    return memberLiveness({ name: task.assignee.name, session: task.assignee.session }).alive === true
+  }
+
+  /**
+   * Best-effort interrupt of a member that lost its task. The Agent Teams edge
+   * may not expose one: a refusal is reported and recorded, never thrown, because
+   * the handover itself must not depend on it (the dispatcher liveness guard is
+   * the safety net).
+   */
+  async function interruptMember(identity) {
+    const who = identity === null || identity === undefined ? {} : identity
+    const target = typeof who.session === 'string' && who.session !== '' ? who.session : typeof who.name === 'string' && who.name !== '' ? who.name : null
+    if (target === null) return { ok: false, code: 'no-identity' }
+    const team = ctx.get('agentTeams')
+    if (team === null || team === undefined) return { ok: false, code: 'no-team-service' }
+    for (const method of ['interrupt', 'interruptMember', 'stopMember', 'stop']) {
+      if (typeof team[method] !== 'function') continue
+      try {
+        await team[method](target)
+        return { ok: true, via: method }
+      } catch (error) {
+        return { ok: false, code: 'interrupt-failed', message: String((error && error.message) || error) }
+      }
+    }
+    return { ok: false, code: 'no-interrupt-api' }
+  }
+
   async function reap(projectPath, board, now) {
     let current = board
     const limit = current.dispatch.maxAttempts
@@ -1567,19 +1697,72 @@ export function createDispatcher(ctx, options) {
         for (const task of stale) releaseTaskLocks(task.id)
       }
     }
-    // 2. Expired leases, even while dispatch is paused: a dead worker must not
-    // hold a task forever.
-    const expired = current.tasks.filter(
+    // 2. Lapsed leases, even while dispatch is paused. A lapsed lease is NOT
+    // proof the worker is gone, so liveness decides first: a holder that is
+    // still alive keeps the task (lease extended, bounded by the hard cap) and no
+    // second agent is ever dispatched for it. Only a gone/failed holder, or one
+    // past the cap, is handed over: the old agent is interrupted, the task is
+    // requeued with its claim identity kept, and the next attempt adopts this
+    // attempt checkout instead of starting over from the target.
+    const lapsed = current.tasks.filter(
       (task) => task.status === 'running' && (task.leaseUntil === null || Date.parse(task.leaseUntil) <= now),
     )
-    if (expired.length > 0) {
+    const handover = []
+    for (const task of lapsed) {
+      const holder = task.assignee === null ? null : { name: task.assignee.name, session: task.assignee.session }
+      const live = memberLiveness(holder)
+      const startedAt = model.attemptStartedAt(task)
+      const capped = startedAt !== null && now - startedAt >= TASK_LEASE_EXTENSION_MAX_MS
+      if (live.alive === true && capped !== true) {
+        const extended = await applyReap(projectPath, (value) => {
+          const result = model.extendLease(value, task.id, now, {
+            reason: 'assignee ' + String(live.name) + ' is still ' + String(live.status) + '; no second agent',
+          })
+          return result.ok === true ? result.board : null
+        })
+        if (extended !== null) {
+          current = extended
+          emit('lease-extended', 'system', {
+            taskId: task.id,
+            detail: 'assignee ' + String(live.name) + ' still ' + String(live.status) + '; lease extended instead of a second agent',
+          })
+        }
+        continue
+      }
+      handover.push({ id: task.id, holder: holder, live: live, capped: capped === true })
+    }
+    if (handover.length > 0) {
       const next = await applyReap(projectPath, (value) => {
-        const result = model.expireLeases(value, now, limit)
-        return result.ok === true ? result.board : value
+        let mutated = value
+        for (const entry of handover) {
+          const result = model.expireLeases(mutated, now, limit, {
+            id: entry.id,
+            error: entry.capped === true ? TASK_LEASE_CAP_ERROR : 'lease expired',
+            reason:
+              entry.capped === true
+                ? 'alive but past the liveness cap'
+                : entry.live.known === true
+                  ? 'assignee ' + String(entry.live.status)
+                  : 'assignee liveness unknown',
+          })
+          if (result.ok === true) mutated = result.board
+        }
+        return mutated
       })
       if (next !== null) {
         current = next
-        for (const task of expired) releaseTaskLocks(task.id)
+        for (const entry of handover) {
+          releaseTaskLocks(entry.id)
+          const interrupted = await interruptMember(entry.holder)
+          emit('lease-handover', 'host', {
+            taskId: entry.id,
+            detail:
+              (entry.capped === true ? 'liveness cap reached' : 'assignee ' + String(entry.live.status)) +
+              '; requeued for a fresh attempt (' +
+              (interrupted.ok === true ? 'old agent interrupted via ' + String(interrupted.via) : 'interrupt ' + String(interrupted.code)) +
+              ')',
+          })
+        }
       }
     }
     return current
@@ -1916,6 +2099,17 @@ export function createDispatcher(ctx, options) {
         if (slots <= 0) break
         const task = model.findTask(current, candidate.id)
         if (task === undefined || task.status !== 'pending') continue
+        // One task, one live agent: a task requeued after a handover must not be
+        // dispatched while the previous holder is still alive, no matter which
+        // pass requeued it. A liveness-capped handover is the single exception —
+        // that holder was explicitly told to stop.
+        if (task.dispatch !== null && task.dispatch.status === 'lease-expired' && task.dispatch.error !== TASK_LEASE_CAP_ERROR) {
+          const previous = memberLiveness({ name: task.dispatch.target, session: task.dispatch.targetId })
+          if (previous.alive === true) {
+            results.push({ id: task.id, skipped: 'previous-assignee-active', previous: task.dispatch.target })
+            continue
+          }
+        }
         if (task.writeFiles.length > 0) {
           const conflicts = locks.conflictsFor(state.memory.locks, task.writeFiles, 'task:' + task.id)
           if (conflicts.length > 0) {
@@ -1985,6 +2179,10 @@ export function createDispatcher(ctx, options) {
                 via: picked.spawn === true ? 'spawn' : 'message',
                 host: boot,
                 worktree: worktree,
+                adopt:
+                  worktree.adopted === true
+                    ? { fromAttempt: worktree.fromAttempt, branch: worktree.branch, head: worktree.head === undefined ? null : worktree.head }
+                    : null,
               },
               state.clock(),
             ),
@@ -2000,7 +2198,16 @@ export function createDispatcher(ctx, options) {
           continue
         }
         current = claimed.board
-        emit('worktree-create', 'host', { taskId: task.id, detail: 'task worktree ' + String(worktree.path) })
+        if (worktree.adopted === true) {
+          emit('attempt-adopt', 'host', {
+            taskId: task.id,
+            detail:
+              'adopted ' + String(worktree.branch) + (worktree.head === null || worktree.head === undefined ? '' : ' @ ' + String(worktree.head).slice(0, 10)) +
+              ' from attempt ' + String(worktree.fromAttempt) + ' instead of a fresh checkout',
+          })
+        } else {
+          emit('worktree-create', 'host', { taskId: task.id, detail: 'task worktree ' + String(worktree.path) })
+        }
         const claimedTask = model.findTask(current, task.id)
         const brief = briefFor(claimedTask, project)
         const leadName = picked.lead !== undefined && picked.lead !== null && picked.lead.name !== undefined ? picked.lead.name : 'lead'

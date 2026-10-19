@@ -70,7 +70,7 @@ The stored vocabulary is exactly five; the board columns are laid out from them:
 | status | meaning |
 | --- | --- |
 | `pending` | not dispatched. Readiness is derived from `dependsOn`, never stored: **ready** (all prerequisites done), **waiting** (a prerequisite is not done yet), **broken** (a prerequisite is missing or cancelled and needs a human). |
-| `running` | claimed by a worker, with a 15-minute lease. |
+| `running` | claimed by a worker, with a 60-minute lease that any assignee activity renews. |
 | `done` | finished. **There is no review or acceptance state: `submit` is completion**, and dependents are released immediately. |
 | `blocked` | needs a human: a manual block, a dead worker, or an exhausted attempt budget. |
 | `cancelled` | abandoned. |
@@ -80,10 +80,12 @@ The panel renders five columns from these: ready, waiting (both `pending`), runn
 ### Dependencies and dispatch
 
 - `B.dependsOn = [A]` means A must be `done` before B is dispatched. The graph is validated on write (no self-dependency, no unknown or cancelled prerequisite, no cycle); deleting a task another live task depends on is refused unless forced.
-- Dispatch is project-level: `start` / `pause` is persisted in `board.dispatch`. A pass reaps claims left by a previous host process, reaps expired leases (even while dispatch is paused), then hands ready tasks to workers while fewer than `maxConcurrent` tasks are running.
+- Dispatch is project-level: `start` / `pause` is persisted in `board.dispatch`. A pass reaps claims left by a previous host process, then settles lapsed leases by **liveness** (extend while the holder is alive, hand over when it is gone) even while dispatch is paused, and finally hands ready tasks to workers while fewer than `maxConcurrent` tasks are running.
 - Ready tasks are ordered `priority` descending, then `createdAt` ascending, then id.
 - Every dispatch **claims the task before anything leaves the process**: the claim is the mutex and only `claimTask` produces `running`. It then calls `sendMessage` to an idle teammate, or `spawnTeammate` for a new one. The attempt counter increments exactly at claim; after the attempt budget (default 3) the task becomes `blocked` instead of retrying forever.
-- A running task holds a **15-minute lease**. Any `task_center` call by the assignee is a heartbeat and renews it when half spent; an expired lease returns the task to `pending` (or `blocked` once the budget is gone), and a host restart reaps its claims on the next pass.
+- A running task holds a **60-minute lease**. Every `task_center` call by the assignee renews it **unconditionally** (there is no "half spent" gate) and a host heartbeat in every pass renews it on a fixed five-minute cadence, so a long tool run cannot lose its claim.
+- A lapsed lease is judged by **liveness**, not by the clock: while the assignee session still exists the host extends the lease (bounded by a four-hour per-attempt hard cap) and records a `lease-extended` event — **a live holder is never replaced**. When the session is gone or failed, or the cap is reached, the task is handed over: the old agent is interrupted, the task returns to `pending` (or `blocked` once the budget is gone), and the next attempt **adopts the previous attempt's worktree and branch** when it left a commit instead of restarting from the target. A host restart reaps its claims on the next pass.
+- One task has at most one live agent: a requeued task is not dispatched while its previous holder is still alive (only a liveness-capped handover may proceed, because that holder was told to stop).
 - WorkAgents are Agent Teams **teammates under the one resolved Team Lead**. The scheduler reuses an idle teammate (`status: inactive`) first and only spawns when none is idle, within `maxWorkAgents`.
 - Passes are serialised (never overlapping) and are triggered by `start`, every board write, `agent/status` events, and a five-second timer.
 
@@ -103,8 +105,8 @@ The panel renders five columns from these: ready, waiting (both `pending`), runn
 - A task declares what it will write with `writeFiles`. Paths canonicalise to project-relative POSIX paths, are de-duplicated, and are validated against the project root, so a lock cannot be conjured for a path outside the project.
 - Locks live in host memory, keyed by canonical path and owned by the task id. There is no wait queue: a task whose files conflict is skipped on that pass and retried on the next, and the conflict names the holder.
 - Before dispatch the scheduler acquires **all** of the task's declared paths or none of them (atomic), re-checking after it has chosen a worker. A directory lock conflicts with every path under it, segment-aware (`scripts/core` does not conflict with `scripts/core2`).
-- A task's locks are released when it reaches `done`, `blocked` or `cancelled`, and when its lease expires; a failed dispatch and a host-restart reap release them too. An agent may `lock` extra files for its running task; those carry the same task id and are released with it.
-- Lock leases are also 15 minutes, renewed by the same heartbeat that renews the task.
+- A task's locks are released when it reaches `done`, `blocked` or `cancelled`, and when its lease is handed over; a failed dispatch and a host-restart reap release them too. An agent may `lock` extra files for its running task; those carry the same task id and are released with it.
+- Lock leases are also 60 minutes, renewed by the same heartbeat (and host tick) that renews the task.
 
 ### Boundaries
 

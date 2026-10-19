@@ -39,10 +39,24 @@ export const TASK_LEASE_MS = 60 * 60 * 1000
 
 /** The host's own renewal cadence for a running task. The scheduler extends a
  * lease once it is inside this window of lapsing — a FIXED interval, never "half
- * the lease" — so a task stays claimed through a long silent stretch. A lease
- * that already lapsed is never revived: telling a busy worker from a dead one is
- * a liveness check, which this stopgap deliberately does not do. */
+ * the lease" — so a task stays claimed through a long silent stretch. */
 export const TASK_HEARTBEAT_MS = 5 * 60 * 1000
+
+/** How long the LIVENESS path may keep extending one attempt after its lease
+ * lapsed. While the assignee session is still alive a lapsed lease is renewed
+ * (never a second agent), but only up to this much after the attempt started;
+ * past it the task is handed over to a fresh attempt. */
+export const TASK_LEASE_EXTENSION_MAX_MS = 4 * 60 * 60 * 1000
+
+/** A lease this close to lapsing is reported as "expiring": the panel warns and
+ * the board exposes leaseReminder so a silent worker is visible before it is
+ * handled by liveness. */
+export const TASK_LEASE_REMINDER_MS = 10 * 60 * 1000
+
+/** The dispatch.error written when a handover is forced by the liveness cap
+ * rather than by a dead holder. Shared by the writer (the dispatcher's
+ * expireLeases call) and the single-agent guard, so the two can never drift. */
+export const TASK_LEASE_CAP_ERROR = 'lease expired (liveness cap)'
 
 /** Worktree layout. A task checkout may only live inside the project, exactly
  * like a lock path; `root` is INTERNAL configuration, not a toggle. Worktrees
