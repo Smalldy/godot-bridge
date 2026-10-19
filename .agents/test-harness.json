@@ -1,0 +1,15 @@
+{
+  "$comment": "Isolated DSH test-harness settings (plugin/task-center/harness.mjs). Paths are machine-local by design (the module's default dshSource is too); DSH_TEST_HARNESS_* environment variables override every field. dshCommand is the installed DSH runtime executable (not the broken `dsh` PATH shim) driving the desktop-host CLI entry, so the harness never depends on PATH. See README 'Isolated DSH test harness' for the source-checkout alternative.",
+  "dshSource": "J:\\workspace\\HARNESS\\deepseek-harness",
+  "dshCommand": "C:\\Users\\74368\\AppData\\Local\\Programs\\DeepSeek Harness\\DeepSeek Harness.exe",
+  "dshArgs": [
+    "--expose-internals",
+    "C:\\Users\\74368\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-desktop-host\\lib\\cli.js"
+  ],
+  "dshEnv": {
+    "ELECTRON_RUN_AS_NODE": "1"
+  },
+  "profile": "web",
+  "healthTimeoutMs": 90000,
+  "installTimeoutMs": 180000
+}

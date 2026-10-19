@@ -10,7 +10,7 @@
 
 import { createServer } from 'node:net'
 import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, readSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,6 +26,8 @@ export const HARNESS_DEFAULTS = {
   dshSource: DEFAULT_DSH_SOURCE,
   candidatePlugin: DEFAULT_CANDIDATE_PLUGIN,
   dshCommand: 'dsh',
+  dshArgs: [],
+  dshEnv: {},
   profile: 'web',
   portBase: 39000,
   portRange: 100,
@@ -91,11 +93,61 @@ export async function resolveHarnessConfig(options) {
     }
     return fallback
   }
+  const stringMap = (fileKey, envKey, fallback) => {
+    const fromJson = (text) => {
+      try {
+        const parsed = JSON.parse(text)
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+        const map = {}
+        for (const key of Object.keys(parsed)) {
+          if (typeof parsed[key] === 'string') map[key] = parsed[key]
+        }
+        return map
+      } catch (error) {
+        return null
+      }
+    }
+    const envValue = env[envKey]
+    if (typeof envValue === 'string' && envValue.trim() !== '') {
+      const parsed = fromJson(envValue)
+      if (parsed !== null) return parsed
+    }
+    const fileValue = source[fileKey]
+    if (fileValue !== null && typeof fileValue === 'object' && !Array.isArray(fileValue)) {
+      const map = {}
+      for (const key of Object.keys(fileValue)) {
+        if (typeof fileValue[key] === 'string' && fileValue[key] !== '') map[key] = fileValue[key]
+      }
+      return map
+    }
+    return Object.assign({}, fallback)
+  }
+  const stringList = (fileKey, envKey, fallback) => {
+    const envValue = env[envKey]
+    if (typeof envValue === 'string' && envValue.trim() !== '') {
+      const text = envValue.trim()
+      // A JSON array is the lossless form (paths may contain spaces); a plain
+      // string is split on whitespace for the common `node --import x y` case.
+      if (text.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(text)
+          if (Array.isArray(parsed)) return parsed.filter((value) => typeof value === 'string' && value !== '')
+        } catch (error) {}
+      }
+      return text.split(/\s+/).filter((value) => value !== '')
+    }
+    const fileValue = source[fileKey]
+    if (Array.isArray(fileValue)) return fileValue.filter((value) => typeof value === 'string' && value !== '')
+    if (typeof fileValue === 'string' && fileValue.trim() !== '') return fileValue.trim().split(/\s+/).filter((value) => value !== '')
+    return Array.isArray(fallback) ? fallback.slice() : []
+  }
   const config = {
     projectPath: projectPath,
     dshSource: pick('dshSource', 'DSH_TEST_HARNESS_SOURCE', defaults.dshSource),
     candidatePlugin: pick('candidatePlugin', 'DSH_TEST_HARNESS_CANDIDATE', defaults.candidatePlugin),
     dshCommand: pick('dshCommand', 'DSH_TEST_HARNESS_DSH', defaults.dshCommand),
+    dshArgs: stringList('dshArgs', 'DSH_TEST_HARNESS_DSH_ARGS', defaults.dshArgs),
+    dshEnv: stringMap('dshEnv', 'DSH_TEST_HARNESS_DSH_ENV', defaults.dshEnv),
     profile: pick('profile', 'DSH_TEST_HARNESS_PROFILE', defaults.profile),
     portBase: number('portBase', 'DSH_TEST_HARNESS_PORT_BASE', defaults.portBase),
     portRange: number('portRange', 'DSH_TEST_HARNESS_PORT_RANGE', defaults.portRange),
@@ -120,15 +172,106 @@ export async function sourceVersionOf(fsOps, dshSource) {
   return manifest.version.trim()
 }
 
-/** The production DSH version: explicit config first, then the running install. */
-export function defaultProductionVersion(explicit) {
-  if (typeof explicit === 'string' && explicit.trim() !== '') return explicit.trim()
-  if (typeof process.env.DSH_VERSION === 'string' && process.env.DSH_VERSION.trim() !== '') return process.env.DSH_VERSION.trim()
+/** Plain manifests inside an Electron install, relative to <install>/resources. */
+const PACKAGED_MANIFESTS = [
+  ['app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'],
+  ['app.asar', 'dsh', 'package.json'],
+  ['app.asar.unpacked', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'],
+  ['app.asar.unpacked', 'dsh', 'package.json'],
+  ['app', 'package.json'],
+]
+
+/** Manifest entries inside app.asar, in the order that names the real dsh package first. */
+const ASAR_MANIFESTS = ['dsh/node_modules/@deepseek-ai/dsh/package.json', 'dsh/package.json']
+
+/** The `version` of one package.json text, or null. */
+function manifestVersion(text) {
+  if (typeof text !== 'string') return null
   try {
-    const manifest = JSON.parse(readFileSync(join(dirname(process.execPath), 'resources', 'app.asar', 'dsh', 'package.json'), 'utf8'))
-    if (typeof manifest.version === 'string' && manifest.version !== '') return manifest.version
-  } catch (error) {}
+    const manifest = JSON.parse(text)
+    return typeof manifest.version === 'string' && manifest.version !== '' ? manifest.version : null
+  } catch (error) {
+    return null
+  }
+}
+
+/**
+ * Read one file out of an Electron asar archive.
+ *
+ * An asar file is a tiny header (a 16-byte pickle whose last field is the JSON
+ * header length, then the JSON tree) followed by the file data; every file
+ * entry carries its offset relative to `8 + headerSize`. Plain `fs` cannot
+ * follow a path *through* an asar, so a packaged install's version is
+ * unreadable by path — this reads the same bytes Electron does.
+ */
+export function readAsarEntry(archivePath, entry) {
+  let fd = null
+  try {
+    fd = openSync(archivePath, 'r')
+    const head = Buffer.alloc(16)
+    readSync(fd, head, 0, 16, 0)
+    const headerSize = head.readUInt32LE(4)
+    const jsonSize = head.readUInt32LE(12)
+    if (!Number.isFinite(jsonSize) || jsonSize <= 0 || jsonSize > 64 * 1024 * 1024) return null
+    const headerBuffer = Buffer.alloc(jsonSize)
+    readSync(fd, headerBuffer, 0, jsonSize, 16)
+    let node = JSON.parse(headerBuffer.toString('utf8'))
+    for (const part of String(entry).split('/')) {
+      const files = node === null || typeof node !== 'object' ? null : node.files
+      if (files === null || files === undefined || typeof files !== 'object' || files[part] === undefined) return null
+      node = files[part]
+    }
+    if (node === null || typeof node !== 'object' || node.files !== undefined) return null
+    const size = Number(node.size)
+    const offset = 8 + headerSize + Number(node.offset)
+    if (!Number.isFinite(size) || size < 0 || !Number.isFinite(offset) || offset < 0) return null
+    const data = Buffer.alloc(size)
+    readSync(fd, data, 0, size, offset)
+    return data.toString('utf8')
+  } catch (error) {
+    return null
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch (error) {}
+    }
+  }
+}
+
+/**
+ * The production DSH version: explicit config first, the environment second,
+ * then the running install. A packaged Electron install keeps its manifests
+ * either beside app.asar (unpacked builds) or inside the archive itself, so
+ * both are probed; when neither answers the result is null ("unknown", which
+ * the smoke reports as a failure, never as a pass).
+ */
+export function defaultProductionVersion(explicit, options) {
+  const opts = options === undefined ? {} : options
+  if (typeof explicit === 'string' && explicit.trim() !== '') return explicit.trim()
+  const env = opts.env === undefined ? process.env : opts.env
+  if (env !== null && env !== undefined && typeof env.DSH_VERSION === 'string' && env.DSH_VERSION.trim() !== '') return env.DSH_VERSION.trim()
+  const execPath = typeof opts.execPath === 'string' && opts.execPath !== '' ? opts.execPath : process.execPath
+  const resources = join(dirname(execPath), 'resources')
+  for (const relative of PACKAGED_MANIFESTS) {
+    const version = manifestVersion(readTextFile(join(resources, ...relative)))
+    if (version !== null) return version
+  }
+  const archive = join(resources, 'app.asar')
+  for (const entry of ASAR_MANIFESTS) {
+    const version = manifestVersion(readAsarEntry(archive, entry))
+    if (version !== null) return version
+  }
   return null
+}
+
+/** Read one text file, null when it does not exist or is not a file. */
+function readTextFile(path) {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch (error) {
+    return null
+  }
 }
 
 /** 'match' when both sides are known and equal, 'mismatch' when they differ, and
@@ -138,17 +281,42 @@ export function compareVersions(sourceVersion, productionVersion) {
   return sourceVersion === productionVersion ? 'match' : 'mismatch'
 }
 
-/** Windows-safe shell quoting for one argument. */
-function quoteArg(value) {
-  const text = String(value)
-  if (text === '') return '""'
-  return /[\s"&|<>^]/.test(text) ? '"' + text.replace(/"/g, '\\"') + '"' : text
+/**
+ * The full CLI argv: the configured executable, any configured prefix args
+ * (`dshArgs`, e.g. `node --import tsx .../src/bin.ts` so a source checkout can
+ * be driven without a stale build), then this call's arguments.
+ */
+export function dshArgv(config, args) {
+  const argv = [String(config.dshCommand)]
+  const extra = Array.isArray(config.dshArgs) ? config.dshArgs : []
+  for (const value of extra) {
+    if (typeof value === 'string' && value !== '') argv.push(value)
+  }
+  return argv.concat(args)
 }
 
-/** Build one shell command string for the host subprocess service. */
-export function shellCommand(parts, platform) {
-  const list = parts.map(quoteArg).join(' ')
-  return platform === 'win32' ? ['cmd.exe', '/d', '/s', '/c', list] : ['/bin/sh', '-c', list]
+/** The web launcher's access token, as printed in its startup line. */
+const TOKEN_PATTERN = /[?&]token=([A-Za-z0-9._~-]+)/g
+
+/** Extract the last `?token=` printed in a log tail (null when there is none). */
+export function tokenFromLogs(text) {
+  const source = typeof text === 'string' ? text : ''
+  let token = null
+  const pattern = new RegExp(TOKEN_PATTERN.source, 'g')
+  let match
+  while ((match = pattern.exec(source)) !== null) token = match[1]
+  return token
+}
+
+/**
+ * Append the instance token to a URL that requires it. The web app answers 401
+ * at `/` without its token, so the token — which is only ever printed to the
+ * launcher's stdout — has to be carried by the health and page probes.
+ */
+export function tokenUrl(url, token) {
+  if (typeof token !== 'string' || token === '') return url
+  if (/[?&]token=/.test(url)) return url
+  return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(token)
 }
 
 function defaultFsOps() {
@@ -163,19 +331,35 @@ function defaultFsOps() {
 }
 
 function defaultHttp() {
+  const headersFor = (options) => {
+    const opts = options === undefined ? {} : options
+    return typeof opts.cookie === 'string' && opts.cookie !== '' ? { cookie: opts.cookie } : undefined
+  }
   return {
-    async get(url) {
-      const response = await fetch(url, { signal: AbortSignal.timeout(5000) })
+    async get(url, options) {
+      const headers = headersFor(options)
+      const response = await fetch(url, headers === undefined ? { signal: AbortSignal.timeout(5000) } : { headers: headers, signal: AbortSignal.timeout(5000) })
       return { status: response.status, ok: response.ok === true, body: await response.text() }
     },
-    async post(url, body) {
+    async post(url, body, options) {
+      const headers = Object.assign({ 'content-type': 'application/json' }, headersFor(options))
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: headers,
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(5000),
       })
       return { status: response.status, ok: response.ok === true, body: await response.text() }
+    },
+    /**
+     * Exchange the printed process token for the browser cookie. The server
+     * answers 303 with a Set-Cookie and redirects to the token-free directory;
+     * Node's fetch has no cookie jar, so the cookie is captured explicitly.
+     */
+    async exchangeToken(url) {
+      const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+      const setCookie = response.headers.get('set-cookie')
+      return { status: response.status, cookie: setCookie === null || setCookie === undefined ? null : String(setCookie).split(';')[0] }
     },
   }
 }
@@ -208,7 +392,6 @@ export function createHarness(options) {
   const opts = options === undefined ? {} : options
   const ctx = opts.ctx
   const clock = typeof opts.now === 'function' ? opts.now : Date.now
-  const platform = typeof opts.platform === 'string' ? opts.platform : process.platform
   const env = opts.env === undefined ? process.env : opts.env
   const fsOps = opts.fsOps === undefined ? defaultFsOps() : opts.fsOps
   const http = opts.http === undefined ? defaultHttp() : opts.http
@@ -284,6 +467,9 @@ export function createHarness(options) {
       productionVersion: instance.productionVersion,
       versionStatus: instance.versionStatus,
       versionMismatch: instance.versionStatus !== 'match',
+      token: instance.token,
+      cookie: instance.cookie !== null,
+      healthUrl: instanceHealthUrl(instance),
       restarts: state.restarts,
       startedAt: instance.startedAt,
       pluginInstalled: instance.pluginInstalled,
@@ -314,10 +500,13 @@ export function createHarness(options) {
   }
 
   function spawnProcess(parts, cwd, extraEnv, graceMs) {
-    const argv = shellCommand(parts, platform)
+    // The host subprocess service never shell-interprets argv, so the command
+    // goes in as an argument vector. Wrapping it in `cmd /c` used to mangle
+    // any executable path containing a space (Node escapes quotes for
+    // CreateProcess, cmd does not understand those escapes).
     try {
       const handle = subprocess.spawn({
-        argv: argv,
+        argv: parts,
         cwd: cwd,
         env: Object.assign({}, extraEnv === undefined ? {} : extraEnv),
         stdio: {
@@ -360,9 +549,9 @@ export function createHarness(options) {
 
   async function runInstall(config, projectPath, home) {
     const spawned = spawnProcess(
-      [config.dshCommand, 'plugin', '--profile', config.profile, 'add', config.candidatePlugin],
+      dshArgv(config, ['plugin', '--profile', config.profile, 'add', config.candidatePlugin]),
       projectPath,
-      { DSH_HOME: home, DSH_PROFILE: config.profile },
+      Object.assign({}, config.dshEnv, { DSH_HOME: home, DSH_PROFILE: config.profile }),
       config.stopTimeoutMs,
     )
     if (spawned.ok !== true) return spawned
@@ -412,19 +601,60 @@ export function createHarness(options) {
     } catch (error) {}
   }
 
+  /**
+   * Refresh the instance credentials from its log tail: the launcher prints a
+   * one-shot process token, which the server exchanges for the browser cookie.
+   * A stale token resets the cookie, so a restart can never reuse one.
+   */
+  async function refreshAuth(instance) {
+    const token = tokenFromLogs(instance.process === null ? state.lastLogs : logsText())
+    if (token !== null && token !== instance.token) {
+      instance.token = token
+      instance.cookie = null
+    }
+    if (instance.token === null || instance.cookie !== null) return instance
+    if (http === null || http === undefined || typeof http.exchangeToken !== 'function') return instance
+    const url = tokenUrl('http://127.0.0.1:' + String(instance.port) + '/', instance.token)
+    try {
+      const exchanged = await http.exchangeToken(url)
+      instance.lastExchange = exchanged
+      if (exchanged !== null && exchanged !== undefined && Number.isFinite(exchanged.status) && typeof exchanged.cookie === 'string' && exchanged.cookie !== '') {
+        instance.cookie = exchanged.cookie
+      }
+    } catch (error) {
+      instance.lastExchange = { status: null, error: String((error && error.message) || error) }
+    }
+    return instance
+  }
+
+  /** The health/page URL: bare with a cookie, token-carrying before the exchange. */
+  function instanceHealthUrl(instance) {
+    const path = tokenUrl('http://127.0.0.1:' + String(instance.port) + instance.config.healthPath, instance.token)
+    return instance.cookie === null ? path : 'http://127.0.0.1:' + String(instance.port) + instance.config.healthPath
+  }
+
+  /** Request options carrying the browser cookie when the exchange produced one. */
+  function cookieOptions(instance) {
+    return instance.cookie === null ? undefined : { cookie: instance.cookie }
+  }
+
   async function waitHealth(instance, exitedOf) {
     const config = instance.config
-    const url = 'http://127.0.0.1:' + String(instance.port) + config.healthPath
     const attempts = Math.max(1, Math.ceil(config.healthTimeoutMs / Math.max(1, config.healthIntervalMs)))
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const exited = typeof exitedOf === 'function' ? exitedOf() : null
       if (exited !== null && exited !== undefined) return false
+      await refreshAuth(instance)
+      const url = instanceHealthUrl(instance)
       try {
-        const response = await http.get(url)
+        const response = await http.get(url, cookieOptions(instance))
+        instance.lastHealth = { url: url, status: response === null || response === undefined ? null : response.status }
         if (response !== null && response !== undefined && response.status >= 200 && response.status < 400) {
           return (typeof exitedOf === 'function' ? exitedOf() : null) === null
         }
-      } catch (error) {}
+      } catch (error) {
+        instance.lastHealth = { url: url, status: null, error: String((error && error.message) || error) }
+      }
       await sleep(config.healthIntervalMs)
     }
     return false
@@ -466,6 +696,8 @@ export function createHarness(options) {
       productionVersion: productionVersion,
       versionStatus: versionStatus,
       pluginInstalled: false,
+      token: null,
+      cookie: null,
       process: null,
       config: config,
       startedAt: new Date(clock()).toISOString(),
@@ -474,7 +706,7 @@ export function createHarness(options) {
     state.status = 'starting'
     state.lastError = null
     state.lastLogs = ''
-    const fail = async (code, message) => {
+    const fail = async (code, message, extra) => {
       state.status = 'failed'
       state.lastError = message
       state.lastLogs = logsText()
@@ -483,7 +715,7 @@ export function createHarness(options) {
         await cleanRoot(root)
         state.instance = null
       }
-      return failure(code, message, { lastLogs: state.lastLogs, processExited: kill.exited === true })
+      return failure(code, message, Object.assign({ lastLogs: state.lastLogs, processExited: kill.exited === true }, extra === undefined ? {} : extra))
     }
     try {
       await fsOps.mkdir(home, { recursive: true })
@@ -508,9 +740,9 @@ export function createHarness(options) {
     }
     instance.pluginInstalled = true
     const web = spawnProcess(
-      [config.dshCommand, '--profile', config.profile, '--host', '127.0.0.1', '--port', String(port), '--no-open'],
+      dshArgv(config, ['--profile', config.profile, '--host', '127.0.0.1', '--port', String(port), '--no-open']),
       projectCopy,
-      { DSH_HOME: home, DSH_PROFILE: config.profile },
+      Object.assign({}, config.dshEnv, { DSH_HOME: home, DSH_PROFILE: config.profile }),
       config.stopTimeoutMs,
     )
     if (web.ok !== true) {
@@ -533,7 +765,17 @@ export function createHarness(options) {
       return fail('server-exited', 'the DSH web process exited before it became healthy (exit ' + String(exited.exitCode) + ')')
     }
     if (healthy !== true) {
-      return fail('health-timeout', 'the isolated DSH did not answer ' + config.healthPath + ' on port ' + String(port) + ' within ' + String(config.healthTimeoutMs) + 'ms')
+      return fail(
+        'health-timeout',
+        'the isolated DSH did not answer ' + config.healthPath + ' on port ' + String(port) + ' within ' + String(config.healthTimeoutMs) + 'ms',
+        {
+          healthUrl: instanceHealthUrl(instance),
+          token: instance.token,
+          cookie: instance.cookie !== null,
+          lastHealth: instance.lastHealth === undefined ? null : instance.lastHealth,
+          lastExchange: instance.lastExchange === undefined ? null : instance.lastExchange,
+        },
+      )
     }
     state.status = 'running'
     return Object.assign(snapshot(), { ok: true, versionMismatch: versionStatus !== 'match' })
@@ -552,9 +794,10 @@ export function createHarness(options) {
   async function health() {
     const instance = state.instance
     if (instance === null || state.status !== 'running') return { ok: false, code: 'not-running', message: 'no isolated DSH is running' }
-    const url = 'http://127.0.0.1:' + String(instance.port) + instance.config.healthPath
+    await refreshAuth(instance)
+    const url = instanceHealthUrl(instance)
     try {
-      const response = await http.get(url)
+      const response = await http.get(url, cookieOptions(instance))
       const ok = response !== null && response !== undefined && response.status >= 200 && response.status < 400
       return { ok: ok, status: response === undefined ? null : response.status, url: url }
     } catch (error) {
@@ -608,10 +851,14 @@ export function createHarness(options) {
     if (instance === null || state.status !== 'running') return failure('not-running', 'no isolated DSH is running')
     const port = instance.port
     const origin = 'http://127.0.0.1:' + String(port)
+    // The web app gates the shell behind the launch token printed on stdout;
+    // the plugin routes below are not gated, so they stay on the bare origin.
+    await refreshAuth(instance)
     const checks = {}
-    const page = await http.get(origin + '/')
-    checks.page = { ok: page.ok === true && page.status === 200, status: page.status, html: typeof page.body === 'string' && page.body.indexOf('<') >= 0 }
-    const healthResponse = await http.get(origin + instance.config.healthPath)
+    const pageUrl = instance.cookie === null ? tokenUrl(origin + '/', instance.token) : origin + '/'
+    const page = await http.get(pageUrl, cookieOptions(instance))
+    checks.page = { ok: page.ok === true && page.status === 200, status: page.status, html: typeof page.body === 'string' && page.body.indexOf('<') >= 0, token: instance.token !== null, cookie: instance.cookie !== null }
+    const healthResponse = await http.get(instanceHealthUrl(instance), cookieOptions(instance))
     checks.health = { ok: healthResponse.ok === true && healthResponse.status >= 200 && healthResponse.status < 400, status: healthResponse.status }
     const stateUrl = origin + '/godot-bridge/task-center/state?project=' + encodeURIComponent(instance.projectCopy)
     const stateResponse = await http.get(stateUrl)

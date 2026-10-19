@@ -4,14 +4,20 @@
 // used a made-up kill() would fail here. The real smoke is an optional
 // integration check, not part of npm test.
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   HARNESS_CONFIG_FILE,
   compareVersions,
   createHarness,
+  defaultProductionVersion,
+  dshArgv,
+  readAsarEntry,
   resolveHarnessConfig,
-  shellCommand,
   sourceVersionOf,
+  tokenFromLogs,
+  tokenUrl,
 } from '../../plugin/task-center/harness.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createRoleManager } from '../../plugin/task-center/dispatch.mjs'
@@ -28,7 +34,7 @@ const PROJECT = '/work/demo-project'
 const SOURCE = '/work/deepseek-harness'
 const CANDIDATE = '/work/godot-bridge'
 const norm = (path) => String(path).replace(/\\/g, '/')
-const commandOf = (call) => String(call.argv[call.argv.length - 1])
+const commandOf = (call) => call.argv.join(' ')
 
 function fakeFs() {
   const files = new Map()
@@ -74,7 +80,7 @@ function fakeProcess(options) {
   const handles = []
   let pid = 1000
   const spawn = (request) => {
-    const command = String(request.argv[request.argv.length - 1])
+    const command = request.argv.join(' ')
     const isWeb = command.indexOf('--no-open') >= 0
     calls.push({
       command: command,
@@ -127,8 +133,10 @@ function fakeProcess(options) {
 function fakeHttp(options) {
   const opts = options === undefined ? {} : options
   const calls = []
-  const respond = async (method, url, body) => {
-    calls.push({ method: method, url: url, body: body })
+  const COOKIE = 'dsh_auth=fixture-token'
+  const respond = async (method, url, body, requestOptions) => {
+    const cookie = requestOptions === undefined ? undefined : requestOptions.cookie
+    calls.push({ method: method, url: url, body: body, cookie: cookie })
     const custom = method === 'post' ? opts.post : opts.get
     if (typeof custom === 'function') return custom(url, body)
     if (opts.failAll === true) throw new Error('connection refused')
@@ -136,16 +144,27 @@ function fakeHttp(options) {
       if (opts.stateFails === true) return { status: 500, ok: false, body: 'error' }
       return { status: 200, ok: true, body: JSON.stringify({ ok: true, tasks: [] }) }
     }
+    if (opts.auth === true && method === 'get') {
+      // The real server: `/?token=` answers 303 + Set-Cookie, `/` answers 401
+      // without that cookie and 200 with it. Node's fetch keeps no cookie jar.
+      if (url.indexOf('token=fixture-token') >= 0) return { status: 303, ok: false, body: '' }
+      if (cookie === COOKIE) return { status: 200, ok: true, body: '<html><body>DSH</body></html>' }
+      return { status: 401, ok: false, body: 'unauthorized' }
+    }
     if (method === 'get') return { status: 200, ok: true, body: '<html><body>DSH</body></html>' }
     return { status: 200, ok: true, body: JSON.stringify({ ok: true }) }
   }
-  return {
-    calls: calls,
-    http: {
-      get: (url) => respond('get', url),
-      post: (url, body) => respond('post', url, body),
-    },
+  const http = {
+    get: (url, requestOptions) => respond('get', url, undefined, requestOptions),
+    post: (url, body, requestOptions) => respond('post', url, body, requestOptions),
   }
+  if (opts.auth === true) {
+    http.exchangeToken = async (url) => {
+      calls.push({ method: 'exchange', url: url })
+      return url.indexOf('token=fixture-token') >= 0 ? { status: 303, cookie: COOKIE } : { status: 401, cookie: null }
+    }
+  }
+  return { calls: calls, http: http }
 }
 
 function baseOptions(extra) {
@@ -213,6 +232,98 @@ function baseOptions(extra) {
   check('install and stop timeouts have defaults', fallback.installTimeoutMs === 120000 && fallback.stopTimeoutMs === 5000, JSON.stringify({ install: fallback.installTimeoutMs, stop: fallback.stopTimeoutMs }))
 }
 
+// ── CLI prefix args and extra environment (source CLIs, space-containing exe paths) ──
+{
+  const fs = fakeFs()
+  fs.setFile(
+    join(PROJECT, HARNESS_CONFIG_FILE),
+    JSON.stringify({
+      dshSource: SOURCE,
+      dshCommand: 'C:\\Program Files\\nodejs\\node.exe',
+      dshArgs: ['--import', '/x/tsx.mjs', '/x/apps/cli/src/bin.ts'],
+      dshEnv: { TSX_TSCONFIG_PATH: '/x/tsconfig.base.json' },
+    }),
+  )
+  const config = await resolveHarnessConfig({ projectPath: PROJECT, fsOps: fs, env: {} })
+  check('the CLI prefix args come from the project file', config.dshArgs.join(' ') === '--import /x/tsx.mjs /x/apps/cli/src/bin.ts', JSON.stringify(config.dshArgs))
+  check('argv[0] may contain spaces because no shell is involved', config.dshCommand === 'C:\\Program Files\\nodejs\\node.exe', config.dshCommand)
+  check('extra CLI environment comes from the project file', config.dshEnv.TSX_TSCONFIG_PATH === '/x/tsconfig.base.json', JSON.stringify(config.dshEnv))
+  const overridden = await resolveHarnessConfig({
+    projectPath: PROJECT,
+    fsOps: fs,
+    env: {
+      DSH_TEST_HARNESS_DSH: 'node',
+      DSH_TEST_HARNESS_DSH_ARGS: '["--import", "/y/loader.mjs", "/y/bin.ts"]',
+      DSH_TEST_HARNESS_DSH_ENV: '{"ELECTRON_RUN_AS_NODE":"1"}',
+    },
+  })
+  check('a JSON env list keeps prefix args intact', overridden.dshArgs.join(' ') === '--import /y/loader.mjs /y/bin.ts', JSON.stringify(overridden.dshArgs))
+  check('a JSON env map supplies CLI environment', overridden.dshEnv.ELECTRON_RUN_AS_NODE === '1', JSON.stringify(overridden.dshEnv))
+  const fallback = await resolveHarnessConfig({ projectPath: '/none', fsOps: fs, env: {} })
+  check('cli args and env default to empty', fallback.dshArgs.length === 0 && Object.keys(fallback.dshEnv).length === 0, JSON.stringify({ args: fallback.dshArgs, env: fallback.dshEnv }))
+}
+
+// ── the printed process token and the browser cookie ─────────────────────
+{
+  check('the process token is read from the launcher line', tokenFromLogs('dsh web: http://127.0.0.1:39000/?token=abc_DEF-123\n') === 'abc_DEF-123')
+  check('the last printed token wins', tokenFromLogs('?token=first\n?token=second\n') === 'second')
+  check('a log without a token yields null', tokenFromLogs('dsh web ready\n') === null)
+  check('the token is appended to a bare URL', tokenUrl('http://127.0.0.1:1/', 'abc') === 'http://127.0.0.1:1/?token=abc', tokenUrl('http://127.0.0.1:1/', 'abc'))
+  check('an existing token is not duplicated', tokenUrl('http://127.0.0.1:1/?token=x', 'abc') === 'http://127.0.0.1:1/?token=x')
+}
+
+// ── the packaged production version, read through app.asar ───────────────
+function syntheticAsar(entries) {
+  const files = {}
+  const bodies = []
+  let cursor = 0
+  for (const path of Object.keys(entries)) {
+    const text = Buffer.from(entries[path])
+    const parts = path.split('/')
+    let node = files
+    for (let index = 0; index < parts.length - 1; index += 1) {
+      if (node[parts[index]] === undefined) node[parts[index]] = { files: {} }
+      node = node[parts[index]].files
+    }
+    node[parts[parts.length - 1]] = { offset: String(cursor), size: text.length }
+    bodies.push(text)
+    cursor += text.length
+  }
+  const header = Buffer.from(JSON.stringify({ files: files }))
+  const headerSize = (8 + header.length + 3) & ~3
+  const head = Buffer.alloc(16)
+  head.writeUInt32LE(4, 0)
+  head.writeUInt32LE(headerSize, 4)
+  head.writeUInt32LE(headerSize - 4, 8)
+  head.writeUInt32LE(header.length, 12)
+  const padding = Buffer.alloc(8 + headerSize - 16 - header.length)
+  return Buffer.concat([head, header, padding, ...bodies])
+}
+{
+  const root = mkdtempSync(join(tmpdir(), 'dsh-harness-asar-'))
+  try {
+    const archive = join(root, 'resources', 'app.asar')
+    const cliManifest = JSON.stringify({ name: '@deepseek-ai/dsh', version: '9.8.7' })
+    const runtimeManifest = JSON.stringify({ version: '9.8.6' })
+    mkdirSync(join(root, 'resources'), { recursive: true })
+    writeFileSync(archive, syntheticAsar({ 'dsh/node_modules/@deepseek-ai/dsh/package.json': cliManifest, 'dsh/package.json': runtimeManifest }))
+    check('an asar entry reads as its file text', readAsarEntry(archive, 'dsh/package.json') === runtimeManifest, String(readAsarEntry(archive, 'dsh/package.json')))
+    check('a missing asar entry is null', readAsarEntry(archive, 'nope/package.json') === null)
+    check('a malformed archive is null, not a throw', readAsarEntry(join(root, 'nope.asar'), 'dsh/package.json') === null)
+    const execPath = join(root, 'DeepSeek Harness.exe')
+    check('the packaged dsh version comes from inside app.asar', defaultProductionVersion(null, { execPath: execPath, env: {} }) === '9.8.7', String(defaultProductionVersion(null, { execPath: execPath, env: {} })))
+    check('the explicit version wins over the packaged one', defaultProductionVersion('1.0.0', { execPath: execPath, env: {} }) === '1.0.0')
+    check('DSH_VERSION wins over the packaged one', defaultProductionVersion(null, { execPath: execPath, env: { DSH_VERSION: '2.0.0' } }) === '2.0.0')
+    const plain = join(root, 'plain')
+    mkdirSync(join(plain, 'resources', 'app'), { recursive: true })
+    writeFileSync(join(plain, 'resources', 'app', 'package.json'), JSON.stringify({ version: '3.2.1' }))
+    check('an unpacked install manifest is read too', defaultProductionVersion(null, { execPath: join(plain, 'x.exe'), env: {} }) === '3.2.1')
+    check('an install with no manifest is unknown, never a made-up match', defaultProductionVersion(null, { execPath: join(root, 'empty', 'x.exe'), env: {} }) === null)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
 // ── version comparison ─────────────────────────────────────────────────────
 {
   check('equal versions match', compareVersions('1.2.3', '1.2.3') === 'match')
@@ -222,7 +333,11 @@ function baseOptions(extra) {
   fs.setFile(join(SOURCE, 'package.json'), JSON.stringify({ version: '2.0.0' }))
   check('the source version is read from its package.json', (await sourceVersionOf(fs, SOURCE)) === '2.0.0')
 }
-check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', '--port', '39000'], 'linux').join(' ').indexOf('dsh web --port 39000') > 0)
+check(
+  'the CLI argv carries the command, its prefix args and the call args in order',
+  dshArgv({ dshCommand: 'node', dshArgs: ['--import', '/x/tsx.mjs'] }, ['--profile', 'web']).join(' ') === 'node --import /x/tsx.mjs --profile web',
+  dshArgv({ dshCommand: 'node', dshArgs: ['--import'] }, []).join(' '),
+)
 
 // ── start: isolated home/profile/port, candidate plugin, real argv ────────
 {
@@ -254,6 +369,37 @@ check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', 
   )
   check('the versions match', started.sourceVersion === '1.2.3' && started.productionVersion === '1.2.3' && started.versionStatus === 'match' && started.versionMismatch === false, JSON.stringify(started))
   check('logs capture the process output', rig.harness.logs().logs.indexOf('dsh web ready') >= 0, rig.harness.logs().logs)
+  await rig.harness.stop()
+}
+
+// ── prefix args and CLI environment reach both children ──────────────────
+{
+  const rig = baseOptions({
+    config: {
+      dshCommand: 'C:\\Program Files\\nodejs\\node.exe',
+      dshArgs: ['--import', '/x/tsx.mjs', '/x/bin.ts'],
+      dshEnv: { TSX_TSCONFIG_PATH: '/x/tsconfig.base.json' },
+    },
+  })
+  const started = await rig.harness.start(PROJECT)
+  const install = rig.proc.calls.filter((call) => call.command.indexOf(' plugin ') >= 0)[0]
+  const web = rig.proc.calls.filter((call) => call.web === true)[0]
+  const prefix = 'C:\\Program Files\\nodejs\\node.exe --import /x/tsx.mjs /x/bin.ts'
+  check(
+    'the install command carries the configured CLI and its prefix args',
+    started.ok === true && install !== undefined && install.command.indexOf(prefix + ' plugin --profile web add ') === 0,
+    JSON.stringify(install && install.command),
+  )
+  check(
+    'the web command carries the same prefix args',
+    web !== undefined && web.command.indexOf(prefix + ' --profile web --host 127.0.0.1 --port ') === 0,
+    JSON.stringify(web && web.command),
+  )
+  check(
+    'the configured CLI environment reaches the child',
+    web !== undefined && web.env.TSX_TSCONFIG_PATH === '/x/tsconfig.base.json' && web.env.DSH_HOME === started.home,
+    JSON.stringify(web && web.env),
+  )
   await rig.harness.stop()
 }
 {
@@ -385,6 +531,27 @@ check('shell commands are quoted for the platform', shellCommand(['dsh', 'web', 
   )
   const actionCall = rig.http.calls.filter((call) => call.method === 'post')[0]
   check('the task-center action API is exercised', actionCall !== undefined && actionCall.body.action === 'board', JSON.stringify(actionCall && actionCall.body))
+  await rig.harness.stop()
+}
+
+// ── the real web auth handshake: token -> 303 + cookie -> 200 ────────────
+{
+  const rig = baseOptions({ process: { webOutput: 'dsh web: http://127.0.0.1:39000/?token=fixture-token\n' }, http: { auth: true } })
+  const started = await rig.harness.start(PROJECT)
+  check('the printed process token is captured at start', started.ok === true && started.token === 'fixture-token', JSON.stringify({ ok: started.ok, token: started.token, code: started.code }))
+  check('the 303 exchange was kept as a cookie and the token leaves the health URL', started.ok === true && started.cookie === true && started.healthUrl === 'http://127.0.0.1:39000/', JSON.stringify({ cookie: started.cookie, healthUrl: started.healthUrl }))
+  const exchange = rig.http.calls.filter((call) => call.method === 'exchange')[0]
+  check('the one-shot token is exchanged once', exchange !== undefined && exchange.url.indexOf('token=fixture-token') > 0, JSON.stringify(exchange && exchange.url))
+  check(
+    'health is polled with the cookie, never the one-shot token',
+    rig.http.calls.every((call) => call.method === 'exchange' || call.url.indexOf('token=') < 0),
+    JSON.stringify(rig.http.calls.map((call) => call.url)),
+  )
+  const smoke = await rig.harness.smoke(PROJECT)
+  check('smoke passes through the cookie-authenticated page', smoke.ok === true && smoke.checks.page.status === 200 && smoke.checks.page.cookie === true, JSON.stringify(smoke))
+  const page = rig.http.calls.filter((call) => call.method === 'get' && call.url === 'http://127.0.0.1:39000/')[0]
+  check('the page request carries the exchanged cookie', page !== undefined && page.cookie === 'dsh_auth=fixture-token', JSON.stringify(page))
+  check('the plugin routes stay reachable without the cookie', rig.http.calls.some((call) => call.url.indexOf('/godot-bridge/task-center/state') >= 0), JSON.stringify(rig.http.calls.map((call) => call.url)))
   await rig.harness.stop()
 }
 {
