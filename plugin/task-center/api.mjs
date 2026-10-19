@@ -1187,8 +1187,10 @@ export function createApi(ctx, options) {
     })
   }
 
-  /** Renew the lease of the caller's running tasks when it is half spent. A
-   * tool call is a heartbeat; there is no separate timer. */
+  /** Renew the lease of every running task the caller owns. Any activity by the
+   * assignee is a heartbeat and renews UNCONDITIONALLY — there is no "lease is
+   * half spent" gate, so a long task cannot drift into expiry between two calls.
+   * The scheduler's host tick covers an assignee that produces no calls at all. */
   async function heartbeat(projectPath, owner) {
     if (owner === null || owner === undefined) return
     const read = await readBoardOrFail(projectPath)
@@ -1198,7 +1200,7 @@ export function createApi(ctx, options) {
       if (task.status !== 'running' || task.assignee === null) return false
       const sessionMatch = owner.session !== null && owner.session !== undefined && task.assignee.session === owner.session
       const nameMatch = owner.name !== null && owner.name !== undefined && task.assignee.name === owner.name
-      return (sessionMatch || nameMatch) && task.leaseUntil !== null && Date.parse(task.leaseUntil) - now < TASK_LEASE_MS / 2
+      return sessionMatch || nameMatch
     })
     if (owned.length === 0) return
     const applied = await state.apply(
@@ -1217,7 +1219,10 @@ export function createApi(ctx, options) {
   function ownerOf(context) {
     if (context === undefined || context === null) return null
     if (context.role === 'user') return null
-    return { session: context.agent === undefined ? null : context.agent.id, name: context.by }
+    // The unified heartbeat path calls this for EVERY action, so an explicit
+    // "no agent" (null) must read as "no owner" instead of throwing.
+    const agent = context.agent === undefined || context.agent === null ? null : context.agent
+    return { session: agent === null || agent.id === undefined || agent.id === null ? null : agent.id, name: context.by }
   }
 
   function assigneeMatches(task, owner) {
@@ -1230,9 +1235,9 @@ export function createApi(ctx, options) {
     return task.assignee.session === null || task.assignee.session === undefined
   }
 
+  /** One board write. The heartbeat is NOT repeated here: perform() already ran it
+   * for this call, so re-running it would double-write for every write action. */
   async function mutate(projectPath, mutator, context) {
-    const owner = ownerOf(context)
-    if (owner !== null) await heartbeat(projectPath, owner)
     const applied = await state.apply(projectPath, mutator, writePolicyFor(projectPath))
     if (applied.failed !== null) return applied.failed
     reconcileLocks(applied.board)
@@ -1525,10 +1530,13 @@ export function createApi(ctx, options) {
     }
     remember(projectPath)
     const now = clock()
-    if (READ_ACTIONS.indexOf(action) >= 0) {
-      const reader = ownerOf(context)
-      if (reader !== null) await heartbeat(projectPath, reader)
-    }
+    // Any activity by the assignee renews its lease and file locks, so the
+    // heartbeat runs ONCE here, before the action, for every action an agent can
+    // call. Routing it through one place is what keeps 'lock' and 'unlock' (which
+    // never write the board and used to bypass mutate()) from silently drifting
+    // into expiry, and it stops an action from renewing twice.
+    const owner = ownerOf(context)
+    if (owner !== null) await heartbeat(projectPath, owner)
 
     if (action === 'skillsCatalog') {
       const denied = roleAdminRefusal(context, 'The skill catalog belongs to the user; open it from the task center panel.')

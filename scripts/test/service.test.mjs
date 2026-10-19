@@ -2,7 +2,7 @@
 // settings. No filesystem and no Cordis — service.mjs is pure.
 
 import { emptyBoard } from '../../plugin/task-center/board.mjs'
-import { TASK_LEASE_MS } from '../../plugin/task-center/schema.mjs'
+import { TASK_HEARTBEAT_MS, TASK_LEASE_MS } from '../../plugin/task-center/schema.mjs'
 import { mergeEligible, recordMergeResult } from '../../plugin/task-center/merge.mjs'
 import {
   approveReview,
@@ -24,6 +24,7 @@ import {
   requestChanges,
   readyTasks,
   renewLeases,
+  renewRunningLeases,
   reopenTask,
   retryTask,
   setDispatch,
@@ -234,6 +235,53 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   const final = expireLeases(board, T0 + 3 * TASK_LEASE_MS + 10, 3)
   check('a task at the attempt budget blocks', findTask(final.board, 'T-1').status === 'blocked', findTask(final.board, 'T-1').status)
   check('and says why', findTask(final.board, 'T-1').dispatch.error === 'lease expired')
+}
+
+// ── lease mitigation: 60 minutes, activity renews, fixed host heartbeat ────
+{
+  check('the task lease is 60 minutes', TASK_LEASE_MS === 60 * 60 * 1000, String(TASK_LEASE_MS))
+  check('the host heartbeat window is a fixed interval, not half the lease', TASK_HEARTBEAT_MS > 0 && TASK_HEARTBEAT_MS * 2 <= TASK_LEASE_MS, String(TASK_HEARTBEAT_MS))
+  let board = make(base(), 'A').board
+  board = claimTask(board, 'T-1', { name: 'w', session: 's-w' }, T0).board
+  check('claiming starts the 60 minute lease', Date.parse(findTask(board, 'T-1').leaseUntil) === T0 + TASK_LEASE_MS)
+  // The old 15 minute lease is gone: an idle lease survives well past it...
+  const pastOldLease = T0 + 16 * 60 * 1000
+  const atSixteen = expireLeases(board, pastOldLease, 3)
+  check('a lease is not expired sixteen minutes in (the old 15 minute bound is gone)', atSixteen.events.length === 0 && findTask(atSixteen.board, 'T-1').status === 'running', JSON.stringify(atSixteen.events))
+  check('the task is still running sixteen minutes in', findTask(board, 'T-1').status === 'running')
+  // ...and only a full 60 idle minutes return it to the pool.
+  check('a lease is not expired one millisecond before the 60 minutes', expireLeases(board, T0 + TASK_LEASE_MS - 1, 3).events.length === 0)
+  const lapsed = expireLeases(board, T0 + TASK_LEASE_MS + 1, 3)
+  check('sixty idle minutes expire the lease', lapsed.events.length === 1 && findTask(lapsed.board, 'T-1').status === 'pending', JSON.stringify(lapsed.events))
+}
+
+{
+  let board = make(base(), 'A').board
+  board = claimTask(board, 'T-1', { name: 'w', session: 's-w' }, T0).board
+  const leaseEnd = T0 + TASK_LEASE_MS
+  // Not due yet: the host heartbeat must not write on every tick.
+  const early = renewRunningLeases(board, leaseEnd - TASK_HEARTBEAT_MS - 1, {})
+  check('the host heartbeat leaves a lease that is not due alone', early.ok === true && early.renewed.length === 0 && Date.parse(findTask(early.board, 'T-1').leaseUntil) === leaseEnd, JSON.stringify(early.renewed))
+  // Inside the fixed window: extended by the full lease, independent of any half-way point.
+  const due = renewRunningLeases(board, leaseEnd - TASK_HEARTBEAT_MS + 1, {})
+  check(
+    'the host heartbeat extends a due lease by the full 60 minutes',
+    due.ok === true && due.renewed.join(',') === 'T-1' && Date.parse(findTask(due.board, 'T-1').leaseUntil) === leaseEnd - TASK_HEARTBEAT_MS + 1 + TASK_LEASE_MS,
+    JSON.stringify(due.renewed),
+  )
+  // A lapsed lease is never revived: that is the reap's job.
+  const afterLapse = renewRunningLeases(board, leaseEnd + 1, {})
+  check('the host heartbeat never revives a lapsed lease', afterLapse.ok === true && afterLapse.renewed.length === 0 && Date.parse(findTask(afterLapse.board, 'T-1').leaseUntil) === leaseEnd, JSON.stringify(afterLapse.renewed))
+  check('and the lapsed task is still expired', findTask(board, 'T-1').status === 'running' && Date.parse(findTask(board, 'T-1').leaseUntil) <= leaseEnd + 1)
+  // Scope: only running tasks with a known assignee.
+  const reviewing = submitTask(board, 'T-1', { evidence: 'done' }, T0 + 1, 'w').board
+  check('a task outside running is not heartbeated', renewRunningLeases(reviewing, leaseEnd - 1, {}).renewed.length === 0)
+  const orphan = JSON.parse(JSON.stringify(board))
+  orphan.tasks[0].assignee = null
+  check('a running task without an assignee is not heartbeated', renewRunningLeases(orphan, leaseEnd - 1, {}).renewed.length === 0)
+  // A shorter window is honoured (configurable, for tests and future tuning).
+  const narrow = renewRunningLeases(board, leaseEnd - 1000, { windowMs: 500 })
+  check('the heartbeat window is configurable', narrow.renewed.length === 0 && renewRunningLeases(board, leaseEnd - 1000, { windowMs: 5000 }).renewed.length === 1)
 }
 
 // submit enters the review phase: submission is not completion
