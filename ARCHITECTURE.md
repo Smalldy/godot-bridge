@@ -128,7 +128,7 @@ A task walks exactly one machine: `pending → running → reviewing → testing
 ### Worktree creation and robustness
 
 - A task checkout lives at `<project>/.worktrees/<taskId>-<attempt>` on branch `task/<taskId>-<attempt>`. The execution model requires it: dispatch refuses to start when the project cannot host a worktree, and a claim-time failure releases the task's locks, pauses dispatch and records why.
-- Every `git worktree add` has its **own 180-second timeout** instead of sharing the general git/send budget. A timeout or a failed add **rolls back** everything it may have registered — the worktree entry, the half-created branch, the lock file and the pruned metadata — then retries **once**.
+- Every `git worktree add` has its **own 180-second timeout** instead of sharing the general git/subprocess budget. A timeout or a failed add **rolls back** everything it may have registered — the worktree entry, the half-created branch, the lock file and the pruned metadata — then retries **once**.
 - Creation is **serialised per repository**, so two tasks (or a task and a candidate build) cannot race the same worktree metadata. If the retry also fails, the failure is reported readably instead of leaving a half-registered checkout that would break every later dispatch.
 
 ### Roles
