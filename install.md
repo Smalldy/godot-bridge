@@ -5,16 +5,21 @@
 ## Files
 
 ```
-plugin/godot-bridge.mjs           # the plugin (standard DSH module: named exports name/inject/apply)
-client/client.js                  # browser half: the row's config page on the Plugins page (dsh.client)
+plugin/godot-bridge.mjs           # the plugin's tool row (standard DSH module: named exports name/inject/apply)
+plugin/task-center/*.mjs          # the task center's host half (board, schema, service, dispatch, api, git, roles, harness)
+client/client.js                  # browser half: the engine-path config page AND the task-center panel (one dsh.client bundle)
 plugin/mcp_interaction_server.gd  # vendored from godot-mcp (MIT) — in-game TCP server autoload
 plugin/godot_operations.gd        # vendored from godot-mcp (MIT) — headless ops script
 plugin/validate_script.gd         # vendored from godot-mcp (MIT) — GDScript compile-check
 package.json                      # dsh.bundle + dsh.client manifest (for `dsh plugin add`)
-cordis.patch.yml                  # bundle patch layer (inserts the tool row)
+cordis.patch.yml                  # bundle patch layer (inserts BOTH rows: the tool row and the task center)
 ```
 
 The plugin is a standard DSH bundle module: it imports `defineTool` from `@deepseek-ai/dsh-tools` and registers the seventeen `godot_*` tools via `ctx.tools.register`. It uses named exports (`export const name`, `export const inject`, `export function apply`) — the cordis loader's `unwrapExports` (`exports.default ?? exports`) turns the namespace into the plugin object. Do not add a stray `export default`: it would make `unwrapExports` collapse to that single value and silently drop `name`/`inject`/`apply`.
+
+Since 0.3.0 the bundle inserts **two rows of the same package** (`cordis.patch.yml`): `tool-godot-bridge` (the seventeen `godot_*` tools) and `task-center` (`godot-bridge/task-center`: the `task_center` tool plus the task-center panel). Cards follow bundles and components follow rows, so both rows sit on one Plugins-page card, and one browser bundle (`client/client.js`) carries both surfaces. `task_center` is deliberately not a `godot_*` tool, so "seventeen `godot_*` tools" stays exact.
+
+The task center keeps its **runtime state inside the project** that uses it, never in the package or the profile: `<project>/.agents/tasks.json` (the board), `.agents/roles.json` (role profiles) and `.agents/test-harness.json` (harness configuration). They are working state — add `.agents/` to that project's `.gitignore`. For the board, roles, merge queue and harness flow see [README → Task Center](README.md#task-center) and [README → Isolated DSH test harness](README.md#isolated-dsh-test-harness); this page stays on install and maintenance.
 
 Because it imports `@deepseek-ai/*`, the module must resolve the harness dependency tree at load time. DSH 0.2 does that with the launcher's runtime resolution instead of a physical fallback layer: a bundle installed into `$DSH_HOME/profiles/<name>/node_modules` is routed to the installation's copies automatically, while a `link:` checkout — whose real path lies outside the profiles tree, because Node's ESM loader resolves symlinks before importing — is routed only for names the plugin declares in its own `peerDependencies`. godot-bridge ≥ 0.1.8 declares `@deepseek-ai/dsh-tools` and `@deepseek-ai/schemastery` (both `peerDependenciesMeta.optional`, so pnpm never installs harness packages from the registry). Keep that declaration when you edit the manifest — `npm run check` fails without it. Do **not** copy the file into a user agent preset (`~/.dsh/.agent-presets/...`): that location is outside every resolution scope and cannot resolve `@deepseek-ai/dsh-tools`.
 
@@ -26,7 +31,7 @@ Because it imports `@deepseek-ai/*`, the module must resolve the harness depende
 dsh plugin --profile web add github:Smalldy/godot-bridge
 ```
 
-`dsh plugin` is a pnpm forwarder: it installs the package into the profile and — because the package's `dsh.bundle` manifest points at `cordis.patch.yml`, which inserts the `tool-godot-bridge` row (referenced by package name) — appends `godot-bridge` to the profile's `dsh.profile.bundles` layer list. Pure ESM + assets, no build script, so a git install needs no `allowBuilds` exemption. After a restart, every session on that profile has the seventeen tools.
+`dsh plugin` is a pnpm forwarder: it installs the package into the profile and — because the package's `dsh.bundle` manifest points at `cordis.patch.yml`, which inserts the `tool-godot-bridge` and `task-center` rows (both referenced by package name) — appends `godot-bridge` to the profile's `dsh.profile.bundles` layer list. Pure ESM + assets, no build script, so a git install needs no `allowBuilds` exemption. After a restart, every session on that profile has the seventeen `godot_*` tools plus `task_center`, and the Plugins page shows the task-center panel.
 
 The same command installs a local checkout or a tarball:
 
@@ -37,10 +42,10 @@ dsh plugin --profile web add ./godot-bridge-0.2.0.tgz   # pnpm pack output
 
 ### Local development (`link:`)
 
-A `link:` dependency (`"godot-bridge": "link:/path/to/godot-bridge"` — what pnpm writes when you add a local checkout to the profile) turns the profile's `node_modules/godot-bridge` into a symlink to your working copy, so code edits take effect without reinstalling: the browser half (`client/client.js`) is hot-swapped by the host's artifact polling within about a second, and the plugin's host half is re-imported on a profile reload. A `package.json` edit is the exception — see below. It is also the one install shape the launcher's runtime resolution cannot route by itself: the plugin's real path sits outside the profiles tree, and a *linked root* gets harness packages routed only for names the plugin declares in its `peerDependencies`. That declaration is why 0.1.8 exists — without it the whole bundle fails to import (`ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-tools' imported from …godot-bridge.mjs`) and none of the seventeen tools registers.
+A `link:` dependency (`"godot-bridge": "link:/path/to/godot-bridge"` — what pnpm writes when you add a local checkout to the profile) turns the profile's `node_modules/godot-bridge` into a symlink to your working copy, so code edits take effect without reinstalling: the browser half (`client/client.js`) is hot-swapped by the host's artifact polling within about a second, and the plugin's host half is re-imported on a profile reload. A `package.json` edit is the exception — see below. It is also the one install shape the launcher's runtime resolution cannot route by itself: the plugin's real path sits outside the profiles tree, and a *linked root* gets harness packages routed only for names the plugin declares in its `peerDependencies`. That declaration is why 0.1.8 exists — without it the whole bundle fails to import (`ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-tools' imported from …godot-bridge.mjs`) and none of the seventeen `godot_*` tools (nor `task_center`) registers.
 
 - Prefer a non-symlinked install when you do not need live edits: `pnpm pack`, then `dsh plugin --profile web add ./godot-bridge-0.2.0.tgz` (reinstall after each change).
-- After changing the plugin's host half, reload the profile (Plugins page) or restart DSH, then confirm the seventeen tools. After changing `package.json` — the `dsh.client` declaration, `exports`, `files` — **restart DSH**: the client-module scan reads a package's manifest once per Loader row and caches it until the host restarts, so a reload is not enough. `npm run check` guards the contract and `scripts/diagnose-dsh-resolution.mjs` reports what the launcher actually routes — see [README → DSH 0.2+ compatibility](README.md#dsh-02-compatibility-and-troubleshooting).
+- After changing the plugin's host half, reload the profile (Plugins page) or restart DSH, then confirm the seventeen `godot_*` tools and the task-center panel. After changing `package.json` — the `dsh.client` declaration, `exports`, `files` — **restart DSH**: the client-module scan reads a package's manifest once per Loader row and caches it until the host restarts, so a reload is not enough. `npm run check` guards the contract and `scripts/diagnose-dsh-resolution.mjs` reports what the launcher actually routes — see [README → DSH 0.2+ compatibility](README.md#dsh-02-compatibility-and-troubleshooting).
 
 ## Uninstall
 
@@ -48,7 +53,7 @@ A `link:` dependency (`"godot-bridge": "link:/path/to/godot-bridge"` — what pn
 dsh plugin --profile web remove godot-bridge
 ```
 
-`dsh plugin remove` forwards to `pnpm remove` in the profile directory and then reconciles `dsh.profile.bundles` — the dependency **and** the `godot-bridge` bundle layer are both removed from the profile's `package.json`. After a restart, the seventeen `godot_*` tools are gone from sessions on that profile. The `web` profile itself (the standard one) is untouched; removing a plugin never creates or deletes a profile.
+`dsh plugin remove` forwards to `pnpm remove` in the profile directory and then reconciles `dsh.profile.bundles` — the dependency **and** the `godot-bridge` bundle layer are both removed from the profile's `package.json`. After a restart, the seventeen `godot_*` tools, the `task_center` tool and the task-center panel are gone from sessions on that profile. The `web` profile itself (the standard one) is untouched; removing a plugin never creates or deletes a profile.
 
 Notes:
 

@@ -20,7 +20,7 @@
 - **角色上下文编辑器**：唯一主卡，顶部 实现/测试/评审 分段页签；只读身份行 + profile 选择器与阶段绑定；可编辑上下文模板 + 宿主变量目录（插入 chips + 说明）；宿主固定块（职责、权限边界、结论格式——由真实 brief 生成器产生并标注“宿主固定”）；SKILLS 输入 + 目录弹窗；FORK / 保存 / 应用。Fork/保存成功后编辑器与“应用”的目标立即切换（不等下一轮轮询）；保存失败保留草稿与已编辑内容。
 - **角色上下文模板与技能管理**：profile prompt 是模板，可注入 `{{TASK_ID}}`、`{{TASK_TITLE}}`、`{{SPEC}}`、`{{COMPLETIONS_DEF}}`、`{{GIT_INFO}}`、`{{PROJECT}}`、`{{LEAD}}`、`{{ROLE}}`、`{{STAGE}}`；保存时出现其它变量会以 `invalid-role-variable` 拒绝并列出允许变量，空模板合法。新增仅用户、只读的 `skillsCatalog` 动作，从宿主技能注册表（`ctx.get('skills').list`）列技能供面板勾选，服务缺失时降级为可读的 `skills-unavailable`。
 - **隔离 DSH 测试 harness**：`harnessStart`/`harnessStatus`/`harnessSmoke`/`harnessRestart`/`harnessStop`（仅 tester 或用户）启动用完即弃的 DSH 实例——独立 `DSH_HOME`、profile、空闲端口与项目副本——把候选插件装进去，证明页面、health、插件行与任务中心路由可应答，且完全不碰生产 profile、会话与端口。版本不匹配（或无法确定版本）时 smoke 失败而不是通过。
-- **worktree 创建健壮性**：每次 `git worktree add` 使用独立的 180 秒超时，不再与通用 git/发送预算共用；超时或失败会回滚它可能登记的一切（worktree 条目、分支、锁、已 prune 的元数据），失败后重试一次，且同一仓库内的创建串行执行，两个任务不会争抢同一份 worktree 元数据。无法承载 worktree 的项目仍在派发前以可读原因拒绝。
+- **worktree 创建健壮性**：每次 `git worktree add` 使用独立的 180 秒超时，不再与通用的 git 与子进程预算共用；超时或失败会回滚它可能登记的一切（worktree 条目、分支、锁、已 prune 的元数据），失败后重试一次，且同一仓库内的创建串行执行，两个任务不会争抢同一份 worktree 元数据。无法承载 worktree 的项目仍在派发前以可读原因拒绝。
 - **执行者与文件锁可见**：执行者页显示 Lead、上限、忙/闲/启动中/失败计数与每个 WorkAgent 的当前任务；文件锁页显示持有任务/Agent 以及“会等待该文件”的就绪任务（竞争提示，不是 FIFO 队列）。
 - **开始派发需要同意**：agent 调 `start` 只写入 `dispatch.request`，不会启动调度器；面板显示发起者与说明，并提供批准/拒绝。`pause` 双方都可立即调用。
 - **GUI**：重写面板，包含七列看板、队列、执行者、文件锁、状态与角色视图、派发设置、待批准 start 横幅，以及 2.5 秒宿主快照轮询。

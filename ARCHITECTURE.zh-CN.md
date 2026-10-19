@@ -128,7 +128,7 @@ godot-bridge 走 harness 的**原始 `subprocess` 服务**——shell 执行器�
 ### worktree 创建与健壮性
 
 - 任务 checkout 位于 `<项目>/.worktrees/<taskId>-<attempt>`，分支 `task/<taskId>-<attempt>`。这是执行模型的前提：项目无法承载 worktree 时派发直接拒绝开始；claim 时失败会释放该任务的锁、暂停派发并记录原因。
-- 每次 `git worktree add` 都有**独立的 180 秒超时**，不与通用 git/发送预算共用。超时或失败会**回滚**它可能登记的一切——worktree 条目、半建的分支、锁文件、已 prune 的元数据——然后**重试一次**。
+- 每次 `git worktree add` 都有**独立的 180 秒超时**，不与通用的 git 与子进程预算共用。超时或失败会**回滚**它可能登记的一切——worktree 条目、半建的分支、锁文件、已 prune 的元数据——然后**重试一次**。
 - 创建按仓库**串行化**，两个任务（或任务与候选构建）不会争抢同一份 worktree 元数据。若重试仍失败，会以可读方式报告，而不是留下一个半登记的 checkout 破坏后续所有派发。
 
 ### 角色
