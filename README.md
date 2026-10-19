@@ -35,26 +35,41 @@ The remaining godot-mcp tools were implemented in the MCP server's own Node proc
 
 ## Task Center
 
-The same package mounts a second component row, `godot-bridge/task-center`: a project task board, a dependency-driven dispatcher, file locks, and a centre-column GUI panel (sidebar entry “Tasks”).
+The same package mounts a second component row, `godot-bridge/task-center`: a project task board, a phase-driven dispatcher with independent review and testing, file locks, a role system, and a centre-column GUI panel (sidebar entry “Tasks”).
 
 ### Execution flow
 
-Every task runs in its own git worktree — `<project>/.worktrees/<taskId>-<attempt>` on branch `task/<taskId>-<attempt>`, created when the task is claimed. A task is never dispatched into the shared checkout; if the project cannot host a worktree, dispatch refuses to start instead.
+Every task runs in its own git worktree — `<project>/.worktrees/<taskId>-<attempt>` on branch `task/<taskId>-<attempt>`, created when the task is claimed. A task is never dispatched into the shared checkout; if the project cannot host a worktree, dispatch refuses to start instead. Each task walks one phase machine — `pending → running → reviewing → testing → done`, with `blocked` / `cancelled` as exits:
 
-1. **Work**: the assignee edits only that checkout and runs the tests there.
-2. **Submit**: `submit` commits the worktree and opens a merge request (base = the current target head, head = the new commit, changed files = the base..head diff).
-3. **Testing**: with `testing = self` (the default) the assignee's own verification is the record; with `testing = independent` the host checks the branch out in a temporary `verify-<taskId>` worktree, runs `npm run verify` there, and writes the `verdict` itself — a request cannot be merged until that verdict passes. No agent decides pass/fail.
-4. **Merge**: a host sweep every 5 seconds enqueues ready requests into the serial merge queue, which integrates the branch in a throwaway worktree, runs the project verification there, and only when it is green fast-forwards the target branch and removes the now-merged task worktree.
-5. **Exceptions**: a conflict or a red verification marks the request and notifies the owner; the target branch is never touched. `mergeRequest` / `rejectMerge` / `refreshMerge` stay available to the user or the `merger` teammate for manual integration, audit or repair.
+1. **Work**: the assignee edits only that checkout, runs the project tests there, and may load the skills its role profile lists.
+2. **Submit**: `submit` commits the worktree, records the base..head diff and moves the task to REVIEW. Submitting is not completion.
+3. **Review**: the host provisions the reviewer role (a read-only, independent context) and sends it a per-round brief — spec and acceptance criteria, the diff, declared vs actual files, the worker evidence and the review checklist. `approveReview` moves the task to TESTING; `requestChanges` returns it to running with concrete reasons. Three rounds without approval block the task; an undecided review is reminded after 10 minutes and blocked after another 10.
+4. **Test**: an approval builds a throwaway candidate `<project>/.worktrees/test-<id>` on branch `test/<id>` from the current target head plus the task branch, and hands it to the tester role with a self-contained brief (acceptance criteria, candidate path/branch, runbook, evidence format). The tester records `passTest` or `failTest` with evidence; a failure returns the task to running with that evidence. An undecided test round is reminded after 10 minutes and blocked at 20.
+5. **Merge**: a passed test is merged by the host's serial merge queue (a five-second sweep) — one accepted candidate per task, integrated in a throwaway `merge-<id>` worktree and merged at most once. If the target head moved after the verdict, the candidate is rebuilt from the new head and the test round restarts instead of merging a stale tree.
+6. **Exceptions**: a conflict or a moved target marks the request and notifies the owner; the target branch is never touched. `mergeRequest` / `rejectMerge` / `refreshMerge` stay available to the user or the `merger` teammate for manual integration, audit or repair.
 
-- **Board**: `<project>/.agents/tasks.json`. Schema v2; a v1 board migrates on read. Duplicate ids, malformed entries and future versions are refused instead of overwritten. Add the file to the project's `.gitignore` — it is working state, not source.
-- **Action API**: the `task_center` tool and `POST /godot-bridge/task-center/action` share one vocabulary: `create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`.
-- **Dependencies**: `B.dependsOn = [A]` means B runs only after A is done. Ready tasks are ordered by `priority` descending, then creation time. `A <- B <- C`, `D`, `E <- F` dispatch A, D, E first; A's completion dispatches B, E's completion dispatches F.
-- **Dispatch**: start/pause is a project-level state persisted in the board. The GUI exposes one number, **maximum concurrency**: at most that many tasks run at once; the WorkAgent cap is derived as concurrency + 1, a worker is spawned when none is idle, and a task blocks after 3 consecutive failures (the advanced `settings` action can still override these). Every dispatch claims the task first (a 60-minute lease that any assignee activity renews, plus a fixed host heartbeat), then hands it to Agent Teams — `sendMessage` to an idle member, otherwise `spawnTeammate`. A lapsed lease is settled by liveness: a live holder keeps the task, and only a gone/failed holder (or one past the four-hour per-attempt cap) is handed over, with the next attempt adopting the previous checkout instead of restarting. A host restart recovers claims from the previous process.
+- **Board**: `<project>/.agents/tasks.json`. Schema v2; a v1 board migrates on read (old statuses collapse into the current vocabulary, `blockedBy` becomes `dependsOn`, a stale claim is released). Duplicate ids, malformed entries and future versions are refused instead of overwritten. Add the file to the project's `.gitignore` — it is working state, not source.
+- **Action API**: the `task_center` tool and `POST /godot-bridge/task-center/action` share one vocabulary: `create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / approveReview / requestChanges / passTest / failTest / mergeRequest / refreshMerge / rejectMerge / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject / rolesList / rolesCreate / rolesUpdate / rolesDelete / rolesBind / rolesDrain / rolesReplace / rolesReset / skillsCatalog / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`.
+- **Dependencies**: `B.dependsOn = [A]` means B runs only after A is done **and merged**. Ready tasks are ordered by `priority` descending, then creation time. `A <- B <- C`, `D`, `E <- F` dispatch A, D, E first; A's completion dispatches B, E's completion dispatches F.
+- **Dispatch**: start/pause is a project-level state persisted in the board. The GUI exposes one number, **maximum concurrency**: at most that many tasks run at once; the WorkAgent cap is derived as concurrency + 1, a worker is spawned when none is idle, and a task blocks after 3 consecutive failures (the advanced `settings` action can still override these). Every dispatch claims the task first (a 60-minute lease that any assignee activity renews, plus a fixed host heartbeat), then hands it to Agent Teams — `sendMessage` to an idle member, otherwise `spawnTeammate`.
+- **Leases and liveness**: a running task holds a **60-minute lease**. Every `task_center` call by the assignee renews it **unconditionally**, and a host heartbeat in every pass renews it on a fixed five-minute cadence, so a long tool run cannot lose its claim. A lapsed lease is settled by **liveness**, not by the clock: a live holder keeps the task (bounded by a four-hour per-attempt cap) and only a gone/failed session is handed over, after an interrupt. One task never has two live agents, and a handover adopts the previous attempt's worktree and branch when it left a commit. The board exposes `leaseRemaining` / `leaseReminder` and records `lease-extended` / `lease-handover` / `attempt-adopt` events.
+- **Roles**: `<project>/.agents/roles.json` (version 1; the normalised `worker` / `reviewer` / `tester` profiles always exist). A profile names one of the three fixed kinds, its stage binding (implement / review / test), 1–8 instances, allowed permissions, a fresh-or-fork context, the skills to load and a prompt **template**. The host provisions a missing stage role through the live Lead and replaces a dead or timed-out instance; reviewer and tester are read-only independent contexts and a worker can never decide its own verdict.
+  - Manage them in the GUI **Roles** tab: pick 实现 / 测试 / 评审, read the bound profile's host context, **Fork** it, edit the template and skills, **Save**, then **Apply** (bind the stage and replace the running instances). `rolesList` / `rolesCreate` / `rolesUpdate` / `rolesDelete` / `rolesBind` / `rolesDrain` / `rolesReplace` / `rolesReset` do the same over the action API. All role administration and `skillsCatalog` are **user-only** (hidden from the tool enum, refused for agents).
+  - A template may inject `{{TASK_ID}}`, `{{TASK_TITLE}}`, `{{SPEC}}`, `{{COMPLETIONS_DEF}}`, `{{GIT_INFO}}`, `{{PROJECT}}`, `{{LEAD}}`, `{{ROLE}}` and `{{STAGE}}`. Any other `{{NAME}}` is refused at save time with `invalid-role-variable` and the allowed list; an empty template is legal. The fixed header, the task data and the duties / permission-boundary / verdict sections are host-generated and never template output.
 - **File locks**: `writeFiles` declares what a task will write. The scheduler acquires all of them atomically before dispatch and releases them on completion, block, cancel or lease handover. An agent may `lock` extra files for its running task. Paths canonicalise to project-relative POSIX paths; a directory lock conflicts with every child path.
-- **GUI**: board (ready / waiting / running / done / blocked), queue, workers and locks views; start/pause, create/edit, submit/retry/reopen, dispatch settings. The workers view shows the lead, cap, busy/idle/provisioning/failed counts and each WorkAgent's current task. The locks view names the holder task/agent and the pending ready tasks that would wait on the file; waiters are advisory contention, not a FIFO queue. A pending start request appears as a banner with approve/reject. It polls the host snapshot every 2.5 s.
+- **GUI**: six tabs — board (seven columns: ready, waiting, running, reviewing, testing, done, blocked), queue, workers, locks, status and roles. The workers view shows the lead, cap, busy/idle/provisioning/failed counts and each WorkAgent's current task; the locks view names the holder task/agent and the pending ready tasks that would wait on the file (advisory contention, not a FIFO queue); the status view lists live agents, the worktree inventory and a host activity ring; the roles view is the single role context editor described above. A pending start request appears as a banner with approve/reject. It polls the host snapshot every 2.5 s.
 - **Consent**: an agent's `start` records `dispatch.request`; it does not start the scheduler. The panel shows the request, and only the user's `approveStart` runs it. `pause` is immediate for either side; `settings` is user-only.
+- **Timeouts and the host watchdog**: a review that stays undecided past 10 minutes gets one reminder and is blocked for triage after another 10; a test round is reminded at 10 minutes and blocked at 20; three review rounds without approval also block. Every async host action (candidate build, candidate merge, merge request, role provisioning, notification) is bounded at 2 minutes: a stuck action answers `queue-timeout` / `action-timeout` and late writes from the abandoned unit are refused, so one hung await cannot hold the action or the merge queue.
+- **Worktree robustness**: each `git worktree add` has its own 180-second timeout (it does not share the general git/send budget); a timeout or failure rolls back what it may have registered (worktree entry, branch, lock, pruned metadata), retries once, and creation is serialised per repository so two tasks cannot race the same worktree metadata.
 - **Safety**: HTTP writes require `application/json` and a same-origin `Origin`; `?project=` is only a read hint, while switching projects goes through `openProject` (which verifies the directory).
+
+### Known limitations
+
+- There is no session-jump API: the status view can copy a session id, but opening that session stays a manual step in the Team list.
+- Godot must be launched through the `godot_*` tools, never through the shell tools (the file sandbox crashes it — see Pitfalls).
+- The isolated harness needs `dshCommand` (and usually `dshArgs`) configured; without a working CLI the smoke reports a readable failure instead of passing.
+- One project at a time and one Team/Lead at a time: the shared state keeps a single project hint and dispatch resolves the first live Lead. Without the Agent Teams services, tasks stay pending with an explicit reason.
+- A target branch that moves between the test verdict and the merge forces a rebuild + retest by design; the merge is never applied to a stale tree.
 
 ```sh
 # create a task from outside the GUI (any HTTP client)
@@ -68,7 +83,7 @@ curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
   -H 'content-type: application/json' -d '{"action":"pause","project":"/path/to/game"}'
 ```
 
-`npm test` covers board, service, locks, dispatch, routes, tool, activation and client.
+`npm test` covers board, service, locks, dispatch, git, harness, routes, tool, activation, target history and the browser half.
 
 ## Isolated DSH test harness
 
@@ -234,8 +249,9 @@ Godot executable resolution: per-tool `godot_path` argument → the `godotPath` 
 ## Project layout
 
 ```
-plugin/godot-bridge.mjs           # the plugin (standard DSH module, named exports name/inject/apply)
-client/client.js                  # browser half: the row's config page on the Plugins page (dsh.client)
+plugin/godot-bridge.mjs           # the plugin entry (standard DSH module, named exports name/inject/apply)
+plugin/task-center/               # task center host half (board / service / locks / dispatch / merge / api / tool / routes / roles / harness)
+client/client.js                  # browser half: engine-path form + task center panel (dsh.client)
 plugin/mcp_interaction_server.gd  # vendored from godot-mcp (MIT) — in-game TCP server autoload
 plugin/godot_operations.gd        # vendored from godot-mcp (MIT) — headless ops script
 plugin/validate_script.gd         # vendored from godot-mcp (MIT) — GDScript compile-check
@@ -246,8 +262,12 @@ ARCHITECTURE.md / ARCHITECTURE.zh-CN.md  # how it replaces godot-mcp + protocol 
 COVERAGE.md / COVERAGE.zh-CN.md   # full tool-by-tool comparison vs godot-mcp
 CHANGELOG.md / CHANGELOG.zh-CN.md  # release history
 scripts/check-plugin-contract.mjs  # static dependency-contract check (`npm run check`)
+scripts/check-target-history.mjs   # branch-protection history guard (`npm run check:target`)
+scripts/setup-hooks.mjs            # installs the pre-commit target guard (`npm run hooks:install`)
 scripts/diagnose-dsh-resolution.mjs  # re-runnable DSH runtime-resolution diagnostic (dev only)
 ```
+
+The task center writes project-local runtime files under `<project>/.agents/`: `tasks.json` (the board), `roles.json` (role profiles) and, optionally, `test-harness.json` (machine-local harness paths). They are working state, not source — gitignore them.
 
 `mcp_interaction_server.gd`, `godot_operations.gd` and `validate_script.gd` are vendored from [godot-mcp](https://github.com/tugcantopaloglu/godot-mcp) (MIT). The plugin locates the headless scripts relative to the module (`import.meta.url`); pass an explicit `ops_script` / `validate_script` argument to override.
 

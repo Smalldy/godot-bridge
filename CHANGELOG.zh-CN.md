@@ -5,26 +5,37 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [0.3.0] - 2026-10-18
+## [0.3.0] - 2026-10-20
 
 ### 新增
 
-- **任务中心 v2**：项目级任务板（`<项目>/.agents/tasks.json`）、依赖驱动的派发（显式开始/暂停）、优先级排序、并发与重试设置、60 分钟 worker 租约（活动即续租、凭 liveness 保活），以及宿主重启后对上一进程 claim 的回收。
-- **文件锁**：任务用 `writeFiles` 声明要写的文件；调度器在派发前原子获取全部锁，任务完成/阻塞/取消/租约交接时释放。路径规范化为项目相对 POSIX 路径，目录锁与子路径冲突；agent 可以为自己的运行任务追加锁。
-- **统一动作 API**：`task_center` 工具与 HTTP 路由调用同一批处理器（`create`、`update`、`delete`、`list`、`get`、`board`、`start`、`pause`、`approveStart`、`rejectStart`、`cancelStartRequest`、`settings`、`tick`、`submit`、`cancel`、`reopen`、`block`、`unblock`、`retry`、`lock`、`unlock`、`locks`、`forceUnlock`、`openProject`）。
-- **任务中心 GUI**：重写面板，包含看板、队列、文件锁视图；开始/暂停、新建/编辑、提交/重试/重开、派发设置、依赖与租约展示，以及待批准 start 申请的横幅，2.5 秒轮询宿主快照。
-- **开始派发需要同意**：agent 调 `start` 只写入 `dispatch.request`，不会启动调度器；面板显示发起者和说明，并提供批准/拒绝。只有用户的 `approveStart` 才真正运行。`pause` 双方都可直接调；`settings` 仅用户可改。
-- **执行者与文件锁可见**：面板新增执行者视图（Lead、上限、忙/闲/启动中/失败、每个 WorkAgent 的当前任务）；文件锁视图显示持有任务/Agent，以及“会等待该文件”的就绪任务。等待者是竞争提示，不是 FIFO 队列。
+- **任务中心 v2**：项目级任务板（`<项目>/.agents/tasks.json`）、依赖驱动的派发（显式开始/暂停 + 用户同意）、优先级排序、并发与重试设置、文件锁，以及宿主重启后对上一进程 claim 的回收。
+- **评审/测试阶段机**：每个任务走 `pending → running → reviewing → testing → done`，以 `blocked`/`cancelled` 作为出口。`submit` 提交 worktree 并进入 REVIEW；评审者通过或打回；通过后构建独立测试候选并进入 TESTING；测试通过后合并、任务变 DONE。每个阶段各自保存记录（轮次、执行者、结论、原因/证据），`reopen`/`retry` 保留历史。
+- **角色系统**：三种固定角色——worker（implement）、reviewer（review）、tester（test）——各自以 Agent Teams teammate 槽位（`worker-1`、`reviewer-1`……）在解析出的 Lead 下创建。Profile 存放于 `<项目>/.agents/roles.json`（version 1，始终存在规范化的 `worker`/`reviewer`/`tester`）：角色种类、阶段绑定、实例数（1–8）、权限、fresh/fork 上下文、技能与 prompt 模板。宿主自动补齐缺失的阶段角色，并替换死亡或超时的实例；reviewer/tester 是只读的独立上下文，worker 永远不能评审或测试自己的任务。
+- **独立评审者与候选测试者**：`approveReview`/`requestChanges` 属于 reviewer（或用户），`passTest`/`failTest` 属于 tester（或用户）。进入 TESTING 时以当前 target head + 任务分支构建一次性候选 `<项目>/.worktrees/test-<id>`（分支 `test/<id>`），并向 tester 发送自包含 brief（验收标准、候选路径/分支、运行手册、证据格式）；worker 从不裁决自己的任务。
+- **宿主驱动的合并队列与自动合并**：宿主每 5 秒扫描一次，把每个被 tester 接受的申请送入唯一的串行合并队列。队列在一次性 `merge-<id>` worktree 中整合已接受的候选；target head 已移动时拒绝合并（从新 head 重建候选并重开测试轮）；冲突会可读地记录；每个任务最多合并一次——重复的 pass 或重复申请都不会重复合并。
+- **评审/测试超时策略**：评审 10 分钟无结论先提醒 reviewer，再过 10 分钟仍无结论则把任务置为阻塞待人工处理；测试轮 10 分钟提醒、20 分钟阻塞。评审轮次上限为 3。被任一套策略阻塞的任务会写明轮次、已耗时、执行者与候选状态，而不是无声挂死。
+- **宿主动作看门狗**：每个异步宿主动作（候选构建、候选合并、merge request、角色准备、通知）上限 2 分钟。卡住的动作用 `queue-timeout`/`action-timeout` 返回，被放弃单元的任何迟到写入都会被拒绝，因此一个挂起的 await 无法永久占住动作或合并队列。
+- **角色/状态 UI**：面板分为 看板 / 队列 / 执行者 / 文件锁 / 状态 / 角色 六个页签。看板是七列（就绪、等待、进行中、评审中、测试中、完成、阻塞）；状态页显示在线 agent、工作树清单与宿主活动环；角色页只有一张 **角色上下文编辑器** 主卡。
+- **角色上下文编辑器**：唯一主卡，顶部 实现/测试/评审 分段页签；只读身份行 + profile 选择器与阶段绑定；可编辑上下文模板 + 宿主变量目录（插入 chips + 说明）；宿主固定块（职责、权限边界、结论格式——由真实 brief 生成器产生并标注“宿主固定”）；SKILLS 输入 + 目录弹窗；FORK / 保存 / 应用。Fork/保存成功后编辑器与“应用”的目标立即切换（不等下一轮轮询）；保存失败保留草稿与已编辑内容。
+- **角色上下文模板与技能管理**：profile prompt 是模板，可注入 `{{TASK_ID}}`、`{{TASK_TITLE}}`、`{{SPEC}}`、`{{COMPLETIONS_DEF}}`、`{{GIT_INFO}}`、`{{PROJECT}}`、`{{LEAD}}`、`{{ROLE}}`、`{{STAGE}}`；保存时出现其它变量会以 `invalid-role-variable` 拒绝并列出允许变量，空模板合法。新增仅用户、只读的 `skillsCatalog` 动作，从宿主技能注册表（`ctx.get('skills').list`）列技能供面板勾选，服务缺失时降级为可读的 `skills-unavailable`。
+- **隔离 DSH 测试 harness**：`harnessStart`/`harnessStatus`/`harnessSmoke`/`harnessRestart`/`harnessStop`（仅 tester 或用户）启动用完即弃的 DSH 实例——独立 `DSH_HOME`、profile、空闲端口与项目副本——把候选插件装进去，证明页面、health、插件行与任务中心路由可应答，且完全不碰生产 profile、会话与端口。版本不匹配（或无法确定版本）时 smoke 失败而不是通过。
+- **worktree 创建健壮性**：每次 `git worktree add` 使用独立的 180 秒超时，不再与通用 git/发送预算共用；超时或失败会回滚它可能登记的一切（worktree 条目、分支、锁、已 prune 的元数据），失败后重试一次，且同一仓库内的创建串行执行，两个任务不会争抢同一份 worktree 元数据。无法承载 worktree 的项目仍在派发前以可读原因拒绝。
+- **执行者与文件锁可见**：执行者页显示 Lead、上限、忙/闲/启动中/失败计数与每个 WorkAgent 的当前任务；文件锁页显示持有任务/Agent 以及“会等待该文件”的就绪任务（竞争提示，不是 FIFO 队列）。
+- **开始派发需要同意**：agent 调 `start` 只写入 `dispatch.request`，不会启动调度器；面板显示发起者与说明，并提供批准/拒绝。`pause` 双方都可立即调用。
+- **GUI**：重写面板，包含七列看板、队列、执行者、文件锁、状态与角色视图、派发设置、待批准 start 横幅，以及 2.5 秒宿主快照轮询。
 
 ### 变更
 
-- 板子 schema 升到 v2。读到 v1 会自动迁移；未来版本会被拒绝而不是降级。任务 id 由构造保证唯一，`seq` 不会与已有 id 冲突，历史长度有上限。
+- 板子 schema 升到 v2。读到 v1 会自动迁移（旧状态坍缩到当前词表、`blockedBy` 变成 `dependsOn`、旧 claim 被释放）；未来版本会被拒绝而不是降级。任务 id 由构造保证唯一、`seq` 不会冲突、历史最多保留 120 条。
+- **`submit` 不再是完成**：它进入 REVIEW。任务只有在独立评审通过 **且** 独立测试通过（或用户/merger 手动完成）后才到 DONE。`accept`、`reject`、`requiresReview` 已移除；旧板子里的 `review` 任务迁移为 `done`。
+- **租约最终语义**：运行中的任务持有 60 分钟租约；assignee 的任何活动都会无条件续租，宿主还按固定 5 分钟节奏心跳续租，因此长时间工具运行不会丢 claim。失效租约按 liveness 判定而非只看时钟：holder 仍活着就保住任务（单次尝试 4 小时硬上限，记 `lease-extended`），只有 session 消失/failed 才在中断后交接。同一任务绝不会有两条活跃 agent；交接时若上一尝试留有 commit，则 adopt 其 worktree 与分支。看板暴露 `leaseRemaining`/`leaseReminder`，并记录 `lease-handover`/`attempt-adopt` 事件。
+- **合并队列幂等**：候选合并按任务加锁且幂等——队列对每个任务只记录一次合并，拒绝已在合并/已合并的申请，target 移动时执行“重建 + 重测”，绝不合并过期树。
 - 浏览器半侧不再包含 mock store：只拉取宿主快照、发送一个动作、渲染宿主返回，因此宿主故障不会再以编造的任务呈现给用户。
-- **租约 liveness 与单任务单 agent**：assignee 的任何活动都会无条件续租 60 分钟租约，宿主心跳按固定节奏续租，长时间工具运行不再丢 claim。失效租约按 liveness 处理——holder 仍活着就保住任务（单次尝试 4 小时硬上限），已消失/failed 的先中断再交接——因此同一任务绝不会有两个活跃 agent。交接时若上一尝试留有 commit，下一次尝试会 adopt 其 worktree/branch，而不是从 target 重做；看板暴露 `leaseRemaining`/`leaseReminder`，并记录 `lease-extended`/`lease-handover`/`attempt-adopt` 事件。
-- **分支保护与 hotfix 追溯**：`scripts/check-target-history.mjs`（`npm run check:target`，已接入 `npm run check`）会拒绝这样的 target 历史——其中存在既不能由 `task/`/`test/`/`merge/` 合并解释、也不在板子中 done+merged、更不是已声明紧急例外的非 merge commit；`scripts/setup-hooks.mjs` 安装 `pre-commit` 钩子，禁止在 target 上直接提交，除非设置 `TASK_CENTER_MERGE=1`。两次 merge-queue hotfix 以紧急例外记录：`1695506`（合并）与 `2c895b4`（候选合并幂等 + 限制 git 子进程），由 T-30 的回归测试与 T-38 租约/心跳依赖的有界动作路径追溯覆盖。
+- **分支保护与 hotfix 追溯**：`scripts/check-target-history.mjs`（`npm run check:target`，已接入 `npm run check`）会拒绝这样的 target 历史——其中存在既不能由 `task/`/`test/`/`merge/` 合并解释、也不在板子中 done+merged、更不是已声明紧急例外的非 merge commit；`scripts/setup-hooks.mjs` 安装 `pre-commit` 钩子，禁止在 target 上直接提交，除非设置 `TASK_CENTER_MERGE=1`。两次 merge-queue hotfix 以紧急例外记录：`1695506`（合并）与 `2c895b4`（候选合并幂等 + 限制 git 子进程），由 T-30 的回归测试与看门狗现在保障的有界宿主动作路径追溯覆盖。
 - 派发设置弹窗只暴露一个值：最大并发。执行者上限自动按并发 + 1 推导，自动新建开启，重试上限保持内部默认 3；工具/HTTP 的 `settings` 仍可覆盖这些高级参数。
-- 派发在发出任何东西之前先 claim，记录投递结果，并在达到尝试上限后把任务置为阻塞，而不是无限重试。
-- 初版看板只有五列，没有验收状态：`submit` 即完成，`accept`、`reject`、`requiresReview` 已移除；旧板子里的 `review` 任务会迁移为 `done`。
+- 派发在向进程外发出任何东西之前先 claim、记录投递结果，并在达到尝试预算后把任务置为阻塞，而不是无限重试。
+- **角色管理仅限用户**：`rolesList`/`rolesCreate`/`rolesUpdate`/`rolesDelete`/`rolesBind`/`rolesDrain`/`rolesReplace`/`rolesReset` 与 `skillsCatalog` 从工具枚举中隐藏，对 agent 直接拒绝；profile 保存在写入 `roles.json` 前会完整校验（名称、种类、阶段、实例数、上下文、权限、技能、有限长度 prompt 与模板变量）。
 
 ### 修复
 
@@ -32,12 +43,15 @@
 - WorkAgent 提交可能被拒绝：板子存的是 Team 成员名，而工具侧量的是 session id；现在两边身份都会记录。
 - 任务租约过期从不回收；面板的新建/释放/提交/解除阻塞/重开动作与宿主词汇表不一致。
 - 依赖被删除或取消后，下游会无提示地永久等待；现在会报告“依赖已破”。
-- 从任务中心切到对话页再切回来时，视图和选中的任务会重置回看板；现在两者都能跨 remount 保留。
+- 从任务中心切到对话页再切回来时，视图与选中的任务会重置回看板；现在两者都能跨 remount 保留。
+- 已 submit 的任务可能永久停在 REVIEW 或 TESTING 而没有任何结论；超时策略现在先提醒一次，然后连同轮次与候选状态一起阻塞待人工处理。
+- worktree 创建失败可能残留已登记的 worktree、半建的分支或陈旧锁，从而破坏该仓库后续所有派发；现在会回滚、重试一次，并按仓库串行创建。
 
 ### 移除
 
 - `/task` 斜杠命令与 `@deepseek-ai/dsh-llm` peer 依赖。
 - 示例 store、种子板、模拟/重置控件以及 `__fixture` 测试接缝。
+- 五列 submit-即-完成 的旧看板与 `verify-<id>` 自测 worktree：阶段机的独立候选取代了它们。
 
 ## [0.2.0] - 2026-10-01
 
@@ -182,6 +196,7 @@
 - `godot_manage_input_map` 使用正确的 Godot 4 键码（修复 godot-mcp 的 Godot 3 基线 bug）。
 - 双语文档（README / install / ARCHITECTURE / COVERAGE），含安装与移除指南；`cordis.patch.yml` 纳入发布 `files`。
 
+[0.3.0]: https://github.com/Smalldy/godot-bridge/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Smalldy/godot-bridge/compare/v0.1.8...v0.2.0
 [0.1.8]: https://github.com/Smalldy/godot-bridge/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/Smalldy/godot-bridge/compare/v0.1.6...v0.1.7
