@@ -48,7 +48,7 @@ Every task runs in its own git worktree — `<project>/.worktrees/<taskId>-<atte
 5. **Exceptions**: a conflict or a red verification marks the request and notifies the owner; the target branch is never touched. `mergeRequest` / `rejectMerge` / `refreshMerge` stay available to the user or the `merger` teammate for manual integration, audit or repair.
 
 - **Board**: `<project>/.agents/tasks.json`. Schema v2; a v1 board migrates on read. Duplicate ids, malformed entries and future versions are refused instead of overwritten. Add the file to the project's `.gitignore` — it is working state, not source.
-- **Action API**: the `task_center` tool and `POST /godot-bridge/task-center/action` share one vocabulary: `create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject`.
+- **Action API**: the `task_center` tool and `POST /godot-bridge/task-center/action` share one vocabulary: `create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`.
 - **Dependencies**: `B.dependsOn = [A]` means B runs only after A is done. Ready tasks are ordered by `priority` descending, then creation time. `A <- B <- C`, `D`, `E <- F` dispatch A, D, E first; A's completion dispatches B, E's completion dispatches F.
 - **Dispatch**: start/pause is a project-level state persisted in the board. The GUI exposes one number, **maximum concurrency**: at most that many tasks run at once; the WorkAgent cap is derived as concurrency + 1, a worker is spawned when none is idle, and a task blocks after 3 consecutive failures (the advanced `settings` action can still override these). Every dispatch claims the task first (a 60-minute lease that any assignee activity renews, plus a fixed host heartbeat), then hands it to Agent Teams — `sendMessage` to an idle member, otherwise `spawnTeammate`. A lapsed lease is settled by liveness: a live holder keeps the task, and only a gone/failed holder (or one past the four-hour per-attempt cap) is handed over, with the next attempt adopting the previous checkout instead of restarting. A host restart recovers claims from the previous process.
 - **File locks**: `writeFiles` declares what a task will write. The scheduler acquires all of them atomically before dispatch and releases them on completion, block, cancel or lease handover. An agent may `lock` extra files for its running task. Paths canonicalise to project-relative POSIX paths; a directory lock conflicts with every child path.
@@ -69,6 +69,63 @@ curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
 ```
 
 `npm test` covers board, service, locks, dispatch, routes, tool, activation and client.
+
+## Isolated DSH test harness
+
+The task center also ships a real-DSH smoke for the candidate plugin: `plugin/task-center/harness.mjs` starts a **disposable DSH instance** and proves that the candidate loads and answers — without touching the production profile, session or port. Only the tester role (or the user) drives it through `task_center` `harnessStart` / `harnessStatus` / `harnessSmoke` / `harnessRestart` / `harnessStop`; `POST /godot-bridge/task-center/action` exposes the same actions to the GUI.
+
+One `harnessStart` creates, under a single OS-temp root that `harnessStop` removes:
+
+- its own `DSH_HOME` (`<root>/home`) and a fresh `web` profile, with the candidate plugin installed via `dsh plugin --profile web add <candidatePlugin>`;
+- its own copy of the project (`<root>/project`, without `.git`, `.worktrees`, `node_modules`, `dist`, `coverage`);
+- its own free port from `portBase` (a configured `productionPort` is never a candidate) and a fresh web process token.
+
+### Configuration
+
+`<project>/.agents/test-harness.json` holds machine-local paths (like the module's default `dshSource`); every field is optional and `DSH_TEST_HARNESS_*` environment variables win:
+
+| Field | Env | Meaning |
+| --- | --- | --- |
+| `dshSource` | `DSH_TEST_HARNESS_SOURCE` | DSH checkout whose `package.json` version is compared with the running install |
+| `dshCommand` | `DSH_TEST_HARNESS_DSH` | The CLI executable (`argv[0]`). It is spawned **without a shell**, so an absolute path containing spaces is fine; a `.cmd` shim is not — point at the real executable |
+| `dshArgs` | `DSH_TEST_HARNESS_DSH_ARGS` | Prefix argv for that executable, e.g. `["--import", "<tsx loader>", "<checkout>/apps/cli/src/bin.ts"]` or `["<checkout>/apps/cli/lib/bin.js"]`. The env form is a JSON array |
+| `dshEnv` | `DSH_TEST_HARNESS_DSH_ENV` | Extra environment for both CLI calls (JSON object). `DSH_HOME`/`DSH_PROFILE` are always set per instance |
+| `candidatePlugin` | `DSH_TEST_HARNESS_CANDIDATE` | Package installed into the test profile; defaults to this package |
+| `profile` | `DSH_TEST_HARNESS_PROFILE` | Profile name (default `web`) |
+| `portBase` / `portRange` | `DSH_TEST_HARNESS_PORT_BASE` / `…_PORT_RANGE` | Port search window (default 39000 + 100) |
+| `healthPath` / `healthTimeoutMs` / `healthIntervalMs` | matching `…_HEALTH_*` | Readiness probe and its budget |
+| `installTimeoutMs` / `stopTimeoutMs` | `DSH_TEST_HARNESS_INSTALL_TIMEOUT_MS` / `…_STOP_TIMEOUT_MS` | `dsh plugin add` budget and terminate/wait budget |
+| `productionPort` / `productionVersion` | `DSH_TEST_HARNESS_PRODUCTION_PORT` / `…_PRODUCTION_VERSION` | The port to never take, and an explicit production version override |
+
+### The web contract it speaks
+
+A real `dsh web` is **token-gated**: the launcher prints `dsh web: http://127.0.0.1:<port>/?token=<one-shot>`; that URL answers **303 + Set-Cookie**, and `/` answers 401 without the cookie. Node's `fetch` keeps no cookie jar, so the harness copies the token out of the collected stdout, performs the exchange itself and then polls health/page with the cookie. The task-center plugin routes are not gated, so the smoke reaches them directly. Production version detection is explicit config → `DSH_VERSION` → a packaged manifest → the Electron `app.asar` header (plain `fs` cannot follow a path *through* an asar); when none answers, the result is `unknown` and the smoke **fails** rather than passing.
+
+### Real smoke evidence (this workspace)
+
+The source checkout at `J:\workspace\HARNESS\deepseek-harness` is `0.2.1-rc.2`, but its built `apps/cli/lib` predates the multi-patch bundle manifest (`@deepseek-ai/dsh-web-app` declares an array `dsh.bundle.patch`), so `node apps/cli/lib/bin.js --profile web` dies in `loadProfileDirectory`; the source-through-tsx variant also hits that checkout's missing `semver`. `.agents/test-harness.json` therefore drives the **installed runtime CLI** explicitly — the same entry the desktop app's own `dsh.cmd` uses — so no PATH shim (the broken `npm\dsh.ps1`) is involved. After a successful `pnpm run build` in that checkout, `dshCommand: "node"` plus `dshArgs: ["<checkout>/apps/cli/lib/bin.js"]` is the simpler choice.
+
+```text
+POST …/action {"action":"harnessStart","project":"J:\…\godot-bridge"}
+{"ok":true,"status":"running","port":39000,
+ "home":"C:\Users\…\Temp\godot-bridge-harness-Uid58s\home",
+ "projectCopy":"C:\Users\…\Temp\godot-bridge-harness-Uid58s\project",
+ "profile":"web","pluginInstalled":true,
+ "sourceVersion":"0.2.1-rc.2","productionVersion":"0.2.1-rc.2","versionStatus":"match",
+ "token":"<printed>","cookie":true,"healthUrl":"http://127.0.0.1:39000/"}
+
+POST …/action {"action":"harnessSmoke"}
+{"ok":true,"versionStatus":"match",
+ "checks":{"page":{"ok":true,"status":200,"html":true,"token":true,"cookie":true},
+           "health":{"ok":true,"status":200},
+           "pluginRow":{"ok":true,"status":200},
+           "taskCenterAction":{"ok":true,"status":200}}}
+
+POST …/action {"action":"harnessStop"}
+{"ok":true,"stopped":true,"processExited":true}
+```
+
+Isolation checks run around that sequence: the nested port has no listener after stop, the temp root is removed, the production port still answers, the production `~/.dsh/profiles` mtimes are unchanged and no instance process survives (`netstat`/process sweep). A version mismatch (or an unverifiable version) makes `harnessSmoke` return `ok:false, code:"version-mismatch"` naming both sides; an unreachable instance returns `health-timeout` with the last health status and log tail — never a pass.
 
 ## How it works
 

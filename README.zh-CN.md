@@ -48,7 +48,7 @@
 5. **异常**：冲突或验证失败会标记该申请并通知 owner，target 分支保持不变。`mergeRequest` / `rejectMerge` / `refreshMerge` 仍保留给用户或 `merger` 队友，用于手动整合、审计或修复。
 
 - **任务板**：`<项目>/.agents/tasks.json`。schema v2，读到 v1 会自动迁移；重复 id、非法条目、未来版本会被拒绝而不是覆盖；建议把该文件加入项目 `.gitignore`（它是运行态，不是源码）。
-- **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject`。
+- **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`。
 - **依赖**：`B.dependsOn = [A]` 表示 A 完成后才派发 B。就绪任务按 `priority` 降序、创建时间升序取。`A <- B <- C`、`D`、`E <- F` 会先派发 A、D、E；A 完成后派发 B，E 完成后派发 F。
 - **派发**：开始/暂停是项目级状态（持久化在板子里）。GUI 只暴露**最大并发**：最多同时跑这么多个任务；执行者上限自动设为并发 + 1，没有空闲执行者时会自动新建，连续失败 3 次后任务阻塞（高级调用仍可用 `settings` 覆盖）。每次派发先 `claim`（60 分钟租约；assignee 任何活动都会续租，另有固定节奏的宿主心跳）再交给 Agent Teams：优先 `sendMessage` 给空闲成员，否则 `spawnTeammate`。租约失效按 liveness 判定：holder 仍活着就保住任务，只有 session 消失/failed（或超过单次 4 小时硬上限）才交接，且下一次尝试会 adopt 上一份 checkout 而不是重做；宿主重启会回收上一进程的 claim。
 - **文件锁**：任务用 `writeFiles` 声明要写的文件；调度器在派发前原子获取全部锁，任务完成/阻塞/取消/租约交接时释放。agent 也可以 `lock` 为自己的运行任务追加锁。路径规范化为项目相对路径，目录锁会与子路径冲突。
@@ -69,6 +69,63 @@ curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
 ```
 
 运行 `npm test` 覆盖 board / service / locks / dispatch / routes / tool / activation / client。
+
+## 隔离 DSH 测试 harness
+
+任务中心同时提供「真实 DSH 冒烟」：`plugin/task-center/harness.mjs` 启动一个**用完即弃的 DSH 实例**，证明候选插件能装、能加载、能应答，而完全不碰生产 profile、会话与端口。只有 tester 角色（或用户）能通过 `task_center` 的 `harnessStart` / `harnessStatus` / `harnessSmoke` / `harnessRestart` / `harnessStop` 驱动；`POST /godot-bridge/task-center/action` 对 GUI 暴露同一组动作。
+
+一次 `harnessStart` 会在同一个系统临时根目录下创建（`harnessStop` 会整个删除）:
+
+- 独立的 `DSH_HOME`（`<root>/home`）与全新的 `web` profile，候选插件由 `dsh plugin --profile web add <candidatePlugin>` 装入；
+- 独立的项目副本（`<root>/project`，不含 `.git`、`.worktrees`、`node_modules`、`dist`、`coverage`）；
+- 从 `portBase` 起挑一个空闲端口（配置的 `productionPort` 永不入选），以及全新的 web 进程 token。
+
+### 配置
+
+`<project>/.agents/test-harness.json` 保存机器本地路径（与模块默认的 `dshSource` 同类）；所有字段可选，`DSH_TEST_HARNESS_*` 环境变量优先：
+
+| 字段 | 环境变量 | 含义 |
+| --- | --- | --- |
+| `dshSource` | `DSH_TEST_HARNESS_SOURCE` | 用于与运行中安装版比版本的 DSH checkout |
+| `dshCommand` | `DSH_TEST_HARNESS_DSH` | CLI 可执行文件（`argv[0]`）。**不经 shell** 启动，因此带空格的绝对路径可用，但 `.cmd` 不行——请指向真正的可执行文件 |
+| `dshArgs` | `DSH_TEST_HARNESS_DSH_ARGS` | 该可执行文件的前置参数，如 `["--import", "<tsx loader>", "<checkout>/apps/cli/src/bin.ts"]` 或 `["<checkout>/apps/cli/lib/bin.js"]`；环境变量形式是 JSON 数组 |
+| `dshEnv` | `DSH_TEST_HARNESS_DSH_ENV` | 两次 CLI 调用的额外环境（JSON 对象）。每个实例的 `DSH_HOME`/`DSH_PROFILE` 始终单独设置 |
+| `candidatePlugin` | `DSH_TEST_HARNESS_CANDIDATE` | 装入测试 profile 的包，默认是本包 |
+| `profile` | `DSH_TEST_HARNESS_PROFILE` | profile 名（默认 `web`） |
+| `portBase` / `portRange` | `DSH_TEST_HARNESS_PORT_BASE` / `…_PORT_RANGE` | 端口搜索区间（默认 39000 + 100） |
+| `healthPath` / `healthTimeoutMs` / `healthIntervalMs` | 对应的 `…_HEALTH_*` | 就绪探测与预算 |
+| `installTimeoutMs` / `stopTimeoutMs` | `DSH_TEST_HARNESS_INSTALL_TIMEOUT_MS` / `…_STOP_TIMEOUT_MS` | `dsh plugin add` 预算与 terminate/等待预算 |
+| `productionPort` / `productionVersion` | `DSH_TEST_HARNESS_PRODUCTION_PORT` / `…_PRODUCTION_VERSION` | 永不占用的端口，以及显式的生产版本覆盖 |
+
+### 它遵守的 web 契约
+
+真实 `dsh web` 带 token 鉴权：launcher 打印 `dsh web: http://127.0.0.1:<port>/?token=<一次性>`；该 URL 返回 **303 + Set-Cookie**，而 `/` 在没有 cookie 时返回 401。Node 的 `fetch` 没有 cookie jar，因此 harness 先从头日志里取出 token、自行完成交换，再用 cookie 探测 health/页面。任务中心插件路由不鉴权，smoke 直接访问。生产版本探测顺序：显式配置 → `DSH_VERSION` → 打包目录里的 manifest → Electron `app.asar` 头部（普通 `fs` 无法穿过 asar 路径）；都拿不到时结果为 `unknown`，smoke **失败**而不是算通过。
+
+### 真实冒烟证据（本工作区）
+
+`J:\workspace\HARNESS\deepseek-harness` 的版本是 `0.2.1-rc.2`，但其已构建的 `apps/cli/lib` 早于多 patch 的 bundle manifest（`@deepseek-ai/dsh-web-app` 的 `dsh.bundle.patch` 是数组），因此 `node apps/cli/lib/bin.js --profile web` 会在 `loadProfileDirectory` 里报错退出；改走 tsx 跑源码又缺该 checkout 未安装的 `semver`。所以 `.agents/test-harness.json` 直接驱动**安装版运行时 CLI**（与桌面应用自己的 `dsh.cmd` 同一条入口），完全不依赖 PATH 上那个坏掉的 `npm\dsh.ps1` 壳。若该 checkout 重新 `pnpm run build`，更简单的写法是 `dshCommand: "node"` 加 `dshArgs: ["<checkout>/apps/cli/lib/bin.js"]`。
+
+```text
+POST …/action {"action":"harnessStart","project":"J:\…\godot-bridge"}
+{"ok":true,"status":"running","port":39000,
+ "home":"C:\Users\…\Temp\godot-bridge-harness-Uid58s\home",
+ "projectCopy":"C:\Users\…\Temp\godot-bridge-harness-Uid58s\project",
+ "profile":"web","pluginInstalled":true,
+ "sourceVersion":"0.2.1-rc.2","productionVersion":"0.2.1-rc.2","versionStatus":"match",
+ "token":"<printed>","cookie":true,"healthUrl":"http://127.0.0.1:39000/"}
+
+POST …/action {"action":"harnessSmoke"}
+{"ok":true,"versionStatus":"match",
+ "checks":{"page":{"ok":true,"status":200,"html":true,"token":true,"cookie":true},
+           "health":{"ok":true,"status":200},
+           "pluginRow":{"ok":true,"status":200},
+           "taskCenterAction":{"ok":true,"status":200}}}
+
+POST …/action {"action":"harnessStop"}
+{"ok":true,"stopped":true,"processExited":true}
+```
+
+整个序列前后还会校验隔离边界：stop 后嵌套端口无监听、临时根目录已删除、生产端口仍可访问、生产 `~/.dsh/profiles` 的 mtime 未变、没有实例进程残留（`netstat`/进程扫描）。版本不匹配（或无法确定）时 `harnessSmoke` 返回 `ok:false, code:"version-mismatch"` 并同时给出两侧版本；实例不可达则返回 `health-timeout` 附带最后的 health 状态与日志尾巴——绝不算通过。
 
 ## 工作原理
 
