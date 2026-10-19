@@ -3538,5 +3538,63 @@ async function withDeadline(promise, ms) {
 
 surface.dispose()
 rig.scheduler.dispose()
+
+// ── T-37 liveness observability: lease fields and handover events ──────────
+{
+  const activity = createActivity({})
+  const team = roleTeam()
+  const rig = createSubmitRig({ team: team, roles: true, git: fakeGit().git, activity: activity })
+  // The claim must belong to THIS dispatcher, or reap treats it as a host-restart
+  // leftover before liveness is ever consulted.
+  const claim = { status: 'sent', at: new Date().toISOString(), target: 'fixer', targetId: 'session-fixer', via: 'message', error: null, host: rig.scheduler.boot }
+  seedRunningTask(rig, runningWorktreeTask({ leaseUntil: new Date(Date.now() - 1000).toISOString(), dispatch: claim }))
+  await rig.scheduler.settle(PROJECT)
+  let snapshot = await rig.action('board')
+  let task = snapshot.tasks.filter((entry) => entry.id === 'T-1')[0]
+  check(
+    'a live holder keeps its lease and the snapshot shows the remainder',
+    task.status === 'running' && task.leaseRemaining > 0 && task.leaseExpired === false && task.leaseReminder === false,
+    JSON.stringify({ status: task.status, remaining: task.leaseRemaining, expired: task.leaseExpired }),
+  )
+  check(
+    'and the snapshot exposes assignee, attempt and leaseUntil together',
+    task.assignee.name === 'fixer' && task.attempts === 1 && typeof task.leaseUntil === 'string',
+    JSON.stringify({ assignee: task.assignee, attempts: task.attempts, lease: task.leaseUntil }),
+  )
+  const extended = activity.list(20).filter((entry) => entry.kind === 'lease-extended')
+  check(
+    'the liveness extension is a system activity entry',
+    extended.length === 1 && extended[0].actor === 'system' && extended[0].taskId === 'T-1',
+    JSON.stringify(activity.list(20)),
+  )
+
+  // Inside the reminder window but outside the host heartbeat window: the board
+  // warns without extending.
+  seedRunningTask(rig, runningWorktreeTask({ leaseUntil: new Date(Date.now() + 8 * 60 * 1000).toISOString(), dispatch: claim }))
+  snapshot = await rig.action('board')
+  task = snapshot.tasks.filter((entry) => entry.id === 'T-1')[0]
+  check(
+    'a lease close to lapsing is flagged for the panel',
+    task.leaseReminder === true && task.leaseRemaining > 0,
+    JSON.stringify({ reminder: task.leaseReminder, remaining: task.leaseRemaining }),
+  )
+
+  // The holder dies: the task is handed over and the handover is visible.
+  team.setStatus('fixer', 'failed')
+  seedRunningTask(rig, runningWorktreeTask({ leaseUntil: new Date(Date.now() - 1000).toISOString(), commit: 'old-commit-sha', dispatch: claim }))
+  await rig.scheduler.settle(PROJECT)
+  snapshot = await rig.action('board')
+  task = snapshot.tasks.filter((entry) => entry.id === 'T-1')[0]
+  check('a gone holder is a real expiry, not an extension', task.status === 'pending' && task.dispatch.status === 'lease-expired', JSON.stringify(task.dispatch))
+  check('and the lease is cleared on the requeued task', task.leaseUntil === null && task.leaseRemaining === null, JSON.stringify({ lease: task.leaseUntil, remaining: task.leaseRemaining }))
+  const handover = activity.list(40).filter((entry) => entry.kind === 'lease-handover')
+  check(
+    'the handover is a host activity entry naming the reason',
+    handover.length === 1 && handover[0].actor === 'host' && String(handover[0].detail).indexOf('failed') >= 0,
+    JSON.stringify(handover),
+  )
+  rig.scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

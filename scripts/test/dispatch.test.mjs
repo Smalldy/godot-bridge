@@ -242,24 +242,44 @@ async function submitAndMerge(rig, id, evidence) {
   rig.scheduler.dispose()
 }
 
-// ── lease expiry returns the task to the pool (even while paused) ──────────
+// ── lease liveness: a lapsed lease with a LIVE holder is extended; one whose
+// holder is gone returns the task to the pool (even while paused) ──────────
 {
   const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
   const A = (await createTask(rig, { title: 'A' })).id
   await rig.action('start')
   await rig.settle()
   await rig.action('pause')
+  const claimed = (await snapshot(rig)).tasks.filter((task) => task.id === A)[0]
+  const holder = claimed.assignee.name
   await patchTask(rig, A, (task) => {
     task.leaseUntil = new Date(Date.now() - 1000).toISOString()
   })
   await rig.settle()
-  const snap = await snapshot(rig)
-  check('an expired lease returns the task to pending', byId(snap, A).status === 'pending', JSON.stringify(ids(snap)))
+  let snap = await snapshot(rig)
+  check(
+    'a lapsed lease whose holder is still alive is extended, never reaped',
+    byId(snap, A).status === 'running' && Date.parse(byId(snap, A).leaseUntil) > Date.now(),
+    JSON.stringify({ status: byId(snap, A).status, lease: byId(snap, A).leaseUntil }),
+  )
+  const history = Array.isArray(byId(snap, A).history) ? byId(snap, A).history : []
+  check('and the extension is recorded in history', history.some((entry) => String(entry.note).indexOf('lease extended') >= 0), JSON.stringify(history.slice(-2)))
+  // The holder disappears from the roster: the same lapsed lease is now a real
+  // expiry and the task goes back to the pool for a fresh attempt.
+  const roster = rig.team.roster
+  const holderIndex = roster.findIndex((member) => member.name === holder)
+  const removedHolder = holderIndex >= 0 ? roster.splice(holderIndex, 1)[0] : undefined
+  await patchTask(rig, A, (task) => {
+    task.leaseUntil = new Date(Date.now() - 1000).toISOString()
+  })
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('an expired lease whose holder is gone returns the task to pending', byId(snap, A).status === 'pending', JSON.stringify(ids(snap)))
   check('and the expiry is visible', byId(snap, A).dispatch.status === 'lease-expired', JSON.stringify(byId(snap, A).dispatch))
   check('and no file lock is left behind', snap.locks.length === 0, JSON.stringify(snap.locks))
+  if (removedHolder !== undefined) roster.push(removedHolder)
   rig.scheduler.dispose()
 }
-
 // ── lease mitigation: activity renews unconditionally, the host heartbeat
 // keeps a lease that is still valid alive without any tool call ────────────
 {
@@ -335,10 +355,16 @@ async function submitAndMerge(rig, id, evidence) {
   const submitted = await submitAsUser(rig, B, 'done')
   check('submit releases the lease of the task it moves out of running', submitted.ok === true && submitted.task.leaseUntil === null, JSON.stringify(submitted.task && submitted.task.leaseUntil))
 
-  // A lease that already lapsed is never revived by the heartbeat: only a
-  // liveness check (T-37) could tell a dead worker from a silent one. Dispatch is
-  // paused first so the reap is observed instead of an immediate re-dispatch.
+  // A lapsed lease whose holder is GONE is a real expiry: the liveness path never
+  // revives it, so the task is reaped (dispatch is paused first so the reap is
+  // observed instead of an immediate re-dispatch).
   await rig.action('pause')
+  const reapRoster = rig.team.roster
+  const reapIndex = reapRoster.findIndex((member) => member.name === owner.name)
+  const removedHolder = reapIndex >= 0 ? reapRoster.splice(reapIndex, 1)[0] : undefined
+  clock = Date.parse(hostRenewed.leaseUntil) + 1
+  await rig.settle()
+  if (removedHolder !== undefined) reapRoster.push(removedHolder)
   clock = Date.parse(hostRenewed.leaseUntil) + 1
   await rig.settle()
   snap = await snapshot(rig)
@@ -348,6 +374,131 @@ async function submitAndMerge(rig, id, evidence) {
     JSON.stringify(byId(snap, A).dispatch),
   )
   check('and the reaped task releases its file lock', snap.locks.length === 0, JSON.stringify(snap.locks))
+  rig.scheduler.dispose()
+}
+
+// ── T-37 liveness: one live agent per task, handover adopts the checkout ───
+// A lapsed lease is not proof the worker is gone: while the holder is alive the
+// task stays claimed (never a second agent); when the holder is gone the task is
+// handed over, and the next attempt reuses the previous attempt checkout.
+{
+  // nothingToCommit models an adopted checkout whose only commit is the old one:
+  // submit must record that HEAD instead of inventing a new commit.
+  const git = createFakeGit({ nothingToCommit: true })
+  // A handover needs a replacement: after the old holder is gone the dispatcher
+  // spawns the next work agent (the fake team records the spawn).
+  const rig = createRig({ git: git, teamOptions: { spawnedStatus: 'running' } })
+  const A = (await createTask(rig, { title: 'handover', writeFiles: ['scripts/a.gd'] })).id
+  await rig.action('start')
+  await rig.settle()
+  let snap = await snapshot(rig)
+  const firstPath = join(PROJECT, '.worktrees', A + '-1')
+  const first = byId(snap, A)
+  const holder = first.assignee.name
+  const session = first.assignee.session
+  check('the first attempt runs in its own worktree', first.status === 'running' && first.worktree === firstPath && first.branch === 'task/' + A + '-1', JSON.stringify({ worktree: first.worktree, branch: first.branch }))
+  check('and the attempt is recorded with its holder', first.attempts === 1 && first.dispatch.target === holder && first.dispatch.targetId === session, JSON.stringify(first.dispatch))
+
+  // The lease lapses but the holder is still alive: the host extends it. No
+  // second worker, no new worktree.
+  await patchTask(rig, A, (task) => {
+    task.leaseUntil = new Date(Date.now() - 1000).toISOString()
+  })
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('a lapsed lease with a live holder keeps the task running', byId(snap, A).status === 'running' && byId(snap, A).attempts === 1, JSON.stringify(ids(snap)))
+  check('and its lease is extended past now', Date.parse(byId(snap, A).leaseUntil) > Date.now(), String(byId(snap, A).leaseUntil))
+  check('and no second worktree was created', git.calls.filter((call) => call.name === 'worktreeAdd').length === 1, JSON.stringify(git.calls.filter((call) => call.name === 'worktreeAdd')))
+
+  // The host tick may run many times while the holder is alive: still one agent.
+  for (let tick = 0; tick < 3; tick += 1) {
+    await patchTask(rig, A, (task) => {
+      task.leaseUntil = new Date(Date.now() - 1000).toISOString()
+    })
+    await rig.settle()
+  }
+  snap = await snapshot(rig)
+  check('repeated lapses never dispatch a second agent', byId(snap, A).status === 'running' && byId(snap, A).attempts === 1 && git.calls.filter((call) => call.name === 'worktreeAdd').length === 1, JSON.stringify({ attempts: byId(snap, A).attempts, adds: git.calls.filter((call) => call.name === 'worktreeAdd').length }))
+
+  // The holder dies (gone from the roster) and a commit exists: the task is
+  // handed over and the next attempt ADOPTS the attempt-1 checkout.
+  await rig.action('pause')
+  const roster = rig.team.roster
+  const holderIndex = roster.findIndex((member) => member.name === holder)
+  const removedHolder = holderIndex >= 0 ? roster.splice(holderIndex, 1)[0] : undefined
+  await patchTask(rig, A, (task) => {
+    task.commit = 'old-commit-sha'
+    task.leaseUntil = new Date(Date.now() - 1000).toISOString()
+  })
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('a lapsed lease whose holder is gone is requeued', byId(snap, A).status === 'pending' && byId(snap, A).dispatch.status === 'lease-expired', JSON.stringify(byId(snap, A).dispatch))
+  check('and the handover records why it was requeued', String((byId(snap, A).history || []).slice(-1)[0].note).indexOf('assignee gone') >= 0, JSON.stringify((byId(snap, A).history || []).slice(-1)))
+
+  // Restart dispatch: the fresh attempt adopts the old checkout instead of
+  // starting over from the target.
+  await rig.action('start')
+  await rig.settle()
+  snap = await snapshot(rig)
+  const adopted = byId(snap, A)
+  const adds = git.calls.filter((call) => call.name === 'worktreeAdd')
+  check('the next attempt is attempt 2', adopted.attempts === 2, String(adopted.attempts))
+  check('and it adopts the attempt-1 worktree and branch', adopted.status === 'running' && adopted.worktree === firstPath && adopted.branch === 'task/' + A + '-1', JSON.stringify({ worktree: adopted.worktree, branch: adopted.branch }))
+  check('without creating a duplicate worktree', adds.length === 1 && adds[0].detail.path === firstPath, JSON.stringify(adds.map((call) => call.detail.path)))
+  check('the checkout keeps the original base so the merge spans the old work', adopted.base === 'base-sha', String(adopted.base))
+  check('and the claim says it adopted', adopted.dispatch.via === 'adopt', JSON.stringify(adopted.dispatch))
+  check('history records the adoption', (adopted.history || []).some((entry) => String(entry.note).indexOf('adopting task/' + A + '-1') >= 0 && String(entry.note).indexOf('from attempt 1') >= 0), JSON.stringify((adopted.history || []).slice(-1)))
+
+  // The adopted attempt can submit the OLD commit: commitAll has nothing new,
+  // and the recorded head is the adopted HEAD, not the target.
+  git.head = async function () { return { ok: true, hash: 'old-commit-sha' } }
+  const submitted = await submitAsUser(rig, A, 'handover submit')
+  check('the adopted attempt submits', submitted.ok === true && submitted.task.merge !== null && submitted.task.merge.status === 'open', JSON.stringify(submitted.ok === true ? submitted.task.merge : submitted))
+  check('and the merge request points at the adopted commit', submitted.ok === true && submitted.task.merge.head === 'old-commit-sha' && submitted.task.merge.base === 'base-sha', JSON.stringify(submitted.ok === true ? { base: submitted.task.merge.base, head: submitted.task.merge.head } : submitted))
+  if (removedHolder !== undefined) roster.push(removedHolder)
+  rig.scheduler.dispose()
+}
+
+// ── T-37 hard cap and the single-agent guard ───────────────────────────────
+{
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  const A = (await createTask(rig, { title: 'capped' })).id
+  await rig.action('start')
+  await rig.settle()
+  await rig.action('pause')
+  // Alive holder, but the attempt started longer ago than the cap allows.
+  await patchTask(rig, A, (task) => {
+    task.dispatch = Object.assign({}, task.dispatch, { at: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString() })
+    task.leaseUntil = new Date(Date.now() - 1000).toISOString()
+  })
+  await rig.settle()
+  let snap = await snapshot(rig)
+  check('a live holder past the liveness cap is handed over anyway', byId(snap, A).status === 'pending', JSON.stringify(ids(snap)))
+  check('and the reason names the cap', byId(snap, A).dispatch.error === 'lease expired (liveness cap)', JSON.stringify(byId(snap, A).dispatch))
+
+  // Requirement 4: while the previous holder is alive, no second agent may be
+  // dispatched — even if some other pass requeued the task.
+  const claimed = (await snapshot(rig)).tasks.filter((task) => task.id === A)[0]
+  const previousName = claimed.dispatch.target === null ? 'fixer' : claimed.dispatch.target
+  await patchTask(rig, A, (task) => {
+    task.status = 'pending'
+    task.assignee = null
+    task.dispatch = Object.assign({}, task.dispatch, { status: 'lease-expired', error: 'lease expired' })
+  })
+  await rig.action('start')
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('a live previous holder blocks the next attempt', byId(snap, A).status === 'pending', JSON.stringify(ids(snap)))
+  const guard = rig.scheduler.status().lastResults.filter((entry) => entry.id === A && entry.skipped === 'previous-assignee-active')
+  check('and the pass says why it skipped', guard.length >= 1, JSON.stringify(rig.scheduler.status().lastResults))
+  // Once that holder is gone the task dispatches again.
+  const roster = rig.team.roster
+  const index = roster.findIndex((member) => member.name === previousName)
+  const removed = index >= 0 ? roster.splice(index, 1)[0] : undefined
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('once the previous holder is gone the task runs again', byId(snap, A).status === 'running', JSON.stringify(ids(snap)))
+  if (removed !== undefined) roster.push(removed)
   rig.scheduler.dispose()
 }
 

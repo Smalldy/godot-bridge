@@ -18,7 +18,15 @@
  * A <- B (A must be done before B runs).
  */
 
-import { CLOSED_STATUSES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, normaliseDispatch, normaliseMerge } from './schema.mjs'
+import {
+  CLOSED_STATUSES,
+  TASK_HEARTBEAT_MS,
+  TASK_LEASE_MS,
+  TASK_LEASE_EXTENSION_MAX_MS,
+  TASK_LEASE_REMINDER_MS,
+  normaliseDispatch,
+  normaliseMerge,
+} from './schema.mjs'
 
 const iso = (now) => new Date(now).toISOString()
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -366,6 +374,7 @@ export function claimTask(board, id, worker, now) {
   // What the scheduler prepared for THIS attempt. A fallback carries no
   // worktree, so those fields are cleared and only the reason remains.
   const worktree = worker.worktree === undefined || worker.worktree === null ? {} : worker.worktree
+  const adopted = worker.adopt === undefined || worker.adopt === null ? null : worker.adopt
   target.status = 'running'
   target.assignee = {
     name: worker.name === undefined ? '@worker' : String(worker.name),
@@ -383,7 +392,7 @@ export function claimTask(board, id, worker, now) {
     at: iso(now),
     target: target.assignee.name,
     targetId: target.assignee.session,
-    via: worker.via === undefined ? null : String(worker.via),
+    via: adopted === null ? (worker.via === undefined ? null : String(worker.via)) : 'adopt',
     error: null,
     host: worker.host === undefined || worker.host === null ? null : String(worker.host),
     keep: worktree.keep === true,
@@ -394,7 +403,13 @@ export function claimTask(board, id, worker, now) {
     by: 'scheduler',
     from: 'pending',
     to: 'running',
-    note: 'dispatched to ' + target.assignee.name + (target.attempts > 1 ? ' (attempt ' + String(target.attempts) + ')' : ''),
+    note:
+      'dispatched to ' + target.assignee.name + (target.attempts > 1 ? ' (attempt ' + String(target.attempts) + ')' : '') +
+      (adopted === null
+        ? ''
+        : ' adopting ' + String(adopted.branch) +
+          (adopted.head === null || adopted.head === undefined ? '' : ' @ ' + String(adopted.head).slice(0, 10)) +
+          ' from attempt ' + String(adopted.fromAttempt)),
   })
   return done(next, [{ kind: 'claimed', id: id, who: target.assignee.name }], { task: target })
 }
@@ -459,13 +474,24 @@ export function failDispatch(board, id, error, now, maxAttempts) {
   return done(next, [{ kind: exhausted ? 'exhausted' : 'dispatch-failed', id: id }], { task: target })
 }
 
-/** Running tasks whose lease expired come back to the pool; after the attempt
- * budget they become blocked instead, so a crash loop is visible. */
-export function expireLeases(board, now, maxAttempts) {
+/**
+ * Running tasks whose lease expired come back to the pool; after the attempt
+ * budget they become blocked instead, so a crash loop is visible.
+ *
+ * Options narrow the reap to one task and explain WHY it was let go, because the
+ * liveness path distinguishes a holder that is gone from one that is alive but
+ * past the hard cap. The claim identity (dispatch.target/targetId) is kept with
+ * the requeued task: it is what tells the dispatcher whose liveness to check
+ * before handing the task to a second agent.
+ */
+export function expireLeases(board, now, maxAttempts, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const only = typeof opts.id === 'string' && opts.id !== '' ? opts.id : null
   const next = clone(board)
   const reaped = []
   for (const target of next.tasks) {
     if (target.status !== 'running') continue
+    if (only !== null && target.id !== only) continue
     if (target.leaseUntil !== null && Date.parse(target.leaseUntil) > now) continue
     const limit = Number.isFinite(maxAttempts) ? maxAttempts : target.maxAttempts
     const exhausted = target.attempts >= limit
@@ -475,7 +501,7 @@ export function expireLeases(board, now, maxAttempts) {
     target.leaseUntil = null
     target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
       status: exhausted ? 'exhausted' : 'lease-expired',
-      error: 'lease expired',
+      error: typeof opts.error === 'string' && opts.error !== '' ? opts.error : 'lease expired',
       at: iso(now),
     })
     touch(target, now)
@@ -484,7 +510,10 @@ export function expireLeases(board, now, maxAttempts) {
       by: 'system',
       from: 'running',
       to: target.status,
-      note: 'lease expired for ' + who + (exhausted ? '; attempt budget spent' : '; returned to the pool'),
+      note:
+        'lease expired for ' + who +
+        (typeof opts.reason === 'string' && opts.reason !== '' ? ' (' + opts.reason + ')' : '') +
+        (exhausted ? '; attempt budget spent' : '; returned to the pool'),
     })
     reaped.push(target.id)
   }
@@ -732,6 +761,42 @@ export function renewLeases(board, owner, now) {
   return done(next, [], { renewed: renewed })
 }
 
+/** When the current attempt started (its claim record), or null. */
+export function attemptStartedAt(task) {
+  const record = task === null || task === undefined ? null : task.dispatch
+  const at = record === null || record === undefined || typeof record.at !== 'string' ? null : Date.parse(record.at)
+  return at === null || !Number.isFinite(at) ? null : at
+}
+
+/**
+ * Extend a running task's lease WITHOUT changing its assignee or attempt: the
+ * liveness path saw a lapsed lease whose holder is still alive, so the task is
+ * kept instead of being handed to a second agent. The reason lands in history so
+ * the board explains why a task did not move.
+ */
+export function extendLease(board, id, now, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status !== 'running') return fail('not-running', id + ' is ' + task.status + ', not running')
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  target.leaseUntil = iso(now + TASK_LEASE_MS)
+  touch(target, now)
+  pushHistory(target, {
+    at: iso(now),
+    by: 'scheduler',
+    from: 'running',
+    to: 'running',
+    note: 'lease extended: ' + (opts.reason === undefined ? 'assignee still alive' : String(opts.reason)),
+  })
+  return done(next, [{ kind: 'lease-extended', id: id }], { task: target, reason: opts.reason === undefined ? null : String(opts.reason) })
+}
+
+/** The liveness extension cap, re-exported so the dispatcher and tests share one
+ * value instead of restating the policy. */
+export const LEASE_EXTENSION_MAX_MS = TASK_LEASE_EXTENSION_MAX_MS
+
 /**
  * The host heartbeat: extend the lease of every running task that still has a
  * known assignee once its lease is inside the heartbeat window. It never touches
@@ -808,7 +873,13 @@ export function summary(board, task, now) {
     attempts: task.attempts,
     maxAttempts: task.maxAttempts,
     leaseUntil: task.leaseUntil,
+    leaseRemaining: task.leaseUntil === null ? null : Math.max(0, Date.parse(task.leaseUntil) - at),
     leaseExpired: task.leaseUntil !== null && Date.parse(task.leaseUntil) <= at,
+    leaseReminder:
+      task.status === 'running' &&
+      task.leaseUntil !== null &&
+      Date.parse(task.leaseUntil) > at &&
+      Date.parse(task.leaseUntil) - at <= TASK_LEASE_REMINDER_MS,
     dispatch: task.dispatch,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,

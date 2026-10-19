@@ -1628,6 +1628,43 @@ await flush()
   check('the dialog can be closed', findAll(tree, (node) => node.props && node.props['data-modal'] === 'role-skills').length === 0)
 }
 
+// ── T-37 lease observability on the task card ─────────────────────────────
+{
+  const before = HOST.tasks
+  const withLease = function (patch) {
+    HOST.tasks = before.map(function (task) { return task.id === 'T-1' ? Object.assign({}, task, patch) : task })
+  }
+  const cardFor = function (tree) {
+    return findAll(tree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card').filter((card) => textOf(card).indexOf('Build damage system') >= 0)[0]
+  }
+  // Inside the host reminder window: the chip warns before anything expires.
+  withLease({ leaseRemaining: 8 * 60 * 1000, leaseReminder: true, leaseExpired: false })
+  let tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  let chip = findAll(cardFor(tree), (node) => node.props && node.props['data-lease'] !== undefined)[0]
+  check(
+    'a lease close to lapsing is marked as a reminder',
+    chip !== undefined && chip.props['data-lease'] === 'reminder' && chip.props['data-tone'] === 'blocked' && textOf(chip).indexOf('剩余') >= 0,
+    chip && JSON.stringify({ state: chip.props['data-lease'], text: textOf(chip) }),
+  )
+  // A lapsed lease is visibly expired rather than silently long.
+  withLease({ leaseRemaining: 0, leaseReminder: false, leaseExpired: true })
+  tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  chip = findAll(cardFor(tree), (node) => node.props && node.props['data-lease'] !== undefined)[0]
+  check('a lapsed lease is marked expired', chip !== undefined && chip.props['data-lease'] === 'expired' && textOf(chip).indexOf('已过期') >= 0, chip && textOf(chip))
+  // A healthy lease keeps the neutral tone.
+  withLease({ leaseRemaining: 55 * 60 * 1000, leaseReminder: false, leaseExpired: false })
+  tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  chip = findAll(cardFor(tree), (node) => node.props && node.props['data-lease'] !== undefined)[0]
+  check('a healthy lease stays neutral', chip !== undefined && chip.props['data-lease'] === 'ok' && chip.props['data-tone'] === 'waiting', chip && JSON.stringify(chip.props))
+  HOST.tasks = before
+}
+
 // File-lock view: waiters are advisory, not a queue.
 const locksTree = withHooks(panel, { initialView: 'locks' })
 await flush()

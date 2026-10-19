@@ -50,8 +50,8 @@
 - **任务板**：`<项目>/.agents/tasks.json`。schema v2，读到 v1 会自动迁移；重复 id、非法条目、未来版本会被拒绝而不是覆盖；建议把该文件加入项目 `.gitignore`（它是运行态，不是源码）。
 - **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject`。
 - **依赖**：`B.dependsOn = [A]` 表示 A 完成后才派发 B。就绪任务按 `priority` 降序、创建时间升序取。`A <- B <- C`、`D`、`E <- F` 会先派发 A、D、E；A 完成后派发 B，E 完成后派发 F。
-- **派发**：开始/暂停是项目级状态（持久化在板子里）。GUI 只暴露**最大并发**：最多同时跑这么多个任务；执行者上限自动设为并发 + 1，没有空闲执行者时会自动新建，连续失败 3 次后任务阻塞（高级调用仍可用 `settings` 覆盖）。每次派发先 `claim`（15 分钟租约）再交给 Agent Teams：优先 `sendMessage` 给空闲成员，否则 `spawnTeammate`。worker 死掉后租约到期自动回池；宿主重启会回收上一进程的 claim。
-- **文件锁**：任务用 `writeFiles` 声明要写的文件；调度器在派发前原子获取全部锁，任务完成/阻塞/取消/租约过期时释放。agent 也可以 `lock` 为自己的运行任务追加锁。路径规范化为项目相对路径，目录锁会与子路径冲突。
+- **派发**：开始/暂停是项目级状态（持久化在板子里）。GUI 只暴露**最大并发**：最多同时跑这么多个任务；执行者上限自动设为并发 + 1，没有空闲执行者时会自动新建，连续失败 3 次后任务阻塞（高级调用仍可用 `settings` 覆盖）。每次派发先 `claim`（60 分钟租约；assignee 任何活动都会续租，另有固定节奏的宿主心跳）再交给 Agent Teams：优先 `sendMessage` 给空闲成员，否则 `spawnTeammate`。租约失效按 liveness 判定：holder 仍活着就保住任务，只有 session 消失/failed（或超过单次 4 小时硬上限）才交接，且下一次尝试会 adopt 上一份 checkout 而不是重做；宿主重启会回收上一进程的 claim。
+- **文件锁**：任务用 `writeFiles` 声明要写的文件；调度器在派发前原子获取全部锁，任务完成/阻塞/取消/租约交接时释放。agent 也可以 `lock` 为自己的运行任务追加锁。路径规范化为项目相对路径，目录锁会与子路径冲突。
 - **GUI**：看板（就绪 / 等待 / 进行中 / 完成 / 阻塞）、队列、执行者、文件锁；开始/暂停、新建/编辑、提交/重试/重开、派发设置。执行者页显示 Lead、上限、忙/闲/启动中/失败计数以及每个 WorkAgent 的当前任务；文件锁页显示持有任务/Agent、租约和“会等待该文件”的就绪任务（是竞争提示，不是 FIFO 队列）。Agent 的 start 申请会显示为一条带“批准并开始 / 拒绝”的横幅。2.5 秒轮询宿主快照。
 - **同意**：agent 调 `start` 只写入 `dispatch.request`，不会启动调度器；面板显示申请，只有用户的 `approveStart` 才真正开始。`pause` 双方都可直接调；`settings` 仅用户可改。
 - **安全**：HTTP 写动作要求 `application/json` 且校验同源 `Origin`；`?project=` 只是读提示，切换项目走 `openProject`（校验目录存在）。
