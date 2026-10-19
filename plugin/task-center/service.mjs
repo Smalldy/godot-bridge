@@ -793,21 +793,26 @@ export function extendLease(board, id, now, options) {
   return done(next, [{ kind: 'lease-extended', id: id }], { task: target, reason: opts.reason === undefined ? null : String(opts.reason) })
 }
 
-/** The liveness extension cap, re-exported so the dispatcher and tests share one
- * value instead of restating the policy. */
-export const LEASE_EXTENSION_MAX_MS = TASK_LEASE_EXTENSION_MAX_MS
-
 /**
  * The host heartbeat: extend the lease of every running task that still has a
- * known assignee once its lease is inside the heartbeat window. It never touches
- * a lease that already lapsed (that task is reaped, not revived), and it does not
- * decide whether the assignee is alive — that liveness check belongs to the
- * dispatch follow-up, not to this stopgap. Renewing only inside the window keeps
- * the writes bounded to one per lease period per task.
+ * known assignee once its lease is inside the heartbeat window.
+ *
+ * It is LIVENESS- and CAP-aware, which is what keeps the handover path reachable
+ * in a host that ticks forever:
+ *   - allow(task) must say the holder is alive (the dispatcher passes the Team
+ *     roster check), so a dead holder is NOT renewed and its lease lapses into
+ *     the reap, which hands the task over;
+ *   - an attempt that already reached maxExtensionMs (default
+ *     TASK_LEASE_EXTENSION_MAX_MS) is NOT renewed either, so a live holder past
+ *     the cap also lapses into a handover.
+ * A lease that already lapsed is never revived, and renewing only inside the
+ * window keeps the writes bounded to one per lease period per task.
  */
 export function renewRunningLeases(board, now, options) {
   const opts = options === undefined || options === null ? {} : options
   const windowMs = Number.isFinite(opts.windowMs) ? Math.max(1, Math.floor(opts.windowMs)) : TASK_HEARTBEAT_MS
+  const maxExtensionMs = Number.isFinite(opts.maxExtensionMs) ? Math.max(1, Math.floor(opts.maxExtensionMs)) : TASK_LEASE_EXTENSION_MAX_MS
+  const allow = typeof opts.allow === 'function' ? opts.allow : null
   const next = clone(board)
   const renewed = []
   for (const target of next.tasks) {
@@ -817,6 +822,9 @@ export function renewRunningLeases(board, now, options) {
     if (!Number.isFinite(until)) continue
     if (until <= now) continue
     if (until - now > windowMs) continue
+    const startedAt = attemptStartedAt(target)
+    if (startedAt !== null && now - startedAt >= maxExtensionMs) continue
+    if (allow !== null && allow(target) !== true) continue
     target.leaseUntil = iso(now + TASK_LEASE_MS)
     touch(target, now)
     renewed.push(target.id)

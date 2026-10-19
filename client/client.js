@@ -1405,20 +1405,20 @@ window.__ModuleLoader__.load({
 					}
 				}
 				if (lease !== null) {
-				meta.push(
-					h(
-						'span',
-						{
-							key: 'lease',
-							className: 'gbt-chip',
-							'data-tone': lease.warn ? 'blocked' : 'waiting',
-							'data-lease': lease.expired === true ? 'expired' : lease.remind === true ? 'reminder' : 'ok',
-							title: lease.remind === true ? t('leaseReminder') : t('leaseLeft'),
-						},
-						lease.text,
-					),
-				)
-			}
+					meta.push(
+						h(
+							'span',
+							{
+								key: 'lease',
+								className: 'gbt-chip',
+								'data-tone': lease.warn ? 'blocked' : 'waiting',
+								'data-lease': lease.expired === true ? 'expired' : lease.remind === true ? 'reminder' : 'ok',
+								title: lease.remind === true ? t('leaseReminder') : t('leaseLeft'),
+							},
+							lease.text,
+						),
+					)
+				}
 				if (files.length > 0) meta.push(h('span', { key: 'files', className: 'gbt-chip' }, '🔒 ' + String(files.length)))
 				if (merge !== null) {
 					meta.push(h('span', { key: 'merge', className: 'gbt-chip', 'data-tone': tcMergeTone(merge.status), title: t('mergeTitle') }, '⇄ ' + tcMergeLabel(merge.status, t)))

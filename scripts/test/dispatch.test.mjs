@@ -502,6 +502,97 @@ async function submitAndMerge(rig, id, evidence) {
   rig.scheduler.dispose()
 }
 
+// ── T-37 e2e on the production timer rhythm ────────────────────────────────
+// The host ticks forever, so the heartbeat itself must let a dead holder lease
+// lapse: these tests step the clock in small increments and NEVER patch
+// leaseUntil, which is exactly the probe that exposed the unreachable path.
+{
+  let clock = 1_700_000_000_000
+  const git = createFakeGit()
+  const rig = createRig({ git: git, teamOptions: { spawnedStatus: 'running' }, now: () => clock })
+  const A = (await createTask(rig, { title: 'dead holder', writeFiles: ['scripts/a.gd'] })).id
+  await rig.action('start')
+  await rig.settle()
+  let snap = await snapshot(rig)
+  const claimed = byId(snap, A)
+  const firstPath = join(PROJECT, '.worktrees', A + '-1')
+  check('the attempt is claimed with a full lease', claimed.status === 'running' && Date.parse(claimed.leaseUntil) === clock + TASK_LEASE_MS, JSON.stringify(claimed.leaseUntil))
+  check('and runs in its own checkout', claimed.worktree === firstPath && claimed.branch === 'task/' + A + '-1')
+  // The worker dies: it leaves the roster (and a commit) behind.
+  const roster = rig.team.roster
+  const index = roster.findIndex((member) => member.name === claimed.assignee.name)
+  const removed = index >= 0 ? roster.splice(index, 1)[0] : undefined
+  await patchTask(rig, A, (task) => {
+    task.commit = 'dead-worker-commit'
+  })
+  let elapsed = 0
+  for (let step = 0; step < 90; step += 1) {
+    clock += 60 * 1000
+    elapsed += 60 * 1000
+    await rig.settle()
+    const seen = byId(await snapshot(rig), A)
+    if (seen.attempts > 1) break
+  }
+  snap = await snapshot(rig)
+  const handedOver = byId(snap, A)
+  check('a dead holder loses the task one lease after the claim, on the timer rhythm', handedOver.attempts >= 2 && elapsed <= 65 * 60 * 1000, JSON.stringify({ attempts: handedOver.attempts, minutes: Math.round(elapsed / 60000) }))
+  check('and the next attempt adopts the dead attempt checkout', handedOver.status === 'running' && handedOver.worktree === firstPath && handedOver.branch === 'task/' + A + '-1' && handedOver.dispatch.via === 'adopt', JSON.stringify({ status: handedOver.status, worktree: handedOver.worktree, branch: handedOver.branch, via: handedOver.dispatch.via }))
+  check('with exactly one worktree add for the whole handover', git.calls.filter((call) => call.name === 'worktreeAdd').length === 1, JSON.stringify(git.calls.filter((call) => call.name === 'worktreeAdd').map((call) => call.detail.path)))
+  check('and history records the gone holder', (handedOver.history || []).some((entry) => String(entry.note).indexOf('assignee gone') >= 0), JSON.stringify((handedOver.history || []).slice(-3)))
+  if (removed !== undefined) roster.push(removed)
+  rig.scheduler.dispose()
+}
+
+// A live holder is never renewed past the cap: its lease lapses into a handover.
+{
+  let clock = 1_700_000_000_000
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' }, now: () => clock })
+  const A = (await createTask(rig, { title: 'capped holder' })).id
+  await rig.action('start')
+  await rig.settle()
+  await patchTask(rig, A, (task) => {
+    task.dispatch = Object.assign({}, task.dispatch, { at: new Date(clock - 5 * 60 * 60 * 1000).toISOString() })
+  })
+  let elapsed = 0
+  for (let step = 0; step < 130; step += 1) {
+    clock += 60 * 1000
+    elapsed += 60 * 1000
+    await rig.settle()
+    const seen = byId(await snapshot(rig), A)
+    if (seen.attempts > 1) break
+  }
+  const snap = await snapshot(rig)
+  const capped = byId(snap, A)
+  const history = capped.history || []
+  check(
+    'a live holder past the cap is not renewed and is handed over',
+    capped.attempts >= 2 && history.some((entry) => String(entry.note).indexOf('past the liveness cap') >= 0) && elapsed <= 65 * 60 * 1000,
+    JSON.stringify({ attempts: capped.attempts, minutes: Math.round(elapsed / 60000), tail: history.slice(-2) }),
+  )
+  rig.scheduler.dispose()
+}
+
+// A claim without a readable start time cannot be capped, so a live holder keeps
+// its lease (the fallback must not cap at zero).
+{
+  let clock = 1_700_000_000_000
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' }, now: () => clock })
+  const A = (await createTask(rig, { title: 'no claim time' })).id
+  await rig.action('start')
+  await rig.settle()
+  await patchTask(rig, A, (task) => {
+    task.dispatch = Object.assign({}, task.dispatch, { at: null })
+  })
+  // Walk past the heartbeat window: the live holder must still be renewed.
+  for (let step = 0; step < 56; step += 1) {
+    clock += 60 * 1000
+    await rig.settle()
+  }
+  const noClaim = byId(await snapshot(rig), A)
+  check('a task without a claim time is never capped and keeps its lease', noClaim.status === 'running' && noClaim.attempts === 1 && Date.parse(noClaim.leaseUntil) > clock, JSON.stringify({ status: noClaim.status, attempts: noClaim.attempts, lease: noClaim.leaseUntil }))
+  rig.scheduler.dispose()
+}
+
 // ── a task claimed by a previous host process is recovered ─────────────────
 {
   const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })

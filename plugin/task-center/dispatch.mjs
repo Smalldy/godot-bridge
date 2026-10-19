@@ -34,6 +34,7 @@ import {
   ROLE_STAGE,
   ROLE_TEMPLATE_VARIABLES,
   TASK_HEARTBEAT_MS,
+  TASK_LEASE_CAP_ERROR,
   TASK_LEASE_EXTENSION_MAX_MS,
   TASK_LEASE_MS,
   TEST_REMINDER_MS,
@@ -1541,15 +1542,17 @@ export function createDispatcher(ctx, options) {
    * lease is inside the heartbeat window, renewing its file locks with it. It
    * runs before the reap so a task that is still inside its lease is never
    * mistaken for a dead one just because its worker is silent for a long tool
-   * run. A lease that already lapsed is left alone on purpose: reviving it would
-   * disable lease expiry entirely, and telling a busy worker from a dead one is
-   * the liveness check T-37 owns.
+   * run. It renews ONLY a holder the Team still lists and only while the attempt
+   * is inside the extension cap, so a dead holder (or one past the cap) lapses
+   * into the handover path on schedule instead of being kept alive forever. A
+   * lease that already lapsed is never revived here.
    */
   async function applyHeartbeat(projectPath, board, now) {
-    const planned = model.renewRunningLeases(board, now, { windowMs: heartbeatMs })
+    const plan = { windowMs: heartbeatMs, maxExtensionMs: TASK_LEASE_EXTENSION_MAX_MS, allow: holderIsAlive }
+    const planned = model.renewRunningLeases(board, now, plan)
     if (planned.ok !== true || planned.renewed.length === 0) return board
     const next = await applyReap(projectPath, (value) => {
-      const result = model.renewRunningLeases(value, now, { windowMs: heartbeatMs })
+      const result = model.renewRunningLeases(value, now, plan)
       return result.ok === true && result.renewed.length > 0 ? result.board : null
     })
     if (next === null) return board
@@ -1641,6 +1644,13 @@ export function createDispatcher(ctx, options) {
     return { known: true, alive: status !== 'failed', status: status, name: typeof match.name === 'string' ? match.name : name }
   }
 
+  /** The heartbeat gate: only a holder the Team still lists is renewed, so a dead
+   * worker's lease lapses into the handover path instead of living forever. */
+  function holderIsAlive(task) {
+    if (task === null || task === undefined || task.assignee === null) return false
+    return memberLiveness({ name: task.assignee.name, session: task.assignee.session }).alive === true
+  }
+
   /**
    * Best-effort interrupt of a member that lost its task. The Agent Teams edge
    * may not expose one: a refusal is reported and recorded, never thrown, because
@@ -1727,7 +1737,7 @@ export function createDispatcher(ctx, options) {
         for (const entry of handover) {
           const result = model.expireLeases(mutated, now, limit, {
             id: entry.id,
-            error: entry.capped === true ? 'lease expired (liveness cap)' : 'lease expired',
+            error: entry.capped === true ? TASK_LEASE_CAP_ERROR : 'lease expired',
             reason:
               entry.capped === true
                 ? 'alive but past the liveness cap'
@@ -2093,7 +2103,7 @@ export function createDispatcher(ctx, options) {
         // dispatched while the previous holder is still alive, no matter which
         // pass requeued it. A liveness-capped handover is the single exception —
         // that holder was explicitly told to stop.
-        if (task.dispatch !== null && task.dispatch.status === 'lease-expired' && task.dispatch.error !== 'lease expired (liveness cap)') {
+        if (task.dispatch !== null && task.dispatch.status === 'lease-expired' && task.dispatch.error !== TASK_LEASE_CAP_ERROR) {
           const previous = memberLiveness({ name: task.dispatch.target, session: task.dispatch.targetId })
           if (previous.alive === true) {
             results.push({ id: task.id, skipped: 'previous-assignee-active', previous: task.dispatch.target })

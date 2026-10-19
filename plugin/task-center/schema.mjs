@@ -53,6 +53,11 @@ export const TASK_LEASE_EXTENSION_MAX_MS = 4 * 60 * 60 * 1000
  * handled by liveness. */
 export const TASK_LEASE_REMINDER_MS = 10 * 60 * 1000
 
+/** The dispatch.error written when a handover is forced by the liveness cap
+ * rather than by a dead holder. Shared by the writer (the dispatcher's
+ * expireLeases call) and the single-agent guard, so the two can never drift. */
+export const TASK_LEASE_CAP_ERROR = 'lease expired (liveness cap)'
+
 /** Worktree layout. A task checkout may only live inside the project, exactly
  * like a lock path; `root` is INTERNAL configuration, not a toggle. Worktrees
  * are how every task runs, so there is no "enabled" flag to turn off. */
