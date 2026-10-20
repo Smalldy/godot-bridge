@@ -448,7 +448,6 @@ window.__ModuleLoader__.load({
 				roleEditorApplySkipped: '没有在跑实例，只更新了阶段绑定。',
 				rolePreviewRawTitle: '原始提示词',
 				rolePreviewInjectedTitle: '注入后的提示词',
-				rolePreviewVariables: '可引用变量',
 				rolePreviewEmptyValue: '（空）',
 				rolePreviewTaskPick: '任务',
 				rolePreviewTaskAuto: '自动（最近活跃任务）',
@@ -456,7 +455,6 @@ window.__ModuleLoader__.load({
 				rolePreviewLoading: '正在读取宿主真正注入的文本…',
 				rolePreviewMissing: '宿主还没有返回注入预览。',
 				rolePreviewFailed: '注入预览读取失败',
-				rolePreviewUnknown: '预览不可用',
 				rolePreviewGroupTemplate: '你的原文',
 				rolePreviewGroupTask: '任务数据',
 				rolePreviewGroupFixed: '宿主固定',
@@ -779,7 +777,6 @@ window.__ModuleLoader__.load({
 				roleEditorApplySkipped: 'No live instance; only the stage binding was updated.',
 				rolePreviewRawTitle: 'Raw prompt',
 				rolePreviewInjectedTitle: 'Injected prompt',
-				rolePreviewVariables: 'Usable variables',
 				rolePreviewEmptyValue: '(empty)',
 				rolePreviewTaskPick: 'Task',
 				rolePreviewTaskAuto: 'Auto (most recent active task)',
@@ -787,7 +784,6 @@ window.__ModuleLoader__.load({
 				rolePreviewLoading: 'Reading the exact text the host injects…',
 				rolePreviewMissing: 'The host has not returned an injected preview yet.',
 				rolePreviewFailed: 'Could not read the injected preview',
-				rolePreviewUnknown: 'Preview unavailable',
 				rolePreviewGroupTemplate: 'Your own text',
 				rolePreviewGroupTask: 'Task data',
 				rolePreviewGroupFixed: 'Host-fixed',
@@ -1190,7 +1186,6 @@ window.__ModuleLoader__.load({
 				worktrees: payload.worktrees === undefined || payload.worktrees === null ? null : payload.worktrees,
 				activity: payload.activity === undefined || payload.activity === null ? null : payload.activity,
 				roles: payload.roles === undefined || payload.roles === null ? null : payload.roles,
-				rolePreviews: Array.isArray(payload.rolePreviews) ? payload.rolePreviews : [],
 				scheduler: payload.scheduler === undefined ? null : payload.scheduler,
 				actionResult: actionResult === undefined || actionResult === null ? null : actionResult,
 				actionError: payload.actionError === undefined || payload.actionError === null ? null : payload.actionError,
@@ -1269,7 +1264,15 @@ window.__ModuleLoader__.load({
 				return loading
 			}
 
-			async function send(action, body) {
+			/**
+			 * Send one action. options.quiet marks an AUTOMATIC call (the prompt
+			 * preview): it may refresh board data, but it never enters the
+			 * action-result channel, so an automatic request can neither fake nor
+			 * clear the banner of the user's last real action.
+			 */
+			async function send(action, body, options) {
+				const opts = options === undefined || options === null ? {} : options
+				const quiet = opts.quiet === true
 				const payloadBody = Object.assign({ action: action }, body === undefined ? {} : body)
 				const project = tcRememberedProject()
 				if (project !== null) payloadBody.project = project
@@ -1283,14 +1286,24 @@ window.__ModuleLoader__.load({
 					})
 					if (payload && payload.ok === true) {
 						const host = payload.snapshot !== undefined && payload.snapshot !== null ? payload.snapshot : payload
-						if (host && Array.isArray(host.tasks)) emit(tcSnapshot(host, 'host', '', payload))
+						if (host && Array.isArray(host.tasks)) {
+							const next = tcSnapshot(host, 'host', '', payload)
+							if (quiet) {
+								next.actionResult = snapshot.actionResult
+								next.actionError = snapshot.actionError
+								next.message = snapshot.message
+							}
+							emit(next)
+						}
 						if (host && typeof host.project === 'string') tcRememberProject(host.project)
 						return { ok: true, payload: payload }
 					}
-					emit(Object.assign({}, snapshot, { message: String((payload && payload.message) || 'the host refused that action'), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
+					if (!quiet) {
+						emit(Object.assign({}, snapshot, { message: String((payload && payload.message) || 'the host refused that action'), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
+					}
 					return { ok: false, payload: payload }
 				} catch (error) {
-					emit(Object.assign({}, snapshot, { message: String((error && error.message) || error) }))
+					if (!quiet) emit(Object.assign({}, snapshot, { message: String((error && error.message) || error) }))
 					return { ok: false, error: error }
 				} finally {
 					if (busy === token) setBusy(null)
@@ -1922,6 +1935,11 @@ window.__ModuleLoader__.load({
 				)
 			}
 
+			/**
+			 * The banner of the user's LAST action. A successful payload this panel
+			 * cannot describe (an action it does not own, or an empty answer) renders
+			 * NOTHING: claiming "saved" for an unrecognised success would be a lie.
+			 */
 			function roleResultBanner(result, t) {
 				if (result === null || result === undefined) return null
 				const payload = result.payload
@@ -1953,7 +1971,8 @@ window.__ModuleLoader__.load({
 						}
 					}
 				}
-				return h('div', { className: 'gbt-banner', 'data-tone': 'info', 'data-role-result': 'ok' }, parts.length === 0 ? t('roleSave') + ' ✓' : parts.join(' · '))
+				if (parts.length === 0) return null
+				return h('div', { className: 'gbt-banner', 'data-tone': 'info', 'data-role-result': 'ok' }, parts.join(' · '))
 			}
 
 			/** One grouped card section with a title row. */
@@ -2113,7 +2132,9 @@ window.__ModuleLoader__.load({
 					const body = { kind: kind }
 					if (previewProfileName !== null) body.profile = String(previewProfileName)
 					if (typeof roleEditorState.previewTaskId === 'string' && roleEditorState.previewTaskId !== '') body.taskId = roleEditorState.previewTaskId
-					Promise.resolve(store.send('rolesPreview', body)).then(function (outcome) {
+					// Quiet: the preview is automatic, so its answer must never become the
+					// panel's "your last action" result banner.
+					Promise.resolve(store.send('rolesPreview', body, { quiet: true })).then(function (outcome) {
 						const ok = outcome !== null && outcome !== undefined && outcome.ok === true
 						const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined ? outcome.payload : null
 						roleEditorState.previewPending = false

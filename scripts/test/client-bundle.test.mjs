@@ -442,6 +442,8 @@ function rolePreviewReply(body) {
       }
     }),
     sections: sections,
+    // The real route attaches the board snapshot to every successful action.
+    snapshot: HOST,
   }
 }
 const HOST = {
@@ -911,6 +913,19 @@ await flush()
   const rolesText = textOf(rolesTree)
   check('the editor names the built-in profile it is editing', rolesText.indexOf('worker') >= 0, rolesText)
   check('the three role kinds are one click away', rolesText.indexOf('实现') >= 0 && rolesText.indexOf('测试') >= 0 && rolesText.indexOf('评审') >= 0, rolesText)
+  // The automatic injected-preview fetch must never become "your last action":
+  // no fabricated banner on mount, and no actionResult written by the preview.
+  check(
+    'the roles page shows no fabricated action banner on mount',
+    findAll(rolesTree, (node) => node.props && node.props['data-role-result'] !== undefined).length === 0 && rolesText.indexOf('保存 ✓') < 0,
+    rolesText.slice(0, 300),
+  )
+  const mountResult = captured.getSnapshot().actionResult
+  check(
+    'the automatic preview never becomes the recorded action result',
+    mountResult === null || mountResult.kind === undefined,
+    JSON.stringify(mountResult === null ? null : { kind: mountResult.kind, keys: Object.keys(mountResult) }),
+  )
 
   // ONE card: the context editor. Every stand-alone management card is gone.
   const cards = findAll(rolesTree, (node) => node.props && typeof node.props.className === 'string' && node.props.className.indexOf('gbt-rcard') >= 0)
@@ -966,8 +981,19 @@ await flush()
   check('reloading the role profiles sends rolesList', posts[posts.length - 1].action === 'rolesList', JSON.stringify(posts[posts.length - 1]))
 
   // Switch to the reviewer tab: its bound custom profile, and its stage owners.
+  // The switch triggers an automatic preview request; it must not touch the
+  // action-result channel (neither set nor clear the user's last outcome).
+  const previewResultBefore = captured.getSnapshot().actionResult
+  const previewErrorBefore = captured.getSnapshot().actionError
   tabs[2].props.onClick()
   rolesTree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  rolesTree = withHooks(panel, { initialView: 'roles' })
+  check(
+    'an automatic preview never writes snapshot.actionResult/actionError',
+    captured.getSnapshot().actionResult === previewResultBefore && captured.getSnapshot().actionError === previewErrorBefore,
+    JSON.stringify({ before: previewResultBefore === null ? null : Object.keys(previewResultBefore), after: captured.getSnapshot().actionResult === null ? null : Object.keys(captured.getSnapshot().actionResult), error: captured.getSnapshot().actionError }),
+  )
   editor = findAll(findAll(rolesTree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
   check(
@@ -986,12 +1012,17 @@ await flush()
   // A custom profile can be deleted; a built-in cannot.
   check('a custom profile offers delete', findAll(identity, (node) => node.props && node.props['data-action'] === 'rolesDelete').length === 1)
 
-  // Bind the chosen profile to the stage from the identity row.
+  // Bind the chosen profile to the stage from the identity row. A real action
+  // still shows its result banner (the payload is the host's, not a preview).
+  postReply = { ok: true, config: HOST.roles, bound: { stage: 'review', profile: 'reviewer' }, source: 'file', snapshot: HOST }
   identitySelect.props.ref.current = { value: 'reviewer' }
   findAll(identity, (node) => node.props && node.props['data-action'] === 'rolesBind')[0].props.onClick()
   await flush()
   const bindPost = posts[posts.length - 1]
   check('binding from the identity row sends rolesBind with the chosen profile', bindPost.action === 'rolesBind' && bindPost.stage === 'review' && bindPost.profile === 'reviewer', JSON.stringify(bindPost))
+  const afterBind = withHooks(panel, { initialView: 'roles' })
+  const bindBanner = findAll(afterBind, (node) => node.props && node.props['data-role-result'] === 'ok')[0]
+  check('a real bind still shows its result banner', bindBanner !== undefined && textOf(bindBanner).indexOf('来源') >= 0, bindBanner && textOf(bindBanner))
 
   // Picking another profile in the selector retargets the editor.
   identitySelect.props.onChange()
@@ -2142,6 +2173,7 @@ check(
   // Save the draft, then let the host report the created profile: a stale value
   // from before the save must not survive it.
   area.props.ref.current.value = 'forked body'
+  postReply = { ok: true, config: HOST.roles, source: 'file', snapshot: HOST }
   clickAction(rtree, 'role-editor-save')
   await flush()
   const created = posts[posts.length - 1]
@@ -2164,10 +2196,15 @@ check(
   )
 
   // The editor-local banner belongs to one identity: a kind switch clears it.
-  check('the saved outcome is shown inside the editor', textOf(editorOf(rtree)).indexOf('保存 ✓') >= 0, textOf(editorOf(rtree)).slice(0, 200))
+  const savedBanner = findAll(editorOf(rtree), function (node) { return node.props && node.props['data-role-result'] === 'ok' })[0]
+  check('the real saved outcome is shown inside the editor', savedBanner !== undefined && textOf(savedBanner).indexOf('来源') >= 0, savedBanner && textOf(savedBanner))
   clickAction(rtree, 'role-editor-kind', 'data-kind', 'tester')
   rtree = reuse.render(panel2, { initialView: 'roles' })
-  check('switching kind clears the previous identity banner', textOf(editorOf(rtree)).indexOf('保存 ✓') < 0, textOf(editorOf(rtree)).slice(0, 200))
+  check(
+    'switching kind clears the previous identity banner',
+    findAll(editorOf(rtree), function (node) { return node.props && node.props['data-role-result'] !== undefined }).length === 0,
+    textOf(editorOf(rtree)).slice(0, 200),
+  )
 
   // A FAILED save keeps the draft AND the values typed into it: the identity does
   // not change, so the control is not remounted and its typed text survives.
