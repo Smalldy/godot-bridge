@@ -1189,12 +1189,14 @@ await flush()
   editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
 
   const promptArea = findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-prompts')[0]
-  check('the editor has ONE prompt area', promptArea !== undefined && promptArea.props.className === 'gbt-promptcols', promptArea && promptArea.props.className)
-  const rawCol = findAll(promptArea, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
+  check('the editor has ONE prompt area', promptArea !== undefined && promptArea.props['data-role-layout'] === 'single', promptArea && promptArea.props.className)
   const injectedCol = findAll(promptArea, (node) => node.props && node.props['data-role-prompt'] === 'injected')[0]
   check(
-    'the prompt area is exactly two columns: raw and injected',
-    rawCol !== undefined && injectedCol !== undefined && findAll(promptArea, (node) => node.props && node.props['data-role-prompt'] !== undefined).length === 2,
+    'the implement page is a single read-only view: no raw column, no half panel',
+    promptArea.props.className === 'gbt-promptsingle' &&
+      findAll(promptArea, (node) => node.props && node.props['data-role-prompt'] === 'raw').length === 0 &&
+      injectedCol !== undefined,
+    JSON.stringify(promptArea.props),
   )
   check(
     'the old six-block renderer is gone',
@@ -1202,18 +1204,15 @@ await flush()
       findAll(editor, (node) => node.props && node.props['data-editor-block'] !== undefined).length === 0,
   )
 
-  // A built-in role is host-fixed: the left column explains why it is empty.
+  // The implement stage is not wired to the role system: say so, full width.
+  const workerNote = findAll(editor, (node) => node.props && node.props['data-role-worker-note'] !== undefined)[0]
   check(
-    'a built-in role renders a read-only raw column, not an editor',
-    rawCol.props['data-role-raw-readonly'] === 'true' && rawCol.props['data-role-raw-reason'] === 'worker' && findAll(rawCol, (node) => node.type === 'textarea').length === 0,
-    JSON.stringify(rawCol.props),
-  )
-  check(
-    'the implement stage says role customization is not wired yet',
-    rawCol.props['data-role-raw-reason'] === 'worker' &&
-      textOf(rawCol).indexOf('实现阶段由每任务执行者承担') >= 0 &&
-      findAll(rawCol, (node) => node.props && node.props['data-role-tokens'] !== undefined).length === 0,
-    textOf(rawCol),
+    'the implement page explains why it has nothing to edit',
+    workerNote !== undefined &&
+      textOf(workerNote).indexOf('实现角色尚不可定制') >= 0 &&
+      textOf(workerNote).indexOf('实现阶段由每任务执行者承担') >= 0 &&
+      findAll(editor, (node) => node.props && node.props['data-role-tokens'] !== undefined).length === 0,
+    workerNote && textOf(workerNote),
   )
 
   // The right column is what the host really injects, not panel copy.
@@ -1246,16 +1245,52 @@ await flush()
   await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
-  const testerRaw = findAll(editor, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
+  const testerArea = findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-prompts')[0]
+  const testerRaw = findAll(testerArea, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
+  const testerInjected = findAll(testerArea, (node) => node.props && node.props['data-role-prompt'] === 'injected')[0]
   check(
-    'a built-in profile is read-only and explains that it cannot be edited in place',
-    testerRaw !== undefined &&
+    'a built-in profile keeps two columns, and the left one is a designed empty state',
+    testerArea.props['data-role-layout'] === 'split' &&
+      testerRaw !== undefined &&
+      testerInjected !== undefined &&
       testerRaw.props['data-role-raw-readonly'] === 'true' &&
       testerRaw.props['data-role-raw-reason'] === 'builtin' &&
-      findAll(testerRaw, (node) => node.type === 'textarea').length === 0 &&
-      textOf(testerRaw).indexOf('默认角色不可直接修改') >= 0,
+      testerRaw.props['data-role-empty-state'] === 'builtin' &&
+      findAll(testerRaw, (node) => node.type === 'textarea').length === 0,
+    testerRaw && JSON.stringify(testerRaw.props),
+  )
+  const emptyCopy = findAll(testerRaw, (node) => node.props && node.props['data-role-empty-fork'] === 'true')[0]
+  check(
+    'the built-in empty state says what to do and offers the existing Fork action',
+    emptyCopy !== undefined &&
+      emptyCopy.props['data-action'] === 'role-editor-fork' &&
+      textOf(emptyCopy) === '复制一份来改' &&
+      textOf(testerRaw).indexOf('默认角色不可修改') >= 0 &&
+      textOf(testerRaw).indexOf('宿主内置') >= 0,
     testerRaw && textOf(testerRaw),
   )
+
+  // Forking from the empty state turns the page into an editable two-column view.
+  emptyCopy.props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const forkedArea = findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-prompts')[0]
+  const forkedRaw = findAll(forkedArea, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
+  const forkedAreaField = findAll(forkedRaw, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0]
+  check(
+    'a forked copy on the same page is two columns with an editable raw prompt',
+    forkedArea.props['data-role-layout'] === 'split' &&
+      forkedRaw !== undefined &&
+      forkedRaw.props['data-role-raw-readonly'] === 'false' &&
+      forkedAreaField !== undefined,
+    forkedRaw && JSON.stringify(forkedRaw.props),
+  )
+
+  // Leave the editor without a draft so the next block starts on the bound profile.
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'tester')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
 }
 
 // ── Fork/save: a failed save keeps the draft, a success retargets at once ──
