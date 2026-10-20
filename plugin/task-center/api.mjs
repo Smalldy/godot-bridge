@@ -16,10 +16,12 @@ import {
   HOST_ACTION_TIMEOUT_MS,
   ROLE_KINDS,
   ROLE_STAGE,
+  ROLE_TEMPLATE_VARIABLES,
   TASK_LEASE_MS,
   WORKFLOW_STAGES,
   defaultRoleConfig,
   normaliseRoleConfig,
+  profileForKind,
   validateRoleBinding,
   validateRoleProfile,
 } from './schema.mjs'
@@ -28,12 +30,18 @@ import * as locks from './locks.mjs'
 import {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
+  ROLE_SAMPLE_TASK,
+  briefFor,
+  briefPartsFor,
   probeWorktree,
   resolveLead,
   reviewBriefFor,
   reworkBriefFor,
+  roleBriefFor,
+  roleBriefPartsFor,
   roleContextPreview,
   roleKindOf,
+  roleTemplateValuesFor,
   servicesFor,
   testFailureBriefFor,
   testerBriefFor,
@@ -70,6 +78,7 @@ export const ACTIONS = [
   'harnessStatus',
   'harnessSmoke',
   'rolesList',
+  'rolesPreview',
   'rolesCreate',
   'rolesUpdate',
   'rolesDelete',
@@ -100,6 +109,7 @@ export const USER_ONLY_ACTIONS = [
   'rejectStart',
   'settings',
   'rolesList',
+  'rolesPreview',
   'rolesCreate',
   'rolesUpdate',
   'rolesDelete',
@@ -117,6 +127,9 @@ export const AGENT_ACTIONS = ACTIONS.filter((action) => USER_ONLY_ACTIONS.indexO
 export const READ_ACTIONS = ['board', 'list', 'get', 'locks', 'harnessStatus', 'skillsCatalog']
 
 const STATUS_RANK = { pending: 0, running: 1, reviewing: 2, testing: 3, blocked: 4, done: 5, cancelled: 6 }
+
+/** The statuses a prompt preview prefers: the work the Team is doing right now. */
+const ACTIVE_PREVIEW_STATUSES = ['running', 'reviewing', 'testing']
 
 function failure(code, message, extra) {
   return Object.assign({ ok: false, code: code, message: message }, extra === undefined ? {} : extra)
@@ -476,6 +489,103 @@ export function createApi(ctx, options) {
     } finally {
       mergingCandidates.delete(id)
     }
+  }
+
+  /**
+   * Which task a role preview injects. The named task wins; otherwise the most
+   * recently updated ACTIVE task (running/reviewing/testing), then the most
+   * recently updated task of any status, and only when the board is empty the
+   * built-in sample. A task id the board does not hold is a readable refusal —
+   * never a silent fall back to the sample, which would look like a real task.
+   */
+  async function previewTaskFor(projectPath, taskId) {
+    const requested = typeof taskId === 'string' && taskId !== '' ? taskId : null
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return { failed: read.failed }
+    const tasks = Array.isArray(read.board.tasks) ? read.board.tasks : []
+    if (requested !== null) {
+      const found = model.findTask(read.board, requested)
+      if (found === undefined) return { failed: failure('unknown-task', 'no task with id ' + requested) }
+      return { task: found, real: true }
+    }
+    const updatedAtOf = (task) => {
+      const ms = Date.parse(task === null || task === undefined ? '' : task.updatedAt)
+      return Number.isFinite(ms) ? ms : 0
+    }
+    const newestFirst = (left, right) => updatedAtOf(right) - updatedAtOf(left) || String(right.id).localeCompare(String(left.id))
+    const active = tasks.filter((task) => ACTIVE_PREVIEW_STATUSES.indexOf(task.status) >= 0).sort(newestFirst)[0]
+    if (active !== undefined) return { task: active, real: true }
+    const latest = tasks.slice().sort(newestFirst)[0]
+    if (latest !== undefined) return { task: latest, real: true }
+    return { task: ROLE_SAMPLE_TASK, real: false }
+  }
+
+  /** The Team Lead's name for the previewed brief, or null without a live Team. */
+  function previewLeadName() {
+    try {
+      const lead = resolveLead(ctx)
+      if (lead === null || lead === undefined) return null
+      if (typeof lead.name === 'string' && lead.name !== '') return lead.name
+      return lead.id === undefined || lead.id === null ? null : String(lead.id)
+    } catch (error) {
+      return null
+    }
+  }
+
+  /**
+   * The injected text the host really sends a role teammate, for the panel's
+   * read-only preview. It NEVER composes copy of its own: text and sections come
+   * straight from the same builders the dispatch path uses (roleBriefFor /
+   * briefFor), so the panel cannot drift from what an agent wakes with.
+   *
+   * Implementing (worker) previews the per-task brief the WorkAgent actually
+   * receives, because the implement stage is carried per task, not by a role
+   * profile; the other kinds preview the role brief for the named/bound profile.
+   */
+  async function rolePreviewFor(projectPath, config, input) {
+    const profileName = typeof input.profile === 'string' && input.profile !== '' ? input.profile : null
+    const profiles = config !== null && config !== undefined && config.profiles !== null && config.profiles !== undefined ? config.profiles : {}
+    const named = profileName === null ? null : profiles[profileName]
+    if (profileName !== null && (named === undefined || named === null)) {
+      return failure('unknown-role-profile', 'no role profile named ' + profileName)
+    }
+    const requestedKind = typeof input.kind === 'string' && input.kind !== '' ? input.kind : null
+    const kind = requestedKind !== null ? requestedKind : named !== null && typeof named.role === 'string' ? named.role : 'worker'
+    if (ROLE_KINDS.indexOf(kind) < 0) {
+      return failure('invalid-role-kind', 'a role kind must be one of ' + ROLE_KINDS.join(', ') + ' (got ' + String(kind) + ')')
+    }
+    const stage = named !== null && typeof named.stage === 'string' ? named.stage : ROLE_STAGE[kind]
+    // Bind the named profile to its own stage in a scoped copy: the builders
+    // resolve a profile through the stage binding, and the preview must show
+    // THIS profile's text even when another one owns the stage.
+    const scoped =
+      named === null
+        ? config
+        : Object.assign({}, config, { stages: Object.assign({}, config.stages, { [stage]: profileName }) })
+    const picked = await previewTaskFor(projectPath, input.taskId)
+    if (picked.failed !== undefined) return picked.failed
+    const task = picked.task
+    const leadName = previewLeadName()
+    const briefOptions = { projectPath: projectPath, leadName: leadName }
+    const worker = kind === 'worker'
+    // One generation path per kind: the exact function the dispatch path calls.
+    const text = worker ? briefFor(task, projectPath, leadName) : roleBriefFor(kind, task, scoped, briefOptions)
+    const parts = worker ? briefPartsFor(task, projectPath, leadName) : roleBriefPartsFor(kind, task, scoped, briefOptions)
+    const values = roleTemplateValuesFor(kind, task, scoped, briefOptions)
+    const tokens = ROLE_TEMPLATE_VARIABLES.map((entry) => ({
+      name: entry.name,
+      value: values[entry.name] === undefined || values[entry.name] === null ? '' : String(values[entry.name]),
+    }))
+    const bound = scoped !== null && scoped !== undefined ? profileForKind(scoped, kind) : null
+    return ok({
+      kind: kind,
+      stage: stage,
+      profile: named !== null ? String(profileName) : bound !== null && typeof bound.name === 'string' ? bound.name : String(kind),
+      task: { id: task.id, title: task.title, real: picked.real === true, sample: picked.real !== true },
+      text: text,
+      tokens: tokens,
+      sections: parts.map((part) => ({ key: part.key, group: part.group, text: part.text })),
+    })
   }
 
   /** Read-only brief previews for every configured role profile. */
@@ -1557,6 +1667,9 @@ export function createApi(ctx, options) {
           defaults: defaultRoleConfig(),
           instances: roleInstanceList(),
         })
+      }
+      if (action === 'rolesPreview') {
+        return rolePreviewFor(projectPath, current, source)
       }
       if (action === 'rolesCreate' || action === 'rolesUpdate') {
         const name = String(source.name === undefined ? '' : source.name)

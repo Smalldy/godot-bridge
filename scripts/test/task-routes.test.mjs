@@ -6,7 +6,7 @@ import { registerTaskRoutes, STATE_PATH, ACTION_PATH } from '../../plugin/task-c
 import { createFakeFs, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
-import { createActivity, createDispatcher, createRoleManager } from '../../plugin/task-center/dispatch.mjs'
+import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, roleBriefFor } from '../../plugin/task-center/dispatch.mjs'
 import { rolesPath } from '../../plugin/task-center/board.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
@@ -3024,6 +3024,164 @@ async function withDeadline(promise, ms) {
   check('the preview keeps the injection point literal in the template block', templatedTemplate.text === 'Templated {{TASK_ID}} for {{SPEC}}', templatedTemplate.text)
   check('and renders it in the real brief entry', templated.entries[0].text.indexOf('Templated T-? for <example spec: what this task involves>') >= 0, templated.entries[0].text.slice(0, 300))
   check('the preview names the variables the template uses', templated.templateVariables.join(',') === 'TASK_ID,SPEC', JSON.stringify(templated.templateVariables))
+  rig.scheduler.dispose()
+}
+
+// ── rolesPreview: the exact injected text, from the host's own builders ────
+{
+  const stamp = new Date().toISOString()
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git })
+  const olderRunning = runningWorktreeTask({
+    id: 'T-1',
+    title: 'Patrol state for the enemy',
+    updatedAt: new Date(Date.now() - 600000).toISOString(),
+    spec: 'Walk between two waypoints and chase the player.',
+    acceptance: 'npm run verify passes.',
+  })
+  const newerPending = runningWorktreeTask({
+    id: 'T-2',
+    title: 'Pending idea',
+    status: 'pending',
+    updatedAt: stamp,
+    leaseUntil: null,
+    dispatch: null,
+    assignee: null,
+  })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, updatedAt: stamp, tasks: [olderRunning, newerPending] }))
+  const listed = await rig.api.perform('rolesList', {}, rig.user)
+  const config = listed.config
+  // The rig's Team Lead agent is listed by id; the preview uses the same name
+  // the dispatch path resolves (name when present, the id otherwise).
+  const previewOptions = { projectPath: PROJECT, leadName: 'session-lead' }
+  const snapshot = await rig.api.snapshot(PROJECT)
+  const boardTask = snapshot.tasks.filter((task) => task.id === 'T-1')[0]
+
+  const worker = await rig.api.perform('rolesPreview', {}, rig.user)
+  check(
+    'rolesPreview returns the worker brief the per-task executor really receives',
+    worker.ok === true &&
+      worker.kind === 'worker' &&
+      worker.stage === 'implement' &&
+      worker.profile === 'worker' &&
+      worker.task.id === 'T-1' &&
+      boardTask !== undefined &&
+      worker.text === briefFor(boardTask, PROJECT, 'session-lead'),
+    JSON.stringify({ ok: worker.ok, kind: worker.kind, stage: worker.stage, profile: worker.profile, task: worker.task }),
+  )
+  check(
+    'an active task wins over a more recently updated pending one',
+    worker.task.real === true && worker.task.sample === false && worker.task.id === 'T-1' && worker.text.indexOf('Patrol state for the enemy') >= 0,
+    JSON.stringify(worker.task),
+  )
+  check(
+    'a real preview never carries the example task title',
+    worker.text.indexOf(ROLE_SAMPLE_TASK.title) < 0 && worker.text.indexOf('<example') < 0 && worker.text.indexOf('T-?') < 0,
+    worker.text.slice(0, 200),
+  )
+  check(
+    'the preview splits the injected text into ordered, labelled sections',
+    Array.isArray(worker.sections) &&
+      worker.sections.length >= 4 &&
+      worker.sections.map((section) => section.text).join('\n\n') === worker.text &&
+      worker.sections.some((section) => section.group === 'task') &&
+      worker.sections.some((section) => section.group === 'fixed') &&
+      !worker.sections.some((section) => section.group === 'template'),
+    JSON.stringify(worker.sections.map((section) => [section.key, section.group])),
+  )
+  check(
+    'the variable list carries the real value for this task',
+    Array.isArray(worker.tokens) &&
+      worker.tokens.length === 9 &&
+      worker.tokens.filter((token) => token.name === 'TASK_ID')[0].value === 'T-1' &&
+      worker.tokens.filter((token) => token.name === 'PROJECT')[0].value === PROJECT,
+    JSON.stringify(worker.tokens),
+  )
+
+  const reviewer = await rig.api.perform('rolesPreview', { kind: 'reviewer' }, rig.user)
+  check(
+    'a reviewer preview is the role brief the reviewer really receives',
+    reviewer.ok === true && reviewer.kind === 'reviewer' && reviewer.stage === 'review' && reviewer.text === roleBriefFor('reviewer', boardTask, config, previewOptions),
+    reviewer.ok === true ? reviewer.text.slice(0, 200) : JSON.stringify(reviewer),
+  )
+  check(
+    'the reviewer section labels separate task data from host copy',
+    reviewer.sections.some((section) => section.group === 'task') && reviewer.sections.some((section) => section.group === 'fixed'),
+    JSON.stringify(reviewer.sections.map((section) => section.group)),
+  )
+
+  const created = await rig.api.perform('rolesCreate', { name: 'strict-reviewer', profile: { role: 'reviewer', prompt: 'Review {{TASK_ID}} in {{PROJECT}}.' } }, rig.user)
+  check('a custom profile exists for the preview', created.ok === true && created.config.profiles['strict-reviewer'].prompt === 'Review {{TASK_ID}} in {{PROJECT}}.')
+  const scoped = Object.assign({}, created.config, { stages: Object.assign({}, created.config.stages, { review: 'strict-reviewer' }) })
+  const custom = await rig.api.perform('rolesPreview', { profile: 'strict-reviewer' }, rig.user)
+  check(
+    'a named profile preview resolves the profile through its own stage binding',
+    custom.ok === true && custom.profile === 'strict-reviewer' && custom.text === roleBriefFor('reviewer', boardTask, scoped, previewOptions),
+    custom.ok === true ? custom.text.slice(0, 200) : JSON.stringify(custom),
+  )
+  check(
+    'the custom template is injected with the real task values, not a placeholder',
+    custom.text.indexOf('Review T-1 in ' + PROJECT) >= 0 && custom.text.indexOf('T-?') < 0,
+    custom.text.slice(0, 200),
+  )
+  check(
+    'a custom prompt is the only section the user owns; the rest is task data or host copy',
+    custom.sections.filter((section) => section.group === 'template').length === 1 &&
+      custom.sections.some((section) => section.group === 'task') &&
+      custom.sections.some((section) => section.group === 'fixed'),
+    JSON.stringify(custom.sections.map((section) => section.group)),
+  )
+
+  const explicit = await rig.api.perform('rolesPreview', { taskId: 'T-2' }, rig.user)
+  check(
+    'a taskId picks that task even when it is not the active one',
+    explicit.ok === true && explicit.task.id === 'T-2' && explicit.task.real === true && explicit.text.indexOf('Pending idea') >= 0,
+    JSON.stringify(explicit.task),
+  )
+
+  const unknownProfile = await rig.api.perform('rolesPreview', { profile: 'nope' }, rig.user)
+  check('an unknown profile is a readable refusal', unknownProfile.ok === false && unknownProfile.code === 'unknown-role-profile' && unknownProfile.message.indexOf('nope') >= 0, JSON.stringify(unknownProfile))
+  const unknownTask = await rig.api.perform('rolesPreview', { taskId: 'T-999' }, rig.user)
+  check('an unknown task id is a readable refusal', unknownTask.ok === false && unknownTask.code === 'unknown-task' && unknownTask.message.indexOf('T-999') >= 0, JSON.stringify(unknownTask))
+  const invalidKind = await rig.api.perform('rolesPreview', { kind: 'merger' }, rig.user)
+  check('an unknown role kind is a readable refusal', invalidKind.ok === false && invalidKind.code === 'invalid-role-kind', JSON.stringify(invalidKind))
+  const denied = await rig.api.perform('rolesPreview', {}, agentCaller('session-fixer'))
+  check('an agent cannot read the role preview', denied.ok === false && denied.code === 'user-only', JSON.stringify(denied))
+
+  const surface = install(rig)
+  const routed = (await postTo(surface, { action: 'rolesPreview', taskId: 'T-1' })).json()
+  check(
+    'the route exposes rolesPreview and still carries the board snapshot',
+    routed.ok === true && routed.kind === 'worker' && routed.snapshot !== undefined && Array.isArray(routed.snapshot.tasks) && routed.snapshot.tasks.length === 2,
+    JSON.stringify({ ok: routed.ok, kind: routed.kind, hasSnapshot: routed.snapshot !== undefined }),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── rolesPreview: an empty board falls back to a realistic sample task ─────
+{
+  const stamp = new Date().toISOString()
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 1, dispatch: { state: 'paused' }, updatedAt: stamp, tasks: [] }))
+  const sample = await rig.api.perform('rolesPreview', {}, rig.user)
+  check(
+    'an empty board previews the built-in sample task and says it is not real',
+    sample.ok === true && sample.task.sample === true && sample.task.real === false && sample.task.id === ROLE_SAMPLE_TASK.id && sample.text.indexOf(ROLE_SAMPLE_TASK.title) >= 0,
+    JSON.stringify(sample.task),
+  )
+  check(
+    'the sample task fields carry no angle-bracket placeholders',
+    JSON.stringify(ROLE_SAMPLE_TASK).indexOf('<') < 0 && JSON.stringify(ROLE_SAMPLE_TASK).indexOf('>') < 0,
+    JSON.stringify(ROLE_SAMPLE_TASK).slice(0, 200),
+  )
+  check(
+    'the sample preview is still the real builder output and has no fake values',
+    sample.text === briefFor(ROLE_SAMPLE_TASK, PROJECT, 'session-lead') &&
+      sample.text.indexOf('<example') < 0 &&
+      sample.text.indexOf('T-?') < 0 &&
+      sample.text.indexOf('<task worktree>') < 0,
+    sample.text.slice(0, 300),
+  )
   rig.scheduler.dispose()
 }
 
