@@ -1684,6 +1684,11 @@ export function createApi(ctx, options) {
           if (merged.role === undefined && merged.kind === undefined && ROLE_KINDS.indexOf(name) >= 0) merged.role = name
         } else {
           if (current.profiles[name] === undefined) return failure('unknown-role-profile', 'no role profile named ' + name)
+          // The three built-in profiles are host defaults, not editable documents:
+          // the UI forks a copy, and the API enforces the same rule for every caller.
+          if (ROLE_KINDS.indexOf(name) >= 0) {
+            return failure('builtin-profile-immutable', 'the built-in ' + name + ' profile cannot be edited; fork a copy instead')
+          }
           const existing = current.profiles[name]
           merged = Object.assign(
             {
@@ -1805,10 +1810,15 @@ export function createApi(ctx, options) {
         })
       }
       if (action === 'rolesReset') {
-        const config = defaultRoleConfig()
+        // A reset restores the three BUILT-IN profiles only. Custom copies are
+        // the user's work, so they survive; stage bindings to them stay as they
+        // are, and bindings to a built-in stay on that built-in.
+        const defaults = defaultRoleConfig()
+        const profiles = Object.assign({}, current.profiles, defaults.profiles)
+        const config = normaliseRoleConfig(Object.assign({}, current, { profiles: profiles }))
         const written = await persistRoles(projectPath, config)
         if (written.ok !== true) return written
-        emitActivity(context, 'role-config', 'reset role profiles to the defaults', null)
+        emitActivity(context, 'role-config', 'reset the built-in role profiles to the defaults', null)
         const ensured = []
         if (roles !== null && typeof roles.ensure === 'function') {
           for (const kind of ROLE_KINDS) {

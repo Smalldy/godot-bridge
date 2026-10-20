@@ -562,8 +562,10 @@ globalThis.fetch = async function (url, options) {
     posts.push(body)
     if (postGate !== null) await postGate
     if (postReply !== null) {
-      const reply = postReply
-      postReply = null
+      // A single reply object, or a queue for actions that send more than one
+      // request (e.g. save = rolesUpdate + rolesReplace).
+      const reply = Array.isArray(postReply) ? postReply.shift() : postReply
+      postReply = Array.isArray(postReply) && postReply.length > 0 ? postReply : null
       return { json: async () => reply }
     }
     if (body.action === 'rolesPreview') return { json: async () => rolePreviewReply(body) }
@@ -965,19 +967,32 @@ await flush()
   )
   check('exactly one tab is marked active', findAll(editor, (node) => node.props && node.props.className === 'gbt-seg' && node.props['data-active'] === 'true').length === 1)
 
-  // Identity row: kind + bound profile read-only, plus the profile selector/bind.
+  // Identity row: kind + custom/default state + the ONE "current use" picker.
   let identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
   check(
-    'the identity row names the kind and the bound profile',
+    'the identity row names the kind and the current profile',
     identity.props['data-kind'] === 'worker' && identity.props['data-profile'] === 'worker' && identity.props['data-bound'] === 'worker',
     JSON.stringify(identity.props),
   )
   check('the identity has no free-text control', findAll(identity, (node) => node.type === 'input' || node.type === 'textarea').length === 0)
-  let identitySelect = findAll(identity, (node) => node.type === 'select' && node.props['data-stage-select'] !== undefined)[0]
   check(
-    'the identity selector offers the stage\'s profiles',
-    identitySelect !== undefined && identitySelect.props.defaultValue === 'worker' && identitySelect.props.children.length === 1,
-    identitySelect === undefined ? 'missing' : JSON.stringify(identitySelect.props.children.map((option) => option.props.value)),
+    'the bind/apply/replace-kind/reset controls and the old profile select are gone',
+    ['rolesBind', 'role-editor-apply', 'rolesReplace-kind', 'rolesReset'].every((action) => findAll(editor, (node) => node.props && node.props['data-action'] === action).length === 0) &&
+      findAll(editor, (node) => node.props && node.props['data-field'] === 'profile-select').length === 0 &&
+      textOf(editor).indexOf('选择后点“绑定”') < 0,
+  )
+  check(
+    'the action row holds only Save, and the built-in prompt panel holds the only Fork entry',
+    findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-actions').length === 1 &&
+      findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save').length === 1 &&
+      findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork').length === 1 &&
+      findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props['data-role-empty-fork'] === 'true',
+  )
+  let useSelect = findAll(identity, (node) => node.type === 'select' && node.props['data-role-use-select'] === 'true')[0]
+  check(
+    'the current-use picker offers the stage\'s default first',
+    useSelect !== undefined && useSelect.props.defaultValue === 'worker' && findAll(useSelect, (node) => node.type === 'option').map((option) => option.props.value).join(',') === 'worker' && textOf(useSelect).indexOf('默认') >= 0,
+    useSelect === undefined ? 'missing' : textOf(useSelect),
   )
   const refresh = findAll(rolesTree, (node) => node.props && node.props['data-action'] === 'rolesList')[0]
   check('reloading the profiles moved into the card header', refresh !== undefined && findAll(cards[0], (node) => node.props && node.props.className === 'gbt-rhead' && findAll(node, (child) => child === refresh).length === 1).length === 1)
@@ -1007,39 +1022,58 @@ await flush()
     JSON.stringify(identity.props),
   )
   check('the active tab follows the switch', findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['aria-selected'] === 'true').map((tab) => tab.props['data-kind']).join(',') === 'reviewer')
-  identitySelect = findAll(identity, (node) => node.type === 'select' && node.props['data-stage-select'] !== undefined)[0]
+  useSelect = findAll(identity, (node) => node.type === 'select' && node.props['data-role-use-select'] === 'true')[0]
   check(
-    'the selector lists every profile owning the stage, from profile.stage',
-    identitySelect.props.children.map((option) => option.props.value).join(',') === 'reviewer,godot-reviewer',
-    JSON.stringify(identitySelect.props.children.map((option) => option.props.value)),
+    'the current-use picker lists the built-in default and every custom copy of the stage',
+    useSelect !== undefined &&
+      useSelect.props.defaultValue === 'godot-reviewer' &&
+      findAll(useSelect, (node) => node.type === 'option').map((option) => option.props.value).join(',') === 'reviewer,godot-reviewer' &&
+      textOf(useSelect).indexOf('默认') >= 0,
+    useSelect === undefined ? 'missing' : textOf(useSelect),
   )
 
-  // A custom profile can be deleted; a built-in cannot.
-  check('a custom profile offers delete', findAll(identity, (node) => node.props && node.props['data-action'] === 'rolesDelete').length === 1)
+  // A custom copy can be deleted; a built-in cannot.
+  check('a custom copy offers delete', findAll(identity, (node) => node.props && node.props['data-action'] === 'rolesDelete').length === 1)
 
-  // Bind the chosen profile to the stage from the identity row. A real action
-  // still shows its result banner (the payload is the host's, not a preview).
-  postReply = { ok: true, config: HOST.roles, bound: { stage: 'review', profile: 'reviewer' }, source: 'file', snapshot: HOST }
-  identitySelect.props.ref.current = { value: 'reviewer' }
-  findAll(identity, (node) => node.props && node.props['data-action'] === 'rolesBind')[0].props.onClick()
+  // ONE pick of "current use" is ONE action: bind the stage, then replace the kind.
+  postReply = null
+  const usesBefore = posts.length
+  useSelect.props.onChange({ target: { value: 'reviewer' } })
   await flush()
-  const bindPost = posts[posts.length - 1]
-  check('binding from the identity row sends rolesBind with the chosen profile', bindPost.action === 'rolesBind' && bindPost.stage === 'review' && bindPost.profile === 'reviewer', JSON.stringify(bindPost))
-  const afterBind = withHooks(panel, { initialView: 'roles' })
-  const bindBanner = findAll(afterBind, (node) => node.props && node.props['data-role-result'] === 'ok')[0]
-  check('a real bind still shows its result banner', bindBanner !== undefined && textOf(bindBanner).indexOf('来源') >= 0, bindBanner && textOf(bindBanner))
+  await flush()
+  const usePosts = posts.slice(usesBefore)
+  check(
+    'picking the default binds and replaces in a single action',
+    usePosts.length === 2 && usePosts[0].action === 'rolesBind' && usePosts[0].stage === 'review' && usePosts[0].profile === 'reviewer' && usePosts[1].action === 'rolesReplace' && usePosts[1].name === 'reviewer',
+    JSON.stringify(usePosts),
+  )
 
-  // Picking another profile in the selector retargets the editor.
-  identitySelect.props.onChange()
+  // Pick the custom copy back: same one-step activation. The snapshot lags a
+  // poll behind, so reflect the fresh binding before the next pick.
+  HOST.roles = Object.assign({}, HOST.roles, { stages: Object.assign({}, HOST.roles.stages, { review: 'reviewer' }) })
+  // The picker reads the host snapshot, so pull the fresh binding in before the
+  // next pick (the real panel polls; the test refreshes explicitly).
+  findAll(rolesTree, (node) => node.props && node.props['data-action'] === 'rolesList')[0].props.onClick()
+  await flush()
   rolesTree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(rolesTree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
-  check('picking a profile retargets the editor', identity.props['data-profile'] === 'reviewer' && identity.props['data-bound'] === 'godot-reviewer', JSON.stringify(identity.props))
+  useSelect = findAll(identity, (node) => node.type === 'select' && node.props['data-role-use-select'] === 'true')[0]
+  check('the picker lists the default and every custom copy of the stage', findAll(useSelect, (node) => node.type === 'option').map((option) => option.props.value).join(',') === 'reviewer,godot-reviewer', textOf(useSelect))
+  const copyBefore = posts.length
+  useSelect.props.onChange({ target: { value: 'godot-reviewer' } })
+  await flush()
+  await flush()
+  const copyPosts = posts.slice(copyBefore)
+  check(
+    'picking a copy binds and replaces it in the same action',
+    copyPosts.length === 2 && copyPosts[0].action === 'rolesBind' && copyPosts[0].profile === 'godot-reviewer' && copyPosts[1].action === 'rolesReplace' && copyPosts[1].name === 'reviewer',
+    JSON.stringify(copyPosts),
+  )
   check('a built-in profile offers no delete', findAll(identity, (node) => node.props && node.props['data-action'] === 'rolesDelete').length === 0)
+  HOST.roles = Object.assign({}, HOST.roles, { stages: Object.assign({}, HOST.roles.stages, { review: 'godot-reviewer' }) })
 
   // The kind's instances live in a compact block inside the same card.
-  identitySelect.props.ref.current = { value: 'godot-reviewer' }
-  identitySelect.props.onChange()
   rolesTree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(rolesTree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   const instanceBlock = findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-instances')[0]
@@ -1073,43 +1107,6 @@ await flush()
   const waitedText = textOf(withHooks(panel, { initialView: 'roles' }))
   check('a replace shows drained/created and the waited/timedOut/waiting status', waitedText.indexOf('已排空') >= 0 && waitedText.indexOf('reviewer-2') >= 0 && waitedText.indexOf('120') >= 0 && waitedText.indexOf('等待超时') >= 0 && waitedText.indexOf('等待中') >= 0, waitedText)
   check('a replace also reports the replaced and reused instances', waitedText.indexOf('已替换: reviewer-1') >= 0 && waitedText.indexOf('复用: reviewer-3') >= 0, waitedText)
-
-  // Batch actions moved next to the editor actions: replace the current kind, reset.
-  rolesTree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(rolesTree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'rolesReplace-kind' && node.props['data-kind'] === 'reviewer')[0].props.onClick()
-  await flush()
-  check('replacing the current kind sends rolesReplace with the kind name', posts[posts.length - 1].action === 'rolesReplace' && posts[posts.length - 1].name === 'reviewer', JSON.stringify(posts[posts.length - 1]))
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'rolesReset')[0].props.onClick()
-  await flush()
-  check('resetting sends rolesReset', posts[posts.length - 1].action === 'rolesReset', JSON.stringify(posts[posts.length - 1]))
-
-  // A reset that hits a host timeout is shown inside the result banner. The real
-  // API shape is ensured = [{ kind, result }]: only result carries ok/code/message.
-  postReply = { ok: true, ensured: [{ kind: 'reviewer', result: { ok: false, code: 'action-timeout', message: 'role reviewer provisioning timed out' } }], snapshot: HOST }
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'rolesReset')[0].props.onClick()
-  await flush()
-  const ensuredText = textOf(withHooks(panel, { initialView: 'roles' }))
-  check(
-    'a reset with a failed ensure reports the kind and readable reason (real ensured shape)',
-    ensuredText.indexOf('宿主操作超时') >= 0 && ensuredText.indexOf('reviewer') >= 0 && ensuredText.indexOf('role reviewer provisioning timed out') >= 0,
-    ensuredText,
-  )
-
-  // All three ensures succeeded: the banner must not invent a failure.
-  postReply = {
-    ok: true,
-    ensured: [
-      { kind: 'worker', result: { ok: true } },
-      { kind: 'reviewer', result: { ok: true } },
-      { kind: 'tester', result: { ok: true } },
-    ],
-    snapshot: HOST,
-  }
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'rolesReset')[0].props.onClick()
-  await flush()
-  const ensuredOkText = textOf(withHooks(panel, { initialView: 'roles' }))
-  check('a fully successful reset shows no false failure', ensuredOkText.indexOf('已创建: 3') >= 0 && ensuredOkText.indexOf('操作失败') < 0, ensuredOkText)
 
   // Server-side validation errors are readable in the panel, and a COMPLETED
   // poll (the refresh button calls store.load) does not wipe them.
@@ -1224,7 +1221,7 @@ await flush()
   const workerCopy = findAll(workerRaw, (node) => node.props && node.props['data-role-empty-fork'] === 'true')[0]
   check(
     'the worker prompt keeps the not-editable note and the existing Fork action',
-    workerCopy !== undefined && workerCopy.props['data-action'] === 'role-editor-fork' && textOf(workerCopy) === '复制一份来改' && textOf(workerRaw).indexOf('默认角色不可修改') >= 0,
+    workerCopy !== undefined && workerCopy.props['data-action'] === 'role-editor-fork' && textOf(workerCopy) === '复制一份并启用' && textOf(workerRaw).indexOf('默认角色不可修改') >= 0,
     workerRaw && textOf(workerRaw),
   )
 
@@ -1284,7 +1281,7 @@ await flush()
     'the built-in prompt keeps the not-editable note and the existing Fork action',
     emptyCopy !== undefined &&
       emptyCopy.props['data-action'] === 'role-editor-fork' &&
-      textOf(emptyCopy) === '复制一份来改' &&
+      textOf(emptyCopy) === '复制一份并启用' &&
       textOf(testerRaw).indexOf('默认角色不可修改') >= 0,
     testerRaw && textOf(testerRaw),
   )
@@ -1311,7 +1308,7 @@ await flush()
       forkedRaw.props['data-role-raw-readonly'] === 'false' &&
       forkedAreaField !== undefined &&
       forkedAreaField.props.defaultValue === TESTER_DEFAULT_PROMPT,
-    forkedAreaField && String(forkedAreaField.props.defaultValue),
+    JSON.stringify({ layout: forkedArea.props['data-role-layout'], readonly: forkedRaw && forkedRaw.props['data-role-raw-readonly'], hasField: forkedAreaField !== undefined, value: forkedAreaField && String(forkedAreaField.props.defaultValue) }),
   )
 
   // The implement page forks into an editable two-column view like the others.
@@ -1340,7 +1337,7 @@ await flush()
     forkedWorkerArea.props['data-role-layout'] === 'split' &&
       forkedWorkerField !== undefined &&
       forkedWorkerField.props.defaultValue === WORKER_DEFAULT_PROMPT,
-    forkedWorkerField && String(forkedWorkerField.props.defaultValue),
+    JSON.stringify({ layout: forkedWorkerArea.props['data-role-layout'], hasField: forkedWorkerField !== undefined, value: forkedWorkerField && String(forkedWorkerField.props.defaultValue) }),
   )
 
   // Leave the editor without a draft so the next block starts on the bound profile.
@@ -1348,72 +1345,37 @@ await flush()
   tree = withHooks(panel, { initialView: 'roles' })
 }
 
-// ── Fork/save: a failed save keeps the draft, a success retargets at once ──
+// ── one role, one action: save applies, fork creates + applies, delete falls back ─
 {
   let tree = withHooks(panel, { initialView: 'roles' })
   await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   let editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  // Start on the reviewer tab, bound to the custom profile.
+  // The reviewer stage is bound to the custom copy in this fixture.
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'reviewer')[0].props.onClick()
   tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props.onClick()
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  let identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
-  const draftName = identity.props['data-profile']
-  check('Fork turns the bound profile into an unsaved draft', identity.props['data-draft'] === 'true' && draftName.indexOf('godot-reviewer-fork') === 0, JSON.stringify(identity.props))
-
-  // A failed save keeps the draft (and the banner is readable).
-  postReply = { ok: false, code: 'invalid-role-instances', message: 'instances must be an integer from 1 to 8' }
-  const updatesBefore = posts.filter((post) => post.action === 'rolesUpdate').length
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
   await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
-  check('a failed save keeps the draft for a retry', identity.props['data-draft'] === 'true' && identity.props['data-profile'] === draftName, JSON.stringify(identity.props))
-  check('a failed save is readable in the editor', textOf(editor).indexOf('实例数必须是 1–8 的整数') >= 0, textOf(editor).slice(0, 300))
-  check('a failed draft save never writes the source profile', posts.filter((post) => post.action === 'rolesUpdate').length === updatesBefore)
 
-  // A successful save creates the fork and retargets the editor IMMEDIATELY:
-  // no snapshot refresh (no poll) happens between the save and Apply.
+  // Saving the profile that is in use applies it in the same click.
   postReply = null
+  const saveBefore = posts.length
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
   await flush()
-  const created = posts[posts.length - 1]
+  await flush()
+  const savePosts = posts.slice(saveBefore)
   check(
-    'saving the draft creates the forked profile with the copied fields',
-    created.action === 'rolesCreate' && created.name === draftName && created.profile.role === 'reviewer' && created.profile.instances === 2 && created.profile.context === 'fork' && created.profile.prompt === 'Check Godot idioms.',
-    JSON.stringify(created),
-  )
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
-  check('a successful save clears the draft and retargets the new profile without a poll', identity.props['data-draft'] === 'false' && identity.props['data-profile'] === draftName, JSON.stringify(identity.props))
-  // No board/snapshot refresh happens between this render and Apply: the editor
-  // targets the just-created profile from its own state, not from a poll.
-  const loadsBeforeApply = loads
-  const beforeApply = posts.length
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-apply')[0].props.onClick()
-  for (let tick = 0; tick < 4; tick += 1) await flush()
-  const applyPosts = posts.slice(beforeApply)
-  check(
-    'Apply binds and replaces for the freshly saved profile, with no poll in between',
-    loads === loadsBeforeApply &&
-      applyPosts.length === 2 &&
-      applyPosts[0].action === 'rolesBind' &&
-      applyPosts[0].stage === 'review' &&
-      applyPosts[0].profile === draftName &&
-      applyPosts[1].action === 'rolesReplace' &&
-      applyPosts[1].name === 'reviewer',
-    JSON.stringify({ loads: loads - loadsBeforeApply, applyPosts: applyPosts }),
+    'saving the current copy updates it and replaces the running instances in one action',
+    savePosts.length === 2 &&
+      savePosts[0].action === 'rolesUpdate' &&
+      savePosts[0].name === 'godot-reviewer' &&
+      savePosts[1].action === 'rolesReplace' &&
+      savePosts[1].name === 'reviewer',
+    JSON.stringify(savePosts),
   )
 
-  // Saving a built-in profile in place is refused locally, with no request.
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  // A built-in profile is still refused locally, with no request.
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'worker')[0].props.onClick()
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
@@ -1423,39 +1385,106 @@ await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   const refusalEditor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   check('saving a built-in profile is refused with no request', posts.length === beforeRefusal, JSON.stringify(posts.slice(beforeRefusal)))
-  check('the refusal is readable in the editor', textOf(refusalEditor).indexOf('内置 profile 不能直接修改，请先 Fork 再保存') >= 0, textOf(refusalEditor).slice(0, 400))
+  check('the refusal points at the copy action', textOf(refusalEditor).indexOf('内置角色是宿主默认，不能修改；请复制一份来改。') >= 0, textOf(refusalEditor).slice(0, 400))
 
-  // Applying a draft is refused: it must be saved first.
-  findAll(refusalEditor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'reviewer')[0].props.onClick()
+  // Fork on a built-in page: create, bind and replace happen as ONE flow, and the
+  // copy becomes the current use. A refused create keeps the draft for a retry.
+  findAll(refusalEditor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'tester')[0].props.onClick()
   tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props.onClick()
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  const beforeDraftApply = posts.length
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-apply')[0].props.onClick()
   await flush()
   tree = withHooks(panel, { initialView: 'roles' })
-  const draftApplyEditor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  check('Apply refuses an unsaved draft', posts.length === beforeDraftApply && textOf(draftApplyEditor).indexOf('请先保存这个 Fork 草稿，再应用') >= 0, JSON.stringify(posts.slice(beforeDraftApply)))
-
-  // Worker has no live instance in this fixture: Apply binds and says so.
-  findAll(draftApplyEditor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'worker')[0].props.onClick()
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  postReply = { ok: false, code: 'invalid-role-instances', message: 'instances must be an integer from 1 to 8' }
+  const failedForkBefore = posts.length
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props.onClick()
+  await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  const beforeWorkerApply = posts.length
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-apply')[0].props.onClick()
-  for (let tick = 0; tick < 4; tick += 1) await flush()
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  let identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
+  const failedDraftName = identity.props['data-profile']
   check(
-    'Apply without a live instance only binds the stage and explains why',
-    posts.slice(beforeWorkerApply).length === 1 && posts[posts.length - 1].action === 'rolesBind' && posts[posts.length - 1].stage === 'implement' && textOf(editor).indexOf('没有在跑实例，只更新了阶段绑定。') >= 0,
-    JSON.stringify(posts.slice(beforeWorkerApply)),
+    'a refused Fork keeps the draft and reports the host error',
+    identity.props['data-draft'] === 'true' &&
+      failedDraftName.indexOf('tester-fork') === 0 &&
+      textOf(editor).indexOf('实例数必须是 1–8 的整数') >= 0 &&
+      posts.slice(failedForkBefore).length === 1 &&
+      posts[posts.length - 1].action === 'rolesCreate',
+    JSON.stringify({ identity: identity.props, posts: posts.slice(failedForkBefore) }),
   )
+
+  // Switching current use with that draft open is refused, not silently applied.
+  postReply = null
+  const switchBefore = posts.length
+  const useSelect = findAll(identity, (node) => node.type === 'select' && node.props['data-role-use-select'] === 'true')[0]
+  useSelect.props.onChange({ target: { value: 'tester' } })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  const draftGuardEditor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  check(
+    'switching current use with an unsaved draft is refused with a readable notice',
+    posts.length === switchBefore && textOf(draftGuardEditor).indexOf('还有未保存的修改，请先保存或丢弃，再切换当前使用。') >= 0,
+    JSON.stringify(posts.slice(switchBefore)),
+  )
+
+  // Save the draft: it is created, bound and applied, becoming the current use.
+  const retryBefore = posts.length
+  findAll(draftGuardEditor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
+  await flush()
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
+  const retryPosts = posts.slice(retryBefore).filter((post) => post.action !== 'rolesPreview')
+  check(
+    'a saved Fork creates, binds and replaces in one flow and becomes the current use',
+    retryPosts.length === 3 &&
+      retryPosts[0].action === 'rolesCreate' &&
+      retryPosts[0].name === failedDraftName &&
+      retryPosts[1].action === 'rolesBind' &&
+      retryPosts[1].stage === 'test' &&
+      retryPosts[1].profile === failedDraftName &&
+      retryPosts[2].action === 'rolesReplace' &&
+      retryPosts[2].name === 'tester' &&
+      identity.props['data-draft'] === 'false' &&
+      identity.props['data-profile'] === failedDraftName,
+    JSON.stringify({ posts: retryPosts, identity: identity.props }),
+  )
+
+  // Deleting the copy that is in use falls back to the built-in default at once.
+  HOST.roles = Object.assign({}, HOST.roles, {
+    profiles: Object.assign({}, HOST.roles.profiles, {
+      [failedDraftName]: { name: failedDraftName, role: 'tester', stage: 'test', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: TESTER_DEFAULT_PROMPT },
+    }),
+    stages: Object.assign({}, HOST.roles.stages, { test: failedDraftName }),
+  })
+  findAll(tree, (node) => node.props && node.props['data-action'] === 'rolesList')[0].props.onClick()
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const deleteBefore = posts.length
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'rolesDelete')[0].props.onClick()
+  await flush()
+  await flush()
+  const deletePosts = posts.slice(deleteBefore).filter((post) => post.action !== 'rolesPreview')
+  check(
+    'deleting the current copy falls back to the built-in default and applies it',
+    deletePosts.length === 3 &&
+      deletePosts[0].action === 'rolesDelete' &&
+      deletePosts[0].name === failedDraftName &&
+      deletePosts[1].action === 'rolesBind' &&
+      deletePosts[1].profile === 'tester' &&
+      deletePosts[2].action === 'rolesReplace' &&
+      deletePosts[2].name === 'tester',
+    JSON.stringify(deletePosts),
+  )
+  HOST.roles = Object.assign({}, HOST.roles, { stages: Object.assign({}, HOST.roles.stages, { test: 'tester' }) })
+  const cleanedProfiles = Object.assign({}, HOST.roles.profiles)
+  delete cleanedProfiles[failedDraftName]
+  HOST.roles = Object.assign({}, HOST.roles, { profiles: cleanedProfiles })
+  postReply = null
 }
 
-// ── an in-flight save must not clear a newer Fork draft ────────────────────
+// ── a create answer never clobbers a newer editor identity ──────────────────
 {
   let releasePost = null
   postGate = new Promise(function (resolveGate) { releasePost = resolveGate })
@@ -1463,20 +1492,15 @@ await flush()
   await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   let editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'worker')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props.onClick()
+  // The create is still in flight; switch kind, then let the answer land.
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'reviewer')[0].props.onClick()
   tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props.onClick()
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
-  // While that save is in flight, fork again: the newer draft must survive it.
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props.onClick()
-  tree = withHooks(panel, { initialView: 'roles' })
-  const forkEditor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  const forkedIdentity = findAll(forkEditor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
-  const forkedName = forkedIdentity.props['data-profile']
-  check('a fork while a save is in flight is shown immediately', forkedIdentity.props['data-draft'] === 'true' && forkedName.indexOf('godot-reviewer-fork') === 0, JSON.stringify(forkedIdentity.props))
   releasePost()
   postGate = null
   await flush()
@@ -1484,12 +1508,13 @@ await flush()
   const settledEditor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   const settledIdentity = findAll(settledEditor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
   check(
-    'the completed save does not clear the newer fork draft',
-    settledIdentity.props['data-draft'] === 'true' && settledIdentity.props['data-profile'] === forkedName,
+    'a late create answer does not drag the editor back to the old kind',
+    settledIdentity.props['data-kind'] === 'reviewer' && settledIdentity.props['data-draft'] === 'false',
     JSON.stringify(settledIdentity.props),
   )
   postReply = null
 }
+
 
 // ── role context editor: kind tabs, editable raw prompt, injected preview, skills ─
 {
@@ -1559,115 +1584,58 @@ await flush()
     reviewerSections.map((node) => textOf(node)).join(' | '),
   )
 
-  // Save a custom profile: the template and skills go through rolesUpdate.
+  // Save a custom profile: the template and skills go through rolesUpdate, and
+  // because this copy is the current use, the running instances are replaced in
+  // the SAME click.
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   findAll(editor, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0].props.ref.current = { value: 'Review {{SPEC}} and {{SPEC}}.' }
   findAll(editor, (node) => node.props && node.props['data-field'] === 'skills')[0].props.ref.current = { value: 'dsh-plugin-workflow' }
+  const customSaveBefore = posts.length
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
   await flush()
-  const editorSave = posts[posts.length - 1]
-  check(
-    'saving a custom profile sends rolesUpdate with the template and skills',
-    editorSave.action === 'rolesUpdate' && editorSave.name === 'godot-reviewer' && editorSave.profile.prompt === 'Review {{SPEC}} and {{SPEC}}.' && editorSave.profile.skills.join(',') === 'dsh-plugin-workflow',
-    JSON.stringify(editorSave),
-  )
-
-  // Fork the bound profile, edit the draft, save it with rolesCreate. The count is
-  // taken here: the fork must not add a rolesUpdate of its own.
-  const sourceUpdatesBefore = posts.filter((post) => post.action === 'rolesUpdate' && post.name === 'godot-reviewer').length
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props.onClick()
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
-  const forkedDraft = identity.props['data-profile']
-  check(
-    'Fork turns the current profile into an unsaved draft',
-    identity.props['data-draft'] === 'true' && forkedDraft.indexOf('godot-reviewer-fork') === 0 && textOf(editor).indexOf('草稿（Fork，未保存）') >= 0,
-    JSON.stringify(identity.props),
-  )
-  const forkArea = findAll(editor, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0]
-  check('the fork starts from the source template', forkArea.props.defaultValue === 'Review {{SPEC}} carefully.', String(forkArea.props.defaultValue))
-  forkArea.props.ref.current = { value: 'Forked {{TASK_ID}}.' }
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
   await flush()
-  const editorFork = posts[posts.length - 1]
+  const customSavePosts = posts.slice(customSaveBefore).filter((post) => post.action !== 'rolesPreview')
   check(
-    'saving the draft creates the forked profile and copies the profile fields',
-    editorFork.action === 'rolesCreate' &&
-      editorFork.name === forkedDraft &&
-      editorFork.profile.role === 'reviewer' &&
-      editorFork.profile.prompt === 'Forked {{TASK_ID}}.' &&
-      editorFork.profile.instances === 2 &&
-      editorFork.profile.context === 'fork' &&
-      editorFork.profile.skills.join(',') === 'dsh-plugin-workflow',
-    JSON.stringify(editorFork),
-  )
-  check('the fork never edits the source profile', posts.filter((post) => post.action === 'rolesUpdate' && post.name === 'godot-reviewer').length === sourceUpdatesBefore, String(posts.filter((post) => post.action === 'rolesUpdate').length))
-
-  // The host snapshot now carries the created profile: the editor targets it.
-  HOST.roles = Object.assign({}, HOST.roles, {
-    profiles: Object.assign({}, HOST.roles.profiles, { [forkedDraft]: Object.assign({ name: forkedDraft }, editorFork.profile) }),
-  })
-  tree = withHooks(panel, { initialView: 'roles' })
-  await flush()
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
-  check('a successful draft save clears the draft and targets the new profile', identity.props['data-draft'] === 'false' && identity.props['data-profile'] === forkedDraft, JSON.stringify(identity.props))
-  check(
-    'a saved custom profile keeps its editable raw prompt and the host preview',
-    findAll(editor, (node) => node.props && node.props['data-editor-nopreview'] !== undefined).length === 0 &&
-      findAll(editor, (node) => node.type === 'textarea' && node.props['data-field'] === 'template').length === 1 &&
-      findAll(editor, (node) => node.props && node.props['data-role-prompt'] === 'injected').length === 1,
+    'saving the current custom profile updates it and replaces the running instances in one action',
+    customSavePosts.length === 2 &&
+      customSavePosts[0].action === 'rolesUpdate' &&
+      customSavePosts[0].name === 'godot-reviewer' &&
+      customSavePosts[0].profile.prompt === 'Review {{SPEC}} and {{SPEC}}.' &&
+      customSavePosts[0].profile.skills.join(',') === 'dsh-plugin-workflow' &&
+      customSavePosts[1].action === 'rolesReplace' &&
+      customSavePosts[1].name === 'reviewer',
+    JSON.stringify(customSavePosts),
   )
 
-  // Apply: bind the stage, then replace the running instances of the kind.
-  const beforeApply = posts.length
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-apply')[0].props.onClick()
-  for (let tick = 0; tick < 4; tick += 1) await flush()
-  const applyPosts = posts.slice(beforeApply)
-  check(
-    'Apply binds the stage and then replaces the running instance',
-    applyPosts.length === 2 &&
-      applyPosts[0].action === 'rolesBind' &&
-      applyPosts[0].stage === 'review' &&
-      applyPosts[0].profile === forkedDraft &&
-      applyPosts[1].action === 'rolesReplace' &&
-      applyPosts[1].name === 'reviewer',
-    JSON.stringify(applyPosts),
-  )
-
-  // A built-in profile cannot be edited in place: the refusal is readable and
-  // no request is sent.
+  // The implement stage has no live instance in this fixture: Fork still creates
+  // and binds the copy, and the panel says it takes effect on the next dispatch.
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'worker')[0].props.onClick()
   tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  const beforeRefusal = posts.length
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
   await flush()
-  check('saving a built-in profile is refused with no request', posts.length === beforeRefusal, JSON.stringify(posts.slice(beforeRefusal)))
-  tree = withHooks(panel, { initialView: 'roles' })
-  const refusalEditor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  check('the refusal is readable in the editor', textOf(refusalEditor).indexOf('内置 profile 不能直接修改，请先 Fork 再保存') >= 0, textOf(refusalEditor).slice(0, 400))
-
-  // Worker has no live instance in this fixture: Apply binds and says so.
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  const beforeWorkerApply = posts.length
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-apply')[0].props.onClick()
-  for (let tick = 0; tick < 4; tick += 1) await flush()
+  const workerForkBefore = posts.length
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props.onClick()
+  await flush()
+  await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const workerForkPosts = posts.slice(workerForkBefore).filter((post) => post.action !== 'rolesPreview')
   check(
-    'Apply without a live instance only binds the stage and explains why',
-    posts.slice(beforeWorkerApply).length === 1 && posts[posts.length - 1].action === 'rolesBind' && posts[posts.length - 1].stage === 'implement' && textOf(editor).indexOf('没有在跑实例，只更新了阶段绑定。') >= 0,
-    JSON.stringify(posts.slice(beforeWorkerApply)),
+    'forking the implement stage creates and binds the copy without a replace, and says it lands next dispatch',
+    workerForkPosts.length === 2 &&
+      workerForkPosts[0].action === 'rolesCreate' &&
+      workerForkPosts[0].name.indexOf('worker-fork') === 0 &&
+      workerForkPosts[1].action === 'rolesBind' &&
+      workerForkPosts[1].stage === 'implement' &&
+      workerForkPosts[1].profile === workerForkPosts[0].name &&
+      textOf(editor).indexOf('没有在跑实例，下次派发生效。') >= 0,
+    JSON.stringify(workerForkPosts),
   )
+
 
   // Skills dialog: the catalog comes from the host, the selection is written
   // into profile.skills on the next save.
@@ -2249,47 +2217,63 @@ check(
   )
   check('switching kind remounts the skills control on the reviewer skills', valueOf(fieldOf(rtree, 'skills')) === 'dsh-plugin-workflow', String(valueOf(fieldOf(rtree, 'skills'))))
 
-  // Fork: the draft is a copy of the reviewer profile, so the control must come
-  // back on the SOURCE template, not on the text just typed.
-  area.props.ref.current.value = 'edited before fork'
+  // Fork exists only on a built-in page now: switch to tester and use its CTA.
+  clickAction(rtree, 'role-editor-kind', 'data-kind', 'tester')
+  rtree = reuse.render(panel2, { initialView: 'roles' })
   clickAction(rtree, 'role-editor-fork')
+  await flush()
   rtree = reuse.render(panel2, { initialView: 'roles' })
   area = fieldOf(rtree, 'template')
+  let reuseIdentity = findAll(editorOf(rtree), function (node) { return node.props && node.props['data-editor-identity'] === 'true' })[0]
   check(
-    'Fork remounts the template control on the source template',
-    valueOf(area) === 'Reviewer template body.' && dirtyOf(area) === false,
-    JSON.stringify({ value: valueOf(area), dirty: dirtyOf(area) }),
+    'Fork creates a copy and mounts its editable control on the source prompt',
+    valueOf(area) === TESTER_DEFAULT_PROMPT && dirtyOf(area) === false && reuseIdentity.props['data-draft'] === 'false' && reuseIdentity.props['data-profile'].indexOf('tester-fork') === 0,
+    JSON.stringify({ value: valueOf(area), identity: reuseIdentity.props }),
   )
+  const created = posts.filter(function (post) { return post.action === 'rolesCreate' }).pop()
+  check('the Fork is created and applied in one flow', created !== undefined && created.name === reuseIdentity.props['data-profile'], JSON.stringify(created))
+  HOST.roles = Object.assign({}, HOST.roles, {
+    stages: Object.assign({}, HOST.roles.stages, { test: created.name }),
+    profiles: Object.assign({}, HOST.roles.profiles, {
+      [created.name]: Object.assign({ name: created.name }, created.profile),
+    }),
+  })
+  findAll(rtree, function (node) { return node.props && node.props['data-action'] === 'rolesList' })[0].props.onClick()
+  await flush()
+  rtree = reuse.render(panel2, { initialView: 'roles' })
+  area = fieldOf(rtree, 'template')
 
-  // Save the draft, then let the host report the created profile: a stale value
-  // from before the save must not survive it.
+  // Saving the current copy updates it AND replaces the running instances; the
+  // real replace answer (replaced/source) is what the banner shows.
   area.props.ref.current.value = 'forked body'
-  postReply = { ok: true, config: HOST.roles, source: 'file', snapshot: HOST }
+  postReply = [
+    { ok: true, config: HOST.roles, profile: Object.assign({ name: created.name }, created.profile, { prompt: 'forked body' }), source: 'file', snapshot: HOST },
+    { ok: true, replaced: [{ name: 'tester-1', reason: 'drained' }], source: 'file', snapshot: HOST },
+  ]
   clickAction(rtree, 'role-editor-save')
   await flush()
-  const created = posts[posts.length - 1]
-  check('the reuse harness saved the draft as a create', created.action === 'rolesCreate' && created.name.indexOf('godot-reviewer-fork') === 0 && created.profile.prompt === 'forked body', JSON.stringify(created))
+  await flush()
+  const savePost = posts.filter(function (post) { return post.action === 'rolesUpdate' }).pop()
+  check('saving the forked copy sends rolesUpdate with the edited prompt', savePost !== undefined && savePost.name === created.name && savePost.profile.prompt === 'forked body', JSON.stringify(savePost))
   HOST.roles = Object.assign({}, HOST.roles, {
+    stages: Object.assign({}, HOST.roles.stages, { test: created.name }),
     profiles: Object.assign({}, HOST.roles.profiles, {
-      [created.name]: { name: created.name, role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'forked body' },
+      [created.name]: Object.assign({}, HOST.roles.profiles[created.name], { prompt: 'forked body' }),
     }),
   })
   rtree = reuse.render(panel2, { initialView: 'roles' })
   await flush()
   rtree = reuse.render(panel2, { initialView: 'roles' })
   area = fieldOf(rtree, 'template')
-  const reuseIdentity = findAll(editorOf(rtree), function (node) { return node.props && node.props['data-editor-identity'] === 'true' })[0]
-  check('a successful draft save retargets the editor at the created profile', reuseIdentity.props['data-profile'] === created.name && reuseIdentity.props['data-draft'] === 'false', JSON.stringify(reuseIdentity.props))
+  reuseIdentity = findAll(editorOf(rtree), function (node) { return node.props && node.props['data-editor-identity'] === 'true' })[0]
   check(
-    'the template control shows the saved profile after the save',
-    valueOf(area) === 'forked body' && dirtyOf(area) === false,
-    JSON.stringify({ value: valueOf(area), dirty: dirtyOf(area) }),
+    'a successful save retargets the editor at the saved copy',
+    reuseIdentity.props['data-profile'] === created.name && reuseIdentity.props['data-draft'] === 'false' && valueOf(area) === 'forked body',
+    JSON.stringify({ identity: reuseIdentity.props, value: valueOf(area), dirty: dirtyOf(area) }),
   )
-
-  // The editor-local banner belongs to one identity: a kind switch clears it.
   const savedBanner = findAll(editorOf(rtree), function (node) { return node.props && node.props['data-role-result'] === 'ok' })[0]
-  check('the real saved outcome is shown inside the editor', savedBanner !== undefined && textOf(savedBanner).indexOf('来源') >= 0, savedBanner && textOf(savedBanner))
-  clickAction(rtree, 'role-editor-kind', 'data-kind', 'tester')
+  check('the real save+replace outcome is shown inside the editor', savedBanner !== undefined && textOf(savedBanner).indexOf('已替换') >= 0 && textOf(savedBanner).indexOf('来源') >= 0, savedBanner && textOf(savedBanner))
+  clickAction(rtree, 'role-editor-kind', 'data-kind', 'worker')
   rtree = reuse.render(panel2, { initialView: 'roles' })
   check(
     'switching kind clears the previous identity banner',
@@ -2297,11 +2281,8 @@ check(
     textOf(editorOf(rtree)).slice(0, 200),
   )
 
-  // A FAILED save keeps the draft AND the values typed into it: the identity does
-  // not change, so the control is not remounted and its typed text survives.
-  clickAction(rtree, 'role-editor-kind', 'data-kind', 'reviewer')
-  rtree = reuse.render(panel2, { initialView: 'roles' })
-  clickAction(rtree, 'role-editor-fork')
+  // A FAILED save keeps the typed value on the same control and is readable.
+  clickAction(rtree, 'role-editor-kind', 'data-kind', 'tester')
   rtree = reuse.render(panel2, { initialView: 'roles' })
   area = fieldOf(rtree, 'template')
   area.props.ref.current.value = 'draft body kept'
@@ -2312,12 +2293,13 @@ check(
   area = fieldOf(rtree, 'template')
   const failedIdentity = findAll(editorOf(rtree), function (node) { return node.props && node.props['data-editor-identity'] === 'true' })[0]
   check(
-    'a failed save keeps the draft and its edited values',
-    failedIdentity.props['data-draft'] === 'true' && valueOf(area) === 'draft body kept' && dirtyOf(area) === true,
-    JSON.stringify({ draft: failedIdentity.props['data-draft'], value: valueOf(area), dirty: dirtyOf(area) }),
+    'a failed save keeps the typed value and creates no draft',
+    failedIdentity.props['data-draft'] === 'false' && valueOf(area) === 'draft body kept' && dirtyOf(area) === true,
+    JSON.stringify({ identity: failedIdentity.props, value: valueOf(area), dirty: dirtyOf(area) }),
   )
   check('a failed save is readable in the editor', textOf(editorOf(rtree)).indexOf('实例数必须是 1–8 的整数') >= 0, textOf(editorOf(rtree)).slice(0, 240))
   postReply = null
+
 
   disposers2.slice().reverse().forEach(function (disposer) { disposer() })
 }

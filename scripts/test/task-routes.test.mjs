@@ -3549,6 +3549,14 @@ async function withDeadline(promise, ms) {
   check('a refused profile is not persisted', rig.fs.files.get(rolesPath(PROJECT)).text === before)
   const duplicate = await rig.api.perform('rolesCreate', { name: 'godot-reviewer', profile: { role: 'reviewer' } }, user)
   check('creating an existing profile is refused', duplicate.ok === false && duplicate.code === 'role-exists', JSON.stringify(duplicate))
+  const immutable = await rig.api.perform('rolesUpdate', { name: 'reviewer', profile: { prompt: 'hacked' } }, user)
+  check('a built-in profile cannot be edited through the API', immutable.ok === false && immutable.code === 'builtin-profile-immutable', JSON.stringify(immutable))
+  const afterImmutable = await rig.api.perform('rolesList', {}, user)
+  check(
+    'the refused built-in edit changed nothing',
+    afterImmutable.config.profiles.reviewer.prompt === DEFAULT_ROLE_PROMPTS.reviewer,
+    afterImmutable.config.profiles.reviewer.prompt.slice(0, 80),
+  )
 
   const updated = await rig.api.perform('rolesUpdate', { name: 'godot-reviewer', profile: { prompt: 'Updated prompt.' } }, user)
   check(
@@ -3620,20 +3628,23 @@ async function withDeadline(promise, ms) {
   const reset = await rig.api.perform('rolesReset', {}, user)
   const defaults = defaultRoleConfig()
   check(
-    'resetting restores the default profiles and stages',
+    'resetting restores only the built-in profiles and keeps the custom copies and their bindings',
     reset.ok === true &&
       reset.source === 'default' &&
       reset.config.stages.implement === defaults.stages.implement &&
-      reset.config.stages.review === defaults.stages.review &&
       reset.config.stages.test === defaults.stages.test &&
-      reset.config.profiles['godot-reviewer'] === undefined &&
-      reset.config.profiles.worker.instances === 1,
-    JSON.stringify({ stages: reset.ok ? reset.config.stages : reset }),
+      reset.config.stages.review === 'godot-reviewer' &&
+      reset.config.profiles['godot-reviewer'] !== undefined &&
+      reset.config.profiles['godot-reviewer'].prompt === 'Updated prompt.' &&
+      reset.config.profiles.worker.instances === defaults.profiles.worker.instances &&
+      reset.config.profiles.reviewer.prompt === DEFAULT_ROLE_PROMPTS.reviewer &&
+      reset.config.profiles.tester.prompt === DEFAULT_ROLE_PROMPTS.tester,
+    JSON.stringify({ stages: reset.ok ? reset.config.stages : reset, profiles: reset.ok ? Object.keys(reset.config.profiles) : reset }),
   )
   const afterReset = JSON.parse(rig.fs.files.get(rolesPath(PROJECT)).text)
-  check('resetting persists the defaults', afterReset.profiles['godot-reviewer'] === undefined && afterReset.stages.review === 'reviewer', JSON.stringify(afterReset.stages))
+  check('resetting persists the built-in defaults without dropping a custom copy', afterReset.profiles['godot-reviewer'] !== undefined && afterReset.stages.review === 'godot-reviewer' && afterReset.profiles.reviewer.prompt === DEFAULT_ROLE_PROMPTS.reviewer, JSON.stringify(afterReset.stages))
   const listedAfter = await rig.api.perform('rolesList', {}, user)
-  check('the defaults are unchanged after reset', listedAfter.ok === true && listedAfter.config.profiles.reviewer.role === 'reviewer' && listedAfter.config.profiles.tester.role === 'tester', JSON.stringify(listedAfter.ok ? listedAfter.config.profiles : listedAfter))
+  check('the built-in profiles are the defaults after reset', listedAfter.ok === true && listedAfter.config.profiles.reviewer.role === 'reviewer' && listedAfter.config.profiles.tester.role === 'tester' && listedAfter.config.profiles.reviewer.prompt === DEFAULT_ROLE_PROMPTS.reviewer, JSON.stringify(listedAfter.ok ? listedAfter.config.profiles : listedAfter))
   rig.scheduler.dispose()
 }
 
