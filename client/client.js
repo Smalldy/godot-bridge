@@ -385,24 +385,19 @@ window.__ModuleLoader__.load({
 				roleKindMerger: '合并',
 				roleKindLead: 'Lead',
 				roleKindTeammate: '成员',
-				roleBind: '绑定',
 				roleSave: '保存',
-				roleDelete: '删除',
 				roleCreate: '创建',
 				rolePrompt: '指令',
 				roleSkills: '技能',
 				roleContext: '上下文',
 				rolePermissions: '权限',
 				roleInstancesCount: '实例数',
-				roleReset: '恢复默认',
 				roleProfilePrompt: 'Profile prompt（可修改）',
 				rolePromptEmpty: '（空 —— 内置角色的上下文由宿主 brief 补齐）',
-				roleFork: 'Fork',
 				roleRefresh: '读取角色配置',
 				roleSource: '来源',
 				roleDrain: '排空',
 				roleReplace: '替换',
-				roleReplaceKind: '替换整类',
 				roleName: '名称',
 				roleKind: '种类',
 				roleActionFailed: '操作失败',
@@ -431,21 +426,20 @@ window.__ModuleLoader__.load({
 				roleErrUnavailable: '角色管理器不可用',
 				roleErrUserOnly: '仅限用户操作',
 				roleErrVariable: '模板变量不合法',
-				roleErrBuiltinReadonly: '内置 profile 不能直接修改，请先 Fork 再保存',
+				roleErrBuiltinReadonly: '内置角色是宿主默认，不能修改；请复制一份来改。',
 				roleErrSkillsUnavailable: '技能服务不可用',
-				roleErrUnsaved: '请先保存这个 Fork 草稿，再应用',
+				roleErrUnsaved: '还有未保存的修改，请先保存或丢弃，再切换当前使用。',
 				roleEditor: '角色上下文编辑器',
-				roleEditorHint: '选择角色 → 左栏编辑原始提示词、右栏对照宿主真正注入的完整文本 → Fork → 保存 → 应用（绑定并替换在跑实例）。',
-				roleEditorDraft: '草稿（Fork，未保存）',
+				roleEditorHint: '选择角色 → 看原始提示词与宿主真正注入的文本 → 保存即生效；想改内置角色请复制一份。',
+				roleEditorDraft: '草稿（未保存）',
 				roleEditorTabsLabel: '角色种类',
-				roleEditorBoundProfile: '当前绑定',
-				roleEditorSelectProfile: 'Profile',
 				roleEditorCreateBlank: '空白新建 profile（次要入口）',
 				roleEditorInstances: '实例',
-				roleEditorBindHint: '选择后点“绑定”只改阶段绑定，点“应用”会同时替换在跑实例。',
-				roleEditorNoProfile: '该阶段没有绑定的 profile',
-				roleEditorApply: '应用（绑定并替换实例）',
-				roleEditorApplySkipped: '没有在跑实例，只更新了阶段绑定。',
+				roleEditorNoProfile: '该阶段没有可用的角色',
+				roleCurrentUse: '当前使用',
+				roleUseDefault: '默认',
+				roleUsePendingNextDispatch: '没有在跑实例，下次派发生效。',
+				roleDeleteThis: '删除这份',
 				rolePreviewRawTitle: '原始提示词',
 				rolePreviewInjectedTitle: '注入后的提示词',
 				rolePreviewEmptyValue: '（空）',
@@ -461,7 +455,7 @@ window.__ModuleLoader__.load({
 				rolePreviewGroupFixed: '宿主固定',
 				rolePreviewBuiltinReadonly: '默认角色是宿主内置的，不能在原处修改。',
 				roleEmptyBuiltinTitle: '默认角色不可修改',
-				roleEmptyCopy: '复制一份来改',
+				roleEmptyCopy: '复制一份并启用',
 				roleEditorSkillsManage: '管理',
 				roleEditorSkillsTitle: '系统技能',
 				roleEditorSkillsEmpty: '宿主没有可用的系统技能。',
@@ -716,24 +710,19 @@ window.__ModuleLoader__.load({
 				roleKindMerger: 'merger',
 				roleKindLead: 'lead',
 				roleKindTeammate: 'teammate',
-				roleBind: 'Bind',
 				roleSave: 'Save',
-				roleDelete: 'Delete',
 				roleCreate: 'Create',
 				rolePrompt: 'Prompt',
 				roleSkills: 'Skills',
 				roleContext: 'Context',
 				rolePermissions: 'Permissions',
 				roleInstancesCount: 'Instances',
-				roleReset: 'Reset defaults',
 				roleProfilePrompt: 'Profile prompt (editable)',
 				rolePromptEmpty: '(empty — the host brief fills the context for built-in roles)',
-				roleFork: 'Fork',
 				roleRefresh: 'Reload role profiles',
 				roleSource: 'Source',
 				roleDrain: 'Drain',
 				roleReplace: 'Replace',
-				roleReplaceKind: 'Replace kind',
 				roleName: 'Name',
 				roleKind: 'Kind',
 				roleActionFailed: 'Action failed',
@@ -762,21 +751,20 @@ window.__ModuleLoader__.load({
 				roleErrUnavailable: 'role manager unavailable',
 				roleErrUserOnly: 'user only',
 				roleErrVariable: 'invalid template variable',
-				roleErrBuiltinReadonly: 'a built-in profile cannot be edited in place; fork it first',
+				roleErrBuiltinReadonly: 'a built-in role is a host default and cannot be edited; make a copy instead',
 				roleErrSkillsUnavailable: 'skill service unavailable',
-				roleErrUnsaved: 'save this fork draft before applying it',
+				roleErrUnsaved: 'there are unsaved changes; save or discard them before switching the current use',
 				roleEditor: 'Role context editor',
-				roleEditorHint: 'Pick a role → edit the raw prompt on the left and compare the exact injected text on the right → Fork → Save → Apply (bind and replace the running instance).',
-				roleEditorDraft: 'draft (forked, unsaved)',
+				roleEditorHint: 'Pick a role → read the raw prompt and the exact injected text → Save takes effect; copy a built-in role to change it.',
+				roleEditorDraft: 'draft (unsaved)',
 				roleEditorTabsLabel: 'Role kind',
-				roleEditorBoundProfile: 'Bound',
-				roleEditorSelectProfile: 'Profile',
 				roleEditorCreateBlank: 'New blank profile (secondary)',
 				roleEditorInstances: 'Instances',
-				roleEditorBindHint: 'Bind changes the stage binding only; Apply also replaces the running instances.',
-				roleEditorNoProfile: 'no profile is bound to this stage',
-				roleEditorApply: 'Apply (bind + replace instances)',
-				roleEditorApplySkipped: 'No live instance; only the stage binding was updated.',
+				roleEditorNoProfile: 'no role is available for this stage',
+				roleCurrentUse: 'Currently using',
+				roleUseDefault: 'Default',
+				roleUsePendingNextDispatch: 'No live instance; takes effect on the next dispatch.',
+				roleDeleteThis: 'Delete this copy',
 				rolePreviewRawTitle: 'Raw prompt',
 				rolePreviewInjectedTitle: 'Injected prompt',
 				rolePreviewEmptyValue: '(empty)',
@@ -792,7 +780,7 @@ window.__ModuleLoader__.load({
 				rolePreviewGroupFixed: 'Host-fixed',
 				rolePreviewBuiltinReadonly: 'A default role is built into the host and cannot be changed in place.',
 				roleEmptyBuiltinTitle: 'Default roles cannot be edited',
-				roleEmptyCopy: 'Make a copy to edit',
+				roleEmptyCopy: 'Make a copy and use it',
 				roleEditorSkillsManage: 'Manage',
 				roleEditorSkillsTitle: 'System skills',
 				roleEditorSkillsEmpty: 'The host reported no system skills.',
@@ -1766,6 +1754,7 @@ window.__ModuleLoader__.load({
 				'user-only': 'roleErrUserOnly',
 				'invalid-role-variable': 'roleErrVariable',
 				'builtin-profile-readonly': 'roleErrBuiltinReadonly',
+				'builtin-profile-immutable': 'roleErrBuiltinReadonly',
 				'skills-unavailable': 'roleErrSkillsUnavailable',
 				'role-unsaved': 'roleErrUnsaved',
 				'action-timeout': 'roleErrActionTimeout',
@@ -2015,6 +2004,9 @@ window.__ModuleLoader__.load({
 				skillsSelected: new Set(),
 				applySkipped: false,
 				notice: null,
+				// Bumped when a "current use" switch is refused so the uncontrolled
+				// selector remounts back on the real value (no silent draft loss).
+				pickVersion: 0,
 				// The injected-text preview the host returned for the current identity,
 				// the identity it belongs to and the in-flight/failed state around it.
 				preview: null,
@@ -2099,6 +2091,10 @@ window.__ModuleLoader__.load({
 								? saved.profile
 								: null
 				const builtin = selectedName === 'worker' || selectedName === 'reviewer' || selectedName === 'tester'
+				// The "current use" selector: the stage's built-in default plus every
+				// custom copy owning this stage. No bind/apply vocabulary is exposed.
+				const useOptions = [kind].concat(options.filter(function (name) { return name !== kind }))
+				if (selectedName !== null && useOptions.indexOf(String(selectedName)) < 0) useOptions.push(String(selectedName))
 				// Only a profile the user owns (a saved copy or a fork draft) has a prompt
 				// that can be edited here. Everything else is a clear empty state, never a
 				// blank half-panel.
@@ -2114,14 +2110,16 @@ window.__ModuleLoader__.load({
 				const instances = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
 				const templateRef = React.useRef(null)
 				const skillsRef = React.useRef(null)
-				const selectRef = React.useRef(null)
 				// Real React reuses a host node across renders, so an uncontrolled control
 				// only takes a new defaultValue when it REMOUNTS. The key carries the editor
 				// identity AND whether the identity is still a draft: switching kind,
 				// forking and a successful save all remount the controls on the right
 				// profile instead of silently keeping the previous profile's text (which
 				// would then be saved onto the wrong profile).
-				const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved')
+				const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved') + ':' + String(roleEditorState.pickVersion || 0)
+				// What the selector shows as "in use": the draft's source while a draft is
+				// open, otherwise the edited profile (falling back to the bound one).
+				const useValue = draft !== null ? String(draft.source) : selectedName !== null ? String(selectedName) : String(kind)
 
 				/**
 				 * The identity a preview belongs to: kind + the saved profile + the chosen
@@ -2175,11 +2173,6 @@ window.__ModuleLoader__.load({
 					if (node !== null && node !== undefined && typeof node.value === 'string') return tcSplitList(node.value)
 					return target !== null && Array.isArray(target.skills) ? target.skills.slice() : []
 				}
-				function chosenName() {
-					const node = selectRef.current
-					if (node !== null && node !== undefined && typeof node.value === 'string' && node.value !== '') return node.value
-					return selectedName
-				}
 				// The editor reports its own outcome: a client-side refusal has no store
 				// event, and the banner must survive the panel's re-render.
 				function report(action, ok, payload) {
@@ -2207,20 +2200,56 @@ window.__ModuleLoader__.load({
 					roleEditorState.previewError = null
 					bump()
 				}
-				/** Pick another profile of this kind in the identity selector. */
-				function selectProfile(name) {
-					if (typeof name !== 'string' || name === '') return
-					roleEditorState.selected = name
-					roleEditorState.draft = null
-					roleEditorState.saved = null
+				/**
+				 * ONE switch of "current use": bind the stage to the profile, then replace
+				 * the running instances of this kind. With nothing live, only the binding
+				 * changes and the panel says it takes effect on the next dispatch.
+				 */
+				async function applyProfile(name) {
 					roleEditorState.applySkipped = false
-					roleEditorState.notice = null
-					roleEditorState.preview = null
-					roleEditorState.previewKey = null
-					roleEditorState.previewPending = false
-					roleEditorState.previewError = null
+					const boundResult = await send('rolesBind', { stage: stage, profile: name })
+					if (boundResult.ok !== true) {
+						roleEditorState.pickVersion += 1
+						bump()
+						return false
+					}
+					roleEditorState.selected = name
+					// Keep the optimistic copy of a just-created profile so the editor can
+					// target it before the next host poll carries it.
+					if (roleEditorState.saved !== null && roleEditorState.saved.name !== name) roleEditorState.saved = null
+					const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
+					if (live.length === 0) {
+						roleEditorState.applySkipped = true
+						bump()
+						return true
+					}
+					await send('rolesReplace', { name: kind })
 					bump()
+					return true
 				}
+				/**
+				 * The "current use" picker: one pick is one action. An open draft blocks the
+				 * switch with a readable notice (never a silent discard) and the selector
+				 * remounts on the real value.
+				 */
+				async function chooseUse(name) {
+					if (typeof name !== 'string' || name === '') return
+					roleEditorState.notice = null
+					if (draft !== null) {
+						report('rolesBind', false, { code: 'role-unsaved' })
+						roleEditorState.pickVersion += 1
+						bump()
+						return
+					}
+					if (name === boundName) {
+						roleEditorState.selected = name
+						roleEditorState.saved = null
+						bump()
+						return
+					}
+					await applyProfile(name)
+				}
+				/** Fork a copy of the current profile. It is created AND made current in one flow. */
 				function fork() {
 					if (target === null || selectedName === null) return
 					let candidate = String(selectedName) + '-fork'
@@ -2235,6 +2264,27 @@ window.__ModuleLoader__.load({
 					roleEditorState.applySkipped = false
 					roleEditorState.notice = null
 					bump()
+					void commitDraft(candidate)
+				}
+				/**
+				 * Create the draft profile, then bind + replace it: Fork must take effect
+				 * without a second click. A refused create keeps the draft for a retry.
+				 */
+				async function commitDraft(name, fromEditor) {
+					const submitted = roleEditorState.draft
+					if (submitted === null || submitted.name !== name) return
+					// Fork copies the source profile as-is; a retry after a refused create
+					// must keep whatever the user typed into the editor.
+					const body = fromEditor === true
+						? Object.assign({}, submitted.profile, { prompt: currentTemplate(), skills: currentSkills() })
+						: Object.assign({}, submitted.profile)
+					const outcome = await send('rolesCreate', { name: name, profile: body })
+					if (outcome.ok !== true || roleEditorState.draft !== submitted) return
+					roleEditorState.draft = null
+					roleEditorState.selected = name
+					roleEditorState.saved = { name: name, profile: Object.assign({}, body, { name: name }) }
+					bump()
+					await applyProfile(name)
 				}
 				async function save() {
 					// A stale banner must never be read as this attempt's outcome; report() replaces it.
@@ -2242,75 +2292,39 @@ window.__ModuleLoader__.load({
 					const template = currentTemplate()
 					const skills = currentSkills()
 					if (draft !== null) {
-						// T-35 rule: a successful create clears the draft, a refused one keeps
-						// it (and the user's edits) for a retry.
-						const submitted = draft
-						const body = Object.assign({}, submitted.profile, { prompt: template, skills: skills })
-						const outcome = await send('rolesCreate', { name: submitted.name, profile: body })
-						if (outcome.ok === true && roleEditorState.draft === submitted) {
-							// Target the created profile IMMEDIATELY: the panel must not need the
-							// next 2.5s poll before Apply can bind it.
-							roleEditorState.draft = null
-							roleEditorState.selected = submitted.name
-							roleEditorState.saved = { name: submitted.name, profile: Object.assign({}, body, { name: submitted.name }) }
-							bump()
-						}
+						// Only a retry after a refused create lands here: create and make current.
+						await commitDraft(draft.name, true)
 						return
 					}
 					if (selectedName === null) return
 					if (builtin) {
-						// The built-in profiles are the defaults; editing one in place would
-						// be lost by the next reset. Fork it instead.
+						// The built-in profiles are host defaults; fork a copy to change them.
 						report('rolesUpdate', false, { code: 'builtin-profile-readonly' })
 						return
 					}
+					// Saving the profile that is currently in use applies it in the SAME click.
+					const isCurrent = selectedName === boundName
 					const outcome = await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills } })
-					if (outcome.ok === true) {
-						// Keep the saved values visible until the host snapshot catches up.
-						roleEditorState.saved = { name: selectedName, profile: Object.assign({}, target === null ? {} : target, { prompt: template, skills: skills }) }
-						bump()
-					}
+					if (outcome.ok !== true) return
+					// Keep the saved values visible until the host snapshot catches up.
+					roleEditorState.saved = { name: selectedName, profile: Object.assign({}, target === null ? {} : target, { prompt: template, skills: skills }) }
+					bump()
+					if (isCurrent) await send('rolesReplace', { name: kind })
 				}
+				/** Delete this copy; if it was in use, the built-in default takes over at once. */
 				async function remove() {
 					roleEditorState.notice = null
 					if (selectedName === null || builtin) return
-					const outcome = await send('rolesDelete', { name: selectedName })
-					if (outcome.ok === true) {
-						roleEditorState.selected = null
-						roleEditorState.saved = null
-						bump()
-					}
-				}
-				async function bind() {
-					roleEditorState.notice = null
-					const chosen = chosenName()
-					if (chosen === null) {
-						report('rolesBind', false, { code: 'unknown-role-profile' })
-						return
-					}
-					await send('rolesBind', { stage: stage, profile: chosen })
-				}
-				async function apply() {
-					roleEditorState.notice = null
-					if (draft !== null) {
-						report('rolesBind', false, { code: 'role-unsaved' })
-						return
-					}
-					const chosen = chosenName()
-					if (chosen === null) {
-						report('rolesBind', false, { code: 'unknown-role-profile' })
-						return
-					}
+					const name = selectedName
+					const wasBound = name === boundName
+					const outcome = await send('rolesDelete', { name: name })
+					if (outcome.ok !== true) return
+					roleEditorState.selected = null
+					roleEditorState.saved = null
 					roleEditorState.applySkipped = false
-					const boundResult = await send('rolesBind', { stage: stage, profile: chosen })
-					if (boundResult.ok !== true) return
-					const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
-					if (live.length === 0) {
-						roleEditorState.applySkipped = true
-						bump()
-						return
-					}
-					await send('rolesReplace', { name: kind })
+					roleEditorState.pickVersion += 1
+					bump()
+					if (wasBound) await applyProfile(kind)
 				}
 				async function openSkills() {
 					roleEditorState.skillsOpen = true
@@ -2492,52 +2506,44 @@ window.__ModuleLoader__.load({
 								}),
 								h('div', { className: 'gbt-formactions' }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-skills-save', onClick: saveSkills }, t('roleEditorSkillsSave')))))
 					: null
-				const selectOptions = options.slice()
-				if (selectedName !== null && selectOptions.indexOf(String(selectedName)) < 0) selectOptions.push(String(selectedName))
-				const selectValue = draft !== null ? draft.name : selectedName === null ? '' : String(selectedName)
 				const identityRow = h(
 					'div',
 					{ className: 'gbt-editor-identity', 'data-editor-identity': 'true', 'data-kind': kind, 'data-profile': selectedName === null ? '' : String(selectedName), 'data-bound': boundName === null ? '' : String(boundName), 'data-draft': draft === null ? 'false' : 'true' },
 					h('span', { className: 'gbt-pill' }, t('roleKind') + ' · ' + roleKindLabel(kind, t)),
-					h('span', { className: 'gbt-pill gbt-mono', 'data-editor-bound': 'true' }, t('roleEditorBoundProfile') + ' · ' + (boundName === null ? t('roleEditorNoProfile') : String(boundName))),
 					h('span', { className: 'gbt-pill' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')),
 					h(
 						'label',
 						{ className: 'gbt-editor-select' },
-						t('roleEditorSelectProfile'),
+						t('roleCurrentUse'),
 						h(
 							'select',
 							{
-								key: 'identity-select:' + controlKey,
-								ref: selectRef,
+								key: 'current-use:' + controlKey,
 								className: 'gbt-input',
-								'data-stage-select': stage,
-								'data-field': 'profile-select',
-								defaultValue: selectValue,
-								onChange: function () {
-									const node = selectRef.current
-									selectProfile(node === null || node === undefined ? '' : node.value)
+								'data-role-use-select': 'true',
+								'data-field': 'current-use',
+								'data-stage': stage,
+								'data-bound': boundName === null ? '' : String(boundName),
+								defaultValue: useValue,
+								onChange: function (event) {
+									void chooseUse(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : '')
 								},
 							},
-							selectOptions.length === 0
+							useOptions.length === 0
 								? h('option', { key: 'none', value: '' }, t('roleEditorNoProfile'))
-								: selectOptions.map(function (name) { return h('option', { key: name, value: name }, name) }),
+								: useOptions.map(function (name) { return h('option', { key: name, value: name }, name === kind ? t('roleUseDefault') : name) }),
 						),
 					),
-					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesBind', onClick: function () { void bind() } }, t('roleBind')),
 					builtin || draft !== null || selectedName === null || profiles[selectedName] === undefined
 						? null
-						: h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesDelete', onClick: function () { void remove() } }, t('roleDelete')),
-					h('span', { className: 'gbt-footnote' }, t('roleEditorBindHint')),
+						: h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesDelete', 'data-role-delete-copy': 'true', onClick: function () { void remove() } }, t('roleDeleteThis')),
 				)
+				// Save is the only primary action; switching "current use" is one pick.
+				// Forking lives in the built-in prompt panel (its contextual empty-state CTA).
 				const actions = h(
 					'div',
 					{ className: 'gbt-rowactions', 'data-section': 'role-editor-actions' },
-					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-fork', onClick: fork }, t('roleFork')),
 					h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-editor-save', onClick: function () { void save() } }, t('roleSave')),
-					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-apply', onClick: function () { void apply() } }, t('roleEditorApply')),
-					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesReplace-kind', 'data-kind': kind, onClick: function () { void send('rolesReplace', { name: kind }) } }, t('roleReplaceKind') + ' · ' + roleKindLabel(kind, t)),
-					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesReset', onClick: function () { void send('rolesReset', {}) } }, t('roleReset')),
 				)
 				return h('div', { className: 'gbt-roleeditor', 'data-editor': 'true', 'data-kind': kind },
 					h('p', { className: 'gbt-footnote' }, t('roleEditorHint')),
@@ -2547,7 +2553,7 @@ window.__ModuleLoader__.load({
 					})),
 					identityRow,
 					actions,
-					roleEditorState.applySkipped === true ? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleEditorApplySkipped')) : null,
+					roleEditorState.applySkipped === true ? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleUsePendingNextDispatch')) : null,
 					prompts,
 					skillsRow,
 					instancesBlock,
