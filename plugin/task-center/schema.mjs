@@ -87,6 +87,30 @@ export const ROLE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}$/
 export const ROLE_PROMPT_MAX = 4000
 
 /**
+ * The readable default prompt of the built-in reviewer and tester profiles.
+ * These instructions used to be a host-fixed "Duties" paragraph inside the
+ * brief; they are now an ordinary profile prompt the panel can show, fork and
+ * edit, while only the hard permission boundary and the verdict schema stay
+ * host-fixed. English, like the rest of the brief.
+ *
+ * The worker keeps an empty prompt on purpose: implementers are wired through
+ * briefFor, not through a role profile (that lands in a later task).
+ */
+export const DEFAULT_ROLE_PROMPTS = {
+  reviewer: [
+    'Duties: review the submitted tree (the diff from its base to its head, the declared vs actual files, and the worker evidence), then approve it or request concrete changes.',
+    'Review against the project conventions: keep the change consistent with the surrounding code and architecture, avoid unrelated rewrites and never restyle files the task did not touch.',
+    'Review checklist:\n- The diff matches the spec and the acceptance criteria, and nothing unrelated changed.\n- Declared vs actual files match (or the extras are justified).\n- No secrets, debug leftovers, dead code or commented-out blocks.\n- The evidence plausibly matches the change (you do NOT need to run the full test suite; the test stage does that).\n- Error handling and naming follow the code around it.',
+    'Decide: approve the review, or ask for changes with concrete, actionable reasons naming the files and lines.',
+  ].join('\n\n'),
+  tester: [
+    'Duties: independently test the candidate tree for the task and record a pass or a failure with evidence.',
+    'Test against the acceptance criteria in the candidate checkout: run the project test commands there and record the exact command and exit code, then exercise the acceptance check itself. A green unit suite is not a substitute for the acceptance check.',
+    'Report evidence another person could replay: what you ran, what came back, and why it proves the criterion. Decide pass or fail; on a failure give the failing command and its tail output.',
+  ].join('\n\n'),
+}
+
+/**
  * The variables a role prompt template may inject. The catalog is ONE list used
  * three ways: validateRoleProfile refuses a template that mentions anything else,
  * the brief builders substitute these tokens with the real task values, and the
@@ -207,10 +231,16 @@ export function normaliseRoleProfile(raw, kind, name) {
   }
 }
 
+/** One built-in profile, carrying its readable default prompt when it has one. */
+function defaultProfileFor(kind) {
+  const prompt = DEFAULT_ROLE_PROMPTS[kind]
+  return normaliseRoleProfile(prompt === undefined ? null : { prompt: prompt }, kind, kind)
+}
+
 /** The built-in profile set: one implement-stage worker, one reviewer, one tester. */
 export function defaultRoleConfig() {
   const profiles = {}
-  for (const kind of ROLE_KINDS) profiles[kind] = normaliseRoleProfile(null, kind, kind)
+  for (const kind of ROLE_KINDS) profiles[kind] = defaultProfileFor(kind)
   return {
     version: ROLE_CONFIG_VERSION,
     defaultProfile: 'worker',
@@ -329,7 +359,14 @@ export function normaliseRoleConfig(raw) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return base
   const sourceProfiles = raw.profiles !== null && typeof raw.profiles === 'object' && !Array.isArray(raw.profiles) ? raw.profiles : {}
   const profiles = {}
-  for (const kind of ROLE_KINDS) profiles[kind] = normaliseRoleProfile(sourceProfiles[kind], kind, kind)
+  // Migration: an existing roles.json may carry a built-in profile with an empty
+  // prompt (the old host-fixed duties). Fall back to the readable default for the
+  // three built-in names only; a custom profile with an empty prompt stays empty,
+  // and the fallback is not written back until the user saves.
+  for (const kind of ROLE_KINDS) {
+    const profile = normaliseRoleProfile(sourceProfiles[kind], kind, kind)
+    profiles[kind] = profile.prompt === '' && DEFAULT_ROLE_PROMPTS[kind] !== undefined ? Object.assign({}, profile, { prompt: DEFAULT_ROLE_PROMPTS[kind] }) : profile
+  }
   for (const name of Object.keys(sourceProfiles)) {
     if (ROLE_KINDS.indexOf(name) >= 0) continue
     if (!ROLE_NAME_PATTERN.test(name)) continue

@@ -446,6 +446,10 @@ function rolePreviewReply(body) {
     snapshot: HOST,
   }
 }
+// The host now normalises the built-in reviewer/tester prompts; the panel shows
+// them read-only. The worker prompt stays empty until the implement stage is wired.
+const REVIEWER_DEFAULT_PROMPT = 'Review the submitted tree; approve it or request concrete changes.'
+const TESTER_DEFAULT_PROMPT = 'Test the candidate against the acceptance criteria; record pass or fail with evidence.'
 const HOST = {
   ok: true,
   project: PROJECT,
@@ -519,8 +523,8 @@ const HOST = {
     stages: { implement: 'worker', review: 'godot-reviewer', test: 'tester' },
     profiles: {
       worker: { name: 'worker', role: 'worker', stage: 'implement', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: '' },
-      reviewer: { name: 'reviewer', role: 'reviewer', stage: 'review', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: '' },
-      tester: { name: 'tester', role: 'tester', stage: 'test', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: '' },
+      reviewer: { name: 'reviewer', role: 'reviewer', stage: 'review', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: REVIEWER_DEFAULT_PROMPT },
+      tester: { name: 'tester', role: 'tester', stage: 'test', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: TESTER_DEFAULT_PROMPT },
       'godot-reviewer': { name: 'godot-reviewer', role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check Godot idioms.' },
     },
   },
@@ -1249,28 +1253,39 @@ await flush()
   const testerRaw = findAll(testerArea, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
   const testerInjected = findAll(testerArea, (node) => node.props && node.props['data-role-prompt'] === 'injected')[0]
   check(
-    'a built-in profile keeps two columns, and the left one is a designed empty state',
+    'a built-in profile keeps two columns and shows its readable default prompt, not an empty panel',
     testerArea.props['data-role-layout'] === 'split' &&
       testerRaw !== undefined &&
       testerInjected !== undefined &&
       testerRaw.props['data-role-raw-readonly'] === 'true' &&
       testerRaw.props['data-role-raw-reason'] === 'builtin' &&
-      testerRaw.props['data-role-empty-state'] === 'builtin' &&
+      testerRaw.props['data-role-default-prompt'] === 'true' &&
       findAll(testerRaw, (node) => node.type === 'textarea').length === 0,
     testerRaw && JSON.stringify(testerRaw.props),
   )
+  const defaultPromptText = findAll(testerRaw, (node) => node.props && node.props['data-role-default-prompt-text'] === 'true')[0]
+  check(
+    'the built-in default prompt is rendered read-only and literal',
+    defaultPromptText !== undefined && textOf(defaultPromptText) === TESTER_DEFAULT_PROMPT && findAll(defaultPromptText, (node) => node.type === 'input' || node.type === 'textarea').length === 0,
+    defaultPromptText && textOf(defaultPromptText),
+  )
   const emptyCopy = findAll(testerRaw, (node) => node.props && node.props['data-role-empty-fork'] === 'true')[0]
   check(
-    'the built-in empty state says what to do and offers the existing Fork action',
+    'the built-in prompt keeps the not-editable note and the existing Fork action',
     emptyCopy !== undefined &&
       emptyCopy.props['data-action'] === 'role-editor-fork' &&
       textOf(emptyCopy) === '复制一份来改' &&
-      textOf(testerRaw).indexOf('默认角色不可修改') >= 0 &&
-      textOf(testerRaw).indexOf('宿主内置') >= 0,
+      textOf(testerRaw).indexOf('默认角色不可修改') >= 0,
     testerRaw && textOf(testerRaw),
   )
+  const testerTemplate = findAll(testerInjected, (node) => node.props && node.props['data-role-section-group'] === 'template')[0]
+  check(
+    'the injected template section is labelled as the built-in default prompt',
+    testerTemplate !== undefined && findAll(testerTemplate, (node) => node.type === 'span').some((node) => textOf(node) === '内置默认提示词'),
+    testerTemplate && textOf(testerTemplate),
+  )
 
-  // Forking from the empty state turns the page into an editable two-column view.
+  // Forking copies the default prompt into an editable two-column view.
   emptyCopy.props.onClick()
   tree = withHooks(panel, { initialView: 'roles' })
   await flush()
@@ -1280,12 +1295,13 @@ await flush()
   const forkedRaw = findAll(forkedArea, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
   const forkedAreaField = findAll(forkedRaw, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0]
   check(
-    'a forked copy on the same page is two columns with an editable raw prompt',
+    'a forked copy is two columns, editable, and starts from the default prompt',
     forkedArea.props['data-role-layout'] === 'split' &&
       forkedRaw !== undefined &&
       forkedRaw.props['data-role-raw-readonly'] === 'false' &&
-      forkedAreaField !== undefined,
-    forkedRaw && JSON.stringify(forkedRaw.props),
+      forkedAreaField !== undefined &&
+      forkedAreaField.props.defaultValue === TESTER_DEFAULT_PROMPT,
+    forkedAreaField && String(forkedAreaField.props.defaultValue),
   )
 
   // Leave the editor without a draft so the next block starts on the bound profile.

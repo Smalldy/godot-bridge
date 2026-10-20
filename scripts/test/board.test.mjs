@@ -4,6 +4,7 @@
 import { join } from 'node:path'
 import { readBoard, updateBoard, emptyBoard, boardPath, MAX_HISTORY, readRoleConfig, writeRoleConfig, rolesPath } from '../../plugin/task-center/board.mjs'
 import {
+  DEFAULT_ROLE_PROMPTS,
   ROLE_TEMPLATE_VARIABLES,
   ROLE_TEMPLATE_VARIABLE_NAMES,
   defaultRoleConfig,
@@ -416,12 +417,46 @@ const MERGE = {
     JSON.stringify(missing.config),
   )
   check(
-    'the default profile carries context, permissions and prompt',
+    'the built-in reviewer/tester carry their readable default prompt, the worker stays empty',
     missing.config.profiles.reviewer.context === 'fresh' &&
       Array.isArray(missing.config.profiles.reviewer.permissions) &&
-      missing.config.profiles.reviewer.prompt === '' &&
+      missing.config.profiles.reviewer.prompt === DEFAULT_ROLE_PROMPTS.reviewer &&
+      DEFAULT_ROLE_PROMPTS.reviewer.length > 0 &&
+      missing.config.profiles.tester.prompt === DEFAULT_ROLE_PROMPTS.tester &&
+      DEFAULT_ROLE_PROMPTS.tester.length > 0 &&
+      missing.config.profiles.worker.prompt === '' &&
       missing.config.profiles.reviewer.instances === 1,
-    JSON.stringify(missing.config.profiles.reviewer),
+    JSON.stringify({ reviewer: missing.config.profiles.reviewer.prompt.length, tester: missing.config.profiles.tester.prompt.length, worker: missing.config.profiles.worker.prompt.length }),
+  )
+  check(
+    'defaultRoleConfig gives reviewer/tester a non-empty prompt and keeps the worker prompt empty for now',
+    defaultRoleConfig().profiles.reviewer.prompt.length > 0 &&
+      defaultRoleConfig().profiles.tester.prompt.length > 0 &&
+      defaultRoleConfig().profiles.worker.prompt === '',
+    JSON.stringify({ reviewer: defaultRoleConfig().profiles.reviewer.prompt.length, tester: defaultRoleConfig().profiles.tester.prompt.length, worker: defaultRoleConfig().profiles.worker.prompt.length }),
+  )
+  // Migration: an existing roles.json with the old empty built-in prompts gets the
+  // new defaults in memory only; a custom profile with an empty prompt stays empty.
+  const migrated = normaliseRoleConfig({
+    profiles: {
+      reviewer: { prompt: '' },
+      tester: {},
+      worker: { prompt: '' },
+      'godot-reviewer': { role: 'reviewer', prompt: '', stage: 'review' },
+    },
+  })
+  check(
+    'an existing roles.json falls back to the built-in default prompt',
+    migrated.profiles.reviewer.prompt === DEFAULT_ROLE_PROMPTS.reviewer &&
+      migrated.profiles.tester.prompt === DEFAULT_ROLE_PROMPTS.tester &&
+      migrated.profiles.worker.prompt === '' &&
+      migrated.profiles['godot-reviewer'].prompt === '',
+    JSON.stringify({ reviewer: migrated.profiles.reviewer.prompt.length, tester: migrated.profiles.tester.prompt.length, worker: migrated.profiles.worker.prompt.length, custom: migrated.profiles['godot-reviewer'].prompt }),
+  )
+  check(
+    'an explicit built-in prompt is never overwritten by the default',
+    normaliseRoleConfig({ profiles: { reviewer: { prompt: 'Mine' }, tester: { prompt: 'Theirs' } } }).profiles.reviewer.prompt === 'Mine' &&
+      normaliseRoleConfig({ profiles: { tester: { prompt: 'Theirs' } } }).profiles.tester.prompt === 'Theirs',
   )
 
   const custom = normaliseRoleConfig({

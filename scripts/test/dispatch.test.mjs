@@ -23,7 +23,7 @@ import {
   serialiseWorktreeCreate,
   workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
-import { ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
+import { DEFAULT_ROLE_PROMPTS, ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, createFakeGit, seedBoard, PROJECT } from './support/fixtures.mjs'
@@ -1322,7 +1322,39 @@ function roleTask(overrides) {
       brief.indexOf('FRESH') >= 0,
     brief,
   )
-  check('a template cannot rewrite the fixed duties', brief.indexOf('Duties: review the submitted tree') >= 0, brief.slice(0, 400))
+  check(
+    'a custom template never adds or rewrites a host Duties paragraph',
+    roleBriefSections('reviewer', task, config, { projectPath: PROJECT, leadName: 'lead' }).fixed.indexOf('Duties:') < 0 &&
+      brief.indexOf('Permission boundary (hard):') >= 0 &&
+      brief.indexOf('Verdict schema:') >= 0,
+    brief.slice(0, 400),
+  )
+  // The reviewer/tester working instructions moved out of the host-fixed part and
+  // into the built-in profile prompt, so the panel can read and fork them.
+  const builtinReviewer = roleBriefSections('reviewer', roleTask(), defaultRoleConfig(), { projectPath: PROJECT, leadName: 'lead' })
+  check(
+    'the built-in reviewer prompt carries the duties while the fixed part keeps only boundary and verdict',
+    builtinReviewer.template === DEFAULT_ROLE_PROMPTS.reviewer &&
+      builtinReviewer.templateRendered.indexOf('review the submitted tree') >= 0 &&
+      builtinReviewer.fixed.indexOf('Duties:') < 0 &&
+      builtinReviewer.fixed.indexOf('Permission boundary (hard):') >= 0 &&
+      builtinReviewer.fixed.indexOf('Verdict schema:') >= 0,
+    JSON.stringify({ fixed: builtinReviewer.fixed.slice(0, 120), template: builtinReviewer.template.slice(0, 60) }),
+  )
+  const builtinTester = roleBriefSections('tester', roleTask(), defaultRoleConfig(), { projectPath: PROJECT, leadName: 'lead' })
+  check(
+    'the built-in tester prompt carries the duties while the fixed part keeps only boundary and verdict',
+    builtinTester.template === DEFAULT_ROLE_PROMPTS.tester &&
+      builtinTester.templateRendered.indexOf('independently test the candidate tree') >= 0 &&
+      builtinTester.fixed.indexOf('Duties:') < 0 &&
+      builtinTester.fixed.indexOf('Permission boundary (hard):') >= 0 &&
+      builtinTester.fixed.indexOf('Verdict schema:') >= 0,
+    JSON.stringify({ fixed: builtinTester.fixed.slice(0, 120), template: builtinTester.template.slice(0, 60) }),
+  )
+  check(
+    'the worker fixed duties are untouched (the implement stage is wired separately)',
+    roleBriefSections('worker', roleTask(), defaultRoleConfig(), {}).fixed.indexOf('Duties: implement the task') >= 0,
+  )
   const values = roleTemplateValuesFor('reviewer', task, config, { projectPath: PROJECT, leadName: 'lead' })
   check(
     'the value map exposes every catalog variable',
@@ -1331,7 +1363,13 @@ function roleTask(overrides) {
   )
   check('without a task the task variables render empty', roleTemplateValuesFor('reviewer', null, config, { projectPath: PROJECT }).TASK_ID === '')
   const bare = roleBriefFor('reviewer', task, normaliseRoleConfig({}), { projectPath: PROJECT, leadName: 'lead' })
-  check('a profile without a template keeps its brief shape', bare.indexOf('Profile instructions:') < 0 && bare.indexOf('Task center role: reviewer') >= 0, bare.slice(0, 300))
+  check(
+    'an empty config carries the readable built-in reviewer prompt in the brief',
+    bare.indexOf('Profile instructions:') >= 0 && bare.indexOf(DEFAULT_ROLE_PROMPTS.reviewer) >= 0 && bare.indexOf('Task center role: reviewer') >= 0,
+    bare.slice(0, 300),
+  )
+  const order = ['Task center role: reviewer', 'Profile instructions:', 'Task T-1:', 'Permission boundary (hard):', 'Skills:'].map((needle) => bare.indexOf(needle))
+  check('the brief keeps header → prompt → task data → fixed → skills order', order.every((index, position) => index >= 0 && (position === 0 || index > order[position - 1])), JSON.stringify(order))
   const sections = roleBriefSections('reviewer', task, config, { projectPath: PROJECT, leadName: 'lead' })
   check(
     'the split sections give the panel fixed parts and the raw template',

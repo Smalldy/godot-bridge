@@ -10,7 +10,7 @@ import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRol
 import { rolesPath } from '../../plugin/task-center/board.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
-import { ROLE_TEMPLATE_VARIABLE_NAMES, defaultRoleConfig } from '../../plugin/task-center/schema.mjs'
+import { DEFAULT_ROLE_PROMPTS, ROLE_TEMPLATE_VARIABLE_NAMES, defaultRoleConfig } from '../../plugin/task-center/schema.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -3107,6 +3107,19 @@ async function withDeadline(promise, ms) {
     'the reviewer section labels separate task data from host copy',
     reviewer.sections.some((section) => section.group === 'task') && reviewer.sections.some((section) => section.group === 'fixed'),
     JSON.stringify(reviewer.sections.map((section) => section.group)),
+  )
+  const reviewerTemplate = reviewer.sections.filter((section) => section.group === 'template')[0]
+  check(
+    'the built-in reviewer preview carries the default prompt in its template section',
+    reviewerTemplate !== undefined && reviewerTemplate.text.indexOf(DEFAULT_ROLE_PROMPTS.reviewer) >= 0,
+    reviewerTemplate && reviewerTemplate.text.slice(0, 160),
+  )
+  const tester = await rig.api.perform('rolesPreview', { kind: 'tester' }, rig.user)
+  const testerTemplate = tester.ok === true ? tester.sections.filter((section) => section.group === 'template')[0] : undefined
+  check(
+    'the built-in tester preview carries the default prompt in its template section',
+    tester.ok === true && testerTemplate !== undefined && testerTemplate.text.indexOf(DEFAULT_ROLE_PROMPTS.tester) >= 0,
+    tester.ok === true ? (testerTemplate && testerTemplate.text.slice(0, 160)) : JSON.stringify(tester),
   )
 
   const created = await rig.api.perform('rolesCreate', { name: 'strict-reviewer', profile: { role: 'reviewer', prompt: 'Review {{TASK_ID}} in {{PROJECT}}.' } }, rig.user)

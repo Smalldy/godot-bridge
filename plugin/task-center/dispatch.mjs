@@ -945,11 +945,15 @@ function gitInfoFor(task) {
  *
  *   header (role/stage/project/lead) → profile meta (permissions, fork note)
  *   → the editable profile template (variables substituted)
- *   → the task data → the host-fixed duties / permission boundary / verdict
+ *   → the task data → the host-fixed permission boundary / verdict schema
  *   → the host-fixed skills injection.
  *
  * Only 'template' is editable. Every other part is host copy: the panel renders
- * those blocks read-only, and a template can never overwrite them.
+ * those blocks read-only, and a template can never overwrite them. The reviewer
+ * and tester working instructions are NOT host copy anymore: they are the
+ * built-in profile prompt (see schema.DEFAULT_ROLE_PROMPTS), so the user can
+ * read, fork and edit them. The worker's fixed duties stay here until the
+ * implement stage is wired to the role system.
  */
 export function roleBriefSections(kind, task, config, options) {
   const opts = options === undefined || options === null ? {} : options
@@ -1000,9 +1004,10 @@ export function roleBriefSections(kind, task, config, options) {
       '  task_center { action: "submit", id: "<task>", evidence: "what changed and how you checked it" }',
     )
   } else if (kind === 'reviewer') {
+    // The working instructions live in the built-in profile prompt (and in every
+    // fork of it); the host-fixed part keeps only what a template must not
+    // rewrite: the hard boundary and the verdict schema.
     fixed.push(
-      'Duties: review the submitted tree (the diff from its base to its head, the declared vs actual files, and the worker evidence). Approve it or request concrete changes.',
-      '',
       'Permission boundary (hard):',
       '- READ-ONLY on implementation: do NOT edit files, do NOT commit, do NOT merge or push, do NOT change the task branch.',
       '- The only task actions you may call are approveReview and requestChanges.',
@@ -1014,8 +1019,6 @@ export function roleBriefSections(kind, task, config, options) {
     )
   } else if (kind === 'tester') {
     fixed.push(
-      'Duties: independently test the candidate tree for the task and record a pass or a failure with evidence.',
-      '',
       'Permission boundary (hard):',
       '- READ-ONLY on implementation: do NOT edit files, do NOT commit, do NOT merge or push, do NOT change the task branch.',
       '- The only task actions you may call are passTest and failTest.',
