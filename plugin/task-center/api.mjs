@@ -21,6 +21,7 @@ import {
   WORKFLOW_STAGES,
   defaultRoleConfig,
   normaliseRoleConfig,
+  normaliseVerify,
   profileForKind,
   validateRoleBinding,
   validateRoleProfile,
@@ -33,6 +34,7 @@ import {
   ROLE_SAMPLE_TASK,
   briefFor,
   briefPartsFor,
+  hostCheckEvidence,
   probeWorktree,
   resolveLead,
   reviewBriefFor,
@@ -42,6 +44,7 @@ import {
   roleContextPreview,
   roleKindOf,
   roleTemplateValuesFor,
+  runHostCheck,
   servicesFor,
   testFailureBriefFor,
   testerBriefFor,
@@ -1382,7 +1385,7 @@ export function createApi(ctx, options) {
     const files = canonicalFiles(projectPath, source.writeFiles)
     if (files.ok !== true) return files
     const result = {}
-    for (const key of ['title', 'spec', 'acceptance', 'priority', 'maxAttempts', 'dependsOn', 'note']) {
+    for (const key of ['title', 'spec', 'acceptance', 'priority', 'maxAttempts', 'dependsOn', 'note', 'verify']) {
       if (source[key] !== undefined) result[key] = source[key]
     }
     if (files.files !== undefined) result.writeFiles = files.files
@@ -2233,6 +2236,27 @@ export function createApi(ctx, options) {
           )
         }
       }
+      // The declared mechanical verification is a HOST action: it runs in the
+      // candidate the review just built, BEFORE any tester exists. A command
+      // that exits non-zero is not a judgement call, so it must not consume a
+      // tester round (or its watchdog).
+      let hostCheck = null
+      let hostCheckFailed = false
+      const declaredVerify = normaliseVerify(reviewTask.verify)
+      if (action === 'approveReview' && declaredVerify !== null) {
+        if (candidate === null) {
+          emitActivity(null, 'host-check', 'skipped: no test candidate in this profile', id, 'host')
+        } else {
+          const checked = await runHostCheck(ctx, { verify: declaredVerify, cwd: candidate.path, now: () => clock() })
+          if (checked.ok !== true) {
+            // The declaration cannot be honoured: refuse readably instead of
+            // pretending it passed. Nothing is written, so the review stays open.
+            return failure(checked.code, checked.message)
+          }
+          hostCheck = checked.check
+          hostCheckFailed = hostCheck.timedOut === true || hostCheck.exitCode !== 0
+        }
+      }
       const result = await writeTask(
         projectPath,
         id,
@@ -2242,14 +2266,70 @@ export function createApi(ctx, options) {
               ? model.approveReview(board, id, clock(), context.by)
               : model.requestChanges(board, id, source.reasons, clock(), context.by)
           if (transitioned.ok !== true) return transitioned
-          if (candidate !== null) return recordCandidate(transitioned.board, id, candidate, clock(), { by: context.by })
-          return transitioned
+          let next = transitioned
+          if (hostCheckFailed) {
+            // The host records a FAILED test itself (by = host): the task goes
+            // straight back to running with the command, the exit code and the
+            // output tail, and no tester round is opened.
+            const failed = model.failTest(transitioned.board, id, hostCheckEvidence(hostCheck), clock(), 'host')
+            if (failed.ok !== true) return failed
+            next = failed
+          } else if (candidate !== null) {
+            const recorded = recordCandidate(transitioned.board, id, candidate, clock(), { by: context.by })
+            if (recorded.ok !== true) return recorded
+            next = recorded
+          }
+          if (hostCheck !== null) {
+            const checkedTask = model.findTask(next.board, id)
+            if (checkedTask !== null && checkedTask !== undefined && checkedTask.test !== null && checkedTask.test !== undefined) {
+              checkedTask.test.hostCheck = hostCheck
+            }
+          }
+          return next
         },
         context,
       )
       if (result.ok !== true) return result
       if (action === 'requestChanges') {
         emitActivity(context, 'review-end', 'changes requested: ' + String(source.reasons || '').slice(0, 200), id)
+      }
+      if (action === 'approveReview' && hostCheckFailed) {
+        emitActivity(context, 'review-end', 'approved', id)
+        emitActivity(
+          null,
+          'host-check',
+          'mechanical verification failed (' + String(hostCheck.timedOut === true ? 'timed out' : 'exit ' + String(hostCheck.exitCode)) + '); back to running',
+          id,
+          'host',
+        )
+        // The candidate proved nothing: drop it so the next approval rebuilds
+        // from the (possibly moved) target head. A failure here is not fatal.
+        if (candidate !== null && candidateWorkflow) {
+          const discardStarted = Date.now()
+          await boundedAwait(
+            () => serialised(() => merger.discardCandidate(result.task, projectPath, { worktreeRoot: worktreeRootOf(read.board) })),
+            actionTimeoutMs,
+          )
+          if (Date.now() - discardStarted > actionTimeoutMs) actionTimeoutFailure('approveReview discard candidate', id, discardStarted)
+        }
+        // The worker owns the fix and may be idle, so it is told directly (the
+        // board carries the same evidence).
+        const ownerName =
+          result.task !== null &&
+          result.task !== undefined &&
+          result.task.assignee !== null &&
+          result.task.assignee !== undefined &&
+          typeof result.task.assignee.name === 'string' &&
+          result.task.assignee.name !== ''
+            ? result.task.assignee.name
+            : null
+        if (ownerName !== null) {
+          await notifyMember(
+            ownerName,
+            'Host mechanical verification FAILED for ' + id + ' (' + String(result.task.title) + ').\n\n' + hostCheckEvidence(hostCheck),
+          )
+        }
+        return ok({ task: result.task, events: result.events, hostCheck: hostCheck })
       }
       if (action === 'requestChanges' && result.task !== null && result.task !== undefined && result.task.status === 'running') {
         // Tell the worker what to fix and that it continues in its own worktree.
@@ -2269,11 +2349,17 @@ export function createApi(ctx, options) {
           result.candidate = candidate
           const tester = roleSlotNameOf('tester')
           if (tester !== null) {
-            await notifyMember(tester, testerBriefFor(result.task, projectPath, candidate, { godot: await godotInfoFor(projectPath, candidate.path) }))
+            await notifyMember(
+              tester,
+              testerBriefFor(result.task, projectPath, candidate, {
+                godot: await godotInfoFor(projectPath, candidate.path),
+                hostCheck: hostCheck,
+              }),
+            )
           }
         }
       }
-      return ok({ task: result.task, events: result.events, provisioned: result.provisioned, candidate: result.candidate })
+      return ok({ task: result.task, events: result.events, provisioned: result.provisioned, candidate: result.candidate, hostCheck: hostCheck })
     }
     if (action === 'passTest' || action === 'failTest') {
       const id = String(source.id === undefined ? '' : source.id)

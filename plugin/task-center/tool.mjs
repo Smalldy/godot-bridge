@@ -80,6 +80,28 @@ export function registerTaskTool(ctx, options) {
         description: 'Project-relative files this task will write; the scheduler locks them before dispatch.',
         items: { type: 'string' },
       },
+      verify: {
+        description:
+          'Host-run mechanical verification (create, update). The HOST executes the command in the test candidate right after the review is approved, before any tester is involved; a non-zero exit (or a timeout) records a failed test by the host and returns the task to running with the command, exit code and output tail. ' +
+          'Omitting it (or null) keeps the legacy flow where the tester runs the suite itself.',
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+              command: {
+                type: 'string',
+                description: 'The shell command to run, e.g. "npm run verify" (it may chain: "npm run verify && npm run e2e").',
+              },
+              timeoutMs: {
+                type: 'number',
+                description: 'Upper bound in milliseconds; defaults to 600000 (10 minutes).',
+              },
+            },
+          },
+          { type: 'null', description: 'Clear a previously declared verification.' },
+        ],
+      },
       paths: {
         type: 'array',
         description: 'Project-relative paths for lock, unlock and forceUnlock.',

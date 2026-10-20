@@ -15,8 +15,11 @@ import {
   gitFor,
   isRoleName,
   pickTarget,
+  hostCheckEvidence,
   reviewBriefFor,
   reworkBriefFor,
+  runHostCheck,
+  testerBriefFor,
   roleBriefFor,
   roleBriefSections,
   roleContextPreview,
@@ -25,7 +28,7 @@ import {
   serialiseWorktreeCreate,
   workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
-import { DEFAULT_ROLE_PROMPTS, ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
+import { DEFAULT_ROLE_PROMPTS, ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, VERIFY_TAIL_BYTES, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, createFakeGit, seedBoard, PROJECT } from './support/fixtures.mjs'
@@ -1716,6 +1719,146 @@ function roleTask(overrides) {
   check('the rework brief carries the reviewer reasons', rework.indexOf('rename the helper in scripts/a.gd:12') >= 0, rework.slice(0, 500))
   check('the rework brief keeps the same worktree and branch', rework.indexOf('SAME worktree') >= 0 && rework.indexOf('task/T-1-1') >= 0, rework.slice(0, 700))
   check('the rework brief asks for a resubmission of the next round', rework.indexOf('submit') >= 0 && rework.indexOf('round 3') >= 0, rework.slice(-400))
+}
+
+// ── the host's mechanical verification (task.verify) ───────────────────────
+function fakeHostSubprocess(result) {
+  const spec = result === undefined ? {} : result
+  const calls = []
+  const spawn = (request) => {
+    calls.push(request)
+    return {
+      stdin: undefined,
+      stdout: undefined,
+      stderr: undefined,
+      control: undefined,
+      collected: {
+        stdout: { readFrom: () => ({ text: spec.stdout === undefined ? '' : spec.stdout, nextOffset: 0, lossy: false }) },
+        stderr: { readFrom: () => ({ text: spec.stderr === undefined ? '' : spec.stderr, nextOffset: 0, lossy: false }) },
+      },
+      done:
+        spec.hang === true
+          ? new Promise((resolveDone) => {
+              if (request.signal !== undefined) request.signal.addEventListener('abort', () => resolveDone({ exitCode: null, signal: 'SIGTERM' }))
+            })
+          : Promise.resolve({ exitCode: spec.code === undefined ? 0 : spec.code, signal: null }),
+      terminate() {},
+      waitForExit() {
+        return Promise.resolve(true)
+      },
+    }
+  }
+  return { calls: calls, subprocess: { spawn: spawn } }
+}
+
+{
+  const passing = fakeHostSubprocess({ code: 0, stdout: 'ALL GOOD\n12 passing\n' })
+  const checked = await runHostCheck({ get: () => passing.subprocess }, { verify: { command: 'npm run verify' }, cwd: PROJECT })
+  check('the host check returns a record when the command passes', checked.ok === true && checked.check.exitCode === 0 && checked.check.timedOut === false, JSON.stringify(checked))
+  check(
+    'the host check records the command, a duration and a timestamp',
+    checked.check.command === 'npm run verify' && Number.isFinite(checked.check.durationMs) && typeof checked.check.at === 'string' && checked.check.at.indexOf('T') > 0,
+    JSON.stringify(checked.check),
+  )
+  check('the host check keeps the output tail', checked.check.tail.indexOf('ALL GOOD') >= 0 && checked.check.tail.indexOf('12 passing') >= 0, checked.check.tail)
+  check(
+    'the command runs as one shell line inside the candidate',
+    passing.calls.length === 1 && passing.calls[0].cwd === PROJECT && passing.calls[0].argv.indexOf('npm run verify') >= 0,
+    JSON.stringify(passing.calls[0] && passing.calls[0].argv),
+  )
+
+  const failing = fakeHostSubprocess({ code: 2, stdout: 'FAIL some.test.mjs', stderr: 'exit code 2' })
+  const failed = await runHostCheck({ get: () => failing.subprocess }, { verify: { command: 'npm run verify' }, cwd: PROJECT })
+  check('a non-zero exit is recorded, not thrown', failed.ok === true && failed.check.exitCode === 2 && failed.check.tail.indexOf('FAIL some.test.mjs') >= 0, JSON.stringify(failed))
+  const evidence = hostCheckEvidence(failed.check)
+  check(
+    'the failure evidence names the command, the exit code and the tail',
+    evidence.indexOf('npm run verify') >= 0 && evidence.indexOf('exit code: 2') >= 0 && evidence.indexOf('FAIL some.test.mjs') >= 0,
+    evidence,
+  )
+
+  const lines = []
+  for (let index = 0; index < 400; index += 1) lines.push('line ' + String(index) + ' ' + 'x'.repeat(40))
+  const tailed = await runHostCheck({ get: () => fakeHostSubprocess({ code: 0, stdout: lines.join('\n') }).subprocess }, { verify: { command: 'npm run verify' }, cwd: PROJECT })
+  check(
+    'the recorded tail is bounded to 4KB',
+    Buffer.byteLength(tailed.check.tail, 'utf8') <= VERIFY_TAIL_BYTES && tailed.check.tail.length > 0,
+    String(Buffer.byteLength(tailed.check.tail, 'utf8')),
+  )
+  check('and it keeps the END of the output', tailed.check.tail.indexOf('line 399') >= 0 && tailed.check.tail.indexOf('line 0 ') < 0, tailed.check.tail.slice(0, 120))
+
+  const timed = await runHostCheck({ get: () => fakeHostSubprocess({ hang: true }).subprocess }, { verify: { command: 'npm run verify', timeoutMs: 30 }, cwd: PROJECT })
+  check('a command that exceeds its bound is a timed-out result', timed.ok === true && timed.check.timedOut === true && timed.check.exitCode === null, JSON.stringify(timed))
+  const timeoutEvidence = hostCheckEvidence(timed.check)
+  check('the timeout evidence says so', timeoutEvidence.indexOf('timed out') >= 0 && timeoutEvidence.indexOf('npm run verify') >= 0, timeoutEvidence)
+
+  check(
+    'without a subprocess service the host check refuses readably',
+    (await runHostCheck({ get: () => undefined }, { verify: { command: 'npm run verify' }, cwd: PROJECT })).code === 'no-subprocess-service',
+  )
+  check(
+    'without a candidate the host check refuses readably',
+    (await runHostCheck({ get: () => fakeHostSubprocess({}).subprocess }, { verify: { command: 'npm run verify' }, cwd: '' })).code === 'no-candidate',
+  )
+  check('without a declaration there is nothing to run', (await runHostCheck({ get: () => undefined }, { verify: null, cwd: PROJECT })).code === 'no-verify')
+}
+
+// ── the briefs carry the host check as a floor, never as the tester's verdict ─
+{
+  const passing = { command: 'npm run verify', exitCode: 0, timedOut: false, durationMs: 12000, tail: 'ALL GOOD\n12 passing', at: '2026-10-21T00:00:00.000Z' }
+  const task = roleTask({
+    status: 'testing',
+    merge: {
+      status: 'open',
+      base: 'base-sha',
+      target: 'feat/task-center-v2',
+      head: 'head-sha',
+      mergeCommit: 'candidate-sha',
+      declaredFiles: ['scripts/a.gd'],
+      actualFiles: ['scripts/a.gd'],
+      tests: 'npm run verify',
+      reviewer: null,
+      conflict: null,
+      output: null,
+      at: null,
+    },
+    test: { status: 'pending', by: null, at: null, evidence: null, attempt: 1, hostCheck: passing },
+    verify: { command: 'npm run verify' },
+  })
+  const candidate = { path: join(PROJECT, '.worktrees', 'test-T-1'), branch: 'test/T-1', base: 'target-sha', head: 'candidate-sha' }
+  const brief = testerBriefFor(task, PROJECT, candidate, { hostCheck: passing })
+  check(
+    'the tester brief carries the host check and its output',
+    brief.indexOf('Host mechanical check') >= 0 && brief.indexOf('npm run verify') >= 0 && brief.indexOf('ALL GOOD') >= 0,
+    brief.slice(0, 1400),
+  )
+  check('the tester brief says the host check is NOT the verdict', brief.indexOf('BASELINE SUITE result, NOT your verdict') >= 0, brief.slice(0, 1800))
+  check(
+    'the tester brief demands independent probes with two-part evidence',
+    brief.indexOf('【宿主基线】') >= 0 && brief.indexOf('【我的探针】') >= 0 && brief.indexOf('your own probes') >= 0,
+    brief.slice(0, 2000),
+  )
+  check(
+    'the tester brief allows a justified re-run and other suites',
+    brief.indexOf('Re-running the same command is allowed') >= 0 && brief.indexOf('floor, not a ceiling') >= 0,
+    brief.slice(0, 2200),
+  )
+
+  const rebuilt = testerBriefFor(roleTask({ status: 'testing', verify: { command: 'npm run verify' } }), PROJECT, candidate, {})
+  check(
+    'a rebuilt candidate with no host record asks the tester to run the command',
+    rebuilt.indexOf('the host has no check for this round') >= 0 && rebuilt.indexOf('run that command yourself') >= 0,
+    rebuilt.slice(0, 1000),
+  )
+
+  const reviewWith = reviewBriefFor(task, PROJECT)
+  check(
+    'the review brief carries the host mechanical evidence',
+    reviewWith.indexOf('Mechanical evidence collected by the HOST') >= 0 && reviewWith.indexOf('npm run verify') >= 0 && reviewWith.indexOf('12 passing') >= 0,
+    reviewWith.slice(0, 1800),
+  )
+  const reviewWithout = reviewBriefFor(roleTask({ test: null }), PROJECT)
+  check('the review brief says so when no host check has run', reviewWithout.indexOf('No mechanical verification has run') >= 0, reviewWithout.slice(0, 1400))
 }
 
 // ── review timeout policy: remind once, then block for triage ──────────────

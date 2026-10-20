@@ -39,7 +39,11 @@ import {
   TASK_LEASE_MS,
   TEST_REMINDER_MS,
   TEST_TIMEOUT_MS,
+  VERIFY_COLLECT_BYTES,
+  VERIFY_DEFAULT_TIMEOUT_MS,
+  VERIFY_TAIL_BYTES,
   defaultRoleConfig,
+  normaliseVerify,
   profileForKind,
   renderRoleTemplate,
   roleTemplateVariables,
@@ -1255,6 +1259,175 @@ export function roleContextPreview(config, kind, options) {
  * task asked for, the tree under review, the worker's evidence, the project
  * conventions and a checklist — no full test run is expected at this stage.
  */
+// ── mechanical verification (the host's own check) ──────────────────────────
+
+/** The last `maxBytes` of `text`, cut on a line boundary when possible. */
+function verifyTailOf(text, maxBytes) {
+  const trimmed = String(text === undefined || text === null ? '' : text).replace(/[ \t]+$/gm, '').replace(/\s+$/, '')
+  if (trimmed === '') return ''
+  if (Buffer.byteLength(trimmed, 'utf8') <= maxBytes) return trimmed
+  const lines = trimmed.split('\n')
+  const kept = []
+  let used = 0
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const size = Buffer.byteLength(lines[index], 'utf8') + 1
+    if (kept.length > 0 && used + size > maxBytes) break
+    kept.unshift(lines[index])
+    used += size
+    if (used >= maxBytes) break
+  }
+  const text_ = kept.join('\n')
+  if (text_ !== '' && Buffer.byteLength(text_, 'utf8') <= maxBytes) return text_
+  // A single line longer than the budget: keep its LAST bytes (the failure line).
+  const buffer = Buffer.from(trimmed, 'utf8')
+  let start = Math.max(0, buffer.length - maxBytes)
+  while (start < buffer.length && (buffer[start] & 0xc0) === 0x80) start += 1
+  return buffer.subarray(start).toString('utf8')
+}
+
+/** Read whatever the collected streams hold; a missing collector loses output,
+ * never the exit code. */
+function readCollected(handle) {
+  const out = { stdout: '', stderr: '' }
+  try {
+    if (handle !== null && handle !== undefined && handle.collected) {
+      if (handle.collected.stdout && typeof handle.collected.stdout.readFrom === 'function') out.stdout = handle.collected.stdout.readFrom(0).text || ''
+      if (handle.collected.stderr && typeof handle.collected.stderr.readFrom === 'function') out.stderr = handle.collected.stderr.readFrom(0).text || ''
+    }
+  } catch (error) {
+    // Output is diagnostic only; the exit code is the verdict.
+  }
+  return out
+}
+
+/**
+ * Run one task's declared mechanical verification inside its test candidate.
+ *
+ * This is a HOST action, not a model decision: the command is a shell string
+ * (it may chain, e.g. "npm run verify && npm run e2e") executed through the
+ * unconfined subprocess service, exactly as declared. The result is recorded on
+ * the task (test.hostCheck) so neither the tester nor the reviewer has to spend
+ * a round re-running it.
+ *
+ * @returns { ok: true, check } with the record, or { ok: false, code, message }
+ *   when the check could not run at all (no subprocess service, no candidate).
+ */
+export async function runHostCheck(ctx, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const verify = normaliseVerify(opts.verify)
+  const cwd = typeof opts.cwd === 'string' && opts.cwd.length > 0 ? opts.cwd : ''
+  const clock = typeof opts.now === 'function' ? opts.now : Date.now
+  if (verify === null) return { ok: false, code: 'no-verify', message: 'this task declares no mechanical verification to run' }
+  if (cwd === '') return { ok: false, code: 'no-candidate', message: 'the mechanical verification needs the test candidate checkout to run in' }
+  let subprocess = null
+  try {
+    subprocess = ctx.get('subprocess')
+  } catch (error) {
+    subprocess = null
+  }
+  if (subprocess === undefined || subprocess === null || typeof subprocess.spawn !== 'function') {
+    return {
+      ok: false,
+      code: 'no-subprocess-service',
+      message: 'the task declares verify: "' + verify.command + '", but this profile has no subprocess service to run it with',
+    }
+  }
+  const timeoutMs = Number.isFinite(verify.timeoutMs) ? Math.max(1, Math.floor(verify.timeoutMs)) : VERIFY_DEFAULT_TIMEOUT_MS
+  // The setting is a shell command; npm on Windows is a .cmd shim, so one
+  // explicit shell owns the line — never an implicit one.
+  const argv = process.platform === 'win32' ? ['cmd.exe', '/d', '/s', '/c', verify.command] : ['/bin/sh', '-c', verify.command]
+  // The bound is OUR timer, not AbortSignal.timeout(): that helper's timer is
+  // unref'd, so a test (or an idle host) could drain the event loop before it
+  // fires and the await would never settle. One ref'd timer aborts the child
+  // and is always cleared.
+  const controller = typeof AbortController === 'function' ? new AbortController() : null
+  let timer = null
+  if (controller !== null) {
+    timer = setTimeout(function () {
+      try {
+        controller.abort()
+      } catch (error) {}
+    }, timeoutMs)
+  }
+  const signal = controller === null ? undefined : controller.signal
+  const startedAt = clock()
+  let handle = null
+  let outcome = null
+  let failure = null
+  try {
+    try {
+      handle = subprocess.spawn({
+        argv: argv,
+        cwd: cwd,
+        stdio: {
+          stdin: 'ignore',
+          stdout: { collect: { maxBytes: VERIFY_COLLECT_BYTES } },
+          stderr: { collect: { maxBytes: VERIFY_COLLECT_BYTES } },
+        },
+        graceMs: Math.min(120000, Math.max(1, timeoutMs)),
+        ...(signal === undefined ? {} : { signal: signal }),
+      })
+    } catch (error) {
+      handle = null
+      failure = String((error && error.message) || error)
+    }
+    if (handle !== null) {
+      try {
+        outcome = await handle.done
+      } catch (error) {
+        failure = String((error && error.message) || error)
+      }
+    }
+  } finally {
+    if (timer !== null) clearTimeout(timer)
+  }
+  const durationMs = Math.max(0, clock() - startedAt)
+  const timedOut = controller !== null && controller.signal.aborted === true
+  const output = readCollected(handle)
+  const stdout = typeof output.stdout === 'string' ? output.stdout : ''
+  const stderr = typeof output.stderr === 'string' ? output.stderr : ''
+  const body = stderr === '' ? stdout : stdout === '' ? stderr : stdout + '\n' + stderr
+  const tailText = failure === null ? body : body === '' ? failure : body + '\n' + failure
+  const exitCode = outcome !== null && outcome !== undefined && Number.isFinite(outcome.exitCode) ? Math.floor(outcome.exitCode) : null
+  return {
+    ok: true,
+    check: {
+      command: verify.command,
+      exitCode: exitCode,
+      timedOut: timedOut,
+      durationMs: durationMs,
+      tail: verifyTailOf(tailText, VERIFY_TAIL_BYTES),
+      at: new Date(clock()).toISOString(),
+    },
+  }
+}
+
+/** The evidence a failed host check records on the task. */
+export function hostCheckEvidence(check) {
+  const lines = []
+  lines.push('Mechanical verification failed on the host (not a tester verdict).')
+  lines.push('  command:  ' + String(check.command))
+  lines.push('  exit code: ' + String(check.exitCode === null ? 'none' : check.exitCode) + (check.timedOut === true ? ' (timed out)' : ''))
+  if (Number.isFinite(check.durationMs)) lines.push('  duration:  ' + String(Math.round(check.durationMs / 1000)) + 's')
+  if (typeof check.tail === 'string' && check.tail !== '') lines.push('  output tail:', check.tail)
+  lines.push('Fix it in the SAME worktree, then submit again.')
+  return lines.join('\n')
+}
+
+/** A readable summary of one host check, for the tester/reviewer briefs. */
+function hostCheckSummaryLines(check) {
+  const lines = []
+  lines.push('  command:   ' + String(check.command))
+  lines.push('  exit code: ' + String(check.exitCode === null ? 'none' : check.exitCode) + (check.timedOut === true ? ' (timed out)' : ''))
+  if (Number.isFinite(check.durationMs)) lines.push('  duration:  ' + String(Math.round(check.durationMs / 1000)) + 's')
+  if (typeof check.at === 'string') lines.push('  ran at:    ' + check.at)
+  if (typeof check.tail === 'string' && check.tail !== '') {
+    lines.push('  output tail:')
+    for (const line of check.tail.split('\n')) lines.push('    ' + line)
+  }
+  return lines
+}
+
 export function reviewBriefFor(task, projectPath) {
   const review = task.review === null || task.review === undefined ? {} : task.review
   const merge = task.merge === null || task.merge === undefined ? {} : task.merge
@@ -1282,6 +1455,21 @@ export function reviewBriefFor(task, projectPath) {
     lines.push('Every changed file was declared.')
   }
   lines.push('', 'Worker self-test evidence:', typeof task.evidence === 'string' && task.evidence !== '' ? task.evidence : '(none recorded)')
+  // The host already recorded the mechanical side of the checklist (the diff's
+  // file lists, and the declared command's result on the last approved round).
+  // The reviewer judges; it must not spend the round re-running the suite.
+  const hostCheck = task.test !== null && task.test !== undefined && task.test.hostCheck !== null && task.test.hostCheck !== undefined ? task.test.hostCheck : null
+  lines.push(
+    '',
+    'Mechanical evidence collected by the HOST (do NOT re-run the suite to check this list):',
+    '- Declared vs actual files above are the host\'s own git record of this diff.',
+  )
+  if (hostCheck === null) {
+    lines.push('- No mechanical verification has run for this task yet; the test stage runs the declared command in the candidate.')
+  } else {
+    lines.push('- The last mechanical verification run by the host for this task:')
+    lines.push(...hostCheckSummaryLines(hostCheck))
+  }
   if (typeof review.reasons === 'string' && review.reasons !== '') lines.push('', 'Previous review reasons:', review.reasons)
   lines.push(
     '',
@@ -1331,6 +1519,12 @@ export function testerBriefFor(task, projectPath, candidate, options) {
   const opts = options === undefined || options === null ? {} : options
   const test = task.test === null || task.test === undefined ? {} : task.test
   const godot = opts.godot === undefined || opts.godot === null ? null : opts.godot
+  const hostCheck =
+    opts.hostCheck !== undefined && opts.hostCheck !== null
+      ? opts.hostCheck
+      : test.hostCheck !== null && test.hostCheck !== undefined
+        ? test.hostCheck
+        : null
   const lines = []
   lines.push('Independent TEST round ' + String(Number.isFinite(test.attempt) ? test.attempt : 1) + ' for ' + String(task.id) + ': ' + String(task.title))
   if (typeof projectPath === 'string' && projectPath.length > 0) lines.push('Project: ' + projectPath)
@@ -1342,6 +1536,22 @@ export function testerBriefFor(task, projectPath, candidate, options) {
   if (typeof task.spec === 'string' && task.spec !== '') lines.push('', 'What it involves:', task.spec)
   if (typeof task.acceptance === 'string' && task.acceptance !== '') lines.push('', 'Acceptance:', task.acceptance)
   lines.push('', 'Worker self-test evidence (do NOT just repeat it — test independently):', typeof task.evidence === 'string' && task.evidence !== '' ? task.evidence : '(none recorded)')
+  if (hostCheck !== null) {
+    lines.push(
+      '',
+      'Host mechanical check (the host ALREADY ran this in the candidate — see task.test.hostCheck):',
+      ...hostCheckSummaryLines(hostCheck),
+      '',
+      'What this means for your verdict:',
+      '1) The host check is the BASELINE SUITE result, NOT your verdict. It proves only that the declared command exits 0 in this candidate.',
+      '2) You MUST still design and run your own probes for what the suite does not encode: edge cases, actual behaviour, and conformance to the acceptance criteria. Your evidence must separate 【宿主基线】 (what the host ran and returned) from 【我的探针】 (what you ran, what came back, and why it proves the criterion).',
+      '3) Re-running the same command is allowed when you suspect flakiness or an environment difference (say why), and you may run any other suite. The host run is a floor, not a ceiling.',
+    )
+  } else if (normaliseVerify(task.verify) !== null) {
+    // A retest after the target moved rebuilds the candidate; the host has no
+    // check for the new tree, so the tester runs the declared command this round.
+    lines.push('', 'This task declares verify: "' + String(normaliseVerify(task.verify).command) + '" but the host has no check for this round (the candidate was rebuilt); run that command yourself before judging.')
+  }
   lines.push(
     '',
     'Test plan / runbook:',

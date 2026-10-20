@@ -418,6 +418,7 @@ function createSubmitRig(options) {
     get(key) {
       if (key === 'agents') return agents
       if (key === 'agentTeams') return team
+      if (key === 'subprocess') return opts.subprocess
       return undefined
     },
   }
@@ -2207,6 +2208,7 @@ function createTesterRig(options) {
     roles: true,
     git: fake.git,
     merger: merger,
+    subprocess: opts.subprocess,
     autoMerge: opts.autoMerge === true,
     activity: opts.activity,
     actionTimeoutMs: opts.actionTimeoutMs,
@@ -2287,6 +2289,185 @@ function acceptingTask(overrides) {
     snapshot.tasks[0].candidate !== null && snapshot.tasks[0].candidate.path === candidatePath && snapshot.tasks[0].candidate.branch === 'test/T-1' && snapshot.tasks[0].candidate.head === 'candidate-sha',
     JSON.stringify(snapshot.tasks[0].candidate),
   )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── the host's mechanical verification (task.verify) ────────────────────────
+function fakeHostSubprocess(result) {
+  const spec = result === undefined ? {} : result
+  const calls = []
+  const spawn = (request) => {
+    calls.push(request)
+    return {
+      stdin: undefined,
+      stdout: undefined,
+      stderr: undefined,
+      control: undefined,
+      collected: {
+        stdout: { readFrom: () => ({ text: spec.stdout === undefined ? '' : spec.stdout, nextOffset: 0, lossy: false }) },
+        stderr: { readFrom: () => ({ text: spec.stderr === undefined ? '' : spec.stderr, nextOffset: 0, lossy: false }) },
+      },
+      done:
+        spec.hang === true
+          ? new Promise((resolveDone) => {
+              if (request.signal !== undefined) request.signal.addEventListener('abort', () => resolveDone({ exitCode: null, signal: 'SIGTERM' }))
+            })
+          : Promise.resolve({ exitCode: spec.code === undefined ? 0 : spec.code, signal: null }),
+      terminate() {},
+      waitForExit() {
+        return Promise.resolve(true)
+      },
+    }
+  }
+  return { calls: calls, subprocess: { spawn: spawn } }
+}
+
+{
+  // A red declared command is the HOST's verdict: the task goes back to running
+  // with the command, the exit code and the tail — and no tester round opens.
+  const proc = fakeHostSubprocess({ code: 2, stdout: 'FAIL candidate.test.mjs', stderr: 'exit code 2' })
+  const ctx = createTesterRig({ subprocess: proc.subprocess })
+  const rig = ctx.rig
+  const fake = ctx.fake
+  seedBoard(
+    rig.fs,
+    PROJECT,
+    JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask({ verify: { command: 'npm run verify' } })] }),
+  )
+  const surface = install(rig)
+  const approved = await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  const payload = approved.json()
+  check('a failed host check returns the task to running', payload.ok === true && payload.task.status === 'running', approved.text)
+  check('the host records a FAILED test itself', payload.task.test.status === 'failed' && payload.task.test.by === 'host', JSON.stringify(payload.task.test))
+  check(
+    'the host check record carries command, exit code, duration and tail',
+    payload.task.test.hostCheck.command === 'npm run verify' &&
+      payload.task.test.hostCheck.exitCode === 2 &&
+      payload.task.test.hostCheck.timedOut === false &&
+      Number.isFinite(payload.task.test.hostCheck.durationMs) &&
+      payload.task.test.hostCheck.tail.indexOf('FAIL candidate.test.mjs') >= 0 &&
+      typeof payload.task.test.hostCheck.at === 'string',
+    JSON.stringify(payload.task.test.hostCheck),
+  )
+  check(
+    'the evidence names the command, the exit code and the tail',
+    payload.task.test.evidence.indexOf('npm run verify') >= 0 && payload.task.test.evidence.indexOf('exit code: 2') >= 0 && payload.task.test.evidence.indexOf('FAIL candidate.test.mjs') >= 0,
+    payload.task.test.evidence,
+  )
+  check(
+    'the host check consumed no tester round',
+    ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'tester-1').length === 0,
+    JSON.stringify(ctx.team.calls.map((call) => call.kind + ':' + call.target)),
+  )
+  check('the task never enters the merge queue', payload.task.merge.mergeCommit === null && payload.task.merge.status === 'open', JSON.stringify(payload.task.merge))
+  {
+    const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
+    const added = fake.calls.findIndex((call) => call.args.join(' ') === 'worktree add -b test/T-1 ' + candidatePath + ' target-sha')
+    const removedAfter = fake.calls.findIndex((call, index) => index > added && call.args.join(' ') === 'worktree remove --force ' + candidatePath)
+    check('the rejected candidate is discarded after the failure', added >= 0 && removedAfter > added, JSON.stringify(fake.calls.map((call) => call.args.join(' '))))
+  }
+  const notices = ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'fixer')
+  check(
+    'the worker is told about the failed mechanical check',
+    notices.length === 1 && notices[0].text.indexOf('npm run verify') >= 0 && notices[0].text.indexOf('exit code: 2') >= 0,
+    JSON.stringify(notices.map((call) => call.text.slice(0, 120))),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // A green declared command opens the test round, records itself, and the
+  // tester brief treats it as the FLOOR (not the tester's verdict).
+  const proc = fakeHostSubprocess({ code: 0, stdout: 'ALL GOOD\n12 passing' })
+  const ctx = createTesterRig({ subprocess: proc.subprocess })
+  const rig = ctx.rig
+  seedBoard(
+    rig.fs,
+    PROJECT,
+    JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask({ verify: { command: 'npm run verify' } })] }),
+  )
+  const surface = install(rig)
+  const approved = await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  const payload = approved.json()
+  check('a green host check enters testing', payload.ok === true && payload.task.status === 'testing' && payload.task.test.status === 'pending', approved.text)
+  check(
+    'the host check is recorded on the task with its tail',
+    payload.task.test.hostCheck.exitCode === 0 &&
+      payload.task.test.hostCheck.timedOut === false &&
+      payload.task.test.hostCheck.tail.indexOf('ALL GOOD') >= 0 &&
+      typeof payload.task.test.hostCheck.at === 'string' &&
+      Number.isFinite(payload.task.test.hostCheck.durationMs),
+    JSON.stringify(payload.task.test.hostCheck),
+  )
+  check(
+    'the command ran once, in the candidate, through the shell',
+    proc.calls.length === 1 &&
+      proc.calls[0].cwd === join(PROJECT, '.worktrees', 'test-T-1') &&
+      proc.calls[0].argv.indexOf('npm run verify') >= 0,
+    JSON.stringify(proc.calls[0] && { argv: proc.calls[0].argv, cwd: proc.calls[0].cwd }),
+  )
+  const sent = ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'tester-1')
+  check('the tester is told once', sent.length === 1, JSON.stringify(ctx.team.calls.map((call) => call.kind + ':' + call.target)))
+  const brief = sent.length === 0 ? '' : sent[0].text
+  check(
+    'the tester brief carries the host check summary',
+    brief.indexOf('Host mechanical check') >= 0 && brief.indexOf('npm run verify') >= 0 && brief.indexOf('ALL GOOD') >= 0,
+    brief.slice(0, 1600),
+  )
+  check('the tester brief says the host check is not the verdict', brief.indexOf('BASELINE SUITE result, NOT your verdict') >= 0, brief.slice(0, 1800))
+  check(
+    'the tester brief demands independent probes with two-part evidence',
+    brief.indexOf('【宿主基线】') >= 0 && brief.indexOf('【我的探针】') >= 0 && brief.indexOf('your own probes') >= 0,
+    brief.slice(0, 2000),
+  )
+  check(
+    'the tester brief allows a justified re-run and other suites',
+    brief.indexOf('Re-running the same command is allowed') >= 0 && brief.indexOf('floor, not a ceiling') >= 0,
+    brief.slice(0, 2200),
+  )
+  {
+    const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
+    const added = ctx.fake.calls.findIndex((call) => call.args.join(' ') === 'worktree add -b test/T-1 ' + candidatePath + ' target-sha')
+    const removedAfter = ctx.fake.calls.findIndex((call, index) => index > added && call.args.join(' ') === 'worktree remove --force ' + candidatePath)
+    check('the accepted candidate is kept for the tester', added >= 0 && removedAfter < 0, JSON.stringify(ctx.fake.calls.map((call) => call.args.join(' '))))
+  }
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // No declaration: the historical flow, and the host never starts a process.
+  const proc = fakeHostSubprocess({ code: 2 })
+  const ctx = createTesterRig({ subprocess: proc.subprocess })
+  const rig = ctx.rig
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask()] }))
+  const surface = install(rig)
+  const approved = await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  const payload = approved.json()
+  check('a task without verify keeps the old flow', payload.ok === true && payload.task.status === 'testing', approved.text)
+  check('and records no host check', payload.task.test.hostCheck === null, JSON.stringify(payload.task.test.hostCheck))
+  check('and runs no command', proc.calls.length === 0, JSON.stringify(proc.calls.length))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // The declaration is an ordinary task field on both create and update.
+  const rig = createSubmitRig({})
+  const surface = install(rig)
+  const created = await postTo(surface, { action: 'create', project: PROJECT, title: 'verify card', verify: { command: 'npm run verify && npm run e2e', timeoutMs: 120000 } })
+  const payload = created.json()
+  check(
+    'create carries the verify declaration',
+    payload.ok === true && payload.task.verify.command === 'npm run verify && npm run e2e' && payload.task.verify.timeoutMs === 120000,
+    created.text,
+  )
+  const updated = await postTo(surface, { action: 'update', project: PROJECT, id: payload.task.id, verify: null })
+  check('update clears the declaration', updated.json().ok === true && updated.json().task.verify === null, updated.text)
+  const typo = await postTo(surface, { action: 'create', project: PROJECT, title: 'bad verify', verify: { cmd: 'npm test' } })
+  check('a malformed declaration is refused instead of silently dropped', typo.json().ok === false && typo.json().code === 'invalid-verify', typo.text)
   surface.dispose()
   rig.scheduler.dispose()
 }
