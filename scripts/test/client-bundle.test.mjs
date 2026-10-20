@@ -998,6 +998,7 @@ await flush()
       findAll(editor, (node) => node.props && node.props['data-roles-pane'] === 'injected').length === 1 &&
       findAll(editor, (node) => node.props && node.props['data-role-anchors'] === 'true').length === 2 &&
       findAll(editor, (node) => node.props && node.props['data-role-anchors'] === 'true').every((row) => findAll(row, (node) => node.props && node.props['data-role-anchor'] !== undefined).map((node) => node.props['data-role-anchor']).join(',') === 'template,task,fixed,skills') &&
+      findAll(editor, (node) => node.props && node.props['data-roles-pane'] !== undefined).every((pane) => pane.props.children[0] && pane.props.children[0].props && pane.props.children[0].props['data-role-anchors'] === 'true' && pane.props.children[1] && pane.props.children[1].props && pane.props.children[1].props['data-role-prompt'] !== undefined) &&
       findAll(editor, (node) => node.props && node.props['data-role-section-source'] !== undefined).length >= 1,
   )
   check(
@@ -1156,7 +1157,7 @@ await flush()
   )
   check(
     'CSS gives the 45/55 panes, the action bar and the create fold a layout',
-    css.indexOf('.gbt-rolespanes') >= 0 && css.indexOf('45fr 55fr') >= 0 && css.indexOf('.gbt-rolesactions') >= 0 && css.indexOf('position:sticky') >= 0 && css.indexOf('.gbt-rolescroll') >= 0 && css.indexOf('mask-image') >= 0 && css.indexOf('.gbt-createblank') >= 0 && css.indexOf('.gbt-editor-select') >= 0,
+    css.indexOf('.gbt-rolesview .gbt-footnote') >= 0 && css.indexOf('.gbt-rolespanes') >= 0 && css.indexOf('45fr 55fr') >= 0 && css.indexOf('.gbt-rolesactions') >= 0 && css.indexOf('position:sticky') >= 0 && css.indexOf('.gbt-rolescroll') >= 0 && css.indexOf('mask-image') >= 0 && css.indexOf('.gbt-createblank') >= 0 && css.indexOf('.gbt-editor-select') >= 0,
     css.slice(0, 160),
   )
   const editor = findAll(rolesTree, (node) => node.props && node.props['data-editor'] === 'true')[0]
@@ -1229,6 +1230,12 @@ await flush()
     'the right column names a real task as the source',
     source !== undefined && source.props['data-role-task-source'] === 'real' && textOf(source).indexOf('T-1 · Build damage system') >= 0,
     source && textOf(source),
+  )
+  const taskRow = findAll(injectedCol, (node) => node.props && node.props['data-role-taskrow'] === 'true')[0]
+  check(
+    'the right pane top row combines the task select and the real/sample badge',
+    taskRow !== undefined && findAll(taskRow, (node) => node.type === 'select' && node.props['data-field'] === 'preview-task').length === 1 && findAll(taskRow, (node) => node.props && node.props['data-role-task-source'] !== undefined).length === 1,
+    taskRow && JSON.stringify(taskRow.props),
   )
   const previewText = findAll(injectedCol, (node) => node.props && node.props['data-role-preview-text'] === 'true')[0]
   check(

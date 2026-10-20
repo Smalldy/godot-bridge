@@ -936,6 +936,7 @@ window.__ModuleLoader__.load({
 '.gbt-seg[aria-selected="true"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-primary);font-weight:600;border-bottom-color:var(--dsw-alias-state-business-primary,#4f7cff)}',
 '.gbt-editor-select{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 '.gbt-editor-select .gbt-input{width:auto;min-width:170px;height:30px}',
+'.gbt-rolesview .gbt-subhead,.gbt-rolesview .gbt-footnote,.gbt-rolesview .gbt-pill{font-size:11px}',
 '.gbt-rolesheader{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}',
 '.gbt-rolesheader-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
 '.gbt-rolespanes{display:grid;grid-template-columns:45fr 55fr;gap:10px;align-items:start}',
@@ -944,6 +945,7 @@ window.__ModuleLoader__.load({
 '.gbt-rolescroll{max-height:56vh;overflow:auto;padding:2px 2px 18px;mask-image:linear-gradient(to bottom,#000 88%,transparent);-webkit-mask-image:linear-gradient(to bottom,#000 88%,transparent)}',
 '.gbt-rolesactions{position:sticky;bottom:0;display:flex;gap:8px;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;padding:8px 0 2px;border-top:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1)}',
 '.gbt-rolesactions-left,.gbt-rolesactions-right{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}',
+'.gbt-prompttaskrow{display:flex;gap:6px;align-items:center;min-width:0;flex-wrap:wrap}',
 '.gbt-roleanchors{display:flex;gap:6px;flex-wrap:wrap}',
 '.gbt-roleanchor{font-size:11px;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-3);border-radius:999px;padding:1px 8px}',
 '.gbt-rolefields{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}',
@@ -2464,15 +2466,16 @@ window.__ModuleLoader__.load({
 					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'injected' },
 						h('div', { className: 'gbt-prompthead' },
 							h('div', { className: 'gbt-subhead' }, t('rolePreviewInjectedTitle')),
-							previewTask === null
-								? null
-								: h('span', { className: 'gbt-pill', 'data-role-task-source': sample ? 'sample' : 'real', 'data-task-id': String(previewTask.id) }, sample ? t('rolePreviewSampleTask') : String(previewTask.id) + ' · ' + String(previewTask.title))),
-						h('label', { className: 'gbt-editor-select' }, t('rolePreviewTaskPick'),
-							h('select', { key: 'preview-task:' + controlKey, className: 'gbt-input', 'data-field': 'preview-task', 'data-task-id': taskValue, defaultValue: taskValue, onChange: function (event) { choosePreviewTask(event !== null && event !== undefined && event.target !== undefined ? event.target.value : '') } },
-								h('option', { key: 'auto', value: '' }, t('rolePreviewTaskAuto')),
-								previewTasks.map(function (task) {
-									return h('option', { key: String(task.id), value: String(task.id) }, String(task.id) + ' · ' + String(task.title))
-								}))),
+							h('div', { className: 'gbt-prompttaskrow', 'data-role-taskrow': 'true' },
+								h('label', { className: 'gbt-editor-select' }, t('rolePreviewTaskPick'),
+									h('select', { key: 'preview-task:' + controlKey, className: 'gbt-input', 'data-field': 'preview-task', 'data-task-id': taskValue, defaultValue: taskValue, onChange: function (event) { choosePreviewTask(event !== null && event !== undefined && event.target !== undefined ? event.target.value : '') } },
+										h('option', { key: 'auto', value: '' }, t('rolePreviewTaskAuto')),
+										previewTasks.map(function (task) {
+											return h('option', { key: String(task.id), value: String(task.id) }, String(task.id) + ' · ' + String(task.title))
+										}))),
+								previewTask === null
+									? null
+									: h('span', { className: 'gbt-pill', 'data-role-task-source': sample ? 'sample' : 'real', 'data-task-id': String(previewTask.id) }, sample ? t('rolePreviewSampleTask') : String(previewTask.id) + ' · ' + String(previewTask.title)))),
 						preview === null
 							? h('div', { className: 'gbt-footnote', 'data-role-preview-state': roleEditorState.previewPending === true ? 'loading' : 'unavailable' },
 									roleEditorState.previewError !== null && roleEditorState.previewError !== undefined && typeof roleEditorState.previewError.code === 'string'
@@ -2540,8 +2543,8 @@ window.__ModuleLoader__.load({
 					h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }),
 				)
 				const leftPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'raw' },
-					editablePrompt ? rawColumn() : builtinDefaultColumn(),
 					anchorsRow(),
+					editablePrompt ? rawColumn() : builtinDefaultColumn(),
 					h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow, instancesRow),
 					blankCreate)
 				const rightPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'injected' }, anchorsRow(), injectedColumn())
