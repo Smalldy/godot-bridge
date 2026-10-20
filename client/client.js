@@ -456,6 +456,7 @@ window.__ModuleLoader__.load({
 				rolePreviewMissing: '宿主还没有返回注入预览。',
 				rolePreviewFailed: '注入预览读取失败',
 				rolePreviewGroupTemplate: '你的原文',
+				rolePreviewGroupBuiltin: '内置默认提示词',
 				rolePreviewGroupTask: '任务数据',
 				rolePreviewGroupFixed: '宿主固定',
 				rolePreviewBuiltinReadonly: '默认角色是宿主内置的，不能在原处修改。',
@@ -788,6 +789,7 @@ window.__ModuleLoader__.load({
 				rolePreviewMissing: 'The host has not returned an injected preview yet.',
 				rolePreviewFailed: 'Could not read the injected preview',
 				rolePreviewGroupTemplate: 'Your own text',
+				rolePreviewGroupBuiltin: 'Built-in default prompt',
 				rolePreviewGroupTask: 'Task data',
 				rolePreviewGroupFixed: 'Host-fixed',
 				rolePreviewBuiltinReadonly: 'A default role is built into the host and cannot be changed in place.',
@@ -929,6 +931,8 @@ window.__ModuleLoader__.load({
 			'.gbt-promptsection{display:flex;flex-direction:column;gap:2px;min-width:0}',
 			'.gbt-sectlabel{align-self:flex-start;font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-4);border-radius:999px;padding:0 6px;margin:4px 0 0}',
 			'.gbt-promptpre{margin:0 0 4px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;line-height:1.55;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-builtinprompt{max-height:320px;overflow:auto;border:0.5px solid var(--dsw-alias-border-l4);border-radius:6px;padding:8px;background:var(--dsw-alias-bg-layer-2);margin:0}',
+			'.gbt-promptactions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
 			'@media (max-width:720px){.gbt-promptcols{grid-template-columns:1fr}}',
 '.gbt-editorarea{min-height:160px;font-family:var(--dsw-font-mono,monospace);font-size:11px;line-height:1.55;height:auto}',
 '.gbt-editorskills{display:flex;gap:8px;align-items:flex-end}',
@@ -2370,7 +2374,7 @@ window.__ModuleLoader__.load({
 				}
 				/** A section's user-language label: own text, task data or host copy. */
 				function sectionGroupLabel(group) {
-					if (group === 'template') return t('rolePreviewGroupTemplate')
+					if (group === 'template') return builtin ? t('rolePreviewGroupBuiltin') : t('rolePreviewGroupTemplate')
 					if (group === 'task') return t('rolePreviewGroupTask')
 					return t('rolePreviewGroupFixed')
 				}
@@ -2382,16 +2386,20 @@ window.__ModuleLoader__.load({
 						h('p', { className: 'gbt-footnote', 'data-role-tokens': 'true' }, tokenLine()))
 				}
 				/**
-				 * Left column for a role you cannot edit: a deliberate empty state that
-				 * says WHY it is fixed and offers the existing Fork action, so the page
-				 * never looks like a broken half panel.
+				 * Left column for a built-in role: its READABLE default prompt, shown
+				 * read-only and with literal {{TOKEN}}s (no substitution), plus the note
+				 * that it cannot be edited in place and the existing Fork action that
+				 * copies it into an editable draft.
 				 */
-				function builtinEmptyColumn() {
-					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'true', 'data-role-raw-reason': 'builtin', 'data-role-empty-state': 'builtin' },
+				function builtinDefaultColumn() {
+					const defaultPrompt = target !== null && typeof target.prompt === 'string' ? target.prompt : ''
+					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'true', 'data-role-raw-reason': 'builtin', 'data-role-empty-state': 'builtin', 'data-role-default-prompt': defaultPrompt === '' ? 'false' : 'true' },
 						h('div', { className: 'gbt-subhead' }, t('rolePreviewRawTitle')),
-						h('div', { className: 'gbt-promptempty', 'data-role-raw-empty': 'builtin' },
-							h('div', { className: 'gbt-emptyhead' }, t('roleEmptyBuiltinTitle')),
-							h('p', { className: 'gbt-footnote' }, t('rolePreviewBuiltinReadonly')),
+						defaultPrompt === ''
+							? h('div', { className: 'gbt-promptempty', 'data-role-raw-empty': 'builtin' }, h('p', { className: 'gbt-footnote' }, t('rolePreviewBuiltinReadonly')))
+							: h('pre', { className: 'gbt-promptpre gbt-builtinprompt', 'data-role-default-prompt-text': 'true' }, defaultPrompt),
+						h('div', { className: 'gbt-promptactions' },
+							h('span', { className: 'gbt-footnote', 'data-role-builtin-note': 'true' }, t('roleEmptyBuiltinTitle')),
 							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-fork', 'data-role-empty-fork': 'true', onClick: fork }, t('roleEmptyCopy'))))
 				}
 				/** Right column: the exact text the host injects, section by section. */
@@ -2434,7 +2442,7 @@ window.__ModuleLoader__.load({
 								h('p', { className: 'gbt-footnote' }, t('rolePreviewWorkerReadonly'))),
 							injectedColumn())
 					: h('div', { className: 'gbt-promptcols', 'data-section': 'role-editor-prompts', 'data-role-layout': 'split' },
-							editablePrompt ? rawColumn() : builtinEmptyColumn(),
+							editablePrompt ? rawColumn() : builtinDefaultColumn(),
 							injectedColumn())
 				const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
 					h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
