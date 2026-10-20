@@ -458,8 +458,11 @@ window.__ModuleLoader__.load({
 				rolePreviewGroupTemplate: '你的原文',
 				rolePreviewGroupTask: '任务数据',
 				rolePreviewGroupFixed: '宿主固定',
-				rolePreviewBuiltinReadonly: '默认角色不可直接修改；Fork 一个新副本后即可编辑原文。',
-				rolePreviewWorkerReadonly: '实现阶段由每任务执行者承担，角色定制在下一步接入。',
+				rolePreviewBuiltinReadonly: '默认角色是宿主内置的，不能在原处修改。',
+				rolePreviewWorkerReadonly: '实现阶段由每任务执行者承担；定制实现角色在后续步骤接入。',
+				roleEmptyBuiltinTitle: '默认角色不可修改',
+				roleEmptyCopy: '复制一份来改',
+				roleEmptyWorkerTitle: '实现角色尚不可定制',
 				roleEditorSkillsManage: '管理',
 				roleEditorSkillsTitle: '系统技能',
 				roleEditorSkillsEmpty: '宿主没有可用的系统技能。',
@@ -787,8 +790,11 @@ window.__ModuleLoader__.load({
 				rolePreviewGroupTemplate: 'Your own text',
 				rolePreviewGroupTask: 'Task data',
 				rolePreviewGroupFixed: 'Host-fixed',
-				rolePreviewBuiltinReadonly: 'A default role cannot be edited in place; fork a copy to edit the raw prompt.',
-				rolePreviewWorkerReadonly: 'The implement stage is carried per task by each WorkAgent; role customization arrives in the next step.',
+				rolePreviewBuiltinReadonly: 'A default role is built into the host and cannot be changed in place.',
+				rolePreviewWorkerReadonly: 'The implement stage is carried per task by each WorkAgent; customising the implement role arrives in a later step.',
+				roleEmptyBuiltinTitle: 'Default roles cannot be edited',
+				roleEmptyCopy: 'Make a copy to edit',
+				roleEmptyWorkerTitle: 'The implement role is not customisable yet',
 				roleEditorSkillsManage: 'Manage',
 				roleEditorSkillsTitle: 'System skills',
 				roleEditorSkillsEmpty: 'The host reported no system skills.',
@@ -912,10 +918,13 @@ window.__ModuleLoader__.load({
 '.gbt-roleeditor{display:flex;flex-direction:column;gap:10px;min-width:0}',
 '.gbt-editor-identity{display:flex;gap:6px;flex-wrap:wrap;align-items:center}',
 '.gbt-promptcols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:start}',
+			'.gbt-promptsingle{display:flex;flex-direction:column;gap:10px;min-width:0}',
+			'.gbt-promptnotice{display:flex;flex-direction:column;gap:4px;border:0.5px dashed var(--dsw-alias-border-l4);border-radius:8px;padding:10px 12px;background:var(--dsw-alias-bg-layer-1)}',
+			'.gbt-emptyhead{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}',
 			'.gbt-promptcol{display:flex;flex-direction:column;gap:6px;min-width:0;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-1)}',
 			'.gbt-promptcol[data-role-prompt="raw"]{border-color:rgba(79,124,255,.45)}',
 			'.gbt-prompthead{display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:space-between;min-width:0}',
-			'.gbt-promptempty{font-size:11px;line-height:1.6;color:var(--dsw-alias-label-tertiary);border:0.5px dashed var(--dsw-alias-border-l4);border-radius:6px;padding:10px}',
+			'.gbt-promptempty{display:flex;flex-direction:column;gap:8px;align-items:flex-start;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-tertiary);border:0.5px dashed var(--dsw-alias-border-l4);border-radius:6px;padding:12px}',
 			'.gbt-prompttext{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow:auto;padding-right:2px}',
 			'.gbt-promptsection{display:flex;flex-direction:column;gap:2px;min-width:0}',
 			'.gbt-sectlabel{align-self:flex-start;font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-4);border-radius:999px;padding:0 6px;margin:4px 0 0}',
@@ -2093,6 +2102,13 @@ window.__ModuleLoader__.load({
 								? saved.profile
 								: null
 				const builtin = selectedName === 'worker' || selectedName === 'reviewer' || selectedName === 'tester'
+				// Only a profile the user owns (a saved copy or a fork draft) has a prompt
+				// that can be edited here. Everything else is a clear empty state, never a
+				// blank half-panel.
+				const editablePrompt = !builtin && selectedName !== null && target !== null
+				// The implement stage is not wired to the role system yet: with nothing to
+				// edit, the page is ONE read-only column instead of two half panels.
+				const workerSingleColumn = kind === 'worker' && !editablePrompt
 				// The preview targets the SAVED profile: a fork draft does not exist on the
 				// host yet, so its SOURCE profile is what the host would really inject.
 				const previewProfileName = draft !== null ? draft.source : selectedName
@@ -2360,15 +2376,23 @@ window.__ModuleLoader__.load({
 				}
 				/** Left column: the profile prompt as written, with its literal {{TOKEN}}s. */
 				function rawColumn() {
-					// The implement stage is carried per task by each WorkAgent, and a
-					// built-in profile is the host default: neither is editable in place.
-					const readOnlyReason = kind === 'worker' ? 'worker' : builtin || selectedName === null ? 'builtin' : null
-					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'raw', 'data-role-raw-readonly': readOnlyReason === null ? 'false' : 'true', 'data-role-raw-reason': readOnlyReason === null ? '' : readOnlyReason },
+					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'false', 'data-role-raw-reason': '' },
 						h('div', { className: 'gbt-subhead' }, t('rolePreviewRawTitle')),
-						readOnlyReason === null
-							? h('textarea', { key: 'template-field:' + controlKey, ref: templateRef, className: 'gbt-input gbt-editorarea', 'data-field': 'template', rows: 10, defaultValue: templateText, placeholder: t('rolePromptEmpty'), spellCheck: false })
-							: h('div', { className: 'gbt-promptempty', 'data-role-raw-empty': readOnlyReason }, readOnlyReason === 'worker' ? t('rolePreviewWorkerReadonly') : t('rolePreviewBuiltinReadonly')),
-						kind === 'worker' ? null : h('p', { className: 'gbt-footnote', 'data-role-tokens': 'true' }, tokenLine()))
+						h('textarea', { key: 'template-field:' + controlKey, ref: templateRef, className: 'gbt-input gbt-editorarea', 'data-field': 'template', rows: 10, defaultValue: templateText, placeholder: t('rolePromptEmpty'), spellCheck: false }),
+						h('p', { className: 'gbt-footnote', 'data-role-tokens': 'true' }, tokenLine()))
+				}
+				/**
+				 * Left column for a role you cannot edit: a deliberate empty state that
+				 * says WHY it is fixed and offers the existing Fork action, so the page
+				 * never looks like a broken half panel.
+				 */
+				function builtinEmptyColumn() {
+					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'true', 'data-role-raw-reason': 'builtin', 'data-role-empty-state': 'builtin' },
+						h('div', { className: 'gbt-subhead' }, t('rolePreviewRawTitle')),
+						h('div', { className: 'gbt-promptempty', 'data-role-raw-empty': 'builtin' },
+							h('div', { className: 'gbt-emptyhead' }, t('roleEmptyBuiltinTitle')),
+							h('p', { className: 'gbt-footnote' }, t('rolePreviewBuiltinReadonly')),
+							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-fork', 'data-role-empty-fork': 'true', onClick: fork }, t('roleEmptyCopy'))))
 				}
 				/** Right column: the exact text the host injects, section by section. */
 				function injectedColumn() {
@@ -2403,7 +2427,15 @@ window.__ModuleLoader__.load({
 										h('pre', { className: 'gbt-promptpre' }, typeof section.text === 'string' ? section.text : ''))
 								})))
 				}
-				const prompts = h('div', { className: 'gbt-promptcols', 'data-section': 'role-editor-prompts' }, rawColumn(), injectedColumn())
+				const prompts = workerSingleColumn
+					? h('div', { className: 'gbt-promptsingle', 'data-section': 'role-editor-prompts', 'data-role-layout': 'single' },
+							h('div', { className: 'gbt-promptnotice', 'data-role-worker-note': 'true' },
+								h('div', { className: 'gbt-emptyhead' }, t('roleEmptyWorkerTitle')),
+								h('p', { className: 'gbt-footnote' }, t('rolePreviewWorkerReadonly'))),
+							injectedColumn())
+					: h('div', { className: 'gbt-promptcols', 'data-section': 'role-editor-prompts', 'data-role-layout': 'split' },
+							editablePrompt ? rawColumn() : builtinEmptyColumn(),
+							injectedColumn())
 				const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
 					h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
 					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
