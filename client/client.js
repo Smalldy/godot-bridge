@@ -394,8 +394,6 @@ window.__ModuleLoader__.load({
 				roleProfilePrompt: 'Profile prompt（可修改）',
 				rolePromptEmpty: '（空 —— 内置角色的上下文由宿主 brief 补齐）',
 				roleSource: '来源',
-				roleDrain: '排空',
-				roleReplace: '替换',
 				roleName: '名称',
 				roleKind: '种类',
 				roleActionFailed: '操作失败',
@@ -458,10 +456,7 @@ window.__ModuleLoader__.load({
 				rolePreviewLoading: '正在读取宿主真正注入的文本…',
 				rolePreviewMissing: '宿主还没有返回注入预览。',
 				rolePreviewFailed: '注入预览读取失败',
-				rolePreviewGroupTemplate: '你的原文',
-				rolePreviewGroupBuiltin: '内置默认提示词',
 				rolePreviewGroupTask: '任务数据',
-				rolePreviewGroupFixed: '宿主固定',
 				rolePreviewBuiltinReadonly: '默认角色是宿主内置的，不能在原处修改。',
 				roleEmptyBuiltinTitle: '默认角色不可修改',
 				roleEmptyCopy: '复制一份并启用',
@@ -728,8 +723,6 @@ window.__ModuleLoader__.load({
 				roleProfilePrompt: 'Profile prompt (editable)',
 				rolePromptEmpty: '(empty — the host brief fills the context for built-in roles)',
 				roleSource: 'Source',
-				roleDrain: 'Drain',
-				roleReplace: 'Replace',
 				roleName: 'Name',
 				roleKind: 'Kind',
 				roleActionFailed: 'Action failed',
@@ -792,10 +785,7 @@ window.__ModuleLoader__.load({
 				rolePreviewLoading: 'Reading the exact text the host injects…',
 				rolePreviewMissing: 'The host has not returned an injected preview yet.',
 				rolePreviewFailed: 'Could not read the injected preview',
-				rolePreviewGroupTemplate: 'Your own text',
-				rolePreviewGroupBuiltin: 'Built-in default prompt',
 				rolePreviewGroupTask: 'Task data',
-				rolePreviewGroupFixed: 'Host-fixed',
 				rolePreviewBuiltinReadonly: 'A default role is built into the host and cannot be changed in place.',
 				roleEmptyBuiltinTitle: 'Default roles cannot be edited',
 				roleEmptyCopy: 'Make a copy and use it',
@@ -928,8 +918,8 @@ window.__ModuleLoader__.load({
 			'.gbt-promptempty{display:flex;flex-direction:column;gap:8px;align-items:flex-start;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-tertiary);border:0.5px dashed var(--dsw-alias-border-l4);border-radius:6px;padding:12px}',
 			'.gbt-prompttext{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow:auto;padding-right:2px}',
 			'.gbt-promptsection{display:flex;flex-direction:column;gap:2px;min-width:0}',
-			'.gbt-sectlabel{align-self:flex-start;font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-4);border-radius:999px;padding:0 6px;margin:4px 0 0}',
-			'.gbt-promptpre{margin:0 0 4px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;line-height:1.55;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-sectlabel{align-self:flex-start;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-4);border-radius:999px;padding:0 6px;margin:4px 0 0}',
+			'.gbt-promptpre{margin:0 0 4px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.7;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-builtinprompt{max-height:320px;overflow:auto;border:0.5px solid var(--dsw-alias-border-l4);border-radius:6px;padding:8px;background:var(--dsw-alias-bg-layer-2);margin:0}',
 			'.gbt-promptactions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
 			'@media (max-width:720px){.gbt-promptcols{grid-template-columns:1fr}}',
@@ -1942,28 +1932,6 @@ window.__ModuleLoader__.load({
 				)
 			}
 
-			/** One provisioned role instance: drain and replace in place. */
-			function RoleInstanceRow(props) {
-				const t = props.t
-				return h(
-					'tr',
-					{ 'data-role-instance': props.name, 'data-kind': props.kind, 'data-status': props.status },
-					h('td', { className: 'gbt-mono', 'data-col': 'instance-name' }, props.name),
-					h('td', { 'data-col': 'instance-kind' }, roleKindLabel(props.kind, t)),
-					h('td', { 'data-col': 'instance-status' }, h('span', { className: 'gbt-pill' }, props.status)),
-					h(
-						'td',
-						null,
-						h(
-							'div',
-							{ className: 'gbt-rowactions' },
-							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesDrain', onClick: function () { props.onDrain(props.name) } }, t('roleDrain')),
-							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesReplace', onClick: function () { props.onReplace(props.name) } }, t('roleReplace')),
-						),
-					),
-				)
-			}
-
 			/**
 			 * The banner of the user's LAST action. A successful payload this panel
 			 * cannot describe (an action it does not own, or an empty answer) renders
@@ -2442,9 +2410,11 @@ window.__ModuleLoader__.load({
 				}
 				/** A section's user-language label: own text, task data or host copy. */
 				function sectionGroupLabel(group) {
-					if (group === 'template') return builtin ? t('rolePreviewGroupBuiltin') : t('rolePreviewGroupTemplate')
+					if (group === 'template') return t('roleAnchorPrompt')
 					if (group === 'task') return t('rolePreviewGroupTask')
-					return t('rolePreviewGroupFixed')
+					if (group === 'skills') return t('roleSkills')
+					if (group === 'fixed') return t('roleAnchorBoundary')
+					return t('roleSourceHostFixed')
 				}
 				/** The right-hand source note of a section (host-fixed / auto-filled / …). */
 				function sectionSourceLabel(group) {
@@ -2551,18 +2521,30 @@ window.__ModuleLoader__.load({
 					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
 				const instancesRow = h('label', { className: 'gbt-editorfield', 'data-section': 'role-editor-instances-field' }, t('roleInstancesCount'),
 					h('input', { key: 'instances:' + controlKey, ref: instancesRef, type: 'number', min: 1, max: 8, step: 1, className: 'gbt-input', 'data-field': 'instances', defaultValue: String(target !== null && Number.isInteger(target.instances) ? target.instances : 1), disabled: builtin || !editablePrompt }))
+				/** The blank-create form reports in the same banner as every other action. */
+				async function createBlank(name, fields) {
+					const outcome = await send('rolesCreate', { name: name, profile: fields })
+					if (outcome.ok !== true) return
+					roleEditorState.selected = name
+					roleEditorState.saved = { name: name, profile: Object.assign({ name: name }, fields) }
+					bump()
+					await applyProfile(name)
+				}
+				function createBlankInvalid(code) {
+					report('rolesCreate', false, { code: code, message: '' })
+				}
 				const blankCreate = h(
 					'details',
 					{ key: 'blank-create', className: 'gbt-createblank', 'data-section': 'role-create-blank' },
 					h('summary', null, t('roleEditorCreateBlank')),
-					h(RoleCreateForm, { t: t, onCreate: props.onCreateProfile, onInvalid: props.onCreateInvalid }),
+					h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }),
 				)
 				const leftPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'raw' },
 					editablePrompt ? rawColumn() : builtinDefaultColumn(),
 					anchorsRow(),
 					h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow, instancesRow),
 					blankCreate)
-				const rightPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'injected' }, injectedColumn())
+				const rightPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'injected' }, anchorsRow(), injectedColumn())
 				const runningNames = instances.filter(function (entry) { return entry.kind === kind }).map(function (entry) { return entry.name })
 				const runningRow = h('div', { className: 'gbt-footnote', 'data-role-running': 'true' },
 					t('roleRunningNow') + ': ' + (runningNames.length === 0 ? t('roleNoneRunning') : runningNames.join(', ')) + ' · ' + (boundName === kind ? t('roleFromDefault') : t('roleFromCopy')))
@@ -2635,10 +2617,7 @@ window.__ModuleLoader__.load({
 				const t = props.t
 				const snapshot = props.snapshot
 				const store = props.store
-				const [result, setResult] = React.useState(null)
 				const [, bumpEditor] = React.useReducer(function (count) { return count + 1 }, 0)
-				const hostResult = snapshot.actionResult === undefined || snapshot.actionResult === null ? null : { action: snapshot.actionResult.action, ok: snapshot.actionResult.ok !== false, payload: snapshot.actionResult }
-				const hostError = snapshot.actionError === undefined || snapshot.actionError === null ? null : { action: 'host', ok: false, payload: snapshot.actionError }
 				const config = snapshot.roles === undefined || snapshot.roles === null ? null : snapshot.roles
 				const agents = snapshot.agents
 				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
@@ -2650,17 +2629,6 @@ window.__ModuleLoader__.load({
 						const match = /^(worker|reviewer|tester)-\d+$/.exec(member.name)
 						return { name: member.name, kind: match === null ? 'worker' : match[1], status: typeof member.status === 'string' ? member.status : 'unknown' }
 					})
-				async function run(action, body) {
-					const outcome = await store.send(action, body)
-					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
-					setResult({ action: action, ok: outcome !== null && outcome !== undefined && outcome.ok === true, payload: payload })
-				}
-				async function createProfile(name, fields) {
-					const outcome = await store.send('rolesCreate', { name: name, profile: fields })
-					const ok = outcome !== null && outcome !== undefined && outcome.ok === true
-					const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
-					setResult({ action: 'rolesCreate', ok: ok, payload: payload })
-				}
 				if (config === null) {
 					return h('div', null, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
 				}
@@ -2676,12 +2644,6 @@ window.__ModuleLoader__.load({
 							store: store,
 							instances: instances,
 							bump: bumpEditor,
-							onCreateProfile: function (name, fields) {
-								void createProfile(name, fields)
-							},
-							onCreateInvalid: function (code) {
-								setResult({ action: 'rolesCreate', ok: false, payload: { code: code, message: '' } })
-							},
 						}),
 					}),
 				)

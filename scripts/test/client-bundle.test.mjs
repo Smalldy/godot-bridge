@@ -996,8 +996,8 @@ await flush()
     'the two panes are raw/injected and the section anchors are shared',
     findAll(editor, (node) => node.props && node.props['data-roles-pane'] === 'raw').length === 1 &&
       findAll(editor, (node) => node.props && node.props['data-roles-pane'] === 'injected').length === 1 &&
-      findAll(editor, (node) => node.props && node.props['data-role-anchors'] === 'true').length === 1 &&
-      findAll(editor, (node) => node.props && node.props['data-role-anchor'] !== undefined).map((node) => node.props['data-role-anchor']).join(',') === 'template,task,fixed,skills' &&
+      findAll(editor, (node) => node.props && node.props['data-role-anchors'] === 'true').length === 2 &&
+      findAll(editor, (node) => node.props && node.props['data-role-anchors'] === 'true').every((row) => findAll(row, (node) => node.props && node.props['data-role-anchor'] !== undefined).map((node) => node.props['data-role-anchor']).join(',') === 'template,task,fixed,skills') &&
       findAll(editor, (node) => node.props && node.props['data-role-section-source'] !== undefined).length >= 1,
   )
   check(
@@ -1027,6 +1027,23 @@ await flush()
     captured.getSnapshot().actionResult === previewResultBefore && captured.getSnapshot().actionError === previewErrorBefore,
     JSON.stringify({ before: previewResultBefore === null ? null : Object.keys(previewResultBefore), after: captured.getSnapshot().actionResult === null ? null : Object.keys(captured.getSnapshot().actionResult), error: captured.getSnapshot().actionError }),
   )
+  // A FAILED quiet preview must not write to the action channel either.
+  const quietErrorBefore = captured.getSnapshot().actionError
+  const quietResultBefore = captured.getSnapshot().actionResult
+  const savedPreviewReply = rolePreviewReply
+  rolePreviewReply = function () { return { ok: false, code: 'preview-failed', message: 'boom' } }
+  const previewTaskSelect = findAll(editor, (node) => node.type === 'select' && node.props['data-field'] === 'preview-task')[0]
+  previewTaskSelect.props.onChange({ target: { value: 'T-2' } })
+  await flush()
+  await flush()
+  check(
+    'a FAILED quiet preview never writes snapshot.actionError/actionResult',
+    captured.getSnapshot().actionError === quietErrorBefore && captured.getSnapshot().actionResult === quietResultBefore,
+    JSON.stringify({ error: captured.getSnapshot().actionError, result: captured.getSnapshot().actionResult }),
+  )
+  rolePreviewReply = savedPreviewReply
+  findAll(editor, (node) => node.type === 'select' && node.props['data-field'] === 'preview-task')[0].props.onChange({ target: { value: '' } })
+  await flush()
   editor = findAll(findAll(rolesTree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
   check(
@@ -1223,9 +1240,9 @@ await flush()
   check(
     'the right column separates task data from host copy with readable labels',
     sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'fixed,template,task,fixed' &&
-      findAll(sectionNodes[1], (node) => node.type === 'span').some((node) => textOf(node) === '内置默认提示词') &&
+      findAll(sectionNodes[1], (node) => node.type === 'span').some((node) => textOf(node) === '你的提示词') &&
       findAll(sectionNodes[2], (node) => node.type === 'span').some((node) => textOf(node) === '任务数据') &&
-      findAll(sectionNodes[3], (node) => node.type === 'span').some((node) => textOf(node) === '宿主固定'),
+      findAll(sectionNodes[3], (node) => node.type === 'span').some((node) => textOf(node) === '权限边界与结论'),
     sectionNodes.map((node) => textOf(node)).join(' | '),
   )
   check('the sample label is not shown for a real task', textOf(injectedCol).indexOf('示例任务（非真实') < 0)
@@ -1269,7 +1286,7 @@ await flush()
   const testerTemplate = findAll(testerInjected, (node) => node.props && node.props['data-role-section-group'] === 'template')[0]
   check(
     'the injected template section is labelled as the built-in default prompt',
-    testerTemplate !== undefined && findAll(testerTemplate, (node) => node.type === 'span').some((node) => textOf(node) === '内置默认提示词'),
+    testerTemplate !== undefined && findAll(testerTemplate, (node) => node.type === 'span').some((node) => textOf(node) === '你的提示词'),
     testerTemplate && textOf(testerTemplate),
   )
 
@@ -1561,9 +1578,9 @@ await flush()
   )
   check(
     'the section labels use user language, not implementation names',
-    findAll(reviewerSections[1], (node) => node.type === 'span').some((node) => textOf(node) === '你的原文') &&
+    findAll(reviewerSections[1], (node) => node.type === 'span').some((node) => textOf(node) === '你的提示词') &&
       findAll(reviewerSections[2], (node) => node.type === 'span').some((node) => textOf(node) === '任务数据') &&
-      findAll(reviewerSections[3], (node) => node.type === 'span').some((node) => textOf(node) === '宿主固定'),
+      findAll(reviewerSections[3], (node) => node.type === 'span').some((node) => textOf(node) === '权限边界与结论'),
     reviewerSections.map((node) => textOf(node)).join(' | '),
   )
 
