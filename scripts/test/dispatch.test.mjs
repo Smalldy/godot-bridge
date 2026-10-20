@@ -6,6 +6,8 @@ import { readRoleConfig, rolesPath, updateBoard } from '../../plugin/task-center
 import { createState, writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
 import {
+  briefFor,
+  briefPartsFor,
   createActivity,
   createDispatcher,
   createRoleManager,
@@ -1412,6 +1414,121 @@ function roleTask(overrides) {
   check('the skills injection is unchanged', skilled.indexOf('Load these project skills with the skill tool before acting: skill-a') >= 0, skilled.slice(-200))
   const unskilled = roleBriefFor('reviewer', task, normaliseRoleConfig({}), {})
   check('without skills the brief still asks for project skills', unskilled.indexOf('Load any project-specific skills with the skill tool before acting.') >= 0, unskilled.slice(-200))
+}
+
+// ── the implementer brief carries the worker role prompt and skills ────────
+{
+  const config = normaliseRoleConfig({ profiles: { worker: { skills: ['dsh-plugin-workflow'], prompt: 'Implement {{TASK_ID}} in {{PROJECT}} for {{LEAD}}.' } } })
+  const task = roleTask({ status: 'running', dependsOn: ['T-0'] })
+  const brief = briefFor(task, PROJECT, 'lead', config)
+  check(
+    'a worker brief renders the profile prompt with the real values, no literal token left',
+    brief.indexOf('Profile instructions:') >= 0 &&
+      brief.indexOf('Implement T-1 in ' + PROJECT + ' for lead.') >= 0 &&
+      brief.indexOf('{{') < 0,
+    brief.slice(0, 700),
+  )
+  check(
+    'a worker brief injects the profile skills with the shared wording',
+    brief.indexOf('Load these project skills with the skill tool before acting: dsh-plugin-workflow') >= 0,
+    brief.slice(-400),
+  )
+  const parts = briefPartsFor(task, PROJECT, 'lead', config)
+  check(
+    'the prompt sits before the worktree and task data; skills come last',
+    parts.map((part) => part.key).join(',') === 'header,project,template,worktree,spec,acceptance,prerequisites,locks,report,skills',
+    JSON.stringify(parts.map((part) => part.key)),
+  )
+  check('briefFor is the join of those parts', brief === parts.map((part) => part.text).join('\n\n'))
+}
+{
+  // Backward compatibility: without a role config the brief is byte-identical to
+  // the pre-role-prompt generation. This oracle is the old implementation.
+  function legacyBriefFor(task, projectPath) {
+    const lines = []
+    lines.push('Task ' + task.id + ': ' + task.title)
+    lines.push('')
+    lines.push('Project: ' + projectPath)
+    lines.push('You have been assigned this task. Do the work in that project.')
+    if (typeof task.worktree === 'string' && task.worktree.length > 0) {
+      lines.push(
+        '',
+        'Work in the git worktree created for this task:',
+        '  worktree: ' + task.worktree,
+        '  branch:   ' + String(task.branch === null || task.branch === undefined ? '' : task.branch),
+        '  base:     ' + String(task.base === null || task.base === undefined ? '' : task.base),
+        'Change files ONLY inside that worktree, and run the tests there.',
+        'The task board still lives in the main project — point task_center at',
+        'the main project ("' + projectPath + '"), not at the worktree.',
+      )
+    }
+    if (task.spec !== '') lines.push('', 'What it involves:', task.spec)
+    if (task.acceptance !== '') lines.push('', 'How it will be judged:', task.acceptance)
+    if (task.dependsOn.length > 0) lines.push('', 'Completed prerequisites: ' + task.dependsOn.join(', '))
+    if (task.writeFiles.length > 0) lines.push('', 'The scheduler holds these file locks for you:', task.writeFiles.join(', '))
+    lines.push(
+      '',
+      'Report with the task_center tool:',
+      '  task_center { action: "get", id: "' + task.id + '" }',
+      '  task_center { action: "submit", id: "' + task.id + '", evidence: "what you changed and how you checked it" }',
+      '',
+      'submit is the last step of THIS round: it moves the task to REVIEW, then',
+      'TESTING. A review that requests changes or a failed test returns the task to',
+      'running — keep working in the same worktree and submit again. The merge',
+      'request only becomes mergeable once the TEST phase passes; the host then',
+      'merges it automatically. Do not commit after a passing test.',
+      'Your merge request records the head submit committed, and a merge is refused',
+      'while the branch has moved past it (head-drift). If you must repair the',
+      'request explicitly, use:',
+      '  task_center { action: "refreshMerge", id: "' + task.id + '" }',
+      'That re-points the merge request and starts a fresh review round — it never',
+      'commits, merges or pushes.',
+      '',
+      'Before writing any file that is not in the locked list, call:',
+      '  task_center { action: "lock", paths: ["path/to/file"] }',
+      'and unlock it when you are done. Any task_center call renews your lease; a long task should call get periodically.',
+      '',
+      'Do NOT dispatch anything yourself. You are the assignee, not the scheduler.',
+    )
+    return lines.join('\n')
+  }
+  const full = roleTask({ status: 'running', dependsOn: ['T-0'], spec: 'Do it', acceptance: 'Done', writeFiles: ['scripts/a.gd', 'scripts/b.gd'] })
+  const minimal = roleTask({ status: 'running', spec: '', acceptance: '', dependsOn: [], writeFiles: [], worktree: null, branch: null, base: null, commit: null })
+  check('without a role config briefFor is byte-identical to the legacy brief', briefFor(full, PROJECT, 'lead') === legacyBriefFor(full, PROJECT), briefFor(full, PROJECT, 'lead').slice(0, 300))
+  check('the minimal legacy brief is byte-identical too', briefFor(minimal, PROJECT, 'lead') === legacyBriefFor(minimal, PROJECT), briefFor(minimal, PROJECT, 'lead').slice(0, 300))
+  check(
+    'without a role config there is no prompt or skills section',
+    briefFor(full, PROJECT, 'lead').indexOf('Profile instructions:') < 0 && briefFor(full, PROJECT, 'lead').indexOf('Skills:') < 0,
+  )
+}
+{
+  // Delivery covers BOTH handover paths: a spawned WorkAgent and a reused idle
+  // teammate sent the task by sendMessage.
+  const spawnRig = createRig({ team: createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] }), teamOptions: { spawnedStatus: 'running' } })
+  await createTask(spawnRig, { title: 'spawned task' })
+  await spawnRig.action('settings', { maxConcurrent: 1, maxWorkAgents: 2 })
+  await spawnRig.action('start')
+  await spawnRig.settle()
+  const spawnCall = spawnRig.team.calls.filter((call) => call.kind === 'spawn')[0]
+  check(
+    'a spawned implementer receives the worker default prompt and the skills section',
+    spawnCall !== undefined && spawnCall.text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0 && spawnCall.text.indexOf('Skills:') >= 0,
+    spawnCall === undefined ? 'no spawn call: ' + JSON.stringify(spawnRig.team.calls) : spawnCall.text.slice(0, 300),
+  )
+  spawnRig.scheduler.dispose()
+
+  const reuseRig = createRig({ allowSpawn: false, teamOptions: { markRunningOnSend: true } })
+  await createTask(reuseRig, { title: 'reused task' })
+  await reuseRig.action('settings', { maxConcurrent: 1 })
+  await reuseRig.action('start')
+  await reuseRig.settle()
+  const sendCall = reuseRig.team.calls.filter((call) => call.kind === 'send').pop()
+  check(
+    'a reused teammate receives the same worker prompt and skills, not just a spawn preamble',
+    sendCall !== undefined && sendCall.text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0 && sendCall.text.indexOf('Skills:') >= 0,
+    sendCall === undefined ? 'no send call: ' + JSON.stringify(reuseRig.team.calls) : sendCall.text.slice(0, 300),
+  )
+  reuseRig.scheduler.dispose()
 }
 
 {

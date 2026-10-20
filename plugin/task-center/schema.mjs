@@ -87,16 +87,23 @@ export const ROLE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}$/
 export const ROLE_PROMPT_MAX = 4000
 
 /**
- * The readable default prompt of the built-in reviewer and tester profiles.
- * These instructions used to be a host-fixed "Duties" paragraph inside the
- * brief; they are now an ordinary profile prompt the panel can show, fork and
- * edit, while only the hard permission boundary and the verdict schema stay
- * host-fixed. English, like the rest of the brief.
+ * The readable default prompt of the built-in worker, reviewer and tester
+ * profiles. These instructions used to be host-fixed copy inside the brief; they
+ * are now an ordinary profile prompt the panel can show, fork and edit, while
+ * only the hard permission boundary and the verdict schema stay host-fixed.
+ * English, like the rest of the brief.
  *
- * The worker keeps an empty prompt on purpose: implementers are wired through
- * briefFor, not through a role profile (that lands in a later task).
+ * The worker prompt is injected per task through briefFor, so every implementer
+ * wakes with it on both the spawn and the reused-teammate handover path.
  */
 export const DEFAULT_ROLE_PROMPTS = {
+  worker: [
+    'Duties: implement the task in its worktree and prove it there.',
+    'Edit files, run the project tests and commit ONLY inside the task worktree; never change the main checkout.',
+    'You do not review or test your own task: a separate reviewer and tester decide those verdicts, and the host enforces that boundary.',
+    'Report with task_center submit: what changed and how you checked it. Do not dispatch work yourself — the scheduler owns dispatch.',
+    'After a change request or a failed test, continue in the SAME worktree and branch; do not start from a fresh checkout.',
+  ].join('\n\n'),
   reviewer: [
     'Duties: review the submitted tree (the diff from its base to its head, the declared vs actual files, and the worker evidence), then approve it or request concrete changes.',
     'Review against the project conventions: keep the change consistent with the surrounding code and architecture, avoid unrelated rewrites and never restyle files the task did not touch.',

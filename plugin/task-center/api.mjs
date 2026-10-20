@@ -569,8 +569,10 @@ export function createApi(ctx, options) {
     const briefOptions = { projectPath: projectPath, leadName: leadName }
     const worker = kind === 'worker'
     // One generation path per kind: the exact function the dispatch path calls.
-    const text = worker ? briefFor(task, projectPath, leadName) : roleBriefFor(kind, task, scoped, briefOptions)
-    const parts = worker ? briefPartsFor(task, projectPath, leadName) : roleBriefPartsFor(kind, task, scoped, briefOptions)
+    // The worker preview passes the role config too, so the panel shows precisely
+    // what a per-task implementer receives (prompt and skills included).
+    const text = worker ? briefFor(task, projectPath, leadName, scoped) : roleBriefFor(kind, task, scoped, briefOptions)
+    const parts = worker ? briefPartsFor(task, projectPath, leadName, scoped) : roleBriefPartsFor(kind, task, scoped, briefOptions)
     const values = roleTemplateValuesFor(kind, task, scoped, briefOptions)
     const tokens = ROLE_TEMPLATE_VARIABLES.map((entry) => ({
       name: entry.name,

@@ -837,12 +837,30 @@ export function spawnPreamble(name, leadName) {
 }
 
 /**
+ * The skills injection, shared by the role brief and the per-task worker brief so
+ * a profile's skill list is worded identically on both paths.
+ */
+function roleSkillsSection(profile) {
+  const lines = ['Skills:', '- task_center is your only interface to the board.']
+  const listed = profile !== null && profile !== undefined && Array.isArray(profile.skills) ? profile.skills : []
+  if (listed.length > 0) lines.push('- Load these project skills with the skill tool before acting: ' + listed.join(', '))
+  else lines.push('- Load any project-specific skills with the skill tool before acting.')
+  return lines.join('\n')
+}
+
+/**
  * The assignee brief split into the parts the agent reads, generated in ONE
  * place. briefFor joins the parts; the panel previews the same parts, so the
  * text a worker actually wakes with and the text the panel shows can never
  * disagree. Groups let the panel label a part as task data or host-fixed copy.
+ *
+ * roleConfig is optional: passing it injects the worker profile's rendered prompt
+ * (variables substituted) and its skills section, which is what the implement
+ * stage now really sends. Omitting it keeps the legacy brief byte-identical.
  */
-export function briefPartsFor(task, projectPath, leadName) {
+export function briefPartsFor(task, projectPath, leadName, roleConfig) {
+  const config = roleConfig === undefined || roleConfig === null ? null : roleConfig
+  const profile = config === null ? null : profileForKind(config, 'worker')
   const parts = []
   parts.push({ key: 'header', group: 'fixed', text: 'Task ' + task.id + ': ' + task.title })
   parts.push({
@@ -850,6 +868,10 @@ export function briefPartsFor(task, projectPath, leadName) {
     group: 'fixed',
     text: 'Project: ' + projectPath + '\nYou have been assigned this task. Do the work in that project.',
   })
+  if (profile !== null && profile !== undefined && typeof profile.prompt === 'string' && profile.prompt !== '') {
+    const rendered = renderRoleTemplate(profile.prompt, roleTemplateValuesFor('worker', task, config, { projectPath: projectPath, leadName: leadName }))
+    if (rendered !== '') parts.push({ key: 'template', group: 'template', text: 'Profile instructions:\n' + rendered })
+  }
   if (typeof task.worktree === 'string' && task.worktree.length > 0) {
     parts.push({
       key: 'worktree',
@@ -898,13 +920,15 @@ export function briefPartsFor(task, projectPath, leadName) {
       'Do NOT dispatch anything yourself. You are the assignee, not the scheduler.',
     ].join('\n'),
   })
+  if (config !== null) parts.push({ key: 'skills', group: 'fixed', text: roleSkillsSection(profile) })
   return parts
 }
 
 /** What the assignee is told. It has to stand alone: the agent wakes with no
- * context beyond this message. */
-export function briefFor(task, projectPath, leadName) {
-  return briefPartsFor(task, projectPath, leadName).map((part) => part.text).join('\n\n')
+ * context beyond this message. roleConfig is optional and backward compatible:
+ * omitting it returns exactly the pre-role-prompt brief. */
+export function briefFor(task, projectPath, leadName, roleConfig) {
+  return briefPartsFor(task, projectPath, leadName, roleConfig).map((part) => part.text).join('\n\n')
 }
 
 /**
@@ -1031,12 +1055,6 @@ export function roleBriefSections(kind, task, config, options) {
   } else {
     fixed.push('Duties: follow the task center board for this role.')
   }
-  const skills = []
-  skills.push('Skills:')
-  skills.push('- task_center is your only interface to the board.')
-  const listed = profile !== null && profile !== undefined && Array.isArray(profile.skills) ? profile.skills : []
-  if (listed.length > 0) skills.push('- Load these project skills with the skill tool before acting: ' + listed.join(', '))
-  else skills.push('- Load any project-specific skills with the skill tool before acting.')
   return {
     kind: String(kind),
     stage: stage,
@@ -1047,7 +1065,7 @@ export function roleBriefSections(kind, task, config, options) {
     templateRendered: templateRendered,
     taskData: taskData.join('\n'),
     fixed: fixed.join('\n'),
-    skills: skills.join('\n'),
+    skills: roleSkillsSection(profile),
   }
 }
 
@@ -2354,6 +2372,17 @@ export function createDispatcher(ctx, options) {
       let slots = dispatch.maxConcurrent - running
       if (slots <= 0) return { ok: true, state: 'running', slots: 0, results: results }
 
+      // The worker prompt and skills belong to the handover itself, so resolve the
+      // project role config once per dispatch pass. A missing/broken file falls
+      // back to the schema defaults, exactly like every other role read.
+      let workerConfig = null
+      try {
+        const fs = ctx.fs
+        if (fs !== undefined && fs !== null) workerConfig = (await readRoleConfig({ fs: fs }, { projectPath: project })).config
+      } catch (error) {
+        workerConfig = null
+      }
+
       const ready = model.readyTasks(current)
       const reserved = new Set()
       for (const candidate of ready) {
@@ -2480,8 +2509,11 @@ export function createDispatcher(ctx, options) {
           emit('worktree-create', 'host', { taskId: task.id, detail: 'task worktree ' + String(worktree.path) })
         }
         const claimedTask = model.findTask(current, task.id)
-        const brief = briefFor(claimedTask, project)
         const leadName = picked.lead !== undefined && picked.lead !== null && picked.lead.name !== undefined ? picked.lead.name : 'lead'
+        // ONE brief for both delivery paths: a spawned teammate and a reused
+        // teammate handed the task by sendMessage receive the same text, prompt
+        // and skills included.
+        const brief = briefFor(claimedTask, project, leadName, workerConfig)
         let delivered = null
         let sendError = null
         try {

@@ -417,22 +417,23 @@ const MERGE = {
     JSON.stringify(missing.config),
   )
   check(
-    'the built-in reviewer/tester carry their readable default prompt, the worker stays empty',
+    'the built-in worker/reviewer/tester carry their readable default prompt',
     missing.config.profiles.reviewer.context === 'fresh' &&
       Array.isArray(missing.config.profiles.reviewer.permissions) &&
       missing.config.profiles.reviewer.prompt === DEFAULT_ROLE_PROMPTS.reviewer &&
       DEFAULT_ROLE_PROMPTS.reviewer.length > 0 &&
       missing.config.profiles.tester.prompt === DEFAULT_ROLE_PROMPTS.tester &&
       DEFAULT_ROLE_PROMPTS.tester.length > 0 &&
-      missing.config.profiles.worker.prompt === '' &&
+      missing.config.profiles.worker.prompt === DEFAULT_ROLE_PROMPTS.worker &&
+      DEFAULT_ROLE_PROMPTS.worker.length > 0 &&
       missing.config.profiles.reviewer.instances === 1,
     JSON.stringify({ reviewer: missing.config.profiles.reviewer.prompt.length, tester: missing.config.profiles.tester.prompt.length, worker: missing.config.profiles.worker.prompt.length }),
   )
   check(
-    'defaultRoleConfig gives reviewer/tester a non-empty prompt and keeps the worker prompt empty for now',
+    'defaultRoleConfig gives all three built-in roles a non-empty prompt',
     defaultRoleConfig().profiles.reviewer.prompt.length > 0 &&
       defaultRoleConfig().profiles.tester.prompt.length > 0 &&
-      defaultRoleConfig().profiles.worker.prompt === '',
+      defaultRoleConfig().profiles.worker.prompt.length > 0,
     JSON.stringify({ reviewer: defaultRoleConfig().profiles.reviewer.prompt.length, tester: defaultRoleConfig().profiles.tester.prompt.length, worker: defaultRoleConfig().profiles.worker.prompt.length }),
   )
   // Migration: an existing roles.json with the old empty built-in prompts gets the
@@ -446,10 +447,10 @@ const MERGE = {
     },
   })
   check(
-    'an existing roles.json falls back to the built-in default prompt',
+    'an existing roles.json falls back to the built-in default prompt, for the worker too',
     migrated.profiles.reviewer.prompt === DEFAULT_ROLE_PROMPTS.reviewer &&
       migrated.profiles.tester.prompt === DEFAULT_ROLE_PROMPTS.tester &&
-      migrated.profiles.worker.prompt === '' &&
+      migrated.profiles.worker.prompt === DEFAULT_ROLE_PROMPTS.worker &&
       migrated.profiles['godot-reviewer'].prompt === '',
     JSON.stringify({ reviewer: migrated.profiles.reviewer.prompt.length, tester: migrated.profiles.tester.prompt.length, worker: migrated.profiles.worker.prompt.length, custom: migrated.profiles['godot-reviewer'].prompt }),
   )
