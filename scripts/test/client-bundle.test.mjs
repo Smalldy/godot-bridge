@@ -427,7 +427,7 @@ function rolePreviewReply(body) {
     { key: 'task', group: 'task', text: 'Task ' + task.id + ': ' + task.title },
     { key: 'fixed', group: 'fixed', text: 'Duties: permission boundary.\nVerdict schema: task_center submit.' },
   ]
-  if (kind !== 'worker') sections.splice(1, 0, { key: 'template', group: 'template', text: 'Profile instructions:\n' + (typeof body.profile === 'string' && body.profile !== '' ? body.profile : kind) })
+  sections.splice(1, 0, { key: 'template', group: 'template', text: 'Profile instructions:\n' + (typeof body.profile === 'string' && body.profile !== '' ? body.profile : kind) })
   return {
     ok: true,
     kind: kind,
@@ -448,6 +448,7 @@ function rolePreviewReply(body) {
 }
 // The host now normalises the built-in reviewer/tester prompts; the panel shows
 // them read-only. The worker prompt stays empty until the implement stage is wired.
+const WORKER_DEFAULT_PROMPT = 'Implement the task in its worktree and prove it there.'
 const REVIEWER_DEFAULT_PROMPT = 'Review the submitted tree; approve it or request concrete changes.'
 const TESTER_DEFAULT_PROMPT = 'Test the candidate against the acceptance criteria; record pass or fail with evidence.'
 const HOST = {
@@ -522,7 +523,7 @@ const HOST = {
     defaultProfile: 'worker',
     stages: { implement: 'worker', review: 'godot-reviewer', test: 'tester' },
     profiles: {
-      worker: { name: 'worker', role: 'worker', stage: 'implement', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: '' },
+      worker: { name: 'worker', role: 'worker', stage: 'implement', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: WORKER_DEFAULT_PROMPT },
       reviewer: { name: 'reviewer', role: 'reviewer', stage: 'review', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: REVIEWER_DEFAULT_PROMPT },
       tester: { name: 'tester', role: 'tester', stage: 'test', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: TESTER_DEFAULT_PROMPT },
       'godot-reviewer': { name: 'godot-reviewer', role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check Godot idioms.' },
@@ -1193,13 +1194,12 @@ await flush()
   editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
 
   const promptArea = findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-prompts')[0]
-  check('the editor has ONE prompt area', promptArea !== undefined && promptArea.props['data-role-layout'] === 'single', promptArea && promptArea.props.className)
+  check('the editor has ONE prompt area in the same split shape as review/test', promptArea !== undefined && promptArea.props['data-role-layout'] === 'split', promptArea && promptArea.props.className)
+  const workerRaw = findAll(promptArea, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
   const injectedCol = findAll(promptArea, (node) => node.props && node.props['data-role-prompt'] === 'injected')[0]
   check(
-    'the implement page is a single read-only view: no raw column, no half panel',
-    promptArea.props.className === 'gbt-promptsingle' &&
-      findAll(promptArea, (node) => node.props && node.props['data-role-prompt'] === 'raw').length === 0 &&
-      injectedCol !== undefined,
+    'the implement page is two columns: raw prompt and injected text',
+    promptArea.props.className === 'gbt-promptcols' && workerRaw !== undefined && injectedCol !== undefined,
     JSON.stringify(promptArea.props),
   )
   check(
@@ -1207,16 +1207,25 @@ await flush()
     findAll(editor, (node) => node.props && node.props['data-block-type'] !== undefined).length === 0 &&
       findAll(editor, (node) => node.props && node.props['data-editor-block'] !== undefined).length === 0,
   )
-
-  // The implement stage is not wired to the role system: say so, full width.
-  const workerNote = findAll(editor, (node) => node.props && node.props['data-role-worker-note'] !== undefined)[0]
   check(
-    'the implement page explains why it has nothing to edit',
-    workerNote !== undefined &&
-      textOf(workerNote).indexOf('实现角色尚不可定制') >= 0 &&
-      textOf(workerNote).indexOf('实现阶段由每任务执行者承担') >= 0 &&
-      findAll(editor, (node) => node.props && node.props['data-role-tokens'] !== undefined).length === 0,
-    workerNote && textOf(workerNote),
+    'the built-in worker prompt is shown read-only, not as an empty panel',
+    workerRaw.props['data-role-raw-readonly'] === 'true' &&
+      workerRaw.props['data-role-raw-reason'] === 'builtin' &&
+      workerRaw.props['data-role-default-prompt'] === 'true' &&
+      findAll(workerRaw, (node) => node.type === 'textarea').length === 0,
+    JSON.stringify(workerRaw.props),
+  )
+  const workerPromptText = findAll(workerRaw, (node) => node.props && node.props['data-role-default-prompt-text'] === 'true')[0]
+  check(
+    'the worker default prompt is rendered literally',
+    workerPromptText !== undefined && textOf(workerPromptText) === WORKER_DEFAULT_PROMPT && findAll(workerPromptText, (node) => node.type === 'input' || node.type === 'textarea').length === 0,
+    workerPromptText && textOf(workerPromptText),
+  )
+  const workerCopy = findAll(workerRaw, (node) => node.props && node.props['data-role-empty-fork'] === 'true')[0]
+  check(
+    'the worker prompt keeps the not-editable note and the existing Fork action',
+    workerCopy !== undefined && workerCopy.props['data-action'] === 'role-editor-fork' && textOf(workerCopy) === '复制一份来改' && textOf(workerRaw).indexOf('默认角色不可修改') >= 0,
+    workerRaw && textOf(workerRaw),
   )
 
   // The right column is what the host really injects, not panel copy.
@@ -1235,9 +1244,10 @@ await flush()
   const sectionNodes = findAll(injectedCol, (node) => node.type === 'div' && node.props && node.props['data-role-section-group'] !== undefined)
   check(
     'the right column separates task data from host copy with readable labels',
-    sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'fixed,task,fixed' &&
-      findAll(sectionNodes[1], (node) => node.type === 'span').some((node) => textOf(node) === '任务数据') &&
-      findAll(sectionNodes[2], (node) => node.type === 'span').some((node) => textOf(node) === '宿主固定'),
+    sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'fixed,template,task,fixed' &&
+      findAll(sectionNodes[1], (node) => node.type === 'span').some((node) => textOf(node) === '内置默认提示词') &&
+      findAll(sectionNodes[2], (node) => node.type === 'span').some((node) => textOf(node) === '任务数据') &&
+      findAll(sectionNodes[3], (node) => node.type === 'span').some((node) => textOf(node) === '宿主固定'),
     sectionNodes.map((node) => textOf(node)).join(' | '),
   )
   check('the sample label is not shown for a real task', textOf(injectedCol).indexOf('示例任务（非真实') < 0)
@@ -1302,6 +1312,35 @@ await flush()
       forkedAreaField !== undefined &&
       forkedAreaField.props.defaultValue === TESTER_DEFAULT_PROMPT,
     forkedAreaField && String(forkedAreaField.props.defaultValue),
+  )
+
+  // The implement page forks into an editable two-column view like the others.
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'worker')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const workerArea = findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-prompts')[0]
+  const workerRawCol = findAll(workerArea, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
+  const workerFork = findAll(workerRawCol, (node) => node.props && node.props['data-role-empty-fork'] === 'true')[0]
+  check(
+    'the implement page offers the same default-prompt empty state',
+    workerFork !== undefined && textOf(workerRawCol).indexOf(WORKER_DEFAULT_PROMPT) >= 0,
+    workerRawCol && textOf(workerRawCol),
+  )
+  workerFork.props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const forkedWorkerArea = findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-prompts')[0]
+  const forkedWorkerField = findAll(forkedWorkerArea, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0]
+  check(
+    'forking the implement page makes it editable and starts from the worker default prompt',
+    forkedWorkerArea.props['data-role-layout'] === 'split' &&
+      forkedWorkerField !== undefined &&
+      forkedWorkerField.props.defaultValue === WORKER_DEFAULT_PROMPT,
+    forkedWorkerField && String(forkedWorkerField.props.defaultValue),
   )
 
   // Leave the editor without a draft so the next block starts on the bound profile.
@@ -2176,10 +2215,11 @@ check(
   rtree = reuse.render(panel2, { initialView: 'roles' })
   check('the reuse harness renders a second, independent editor', editorOf(rtree) !== undefined)
   check(
-    'the reuse harness starts on the bound worker profile with a read-only raw column',
+    'the reuse harness starts on the bound worker profile with a read-only default prompt',
     editorOf(rtree).props['data-kind'] === 'worker' &&
       fieldOf(rtree, 'template') === undefined &&
-      textOf(editorOf(rtree)).indexOf('实现阶段由每任务执行者承担') >= 0,
+      textOf(editorOf(rtree)).indexOf(WORKER_DEFAULT_PROMPT) >= 0 &&
+      textOf(editorOf(rtree)).indexOf('默认角色不可修改') >= 0,
     JSON.stringify({ kind: editorOf(rtree).props['data-kind'], hasField: fieldOf(rtree, 'template') !== undefined }),
   )
 

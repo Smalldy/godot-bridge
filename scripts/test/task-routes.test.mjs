@@ -2938,9 +2938,12 @@ async function withDeadline(promise, ms) {
     worker !== undefined &&
       worker.placeholder === true &&
       worker.placeholderTask.id === 'T-?' &&
-      worker.profilePrompt === '' &&
+      worker.profilePrompt === DEFAULT_ROLE_PROMPTS.worker &&
       worker.entries.length === 1 &&
       worker.entries[0].text.indexOf('Task center role: worker') >= 0 &&
+      worker.entries[0].text.indexOf('Profile instructions:') >= 0 &&
+      worker.entries[0].text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0 &&
+      worker.entries[0].text.indexOf('Skills:') >= 0 &&
       worker.entries[0].text.indexOf('Permission boundary (hard)') >= 0 &&
       worker.entries[0].text.indexOf('Verdict schema (your report):') >= 0 &&
       worker.entries[0].text.indexOf('<example spec: what this task involves>') >= 0,
@@ -3008,7 +3011,11 @@ async function withDeadline(promise, ms) {
     workerBlock.task.text.indexOf('<example spec: what this task involves>') >= 0 && workerBlock.task.text.indexOf('T-?') >= 0,
     workerBlock.task.text.slice(0, 200),
   )
-  check('the template block holds the literal profile prompt', workerBlock.template.text === '' && worker.profilePrompt === '', JSON.stringify(workerBlock.template))
+  check(
+    'the template block holds the built-in worker prompt literally',
+    workerBlock.template.text === DEFAULT_ROLE_PROMPTS.worker && worker.profilePrompt === DEFAULT_ROLE_PROMPTS.worker,
+    JSON.stringify(workerBlock.template),
+  )
   const customBlock = {}
   custom.blocks.forEach((entry) => {
     customBlock[entry.key] = entry
@@ -3065,7 +3072,7 @@ async function withDeadline(promise, ms) {
       worker.profile === 'worker' &&
       worker.task.id === 'T-1' &&
       boardTask !== undefined &&
-      worker.text === briefFor(boardTask, PROJECT, 'session-lead'),
+      worker.text === briefFor(boardTask, PROJECT, 'session-lead', config),
     JSON.stringify({ ok: worker.ok, kind: worker.kind, stage: worker.stage, profile: worker.profile, task: worker.task }),
   )
   check(
@@ -3085,8 +3092,19 @@ async function withDeadline(promise, ms) {
       worker.sections.map((section) => section.text).join('\n\n') === worker.text &&
       worker.sections.some((section) => section.group === 'task') &&
       worker.sections.some((section) => section.group === 'fixed') &&
-      !worker.sections.some((section) => section.group === 'template'),
+      worker.sections.some((section) => section.group === 'template'),
     JSON.stringify(worker.sections.map((section) => [section.key, section.group])),
+  )
+  const workerTemplate = worker.sections.filter((section) => section.group === 'template')[0]
+  check(
+    'the worker preview carries the built-in default prompt in its template section',
+    workerTemplate !== undefined && workerTemplate.text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0,
+    workerTemplate && workerTemplate.text.slice(0, 200),
+  )
+  check(
+    'the worker preview carries the skills injection like the real implementer',
+    worker.text.indexOf('Skills:') >= 0 && worker.text.indexOf('task_center is your only interface to the board.') >= 0,
+    worker.text.slice(-300),
   )
   check(
     'the variable list carries the real value for this task',
@@ -3189,7 +3207,7 @@ async function withDeadline(promise, ms) {
   )
   check(
     'the sample preview is still the real builder output and has no fake values',
-    sample.text === briefFor(ROLE_SAMPLE_TASK, PROJECT, 'session-lead') &&
+    sample.text === briefFor(ROLE_SAMPLE_TASK, PROJECT, 'session-lead', defaultRoleConfig()) &&
       sample.text.indexOf('<example') < 0 &&
       sample.text.indexOf('T-?') < 0 &&
       sample.text.indexOf('<task worktree>') < 0,
