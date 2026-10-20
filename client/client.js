@@ -353,7 +353,6 @@ window.__ModuleLoader__.load({
 				statusActor: '主体',
 				statusWorktreesEmpty: '没有工作树。',
 				statusActivityEmpty: '没有活动记录。',
-				roleInstancesEmpty: '没有角色实例。',
 				roleErrMissingName: '缺少角色名',
 				roleErrActionTimeout: '宿主操作超时',
 				roleErrQueueTimeout: '合并队列超时',
@@ -394,7 +393,6 @@ window.__ModuleLoader__.load({
 				roleInstancesCount: '实例数',
 				roleProfilePrompt: 'Profile prompt（可修改）',
 				rolePromptEmpty: '（空 —— 内置角色的上下文由宿主 brief 补齐）',
-				roleRefresh: '读取角色配置',
 				roleSource: '来源',
 				roleDrain: '排空',
 				roleReplace: '替换',
@@ -430,13 +428,24 @@ window.__ModuleLoader__.load({
 				roleErrSkillsUnavailable: '技能服务不可用',
 				roleErrUnsaved: '还有未保存的修改，请先保存或丢弃，再切换当前使用。',
 				roleEditor: '角色上下文编辑器',
-				roleEditorHint: '选择角色 → 看原始提示词与宿主真正注入的文本 → 保存即生效；想改内置角色请复制一份。',
 				roleEditorDraft: '草稿（未保存）',
 				roleEditorTabsLabel: '角色种类',
 				roleEditorCreateBlank: '空白新建 profile（次要入口）',
-				roleEditorInstances: '实例',
 				roleEditorNoProfile: '该阶段没有可用的角色',
 				roleCurrentUse: '当前使用',
+				roleDraftName: '副本名称',
+				roleDiscard: '丢弃',
+				roleDraftHint: '草稿未保存 · 切换会提示',
+				roleRunningNow: '运行中',
+				roleNoneRunning: '无',
+				roleFromDefault: '来自默认',
+				roleFromCopy: '来自副本',
+				roleAnchorPrompt: '你的提示词',
+				roleAnchorBoundary: '权限边界与结论',
+				roleSourceHostFixed: '宿主固定',
+				roleSourceAuto: '自动填充',
+				roleSourceUnoverridable: '不可覆盖',
+				roleSourceHostInjected: '宿主注入',
 				roleUseDefault: '默认',
 				roleUsePendingNextDispatch: '没有在跑实例，下次派发生效。',
 				roleDeleteThis: '删除这份',
@@ -678,7 +687,6 @@ window.__ModuleLoader__.load({
 				statusActor: 'Actor',
 				statusWorktreesEmpty: 'No worktrees.',
 				statusActivityEmpty: 'No activity entries.',
-				roleInstancesEmpty: 'No role instances.',
 				roleErrMissingName: 'missing role name',
 				roleErrActionTimeout: 'host action timed out',
 				roleErrQueueTimeout: 'merge queue timed out',
@@ -719,7 +727,6 @@ window.__ModuleLoader__.load({
 				roleInstancesCount: 'Instances',
 				roleProfilePrompt: 'Profile prompt (editable)',
 				rolePromptEmpty: '(empty — the host brief fills the context for built-in roles)',
-				roleRefresh: 'Reload role profiles',
 				roleSource: 'Source',
 				roleDrain: 'Drain',
 				roleReplace: 'Replace',
@@ -755,13 +762,24 @@ window.__ModuleLoader__.load({
 				roleErrSkillsUnavailable: 'skill service unavailable',
 				roleErrUnsaved: 'there are unsaved changes; save or discard them before switching the current use',
 				roleEditor: 'Role context editor',
-				roleEditorHint: 'Pick a role → read the raw prompt and the exact injected text → Save takes effect; copy a built-in role to change it.',
 				roleEditorDraft: 'draft (unsaved)',
 				roleEditorTabsLabel: 'Role kind',
 				roleEditorCreateBlank: 'New blank profile (secondary)',
-				roleEditorInstances: 'Instances',
 				roleEditorNoProfile: 'no role is available for this stage',
 				roleCurrentUse: 'Currently using',
+				roleDraftName: 'Copy name',
+				roleDiscard: 'Discard',
+				roleDraftHint: 'Unsaved draft · switching will ask first',
+				roleRunningNow: 'Running',
+				roleNoneRunning: 'none',
+				roleFromDefault: 'from the default',
+				roleFromCopy: 'from a copy',
+				roleAnchorPrompt: 'Your prompt',
+				roleAnchorBoundary: 'Boundaries and verdict',
+				roleSourceHostFixed: 'host-fixed',
+				roleSourceAuto: 'auto-filled',
+				roleSourceUnoverridable: 'cannot be overridden',
+				roleSourceHostInjected: 'host-injected',
 				roleUseDefault: 'Default',
 				roleUsePendingNextDispatch: 'No live instance; takes effect on the next dispatch.',
 				roleDeleteThis: 'Delete this copy',
@@ -928,6 +946,22 @@ window.__ModuleLoader__.load({
 '.gbt-seg[aria-selected="true"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-primary);font-weight:600;border-bottom-color:var(--dsw-alias-state-business-primary,#4f7cff)}',
 '.gbt-editor-select{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 '.gbt-editor-select .gbt-input{width:auto;min-width:170px;height:30px}',
+'.gbt-rolesheader{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}',
+'.gbt-rolesheader-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
+'.gbt-rolespanes{display:grid;grid-template-columns:45fr 55fr;gap:10px;align-items:start}',
+'@media (max-width:720px){.gbt-rolespanes{grid-template-columns:1fr}}',
+'.gbt-rolespane{display:flex;flex-direction:column;gap:8px;min-width:0}',
+'.gbt-rolescroll{max-height:56vh;overflow:auto;padding:2px 2px 18px;mask-image:linear-gradient(to bottom,#000 88%,transparent);-webkit-mask-image:linear-gradient(to bottom,#000 88%,transparent)}',
+'.gbt-rolesactions{position:sticky;bottom:0;display:flex;gap:8px;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;padding:8px 0 2px;border-top:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1)}',
+'.gbt-rolesactions-left,.gbt-rolesactions-right{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}',
+'.gbt-roleanchors{display:flex;gap:6px;flex-wrap:wrap}',
+'.gbt-roleanchor{font-size:11px;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-3);border-radius:999px;padding:1px 8px}',
+'.gbt-rolefields{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}',
+'.gbt-rolefields .gbt-editorskills{grid-column:1/-1}',
+'.gbt-secthead{display:flex;gap:6px;align-items:center;justify-content:space-between;min-width:0}',
+'.gbt-sectsource{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+'.gbt-editorfield{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+'.gbt-editorfield .gbt-input{height:30px}',
 '.gbt-editorinstances{display:flex;flex-direction:column;gap:4px}',
 '.gbt-createblank{margin-top:2px;border:0.5px dashed var(--dsw-alias-border-l4);border-radius:8px;padding:6px 10px}',
 '.gbt-createblank summary{cursor:pointer;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
@@ -2110,6 +2144,7 @@ window.__ModuleLoader__.load({
 				const instances = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
 				const templateRef = React.useRef(null)
 				const skillsRef = React.useRef(null)
+				const instancesRef = React.useRef(null)
 				// Real React reuses a host node across renders, so an uncontrolled control
 				// only takes a new defaultValue when it REMOUNTS. The key carries the editor
 				// identity AND whether the identity is still a draft: switching kind,
@@ -2173,6 +2208,37 @@ window.__ModuleLoader__.load({
 					if (node !== null && node !== undefined && typeof node.value === 'string') return tcSplitList(node.value)
 					return target !== null && Array.isArray(target.skills) ? target.skills.slice() : []
 				}
+				function currentInstances() {
+					const node = instancesRef.current
+					const raw = node !== null && node !== undefined && node.value !== '' ? Number(node.value) : NaN
+					if (Number.isInteger(raw) && raw >= 1 && raw <= 8) return raw
+					return target !== null && Number.isInteger(target.instances) ? target.instances : 1
+				}
+				/** Discard a drop draft; nothing was ever written to the host. */
+				function discardDraft() {
+					roleEditorState.draft = null
+					roleEditorState.saved = null
+					roleEditorState.applySkipped = false
+					roleEditorState.notice = null
+					roleEditorState.pickVersion += 1
+					bump()
+				}
+				/** Fork is a DRAFT now: the user names it, then Save creates + applies it. */
+				function fork() {
+					if (target === null || selectedName === null) return
+					let candidate = String(selectedName) + '-fork'
+					let index = 2
+					while (profiles[candidate] !== undefined || roleEditorState.used.has(candidate)) {
+						candidate = String(selectedName) + '-fork-' + String(index)
+						index += 1
+					}
+					roleEditorState.used.add(candidate)
+					roleEditorState.draft = { source: String(selectedName), name: candidate, profile: roleProfileCopy(target) }
+					roleEditorState.saved = null
+					roleEditorState.applySkipped = false
+					roleEditorState.notice = null
+					bump()
+				}
 				// The editor reports its own outcome: a client-side refusal has no store
 				// event, and the banner must survive the panel's re-render.
 				function report(action, ok, payload) {
@@ -2186,8 +2252,12 @@ window.__ModuleLoader__.load({
 					report(action, ok, payload)
 					return { ok: ok, payload: payload }
 				}
-				/** Switch kind: no draft, no selection, no banner and no preview may leak across. */
+				/** Switch kind: an open draft blocks the switch (never a silent discard). */
 				function switchKind(next) {
+					if (draft !== null) {
+						report('role-editor-kind', false, { code: 'role-unsaved' })
+						return
+					}
 					roleEditorState.kind = next
 					roleEditorState.draft = null
 					roleEditorState.selected = null
@@ -2249,23 +2319,6 @@ window.__ModuleLoader__.load({
 					}
 					await applyProfile(name)
 				}
-				/** Fork a copy of the current profile. It is created AND made current in one flow. */
-				function fork() {
-					if (target === null || selectedName === null) return
-					let candidate = String(selectedName) + '-fork'
-					let index = 2
-					while (profiles[candidate] !== undefined || roleEditorState.used.has(candidate)) {
-						candidate = String(selectedName) + '-fork-' + String(index)
-						index += 1
-					}
-					roleEditorState.used.add(candidate)
-					roleEditorState.draft = { source: String(selectedName), name: candidate, profile: roleProfileCopy(target) }
-					roleEditorState.saved = null
-					roleEditorState.applySkipped = false
-					roleEditorState.notice = null
-					bump()
-					void commitDraft(candidate)
-				}
 				/**
 				 * Create the draft profile, then bind + replace it: Fork must take effect
 				 * without a second click. A refused create keeps the draft for a retry.
@@ -2276,7 +2329,7 @@ window.__ModuleLoader__.load({
 					// Fork copies the source profile as-is; a retry after a refused create
 					// must keep whatever the user typed into the editor.
 					const body = fromEditor === true
-						? Object.assign({}, submitted.profile, { prompt: currentTemplate(), skills: currentSkills() })
+						? Object.assign({}, submitted.profile, { prompt: currentTemplate(), skills: currentSkills(), instances: currentInstances() })
 						: Object.assign({}, submitted.profile)
 					const outcome = await send('rolesCreate', { name: name, profile: body })
 					if (outcome.ok !== true || roleEditorState.draft !== submitted) return
@@ -2292,8 +2345,18 @@ window.__ModuleLoader__.load({
 					const template = currentTemplate()
 					const skills = currentSkills()
 					if (draft !== null) {
-						// Only a retry after a refused create lands here: create and make current.
-						await commitDraft(draft.name, true)
+						// The draft name is validated here (kebab-case + uniqueness) exactly
+						// like the host would: the same refusal codes are shown.
+						const proposed = String(draft.name)
+						if (!/^[a-z][a-z0-9-]{0,40}$/.test(proposed)) {
+							report('rolesCreate', false, { code: 'invalid-role-name' })
+							return
+						}
+						if (profiles[proposed] !== undefined) {
+							report('rolesCreate', false, { code: 'role-exists' })
+							return
+						}
+						await commitDraft(proposed, true)
 						return
 					}
 					if (selectedName === null) return
@@ -2304,10 +2367,11 @@ window.__ModuleLoader__.load({
 					}
 					// Saving the profile that is currently in use applies it in the SAME click.
 					const isCurrent = selectedName === boundName
-					const outcome = await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills } })
+					const instancesField = currentInstances()
+					const outcome = await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills, instances: instancesField } })
 					if (outcome.ok !== true) return
 					// Keep the saved values visible until the host snapshot catches up.
-					roleEditorState.saved = { name: selectedName, profile: Object.assign({}, target === null ? {} : target, { prompt: template, skills: skills }) }
+					roleEditorState.saved = { name: selectedName, profile: Object.assign({}, target === null ? {} : target, { prompt: template, skills: skills, instances: instancesField }) }
 					bump()
 					if (isCurrent) await send('rolesReplace', { name: kind })
 				}
@@ -2382,6 +2446,22 @@ window.__ModuleLoader__.load({
 					if (group === 'task') return t('rolePreviewGroupTask')
 					return t('rolePreviewGroupFixed')
 				}
+				/** The right-hand source note of a section (host-fixed / auto-filled / …). */
+				function sectionSourceLabel(group) {
+					if (group === 'header') return t('roleSourceHostFixed')
+					if (group === 'task') return t('roleSourceAuto')
+					if (group === 'skills') return t('roleSourceHostInjected')
+					if (group === 'fixed') return t('roleSourceUnoverridable')
+					return builtin ? t('roleSourceHostFixed') : t('roleSourceAuto')
+				}
+				/** The four cross-column anchors: your prompt / task data / boundaries / skills. */
+				function anchorsRow() {
+					return h('div', { className: 'gbt-roleanchors', 'data-role-anchors': 'true' },
+						h('span', { className: 'gbt-roleanchor', 'data-role-anchor': 'template' }, t('roleAnchorPrompt')),
+						h('span', { className: 'gbt-roleanchor', 'data-role-anchor': 'task' }, t('rolePreviewGroupTask')),
+						h('span', { className: 'gbt-roleanchor', 'data-role-anchor': 'fixed' }, t('roleAnchorBoundary')),
+						h('span', { className: 'gbt-roleanchor', 'data-role-anchor': 'skills' }, t('roleSkills')))
+				}
 				/** Left column: the profile prompt as written, with its literal {{TOKEN}}s. */
 				function rawColumn() {
 					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'false', 'data-role-raw-reason': '' },
@@ -2403,8 +2483,7 @@ window.__ModuleLoader__.load({
 							? h('div', { className: 'gbt-promptempty', 'data-role-raw-empty': 'builtin' }, h('p', { className: 'gbt-footnote' }, t('rolePreviewBuiltinReadonly')))
 							: h('pre', { className: 'gbt-promptpre gbt-builtinprompt', 'data-role-default-prompt-text': 'true' }, defaultPrompt),
 						h('div', { className: 'gbt-promptactions' },
-							h('span', { className: 'gbt-footnote', 'data-role-builtin-note': 'true' }, t('roleEmptyBuiltinTitle')),
-							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-fork', 'data-role-empty-fork': 'true', onClick: fork }, t('roleEmptyCopy'))))
+							h('span', { className: 'gbt-footnote', 'data-role-builtin-note': 'true' }, t('roleEmptyBuiltinTitle'))))
 				}
 				/** Right column: the exact text the host injects, section by section. */
 				function injectedColumn() {
@@ -2435,55 +2514,63 @@ window.__ModuleLoader__.load({
 									const key = String(section.key === undefined || section.key === null ? index : section.key)
 									const group = String(section.group === undefined || section.group === null ? 'fixed' : section.group)
 									return h('div', { key: key + ':' + String(index), className: 'gbt-promptsection', 'data-role-section': key, 'data-role-section-group': group },
-										h('span', { className: 'gbt-sectlabel', 'data-role-section-label': group }, sectionGroupLabel(group)),
+										h('div', { className: 'gbt-secthead' },
+											h('span', { className: 'gbt-sectlabel', 'data-role-section-label': group }, sectionGroupLabel(group)),
+											h('span', { className: 'gbt-sectsource', 'data-role-section-source': group }, sectionSourceLabel(group))),
 										h('pre', { className: 'gbt-promptpre' }, typeof section.text === 'string' ? section.text : ''))
 								})))
 				}
-				// Every kind uses the same shape now: the raw prompt (editable for a
-				// profile the user owns, otherwise the readable built-in default) beside
-				// the exact injected text. The implement stage is wired like the others.
-				const prompts = h('div', { className: 'gbt-promptcols', 'data-section': 'role-editor-prompts', 'data-role-layout': 'split' },
-					editablePrompt ? rawColumn() : builtinDefaultColumn(),
-					injectedColumn())
+				// 02 对照式: one toolbar (tabs + current use), a 45/55 pair of panes sharing
+				// four section anchors, then a fixed bottom action bar. No instance table,
+				// no refresh button, no repeated guidance sentence.
+				const toolbar = h('div', { className: 'gbt-rolesheader', 'data-roles-header': 'true' },
+					h('div', { className: 'gbt-segmented', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-section': 'role-editor-kinds' }, ROLE_EDITOR_KINDS.map(function (entry) {
+						return h('button', { key: entry, type: 'button', className: 'gbt-seg', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
+					})),
+					h('div', { className: 'gbt-rolesheader-right' },
+						h('span', { className: 'gbt-pill' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')),
+						h('label', { className: 'gbt-editor-select' }, t('roleCurrentUse'),
+							h('select', {
+								key: 'current-use:' + controlKey,
+								className: 'gbt-input',
+								'data-role-use-select': 'true',
+								'data-field': 'current-use',
+								'data-stage': stage,
+								'data-bound': boundName === null ? '' : String(boundName),
+								defaultValue: useValue,
+								onChange: function (event) {
+									void chooseUse(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : '')
+								},
+							},
+								useOptions.length === 0
+									? h('option', { key: 'none', value: '' }, t('roleEditorNoProfile'))
+									: useOptions.map(function (name) { return h('option', { key: name, value: name }, name === kind ? t('roleUseDefault') : name) })))))
+				const identityRow = h('div', { className: 'gbt-editor-identity', 'data-editor-identity': 'true', 'data-kind': kind, 'data-profile': selectedName === null ? '' : String(selectedName), 'data-bound': boundName === null ? '' : String(boundName), 'data-draft': draft === null ? 'false' : 'true' })
 				const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
 					h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
 					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
-				const instanceRows = instances.map(function (instance) {
-					return h(RoleInstanceRow, {
-						key: instance.name,
-						name: instance.name,
-						kind: instance.kind,
-						status: instance.status,
-						t: t,
-						onDrain: function (name) {
-							void send('rolesDrain', { name: name })
-						},
-						onReplace: function (name) {
-							void send('rolesReplace', { name: name })
-						},
-					})
-				})
-				const instancesBlock = h(
-					'div',
-					{ key: 'instances', className: 'gbt-editorinstances', 'data-section': 'role-editor-instances' },
-					h('div', { className: 'gbt-subhead' }, t('roleEditorInstances') + ' · ' + roleKindLabel(kind, t)),
-					h(
-						'div',
-						{ className: 'gbt-tablewrap' },
-						h(
-							'table',
-							{ className: 'gbt-locktable', 'data-section': 'role-instances' },
-							h('thead', null, h('tr', null, h('th', null, t('roleName')), h('th', null, t('roleKind')), h('th', null, t('roleStatus')), h('th', null, ''))),
-							h('tbody', null, instanceRows.length === 0 ? h('tr', null, h('td', { colSpan: 4 }, t('roleInstancesEmpty'))) : instanceRows),
-						),
-					),
-				)
+				const instancesRow = h('label', { className: 'gbt-editorfield', 'data-section': 'role-editor-instances-field' }, t('roleInstancesCount'),
+					h('input', { key: 'instances:' + controlKey, ref: instancesRef, type: 'number', min: 1, max: 8, step: 1, className: 'gbt-input', 'data-field': 'instances', defaultValue: String(target !== null && Number.isInteger(target.instances) ? target.instances : 1), disabled: builtin || !editablePrompt }))
 				const blankCreate = h(
 					'details',
 					{ key: 'blank-create', className: 'gbt-createblank', 'data-section': 'role-create-blank' },
 					h('summary', null, t('roleEditorCreateBlank')),
 					h(RoleCreateForm, { t: t, onCreate: props.onCreateProfile, onInvalid: props.onCreateInvalid }),
 				)
+				const leftPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'raw' },
+					editablePrompt ? rawColumn() : builtinDefaultColumn(),
+					anchorsRow(),
+					h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow, instancesRow),
+					blankCreate)
+				const rightPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'injected' }, injectedColumn())
+				const runningNames = instances.filter(function (entry) { return entry.kind === kind }).map(function (entry) { return entry.name })
+				const runningRow = h('div', { className: 'gbt-footnote', 'data-role-running': 'true' },
+					t('roleRunningNow') + ': ' + (runningNames.length === 0 ? t('roleNoneRunning') : runningNames.join(', ')) + ' · ' + (boundName === kind ? t('roleFromDefault') : t('roleFromCopy')))
+				const draftNameRow = draft === null ? null : h('label', { className: 'gbt-editorfield', 'data-section': 'role-draft-name' }, t('roleDraftName'),
+					h('input', { key: 'draft-name:' + controlKey, className: 'gbt-input', 'data-field': 'draft-name', defaultValue: draft.name, spellCheck: false, onChange: function (event) {
+						const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : ''
+						if (roleEditorState.draft !== null) roleEditorState.draft.name = next
+					} }))
 				const modal = roleEditorState.skillsOpen === true
 					? h('div', { className: 'gbt-overlay', 'data-modal': 'role-skills' },
 							h('div', { className: 'gbt-modal' },
@@ -2506,58 +2593,34 @@ window.__ModuleLoader__.load({
 								}),
 								h('div', { className: 'gbt-formactions' }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-skills-save', onClick: saveSkills }, t('roleEditorSkillsSave')))))
 					: null
-				const identityRow = h(
-					'div',
-					{ className: 'gbt-editor-identity', 'data-editor-identity': 'true', 'data-kind': kind, 'data-profile': selectedName === null ? '' : String(selectedName), 'data-bound': boundName === null ? '' : String(boundName), 'data-draft': draft === null ? 'false' : 'true' },
-					h('span', { className: 'gbt-pill' }, t('roleKind') + ' · ' + roleKindLabel(kind, t)),
-					h('span', { className: 'gbt-pill' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')),
-					h(
-						'label',
-						{ className: 'gbt-editor-select' },
-						t('roleCurrentUse'),
-						h(
-							'select',
-							{
-								key: 'current-use:' + controlKey,
-								className: 'gbt-input',
-								'data-role-use-select': 'true',
-								'data-field': 'current-use',
-								'data-stage': stage,
-								'data-bound': boundName === null ? '' : String(boundName),
-								defaultValue: useValue,
-								onChange: function (event) {
-									void chooseUse(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : '')
-								},
-							},
-							useOptions.length === 0
-								? h('option', { key: 'none', value: '' }, t('roleEditorNoProfile'))
-								: useOptions.map(function (name) { return h('option', { key: name, value: name }, name === kind ? t('roleUseDefault') : name) }),
-						),
-					),
-					builtin || draft !== null || selectedName === null || profiles[selectedName] === undefined
-						? null
-						: h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesDelete', 'data-role-delete-copy': 'true', onClick: function () { void remove() } }, t('roleDeleteThis')),
-				)
-				// Save is the only primary action; switching "current use" is one pick.
-				// Forking lives in the built-in prompt panel (its contextual empty-state CTA).
-				const actions = h(
-					'div',
-					{ className: 'gbt-rowactions', 'data-section': 'role-editor-actions' },
-					h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-editor-save', onClick: function () { void save() } }, t('roleSave')),
-				)
-				return h('div', { className: 'gbt-roleeditor', 'data-editor': 'true', 'data-kind': kind },
-					h('p', { className: 'gbt-footnote' }, t('roleEditorHint')),
-					roleEditorState.notice === null ? null : roleResultBanner(roleEditorState.notice, t),
-					h('div', { className: 'gbt-segmented', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-section': 'role-editor-kinds' }, ROLE_EDITOR_KINDS.map(function (entry) {
-						return h('button', { key: entry, type: 'button', className: 'gbt-seg', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
-					})),
+				const saveButton = h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-editor-save', onClick: function () { void save() } }, t('roleSave'))
+				const discardButton = h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-discard', onClick: discardDraft }, t('roleDiscard'))
+				const forkButton = builtin
+					? h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-fork', 'data-role-empty-fork': 'true', onClick: fork }, t('roleEmptyCopy'))
+					: null
+				const deleteButton = draft === null && editablePrompt && selectedName !== null && profiles[selectedName] !== undefined
+					? h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesDelete', 'data-role-delete-copy': 'true', onClick: function () { void remove() } }, t('roleDeleteThis'))
+					: null
+				const actionBar = h('div', { className: 'gbt-rolesactions', 'data-roles-actions': 'true' },
+					h('div', { className: 'gbt-rolesactions-left' },
+						draft !== null ? discardButton : null,
+						draft !== null || (editablePrompt && selectedName !== null) ? saveButton : null,
+						draftNameRow),
+					h('div', { className: 'gbt-rolesactions-right' }, forkButton, deleteButton))
+				const stateHint = draft !== null
+					? h('div', { className: 'gbt-footnote', 'data-role-draft-hint': 'true' }, t('roleDraftHint'))
+					: roleEditorState.applySkipped === true
+						? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleUsePendingNextDispatch'))
+						: null
+				return h('div', { className: 'gbt-roleeditor', 'data-editor': 'true', 'data-kind': kind, 'data-draft': draft === null ? 'false' : 'true' },
+					toolbar,
 					identityRow,
-					actions,
-					roleEditorState.applySkipped === true ? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleUsePendingNextDispatch')) : null,
-					prompts,
-					skillsRow,
-					instancesBlock,
-					blankCreate,
+					h('div', { className: 'gbt-rolescroll', 'data-roles-scroll': 'true' },
+						h('div', { className: 'gbt-rolespanes', 'data-roles-panes': 'true', 'data-role-layout': 'split' }, leftPane, rightPane),
+						runningRow),
+					roleEditorState.notice === null ? null : roleResultBanner(roleEditorState.notice, t),
+					stateHint,
+					actionBar,
 					modal)
 			}
 
@@ -2601,27 +2664,12 @@ window.__ModuleLoader__.load({
 				if (config === null) {
 					return h('div', null, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
 				}
-				const refreshButton = h(
-					'button',
-					{
-						type: 'button',
-						className: 'gbt-btn',
-						'data-action': 'rolesList',
-						onClick: function () {
-							void run('rolesList', {})
-						},
-					},
-					t('roleRefresh'),
-				)
 				return h(
 					'div',
 					{ className: 'gbt-rolesview' },
-					h('p', { key: 'hint', className: 'gbt-footnote' }, t('rolesHint')),
-					roleResultBanner(result, t) || roleResultBanner(hostError, t) || roleResultBanner(hostResult, t),
 					roleCard({
 						id: 'editor',
 						title: t('roleEditor'),
-						aside: h('div', { className: 'gbt-rheadactions' }, refreshButton),
 						children: h(RolesEditor, {
 							t: t,
 							snapshot: snapshot,
