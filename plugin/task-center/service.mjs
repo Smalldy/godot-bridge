@@ -26,6 +26,7 @@ import {
   TASK_LEASE_REMINDER_MS,
   normaliseDispatch,
   normaliseMerge,
+  normaliseVerify,
 } from './schema.mjs'
 
 const iso = (now) => new Date(now).toISOString()
@@ -118,6 +119,16 @@ export function validateDepends(board, taskId, dependsOn) {
 export function createTask(board, input, now, by) {
   const title = String(input.title === undefined ? '' : input.title).trim()
   if (title === '') return fail('missing-title', 'a task needs a title')
+  // A declaration that cannot be normalised is a TYPO, not "no declaration":
+  // silently dropping it would hand the work back to the tester with no
+  // mechanical baseline at all.
+  const declaredVerify = normaliseVerify(input.verify)
+  if (input.verify !== undefined && input.verify !== null && declaredVerify === null) {
+    return fail(
+      'invalid-verify',
+      'verify must be { command: "a shell command", timeoutMs?: number } or null; got ' + JSON.stringify(input.verify),
+    )
+  }
   const checked = validateDepends(board, undefined, input.dependsOn)
   if (checked.ok !== true) return checked
   const next = clone(board)
@@ -132,6 +143,7 @@ export function createTask(board, input, now, by) {
     priority: Number.isFinite(input.priority) ? Math.floor(input.priority) : 0,
     dependsOn: checked.dependsOn,
     writeFiles: normaliseList(input.writeFiles),
+    verify: declaredVerify,
     base: null,
     target: null,
     branch: null,
@@ -192,6 +204,12 @@ export function updateTask(board, id, input, now, by) {
     if (checked.ok !== true) return checked
   }
   if (input.title !== undefined && String(input.title).trim() === '') return fail('missing-title', 'a task needs a title')
+  if (input.verify !== undefined && input.verify !== null && normaliseVerify(input.verify) === null) {
+    return fail(
+      'invalid-verify',
+      'verify must be { command: "a shell command", timeoutMs?: number } or null; got ' + JSON.stringify(input.verify),
+    )
+  }
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   const notes = []
@@ -209,6 +227,12 @@ export function updateTask(board, id, input, now, by) {
   if (input.writeFiles !== undefined) {
     target.writeFiles = normaliseList(input.writeFiles)
     notes.push('files: ' + (target.writeFiles.length === 0 ? 'none' : target.writeFiles.join(', ')))
+  }
+  // `verify` is an ordinary task field (not host-only): the worker or the user
+  // declares it, and null clears it back to the tester-runs-the-suite flow.
+  if (input.verify !== undefined) {
+    target.verify = normaliseVerify(input.verify)
+    notes.push('verify: ' + (target.verify === null ? 'none' : target.verify.command))
   }
   touch(target, now)
   pushHistory(target, {
@@ -866,6 +890,7 @@ export function summary(board, task, now) {
     dependsOn: task.dependsOn,
     dependency: dependency,
     writeFiles: task.writeFiles,
+    verify: task.verify,
     worktree: task.worktree,
     worktreeError: task.worktreeError,
     branch: task.branch,

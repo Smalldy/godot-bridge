@@ -241,6 +241,46 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   mergeRig.scheduler.dispose()
 }
 
+// ── the host mechanical verification is declarable through the tool ─────────
+{
+  const declared = rig.tool.parameters.verify
+  check(
+    'the tool exposes the verify parameter',
+    declared !== undefined && Array.isArray(declared.oneOf) && declared.oneOf.length === 2,
+    JSON.stringify(declared === undefined ? 'missing' : Object.keys(declared)),
+  )
+  const objectBranch = declared === undefined ? undefined : declared.oneOf.filter((branch) => branch.type === 'object')[0]
+  check(
+    'the verify parameter names a command and an optional timeout',
+    objectBranch !== undefined && objectBranch.properties.command.type === 'string' && objectBranch.properties.timeoutMs.type === 'number',
+    JSON.stringify(objectBranch === undefined ? 'missing object branch' : Object.keys(objectBranch.properties)),
+  )
+  check(
+    'the verify parameter can be cleared with null',
+    declared !== undefined && declared.oneOf.some((branch) => branch.type === 'null'),
+    JSON.stringify(declared === undefined ? 'missing' : declared.oneOf.map((branch) => branch.type)),
+  )
+  check(
+    'the verify description says the HOST runs the command',
+    String(declared === undefined ? '' : declared.description).indexOf('HOST executes the command') >= 0,
+    String(declared === undefined ? '' : declared.description).slice(0, 200),
+  )
+}
+
+{
+  const created = await call({ action: 'create', title: 'verify card', verify: { command: 'npm run verify && npm run e2e', timeoutMs: 120000 } })
+  check(
+    'create carries the verify declaration through the tool',
+    created.ok === true &&
+      created.task.verify !== null &&
+      created.task.verify.command === 'npm run verify && npm run e2e' &&
+      created.task.verify.timeoutMs === 120000,
+    JSON.stringify(created),
+  )
+  const cleared = await call({ action: 'update', id: created.task.id, verify: null })
+  check('update clears the verify declaration through the tool', cleared.ok === true && cleared.task.verify === null, JSON.stringify(cleared))
+}
+
 if (typeof disposer === 'function') disposer()
 rig.scheduler.dispose()
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

@@ -32,6 +32,7 @@ import {
   normaliseReview,
   normaliseRoleConfig,
   normaliseTest,
+  normaliseVerify,
 } from './schema.mjs'
 
 export { BOARD_DIRECTORY, BOARD_FILENAME, BOARD_VERSION, MAX_BOARD_BYTES, MAX_HISTORY, ROLE_CONFIG_FILENAME }
@@ -218,6 +219,9 @@ function normaliseTask(raw, index, now) {
       priority: Number.isFinite(raw.priority) ? Math.floor(raw.priority) : 0,
       dependsOn: dependsOn,
       writeFiles: writeFiles,
+      // The optional mechanical-verification declaration. Absent (null) keeps the
+      // historical flow where the tester runs the suite itself.
+      verify: normaliseVerify(raw.verify),
       base: typeof raw.base === 'string' ? raw.base : null,
       target: typeof raw.target === 'string' ? raw.target : null,
       branch: typeof raw.branch === 'string' ? raw.branch : null,

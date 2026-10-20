@@ -139,6 +139,30 @@ check(
     registered.invocation !== undefined && registered.invocation !== null && registered.invocation.modelInvocable === true && registered.invocation.userInvocable === true,
     JSON.stringify(registered.invocation),
   )
+  // The registry validates `source` only when the skill is LOADED (get() ->
+  // validateDefinition), so a registration without it appears in the catalog and
+  // then fails with 'loaded skill "<name>" source must be a string'. Assert the
+  // load-time shape here so that defect cannot come back.
+  check(
+    'the registration carries the source string the registry validates on load',
+    typeof registered.source === 'string' && registered.source.length > 0,
+    String(registered.source),
+  )
+  check(
+    'the registration satisfies the load-time shape (name/description/source/content/invocation)',
+    typeof registered.name === 'string' &&
+      /^[a-z][a-z0-9-]*$/.test(registered.name) &&
+      typeof registered.description === 'string' &&
+      registered.description.length > 0 &&
+      typeof registered.source === 'string' &&
+      registered.source.length > 0 &&
+      typeof registered.content === 'string' &&
+      registered.content.length > 0 &&
+      registered.invocation !== undefined &&
+      registered.invocation.modelInvocable === true &&
+      registered.invocation.userInvocable === true,
+    JSON.stringify({ name: registered.name, source: registered.source, contentLength: registered.content === undefined ? 0 : registered.content.length }),
+  )
   check('the registered body is the generated body, not a hand-written copy', registered.content === generated)
   {
     const bytes = Buffer.byteLength(generated, 'utf8')

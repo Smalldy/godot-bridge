@@ -194,6 +194,55 @@ export const TEST_TIMEOUT_MS = 20 * 60 * 1000
  * action or the serialised merge queue forever. */
 export const HOST_ACTION_TIMEOUT_MS = 2 * 60 * 1000
 
+/**
+ * Mechanical verification (the task's optional `verify` declaration).
+ *
+ * A task may name the command that proves it mechanically ("npm run verify").
+ * The HOST runs it in the test candidate BEFORE any tester is involved: a
+ * command that exits 0 or not is not a judgement call, so spending a tester
+ * round (and its 20-minute watchdog) on it was the wrong place for it. A task
+ * without the field keeps the historical flow, where the tester runs the suite
+ * itself.
+ */
+export const VERIFY_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
+/** The task keeps only the TAIL of the command output (the part that explains a
+ * failure), never the whole log. */
+export const VERIFY_TAIL_BYTES = 4 * 1024
+/** Output collected while the command runs; the tail is cut from this. */
+export const VERIFY_COLLECT_BYTES = 256 * 1024
+
+/** One task's mechanical-verification declaration, or null. A blank command is
+ * no declaration at all, so a broken board degrades instead of running "". */
+export function normaliseVerify(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const command = typeof raw.command === 'string' ? raw.command.trim() : ''
+  if (command === '') return null
+  const out = { command: command }
+  if (Number.isFinite(raw.timeoutMs) && raw.timeoutMs > 0) out.timeoutMs = Math.floor(raw.timeoutMs)
+  return out
+}
+
+/**
+ * The host's record of one mechanical-verification run, or null.
+ *
+ * `timedOut` is separate from `exitCode` on purpose: a killed command has no
+ * exit code, and reporting a made-up 1 would hide the difference between "the
+ * suite failed" and "the suite never finished".
+ */
+export function normaliseHostCheck(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const command = typeof raw.command === 'string' ? raw.command : ''
+  if (command === '') return null
+  return {
+    command: command,
+    exitCode: Number.isFinite(raw.exitCode) ? Math.floor(raw.exitCode) : null,
+    timedOut: raw.timedOut === true,
+    durationMs: Number.isFinite(raw.durationMs) ? Math.max(0, Math.floor(raw.durationMs)) : null,
+    tail: typeof raw.tail === 'string' ? raw.tail : '',
+    at: typeof raw.at === 'string' ? raw.at : null,
+  }
+}
+
 /** The project-level role profile file (optional; defaults apply when absent). */
 export const ROLE_CONFIG_FILENAME = 'roles.json'
 export const ROLE_CONFIG_VERSION = 1
@@ -511,6 +560,9 @@ export function normaliseTest(raw) {
     at: typeof raw.at === 'string' ? raw.at : null,
     evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
     attempt: phaseAttempt(raw.attempt),
+    // The host's own mechanical check of this round (see runHostCheck). Optional:
+    // an older board or a task without `verify` has none.
+    hostCheck: normaliseHostCheck(raw.hostCheck),
   }
 }
 

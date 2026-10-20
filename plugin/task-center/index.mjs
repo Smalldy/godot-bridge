@@ -233,6 +233,10 @@ export function apply(ctx) {
       name: SKILL_NAME,
       description: SKILL_DESCRIPTION,
       whenToUse: SKILL_WHEN_TO_USE,
+      // `source` is REQUIRED by the registry's LOAD-time validation: register()
+      // itself only checks name/description/invocation, but loading the skill
+      // fails with 'loaded skill "<name>" source must be a string' without it.
+      source: 'runtime',
       content: buildSkillContent({
         actions: ACTIONS,
         agentActions: AGENT_ACTIONS,
