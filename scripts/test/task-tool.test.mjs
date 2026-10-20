@@ -4,6 +4,8 @@ import { register } from 'node:module'
 register('./stubs/hooks.mjs', import.meta.url)
 
 const { registerTaskTool, agentLabel, projectPathOf } = await import('../../plugin/task-center/tool.mjs')
+const { SKILL_NAME, buildSkillContent } = await import('../../plugin/task-center/skill.mjs')
+const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
 const { createRig, createTask } = await import('./support/fixtures.mjs')
 
 let failures = 0
@@ -44,20 +46,50 @@ check(
 )
 {
   const description = String(rig.tool.description === undefined ? '' : rig.tool.description)
+  check('the tool description routes the model to the skill first', description.indexOf(SKILL_NAME) >= 0, description.slice(0, 240))
+  check(
+    'the tool description still enumerates every agent action',
+    AGENT_ACTIONS.every((action) => description.indexOf(action) >= 0),
+    AGENT_ACTIONS.filter((action) => description.indexOf(action) < 0).join(','),
+  )
+  check('the tool description is a router, not the manual', description.length <= 1400, String(description.length))
+  check(
+    'the role/harness/template prose left the description',
+    ['provisions a missing role', 'godot_run_headless', '{{TASK_ID}}', 'per-round brief', 'skillsCatalog', 'merger-only'].every((needle) => description.indexOf(needle) < 0),
+    ['provisions a missing role', 'godot_run_headless', '{{TASK_ID}}', 'per-round brief', 'skillsCatalog', 'merger-only'].filter((needle) => description.indexOf(needle) >= 0).join(','),
+  )
   check('the tool says dependencies must be merged, not just done', description.indexOf('done and merged') >= 0, description.slice(0, 300))
-  check('the tool says refreshMerge re-bases on the target head', description.indexOf('re-bases it on the target') >= 0, description.slice(0, 300))
-  check(
-    'the tool describes the reviewer hand-off',
-    description.indexOf('per-round brief') >= 0 && description.indexOf('read-only') >= 0,
-    description.slice(0, 600),
-  )
+  check('the tool description keeps the start-consent routing', description.indexOf('needs-consent') >= 0 && description.indexOf('panel') >= 0, description.slice(-260))
   check('requestChanges carries explicit reasons', rig.tool.parameters.reasons !== undefined, JSON.stringify(rig.tool.parameters.reasons))
-  check(
-    'the tool describes the candidate tester workflow and Godot launches',
-    description.indexOf('test candidate') >= 0 && description.indexOf('godot_run_headless') >= 0 && description.indexOf('passTest') >= 0,
-    description.slice(0, 1400),
-  )
   check('the tool no longer describes a host verification gate', description.indexOf('after verification') < 0, description.slice(0, 1400))
+  check('the enum is the registry, not a second list', actions.join(',') === AGENT_ACTIONS.join(','), actions.join(','))
+}
+
+// ── the skill body is generated from the same registry ─────────────────────
+{
+  const content = buildSkillContent({ actions: ACTIONS, agentActions: AGENT_ACTIONS, readActions: READ_ACTIONS, userOnlyActions: USER_ONLY_ACTIONS })
+  check(
+    'the skill body names every agent action',
+    AGENT_ACTIONS.every((action) => content.indexOf('`' + action + '`') >= 0),
+    AGENT_ACTIONS.filter((action) => content.indexOf('`' + action + '`') < 0).join(','),
+  )
+  check(
+    'the skill body carries every read action',
+    READ_ACTIONS.filter((action) => USER_ONLY_ACTIONS.indexOf(action) < 0).every((action) => content.indexOf('`' + action + '`') >= 0),
+    READ_ACTIONS.filter((action) => content.indexOf('`' + action + '`') < 0).join(','),
+  )
+  {
+    const userLine = content.split('\n').filter((line) => line.indexOf('仅用户') >= 0)[0] || ''
+    const tokens = (userLine.match(/`([^`]+)`/g) || []).map((token) => token.slice(1, -1))
+    check('the skill user-only section lists every user action', USER_ONLY_ACTIONS.every((action) => tokens.indexOf(action) >= 0), tokens.join(','))
+    check('the skill user-only section lists nothing but user actions', tokens.length > 0 && tokens.every((token) => USER_ONLY_ACTIONS.indexOf(token) >= 0), tokens.join(','))
+  }
+  check(
+    'the skill body carries the narrative the description gave up',
+    ['候选 worktree', 'godot_run_headless', '{{TASK_ID}}', 'invalid-role-variable', 'merger-only', 'head-drift'].every((needle) => content.indexOf(needle) >= 0),
+    ['候选 worktree', 'godot_run_headless', '{{TASK_ID}}', 'invalid-role-variable', 'merger-only', 'head-drift'].filter((needle) => content.indexOf(needle) < 0).join(','),
+  )
+  check('the description no longer duplicates the manual', String(rig.tool.description).indexOf('候选 worktree') < 0)
 }
 check('the old setStatus vocabulary is gone', actions.indexOf('setStatus') < 0, actions.join(','))
 check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && actions.indexOf('forceUnlock') >= 0)
@@ -67,18 +99,14 @@ check(
   actions.join(','),
 )
 {
-  const description = String(rig.tool.description === undefined ? '' : rig.tool.description)
+  const content = buildSkillContent({ actions: ACTIONS, agentActions: AGENT_ACTIONS, readActions: READ_ACTIONS, userOnlyActions: USER_ONLY_ACTIONS })
   check(
-    'the tool documents the prompt template variables and the refusal code',
-    description.indexOf('{{TASK_ID}}') >= 0 && description.indexOf('{{SPEC}}') >= 0 && description.indexOf('invalid-role-variable') >= 0,
-    description.slice(-600),
+    'the skill documents the prompt template variables and the refusal code',
+    content.indexOf('{{TASK_ID}}') >= 0 && content.indexOf('{{SPEC}}') >= 0 && content.indexOf('invalid-role-variable') >= 0,
+    content.slice(-600),
   )
-  check(
-    'the tool says the fixed brief sections are host-generated',
-    description.indexOf('host-generated') >= 0 && description.indexOf('never template output') >= 0,
-    description.slice(-600),
-  )
-  check('the tool names the read-only skills catalog for the panel', description.indexOf('skillsCatalog') >= 0 && description.indexOf('skills-unavailable') >= 0, description.slice(-500))
+  check('the skill says the fixed brief sections are host-generated', content.indexOf('固定头部') >= 0, content.slice(-400))
+  check('the skill names the read-only skills catalog for the panel', content.indexOf('skillsCatalog') >= 0 && content.indexOf('skills-unavailable') >= 0, content.slice(-400))
 }
 check(
   'the tool exposes the isolated DSH harness',

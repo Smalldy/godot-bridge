@@ -8,6 +8,7 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { AGENT_ACTIONS, READ_ACTIONS } from './api.mjs'
+import { SKILL_NAME } from './skill.mjs'
 
 /** A stable display label from the only identity the tool layer exposes. */
 export function agentLabel(agent) {
@@ -35,31 +36,18 @@ export function projectPathOf(ctx, agent) {
   return null
 }
 
-const DESCRIPTION = [
-  'Project task board with dependency-driven dispatch and file locks.',
-  'Actions: board (overview), list, get, create, update, delete,',
-  'pause (immediate), tick (one scheduler pass), submit (an assignee reports the work done and enters REVIEW),',
-  'approveReview (reviewer approves: the task enters TESTING), requestChanges (reviewer sends it back to running with reasons — the worker fixes it in the same worktree),',
-  'when a task enters review the host provisions a reviewer role and sends it a per-round brief (spec/acceptance, the diff, declared vs actual files, the worker evidence, conventions and the review checklist); the reviewer is read-only and cannot edit, commit, merge or push,',
-  'when the review is approved the host builds the independent test candidate from the target head plus the task branch (.worktrees/test-<id>), provisions the tester and sends a test brief with the acceptance criteria, candidate path/branch, test plan/runbook and evidence format; the tester may launch the candidate Godot project (godot_run_headless for a headless smoke test, godot_run_project interactively — never through pwsh/bash), is read-only on implementation and records passTest or failTest with evidence (failTest returns the task to running with that evidence; a target that moved after the test invalidates the verdict and forces a retest),',
-  'passTest (the host merges the accepted candidate immediately when the target has not moved; the merge turns the task DONE) and failTest —',
-  'mergeRequest (manually integrate the tester-accepted candidate) and rejectMerge —',
-  'mergeRequest/rejectMerge are reserved for the user or the Team member named "merger" (every other agent gets merger-only);',
-  'mergeRequest refuses with review-required/test-required/test-failed until the task is in TESTING with a passed test,',
-  'refuses with head-drift when the task branch has moved past the head the merge request recorded,',
-  'and refreshMerge (its owner, the user or the merger) re-points an open request at the branch head and re-bases it on the target branch\'s current head, refreshing its commit and changed files and starting a fresh review round, without committing, merging or pushing;',
-  'when a submit opens a merge request the merger is notified directly,',
-  'cancel, reopen, block, unblock, retry, cancelStartRequest,',
-  'lock / unlock / locks / forceUnlock, openProject.',
-  'start does not start dispatch for an agent: it records a request, and the user approves it in the task center panel.',
-  'Dependencies: B.dependsOn=[A] means A must be done and merged (when A has a merge request) before B runs.',
-  'A task only runs while dispatch is started; the scheduler acquires its writeFiles locks first.',
-  'Roles: the host keeps worker/reviewer/tester profiles (implement/review/test stages, one instance each by default, configurable in the project .agents/roles.json and the default profile is worker). It provisions a missing role through the live Lead automatically and replaces a dead or timed-out one — no manual spawn is needed. Reviewer and tester are read-only independent contexts: only a reviewer may approveReview/requestChanges and only a tester may passTest/failTest (the user may do either); a worker must never review or test its own task, and a reviewer/tester cannot commit, merge or change implementation.',
-  'Role administration is USER-ONLY: rolesList / rolesCreate / rolesUpdate / rolesDelete / rolesBind / rolesDrain / rolesReplace / rolesReset manage the project .agents/roles.json profiles (role kind, stage, skills, context, permissions, instances, prompt), stage bindings and role instances; the host drains an old instance and spawns its replacement through the live Lead. These actions are hidden from the tool and refused for agents.',
-  'A profile prompt is a TEMPLATE: it may inject {{TASK_ID}} {{TASK_TITLE}} {{SPEC}} {{COMPLETIONS_DEF}} {{GIT_INFO}} {{PROJECT}} {{LEAD}} {{ROLE}} {{STAGE}}; a save that mentions any other {{NAME}} is refused with invalid-role-variable and the allowed list. The fixed header, the task data and the duties/permission-boundary/verdict sections are host-generated, never template output.',
-  'skillsCatalog is another USER-ONLY read-only action: it lists the host skill registry (ctx.get("skills").list) for the panel skills dialog, and reports a readable skills-unavailable when that service is missing or fails.',
-  'The tester (or the user) drives an ISOLATED DSH test instance with harnessStart / harnessStop / harnessRestart / harnessStatus / harnessSmoke: a throwaway DSH_HOME/profile, its own free port and its own project copy, started through the host subprocess service (candidate plugin installed into the test profile). It never touches the production profile, session or port, records the DSH source version against the production version and reports version-mismatch instead of a pass, and smoke-checks the page, plugin row and task-center state/action routes. It does not start Godot.',
-].join(' ')
+// The description is a ROUTER, not the manual: what this is, the action enum,
+// and where to read the rest. The workflow, the role matrix, the pipeline
+// details and the refusal codes live in the runtime skill (skill.mjs), whose
+// body is generated from this very action registry — one source, no drift —
+// while the enum below stays because the model routes on it before loading
+// anything.
+const DESCRIPTION =
+  'Project task board with dependency-driven dispatch, file locks and a review/test/merge pipeline; every task runs in its own git worktree. ' +
+  'Read the skill "' + SKILL_NAME + '" first (skill tool): it carries the workflow, the action matrix, the write-card rules and the refusal codes. ' +
+  'Actions: ' + AGENT_ACTIONS.join(', ') + '. ' +
+  'start only records a dispatch request until the user approves it in the task center panel (needs-consent is not a failure). ' +
+  'Dependencies: B.dependsOn=[A] means A must be done and merged before B runs.'
 
 export function registerTaskTool(ctx, options) {
   const opts = options === undefined ? {} : options

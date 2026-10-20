@@ -1,11 +1,14 @@
-// Activation test: the task-center row must wire its tool, routes, timer and
-// event listener without a live host. This is the seam unit tests skip.
+// Activation test: the task-center row must wire its tool, routes, timer, event
+// listener, runtime skill and always-on rules without a live host. This is the
+// seam unit tests skip.
 
 import { register } from 'node:module'
 register('./stubs/hooks.mjs', import.meta.url)
 
 const { apply } = await import('../../plugin/task-center/index.mjs')
 const { createFakeFs, PROJECT } = await import('./support/fixtures.mjs')
+const { SKILL_NAME, buildSkillContent } = await import('../../plugin/task-center/skill.mjs')
+const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
 
 let failures = 0
 function check(label, condition, detail) {
@@ -21,6 +24,10 @@ const routes = []
 const effects = []
 const disposers = []
 const listeners = []
+const skillRegistrations = []
+const skillDisposals = []
+const promptSections = []
+const requestedServices = []
 const ctx = {
   fs: createFakeFs(),
   sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
@@ -46,6 +53,29 @@ const ctx = {
     const disposer = callback()
     if (typeof disposer === 'function') disposers.push({ label, disposer })
     return disposer
+  },
+  inject(deps, callback) {
+    requestedServices.push(deps.join(','))
+    if (deps.indexOf('skills') >= 0) {
+      callback({
+        skills: {
+          register(spec) {
+            skillRegistrations.push(spec)
+            return function () { skillDisposals.push(String(spec === undefined || spec === null ? '' : spec.name)) }
+          },
+        },
+      })
+    }
+    if (deps.indexOf('systemPrompt') >= 0) {
+      callback({
+        systemPrompt: {
+          section(spec) {
+            promptSections.push(spec)
+            return function () {}
+          },
+        },
+      })
+    }
   },
   get(key) {
     if (key === 'agents') return { list: () => [] }
@@ -80,33 +110,98 @@ check(
   tools[0].parameters.action.enum.indexOf('mergeRequest') >= 0 && tools[0].parameters.action.enum.indexOf('rejectMerge') >= 0,
   tools[0].parameters.action.enum.join(','),
 )
+
+// ── the runtime skill: registered from the live action registry ─────────────
+{
+  const generated = buildSkillContent({
+    actions: ACTIONS,
+    agentActions: AGENT_ACTIONS,
+    readActions: READ_ACTIONS,
+    userOnlyActions: USER_ONLY_ACTIONS,
+  })
+  const registered = skillRegistrations[0] === undefined ? {} : skillRegistrations[0]
+  check('the row registers exactly one runtime skill', skillRegistrations.length === 1, String(skillRegistrations.length))
+  check('the skill is named ' + SKILL_NAME, registered.name === SKILL_NAME && SKILL_NAME === 'godot-bridge-task-center', String(registered.name))
+  check('the skill carries a routing description', typeof registered.description === 'string' && registered.description.length > 10, String(registered.description))
+  check('the skill carries a whenToUse hint', typeof registered.whenToUse === 'string' && registered.whenToUse.length > 10, String(registered.whenToUse))
+  check('the skill body is not empty', typeof registered.content === 'string' && registered.content.length > 2000, String(registered.content === undefined ? 'undefined' : registered.content.length))
+  check(
+    'the skill is invocable by the model and by the user',
+    registered.invocation !== undefined && registered.invocation !== null && registered.invocation.modelInvocable === true && registered.invocation.userInvocable === true,
+    JSON.stringify(registered.invocation),
+  )
+  check('the registered body is the generated body, not a hand-written copy', registered.content === generated)
+  {
+    const bytes = Buffer.byteLength(generated, 'utf8')
+    check('the body stays inside its 6-8KB budget', bytes >= 6000 && bytes <= 8192, String(bytes) + ' bytes')
+  }
+  check(
+    'the body names every agent action',
+    AGENT_ACTIONS.every((action) => generated.indexOf('`' + action + '`') >= 0),
+    AGENT_ACTIONS.filter((action) => generated.indexOf('`' + action + '`') < 0).join(','),
+  )
+  {
+    const userLine = generated.split('\n').filter((line) => line.indexOf('仅用户') >= 0)[0] || ''
+    const tokens = (userLine.match(/`([^`]+)`/g) || []).map((token) => token.slice(1, -1))
+    check('the user-only section lists every user action', USER_ONLY_ACTIONS.every((action) => tokens.indexOf(action) >= 0), tokens.join(','))
+    check('the user-only section lists nothing but user actions', tokens.length > 0 && tokens.every((token) => USER_ONLY_ACTIONS.indexOf(token) >= 0), tokens.join(','))
+  }
+  check(
+    'the body carries the workflow the tool description no longer repeats',
+    ['worker / reviewer / tester', 'implement / review / test', '.agents/roles.json', 'provision', '候选 worktree', 'godot_run_headless', '立即合并'].every(
+      (needle) => generated.indexOf(needle) >= 0,
+    ),
+    ['worker / reviewer / tester', 'implement / review / test', '.agents/roles.json', 'provision', '候选 worktree', 'godot_run_headless', '立即合并'].filter((needle) => generated.indexOf(needle) < 0).join(','),
+  )
+  check(
+    'the body carries the verdict gates and the refusal codes',
+    ['worker-cannot-self-review', 'worker-cannot-self-test', 'merger-only', 'user-only', 'head-drift', 'needs-consent', 'worktree-*', 'test-required'].every(
+      (needle) => generated.indexOf(needle) >= 0,
+    ),
+    ['worker-cannot-self-review', 'worker-cannot-self-test', 'merger-only', 'user-only', 'head-drift', 'needs-consent', 'worktree-*', 'test-required'].filter((needle) => generated.indexOf(needle) < 0).join(','),
+  )
+  check('the body keeps the prompt-template contract', generated.indexOf('{{TASK_ID}}') >= 0 && generated.indexOf('invalid-role-variable') >= 0)
+  check('the body keeps the Godot launch rule', generated.indexOf('pwsh') >= 0 && generated.indexOf('sandbox-crash') >= 0)
+}
+
+// ── the always-on rules: four lines, namespaced, ordered after the main row ──
+{
+  const section = promptSections[0] === undefined ? {} : promptSections[0]
+  check('the row adds exactly one always-on section', promptSections.length === 1, String(promptSections.length))
+  check('the section name is namespaced to this plugin', typeof section.name === 'string' && section.name.indexOf('godot-bridge:') === 0, String(section.name))
+  check('the section sits after the main row sections', section.order === 155, String(section.order))
+  const text = typeof section.text === 'string' ? section.text : ''
+  check(
+    'the rules cover the four things an agent must never get wrong',
+    ['start', 'needs-consent', 'reviewer', 'tester', 'worktree', 'target', '.agents/tasks.json'].every((needle) => text.indexOf(needle) >= 0),
+    text,
+  )
+  check('the rules point at the skill', text.indexOf(SKILL_NAME) >= 0, text)
+  check('the rules stay short', text.length < 900, String(text.length))
+}
+
+// ── the tool description is a router, not the manual ────────────────────────
+{
+  const description = String(tools[0].description === undefined ? '' : tools[0].description)
+  check('the tool description sends the model to the skill', description.indexOf(SKILL_NAME) >= 0, description.slice(0, 200))
+  check(
+    'the tool description still enumerates every agent action',
+    AGENT_ACTIONS.every((action) => description.indexOf(action) >= 0),
+    AGENT_ACTIONS.filter((action) => description.indexOf(action) < 0).join(','),
+  )
+  check('the tool description stays short', description.length <= 1400, String(description.length))
+  check(
+    'the long role/harness/template narrative moved out of the description',
+    ['provisions a missing role', 'godot_run_headless', '{{TASK_ID}}', 'per-round brief', 'rolesList'].every((needle) => description.indexOf(needle) < 0),
+    ['provisions a missing role', 'godot_run_headless', '{{TASK_ID}}', 'per-round brief', 'rolesList'].filter((needle) => description.indexOf(needle) >= 0).join(','),
+  )
+  check('the description keeps the start-consent routing', description.indexOf('needs-consent') >= 0 && description.indexOf('panel') >= 0, description.slice(-300))
+  check('the description still says dependencies must be merged', description.indexOf('done and merged') >= 0)
+}
+
 {
   const { MERGER_NAME, createRoleManager, roleKindOf } = await import('../../plugin/task-center/dispatch.mjs')
   check('the merger is a fixed role name', MERGER_NAME === 'merger', String(MERGER_NAME))
-  const description = String(tools[0].description === undefined ? '' : tools[0].description)
-  check(
-    'the tool description tells agents the merge actions are merger-only',
-    description.indexOf('merger') >= 0 && description.indexOf('merger-only') >= 0,
-    description.slice(0, 200),
-  )
-  check(
-    'the tool description explains the worker/reviewer/tester profiles',
-    description.indexOf('worker/reviewer/tester') >= 0 && description.indexOf('implement/review/test') >= 0,
-    description.slice(-700),
-  )
-  check(
-    'the tool description says the host provisions roles, not the Lead',
-    description.indexOf('provisions a missing role') >= 0 && description.indexOf('no manual spawn') >= 0,
-    description.slice(-700),
-  )
-  check('the tool description names the project role file', description.indexOf('.agents/roles.json') >= 0, description.slice(-700))
-  check(
-    'the tool description explains the tester candidate workflow',
-    description.indexOf('test candidate') >= 0 && description.indexOf('godot_run_headless') >= 0 && description.indexOf('host merges the accepted candidate') >= 0,
-    description.slice(0, 1400),
-  )
-  check('the tool description no longer claims a host verification gate', description.indexOf('after verification') < 0, description.slice(0, 1400))
-  check('the tool description states the hard verdict gates', description.indexOf('worker must never review or test its own task') >= 0, description.slice(-700))
   check('role names map to kinds', roleKindOf('reviewer-1') === 'reviewer' && roleKindOf('tester-12') === 'tester' && roleKindOf('work-T-1-1') === null)
   const noService = createRoleManager({ get: () => undefined })
   const refused = await noService.ensure('reviewer', {})
@@ -155,6 +250,7 @@ try {
   teardownError = error
 }
 check('teardown runs without throwing', teardownError === null, teardownError && teardownError.message)
+check('teardown disposes the skill registration', skillDisposals.length === 1 && skillDisposals[0] === SKILL_NAME, JSON.stringify(skillDisposals))
 
 // ── git wiring: required for dispatch, lazy, never a reason to fail activation ─
 {
@@ -230,6 +326,52 @@ check('teardown runs without throwing', teardownError === null, teardownError &&
   check('the row activates with a subprocess service present', secondError === null, secondError && secondError.stack)
   check('the tool and routes still wire up', secondTools.length === 1 && secondRoutes.length === 3, String(secondTools.length) + '/' + String(secondRoutes.length))
   check('activation spawns no git process', spawned.length === 0, JSON.stringify(spawned))
+}
+
+// ── a host WITHOUT the skills/systemPrompt services still loads the row ──────
+{
+  const thirdTools = []
+  const thirdRoutes = []
+  const requested = []
+  const thirdCtx = {
+    fs: createFakeFs(),
+    sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+    logger: { warn() {} },
+    tools: {
+      register(tool) {
+        thirdTools.push(tool)
+        return () => {}
+      },
+    },
+    webServer: {
+      register(spec) {
+        thirdRoutes.push(spec)
+        return () => {}
+      },
+    },
+    on() { return () => {} },
+    effect(callback) { return callback() },
+    // The inject seam exists, but the services do not: the callback receives a
+    // context with neither property.
+    inject(deps, callback) {
+      requested.push(deps.join(','))
+      callback({})
+    },
+    get() { return undefined },
+  }
+  let thirdError = null
+  try {
+    apply(thirdCtx)
+  } catch (error) {
+    thirdError = error
+  }
+  check('a host without the skills/systemPrompt services still activates', thirdError === null, thirdError && thirdError.stack)
+  check('the tool and routes still wire up without the guide services', thirdTools.length === 1 && thirdRoutes.length === 3, String(thirdTools.length) + '/' + String(thirdRoutes.length))
+  check(
+    'both optional services are requested through inject',
+    requested.indexOf('skills') >= 0 && requested.indexOf('systemPrompt') >= 0,
+    requested.join('|'),
+  )
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
