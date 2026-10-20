@@ -836,57 +836,75 @@ export function spawnPreamble(name, leadName) {
   ].join('\n')
 }
 
+/**
+ * The assignee brief split into the parts the agent reads, generated in ONE
+ * place. briefFor joins the parts; the panel previews the same parts, so the
+ * text a worker actually wakes with and the text the panel shows can never
+ * disagree. Groups let the panel label a part as task data or host-fixed copy.
+ */
+export function briefPartsFor(task, projectPath, leadName) {
+  const parts = []
+  parts.push({ key: 'header', group: 'fixed', text: 'Task ' + task.id + ': ' + task.title })
+  parts.push({
+    key: 'project',
+    group: 'fixed',
+    text: 'Project: ' + projectPath + '\nYou have been assigned this task. Do the work in that project.',
+  })
+  if (typeof task.worktree === 'string' && task.worktree.length > 0) {
+    parts.push({
+      key: 'worktree',
+      group: 'task',
+      text: [
+        'Work in the git worktree created for this task:',
+        '  worktree: ' + task.worktree,
+        '  branch:   ' + String(task.branch === null || task.branch === undefined ? '' : task.branch),
+        '  base:     ' + String(task.base === null || task.base === undefined ? '' : task.base),
+        'Change files ONLY inside that worktree, and run the tests there.',
+        'The task board still lives in the main project — point task_center at',
+        'the main project ("' + projectPath + '"), not at the worktree.',
+      ].join('\n'),
+    })
+  }
+  if (task.spec !== '') parts.push({ key: 'spec', group: 'task', text: 'What it involves:\n' + task.spec })
+  if (task.acceptance !== '') parts.push({ key: 'acceptance', group: 'task', text: 'How it will be judged:\n' + task.acceptance })
+  if (task.dependsOn.length > 0) parts.push({ key: 'prerequisites', group: 'task', text: 'Completed prerequisites: ' + task.dependsOn.join(', ') })
+  if (task.writeFiles.length > 0) {
+    parts.push({ key: 'locks', group: 'fixed', text: 'The scheduler holds these file locks for you:\n' + task.writeFiles.join(', ') })
+  }
+  parts.push({
+    key: 'report',
+    group: 'fixed',
+    text: [
+      'Report with the task_center tool:',
+      '  task_center { action: "get", id: "' + task.id + '" }',
+      '  task_center { action: "submit", id: "' + task.id + '", evidence: "what you changed and how you checked it" }',
+      '',
+      'submit is the last step of THIS round: it moves the task to REVIEW, then',
+      'TESTING. A review that requests changes or a failed test returns the task to',
+      'running — keep working in the same worktree and submit again. The merge',
+      'request only becomes mergeable once the TEST phase passes; the host then',
+      'merges it automatically. Do not commit after a passing test.',
+      'Your merge request records the head submit committed, and a merge is refused',
+      'while the branch has moved past it (head-drift). If you must repair the',
+      'request explicitly, use:',
+      '  task_center { action: "refreshMerge", id: "' + task.id + '" }',
+      'That re-points the merge request and starts a fresh review round — it never',
+      'commits, merges or pushes.',
+      '',
+      'Before writing any file that is not in the locked list, call:',
+      '  task_center { action: "lock", paths: ["path/to/file"] }',
+      'and unlock it when you are done. Any task_center call renews your lease; a long task should call get periodically.',
+      '',
+      'Do NOT dispatch anything yourself. You are the assignee, not the scheduler.',
+    ].join('\n'),
+  })
+  return parts
+}
+
 /** What the assignee is told. It has to stand alone: the agent wakes with no
  * context beyond this message. */
 export function briefFor(task, projectPath, leadName) {
-  const lines = []
-  lines.push('Task ' + task.id + ': ' + task.title)
-  lines.push('')
-  lines.push('Project: ' + projectPath)
-  lines.push('You have been assigned this task. Do the work in that project.')
-  if (typeof task.worktree === 'string' && task.worktree.length > 0) {
-    lines.push(
-      '',
-      'Work in the git worktree created for this task:',
-      '  worktree: ' + task.worktree,
-      '  branch:   ' + String(task.branch === null || task.branch === undefined ? '' : task.branch),
-      '  base:     ' + String(task.base === null || task.base === undefined ? '' : task.base),
-      'Change files ONLY inside that worktree, and run the tests there.',
-      'The task board still lives in the main project — point task_center at',
-      'the main project ("' + projectPath + '"), not at the worktree.',
-    )
-  }
-  if (task.spec !== '') lines.push('', 'What it involves:', task.spec)
-  if (task.acceptance !== '') lines.push('', 'How it will be judged:', task.acceptance)
-  if (task.dependsOn.length > 0) lines.push('', 'Completed prerequisites: ' + task.dependsOn.join(', '))
-  if (task.writeFiles.length > 0) {
-    lines.push('', 'The scheduler holds these file locks for you:', task.writeFiles.join(', '))
-  }
-  lines.push(
-    '',
-    'Report with the task_center tool:',
-    '  task_center { action: "get", id: "' + task.id + '" }',
-    '  task_center { action: "submit", id: "' + task.id + '", evidence: "what you changed and how you checked it" }',
-    '',
-    'submit is the last step of THIS round: it moves the task to REVIEW, then',
-    'TESTING. A review that requests changes or a failed test returns the task to',
-    'running — keep working in the same worktree and submit again. The merge',
-    'request only becomes mergeable once the TEST phase passes; the host then',
-    'merges it automatically. Do not commit after a passing test.',
-    'Your merge request records the head submit committed, and a merge is refused',
-    'while the branch has moved past it (head-drift). If you must repair the',
-    'request explicitly, use:',
-    '  task_center { action: "refreshMerge", id: "' + task.id + '" }',
-    'That re-points the merge request and starts a fresh review round — it never',
-    'commits, merges or pushes.',
-    '',
-    'Before writing any file that is not in the locked list, call:',
-    '  task_center { action: "lock", paths: ["path/to/file"] }',
-    'and unlock it when you are done. Any task_center call renews your lease; a long task should call get periodically.',
-    '',
-    'Do NOT dispatch anything yourself. You are the assignee, not the scheduler.',
-  )
-  return lines.join('\n')
+  return briefPartsFor(task, projectPath, leadName).map((part) => part.text).join('\n\n')
 }
 
 /**
@@ -1044,17 +1062,84 @@ export function roleBriefSections(kind, task, config, options) {
  * A worker brief on rework says to continue in the SAME worktree/context.
  */
 export function roleBriefFor(kind, task, config, options) {
+  return roleBriefPartsFor(kind, task, config, options).map((part) => part.text).join('\n\n')
+}
+
+/**
+ * The role brief split into its ordered parts. roleBriefFor joins them, so the
+ * text the role teammate wakes with and the text the panel previews are the
+ * same generation path. Only the template part is user copy; the groups let the
+ * panel label a part as the user's own text, task data or host-fixed copy.
+ */
+export function roleBriefPartsFor(kind, task, config, options) {
   const sections = roleBriefSections(kind, task, config, options)
-  const lines = [sections.header]
-  if (sections.meta !== '') lines.push('', sections.meta)
-  if (sections.template !== '') lines.push('', 'Profile instructions:', sections.templateRendered)
-  if (sections.taskData !== '') lines.push('', sections.taskData)
-  lines.push('', sections.fixed)
-  lines.push('', sections.skills)
+  const parts = [{ key: 'header', group: 'fixed', text: sections.header }]
+  if (sections.meta !== '') parts.push({ key: 'meta', group: 'fixed', text: sections.meta })
+  if (sections.template !== '') parts.push({ key: 'template', group: 'template', text: 'Profile instructions:\n' + sections.templateRendered })
+  if (sections.taskData !== '') parts.push({ key: 'task', group: 'task', text: sections.taskData })
+  parts.push({ key: 'duties', group: 'fixed', text: sections.fixed })
+  parts.push({ key: 'skills', group: 'fixed', text: sections.skills })
   if (kind === 'reviewer' || kind === 'tester') {
-    lines.push('', 'You are an independent, FRESH context: do not assume the worker conversation, and do not reuse its unstated context.')
+    parts.push({
+      key: 'fresh-context',
+      group: 'fixed',
+      text: 'You are an independent, FRESH context: do not assume the worker conversation, and do not reuse its unstated context.',
+    })
   }
-  return lines.join('\n')
+  return parts
+}
+
+/**
+ * The task a preview falls back to when the board has no task at all. It is a
+ * REALISTIC card on purpose: every field a brief reads is filled with concrete
+ * values, so the injected text shows its true shape instead of angle-bracket
+ * placeholders. It is never a board task and never dispatched; the API marks it
+ * real:false / sample:true so the panel can say it is an example.
+ */
+export const ROLE_SAMPLE_TASK = {
+  id: 'T-42',
+  title: 'Enemy patrol chases the player',
+  status: 'running',
+  priority: 5,
+  dependsOn: ['T-39'],
+  spec: 'Add a patrol state to the enemy controller: walk between two waypoints, notice the player within 6 m, and chase for 3 s before returning to patrol.',
+  acceptance: 'npm run verify passes. In the demo scene the enemy walks both waypoints, chases the player when it gets close, and never leaves the navmesh.',
+  writeFiles: ['scripts/enemy/patrol.gd', 'scripts/enemy/enemy.gd', 'scenes/demo.tscn'],
+  actualFiles: ['scripts/enemy/patrol.gd', 'scripts/enemy/enemy.gd'],
+  branch: 'task/T-42-1',
+  worktree: 'C:/projects/godot-demo/.worktrees/T-42',
+  commit: '4f3a9c2e7b1d8a6c5e0f9b7d3a1c8e2f6b4d0a95',
+  base: '9c1d7ab3e5f24c8d0a6b3f9e7c2d1a8b5e4f0c36',
+  target: 'feat/patrol-ai',
+  evidence: 'npm run verify: 26 test files pass, 0 failures. Manual check in demo.tscn: patrol and chase work, navmesh untouched.',
+  review: { status: 'pending', by: null, at: null, reasons: null, attempt: 1 },
+  test: { status: 'pending', by: null, at: null, evidence: null, attempt: 1 },
+  merge: {
+    status: 'open',
+    base: '9c1d7ab3e5f24c8d0a6b3f9e7c2d1a8b5e4f0c36',
+    target: 'feat/patrol-ai',
+    head: '4f3a9c2e7b1d8a6c5e0f9b7d3a1c8e2f6b4d0a95',
+    mergeCommit: null,
+    declaredFiles: ['scripts/enemy/patrol.gd', 'scripts/enemy/enemy.gd', 'scenes/demo.tscn'],
+    actualFiles: ['scripts/enemy/patrol.gd', 'scripts/enemy/enemy.gd'],
+    tests: 'npm run verify',
+    reviewer: null,
+    conflict: null,
+    output: null,
+    at: '2026-10-19T09:20:00.000Z',
+  },
+  assignee: { name: 'work-t42-1', session: 'session-t42-1' },
+  attempts: 1,
+  maxAttempts: 3,
+  leaseUntil: '2026-10-19T09:50:00.000Z',
+  dispatch: { status: 'claimed', at: '2026-10-19T09:00:00.000Z', target: 'work-t42-1', targetId: 'session-t42-1', via: 'spawn', error: null, host: 'host-1' },
+  createdAt: '2026-10-19T08:55:00.000Z',
+  updatedAt: '2026-10-19T09:20:00.000Z',
+  createdBy: '@lead',
+  history: [
+    { at: '2026-10-19T08:55:00.000Z', by: '@lead', from: null, to: 'pending', note: 'created' },
+    { at: '2026-10-19T09:00:00.000Z', by: 'scheduler', from: 'pending', to: 'running', note: 'dispatched to work-t42-1' },
+  ],
 }
 
 

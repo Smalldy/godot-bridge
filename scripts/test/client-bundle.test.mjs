@@ -402,18 +402,47 @@ const TASKS = [
     history: [],
   },
 ]
-const PREVIEW_VARS = ['TASK_ID', 'TASK_TITLE', 'SPEC', 'COMPLETIONS_DEF', 'GIT_INFO', 'PROJECT', 'LEAD', 'ROLE', 'STAGE'].map(function (variable) {
-  return { name: variable, description: variable + ' description', sample: variable + '-sample' }
-})
-function previewBlocks(kind, stage, prompt) {
-  return [
-    { key: 'header', type: 'fixed', title: 'Fixed header (host: role, stage, project, lead)', text: 'Task center role: ' + kind + '\nStage: ' + stage + '\nProject: ' + PROJECT, editable: false },
-    { key: 'meta', type: 'fixed', title: 'Fixed profile meta (host: permissions, context)', text: 'Profile permissions: read-only', editable: false },
-    { key: 'template', type: 'template', title: 'Editable template (profile.prompt)', text: prompt, editable: true },
-    { key: 'task', type: 'task', title: 'Task data (host: spec, acceptance, worktree)', text: 'Task T-?: Example task (placeholder)\nWhat it involves:\n<example spec: what this task involves>', editable: false },
-    { key: 'duties', type: 'fixed', title: 'Fixed duties / permission boundary / verdict (host)', text: 'Duties: ' + kind + '\nPermission boundary (hard):\n- READ-ONLY on implementation.\nVerdict schema:', editable: false },
-    { key: 'skills', type: 'fixed', title: 'Fixed skills injection (host)', text: 'Skills:\n- task_center is your only interface to the board.', editable: false },
+// The injected-text preview is a Host action: the panel must render exactly what
+// the Host answers, so the fake Host builds the same shape an agent receives
+// (text + labelled sections + variable values) instead of panel copy.
+const PREVIEW_VARIABLES = ['TASK_ID', 'TASK_TITLE', 'SPEC', 'COMPLETIONS_DEF', 'GIT_INFO', 'PROJECT', 'LEAD', 'ROLE', 'STAGE']
+const PREVIEW_CALLS = []
+let previewSampleNext = false
+const SAMPLE_TASK_TITLE = 'Enemy patrol chases the player'
+function taskNamed(id) {
+  return TASKS.filter(function (task) { return task.id === id })[0]
+}
+function rolePreviewReply(body) {
+  const kind = typeof body.kind === 'string' && body.kind !== '' ? body.kind : 'worker'
+  const requested =
+    typeof body.taskId === 'string' && body.taskId !== ''
+      ? taskNamed(body.taskId)
+      : TASKS.filter(function (task) { return ['running', 'reviewing', 'testing'].indexOf(task.status) >= 0 })[0] || TASKS[0]
+  const sample = previewSampleNext
+  previewSampleNext = false
+  const task = sample ? { id: 'T-42', title: SAMPLE_TASK_TITLE } : { id: requested.id, title: requested.title }
+  PREVIEW_CALLS.push({ kind: kind, profile: body.profile === undefined ? null : body.profile, taskId: body.taskId === undefined ? null : body.taskId })
+  const sections = [
+    { key: 'header', group: 'fixed', text: 'Task center role: ' + kind + '\nProject: ' + PROJECT },
+    { key: 'task', group: 'task', text: 'Task ' + task.id + ': ' + task.title },
+    { key: 'fixed', group: 'fixed', text: 'Duties: permission boundary.\nVerdict schema: task_center submit.' },
   ]
+  if (kind !== 'worker') sections.splice(1, 0, { key: 'template', group: 'template', text: 'Profile instructions:\n' + (typeof body.profile === 'string' && body.profile !== '' ? body.profile : kind) })
+  return {
+    ok: true,
+    kind: kind,
+    stage: kind === 'worker' ? 'implement' : kind === 'reviewer' ? 'review' : 'test',
+    profile: body.profile === undefined ? kind : String(body.profile),
+    task: { id: task.id, title: task.title, real: task.id !== 'T-42', sample: task.id === 'T-42' },
+    text: sections.map(function (section) { return section.text }).join('\n\n'),
+    tokens: PREVIEW_VARIABLES.map(function (name) {
+      return {
+        name: name,
+        value: name === 'TASK_ID' ? task.id : name === 'TASK_TITLE' ? task.title : name === 'PROJECT' ? PROJECT : name === 'ROLE' ? kind : '',
+      }
+    }),
+    sections: sections,
+  }
 }
 const HOST = {
   ok: true,
@@ -493,71 +522,6 @@ const HOST = {
       'godot-reviewer': { name: 'godot-reviewer', role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check Godot idioms.' },
     },
   },
-  rolePreviews: [
-    {
-      name: 'worker',
-      kind: 'worker',
-      stage: 'implement',
-      placeholder: true,
-      placeholderTask: { id: 'T-?', title: 'Example task (placeholder)' },
-      profilePrompt: '',
-      variableCatalog: PREVIEW_VARS,
-      templateVariables: [],
-      blocks: previewBlocks('worker', 'implement', ''),
-      entries: [
-        {
-          key: 'role',
-          label: 'Role brief (provisioning)',
-          text: 'Task center role: worker\nStage: implement (this role owns the implement stage; role profiles replace manual Lead spawns.)\n\nTask T-?: Example task (placeholder)\n\nWhat it involves:\n<example spec: what this task involves>\n\nPermission boundary (hard):\n- You may edit files and commit only inside the task worktree.',
-        },
-      ],
-    },
-    {
-      name: 'reviewer',
-      kind: 'reviewer',
-      stage: 'review',
-      placeholder: true,
-      placeholderTask: { id: 'T-?', title: 'Example task (placeholder)' },
-      profilePrompt: '',
-      variableCatalog: PREVIEW_VARS,
-      templateVariables: [],
-      blocks: previewBlocks('reviewer', 'review', ''),
-      entries: [
-        { key: 'role', label: 'Role brief (provisioning)', text: 'Task center role: reviewer\nStage: review\n\nPermission boundary (hard):\n- READ-ONLY on implementation.' },
-        { key: 'stage', label: 'Review round brief', text: 'Review round 1 for T-?: Example task (placeholder)\nProject: ' + PROJECT },
-      ],
-    },
-    {
-      name: 'tester',
-      kind: 'tester',
-      stage: 'test',
-      placeholder: true,
-      placeholderTask: { id: 'T-?', title: 'Example task (placeholder)' },
-      profilePrompt: '',
-      variableCatalog: PREVIEW_VARS,
-      templateVariables: [],
-      blocks: previewBlocks('tester', 'test', ''),
-      entries: [
-        { key: 'role', label: 'Role brief (provisioning)', text: 'Task center role: tester\nStage: test\n\nPermission boundary (hard):\n- READ-ONLY on implementation.' },
-        { key: 'stage', label: 'Test round brief', text: 'Independent TEST round 1 for T-?: Example task (placeholder)' },
-      ],
-    },
-    {
-      name: 'godot-reviewer',
-      kind: 'reviewer',
-      stage: 'review',
-      placeholder: true,
-      placeholderTask: { id: 'T-?', title: 'Example task (placeholder)' },
-      profilePrompt: 'Check Godot idioms.',
-      variableCatalog: PREVIEW_VARS,
-      templateVariables: [],
-      blocks: previewBlocks('reviewer', 'review', 'Check Godot idioms.'),
-      entries: [
-        { key: 'role', label: 'Role brief (provisioning)', text: 'Task center role: reviewer\nStage: review\n\nProfile instructions:\nCheck Godot idioms.' },
-        { key: 'stage', label: 'Review round brief', text: 'Review round 1 for T-?: Example task (placeholder)' },
-      ],
-    },
-  ],
   locks: [
     {
       path: 'scripts/damage.gd',
@@ -587,13 +551,15 @@ let postReply = null
 const posts = []
 globalThis.fetch = async function (url, options) {
   if (options !== undefined && options.method === 'POST') {
-    posts.push(JSON.parse(options.body))
+    const body = JSON.parse(options.body)
+    posts.push(body)
     if (postGate !== null) await postGate
     if (postReply !== null) {
       const reply = postReply
       postReply = null
       return { json: async () => reply }
     }
+    if (body.action === 'rolesPreview') return { json: async () => rolePreviewReply(body) }
     return { json: async () => ({ ok: true, snapshot: HOST }) }
   }
   loads += 1
@@ -1177,7 +1143,7 @@ await flush()
   check('the create button sits in a right-aligned action row', formActions !== undefined && findAll(formActions, (node) => node.props && node.props['data-action'] === 'rolesCreate').length === 1)
 }
 
-// ── Role context editor: the host brief lives in the editor, not a card ────
+// ── Prompt area: two columns, raw prompt left, exact injected text right ───
 {
   let tree = withHooks(panel, { initialView: 'roles' })
   await flush()
@@ -1187,13 +1153,78 @@ await flush()
   // survives between blocks.
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'worker')[0].props.onClick()
   tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
-  const blocks = findAll(editor, (node) => node.props && node.props['data-editor-block'] !== undefined)
-  const header = blocks.filter((block) => block.props['data-editor-block'] === 'header')[0]
-  check('the editor shows the host-generated header, not an empty context', header !== undefined && textOf(header).indexOf('Task center role: worker') >= 0 && textOf(header).indexOf('Project: ' + PROJECT) >= 0, header && textOf(header).slice(0, 200))
-  const customWorker = findAll(editor, (node) => node.props && node.props['data-editor-block'] === 'duties')[0]
-  check('the fixed blocks carry the real brief text', customWorker !== undefined && textOf(customWorker).indexOf('Permission boundary (hard)') >= 0, customWorker && textOf(customWorker).slice(0, 120))
-  check('the preview card is gone, so every brief block lives in the editor', findAll(tree, (node) => node.props && node.props['data-role-preview'] !== undefined).length === 0)
+
+  const promptArea = findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-prompts')[0]
+  check('the editor has ONE prompt area', promptArea !== undefined && promptArea.props.className === 'gbt-promptcols', promptArea && promptArea.props.className)
+  const rawCol = findAll(promptArea, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
+  const injectedCol = findAll(promptArea, (node) => node.props && node.props['data-role-prompt'] === 'injected')[0]
+  check(
+    'the prompt area is exactly two columns: raw and injected',
+    rawCol !== undefined && injectedCol !== undefined && findAll(promptArea, (node) => node.props && node.props['data-role-prompt'] !== undefined).length === 2,
+  )
+  check(
+    'the old six-block renderer is gone',
+    findAll(editor, (node) => node.props && node.props['data-block-type'] !== undefined).length === 0 &&
+      findAll(editor, (node) => node.props && node.props['data-editor-block'] !== undefined).length === 0,
+  )
+
+  // A built-in role is host-fixed: the left column explains why it is empty.
+  check(
+    'a built-in role renders a read-only raw column, not an editor',
+    rawCol.props['data-role-raw-readonly'] === 'true' && rawCol.props['data-role-raw-reason'] === 'worker' && findAll(rawCol, (node) => node.type === 'textarea').length === 0,
+    JSON.stringify(rawCol.props),
+  )
+  check(
+    'the implement stage says role customization is not wired yet',
+    rawCol.props['data-role-raw-reason'] === 'worker' &&
+      textOf(rawCol).indexOf('实现阶段由每任务执行者承担') >= 0 &&
+      findAll(rawCol, (node) => node.props && node.props['data-role-tokens'] !== undefined).length === 0,
+    textOf(rawCol),
+  )
+
+  // The right column is what the host really injects, not panel copy.
+  const source = findAll(injectedCol, (node) => node.props && node.props['data-role-task-source'] !== undefined)[0]
+  check(
+    'the right column names a real task as the source',
+    source !== undefined && source.props['data-role-task-source'] === 'real' && textOf(source).indexOf('T-1 · Build damage system') >= 0,
+    source && textOf(source),
+  )
+  const previewText = findAll(injectedCol, (node) => node.props && node.props['data-role-preview-text'] === 'true')[0]
+  check(
+    'the right column renders the host text verbatim',
+    previewText !== undefined && textOf(previewText).indexOf('Task center role: worker') >= 0 && textOf(previewText).indexOf('Duties: permission boundary.') >= 0,
+    previewText && textOf(previewText).slice(0, 200),
+  )
+  const sectionNodes = findAll(injectedCol, (node) => node.type === 'div' && node.props && node.props['data-role-section-group'] !== undefined)
+  check(
+    'the right column separates task data from host copy with readable labels',
+    sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'fixed,task,fixed' &&
+      findAll(sectionNodes[1], (node) => node.type === 'span').some((node) => textOf(node) === '任务数据') &&
+      findAll(sectionNodes[2], (node) => node.type === 'span').some((node) => textOf(node) === '宿主固定'),
+    sectionNodes.map((node) => textOf(node)).join(' | '),
+  )
+  check('the sample label is not shown for a real task', textOf(injectedCol).indexOf('示例任务（非真实') < 0)
+  check('the task selector offers every host task by id and title', findAll(injectedCol, (node) => node.type === 'option').length === TASKS.length + 1)
+
+  // A built-in profile other than the implement stage is read-only with its own note.
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'tester')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const testerRaw = findAll(editor, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
+  check(
+    'a built-in profile is read-only and explains that it cannot be edited in place',
+    testerRaw !== undefined &&
+      testerRaw.props['data-role-raw-readonly'] === 'true' &&
+      testerRaw.props['data-role-raw-reason'] === 'builtin' &&
+      findAll(testerRaw, (node) => node.type === 'textarea').length === 0 &&
+      textOf(testerRaw).indexOf('默认角色不可直接修改') >= 0,
+    testerRaw && textOf(testerRaw),
+  )
 }
 
 // ── Fork/save: a failed save keeps the draft, a success retargets at once ──
@@ -1339,38 +1370,8 @@ await flush()
   postReply = null
 }
 
-// ── role context editor: kind tabs, editable template, fixed blocks, skills ─
+// ── role context editor: kind tabs, editable raw prompt, injected preview, skills ─
 {
-  const VARS = ['TASK_ID', 'TASK_TITLE', 'SPEC', 'COMPLETIONS_DEF', 'GIT_INFO', 'PROJECT', 'LEAD', 'ROLE', 'STAGE']
-  function editorPreview(name, kind, stage, prompt) {
-    return {
-      name: name,
-      kind: kind,
-      stage: stage,
-      placeholder: true,
-      placeholderTask: { id: 'T-?', title: 'Example task (placeholder)' },
-      profilePrompt: prompt,
-      variableCatalog: VARS.map(function (variable) {
-        return { name: variable, description: variable + ' description', sample: variable + '-sample' }
-      }),
-      templateVariables: prompt.indexOf('{{SPEC}}') >= 0 ? ['SPEC'] : [],
-      blocks: [
-        { key: 'header', type: 'fixed', title: 'Fixed header (host)', text: 'Task center role: ' + kind + '\nStage: ' + stage + '\nProject: ' + PROJECT, editable: false },
-        { key: 'meta', type: 'fixed', title: 'Fixed profile meta (host)', text: 'Profile permissions: read-only', editable: false },
-        { key: 'template', type: 'template', title: 'Editable template (profile.prompt)', text: prompt, editable: true },
-        { key: 'task', type: 'task', title: 'Task data (host)', text: 'Task T-?: Example task (placeholder)\nWhat it involves:\n<example spec>', editable: false },
-        { key: 'duties', type: 'fixed', title: 'Fixed duties / permission boundary / verdict (host)', text: 'Duties: review\nPermission boundary (hard):\n- READ-ONLY', editable: false },
-        { key: 'skills', type: 'fixed', title: 'Fixed skills injection (host)', text: 'Skills:', editable: false },
-      ],
-      entries: [{ key: 'role', label: 'Role brief (provisioning)', text: 'Task center role: ' + kind + '\nProfile instructions:\n' + prompt }],
-    }
-  }
-  HOST.rolePreviews = [
-    editorPreview('worker', 'worker', 'implement', ''),
-    editorPreview('reviewer', 'reviewer', 'review', ''),
-    editorPreview('tester', 'tester', 'test', ''),
-    editorPreview('godot-reviewer', 'reviewer', 'review', 'Review {{SPEC}} carefully.'),
-  ]
   HOST.roles = Object.assign({}, HOST.roles, {
     stages: { implement: 'worker', review: 'godot-reviewer', test: 'tester' },
     profiles: Object.assign({}, HOST.roles.profiles, {
@@ -1393,32 +1394,49 @@ await flush()
   check('the worker tab shows its bound profile', identity.props['data-kind'] === 'worker' && identity.props['data-profile'] === 'worker' && identity.props['data-draft'] === 'false', JSON.stringify(identity.props))
   check('the identity has no free-text control', findAll(identity, (node) => node.type === 'input' || node.type === 'textarea').length === 0)
 
-  // The reviewer stage is bound to the custom profile.
+  // The reviewer stage is bound to the custom profile: its raw prompt is editable.
   kindTabs.filter((tab) => tab.props['data-kind'] === 'reviewer')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
   check('switching tabs shows that kind’s bound profile', identity.props['data-profile'] === 'godot-reviewer' && identity.props['data-bound'] === 'godot-reviewer', JSON.stringify(identity.props))
-  const contextBlocks = findAll(editor, (node) => node.props && node.props['data-editor-block'] !== undefined)
-  check('every context block is rendered in order', contextBlocks.map((block) => block.props['data-editor-block']).join(',') === 'header,meta,template,task,duties,skills', JSON.stringify(contextBlocks.map((block) => block.props['data-editor-block'])))
-  const fixedBlocks = contextBlocks.filter((block) => block.props['data-editable'] === 'false')
+  const rawCol = findAll(editor, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
+  const injectedCol = findAll(editor, (node) => node.props && node.props['data-role-prompt'] === 'injected')[0]
+  const templateArea = findAll(rawCol, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0]
   check(
-    'the fixed blocks are labelled host-fixed and carry no control',
-    fixedBlocks.length === 5 && fixedBlocks.every((block) => textOf(block).indexOf('宿主固定，不可编辑') >= 0 && findAll(block, (node) => node.type === 'textarea' || node.type === 'input').length === 0),
-    String(fixedBlocks.length),
+    'a custom profile makes the raw prompt editable and keeps its literal tokens',
+    rawCol.props['data-role-raw-readonly'] === 'false' && templateArea !== undefined && templateArea.props.defaultValue === 'Review {{SPEC}} carefully.',
+    templateArea && String(templateArea.props.defaultValue),
   )
-  const dutiesBlock = contextBlocks.filter((block) => block.props['data-editor-block'] === 'duties')[0]
-  check('the fixed blocks show the host brief text', textOf(dutiesBlock).indexOf('Permission boundary (hard):') >= 0 && textOf(dutiesBlock).indexOf('READ-ONLY') >= 0, textOf(dutiesBlock))
-  const templateBlock = contextBlocks.filter((block) => block.props['data-editor-block'] === 'template')[0]
-  const templateArea = findAll(templateBlock, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0]
-  check('only the template block is editable', templateBlock.props['data-editable'] === 'true' && templateArea !== undefined && templateArea.props.defaultValue === 'Review {{SPEC}} carefully.', String(templateArea && templateArea.props.defaultValue))
-  const chips = findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-insert')
-  check('every host variable is an insert chip', chips.map((chip) => chip.props['data-variable']).join(',') === VARS.join(','), JSON.stringify(chips.map((chip) => chip.props['data-variable'])))
-  const legend = findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-varlist')[0]
-  check('the variable legend describes each variable', legend !== undefined && VARS.every((name) => textOf(legend).indexOf('{{' + name + '}}') >= 0))
-  templateArea.props.ref.current = { value: 'Review ' }
-  chips.filter((chip) => chip.props['data-variable'] === 'SPEC')[0].props.onClick()
-  check('a chip inserts the literal {{VAR}} token', templateArea.props.ref.current.value === 'Review {{SPEC}}', String(templateArea.props.ref.current && templateArea.props.ref.current.value))
+  check(
+    'the left column lists every variable with its current value on one line',
+    findAll(rawCol, (node) => node.props && node.props['data-role-tokens'] !== undefined).length === 1 && textOf(rawCol).indexOf('{{TASK_ID}} → T-1') >= 0 && textOf(rawCol).indexOf('{{SPEC}} → （空）') >= 0,
+    textOf(rawCol),
+  )
+  check(
+    'the old variable chips and catalog are gone',
+    findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-insert').length === 0 &&
+      findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-varlist').length === 0 &&
+      findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-varchips').length === 0,
+  )
+  const reviewerText = findAll(injectedCol, (node) => node.props && node.props['data-role-preview-text'] === 'true')[0]
+  const reviewerSections = findAll(injectedCol, (node) => node.type === 'div' && node.props && node.props['data-role-section-group'] !== undefined)
+  check(
+    'the right column shows the injected reply with a section for the user’s own text',
+    reviewerText !== undefined &&
+      reviewerSections.map((node) => node.props['data-role-section-group']).join(',') === 'fixed,template,task,fixed' &&
+      textOf(reviewerText).indexOf('Profile instructions:\ngodot-reviewer') >= 0,
+    reviewerSections.map((node) => node.props['data-role-section-group']).join(','),
+  )
+  check(
+    'the section labels use user language, not implementation names',
+    findAll(reviewerSections[1], (node) => node.type === 'span').some((node) => textOf(node) === '你的原文') &&
+      findAll(reviewerSections[2], (node) => node.type === 'span').some((node) => textOf(node) === '任务数据') &&
+      findAll(reviewerSections[3], (node) => node.type === 'span').some((node) => textOf(node) === '宿主固定'),
+    reviewerSections.map((node) => textOf(node)).join(' | '),
+  )
 
   // Save a custom profile: the template and skills go through rolesUpdate.
   tree = withHooks(panel, { initialView: 'roles' })
@@ -1478,7 +1496,12 @@ await flush()
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
   check('a successful draft save clears the draft and targets the new profile', identity.props['data-draft'] === 'false' && identity.props['data-profile'] === forkedDraft, JSON.stringify(identity.props))
-  check('a profile without a host preview still shows an editable template and says so', findAll(editor, (node) => node.props && node.props['data-editor-nopreview'] !== undefined).length === 1 && findAll(editor, (node) => node.type === 'textarea' && node.props['data-field'] === 'template').length === 1)
+  check(
+    'a saved custom profile keeps its editable raw prompt and the host preview',
+    findAll(editor, (node) => node.props && node.props['data-editor-nopreview'] !== undefined).length === 0 &&
+      findAll(editor, (node) => node.type === 'textarea' && node.props['data-field'] === 'template').length === 1 &&
+      findAll(editor, (node) => node.props && node.props['data-role-prompt'] === 'injected').length === 1,
+  )
 
   // Apply: bind the stage, then replace the running instances of the kind.
   const beforeApply = posts.length
@@ -1527,6 +1550,16 @@ await flush()
 
   // Skills dialog: the catalog comes from the host, the selection is written
   // into profile.skills on the next save.
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
+  // Back to the reviewer tab, whose profile already uses dsh-plugin-workflow: the
+  // dialog seeds its selection from profile.skills. Render the tab first so the
+  // preview request it triggers consumes no mock reply meant for the dialog.
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'reviewer')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   postReply = {
     ok: true,
     skills: [
@@ -1536,13 +1569,6 @@ await flush()
     ],
     snapshot: HOST,
   }
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  // Back to the reviewer tab, whose profile already uses dsh-plugin-workflow: the
-  // dialog seeds its selection from profile.skills.
-  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'reviewer')[0].props.onClick()
-  tree = withHooks(panel, { initialView: 'roles' })
-  editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-skills-manage')[0].props.onClick()
   await flush()
   check('managing skills asks the host for its catalog', posts[posts.length - 1].action === 'skillsCatalog', JSON.stringify(posts[posts.length - 1]))
@@ -1586,6 +1612,61 @@ await flush()
   findAll(unavailableModal, (node) => node.props && node.props['data-action'] === 'role-skills-close')[0].props.onClick()
   tree = withHooks(panel, { initialView: 'roles' })
   check('the dialog can be closed', findAll(tree, (node) => node.props && node.props['data-modal'] === 'role-skills').length === 0)
+}
+
+// ── injected preview: the chosen task drives the request, samples are marked ─
+{
+  let tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  let editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
+  findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind' && node.props['data-kind'] === 'worker')[0].props.onClick()
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
+  const select = findAll(editor, (node) => node.type === 'select' && node.props['data-field'] === 'preview-task')[0]
+  check(
+    'the task dropdown offers auto plus every host task',
+    select !== undefined && findAll(select, (node) => node.type === 'option').length === TASKS.length + 1 && textOf(select).indexOf('自动（最近活跃任务）') >= 0,
+    select && textOf(select),
+  )
+  const callsBefore = PREVIEW_CALLS.length
+  select.props.onChange({ target: { value: 'T-3' } })
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
+  check(
+    'switching the task asks the host for a new preview',
+    PREVIEW_CALLS.length === callsBefore + 1 && PREVIEW_CALLS[PREVIEW_CALLS.length - 1].taskId === 'T-3',
+    JSON.stringify(PREVIEW_CALLS.slice(callsBefore)),
+  )
+  let injectedCol = findAll(editor, (node) => node.props && node.props['data-role-prompt'] === 'injected')[0]
+  let source = findAll(injectedCol, (node) => node.props && node.props['data-role-task-source'] !== undefined)[0]
+  check('the right column follows the chosen task', source !== undefined && source.props['data-role-task-source'] === 'real' && source.props['data-task-id'] === 'T-3' && textOf(source).indexOf('T-3 · Tail output feature') >= 0, source && textOf(source))
+
+  // The host may answer with its built-in sample task: it must never look real.
+  previewSampleNext = true
+  const selectAgain = findAll(injectedCol, (node) => node.type === 'select' && node.props['data-field'] === 'preview-task')[0]
+  selectAgain.props.onChange({ target: { value: 'T-4' } })
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'roles' })
+  editor = findAll(tree, (node) => node.props && node.props['data-editor'] === 'true')[0]
+  injectedCol = findAll(editor, (node) => node.props && node.props['data-role-prompt'] === 'injected')[0]
+  source = findAll(injectedCol, (node) => node.props && node.props['data-role-task-source'] !== undefined)[0]
+  check(
+    'a sample task is labelled as not real',
+    source !== undefined && source.props['data-role-task-source'] === 'sample' && source.props['data-task-id'] === 'T-42' && textOf(injectedCol).indexOf('示例任务（非真实，仅用于验证注入形态）') >= 0,
+    source && textOf(source),
+  )
+
+  // Reset to auto so later blocks see the default identity.
+  const reset = findAll(injectedCol, (node) => node.type === 'select' && node.props['data-field'] === 'preview-task')[0]
+  reset.props.onChange({ target: { value: '' } })
+  tree = withHooks(panel, { initialView: 'roles' })
+  await flush()
 }
 
 // ── T-37 lease observability on the task card ─────────────────────────────
@@ -2012,20 +2093,35 @@ check(
   await flush()
   rtree = reuse.render(panel2, { initialView: 'roles' })
   check('the reuse harness renders a second, independent editor', editorOf(rtree) !== undefined)
-  check('the reuse harness starts on the bound worker profile', editorOf(rtree).props['data-kind'] === 'worker' && valueOf(fieldOf(rtree, 'template')) === '', JSON.stringify({ kind: editorOf(rtree).props['data-kind'], value: valueOf(fieldOf(rtree, 'template')) }))
+  check(
+    'the reuse harness starts on the bound worker profile with a read-only raw column',
+    editorOf(rtree).props['data-kind'] === 'worker' &&
+      fieldOf(rtree, 'template') === undefined &&
+      textOf(editorOf(rtree)).indexOf('实现阶段由每任务执行者承担') >= 0,
+    JSON.stringify({ kind: editorOf(rtree).props['data-kind'], hasField: fieldOf(rtree, 'template') !== undefined }),
+  )
 
-  // A user types into the worker template (a variable chip writes the same DOM
-  // value), then switches identity.
+  // The editable control lives on the custom reviewer profile; switching identity
+  // must remount it with that profile's own text, never a stale typed value.
+  clickAction(rtree, 'role-editor-kind', 'data-kind', 'reviewer')
+  rtree = reuse.render(panel2, { initialView: 'roles' })
   let area = fieldOf(rtree, 'template')
-  area.props.ref.current.value = 'stale worker text'
+  check(
+    'the reviewer profile supplies the editable raw prompt',
+    area !== undefined && valueOf(area) === 'Reviewer template body.' && dirtyOf(area) === false,
+    JSON.stringify({ value: valueOf(area), dirty: dirtyOf(area) }),
+  )
+  area.props.ref.current.value = 'stale reviewer text'
   fieldOf(rtree, 'skills').props.ref.current.value = 'stale-skills'
   check('typing marks the reused control dirty', dirtyOf(area) === true)
+  clickAction(rtree, 'role-editor-kind', 'data-kind', 'tester')
+  rtree = reuse.render(panel2, { initialView: 'roles' })
   clickAction(rtree, 'role-editor-kind', 'data-kind', 'reviewer')
   rtree = reuse.render(panel2, { initialView: 'roles' })
   area = fieldOf(rtree, 'template')
-  check('the worker text never leaks onto the reviewer profile', valueOf(area) !== 'stale worker text', String(valueOf(area)))
+  check('the typed text never leaks onto the reviewer profile', valueOf(area) !== 'stale reviewer text', String(valueOf(area)))
   check(
-    'switching kind remounts the template control on the reviewer template',
+    'switching back remounts the template control on the reviewer template',
     valueOf(area) === 'Reviewer template body.' && dirtyOf(area) === false,
     JSON.stringify({ value: valueOf(area), dirty: dirtyOf(area) }),
   )

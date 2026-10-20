@@ -435,7 +435,7 @@ window.__ModuleLoader__.load({
 				roleErrSkillsUnavailable: '技能服务不可用',
 				roleErrUnsaved: '请先保存这个 Fork 草稿，再应用',
 				roleEditor: '角色上下文编辑器',
-				roleEditorHint: '选择角色 → 查看宿主真实的上下文分块 → Fork → 编辑模板与技能 → 保存 → 应用（绑定并替换在跑实例）。',
+				roleEditorHint: '选择角色 → 左栏编辑原始提示词、右栏对照宿主真正注入的完整文本 → Fork → 保存 → 应用（绑定并替换在跑实例）。',
 				roleEditorDraft: '草稿（Fork，未保存）',
 				roleEditorTabsLabel: '角色种类',
 				roleEditorBoundProfile: '当前绑定',
@@ -443,15 +443,25 @@ window.__ModuleLoader__.load({
 				roleEditorCreateBlank: '空白新建 profile（次要入口）',
 				roleEditorInstances: '实例',
 				roleEditorBindHint: '选择后点“绑定”只改阶段绑定，点“应用”会同时替换在跑实例。',
-				roleEditorTemplate: '可编辑模板',
-				roleEditorInsert: '插入变量',
-				roleEditorFixedNote: '宿主固定，不可编辑',
 				roleEditorNoProfile: '该阶段没有绑定的 profile',
-				roleEditorNoPreview: '宿主尚未提供该 profile 的上下文分块（保存后由宿主生成）。',
-				roleEditorNoVariables: '宿主没有提供变量目录。',
 				roleEditorApply: '应用（绑定并替换实例）',
 				roleEditorApplySkipped: '没有在跑实例，只更新了阶段绑定。',
-				roleEditorVariableSample: '示例',
+				rolePreviewRawTitle: '原始提示词',
+				rolePreviewInjectedTitle: '注入后的提示词',
+				rolePreviewVariables: '可引用变量',
+				rolePreviewEmptyValue: '（空）',
+				rolePreviewTaskPick: '任务',
+				rolePreviewTaskAuto: '自动（最近活跃任务）',
+				rolePreviewSampleTask: '示例任务（非真实，仅用于验证注入形态）',
+				rolePreviewLoading: '正在读取宿主真正注入的文本…',
+				rolePreviewMissing: '宿主还没有返回注入预览。',
+				rolePreviewFailed: '注入预览读取失败',
+				rolePreviewUnknown: '预览不可用',
+				rolePreviewGroupTemplate: '你的原文',
+				rolePreviewGroupTask: '任务数据',
+				rolePreviewGroupFixed: '宿主固定',
+				rolePreviewBuiltinReadonly: '默认角色不可直接修改；Fork 一个新副本后即可编辑原文。',
+				rolePreviewWorkerReadonly: '实现阶段由每任务执行者承担，角色定制在下一步接入。',
 				roleEditorSkillsManage: '管理',
 				roleEditorSkillsTitle: '系统技能',
 				roleEditorSkillsEmpty: '宿主没有可用的系统技能。',
@@ -756,7 +766,7 @@ window.__ModuleLoader__.load({
 				roleErrSkillsUnavailable: 'skill service unavailable',
 				roleErrUnsaved: 'save this fork draft before applying it',
 				roleEditor: 'Role context editor',
-				roleEditorHint: 'Pick a role → read the host’s real context blocks → Fork → edit the template and skills → Save → Apply (bind and replace the running instance).',
+				roleEditorHint: 'Pick a role → edit the raw prompt on the left and compare the exact injected text on the right → Fork → Save → Apply (bind and replace the running instance).',
 				roleEditorDraft: 'draft (forked, unsaved)',
 				roleEditorTabsLabel: 'Role kind',
 				roleEditorBoundProfile: 'Bound',
@@ -764,15 +774,25 @@ window.__ModuleLoader__.load({
 				roleEditorCreateBlank: 'New blank profile (secondary)',
 				roleEditorInstances: 'Instances',
 				roleEditorBindHint: 'Bind changes the stage binding only; Apply also replaces the running instances.',
-				roleEditorTemplate: 'Editable template',
-				roleEditorInsert: 'Insert variable',
-				roleEditorFixedNote: 'host-fixed, not editable',
 				roleEditorNoProfile: 'no profile is bound to this stage',
-				roleEditorNoPreview: 'The host has not reported this profile’s context blocks yet (it generates them after a save).',
-				roleEditorNoVariables: 'The host did not report a variable catalog.',
 				roleEditorApply: 'Apply (bind + replace instances)',
 				roleEditorApplySkipped: 'No live instance; only the stage binding was updated.',
-				roleEditorVariableSample: 'e.g.',
+				rolePreviewRawTitle: 'Raw prompt',
+				rolePreviewInjectedTitle: 'Injected prompt',
+				rolePreviewVariables: 'Usable variables',
+				rolePreviewEmptyValue: '(empty)',
+				rolePreviewTaskPick: 'Task',
+				rolePreviewTaskAuto: 'Auto (most recent active task)',
+				rolePreviewSampleTask: 'Example task (not real, only to show the injected shape)',
+				rolePreviewLoading: 'Reading the exact text the host injects…',
+				rolePreviewMissing: 'The host has not returned an injected preview yet.',
+				rolePreviewFailed: 'Could not read the injected preview',
+				rolePreviewUnknown: 'Preview unavailable',
+				rolePreviewGroupTemplate: 'Your own text',
+				rolePreviewGroupTask: 'Task data',
+				rolePreviewGroupFixed: 'Host-fixed',
+				rolePreviewBuiltinReadonly: 'A default role cannot be edited in place; fork a copy to edit the raw prompt.',
+				rolePreviewWorkerReadonly: 'The implement stage is carried per task by each WorkAgent; role customization arrives in the next step.',
 				roleEditorSkillsManage: 'Manage',
 				roleEditorSkillsTitle: 'System skills',
 				roleEditorSkillsEmpty: 'The host reported no system skills.',
@@ -895,15 +915,17 @@ window.__ModuleLoader__.load({
 '@media (max-width: 720px){.gbt-formgrid{grid-template-columns:repeat(2,minmax(0,1fr))}.gbt-roleprofiles{min-width:760px}}',
 '.gbt-roleeditor{display:flex;flex-direction:column;gap:10px;min-width:0}',
 '.gbt-editor-identity{display:flex;gap:6px;flex-wrap:wrap;align-items:center}',
-'.gbt-editorblock{display:flex;flex-direction:column;gap:4px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-1)}',
-'.gbt-editorblock[data-editable="true"]{border-color:rgba(79,124,255,.5)}',
-'.gbt-editorarea{min-height:120px;font-family:var(--dsw-font-mono,monospace);font-size:11px;line-height:1.55;height:auto}',
-'.gbt-editorvars{display:flex;flex-direction:column;gap:6px}',
-'.gbt-varchips{display:flex;gap:5px;flex-wrap:wrap;align-items:center}',
-'.gbt-varchip{cursor:pointer;border:0.5px solid var(--dsw-alias-border-l4);border-radius:999px;background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-secondary);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;padding:1px 8px}',
-'.gbt-varchip:hover{border-color:rgba(79,124,255,.6);color:var(--dsw-alias-label-primary)}',
-'.gbt-varlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:4px 12px}',
-'.gbt-varitem{font-size:10px;color:var(--dsw-alias-label-tertiary);line-height:1.5}',
+'.gbt-promptcols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:start}',
+			'.gbt-promptcol{display:flex;flex-direction:column;gap:6px;min-width:0;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-1)}',
+			'.gbt-promptcol[data-role-prompt="raw"]{border-color:rgba(79,124,255,.45)}',
+			'.gbt-prompthead{display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:space-between;min-width:0}',
+			'.gbt-promptempty{font-size:11px;line-height:1.6;color:var(--dsw-alias-label-tertiary);border:0.5px dashed var(--dsw-alias-border-l4);border-radius:6px;padding:10px}',
+			'.gbt-prompttext{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow:auto;padding-right:2px}',
+			'.gbt-promptsection{display:flex;flex-direction:column;gap:2px;min-width:0}',
+			'.gbt-sectlabel{align-self:flex-start;font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-4);border-radius:999px;padding:0 6px;margin:4px 0 0}',
+			'.gbt-promptpre{margin:0 0 4px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;line-height:1.55;color:var(--dsw-alias-label-secondary)}',
+			'@media (max-width:720px){.gbt-promptcols{grid-template-columns:1fr}}',
+'.gbt-editorarea{min-height:160px;font-family:var(--dsw-font-mono,monospace);font-size:11px;line-height:1.55;height:auto}',
 '.gbt-editorskills{display:flex;gap:8px;align-items:flex-end}',
 '.gbt-editorskills-field{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dsw-alias-label-tertiary);flex:1;min-width:0}',
 '.gbt-skillrow{display:flex;align-items:center;gap:6px;padding:3px 0}',
@@ -1968,6 +1990,13 @@ window.__ModuleLoader__.load({
 				skillsSelected: new Set(),
 				applySkipped: false,
 				notice: null,
+				// The injected-text preview the host returned for the current identity,
+				// the identity it belongs to and the in-flight/failed state around it.
+				preview: null,
+				previewKey: null,
+				previewPending: false,
+				previewError: null,
+				previewTaskId: '',
 			}
 
 			const ROLE_EDITOR_KINDS = ['worker', 'tester', 'reviewer']
@@ -1995,21 +2024,6 @@ window.__ModuleLoader__.load({
 				})
 			}
 
-			function rolePreviewNamed(snapshot, name) {
-				const list = Array.isArray(snapshot.rolePreviews) ? snapshot.rolePreviews : []
-				return list.filter(function (preview) { return preview !== null && typeof preview === 'object' && preview.name === name })[0] || null
-			}
-
-			/** The variable catalog is the same for every profile; use the first the host sent. */
-			function roleVariableCatalogOf(snapshot) {
-				const list = Array.isArray(snapshot.rolePreviews) ? snapshot.rolePreviews : []
-				for (let index = 0; index < list.length; index += 1) {
-					const preview = list[index]
-					if (preview !== null && preview !== undefined && Array.isArray(preview.variableCatalog) && preview.variableCatalog.length > 0) return preview.variableCatalog
-				}
-				return []
-			}
-
 			/** Only the profile fields a fork copies; the source is never written. */
 			function roleProfileCopy(profile) {
 				return {
@@ -2025,12 +2039,12 @@ window.__ModuleLoader__.load({
 
 			/**
 			 * The role context editor — the whole Roles tab. The host owns the
-			 * context: the fixed header, task data, duties, permission boundary and
-			 * verdict schema are read-only blocks generated by the real brief
-			 * builders, and only the profile template is editable, with the variable
-			 * chips the host's catalog advertises. The identity row owns the profile
-			 * selection and the stage binding; the kind's instances live in a compact
-			 * block inside the same card.
+			 * prompt area is TWO columns: the raw prompt (editable for a custom
+			 * profile, read-only for a built-in one) on the left and the exact text
+			 * the host injects on the right, fetched from the host's rolesPreview so
+			 * it is the real brief builder output, never panel copy. The identity row
+			 * owns the profile selection and the stage binding; the kind's instances
+			 * live in a compact block inside the same card.
 			 */
 			function RolesEditor(props) {
 				const t = props.t
@@ -2060,9 +2074,11 @@ window.__ModuleLoader__.load({
 								? saved.profile
 								: null
 				const builtin = selectedName === 'worker' || selectedName === 'reviewer' || selectedName === 'tester'
-				const preview = selectedName === null ? null : rolePreviewNamed(snapshot, selectedName)
-				const hostBlocks = preview !== null && Array.isArray(preview.blocks) ? preview.blocks : []
-				const variableCatalog = roleVariableCatalogOf(snapshot)
+				// The preview targets the SAVED profile: a fork draft does not exist on the
+				// host yet, so its SOURCE profile is what the host would really inject.
+				const previewProfileName = draft !== null ? draft.source : selectedName
+				const preview = roleEditorState.preview !== null && roleEditorState.preview.kind === kind ? roleEditorState.preview : null
+				const previewTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : []
 				const templateText = target !== null && typeof target.prompt === 'string' ? target.prompt : ''
 				const skillsText = target !== null && Array.isArray(target.skills) ? target.skills.join(', ') : ''
 				const catalog = Array.isArray(roleEditorState.skills) ? roleEditorState.skills : []
@@ -2077,6 +2093,47 @@ window.__ModuleLoader__.load({
 				// profile instead of silently keeping the previous profile's text (which
 				// would then be saved onto the wrong profile).
 				const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved')
+
+				/**
+				 * The identity a preview belongs to: kind + the saved profile + the chosen
+				 * task. Changing any of them re-asks the host, so the right column can
+				 * never show the injected text of a different identity.
+				 */
+				function previewKeyOf() {
+					return kind + '|' + String(previewProfileName === null ? '' : previewProfileName) + '|' + String(roleEditorState.previewTaskId === undefined ? '' : roleEditorState.previewTaskId)
+				}
+				/** Ask the host for the injected text once per identity; a stale answer is dropped. */
+				function ensurePreview() {
+					if (roleEditorState.previewPending === true) return
+					const key = previewKeyOf()
+					if (roleEditorState.previewKey === key) return
+					roleEditorState.previewKey = key
+					roleEditorState.previewPending = true
+					roleEditorState.previewError = null
+					const body = { kind: kind }
+					if (previewProfileName !== null) body.profile = String(previewProfileName)
+					if (typeof roleEditorState.previewTaskId === 'string' && roleEditorState.previewTaskId !== '') body.taskId = roleEditorState.previewTaskId
+					Promise.resolve(store.send('rolesPreview', body)).then(function (outcome) {
+						const ok = outcome !== null && outcome !== undefined && outcome.ok === true
+						const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined ? outcome.payload : null
+						roleEditorState.previewPending = false
+						if (roleEditorState.previewKey !== key) {
+							bump()
+							return
+						}
+						if (ok === true && payload !== null && typeof payload.text === 'string') {
+							roleEditorState.preview = payload
+							roleEditorState.previewError = null
+						} else {
+							roleEditorState.preview = null
+							roleEditorState.previewError = payload !== null && typeof payload === 'object' ? payload : { code: 'preview-unavailable' }
+						}
+						bump()
+					})
+				}
+				React.useEffect(function () {
+					ensurePreview()
+				})
 
 				function currentTemplate() {
 					const node = templateRef.current
@@ -2105,7 +2162,7 @@ window.__ModuleLoader__.load({
 					report(action, ok, payload)
 					return { ok: ok, payload: payload }
 				}
-				/** Switch kind: no draft, no selection and no banner may leak across. */
+				/** Switch kind: no draft, no selection, no banner and no preview may leak across. */
 				function switchKind(next) {
 					roleEditorState.kind = next
 					roleEditorState.draft = null
@@ -2113,6 +2170,10 @@ window.__ModuleLoader__.load({
 					roleEditorState.saved = null
 					roleEditorState.applySkipped = false
 					roleEditorState.notice = null
+					roleEditorState.preview = null
+					roleEditorState.previewKey = null
+					roleEditorState.previewPending = false
+					roleEditorState.previewError = null
 					bump()
 				}
 				/** Pick another profile of this kind in the identity selector. */
@@ -2123,6 +2184,10 @@ window.__ModuleLoader__.load({
 					roleEditorState.saved = null
 					roleEditorState.applySkipped = false
 					roleEditorState.notice = null
+					roleEditorState.preview = null
+					roleEditorState.previewKey = null
+					roleEditorState.previewPending = false
+					roleEditorState.previewError = null
 					bump()
 				}
 				function fork() {
@@ -2216,13 +2281,6 @@ window.__ModuleLoader__.load({
 					}
 					await send('rolesReplace', { name: kind })
 				}
-				function insertVariable(name) {
-					const node = templateRef.current
-					if (node === null || node === undefined) return
-					const value = typeof node.value === 'string' ? node.value : ''
-					node.value = value + '{{' + String(name) + '}}'
-					bump()
-				}
 				async function openSkills() {
 					roleEditorState.skillsOpen = true
 					roleEditorState.skillsError = null
@@ -2253,48 +2311,78 @@ window.__ModuleLoader__.load({
 					roleEditorState.skillsOpen = false
 					bump()
 				}
-				function variableLegend() {
-					return h('div', { key: 'variables', className: 'gbt-editorvars', 'data-section': 'role-editor-variables' },
-						variableCatalog.length === 0
-							? h('div', { className: 'gbt-footnote' }, t('roleEditorNoVariables'))
-							: [
-									h('div', { key: 'chips', className: 'gbt-varchips', 'data-section': 'role-editor-varchips' },
-										h('span', { className: 'gbt-footnote' }, t('roleEditorInsert')),
-										variableCatalog.map(function (entry) {
-											return h('button', { key: entry.name, type: 'button', className: 'gbt-varchip', 'data-action': 'role-editor-insert', 'data-variable': entry.name, onClick: function () { insertVariable(entry.name) } }, '{{' + entry.name + '}}')
-										})),
-									h('div', { key: 'list', className: 'gbt-varlist', 'data-section': 'role-editor-varlist' }, variableCatalog.map(function (entry) {
-										return h('div', { key: entry.name, className: 'gbt-varitem', 'data-variable': entry.name },
-											h('code', { className: 'gbt-mono' }, '{{' + entry.name + '}}'),
-											h('span', null, ' ' + String(entry.description === undefined ? '' : entry.description)),
-											h('span', { className: 'gbt-footnote' }, ' · ' + t('roleEditorVariableSample') + ' ' + String(entry.sample === undefined ? '' : entry.sample)))
-									})),
-								])
+				/** One line: every variable the template may use, with its value for this task. */
+				function tokenLine() {
+					const tokens = preview !== null && Array.isArray(preview.tokens) ? preview.tokens : []
+					if (tokens.length === 0) return t('rolePreviewMissing')
+					return tokens.map(function (token) {
+						const raw = token.value === undefined || token.value === null ? '' : String(token.value)
+						return '{{' + String(token.name) + '}} → ' + (raw === '' ? t('rolePreviewEmptyValue') : raw)
+					}).join(' · ')
 				}
-				function templateBlock() {
-					return h('div', { key: 'template:' + controlKey, className: 'gbt-editorblock', 'data-editor-block': 'template', 'data-block-type': 'template', 'data-editable': 'true', 'data-host-block': hostBlocks.length === 0 ? 'missing' : 'present' },
-						h('div', { className: 'gbt-subhead' }, t('roleEditorTemplate') + ' · ' + t('roleProfilePrompt')),
-						h('textarea', { key: 'template-field:' + controlKey, ref: templateRef, className: 'gbt-input gbt-editorarea', 'data-field': 'template', rows: 8, defaultValue: templateText, placeholder: t('rolePromptEmpty'), spellCheck: false }))
+				/** Choose the task the injected preview is generated for ('' means auto). */
+				function choosePreviewTask(id) {
+					const next = typeof id === 'string' ? id : ''
+					if (roleEditorState.previewTaskId === next) return
+					roleEditorState.previewTaskId = next
+					roleEditorState.preview = null
+					roleEditorState.previewKey = null
+					roleEditorState.previewPending = false
+					roleEditorState.previewError = null
+					bump()
 				}
-				const blocks = []
-				if (hostBlocks.length > 0) {
-					hostBlocks.forEach(function (block) {
-						const key = String(block.key === undefined || block.key === null ? block.type : block.key)
-						if (block.type === 'template' && block.editable === true) {
-							blocks.push(templateBlock())
-							blocks.push(variableLegend())
-							return
-						}
-						const editable = block.editable === true
-						blocks.push(h('div', { key: key, className: 'gbt-editorblock', 'data-editor-block': key, 'data-block-type': String(block.type), 'data-editable': editable ? 'true' : 'false' },
-							h('div', { className: 'gbt-subhead' }, String(block.title === undefined ? key : block.title) + (editable ? '' : ' · ' + t('roleEditorFixedNote'))),
-							h('pre', { className: 'gbt-previewtext' }, typeof block.text === 'string' ? block.text : '')))
-					})
-				} else {
-					blocks.push(templateBlock())
-					blocks.push(variableLegend())
-					blocks.push(h('div', { key: 'no-preview', className: 'gbt-footnote', 'data-editor-nopreview': 'true' }, t('roleEditorNoPreview')))
+				/** A section's user-language label: own text, task data or host copy. */
+				function sectionGroupLabel(group) {
+					if (group === 'template') return t('rolePreviewGroupTemplate')
+					if (group === 'task') return t('rolePreviewGroupTask')
+					return t('rolePreviewGroupFixed')
 				}
+				/** Left column: the profile prompt as written, with its literal {{TOKEN}}s. */
+				function rawColumn() {
+					// The implement stage is carried per task by each WorkAgent, and a
+					// built-in profile is the host default: neither is editable in place.
+					const readOnlyReason = kind === 'worker' ? 'worker' : builtin || selectedName === null ? 'builtin' : null
+					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'raw', 'data-role-raw-readonly': readOnlyReason === null ? 'false' : 'true', 'data-role-raw-reason': readOnlyReason === null ? '' : readOnlyReason },
+						h('div', { className: 'gbt-subhead' }, t('rolePreviewRawTitle')),
+						readOnlyReason === null
+							? h('textarea', { key: 'template-field:' + controlKey, ref: templateRef, className: 'gbt-input gbt-editorarea', 'data-field': 'template', rows: 10, defaultValue: templateText, placeholder: t('rolePromptEmpty'), spellCheck: false })
+							: h('div', { className: 'gbt-promptempty', 'data-role-raw-empty': readOnlyReason }, readOnlyReason === 'worker' ? t('rolePreviewWorkerReadonly') : t('rolePreviewBuiltinReadonly')),
+						kind === 'worker' ? null : h('p', { className: 'gbt-footnote', 'data-role-tokens': 'true' }, tokenLine()))
+				}
+				/** Right column: the exact text the host injects, section by section. */
+				function injectedColumn() {
+					const previewTask = preview !== null && preview.task !== undefined && preview.task !== null ? preview.task : null
+					const sample = previewTask !== null && previewTask.sample === true
+					const taskValue = typeof roleEditorState.previewTaskId === 'string' ? roleEditorState.previewTaskId : ''
+					const sections = preview !== null && Array.isArray(preview.sections) ? preview.sections : []
+					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'injected' },
+						h('div', { className: 'gbt-prompthead' },
+							h('div', { className: 'gbt-subhead' }, t('rolePreviewInjectedTitle')),
+							previewTask === null
+								? null
+								: h('span', { className: 'gbt-pill', 'data-role-task-source': sample ? 'sample' : 'real', 'data-task-id': String(previewTask.id) }, sample ? t('rolePreviewSampleTask') : String(previewTask.id) + ' · ' + String(previewTask.title))),
+						h('label', { className: 'gbt-editor-select' }, t('rolePreviewTaskPick'),
+							h('select', { key: 'preview-task:' + controlKey, className: 'gbt-input', 'data-field': 'preview-task', 'data-task-id': taskValue, defaultValue: taskValue, onChange: function (event) { choosePreviewTask(event !== null && event !== undefined && event.target !== undefined ? event.target.value : '') } },
+								h('option', { key: 'auto', value: '' }, t('rolePreviewTaskAuto')),
+								previewTasks.map(function (task) {
+									return h('option', { key: String(task.id), value: String(task.id) }, String(task.id) + ' · ' + String(task.title))
+								}))),
+						preview === null
+							? h('div', { className: 'gbt-footnote', 'data-role-preview-state': roleEditorState.previewPending === true ? 'loading' : 'unavailable' },
+									roleEditorState.previewError !== null && roleEditorState.previewError !== undefined && typeof roleEditorState.previewError.code === 'string'
+										? t('rolePreviewFailed') + ' (' + roleEditorState.previewError.code + ')'
+										: roleEditorState.previewPending === true
+											? t('rolePreviewLoading')
+											: t('rolePreviewMissing'))
+							: h('div', { className: 'gbt-prompttext', 'data-role-preview-text': 'true' }, sections.map(function (section, index) {
+									const key = String(section.key === undefined || section.key === null ? index : section.key)
+									const group = String(section.group === undefined || section.group === null ? 'fixed' : section.group)
+									return h('div', { key: key + ':' + String(index), className: 'gbt-promptsection', 'data-role-section': key, 'data-role-section-group': group },
+										h('span', { className: 'gbt-sectlabel', 'data-role-section-label': group }, sectionGroupLabel(group)),
+										h('pre', { className: 'gbt-promptpre' }, typeof section.text === 'string' ? section.text : ''))
+								})))
+				}
+				const prompts = h('div', { className: 'gbt-promptcols', 'data-section': 'role-editor-prompts' }, rawColumn(), injectedColumn())
 				const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
 					h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
 					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
@@ -2412,7 +2500,7 @@ window.__ModuleLoader__.load({
 					identityRow,
 					actions,
 					roleEditorState.applySkipped === true ? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleEditorApplySkipped')) : null,
-					blocks,
+					prompts,
 					skillsRow,
 					instancesBlock,
 					blankCreate,
