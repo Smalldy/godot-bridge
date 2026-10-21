@@ -9,6 +9,7 @@ import { createState } from '../../plugin/task-center/state.mjs'
 import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, roleBriefFor } from '../../plugin/task-center/dispatch.mjs'
 import { rolesPath } from '../../plugin/task-center/board.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
+import { phaseActivityAt } from '../../plugin/task-center/dispatch.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
 import { DEFAULT_ROLE_PROMPTS, ROLE_TEMPLATE_VARIABLE_NAMES, defaultRoleConfig } from '../../plugin/task-center/schema.mjs'
 
@@ -2293,6 +2294,26 @@ function acceptingTask(overrides) {
   rig.scheduler.dispose()
 }
 
+// ── a real tool call renews only its own role's activity clock ──────────────
+{
+  const ctx = createTesterRig()
+  const rig = ctx.rig
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask()] }))
+  const testerCall = { projectPath: PROJECT, by: '@bc7233e0', role: 'agent', agent: { id: 'session-tester-1' } }
+  const testerBefore = Date.now()
+  await rig.api.perform('get', { id: 'T-1' }, testerCall)
+  const testerClock = phaseActivityAt(rig.ctx, 'T-1', ['tester-1', 'session-tester-1'])
+  check('a real tester tool call renews the tester clock', testerClock >= testerBefore, JSON.stringify({ testerClock: testerClock, before: testerBefore }))
+  const workerCall = { projectPath: PROJECT, by: '@worker', role: 'agent', agent: { id: 'session-fixer' } }
+  await sleep(5)
+  await rig.api.perform('get', { id: 'T-1' }, workerCall)
+  check(
+    'a worker tool call does not renew the tester clock',
+    phaseActivityAt(rig.ctx, 'T-1', ['tester-1', 'session-tester-1']) === testerClock,
+    JSON.stringify({ after: phaseActivityAt(rig.ctx, 'T-1', ['tester-1', 'session-tester-1']), tester: testerClock }),
+  )
+  rig.scheduler.dispose()
+}
 // ── the host's mechanical verification (task.verify) ────────────────────────
 function fakeHostSubprocess(result) {
   // A single result, or a queue consumed one spawn at a time (the retest path
@@ -2491,29 +2512,30 @@ function fakeHostSubprocess(result) {
 }
 
 {
-  // A slow retest check outlives the caller's bound: the abandoned turn must
-  // not write late. The task keeps its previous (passed) state for triage.
+  // A retest command that outlives the small action budget must still finish (the
+  // passTest bound covers verify.timeoutMs) and a genuine check timeout records
+  // the host failTest, so the auto-merge sweep cannot loop rebuild->check.
   const proc = fakeHostSubprocess([{ code: 0 }, { code: 0, delayMs: 300 }])
-  const ctx = createTesterRig({ subprocess: proc.subprocess, actionTimeoutMs: 40 })
+  const ctx = createTesterRig({ subprocess: proc.subprocess, actionTimeoutMs: 40, autoMerge: true })
   const rig = ctx.rig
-  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask({ verify: { command: 'npm run verify' } })] }))
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask({ verify: { command: 'npm run verify', timeoutMs: 100 } })] }))
   const surface = install(rig)
   await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
   ctx.fake.setTargetHead('moved-target-sha')
   const passed = await postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1' })
-  const immediate = passed.json()
+  const payload = passed.json()
   check(
-    'a slow retest check returns a readable timeout',
-    immediate.mergeError !== undefined && immediate.mergeError !== null && immediate.mergeError.code === 'action-timeout',
+    'a retest check longer than the action bound still records the host timeout',
+    payload.ok === true && payload.task.status === 'running' && payload.task.test.status === 'failed' && payload.task.test.by === 'host' && payload.task.test.hostCheck.timedOut === true,
     passed.text,
   )
-  await sleep(400)
-  const after = await rig.api.snapshot(PROJECT)
-  const state = after.tasks[0]
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  const afterRead = await rig.state.read(PROJECT)
+  const afterTask = afterRead.board.tasks.filter((task) => task.id === 'T-1')[0]
   check(
-    'an abandoned retest turn never writes late',
-    state.status === 'testing' && state.test.status === 'passed' && state.merge.mergeCommit === 'candidate-sha',
-    JSON.stringify({ status: state.status, test: state.test.status, commit: state.merge.mergeCommit }),
+    'the failed retest cannot be rebuilt in a loop by the sweep',
+    sweep.ok === true && sweep.merged.length === 0 && (afterTask.status === 'running' || afterTask.status === 'pending') && afterTask.test.status === 'failed' && afterTask.merge.mergeCommit === null,
+    JSON.stringify({ sweep: sweep, status: afterTask && afterTask.status, test: afterTask.test && afterTask.test.status, commit: afterTask.merge && afterTask.merge.mergeCommit }),
   )
   surface.dispose()
   rig.scheduler.dispose()

@@ -141,33 +141,49 @@ function activityBucket(ctx, create) {
   return bucket
 }
 
-/** Record that `by` touched task `taskId` at `at` (ms). Never throws. */
-export function recordPhaseActivity(ctx, taskId, by, at) {
+/** Record that `by` (name) / `session` touched task `taskId` at `at` (ms). Never throws. */
+export function recordPhaseActivity(ctx, taskId, by, at, session) {
   if (typeof taskId !== 'string' || taskId === '') return
   if (!Number.isFinite(at)) return
   try {
     const bucket = activityBucket(ctx, true)
-    const previous = bucket.get(taskId)
-    if (previous !== undefined && previous.at > at) return
-    bucket.set(taskId, { at: at, by: typeof by === 'string' ? by : null })
+    let entry = bucket.get(taskId)
+    if (entry === undefined) {
+      entry = { at: 0, times: new Map() }
+      bucket.set(taskId, entry)
+    }
+    if (at > entry.at) entry.at = at
+    // Keep the latest activity PER identity: a worker's call must not overwrite
+    // the tester's own last-call timestamp.
+    const key = (typeof by === 'string' ? by : '') + '|' + (typeof session === 'string' ? session : '')
+    const previous = entry.times.get(key)
+    if (previous === undefined || at > previous) entry.times.set(key, at)
+    if (entry.times.size > 64) {
+      const oldest = entry.times.keys().next()
+      if (oldest !== undefined && oldest.done !== true) entry.times.delete(oldest.value)
+    }
   } catch (error) {}
 }
 
-/** The last recorded activity on `taskId` (ms), or 0 when none exists. */
+/** The last recorded activity on `taskId` (ms), or 0 when none exists. With
+ * `roles` (slot names plus member ids/sessions), only the identities that belong
+ * to those roles count, so a worker/user call never renews a role's clock. */
 export function phaseActivityAt(ctx, taskId, roles) {
   if (typeof taskId !== 'string' || taskId === '') return 0
   try {
     const bucket = activityBucket(ctx, false)
     const entry = bucket === undefined ? undefined : bucket.get(taskId)
-    if (entry === undefined || !Number.isFinite(entry.at)) return 0
-    // Only activity attributable to the phase's own role renews its silence
-    // clock; a worker's periodic get or a user action must not mask a dead
-    // tester/reviewer.
-    if (Array.isArray(roles) && roles.length > 0) {
-      const by = typeof entry.by === 'string' ? entry.by : ''
-      if (roles.indexOf(by) < 0) return 0
+    if (entry === undefined) return 0
+    if (!Array.isArray(roles) || roles.length === 0) return Number.isFinite(entry.at) ? entry.at : 0
+    let latest = 0
+    for (const [key, at] of entry.times) {
+      if (!Number.isFinite(at)) continue
+      const parts = key.split('|')
+      if (roles.indexOf(parts[0]) >= 0 || roles.indexOf(parts[1]) >= 0) {
+        if (at > latest) latest = at
+      }
     }
-    return entry.at
+    return latest
   } catch (error) {
     return 0
   }
@@ -2403,6 +2419,26 @@ export function createDispatcher(ctx, options) {
 
 
   /** Live tester slot names (tester-1, tester-2, ...). */
+  /** Role slot names plus the member ids/sessions that belong to those slots. */
+  function roleIdentities(names) {
+    const out = names.slice()
+    if (names.length === 0) return out
+    const { agentTeams } = servicesFor(ctx)
+    const lead = resolveLead(ctx)
+    if (agentTeams === undefined || agentTeams === null || lead === null) return out
+    try {
+      const roster = agentTeams.listMembers(lead)
+      if (!Array.isArray(roster)) return out
+      for (const member of roster) {
+        if (member === null || member === undefined || names.indexOf(String(member.name)) < 0) continue
+        if (typeof member.id === 'string' && member.id !== '' && out.indexOf(member.id) < 0) out.push(member.id)
+        const session = member.session !== undefined ? member.session : member.sessionId
+        if (typeof session === 'string' && session !== '' && out.indexOf(session) < 0) out.push(session)
+      }
+    } catch (error) {}
+    return out
+  }
+
   function testerNames() {
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return []
@@ -2463,7 +2499,7 @@ export function createDispatcher(ctx, options) {
     for (const task of pending) {
       const startedAt = Date.parse(task.review.at)
       if (!Number.isFinite(startedAt)) continue
-      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, names))
+      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, roleIdentities(names)))
       const silence = now - lastAt
       const key = String(task.id) + '@' + String(task.review.at)
       if (silence >= reviewTimeoutMs * 2 + phaseGraceMs) {
@@ -2480,7 +2516,7 @@ export function createDispatcher(ctx, options) {
           ) {
             return value
           }
-          const freshSilence = Math.round((now - Math.max(Date.parse(fresh.review.at), phaseActivityAt(ctx, fresh.id, names))) / 60000)
+          const freshSilence = Math.round((now - Math.max(Date.parse(fresh.review.at), phaseActivityAt(ctx, fresh.id, roleIdentities(names)))) / 60000)
           const result = model.blockTask(value, fresh.id, now, 'system', 'review timed out: no reviewer verdict after ' + String(freshSilence) + 'min of silence')
           return result.ok === true ? result.board : value
         })
@@ -2555,7 +2591,7 @@ export function createDispatcher(ctx, options) {
     for (const task of pending) {
       const startedAt = Date.parse(task.test.at)
       if (!Number.isFinite(startedAt)) continue
-      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id))
+      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, roleIdentities(names)))
       const silence = now - lastAt
       const key = String(task.id) + '@' + String(task.test.at)
       const candidate =

@@ -2107,9 +2107,10 @@ function fakeHostSubprocess(result) {
     recordPhaseActivity(rig.ctx, 'T-1', 'tester-1', Date.now())
     await sleep(40)
   }
+  recordPhaseActivity(rig.ctx, 'T-1', 'tester-1', Date.now())
   await scheduler.tick(PROJECT)
   let read = await state.read(PROJECT)
-  check('a tester that keeps calling is never reminded or blocked', findTask(read.board, 'T-1').status === 'testing' && rig.team.calls.filter((call) => call.target === 'tester-1').length === 0, JSON.stringify({ status: findTask(read.board, 'T-1').status, calls: rig.team.calls.length }))
+  check('a tester that keeps calling is never reminded or blocked', findTask(read.board, 'T-1').status === 'testing' && rig.team.calls.filter((call) => call.target === 'tester-1').length === 0, JSON.stringify({ status: findTask(read.board, 'T-1').status, calls: rig.team.calls.map((call) => [call.target, String(call.text).slice(0, 40)]) }))
   await sleep(260)
   await scheduler.tick(PROJECT)
   read = await state.read(PROJECT)

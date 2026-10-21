@@ -22,6 +22,7 @@ import {
   defaultRoleConfig,
   normaliseRoleConfig,
   normaliseVerify,
+  VERIFY_DEFAULT_TIMEOUT_MS,
   profileForKind,
   validateRoleBinding,
   validateRoleProfile,
@@ -476,6 +477,10 @@ export function createApi(ctx, options) {
       // A failure is a host failTest (back to running) and the tester is not
       // notified; a success enters testing with test.hostCheck recorded.
       const declaredRetestVerify = normaliseVerify(latestTask.verify)
+      // A declared command may legitimately run for verify.timeoutMs (10 min by
+      // default), which is longer than one action bound. The check is bounded by
+      // runHostCheck itself; the surrounding action only has to outwait it.
+      const retestBudgetMs = declaredRetestVerify !== null && Number.isFinite(declaredRetestVerify.timeoutMs) ? declaredRetestVerify.timeoutMs : VERIFY_DEFAULT_TIMEOUT_MS
       let retestCheck = null
       let retestFailed = false
       if (declaredRetestVerify !== null) {
@@ -497,10 +502,6 @@ export function createApi(ctx, options) {
       if (isAbandoned()) {
         await discardRebuilt()
         return failure('action-abandoned', 'the merge queue turn for ' + id + ' was abandoned after the retest host check; nothing was recorded')
-      }
-      if (Date.now() > deadlineAt) {
-        await discardRebuilt()
-        return actionTimeoutFailure('mergeTestedCandidate retest host check', id, startedAt)
       }
       const recorded = await writeTask(
         projectPath,
@@ -524,6 +525,11 @@ export function createApi(ctx, options) {
           const failedTask = model.findTask(failed.board, id)
           if (failedTask !== null && failedTask !== undefined && failedTask.test !== null && failedTask.test !== undefined) {
             failedTask.test.hostCheck = retestCheck
+          }
+          // The rebuilt candidate was just discarded: forget its commit so the
+          // merge sweep cannot see a stale candidate to retry or loop on.
+          if (failedTask !== null && failedTask !== undefined && failedTask.merge !== null && failedTask.merge !== undefined) {
+            failedTask.merge = Object.assign({}, failedTask.merge, { mergeCommit: null, conflict: null, output: null })
           }
           return failed
         },
@@ -1717,7 +1723,8 @@ export function createApi(ctx, options) {
     // get/passTest is never mistaken for a stuck one.
     if (typeof source.id === 'string' && source.id !== '') {
       const activityBy = typeof owner === 'string' ? owner : owner !== null && owner !== undefined && typeof owner.name === 'string' ? owner.name : null
-      recordPhaseActivity(ctx, source.id, activityBy, now)
+      const activitySession = owner !== null && owner !== undefined && typeof owner === 'object' && typeof owner.session === 'string' ? owner.session : null
+      recordPhaseActivity(ctx, source.id, activityBy, now, activitySession)
     }
 
     if (action === 'skillsCatalog') {
@@ -2472,7 +2479,12 @@ export function createApi(ctx, options) {
         // (no separate verify). A moved target comes back as a retest. The merge
         // itself is bounded: a stuck queue must not hold this action forever.
         const mergeStarted = Date.now()
-        const boundedMerge = await boundedAwait(() => mergeTestedCandidate(projectPath, id, context.by, context), actionTimeoutMs)
+        const passVerify = normaliseVerify(result.task === null || result.task === undefined ? null : result.task.verify)
+        const passVerifyBudget = passVerify !== null && Number.isFinite(passVerify.timeoutMs) ? passVerify.timeoutMs : VERIFY_DEFAULT_TIMEOUT_MS
+        const boundedMerge = await boundedAwait(
+          () => mergeTestedCandidate(projectPath, id, context.by, context),
+          actionTimeoutMs + passVerifyBudget + 60 * 1000,
+        )
         if (boundedMerge.timedOut === true) {
           const timedOutFailure = actionTimeoutFailure('passTest merge candidate', id, mergeStarted)
           return ok({ task: result.task, events: result.events, mergeError: timedOutFailure })

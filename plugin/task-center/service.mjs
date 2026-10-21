@@ -26,7 +26,7 @@ import {
   TASK_LEASE_REMINDER_MS,
   normaliseDispatch,
   normaliseMerge,
-  normaliseVerify,
+
   validateVerify,
 } from './schema.mjs'
 
