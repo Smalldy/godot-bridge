@@ -391,6 +391,39 @@ window.__ModuleLoader__.load({
 				statusMinutes: '分钟',
 				statusPausedBy: '由 {by} 暂停',
 				statusYou: '你',
+				stageDispatch: '派发',
+				stageImplement: '实现',
+				stageReview: '评审',
+				stageTest: '测试',
+				stageMerge: '合并',
+				roundUnit: '轮',
+				interruptedAt: '中断于',
+				detailSubmitted: '提交',
+				detailSubmitCount: '第 {n} 次提交',
+				detailFilesDeclared: '声明 {n} 文件',
+				detailFilesActual: '实际 {n} 文件',
+				detailRound: '第 {n} 轮',
+				detailResubmitted: '重新提交',
+				detailFixSubmit: '修复后重新提交',
+				detailWhereNow: '做到哪了',
+				detailAllFields: '全部字段（含历史）',
+				detailNoEvents: '还没有阶段结论。',
+				detailInterrupted: '任务被中断',
+				detailElapsed: '用时',
+				detailDeclaredFiles: '声明文件',
+				detailActualFiles: '实际文件',
+				detailHostCheck: '宿主检查',
+				detailHostCheckUndeclared: '未声明',
+				detailHostCheckIncomplete: '未完成',
+				detailHostCheckFailed: '失败',
+				detailSpecExpand: '展开说明与验收',
+				detailSpecHint: '说明与验收默认折叠。',
+				detailNow: '现在',
+				detailMinutes: '分钟',
+				detailHours: '小时',
+				detailSeconds: '秒',
+				viewFull: '查看全文',
+				collapse: '收起',
 				statusSweepInterval: '每 5 秒扫描',
 				statusShowAll: '显示全部',
 				statusShowReal: '仅真实事件',
@@ -774,6 +807,39 @@ window.__ModuleLoader__.load({
 				statusMinutes: 'min',
 				statusPausedBy: 'paused by {by}',
 				statusYou: 'you',
+				stageDispatch: 'Dispatch',
+				stageImplement: 'Implement',
+				stageReview: 'Review',
+				stageTest: 'Test',
+				stageMerge: 'Merge',
+				roundUnit: 'round(s)',
+				interruptedAt: 'interrupted at',
+				detailSubmitted: 'submitted',
+				detailSubmitCount: 'submission {n}',
+				detailFilesDeclared: '{n} declared',
+				detailFilesActual: '{n} actual',
+				detailRound: 'round {n}',
+				detailResubmitted: 'resubmitted',
+				detailFixSubmit: 'resubmitted after fix',
+				detailWhereNow: 'Where it is now',
+				detailAllFields: 'All fields (with history)',
+				detailNoEvents: 'No phase conclusion yet.',
+				detailInterrupted: 'Task was interrupted',
+				detailElapsed: 'elapsed',
+				detailDeclaredFiles: 'declared files',
+				detailActualFiles: 'actual files',
+				detailHostCheck: 'host check',
+				detailHostCheckUndeclared: 'undeclared',
+				detailHostCheckIncomplete: 'incomplete',
+				detailHostCheckFailed: 'failed',
+				detailSpecExpand: 'Expand spec and acceptance',
+				detailSpecHint: 'Spec and acceptance are collapsed by default.',
+				detailNow: 'now',
+				detailMinutes: 'min',
+				detailHours: 'h',
+				detailSeconds: 's',
+				viewFull: 'View full',
+				collapse: 'Collapse',
 				statusSweepInterval: 'scans every 5s',
 				statusShowAll: 'Show all',
 				statusShowReal: 'Real events only',
@@ -1040,6 +1106,40 @@ window.__ModuleLoader__.load({
 '.gbt-editor-select{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 '.gbt-editor-select .gbt-input{width:auto;min-width:170px;height:30px}',
 '.gbt-rolesview .gbt-subhead,.gbt-rolesview .gbt-footnote,.gbt-rolesview .gbt-pill{font-size:11px}',
+'.gbt-detailbody{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:12px;align-items:start}',
+'.gbt-detailcard{border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:8px;background:var(--panel,var(--dsw-alias-bg-layer-1));min-width:0}',
+'.gbt-detailcardhead{padding:9px 12px;border-bottom:1px solid var(--line,var(--dsw-alias-border-l4));font-size:12px}',
+'.gbt-detailevents{padding:8px 12px;display:flex;flex-direction:column;gap:10px}',
+'.gbt-detailevent{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;font-size:12px}',
+'.gbt-detailpill{font-size:11px;padding:1px 7px;border-radius:9px;border:1px solid var(--line2,var(--dsw-alias-border-l4));color:var(--t2,var(--dsw-alias-label-secondary))}',
+'.gbt-detailpill[data-tone="ok"]{color:var(--ok,#3ecf8e);border-color:rgba(62,207,142,.4)}',
+'.gbt-detailpill[data-tone="bad"]{color:var(--bad,#e5645c);border-color:rgba(229,100,92,.4)}',
+'.gbt-detailwho{color:var(--t2,var(--dsw-alias-label-secondary));font-size:11.5px}',
+'.gbt-detailwhen{margin-left:auto;color:var(--t3,var(--dsw-alias-label-tertiary));font-size:11.5px;font-family:var(--mono,monospace)}',
+'.gbt-detailex{flex-basis:100%;color:var(--t3,var(--dsw-alias-label-tertiary));font-size:11.5px}',
+'.gbt-detailreason{flex-basis:100%;margin-top:2px;padding:7px 9px;border-left:2px solid var(--bad,#e5645c);background:rgba(229,100,92,.07);border-radius:0 5px 5px 0;font-size:12px;color:var(--t2,var(--dsw-alias-label-secondary));white-space:pre-wrap}',
+'.gbt-detailreason.good{border-left-color:var(--ok,#3ecf8e);background:rgba(62,207,142,.07)}',
+'.gbt-detailpreview{margin:4px 0 0;padding:8px;background:var(--elev,var(--dsw-alias-bg-layer-4));border-radius:6px;font-size:11.5px;max-height:200px;overflow:auto;white-space:pre-wrap}',
+'.gbt-detailstages{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:4px 0 2px}',
+'.gbt-detailstage{display:flex;flex-direction:column;gap:5px;font-size:11.5px;color:var(--t2,var(--dsw-alias-label-tertiary))}',
+'.gbt-detailstagebar{height:4px;border-radius:2px;background:var(--line2,var(--dsw-alias-border-l4))}',
+'.gbt-detailstage[data-state="done"] .gbt-detailstagebar{background:var(--ok,#3ecf8e)}',
+'.gbt-detailstage[data-state="active"] .gbt-detailstagebar{background:var(--dsw-alias-state-business-primary,#4f7cff)}',
+'.gbt-detailstage[data-state="interrupted"] .gbt-detailstagebar{background:var(--bad,#e5645c)}',
+'.gbt-detailstagelabel{display:flex;gap:6px;align-items:baseline}',
+'.gbt-detailstagetime{margin-left:auto;font-family:var(--mono,monospace);font-size:11px}',
+'.gbt-detailinterrupt{margin:2px 0 6px;font-size:11.5px;color:var(--bad,#e5645c)}',
+'.gbt-detailsummary{border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:8px;background:var(--panel,var(--dsw-alias-bg-layer-1));padding:10px 12px;display:flex;flex-direction:column;gap:8px;font-size:12px}',
+'.gbt-detailstat{display:flex;align-items:baseline;gap:6px}',
+'.gbt-detailstat b{font-size:18px;font-weight:600}',
+'.gbt-detailstat span{font-size:11.5px;color:var(--t3,var(--dsw-alias-label-tertiary))}',
+'.gbt-detailstatline{color:var(--t2,var(--dsw-alias-label-secondary));font-size:11.5px}',
+'.gbt-detailkv{display:flex;gap:6px;align-items:baseline;font-size:11.5px;color:var(--t2,var(--dsw-alias-label-secondary))}',
+'.gbt-detailkv b{color:var(--t1,var(--dsw-alias-label-primary))}',
+'.gbt-detailhead{display:flex;flex-direction:column;gap:4px;min-width:0}',
+'.gbt-detailmeta{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--t2,var(--dsw-alias-label-tertiary))}',
+'.gbt-detailspan{font-family:var(--mono,monospace)}',
+'@media (max-width:900px){.gbt-detailbody{grid-template-columns:1fr}.gbt-detailstages{grid-template-columns:repeat(2,minmax(0,1fr))}}',
 '.gbt-statusview{display:flex;flex-direction:column;gap:12px}',
 '.gbt-statustop{display:flex;align-items:flex-start;gap:12px}',
 '.gbt-statussummary{font-size:15px;line-height:1.4;color:var(--t1,var(--dsw-alias-label-primary))}',
@@ -3130,22 +3230,29 @@ window.__ModuleLoader__.load({
 				)
 			}
 
+			/** Detail-page disclosure state that must survive a re-mount. */
+			const detailUiState = { evidence: false, spec: false }
+
 			function DetailView(props) {
 				const task = props.task
 				const t = props.t
 				const now = props.now
 				const snapshot = props.snapshot
 				const [deleteError, setDeleteError] = React.useState(null)
+				const [evidenceOpen, setEvidenceOpen] = React.useState(detailUiState.evidence === true)
+				const [specOpen, setSpecOpen] = React.useState(detailUiState.spec === true)
 				const evidence = React.useRef(null)
 				const note = React.useRef(null)
 				const allTasks = snapshot.tasks
 				const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
 				const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
+				const actualFiles = Array.isArray(task.actualFiles) ? task.actualFiles : []
 				const held = snapshot.locks.filter(function (lock) { return lock.taskId === task.id }).map(function (lock) { return lock.path })
 				const dispatch = task.dispatch === null || task.dispatch === undefined ? null : task.dispatch
 				const merge = tcMergeOf(task)
 				const review = tcReviewOf(task)
 				const test = tcTestOf(task)
+				const history = Array.isArray(task.history) ? task.history.slice() : []
 
 				function noteValue() {
 					return note.current === null ? '' : String(note.current.value || '').trim()
@@ -3166,6 +3273,28 @@ window.__ModuleLoader__.load({
 						}
 						setDeleteError(result.payload !== undefined && result.payload !== null && result.payload.code === 'referenced' ? 'referenced' : 'failed')
 					})
+				}
+
+				// ── member names: session-id prefixes from @ids resolve to the roster ──
+				const roster = []
+				if (snapshot.agents !== null && snapshot.agents !== undefined) {
+					if (snapshot.agents.lead !== null && snapshot.agents.lead !== undefined) roster.push(snapshot.agents.lead)
+					if (Array.isArray(snapshot.agents.members)) snapshot.agents.members.forEach(function (member) { roster.push(member) })
+				}
+				/** The same label the tool puts in review.by/test.by: session- stripped, non-alphanumerics removed, 8 chars. */
+				function agentLabel(member) {
+					const raw = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' ? member.id : ''
+					return String(raw).replace(/^session-/, '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+				}
+				function actorName(value) {
+					if (typeof value !== 'string' || value === '') return '—'
+					if (value.charAt(0) !== '@') return value === 'user' ? t('statusYou') : value
+					const id = value.slice(1)
+					const idKey = id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+					const hit = roster.filter(function (member) {
+						return agentLabel(member) === idKey || member.name === id || member.kind === id || member.id === id || member.id === value
+					})[0]
+					return hit === undefined ? value : typeof hit.name === 'string' && hit.name !== '' ? hit.name : value
 				}
 
 				const actions = []
@@ -3189,6 +3318,186 @@ window.__ModuleLoader__.load({
 					actions.push(h('button', { key: 'delete', type: 'button', className: 'gbt-btn', 'data-variant': 'danger', onClick: function () { remove(false) } }, t('delete')))
 				}
 
+				// ── stage spine: dispatch -> implement -> review -> test -> merge ──
+				const stageOrder = ['pending', 'running', 'reviewing', 'testing', 'done']
+				const stageKeys = ['stageDispatch', 'stageImplement', 'stageReview', 'stageTest', 'stageMerge']
+				let reached = stageOrder.indexOf(task.status === 'blocked' || task.status === 'cancelled' ? 'pending' : task.status)
+				if (task.status === 'blocked' || task.status === 'cancelled') {
+					// blocked/cancelled interrupts the last stage the task really reached.
+					history.forEach(function (entry) {
+						if (typeof entry.from === 'string') reached = Math.max(reached, stageOrder.indexOf(entry.from))
+						if (typeof entry.to === 'string') reached = Math.max(reached, stageOrder.indexOf(entry.to))
+					})
+					reached = Math.max(0, reached)
+				}
+				const interrupted = task.status === 'blocked' || task.status === 'cancelled'
+				function historyAt(to) {
+					const hit = history.filter(function (entry) { return entry.to === to && typeof entry.at === 'string' })[0]
+					return hit === undefined ? null : hit.at
+				}
+				const reviewRounds = review === null ? history.filter(function (entry) { return entry.to === 'reviewing' }).length : Math.max(1, tcRound(review))
+				const testRounds = test === null ? history.filter(function (entry) { return entry.to === 'testing' }).length : Math.max(1, tcRound(test))
+				// Completion times: dispatch ends when the run starts, implement ends at the
+				// review start, review ends at the test start, test/merge end at done/merge.at.
+				const stageTimes = [
+					historyAt('running'),
+					historyAt('reviewing') === null && review !== null && typeof review.at === 'string' ? review.at : historyAt('reviewing'),
+					historyAt('testing') === null && test !== null && typeof test.at === 'string' ? test.at : historyAt('testing'),
+					historyAt('done') === null && merge !== null && typeof merge.at === 'string' ? merge.at : historyAt('done'),
+					merge !== null && typeof merge.at === 'string' ? merge.at : historyAt('done'),
+				]
+				const stageRounds = [null, null, review === null ? null : reviewRounds, test === null ? null : testRounds, null]
+				const interruptedReason = (function () {
+					const hit = history.filter(function (entry) { return entry.to === 'blocked' || entry.to === 'cancelled' })[0]
+					if (hit === undefined) return null
+					return typeof hit.note === 'string' && hit.note !== '' ? hit.note : t(tcStatusKey(hit.to))
+				})()
+				const stages = h(
+					'div',
+					{ className: 'gbt-detailstages', 'data-detail': 'stages' },
+					stageOrder.map(function (statusKey, index) {
+						const state = index < reached ? 'done' : index === reached ? (interrupted ? 'interrupted' : task.status === 'done' ? 'done' : 'active') : 'todo'
+						const time = stageTimes[index]
+						const rounds = stageRounds[index]
+						return h(
+							'div',
+							{ key: statusKey, className: 'gbt-detailstage', 'data-stage': statusKey, 'data-state': state, 'data-rounds': rounds === null ? '' : String(rounds), 'data-at': time === null ? '' : String(time) },
+							h('span', { className: 'gbt-detailstagebar' }),
+							h('span', { className: 'gbt-detailstagelabel' }, h('b', null, t(stageKeys[index])), rounds === null ? null : ' · ' + String(rounds) + ' ' + t('roundUnit'), time === null ? null : h('span', { className: 'gbt-detailstagetime' }, new Date(time).toTimeString().slice(0, 5))),
+						)
+					}),
+					interrupted ? h('div', { className: 'gbt-detailinterrupt', 'data-detail-interrupt': task.status }, t('interruptedAt') + ' ' + t(task.status === 'blocked' ? 'statusBlocked' : 'statusCancelled') + (interruptedReason === null ? '' : ' · ' + interruptedReason)) : null,
+				)
+
+				// ── "where is it now": one row per phase conclusion ──
+				const events = []
+				const submissions = history.filter(function (entry) { return entry.to === 'reviewing' })
+				const sha = typeof task.commit === 'string' && task.commit !== '' ? task.commit.slice(0, 7) : null
+				submissions.forEach(function (entry, index) {
+					events.push(
+						h(
+							'div',
+							{ key: 'sub-' + String(index), className: 'gbt-detailevent', 'data-detail-event': 'submit' },
+							h('span', { className: 'gbt-detailpill', 'data-tone': 'ok' }, t('detailSubmitted')),
+							h('b', null, t('stageImplement')),
+							h('span', { className: 'gbt-detailwho' }, (entry.by === null || entry.by === undefined ? '—' : actorName(entry.by)) + (submissions.length > 1 ? ' · ' + t('detailSubmitCount').replace('{n}', String(index + 1)) : '')),
+							h('span', { className: 'gbt-detailwhen' }, new Date(entry.at).toTimeString().slice(0, 5)),
+							sha === null ? null : h('div', { className: 'gbt-detailex gbt-mono' }, sha + ' · ' + t('detailFilesDeclared').replace('{n}', String(files.length)) + (actualFiles.length === 0 ? '' : ' = ' + t('detailFilesActual').replace('{n}', String(actualFiles.length)))),
+						),
+					)
+				})
+				if (review !== null) {
+					const reasons = typeof review.reasons === 'string' ? review.reasons : ''
+					events.push(
+						h(
+							'div',
+							{ key: 'review', className: 'gbt-detailevent', 'data-detail-event': 'review', 'data-review-status': String(review.status) },
+							h('span', { className: 'gbt-detailpill', 'data-tone': review.status === 'approved' ? 'ok' : review.status === 'changes-requested' ? 'bad' : 'wait' }, tcReviewLabel(review.status, t)),
+							h('b', null, t('stageReview')),
+							h('span', { className: 'gbt-detailwho' }, actorName(review.by) + ' · ' + t('detailRound').replace('{n}', String(tcRound(review)))),
+							h('span', { className: 'gbt-detailwhen' }, new Date(review.at).toTimeString().slice(0, 5)),
+							reasons === '' ? null : h('div', { className: review.status === 'changes-requested' ? 'gbt-detailreason' : 'gbt-detailreason good', 'data-detail-reason': String(review.status) }, reasons),
+						),
+					)
+					if (review.status === 'changes-requested' && submissions.length > 0) {
+						const later = submissions.filter(function (entry) { return new Date(entry.at).getTime() > new Date(review.at).getTime() }).slice(-1)[0]
+						if (later !== undefined) {
+							events.push(
+								h(
+									'div',
+									{ key: 'resubmit', className: 'gbt-detailevent', 'data-detail-event': 'resubmit' },
+									h('span', { className: 'gbt-detailpill', 'data-tone': 'ok' }, t('detailResubmitted')),
+									h('b', null, t('detailFixSubmit')),
+									h('span', { className: 'gbt-detailwho' }, (actorName(later.by) === '—' ? '' : actorName(later.by) + ' · ') + new Date(later.at).toTimeString().slice(0, 5)),
+									sha === null ? null : h('span', { className: 'gbt-detailwhen gbt-mono' }, sha),
+								),
+							)
+						}
+					}
+				}
+				if (test !== null) {
+					const full = typeof test.evidence === 'string' ? test.evidence : ''
+					const firstRaw = full === '' ? '' : full.split('\n')[0]
+					const hostCheckNow = test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? test.hostCheck : null
+					const summarySuffix = hostCheckNow === null ? '' : ' · exit ' + String(hostCheckNow.exitCode === null || hostCheckNow.exitCode === undefined ? '—' : hostCheckNow.exitCode) + (hostCheckNow.durationMs === undefined || hostCheckNow.durationMs === null ? '' : ' · ' + String(Math.round(hostCheckNow.durationMs / 1000)) + 's')
+					const firstLine = (full === '' ? t('noEvidence') : firstRaw.slice(0, 160) + (firstRaw.length > 160 ? '…' : '')) + summarySuffix
+					events.push(
+						h(
+							'div',
+							{ key: 'test', className: 'gbt-detailevent', 'data-detail-event': 'test', 'data-test-status': String(test.status) },
+							h('span', { className: 'gbt-detailpill', 'data-tone': test.status === 'passed' ? 'ok' : 'bad' }, tcTestLabel(test.status, t)),
+							h('b', null, t('stageTest')),
+							h('span', { className: 'gbt-detailwho' }, actorName(test.by) + (full === '' ? '' : ' · ' + t('detailRound').replace('{n}', String(tcRound(test))))),
+							h('span', { className: 'gbt-detailwhen' }, new Date(test.at).toTimeString().slice(0, 5)),
+							h('div', { className: 'gbt-detailex gbt-mono' }, firstLine),
+							evidenceOpen
+								? h('pre', { className: 'gbt-detailpreview', 'data-detail-evidence': 'full' }, (function () {
+										const lines = full.split('\n')
+										return lines.slice(0, 40).join('\n') + (lines.length > 40 ? '\n… (' + String(lines.length - 40) + ')' : '')
+									})())
+								: null,
+							full === '' ? null : h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'detail-evidence', onClick: function () { detailUiState.evidence = !evidenceOpen; setEvidenceOpen(!evidenceOpen) } }, evidenceOpen ? t('collapse') : t('viewFull')),
+						),
+					)
+				}
+				if (merge !== null) {
+					const mergeSha = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? merge.mergeCommit : typeof merge.commit === 'string' && merge.commit !== '' ? merge.commit : null
+					const commit = mergeSha === null ? sha : mergeSha.slice(0, 7)
+					events.push(
+						h(
+							'div',
+							{ key: 'merge', className: 'gbt-detailevent', 'data-detail-event': 'merge' },
+							h('span', { className: 'gbt-detailpill', 'data-tone': merge.status === 'merged' ? 'ok' : 'wait' }, tcMergeLabel(merge.status, t)),
+							h('b', null, t('stageMerge')),
+							h('span', { className: 'gbt-detailwho' }, typeof merge.target === 'string' && merge.target !== '' ? '→ ' + merge.target : '—'),
+							h('span', { className: 'gbt-detailwhen' }, merge.at === null || merge.at === undefined ? '' : new Date(merge.at).toTimeString().slice(0, 5)),
+							commit === null ? null : h('div', { className: 'gbt-detailex gbt-mono' }, commit + ' · ' + t('detailFilesDeclared').replace('{n}', String(files.length)) + (actualFiles.length === 0 ? '' : ' = ' + t('detailFilesActual').replace('{n}', String(actualFiles.length)))),
+						),
+					)
+				}
+				if (interrupted) {
+					events.push(
+						h(
+							'div',
+							{ key: 'interrupt', className: 'gbt-detailevent', 'data-detail-event': 'interrupt' },
+							h('span', { className: 'gbt-detailpill', 'data-tone': 'bad' }, t(task.status === 'blocked' ? 'statusBlocked' : 'statusCancelled')),
+							h('b', null, t('detailInterrupted')),
+							h('span', { className: 'gbt-detailwho' }, interruptedReason === null ? '—' : interruptedReason),
+						),
+					)
+				}
+				if (events.length === 0) events.push(h('p', { key: 'empty', className: 'gbt-footnote' }, t('detailNoEvents')))
+				const eventsBody = h('div', { className: 'gbt-detailevents', 'data-detail': 'events' }, events)
+
+				// ── summary column ──
+				const finishedAt = merge !== null && typeof merge.at === 'string' ? merge.at : task.status === 'done' ? task.updatedAt : null
+				const spanMs = Math.max(0, (finishedAt === null ? now : new Date(finishedAt).getTime()) - new Date(task.createdAt).getTime())
+				const elapsedText = (function () {
+					const minutes = Math.round(spanMs / 60000)
+					if (minutes < 1) return String(Math.max(1, Math.round(spanMs / 1000))) + ' ' + t('detailSeconds')
+					if (minutes < 60) return String(minutes) + ' ' + t('detailMinutes')
+					return String(Math.floor(minutes / 60)) + ' ' + t('detailHours') + ' ' + String(minutes % 60) + ' ' + t('detailMinutes')
+				})()
+				const summary = h(
+					'div',
+					{ className: 'gbt-detailsummary', 'data-detail': 'summary' },
+					h('div', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
+					h('div', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit'), ' · ', t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit'), ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailDeclaredFiles')), h('b', null, String(files.length)), h('span', null, t('detailActualFiles')), h('b', null, actualFiles.length === 0 ? '—' : String(actualFiles.length))),
+					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailHostCheck')), h('b', { 'data-detail-hostcheck': 'true' }, task.verify === null || task.verify === undefined ? t('detailHostCheckUndeclared') : test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? (test.hostCheck.exitCode === 0 && test.hostCheck.timedOut !== true ? t('statusResultPassed') : t('detailHostCheckFailed')) : t('detailHostCheckIncomplete'))),
+					h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'detail-spec', onClick: function () { detailUiState.spec = !specOpen; setSpecOpen(!specOpen) } }, specOpen ? t('collapse') : t('detailSpecExpand')),
+					specOpen
+						? h(
+								'div',
+								{ 'data-detail-spec': 'full' },
+								h('div', { className: 'gbt-subhead' }, t('spec')),
+								h('p', { className: 'gbt-prose' }, task.spec === '' ? t('noSpec') : task.spec),
+								h('div', { className: 'gbt-subhead' }, t('acceptance')),
+								h('p', { className: 'gbt-prose' }, task.acceptance === '' ? t('noSpec') : task.acceptance),
+							)
+						: h('p', { className: 'gbt-footnote', 'data-detail-spec': 'collapsed' }, t('detailSpecHint')),
+				)
+
 				const blocks = []
 				blocks.push(
 					h(
@@ -3200,103 +3509,8 @@ window.__ModuleLoader__.load({
 				)
 				if (deleteError === 'referenced') blocks.push(h('p', { key: 'forcehint', className: 'gbt-footnote' }, t('forceHint')))
 				if (deleteError === 'failed') blocks.push(h('p', { key: 'deletefail', className: 'gbt-footnote' }, t('error')))
-
-				blocks.push(
-					h(
-						'section',
-						{ key: 'meta', className: 'gbt-section' },
-						h('h3', null, t('status')),
-						h(
-							'dl',
-							{ className: 'gbt-meta' },
-							h('dt', null, t('priority')),
-							h('dd', null, String(task.priority)),
-							h('dt', null, t('assignee')),
-							h('dd', null, task.assignee !== null && task.assignee !== undefined ? task.assignee.name : '—'),
-							h('dt', null, t('attempts')),
-							h('dd', null, String(task.attempts) + ' / ' + String(task.maxAttempts)),
-							h('dt', null, t('created')),
-							h('dd', null, tcAgo(task.createdAt, now)),
-							h('dt', null, t('updated')),
-							h('dd', null, tcAgo(task.updatedAt, now)),
-						),
-					),
-				)
-
-				// The phase machine is the spine of a task: its review and test
-				// rounds decide whether the host may merge. The panel only renders
-				// the records the Host returned; it never derives a verdict.
-				blocks.push(
-					h(
-						'section',
-						{ key: 'phase', className: 'gbt-section' },
-						h('h3', null, t('phaseTitle')),
-						h(
-							'dl',
-							{ className: 'gbt-meta' },
-							h('dt', null, t('phaseCurrent')),
-							h('dd', null, h('span', { className: 'gbt-pill', 'data-status': task.status }, tcPhaseLabel(task, t))),
-							h('dt', null, t('requiredRole')),
-							h('dd', null, typeof task.requiredRole === 'string' && task.requiredRole !== '' ? task.requiredRole : '—'),
-							h('dt', null, t('phaseAttempts')),
-							h('dd', null, String(task.attempts) + ' / ' + String(task.maxAttempts)),
-						),
-						h(
-							'div',
-							{ className: 'gbt-outputblock' },
-							h('div', { className: 'gbt-subhead' }, t('review')),
-							review === null
-								? h('p', { className: 'gbt-footnote' }, t('noReview'))
-								: h(
-										'div',
-										null,
-										h(
-											'dl',
-											{ className: 'gbt-meta' },
-											h('dt', null, t('reviewStatus')),
-											h('dd', null, h('span', { className: 'gbt-pill', 'data-status': review.status }, tcReviewLabel(review.status, t))),
-											h('dt', null, review.status === 'pending' ? t('submitter') : t('reviewer')),
-											h('dd', null, typeof review.by === 'string' && review.by !== '' ? review.by : '—'),
-											h('dt', null, t('reviewAttempt')),
-											h('dd', null, String(tcRound(review))),
-											h('dt', null, t('phaseAt')),
-											h('dd', null, tcAgo(review.at, now)),
-										),
-										h('p', { className: 'gbt-footnote' }, t('reviewHint')),
-										review.reasons === null || review.reasons === undefined || review.reasons === ''
-											? null
-											: outputBlock('review-reasons', t('reviewReasons'), review.reasons, t),
-									),
-						),
-						h(
-							'div',
-							{ className: 'gbt-outputblock' },
-							h('div', { className: 'gbt-subhead' }, t('test')),
-							test === null
-								? h('p', { className: 'gbt-footnote' }, t('noTest'))
-								: h(
-										'div',
-										null,
-										h(
-											'dl',
-											{ className: 'gbt-meta' },
-											h('dt', null, t('testStatus')),
-											h('dd', null, h('span', { className: 'gbt-pill', 'data-status': test.status }, tcTestLabel(test.status, t))),
-											h('dt', null, t('tester')),
-											h('dd', null, typeof test.by === 'string' && test.by !== '' ? test.by : '—'),
-											h('dt', null, t('testAttempt')),
-											h('dd', null, String(tcRound(test))),
-											h('dt', null, t('phaseAt')),
-											h('dd', null, tcAgo(test.at, now)),
-											h('dt', null, t('testCandidate')),
-											h('dd', null, typeof task.worktree === 'string' && task.worktree !== '' ? task.worktree : '—'),
-										),
-										h('p', { className: 'gbt-footnote' }, t('testHint')),
-										outputBlock('test-evidence', t('testEvidence'), typeof test.evidence === 'string' ? test.evidence : '', t),
-									),
-						),
-					),
-				)
+				blocks.push(stages)
+				blocks.push(h('div', { className: 'gbt-detailbody' }, h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody), summary))
 
 				if (task.status === 'running') {
 					blocks.push(
@@ -3305,179 +3519,63 @@ window.__ModuleLoader__.load({
 							{ key: 'work', className: 'gbt-section' },
 							h('h3', null, t('evidence')),
 							h('textarea', { className: 'gbt-area', ref: evidence, placeholder: t('evidence') }),
-							h(
-								'div',
-								{ className: 'gbt-actions', style: { marginTop: '6px' } },
-								h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: submitWork }, t('submit')),
-							),
+							h('div', { className: 'gbt-actions', style: { marginTop: '6px' } }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: submitWork }, t('submit'))),
 						),
 					)
 				}
 
 				blocks.push(
 					h(
-						'section',
-						{ key: 'spec', className: 'gbt-section' },
-						h('h3', null, t('spec')),
-						h('p', { className: 'gbt-prose' }, task.spec === '' ? t('noSpec') : task.spec),
-					),
-				)
-				blocks.push(
-					h(
-						'section',
-						{ key: 'acceptance', className: 'gbt-section' },
-						h('h3', null, t('acceptance')),
-						h('p', { className: 'gbt-prose' }, task.acceptance === '' ? t('noSpec') : task.acceptance),
-					),
-				)
-				blocks.push(
-					h(
-						'section',
-						{ key: 'evidence-view', className: 'gbt-section' },
-						h('h3', null, t('evidence')),
-						h('p', { className: 'gbt-prose' }, task.evidence === '' ? t('noEvidence') : task.evidence),
-					),
-				)
-
-				blocks.push(
-					h(
-						'section',
-						{ key: 'deps', className: 'gbt-section' },
-						h('h3', null, t('dependencies')),
-						deps.length === 0
-							? h('p', { className: 'gbt-prose' }, t('noDeps'))
+						'details',
+						{ key: 'fields', className: 'gbt-section' },
+						h('summary', null, t('detailAllFields')),
+						h(
+							'dl',
+							{ className: 'gbt-meta' },
+							h('dt', null, t('priority')),
+							h('dd', null, String(task.priority)),
+							h('dt', null, t('assignee')),
+							h('dd', null, task.assignee !== null && task.assignee !== undefined ? actorName(task.assignee.name) : '—'),
+							h('dt', null, t('attempts')),
+							h('dd', null, String(task.attempts) + ' / ' + String(task.maxAttempts)),
+							h('dt', null, t('created')),
+							h('dd', null, tcAgo(task.createdAt, now)),
+							h('dt', null, t('updated')),
+							h('dd', null, tcAgo(finishedAt === null ? task.updatedAt : finishedAt, now)),
+							h('dt', null, t('phaseCurrent')),
+							h('dd', null, h('span', { className: 'gbt-pill', 'data-status': task.status }, tcPhaseLabel(task, t))),
+							h('dt', null, t('requiredRole')),
+							h('dd', null, typeof task.requiredRole === 'string' && task.requiredRole !== '' ? task.requiredRole : '—'),
+							h('dt', null, t('worktree')),
+							h('dd', null, typeof task.worktree === 'string' && task.worktree !== '' ? task.worktree : '—'),
+							h('dt', null, t('branch')),
+							h('dd', null, typeof task.branch === 'string' && task.branch !== '' ? task.branch : '—'),
+							h('dt', null, t('commit')),
+							h('dd', null, typeof task.commit === 'string' && task.commit !== '' ? task.commit : '—'),
+						),
+						h('div', { className: 'gbt-subhead' }, t('dependencies')),
+						deps.length === 0 ? h('p', { className: 'gbt-footnote' }, t('noDeps')) : h('div', { className: 'gbt-cardmeta' }, deps.map(function (id) {
+							const dependency = allTasks.filter(function (entry) { return entry.id === id })[0]
+							return h('span', { key: id, className: 'gbt-chip', 'data-tone': toneForDependency(allTasks, id) }, dependency === undefined ? id + ' · ' + t('depBroken') : id + ' · ' + t(tcStatusKey(dependency.status)))
+						})),
+						h('div', { className: 'gbt-subhead' }, t('files')),
+						files.length === 0 ? h('p', { className: 'gbt-footnote' }, t('noFiles')) : h('div', { className: 'gbt-cardmeta' }, files.map(function (path) {
+							return h('span', { key: path, className: 'gbt-chip', 'data-tone': held.indexOf(path) >= 0 ? 'running' : 'waiting' }, (held.indexOf(path) >= 0 ? '🔒 ' : '') + path)
+						})),
+						dispatch === null
+							? null
 							: h(
 									'div',
-									{ className: 'gbt-cardmeta' },
-									deps.map(function (id) {
-										const dependency = allTasks.filter(function (entry) { return entry.id === id })[0]
-										const tone = toneForDependency(allTasks, id)
-										const label = dependency === undefined ? id + ' · ' + t('depBroken') : id + ' · ' + t(tcStatusKey(dependency.status))
-										return h('span', { key: id, className: 'gbt-chip', 'data-tone': tone }, label)
-									}),
+									null,
+									h('div', { className: 'gbt-subhead' }, t('dispatch')),
+									h('dl', { className: 'gbt-meta' }, h('dt', null, t('status')), h('dd', null, String(dispatch.status === null || dispatch.status === undefined ? '—' : dispatch.status)), h('dt', null, t('assignee')), h('dd', null, String(dispatch.target === null || dispatch.target === undefined ? '—' : dispatch.target)), dispatch.error === null || dispatch.error === undefined ? null : h('dt', null, t('dispatchError')), dispatch.error === null || dispatch.error === undefined ? null : h('dd', null, String(dispatch.error))),
 								),
+						h('div', { className: 'gbt-subhead' }, t('history')),
+						history.length === 0 ? h('p', { className: 'gbt-footnote' }, t('emptyHistory')) : h('div', { className: 'gbt-timeline' }, history.slice().reverse().map(function (entry, index) {
+							return h('div', { key: String(index), className: 'gbt-event' }, h('span', { className: 'gbt-mono' }, tcAgo(entry.at, now)), ' ', h('b', null, actorName(entry.by)), ' ', h('span', null, (entry.from === null ? '·' : entry.from) + ' → ' + (entry.to === null ? '·' : entry.to)), entry.note === '' ? null : h('div', null, entry.note))
+						})),
 					),
 				)
-
-				blocks.push(
-					h(
-						'section',
-						{ key: 'files', className: 'gbt-section' },
-						h('h3', null, t('files')),
-						files.length === 0
-							? h('p', { className: 'gbt-prose' }, t('noFiles'))
-							: h(
-									'div',
-									{ className: 'gbt-cardmeta' },
-									files.map(function (path) {
-										const locked = held.indexOf(path) >= 0
-										return h('span', { key: path, className: 'gbt-chip', 'data-tone': locked ? 'running' : 'waiting' }, (locked ? '🔒 ' : '') + path)
-									}),
-								),
-					),
-				)
-
-				const checkoutParts = [
-					typeof task.worktree === 'string' ? task.worktree : '',
-					typeof task.branch === 'string' ? task.branch : '',
-					typeof task.commit === 'string' ? task.commit : '',
-				]
-				if (checkoutParts.some(function (value) { return value !== '' })) {
-					blocks.push(
-						h(
-							'section',
-							{ key: 'checkout', className: 'gbt-section' },
-							h('h3', null, t('checkoutTitle')),
-							h(
-								'dl',
-								{ className: 'gbt-meta' },
-								h('dt', null, t('worktree')),
-								h('dd', null, checkoutParts[0] === '' ? '—' : checkoutParts[0]),
-								h('dt', null, t('branch')),
-								h('dd', null, checkoutParts[1] === '' ? '—' : checkoutParts[1]),
-								h('dt', null, t('commit')),
-								h('dd', null, checkoutParts[2] === '' ? '—' : checkoutParts[2]),
-							),
-						),
-					)
-				}
-
-				if (merge !== null) {
-					const rows = [
-						h('dt', { key: 'ms-l' }, t('mergeStatus')),
-						h('dd', { key: 'ms-v' }, h('span', { className: 'gbt-pill', 'data-status': tcMergeTone(merge.status) }, tcMergeLabel(merge.status, t))),
-					]
-					if (typeof merge.target === 'string' && merge.target !== '') {
-						rows.push(h('dt', { key: 'tg-l' }, t('mergeTarget')), h('dd', { key: 'tg-v' }, merge.target))
-					}
-					if (merge.conflict !== null && merge.conflict !== undefined) {
-						rows.push(h('dt', { key: 'cf-l' }, t('conflictDetail')), h('dd', { key: 'cf-v' }, String(merge.conflict)))
-					}
-					blocks.push(
-						h(
-							'section',
-							{ key: 'merge', className: 'gbt-section' },
-							h('h3', null, t('mergeTitle')),
-							h('dl', { className: 'gbt-meta' }, rows),
-							typeof merge.output === 'string' && merge.output !== ''
-								? outputBlock('merge-out', t('verificationOutput'), merge.output, t)
-								: null,
-						),
-					)
-				}
-
-				if (dispatch !== null) {
-					blocks.push(
-						h(
-							'section',
-							{ key: 'dispatch', className: 'gbt-section' },
-							h('h3', null, t('dispatch')),
-							h(
-								'dl',
-								{ className: 'gbt-meta' },
-								h('dt', null, t('status')),
-								h('dd', null, String(dispatch.status === null || dispatch.status === undefined ? '—' : dispatch.status)),
-								h('dt', null, t('assignee')),
-								h('dd', null, String(dispatch.target === null || dispatch.target === undefined ? '—' : dispatch.target)),
-								h('dt', null, t('attempts')),
-								h('dd', null, String(task.attempts)),
-								dispatch.error === null || dispatch.error === undefined
-									? null
-									: h('dt', { key: 'error-label' }, t('dispatchError')),
-								dispatch.error === null || dispatch.error === undefined ? null : h('dd', { key: 'error-value' }, String(dispatch.error)),
-							),
-						),
-					)
-				}
-
-				const history = Array.isArray(task.history) ? task.history.slice().reverse() : []
-				blocks.push(
-					h(
-						'section',
-						{ key: 'history', className: 'gbt-section' },
-						h('h3', null, t('history')),
-						history.length === 0
-							? h('p', { className: 'gbt-prose' }, t('emptyHistory'))
-							: h(
-									'div',
-									{ className: 'gbt-timeline' },
-									history.map(function (entry, index) {
-										const move = (entry.from === null ? '·' : entry.from) + ' → ' + (entry.to === null ? '·' : entry.to)
-										return h(
-											'div',
-											{ key: String(index), className: 'gbt-event' },
-											h('span', { className: 'gbt-mono' }, tcAgo(entry.at, now)),
-											' ',
-											h('b', null, entry.by),
-											' ',
-											h('span', null, move),
-											entry.note === '' ? null : h('div', null, entry.note),
-										)
-									}),
-								),
-					),
-				)
-
 				blocks.push(h('input', { key: 'note', className: 'gbt-input', ref: note, placeholder: t('notePlaceholder') }))
 				return h(
 					'aside',
@@ -3487,9 +3585,10 @@ window.__ModuleLoader__.load({
 						{ className: 'gbt-drawerhead' },
 						h(
 							'div',
-							null,
+							{ className: 'gbt-detailhead' },
 							h('div', { className: 'gbt-cardmeta' }, h('span', { className: 'gbt-id' }, task.id), h('span', { className: 'gbt-pill', 'data-status': task.status }, t(tcStatusKey(task.status))), waitingChip(task, t, 'waiting')),
 							h('h2', { className: 'gbt-drawertitle' }, task.title),
+							h('div', { className: 'gbt-detailmeta' }, h('span', null, t('assignee') + ' ' + (task.assignee === null || task.assignee === undefined ? '—' : task.assignee.name)), h('span', { className: 'gbt-detailspan' }, new Date(task.createdAt).toTimeString().slice(0, 5) + ' → ' + (finishedAt === null ? t('detailNow') : new Date(finishedAt).toTimeString().slice(0, 5)) + ' · ' + elapsedText)),
 						),
 						h('button', { type: 'button', className: 'gbt-iconbtn', onClick: props.onClose, 'aria-label': t('close') }, '×'),
 					),
