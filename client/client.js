@@ -3441,7 +3441,8 @@ window.__ModuleLoader__.load({
 					)
 				}
 				if (merge !== null) {
-					const commit = typeof merge.commit === 'string' && merge.commit !== '' ? merge.commit.slice(0, 7) : sha
+					const mergeSha = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? merge.mergeCommit : typeof merge.commit === 'string' && merge.commit !== '' ? merge.commit : null
+					const commit = mergeSha === null ? sha : mergeSha.slice(0, 7)
 					events.push(
 						h(
 							'div',

@@ -2065,7 +2065,12 @@ check(
   check('a done task shows every phase done, with rounds on review and test', fiveStages.every((node) => node.props['data-state'] === 'done') && stageOf(doneDrawer, 'reviewing').props['data-rounds'] === '1' && stageOf(doneDrawer, 'testing').props['data-rounds'] === '1', JSON.stringify(fiveStages.map((node) => [node.props['data-stage'], node.props['data-state'], node.props['data-rounds']])))
   const doneText = textOf(doneDrawer)
   check('the body lists the submit, review, test and merge conclusions', ['提交', '评审通过', '测试通过', '已合并'].every((label) => doneText.indexOf(label) >= 0), doneText.slice(0, 400))
-  check('the merge row carries the target branch and merged commit', doneText.indexOf('feat/task-center-v2') >= 0 && doneText.indexOf('abcdef1') >= 0, doneText.slice(0, 400))
+  const mergeEvent = findAll(doneDrawer, (node) => node.props && node.props['data-detail-event'] === 'merge')[0]
+  check(
+    'the merge row carries the target branch and the MERGE commit (merge.mergeCommit, not the tested head)',
+    mergeEvent !== undefined && textOf(mergeEvent).indexOf('feat/task-center-v2') >= 0 && textOf(mergeEvent).indexOf('fedcba0') >= 0 && textOf(mergeEvent).indexOf('abcdef1') < 0,
+    mergeEvent && textOf(mergeEvent),
+  )
   check('the summary column shows elapsed time, rounds and attempts', doneText.indexOf('用时') >= 0 && doneText.indexOf('尝试') >= 0 && doneText.indexOf('1 / 3') >= 0, doneText.slice(-400))
   check('the spec/acceptance block is collapsed by default', findAll(doneDrawer, (node) => node.props && node.props['data-detail-spec'] === 'collapsed').length === 1 && findAll(doneDrawer, (node) => node.props && node.props['data-detail-spec'] === 'full').length === 0)
   check('all raw fields stay reachable in the folded field block', doneText.indexOf('全部字段') >= 0 && doneText.indexOf('abcdef1234567890') >= 0, doneText.slice(-400))
