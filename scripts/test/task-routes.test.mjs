@@ -3383,11 +3383,9 @@ async function withDeadline(promise, ms) {
   check(
     'the preview splits the injected text into ordered, labelled sections',
     Array.isArray(worker.sections) &&
-      worker.sections.length >= 4 &&
+      worker.sections.length >= 5 &&
       worker.sections.map((section) => section.text).join('\n\n') === worker.text &&
-      worker.sections.some((section) => section.group === 'task') &&
-      worker.sections.some((section) => section.group === 'fixed') &&
-      worker.sections.some((section) => section.group === 'template'),
+      Array.from(new Set(worker.sections.map((section) => section.group))).join(',') === 'role,template,task,fixed,skills',
     JSON.stringify(worker.sections.map((section) => [section.key, section.group])),
   )
   const workerTemplate = worker.sections.filter((section) => section.group === 'template')[0]
@@ -3418,7 +3416,7 @@ async function withDeadline(promise, ms) {
   )
   check(
     'the reviewer section labels separate task data from host copy',
-    reviewer.sections.some((section) => section.group === 'task') && reviewer.sections.some((section) => section.group === 'fixed'),
+    Array.from(new Set(reviewer.sections.map((section) => section.group))).join(',') === 'role,template,task,fixed,skills',
     JSON.stringify(reviewer.sections.map((section) => section.group)),
   )
   const reviewerTemplate = reviewer.sections.filter((section) => section.group === 'template')[0]

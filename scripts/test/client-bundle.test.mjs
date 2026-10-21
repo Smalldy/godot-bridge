@@ -422,12 +422,14 @@ function rolePreviewReply(body) {
   previewSampleNext = false
   const task = sample ? { id: 'T-42', title: SAMPLE_TASK_TITLE } : { id: requested.id, title: requested.title }
   PREVIEW_CALLS.push({ kind: kind, profile: body.profile === undefined ? null : body.profile, taskId: body.taskId === undefined ? null : body.taskId })
+  // The host's real groups: role / template / task / fixed / skills.
   const sections = [
-    { key: 'header', group: 'fixed', text: 'Task center role: ' + kind + '\nProject: ' + PROJECT },
+    { key: 'header', group: 'role', text: 'Task center role: ' + kind + '\nProject: ' + PROJECT },
+    { key: 'template', group: 'template', text: 'Profile instructions:\n' + (typeof body.profile === 'string' && body.profile !== '' ? body.profile : kind) },
     { key: 'task', group: 'task', text: 'Task ' + task.id + ': ' + task.title },
     { key: 'fixed', group: 'fixed', text: 'Duties: permission boundary.\nVerdict schema: task_center submit.' },
+    { key: 'skills', group: 'skills', text: 'Load these skills before starting.' },
   ]
-  sections.splice(1, 0, { key: 'template', group: 'template', text: 'Profile instructions:\n' + (typeof body.profile === 'string' && body.profile !== '' ? body.profile : kind) })
   return {
     ok: true,
     kind: kind,
@@ -965,7 +967,7 @@ await flush()
     tabs[0].props['aria-selected'] === 'true' && tabs[1].props['aria-selected'] === 'false' && tabs[2].props['aria-selected'] === 'false',
     JSON.stringify(tabs.map((tab) => tab.props['aria-selected'])),
   )
-  check('exactly one tab is marked active', findAll(editor, (node) => node.props && node.props.className === 'gbt-seg' && node.props['data-active'] === 'true').length === 1)
+  check('exactly one tab is marked active', findAll(editor, (node) => node.props && node.props.className === 'gbt-rolesegitem' && node.props['data-active'] === 'true').length === 1)
 
   // Identity row: kind + custom/default state + the ONE "current use" picker.
   let identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
@@ -993,13 +995,42 @@ await flush()
     findAll(editor, (node) => node.props && node.props['data-roles-header'] === 'true').length === 1,
   )
   check(
-    'the two panes are raw/injected and the section anchors are shared',
+    'there is no anchor row on either pane any more',
+    findAll(editor, (node) => node.props && node.props['data-role-anchors'] !== undefined).length === 0 &&
+      findAll(editor, (node) => node.props && node.props['data-role-anchor'] !== undefined).length === 0,
+  )
+  check(
+    'the two panes are raw/injected and each is one card',
     findAll(editor, (node) => node.props && node.props['data-roles-pane'] === 'raw').length === 1 &&
       findAll(editor, (node) => node.props && node.props['data-roles-pane'] === 'injected').length === 1 &&
-      findAll(editor, (node) => node.props && node.props['data-role-anchors'] === 'true').length === 2 &&
-      findAll(editor, (node) => node.props && node.props['data-role-anchors'] === 'true').every((row) => findAll(row, (node) => node.props && node.props['data-role-anchor'] !== undefined).map((node) => node.props['data-role-anchor']).join(',') === 'template,task,fixed,skills') &&
-      findAll(editor, (node) => node.props && node.props['data-roles-pane'] !== undefined).every((pane) => pane.props.children[0] && pane.props.children[0].props && pane.props.children[0].props['data-role-anchors'] === 'true' && pane.props.children[1] && pane.props.children[1].props && pane.props.children[1].props['data-role-prompt'] !== undefined) &&
-      findAll(editor, (node) => node.props && node.props['data-role-section-source'] !== undefined).length >= 1,
+      findAll(editor, (node) => node.props && node.props['data-role-card'] === 'raw').length === 1 &&
+      findAll(editor, (node) => node.props && node.props['data-role-card'] === 'injected').length === 1,
+  )
+  check(
+    'the role page tabs are the role-specific segmented control',
+    findAll(editor, (node) => node.props && node.props.className === 'gbt-roleseg').length === 1 &&
+      findAll(editor, (node) => node.props && node.props['data-role-tabs'] === 'true').length === 1 &&
+      findAll(editor, (node) => node.props && node.props.className === 'gbt-rolesegitem').length === 3 &&
+      findAll(editor, (node) => node.props && node.props.className === 'gbt-segmented').length === 0 &&
+      findAll(editor, (node) => node.props && node.props.className === 'gbt-seg').length === 0,
+  )
+  check(
+    'the left card holds the prompt, skills and instance count together',
+    (function () {
+      const card = findAll(editor, (node) => node.props && node.props['data-role-card'] === 'raw')[0]
+      return (
+        card !== undefined &&
+        findAll(card, (node) => node.props && node.props['data-role-prompt'] === 'raw').length === 1 &&
+        findAll(card, (node) => node.type === 'input' && node.props['data-field'] === 'skills').length === 1 &&
+        findAll(card, (node) => node.type === 'input' && node.props['data-field'] === 'instances').length === 1 &&
+        findAll(card, (node) => node.props && node.props['data-role-card-title'] === 'true').length === 1
+      )
+    })(),
+  )
+  check(
+    'the injected sections are labelled once, in the semantic order',
+    findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,你的提示词,任务数据,权限边界与结论,技能',
+    findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(','),
   )
   check(
     'no refresh button, no repeated guidance sentence and no top banner',
@@ -1246,10 +1277,12 @@ await flush()
   const sectionNodes = findAll(injectedCol, (node) => node.type === 'div' && node.props && node.props['data-role-section-group'] !== undefined)
   check(
     'the right column separates task data from host copy with readable labels',
-    sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'fixed,template,task,fixed' &&
-      findAll(sectionNodes[1], (node) => node.type === 'span').some((node) => textOf(node) === '你的提示词') &&
-      findAll(sectionNodes[2], (node) => node.type === 'span').some((node) => textOf(node) === '任务数据') &&
-      findAll(sectionNodes[3], (node) => node.type === 'span').some((node) => textOf(node) === '权限边界与结论'),
+    sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'role,template,task,fixed,skills' &&
+      textOf(sectionNodes[0]).indexOf('角色与阶段') >= 0 &&
+      textOf(sectionNodes[1]).indexOf('你的提示词') >= 0 &&
+      textOf(sectionNodes[2]).indexOf('任务数据') >= 0 &&
+      textOf(sectionNodes[3]).indexOf('权限边界与结论') >= 0 &&
+      textOf(sectionNodes[4]).indexOf('技能') >= 0,
     sectionNodes.map((node) => textOf(node)).join(' | '),
   )
   check('the sample label is not shown for a real task', textOf(injectedCol).indexOf('示例任务（非真实') < 0)
@@ -1579,15 +1612,17 @@ await flush()
   check(
     'the right column shows the injected reply with a section for the user’s own text',
     reviewerText !== undefined &&
-      reviewerSections.map((node) => node.props['data-role-section-group']).join(',') === 'fixed,template,task,fixed' &&
+      reviewerSections.map((node) => node.props['data-role-section-group']).join(',') === 'role,template,task,fixed,skills' &&
       textOf(reviewerText).indexOf('Profile instructions:\ngodot-reviewer') >= 0,
     reviewerSections.map((node) => node.props['data-role-section-group']).join(','),
   )
   check(
     'the section labels use user language, not implementation names',
-    findAll(reviewerSections[1], (node) => node.type === 'span').some((node) => textOf(node) === '你的提示词') &&
+    findAll(reviewerSections[0], (node) => node.type === 'span').some((node) => textOf(node) === '角色与阶段') &&
+      findAll(reviewerSections[1], (node) => node.type === 'span').some((node) => textOf(node) === '你的提示词') &&
       findAll(reviewerSections[2], (node) => node.type === 'span').some((node) => textOf(node) === '任务数据') &&
-      findAll(reviewerSections[3], (node) => node.type === 'span').some((node) => textOf(node) === '权限边界与结论'),
+      findAll(reviewerSections[3], (node) => node.type === 'span').some((node) => textOf(node) === '权限边界与结论') &&
+      findAll(reviewerSections[4], (node) => node.type === 'span').some((node) => textOf(node) === '技能'),
     reviewerSections.map((node) => textOf(node)).join(' | '),
   )
 
