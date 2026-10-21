@@ -432,6 +432,7 @@ window.__ModuleLoader__.load({
 				roleEditorNoProfile: '该阶段没有可用的角色',
 				roleCurrentUse: '当前使用',
 				roleSectionRole: '角色与阶段',
+				rolePreviewGroupBuiltin: '内置默认提示词',
 				roleDraftName: '副本名称',
 				roleDiscard: '丢弃',
 				roleDraftHint: '草稿未保存 · 切换会提示',
@@ -762,6 +763,7 @@ window.__ModuleLoader__.load({
 				roleEditorNoProfile: 'no role is available for this stage',
 				roleCurrentUse: 'Currently using',
 				roleSectionRole: 'Role and stage',
+				rolePreviewGroupBuiltin: 'Built-in default prompt',
 				roleDraftName: 'Copy name',
 				roleDiscard: 'Discard',
 				roleDraftHint: 'Unsaved draft · switching will ask first',
@@ -889,7 +891,6 @@ window.__ModuleLoader__.load({
 			'.gbt-modalhead{display:flex;align-items:flex-start;gap:10px;margin-bottom:2px}',
 			'.gbt-modalhead h2{margin:0;font-size:15px;font-weight:600;flex:1}',
 			'.gbt-form{display:flex;flex-direction:column;gap:10px;margin-top:12px}',
-'.gbt-rcard{border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;padding:12px;margin:0 0 12px;background:var(--dsw-alias-bg-layer-2);min-width:0}',
 '.gbt-rhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}',
 '.gbt-rtitle{margin:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}',
 '.gbt-rbody{display:flex;flex-direction:column;gap:10px;min-width:0}',
@@ -1983,15 +1984,6 @@ window.__ModuleLoader__.load({
 			}
 
 			/** One grouped card section with a title row. */
-			function roleCard(props) {
-				return h(
-					'section',
-					{ className: 'gbt-rcard', 'data-card': props.id },
-					h('div', { className: 'gbt-rhead' }, h('h3', { className: 'gbt-rtitle' }, props.title), props.aside === undefined ? null : props.aside),
-					h('div', { className: 'gbt-rbody' }, props.children),
-				)
-			}
-
 			/** Horizontal scrolling wrapper so narrow screens scroll, not squash. */
 			function tableWrap(key, table) {
 				return h('div', { key: key, className: 'gbt-tablewrap' }, table)
@@ -2421,7 +2413,7 @@ window.__ModuleLoader__.load({
 				/** A section's user-language label: own text, task data or host copy. */
 				function sectionGroupLabel(group) {
 					if (group === 'role') return t('roleSectionRole')
-					if (group === 'template') return t('roleAnchorPrompt')
+					if (group === 'template') return builtin ? t('rolePreviewGroupBuiltin') : t('roleAnchorPrompt')
 					if (group === 'task') return t('rolePreviewGroupTask')
 					if (group === 'skills') return t('roleSkills')
 					if (group === 'fixed') return t('roleAnchorBoundary')
@@ -2645,17 +2637,18 @@ window.__ModuleLoader__.load({
 				return h(
 					'div',
 					{ className: 'gbt-rolesview' },
-					roleCard({
-						id: 'editor',
-						title: t('roleEditor'),
-						children: h(RolesEditor, {
+					h(
+						'section',
+						{ className: 'gbt-rolesview-card', 'data-card': 'editor' },
+						h('div', { className: 'gbt-rhead' }, h('h3', { className: 'gbt-rtitle' }, t('roleEditor'))),
+						h('div', { className: 'gbt-rbody' }, h(RolesEditor, {
 							t: t,
 							snapshot: snapshot,
 							store: store,
 							instances: instances,
 							bump: bumpEditor,
-						}),
-					}),
+						})),
+					),
 				)
 			}
 
@@ -3665,7 +3658,7 @@ window.__ModuleLoader__.load({
 					tabs.map(function (tab) {
 						return h(
 							'button',
-							{ key: tab.key, type: 'button', className: 'gbt-tab', 'data-active': view === tab.key ? 'true' : 'false', onClick: function () { setView(tab.key) } },
+							{ key: tab.key, type: 'button', className: 'gbt-tab', 'data-view': tab.key, 'data-active': view === tab.key ? 'true' : 'false', onClick: function () { setView(tab.key) } },
 							tab.label + (tab.count === undefined ? '' : ' · ' + String(tab.count)),
 						)
 					}),

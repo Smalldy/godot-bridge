@@ -934,15 +934,29 @@ export function briefPartsFor(task, projectPath, leadName, roleConfig) {
   const config = roleConfig === undefined || roleConfig === null ? null : roleConfig
   const profile = config === null ? null : profileForKind(config, 'worker')
   const parts = []
-  parts.push({ key: 'header', group: 'role', text: 'Task ' + task.id + ': ' + task.title })
-  parts.push({
-    key: 'project',
-    group: 'role',
-    text: 'Project: ' + projectPath + '\nYou have been assigned this task. Do the work in that project.',
-  })
+  if (config === null) {
+    // Legacy brief (no role config): byte-identical to the pre-role generation.
+    parts.push({ key: 'header', group: 'role', text: 'Task ' + task.id + ': ' + task.title })
+    parts.push({
+      key: 'project',
+      group: 'role',
+      text: 'Project: ' + projectPath + '\nYou have been assigned this task. Do the work in that project.',
+    })
+  } else {
+    // The role identity header must not carry the task title: it belongs to the
+    // task data, together with the project/assignment lines.
+    parts.push({ key: 'header', group: 'role', text: 'Task center role: worker\nStage: implement (this role owns the implement stage)' })
+  }
   if (profile !== null && profile !== undefined && typeof profile.prompt === 'string' && profile.prompt !== '') {
     const rendered = renderRoleTemplate(profile.prompt, roleTemplateValuesFor('worker', task, config, { projectPath: projectPath, leadName: leadName }))
     if (rendered !== '') parts.push({ key: 'template', group: 'template', text: 'Profile instructions:\n' + rendered })
+  }
+  if (config !== null) {
+    parts.push({
+      key: 'task',
+      group: 'task',
+      text: 'Task ' + task.id + ': ' + task.title + '\n\nProject: ' + projectPath + '\nYou have been assigned this task. Do the work in that project.',
+    })
   }
   if (typeof task.worktree === 'string' && task.worktree.length > 0) {
     parts.push({

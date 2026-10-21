@@ -1441,7 +1441,7 @@ function roleTask(overrides) {
   const parts = briefPartsFor(task, PROJECT, 'lead', config)
   check(
     'the prompt sits before the worktree and task data; skills come last',
-    parts.map((part) => part.key).join(',') === 'header,project,template,worktree,spec,acceptance,prerequisites,locks,report,skills',
+    parts.map((part) => part.key).join(',') === 'header,template,task,worktree,spec,acceptance,prerequisites,locks,report,skills',
     JSON.stringify(parts.map((part) => part.key)),
   )
   check('briefFor is the join of those parts', brief === parts.map((part) => part.text).join('\n\n'))

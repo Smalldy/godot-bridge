@@ -3385,7 +3385,9 @@ async function withDeadline(promise, ms) {
     Array.isArray(worker.sections) &&
       worker.sections.length >= 5 &&
       worker.sections.map((section) => section.text).join('\n\n') === worker.text &&
-      worker.sections.map((section) => section.group).join(',') === 'role,role,template,task,task,task,task,fixed,skills',
+      worker.sections.map((section) => section.group).join(',') === 'role,template,task,task,task,task,task,fixed,skills' &&
+      worker.sections.filter((section) => section.text.indexOf('Task T-1:') >= 0).every((section) => section.group === 'task') &&
+      worker.sections.some((section) => section.group === 'role' && section.text.indexOf('Task T-1:') < 0),
     JSON.stringify(worker.sections.map((section) => [section.key, section.group])),
   )
   const workerTemplate = worker.sections.filter((section) => section.group === 'template')[0]
