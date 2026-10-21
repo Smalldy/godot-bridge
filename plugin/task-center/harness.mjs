@@ -448,6 +448,10 @@ export function createHarness(options) {
         ok: true,
         status: state.status,
         running: false,
+        port: null,
+        token: null,
+        url: null,
+        cookie: false,
         lastError: state.lastError,
         lastLogs: state.lastLogs,
         restarts: state.restarts,
@@ -469,6 +473,11 @@ export function createHarness(options) {
       versionMismatch: instance.versionStatus !== 'match',
       token: instance.token,
       cookie: instance.cookie !== null,
+      // The token-carrying URL a browser/shot tool can open directly (the token
+      // is one-shot for the browser cookie but still authenticates the first
+      // navigation), plus the bare origin for tools that already hold the cookie.
+      url: instance.token === null ? 'http://127.0.0.1:' + String(instance.port) + '/' : tokenUrl('http://127.0.0.1:' + String(instance.port) + '/', instance.token),
+      origin: 'http://127.0.0.1:' + String(instance.port),
       healthUrl: instanceHealthUrl(instance),
       restarts: state.restarts,
       startedAt: instance.startedAt,

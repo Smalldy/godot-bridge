@@ -344,6 +344,11 @@ check(
   const rig = baseOptions()
   const started = await rig.harness.start(PROJECT)
   check('start reports running on a free port', started.ok === true && started.status === 'running' && started.port >= 39000 && started.port < 39005, JSON.stringify(started))
+  check(
+    'without a printed token the url is the bare origin and cookie is false',
+    /^http:\/\/127\.0\.0\.1:\d+\/$/.test(String(started.url)) && started.cookie === false && started.url.indexOf('token=') < 0,
+    JSON.stringify({ url: started.url, cookie: started.cookie }),
+  )
   check('the instance home is under the temp root, not the production home', norm(started.home).indexOf(norm(TMP) + '/godot-bridge-harness-') === 0, started.home)
   check('the project is an independent copy', norm(started.projectCopy).indexOf(norm(TMP)) === 0 && norm(started.projectCopy) !== norm(PROJECT), started.projectCopy)
   check('the temp root was created and the project copied', rig.fs.calls.mkdtemp.length === 1 && rig.fs.calls.cp.length === 1 && rig.fs.calls.cp[0].from === PROJECT, JSON.stringify(rig.fs.calls.cp))
@@ -540,6 +545,17 @@ check(
   const started = await rig.harness.start(PROJECT)
   check('the printed process token is captured at start', started.ok === true && started.token === 'fixture-token', JSON.stringify({ ok: started.ok, token: started.token, code: started.code }))
   check('the 303 exchange was kept as a cookie and the token leaves the health URL', started.ok === true && started.cookie === true && started.healthUrl === 'http://127.0.0.1:39000/', JSON.stringify({ cookie: started.cookie, healthUrl: started.healthUrl }))
+  check(
+    'start returns the token-carrying url and the cookie flag',
+    started.ok === true && started.url === 'http://127.0.0.1:39000/?token=fixture-token' && started.cookie === true,
+    JSON.stringify({ url: started.url, cookie: started.cookie }),
+  )
+  const authStatus = rig.harness.status()
+  check(
+    'status exposes the same token url, cookie flag, port and token',
+    authStatus.url === 'http://127.0.0.1:39000/?token=fixture-token' && authStatus.cookie === true && authStatus.port === 39000 && authStatus.token === 'fixture-token',
+    JSON.stringify({ url: authStatus.url, cookie: authStatus.cookie, port: authStatus.port }),
+  )
   const exchange = rig.http.calls.filter((call) => call.method === 'exchange')[0]
   check('the one-shot token is exchanged once', exchange !== undefined && exchange.url.indexOf('token=fixture-token') > 0, JSON.stringify(exchange && exchange.url))
   check(
@@ -605,7 +621,7 @@ function harnessRig(options) {
   const fake = {
     start: async (project) => {
       calls.push({ action: 'start', project: project })
-      return { ok: true, status: 'running', port: 39000 }
+      return { ok: true, status: 'running', port: 39000, token: 'fixture-token', url: 'http://127.0.0.1:39000/?token=fixture-token', cookie: true }
     },
     stop: async () => {
       calls.push({ action: 'stop' })
@@ -617,7 +633,7 @@ function harnessRig(options) {
     },
     status: () => {
       calls.push({ action: 'status' })
-      return { ok: true, status: 'running', port: 39000 }
+      return { ok: true, status: 'running', port: 39000, token: 'fixture-token', url: 'http://127.0.0.1:39000/?token=fixture-token', cookie: true }
     },
     logs: () => ({ ok: true, logs: 'harness log tail' }),
     smoke: async (project) => {
@@ -642,9 +658,15 @@ function harnessRig(options) {
   const rg = harnessRig()
   const started = await rg.api.perform('harnessStart', { project: rg.rig.project }, rg.tester)
   check('the tester can start the isolated instance', started.ok === true && started.status === 'running', JSON.stringify(started))
+  check('harnessStart returns the token url and cookie flag', started.url === 'http://127.0.0.1:39000/?token=fixture-token' && started.cookie === true, JSON.stringify({ url: started.url, cookie: started.cookie }))
   check('the project is passed to the harness', rg.calls.length === 1 && rg.calls[0].action === 'start' && rg.calls[0].project === rg.rig.project, JSON.stringify(rg.calls))
   const status = await rg.api.perform('harnessStatus', {}, rg.tester)
   check('the tester can read the harness status and logs', status.ok === true && status.harness.status === 'running' && status.logs.logs === 'harness log tail', JSON.stringify(status))
+  check(
+    'harnessStatus mirrors url/cookie/port/token at the top level',
+    status.url === 'http://127.0.0.1:39000/?token=fixture-token' && status.cookie === true && status.port === 39000 && status.token === 'fixture-token',
+    JSON.stringify({ url: status.url, cookie: status.cookie, port: status.port, token: status.token }),
+  )
   const smoke = await rg.api.perform('harnessSmoke', {}, rg.tester)
   check('the tester can run the smoke', smoke.ok === true && smoke.checks.page.ok === true, JSON.stringify(smoke))
   const restarted = await rg.api.perform('harnessRestart', {}, rg.tester)

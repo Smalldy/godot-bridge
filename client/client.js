@@ -2504,7 +2504,7 @@ window.__ModuleLoader__.load({
 				// no refresh button, no repeated guidance sentence.
 				const toolbar = h('div', { className: 'gbt-rolesheader', 'data-roles-header': 'true' },
 					h('div', { className: 'gbt-roleseg', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-role-tabs': 'true', 'data-section': 'role-editor-kinds' }, ROLE_EDITOR_KINDS.map(function (entry) {
-						return h('button', { key: entry, type: 'button', className: 'gbt-rolesegitem', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
+						return h('button', { key: entry, type: 'button', className: 'gbt-rolesegitem', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-roles-tab': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
 					})),
 					h('div', { className: 'gbt-rolesheader-right' },
 						h('span', { className: 'gbt-pill' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')),
@@ -3676,7 +3676,7 @@ window.__ModuleLoader__.load({
 
 				return h(
 					'div',
-					{ className: 'gbt-root' },
+					{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center' },
 					header,
 					statusline,
 					busyBar,
@@ -3720,11 +3720,18 @@ window.__ModuleLoader__.load({
 			function Glyph(props) {
 				const size = typeof props.size === 'number' ? props.size : 18
 				const active = props.active === true
+				// The sidebar row itself carries no stable attribute and its aria-label
+				// is localized; this glyph is inside that row's <button>, so clicking it
+				// bubbles to selectPanel and gives shot tools a locale-independent target.
 				return h(
-					'svg',
-					{ className: 'gbt-glyph', width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
-					h('rect', { x: 1.5, y: 2, width: 13, height: 12, rx: 2.4, stroke: 'currentColor', strokeWidth: active ? 1.6 : 1.3 }),
-					h('path', { d: 'M5.6 4.6v6.8M10.4 4.6v6.8', stroke: 'currentColor', strokeWidth: 1.2, strokeLinecap: 'round' }),
+					'span',
+					{ className: 'gbt-glyphwrap', 'data-panel': 'task-center' },
+					h(
+						'svg',
+						{ className: 'gbt-glyph', width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
+						h('rect', { x: 1.5, y: 2, width: 13, height: 12, rx: 2.4, stroke: 'currentColor', strokeWidth: active ? 1.6 : 1.3 }),
+						h('path', { d: 'M5.6 4.6v6.8M10.4 4.6v6.8', stroke: 'currentColor', strokeWidth: 1.2, strokeLinecap: 'round' }),
+					),
 				)
 			}
 
