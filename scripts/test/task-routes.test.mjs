@@ -2468,6 +2468,12 @@ function fakeHostSubprocess(result) {
   check('update clears the declaration', updated.json().ok === true && updated.json().task.verify === null, updated.text)
   const typo = await postTo(surface, { action: 'create', project: PROJECT, title: 'bad verify', verify: { cmd: 'npm test' } })
   check('a malformed declaration is refused instead of silently dropped', typo.json().ok === false && typo.json().code === 'invalid-verify', typo.text)
+  for (const bad of [{ command: '' }, { command: '   ' }, { command: 'npm run verify', timeoutMs: 0 }, { command: 'npm run verify', timeoutMs: -1 }, { command: 'npm run verify', timeoutMs: 'abc' }]) {
+    const refused = await postTo(surface, { action: 'create', project: PROJECT, title: 'bad verify timeout', verify: bad })
+    check('an invalid verify declaration is refused: ' + JSON.stringify(bad), refused.json().ok === false && refused.json().code === 'invalid-verify', refused.text)
+  }
+  const updateBad = await postTo(surface, { action: 'update', project: PROJECT, id: payload.task.id, verify: { command: 'npm run verify', timeoutMs: 0 } })
+  check('update refuses an invalid verify declaration too', updateBad.json().ok === false && updateBad.json().code === 'invalid-verify', updateBad.text)
   surface.dispose()
   rig.scheduler.dispose()
 }

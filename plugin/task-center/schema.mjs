@@ -189,6 +189,17 @@ export const ROLE_PROVISION_TIMEOUT_MS = 5 * 60 * 1000
 export const TEST_REMINDER_MS = 10 * 60 * 1000
 export const TEST_TIMEOUT_MS = 20 * 60 * 1000
 
+/**
+ * Silence alone does not prove a role is stuck: a tester may call task_center
+ * (get / passTest / ...) while it works, and every identifiable call renews the
+ * phase's last-activity clock. The watchdog measures SILENCE from that activity.
+ * Before blocking it leaves this grace window after the hard threshold: reaching
+ * TEST_TIMEOUT_MS only sends an "about to block" reminder; the task is blocked at
+ * TEST_TIMEOUT_MS + PHASE_BLOCK_GRACE_MS with no activity, so a verdict landing
+ * exactly on the boundary is not thrown away.
+ */
+export const PHASE_BLOCK_GRACE_MS = 2 * 60 * 1000
+
 /** The host bounds one async action (candidate build / candidate merge / merge
  * request / role provisioning / notification) so a stuck await cannot hold the
  * action or the serialised merge queue forever. */
@@ -220,6 +231,30 @@ export function normaliseVerify(raw) {
   const out = { command: command }
   if (Number.isFinite(raw.timeoutMs) && raw.timeoutMs > 0) out.timeoutMs = Math.floor(raw.timeoutMs)
   return out
+}
+
+/**
+ * Strict form of normaliseVerify for WRITES: a malformed declaration is refused
+ * with invalid-verify instead of being silently dropped. normaliseVerify stays
+ * lenient for reading an existing board (a broken field degrades to "no check").
+ */
+export function validateVerify(raw) {
+  if (raw === null) return { ok: true, verify: null }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, code: 'invalid-verify', message: 'verify must be an object with a non-empty command, or null' }
+  }
+  const command = typeof raw.command === 'string' ? raw.command.trim() : ''
+  if (command === '') {
+    return { ok: false, code: 'invalid-verify', message: 'verify.command must be a non-empty string' }
+  }
+  const out = { command: command }
+  if (raw.timeoutMs !== undefined) {
+    if (!Number.isFinite(raw.timeoutMs) || raw.timeoutMs <= 0) {
+      return { ok: false, code: 'invalid-verify', message: 'verify.timeoutMs must be a positive number, got ' + JSON.stringify(raw.timeoutMs) }
+    }
+    out.timeoutMs = Math.floor(raw.timeoutMs)
+  }
+  return { ok: true, verify: out }
 }
 
 /**
@@ -547,6 +582,8 @@ export function normaliseReview(raw) {
     at: typeof raw.at === 'string' ? raw.at : null,
     reasons: typeof raw.reasons === 'string' ? raw.reasons : null,
     attempt: phaseAttempt(raw.attempt),
+    // The last identifiable reviewer activity on this round (see perform()).
+    lastActivityAt: typeof raw.lastActivityAt === 'string' ? raw.lastActivityAt : null,
   }
 }
 
@@ -560,6 +597,8 @@ export function normaliseTest(raw) {
     at: typeof raw.at === 'string' ? raw.at : null,
     evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
     attempt: phaseAttempt(raw.attempt),
+    // The last identifiable tester activity on this round (see perform()).
+    lastActivityAt: typeof raw.lastActivityAt === 'string' ? raw.lastActivityAt : null,
     // The host's own mechanical check of this round (see runHostCheck). Optional:
     // an older board or a task without `verify` has none.
     hostCheck: normaliseHostCheck(raw.hostCheck),

@@ -27,6 +27,7 @@ import {
   normaliseDispatch,
   normaliseMerge,
   normaliseVerify,
+  validateVerify,
 } from './schema.mjs'
 
 const iso = (now) => new Date(now).toISOString()
@@ -122,13 +123,14 @@ export function createTask(board, input, now, by) {
   // A declaration that cannot be normalised is a TYPO, not "no declaration":
   // silently dropping it would hand the work back to the tester with no
   // mechanical baseline at all.
-  const declaredVerify = normaliseVerify(input.verify)
-  if (input.verify !== undefined && input.verify !== null && declaredVerify === null) {
+  const checkedVerify = validateVerify(input.verify === undefined ? null : input.verify)
+  if (checkedVerify.ok !== true) {
     return fail(
       'invalid-verify',
       'verify must be { command: "a shell command", timeoutMs?: number } or null; got ' + JSON.stringify(input.verify),
     )
   }
+  const declaredVerify = input.verify === undefined ? null : checkedVerify.verify
   const checked = validateDepends(board, undefined, input.dependsOn)
   if (checked.ok !== true) return checked
   const next = clone(board)
@@ -204,7 +206,8 @@ export function updateTask(board, id, input, now, by) {
     if (checked.ok !== true) return checked
   }
   if (input.title !== undefined && String(input.title).trim() === '') return fail('missing-title', 'a task needs a title')
-  if (input.verify !== undefined && input.verify !== null && normaliseVerify(input.verify) === null) {
+  const updatedVerify = input.verify === undefined ? undefined : validateVerify(input.verify)
+  if (updatedVerify !== undefined && updatedVerify.ok !== true) {
     return fail(
       'invalid-verify',
       'verify must be { command: "a shell command", timeoutMs?: number } or null; got ' + JSON.stringify(input.verify),
@@ -231,7 +234,7 @@ export function updateTask(board, id, input, now, by) {
   // `verify` is an ordinary task field (not host-only): the worker or the user
   // declares it, and null clears it back to the tester-runs-the-suite flow.
   if (input.verify !== undefined) {
-    target.verify = normaliseVerify(input.verify)
+    target.verify = updatedVerify.verify
     notes.push('verify: ' + (target.verify === null ? 'none' : target.verify.command))
   }
   touch(target, now)

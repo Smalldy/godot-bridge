@@ -45,6 +45,7 @@ import {
   roleKindOf,
   roleTemplateValuesFor,
   runHostCheck,
+  recordPhaseActivity,
   servicesFor,
   testFailureBriefFor,
   testerBriefFor,
@@ -470,21 +471,57 @@ export function createApi(ctx, options) {
       }
       if (isAbandoned()) return failure('action-abandoned', 'the merge queue turn for ' + id + ' was abandoned after its bound; nothing was recorded')
       if (Date.now() > deadlineAt) return actionTimeoutFailure('mergeTestedCandidate record retest', id, startedAt)
+      // The rebuilt candidate must prove itself the same way the first build did:
+      // the declared mechanical check runs on the HOST before any tester round.
+      // A failure is a host failTest (back to running) and the tester is not
+      // notified; a success enters testing with test.hostCheck recorded.
+      const declaredRetestVerify = normaliseVerify(latestTask.verify)
+      let retestCheck = null
+      let retestFailed = false
+      if (declaredRetestVerify !== null) {
+        const checked = await runHostCheck(ctx, { verify: declaredRetestVerify, cwd: rebuilt.path, now: () => clock() })
+        if (checked.ok !== true) return failure(checked.code, checked.message)
+        retestCheck = checked.check
+        retestFailed = retestCheck.timedOut === true || retestCheck.exitCode !== 0
+      }
       const recorded = await writeTask(
         projectPath,
         id,
-        (board) => recordCandidate(board, id, rebuilt, clock(), { retest: true, by: by }),
+        (board) => {
+          if (retestFailed) return model.failTest(board, id, hostCheckEvidence(retestCheck), clock(), 'host')
+          const candidateRecorded = recordCandidate(board, id, rebuilt, clock(), { retest: true, by: by })
+          if (candidateRecorded.ok !== true) return candidateRecorded
+          if (retestCheck !== null) {
+            const checkedTask = model.findTask(candidateRecorded.board, id)
+            if (checkedTask !== null && checkedTask !== undefined && checkedTask.test !== null && checkedTask.test !== undefined) {
+              checkedTask.test.hostCheck = retestCheck
+            }
+          }
+          return candidateRecorded
+        },
         context,
       )
       if (recorded.ok !== true) return recorded
       recorded.merged = false
-      recorded.retest = true
+      recorded.retest = retestFailed !== true
       recorded.candidate = rebuilt
+      if (retestFailed) {
+        emitActivity(null, 'host-check', 'retest mechanical verification failed (' + String(retestCheck.timedOut === true ? 'timed out' : 'exit ' + String(retestCheck.exitCode)) + '); back to running', id, 'host')
+        if (candidateWorkflow) {
+          await boundedAwait(
+            () => serialised(() => merger.discardCandidate(recorded.task, projectPath, { worktreeRoot: worktreeRootOf(read.board) })),
+            actionTimeoutMs,
+          )
+        }
+        const ownerName = recorded.task !== null && recorded.task !== undefined && recorded.task.assignee !== null && recorded.task.assignee !== undefined && typeof recorded.task.assignee.name === 'string' ? recorded.task.assignee.name : null
+        if (ownerName !== null) await notifyMember(ownerName, 'Host mechanical verification FAILED for ' + id + ' (' + String(recorded.task.title) + ').' + hostCheckEvidence(retestCheck))
+        return recorded
+      }
       const provisioned = await provisionRole('tester', projectPath, recorded.task)
       if (provisioned !== null) recorded.provisioned = provisioned
       const tester = roleSlotNameOf('tester')
       if (tester !== null) {
-        await notifyMember(tester, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path) }))
+        await notifyMember(tester, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck }))
       }
       return recorded
     }
@@ -1652,6 +1689,10 @@ export function createApi(ctx, options) {
     // into expiry, and it stops an action from renewing twice.
     const owner = ownerOf(context)
     if (owner !== null) await heartbeat(projectPath, owner)
+    // Any task-scoped call by a role renews that round's silence clock. The
+    // watchdog measures silence from this, so a tester that keeps calling
+    // get/passTest is never mistaken for a stuck one.
+    if (typeof source.id === 'string' && source.id !== '') recordPhaseActivity(ctx, source.id, owner, now)
 
     if (action === 'skillsCatalog') {
       const denied = roleAdminRefusal(context, 'The skill catalog belongs to the user; open it from the task center panel.')
