@@ -415,9 +415,13 @@ window.__ModuleLoader__.load({
 				detailHostCheck: '宿主检查',
 				detailHostCheckUndeclared: '未声明',
 				detailHostCheckIncomplete: '未完成',
+				detailHostCheckFailed: '失败',
 				detailSpecExpand: '展开说明与验收',
 				detailSpecHint: '说明与验收默认折叠。',
 				detailNow: '现在',
+				detailMinutes: '分钟',
+				detailHours: '小时',
+				detailSeconds: '秒',
 				viewFull: '查看全文',
 				collapse: '收起',
 				statusSweepInterval: '每 5 秒扫描',
@@ -827,9 +831,13 @@ window.__ModuleLoader__.load({
 				detailHostCheck: 'host check',
 				detailHostCheckUndeclared: 'undeclared',
 				detailHostCheckIncomplete: 'incomplete',
+				detailHostCheckFailed: 'failed',
 				detailSpecExpand: 'Expand spec and acceptance',
 				detailSpecHint: 'Spec and acceptance are collapsed by default.',
 				detailNow: 'now',
+				detailMinutes: 'min',
+				detailHours: 'h',
+				detailSeconds: 's',
 				viewFull: 'View full',
 				collapse: 'Collapse',
 				statusSweepInterval: 'scans every 5s',
@@ -3273,14 +3281,18 @@ window.__ModuleLoader__.load({
 					if (snapshot.agents.lead !== null && snapshot.agents.lead !== undefined) roster.push(snapshot.agents.lead)
 					if (Array.isArray(snapshot.agents.members)) snapshot.agents.members.forEach(function (member) { roster.push(member) })
 				}
+				/** The same label the tool puts in review.by/test.by: session- stripped, non-alphanumerics removed, 8 chars. */
+				function agentLabel(member) {
+					const raw = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' ? member.id : ''
+					return String(raw).replace(/^session-/, '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+				}
 				function actorName(value) {
 					if (typeof value !== 'string' || value === '') return '—'
 					if (value.charAt(0) !== '@') return value === 'user' ? t('statusYou') : value
 					const id = value.slice(1)
+					const idKey = id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
 					const hit = roster.filter(function (member) {
-						return typeof member.session === 'string' && member.session.indexOf(id) === 0
-					})[0] || roster.filter(function (member) {
-						return member.name === id || member.kind === id || member.id === id || member.id === value
+						return agentLabel(member) === idKey || member.name === id || member.kind === id || member.id === id || member.id === value
 					})[0]
 					return hit === undefined ? value : typeof hit.name === 'string' && hit.name !== '' ? hit.name : value
 				}
@@ -3325,7 +3337,15 @@ window.__ModuleLoader__.load({
 				}
 				const reviewRounds = review === null ? history.filter(function (entry) { return entry.to === 'reviewing' }).length : Math.max(1, tcRound(review))
 				const testRounds = test === null ? history.filter(function (entry) { return entry.to === 'testing' }).length : Math.max(1, tcRound(test))
-				const stageTimes = [historyAt('running') === null ? historyAt('pending') : historyAt('running'), historyAt('running'), historyAt('reviewing'), historyAt('testing'), historyAt('done')]
+				// Completion times: dispatch ends when the run starts, implement ends at the
+				// review start, review ends at the test start, test/merge end at done/merge.at.
+				const stageTimes = [
+					historyAt('running'),
+					historyAt('reviewing') === null && review !== null && typeof review.at === 'string' ? review.at : historyAt('reviewing'),
+					historyAt('testing') === null && test !== null && typeof test.at === 'string' ? test.at : historyAt('testing'),
+					historyAt('done') === null && merge !== null && typeof merge.at === 'string' ? merge.at : historyAt('done'),
+					merge !== null && typeof merge.at === 'string' ? merge.at : historyAt('done'),
+				]
 				const stageRounds = [null, null, review === null ? null : reviewRounds, test === null ? null : testRounds, null]
 				const interruptedReason = (function () {
 					const hit = history.filter(function (entry) { return entry.to === 'blocked' || entry.to === 'cancelled' })[0]
@@ -3351,7 +3371,7 @@ window.__ModuleLoader__.load({
 
 				// ── "where is it now": one row per phase conclusion ──
 				const events = []
-				const submissions = history.filter(function (entry) { return entry.to === 'reviewing' || entry.to === 'testing' }).filter(function (entry) { return entry.to === 'reviewing' })
+				const submissions = history.filter(function (entry) { return entry.to === 'reviewing' })
 				const sha = typeof task.commit === 'string' && task.commit !== '' ? task.commit.slice(0, 7) : null
 				submissions.forEach(function (entry, index) {
 					events.push(
@@ -3361,7 +3381,7 @@ window.__ModuleLoader__.load({
 							h('span', { className: 'gbt-detailpill', 'data-tone': 'ok' }, t('detailSubmitted')),
 							h('b', null, t('stageImplement')),
 							h('span', { className: 'gbt-detailwho' }, (entry.by === null || entry.by === undefined ? '—' : actorName(entry.by)) + (submissions.length > 1 ? ' · ' + t('detailSubmitCount').replace('{n}', String(index + 1)) : '')),
-							h('span', { className: 'gbt-detailwhen' }, tcAgo(entry.at, now)),
+							h('span', { className: 'gbt-detailwhen' }, new Date(entry.at).toTimeString().slice(0, 5)),
 							sha === null ? null : h('div', { className: 'gbt-detailex gbt-mono' }, sha + ' · ' + t('detailFilesDeclared').replace('{n}', String(files.length)) + (actualFiles.length === 0 ? '' : ' = ' + t('detailFilesActual').replace('{n}', String(actualFiles.length)))),
 						),
 					)
@@ -3375,7 +3395,7 @@ window.__ModuleLoader__.load({
 							h('span', { className: 'gbt-detailpill', 'data-tone': review.status === 'approved' ? 'ok' : review.status === 'changes-requested' ? 'bad' : 'wait' }, tcReviewLabel(review.status, t)),
 							h('b', null, t('stageReview')),
 							h('span', { className: 'gbt-detailwho' }, actorName(review.by) + ' · ' + t('detailRound').replace('{n}', String(tcRound(review)))),
-							h('span', { className: 'gbt-detailwhen' }, tcAgo(review.at, now)),
+							h('span', { className: 'gbt-detailwhen' }, new Date(review.at).toTimeString().slice(0, 5)),
 							reasons === '' ? null : h('div', { className: review.status === 'changes-requested' ? 'gbt-detailreason' : 'gbt-detailreason good', 'data-detail-reason': String(review.status) }, reasons),
 						),
 					)
@@ -3398,7 +3418,9 @@ window.__ModuleLoader__.load({
 				if (test !== null) {
 					const full = typeof test.evidence === 'string' ? test.evidence : ''
 					const firstRaw = full === '' ? '' : full.split('\n')[0]
-					const firstLine = full === '' ? t('noEvidence') : firstRaw.slice(0, 160) + (firstRaw.length > 160 ? '…' : '')
+					const hostCheckNow = test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? test.hostCheck : null
+					const summarySuffix = hostCheckNow === null ? '' : ' · exit ' + String(hostCheckNow.exitCode === null || hostCheckNow.exitCode === undefined ? '—' : hostCheckNow.exitCode) + (hostCheckNow.durationMs === undefined || hostCheckNow.durationMs === null ? '' : ' · ' + String(Math.round(hostCheckNow.durationMs / 1000)) + 's')
+					const firstLine = (full === '' ? t('noEvidence') : firstRaw.slice(0, 160) + (firstRaw.length > 160 ? '…' : '')) + summarySuffix
 					events.push(
 						h(
 							'div',
@@ -3406,7 +3428,7 @@ window.__ModuleLoader__.load({
 							h('span', { className: 'gbt-detailpill', 'data-tone': test.status === 'passed' ? 'ok' : 'bad' }, tcTestLabel(test.status, t)),
 							h('b', null, t('stageTest')),
 							h('span', { className: 'gbt-detailwho' }, actorName(test.by) + (full === '' ? '' : ' · ' + t('detailRound').replace('{n}', String(tcRound(test))))),
-							h('span', { className: 'gbt-detailwhen' }, tcAgo(test.at, now)),
+							h('span', { className: 'gbt-detailwhen' }, new Date(test.at).toTimeString().slice(0, 5)),
 							h('div', { className: 'gbt-detailex gbt-mono' }, firstLine),
 							evidenceOpen
 								? h('pre', { className: 'gbt-detailpreview', 'data-detail-evidence': 'full' }, (function () {
@@ -3427,7 +3449,7 @@ window.__ModuleLoader__.load({
 							h('span', { className: 'gbt-detailpill', 'data-tone': merge.status === 'merged' ? 'ok' : 'wait' }, tcMergeLabel(merge.status, t)),
 							h('b', null, t('stageMerge')),
 							h('span', { className: 'gbt-detailwho' }, typeof merge.target === 'string' && merge.target !== '' ? '→ ' + merge.target : '—'),
-							h('span', { className: 'gbt-detailwhen' }, merge.at === null || merge.at === undefined ? '' : tcAgo(merge.at, now)),
+							h('span', { className: 'gbt-detailwhen' }, merge.at === null || merge.at === undefined ? '' : new Date(merge.at).toTimeString().slice(0, 5)),
 							commit === null ? null : h('div', { className: 'gbt-detailex gbt-mono' }, commit + ' · ' + t('detailFilesDeclared').replace('{n}', String(files.length)) + (actualFiles.length === 0 ? '' : ' = ' + t('detailFilesActual').replace('{n}', String(actualFiles.length)))),
 						),
 					)
@@ -3448,13 +3470,20 @@ window.__ModuleLoader__.load({
 
 				// ── summary column ──
 				const finishedAt = merge !== null && typeof merge.at === 'string' ? merge.at : task.status === 'done' ? task.updatedAt : null
+				const spanMs = Math.max(0, (finishedAt === null ? now : new Date(finishedAt).getTime()) - new Date(task.createdAt).getTime())
+				const elapsedText = (function () {
+					const minutes = Math.round(spanMs / 60000)
+					if (minutes < 1) return String(Math.max(1, Math.round(spanMs / 1000))) + ' ' + t('detailSeconds')
+					if (minutes < 60) return String(minutes) + ' ' + t('detailMinutes')
+					return String(Math.floor(minutes / 60)) + ' ' + t('detailHours') + ' ' + String(minutes % 60) + ' ' + t('detailMinutes')
+				})()
 				const summary = h(
 					'div',
 					{ className: 'gbt-detailsummary', 'data-detail': 'summary' },
-					h('div', { className: 'gbt-detailstat' }, h('b', null, tcAgo(task.createdAt, now).replace(' 前', '')), h('span', null, t('detailElapsed'))),
+					h('div', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
 					h('div', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit'), ' · ', t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit'), ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
 					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailDeclaredFiles')), h('b', null, String(files.length)), h('span', null, t('detailActualFiles')), h('b', null, actualFiles.length === 0 ? '—' : String(actualFiles.length))),
-					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailHostCheck')), h('b', null, task.verify === null || task.verify === undefined ? t('detailHostCheckUndeclared') : typeof task.hostCheck === 'object' && task.hostCheck !== null ? (task.hostCheck.ok === true ? t('statusResultPassed') : t('failed')) : t('detailHostCheckIncomplete'))),
+					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailHostCheck')), h('b', { 'data-detail-hostcheck': 'true' }, task.verify === null || task.verify === undefined ? t('detailHostCheckUndeclared') : test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? (test.hostCheck.exitCode === 0 && test.hostCheck.timedOut !== true ? t('statusResultPassed') : t('detailHostCheckFailed')) : t('detailHostCheckIncomplete'))),
 					h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'detail-spec', onClick: function () { detailUiState.spec = !specOpen; setSpecOpen(!specOpen) } }, specOpen ? t('collapse') : t('detailSpecExpand')),
 					specOpen
 						? h(
@@ -3558,7 +3587,7 @@ window.__ModuleLoader__.load({
 							{ className: 'gbt-detailhead' },
 							h('div', { className: 'gbt-cardmeta' }, h('span', { className: 'gbt-id' }, task.id), h('span', { className: 'gbt-pill', 'data-status': task.status }, t(tcStatusKey(task.status))), waitingChip(task, t, 'waiting')),
 							h('h2', { className: 'gbt-drawertitle' }, task.title),
-							h('div', { className: 'gbt-detailmeta' }, h('span', null, t('assignee') + ' ' + (task.assignee === null || task.assignee === undefined ? '—' : task.assignee.name)), h('span', { className: 'gbt-detailspan' }, new Date(task.createdAt).toTimeString().slice(0, 5) + ' → ' + (finishedAt === null ? t('detailNow') : new Date(finishedAt).toTimeString().slice(0, 5)) + ' · ' + tcAgo(task.createdAt, now).replace(' 前', ''))),
+							h('div', { className: 'gbt-detailmeta' }, h('span', null, t('assignee') + ' ' + (task.assignee === null || task.assignee === undefined ? '—' : task.assignee.name)), h('span', { className: 'gbt-detailspan' }, new Date(task.createdAt).toTimeString().slice(0, 5) + ' → ' + (finishedAt === null ? t('detailNow') : new Date(finishedAt).toTimeString().slice(0, 5)) + ' · ' + elapsedText)),
 						),
 						h('button', { type: 'button', className: 'gbt-iconbtn', onClick: props.onClose, 'aria-label': t('close') }, '×'),
 					),

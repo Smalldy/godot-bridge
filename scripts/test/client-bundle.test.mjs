@@ -2102,6 +2102,70 @@ check(
   )
   runningTask.history = savedHistory
 
+  // A realistic tool label ("session-" stripped, non-alphanumerics removed, 8 chars)
+  // must resolve too, not just the kind fallback.
+  const realTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+  const savedReview = realTask.review
+  const savedTest = realTask.test
+  realTask.review = Object.assign({}, savedReview, { by: '@reviewer1' })
+  realTask.test = Object.assign({}, savedTest, { by: '@tester1' })
+  const realisticDrawer = await openDetail('Build damage system')
+  check(
+    'realistic tool labels (@reviewer1/@tester1) resolve to the member names',
+    textOf(realisticDrawer).indexOf('reviewer-1') >= 0 && textOf(realisticDrawer).indexOf('tester-1') >= 0 && textOf(realisticDrawer).indexOf('@reviewer1') < 0 && textOf(realisticDrawer).indexOf('@tester1') < 0,
+    textOf(realisticDrawer).slice(0, 300),
+  )
+  realTask.review = savedReview
+  realTask.test = savedTest
+
+  // Elapsed is the finished span, not the growing age.
+  const doneTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
+  const elapsedDrawer = await openDetail('Tail output feature')
+  check(
+    'a finished task reports the created-to-merge span, not its age',
+    textOf(elapsedDrawer).indexOf('2 分钟') >= 0,
+    textOf(elapsedDrawer).slice(-300),
+  )
+
+  // Stage completions: implement ends at review start, review at test start, test/merge at done/merge.at.
+  const savedWtHistory = doneTask.history
+  const stageTimes = {
+    running: new Date(Date.now() - 60000).toISOString(),
+    reviewing: new Date(Date.now() - 50000).toISOString(),
+    testing: new Date(Date.now() - 40000).toISOString(),
+    done: new Date(Date.now() - 30000).toISOString(),
+  }
+  doneTask.history = [
+    { from: 'pending', to: 'running', at: stageTimes.running, by: '@session-fixer', note: '' },
+    { from: 'running', to: 'reviewing', at: stageTimes.reviewing, by: '@session-fixer', note: '' },
+    { from: 'reviewing', to: 'testing', at: stageTimes.testing, by: '@session-reviewer-1', note: '' },
+    { from: 'testing', to: 'done', at: stageTimes.done, by: '@session-tester-1', note: '' },
+  ]
+  const timesDrawer = await openDetail('Tail output feature')
+  check(
+    'the spine shows completion times (dispatch ends at running, implement at review start, review at test start)',
+    stageOf(timesDrawer, 'pending').props['data-at'] === stageTimes.running &&
+      stageOf(timesDrawer, 'running').props['data-at'] === stageTimes.reviewing &&
+      stageOf(timesDrawer, 'reviewing').props['data-at'] === stageTimes.testing &&
+      stageOf(timesDrawer, 'testing').props['data-at'] === stageTimes.done,
+    JSON.stringify(['pending', 'running', 'reviewing', 'testing', 'done'].map((key) => [key, stageOf(timesDrawer, key).props['data-at']])),
+  )
+  doneTask.history = savedWtHistory
+
+  // Host check record lives on test.hostCheck with exitCode/timedOut, not on task.hostCheck.ok.
+  const savedVerify = doneTask.verify
+  const savedHostCheck = doneTask.test.hostCheck
+  doneTask.verify = { command: 'npm run verify', timeoutMs: 600000 }
+  doneTask.test = Object.assign({}, doneTask.test, { hostCheck: { command: 'npm run verify', exitCode: 0, timedOut: false, durationMs: 21000 } })
+  const passDrawer = await openDetail('Tail output feature')
+  const passNode = findAll(passDrawer, (node) => node.props && node.props['data-detail-hostcheck'] !== undefined)[0]
+  check('a host check with exitCode 0 reads as passed', passNode !== undefined && textOf(passDrawer).indexOf('通过') >= 0, passNode && textOf(passNode))
+  doneTask.test = Object.assign({}, doneTask.test, { hostCheck: { command: 'npm run verify', exitCode: 1, timedOut: false, durationMs: 21000 } })
+  const failDrawer = await openDetail('Tail output feature')
+  check('a non-zero host check reads as failed', textOf(failDrawer).indexOf('失败') >= 0, textOf(failDrawer).slice(-200))
+  doneTask.verify = savedVerify
+  doneTask.test = Object.assign({}, doneTask.test, { hostCheck: savedHostCheck })
+
   const savedAgents = HOST.agents
   HOST.agents = { lead: null, members: [] }
   const unmappedDrawer = await openDetail('Build damage system')
