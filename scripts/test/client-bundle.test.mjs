@@ -2038,117 +2038,84 @@ check(
   check('the settings save carries the project', settingsPost.project === PROJECT, JSON.stringify(settingsPost))
 }
 
-// Merge request + review/test phase state is visible on the card and in the drawer.
+// Detail page: stage spine, "where it is now" and the summary column.
 {
-  const boardTree = withHooks(panel, { initialView: 'board' })
-  await flush()
-  const cards = findAll(boardTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card')
-  const mergeCard = cards.filter((card) => textOf(card).indexOf('Tail output feature') >= 0)[0]
-  check('the merge-request task card is rendered', mergeCard !== undefined)
-  const cardText = textOf(mergeCard)
-  check('the card shows the merge status', cardText.indexOf('已合并') >= 0, cardText)
-  check('the card shows the test verdict', cardText.indexOf('测试通过') >= 0, cardText)
-  check('the card shows the branch and commit', cardText.indexOf('task/T-3-1') >= 0 && cardText.indexOf('abcdef1234') >= 0, cardText)
-  check('the card names the task worktree', cardText.indexOf('T-3') >= 0, cardText)
+  async function openDetail(title) {
+    const boardTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    const cards = findAll(boardTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card')
+    const card = cards.filter((entry) => textOf(entry).indexOf(title) >= 0)[0]
+    card.props.onClick()
+    const tree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    return findAll(tree, (node) => node.props && node.props.className === 'gbt-drawer')[0]
+  }
+  function stageOf(drawer, key) {
+    return findAll(drawer, (node) => node.props && node.props['data-stage'] === key)[0]
+  }
 
-  mergeCard.props.onClick()
-  const detailTree = withHooks(panel, { initialView: 'board' })
+  const doneDrawer = await openDetail('Tail output feature')
+  check('the detail page is a stage spine, an event body and a summary column', doneDrawer !== undefined &&
+    findAll(doneDrawer, (node) => node.props && node.props['data-detail'] === 'stages').length === 1 &&
+    findAll(doneDrawer, (node) => node.props && node.props['data-detail'] === 'events').length === 1 &&
+    findAll(doneDrawer, (node) => node.props && node.props['data-detail'] === 'summary').length === 1,
+    doneDrawer && textOf(doneDrawer).slice(0, 200))
+  const fiveStages = findAll(doneDrawer, (node) => node.props && node.props['data-stage'] !== undefined)
+  check('the spine has the five phases in order', fiveStages.map((node) => node.props['data-stage']).join(',') === 'pending,running,reviewing,testing,done', JSON.stringify(fiveStages.map((node) => node.props['data-stage'])))
+  check('a done task shows every phase done, with rounds on review and test', fiveStages.every((node) => node.props['data-state'] === 'done') && stageOf(doneDrawer, 'reviewing').props['data-rounds'] === '1' && stageOf(doneDrawer, 'testing').props['data-rounds'] === '1', JSON.stringify(fiveStages.map((node) => [node.props['data-stage'], node.props['data-state'], node.props['data-rounds']])))
+  const doneText = textOf(doneDrawer)
+  check('the body lists the submit, review, test and merge conclusions', ['提交', '评审通过', '测试通过', '已合并'].every((label) => doneText.indexOf(label) >= 0), doneText.slice(0, 400))
+  check('the merge row carries the target branch and merged commit', doneText.indexOf('feat/task-center-v2') >= 0 && doneText.indexOf('abcdef1') >= 0, doneText.slice(0, 400))
+  check('the summary column shows elapsed time, rounds and attempts', doneText.indexOf('用时') >= 0 && doneText.indexOf('尝试') >= 0 && doneText.indexOf('1 / 3') >= 0, doneText.slice(-400))
+  check('the spec/acceptance block is collapsed by default', findAll(doneDrawer, (node) => node.props && node.props['data-detail-spec'] === 'collapsed').length === 1 && findAll(doneDrawer, (node) => node.props && node.props['data-detail-spec'] === 'full').length === 0)
+  check('all raw fields stay reachable in the folded field block', doneText.indexOf('全部字段') >= 0 && doneText.indexOf('abcdef1234567890') >= 0, doneText.slice(-400))
+
+  const runningDrawer = await openDetail('Build damage system')
+  check('a running task highlights the implement phase', stageOf(runningDrawer, 'running') !== undefined && stageOf(runningDrawer, 'running').props['data-state'] === 'active' && stageOf(runningDrawer, 'pending').props['data-state'] === 'done', JSON.stringify(fiveStages.map((node) => node.props['data-state'])))
+  const reasonNodes = findAll(runningDrawer, (node) => node.props && node.props['data-detail-reason'] !== undefined)
+  check('the review rejection reason is rendered inline from review.reasons', reasonNodes.length === 1 && textOf(reasonNodes[0]).indexOf('please cover the edge case') >= 0 && reasonNodes[0].props['data-detail-reason'] === 'changes-requested', reasonNodes[0] && textOf(reasonNodes[0]))
+  check('the reviewer shows as the member name, not the @id', textOf(runningDrawer).indexOf('reviewer-1') >= 0 && textOf(runningDrawer).indexOf('@reviewer') < 0, textOf(runningDrawer).slice(0, 300))
+  check('the tester shows as the member name too', textOf(runningDrawer).indexOf('tester-1') >= 0 && textOf(runningDrawer).indexOf('@tester') < 0, textOf(runningDrawer).slice(0, 300))
+  check('the long test evidence is not rendered by default', findAll(runningDrawer, (node) => node.props && node.props['data-detail-evidence'] === 'full').length === 0 && textOf(runningDrawer).indexOf('P'.repeat(200)) < 0, textOf(runningDrawer).slice(0, 300))
+  const evidenceButton = findAll(runningDrawer, (node) => node.props && node.props['data-action'] === 'detail-evidence')[0]
+  check('a view-full control is offered for the evidence', evidenceButton !== undefined && textOf(evidenceButton).indexOf('查看全文') >= 0)
+  evidenceButton.props.onClick()
   await flush()
-  const drawer = findAll(detailTree, (node) => node.props && node.props.className === 'gbt-drawer')[0]
-  check('clicking the card opens its detail drawer', drawer !== undefined)
-  const detailText = textOf(drawer)
-  check('the detail shows the merge request section', detailText.indexOf('合并请求') >= 0 && detailText.indexOf('合并状态') >= 0, detailText.slice(0, 300))
-  check('the detail shows the merge status', detailText.indexOf('已合并') >= 0, detailText)
+  const evidenceTree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  const reopenedRunning = findAll(evidenceTree, (node) => node.props && node.props.className === 'gbt-drawer')[0]
+  const evidenceFull = findAll(reopenedRunning, (node) => node.props && node.props['data-detail-evidence'] === 'full')[0]
+  check('view full reveals the evidence text', evidenceFull !== undefined && textOf(evidenceFull).indexOf('deep stderr tail marker') >= 0, evidenceFull && textOf(evidenceFull).slice(0, 200))
+
+  const runningTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+  const savedHistory = runningTask.history
+  runningTask.history = [
+    { from: 'running', to: 'reviewing', at: new Date(Date.now() - 20000).toISOString(), by: '@session-fixer', note: '' },
+    { from: 'running', to: 'reviewing', at: new Date(Date.now() - 1000).toISOString(), by: '@session-fixer', note: 'fix after review' },
+  ]
+  const resubmitDrawer = await openDetail('Build damage system')
+  const resubmitRow = findAll(resubmitDrawer, (node) => node.props && node.props['data-detail-event'] === 'resubmit')[0]
   check(
-    'the detail shows worktree, branch and commit',
-    detailText.indexOf('J:\\demo\\mm13d\\.worktrees\\T-3') >= 0 && detailText.indexOf('task/T-3-1') >= 0 && detailText.indexOf('abcdef1234567890') >= 0,
-    detailText,
+    'a resubmission after a review rejection adds the fix-and-resubmit line',
+    resubmitRow !== undefined && textOf(resubmitDrawer).indexOf('修复后重新提交') >= 0,
+    resubmitRow && textOf(resubmitRow),
   )
-  check('the detail shows the phase machine', detailText.indexOf('阶段') >= 0 && detailText.indexOf('当前阶段') >= 0, detailText)
-  check(
-    'the detail shows the approved review and its reviewer',
-    detailText.indexOf('评审状态') >= 0 && detailText.indexOf('评审通过') >= 0 && detailText.indexOf('@reviewer') >= 0,
-    detailText,
-  )
-  check(
-    'the detail shows the passed test and its tester',
-    detailText.indexOf('测试状态') >= 0 && detailText.indexOf('测试通过') >= 0 && detailText.indexOf('@tester') >= 0,
-    detailText,
-  )
-  check(
-    'the detail shows the merge verification output',
-    detailText.indexOf('合并验证输出') >= 0 && detailText.indexOf('PASS board.test.mjs') >= 0,
-    detailText,
-  )
+  runningTask.history = savedHistory
+
+  const savedAgents = HOST.agents
+  HOST.agents = { lead: null, members: [] }
+  const unmappedDrawer = await openDetail('Build damage system')
+  check('an @id with no roster match stays verbatim', textOf(unmappedDrawer).indexOf('@reviewer') >= 0, textOf(unmappedDrawer).slice(0, 300))
+  HOST.agents = savedAgents
+
+  const reviewingDrawer = await openDetail('Review the crate API')
+  check('a reviewing task highlights the review phase', stageOf(reviewingDrawer, 'reviewing').props['data-state'] === 'active', JSON.stringify(findAll(reviewingDrawer, (node) => node.props && node.props['data-stage'] !== undefined).map((node) => node.props['data-state'])))
+  const testingDrawer = await openDetail('Test the crate API')
+  check('a testing task highlights the test phase', stageOf(testingDrawer, 'testing').props['data-state'] === 'active', JSON.stringify(findAll(testingDrawer, (node) => node.props && node.props['data-stage'] !== undefined).map((node) => node.props['data-state'])))
+  const blockedDrawer = await openDetail('Stuck task')
+  check('a blocked task marks the reached phase as interrupted', findAll(blockedDrawer, (node) => node.props && node.props['data-state'] === 'interrupted').length === 1 && findAll(blockedDrawer, (node) => node.props && node.props['data-detail-interrupt'] !== undefined).length === 1, JSON.stringify(findAll(blockedDrawer, (node) => node.props && node.props['data-stage'] !== undefined).map((node) => [node.props['data-stage'], node.props['data-state']])))
 }
 
-// A task back from review and testing shows both records, their rounds, and the
-// candidate worktree's evidence tail.
-{
-  const boardTree = withHooks(panel, { initialView: 'board' })
-  await flush()
-  const cards = findAll(boardTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card')
-  const phaseCard = cards.filter((card) => textOf(card).indexOf('Build damage system') >= 0)[0]
-  check('the phase-machine task card is rendered', phaseCard !== undefined)
-  phaseCard.props.onClick()
-  const detailTree = withHooks(panel, { initialView: 'board' })
-  await flush()
-  const drawer = findAll(detailTree, (node) => node.props && node.props.className === 'gbt-drawer')[0]
-  const detailText = textOf(drawer)
-  check(
-    'the detail shows the current phase and the attempt budget',
-    detailText.indexOf('当前阶段') >= 0 && detailText.indexOf('实现中') >= 0 && detailText.indexOf('2 / 3') >= 0,
-    detailText,
-  )
-  check(
-    'the detail shows the review status and its round',
-    detailText.indexOf('评审状态') >= 0 && detailText.indexOf('已打回') >= 0 && detailText.indexOf('评审轮次') >= 0,
-    detailText,
-  )
-  check('the detail names the reviewer', detailText.indexOf('评审者') >= 0 && detailText.indexOf('@reviewer') >= 0, detailText)
-  check(
-    'the detail keeps the review reasons',
-    detailText.indexOf('打回原因') >= 0 && detailText.indexOf('please cover the edge case') >= 0,
-    detailText,
-  )
-  check(
-    'the detail shows the test verdict and its round',
-    detailText.indexOf('测试状态') >= 0 && detailText.indexOf('测试未通过') >= 0 && detailText.indexOf('测试轮次') >= 0,
-    detailText,
-  )
-  check('the detail names the tester', detailText.indexOf('测试者') >= 0 && detailText.indexOf('@tester') >= 0, detailText)
-  check(
-    'the detail shows the candidate worktree',
-    detailText.indexOf('候选工作树') >= 0 && detailText.indexOf('J:\\demo\\mm13d\\.worktrees\\T-1') >= 0,
-    detailText,
-  )
-  check(
-    'the detail shows the test evidence tail',
-    detailText.indexOf('FAIL  scripts/test/deep-tail.test.mjs') >= 0 && detailText.indexOf('Error: deep stderr tail marker') >= 0,
-    detailText.slice(-600),
-  )
-  check('the evidence head is truncated', detailText.indexOf('P'.repeat(1300)) < 0)
-  check('a tail hint marks the truncated evidence', detailText.indexOf('仅显示输出尾部') >= 0)
-}
-
-// A running task has a worktree/branch before any merge request exists.
-{
-  const boardTree = withHooks(panel, { initialView: 'board' })
-  await flush()
-  const cards = findAll(boardTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card')
-  const runningCard = cards.filter((card) => textOf(card).indexOf('Build damage system') >= 0)[0]
-  check('the running task card is available', runningCard !== undefined)
-  const cardText = textOf(runningCard)
-  check('the running card shows its branch', cardText.indexOf('task/T-1-1') >= 0, cardText)
-  runningCard.props.onClick()
-  const detailTree = withHooks(panel, { initialView: 'board' })
-  await flush()
-  const drawer = findAll(detailTree, (node) => node.props && node.props.className === 'gbt-drawer')[0]
-  const detailText = textOf(drawer)
-  check('the checkout section appears without a merge request', detailText.indexOf('执行工作树') >= 0, detailText)
-  check('and names the worktree and branch', detailText.indexOf('J:\\demo\\mm13d\\.worktrees\\T-1') >= 0 && detailText.indexOf('task/T-1-1') >= 0, detailText)
-  check('a task with no merge request has no merge section', detailText.indexOf('合并请求') < 0, detailText)
-}
 
 // ── uncontrolled-control reuse: a reconciler-faithful harness ──────────────
 // The stub above cannot see THIS class of bug: it hands a fresh ref object to
