@@ -197,6 +197,11 @@ export const TEST_TIMEOUT_MS = 20 * 60 * 1000
  * TEST_TIMEOUT_MS only sends an "about to block" reminder; the task is blocked at
  * TEST_TIMEOUT_MS + PHASE_BLOCK_GRACE_MS with no activity, so a verdict landing
  * exactly on the boundary is not thrown away.
+ *
+ * The activity clock itself is MEMORY ONLY (dispatch.mjs): it is not persisted on
+ * the board, so a host restart loses it and a round already older than the
+ * silence threshold may be blocked on the first tick after the restart. That is
+ * accepted deliberately: the clock is a liveness hint, not a decision record.
  */
 export const PHASE_BLOCK_GRACE_MS = 2 * 60 * 1000
 
@@ -582,8 +587,6 @@ export function normaliseReview(raw) {
     at: typeof raw.at === 'string' ? raw.at : null,
     reasons: typeof raw.reasons === 'string' ? raw.reasons : null,
     attempt: phaseAttempt(raw.attempt),
-    // The last identifiable reviewer activity on this round (see perform()).
-    lastActivityAt: typeof raw.lastActivityAt === 'string' ? raw.lastActivityAt : null,
   }
 }
 
@@ -597,8 +600,6 @@ export function normaliseTest(raw) {
     at: typeof raw.at === 'string' ? raw.at : null,
     evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
     attempt: phaseAttempt(raw.attempt),
-    // The last identifiable tester activity on this round (see perform()).
-    lastActivityAt: typeof raw.lastActivityAt === 'string' ? raw.lastActivityAt : null,
     // The host's own mechanical check of this round (see runHostCheck). Optional:
     // an older board or a task without `verify` has none.
     hostCheck: normaliseHostCheck(raw.hostCheck),

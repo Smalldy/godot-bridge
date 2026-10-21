@@ -154,12 +154,20 @@ export function recordPhaseActivity(ctx, taskId, by, at) {
 }
 
 /** The last recorded activity on `taskId` (ms), or 0 when none exists. */
-export function phaseActivityAt(ctx, taskId) {
+export function phaseActivityAt(ctx, taskId, roles) {
   if (typeof taskId !== 'string' || taskId === '') return 0
   try {
     const bucket = activityBucket(ctx, false)
     const entry = bucket === undefined ? undefined : bucket.get(taskId)
-    return entry === undefined || !Number.isFinite(entry.at) ? 0 : entry.at
+    if (entry === undefined || !Number.isFinite(entry.at)) return 0
+    // Only activity attributable to the phase's own role renews its silence
+    // clock; a worker's periodic get or a user action must not mask a dead
+    // tester/reviewer.
+    if (Array.isArray(roles) && roles.length > 0) {
+      const by = typeof entry.by === 'string' ? entry.by : ''
+      if (roles.indexOf(by) < 0) return 0
+    }
+    return entry.at
   } catch (error) {
     return 0
   }
@@ -2455,7 +2463,7 @@ export function createDispatcher(ctx, options) {
     for (const task of pending) {
       const startedAt = Date.parse(task.review.at)
       if (!Number.isFinite(startedAt)) continue
-      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id))
+      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, names))
       const silence = now - lastAt
       const key = String(task.id) + '@' + String(task.review.at)
       if (silence >= reviewTimeoutMs * 2 + phaseGraceMs) {
@@ -2472,7 +2480,7 @@ export function createDispatcher(ctx, options) {
           ) {
             return value
           }
-          const freshSilence = Math.round((now - Math.max(Date.parse(fresh.review.at), phaseActivityAt(ctx, fresh.id))) / 60000)
+          const freshSilence = Math.round((now - Math.max(Date.parse(fresh.review.at), phaseActivityAt(ctx, fresh.id, names))) / 60000)
           const result = model.blockTask(value, fresh.id, now, 'system', 'review timed out: no reviewer verdict after ' + String(freshSilence) + 'min of silence')
           return result.ok === true ? result.board : value
         })
@@ -2484,9 +2492,9 @@ export function createDispatcher(ctx, options) {
         emit('error', 'system', { taskId: task.id, detail: 'review timed out; task blocked for triage' })
         const owner = task.assignee === null || task.assignee === undefined ? null : task.assignee.name
         const notice =
-          'Review for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.' +
-          '  project: ' + String(projectPath) +
-          '  branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch) +
+          'Review for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
+          '  project: ' + String(projectPath) + '\n' +
+          '  branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch) + '\n' +
           '  worktree: ' + String(task.worktree === null || task.worktree === undefined ? '' : task.worktree)
         if (typeof owner === 'string' && owner !== '') await sendMemberMessage(lead, owner, notice)
         if (lead !== null && typeof lead.name === 'string' && lead.name !== '') await sendMemberMessage(lead, lead.name, notice)
@@ -2495,7 +2503,7 @@ export function createDispatcher(ctx, options) {
       if (silence >= reviewTimeoutMs * 2) {
         if (memory.reviewGrace.has(key)) continue
         if (names.length === 0 || lead === null) continue
-        const sent = await sendMemberMessage(lead, names[0], 'The review round is about to be blocked for inactivity. Record approveReview or requestChanges now; the task will be blocked after the grace window.' + reviewBriefFor(task, projectPath))
+        const sent = await sendMemberMessage(lead, names[0], 'The review round is about to be blocked for inactivity. Record approveReview or requestChanges now; the task will be blocked after the grace window.\n\n' + reviewBriefFor(task, projectPath))
         if (sent === true) {
           memory.reviewGrace.set(key, now)
           emit('review-grace', 'system', { taskId: task.id, detail: 'review about to be blocked; grace window started' })
@@ -2504,7 +2512,7 @@ export function createDispatcher(ctx, options) {
       }
       if (silence >= reviewTimeoutMs && memory.reviewReminders.has(key) === false) {
         if (names.length === 0 || lead === null) continue
-        const sent = await sendMemberMessage(lead, names[0], 'Reminder — review is still waiting.' + reviewBriefFor(task, projectPath))
+        const sent = await sendMemberMessage(lead, names[0], 'Reminder — review is still waiting.\n\n' + reviewBriefFor(task, projectPath))
         if (sent === true) {
           memory.reviewReminders.set(key, now)
           reminded.push(task.id)
@@ -2574,7 +2582,7 @@ export function createDispatcher(ctx, options) {
             fresh.merge !== null && fresh.merge !== undefined && typeof fresh.merge.mergeCommit === 'string' && fresh.merge.mergeCommit !== ''
               ? 'candidate ' + String(fresh.merge.mergeCommit)
               : 'no candidate recorded'
-          const freshMinutes = Math.round((now - Math.max(Date.parse(fresh.test.at), phaseActivityAt(ctx, fresh.id))) / 60000)
+          const freshMinutes = Math.round((now - Math.max(Date.parse(fresh.test.at), phaseActivityAt(ctx, fresh.id, names))) / 60000)
           blockNote = 'test timeout: no verdict after ' + String(freshMinutes) + 'min of silence (' + tester + '; ' + freshCandidate + ')'
           const result = model.blockTask(value, fresh.id, now, 'system', blockNote + '; blocked for triage')
           return result.ok === true ? result.board : value
@@ -2589,8 +2597,8 @@ export function createDispatcher(ctx, options) {
         emit('error', 'system', { taskId: task.id, detail: (blockNote === null ? 'test timeout' : blockNote) + '; task blocked for triage' })
         const owner = task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' ? null : task.assignee.name
         const notice =
-          'Test for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.' +
-          '  project: ' + String(projectPath) +
+          'Test for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
+          '  project: ' + String(projectPath) + '\n' +
           '  ' + (blockNote === null ? 'tester: ' + String(tester) : blockNote)
         if (owner !== null && owner !== '') await sendMemberMessage(lead, owner, notice)
         if (lead !== null && typeof lead.name === 'string' && lead.name !== '') await sendMemberMessage(lead, lead.name, notice)
@@ -2603,9 +2611,9 @@ export function createDispatcher(ctx, options) {
         const sent = await sendMemberMessage(
           lead,
           tester,
-          'The test round is about to be blocked for inactivity.' +
-            '  task: ' + String(task.id) + ' ' + String(task.title) +
-            '  ' + candidate +
+          'The test round is about to be blocked for inactivity.\n' +
+            '  task: ' + String(task.id) + ' ' + String(task.title) + '\n' +
+            '  ' + candidate + '\n' +
             'Record passTest or failTest now; after the grace window the task is blocked for triage.',
         )
         if (sent === true) {
@@ -2618,9 +2626,9 @@ export function createDispatcher(ctx, options) {
         if (names.length === 0 || lead === null) continue
         const tester = names[0]
         const text =
-          'Reminder — the test phase is still waiting for a verdict.' +
-          '  task: ' + String(task.id) + ' ' + String(task.title) +
-          '  ' + candidate +
+          'Reminder — the test phase is still waiting for a verdict.\n' +
+          '  task: ' + String(task.id) + ' ' + String(task.title) + '\n' +
+          '  ' + candidate + '\n' +
           'Record passTest or failTest with task_center; do not leave the round pending.'
         const sent = await sendMemberMessage(lead, tester, text)
         if (sent === true) {

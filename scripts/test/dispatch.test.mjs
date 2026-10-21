@@ -26,6 +26,7 @@ import {
   roleKindOf,
   roleTemplateValuesFor,
   recordPhaseActivity,
+  phaseActivityAt,
   serialiseWorktreeCreate,
   workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
@@ -2129,6 +2130,27 @@ function fakeHostSubprocess(result) {
   scheduler.dispose()
 }
 
+// ── only the phase role renews its own clock ─────────────────────────────
+{
+  const rig = createRoleRig({ team: createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+    { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+  ] }) })
+  const before = Date.now()
+  recordPhaseActivity(rig.ctx, 'T-1', 'fixer', before)
+  check(
+    'a worker call is recorded but does not renew the tester clock',
+    phaseActivityAt(rig.ctx, 'T-1') === before && phaseActivityAt(rig.ctx, 'T-1', ['tester-1']) === 0,
+    JSON.stringify({ any: phaseActivityAt(rig.ctx, 'T-1'), tester: phaseActivityAt(rig.ctx, 'T-1', ['tester-1']) }),
+  )
+  recordPhaseActivity(rig.ctx, 'T-1', 'tester-1', before + 1)
+  check(
+    'the tester own call renews the tester clock',
+    phaseActivityAt(rig.ctx, 'T-1', ['tester-1']) === before + 1 && phaseActivityAt(rig.ctx, 'T-1', ['reviewer-1']) === 0,
+    JSON.stringify({ tester: phaseActivityAt(rig.ctx, 'T-1', ['tester-1']), reviewer: phaseActivityAt(rig.ctx, 'T-1', ['reviewer-1']) }),
+  )
+}
 // ── the review round renews by activity too ──────────────────────────────
 {
   const activity = createActivity({ limit: 40 })
