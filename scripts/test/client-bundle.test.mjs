@@ -128,6 +128,19 @@ check('label follows the locale', glyph.meta.label() === '任务', glyph.meta.la
 locale = 'en'
 check('label follows an English switch', glyph.meta.label() === 'Tasks', glyph.meta.label())
 locale = 'zh'
+{
+  const glyphEntry = registrations.filter((entry) => entry.meta.name === 'sidebar.panellist')[0]
+  const glyphTree = glyphEntry !== undefined && typeof glyphEntry.component === 'function' ? glyphEntry.component({ size: 18 }) : null
+  check(
+    'the sidebar glyph is the locale-independent shot target (data-panel on the glyph)',
+    glyphTree !== null &&
+      glyphTree.type === 'span' &&
+      glyphTree.props['data-panel'] === 'task-center' &&
+      findAll(glyphTree, (node) => node.type === 'svg' && node.props && node.props.className === 'gbt-glyph').length === 1,
+    glyphTree === null ? 'missing glyph component' : JSON.stringify(glyphTree.props),
+  )
+}
+
 check('both slots are injected', injected.indexOf('sidebar.panellist') >= 0 && injected.indexOf('main') >= 0, injected.join(','))
 check('two style tags are installed', styleTags.length === 2, String(styleTags.length))
 check('task center CSS is tagged', styleTags.some((tag) => (tag.attributes || {})['data-plugin-css'] === 'godot-bridge/task-center.css'))
@@ -968,7 +981,7 @@ await flush()
   check('the tabs are labelled 实现/测试/评审', tabs.map(textOf).join(',') === '实现,测试,评审', tabs.map(textOf).join(','))
   check(
     'the panel root carries the visual-check marker and every role tab its data-roles-tab',
-    findAll(rolesTree, (node) => node.props && node.props['data-panel'] === 'task-center').length >= 1 &&
+    findAll(rolesTree, (node) => node.props && node.props['data-panel-root'] === 'task-center').length === 1 &&
       findAll(editor, (node) => node.props && node.props['data-roles-tab'] !== undefined).map((node) => node.props['data-roles-tab']).join(',') === 'worker,tester,reviewer',
     JSON.stringify(findAll(editor, (node) => node.props && node.props['data-roles-tab'] !== undefined).map((node) => node.props['data-roles-tab'])),
   )
