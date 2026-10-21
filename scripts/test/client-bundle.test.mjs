@@ -966,6 +966,12 @@ await flush()
     JSON.stringify(tabs.map((tab) => [tab.type, tab.props.role, tab.props['data-kind']])),
   )
   check('the tabs are labelled 实现/测试/评审', tabs.map(textOf).join(',') === '实现,测试,评审', tabs.map(textOf).join(','))
+  check(
+    'the panel root carries the visual-check marker and every role tab its data-roles-tab',
+    findAll(rolesTree, (node) => node.props && node.props['data-panel'] === 'task-center').length >= 1 &&
+      findAll(editor, (node) => node.props && node.props['data-roles-tab'] !== undefined).map((node) => node.props['data-roles-tab']).join(',') === 'worker,tester,reviewer',
+    JSON.stringify(findAll(editor, (node) => node.props && node.props['data-roles-tab'] !== undefined).map((node) => node.props['data-roles-tab'])),
+  )
   check('the tabs sit in a labelled tablist', findAll(editor, (node) => node.props && node.props.role === 'tablist').length === 1)
   check(
     'the selected tab carries aria-selected=true and the others false',

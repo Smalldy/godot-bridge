@@ -2522,7 +2522,19 @@ export function createApi(ctx, options) {
       if (harness === null || typeof harness.start !== 'function') {
         return failure('harness-unavailable', 'the isolated DSH harness is not available in this profile')
       }
-      if (action === 'harnessStatus') return ok({ harness: harness.status(), logs: harness.logs() })
+      if (action === 'harnessStatus') {
+          const harnessStatus = harness.status()
+          // Flat mirrors so a caller can hand the URL straight to a shot tool
+          // without digging into the nested record.
+          return ok({
+            harness: harnessStatus,
+            logs: harness.logs(),
+            port: harnessStatus.port === undefined ? null : harnessStatus.port,
+            token: harnessStatus.token === undefined ? null : harnessStatus.token,
+            url: harnessStatus.url === undefined ? null : harnessStatus.url,
+            cookie: harnessStatus.cookie === true,
+          })
+        }
       if (action === 'harnessStop') return harness.stop()
       if (action === 'harnessStart') return harness.start(projectPath)
       if (action === 'harnessRestart') return harness.restart(projectPath)

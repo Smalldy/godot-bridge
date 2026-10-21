@@ -2504,7 +2504,7 @@ window.__ModuleLoader__.load({
 				// no refresh button, no repeated guidance sentence.
 				const toolbar = h('div', { className: 'gbt-rolesheader', 'data-roles-header': 'true' },
 					h('div', { className: 'gbt-roleseg', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-role-tabs': 'true', 'data-section': 'role-editor-kinds' }, ROLE_EDITOR_KINDS.map(function (entry) {
-						return h('button', { key: entry, type: 'button', className: 'gbt-rolesegitem', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
+						return h('button', { key: entry, type: 'button', className: 'gbt-rolesegitem', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-roles-tab': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
 					})),
 					h('div', { className: 'gbt-rolesheader-right' },
 						h('span', { className: 'gbt-pill' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')),
@@ -3676,7 +3676,7 @@ window.__ModuleLoader__.load({
 
 				return h(
 					'div',
-					{ className: 'gbt-root' },
+					{ className: 'gbt-root', 'data-panel': 'task-center' },
 					header,
 					statusline,
 					busyBar,
