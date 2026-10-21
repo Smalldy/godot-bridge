@@ -9,6 +9,7 @@ import { createState } from '../../plugin/task-center/state.mjs'
 import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, roleBriefFor } from '../../plugin/task-center/dispatch.mjs'
 import { rolesPath } from '../../plugin/task-center/board.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
+import { phaseActivityAt } from '../../plugin/task-center/dispatch.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
 import { DEFAULT_ROLE_PROMPTS, ROLE_TEMPLATE_VARIABLE_NAMES, defaultRoleConfig } from '../../plugin/task-center/schema.mjs'
 
@@ -2293,11 +2294,34 @@ function acceptingTask(overrides) {
   rig.scheduler.dispose()
 }
 
+// ── a real tool call renews only its own role's activity clock ──────────────
+{
+  const ctx = createTesterRig()
+  const rig = ctx.rig
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask()] }))
+  const testerCall = { projectPath: PROJECT, by: '@bc7233e0', role: 'agent', agent: { id: 'session-tester-1' } }
+  const testerBefore = Date.now()
+  await rig.api.perform('get', { id: 'T-1' }, testerCall)
+  const testerClock = phaseActivityAt(rig.ctx, 'T-1', ['tester-1', 'session-tester-1'])
+  check('a real tester tool call renews the tester clock', testerClock >= testerBefore, JSON.stringify({ testerClock: testerClock, before: testerBefore }))
+  const workerCall = { projectPath: PROJECT, by: '@worker', role: 'agent', agent: { id: 'session-fixer' } }
+  await sleep(5)
+  await rig.api.perform('get', { id: 'T-1' }, workerCall)
+  check(
+    'a worker tool call does not renew the tester clock',
+    phaseActivityAt(rig.ctx, 'T-1', ['tester-1', 'session-tester-1']) === testerClock,
+    JSON.stringify({ after: phaseActivityAt(rig.ctx, 'T-1', ['tester-1', 'session-tester-1']), tester: testerClock }),
+  )
+  rig.scheduler.dispose()
+}
 // ── the host's mechanical verification (task.verify) ────────────────────────
 function fakeHostSubprocess(result) {
-  const spec = result === undefined ? {} : result
+  // A single result, or a queue consumed one spawn at a time (the retest path
+  // runs the host check twice in one flow).
+  const queue = Array.isArray(result) ? result.slice() : null
   const calls = []
   const spawn = (request) => {
+    const spec = queue === null ? (result === undefined ? {} : result) : queue.length > 0 ? queue.shift() : {}
     calls.push(request)
     return {
       stdin: undefined,
@@ -2313,7 +2337,11 @@ function fakeHostSubprocess(result) {
           ? new Promise((resolveDone) => {
               if (request.signal !== undefined) request.signal.addEventListener('abort', () => resolveDone({ exitCode: null, signal: 'SIGTERM' }))
             })
-          : Promise.resolve({ exitCode: spec.code === undefined ? 0 : spec.code, signal: null }),
+          : new Promise((resolveDone) => {
+              const finish = () => resolveDone({ exitCode: spec.code === undefined ? 0 : spec.code, signal: null })
+              if (Number.isFinite(spec.delayMs) && spec.delayMs > 0) setTimeout(finish, spec.delayMs)
+              else finish()
+            }),
       terminate() {},
       waitForExit() {
         return Promise.resolve(true)
@@ -2453,6 +2481,86 @@ function fakeHostSubprocess(result) {
   rig.scheduler.dispose()
 }
 
+// ── a moved target rebuilds the candidate and re-runs the host check ───────
+{
+  // FAILED retest: the host fails the round itself and the task goes back to
+  // running; the tester is never asked to retest.
+  const proc = fakeHostSubprocess([{ code: 0, stdout: 'first build ok' }, { code: 1, stdout: 'FAIL retest.test.mjs', stderr: 'retest red' }])
+  const ctx = createTesterRig({ subprocess: proc.subprocess })
+  const rig = ctx.rig
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask({ verify: { command: 'npm run verify' } })] }))
+  const surface = install(rig)
+  const approved = await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  check('the first build passes its host check', approved.json().ok === true && approved.json().task.status === 'testing' && approved.json().task.test.hostCheck.exitCode === 0, approved.text)
+  ctx.fake.setTargetHead('moved-target-sha')
+  const callsBefore = ctx.team.calls.length
+  const passed = await postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1' })
+  const payload = passed.json()
+  check('a stale target rebuilds the candidate and fails the task on the host verdict', payload.ok === true && payload.task.status === 'running', passed.text)
+  check('the failed retest round is recorded by the host', payload.task.test.status === 'failed' && payload.task.test.by === 'host', JSON.stringify(payload.task.test))
+  check(
+    'the retest failure evidence names the command, the exit code and the tail',
+    String(payload.task.test.evidence).indexOf('npm run verify') >= 0 && String(payload.task.test.evidence).indexOf('exit code: 1') >= 0 && String(payload.task.test.evidence).indexOf('FAIL retest.test.mjs') >= 0,
+    JSON.stringify(payload.task.test.evidence),
+  )
+  check('the failed retest keeps the hostCheck record', payload.task.test.hostCheck !== null && payload.task.test.hostCheck.exitCode === 1 && payload.task.test.hostCheck.command === 'npm run verify', JSON.stringify(payload.task.test.hostCheck))
+  const testerCalls = ctx.team.calls.slice(callsBefore).filter((call) => call.kind === 'send' && call.target === 'tester-1')
+  check('the tester is never notified about the failed retest', testerCalls.length === 0, JSON.stringify(testerCalls.map((call) => call.text.slice(0, 80))))
+  check('the retest history records the host verdict', payload.task.history.some((entry) => String(entry.note).indexOf('tests failed') >= 0 && String(entry.note).indexOf('npm run verify') >= 0), JSON.stringify(payload.task.history.slice(-2)))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // A retest command that outlives the small action budget must still finish (the
+  // passTest bound covers verify.timeoutMs) and a genuine check timeout records
+  // the host failTest, so the auto-merge sweep cannot loop rebuild->check.
+  const proc = fakeHostSubprocess([{ code: 0 }, { code: 0, delayMs: 300 }])
+  const ctx = createTesterRig({ subprocess: proc.subprocess, actionTimeoutMs: 40, autoMerge: true })
+  const rig = ctx.rig
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask({ verify: { command: 'npm run verify', timeoutMs: 100 } })] }))
+  const surface = install(rig)
+  await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  ctx.fake.setTargetHead('moved-target-sha')
+  const passed = await postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1' })
+  const payload = passed.json()
+  check(
+    'a retest check longer than the action bound still records the host timeout',
+    payload.ok === true && payload.task.status === 'running' && payload.task.test.status === 'failed' && payload.task.test.by === 'host' && payload.task.test.hostCheck.timedOut === true,
+    passed.text,
+  )
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  const afterRead = await rig.state.read(PROJECT)
+  const afterTask = afterRead.board.tasks.filter((task) => task.id === 'T-1')[0]
+  check(
+    'the failed retest cannot be rebuilt in a loop by the sweep',
+    sweep.ok === true && sweep.merged.length === 0 && (afterTask.status === 'running' || afterTask.status === 'pending') && afterTask.test.status === 'failed' && afterTask.merge.mergeCommit === null,
+    JSON.stringify({ sweep: sweep, status: afterTask && afterTask.status, test: afterTask.test && afterTask.test.status, commit: afterTask.merge && afterTask.merge.mergeCommit }),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+{
+  // PASSED retest: the rebuilt candidate enters testing with its hostCheck and
+  // the tester brief carries the mechanical evidence.
+  const proc = fakeHostSubprocess([{ code: 0, stdout: 'first build ok' }, { code: 0, stdout: 'RETEST PASSED' }])
+  const ctx = createTesterRig({ subprocess: proc.subprocess })
+  const rig = ctx.rig
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [acceptingTask({ verify: { command: 'npm run verify' } })] }))
+  const surface = install(rig)
+  await postTo(surface, { action: 'approveReview', project: PROJECT, id: 'T-1' })
+  ctx.fake.setTargetHead('moved-target-sha')
+  const callsBefore = ctx.team.calls.length
+  const passed = await postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1' })
+  const payload = passed.json()
+  check('a passed retest keeps the task in testing', payload.ok === true && payload.task.status === 'testing' && payload.task.test.status === 'pending', passed.text)
+  check('the passed retest records test.hostCheck', payload.task.test.hostCheck !== null && payload.task.test.hostCheck.exitCode === 0 && payload.task.test.hostCheck.tail.indexOf('RETEST PASSED') >= 0, JSON.stringify(payload.task.test.hostCheck))
+  check('the retest resets the round for the tester', payload.task.test.attempt === 2 && payload.task.merge.mergeCommit !== null, JSON.stringify({ attempt: payload.task.test.attempt, mergeCommit: payload.task.merge.mergeCommit }))
+  const briefs = ctx.team.calls.slice(callsBefore).filter((call) => call.kind === 'send' && call.target === 'tester-1')
+  check('the tester brief carries the retest host check', briefs.length === 1 && briefs[0].text.indexOf('npm run verify') >= 0 && briefs[0].text.indexOf('RETEST PASSED') >= 0, JSON.stringify(briefs.map((call) => call.text.slice(0, 160))))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
 {
   // The declaration is an ordinary task field on both create and update.
   const rig = createSubmitRig({})
@@ -2468,6 +2576,12 @@ function fakeHostSubprocess(result) {
   check('update clears the declaration', updated.json().ok === true && updated.json().task.verify === null, updated.text)
   const typo = await postTo(surface, { action: 'create', project: PROJECT, title: 'bad verify', verify: { cmd: 'npm test' } })
   check('a malformed declaration is refused instead of silently dropped', typo.json().ok === false && typo.json().code === 'invalid-verify', typo.text)
+  for (const bad of [{ command: '' }, { command: '   ' }, { command: 'npm run verify', timeoutMs: 0 }, { command: 'npm run verify', timeoutMs: -1 }, { command: 'npm run verify', timeoutMs: 'abc' }]) {
+    const refused = await postTo(surface, { action: 'create', project: PROJECT, title: 'bad verify timeout', verify: bad })
+    check('an invalid verify declaration is refused: ' + JSON.stringify(bad), refused.json().ok === false && refused.json().code === 'invalid-verify', refused.text)
+  }
+  const updateBad = await postTo(surface, { action: 'update', project: PROJECT, id: payload.task.id, verify: { command: 'npm run verify', timeoutMs: 0 } })
+  check('update refuses an invalid verify declaration too', updateBad.json().ok === false && updateBad.json().code === 'invalid-verify', updateBad.text)
   surface.dispose()
   rig.scheduler.dispose()
 }

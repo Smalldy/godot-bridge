@@ -25,6 +25,8 @@ import {
   roleContextPreview,
   roleKindOf,
   roleTemplateValuesFor,
+  recordPhaseActivity,
+  phaseActivityAt,
   serialiseWorktreeCreate,
   workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
@@ -1872,9 +1874,9 @@ function fakeHostSubprocess(result) {
     }),
   })
   const state = createState(rig.ctx)
-  const stale = roleTask({ review: { status: 'pending', by: 'work-T-1-1', at: new Date(Date.now() - 60 * 60 * 1000).toISOString(), reasons: null, attempt: 1 } })
+  const stale = roleTask({ review: { status: 'pending', by: 'work-T-1-1', at: new Date(Date.now() - 30).toISOString(), reasons: null, attempt: 1 } })
   seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [stale] }))
-  const scheduler = createDispatcher(rig.ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: null, roles: rig.manager, reviewTimeoutMs: 25 })
+  const scheduler = createDispatcher(rig.ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: null, roles: rig.manager, reviewTimeoutMs: 25, phaseGraceMs: 0 })
   await scheduler.tick(PROJECT)
   const reminders = rig.team.calls.filter((call) => call.kind === 'send' && call.target === 'reviewer-1')
   check('a stale review gets one reminder to the reviewer', reminders.length === 1 && reminders[0].text.indexOf('Reminder') >= 0 && reminders[0].text.indexOf('Review round 1') >= 0, JSON.stringify(reminders.map((call) => call.text.slice(0, 80))))
@@ -1935,6 +1937,7 @@ function fakeHostSubprocess(result) {
     testReminderMs: 10 * 1000,
     testTimeoutMs: 20 * 1000,
     reviewTimeoutMs: 60 * 60 * 1000,
+    phaseGraceMs: 0,
   })
   await scheduler.tick(PROJECT)
   const reminders = rig.team.calls.filter((call) => call.kind === 'send' && call.target === 'tester-1' && call.text.indexOf('Reminder') >= 0)
@@ -2063,6 +2066,7 @@ function fakeHostSubprocess(result) {
     testReminderMs: 10,
     testTimeoutMs: 20,
     reviewTimeoutMs: 60 * 60 * 1000,
+    phaseGraceMs: 0,
   })
   await scheduler.tick(PROJECT)
   const read = await state.read(PROJECT)
@@ -2077,6 +2081,105 @@ function fakeHostSubprocess(result) {
   scheduler.dispose()
 }
 
+// ── watchdog renewal: activity resets silence; a grace window defers the block ──
+{
+  const activity = createActivity({ limit: 60 })
+  const rig = createRoleRig({ team: createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+    { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+  ] }) })
+  const state = createState(rig.ctx)
+  const old = new Date(Date.now() - 1000).toISOString()
+  const task = roleTask({
+    status: 'testing',
+    assignee: { name: 'fixer', session: 'session-fixer' },
+    review: { status: 'approved', by: 'reviewer-1', at: old, reasons: null, attempt: 1 },
+    test: { status: 'pending', by: null, at: old, evidence: null, attempt: 1 },
+    merge: { status: 'open', base: 'base-sha', target: 'feat/task-center-v2', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: 'npm test', reviewer: null, conflict: null, output: null, at: old },
+  })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [task] }))
+  const scheduler = createDispatcher(rig.ctx, {
+    state: state, projectPath: () => PROJECT, allowSpawn: false, git: null, roles: rig.manager, activity: activity,
+    testReminderMs: 50, testTimeoutMs: 200, phaseGraceMs: 600, reviewTimeoutMs: 60 * 60 * 1000,
+  })
+  for (let index = 0; index < 10; index += 1) {
+    recordPhaseActivity(rig.ctx, 'T-1', 'tester-1', Date.now())
+    await sleep(40)
+  }
+  recordPhaseActivity(rig.ctx, 'T-1', 'tester-1', Date.now())
+  await scheduler.tick(PROJECT)
+  let read = await state.read(PROJECT)
+  check('a tester that keeps calling is never reminded or blocked', findTask(read.board, 'T-1').status === 'testing' && rig.team.calls.filter((call) => call.target === 'tester-1').length === 0, JSON.stringify({ status: findTask(read.board, 'T-1').status, calls: rig.team.calls.map((call) => [call.target, String(call.text).slice(0, 40)]) }))
+  await sleep(260)
+  await scheduler.tick(PROJECT)
+  read = await state.read(PROJECT)
+  const graceEvents = activity.list(60).filter((entry) => entry.kind === 'test-grace')
+  check(
+    'reaching the timeout sends one about-to-block notice instead of blocking',
+    findTask(read.board, 'T-1').status === 'testing' && graceEvents.length === 1 && rig.team.calls.some((call) => call.target === 'tester-1' && call.text.indexOf('about to be blocked') >= 0),
+    JSON.stringify({ status: findTask(read.board, 'T-1').status, grace: graceEvents.length }),
+  )
+  await sleep(100)
+  await scheduler.tick(PROJECT)
+  read = await state.read(PROJECT)
+  check('inside the grace window the round is still open', findTask(read.board, 'T-1').status === 'testing', findTask(read.board, 'T-1').status)
+  await sleep(800)
+  await scheduler.tick(PROJECT)
+  read = await state.read(PROJECT)
+  check('only silence past the grace window blocks the round', findTask(read.board, 'T-1').status === 'blocked', findTask(read.board, 'T-1').status)
+  scheduler.dispose()
+}
+
+// ── only the phase role renews its own clock ─────────────────────────────
+{
+  const rig = createRoleRig({ team: createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
+    { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+  ] }) })
+  const before = Date.now()
+  recordPhaseActivity(rig.ctx, 'T-1', 'fixer', before)
+  check(
+    'a worker call is recorded but does not renew the tester clock',
+    phaseActivityAt(rig.ctx, 'T-1') === before && phaseActivityAt(rig.ctx, 'T-1', ['tester-1']) === 0,
+    JSON.stringify({ any: phaseActivityAt(rig.ctx, 'T-1'), tester: phaseActivityAt(rig.ctx, 'T-1', ['tester-1']) }),
+  )
+  recordPhaseActivity(rig.ctx, 'T-1', 'tester-1', before + 1)
+  check(
+    'the tester own call renews the tester clock',
+    phaseActivityAt(rig.ctx, 'T-1', ['tester-1']) === before + 1 && phaseActivityAt(rig.ctx, 'T-1', ['reviewer-1']) === 0,
+    JSON.stringify({ tester: phaseActivityAt(rig.ctx, 'T-1', ['tester-1']), reviewer: phaseActivityAt(rig.ctx, 'T-1', ['reviewer-1']) }),
+  )
+}
+// ── the review round renews by activity too ──────────────────────────────
+{
+  const activity = createActivity({ limit: 40 })
+  const rig = createRoleRig({ team: createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+  ] }) })
+  const state = createState(rig.ctx)
+  const stale = roleTask({ review: { status: 'pending', by: 'work-T-1-1', at: new Date(Date.now() - 1000).toISOString(), reasons: null, attempt: 1 } })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [stale] }))
+  const scheduler = createDispatcher(rig.ctx, {
+    state: state, projectPath: () => PROJECT, allowSpawn: false, git: null, roles: rig.manager, activity: activity,
+    reviewTimeoutMs: 200, phaseGraceMs: 150, testReminderMs: 100000, testTimeoutMs: 100000,
+  })
+  recordPhaseActivity(rig.ctx, 'T-1', 'reviewer-1', Date.now())
+  await scheduler.tick(PROJECT)
+  let read = await state.read(PROJECT)
+  check('a reviewer that just acted is not reminded or blocked', findTask(read.board, 'T-1').status === 'reviewing' && rig.team.calls.filter((call) => call.kind === 'send').length === 0)
+  await sleep(430)
+  await scheduler.tick(PROJECT)
+  read = await state.read(PROJECT)
+  check('a silent review gets an about-to-block notice first', findTask(read.board, 'T-1').status === 'reviewing' && activity.list(40).some((entry) => entry.kind === 'review-grace'))
+  await sleep(200)
+  await scheduler.tick(PROJECT)
+  read = await state.read(PROJECT)
+  check('silence past the grace window blocks the review', findTask(read.board, 'T-1').status === 'blocked', findTask(read.board, 'T-1').status)
+  scheduler.dispose()
+}
 // ── runtime snapshot sources: workerPool kinds and the activity ring ───────
 {
   const rig = createRoleRig({
