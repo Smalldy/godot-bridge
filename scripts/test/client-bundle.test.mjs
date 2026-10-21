@@ -851,7 +851,7 @@ HOST.workers = savedWorkers
 findButton(poolErrorTree, '刷新').props.onClick()
 await flush()
 
-// ── Roles / Status views: agents, worktrees, activity and role admin ──────
+// ── Status view: one summary line, three cards, a full-width activity card ─
 {
   const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
   let copied = null
@@ -864,70 +864,126 @@ await flush()
   statusTree = withHooks(panel, { initialView: 'status' })
   const statusText = textOf(statusTree)
   check('the status tab is offered alongside the existing views', findButton(statusTree, '状态') !== undefined && findButton(statusTree, '角色') !== undefined, statusText.slice(0, 200))
-  check('the status view separates agents, worktrees and activity sections', ['执行代理', '工作树', '活动'].every((label) => statusText.indexOf(label) >= 0), statusText)
-  const agentRows = findAll(statusTree, (node) => node.type === 'tr' && node.props && node.props['data-agent'] !== undefined)
-  check('the agents table lists the lead and every teammate once', agentRows.length === 4, String(agentRows.length))
-  const leadRow = agentRows.filter((row) => row.props['data-agent'] === 'lead')[0]
-  const fixerRow = agentRows.filter((row) => row.props['data-agent'] === 'fixer')[0]
-  const reviewerRow = agentRows.filter((row) => row.props['data-agent'] === 'reviewer-1')[0]
-  const testerAgentRow = agentRows.filter((row) => row.props['data-agent'] === 'tester-1')[0]
-  check('the lead is a single row with the lead kind', leadRow !== undefined && leadRow.props['data-kind'] === 'lead' && textOf(leadRow).indexOf('Team Lead') >= 0, leadRow && textOf(leadRow))
-  check('teammate rows carry their kind, description and current task', fixerRow !== undefined && fixerRow.props['data-kind'] === 'worker' && textOf(fixerRow).indexOf('feature worker') >= 0 && textOf(fixerRow).indexOf('T-1 · Build damage system') >= 0, fixerRow && textOf(fixerRow))
-  check('reviewer and tester kinds are visible', reviewerRow !== undefined && textOf(reviewerRow).indexOf('评审') >= 0 && testerAgentRow !== undefined && textOf(testerAgentRow).indexOf('测试') >= 0, (reviewerRow && textOf(reviewerRow)) + ' | ' + (testerAgentRow && textOf(testerAgentRow)))
-  const kindCounts = findAll(statusTree, (node) => node.props && node.props['data-kind'] !== undefined && node.type === 'span')
-  check('kind counts are rendered for every role kind', ['lead', 'worker', 'reviewer', 'tester', 'merger'].every(function (kind) { return kindCounts.some(function (node) { return node.props['data-kind'] === kind }) }), String(kindCounts.length))
-  const roleKindStrip = findAll(statusTree, (node) => node.props && node.props['data-role-kind'] !== undefined)
-  check('desired/live/missing and the bound profile are shown', roleKindStrip.some(function (node) { return node.props['data-role-kind'] === 'reviewer' && textOf(node).indexOf('1/2') >= 0 && textOf(node).indexOf('godot-reviewer') >= 0 }), roleKindStrip.map(textOf).join(' | '))
-  check('session ids are shown with a copy control', textOf(fixerRow).indexOf('session-fixer') >= 0 && findAll(fixerRow, (node) => node.props && node.props['data-action'] === 'copy-session').length === 1, fixerRow && textOf(fixerRow))
+  const cardsRoot = findAll(statusTree, (node) => node.props && node.props['data-status'] === 'cards')[0]
+  const statusCards = findAll(statusTree, (node) => node.props && node.props['data-status-card'] !== undefined)
   check(
-    'no fake jump-to-session control is rendered (the hint acknowledges there is no API)',
-    findButton(statusTree, '查看会话') === undefined &&
-      findAll(statusTree, (node) => node.props && node.props['data-action'] === 'open-session').length === 0 &&
-      statusText.indexOf('会话跳转 API') >= 0,
-    statusText,
+    'the status page is a summary line plus three narrow cards and one full-width activity card',
+    cardsRoot !== undefined &&
+      statusCards.map((card) => card.props['data-status-card']).join(',') === 'dispatch,worktrees,agents,activity' &&
+      findAll(statusTree, (node) => node.props && node.props['data-status-grid'] === 'true').length === 1 &&
+      findAll(statusTree, (node) => node.props && node.props['data-status-top'] === 'true').length === 1,
+    JSON.stringify(statusCards.map((card) => card.props['data-status-card'])),
   )
-  check('the session hint says to copy or open from the Team list', statusText.indexOf('复制') >= 0 && statusText.indexOf('Team 列表') >= 0, statusText)
-  const copyButton = findAll(fixerRow, (node) => node.props && node.props['data-action'] === 'copy-session')[0]
+  check(
+    'the summary line reports the dispatch state, the running count and the last activity',
+    statusText.indexOf('已暂停') >= 0 && statusText.indexOf('有 1 个任务在跑') >= 0 && statusText.indexOf('最近活动') >= 0,
+    statusText.slice(0, 300),
+  )
+  check(
+    'the old counter strips and bare tables are gone',
+    findAll(statusTree, (node) => node.props && ['agents', 'agent-kinds', 'role-instances', 'worktrees', 'activity', 'counters'].indexOf(node.props['data-section']) >= 0).length === 0 &&
+      findAll(statusTree, (node) => node.type === 'tr' && node.props && (node.props['data-worktree'] !== undefined || node.props['data-activity'] !== undefined)).length === 0 &&
+      statusText.indexOf('会话跳转 API') < 0,
+    statusText.slice(0, 300),
+  )
+  const dispatchCard = statusCards.filter((card) => card.props['data-status-card'] === 'dispatch')[0]
+  check(
+    'the dispatch card shows concurrency, ready and queue plus a why-not-running reason',
+    dispatchCard !== undefined &&
+      textOf(dispatchCard).indexOf('1/ 3 并发') >= 0 &&
+      textOf(dispatchCard).indexOf('1就绪') >= 0 &&
+      findAll(dispatchCard, (node) => node.props && node.props['data-status-why'] === 'true').length === 1 &&
+      textOf(dispatchCard).indexOf('派发已暂停') >= 0 &&
+      textOf(dispatchCard).indexOf('上次扫描') >= 0 &&
+      textOf(dispatchCard).indexOf('合并队列') >= 0,
+    dispatchCard && textOf(dispatchCard),
+  )
+  const worktreesCard = statusCards.filter((card) => card.props['data-status-card'] === 'worktrees')[0]
+  const activeWtRows = findAll(worktreesCard, (node) => node.props && node.props['data-worktree-row'] !== undefined)
+  check(
+    'the worktrees card lists the main checkout and the active task worktrees only',
+    activeWtRows.length === 3 && activeWtRows[0].props['data-worktree-row'] === 'main' && textOf(worktreesCard).indexOf('T-1') >= 0 && textOf(worktreesCard).indexOf('T-4') >= 0,
+    JSON.stringify(activeWtRows.map((row) => row.props['data-worktree-row'])),
+  )
+  const staleFold = findAll(worktreesCard, (node) => node.props && node.props['data-status-stale'] !== undefined)[0]
+  check(
+    'stale worktrees are folded into one counted line with no cleanup button',
+    staleFold !== undefined && staleFold.props['data-status-stale'] === '1' && textOf(staleFold).indexOf('1 个陈旧工作树') >= 0 && textOf(staleFold).indexOf('清理能力尚未提供') >= 0 && findAll(staleFold, (node) => node.type === 'button').length === 0,
+    staleFold && textOf(staleFold),
+  )
+  const agentsCard = statusCards.filter((card) => card.props['data-status-card'] === 'agents')[0]
+  const agentRows = findAll(agentsCard, (node) => node.props && node.props['data-status-agent'] !== undefined)
+  check('the agents card lists the lead and every teammate once', agentRows.length === 4, String(agentRows.length))
+  const fixerRow = agentRows.filter((row) => row.props['data-status-agent'] === 'fixer')[0]
+  check(
+    'an agent row carries the name, role and current task',
+    fixerRow !== undefined && textOf(fixerRow).indexOf('fixer') >= 0 && textOf(fixerRow).indexOf('实现') >= 0 && textOf(fixerRow).indexOf('T-1') >= 0,
+    fixerRow && textOf(fixerRow),
+  )
+  check(
+    'session ids are not printed in the agent rows until the menu is opened',
+    agentRows.every((row) => textOf(row).indexOf('session-') < 0) && textOf(agentsCard).indexOf('session-') < 0,
+    textOf(agentsCard),
+  )
+  const sessionToggle = findAll(fixerRow, (node) => node.props && node.props['data-action'] === 'status-session')[0]
+  sessionToggle.props.onClick()
+  await flush()
+  statusTree = withHooks(panel, { initialView: 'status' })
+  const reopenedAgents = findAll(statusTree, (node) => node.props && node.props['data-status-card'] === 'agents')[0]
+  const sessionRow = findAll(reopenedAgents, (node) => node.props && node.props['data-status-session'] === 'fixer')[0]
+  check(
+    'the ⋯ menu reveals the session id with a copy control',
+    sessionRow !== undefined && textOf(sessionRow).indexOf('session-fixer') >= 0 && findAll(sessionRow, (node) => node.props && node.props['data-action'] === 'copy-session').length === 1,
+    sessionRow && textOf(sessionRow),
+  )
+  const copyButton = findAll(sessionRow, (node) => node.props && node.props['data-action'] === 'copy-session')[0]
   copyButton.props.onClick()
   await flush()
   check('copying puts the session id on the clipboard', copied === 'session-fixer', String(copied))
 
-  const worktreeRows = findAll(statusTree, (node) => node.type === 'tr' && node.props && node.props['data-worktree'] !== undefined)
-  check('the worktrees table lists every checkout', worktreeRows.length === 4, String(worktreeRows.length))
-  const taskWorktreeRow = worktreeRows.filter((row) => String(row.props['data-worktree']).indexOf('T-1') >= 0)[0]
-  check('a task checkout shows type, branch, head, task and active state', taskWorktreeRow !== undefined && taskWorktreeRow.props['data-type'] === 'task' && taskWorktreeRow.props['data-active'] === 'true' && textOf(taskWorktreeRow).indexOf('task/T-1-1') >= 0 && textOf(taskWorktreeRow).indexOf('T-1') >= 0, taskWorktreeRow && textOf(taskWorktreeRow))
-  const typeCounts = findAll(statusTree, (node) => node.props && node.props['data-wt-type'] !== undefined)
-  check('per-type worktree counts are rendered', typeCounts.length === 6 && typeCounts.some(function (node) { return node.props['data-wt-type'] === 'test' && textOf(node).indexOf('1') >= 0 }), typeCounts.map(textOf).join(' | '))
-  const activityRows = findAll(statusTree, (node) => node.type === 'tr' && node.props && node.props['data-activity'] !== undefined)
-  check('the activity table renders every entry', activityRows.length === 3, String(activityRows.length))
-  const actorCell = function (row) {
-    return findAll(row, (node) => node.props && node.props['data-col'] === 'activity-actor')[0]
+  const activityCard = statusCards.filter((card) => card.props['data-status-card'] === 'activity')[0]
+  check('real activity events render as rows', findAll(activityCard, (node) => node.props && node.props['data-activity-kind'] !== undefined).length === 3, textOf(activityCard))
+
+  const savedActivity = HOST.activity
+  HOST.activity = {
+    available: true,
+    limit: 100,
+    count: savedActivity.entries.length + 1,
+    entries: [{ at: new Date().toISOString(), kind: 'sweep', actor: 'system', taskId: null, detail: 'heartbeat' }].concat(savedActivity.entries),
   }
-  const systemRow = activityRows.filter((row) => row.props['data-actor'] === 'system')[0]
-  const agentRow = activityRows.filter((row) => row.props['data-actor'] === 'agent')[0]
-  const hostRow = activityRows.filter((row) => row.props['data-actor'] === 'host')[0]
-  check('a system event is labelled system, not an agent', systemRow !== undefined && textOf(actorCell(systemRow)) === '系统' && textOf(systemRow).indexOf('reviewer-1') < 0, systemRow && textOf(systemRow))
-  check('an agent event carries the agent name', agentRow !== undefined && textOf(actorCell(agentRow)) === 'reviewer-1', agentRow && textOf(agentRow))
-  check('a host event is labelled host', hostRow !== undefined && textOf(actorCell(hostRow)) === '宿主', hostRow && textOf(hostRow))
-  check('the actor column has a neutral header, not an agent header', findAll(statusTree, (node) => node.type === 'th' && textOf(node) === '主体').length === 1 && findAll(statusTree, (node) => node.type === 'th' && textOf(node) === '代理').length === 0, statusText)
-  check('the activity limit and count are visible', statusText.indexOf('上限') >= 0 && statusText.indexOf('100') >= 0 && statusText.indexOf('条数') >= 0, statusText)
-  const activityAtCell = findAll(activityRows[0], (node) => node.props && node.props['data-col'] === 'activity-at')[0]
-  check('activity times are rendered', activityAtCell !== undefined && textOf(activityAtCell) !== '—' && textOf(activityAtCell) !== '', activityAtCell && textOf(activityAtCell))
+  let sweepTree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  sweepTree = withHooks(panel, { initialView: 'status' })
+  const sweepActivity = findAll(sweepTree, (node) => node.props && node.props['data-status-card'] === 'activity')[0]
+  const sweepFold = findAll(sweepActivity, (node) => node.props && node.props['data-action'] === 'status-show-all')[0]
+  check(
+    'heartbeats are filtered by default and folded into one line',
+    findAll(sweepActivity, (node) => node.props && node.props['data-activity-kind'] === 'sweep').length === 0 &&
+      findAll(sweepActivity, (node) => node.props && node.props['data-activity-kind'] !== undefined).length === 3 &&
+      sweepFold !== undefined &&
+      textOf(sweepActivity).indexOf('心跳已折叠') >= 0,
+    textOf(sweepActivity).slice(0, 300),
+  )
+  sweepFold.props.onClick()
+  await flush()
+  sweepTree = withHooks(panel, { initialView: 'status' })
+  const shownActivity = findAll(sweepTree, (node) => node.props && node.props['data-status-card'] === 'activity')[0]
+  check(
+    'the show-all toggle reveals the raw events including sweeps',
+    findAll(shownActivity, (node) => node.props && node.props['data-activity-kind'] === 'sweep').length === 1 &&
+      findAll(shownActivity, (node) => node.props && node.props['data-activity-kind'] !== undefined).length === 4 &&
+      textOf(shownActivity).indexOf('仅真实事件') >= 0,
+    textOf(shownActivity).slice(0, 300),
+  )
+  HOST.activity = savedActivity
 
   const savedWorktrees = HOST.worktrees
   HOST.worktrees = { available: false, error: 'no-git-service', total: 0, active: 0, counts: {}, worktrees: [] }
-  findButton(statusTree, '刷新').props.onClick()
+  let noGitTree = withHooks(panel, { initialView: 'status' })
   await flush()
-  const noGitTree = withHooks(panel, { initialView: 'status' })
+  noGitTree = withHooks(panel, { initialView: 'status' })
   check('a host without git says no-git-service instead of showing a blank table', textOf(noGitTree).indexOf('no-git-service') >= 0, textOf(noGitTree))
-  HOST.worktrees = { available: true, error: null, total: 0, active: 0, counts: {}, worktrees: [] }
-  findButton(noGitTree, '刷新').props.onClick()
-  await flush()
-  const emptyWorktreesTree = withHooks(panel, { initialView: 'status' })
-  check('an available but empty worktree inventory says so', textOf(emptyWorktreesTree).indexOf('没有工作树') >= 0, textOf(emptyWorktreesTree))
   HOST.worktrees = savedWorktrees
-  findButton(emptyWorktreesTree, '刷新').props.onClick()
-  await flush()
   if (savedNavigator === undefined) delete globalThis.navigator
   else Object.defineProperty(globalThis, 'navigator', savedNavigator)
 }

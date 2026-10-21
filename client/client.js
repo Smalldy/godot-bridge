@@ -353,6 +353,54 @@ window.__ModuleLoader__.load({
 				statusActor: '主体',
 				statusWorktreesEmpty: '没有工作树。',
 				statusActivityEmpty: '没有活动记录。',
+				statusSummaryPaused: '已暂停',
+				statusSummaryRunning: '派发中',
+				statusNoRunning: '没有进行中的任务',
+				statusRunningCount: '有 {n} 个任务在跑',
+				statusLastActivity: '最近活动',
+				statusCardDispatch: '派发',
+				statusCardWorktrees: '工作树',
+				statusCardAgents: '执行者',
+				statusCardActivity: '活动',
+				statusConcurrent: '并发',
+				statusReady: '就绪',
+				statusQueueLen: '队列',
+				statusWhyPaused: '派发已暂停。恢复后，就绪任务按优先级派发',
+				statusWhyNoReady: '没有就绪任务（全部完成或被依赖挡住）',
+				statusWhyFull: '并发已满',
+				statusWhyBlocked: '有 {n} 个任务被阻塞',
+				statusWhyRunning: '派发中，队列已清空',
+				statusLastScan: '上次扫描',
+				statusMergeQueue: '合并队列',
+				statusMergeQueueUnit: '条',
+				statusWtTotal: '个工作树',
+				statusWtActive: '活跃',
+				statusWtMain: '主',
+				statusWtTask: '任务',
+				statusWtActiveState: '活跃',
+				statusWtIdle: '空闲',
+				statusStaleWorktrees: '个陈旧工作树',
+				statusCleanupUnavailable: '清理能力尚未提供',
+				statusIdle: '空闲',
+				statusAgentUnit: '人',
+				statusSession: '会话',
+				statusLatestActivity: '最近',
+				statusEventUnit: '条',
+				statusSweepFolded: '心跳已折叠',
+				statusSweepInterval: '每 5 秒扫描',
+				statusShowAll: '显示全部',
+				statusShowReal: '仅真实事件',
+				statusResultCompleted: '已完成',
+				statusResultPassed: '通过',
+				statusResultSubmitted: '已提交',
+				statusEvtDispatch: '派发',
+				statusEvtSubmit: '提交',
+				statusEvtReview: '评审',
+				statusEvtTest: '测试',
+				statusEvtMerge: '合并',
+				statusEvtError: '阻塞/失败',
+				statusEvtHostCheck: '宿主检查',
+				statusEvtSweep: '心跳',
 				roleErrMissingName: '缺少角色名',
 				roleErrActionTimeout: '宿主操作超时',
 				roleErrQueueTimeout: '合并队列超时',
@@ -684,6 +732,54 @@ window.__ModuleLoader__.load({
 				statusActor: 'Actor',
 				statusWorktreesEmpty: 'No worktrees.',
 				statusActivityEmpty: 'No activity entries.',
+				statusSummaryPaused: 'Paused',
+				statusSummaryRunning: 'Dispatching',
+				statusNoRunning: 'no task is running',
+				statusRunningCount: '{n} task(s) running',
+				statusLastActivity: 'last activity',
+				statusCardDispatch: 'Dispatch',
+				statusCardWorktrees: 'Worktrees',
+				statusCardAgents: 'Agents',
+				statusCardActivity: 'Activity',
+				statusConcurrent: 'concurrent',
+				statusReady: 'ready',
+				statusQueueLen: 'queued',
+				statusWhyPaused: 'Dispatch is paused. Once resumed, ready tasks are dispatched by priority',
+				statusWhyNoReady: 'no ready task (all done or blocked by dependencies)',
+				statusWhyFull: 'concurrency is full',
+				statusWhyBlocked: '{n} task(s) are blocked',
+				statusWhyRunning: 'dispatching; queue is empty',
+				statusLastScan: 'last scan',
+				statusMergeQueue: 'merge queue',
+				statusMergeQueueUnit: '',
+				statusWtTotal: 'worktrees',
+				statusWtActive: 'active',
+				statusWtMain: 'main',
+				statusWtTask: 'task',
+				statusWtActiveState: 'active',
+				statusWtIdle: 'idle',
+				statusStaleWorktrees: 'stale worktrees',
+				statusCleanupUnavailable: 'cleanup is not available yet',
+				statusIdle: 'idle',
+				statusAgentUnit: 'agents',
+				statusSession: 'session',
+				statusLatestActivity: 'latest',
+				statusEventUnit: 'entries',
+				statusSweepFolded: 'heartbeats folded',
+				statusSweepInterval: 'scans every 5s',
+				statusShowAll: 'Show all',
+				statusShowReal: 'Real events only',
+				statusResultCompleted: 'completed',
+				statusResultPassed: 'passed',
+				statusResultSubmitted: 'submitted',
+				statusEvtDispatch: 'dispatch',
+				statusEvtSubmit: 'submit',
+				statusEvtReview: 'review',
+				statusEvtTest: 'test',
+				statusEvtMerge: 'merge',
+				statusEvtError: 'blocked/failed',
+				statusEvtHostCheck: 'host check',
+				statusEvtSweep: 'heartbeat',
 				roleErrMissingName: 'missing role name',
 				roleErrActionTimeout: 'host action timed out',
 				roleErrQueueTimeout: 'merge queue timed out',
@@ -936,6 +1032,38 @@ window.__ModuleLoader__.load({
 '.gbt-editor-select{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 '.gbt-editor-select .gbt-input{width:auto;min-width:170px;height:30px}',
 '.gbt-rolesview .gbt-subhead,.gbt-rolesview .gbt-footnote,.gbt-rolesview .gbt-pill{font-size:11px}',
+'.gbt-statusview{display:flex;flex-direction:column;gap:12px}',
+'.gbt-statustop{display:flex;align-items:flex-start;gap:12px}',
+'.gbt-statussummary{font-size:15px;line-height:1.4;color:var(--t1,var(--dsw-alias-label-primary))}',
+'.gbt-statusactions{margin-left:auto;display:flex;gap:8px}',
+'.gbt-statusgrid{display:grid;gap:12px;grid-template-columns:300px 1fr 1.15fr;grid-template-rows:max-content max-content;align-content:start}',
+'.gbt-statuscard{border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:8px;background:var(--panel,var(--dsw-alias-bg-layer-1));display:flex;flex-direction:column;min-height:0;min-width:0}',
+'.gbt-statuscard[data-status-card="activity"]{grid-column:1 / -1}',
+'.gbt-statuscardhead{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line,var(--dsw-alias-border-l4));font-size:12px}',
+'.gbt-statusmeta{margin-left:auto;font-size:11.5px;color:var(--t2,var(--dsw-alias-label-tertiary))}',
+'.gbt-statuscardbody{padding:10px 12px;min-height:0;display:flex;flex-direction:column;gap:6px}',
+'.gbt-statuskvs{display:flex;gap:20px}',
+'.gbt-statuskv{display:flex;align-items:baseline;gap:5px}',
+'.gbt-statuskv b{font-size:18px;font-weight:600}',
+'.gbt-statuskv span{font-size:11.5px;color:var(--t2,var(--dsw-alias-label-tertiary))}',
+'.gbt-statuswhy{margin-top:6px;padding:8px 10px;border-radius:6px;background:var(--elev,var(--dsw-alias-bg-layer-4));font-size:12px;color:var(--t2,var(--dsw-alias-label-secondary));line-height:1.55}',
+'.gbt-statusscan{margin-top:2px;font-size:11.5px;color:var(--t2,var(--dsw-alias-label-tertiary))}',
+'.gbt-statusrow{display:flex;align-items:center;gap:8px;min-height:30px;border-bottom:1px solid var(--line,var(--dsw-alias-border-l4));font-size:12px}',
+'.gbt-statusrow:last-child{border-bottom:0}',
+'.gbt-statuswho{flex:none;color:var(--t1,var(--dsw-alias-label-primary))}',
+'.gbt-statusrole{width:46px;flex:none;color:var(--t2,var(--dsw-alias-label-tertiary));font-size:11.5px}',
+'.gbt-statustask{color:var(--t2,var(--dsw-alias-label-secondary));overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
+'.gbt-statustime{margin-left:auto;flex:none;color:var(--t2,var(--dsw-alias-label-tertiary));font-size:11.5px;white-space:nowrap}',
+'.gbt-statusmore{width:18px;flex:none;border:0;background:none;color:var(--t2,var(--dsw-alias-label-tertiary));cursor:pointer;padding:0}',
+'.gbt-sessionrow{display:flex;align-items:center;gap:8px;padding:2px 0 4px 0;font-size:11.5px}',
+'.gbt-statusfold{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11.5px;color:var(--t2,var(--dsw-alias-label-tertiary));border-top:1px dashed var(--line,var(--dsw-alias-border-l4));padding-top:7px}',
+'.gbt-statusnote{color:var(--t2,var(--dsw-alias-label-tertiary));font-size:11.5px}',
+'.gbt-statusev{display:flex;gap:10px;font-size:12px;line-height:1.5;padding:5px 0}',
+'.gbt-statusevtime{width:44px;flex:none;color:var(--t2,var(--dsw-alias-label-tertiary));font-size:11.5px}',
+'.gbt-statusevkind{width:52px;flex:none;font-size:11px;color:var(--t2,var(--dsw-alias-label-secondary))}',
+'.gbt-statusevtext{color:var(--t1,var(--dsw-alias-label-primary));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-linkbtn{border:0;background:none;color:var(--dsw-alias-state-business-primary,#4f7cff);cursor:pointer;font:inherit;padding:0}',
+'@media (max-width:900px){.gbt-statusgrid{grid-template-columns:1fr}}',
 '.gbt-roleseg{display:inline-flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:7px;background:var(--dsw-alias-bg-layer-2)}',
 '.gbt-rolesegitem{appearance:none;height:26px;padding:0 14px;border:none;border-radius:5px;background:transparent;color:var(--t2,var(--dsw-alias-label-secondary));font:inherit;font-size:12px;font-weight:400;line-height:26px;cursor:pointer;text-decoration:none}',
 '.gbt-rolesegitem:hover{background:var(--dsw-alias-bg-layer-3);color:var(--t1,var(--dsw-alias-label-primary))}',
@@ -2652,176 +2780,235 @@ window.__ModuleLoader__.load({
 				)
 			}
 
+			/** Status page UI state that must survive a re-mount (view switch, polling). */
+			const statusUiState = { showAll: false, session: null, copied: null }
+
+			/** Status page, direction A: one summary line, three narrow cards, a full-width activity card. */
 			function StatusView(props) {
 				const t = props.t
 				const snapshot = props.snapshot
 				const now = props.now
-				const blocks = []
-				const agents = snapshot.agents
+				const store = props.store
+				// Mirrored into a module store so a re-mount (view switch, polling) keeps
+				// the toggle/menu state; the React state still drives the live render.
+				const [showAllActivity, setShowAllActivity] = React.useState(statusUiState.showAll === true)
+				const [openSession, setOpenSession] = React.useState(statusUiState.session)
+				const [copied, setCopied] = React.useState(statusUiState.copied)
+				const dispatch = snapshot.dispatch === undefined || snapshot.dispatch === null ? { state: 'paused' } : snapshot.dispatch
+				const active = dispatch.state === 'running'
+				const counts = snapshot.counts === undefined || snapshot.counts === null ? {} : snapshot.counts
+				const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : []
+				const queue = Array.isArray(snapshot.queue) ? snapshot.queue : []
+				const scheduler = snapshot.scheduler === undefined || snapshot.scheduler === null ? null : snapshot.scheduler
+				const running = tasks.filter(function (task) { return task.status === 'running' })
+				const maxConcurrent = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
+				const ready = counts.ready === undefined || counts.ready === null ? 0 : counts.ready
+				const blocked = (counts.blocked || 0) + (counts.cancelled || 0)
 				const worktrees = snapshot.worktrees
 				const activity = snapshot.activity
-				blocks.push(h('p', { key: 'sessions', className: 'gbt-footnote' }, t('statusSessionHint')))
-
-				blocks.push(h('h3', { key: 'agents-title', className: 'gbt-subtitle' }, t('statusAgents')))
-				if (agents === null || agents === undefined) {
-					blocks.push(h('div', { key: 'agents-unavailable', className: 'gbt-empty' }, t('statusAgentsUnavailable')))
-				} else {
-					if (typeof agents.error === 'string' && agents.error !== '') {
-						const errorKey = AGENT_ERROR_KEYS[agents.error]
-						const explanation = errorKey === undefined ? agents.error : t(errorKey) + ' (' + agents.error + ')'
-						blocks.push(h('div', { key: 'agents-error', className: 'gbt-banner', 'data-tone': 'error' }, explanation))
+				const agents = snapshot.agents
+				const entries = activity !== null && activity !== undefined && Array.isArray(activity.entries) ? activity.entries : []
+				const realEntries = entries.filter(function (entry) { return entry.kind !== 'sweep' })
+				const sweepCount = entries.length - realEntries.length
+				const shownEntries = showAllActivity ? entries : realEntries
+				const lastActivity = entries.length === 0 || typeof entries[0].at !== 'string' ? null : entries[0].at
+				function summaryText() {
+					const head = active ? t('statusSummaryRunning') : t('statusSummaryPaused')
+					const middle = running.length === 0 ? t('statusNoRunning') : t('statusRunningCount').replace('{n}', String(running.length))
+					return head + ' · ' + middle + (lastActivity === null ? '' : ' · ' + t('statusLastActivity') + ' ' + tcAgo(lastActivity, now))
+				}
+				function whyNotRunning() {
+					if (active !== true) {
+						const since = typeof dispatch.since === 'string' ? dispatch.since : null
+						return since === null ? t('statusWhyPaused') : t('statusWhyPaused') + '（' + tcAgo(since, now) + '）'
 					}
-					const lead = agents.lead === null || agents.lead === undefined ? null : agents.lead
-					const members = Array.isArray(agents.members) ? agents.members : []
-					const rows = []
-					if (lead !== null) rows.push(h(AgentRow, { key: 'lead', member: lead, t: t, isLead: true }))
-					members.forEach(function (member, index) {
-						const name = typeof member.name === 'string' ? member.name : typeof member.id === 'string' ? member.id : String(index)
-						rows.push(h(AgentRow, { key: 'm-' + name, member: member, t: t }))
-					})
-					if (rows.length === 0) {
-						blocks.push(h('div', { key: 'agents-empty', className: 'gbt-empty' }, t('workersEmpty')))
-					} else {
-						blocks.push(
-							tableWrap('agents-table', h(
-								'table',
-								{ key: 'agents-table', className: 'gbt-locktable', 'data-section': 'agents' },
-								h('thead', null, h('tr', null, h('th', null, t('roleName')), h('th', null, t('statusKind')), h('th', null, t('statusDescription')), h('th', null, t('statusSession')), h('th', null, t('statusCurrentTask')))),
-								h('tbody', null, rows),
-							)),
-						)
+					if (ready === 0) return t('statusWhyNoReady')
+					if (running.length >= maxConcurrent) return t('statusWhyFull')
+					if (blocked > 0) return t('statusWhyBlocked').replace('{n}', String(blocked))
+					return t('statusWhyRunning')
+				}
+				function activityKindLabel(kind) {
+					const keys = {
+						dispatch: 'statusEvtDispatch',
+						submit: 'statusEvtSubmit',
+						'review-start': 'statusEvtReview',
+						'review-end': 'statusEvtReview',
+						'test-start': 'statusEvtTest',
+						'test-end': 'statusEvtTest',
+						merge: 'statusEvtMerge',
+						error: 'statusEvtError',
+						'host-check': 'statusEvtHostCheck',
+						sweep: 'statusEvtSweep',
 					}
-					const kinds = agents.kinds === undefined || agents.kinds === null ? {} : agents.kinds
-					const kindKeys = ['lead', 'worker', 'reviewer', 'tester', 'merger']
-					blocks.push(
+					const key = keys[kind]
+					return key === undefined ? String(kind) : t(key)
+				}
+				function lastResultFor(name) {
+					const hit = entries.filter(function (entry) { return entry.actor === name && typeof entry.taskId === 'string' })[0]
+					if (hit === undefined) return '—'
+					if (hit.kind === 'test-end' && String(hit.detail).indexOf('passed') >= 0) return hit.taskId + ' ' + t('statusResultPassed')
+					if (hit.kind === 'merge') return hit.taskId + ' ' + t('statusResultCompleted')
+					if (hit.kind === 'submit') return hit.taskId + ' ' + t('statusResultSubmitted')
+					return hit.taskId
+				}
+				function agentRow(member, isLead, index) {
+					const name = typeof member.name === 'string' ? member.name : typeof member.id === 'string' ? member.id : String(index)
+					const session = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' ? member.id : ''
+					const current = member.currentTask === null || member.currentTask === undefined ? null : member.currentTask
+					const statusText = isLead ? t('statusLead') : current === null ? t('statusIdle') : current.id
+					const expanded = openSession === name
+					return h(
+						'div',
+						{ key: 'agent-' + name, className: 'gbt-statusrow', 'data-status-agent': name },
+						h('span', { className: 'gbt-statuswho gbt-mono' }, name),
+						h('span', { className: 'gbt-statusrole' }, roleKindLabel(isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate', t)),
+						h('span', { className: 'gbt-statustask' }, statusText),
+						h('span', { className: 'gbt-statustime' }, lastResultFor(name)),
 						h(
-							'div',
-							{ key: 'agent-kinds', className: 'gbt-workermeta', 'data-section': 'agent-kinds' },
-							kindKeys.map(function (kind) {
-								return h('span', { key: kind, className: 'gbt-count', 'data-kind': kind }, roleKindLabel(kind, t), h('b', null, String(kinds[kind] || 0)))
-							}),
+							'button',
+							{ type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } },
+							'⋯',
 						),
+						expanded
+							? h(
+									'div',
+									{ className: 'gbt-sessionrow', 'data-status-session': name },
+									h('span', { className: 'gbt-footnote' }, t('statusSession')),
+									h('code', { className: 'gbt-mono' }, session === '' ? '—' : session),
+									session === ''
+										? null
+										: h(
+												'button',
+												{ type: 'button', className: 'gbt-btn', 'data-action': 'copy-session', 'data-session': session, onClick: function () { void copyToClipboard(session).then(function (okopy) { const next = okopy === true ? session : 'failed'; statusUiState.copied = next; setCopied(next) }) } },
+												copied === session ? t('sessionCopied') : t('copySession'),
+											),
+								)
+							: null,
 					)
-					const roleInfo = agents.roles === undefined || agents.roles === null ? null : agents.roles
-					if (roleInfo !== null && roleInfo.desired !== undefined && roleInfo.desired !== null) {
-						blocks.push(
-							h(
-								'div',
-								{ key: 'role-instances', className: 'gbt-workermeta', 'data-section': 'role-instances' },
-								h('span', { className: 'gbt-footnote' }, t('statusRoleInstances')),
-								['worker', 'reviewer', 'tester'].map(function (kind) {
-									const bound = roleInfo.bound === undefined || roleInfo.bound === null || typeof roleInfo.bound[kind] !== 'string' ? '' : ' (' + roleInfo.bound[kind] + ')'
+				}
+				const dispatchCard = h(
+					'section',
+					{ className: 'gbt-statuscard', 'data-status-card': 'dispatch' },
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }), t('statusCardDispatch'), h('span', { className: 'gbt-statusmeta' }, active ? t('running') : t('paused'))),
+					h(
+						'div',
+						{ className: 'gbt-statuscardbody' },
+						h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), h('span', { className: 'gbt-statuskv' }, h('b', null, String(queue.length)), h('span', null, t('statusQueueLen')))),
+						h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
+						h('div', { className: 'gbt-statusscan' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—') + ' · ' + t('statusMergeQueue') + ' ' + String(queue.length) + ' ' + t('statusMergeQueueUnit')),
+					),
+				)
+				const wtList = worktrees !== null && worktrees !== undefined && worktrees.available === true && Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
+				const mainWt = wtList.filter(function (entry) { return entry.type === 'main' })[0]
+				const activeWts = wtList.filter(function (entry) { return entry !== mainWt && entry.active === true })
+				const staleWts = wtList.filter(function (entry) { return entry !== mainWt && entry.active !== true })
+				const dispatchCardRow = h(
+					'div',
+					{ className: 'gbt-statusrow', 'data-worktree-row': 'main' },
+					h('span', { className: 'gbt-statuswho gbt-mono' }, mainWt === undefined ? '—' : String(mainWt.path).split(/[\\/]/).filter(Boolean).slice(-1)[0] || String(mainWt.path)),
+					h('span', { className: 'gbt-statusrole' }, t('statusWtMain')),
+					h('span', { className: 'gbt-statustask gbt-mono' }, mainWt === undefined ? '—' : String(mainWt.branch || '—') + ' · ' + String(mainWt.head || '—').slice(0, 7)),
+					h('span', { className: 'gbt-statustime' }, t('statusWtActiveState')),
+				)
+				const worktreesCard = h(
+					'section',
+					{ className: 'gbt-statuscard', 'data-status-card': 'worktrees' },
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardWorktrees'), h('span', { className: 'gbt-statusmeta' }, String(wtList.length) + ' ' + t('statusWtTotal') + ' · ' + String(activeWts.length + (mainWt === undefined ? 0 : 1)) + ' ' + t('statusWtActive'))),
+					h(
+						'div',
+						{ className: 'gbt-statuscardbody' },
+						worktrees === null || worktrees === undefined || worktrees.available !== true
+							? h('div', { className: 'gbt-empty' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : t('statusWorktreesUnavailable'))
+							: h('div', null, dispatchCardRow, activeWts.map(function (entry) {
+									const path = String(entry.path)
 									return h(
-										'span',
-										{ key: kind, className: 'gbt-count', 'data-role-kind': kind },
-										roleKindLabel(kind, t) +
-											' ' +
-											String(roleInfo.live === undefined || roleInfo.live === null ? 0 : roleInfo.live[kind] || 0) +
-											'/' +
-											String(roleInfo.desired[kind] || 0) +
-											' ' +
-											t('statusMissing') +
-											' ' +
-											String(roleInfo.missing === undefined || roleInfo.missing === null ? 0 : roleInfo.missing[kind] || 0) +
-											bound,
+										'div',
+										{ key: 'wt-' + path, className: 'gbt-statusrow', 'data-worktree-row': String(entry.taskId === undefined || entry.taskId === null ? path : entry.taskId) },
+										h('span', { className: 'gbt-statuswho gbt-mono' }, typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId : path.split(/[\\/]/).filter(Boolean).slice(-1)[0]),
+										h('span', { className: 'gbt-statusrole' }, t('statusWtTask')),
+										h('span', { className: 'gbt-statustask gbt-mono' }, String(entry.branch || '—') + ' · ' + String(entry.head || '—').slice(0, 7)),
+										h('span', { className: 'gbt-statustime' }, t('statusWtActiveState')),
 									)
-								}),
+								})),
+						staleWts.length === 0
+							? null
+							: h(
+									'div',
+									{ className: 'gbt-statusfold', 'data-status-stale': String(staleWts.length) },
+									h('span', null, String(staleWts.length) + ' ' + t('statusStaleWorktrees') + '（' + staleWts.slice(0, 6).map(function (entry) { return typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId : '—' }).join(' · ') + '）'),
+									h('span', { className: 'gbt-statusnote' }, t('statusCleanupUnavailable')),
+								),
+					),
+				)
+				const lead = agents !== null && agents !== undefined ? agents.lead : null
+				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+				const agentRows = []
+				if (lead !== null && lead !== undefined) agentRows.push(agentRow(lead, true, -1))
+				members.forEach(function (member, index) { agentRows.push(agentRow(member, false, index)) })
+				const agentsCard = h(
+					'section',
+					{ className: 'gbt-statuscard', 'data-status-card': 'agents' },
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot', 'data-running': members.some(function (member) { return member.status === 'running' }) ? 'true' : 'false' }), t('statusCardAgents'), h('span', { className: 'gbt-statusmeta' }, String(agentRows.length) + ' ' + t('statusAgentUnit'))),
+					h(
+						'div',
+						{ className: 'gbt-statuscardbody' },
+						agents === null || agents === undefined
+							? h('div', { className: 'gbt-empty' }, t('statusAgentsUnavailable'))
+							: agentRows.length === 0
+								? h('div', { className: 'gbt-empty' }, t('workersEmpty'))
+								: h('div', null, agentRows),
+					),
+				)
+				const activityCard = h(
+					'section',
+					{ className: 'gbt-statuscard', 'data-status-card': 'activity' },
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardActivity'), h('span', { className: 'gbt-statusmeta' }, t('statusLatestActivity') + ' ' + String(shownEntries.length) + ' ' + t('statusEventUnit'))),
+					h(
+						'div',
+						{ className: 'gbt-statuscardbody' },
+						activity === null || activity === undefined || activity.available !== true
+							? h('div', { className: 'gbt-empty' }, t('statusActivityUnavailable'))
+							: shownEntries.length === 0
+								? h('div', { className: 'gbt-empty' }, t('statusActivityEmpty'))
+								: shownEntries.map(function (entry, index) {
+										return h(
+											'div',
+											{ key: 'ev-' + String(index), className: 'gbt-statusev', 'data-activity': String(index), 'data-activity-kind': String(entry.kind) },
+											h('span', { className: 'gbt-statusevtime gbt-mono' }, typeof entry.at === 'string' ? new Date(entry.at).toTimeString().slice(0, 5) : '—'),
+											h('span', { className: 'gbt-statusevkind' }, activityKindLabel(entry.kind)),
+											h('span', { className: 'gbt-statusevtext' }, (typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId + ' · ' : '') + String(entry.detail === undefined || entry.detail === null ? '' : entry.detail), entry.actor === undefined || entry.actor === null ? null : h('span', { className: 'gbt-statusnote' }, ' ' + actorLabel(entry, t))),
+										)
+									}),
+						sweepCount === 0 && entries.length === shownEntries.length
+							? null
+							: h(
+									'div',
+									{ className: 'gbt-statusfold' },
+									h('span', null, t('statusSweepFolded') + ' · ' + t('statusSweepInterval') + '（' + t('statusMergeQueue') + ' ' + String(queue.length) + ' ' + t('statusMergeQueueUnit') + '）'),
+									h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'status-show-all', 'data-show-all': showAllActivity ? 'true' : 'false', onClick: function () { const next = !showAllActivity; statusUiState.showAll = next; setShowAllActivity(next) } }, showAllActivity ? t('statusShowReal') : t('statusShowAll')),
+								),
+					),
+				)
+				return h(
+					'div',
+					{ className: 'gbt-statusview', 'data-status': 'cards' },
+					h(
+						'div',
+						{ className: 'gbt-statustop', 'data-status-top': 'true' },
+						h('div', { className: 'gbt-statussummary' }, h('b', null, summaryText())),
+						h(
+							'div',
+							{ className: 'gbt-statusactions' },
+							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
+							h(
+								'button',
+								{ type: 'button', className: 'gbt-btn', 'data-variant': active ? undefined : 'primary', 'data-action': 'status-toggle-dispatch', onClick: function () { void store.send(active ? 'pause' : 'start') } },
+								active ? '⏸ ' + t('pause') : '▶ ' + t('start'),
 							),
-						)
-					}
-				}
-
-				blocks.push(h('h3', { key: 'wt-title', className: 'gbt-subtitle' }, t('statusWorktrees')))
-				if (worktrees === null || worktrees === undefined || worktrees.available !== true) {
-					const error = worktrees === null || worktrees === undefined ? null : worktrees.error
-					const message = error === 'no-git-service' ? t('statusNoGit') : error === null || error === undefined || error === '' ? t('statusWorktreesUnavailable') : t('statusWorktreesUnavailable') + ' (' + String(error) + ')'
-					blocks.push(h('div', { key: 'wt-unavailable', className: 'gbt-empty' }, message))
-				} else {
-					const counts = worktrees.counts === undefined || worktrees.counts === null ? {} : worktrees.counts
-					const typeKeys = ['main', 'task', 'verify', 'test', 'merge', 'other']
-					blocks.push(
-						h(
-							'div',
-							{ key: 'wt-summary', className: 'gbt-workermeta', 'data-section': 'worktrees' },
-							h('span', { className: 'gbt-count' }, t('statusCount'), h('b', null, String(worktrees.total || 0))),
-							h('span', { className: 'gbt-count' }, t('wtActive'), h('b', null, String(worktrees.active || 0))),
-							typeKeys.map(function (type) {
-								return h('span', { key: type, className: 'gbt-count', 'data-wt-type': type }, worktreeTypeLabel(type, t), h('b', null, String(counts[type] || 0)))
-							}),
 						),
-					)
-					const list = Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
-					if (list.length === 0) {
-						blocks.push(h('div', { key: 'wt-empty', className: 'gbt-empty' }, t('statusWorktreesEmpty')))
-					} else {
-						blocks.push(
-							tableWrap('wt-table', h(
-								'table',
-								{ key: 'wt-table', className: 'gbt-locktable', 'data-section': 'worktrees' },
-								h('thead', null, h('tr', null, h('th', null, t('worktree')), h('th', null, t('statusKind')), h('th', null, t('branch')), h('th', null, t('wtHead')), h('th', null, t('wtTask')), h('th', null, t('wtActive')))),
-								h(
-									'tbody',
-									null,
-									list.map(function (entry, index) {
-										const path = typeof entry.path === 'string' ? entry.path : String(index)
-										return h(
-											'tr',
-											{ key: path, 'data-worktree': path, 'data-type': entry.type, 'data-active': entry.active === true ? 'true' : 'false' },
-											h('td', { className: 'gbt-mono', 'data-col': 'worktree-path' }, path),
-											h('td', { 'data-col': 'worktree-type' }, worktreeTypeLabel(entry.type, t)),
-											h('td', { className: 'gbt-mono', 'data-col': 'worktree-branch' }, typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : '—'),
-											h('td', { className: 'gbt-mono', 'data-col': 'worktree-head' }, typeof entry.head === 'string' && entry.head !== '' ? entry.head.slice(0, 10) : '—'),
-											h('td', { 'data-col': 'worktree-task' }, typeof entry.taskId === 'string' ? entry.taskId : '—'),
-											h('td', { 'data-col': 'worktree-active' }, entry.active === true ? t('wtActive') : t('wtIdle')),
-										)
-									}),
-								),
-							)),
-						)
-					}
-				}
-
-				blocks.push(h('h3', { key: 'activity-title', className: 'gbt-subtitle' }, t('statusActivity')))
-				if (activity === null || activity === undefined || activity.available !== true) {
-					blocks.push(h('div', { key: 'activity-unavailable', className: 'gbt-empty' }, t('statusActivityUnavailable')))
-				} else {
-					blocks.push(
-						h(
-							'div',
-							{ key: 'activity-meta', className: 'gbt-workermeta', 'data-section': 'activity' },
-							h('span', { className: 'gbt-count' }, t('statusLimit') + ' ' + String(activity.limit === undefined ? 0 : activity.limit)),
-							h('span', { className: 'gbt-count' }, t('statusCount') + ' ' + String(activity.count === undefined ? 0 : activity.count)),
-						),
-					)
-					const entries = Array.isArray(activity.entries) ? activity.entries : []
-					if (entries.length === 0) {
-						blocks.push(h('div', { key: 'activity-empty', className: 'gbt-empty' }, t('statusActivityEmpty')))
-					} else {
-						blocks.push(
-							tableWrap('activity-table', h(
-								'table',
-								{ key: 'activity-table', className: 'gbt-locktable', 'data-section': 'activity' },
-								h('thead', null, h('tr', null, h('th', null, t('submittedOn')), h('th', null, t('statusKind')), h('th', null, t('statusActor')), h('th', null, t('wtTask')), h('th', null, t('statusDescription')))),
-								h(
-									'tbody',
-									null,
-									entries.map(function (entry, index) {
-										return h(
-											'tr',
-											{ key: String(index), 'data-activity': String(index), 'data-actor': String(entry.actor) },
-											h('td', { 'data-col': 'activity-at' }, typeof entry.at === 'string' ? tcAgo(entry.at, now) : '—'),
-											h('td', { className: 'gbt-mono', 'data-col': 'activity-kind' }, String(entry.kind === undefined ? '' : entry.kind)),
-											h('td', { 'data-col': 'activity-actor' }, actorLabel(entry, t)),
-											h('td', { className: 'gbt-mono', 'data-col': 'activity-task' }, typeof entry.taskId === 'string' ? entry.taskId : '—'),
-											h('td', { 'data-col': 'activity-detail' }, typeof entry.detail === 'string' ? entry.detail : ''),
-										)
-									}),
-								),
-							)),
-						)
-					}
-				}
-				return h('div', { className: 'gbt-statusview' }, blocks)
+					),
+					h('div', { className: 'gbt-statusgrid', 'data-status-grid': 'true' }, dispatchCard, worktreesCard, agentsCard, activityCard),
+				)
 			}
 
 			function LocksView(props) {
@@ -3647,7 +3834,7 @@ window.__ModuleLoader__.load({
 							: view === 'workers'
 								? h(WorkersView, { snapshot: snapshot, t: t })
 								: view === 'status'
-									? h(StatusView, { snapshot: snapshot, t: t, now: now })
+									? h(StatusView, { snapshot: snapshot, t: t, now: now, store: store })
 									: view === 'roles'
 										? h(RolesView, { snapshot: snapshot, t: t, store: store })
 										: h(LocksView, { snapshot: snapshot, t: t, now: now })
