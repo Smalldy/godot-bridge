@@ -2428,7 +2428,18 @@ check(
       note.indexOf('预览版说明') >= 0 &&
       note.indexOf('继续') >= 0 &&
       ['roles-worker.png', 'roles-tester.png', 'roles-reviewer.png'].every((name) => note.indexOf(name) >= 0) &&
-      note.indexOf('click [data-panel="task-center"]') < note.indexOf('fill input[placeholder="项目目录的绝对路径"]'),
+      note.indexOf('click [data-panel="task-center"]') < note.indexOf('fill input[placeholder="项目目录的绝对路径"]') &&
+      (function () {
+        const blocks = note.split('oil_ui_shoot({').slice(1).map((part) => part.slice(0, part.indexOf('})')))
+        return ['roles-worker.png', 'roles-tester.png', 'roles-reviewer.png'].every(function (name) {
+          const found = blocks.filter((part) => part.indexOf(name) >= 0)[0]
+          const block = found === undefined ? undefined : found.split('\\"').join('"')
+          return block !== undefined &&
+            block.indexOf('click [data-panel="task-center"]') >= 0 &&
+            block.indexOf('click [data-view="roles"]') >= 0 &&
+            block.indexOf('[data-roles-tab="' + name.replace('roles-', '').replace('.png', '') + '"]') >= 0
+        })
+      })(),
     JSON.stringify(selectors.filter((selector) => note.indexOf(selector) < 0)),
   )
 }

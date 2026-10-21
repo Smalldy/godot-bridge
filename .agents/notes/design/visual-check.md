@@ -66,7 +66,9 @@
    task_center { action: "harnessStop" }
    ```
 
-## oil_ui_shoot 示例（三次，三张图）
+## oil_ui_shoot 示例（三次独立运行，每次都要重新导航）
+
+每次 `oil_ui_shoot` 都新开一个页面：插件面板的 view 是内存态（新页面回到 `board`），所以**每次都要重走一遍导航前缀**（关弹窗 → glyph → 等面板根 → 需要时打开项目 → `[data-view="roles"]` → 目标页签）。缺前缀的后两次会在 `waitfor [data-roles-tab=...]` 上挂住。
 
 ```
 oil_ui_shoot({ target: "http://127.0.0.1:<port>/?token=<token>", size: "1440x900",
@@ -74,13 +76,15 @@ oil_ui_shoot({ target: "http://127.0.0.1:<port>/?token=<token>", size: "1440x900
   out: "shots/visual/roles-worker.png" })
 
 oil_ui_shoot({ target: "http://127.0.0.1:<port>/?token=<token>", size: "1440x900",
-  steps: "waitfor [data-roles-tab=\"tester\"]; click [data-roles-tab=\"tester\"]; wait 500",
+  steps: "key Escape; wait 500; click [data-panel=\"task-center\"]; waitfor [data-panel-root=\"task-center\"]; click [data-view=\"roles\"]; waitfor [data-roles-tab=\"tester\"]; click [data-roles-tab=\"tester\"]; wait 500",
   out: "shots/visual/roles-tester.png" })
 
 oil_ui_shoot({ target: "http://127.0.0.1:<port>/?token=<token>", size: "1440x900",
-  steps: "waitfor [data-roles-tab=\"reviewer\"]; click [data-roles-tab=\"reviewer\"]; wait 500",
+  steps: "key Escape; wait 500; click [data-panel=\"task-center\"]; waitfor [data-panel-root=\"task-center\"]; click [data-view=\"roles\"]; waitfor [data-roles-tab=\"reviewer\"]; click [data-roles-tab=\"reviewer\"]; wait 500",
   out: "shots/visual/roles-reviewer.png" })
 ```
+
+如果某个页面里没有项目（面板里出现打开项目表单），在 `click [data-view="roles"]` 之前追加：`fill input[placeholder="项目目录的绝对路径"] <项目绝对路径>; click text="打开项目"; waitfor [data-panel-root="task-center"]`。
 
 ## 验收状态与限制
 
