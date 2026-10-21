@@ -934,10 +934,10 @@ export function briefPartsFor(task, projectPath, leadName, roleConfig) {
   const config = roleConfig === undefined || roleConfig === null ? null : roleConfig
   const profile = config === null ? null : profileForKind(config, 'worker')
   const parts = []
-  parts.push({ key: 'header', group: 'fixed', text: 'Task ' + task.id + ': ' + task.title })
+  parts.push({ key: 'header', group: 'role', text: 'Task ' + task.id + ': ' + task.title })
   parts.push({
     key: 'project',
-    group: 'fixed',
+    group: 'role',
     text: 'Project: ' + projectPath + '\nYou have been assigned this task. Do the work in that project.',
   })
   if (profile !== null && profile !== undefined && typeof profile.prompt === 'string' && profile.prompt !== '') {
@@ -963,7 +963,7 @@ export function briefPartsFor(task, projectPath, leadName, roleConfig) {
   if (task.acceptance !== '') parts.push({ key: 'acceptance', group: 'task', text: 'How it will be judged:\n' + task.acceptance })
   if (task.dependsOn.length > 0) parts.push({ key: 'prerequisites', group: 'task', text: 'Completed prerequisites: ' + task.dependsOn.join(', ') })
   if (task.writeFiles.length > 0) {
-    parts.push({ key: 'locks', group: 'fixed', text: 'The scheduler holds these file locks for you:\n' + task.writeFiles.join(', ') })
+    parts.push({ key: 'locks', group: 'task', text: 'The scheduler holds these file locks for you:\n' + task.writeFiles.join(', ') })
   }
   parts.push({
     key: 'report',
@@ -992,7 +992,7 @@ export function briefPartsFor(task, projectPath, leadName, roleConfig) {
       'Do NOT dispatch anything yourself. You are the assignee, not the scheduler.',
     ].join('\n'),
   })
-  if (config !== null) parts.push({ key: 'skills', group: 'fixed', text: roleSkillsSection(profile) })
+  if (config !== null) parts.push({ key: 'skills', group: 'skills', text: roleSkillsSection(profile) })
   return parts
 }
 
@@ -1166,19 +1166,25 @@ export function roleBriefFor(kind, task, config, options) {
  */
 export function roleBriefPartsFor(kind, task, config, options) {
   const sections = roleBriefSections(kind, task, config, options)
-  const parts = [{ key: 'header', group: 'fixed', text: sections.header }]
-  if (sections.meta !== '') parts.push({ key: 'meta', group: 'fixed', text: sections.meta })
-  if (sections.template !== '') parts.push({ key: 'template', group: 'template', text: 'Profile instructions:\n' + sections.templateRendered })
-  if (sections.taskData !== '') parts.push({ key: 'task', group: 'task', text: sections.taskData })
-  parts.push({ key: 'duties', group: 'fixed', text: sections.fixed })
-  parts.push({ key: 'skills', group: 'fixed', text: sections.skills })
+  // The group is the section's meaning, not its position: the header/assignment
+  // is the role itself, the prompt is the user's template, task data is filled
+  // per task, the boundary/verdict is host-fixed and skills are host-injected.
+  const parts = [{ key: 'header', group: 'role', text: sections.header }]
+  if (sections.meta !== '') parts.push({ key: 'meta', group: 'role', text: sections.meta })
+  // The fresh-context note belongs to the ROLE block, not after the skills
+  // injection: keeping every 'role' part contiguous is what lets the panel show
+  // one 角色与阶段 label for the whole block.
   if (kind === 'reviewer' || kind === 'tester') {
     parts.push({
       key: 'fresh-context',
-      group: 'fixed',
+      group: 'role',
       text: 'You are an independent, FRESH context: do not assume the worker conversation, and do not reuse its unstated context.',
     })
   }
+  if (sections.template !== '') parts.push({ key: 'template', group: 'template', text: 'Profile instructions:\n' + sections.templateRendered })
+  if (sections.taskData !== '') parts.push({ key: 'task', group: 'task', text: sections.taskData })
+  parts.push({ key: 'duties', group: 'fixed', text: sections.fixed })
+  parts.push({ key: 'skills', group: 'skills', text: sections.skills })
   return parts
 }
 

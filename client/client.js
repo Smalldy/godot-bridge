@@ -431,6 +431,7 @@ window.__ModuleLoader__.load({
 				roleEditorCreateBlank: '空白新建 profile（次要入口）',
 				roleEditorNoProfile: '该阶段没有可用的角色',
 				roleCurrentUse: '当前使用',
+				roleSectionRole: '角色与阶段',
 				roleDraftName: '副本名称',
 				roleDiscard: '丢弃',
 				roleDraftHint: '草稿未保存 · 切换会提示',
@@ -760,6 +761,7 @@ window.__ModuleLoader__.load({
 				roleEditorCreateBlank: 'New blank profile (secondary)',
 				roleEditorNoProfile: 'no role is available for this stage',
 				roleCurrentUse: 'Currently using',
+				roleSectionRole: 'Role and stage',
 				roleDraftName: 'Copy name',
 				roleDiscard: 'Discard',
 				roleDraftHint: 'Unsaved draft · switching will ask first',
@@ -911,10 +913,7 @@ window.__ModuleLoader__.load({
 '@media (max-width: 720px){.gbt-formgrid{grid-template-columns:repeat(2,minmax(0,1fr))}.gbt-roleprofiles{min-width:760px}}',
 '.gbt-roleeditor{display:flex;flex-direction:column;gap:10px;min-width:0}',
 '.gbt-editor-identity{display:flex;gap:6px;flex-wrap:wrap;align-items:center}',
-'.gbt-promptcols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:start}',
-						'.gbt-promptcol{display:flex;flex-direction:column;gap:6px;min-width:0;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-1)}',
-			'.gbt-promptcol[data-role-prompt="raw"]{border-color:rgba(79,124,255,.45)}',
-			'.gbt-prompthead{display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:space-between;min-width:0}',
+												'.gbt-prompthead{display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:space-between;min-width:0}',
 			'.gbt-promptempty{display:flex;flex-direction:column;gap:8px;align-items:flex-start;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-tertiary);border:0.5px dashed var(--dsw-alias-border-l4);border-radius:6px;padding:12px}',
 			'.gbt-prompttext{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow:auto;padding-right:2px}',
 			'.gbt-promptsection{display:flex;flex-direction:column;gap:2px;min-width:0}',
@@ -922,8 +921,7 @@ window.__ModuleLoader__.load({
 			'.gbt-promptpre{margin:0 0 4px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.7;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-builtinprompt{max-height:320px;overflow:auto;border:0.5px solid var(--dsw-alias-border-l4);border-radius:6px;padding:8px;background:var(--dsw-alias-bg-layer-2);margin:0}',
 			'.gbt-promptactions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
-			'@media (max-width:720px){.gbt-promptcols{grid-template-columns:1fr}}',
-'.gbt-editorarea{min-height:160px;font-family:var(--dsw-font-mono,monospace);font-size:11px;line-height:1.55;height:auto}',
+			'.gbt-editorarea{min-height:160px;font-family:var(--dsw-font-mono,monospace);font-size:11px;line-height:1.55;height:auto}',
 '.gbt-editorskills{display:flex;gap:8px;align-items:flex-end}',
 '.gbt-editorskills-field{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dsw-alias-label-tertiary);flex:1;min-width:0}',
 '.gbt-skillrow{display:flex;align-items:center;gap:6px;padding:3px 0}',
@@ -937,17 +935,27 @@ window.__ModuleLoader__.load({
 '.gbt-editor-select{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 '.gbt-editor-select .gbt-input{width:auto;min-width:170px;height:30px}',
 '.gbt-rolesview .gbt-subhead,.gbt-rolesview .gbt-footnote,.gbt-rolesview .gbt-pill{font-size:11px}',
+'.gbt-roleseg{display:inline-flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:7px;background:var(--dsw-alias-bg-layer-2)}',
+'.gbt-rolesegitem{appearance:none;height:26px;padding:0 14px;border:none;border-radius:5px;background:transparent;color:var(--t2,var(--dsw-alias-label-secondary));font:inherit;font-size:12px;font-weight:400;line-height:26px;cursor:pointer;text-decoration:none}',
+'.gbt-rolesegitem:hover{background:var(--dsw-alias-bg-layer-3);color:var(--t1,var(--dsw-alias-label-primary))}',
+'.gbt-rolesegitem:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4f7cff);outline-offset:1px}',
+'.gbt-rolesegitem[aria-selected="true"]{background:var(--elev,var(--dsw-alias-bg-layer-4));color:var(--t1,var(--dsw-alias-label-primary))}',
+'.gbt-rolecard{display:flex;flex-direction:column;gap:8px;min-width:0;border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:8px;background:var(--panel,var(--dsw-alias-bg-layer-1));padding:10px 12px}',
+'.gbt-rolecardhead{font-size:13px;line-height:1.4;color:var(--t1,var(--dsw-alias-label-primary));font-weight:600}',
+'.gbt-rolecardbody{display:flex;flex-direction:column;gap:6px;min-width:0}',
+'.gbt-rolespane .gbt-sectlabel{font-size:11px;font-weight:400;letter-spacing:0;text-transform:none;background:none;border-left:2px solid var(--dsw-alias-state-business-primary,#4f7cff);border-radius:0;padding:0 0 0 6px;margin:2px 0}',
+'.gbt-rolespane .gbt-sectsource{font-size:11px;color:var(--t2,var(--dsw-alias-label-tertiary))}',
+'.gbt-rolespane .gbt-promptpre{font-size:12px;line-height:1.7}',
+'.gbt-rolesactions{border-top:1px solid var(--line,var(--dsw-alias-border-l4))}',
 '.gbt-rolesheader{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}',
 '.gbt-rolesheader-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
 '.gbt-rolespanes{display:grid;grid-template-columns:45fr 55fr;gap:10px;align-items:start}',
 '@media (max-width:720px){.gbt-rolespanes{grid-template-columns:1fr}}',
 '.gbt-rolespane{display:flex;flex-direction:column;gap:8px;min-width:0}',
 '.gbt-rolescroll{max-height:56vh;overflow:auto;padding:2px 2px 18px;mask-image:linear-gradient(to bottom,#000 88%,transparent);-webkit-mask-image:linear-gradient(to bottom,#000 88%,transparent)}',
-'.gbt-rolesactions{position:sticky;bottom:0;display:flex;gap:8px;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;padding:8px 0 2px;border-top:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1)}',
+'.gbt-rolesactions{position:sticky;bottom:0;display:flex;gap:8px;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;padding:8px 0 2px;border-top:1px solid var(--line,var(--dsw-alias-border-l4));background:var(--panel,var(--dsw-alias-bg-layer-1))}',
 '.gbt-rolesactions-left,.gbt-rolesactions-right{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}',
 '.gbt-prompttaskrow{display:flex;gap:6px;align-items:center;min-width:0;flex-wrap:wrap}',
-'.gbt-roleanchors{display:flex;gap:6px;flex-wrap:wrap}',
-'.gbt-roleanchor{font-size:11px;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-3);border-radius:999px;padding:1px 8px}',
 '.gbt-rolefields{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}',
 '.gbt-rolefields .gbt-editorskills{grid-column:1/-1}',
 '.gbt-secthead{display:flex;gap:6px;align-items:center;justify-content:space-between;min-width:0}',
@@ -2412,32 +2420,24 @@ window.__ModuleLoader__.load({
 				}
 				/** A section's user-language label: own text, task data or host copy. */
 				function sectionGroupLabel(group) {
+					if (group === 'role') return t('roleSectionRole')
 					if (group === 'template') return t('roleAnchorPrompt')
 					if (group === 'task') return t('rolePreviewGroupTask')
 					if (group === 'skills') return t('roleSkills')
 					if (group === 'fixed') return t('roleAnchorBoundary')
-					return t('roleSourceHostFixed')
+					return t('roleSectionRole')
 				}
 				/** The right-hand source note of a section (host-fixed / auto-filled / …). */
 				function sectionSourceLabel(group) {
-					if (group === 'header') return t('roleSourceHostFixed')
+					if (group === 'role') return t('roleSourceHostFixed')
 					if (group === 'task') return t('roleSourceAuto')
 					if (group === 'skills') return t('roleSourceHostInjected')
 					if (group === 'fixed') return t('roleSourceUnoverridable')
 					return builtin ? t('roleSourceHostFixed') : t('roleSourceAuto')
 				}
-				/** The four cross-column anchors: your prompt / task data / boundaries / skills. */
-				function anchorsRow() {
-					return h('div', { className: 'gbt-roleanchors', 'data-role-anchors': 'true' },
-						h('span', { className: 'gbt-roleanchor', 'data-role-anchor': 'template' }, t('roleAnchorPrompt')),
-						h('span', { className: 'gbt-roleanchor', 'data-role-anchor': 'task' }, t('rolePreviewGroupTask')),
-						h('span', { className: 'gbt-roleanchor', 'data-role-anchor': 'fixed' }, t('roleAnchorBoundary')),
-						h('span', { className: 'gbt-roleanchor', 'data-role-anchor': 'skills' }, t('roleSkills')))
-				}
 				/** Left column: the profile prompt as written, with its literal {{TOKEN}}s. */
 				function rawColumn() {
-					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'false', 'data-role-raw-reason': '' },
-						h('div', { className: 'gbt-subhead' }, t('rolePreviewRawTitle')),
+					return h('div', { className: 'gbt-rolecardbody', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'false', 'data-role-raw-reason': '' },
 						h('textarea', { key: 'template-field:' + controlKey, ref: templateRef, className: 'gbt-input gbt-editorarea', 'data-field': 'template', rows: 10, defaultValue: templateText, placeholder: t('rolePromptEmpty'), spellCheck: false }),
 						h('p', { className: 'gbt-footnote', 'data-role-tokens': 'true' }, tokenLine()))
 				}
@@ -2449,8 +2449,7 @@ window.__ModuleLoader__.load({
 				 */
 				function builtinDefaultColumn() {
 					const defaultPrompt = target !== null && typeof target.prompt === 'string' ? target.prompt : ''
-					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'true', 'data-role-raw-reason': 'builtin', 'data-role-empty-state': 'builtin', 'data-role-default-prompt': defaultPrompt === '' ? 'false' : 'true' },
-						h('div', { className: 'gbt-subhead' }, t('rolePreviewRawTitle')),
+					return h('div', { className: 'gbt-rolecardbody', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'true', 'data-role-raw-reason': 'builtin', 'data-role-empty-state': 'builtin', 'data-role-default-prompt': defaultPrompt === '' ? 'false' : 'true' },
 						defaultPrompt === ''
 							? h('div', { className: 'gbt-promptempty', 'data-role-raw-empty': 'builtin' }, h('p', { className: 'gbt-footnote' }, t('rolePreviewBuiltinReadonly')))
 							: h('pre', { className: 'gbt-promptpre gbt-builtinprompt', 'data-role-default-prompt-text': 'true' }, defaultPrompt),
@@ -2463,7 +2462,7 @@ window.__ModuleLoader__.load({
 					const sample = previewTask !== null && previewTask.sample === true
 					const taskValue = typeof roleEditorState.previewTaskId === 'string' ? roleEditorState.previewTaskId : ''
 					const sections = preview !== null && Array.isArray(preview.sections) ? preview.sections : []
-					return h('div', { className: 'gbt-promptcol', 'data-role-prompt': 'injected' },
+					return h('div', { className: 'gbt-rolecardbody', 'data-role-prompt': 'injected' },
 						h('div', { className: 'gbt-prompthead' },
 							h('div', { className: 'gbt-subhead' }, t('rolePreviewInjectedTitle')),
 							h('div', { className: 'gbt-prompttaskrow', 'data-role-taskrow': 'true' },
@@ -2483,22 +2482,29 @@ window.__ModuleLoader__.load({
 										: roleEditorState.previewPending === true
 											? t('rolePreviewLoading')
 											: t('rolePreviewMissing'))
-							: h('div', { className: 'gbt-prompttext', 'data-role-preview-text': 'true' }, sections.map(function (section, index) {
-									const key = String(section.key === undefined || section.key === null ? index : section.key)
-									const group = String(section.group === undefined || section.group === null ? 'fixed' : section.group)
-									return h('div', { key: key + ':' + String(index), className: 'gbt-promptsection', 'data-role-section': key, 'data-role-section-group': group },
-										h('div', { className: 'gbt-secthead' },
-											h('span', { className: 'gbt-sectlabel', 'data-role-section-label': group }, sectionGroupLabel(group)),
-											h('span', { className: 'gbt-sectsource', 'data-role-section-source': group }, sectionSourceLabel(group))),
-										h('pre', { className: 'gbt-promptpre' }, typeof section.text === 'string' ? section.text : ''))
-								})))
+							: h('div', { className: 'gbt-prompttext', 'data-role-preview-text': 'true' }, (function () {
+									let lastGroup = null
+									return sections.map(function (section, index) {
+										const key = String(section.key === undefined || section.key === null ? index : section.key)
+										const group = String(section.group === undefined || section.group === null ? 'fixed' : section.group)
+										const firstOfGroup = group !== lastGroup
+										lastGroup = group
+										return h('div', { key: key + ':' + String(index), className: 'gbt-promptsection', 'data-role-section': key, 'data-role-section-group': group },
+											firstOfGroup
+												? h('div', { className: 'gbt-secthead', 'data-role-section-head': 'true' },
+														h('span', { className: 'gbt-sectlabel', 'data-role-section-label': group }, sectionGroupLabel(group)),
+														h('span', { className: 'gbt-sectsource', 'data-role-section-source': group }, sectionSourceLabel(group)))
+												: null,
+											h('pre', { className: 'gbt-promptpre' }, typeof section.text === 'string' ? section.text : ''))
+									})
+								})()))
 				}
 				// 02 对照式: one toolbar (tabs + current use), a 45/55 pair of panes sharing
 				// four section anchors, then a fixed bottom action bar. No instance table,
 				// no refresh button, no repeated guidance sentence.
 				const toolbar = h('div', { className: 'gbt-rolesheader', 'data-roles-header': 'true' },
-					h('div', { className: 'gbt-segmented', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-section': 'role-editor-kinds' }, ROLE_EDITOR_KINDS.map(function (entry) {
-						return h('button', { key: entry, type: 'button', className: 'gbt-seg', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
+					h('div', { className: 'gbt-roleseg', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-role-tabs': 'true', 'data-section': 'role-editor-kinds' }, ROLE_EDITOR_KINDS.map(function (entry) {
+						return h('button', { key: entry, type: 'button', className: 'gbt-rolesegitem', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
 					})),
 					h('div', { className: 'gbt-rolesheader-right' },
 						h('span', { className: 'gbt-pill' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')),
@@ -2543,11 +2549,12 @@ window.__ModuleLoader__.load({
 					h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }),
 				)
 				const leftPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'raw' },
-					anchorsRow(),
-					editablePrompt ? rawColumn() : builtinDefaultColumn(),
-					h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow, instancesRow),
+					h('div', { className: 'gbt-rolecard', 'data-role-card': 'raw' },
+						h('div', { className: 'gbt-rolecardhead', 'data-role-card-title': 'true' }, t('rolePreviewRawTitle')),
+						editablePrompt ? rawColumn() : builtinDefaultColumn(),
+						h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow, instancesRow)),
 					blankCreate)
-				const rightPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'injected' }, anchorsRow(), injectedColumn())
+				const rightPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'injected' }, h('div', { className: 'gbt-rolecard', 'data-role-card': 'injected' }, injectedColumn()))
 				const runningNames = instances.filter(function (entry) { return entry.kind === kind }).map(function (entry) { return entry.name })
 				const runningRow = h('div', { className: 'gbt-footnote', 'data-role-running': 'true' },
 					t('roleRunningNow') + ': ' + (runningNames.length === 0 ? t('roleNoneRunning') : runningNames.join(', ')) + ' · ' + (boundName === kind ? t('roleFromDefault') : t('roleFromCopy')))

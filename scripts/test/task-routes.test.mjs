@@ -3383,11 +3383,9 @@ async function withDeadline(promise, ms) {
   check(
     'the preview splits the injected text into ordered, labelled sections',
     Array.isArray(worker.sections) &&
-      worker.sections.length >= 4 &&
+      worker.sections.length >= 5 &&
       worker.sections.map((section) => section.text).join('\n\n') === worker.text &&
-      worker.sections.some((section) => section.group === 'task') &&
-      worker.sections.some((section) => section.group === 'fixed') &&
-      worker.sections.some((section) => section.group === 'template'),
+      worker.sections.map((section) => section.group).join(',') === 'role,role,template,task,task,task,task,fixed,skills',
     JSON.stringify(worker.sections.map((section) => [section.key, section.group])),
   )
   const workerTemplate = worker.sections.filter((section) => section.group === 'template')[0]
@@ -3418,7 +3416,7 @@ async function withDeadline(promise, ms) {
   )
   check(
     'the reviewer section labels separate task data from host copy',
-    reviewer.sections.some((section) => section.group === 'task') && reviewer.sections.some((section) => section.group === 'fixed'),
+    reviewer.sections.map((section) => section.group).join(',') === 'role,role,template,task,fixed,skills',
     JSON.stringify(reviewer.sections.map((section) => section.group)),
   )
   const reviewerTemplate = reviewer.sections.filter((section) => section.group === 'template')[0]
@@ -3433,6 +3431,12 @@ async function withDeadline(promise, ms) {
     'the built-in tester preview carries the default prompt in its template section',
     tester.ok === true && testerTemplate !== undefined && testerTemplate.text.indexOf(DEFAULT_ROLE_PROMPTS.tester) >= 0,
     tester.ok === true ? (testerTemplate && testerTemplate.text.slice(0, 160)) : JSON.stringify(tester),
+  )
+
+  check(
+    'the built-in tester preview exposes the full contiguous group order',
+    tester.ok === true && tester.sections.map((section) => section.group).join(',') === 'role,role,template,task,fixed,skills',
+    tester.ok === true ? tester.sections.map((section) => section.group).join(',') : JSON.stringify(tester),
   )
 
   const created = await rig.api.perform('rolesCreate', { name: 'strict-reviewer', profile: { role: 'reviewer', prompt: 'Review {{TASK_ID}} in {{PROJECT}}.' } }, rig.user)
