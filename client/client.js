@@ -891,7 +891,6 @@ window.__ModuleLoader__.load({
 			'.gbt-modalhead{display:flex;align-items:flex-start;gap:10px;margin-bottom:2px}',
 			'.gbt-modalhead h2{margin:0;font-size:15px;font-weight:600;flex:1}',
 			'.gbt-form{display:flex;flex-direction:column;gap:10px;margin-top:12px}',
-'.gbt-rcard{border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;padding:12px;margin:0 0 12px;background:var(--dsw-alias-bg-layer-2);min-width:0}',
 '.gbt-rhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}',
 '.gbt-rtitle{margin:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}',
 '.gbt-rbody{display:flex;flex-direction:column;gap:10px;min-width:0}',
@@ -1985,15 +1984,6 @@ window.__ModuleLoader__.load({
 			}
 
 			/** One grouped card section with a title row. */
-			function roleCard(props) {
-				return h(
-					'section',
-					{ className: 'gbt-rcard', 'data-card': props.id },
-					h('div', { className: 'gbt-rhead' }, h('h3', { className: 'gbt-rtitle' }, props.title), props.aside === undefined ? null : props.aside),
-					h('div', { className: 'gbt-rbody' }, props.children),
-				)
-			}
-
 			/** Horizontal scrolling wrapper so narrow screens scroll, not squash. */
 			function tableWrap(key, table) {
 				return h('div', { key: key, className: 'gbt-tablewrap' }, table)

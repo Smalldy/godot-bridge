@@ -2424,7 +2424,11 @@ check(
       note.indexOf(':has-text(') < 0 &&
       note.indexOf('.investigate/visual/roles') < 0 &&
       note.indexOf('waitfor') >= 0 &&
-      note.indexOf('wait 500') >= 0,
+      note.indexOf('wait 500') >= 0 &&
+      note.indexOf('预览版说明') >= 0 &&
+      note.indexOf('继续') >= 0 &&
+      ['roles-worker.png', 'roles-tester.png', 'roles-reviewer.png'].every((name) => note.indexOf(name) >= 0) &&
+      note.indexOf('click [data-panel="task-center"]') < note.indexOf('fill input[placeholder="项目目录的绝对路径"]'),
     JSON.stringify(selectors.filter((selector) => note.indexOf(selector) < 0)),
   )
 }
