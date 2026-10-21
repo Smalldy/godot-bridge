@@ -387,6 +387,10 @@ window.__ModuleLoader__.load({
 				statusLatestActivity: '最近',
 				statusEventUnit: '条',
 				statusSweepFolded: '心跳已折叠',
+				statusSweepsShown: '心跳已显示',
+				statusMinutes: '分钟',
+				statusPausedBy: '由 {by} 暂停',
+				statusYou: '你',
 				statusSweepInterval: '每 5 秒扫描',
 				statusShowAll: '显示全部',
 				statusShowReal: '仅真实事件',
@@ -766,6 +770,10 @@ window.__ModuleLoader__.load({
 				statusLatestActivity: 'latest',
 				statusEventUnit: 'entries',
 				statusSweepFolded: 'heartbeats folded',
+				statusSweepsShown: 'heartbeats shown',
+				statusMinutes: 'min',
+				statusPausedBy: 'paused by {by}',
+				statusYou: 'you',
 				statusSweepInterval: 'scans every 5s',
 				statusShowAll: 'Show all',
 				statusShowReal: 'Real events only',
@@ -2803,7 +2811,7 @@ window.__ModuleLoader__.load({
 				const running = tasks.filter(function (task) { return task.status === 'running' })
 				const maxConcurrent = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
 				const ready = counts.ready === undefined || counts.ready === null ? 0 : counts.ready
-				const blocked = (counts.blocked || 0) + (counts.cancelled || 0)
+				const blocked = counts.blocked || 0
 				const worktrees = snapshot.worktrees
 				const activity = snapshot.activity
 				const agents = snapshot.agents
@@ -2820,7 +2828,11 @@ window.__ModuleLoader__.load({
 				function whyNotRunning() {
 					if (active !== true) {
 						const since = typeof dispatch.since === 'string' ? dispatch.since : null
-						return since === null ? t('statusWhyPaused') : t('statusWhyPaused') + '（' + tcAgo(since, now) + '）'
+						const by = typeof dispatch.by === 'string' && dispatch.by !== '' ? dispatch.by.replace(/^@/, '') : null
+						if (since === null) return t('statusWhyPaused')
+						const clock = new Date(since).toTimeString().slice(0, 5)
+						const who = by === null ? null : by === 'user' ? t('statusYou') : by
+						return t('statusWhyPaused') + '（' + clock + (who === null ? '' : ' ' + t('statusPausedBy').replace('{by}', who)) + '）'
 					}
 					if (ready === 0) return t('statusWhyNoReady')
 					if (running.length >= maxConcurrent) return t('statusWhyFull')
@@ -2843,8 +2855,15 @@ window.__ModuleLoader__.load({
 					const key = keys[kind]
 					return key === undefined ? String(kind) : t(key)
 				}
+				/** Minutes since this member's newest activity entry (entries are newest-first). */
+				function idleMinutesFor(name) {
+					const hit = entries.filter(function (entry) { return (entry.actor === name || entry.actorName === name) && typeof entry.at === 'string' })[0]
+					if (hit === undefined) return null
+					const age = now - new Date(hit.at).getTime()
+					return Number.isFinite(age) ? Math.max(0, Math.round(age / 60000)) : null
+				}
 				function lastResultFor(name) {
-					const hit = entries.filter(function (entry) { return entry.actor === name && typeof entry.taskId === 'string' })[0]
+					const hit = entries.filter(function (entry) { return (entry.actor === name || entry.actorName === name) && typeof entry.taskId === 'string' })[0]
 					if (hit === undefined) return '—'
 					if (hit.kind === 'test-end' && String(hit.detail).indexOf('passed') >= 0) return hit.taskId + ' ' + t('statusResultPassed')
 					if (hit.kind === 'merge') return hit.taskId + ' ' + t('statusResultCompleted')
@@ -2855,7 +2874,15 @@ window.__ModuleLoader__.load({
 					const name = typeof member.name === 'string' ? member.name : typeof member.id === 'string' ? member.id : String(index)
 					const session = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' ? member.id : ''
 					const current = member.currentTask === null || member.currentTask === undefined ? null : member.currentTask
-					const statusText = isLead ? t('statusLead') : current === null ? t('statusIdle') : current.id
+					const idleMinutes = idleMinutesFor(name)
+					const statusText = isLead
+						? '—'
+						: current !== null
+							? current.id
+							: idleMinutes === null
+								? t('statusIdle')
+								: t('statusIdle') + ' ' + String(idleMinutes) + ' ' + t('statusMinutes')
+					const resultText = isLead ? typeof member.description === 'string' && member.description !== '' ? member.description : '—' : lastResultFor(name)
 					const expanded = openSession === name
 					return h(
 						'div',
@@ -2863,7 +2890,7 @@ window.__ModuleLoader__.load({
 						h('span', { className: 'gbt-statuswho gbt-mono' }, name),
 						h('span', { className: 'gbt-statusrole' }, roleKindLabel(isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate', t)),
 						h('span', { className: 'gbt-statustask' }, statusText),
-						h('span', { className: 'gbt-statustime' }, lastResultFor(name)),
+						h('span', { className: 'gbt-statustime' }, resultText),
 						h(
 							'button',
 							{ type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } },
@@ -2984,7 +3011,7 @@ window.__ModuleLoader__.load({
 							: h(
 									'div',
 									{ className: 'gbt-statusfold' },
-									h('span', null, t('statusSweepFolded') + ' · ' + t('statusSweepInterval') + '（' + t('statusMergeQueue') + ' ' + String(queue.length) + ' ' + t('statusMergeQueueUnit') + '）'),
+									h('span', null, (showAllActivity ? t('statusSweepsShown') : t('statusSweepFolded')) + ' · ' + t('statusSweepInterval') + '（' + t('statusMergeQueue') + ' ' + String(queue.length) + ' ' + t('statusMergeQueueUnit') + '）'),
 									h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'status-show-all', 'data-show-all': showAllActivity ? 'true' : 'false', onClick: function () { const next = !showAllActivity; statusUiState.showAll = next; setShowAllActivity(next) } }, showAllActivity ? t('statusShowReal') : t('statusShowAll')),
 								),
 					),
@@ -3693,12 +3720,12 @@ window.__ModuleLoader__.load({
 				}
 
 				const tabs = [
-					{ key: 'board', label: t('boardTab'), count: tasks.length },
-					{ key: 'queue', label: t('queue'), count: queue.length },
-					{ key: 'workers', label: t('workersTab'), count: workerMembers === null ? undefined : workerMembers.length },
-					{ key: 'locks', label: t('locks'), count: snapshot.locks.length },
-					{ key: 'status', label: t('statusTab'), count: snapshot.agents !== null && snapshot.agents !== undefined && Array.isArray(snapshot.agents.members) ? snapshot.agents.members.length + (snapshot.agents.lead === null || snapshot.agents.lead === undefined ? 0 : 1) : undefined },
-					{ key: 'roles', label: t('rolesTab'), count: snapshot.roles !== null && snapshot.roles !== undefined && snapshot.roles.profiles !== null && snapshot.roles.profiles !== undefined ? Object.keys(snapshot.roles.profiles).length : undefined },
+					{ key: 'board', label: t('boardTab') },
+					{ key: 'queue', label: t('queue') },
+					{ key: 'workers', label: t('workersTab') },
+					{ key: 'locks', label: t('locks') },
+					{ key: 'status', label: t('statusTab') },
+					{ key: 'roles', label: t('rolesTab') },
 				]
 
 				const header = h(
@@ -3846,7 +3873,7 @@ window.__ModuleLoader__.load({
 						return h(
 							'button',
 							{ key: tab.key, type: 'button', className: 'gbt-tab', 'data-view': tab.key, 'data-active': view === tab.key ? 'true' : 'false', onClick: function () { setView(tab.key) } },
-							tab.label + (tab.count === undefined ? '' : ' · ' + String(tab.count)),
+							tab.label,
 						)
 					}),
 					snapshot.project === null || snapshot.project === undefined

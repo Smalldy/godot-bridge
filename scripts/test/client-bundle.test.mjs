@@ -886,6 +886,12 @@ await flush()
       statusText.indexOf('会话跳转 API') < 0,
     statusText.slice(0, 300),
   )
+  const viewButtons = findAll(statusTree, (node) => node.type === 'button' && node.props && node.props['data-view'] !== undefined)
+  check(
+    'the six view tabs carry labels only, with no count suffixes',
+    viewButtons.length === 6 && viewButtons.every((node) => textOf(node).indexOf(' · ') < 0 && textOf(node).indexOf('·') < 0),
+    JSON.stringify(viewButtons.map((node) => textOf(node))),
+  )
   const dispatchCard = statusCards.filter((card) => card.props['data-status-card'] === 'dispatch')[0]
   check(
     'the dispatch card shows concurrency, ready and queue plus a why-not-running reason',
@@ -919,6 +925,18 @@ await flush()
     'an agent row carries the name, role and current task',
     fixerRow !== undefined && textOf(fixerRow).indexOf('fixer') >= 0 && textOf(fixerRow).indexOf('实现') >= 0 && textOf(fixerRow).indexOf('T-1') >= 0,
     fixerRow && textOf(fixerRow),
+  )
+  const leadRow = agentRows.filter((row) => row.props['data-status-agent'] === 'lead')[0]
+  check(
+    'the lead row shows the description as its last result and no task status',
+    leadRow !== undefined && textOf(leadRow).indexOf('Team') >= 0 && textOf(leadRow).indexOf('—') >= 0,
+    leadRow && textOf(leadRow),
+  )
+  const reviewerAgentRow = agentRows.filter((row) => row.props['data-status-agent'] === 'reviewer-1')[0]
+  check(
+    'an idle agent shows 空闲 with the minutes since its newest activity',
+    reviewerAgentRow !== undefined && textOf(reviewerAgentRow).indexOf('空闲') >= 0 && textOf(reviewerAgentRow).indexOf('分钟') >= 0,
+    reviewerAgentRow && textOf(reviewerAgentRow),
   )
   check(
     'session ids are not printed in the agent rows until the menu is opened',
@@ -972,7 +990,9 @@ await flush()
     'the show-all toggle reveals the raw events including sweeps',
     findAll(shownActivity, (node) => node.props && node.props['data-activity-kind'] === 'sweep').length === 1 &&
       findAll(shownActivity, (node) => node.props && node.props['data-activity-kind'] !== undefined).length === 4 &&
-      textOf(shownActivity).indexOf('仅真实事件') >= 0,
+      textOf(shownActivity).indexOf('仅真实事件') >= 0 &&
+      textOf(shownActivity).indexOf('心跳已显示') >= 0 &&
+      textOf(shownActivity).indexOf('心跳已折叠') < 0,
     textOf(shownActivity).slice(0, 300),
   )
   HOST.activity = savedActivity
