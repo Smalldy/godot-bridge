@@ -423,8 +423,13 @@ function rolePreviewReply(body) {
   const task = sample ? { id: 'T-42', title: SAMPLE_TASK_TITLE } : { id: requested.id, title: requested.title }
   PREVIEW_CALLS.push({ kind: kind, profile: body.profile === undefined ? null : body.profile, taskId: body.taskId === undefined ? null : body.taskId })
   // The host's real groups: role / template / task / fixed / skills.
+  // The real host shape: header+meta+（reviewer/tester 的 fresh-context）all in
+  // the ROLE group, then template, task, fixed and skills. The extra role parts
+  // must still produce exactly ONE 角色与阶段 label.
   const sections = [
     { key: 'header', group: 'role', text: 'Task center role: ' + kind + '\nProject: ' + PROJECT },
+    { key: 'meta', group: 'role', text: 'Profile permissions: read-only, review' },
+    { key: 'fresh-context', group: 'role', text: 'You are an independent, FRESH context.' },
     { key: 'template', group: 'template', text: 'Profile instructions:\n' + (typeof body.profile === 'string' && body.profile !== '' ? body.profile : kind) },
     { key: 'task', group: 'task', text: 'Task ' + task.id + ': ' + task.title },
     { key: 'fixed', group: 'fixed', text: 'Duties: permission boundary.\nVerdict schema: task_center submit.' },
@@ -1277,12 +1282,8 @@ await flush()
   const sectionNodes = findAll(injectedCol, (node) => node.type === 'div' && node.props && node.props['data-role-section-group'] !== undefined)
   check(
     'the right column separates task data from host copy with readable labels',
-    sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'role,template,task,fixed,skills' &&
-      textOf(sectionNodes[0]).indexOf('角色与阶段') >= 0 &&
-      textOf(sectionNodes[1]).indexOf('你的提示词') >= 0 &&
-      textOf(sectionNodes[2]).indexOf('任务数据') >= 0 &&
-      textOf(sectionNodes[3]).indexOf('权限边界与结论') >= 0 &&
-      textOf(sectionNodes[4]).indexOf('技能') >= 0,
+    sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'role,role,role,template,task,fixed,skills' &&
+      findAll(injectedCol, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,你的提示词,任务数据,权限边界与结论,技能',
     sectionNodes.map((node) => textOf(node)).join(' | '),
   )
   check('the sample label is not shown for a real task', textOf(injectedCol).indexOf('示例任务（非真实') < 0)
@@ -1612,17 +1613,13 @@ await flush()
   check(
     'the right column shows the injected reply with a section for the user’s own text',
     reviewerText !== undefined &&
-      reviewerSections.map((node) => node.props['data-role-section-group']).join(',') === 'role,template,task,fixed,skills' &&
+      reviewerSections.map((node) => node.props['data-role-section-group']).join(',') === 'role,role,role,template,task,fixed,skills' &&
       textOf(reviewerText).indexOf('Profile instructions:\ngodot-reviewer') >= 0,
     reviewerSections.map((node) => node.props['data-role-section-group']).join(','),
   )
   check(
     'the section labels use user language, not implementation names',
-    findAll(reviewerSections[0], (node) => node.type === 'span').some((node) => textOf(node) === '角色与阶段') &&
-      findAll(reviewerSections[1], (node) => node.type === 'span').some((node) => textOf(node) === '你的提示词') &&
-      findAll(reviewerSections[2], (node) => node.type === 'span').some((node) => textOf(node) === '任务数据') &&
-      findAll(reviewerSections[3], (node) => node.type === 'span').some((node) => textOf(node) === '权限边界与结论') &&
-      findAll(reviewerSections[4], (node) => node.type === 'span').some((node) => textOf(node) === '技能'),
+    findAll(injectedCol, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,你的提示词,任务数据,权限边界与结论,技能',
     reviewerSections.map((node) => textOf(node)).join(' | '),
   )
 

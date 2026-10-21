@@ -963,7 +963,7 @@ export function briefPartsFor(task, projectPath, leadName, roleConfig) {
   if (task.acceptance !== '') parts.push({ key: 'acceptance', group: 'task', text: 'How it will be judged:\n' + task.acceptance })
   if (task.dependsOn.length > 0) parts.push({ key: 'prerequisites', group: 'task', text: 'Completed prerequisites: ' + task.dependsOn.join(', ') })
   if (task.writeFiles.length > 0) {
-    parts.push({ key: 'locks', group: 'fixed', text: 'The scheduler holds these file locks for you:\n' + task.writeFiles.join(', ') })
+    parts.push({ key: 'locks', group: 'task', text: 'The scheduler holds these file locks for you:\n' + task.writeFiles.join(', ') })
   }
   parts.push({
     key: 'report',
@@ -1171,10 +1171,9 @@ export function roleBriefPartsFor(kind, task, config, options) {
   // per task, the boundary/verdict is host-fixed and skills are host-injected.
   const parts = [{ key: 'header', group: 'role', text: sections.header }]
   if (sections.meta !== '') parts.push({ key: 'meta', group: 'role', text: sections.meta })
-  if (sections.template !== '') parts.push({ key: 'template', group: 'template', text: 'Profile instructions:\n' + sections.templateRendered })
-  if (sections.taskData !== '') parts.push({ key: 'task', group: 'task', text: sections.taskData })
-  parts.push({ key: 'duties', group: 'fixed', text: sections.fixed })
-  parts.push({ key: 'skills', group: 'skills', text: sections.skills })
+  // The fresh-context note belongs to the ROLE block, not after the skills
+  // injection: keeping every 'role' part contiguous is what lets the panel show
+  // one 角色与阶段 label for the whole block.
   if (kind === 'reviewer' || kind === 'tester') {
     parts.push({
       key: 'fresh-context',
@@ -1182,6 +1181,10 @@ export function roleBriefPartsFor(kind, task, config, options) {
       text: 'You are an independent, FRESH context: do not assume the worker conversation, and do not reuse its unstated context.',
     })
   }
+  if (sections.template !== '') parts.push({ key: 'template', group: 'template', text: 'Profile instructions:\n' + sections.templateRendered })
+  if (sections.taskData !== '') parts.push({ key: 'task', group: 'task', text: sections.taskData })
+  parts.push({ key: 'duties', group: 'fixed', text: sections.fixed })
+  parts.push({ key: 'skills', group: 'skills', text: sections.skills })
   return parts
 }
 
