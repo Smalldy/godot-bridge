@@ -955,8 +955,14 @@ await flush()
   )
 
   // ONE card: the context editor. Every stand-alone management card is gone.
-  const cards = findAll(rolesTree, (node) => node.props && typeof node.props.className === 'string' && node.props.className.indexOf('gbt-rcard') >= 0)
+  const cards = findAll(rolesTree, (node) => node.props && node.props['data-card'] === 'editor')
   check('the roles tab is ONE card: the context editor', cards.length === 1 && cards[0].props['data-card'] === 'editor', JSON.stringify(cards.map((card) => card.props['data-card'])))
+  check(
+    'the roles page has a single card layer (no outer rcard border)',
+    findAll(rolesTree, (node) => node.props && typeof node.props.className === 'string' && node.props.className.indexOf('gbt-rcard') >= 0).length === 0 &&
+      findAll(rolesTree, (node) => node.props && node.props.className === 'gbt-rolecard').length === 2,
+    JSON.stringify(findAll(rolesTree, (node) => node.props && typeof node.props.className === 'string' && node.props.className.indexOf('gbt-rcard') >= 0).map((node) => node.props.className)),
+  )
   check(
     'the old stand-alone cards are gone',
     ['source', 'stages', 'profiles', 'previews', 'create', 'instances', 'actionbar'].every((id) => cards.every((card) => card.props['data-card'] !== id)) &&
@@ -1015,6 +1021,14 @@ await flush()
       findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props['data-role-empty-fork'] === 'true',
   )
   check(
+    'all six panel navigation buttons carry a stable data-view',
+    (function () {
+      const buttons = findAll(rolesTree, (node) => node.type === 'button' && node.props && node.props['data-view'] !== undefined)
+      return buttons.length === 6 && buttons.map((node) => node.props['data-view']).join(',') === 'board,queue,workers,locks,status,roles'
+    })(),
+    JSON.stringify(findAll(rolesTree, (node) => node.props && node.props['data-view'] !== undefined).map((node) => node.props['data-view'])),
+  )
+  check(
     'the page starts with one toolbar: tabs on the left, current use on the right',
     findAll(editor, (node) => node.props && node.props['data-roles-header'] === 'true').length === 1,
   )
@@ -1053,7 +1067,7 @@ await flush()
   )
   check(
     'the injected sections are labelled once, in the semantic order',
-    findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,你的提示词,任务数据,权限边界与结论,技能',
+    findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,内置默认提示词,任务数据,权限边界与结论,技能',
     findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(','),
   )
   check(
@@ -1302,7 +1316,7 @@ await flush()
   check(
     'the right column separates task data from host copy with readable labels',
     sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'role,role,role,template,task,fixed,skills' &&
-      findAll(injectedCol, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,你的提示词,任务数据,权限边界与结论,技能',
+      findAll(injectedCol, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,内置默认提示词,任务数据,权限边界与结论,技能',
     sectionNodes.map((node) => textOf(node)).join(' | '),
   )
   check('the sample label is not shown for a real task', textOf(injectedCol).indexOf('示例任务（非真实') < 0)
@@ -1346,7 +1360,7 @@ await flush()
   const testerTemplate = findAll(testerInjected, (node) => node.props && node.props['data-role-section-group'] === 'template')[0]
   check(
     'the injected template section is labelled as the built-in default prompt',
-    testerTemplate !== undefined && findAll(testerTemplate, (node) => node.type === 'span').some((node) => textOf(node) === '你的提示词'),
+    testerTemplate !== undefined && findAll(testerTemplate, (node) => node.type === 'span').some((node) => textOf(node) === '内置默认提示词'),
     testerTemplate && textOf(testerTemplate),
   )
 
@@ -1359,6 +1373,12 @@ await flush()
   const forkedArea = findAll(editor, (node) => node.props && node.props['data-roles-panes'] === 'true')[0]
   const forkedRaw = findAll(forkedArea, (node) => node.props && node.props['data-role-prompt'] === 'raw')[0]
   const forkedAreaField = findAll(forkedRaw, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0]
+  check(
+    'a forked draft switches the template label to 你的提示词',
+    findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).indexOf('你的提示词') >= 0 &&
+      findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).indexOf('内置默认提示词') < 0,
+    JSON.stringify(findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node))),
+  )
   check(
     'a forked copy is two columns, editable, and starts from the default prompt',
     forkedArea.props['data-role-layout'] === 'split' &&
@@ -2378,6 +2398,35 @@ check(
 
 
   disposers2.slice().reverse().forEach(function (disposer) { disposer() })
+}
+
+// ── the visual-check note uses selectors that really exist ────────────────
+{
+  const note = readFileSync(fileURLToPath(new URL('../../.agents/notes/design/visual-check.md', import.meta.url)), 'utf8')
+  const selectors = [
+    '[data-panel="task-center"]',
+    '[data-panel-root="task-center"]',
+    '[data-view="roles"]',
+    '[data-roles-tab="worker"]',
+    '[data-roles-tab="tester"]',
+    '[data-roles-tab="reviewer"]',
+    '[data-roles-pane="raw"]',
+    '[data-roles-pane="injected"]',
+    'input[placeholder="项目目录的绝对路径"]',
+    '打开项目',
+    'key Escape',
+    'harnessStart',
+    'harnessStop',
+  ]
+  check(
+    'the visual-check note documents only real, grep-able selectors',
+    selectors.every((selector) => note.indexOf(selector) >= 0) &&
+      note.indexOf(':has-text(') < 0 &&
+      note.indexOf('.investigate/visual/roles') < 0 &&
+      note.indexOf('waitfor') >= 0 &&
+      note.indexOf('wait 500') >= 0,
+    JSON.stringify(selectors.filter((selector) => note.indexOf(selector) < 0)),
+  )
 }
 
 // teardown
