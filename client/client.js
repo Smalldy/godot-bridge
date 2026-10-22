@@ -3682,9 +3682,17 @@ window.__ModuleLoader__.load({
 					if (minutes < 60) return String(minutes) + ' ' + t('detailMinutes')
 					return String(Math.floor(minutes / 60)) + ' ' + t('detailHours') + ' ' + String(minutes % 60) + ' ' + t('detailMinutes')
 				}
-				const reviewMs = review !== null && typeof review.at === 'string' && typeof review.deliveredAt === 'string' ? new Date(review.at).getTime() - new Date(review.deliveredAt).getTime() : null
-				const testMs = test !== null && typeof test.at === 'string' && typeof test.deliveredAt === 'string' ? new Date(test.at).getTime() - new Date(test.deliveredAt).getTime() : null
-				const queueStart = review !== null && typeof review.at === 'string' ? new Date(review.at).getTime() : null
+				// review.at is the VERDICT time once decided (submit sets it as the phase start
+				// before that), so the phase start for the queue wait comes from history.
+				const reviewPhaseStart = (function () {
+					const hist = Array.isArray(task.history) ? task.history : []
+					const hit = hist.filter(function (entry) { return entry.to === 'reviewing' && typeof entry.at === 'string' }).slice(-1)[0]
+					if (hit !== undefined) return new Date(hit.at).getTime()
+					return review !== null && review.status === 'pending' && typeof review.at === 'string' ? new Date(review.at).getTime() : null
+				})()
+				const reviewMs = review !== null && review.status !== 'pending' && typeof review.at === 'string' && typeof review.deliveredAt === 'string' ? new Date(review.at).getTime() - new Date(review.deliveredAt).getTime() : null
+				const testMs = test !== null && test.status !== 'pending' && typeof test.at === 'string' && typeof test.deliveredAt === 'string' ? new Date(test.at).getTime() - new Date(test.deliveredAt).getTime() : null
+				const queueStart = reviewPhaseStart
 				const queueEnd = review !== null && typeof review.deliveredAt === 'string' ? new Date(review.deliveredAt).getTime() : Number.isFinite(task.queuePosition) && task.queuePosition > 0 ? now : null
 				const queueMs = queueStart === null || queueEnd === null ? null : queueEnd - queueStart
 				const metricParts = []

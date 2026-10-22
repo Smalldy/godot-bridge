@@ -756,7 +756,7 @@ export function createApi(ctx, options) {
     const delivered = []
     const queued = []
     for (const task of tasks) {
-      const slot = stageSlotOf(ctx, task.id)
+      const slot = stageSlotOf(ctx, task.id, kind)
       if (slot === null) {
         delivered.push(task)
         continue
@@ -776,11 +776,11 @@ export function createApi(ctx, options) {
     const state = stageQueueState(read.board, kind)
     const others = state.delivered.filter((entry) => entry.id !== task.id)
     if (others.length < capacity) {
-      recordStageSlot(ctx, task.id, clock(), null)
+      recordStageSlot(ctx, task.id, kind, clock(), null)
       return { delivered: true, position: null }
     }
     const position = state.queued.length + 1
-    recordStageSlot(ctx, task.id, null, position)
+    recordStageSlot(ctx, task.id, kind, null, position)
     return { delivered: false, position: position }
   }
 
@@ -790,7 +790,8 @@ export function createApi(ctx, options) {
     if (read.failed !== undefined) return []
     const capacity = await stageCapacity(kind, projectPath)
     const state = stageQueueState(read.board, kind)
-    let free = capacity - state.delivered.length
+    // Never let a restarted board's legacy no-slot rounds push the count below 0.
+    let free = Math.max(0, capacity - state.delivered.length)
     const promoted = []
     const remaining = []
     for (const entry of state.queued) {
@@ -798,12 +799,12 @@ export function createApi(ctx, options) {
         remaining.push(entry.task)
         continue
       }
-      recordStageSlot(ctx, entry.task.id, clock(), null)
+      recordStageSlot(ctx, entry.task.id, kind, clock(), null)
       promoted.push(entry.task)
       free -= 1
     }
     // Renumber what is still waiting so positions stay dense and truthful.
-    remaining.forEach((task, index) => recordStageSlot(ctx, task.id, null, index + 1))
+    remaining.forEach((task, index) => recordStageSlot(ctx, task.id, kind, null, index + 1))
     return promoted
   }
 
@@ -1427,10 +1428,12 @@ export function createApi(ctx, options) {
       })
       .map((task) => {
         const detail = Object.assign(detailOf(board, task, now), { candidate: candidateOf(projectPath, board, task) })
-        const slot = stageSlotOf(ctx, task.id)
-        detail.queuePosition = slot === null ? null : slot.position
-        if (detail.review !== null && detail.review !== undefined) detail.review = Object.assign({}, detail.review, { deliveredAt: slot === null ? null : slot.at === null ? null : new Date(slot.at).toISOString() })
-        if (detail.test !== null && detail.test !== undefined) detail.test = Object.assign({}, detail.test, { deliveredAt: slot === null ? null : slot.at === null ? null : new Date(slot.at).toISOString() })
+        const reviewSlot = stageSlotOf(ctx, task.id, 'reviewer')
+        const testSlot = stageSlotOf(ctx, task.id, 'tester')
+        detail.queuePosition = reviewSlot !== null && reviewSlot.position !== null ? reviewSlot.position : testSlot !== null && testSlot.position !== null ? testSlot.position : null
+        const isoOf = (slot) => (slot === null || slot.at === null ? null : new Date(slot.at).toISOString())
+        if (detail.review !== null && detail.review !== undefined) detail.review = Object.assign({}, detail.review, { deliveredAt: isoOf(reviewSlot) })
+        if (detail.test !== null && detail.test !== undefined) detail.test = Object.assign({}, detail.test, { deliveredAt: isoOf(testSlot) })
         return detail
       })
     return ok({
@@ -2535,7 +2538,9 @@ export function createApi(ctx, options) {
           }
         }
       }
-      recordStageSlot(ctx, id, null, null)
+      // The delivery timestamp is KEPT on the stage slot so the snapshot can still
+      // report the finished round's duration; the verdict already means the task no
+      // longer occupies capacity (stageQueueState only counts pending rounds).
       // The verdict frees this reviewer slot: hand it to the next queued round.
       const promotedReview = await promoteStageSlots(projectPath, 'reviewer')
       if (promotedReview.length > 0) {
@@ -2583,7 +2588,7 @@ export function createApi(ctx, options) {
         result.task.merge !== undefined &&
         typeof result.task.merge.mergeCommit === 'string' &&
         result.task.merge.mergeCommit.length > 0
-      recordStageSlot(ctx, id, null, null)
+      // Keep the tester delivery timestamp for the finished round's duration.
       const promotedTest = await promoteStageSlots(projectPath, 'tester')
       if (promotedTest.length > 0) {
         const testerSlot = roleSlotNameOf('tester')

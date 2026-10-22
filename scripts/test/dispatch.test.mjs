@@ -2523,7 +2523,7 @@ function fakeHostSubprocess(result) {
   const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
   const reviewTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'reviewing', review: { status: 'pending', by: null, at: old, reasons: null, attempt: 1 } })
   seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [reviewTask('T-1', 'delivered'), reviewTask('T-2', 'queued')] }))
-  recordStageSlot(rig.ctx, 'T-2', null, 1)
+  recordStageSlot(rig.ctx, 'T-2', 'reviewer', null, 1)
   const activity = createActivity()
   const scheduler = createDispatcher(rig.ctx, { state: createState(rig.ctx), projectPath: () => PROJECT, allowSpawn: false, git: null, roles: rig.manager, activity: activity, reviewTimeoutMs: 60, phaseGraceMs: 600 })
   await scheduler.tick(PROJECT)
@@ -2533,7 +2533,7 @@ function fakeHostSubprocess(result) {
     findTask(read.board, 'T-2').status === 'reviewing' && rig.team.calls.filter((call) => String(call.text).indexOf('T-2') >= 0).length === 0,
     JSON.stringify({ status: findTask(read.board, 'T-2').status, calls: rig.team.calls.length }),
   )
-  check('the queued task carries a slot position', stageSlotOf(rig.ctx, 'T-2').position === 1 && stageSlotOf(rig.ctx, 'T-2').at === null)
+  check('the queued task carries a slot position', stageSlotOf(rig.ctx, 'T-2', 'reviewer').position === 1 && stageSlotOf(rig.ctx, 'T-2', 'reviewer').at === null)
   scheduler.dispose()
 }
 
@@ -2551,8 +2551,8 @@ function fakeHostSubprocess(result) {
   const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null }
   const testTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'testing', merge: { status: 'open', base: 'base-sha', target: 'feat/x', head: 'head-sha', mergeCommit: 'cand-' + id, declaredFiles: [], actualFiles: [], tests: 'npm test', reviewer: null, conflict: null, output: null, at: old }, review: { status: 'approved', by: 'reviewer-1', at: old, reasons: null, attempt: 1 }, test: { status: 'pending', by: null, at: old, evidence: null, attempt: 1 } })
   seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [testTask('T-1', 'delivered test'), testTask('T-2', 'queued test')] }))
-  recordStageSlot(rig.ctx, 'T-1', Date.now(), null)
-  recordStageSlot(rig.ctx, 'T-2', null, 1)
+  recordStageSlot(rig.ctx, 'T-1', 'tester', Date.now(), null)
+  recordStageSlot(rig.ctx, 'T-2', 'tester', null, 1)
   rig.state.memory.testCandidates = { 'T-2': { candidate: { path: 'cand-path', branch: 'test/T-2', base: 'base-sha', head: 'head-sha' }, hostCheck: { exitCode: 0, durationMs: 1000 } } }
   await rig.action('passTest', { id: 'T-1', evidence: 'ok' })
   const testerCalls = rig.team.calls.filter((call) => call.target === 'tester-1')
@@ -2562,7 +2562,7 @@ function fakeHostSubprocess(result) {
     promotedCall !== undefined && promotedCall.text.indexOf('cand-path') >= 0 && promotedCall.text.indexOf('head-sha') >= 0 && promotedCall.text.indexOf('Host mechanical check') >= 0,
     promotedCall === undefined ? 'no tester call' : promotedCall.text.slice(0, 400),
   )
-  check('the promoted round clears its queue position', stageSlotOf(rig.ctx, 'T-2').at !== null && stageSlotOf(rig.ctx, 'T-2').position === null)
+  check('the promoted round clears its queue position', stageSlotOf(rig.ctx, 'T-2', 'tester').at !== null && stageSlotOf(rig.ctx, 'T-2', 'tester').position === null)
   rig.scheduler.dispose()
 }
 // ── queue positions stay dense after a promotion ───────────────────────────
@@ -2579,16 +2579,18 @@ function fakeHostSubprocess(result) {
   const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
   const reviewTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'reviewing', review: { status: 'pending', by: null, at: old, reasons: null, attempt: 1 } })
   seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 4, dispatch: { state: 'paused' }, tasks: [reviewTask('T-1', 'A'), reviewTask('T-2', 'B'), reviewTask('T-3', 'C')] }))
-  recordStageSlot(rig.ctx, 'T-1', Date.now(), null)
-  recordStageSlot(rig.ctx, 'T-2', null, 1)
-  recordStageSlot(rig.ctx, 'T-3', null, 2)
+  recordStageSlot(rig.ctx, 'T-1', 'reviewer', Date.now(), null)
+  recordStageSlot(rig.ctx, 'T-2', 'reviewer', null, 1)
+  recordStageSlot(rig.ctx, 'T-3', 'reviewer', null, 2)
   await rig.action('approveReview', { id: 'T-1' })
   check(
     'after a promotion the remaining queue is renumbered from 1',
-    stageSlotOf(rig.ctx, 'T-2').at !== null && stageSlotOf(rig.ctx, 'T-3').position === 1,
-    JSON.stringify({ b: stageSlotOf(rig.ctx, 'T-2'), c: stageSlotOf(rig.ctx, 'T-3') }),
+    stageSlotOf(rig.ctx, 'T-2', 'reviewer').at !== null && stageSlotOf(rig.ctx, 'T-3', 'reviewer').position === 1,
+    JSON.stringify({ b: stageSlotOf(rig.ctx, 'T-2', 'reviewer'), c: stageSlotOf(rig.ctx, 'T-3', 'reviewer') }),
   )
-  check('a finished round drops its slot entry', stageSlotOf(rig.ctx, 'T-1') === null, JSON.stringify(stageSlotOf(rig.ctx, 'T-1')))
+  check('a finished round keeps its delivery time but no queue position', stageSlotOf(rig.ctx, 'T-1', 'reviewer') !== null && stageSlotOf(rig.ctx, 'T-1', 'reviewer').at !== null && stageSlotOf(rig.ctx, 'T-1', 'reviewer').position === null, JSON.stringify(stageSlotOf(rig.ctx, 'T-1', 'reviewer')))
+  const afterVerdict = await snapshot(rig)
+  check('the snapshot still reports the finished review delivery for the metrics', byId(afterVerdict, 'T-1').review !== null && typeof byId(afterVerdict, 'T-1').review.deliveredAt === 'string', JSON.stringify(byId(afterVerdict, 'T-1').review))
   rig.scheduler.dispose()
 }
 // ── restarted board: legacy no-slot rounds never starve a queued round ─────
@@ -2605,12 +2607,12 @@ function fakeHostSubprocess(result) {
   const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
   const reviewTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'reviewing', review: { status: 'pending', by: null, at: old, reasons: null, attempt: 1 } })
   seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 5, dispatch: { state: 'paused' }, tasks: [reviewTask('T-1', 'legacy 1'), reviewTask('T-2', 'legacy 2'), reviewTask('T-3', 'queued')] }))
-  recordStageSlot(rig.ctx, 'T-3', null, 1)
+  recordStageSlot(rig.ctx, 'T-3', 'reviewer', null, 1)
   await rig.action('approveReview', { id: 'T-1' })
   check(
     'legacy no-slot rounds do not crash the capacity and the queued round keeps a position',
-    stageSlotOf(rig.ctx, 'T-3') !== null && (stageSlotOf(rig.ctx, 'T-3').at !== null || stageSlotOf(rig.ctx, 'T-3').position >= 1),
-    JSON.stringify(stageSlotOf(rig.ctx, 'T-3')),
+    stageSlotOf(rig.ctx, 'T-3', 'reviewer') !== null && (stageSlotOf(rig.ctx, 'T-3', 'reviewer').at !== null || stageSlotOf(rig.ctx, 'T-3', 'reviewer').position >= 1),
+    JSON.stringify(stageSlotOf(rig.ctx, 'T-3', 'reviewer')),
   )
   rig.scheduler.dispose()
 }

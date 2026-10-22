@@ -148,23 +148,28 @@ function slotBucket(ctx, create) {
   return bucket
 }
 
-/** Record the slot state for a task: delivered (at set) or queued (position set). */
-export function recordStageSlot(ctx, taskId, at, position) {
+function slotKey(taskId, kind) {
+  return String(taskId) + '@' + String(kind === 'tester' ? 'tester' : 'reviewer')
+}
+
+/** Record one stage's slot state: delivered (at set) or queued (position set). */
+export function recordStageSlot(ctx, taskId, kind, at, position) {
   if (typeof taskId !== 'string' || taskId === '') return
   try {
     const bucket = slotBucket(ctx, true)
-    if (at === null && position === null) bucket.delete(taskId)
-    else bucket.set(taskId, { at: Number.isFinite(at) ? at : null, position: Number.isFinite(position) ? position : null })
+    const key = slotKey(taskId, kind)
+    if (at === null && position === null) bucket.delete(key)
+    else bucket.set(key, { at: Number.isFinite(at) ? at : null, position: Number.isFinite(position) ? position : null })
   } catch (error) {}
 }
 
-/** The slot state for one task, or null when it was never queued/delivered. */
-export function stageSlotOf(ctx, taskId) {
+/** One stage's slot state for a task, or null when it was never queued/delivered. */
+export function stageSlotOf(ctx, taskId, kind) {
   if (typeof taskId !== 'string' || taskId === '') return null
   try {
     const bucket = slotBucket(ctx, false)
     if (bucket === undefined) return null
-    const entry = bucket.get(taskId)
+    const entry = bucket.get(slotKey(taskId, kind))
     return entry === undefined ? null : entry
   } catch (error) {
     return null
@@ -2560,7 +2565,7 @@ export function createDispatcher(ctx, options) {
     const blocked = []
     let nextBoard = null
     for (const task of pending) {
-      const slot = stageSlotOf(ctx, task.id)
+      const slot = stageSlotOf(ctx, task.id, 'reviewer')
       // A task waiting for its role slot has no delivery time yet: its silence
       // clock is paused so the watchdog cannot remind/block it out of turn.
       if (slot !== null && slot.position !== null) continue
@@ -2583,7 +2588,7 @@ export function createDispatcher(ctx, options) {
           ) {
             return value
           }
-          const freshSlot = stageSlotOf(ctx, fresh.id)
+          const freshSlot = stageSlotOf(ctx, fresh.id, 'reviewer')
           const freshStart = freshSlot !== null && Number.isFinite(freshSlot.at) ? freshSlot.at : Date.parse(fresh.review.at)
           const freshSilence = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, roleIdentities(names)))) / 60000)
           const result = model.blockTask(value, fresh.id, now, 'system', 'review timed out: no reviewer verdict after ' + String(freshSilence) + 'min of silence')
@@ -2658,7 +2663,7 @@ export function createDispatcher(ctx, options) {
     const blocked = []
     let nextBoard = null
     for (const task of pending) {
-      const slot = stageSlotOf(ctx, task.id)
+      const slot = stageSlotOf(ctx, task.id, 'tester')
       if (slot !== null && slot.position !== null) continue
       const startedAt = slot !== null && Number.isFinite(slot.at) ? slot.at : Date.parse(task.test.at)
       if (!Number.isFinite(startedAt)) continue
@@ -2689,7 +2694,7 @@ export function createDispatcher(ctx, options) {
             fresh.merge !== null && fresh.merge !== undefined && typeof fresh.merge.mergeCommit === 'string' && fresh.merge.mergeCommit !== ''
               ? 'candidate ' + String(fresh.merge.mergeCommit)
               : 'no candidate recorded'
-          const freshSlot = stageSlotOf(ctx, fresh.id)
+          const freshSlot = stageSlotOf(ctx, fresh.id, 'tester')
           const freshStart = freshSlot !== null && Number.isFinite(freshSlot.at) ? freshSlot.at : Date.parse(fresh.test.at)
           const freshMinutes = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, names))) / 60000)
           blockNote = 'test timeout: no verdict after ' + String(freshMinutes) + 'min of silence (' + tester + '; ' + freshCandidate + ')'

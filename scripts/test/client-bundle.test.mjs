@@ -2575,7 +2575,9 @@ await flush()
     const metricTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
     const savedMetricReview = metricTask.review
     const savedMetricTest = metricTask.test
+    const savedMetricHistory = metricTask.history
     const nowMs = Date.now()
+    metricTask.history = [{ from: 'running', to: 'reviewing', at: new Date(nowMs - 180000).toISOString(), by: '@user', byName: '你', note: 'submitted' }]
     metricTask.review = Object.assign({}, savedMetricReview, { at: new Date(nowMs - 120000).toISOString(), deliveredAt: new Date(nowMs - 60000).toISOString() })
     metricTask.test = Object.assign({}, savedMetricTest, { at: new Date(nowMs - 30000).toISOString(), deliveredAt: new Date(nowMs - 20000).toISOString() })
     const metricDrawer = await openDetail('Build damage system')
@@ -2587,6 +2589,7 @@ await flush()
     )
     metricTask.review = savedMetricReview
     metricTask.test = savedMetricTest
+    metricTask.history = savedMetricHistory
   }
 
   // Elapsed is the finished span, not the growing age.
