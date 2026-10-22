@@ -2234,7 +2234,7 @@ check(
   await flush()
   check(
     'the selected task survives a remount',
-    findAll(afterSelection, (node) => node.props && node.props.className === 'gbt-drawer').length === 1,
+    findAll(afterSelection, (node) => node.props && node.props['data-detail-overlay'] === 'true').length === 1,
   )
 }
 
@@ -2275,10 +2275,112 @@ check(
     card.props.onClick()
     const tree = withHooks(panel, { initialView: 'board' })
     await flush()
-    return findAll(tree, (node) => node.props && node.props.className === 'gbt-drawer')[0]
+    return findAll(tree, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
   }
   function stageOf(drawer, key) {
     return findAll(drawer, (node) => node.props && node.props['data-stage'] === key)[0]
+  }
+
+  // ── overlay shell: wide card, mask/×/Esc close, container breakpoints ──
+  {
+    const originalWidth = Object.getOwnPropertyDescriptor(globalThis.window, 'innerWidth')
+    const setWidth = function (value) { Object.defineProperty(globalThis.window, 'innerWidth', { value: value, configurable: true, writable: true }) }
+    const restoreWidth = function () {
+      if (originalWidth === undefined) delete globalThis.window.innerWidth
+      else Object.defineProperty(globalThis.window, 'innerWidth', originalWidth)
+    }
+    setWidth(1440)
+    const wideDrawer = await openDetail('Tail output feature')
+    check(
+      'the detail opens in a wide overlay (mask + centered panel), not the old 368px drawer',
+      wideDrawer !== undefined && wideDrawer.props['data-detail-overlay'] === 'true' && wideDrawer.props['data-detail-width'] === 'wide' &&
+        findAll(wideDrawer, (node) => node.props && node.props.className === 'gbt-detailpanel').length === 1 &&
+        findAll(wideDrawer, (node) => node.props && node.props['data-detail-mask'] === 'true').length === 1,
+      wideDrawer && JSON.stringify(wideDrawer.props['data-detail-width']),
+    )
+    check(
+      'a wide container renders the two-column layout',
+      wideDrawer.props['data-detail-layout'] === 'two-column' && findAll(wideDrawer, (node) => node.props && node.props['data-detail-layout'] === 'two-column').length >= 1,
+      wideDrawer.props['data-detail-layout'],
+    )
+    const mask = findAll(wideDrawer, (node) => node.props && node.props['data-detail-mask'] === 'true')[0]
+    mask.props.onClick()
+    await flush()
+    const closedByMask = withHooks(panel, { initialView: 'board' })
+    await flush()
+    check('clicking the mask closes the overlay', findAll(closedByMask, (node) => node.props && node.props['data-detail-overlay'] === 'true').length === 0)
+
+    setWidth(800)
+    const compactDrawer = await openDetail('Tail output feature')
+    check(
+      'a 800px container uses the compact two-column layout',
+      compactDrawer.props['data-detail-width'] === 'narrow' && compactDrawer.props['data-detail-layout'] === 'compact' &&
+        findAll(compactDrawer, (node) => node.props && node.props['data-detail-stages'] === 'row').length === 1,
+      JSON.stringify({ width: compactDrawer.props['data-detail-width'], layout: compactDrawer.props['data-detail-layout'] }),
+    )
+
+    setWidth(420)
+    const narrowDrawer = await openDetail('Tail output feature')
+    check(
+      'a 420px container uses one column with a wrapped stage grid',
+      narrowDrawer.props['data-detail-width'] === 'narrow' && narrowDrawer.props['data-detail-layout'] === 'single' &&
+        findAll(narrowDrawer, (node) => node.props && node.props['data-detail-stages'] === 'wrap').length === 1 &&
+        findAll(narrowDrawer, (node) => node.props && node.props['data-detail-summary'] === 'one-line').length === 1,
+      JSON.stringify({ layout: narrowDrawer.props['data-detail-layout'] }),
+    )
+    check(
+      'the narrow layout has no vertical (writing-mode) label column',
+      findAll(narrowDrawer, (node) => node.props && node.props.style !== undefined && node.props.style !== null && (node.props.style.writingMode !== undefined || node.props.style.writingMode === 'vertical-rl')).length === 0 &&
+        findAll(narrowDrawer, (node) => typeof node.props.className === 'string' && node.props.className.indexOf('vertical') >= 0).length === 0,
+      'no vertical nodes expected',
+    )
+    narrowDrawer.props.onKeyDown({ key: 'Escape' })
+    await flush()
+    const closedByEsc = withHooks(panel, { initialView: 'board' })
+    await flush()
+    check('Escape closes the overlay', findAll(closedByEsc, (node) => node.props && node.props['data-detail-overlay'] === 'true').length === 0)
+
+    check(
+      'the 420px layout still renders the spec/acceptance summary (collapsed by default)',
+      findAll(narrowDrawer, (node) => node.props && node.props['data-detail-spec'] === 'collapsed').length === 1 &&
+        findAll(narrowDrawer, (node) => node.props && node.props['data-detail'] === 'summary').length === 2,
+      JSON.stringify(findAll(narrowDrawer, (node) => node.props && node.props['data-detail'] === 'summary').map((node) => node.props['data-detail-summary'])),
+    )
+
+    check(
+      'the single layout does not duplicate elapsed/rounds below the one-line card',
+      (function () {
+        const oneLine = findAll(narrowDrawer, (node) => node.props && node.props['data-detail-summary'] === 'one-line')[0]
+        const details = findAll(narrowDrawer, (node) => node.props && node.props['data-detail-summary'] === 'details')[0]
+        return oneLine !== undefined && details !== undefined && textOf(oneLine).indexOf('用时') >= 0 && textOf(details).indexOf('用时') < 0
+      })(),
+      JSON.stringify(findAll(narrowDrawer, (node) => node.props && node.props['data-detail-summary'] !== undefined).map((node) => textOf(node))),
+    )
+
+    setWidth(760)
+    const midNarrowDrawer = await openDetail('Tail output feature')
+    check(
+      'a 760px viewport (full-screen overlay, no padding) is compact, not single',
+      midNarrowDrawer.props['data-detail-width'] === 'narrow' && midNarrowDrawer.props['data-detail-layout'] === 'compact',
+      JSON.stringify({ width: midNarrowDrawer.props['data-detail-width'], layout: midNarrowDrawer.props['data-detail-layout'] }),
+    )
+
+    setWidth(920)
+    const boundaryDrawer = await openDetail('Tail output feature')
+    check(
+      'the breakpoint uses the panel content width (920 viewport -> 824 container -> compact)',
+      boundaryDrawer.props['data-detail-width'] === 'narrow' && boundaryDrawer.props['data-detail-layout'] === 'compact',
+      JSON.stringify({ width: boundaryDrawer.props['data-detail-width'], layout: boundaryDrawer.props['data-detail-layout'] }),
+    )
+
+    const css = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+    check(
+      'the detail stat value is 13px in the registered CSS (no oversized number)',
+      css.indexOf('.gbt-detailstat b{font-size:13px') >= 0 && css.indexOf('.gbt-detailstat b{font-size:18px') < 0,
+      (css.match(/gbt-detailstat b\{[^}]*\}/g) || []).join(' | '),
+    )
+
+    restoreWidth()
   }
 
   const doneDrawer = await openDetail('Tail output feature')
@@ -2315,7 +2417,7 @@ check(
   await flush()
   const evidenceTree = withHooks(panel, { initialView: 'board' })
   await flush()
-  const reopenedRunning = findAll(evidenceTree, (node) => node.props && node.props.className === 'gbt-drawer')[0]
+  const reopenedRunning = findAll(evidenceTree, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
   const evidenceFull = findAll(reopenedRunning, (node) => node.props && node.props['data-detail-evidence'] === 'full')[0]
   check('view full reveals the evidence text', evidenceFull !== undefined && textOf(evidenceFull).indexOf('deep stderr tail marker') >= 0, evidenceFull && textOf(evidenceFull).slice(0, 200))
 

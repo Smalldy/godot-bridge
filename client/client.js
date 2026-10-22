@@ -1098,9 +1098,7 @@ window.__ModuleLoader__.load({
 			'.gbt-outputblock{margin-top:8px}',
 			'.gbt-subhead{margin:8px 0 4px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dsw-alias-label-tertiary);font-weight:600}',
 			'.gbt-output{margin:0;padding:8px 9px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;line-height:1.5;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto}',
-			'.gbt-drawer{width:368px;border-left:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);display:flex;flex-direction:column;min-height:0;flex:none}',
-			'.gbt-drawer[data-open="false"]{display:none}',
-			'.gbt-drawerhead{display:flex;align-items:flex-start;gap:8px;padding:14px 14px 10px;border-bottom:0.5px solid var(--dsw-alias-border-l4)}',
+									'.gbt-drawerhead{display:flex;align-items:flex-start;gap:8px;padding:14px 14px 10px;border-bottom:0.5px solid var(--dsw-alias-border-l4)}',
 			'.gbt-drawertitle{margin:0;font-size:14px;font-weight:600;line-height:1.4;flex:1;word-break:break-word}',
 			'.gbt-drawerbody{overflow:auto;padding:14px;display:flex;flex-direction:column;gap:14px}',
 			'.gbt-actions{display:flex;gap:6px;flex-wrap:wrap}',
@@ -1166,6 +1164,22 @@ window.__ModuleLoader__.load({
 '.gbt-editor-select{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 '.gbt-editor-select .gbt-input{width:auto;min-width:170px;height:30px}',
 '.gbt-rolesview .gbt-subhead,.gbt-rolesview .gbt-footnote,.gbt-rolesview .gbt-pill{font-size:11px}',
+'.gbt-detailoverlay{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:24px}',
+'.gbt-detailmask{position:absolute;inset:0;background:rgba(0,0,0,.45)}',
+'.gbt-detailpanel{position:relative;display:flex;flex-direction:column;width:calc(100% - 48px);max-width:1080px;height:90vh;overflow:hidden;border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:8px;background:var(--panel,var(--dsw-alias-bg-layer-1));box-shadow:0 24px 64px rgba(0,0,0,.35)}',
+'.gbt-detailpanel .gbt-drawerhead{border-bottom:1px solid var(--line,var(--dsw-alias-border-l4))}',
+'.gbt-detailpanel .gbt-drawerbody{flex:1;overflow:auto}',
+'.gbt-detailbody[data-detail-layout="two-column"]{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:12px;align-items:start}',
+'.gbt-detailbody[data-detail-layout="compact"]{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;align-items:start}',
+'.gbt-detailbody[data-detail-layout="single"]{display:flex;flex-direction:column;gap:10px}',
+'.gbt-detailbody[data-detail-layout="compact"] .gbt-detailevent{flex-wrap:nowrap;overflow-x:auto}',
+'.gbt-detailstages{display:grid;grid-template-columns:repeat(5,minmax(64px,1fr));gap:8px;margin:4px 0 2px;overflow-x:auto}',
+'.gbt-detailstages[data-detail-stages="wrap"]{grid-template-columns:repeat(3,minmax(64px,1fr));overflow:visible}',
+'.gbt-detailsummary-one{flex-direction:row;align-items:baseline;gap:12px;flex-wrap:wrap}',
+'.gbt-detailpanel .gbt-btn,.gbt-detailpanel .gbt-linkbtn{white-space:nowrap}',
+'.gbt-detailstat b{font-size:13px;font-weight:600}',
+'.gbt-detailstat span{font-size:11.5px;color:var(--t3,var(--dsw-alias-label-tertiary))}',
+'@media (max-width:899px){.gbt-detailoverlay{padding:0}.gbt-detailpanel{width:100%;max-width:none;height:100%;border-radius:0;border:0}}',
 '.gbt-detailbody{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:12px;align-items:start}',
 '.gbt-detailcard{border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:8px;background:var(--panel,var(--dsw-alias-bg-layer-1));min-width:0}',
 '.gbt-detailcardhead{padding:9px 12px;border-bottom:1px solid var(--line,var(--dsw-alias-border-l4));font-size:12px}',
@@ -1191,7 +1205,7 @@ window.__ModuleLoader__.load({
 '.gbt-detailinterrupt{margin:2px 0 6px;font-size:11.5px;color:var(--bad,#e5645c)}',
 '.gbt-detailsummary{border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:8px;background:var(--panel,var(--dsw-alias-bg-layer-1));padding:10px 12px;display:flex;flex-direction:column;gap:8px;font-size:12px}',
 '.gbt-detailstat{display:flex;align-items:baseline;gap:6px}',
-'.gbt-detailstat b{font-size:18px;font-weight:600}',
+'.gbt-detailstat b{font-size:13px;font-weight:600}',
 '.gbt-detailstat span{font-size:11.5px;color:var(--t3,var(--dsw-alias-label-tertiary))}',
 '.gbt-detailstatline{color:var(--t2,var(--dsw-alias-label-secondary));font-size:11.5px}',
 '.gbt-detailkv{display:flex;gap:6px;align-items:baseline;font-size:11.5px;color:var(--t2,var(--dsw-alias-label-secondary))}',
@@ -1300,7 +1314,6 @@ window.__ModuleLoader__.load({
 			'.gbt-spinner{display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:gbt-spin .7s linear infinite;vertical-align:-1px;margin-right:6px}',
 			'@keyframes gbt-spin{to{transform:rotate(360deg)}}',
 			'@keyframes gbt-slide{0%{left:-40%}100%{left:100%}}',
-			'@media (max-width:900px){.gbt-drawer{position:fixed;right:0;top:0;bottom:0;z-index:40;box-shadow:-12px 0 40px rgba(0,0,0,.18)}.gbt-board{overflow-x:auto}.gbt-col{min-width:210px}}',
 		].join('')
 
 		/** ISO-8601 to epoch milliseconds, or null. */
@@ -3435,6 +3448,22 @@ window.__ModuleLoader__.load({
 				const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
 				const actualFiles = Array.isArray(task.actualFiles) ? task.actualFiles : []
 				const held = snapshot.locks.filter(function (lock) { return lock.taskId === task.id }).map(function (lock) { return lock.path })
+				// The detail is wide content: lay it out by the CONTAINER width, which the
+				// panel approximates from the window when no explicit probe is passed.
+				const viewport = typeof props.detailWidth === 'number' ? props.detailWidth : typeof window !== 'undefined' && Number.isFinite(window.innerWidth) && window.innerWidth > 0 ? window.innerWidth : 1440
+				// Above 900 the overlay pads 24px per side and the panel is capped at 1080,
+				// so the content width is viewport-96; below 900 the media rule makes the
+				// overlay full screen, so the container IS the viewport.
+				const probe = viewport < 900 ? viewport : Math.min(viewport - 96, 1080)
+				const wide = probe >= 900
+				const layout = wide ? 'two-column' : probe >= 700 ? 'compact' : 'single'
+				const widthClass = wide ? 'wide' : 'narrow'
+				React.useEffect(function () {
+					if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
+					function onKey(event) { if (event !== null && event !== undefined && event.key === 'Escape') props.onClose() }
+					window.addEventListener('keydown', onKey)
+					return function () { window.removeEventListener('keydown', onKey) }
+				}, [])
 				const dispatch = task.dispatch === null || task.dispatch === undefined ? null : task.dispatch
 				const merge = tcMergeOf(task)
 				const review = tcReviewOf(task)
@@ -3529,7 +3558,7 @@ window.__ModuleLoader__.load({
 				})()
 				const stages = h(
 					'div',
-					{ className: 'gbt-detailstages', 'data-detail': 'stages' },
+					{ className: 'gbt-detailstages', 'data-detail': 'stages', 'data-detail-stages': layout === 'single' ? 'wrap' : 'row' },
 					stageOrder.map(function (statusKey, index) {
 						const state = index < reached ? 'done' : index === reached ? (interrupted ? 'interrupted' : task.status === 'done' ? 'done' : 'active') : 'todo'
 						const time = stageTimes[index]
@@ -3653,24 +3682,47 @@ window.__ModuleLoader__.load({
 					if (minutes < 60) return String(minutes) + ' ' + t('detailMinutes')
 					return String(Math.floor(minutes / 60)) + ' ' + t('detailHours') + ' ' + String(minutes % 60) + ' ' + t('detailMinutes')
 				})()
-				const summary = h(
+				const compactSummary = h(
 					'div',
-					{ className: 'gbt-detailsummary', 'data-detail': 'summary' },
-					h('div', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
-					h('div', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit'), ' · ', t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit'), ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+					{ className: 'gbt-detailsummary gbt-detailsummary-one', 'data-detail': 'summary', 'data-detail-summary': 'one-line' },
+					h('span', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
+					h('span', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit') + ' · ' + t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit')),
+				)
+				const specToggle = h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'detail-spec', onClick: function () { detailUiState.spec = !specOpen; setSpecOpen(!specOpen) } }, specOpen ? t('collapse') : t('detailSpecExpand'))
+				const specBody = specOpen
+					? h(
+							'div',
+							{ 'data-detail-spec': 'full' },
+							h('div', { className: 'gbt-subhead' }, t('spec')),
+							h('p', { className: 'gbt-prose' }, task.spec === '' ? t('noSpec') : task.spec),
+							h('div', { className: 'gbt-subhead' }, t('acceptance')),
+							h('p', { className: 'gbt-prose' }, task.acceptance === '' ? t('noSpec') : task.acceptance),
+						)
+					: h('p', { className: 'gbt-footnote', 'data-detail-spec': 'collapsed' }, t('detailSpecHint'))
+				const summaryFacts = h(
+					'div',
+					null,
 					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailDeclaredFiles')), h('b', null, String(files.length)), h('span', null, t('detailActualFiles')), h('b', null, actualFiles.length === 0 ? '—' : String(actualFiles.length))),
 					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailHostCheck')), h('b', { 'data-detail-hostcheck': 'true' }, task.verify === null || task.verify === undefined ? t('detailHostCheckUndeclared') : test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? (test.hostCheck.exitCode === 0 && test.hostCheck.timedOut !== true ? t('statusResultPassed') : t('detailHostCheckFailed')) : t('detailHostCheckIncomplete'))),
-					h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'detail-spec', onClick: function () { detailUiState.spec = !specOpen; setSpecOpen(!specOpen) } }, specOpen ? t('collapse') : t('detailSpecExpand')),
-					specOpen
-						? h(
-								'div',
-								{ 'data-detail-spec': 'full' },
-								h('div', { className: 'gbt-subhead' }, t('spec')),
-								h('p', { className: 'gbt-prose' }, task.spec === '' ? t('noSpec') : task.spec),
-								h('div', { className: 'gbt-subhead' }, t('acceptance')),
-								h('p', { className: 'gbt-prose' }, task.acceptance === '' ? t('noSpec') : task.acceptance),
-							)
-						: h('p', { className: 'gbt-footnote', 'data-detail-spec': 'collapsed' }, t('detailSpecHint')),
+					h('div', { className: 'gbt-detailstatline' }, t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+				)
+				const summary = h(
+					'div',
+					{ className: 'gbt-detailsummary', 'data-detail': 'summary', 'data-detail-summary': 'full' },
+					h('div', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
+					h('div', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit'), ' · ', t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit'), ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+					summaryFacts,
+					specToggle,
+					specBody,
+				)
+				// In the single-column layout the elapsed/rounds move into the one-line
+				// card, so the details card keeps only files/host-check/attempts/spec.
+				const summaryDetails = h(
+					'div',
+					{ className: 'gbt-detailsummary', 'data-detail': 'summary', 'data-detail-summary': 'details' },
+					summaryFacts,
+					specToggle,
+					specBody,
 				)
 
 				const blocks = []
@@ -3685,7 +3737,8 @@ window.__ModuleLoader__.load({
 				if (deleteError === 'referenced') blocks.push(h('p', { key: 'forcehint', className: 'gbt-footnote' }, t('forceHint')))
 				if (deleteError === 'failed') blocks.push(h('p', { key: 'deletefail', className: 'gbt-footnote' }, t('error')))
 				blocks.push(stages)
-				blocks.push(h('div', { className: 'gbt-detailbody' }, h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody), summary))
+				const eventsCard = h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody)
+				blocks.push(h('div', { className: 'gbt-detailbody', 'data-detail-body': layout, 'data-detail-layout': layout }, layout === 'single' ? compactSummary : null, eventsCard, layout === 'single' ? summaryDetails : summary))
 
 				if (task.status === 'running') {
 					blocks.push(
@@ -3753,8 +3806,13 @@ window.__ModuleLoader__.load({
 				)
 				blocks.push(h('input', { key: 'note', className: 'gbt-input', ref: note, placeholder: t('notePlaceholder') }))
 				return h(
-					'aside',
-					{ className: 'gbt-drawer', 'data-open': 'true' },
+					'div',
+					{ className: 'gbt-detailoverlay', 'data-detail-overlay': 'true', 'data-detail-width': widthClass, 'data-detail-layout': layout,
+						onKeyDown: function (event) { if (event !== null && event !== undefined && event.key === 'Escape') props.onClose() } },
+					h('div', { className: 'gbt-detailmask', 'data-detail-mask': 'true', onClick: function () { props.onClose() } }),
+					h(
+						'section',
+						{ className: 'gbt-detailpanel', 'role': 'dialog', 'aria-modal': 'true', tabIndex: -1 },
 					h(
 						'div',
 						{ className: 'gbt-drawerhead' },
@@ -3768,6 +3826,7 @@ window.__ModuleLoader__.load({
 						h('button', { type: 'button', className: 'gbt-iconbtn', onClick: props.onClose, 'aria-label': t('close') }, '×'),
 					),
 					h('div', { className: 'gbt-drawerbody' }, blocks),
+					),
 				)
 			}
 
