@@ -47,6 +47,8 @@ import {
   roleTemplateValuesFor,
   runHostCheck,
   recordPhaseActivity,
+  recordStageSlot,
+  stageSlotOf,
   servicesFor,
   testFailureBriefFor,
   testerBriefFor,
@@ -728,7 +730,85 @@ export function createApi(ctx, options) {
     }
   }
 
-  /** Best-effort host provisioning for one stage role. Never blocks the action. */
+  /** How many instances a stage role has (queue capacity). */
+  async function stageCapacity(kind, projectPath) {
+    const config = await roleConfigFor(projectPath)
+    const profiles = config === null || config === undefined ? null : config.profiles
+    const profile = profiles === null || profiles === undefined ? null : profiles[kind]
+    const instances = profile === null || profile === undefined ? null : profile.instances
+    return Number.isFinite(instances) ? Math.max(1, Math.floor(instances)) : 1
+  }
+
+  function stageStatusOf(kind) {
+    return kind === 'reviewer' ? 'reviewing' : 'testing'
+  }
+
+  /** Delivered + queued tasks of one stage, from the in-memory slot state. */
+  function stageQueueState(board, kind) {
+    const status = stageStatusOf(kind)
+    // A task whose round already has a verdict no longer occupies the slot, even
+    // while it stays in the stage (e.g. testing waits for the merge).
+    const tasks = board.tasks.filter((task) => {
+      if (task.status !== status) return false
+      const record = kind === 'reviewer' ? task.review : task.test
+      return record !== null && record !== undefined && record.status === 'pending'
+    })
+    const delivered = []
+    const queued = []
+    for (const task of tasks) {
+      const slot = stageSlotOf(ctx, task.id, kind)
+      if (slot === null) {
+        delivered.push(task)
+        continue
+      }
+      if (slot.position !== null) queued.push({ task: task, position: slot.position })
+      else delivered.push(task)
+    }
+    queued.sort((left, right) => left.position - right.position)
+    return { delivered: delivered, queued: queued }
+  }
+
+  /** Give a task a slot now, or a 1-based queue position when the slot is full. */
+  async function assignStageSlot(projectPath, task, kind) {
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return { delivered: true, position: null }
+    const capacity = await stageCapacity(kind, projectPath)
+    const state = stageQueueState(read.board, kind)
+    const others = state.delivered.filter((entry) => entry.id !== task.id)
+    if (others.length < capacity) {
+      recordStageSlot(ctx, task.id, kind, clock(), null)
+      return { delivered: true, position: null }
+    }
+    const position = state.queued.length + 1
+    recordStageSlot(ctx, task.id, kind, null, position)
+    return { delivered: false, position: position }
+  }
+
+  /** Hand the next queued task(s) their slot after a verdict frees one. */
+  async function promoteStageSlots(projectPath, kind) {
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return []
+    const capacity = await stageCapacity(kind, projectPath)
+    const state = stageQueueState(read.board, kind)
+    // Never let a restarted board's legacy no-slot rounds push the count below 0.
+    let free = Math.max(0, capacity - state.delivered.length)
+    const promoted = []
+    const remaining = []
+    for (const entry of state.queued) {
+      if (free <= 0) {
+        remaining.push(entry.task)
+        continue
+      }
+      recordStageSlot(ctx, entry.task.id, kind, clock(), null)
+      promoted.push(entry.task)
+      free -= 1
+    }
+    // Renumber what is still waiting so positions stay dense and truthful.
+    remaining.forEach((task, index) => recordStageSlot(ctx, task.id, kind, null, index + 1))
+    return promoted
+  }
+
+  /** Best-effort host provisioning for one stage role. Never blocks the action. */  /** Best-effort host provisioning for one stage role. Never blocks the action. */
   async function provisionRole(kind, projectPath, task) {
     if (roles === null || typeof roles.ensure !== 'function') return null
     const config = await roleConfigFor(projectPath)
@@ -1346,7 +1426,16 @@ export function createApi(ctx, options) {
         const rank = STATUS_RANK[left.status] - STATUS_RANK[right.status]
         return rank !== 0 ? rank : left.id.localeCompare(right.id)
       })
-      .map((task) => Object.assign(detailOf(board, task, now), { candidate: candidateOf(projectPath, board, task) }))
+      .map((task) => {
+        const detail = Object.assign(detailOf(board, task, now), { candidate: candidateOf(projectPath, board, task) })
+        const reviewSlot = stageSlotOf(ctx, task.id, 'reviewer')
+        const testSlot = stageSlotOf(ctx, task.id, 'tester')
+        detail.queuePosition = reviewSlot !== null && reviewSlot.position !== null ? reviewSlot.position : testSlot !== null && testSlot.position !== null ? testSlot.position : null
+        const isoOf = (slot) => (slot === null || slot.at === null ? null : new Date(slot.at).toISOString())
+        if (detail.review !== null && detail.review !== undefined) detail.review = Object.assign({}, detail.review, { deliveredAt: isoOf(reviewSlot) })
+        if (detail.test !== null && detail.test !== undefined) detail.test = Object.assign({}, detail.test, { deliveredAt: isoOf(testSlot) })
+        return detail
+      })
     return ok({
       project: projectPath,
       version: board.version,
@@ -2217,8 +2306,9 @@ export function createApi(ctx, options) {
           const round = recorded.task.review === null || recorded.task.review === undefined ? 1 : recorded.task.review.attempt
           emitActivity(context, 'review-start', 'merge request refreshed; review round ' + String(round), id)
           const reviewer = roleSlotNameOf('reviewer')
-          if (reviewer !== null) await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath))
-          return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned })
+          const slot = await assignStageSlot(projectPath, recorded.task, 'reviewer')
+          if (slot.delivered === true && reviewer !== null) await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath))
+          return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned, queuePosition: slot.position })
         }
         return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
       })
@@ -2281,7 +2371,9 @@ export function createApi(ctx, options) {
           const round = result.task.review === null || result.task.review === undefined ? 1 : result.task.review.attempt
           emitActivity(context, 'review-start', 'submitted for review round ' + String(round), id)
           const reviewer = roleSlotNameOf('reviewer')
-          if (reviewer !== null) await notifyMember(reviewer, reviewBriefFor(result.task, projectPath))
+          const slot = await assignStageSlot(projectPath, result.task, 'reviewer')
+          result.queuePosition = slot.position
+          if (slot.delivered === true && reviewer !== null) await notifyMember(reviewer, reviewBriefFor(result.task, projectPath))
           if (provisioned !== null) result.provisioned = provisioned
         }
       }
@@ -2430,8 +2522,12 @@ export function createApi(ctx, options) {
         if (provisioned !== null) result.provisioned = provisioned
         if (candidate !== null) {
           result.candidate = candidate
+          if (state.memory.testCandidates === undefined || state.memory.testCandidates === null) state.memory.testCandidates = {}
+          state.memory.testCandidates[result.task.id] = { candidate: candidate, hostCheck: hostCheck }
           const tester = roleSlotNameOf('tester')
-          if (tester !== null) {
+          const testSlot = await assignStageSlot(projectPath, result.task, 'tester')
+          result.queuePosition = testSlot.position
+          if (testSlot.delivered === true && tester !== null) {
             await notifyMember(
               tester,
               testerBriefFor(result.task, projectPath, candidate, {
@@ -2440,6 +2536,17 @@ export function createApi(ctx, options) {
               }),
             )
           }
+        }
+      }
+      // The delivery timestamp is KEPT on the stage slot so the snapshot can still
+      // report the finished round's duration; the verdict already means the task no
+      // longer occupies capacity (stageQueueState only counts pending rounds).
+      // The verdict frees this reviewer slot: hand it to the next queued round.
+      const promotedReview = await promoteStageSlots(projectPath, 'reviewer')
+      if (promotedReview.length > 0) {
+        const reviewerSlot = roleSlotNameOf('reviewer')
+        if (reviewerSlot !== null) {
+          for (const promoted of promotedReview) await notifyMember(reviewerSlot, reviewBriefFor(promoted, projectPath))
         }
       }
       return ok({ task: result.task, events: result.events, provisioned: result.provisioned, candidate: result.candidate, hostCheck: hostCheck })
@@ -2481,6 +2588,28 @@ export function createApi(ctx, options) {
         result.task.merge !== undefined &&
         typeof result.task.merge.mergeCommit === 'string' &&
         result.task.merge.mergeCommit.length > 0
+      // Keep the tester delivery timestamp for the finished round's duration.
+      const promotedTest = await promoteStageSlots(projectPath, 'tester')
+      if (promotedTest.length > 0) {
+        const testerSlot = roleSlotNameOf('tester')
+        if (testerSlot !== null) {
+          for (const promoted of promotedTest) {
+            const stored = state.memory.testCandidates === undefined || state.memory.testCandidates === null ? null : state.memory.testCandidates[promoted.id]
+            const storedCandidate = stored !== null && stored !== undefined && stored.candidate !== undefined ? stored.candidate : null
+            const storedHostCheck = stored !== null && stored !== undefined && stored.hostCheck !== undefined ? stored.hostCheck : null
+            const fallbackPath = stored !== null && stored !== undefined && typeof stored === 'string' ? stored : null
+            const candidateForBrief = storedCandidate !== null ? storedCandidate : fallbackPath === null ? null : { path: fallbackPath }
+            if (candidateForBrief === null || typeof candidateForBrief.path !== 'string' || candidateForBrief.path === '') continue
+            await notifyMember(
+              testerSlot,
+              testerBriefFor(promoted, projectPath, candidateForBrief, {
+                godot: await godotInfoFor(projectPath, candidateForBrief.path),
+                hostCheck: storedHostCheck,
+              }),
+            )
+          }
+        }
+      }
       if (action === 'passTest') emitActivity(context, 'test-end', 'passed', id)
       if (action === 'failTest') emitActivity(context, 'test-end', 'failed', id)
       if (action === 'passTest' && candidateWorkflow && hasCandidate) {

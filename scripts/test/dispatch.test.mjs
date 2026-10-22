@@ -26,6 +26,8 @@ import {
   roleKindOf,
   roleTemplateValuesFor,
   recordPhaseActivity,
+  recordStageSlot,
+  stageSlotOf,
   phaseActivityAt,
   serialiseWorktreeCreate,
   workerPool,
@@ -2445,6 +2447,174 @@ function fakeHostSubprocess(result) {
     after.ok === true && after.created.length === 1 && after.created[0].name === 'reviewer-2' && after.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drain-timeout'),
     JSON.stringify({ created: after.created, replaced: after.replaced }),
   )
+}
+
+// ── review role slots: one task at a time, the rest queue ─────────────────
+{
+  const rig = createRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+        { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'running' },
+        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const A = (await createTask(rig, { title: 'slot A' })).id
+  const B = (await createTask(rig, { title: 'slot B' })).id
+  await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 4 })
+  await rig.action('start')
+  await rig.settle()
+  const running = await snapshot(rig)
+  check('both tasks run before the review queue is exercised', byId(running, A).status === 'running' && byId(running, B).status === 'running', JSON.stringify(ids(running)))
+  await submitAsUser(rig, A, 'A ready')
+  await submitAsUser(rig, B, 'B ready')
+  const reviewing = await snapshot(rig)
+  const briefs = () => rig.team.calls.filter((call) => call.target === 'reviewer-1').length
+  check(
+    'only the first review round is delivered while the single reviewer slot is busy',
+    byId(reviewing, A).status === 'reviewing' && byId(reviewing, B).status === 'reviewing' && briefs() === 1,
+    JSON.stringify({ a: byId(reviewing, A).status, b: byId(reviewing, B).status, briefs: briefs() }),
+  )
+  check('the second round reports its queue position', byId(reviewing, B).queuePosition === 1 && byId(reviewing, A).queuePosition === null, JSON.stringify([byId(reviewing, A).queuePosition, byId(reviewing, B).queuePosition]))
+  await rig.action('approveReview', { id: A })
+  await rig.settle()
+  const promoted = await snapshot(rig)
+  check('the freed reviewer slot delivers the queued round', briefs() === 2 && byId(promoted, B).queuePosition === null, JSON.stringify({ briefs: briefs(), queue: byId(promoted, B).queuePosition }))
+  rig.scheduler.dispose()
+}
+{
+  const rig = createRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+        { id: 'session-reviewer-2', name: 'reviewer-2', role: 'teammate', status: 'running' },
+        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const config = defaultRoleConfig()
+  config.profiles.reviewer.instances = 2
+  rig.fs.files.set(rolesPath(PROJECT), { text: JSON.stringify(config), version: 'seed' })
+  const A = (await createTask(rig, { title: 'parallel A' })).id
+  const B = (await createTask(rig, { title: 'parallel B' })).id
+  await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 4 })
+  await rig.action('start')
+  await rig.settle()
+  await submitAsUser(rig, A, 'A ready')
+  await submitAsUser(rig, B, 'B ready')
+  const snap = await snapshot(rig)
+  const delivered = rig.team.calls.filter((call) => call.target === 'reviewer-1').length
+  check('with two reviewer instances both review rounds are delivered', delivered === 2 && byId(snap, A).queuePosition === null && byId(snap, B).queuePosition === null, JSON.stringify({ delivered: delivered, queue: [byId(snap, A).queuePosition, byId(snap, B).queuePosition] }))
+  rig.scheduler.dispose()
+}
+{
+  const rig = createRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const old = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
+  const reviewTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'reviewing', review: { status: 'pending', by: null, at: old, reasons: null, attempt: 1 } })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [reviewTask('T-1', 'delivered'), reviewTask('T-2', 'queued')] }))
+  recordStageSlot(rig.ctx, 'T-2', 'reviewer', null, 1)
+  const activity = createActivity()
+  const scheduler = createDispatcher(rig.ctx, { state: createState(rig.ctx), projectPath: () => PROJECT, allowSpawn: false, git: null, roles: rig.manager, activity: activity, reviewTimeoutMs: 60, phaseGraceMs: 600 })
+  await scheduler.tick(PROJECT)
+  const read = await createState(rig.ctx).read(PROJECT)
+  check(
+    'a queued review round is not reminded or blocked while it waits for the slot',
+    findTask(read.board, 'T-2').status === 'reviewing' && rig.team.calls.filter((call) => String(call.text).indexOf('T-2') >= 0).length === 0,
+    JSON.stringify({ status: findTask(read.board, 'T-2').status, calls: rig.team.calls.length }),
+  )
+  check('the queued task carries a slot position', stageSlotOf(rig.ctx, 'T-2', 'reviewer').position === 1 && stageSlotOf(rig.ctx, 'T-2', 'reviewer').at === null)
+  scheduler.dispose()
+}
+
+// ── tester slot: promotion keeps the full candidate and host baseline ──────
+{
+  const rig = createRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const old = new Date(Date.now() - 120000).toISOString()
+  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null }
+  const testTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'testing', merge: { status: 'open', base: 'base-sha', target: 'feat/x', head: 'head-sha', mergeCommit: 'cand-' + id, declaredFiles: [], actualFiles: [], tests: 'npm test', reviewer: null, conflict: null, output: null, at: old }, review: { status: 'approved', by: 'reviewer-1', at: old, reasons: null, attempt: 1 }, test: { status: 'pending', by: null, at: old, evidence: null, attempt: 1 } })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [testTask('T-1', 'delivered test'), testTask('T-2', 'queued test')] }))
+  recordStageSlot(rig.ctx, 'T-1', 'tester', Date.now(), null)
+  recordStageSlot(rig.ctx, 'T-2', 'tester', null, 1)
+  rig.state.memory.testCandidates = { 'T-2': { candidate: { path: 'cand-path', branch: 'test/T-2', base: 'base-sha', head: 'head-sha' }, hostCheck: { exitCode: 0, durationMs: 1000 } } }
+  await rig.action('passTest', { id: 'T-1', evidence: 'ok' })
+  const testerCalls = rig.team.calls.filter((call) => call.target === 'tester-1')
+  const promotedCall = testerCalls[testerCalls.length - 1]
+  check(
+    'a promoted tester round keeps the full candidate and host baseline',
+    promotedCall !== undefined && promotedCall.text.indexOf('cand-path') >= 0 && promotedCall.text.indexOf('head-sha') >= 0 && promotedCall.text.indexOf('Host mechanical check') >= 0,
+    promotedCall === undefined ? 'no tester call' : promotedCall.text.slice(0, 400),
+  )
+  check('the promoted round clears its queue position', stageSlotOf(rig.ctx, 'T-2', 'tester').at !== null && stageSlotOf(rig.ctx, 'T-2', 'tester').position === null)
+  rig.scheduler.dispose()
+}
+// ── queue positions stay dense after a promotion ───────────────────────────
+{
+  const rig = createRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const old = new Date(Date.now() - 120000).toISOString()
+  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
+  const reviewTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'reviewing', review: { status: 'pending', by: null, at: old, reasons: null, attempt: 1 } })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 4, dispatch: { state: 'paused' }, tasks: [reviewTask('T-1', 'A'), reviewTask('T-2', 'B'), reviewTask('T-3', 'C')] }))
+  recordStageSlot(rig.ctx, 'T-1', 'reviewer', Date.now(), null)
+  recordStageSlot(rig.ctx, 'T-2', 'reviewer', null, 1)
+  recordStageSlot(rig.ctx, 'T-3', 'reviewer', null, 2)
+  await rig.action('approveReview', { id: 'T-1' })
+  check(
+    'after a promotion the remaining queue is renumbered from 1',
+    stageSlotOf(rig.ctx, 'T-2', 'reviewer').at !== null && stageSlotOf(rig.ctx, 'T-3', 'reviewer').position === 1,
+    JSON.stringify({ b: stageSlotOf(rig.ctx, 'T-2', 'reviewer'), c: stageSlotOf(rig.ctx, 'T-3', 'reviewer') }),
+  )
+  check('a finished round keeps its delivery time but no queue position', stageSlotOf(rig.ctx, 'T-1', 'reviewer') !== null && stageSlotOf(rig.ctx, 'T-1', 'reviewer').at !== null && stageSlotOf(rig.ctx, 'T-1', 'reviewer').position === null, JSON.stringify(stageSlotOf(rig.ctx, 'T-1', 'reviewer')))
+  const afterVerdict = await snapshot(rig)
+  check('the snapshot still reports the finished review delivery for the metrics', byId(afterVerdict, 'T-1').review !== null && typeof byId(afterVerdict, 'T-1').review.deliveredAt === 'string', JSON.stringify(byId(afterVerdict, 'T-1').review))
+  rig.scheduler.dispose()
+}
+// ── restarted board: legacy no-slot rounds never starve a queued round ─────
+{
+  const rig = createRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const old = new Date(Date.now() - 120000).toISOString()
+  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
+  const reviewTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'reviewing', review: { status: 'pending', by: null, at: old, reasons: null, attempt: 1 } })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 5, dispatch: { state: 'paused' }, tasks: [reviewTask('T-1', 'legacy 1'), reviewTask('T-2', 'legacy 2'), reviewTask('T-3', 'queued')] }))
+  recordStageSlot(rig.ctx, 'T-3', 'reviewer', null, 1)
+  await rig.action('approveReview', { id: 'T-1' })
+  check(
+    'legacy no-slot rounds do not crash the capacity and the queued round keeps a position',
+    stageSlotOf(rig.ctx, 'T-3', 'reviewer') !== null && (stageSlotOf(rig.ctx, 'T-3', 'reviewer').at !== null || stageSlotOf(rig.ctx, 'T-3', 'reviewer').position >= 1),
+    JSON.stringify(stageSlotOf(rig.ctx, 'T-3', 'reviewer')),
+  )
+  rig.scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

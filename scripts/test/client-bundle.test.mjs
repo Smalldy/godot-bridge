@@ -1302,6 +1302,29 @@ await flush()
     HOST.activity = savedOldActivity
   }
 
+  // A queued review round is visible on the card, the detail and the status page.
+  {
+    const queuedTask = HOST.tasks.filter((entry) => entry.id === 'T-4')[0]
+    const savedQueue = queuedTask.queuePosition
+    queuedTask.queuePosition = 1
+    let queueTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    queueTree = withHooks(panel, { initialView: 'board' })
+    const queuedCard = findAll(queueTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card' && textOf(node).indexOf('Review the crate API') >= 0)[0]
+    check('a queued review round shows its position on the card', queuedCard !== undefined && textOf(queuedCard).indexOf('排队中') >= 0 && textOf(queuedCard).indexOf('前面 1 条') >= 0, queuedCard && textOf(queuedCard))
+    let statusQueueTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    statusQueueTree = withHooks(panel, { initialView: 'status' })
+    const reviewerRow = findAll(statusQueueTree, (node) => node.props && node.props['data-status-agent'] === 'reviewer-1')[0]
+    check('the status agents card shows the reviewer queue length', reviewerRow !== undefined && textOf(reviewerRow).indexOf('队列 1') >= 0, reviewerRow && textOf(reviewerRow))
+    queuedCard.props.onClick()
+    const detailQueueTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    const detailQueueDrawer = findAll(detailQueueTree, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
+    check('the detail page shows the queue position pill', detailQueueDrawer !== undefined && textOf(detailQueueDrawer).indexOf('排队中') >= 0 && textOf(detailQueueDrawer).indexOf('前面 1 条') >= 0, detailQueueDrawer && textOf(detailQueueDrawer).slice(0, 200))
+    queuedTask.queuePosition = savedQueue
+  }
+
   // ── empty states are plain text, not a card inside a card ──
   {
     const savedEmptyAgents = HOST.agents
@@ -2545,6 +2568,28 @@ await flush()
     )
     HOST.agents = savedSubmitRoster
     submitFallbackTask.history = savedSubmitHistory
+  }
+
+  // Review/test durations come from delivery, and queue wait is separate.
+  {
+    const metricTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedMetricReview = metricTask.review
+    const savedMetricTest = metricTask.test
+    const savedMetricHistory = metricTask.history
+    const nowMs = Date.now()
+    metricTask.history = [{ from: 'running', to: 'reviewing', at: new Date(nowMs - 180000).toISOString(), by: '@user', byName: '你', note: 'submitted' }]
+    metricTask.review = Object.assign({}, savedMetricReview, { at: new Date(nowMs - 120000).toISOString(), deliveredAt: new Date(nowMs - 60000).toISOString() })
+    metricTask.test = Object.assign({}, savedMetricTest, { at: new Date(nowMs - 30000).toISOString(), deliveredAt: new Date(nowMs - 20000).toISOString() })
+    const metricDrawer = await openDetail('Build damage system')
+    const metricsNode = findAll(metricDrawer, (node) => node.props && node.props['data-detail-metrics'] === 'true')[0]
+    check(
+      'the detail shows delivery-based review/test durations and the queue wait separately',
+      metricsNode !== undefined && textOf(metricsNode).indexOf('评审') >= 0 && textOf(metricsNode).indexOf('测试') >= 0 && textOf(metricsNode).indexOf('排队') >= 0,
+      metricsNode && textOf(metricsNode),
+    )
+    metricTask.review = savedMetricReview
+    metricTask.test = savedMetricTest
+    metricTask.history = savedMetricHistory
   }
 
   // Elapsed is the finished span, not the growing age.

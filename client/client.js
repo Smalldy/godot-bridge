@@ -415,6 +415,9 @@ window.__ModuleLoader__.load({
 				detailHours: '小时',
 				detailSeconds: '秒',
 				detailTestDuration: '用时',
+				detailQueueWait: '排队',
+				queuedChip: '排队中 · 前面 {n} 条',
+				queueLengthChip: '队列 {n}',
 				actorUnknown: '成员 {id}',
 				actorRoleReviewer: '评审者',
 				actorRoleTester: '测试者',
@@ -860,6 +863,9 @@ window.__ModuleLoader__.load({
 				detailHours: 'h',
 				detailSeconds: 's',
 				detailTestDuration: 'took',
+				detailQueueWait: 'queue',
+				queuedChip: 'queued · {n} ahead',
+				queueLengthChip: 'queue {n}',
 				actorUnknown: 'member {id}',
 				actorRoleReviewer: 'reviewer',
 				actorRoleTester: 'tester',
@@ -1795,6 +1801,9 @@ window.__ModuleLoader__.load({
 				if (commit !== '') meta.push(h('span', { key: 'commit', className: 'gbt-chip', title: commit }, '● ' + commit.slice(0, 10)))
 				if (worktree !== '') meta.push(h('span', { key: 'worktree', className: 'gbt-chip', title: worktree }, '🌿 ' + tcBaseName(worktree)))
 				if (dispatchError !== null && task.status !== 'running') meta.push(h('span', { key: 'error', className: 'gbt-chip', 'data-tone': 'blocked', title: dispatchError }, '⚠ ' + t('dispatchError')))
+				if (Number.isFinite(task.queuePosition) && task.queuePosition > 0) {
+					meta.push(h('span', { key: 'queued', className: 'gbt-chip', 'data-tone': 'waiting', 'data-queue': String(task.queuePosition) }, '⏳ ' + t('queuedChip').replace('{n}', String(task.queuePosition))))
+				}
 				const waiting = waitingChip(task, t, 'waiting')
 				if (waiting !== null) meta.push(waiting)
 				if (meta.length > 0) children.push(h('div', { key: 'meta', className: 'gbt-cardmeta' }, meta))
@@ -3130,13 +3139,15 @@ window.__ModuleLoader__.load({
 					const session = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' ? member.id : ''
 					const current = member.currentTask === null || member.currentTask === undefined ? null : member.currentTask
 					const idleMinutes = idleMinutesFor(name)
-					const statusText = isLead
+					const roleKind = isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate'
+					const queueLength = roleKind === 'reviewer' ? reviewerQueue : roleKind === 'tester' ? testerQueue : 0
+					const statusText = (isLead
 						? '—'
 						: current !== null
 							? current.id
 							: idleMinutes === null
 								? t('statusIdle')
-								: t('statusIdle') + ' ' + String(idleMinutes) + ' ' + t('statusMinutes')
+								: t('statusIdle') + ' ' + String(idleMinutes) + ' ' + t('statusMinutes')) + (queueLength > 0 ? ' · ' + t('queueLengthChip').replace('{n}', String(queueLength)) : '')
 					const resultText = isLead ? typeof member.description === 'string' && member.description !== '' ? member.description : '—' : lastResultFor(name)
 					const expanded = openSession === name
 					return h(
@@ -3222,6 +3233,8 @@ window.__ModuleLoader__.load({
 								),
 					),
 				)
+				const reviewerQueue = tasks.filter(function (task) { return task.status === 'reviewing' && Number.isFinite(task.queuePosition) && task.queuePosition > 0 }).length
+				const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && Number.isFinite(task.queuePosition) && task.queuePosition > 0 }).length
 				const lead = agents !== null && agents !== undefined ? agents.lead : null
 				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
 				const agentRows = []
@@ -3662,11 +3675,37 @@ window.__ModuleLoader__.load({
 					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailHostCheck')), h('b', { 'data-detail-hostcheck': 'true' }, task.verify === null || task.verify === undefined ? t('detailHostCheckUndeclared') : test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? (test.hostCheck.exitCode === 0 && test.hostCheck.timedOut !== true ? t('statusResultPassed') : t('detailHostCheckFailed')) : t('detailHostCheckIncomplete'))),
 					h('div', { className: 'gbt-detailstatline' }, t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
 				)
+				const fmtSpan = function (ms) {
+					if (!Number.isFinite(ms) || ms < 0) return '—'
+					const minutes = Math.round(ms / 60000)
+					if (minutes < 1) return String(Math.max(1, Math.round(ms / 1000))) + 's'
+					if (minutes < 60) return String(minutes) + ' ' + t('detailMinutes')
+					return String(Math.floor(minutes / 60)) + ' ' + t('detailHours') + ' ' + String(minutes % 60) + ' ' + t('detailMinutes')
+				}
+				// review.at is the VERDICT time once decided (submit sets it as the phase start
+				// before that), so the phase start for the queue wait comes from history.
+				const reviewPhaseStart = (function () {
+					const hist = Array.isArray(task.history) ? task.history : []
+					const hit = hist.filter(function (entry) { return entry.to === 'reviewing' && typeof entry.at === 'string' }).slice(-1)[0]
+					if (hit !== undefined) return new Date(hit.at).getTime()
+					return review !== null && review.status === 'pending' && typeof review.at === 'string' ? new Date(review.at).getTime() : null
+				})()
+				const reviewMs = review !== null && review.status !== 'pending' && typeof review.at === 'string' && typeof review.deliveredAt === 'string' ? new Date(review.at).getTime() - new Date(review.deliveredAt).getTime() : null
+				const testMs = test !== null && test.status !== 'pending' && typeof test.at === 'string' && typeof test.deliveredAt === 'string' ? new Date(test.at).getTime() - new Date(test.deliveredAt).getTime() : null
+				const queueStart = reviewPhaseStart
+				const queueEnd = review !== null && typeof review.deliveredAt === 'string' ? new Date(review.deliveredAt).getTime() : Number.isFinite(task.queuePosition) && task.queuePosition > 0 ? now : null
+				const queueMs = queueStart === null || queueEnd === null ? null : queueEnd - queueStart
+				const metricParts = []
+				if (reviewMs !== null) metricParts.push(t('stageReview') + ' ' + fmtSpan(reviewMs))
+				if (testMs !== null) metricParts.push(t('stageTest') + ' ' + fmtSpan(testMs))
+				if (queueMs !== null) metricParts.push(t('detailQueueWait') + ' ' + fmtSpan(queueMs))
+				const metricsNode = metricParts.length === 0 ? null : h('div', { className: 'gbt-detailstatline', 'data-detail-metrics': 'true' }, metricParts.join(' · '))
 				const summary = h(
 					'div',
 					{ className: 'gbt-detailsummary', 'data-detail': 'summary', 'data-detail-summary': 'full' },
 					h('div', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
 					h('div', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit'), ' · ', t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit'), ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+					metricsNode,
 					summaryFacts,
 					specToggle,
 					specBody,
@@ -3775,7 +3814,7 @@ window.__ModuleLoader__.load({
 						h(
 							'div',
 							{ className: 'gbt-detailhead' },
-							h('div', { className: 'gbt-cardmeta' }, h('span', { className: 'gbt-id' }, task.id), h('span', { className: 'gbt-pill', 'data-status': task.status }, t(tcStatusKey(task.status))), waitingChip(task, t, 'waiting')),
+							h('div', { className: 'gbt-cardmeta' }, h('span', { className: 'gbt-id' }, task.id), h('span', { className: 'gbt-pill', 'data-status': task.status }, t(tcStatusKey(task.status))), Number.isFinite(task.queuePosition) && task.queuePosition > 0 ? h('span', { className: 'gbt-pill', 'data-queue': String(task.queuePosition) }, t('queuedChip').replace('{n}', String(task.queuePosition))) : null, waitingChip(task, t, 'waiting')),
 							h('h2', { className: 'gbt-drawertitle' }, task.title),
 							h('div', { className: 'gbt-detailmeta' }, h('span', null, t('assignee') + ' ' + (task.assignee === null || task.assignee === undefined ? '—' : task.assignee.name)), h('span', { className: 'gbt-detailspan' }, new Date(task.createdAt).toTimeString().slice(0, 5) + ' → ' + (finishedAt === null ? t('detailNow') : new Date(finishedAt).toTimeString().slice(0, 5)) + ' · ' + elapsedText)),
 						),

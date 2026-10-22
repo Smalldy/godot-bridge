@@ -130,6 +130,54 @@ export const REVIEW_TIMEOUT_MS = 10 * 60 * 1000
 const PHASE_ACTIVITY = new WeakMap()
 const PHASE_ACTIVITY_FALLBACK = new Map()
 
+// ── role-slot queue ────────────────────────────────────────────────────────
+// One role slot (reviewer-N / tester-N) works one task at a time. The host keeps
+// the delivery/queue state in memory, keyed by ctx like the phase clock:
+// { at: epoch ms of delivery | null, position: 1-based queue position | null }.
+const STAGE_SLOT = new WeakMap()
+const STAGE_SLOT_FALLBACK = new Map()
+
+function slotBucket(ctx, create) {
+  const key = ctx !== null && typeof ctx === 'object' ? ctx : null
+  if (key === null) return STAGE_SLOT_FALLBACK
+  let bucket = STAGE_SLOT.get(key)
+  if (bucket === undefined && create === true) {
+    bucket = new Map()
+    STAGE_SLOT.set(key, bucket)
+  }
+  return bucket
+}
+
+function slotKey(taskId, kind) {
+  return String(taskId) + '@' + String(kind === 'tester' ? 'tester' : 'reviewer')
+}
+
+/** Record one stage's slot state: delivered (at set) or queued (position set). */
+export function recordStageSlot(ctx, taskId, kind, at, position) {
+  if (typeof taskId !== 'string' || taskId === '') return
+  try {
+    const bucket = slotBucket(ctx, true)
+    const key = slotKey(taskId, kind)
+    if (at === null && position === null) bucket.delete(key)
+    else bucket.set(key, { at: Number.isFinite(at) ? at : null, position: Number.isFinite(position) ? position : null })
+  } catch (error) {}
+}
+
+/** One stage's slot state for a task, or null when it was never queued/delivered. */
+export function stageSlotOf(ctx, taskId, kind) {
+  if (typeof taskId !== 'string' || taskId === '') return null
+  try {
+    const bucket = slotBucket(ctx, false)
+    if (bucket === undefined) return null
+    const entry = bucket.get(slotKey(taskId, kind))
+    return entry === undefined ? null : entry
+  } catch (error) {
+    return null
+  }
+}
+
+
+
 function activityBucket(ctx, create) {
   const key = ctx !== null && typeof ctx === 'object' ? ctx : null
   if (key === null) return PHASE_ACTIVITY_FALLBACK
@@ -2517,7 +2565,11 @@ export function createDispatcher(ctx, options) {
     const blocked = []
     let nextBoard = null
     for (const task of pending) {
-      const startedAt = Date.parse(task.review.at)
+      const slot = stageSlotOf(ctx, task.id, 'reviewer')
+      // A task waiting for its role slot has no delivery time yet: its silence
+      // clock is paused so the watchdog cannot remind/block it out of turn.
+      if (slot !== null && slot.position !== null) continue
+      const startedAt = slot !== null && Number.isFinite(slot.at) ? slot.at : Date.parse(task.review.at)
       if (!Number.isFinite(startedAt)) continue
       const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, roleIdentities(names)))
       const silence = now - lastAt
@@ -2536,7 +2588,9 @@ export function createDispatcher(ctx, options) {
           ) {
             return value
           }
-          const freshSilence = Math.round((now - Math.max(Date.parse(fresh.review.at), phaseActivityAt(ctx, fresh.id, roleIdentities(names)))) / 60000)
+          const freshSlot = stageSlotOf(ctx, fresh.id, 'reviewer')
+          const freshStart = freshSlot !== null && Number.isFinite(freshSlot.at) ? freshSlot.at : Date.parse(fresh.review.at)
+          const freshSilence = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, roleIdentities(names)))) / 60000)
           const result = model.blockTask(value, fresh.id, now, 'system', 'review timed out: no reviewer verdict after ' + String(freshSilence) + 'min of silence')
           return result.ok === true ? result.board : value
         })
@@ -2609,7 +2663,9 @@ export function createDispatcher(ctx, options) {
     const blocked = []
     let nextBoard = null
     for (const task of pending) {
-      const startedAt = Date.parse(task.test.at)
+      const slot = stageSlotOf(ctx, task.id, 'tester')
+      if (slot !== null && slot.position !== null) continue
+      const startedAt = slot !== null && Number.isFinite(slot.at) ? slot.at : Date.parse(task.test.at)
       if (!Number.isFinite(startedAt)) continue
       const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, roleIdentities(names)))
       const silence = now - lastAt
@@ -2638,7 +2694,9 @@ export function createDispatcher(ctx, options) {
             fresh.merge !== null && fresh.merge !== undefined && typeof fresh.merge.mergeCommit === 'string' && fresh.merge.mergeCommit !== ''
               ? 'candidate ' + String(fresh.merge.mergeCommit)
               : 'no candidate recorded'
-          const freshMinutes = Math.round((now - Math.max(Date.parse(fresh.test.at), phaseActivityAt(ctx, fresh.id, names))) / 60000)
+          const freshSlot = stageSlotOf(ctx, fresh.id, 'tester')
+          const freshStart = freshSlot !== null && Number.isFinite(freshSlot.at) ? freshSlot.at : Date.parse(fresh.test.at)
+          const freshMinutes = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, names))) / 60000)
           blockNote = 'test timeout: no verdict after ' + String(freshMinutes) + 'min of silence (' + tester + '; ' + freshCandidate + ')'
           const result = model.blockTask(value, fresh.id, now, 'system', blockNote + '; blocked for triage')
           return result.ok === true ? result.board : value
