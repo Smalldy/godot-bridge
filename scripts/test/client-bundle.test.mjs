@@ -1276,6 +1276,19 @@ await flush()
       oldReviewRow !== undefined && textOf(oldReviewRow).indexOf('评审者') >= 0 && oldTestRow !== undefined && textOf(oldTestRow).indexOf('测试者') >= 0 && oldText.indexOf('@7fb24394') < 0 && oldText.indexOf('@b7cc6c31') < 0 && oldText.indexOf('@aaaaaaaa') < 0 && oldText.indexOf('@bbbbbbbb') < 0,
       oldText.slice(0, 300),
     )
+    const mergeTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
+    const savedMergeHistory = mergeTask.history
+    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 10000).toISOString(), by: '@cccccccc', byName: null, note: 'merged as fedcba0987654321' }]
+    let mergeTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    mergeTree = withHooks(panel, { initialView: 'status' })
+    const mergeRow = findAll(mergeTree, (node) => node.props && node.props['data-activity-kind'] === 'merge' && node.props['data-activity-task'] === 'T-3')[0]
+    check(
+      'an old merge row shows 合并者 for an unresolved merger, never a bare @',
+      mergeRow !== undefined && textOf(mergeRow).indexOf('合并者') >= 0 && textOf(mergeRow).indexOf('@cccccccc') < 0,
+      mergeRow && textOf(mergeRow),
+    )
+    mergeTask.history = savedMergeHistory
     const systemPassRow = findAll(oldTree, (node) => node.props && node.props['data-activity-kind'] === 'review-pass')[0]
     check(
       'a host/system event keeps its literal word instead of a role fallback',
@@ -2515,6 +2528,23 @@ await flush()
     HOST.agents = savedRoster
     byNameTask.review = savedByReview
     byNameTask.test = savedByTest
+  }
+
+  // Old submit history without byName falls back to 执行者 on the detail page.
+  {
+    const submitFallbackTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedSubmitHistory = submitFallbackTask.history
+    const savedSubmitRoster = HOST.agents
+    submitFallbackTask.history = [{ from: 'running', to: 'reviewing', at: new Date(Date.now() - 8000).toISOString(), by: '@aaaaaaaa', byName: null, note: 'submitted for review round 1' }]
+    HOST.agents = { lead: null, members: [] }
+    const submitFallbackDrawer = await openDetail('Build damage system')
+    check(
+      'an old submit row shows 执行者 for an unresolved author, never a bare @',
+      textOf(submitFallbackDrawer).indexOf('执行者 aaaaaaaa') >= 0 && textOf(submitFallbackDrawer).indexOf('@aaaaaaaa') < 0,
+      textOf(submitFallbackDrawer).slice(0, 300),
+    )
+    HOST.agents = savedSubmitRoster
+    submitFallbackTask.history = savedSubmitHistory
   }
 
   // Elapsed is the finished span, not the growing age.

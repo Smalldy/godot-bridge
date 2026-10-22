@@ -3049,12 +3049,14 @@ window.__ModuleLoader__.load({
 					const merge = tcMergeOf(task)
 					if (merge !== null && typeof merge.at === 'string') {
 						const commit = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? shortSha(merge.mergeCommit) : ''
+						const mergeActor = mergeActorOf(task)
 						stream.push({
 							key: 'merge-' + task.id,
 							at: merge.at,
 							type: 'merge',
 							taskId: task.id,
-							html: task.id + ' · ' + task.title + ' → ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit),
+							html: task.id + ' · ' + task.title + ' → ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit) +
+								(mergeActor === null ? '' : ' · ' + memberName(mergeActor.by, mergeActor.byName, 'actorRoleMerger')),
 							raw: typeof merge.output === 'string' ? merge.output.split('\n')[0] : null,
 						})
 					}
@@ -3339,6 +3341,16 @@ window.__ModuleLoader__.load({
 				return resolved
 			}
 
+			/** The actor that merged this task, from its merge/done history entry. */
+			function mergeActorOf(task) {
+				const hist = Array.isArray(task === null || task === undefined ? null : task.history) ? task.history : []
+				const hit = hist.filter(function (entry) {
+					const note = typeof entry.note === 'string' ? entry.note : ''
+					return (entry.to === 'done' && note.indexOf('merged') >= 0) || note.indexOf('merged as') === 0
+				})[0]
+				return hit === undefined ? null : { by: hit.by, byName: hit.byName }
+			}
+
 			/** Structured test summary: 通过 · exit 0 · 21s (no evidence text). */
 			function testSummaryText(test, review, t, verdict) {
 				if (test === null || test === undefined) return ''
@@ -3597,6 +3609,7 @@ window.__ModuleLoader__.load({
 							h('span', { className: 'gbt-detailpill', 'data-tone': merge.status === 'merged' ? 'ok' : 'wait' }, tcMergeLabel(merge.status, t)),
 							h('b', null, t('stageMerge')),
 							h('span', { className: 'gbt-detailwho' }, typeof merge.target === 'string' && merge.target !== '' ? '→ ' + merge.target : '—'),
+							h('span', { className: 'gbt-detailwho' }, (function () { const actor = mergeActorOf(task); return actor === null ? '' : ' · ' + actorName(actor.by, actor.byName, 'actorRoleMerger') })()),
 							h('span', { className: 'gbt-detailwhen' }, merge.at === null || merge.at === undefined ? '' : new Date(merge.at).toTimeString().slice(0, 5)),
 							commit === null ? null : h('div', { className: 'gbt-detailex gbt-mono' }, commit + ' · ' + t('detailFilesDeclared').replace('{n}', String(files.length)) + (actualFiles.length === 0 ? '' : ' = ' + t('detailFilesActual').replace('{n}', String(actualFiles.length)))),
 						),
