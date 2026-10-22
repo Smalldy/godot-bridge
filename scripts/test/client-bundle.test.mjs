@@ -1225,6 +1225,70 @@ await flush()
     failTask.test = savedFailTest
   }
 
+  // The header reads the SAME event stream as the activity card.
+  {
+    const savedHeaderActivity = HOST.activity
+    const headerTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedHeaderHistory = headerTask.history
+    const headerAt = new Date(Date.now() - 120000).toISOString()
+    HOST.activity = { available: true, limit: 100, count: 0, entries: [] }
+    headerTask.history = [{ from: 'pending', to: 'running', at: headerAt, by: '@session-lead', byName: 'lead', note: 'dispatched' }]
+    let headerTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    headerTree = withHooks(panel, { initialView: 'status' })
+    const headerText = textOf(headerTree)
+    const headerTime = new Date(headerAt).toTimeString().slice(0, 5)
+    check(
+      'with only history and an empty activity ring the header still shows the newest event time',
+      headerText.indexOf('最近活动') >= 0 && headerText.indexOf(headerTime) >= 0,
+      headerText.slice(0, 260),
+    )
+    HOST.activity = savedHeaderActivity
+    headerTask.history = savedHeaderHistory
+  }
+  // Old records without byName fall back to the semantic role, never a bare @.
+  {
+    const savedOldActivity = HOST.activity
+    const oldTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedOldReview = oldTask.review
+    const savedOldTest = oldTask.test
+    const savedOldHistory = oldTask.history
+    const savedOldRoster = HOST.agents
+    HOST.activity = { available: true, limit: 100, count: 0, entries: [] }
+    HOST.agents = { lead: null, members: [] }
+    oldTask.review = Object.assign({}, savedOldReview, { by: '@7fb24394', byName: null })
+    oldTask.test = Object.assign({}, savedOldTest, { by: '@b7cc6c31', byName: null })
+    oldTask.history = [
+      { from: 'running', to: 'reviewing', at: new Date(Date.now() - 30000).toISOString(), by: '@aaaaaaaa', byName: null, note: 'submitted' },
+      { from: 'reviewing', to: 'running', at: new Date(Date.now() - 25000).toISOString(), by: '@aaaaaaaa', byName: null, note: 'changes requested' },
+      { from: 'reviewing', to: 'testing', at: new Date(Date.now() - 20000).toISOString(), by: 'system', byName: null, note: 'approved' },
+      { from: 'testing', to: 'running', at: new Date(Date.now() - 15000).toISOString(), by: '@bbbbbbbb', byName: null, note: 'tests failed' },
+      { from: 'pending', to: 'running', at: new Date(Date.now() - 40000).toISOString(), by: 'system', byName: null, note: 'dispatched' },
+    ]
+    let oldTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    oldTree = withHooks(panel, { initialView: 'status' })
+    const oldText = textOf(oldTree)
+    const oldReviewRow = findAll(oldTree, (node) => node.props && node.props['data-activity-kind'] === 'review-reject')[0]
+    const oldTestRow = findAll(oldTree, (node) => node.props && node.props['data-activity-kind'] === 'test-fail')[0]
+    check(
+      'old review/test rows without byName show 评审者/测试者 and never a bare @',
+      oldReviewRow !== undefined && textOf(oldReviewRow).indexOf('评审者') >= 0 && oldTestRow !== undefined && textOf(oldTestRow).indexOf('测试者') >= 0 && oldText.indexOf('@7fb24394') < 0 && oldText.indexOf('@b7cc6c31') < 0 && oldText.indexOf('@aaaaaaaa') < 0 && oldText.indexOf('@bbbbbbbb') < 0,
+      oldText.slice(0, 300),
+    )
+    const systemPassRow = findAll(oldTree, (node) => node.props && node.props['data-activity-kind'] === 'review-pass')[0]
+    check(
+      'a host/system event keeps its literal word instead of a role fallback',
+      systemPassRow !== undefined && textOf(systemPassRow).indexOf('system') >= 0 && textOf(systemPassRow).indexOf('评审者') < 0,
+      systemPassRow && textOf(systemPassRow),
+    )
+    HOST.agents = savedOldRoster
+    oldTask.review = savedOldReview
+    oldTask.test = savedOldTest
+    oldTask.history = savedOldHistory
+    HOST.activity = savedOldActivity
+  }
+
   // ── empty states are plain text, not a card inside a card ──
   {
     const savedEmptyAgents = HOST.agents
@@ -2505,8 +2569,8 @@ await flush()
   HOST.agents = { lead: null, members: [] }
   const unmappedDrawer = await openDetail('Build damage system')
   check(
-    'an @id with no roster match shows the safe member fallback, never a bare @',
-    textOf(unmappedDrawer).indexOf('成员 reviewer') >= 0 && textOf(unmappedDrawer).indexOf('@reviewer') < 0,
+    'an @id with no roster match shows the semantic role fallback, never a bare @',
+    textOf(unmappedDrawer).indexOf('评审者 reviewer') >= 0 && textOf(unmappedDrawer).indexOf('@reviewer') < 0,
     textOf(unmappedDrawer).slice(0, 300),
   )
   HOST.agents = savedAgents
