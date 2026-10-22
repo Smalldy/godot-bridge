@@ -415,6 +415,7 @@ window.__ModuleLoader__.load({
 				detailHours: '小时',
 				detailSeconds: '秒',
 				detailTestDuration: '用时',
+				detailQueueWait: '排队',
 				queuedChip: '排队中 · 前面 {n} 条',
 				queueLengthChip: '队列 {n}',
 				actorUnknown: '成员 {id}',
@@ -862,6 +863,7 @@ window.__ModuleLoader__.load({
 				detailHours: 'h',
 				detailSeconds: 's',
 				detailTestDuration: 'took',
+				detailQueueWait: 'queue',
 				queuedChip: 'queued · {n} ahead',
 				queueLengthChip: 'queue {n}',
 				actorUnknown: 'member {id}',
@@ -3673,11 +3675,29 @@ window.__ModuleLoader__.load({
 					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailHostCheck')), h('b', { 'data-detail-hostcheck': 'true' }, task.verify === null || task.verify === undefined ? t('detailHostCheckUndeclared') : test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? (test.hostCheck.exitCode === 0 && test.hostCheck.timedOut !== true ? t('statusResultPassed') : t('detailHostCheckFailed')) : t('detailHostCheckIncomplete'))),
 					h('div', { className: 'gbt-detailstatline' }, t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
 				)
+				const fmtSpan = function (ms) {
+					if (!Number.isFinite(ms) || ms < 0) return '—'
+					const minutes = Math.round(ms / 60000)
+					if (minutes < 1) return String(Math.max(1, Math.round(ms / 1000))) + 's'
+					if (minutes < 60) return String(minutes) + ' ' + t('detailMinutes')
+					return String(Math.floor(minutes / 60)) + ' ' + t('detailHours') + ' ' + String(minutes % 60) + ' ' + t('detailMinutes')
+				}
+				const reviewMs = review !== null && typeof review.at === 'string' && typeof review.deliveredAt === 'string' ? new Date(review.at).getTime() - new Date(review.deliveredAt).getTime() : null
+				const testMs = test !== null && typeof test.at === 'string' && typeof test.deliveredAt === 'string' ? new Date(test.at).getTime() - new Date(test.deliveredAt).getTime() : null
+				const queueStart = review !== null && typeof review.at === 'string' ? new Date(review.at).getTime() : null
+				const queueEnd = review !== null && typeof review.deliveredAt === 'string' ? new Date(review.deliveredAt).getTime() : Number.isFinite(task.queuePosition) && task.queuePosition > 0 ? now : null
+				const queueMs = queueStart === null || queueEnd === null ? null : queueEnd - queueStart
+				const metricParts = []
+				if (reviewMs !== null) metricParts.push(t('stageReview') + ' ' + fmtSpan(reviewMs))
+				if (testMs !== null) metricParts.push(t('stageTest') + ' ' + fmtSpan(testMs))
+				if (queueMs !== null) metricParts.push(t('detailQueueWait') + ' ' + fmtSpan(queueMs))
+				const metricsNode = metricParts.length === 0 ? null : h('div', { className: 'gbt-detailstatline', 'data-detail-metrics': 'true' }, metricParts.join(' · '))
 				const summary = h(
 					'div',
 					{ className: 'gbt-detailsummary', 'data-detail': 'summary', 'data-detail-summary': 'full' },
 					h('div', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
 					h('div', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit'), ' · ', t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit'), ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+					metricsNode,
 					summaryFacts,
 					specToggle,
 					specBody,

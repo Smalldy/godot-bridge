@@ -2570,6 +2570,25 @@ await flush()
     submitFallbackTask.history = savedSubmitHistory
   }
 
+  // Review/test durations come from delivery, and queue wait is separate.
+  {
+    const metricTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedMetricReview = metricTask.review
+    const savedMetricTest = metricTask.test
+    const nowMs = Date.now()
+    metricTask.review = Object.assign({}, savedMetricReview, { at: new Date(nowMs - 120000).toISOString(), deliveredAt: new Date(nowMs - 60000).toISOString() })
+    metricTask.test = Object.assign({}, savedMetricTest, { at: new Date(nowMs - 30000).toISOString(), deliveredAt: new Date(nowMs - 20000).toISOString() })
+    const metricDrawer = await openDetail('Build damage system')
+    const metricsNode = findAll(metricDrawer, (node) => node.props && node.props['data-detail-metrics'] === 'true')[0]
+    check(
+      'the detail shows delivery-based review/test durations and the queue wait separately',
+      metricsNode !== undefined && textOf(metricsNode).indexOf('评审') >= 0 && textOf(metricsNode).indexOf('测试') >= 0 && textOf(metricsNode).indexOf('排队') >= 0,
+      metricsNode && textOf(metricsNode),
+    )
+    metricTask.review = savedMetricReview
+    metricTask.test = savedMetricTest
+  }
+
   // Elapsed is the finished span, not the growing age.
   const doneTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
   const elapsedDrawer = await openDetail('Tail output feature')

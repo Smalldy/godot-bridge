@@ -171,15 +171,7 @@ export function stageSlotOf(ctx, taskId) {
   }
 }
 
-/** All slot entries for this ctx (taskId → state). */
-export function stageSlots(ctx) {
-  try {
-    const bucket = slotBucket(ctx, false)
-    return bucket === undefined ? new Map() : new Map(bucket)
-  } catch (error) {
-    return new Map()
-  }
-}
+
 
 function activityBucket(ctx, create) {
   const key = ctx !== null && typeof ctx === 'object' ? ctx : null

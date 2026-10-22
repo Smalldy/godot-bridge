@@ -746,7 +746,13 @@ export function createApi(ctx, options) {
   /** Delivered + queued tasks of one stage, from the in-memory slot state. */
   function stageQueueState(board, kind) {
     const status = stageStatusOf(kind)
-    const tasks = board.tasks.filter((task) => task.status === status)
+    // A task whose round already has a verdict no longer occupies the slot, even
+    // while it stays in the stage (e.g. testing waits for the merge).
+    const tasks = board.tasks.filter((task) => {
+      if (task.status !== status) return false
+      const record = kind === 'reviewer' ? task.review : task.test
+      return record !== null && record !== undefined && record.status === 'pending'
+    })
     const delivered = []
     const queued = []
     for (const task of tasks) {
@@ -786,12 +792,18 @@ export function createApi(ctx, options) {
     const state = stageQueueState(read.board, kind)
     let free = capacity - state.delivered.length
     const promoted = []
+    const remaining = []
     for (const entry of state.queued) {
-      if (free <= 0) break
+      if (free <= 0) {
+        remaining.push(entry.task)
+        continue
+      }
       recordStageSlot(ctx, entry.task.id, clock(), null)
       promoted.push(entry.task)
       free -= 1
     }
+    // Renumber what is still waiting so positions stay dense and truthful.
+    remaining.forEach((task, index) => recordStageSlot(ctx, task.id, null, index + 1))
     return promoted
   }
 
@@ -2508,7 +2520,7 @@ export function createApi(ctx, options) {
         if (candidate !== null) {
           result.candidate = candidate
           if (state.memory.testCandidates === undefined || state.memory.testCandidates === null) state.memory.testCandidates = {}
-          state.memory.testCandidates[result.task.id] = candidate.path
+          state.memory.testCandidates[result.task.id] = { candidate: candidate, hostCheck: hostCheck }
           const tester = roleSlotNameOf('tester')
           const testSlot = await assignStageSlot(projectPath, result.task, 'tester')
           result.queuePosition = testSlot.position
@@ -2523,6 +2535,7 @@ export function createApi(ctx, options) {
           }
         }
       }
+      recordStageSlot(ctx, id, null, null)
       // The verdict frees this reviewer slot: hand it to the next queued round.
       const promotedReview = await promoteStageSlots(projectPath, 'reviewer')
       if (promotedReview.length > 0) {
@@ -2570,14 +2583,25 @@ export function createApi(ctx, options) {
         result.task.merge !== undefined &&
         typeof result.task.merge.mergeCommit === 'string' &&
         result.task.merge.mergeCommit.length > 0
+      recordStageSlot(ctx, id, null, null)
       const promotedTest = await promoteStageSlots(projectPath, 'tester')
       if (promotedTest.length > 0) {
         const testerSlot = roleSlotNameOf('tester')
         if (testerSlot !== null) {
           for (const promoted of promotedTest) {
-            const path = state.memory.testCandidates === undefined || state.memory.testCandidates === null ? null : state.memory.testCandidates[promoted.id]
-            if (typeof path !== 'string' || path === '') continue
-            await notifyMember(testerSlot, testerBriefFor(promoted, projectPath, { path: path }, { hostCheck: null }))
+            const stored = state.memory.testCandidates === undefined || state.memory.testCandidates === null ? null : state.memory.testCandidates[promoted.id]
+            const storedCandidate = stored !== null && stored !== undefined && stored.candidate !== undefined ? stored.candidate : null
+            const storedHostCheck = stored !== null && stored !== undefined && stored.hostCheck !== undefined ? stored.hostCheck : null
+            const fallbackPath = stored !== null && stored !== undefined && typeof stored === 'string' ? stored : null
+            const candidateForBrief = storedCandidate !== null ? storedCandidate : fallbackPath === null ? null : { path: fallbackPath }
+            if (candidateForBrief === null || typeof candidateForBrief.path !== 'string' || candidateForBrief.path === '') continue
+            await notifyMember(
+              testerSlot,
+              testerBriefFor(promoted, projectPath, candidateForBrief, {
+                godot: await godotInfoFor(projectPath, candidateForBrief.path),
+                hostCheck: storedHostCheck,
+              }),
+            )
           }
         }
       }
