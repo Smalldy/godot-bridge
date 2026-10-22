@@ -423,6 +423,9 @@ window.__ModuleLoader__.load({
 				detailHours: '小时',
 				detailSeconds: '秒',
 				evtCreate: '创建',
+				evtOutcomePass: '通过',
+				evtOutcomeReject: '打回',
+				evtOutcomeFail: '失败',
 				evtRetry: '重试',
 				evtDispatch: '派发',
 				evtSubmit: '提交',
@@ -866,6 +869,9 @@ window.__ModuleLoader__.load({
 				detailHours: 'h',
 				detailSeconds: 's',
 				evtCreate: 'Created',
+				evtOutcomePass: 'passed',
+				evtOutcomeReject: 'rejected',
+				evtOutcomeFail: 'failed',
 				evtRetry: 'Retried',
 				evtDispatch: 'Dispatched',
 				evtSubmit: 'Submitted',
@@ -3048,7 +3054,7 @@ window.__ModuleLoader__.load({
 							at: merge.at,
 							type: 'merge',
 							taskId: task.id,
-							html: t('evtMerge') + ' ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit),
+							html: task.id + ' · ' + task.title + ' → ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit),
 							raw: typeof merge.output === 'string' ? merge.output.split('\n')[0] : null,
 						})
 					}
@@ -3065,7 +3071,7 @@ window.__ModuleLoader__.load({
 						at: entry.at,
 						type: kind === 'host-check' ? 'host-check' : 'blocked',
 						taskId: typeof entry.taskId === 'string' ? entry.taskId : '',
-						html: t(kind === 'host-check' ? 'evtHostCheck' : 'evtError'),
+						html: (typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId + ' · ' : '') + t(kind === 'host-check' ? 'evtHostCheck' : 'evtError'),
 						raw: typeof entry.detail === 'string' ? entry.detail : null,
 					})
 				})
@@ -3087,18 +3093,20 @@ window.__ModuleLoader__.load({
 					return parts.length === 0 ? '' : ' · ' + parts.join(' · ')
 				}
 				function eventText(type, task, assignee, review, test, entry, note, eventRound, noteSha) {
+					// The row already renders the kind as a chip, so the description starts
+					// with the subject and never repeats the verb.
 					const subject = task.id + ' · ' + task.title
-					if (type === 'create') return t('evtCreate') + ' ' + subject
-					if (type === 'retry') return t('evtRetry') + ' ' + task.id
-					if (type === 'dispatch') return t('evtDispatch') + ' ' + task.id + (assignee === null ? '' : ' → ' + assignee)
-					if (type === 'submit') return t('evtSubmit') + ' ' + task.id + (noteSha === '' && shortSha(task.commit) === '' ? '' : ' · ' + (noteSha === '' ? shortSha(task.commit) : noteSha)) + ' · ' + t('detailFilesDeclared').replace('{n}', String(Array.isArray(task.writeFiles) ? task.writeFiles.length : 0))
-					if (type === 'review-pass') return t('evtReviewPass') + ' ' + task.id + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
-					if (type === 'review-reject') return t('evtReviewReject') + ' ' + task.id + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
-					if (type === 'test-pass') return t('evtTestPass') + ' ' + task.id + (test === null ? '' : ' · ' + memberName(test.by)) + testSummary(test)
-					if (type === 'test-fail') return t('evtTestFail') + ' ' + task.id + (test === null ? '' : ' · ' + memberName(test.by)) + testSummary(test)
-					if (type === 'blocked') return t('evtBlocked') + ' ' + task.id
-					if (type === 'cancel') return t('evtCancel') + ' ' + task.id
-					return t('evtEvent') + ' ' + task.id
+					if (type === 'create') return subject
+					if (type === 'retry') return task.id
+					if (type === 'dispatch') return task.id + (assignee === null ? '' : ' → ' + assignee)
+					if (type === 'submit') return task.id + (noteSha === '' && shortSha(task.commit) === '' ? '' : ' · ' + (noteSha === '' ? shortSha(task.commit) : noteSha)) + ' · ' + t('detailFilesDeclared').replace('{n}', String(Array.isArray(task.writeFiles) ? task.writeFiles.length : 0))
+					if (type === 'review-pass') return subject + ' · ' + t('evtOutcomePass') + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
+					if (type === 'review-reject') return subject + ' · ' + t('evtOutcomeReject') + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
+					if (type === 'test-pass') return task.id + ' · ' + t('evtOutcomePass') + (test === null ? '' : ' · ' + memberName(test.by)) + testSummary(test)
+					if (type === 'test-fail') return task.id + ' · ' + t('evtOutcomeFail') + (test === null ? '' : ' · ' + memberName(test.by)) + testSummary(test)
+					if (type === 'blocked') return task.id
+					if (type === 'cancel') return task.id
+					return task.id
 				}
 				/** Minutes since this member's newest activity entry (entries are newest-first). */
 				function idleMinutesFor(name) {

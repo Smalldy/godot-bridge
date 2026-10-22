@@ -1032,9 +1032,16 @@ await flush()
     const streamText = textOf(streamTree)
     check(
       'the events are localized and show member names, never the @id or the raw English note',
-      streamText.indexOf('派发') >= 0 && streamText.indexOf('提交') >= 0 && streamText.indexOf('评审通过') >= 0 && streamText.indexOf('测试通过') >= 0 && streamText.indexOf('合并') >= 0 &&
+      streamText.indexOf('派发') >= 0 && streamText.indexOf('提交') >= 0 && streamText.indexOf('评审') >= 0 && streamText.indexOf('通过') >= 0 && streamText.indexOf('测试') >= 0 && streamText.indexOf('合并') >= 0 &&
         streamText.indexOf('@session') < 0 && streamText.indexOf('@f158b35c') < 0 && streamText.indexOf('submitted for review round') < 0 && streamText.indexOf('dispatched to fixer') < 0 && streamText.indexOf('created by lead') < 0,
       streamText.slice(0, 400),
+    )
+    const mergeRow = findAll(streamTree, (node) => node.props && node.props['data-activity-kind'] === 'merge')[0]
+    check(
+      'the description starts with the subject and never repeats the kind chip verb',
+      streamText.indexOf('派发派发') < 0 && streamText.indexOf('提交提交') < 0 && streamText.indexOf('评审评审') < 0 && streamText.indexOf('测试测试') < 0 && streamText.indexOf('合并合并') < 0 &&
+        mergeRow !== undefined && textOf(mergeRow).indexOf('T-3 · Tail output feature') >= 0 && textOf(mergeRow).indexOf('feat/task-center-v2') >= 0,
+      (mergeRow && textOf(mergeRow)) + ' | ' + streamText.slice(0, 300),
     )
     check(
       'the stream names the assignee rather than an opaque id',
