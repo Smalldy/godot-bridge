@@ -893,8 +893,8 @@ await flush()
   )
   const viewButtons = findAll(statusTree, (node) => node.type === 'button' && node.props && node.props['data-view'] !== undefined)
   check(
-    'the six view tabs carry labels only, with no count suffixes',
-    viewButtons.length === 6 && viewButtons.every((node) => textOf(node).indexOf(' · ') < 0 && textOf(node).indexOf('·') < 0),
+    'the five view tabs carry labels only, with no count suffixes',
+    viewButtons.length === 5 && viewButtons.every((node) => textOf(node).indexOf(' · ') < 0 && textOf(node).indexOf('·') < 0),
     JSON.stringify(viewButtons.map((node) => textOf(node))),
   )
   const dispatchCard = statusCards.filter((card) => card.props['data-status-card'] === 'dispatch')[0]
@@ -1324,10 +1324,10 @@ await flush()
       findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-fork')[0].props['data-role-empty-fork'] === 'true',
   )
   check(
-    'all six panel navigation buttons carry a stable data-view',
+    'all five panel navigation buttons carry a stable data-view (the file-lock tab is gone)',
     (function () {
       const buttons = findAll(rolesTree, (node) => node.type === 'button' && node.props && node.props['data-view'] !== undefined)
-      return buttons.length === 6 && buttons.map((node) => node.props['data-view']).join(',') === 'board,queue,workers,locks,status,roles'
+      return buttons.length === 5 && buttons.map((node) => node.props['data-view']).join(',') === 'board,queue,workers,status,roles' && buttons.every((node) => textOf(node) !== '文件锁')
     })(),
     JSON.stringify(findAll(rolesTree, (node) => node.props && node.props['data-view'] !== undefined).map((node) => node.props['data-view'])),
   )
@@ -2185,57 +2185,13 @@ await flush()
   HOST.tasks = before
 }
 
-// File-lock view: waiters are advisory, not a queue.
-const locksTree = withHooks(panel, { initialView: 'locks' })
-await flush()
-const locksText = textOf(locksTree)
-check('the locks view has a waiters column', locksText.indexOf('等待者') >= 0, locksText)
-check('the locks view renders a waiter as T-x · title', locksText.indexOf('T-2 · Enemy AI') >= 0, locksText)
-check('the locks view says waiters are not a FIFO queue', locksText.indexOf('不是 FIFO 队列') >= 0, locksText)
-const waiterCells = findAll(locksTree, (node) => node.type === 'td' && node.props && node.props['data-col'] === 'waiters')
-check('the locks view renders one waiters cell per lock', waiterCells.length === 2, String(waiterCells.length))
-check(
-  'a waiter chip names the waiting task',
-  waiterCells[0] !== undefined && textOf(waiterCells[0]).indexOf('T-2 · Enemy AI') >= 0,
-  waiterCells[0] && textOf(waiterCells[0]),
-)
-check('a lock without waiters shows a dash', waiterCells[1] !== undefined && textOf(waiterCells[1]) === '—', waiterCells[1] && textOf(waiterCells[1]))
-const postsBeforeRelease = posts.length
-findButton(locksTree, '释放').props.onClick()
-await flush()
-check(
-  'the release button still sends forceUnlock',
-  posts.length === postsBeforeRelease + 1 && posts[posts.length - 1].action === 'forceUnlock',
-  JSON.stringify(posts[posts.length - 1]),
-)
-
-// The main slot unmounts when the user switches to the chat panel. The view
-// and the selected task must survive that remount instead of resetting to board.
+// The manual file-lock page is gone: no locks tab, no lock actions left in the UI.
 {
-  const boardTree = withHooks(panel, { initialView: 'board' })
+  const tree = withHooks(panel, { initialView: 'board' })
   await flush()
-  const queueTab = findButton(boardTree, '队列')
-  check('the queue tab is available for the remount test', queueTab !== undefined)
-  queueTab.props.onClick()
-  const afterSwitch = withHooks(panel, {})
-  await flush()
-  check(
-    'the selected view survives a remount',
-    textOf(afterSwitch).indexOf('派发从这个顺序取任务') >= 0,
-    textOf(afterSwitch).slice(0, 200),
-  )
-
-  const boardAgain = withHooks(panel, { initialView: 'board' })
-  await flush()
-  const card = findAll(boardAgain, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card')[0]
-  check('a task card is available for the selection test', card !== undefined)
-  card.props.onClick()
-  const afterSelection = withHooks(panel, { initialView: 'board' })
-  await flush()
-  check(
-    'the selected task survives a remount',
-    findAll(afterSelection, (node) => node.props && node.props['data-detail-overlay'] === 'true').length === 1,
-  )
+  const tabs = findAll(tree, (node) => node.props && node.props['data-view'] !== undefined)
+  check('the file-lock tab is removed from the panel', tabs.every((node) => node.props['data-view'] !== 'locks') && tabs.length === 5, JSON.stringify(tabs.map((node) => node.props['data-view'])))
+  check('and the old locks page copy is not rendered anywhere', textOf(tree).indexOf('等待者') < 0 && textOf(tree).indexOf('当前没有文件锁') < 0)
 }
 
 // Settings: the phase machine owns review/test, so the old self/independent

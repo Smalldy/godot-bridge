@@ -178,11 +178,6 @@ window.__ModuleLoader__.load({
 				files: '文件',
 				noFiles: '未声明文件',
 				noDeps: '无依赖',
-				locks: '文件锁',
-				lockPath: '路径',
-				lockHolder: '持有者',
-				lockSince: '开始',
-				lockLease: '租约',
 				release: '释放',
 				status: '状态',
 				priority: '优先级',
@@ -203,7 +198,6 @@ window.__ModuleLoader__.load({
 				blockedCol: '阻塞',
 				emptyBoard: '还没有任务。点“新建任务”开始。',
 				emptyQueue: '没有可派发的任务。',
-				emptyLocks: '当前没有文件锁。',
 				emptyHistory: '没有历史记录。',
 				workersTab: '执行者',
 				workersLead: 'Team Lead',
@@ -223,8 +217,6 @@ window.__ModuleLoader__.load({
 				workersErrNoService: '当前 profile 没有 Agent Teams 服务',
 				workersErrNoLead: '没有活着的 Team Lead',
 				workersErrRoster: '花名册不可读',
-				waiters: '等待者',
-				locksWaitersHint: '等待者 = 当前会等这个文件的任务；这不是 FIFO 队列——调度器没有锁队列，只在每轮派发时重试。',
 				unknownProjectHint: '还没有项目。在会话里调用一次 task_center，或在下方填写项目目录。',
 				offline: '宿主没有响应',
 				error: '操作失败',
@@ -624,11 +616,6 @@ window.__ModuleLoader__.load({
 				files: 'Files',
 				noFiles: 'No declared files',
 				noDeps: 'No dependencies',
-				locks: 'File locks',
-				lockPath: 'Path',
-				lockHolder: 'Holder',
-				lockSince: 'Since',
-				lockLease: 'Lease',
 				release: 'Release',
 				status: 'Status',
 				priority: 'Priority',
@@ -649,7 +636,6 @@ window.__ModuleLoader__.load({
 				blockedCol: 'Blocked',
 				emptyBoard: 'No tasks yet. Use “New task” to start.',
 				emptyQueue: 'Nothing is ready to dispatch.',
-				emptyLocks: 'No file locks right now.',
 				emptyHistory: 'No history yet.',
 				workersTab: 'Workers',
 				workersLead: 'Team lead',
@@ -669,8 +655,6 @@ window.__ModuleLoader__.load({
 				workersErrNoService: 'this profile has no Agent Teams services',
 				workersErrNoLead: 'no live Team Lead',
 				workersErrRoster: 'the roster could not be read',
-				waiters: 'Waiters',
-				locksWaitersHint: 'Waiters are the tasks that would wait on this file right now. This is not a FIFO queue — the scheduler keeps no lock queue and simply retries on each dispatch pass.',
 				unknownProjectHint: 'No project yet. Call task_center once in a session, or enter a project directory below.',
 				offline: 'The host did not answer',
 				error: 'Action failed',
@@ -1112,7 +1096,6 @@ window.__ModuleLoader__.load({
 			'.gbt-locktable{width:100%;border-collapse:collapse;font-size:11px}',
 			'.gbt-locktable th{text-align:left;font-weight:500;color:var(--dsw-alias-label-tertiary);padding:6px 8px;border-bottom:0.5px solid var(--dsw-alias-border-l4);position:sticky;top:0;background:var(--dsw-alias-bg-layer-2);z-index:1}',
 			'.gbt-locktable td{padding:6px 8px;border-bottom:0.5px solid var(--dsw-alias-border-l4);vertical-align:middle;color:var(--dsw-alias-label-secondary)}',
-			'.gbt-waiters{display:flex;gap:4px;flex-wrap:wrap}',
 			'.gbt-mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}',
 			'.gbt-overlay{position:fixed;inset:0;background:rgba(15,18,24,.42);display:grid;place-items:center;z-index:100;padding:20px}',
 			'.gbt-modal{width:min(580px,100%);max-height:86vh;overflow:auto;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.22),0 2px 8px rgba(0,0,0,.08);padding:18px}',
@@ -2051,15 +2034,6 @@ window.__ModuleLoader__.load({
 					),
 				)
 				return h('div', null, blocks)
-			}
-
-			/** Waiter chips read "T-3 · title"; a missing title must not invent one. */
-			function waiterLabel(waiter) {
-				if (waiter === null || waiter === undefined) return ''
-				const id = typeof waiter.id === 'string' ? waiter.id : ''
-				const title = typeof waiter.title === 'string' ? waiter.title : ''
-				if (id === '') return title
-				return title === '' ? id : id + ' · ' + title
 			}
 
 			const WORKER_STATUS = { running: 'workersBusy', inactive: 'workersIdle', provisioning: 'workersProvisioning', failed: 'workersFailed' }
@@ -3314,80 +3288,6 @@ window.__ModuleLoader__.load({
 				)
 			}
 
-			function LocksView(props) {
-				const locks = props.snapshot.locks
-				const hint = h('p', { key: 'hint', className: 'gbt-footnote' }, props.t('locksWaitersHint'))
-				if (locks.length === 0) return h('div', null, hint, h('div', { key: 'empty', className: 'gbt-empty' }, props.t('emptyLocks')))
-				return h(
-					'div',
-					null,
-					hint,
-					h(
-						'table',
-						{ className: 'gbt-locktable' },
-						h(
-							'thead',
-							null,
-							h(
-								'tr',
-								null,
-								h('th', null, props.t('lockPath')),
-								h('th', null, props.t('taskCount')),
-								h('th', null, props.t('lockHolder')),
-								h('th', null, props.t('waiters')),
-								h('th', null, props.t('lockLease')),
-								h('th', null, ''),
-							),
-						),
-						h(
-							'tbody',
-							null,
-							locks.map(function (lock) {
-								const lease = tcLease(lock.leaseUntil, props.now, props.t)
-								const waiters = Array.isArray(lock.waiters) ? lock.waiters : []
-								return h(
-									'tr',
-									{ key: lock.path },
-									h('td', { className: 'gbt-mono' }, lock.path),
-									h('td', null, lock.taskId === null || lock.taskId === undefined ? '—' : lock.taskId + (lock.taskTitle === null || lock.taskTitle === undefined ? '' : ' · ' + lock.taskTitle)),
-									h('td', null, lock.agent === null || lock.agent === undefined ? '—' : lock.agent),
-									h(
-										'td',
-										{ 'data-col': 'waiters' },
-										waiters.length === 0
-											? '—'
-											: h(
-												'div',
-												{ className: 'gbt-waiters' },
-												waiters.map(function (waiter, index) {
-													return h('span', { key: waiter !== null && waiter !== undefined && waiter.id !== undefined ? String(waiter.id) : String(index), className: 'gbt-chip', 'data-tone': 'waiting' }, waiterLabel(waiter))
-												}),
-											),
-									),
-									h('td', { 'data-warn': lease !== null && lease.warn ? 'true' : 'false' }, lease === null ? '—' : lease.text),
-									h(
-										'td',
-										null,
-										h(
-											'button',
-											{
-												type: 'button',
-												className: 'gbt-btn',
-												'data-size': 'sm',
-												onClick: function () {
-													void store.send('forceUnlock', { paths: [lock.path] })
-												},
-											},
-											props.t('release'),
-										),
-									),
-								)
-							}),
-						),
-					),
-				)
-			}
-
 			function Modal(props) {
 				return h(
 					'div',
@@ -3998,7 +3898,7 @@ window.__ModuleLoader__.load({
 				const snapshot = useSnapshot()
 				const now = useNow(5000)
 				// Rendering tests may pick the first view; the production slot passes no props.
-				const initialView = props !== undefined && props !== null && ['board', 'queue', 'workers', 'locks', 'status', 'roles'].indexOf(props.initialView) >= 0 ? props.initialView : panelState.view
+				const initialView = props !== undefined && props !== null && ['board', 'queue', 'workers', 'status', 'roles'].indexOf(props.initialView) >= 0 ? props.initialView : panelState.view
 				const [view, setViewState] = React.useState(initialView)
 				const [selectedId, setSelectedIdState] = React.useState(panelState.selectedId)
 				const [editing, setEditing] = React.useState(null)
@@ -4056,7 +3956,6 @@ window.__ModuleLoader__.load({
 					{ key: 'board', label: t('boardTab') },
 					{ key: 'queue', label: t('queue') },
 					{ key: 'workers', label: t('workersTab') },
-					{ key: 'locks', label: t('locks') },
 					{ key: 'status', label: t('statusTab') },
 					{ key: 'roles', label: t('rolesTab') },
 				]
@@ -4197,7 +4096,7 @@ window.__ModuleLoader__.load({
 									? h(StatusView, { snapshot: snapshot, t: t, now: now, store: store })
 									: view === 'roles'
 										? h(RolesView, { snapshot: snapshot, t: t, store: store })
-										: h(LocksView, { snapshot: snapshot, t: t, now: now })
+										: h(Board, { snapshot: snapshot, t: t, now: now, selectedId: selectedId, onOpen: openTask })
 
 				const tabsView = h(
 					'div',
