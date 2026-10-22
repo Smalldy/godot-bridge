@@ -2340,6 +2340,28 @@ check(
     await flush()
     check('Escape closes the overlay', findAll(closedByEsc, (node) => node.props && node.props['data-detail-overlay'] === 'true').length === 0)
 
+    check(
+      'the 420px layout still renders the spec/acceptance summary (collapsed by default)',
+      findAll(narrowDrawer, (node) => node.props && node.props['data-detail-spec'] === 'collapsed').length === 1 &&
+        findAll(narrowDrawer, (node) => node.props && node.props['data-detail'] === 'summary').length === 2,
+      JSON.stringify(findAll(narrowDrawer, (node) => node.props && node.props['data-detail'] === 'summary').map((node) => node.props['data-detail-summary'])),
+    )
+
+    setWidth(920)
+    const boundaryDrawer = await openDetail('Tail output feature')
+    check(
+      'the breakpoint uses the panel content width (920 viewport -> 824 container -> compact)',
+      boundaryDrawer.props['data-detail-width'] === 'narrow' && boundaryDrawer.props['data-detail-layout'] === 'compact',
+      JSON.stringify({ width: boundaryDrawer.props['data-detail-width'], layout: boundaryDrawer.props['data-detail-layout'] }),
+    )
+
+    const css = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+    check(
+      'the detail stat value is 13px in the registered CSS (no oversized number)',
+      css.indexOf('.gbt-detailstat b{font-size:13px') >= 0 && css.indexOf('.gbt-detailstat b{font-size:18px') < 0,
+      (css.match(/gbt-detailstat b\{[^}]*\}/g) || []).join(' | '),
+    )
+
     restoreWidth()
   }
 

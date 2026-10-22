@@ -1098,9 +1098,7 @@ window.__ModuleLoader__.load({
 			'.gbt-outputblock{margin-top:8px}',
 			'.gbt-subhead{margin:8px 0 4px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dsw-alias-label-tertiary);font-weight:600}',
 			'.gbt-output{margin:0;padding:8px 9px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;line-height:1.5;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto}',
-			'.gbt-drawer{width:368px;border-left:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);display:flex;flex-direction:column;min-height:0;flex:none}',
-			'.gbt-drawer[data-open="false"]{display:none}',
-			'.gbt-drawerhead{display:flex;align-items:flex-start;gap:8px;padding:14px 14px 10px;border-bottom:0.5px solid var(--dsw-alias-border-l4)}',
+									'.gbt-drawerhead{display:flex;align-items:flex-start;gap:8px;padding:14px 14px 10px;border-bottom:0.5px solid var(--dsw-alias-border-l4)}',
 			'.gbt-drawertitle{margin:0;font-size:14px;font-weight:600;line-height:1.4;flex:1;word-break:break-word}',
 			'.gbt-drawerbody{overflow:auto;padding:14px;display:flex;flex-direction:column;gap:14px}',
 			'.gbt-actions{display:flex;gap:6px;flex-wrap:wrap}',
@@ -1207,7 +1205,7 @@ window.__ModuleLoader__.load({
 '.gbt-detailinterrupt{margin:2px 0 6px;font-size:11.5px;color:var(--bad,#e5645c)}',
 '.gbt-detailsummary{border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:8px;background:var(--panel,var(--dsw-alias-bg-layer-1));padding:10px 12px;display:flex;flex-direction:column;gap:8px;font-size:12px}',
 '.gbt-detailstat{display:flex;align-items:baseline;gap:6px}',
-'.gbt-detailstat b{font-size:18px;font-weight:600}',
+'.gbt-detailstat b{font-size:13px;font-weight:600}',
 '.gbt-detailstat span{font-size:11.5px;color:var(--t3,var(--dsw-alias-label-tertiary))}',
 '.gbt-detailstatline{color:var(--t2,var(--dsw-alias-label-secondary));font-size:11.5px}',
 '.gbt-detailkv{display:flex;gap:6px;align-items:baseline;font-size:11.5px;color:var(--t2,var(--dsw-alias-label-secondary))}',
@@ -1316,7 +1314,6 @@ window.__ModuleLoader__.load({
 			'.gbt-spinner{display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:gbt-spin .7s linear infinite;vertical-align:-1px;margin-right:6px}',
 			'@keyframes gbt-spin{to{transform:rotate(360deg)}}',
 			'@keyframes gbt-slide{0%{left:-40%}100%{left:100%}}',
-			'@media (max-width:900px){.gbt-drawer{position:fixed;right:0;top:0;bottom:0;z-index:40;box-shadow:-12px 0 40px rgba(0,0,0,.18)}.gbt-board{overflow-x:auto}.gbt-col{min-width:210px}}',
 		].join('')
 
 		/** ISO-8601 to epoch milliseconds, or null. */
@@ -3453,7 +3450,10 @@ window.__ModuleLoader__.load({
 				const held = snapshot.locks.filter(function (lock) { return lock.taskId === task.id }).map(function (lock) { return lock.path })
 				// The detail is wide content: lay it out by the CONTAINER width, which the
 				// panel approximates from the window when no explicit probe is passed.
-				const probe = typeof props.detailWidth === 'number' ? props.detailWidth : typeof window !== 'undefined' && Number.isFinite(window.innerWidth) && window.innerWidth > 0 ? window.innerWidth : 1440
+				const viewport = typeof props.detailWidth === 'number' ? props.detailWidth : typeof window !== 'undefined' && Number.isFinite(window.innerWidth) && window.innerWidth > 0 ? window.innerWidth : 1440
+				// The overlay pads 24px on each side and the panel is capped at 1080px,
+				// so the CONTENT width is not the viewport width.
+				const probe = Math.min(Math.max(0, viewport - 96), 1080)
 				const wide = probe >= 900
 				const layout = wide ? 'two-column' : probe >= 700 ? 'compact' : 'single'
 				const widthClass = wide ? 'wide' : 'narrow'
@@ -3721,7 +3721,7 @@ window.__ModuleLoader__.load({
 				if (deleteError === 'failed') blocks.push(h('p', { key: 'deletefail', className: 'gbt-footnote' }, t('error')))
 				blocks.push(stages)
 				const eventsCard = h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody)
-				blocks.push(h('div', { className: 'gbt-detailbody', 'data-detail-body': layout, 'data-detail-layout': layout }, layout === 'single' ? compactSummary : null, eventsCard, layout === 'single' ? null : summary))
+				blocks.push(h('div', { className: 'gbt-detailbody', 'data-detail-body': layout, 'data-detail-layout': layout }, layout === 'single' ? compactSummary : null, eventsCard, summary))
 
 				if (task.status === 'running') {
 					blocks.push(
