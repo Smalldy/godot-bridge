@@ -416,6 +416,11 @@ window.__ModuleLoader__.load({
 				detailSeconds: '秒',
 				detailTestDuration: '用时',
 				actorUnknown: '成员 {id}',
+				actorRoleReviewer: '评审者',
+				actorRoleTester: '测试者',
+				actorRoleWorker: '执行者',
+				actorRoleMerger: '合并者',
+				statusOnlyHeartbeats: '仅心跳',
 				evtCreate: '创建',
 				evtOutcomePass: '通过',
 				evtOutcomeReject: '打回',
@@ -856,6 +861,11 @@ window.__ModuleLoader__.load({
 				detailSeconds: 's',
 				detailTestDuration: 'took',
 				actorUnknown: 'member {id}',
+				actorRoleReviewer: 'reviewer',
+				actorRoleTester: 'tester',
+				actorRoleWorker: 'worker',
+				actorRoleMerger: 'merger',
+				statusOnlyHeartbeats: 'heartbeats only',
 				evtCreate: 'Created',
 				evtOutcomePass: 'passed',
 				evtOutcomeReject: 'rejected',
@@ -2968,7 +2978,6 @@ window.__ModuleLoader__.load({
 				const agents = snapshot.agents
 				const entries = activity !== null && activity !== undefined && Array.isArray(activity.entries) ? activity.entries : []
 				const sweepCount = entries.filter(function (entry) { return entry.kind === 'sweep' }).length
-				const lastActivity = entries.length === 0 || typeof entries[0].at !== 'string' ? null : entries[0].at
 				// One resolver shared with the detail page: the tool writes @labels, the
 				// panel shows member names (unresolved ids stay verbatim).
 				const roster = []
@@ -2976,8 +2985,8 @@ window.__ModuleLoader__.load({
 					if (agents.lead !== null && agents.lead !== undefined) roster.push(agents.lead)
 					if (Array.isArray(agents.members)) agents.members.forEach(function (member) { roster.push(member) })
 				}
-				function memberName(value, byName) {
-					return actorDisplay(value, byName, roster, t)
+				function memberName(value, byName, fallbackKey) {
+					return actorDisplay(value, byName, roster, t, fallbackKey)
 				}
 				function whyNotRunning() {
 					if (active !== true) {
@@ -2993,7 +3002,7 @@ window.__ModuleLoader__.load({
 					if (blocked > 0) return t('statusWhyBlocked').replace('{n}', String(blocked))
 					return t('statusWhyRunning')
 				}
-				const lastActivityText = lastActivity === null ? null : t('statusLastActivity') + ' ' + tcAgo(lastActivity, now)
+
 
 				// ── the activity stream: localized events for the phases ──
 				function shortSha(value) {
@@ -3040,12 +3049,14 @@ window.__ModuleLoader__.load({
 					const merge = tcMergeOf(task)
 					if (merge !== null && typeof merge.at === 'string') {
 						const commit = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? shortSha(merge.mergeCommit) : ''
+						const mergeActor = mergeActorOf(task)
 						stream.push({
 							key: 'merge-' + task.id,
 							at: merge.at,
 							type: 'merge',
 							taskId: task.id,
-							html: task.id + ' · ' + task.title + ' → ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit),
+							html: task.id + ' · ' + task.title + ' → ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit) +
+								(mergeActor === null ? '' : ' · ' + memberName(mergeActor.by, mergeActor.byName, 'actorRoleMerger')),
 							raw: typeof merge.output === 'string' ? merge.output.split('\n')[0] : null,
 						})
 					}
@@ -3068,11 +3079,20 @@ window.__ModuleLoader__.load({
 				})
 				stream.sort(function (left, right) { return new Date(right.at).getTime() - new Date(left.at).getTime() })
 				const recentStream = stream.slice(0, 30)
+				// The header reads the SAME event stream as the activity card (never the
+				// raw host ring alone); a heartbeat-only board says so instead of going blank.
+				const newestEventAt = recentStream.length === 0 ? null : recentStream[0].at
+				const newestEntryAt = entries.length === 0 ? null : entries[0].at
+				let newestAt = newestEventAt
+				if (newestEntryAt !== null && (newestAt === null || new Date(newestEntryAt).getTime() > new Date(newestAt).getTime())) newestAt = newestEntryAt
+				const lastActivityText = newestAt !== null
+					? t('statusLastActivity') + ' ' + tcAgo(newestAt, now)
+					: sweepCount > 0 ? t('statusLastActivity') + ' ' + t('statusOnlyHeartbeats') : null
 				function reviewWho(entry, review) {
 					const fromEvent = entry !== null && entry !== undefined && typeof entry.by === 'string' && entry.by !== ''
 					const value = fromEvent ? entry.by : review === null ? null : review.by
 					const name = fromEvent ? entry.byName : review === null ? null : review.byName
-					return value === null || value === undefined ? '' : ' · ' + memberName(value, name)
+					return value === null || value === undefined ? '' : ' · ' + memberName(value, name, 'actorRoleReviewer')
 				}
 				function eventText(type, task, assignee, review, test, entry, note, eventRound, noteSha) {
 					// The row already renders the kind as a chip, so the description starts
@@ -3084,8 +3104,8 @@ window.__ModuleLoader__.load({
 					if (type === 'submit') return task.id + (noteSha === '' && shortSha(task.commit) === '' ? '' : ' · ' + (noteSha === '' ? shortSha(task.commit) : noteSha)) + ' · ' + t('detailFilesDeclared').replace('{n}', String(Array.isArray(task.writeFiles) ? task.writeFiles.length : 0))
 					if (type === 'review-pass') return subject + ' · ' + t('evtOutcomePass') + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
 					if (type === 'review-reject') return subject + ' · ' + t('evtOutcomeReject') + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
-					if (type === 'test-pass') return task.id + ' · ' + (test === null ? '' : memberName(test.by, test.byName) + ' · ') + testSummaryText(test, review, t, 'passed')
-					if (type === 'test-fail') return task.id + ' · ' + (test === null ? '' : memberName(test.by, test.byName) + ' · ') + testSummaryText(test, review, t, 'failed')
+					if (type === 'test-pass') return task.id + ' · ' + (test === null ? '' : memberName(test.by, test.byName, 'actorRoleTester') + ' · ') + testSummaryText(test, review, t, 'passed')
+					if (type === 'test-fail') return task.id + ' · ' + (test === null ? '' : memberName(test.by, test.byName, 'actorRoleTester') + ' · ') + testSummaryText(test, review, t, 'failed')
 					if (type === 'blocked') return task.id
 					if (type === 'cancel') return task.id
 					return task.id
@@ -3309,14 +3329,26 @@ window.__ModuleLoader__.load({
 
 			/** Prefer the name the host wrote (byName); otherwise resolve the label against
 			 * the roster; an unresolved id shows as 成员 <label>, never a bare @. */
-			function actorDisplay(by, byName, roster, t) {
+			function actorDisplay(by, byName, roster, t, fallbackKey) {
 				if (typeof byName === 'string' && byName !== '') return byName
 				const resolved = resolveAgentName(by, roster, t)
 				if (typeof resolved === 'string' && resolved.charAt(0) === '@') {
 					const label = resolved.slice(1).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+					const role = typeof fallbackKey === 'string' && fallbackKey !== '' ? t(fallbackKey) : ''
+					if (role !== '') return label === '' ? role : role + ' ' + label
 					return t('actorUnknown').replace('{id}', label === '' ? resolved : label)
 				}
 				return resolved
+			}
+
+			/** The actor that merged this task, from its merge/done history entry. */
+			function mergeActorOf(task) {
+				const hist = Array.isArray(task === null || task === undefined ? null : task.history) ? task.history : []
+				const hit = hist.filter(function (entry) {
+					const note = typeof entry.note === 'string' ? entry.note : ''
+					return (entry.to === 'done' && note.indexOf('merged') >= 0) || note.indexOf('merged as') === 0
+				})[0]
+				return hit === undefined ? null : { by: hit.by, byName: hit.byName }
 			}
 
 			/** Structured test summary: 通过 · exit 0 · 21s (no evidence text). */
@@ -3422,8 +3454,8 @@ window.__ModuleLoader__.load({
 					if (snapshot.agents.lead !== null && snapshot.agents.lead !== undefined) roster.push(snapshot.agents.lead)
 					if (Array.isArray(snapshot.agents.members)) snapshot.agents.members.forEach(function (member) { roster.push(member) })
 				}
-				function actorName(value, byName) {
-					return actorDisplay(value, byName, roster, t)
+				function actorName(value, byName, fallbackKey) {
+					return actorDisplay(value, byName, roster, t, fallbackKey)
 				}
 
 				const actions = []
@@ -3509,7 +3541,7 @@ window.__ModuleLoader__.load({
 							{ key: 'sub-' + String(index), className: 'gbt-detailevent', 'data-detail-event': 'submit' },
 							h('span', { className: 'gbt-detailpill', 'data-tone': 'ok' }, t('detailSubmitted')),
 							h('b', null, t('stageImplement')),
-							h('span', { className: 'gbt-detailwho' }, (entry.by === null || entry.by === undefined ? '—' : actorName(entry.by, entry.byName)) + (submissions.length > 1 ? ' · ' + t('detailSubmitCount').replace('{n}', String(index + 1)) : '')),
+							h('span', { className: 'gbt-detailwho' }, (entry.by === null || entry.by === undefined ? '—' : actorName(entry.by, entry.byName, entry.to === 'reviewing' ? 'actorRoleWorker' : entry.to === 'testing' ? 'actorRoleReviewer' : entry.from === 'testing' ? 'actorRoleTester' : 'actorRoleWorker')) + (submissions.length > 1 ? ' · ' + t('detailSubmitCount').replace('{n}', String(index + 1)) : '')),
 							h('span', { className: 'gbt-detailwhen' }, new Date(entry.at).toTimeString().slice(0, 5)),
 							sha === null ? null : h('div', { className: 'gbt-detailex gbt-mono' }, sha + ' · ' + t('detailFilesDeclared').replace('{n}', String(files.length)) + (actualFiles.length === 0 ? '' : ' = ' + t('detailFilesActual').replace('{n}', String(actualFiles.length)))),
 						),
@@ -3523,7 +3555,7 @@ window.__ModuleLoader__.load({
 							{ key: 'review', className: 'gbt-detailevent', 'data-detail-event': 'review', 'data-review-status': String(review.status) },
 							h('span', { className: 'gbt-detailpill', 'data-tone': review.status === 'approved' ? 'ok' : review.status === 'changes-requested' ? 'bad' : 'wait' }, tcReviewLabel(review.status, t)),
 							h('b', null, t('stageReview')),
-							h('span', { className: 'gbt-detailwho' }, actorName(review.by, review.byName) + ' · ' + t('detailRound').replace('{n}', String(tcRound(review)))),
+							h('span', { className: 'gbt-detailwho' }, actorName(review.by, review.byName, 'actorRoleReviewer') + ' · ' + t('detailRound').replace('{n}', String(tcRound(review)))),
 							h('span', { className: 'gbt-detailwhen' }, new Date(review.at).toTimeString().slice(0, 5)),
 							reasons === '' ? null : h('div', { className: review.status === 'changes-requested' ? 'gbt-detailreason' : 'gbt-detailreason good', 'data-detail-reason': String(review.status) }, reasons),
 						),
@@ -3554,7 +3586,7 @@ window.__ModuleLoader__.load({
 							{ key: 'test', className: 'gbt-detailevent', 'data-detail-event': 'test', 'data-test-status': String(test.status) },
 							h('span', { className: 'gbt-detailpill', 'data-tone': test.status === 'passed' ? 'ok' : 'bad' }, tcTestLabel(test.status, t)),
 							h('b', null, t('stageTest')),
-							h('span', { className: 'gbt-detailwho' }, actorName(test.by, test.byName) + ' · ' + t('detailRound').replace('{n}', String(tcRound(test)))),
+							h('span', { className: 'gbt-detailwho' }, actorName(test.by, test.byName, 'actorRoleTester') + ' · ' + t('detailRound').replace('{n}', String(tcRound(test)))),
 							h('span', { className: 'gbt-detailwhen' }, new Date(test.at).toTimeString().slice(0, 5)),
 							h('div', { className: 'gbt-detailex gbt-mono' }, summaryLine),
 							evidenceOpen
@@ -3577,6 +3609,7 @@ window.__ModuleLoader__.load({
 							h('span', { className: 'gbt-detailpill', 'data-tone': merge.status === 'merged' ? 'ok' : 'wait' }, tcMergeLabel(merge.status, t)),
 							h('b', null, t('stageMerge')),
 							h('span', { className: 'gbt-detailwho' }, typeof merge.target === 'string' && merge.target !== '' ? '→ ' + merge.target : '—'),
+							h('span', { className: 'gbt-detailwho' }, (function () { const actor = mergeActorOf(task); return actor === null ? '' : ' · ' + actorName(actor.by, actor.byName, 'actorRoleMerger') })()),
 							h('span', { className: 'gbt-detailwhen' }, merge.at === null || merge.at === undefined ? '' : new Date(merge.at).toTimeString().slice(0, 5)),
 							commit === null ? null : h('div', { className: 'gbt-detailex gbt-mono' }, commit + ' · ' + t('detailFilesDeclared').replace('{n}', String(files.length)) + (actualFiles.length === 0 ? '' : ' = ' + t('detailFilesActual').replace('{n}', String(actualFiles.length)))),
 						),
