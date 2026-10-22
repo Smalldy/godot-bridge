@@ -3006,7 +3006,6 @@ window.__ModuleLoader__.load({
 				tasks.forEach(function (task) {
 					const hist = Array.isArray(task.history) ? task.history.slice().sort(function (left, right) { return new Date(left.at).getTime() - new Date(right.at).getTime() }) : []
 					let reviewRound = 0
-					let submitRound = 0
 					hist.forEach(function (entry) {
 						const to = typeof entry.to === 'string' ? entry.to : ''
 						const from = typeof entry.from === 'string' ? entry.from : null
@@ -3023,12 +3022,10 @@ window.__ModuleLoader__.load({
 						else if (to === 'blocked') type = 'blocked'
 						else if (to === 'cancelled') type = 'cancel'
 						if (type === null) return
-						if (type === 'submit') submitRound += 1
 						if (type === 'review-pass' || type === 'review-reject') reviewRound += 1
-						const eventRound = type === 'submit' ? submitRound : reviewRound
+						const eventRound = reviewRound
 						const review = task.review !== null && task.review !== undefined ? task.review : null
 						const test = task.test !== null && task.test !== undefined ? task.test : null
-						const round = review === null ? null : tcRound(review)
 						const note = typeof entry.note === 'string' && entry.note !== '' ? entry.note : null
 						const noteSha = (function () {
 							const match = /@([0-9a-fA-F]{7,40})/.exec(note === null ? '' : note)
@@ -3039,7 +3036,7 @@ window.__ModuleLoader__.load({
 							at: entry.at,
 							type: type,
 							taskId: task.id,
-							html: eventText(type, task, assignee, review, round, test, entry, note, eventRound, noteSha),
+							html: eventText(type, task, assignee, review, test, entry, note, eventRound, noteSha),
 							raw: note,
 						})
 					})
@@ -3074,16 +3071,31 @@ window.__ModuleLoader__.load({
 				})
 				stream.sort(function (left, right) { return new Date(right.at).getTime() - new Date(left.at).getTime() })
 				const recentStream = stream.slice(0, 30)
-				function eventText(type, task, assignee, review, round, test, entry, note, eventRound, noteSha) {
+				function reviewWho(entry, review) {
+					const value = entry !== null && entry !== undefined && typeof entry.by === 'string' && entry.by !== '' ? entry.by : review === null ? null : review.by
+					return value === null || value === undefined ? '' : ' · ' + memberName(value)
+				}
+				function testSummary(test) {
+					if (test === null) return ''
+					const parts = []
+					const evidence = typeof test.evidence === 'string' ? test.evidence.split('\n')[0].trim() : ''
+					if (evidence !== '') parts.push(evidence.slice(0, 60) + (evidence.length > 60 ? '…' : ''))
+					const hostCheck = typeof test.hostCheck === 'object' && test.hostCheck !== null ? test.hostCheck : null
+					if (hostCheck !== null) {
+						parts.push('exit ' + String(hostCheck.exitCode === null || hostCheck.exitCode === undefined ? '—' : hostCheck.exitCode) + (hostCheck.durationMs === undefined || hostCheck.durationMs === null ? '' : ' · ' + String(Math.round(hostCheck.durationMs / 1000)) + 's'))
+					}
+					return parts.length === 0 ? '' : ' · ' + parts.join(' · ')
+				}
+				function eventText(type, task, assignee, review, test, entry, note, eventRound, noteSha) {
 					const subject = task.id + ' · ' + task.title
 					if (type === 'create') return t('evtCreate') + ' ' + subject
 					if (type === 'retry') return t('evtRetry') + ' ' + task.id
 					if (type === 'dispatch') return t('evtDispatch') + ' ' + task.id + (assignee === null ? '' : ' → ' + assignee)
 					if (type === 'submit') return t('evtSubmit') + ' ' + task.id + (noteSha === '' && shortSha(task.commit) === '' ? '' : ' · ' + (noteSha === '' ? shortSha(task.commit) : noteSha)) + ' · ' + t('detailFilesDeclared').replace('{n}', String(Array.isArray(task.writeFiles) ? task.writeFiles.length : 0))
-					if (type === 'review-pass') return t('evtReviewPass') + ' ' + task.id + (review === null ? '' : ' · ' + memberName(review.by)) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
-					if (type === 'review-reject') return t('evtReviewReject') + ' ' + task.id + (review === null ? '' : ' · ' + memberName(review.by)) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
-					if (type === 'test-pass') return t('evtTestPass') + ' ' + task.id + (test === null ? '' : ' · ' + memberName(test.by))
-					if (type === 'test-fail') return t('evtTestFail') + ' ' + task.id + (test === null ? '' : ' · ' + memberName(test.by))
+					if (type === 'review-pass') return t('evtReviewPass') + ' ' + task.id + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
+					if (type === 'review-reject') return t('evtReviewReject') + ' ' + task.id + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
+					if (type === 'test-pass') return t('evtTestPass') + ' ' + task.id + (test === null ? '' : ' · ' + memberName(test.by)) + testSummary(test)
+					if (type === 'test-fail') return t('evtTestFail') + ' ' + task.id + (test === null ? '' : ' · ' + memberName(test.by)) + testSummary(test)
 					if (type === 'blocked') return t('evtBlocked') + ' ' + task.id
 					if (type === 'cancel') return t('evtCancel') + ' ' + task.id
 					return t('evtEvent') + ' ' + task.id
@@ -3229,7 +3241,7 @@ window.__ModuleLoader__.load({
 						{ className: 'gbt-statuscardbody' },
 						activity === null || activity === undefined || activity.available !== true
 							? h('div', { className: 'gbt-statusnote' }, t('statusActivityUnavailable'))
-							: recentStream.length === 0 && sweepRows.length === 0
+							: recentStream.length === 0 && sweepRows.length === 0 && sweepCount === 0
 								? h('div', { className: 'gbt-statusnote' }, t('statusActivityEmpty'))
 								: h('div', null,
 									recentStream.map(function (event) {
@@ -3383,7 +3395,12 @@ window.__ModuleLoader__.load({
 			function resolveAgentName(value, roster, t) {
 				if (typeof value !== 'string' || value === '') return '—'
 				if (value === '@user' || value === 'user') return t('statusYou')
-				if (value.charAt(0) !== '@') return value
+				if (value.charAt(0) !== '@') {
+					const bare = roster.filter(function (member) {
+						return member.name === value || member.kind === value || member.id === value || agentToolLabel(member) === value.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+					})[0]
+					return bare === undefined ? value : typeof bare.name === 'string' && bare.name !== '' ? bare.name : value
+				}
 				const id = value.slice(1)
 				const idKey = id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
 				const hit = roster.filter(function (member) {

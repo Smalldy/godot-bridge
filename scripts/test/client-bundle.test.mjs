@@ -1082,6 +1082,89 @@ await flush()
     eventTask.commit = savedEventCommit
   }
   {
+    // A test row must carry the suite summary (evidence first line + host check exit/duration).
+    const summaryTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
+    const savedSummaryTest = summaryTask.test
+    const savedSummaryHistory = summaryTask.history
+    summaryTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 4000).toISOString(), by: '@session-tester-1', note: 'passed' }]
+    summaryTask.test = Object.assign({}, savedSummaryTest, {
+      hostCheck: { command: 'npm run verify', exitCode: 0, timedOut: false, durationMs: 21000 },
+      evidence: '11/11 suites passed in 21s',
+    })
+    let summaryTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    summaryTree = withHooks(panel, { initialView: 'status' })
+    const testRow = findAll(summaryTree, (node) => node.props && node.props['data-activity-kind'] === 'test-pass' && node.props['data-activity-task'] === 'T-3')[0]
+    check(
+      'a test row carries the suite summary (evidence line + exit code/duration)',
+      testRow !== undefined && textOf(testRow).indexOf('11/11 suites') >= 0 && textOf(testRow).indexOf('exit 0') >= 0 && textOf(testRow).indexOf('21s') >= 0,
+      testRow && textOf(testRow),
+    )
+    summaryTask.test = savedSummaryTest
+    summaryTask.history = savedSummaryHistory
+  }
+  {
+    // The rejection reason folds into the row title, never the visible text.
+    const rejectTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedRejectHistory = rejectTask.history
+    rejectTask.history = [
+      { from: 'running', to: 'reviewing', at: new Date(Date.now() - 30000).toISOString(), by: '@session-fixer', note: 'submitted for review round 1 @ccccccc' },
+      { from: 'reviewing', to: 'running', at: new Date(Date.now() - 20000).toISOString(), by: '@session-reviewer-1', note: 'changes requested: the six counters are still rendered' },
+    ]
+    let rejectTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    rejectTree = withHooks(panel, { initialView: 'status' })
+    const rejectRow = findAll(rejectTree, (node) => node.props && node.props['data-activity-kind'] === 'review-reject')[0]
+    check(
+      'a rejection row shows the member name and round, with the reason folded into the title',
+      rejectRow !== undefined && textOf(rejectRow).indexOf('reviewer-1') >= 0 && textOf(rejectRow).indexOf('第 1 轮') >= 0 && textOf(rejectRow).indexOf('six counters') < 0 && String(rejectRow.props.title).indexOf('six counters') >= 0,
+      rejectRow && (textOf(rejectRow) + ' | title=' + String(rejectRow.props.title)),
+    )
+    rejectTask.history = savedRejectHistory
+  }
+  {
+    // A bare session id in dispatch.by also resolves through the roster labels.
+    const savedPauseBare = HOST.dispatch
+    HOST.dispatch = Object.assign({}, savedPauseBare, { by: 'session-reviewer-1' })
+    let bareTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    bareTree = withHooks(panel, { initialView: 'status' })
+    const bareText = textOf(bareTree)
+    check(
+      'a bare session id in the paused reason resolves to the member name',
+      bareText.indexOf('由 reviewer-1 暂停') >= 0 && bareText.indexOf('session-reviewer-1') < 0,
+      bareText.slice(0, 300),
+    )
+    HOST.dispatch = savedPauseBare
+  }
+  {
+    // Only heartbeats: folded line, no "no activity" text.
+    const savedSweepTasks = HOST.tasks
+    const savedSweepActivity = HOST.activity
+    HOST.tasks = []
+    HOST.activity = { available: true, limit: 100, count: 2, entries: [
+      { at: new Date().toISOString(), kind: 'sweep', actor: 'system', actorName: null, taskId: null, detail: 'merge sweep: merged none' },
+      { at: new Date(Date.now() - 5000).toISOString(), kind: 'sweep', actor: 'system', actorName: null, taskId: null, detail: null },
+    ] }
+    let sweepTree2 = withHooks(panel, { initialView: 'status' })
+    await flush()
+    sweepTree2 = withHooks(panel, { initialView: 'status' })
+    const toggle2 = findAll(sweepTree2, (node) => node.props && node.props['data-action'] === 'status-show-all')[0]
+    if (toggle2 !== undefined && toggle2.props['data-show-all'] === 'true') {
+      toggle2.props.onClick()
+      await flush()
+      sweepTree2 = withHooks(panel, { initialView: 'status' })
+    }
+    const sweepCard2 = findAll(sweepTree2, (node) => node.props && node.props['data-status-card'] === 'activity')[0]
+    check(
+      'with only heartbeats the card shows the folded line and no no-activity text',
+      sweepCard2 !== undefined && textOf(sweepCard2).indexOf('心跳已折叠') >= 0 && textOf(sweepCard2).indexOf('没有活动记录') < 0,
+      sweepCard2 && textOf(sweepCard2),
+    )
+    HOST.tasks = savedSweepTasks
+    HOST.activity = savedSweepActivity
+  }
+  {
     const savedPause = HOST.dispatch
     HOST.dispatch = Object.assign({}, savedPause, { by: '@user' })
     let pauseTree = withHooks(panel, { initialView: 'status' })
