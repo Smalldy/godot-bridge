@@ -703,7 +703,7 @@ export function failTest(board, id, evidence, now, by, byName) {
   return done(next, [{ kind: 'test-failed', id: id, who: by }], { task: target })
 }
 
-export function cancelTask(board, id, now, by, note) {
+export function cancelTask(board, id, now, by, note, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status === 'cancelled') return fail('already-cancelled', id + ' is already cancelled')
@@ -714,11 +714,11 @@ export function cancelTask(board, id, now, by, note) {
   target.assignee = null
   target.leaseUntil = null
   touch(target, now)
-  pushHistory(target, { at: iso(now), by: by, from: task.status, to: 'cancelled', note: note === undefined ? 'cancelled' : String(note) })
+  pushHistory(target, { at: iso(now), by: by, byName: byName === undefined ? null : byName, from: task.status, to: 'cancelled', note: note === undefined ? 'cancelled' : String(note) })
   return done(next, [{ kind: 'cancelled', id: id, who: by }], { task: target })
 }
 
-export function reopenTask(board, id, now, by, note) {
+export function reopenTask(board, id, now, by, note, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'blocked') {
@@ -735,11 +735,11 @@ export function reopenTask(board, id, now, by, note) {
   target.review = null
   target.test = null
   touch(target, now)
-  pushHistory(target, { at: iso(now), by: by, from: task.status, to: 'pending', note: note === undefined ? 'reopened' : String(note) })
+  pushHistory(target, { at: iso(now), by: by, byName: byName === undefined ? null : byName, from: task.status, to: 'pending', note: note === undefined ? 'reopened' : String(note) })
   return done(next, [{ kind: 'reopened', id: id, who: by }], { task: target })
 }
 
-export function blockTask(board, id, now, by, note) {
+export function blockTask(board, id, now, by, note, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status === 'done' || task.status === 'cancelled') return fail('closed', id + ' is ' + task.status)
@@ -750,18 +750,18 @@ export function blockTask(board, id, now, by, note) {
   target.assignee = null
   target.leaseUntil = null
   touch(target, now)
-  pushHistory(target, { at: iso(now), by: by, from: task.status, to: 'blocked', note: note === undefined ? 'blocked' : String(note) })
+  pushHistory(target, { at: iso(now), by: by, byName: byName === undefined ? null : byName, from: task.status, to: 'blocked', note: note === undefined ? 'blocked' : String(note) })
   return done(next, [{ kind: 'blocked', id: id, who: by }], { task: target })
 }
 
-export function unblockTask(board, id, now, by, note) {
+export function unblockTask(board, id, now, by, note, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'blocked') return fail('not-blocked', id + ' is ' + task.status + ', not blocked')
-  return reopenTask(board, id, now, by, note === undefined ? 'unblocked' : note)
+  return reopenTask(board, id, now, by, note === undefined ? 'unblocked' : note, byName)
 }
 
-export function retryTask(board, id, now, by, note) {
+export function retryTask(board, id, now, by, note, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'blocked' && task.status !== 'pending') {
@@ -775,7 +775,7 @@ export function retryTask(board, id, now, by, note) {
   target.attempts = 0
   target.dispatch = null
   touch(target, now)
-  pushHistory(target, { at: iso(now), by: by, from: task.status, to: 'pending', note: note === undefined ? 'retry requested' : String(note) })
+  pushHistory(target, { at: iso(now), by: by, byName: byName === undefined ? null : byName, from: task.status, to: 'pending', note: note === undefined ? 'retry requested' : String(note) })
   return done(next, [{ kind: 'retried', id: id, who: by }], { task: target })
 }
 

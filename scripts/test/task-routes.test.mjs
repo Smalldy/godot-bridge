@@ -1926,6 +1926,27 @@ function testStageTask(overrides) {
 }
 
 {
+  // The user's lifecycle actions write 你; a member's write their member name.
+  const rig = createRig({ allowSpawn: false })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [reviewStageTask()] }))
+  const surface = install(rig)
+  const blocked = await postTo(surface, { action: 'block', project: PROJECT, id: 'T-1', note: 'user holds it' })
+  const blockedHistory = blocked.json().task.history[blocked.json().task.history.length - 1]
+  check('a user block writes 你 as the event name', blocked.json().ok === true && blockedHistory.byName === '你', JSON.stringify(blockedHistory))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+{
+  const fake = fakeGit()
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fake.git })
+  seedRunningTask(rig, runningWorktreeTask())
+  const workerBlock = await rig.api.perform('block', { id: 'T-1', note: 'agent holds it' }, agentCaller('session-fixer'))
+  const agentHistory = workerBlock.task.history[workerBlock.task.history.length - 1]
+  check('an agent block writes the member name', workerBlock.ok === true && agentHistory.byName === 'fixer', JSON.stringify(agentHistory))
+  rig.scheduler.dispose()
+}
+
+{
   const fake = fakeGit()
   const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fake.git })
   seedRunningTask(rig, runningWorktreeTask())

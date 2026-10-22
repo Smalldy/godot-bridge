@@ -421,7 +421,7 @@ export function createApi(ctx, options) {
       const recorded = await writeTask(
         projectPath,
         id,
-        (board) => recordMergeResult(board, id, { status: 'merged', mergeCommit: outcome.mergeCommit, conflict: null, output: null }, clock(), by),
+        (board) => recordMergeResult(board, id, { status: 'merged', mergeCommit: outcome.mergeCommit, conflict: null, output: null }, clock(), by, by),
         context,
       )
       if (recorded.ok !== true) return recorded
@@ -1658,7 +1658,7 @@ export function createApi(ctx, options) {
       // a late result for it.
       return failure('action-abandoned', 'the merge queue turn for ' + id + ' was abandoned after its bound; nothing was recorded')
     }
-    const recorded = await writeTask(projectPath, id, (board) => recordMergeResult(board, id, outcome, clock(), by), context)
+    const recorded = await writeTask(projectPath, id, (board) => recordMergeResult(board, id, outcome, clock(), by, writeByName(context)), context)
     if (recorded.ok !== true) return recorded
     emitActivity(context, 'merge', String(outcome.status) + (outcome.mergeCommit !== undefined && outcome.mergeCommit !== null ? ' as ' + String(outcome.mergeCommit) : ''), id, actorOverride)
     if (outcome.status === 'merged' && outcome.taskWorktreeRemoved === true) {
@@ -2134,7 +2134,7 @@ export function createApi(ctx, options) {
         const recorded = await writeTask(
           projectPath,
           id,
-          (board) => recordMergeResult(board, id, { status: 'rejected' }, clock(), context.by),
+          (board) => recordMergeResult(board, id, { status: 'rejected' }, clock(), context.by, writeByName(context)),
           context,
         )
         if (recorded.ok !== true) return recorded
@@ -2207,7 +2207,7 @@ export function createApi(ctx, options) {
         const recorded = await writeTask(
           projectPath,
           id,
-          (board) => refreshMergeRequest(board, id, base, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by),
+          (board) => refreshMergeRequest(board, id, base, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by, writeByName(context)),
           context,
         )
         if (recorded.ok !== true) return recorded
@@ -2555,7 +2555,7 @@ export function createApi(ctx, options) {
       const result = await writeTask(
         projectPath,
         id,
-        (board) => model.cancelTask(board, id, clock(), context.by, source.note),
+        (board) => model.cancelTask(board, id, clock(), context.by, source.note, writeByName(context)),
         context,
       )
       if (result.ok === true) {
@@ -2571,9 +2571,9 @@ export function createApi(ctx, options) {
         projectPath,
         id,
         (board) => {
-          if (action === 'reopen') return model.reopenTask(board, id, clock(), context.by, source.note)
-          if (action === 'unblock') return model.unblockTask(board, id, clock(), context.by, source.note)
-          return model.retryTask(board, id, clock(), context.by, source.note)
+          if (action === 'reopen') return model.reopenTask(board, id, clock(), context.by, source.note, writeByName(context))
+          if (action === 'unblock') return model.unblockTask(board, id, clock(), context.by, source.note, writeByName(context))
+          return model.retryTask(board, id, clock(), context.by, source.note, writeByName(context))
         },
         context,
       )
@@ -2584,7 +2584,7 @@ export function createApi(ctx, options) {
       const result = await writeTask(
         projectPath,
         id,
-        (board) => model.blockTask(board, id, clock(), context.by, source.note),
+        (board) => model.blockTask(board, id, clock(), context.by, source.note, writeByName(context)),
         context,
       )
       if (result.ok === true) {

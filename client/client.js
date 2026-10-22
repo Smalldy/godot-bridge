@@ -3084,8 +3084,8 @@ window.__ModuleLoader__.load({
 					if (type === 'submit') return task.id + (noteSha === '' && shortSha(task.commit) === '' ? '' : ' · ' + (noteSha === '' ? shortSha(task.commit) : noteSha)) + ' · ' + t('detailFilesDeclared').replace('{n}', String(Array.isArray(task.writeFiles) ? task.writeFiles.length : 0))
 					if (type === 'review-pass') return subject + ' · ' + t('evtOutcomePass') + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
 					if (type === 'review-reject') return subject + ' · ' + t('evtOutcomeReject') + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
-					if (type === 'test-pass') return task.id + ' · ' + (test === null ? '' : memberName(test.by, test.byName) + ' · ') + testSummaryText(test, review, t)
-					if (type === 'test-fail') return task.id + ' · ' + (test === null ? '' : memberName(test.by, test.byName) + ' · ') + testSummaryText(test, review, t)
+					if (type === 'test-pass') return task.id + ' · ' + (test === null ? '' : memberName(test.by, test.byName) + ' · ') + testSummaryText(test, review, t, 'passed')
+					if (type === 'test-fail') return task.id + ' · ' + (test === null ? '' : memberName(test.by, test.byName) + ' · ') + testSummaryText(test, review, t, 'failed')
 					if (type === 'blocked') return task.id
 					if (type === 'cancel') return task.id
 					return task.id
@@ -3320,9 +3320,10 @@ window.__ModuleLoader__.load({
 			}
 
 			/** Structured test summary: 通过 · exit 0 · 21s (no evidence text). */
-			function testSummaryText(test, review, t) {
+			function testSummaryText(test, review, t, verdict) {
 				if (test === null || test === undefined) return ''
-				const passed = test.status === 'passed'
+				const effective = verdict === 'passed' || verdict === 'failed' ? verdict : test.status
+				const passed = effective === 'passed'
 				const label = passed ? t('statusResultPassed') : t('detailHostCheckFailed')
 				const hostCheck = typeof test.hostCheck === 'object' && test.hostCheck !== null ? test.hostCheck : null
 				const parts = [label]

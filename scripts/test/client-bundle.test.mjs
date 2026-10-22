@@ -1201,6 +1201,30 @@ await flush()
     blockedTask.history = savedBlockedHistory
   }
 
+  // A fail-then-pass task must keep the failure verdict on the failure row.
+  {
+    const failTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
+    const savedFailHistory = failTask.history
+    const savedFailTest = failTask.test
+    failTask.test = Object.assign({}, savedFailTest, { status: 'passed' })
+    failTask.history = [
+      { from: 'reviewing', to: 'testing', at: new Date(Date.now() - 40000).toISOString(), by: '@session-reviewer-1', byName: 'reviewer-1', note: 'approved' },
+      { from: 'testing', to: 'running', at: new Date(Date.now() - 30000).toISOString(), by: '@session-tester-1', byName: 'tester-1', note: 'tests failed: boom' },
+      { from: 'running', to: 'testing', at: new Date(Date.now() - 20000).toISOString(), by: '@session-fixer', byName: 'fixer', note: 'resubmitted' },
+    ]
+    let failTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    failTree = withHooks(panel, { initialView: 'status' })
+    const failRow = findAll(failTree, (node) => node.props && node.props['data-activity-kind'] === 'test-fail' && node.props['data-activity-task'] === 'T-3')[0]
+    check(
+      'a test-fail row keeps the failure verdict even when the latest test record passed',
+      failRow !== undefined && textOf(failRow).indexOf('失败') >= 0 && textOf(failRow).indexOf('通过') < 0,
+      failRow && textOf(failRow),
+    )
+    failTask.history = savedFailHistory
+    failTask.test = savedFailTest
+  }
+
   // ── empty states are plain text, not a card inside a card ──
   {
     const savedEmptyAgents = HOST.agents
