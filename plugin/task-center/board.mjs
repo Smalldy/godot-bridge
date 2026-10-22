@@ -188,6 +188,7 @@ function normaliseTask(raw, index, now) {
       history.push({
         at: isIso(entry.at) ? entry.at : iso(now),
         by: typeof entry.by === 'string' ? entry.by : 'unknown',
+        byName: typeof entry.byName === 'string' && entry.byName !== '' ? entry.byName : null,
         from: typeof entry.from === 'string' ? entry.from : null,
         to: typeof entry.to === 'string' ? entry.to : null,
         note: typeof entry.note === 'string' ? entry.note : '',

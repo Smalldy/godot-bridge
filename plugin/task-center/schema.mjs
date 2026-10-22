@@ -584,6 +584,7 @@ export function normaliseReview(raw) {
   return {
     status: raw.status,
     by: typeof raw.by === 'string' ? raw.by : null,
+    byName: typeof raw.byName === 'string' && raw.byName !== '' ? raw.byName : null,
     at: typeof raw.at === 'string' ? raw.at : null,
     reasons: typeof raw.reasons === 'string' ? raw.reasons : null,
     attempt: phaseAttempt(raw.attempt),
@@ -597,6 +598,7 @@ export function normaliseTest(raw) {
   return {
     status: raw.status,
     by: typeof raw.by === 'string' ? raw.by : null,
+    byName: typeof raw.byName === 'string' && raw.byName !== '' ? raw.byName : null,
     at: typeof raw.at === 'string' ? raw.at : null,
     evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
     attempt: phaseAttempt(raw.attempt),

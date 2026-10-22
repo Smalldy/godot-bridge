@@ -287,6 +287,18 @@ export function createApi(ctx, options) {
     return null
   }
 
+  /** The member NAME written alongside an event: resolved at write time from the
+   * caller's Team membership, so the panel never has to reverse an @label. */
+  function writeByName(context) {
+    if (context === undefined || context === null) return null
+    if (context.role === 'user') return '你'
+    const member = callerMemberOf(context)
+    if (member !== null && member !== undefined && typeof member.name === 'string' && member.name !== '') return member.name
+    const by = typeof context.by === 'string' ? context.by : ''
+    if (by === 'system' || by === 'host' || by === 'scheduler') return by
+    return null
+  }
+
   /** The caller's Team membership and role kind, when the registry is active. */
   function callerRole(context) {
     const member = callerMemberOf(context)
@@ -517,7 +529,7 @@ export function createApi(ctx, options) {
             }
             return candidateRecorded
           }
-          const failed = model.failTest(candidateRecorded.board, id, hostCheckEvidence(retestCheck), clock(), 'host')
+          const failed = model.failTest(candidateRecorded.board, id, hostCheckEvidence(retestCheck), clock(), 'host', 'host')
           if (failed.ok !== true) return failed
           const failedTask = model.findTask(failed.board, id)
           if (failedTask !== null && failedTask !== undefined && failedTask.test !== null && failedTask.test !== undefined) {
@@ -2248,7 +2260,7 @@ export function createApi(ctx, options) {
       const result = await writeTask(
         projectPath,
         id,
-        (board) => model.submitTask(board, id, input, clock(), context.by),
+        (board) => model.submitTask(board, id, input, clock(), context.by, writeByName(context)),
         context,
       )
       if (result.ok === true && result.task !== null && result.task.status !== 'running') {
@@ -2334,15 +2346,15 @@ export function createApi(ctx, options) {
         (board) => {
           const transitioned =
             action === 'approveReview'
-              ? model.approveReview(board, id, clock(), context.by)
-              : model.requestChanges(board, id, source.reasons, clock(), context.by)
+              ? model.approveReview(board, id, clock(), context.by, writeByName(context))
+              : model.requestChanges(board, id, source.reasons, clock(), context.by, writeByName(context))
           if (transitioned.ok !== true) return transitioned
           let next = transitioned
           if (hostCheckFailed) {
             // The host records a FAILED test itself (by = host): the task goes
             // straight back to running with the command, the exit code and the
             // output tail, and no tester round is opened.
-            const failed = model.failTest(transitioned.board, id, hostCheckEvidence(hostCheck), clock(), 'host')
+            const failed = model.failTest(transitioned.board, id, hostCheckEvidence(hostCheck), clock(), 'host', 'host')
             if (failed.ok !== true) return failed
             next = failed
           } else if (candidate !== null) {
@@ -2447,8 +2459,8 @@ export function createApi(ctx, options) {
         (board) => {
           const decided =
             action === 'passTest'
-              ? model.passTest(board, id, clock(), context.by)
-              : model.failTest(board, id, source.evidence, clock(), context.by)
+              ? model.passTest(board, id, clock(), context.by, writeByName(context))
+              : model.failTest(board, id, source.evidence, clock(), context.by, writeByName(context))
           if (decided.ok !== true) return decided
           if (action === 'passTest' && source.evidence !== undefined && source.evidence !== null) {
             const text = String(source.evidence).trim()

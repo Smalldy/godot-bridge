@@ -1103,8 +1103,8 @@ await flush()
     summaryTree = withHooks(panel, { initialView: 'status' })
     const testRow = findAll(summaryTree, (node) => node.props && node.props['data-activity-kind'] === 'test-pass' && node.props['data-activity-task'] === 'T-3')[0]
     check(
-      'a test row carries the suite summary (evidence line + exit code/duration)',
-      testRow !== undefined && textOf(testRow).indexOf('11/11 suites') >= 0 && textOf(testRow).indexOf('exit 0') >= 0 && textOf(testRow).indexOf('21s') >= 0,
+      'a test row carries the structured summary (status · exit · duration), never the evidence text',
+      testRow !== undefined && textOf(testRow).indexOf('通过') >= 0 && textOf(testRow).indexOf('exit 0') >= 0 && textOf(testRow).indexOf('21s') >= 0 && textOf(testRow).indexOf('11/11 suites') < 0,
       testRow && textOf(testRow),
     )
     summaryTask.test = savedSummaryTest
@@ -2408,6 +2408,27 @@ await flush()
   realTask.review = savedReview
   realTask.test = savedTest
 
+  // byName wins even when the roster is empty (the isolated-instance case).
+  {
+    const byNameTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedByReview = byNameTask.review
+    const savedByTest = byNameTask.test
+    const savedRoster = HOST.agents
+    byNameTask.review = Object.assign({}, savedByReview, { by: '@7fb24394', byName: 'reviewer-1' })
+    byNameTask.test = Object.assign({}, savedByTest, { by: '@b7cc6c31', byName: 'tester-1' })
+    HOST.agents = { lead: null, members: [] }
+    const byNameDrawer = await openDetail('Build damage system')
+    const byNameText = textOf(byNameDrawer)
+    check(
+      'with an empty roster the review/test rows still show the written byName, never a bare @id',
+      byNameText.indexOf('reviewer-1') >= 0 && byNameText.indexOf('tester-1') >= 0 && byNameText.indexOf('@7fb24394') < 0 && byNameText.indexOf('@b7cc6c31') < 0,
+      byNameText.slice(0, 300),
+    )
+    HOST.agents = savedRoster
+    byNameTask.review = savedByReview
+    byNameTask.test = savedByTest
+  }
+
   // Elapsed is the finished span, not the growing age.
   const doneTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
   const elapsedDrawer = await openDetail('Tail output feature')
@@ -2459,7 +2480,11 @@ await flush()
   const savedAgents = HOST.agents
   HOST.agents = { lead: null, members: [] }
   const unmappedDrawer = await openDetail('Build damage system')
-  check('an @id with no roster match stays verbatim', textOf(unmappedDrawer).indexOf('@reviewer') >= 0, textOf(unmappedDrawer).slice(0, 300))
+  check(
+    'an @id with no roster match shows the safe member fallback, never a bare @',
+    textOf(unmappedDrawer).indexOf('成员 reviewer') >= 0 && textOf(unmappedDrawer).indexOf('@reviewer') < 0,
+    textOf(unmappedDrawer).slice(0, 300),
+  )
   HOST.agents = savedAgents
 
   const reviewingDrawer = await openDetail('Review the crate API')

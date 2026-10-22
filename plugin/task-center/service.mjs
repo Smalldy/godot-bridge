@@ -54,6 +54,7 @@ function pushHistory(task, entry) {
   task.history.push({
     at: entry.at,
     by: entry.by,
+    byName: entry.byName === undefined || entry.byName === null || entry.byName === '' ? null : String(entry.byName),
     from: entry.from === undefined ? task.status : entry.from,
     to: entry.to === undefined ? task.status : entry.to,
     note: entry.note === undefined ? '' : entry.note,
@@ -428,6 +429,7 @@ export function claimTask(board, id, worker, now) {
   pushHistory(target, {
     at: iso(now),
     by: 'scheduler',
+    byName: target.assignee.name,
     from: 'pending',
     to: 'running',
     note:
@@ -558,7 +560,7 @@ export function expireLeases(board, now, maxAttempts, options) {
  * test record is kept for context; it is not a decision on this head, and the
  * merge gate only accepts the testing phase with a passed test.
  */
-export function submitTask(board, id, input, now, by) {
+export function submitTask(board, id, input, now, by, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'running') return fail('not-running', id + ' is ' + task.status + ', not running')
@@ -573,6 +575,7 @@ export function submitTask(board, id, input, now, by) {
   target.review = {
     status: 'pending',
     by: by,
+    byName: byName === undefined ? null : byName,
     at: iso(now),
     reasons: null,
     attempt: (target.review === null ? 0 : target.review.attempt) + 1,
@@ -585,6 +588,7 @@ export function submitTask(board, id, input, now, by) {
   pushHistory(target, {
     at: iso(now),
     by: by,
+    byName: byName === undefined ? null : byName,
     from: 'running',
     to: 'reviewing',
     note: input !== undefined && input.note !== undefined ? String(input.note) : 'submitted for review',
@@ -596,17 +600,18 @@ export function submitTask(board, id, input, now, by) {
  * The review phase: a reviewer approves the submission (-> testing) or asks for
  * changes (-> running, back to the same worker).
  */
-export function approveReview(board, id, now, by) {
+export function approveReview(board, id, now, by, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'reviewing') return fail('not-reviewing', id + ' is ' + task.status + ', not reviewing')
   if (task.review === null || task.review.status !== 'pending') return fail('no-pending-review', id + ' has no review decision to approve')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
-  target.review = Object.assign({}, target.review, { status: 'approved', by: by, at: iso(now) })
+  target.review = Object.assign({}, target.review, { status: 'approved', by: by, byName: byName === undefined ? null : byName, at: iso(now) })
   target.test = {
     status: 'pending',
     by: null,
+    byName: null,
     at: iso(now),
     evidence: null,
     attempt: (target.test === null ? 0 : target.test.attempt) + 1,
@@ -616,6 +621,7 @@ export function approveReview(board, id, now, by) {
   pushHistory(target, {
     at: iso(now),
     by: by,
+    byName: byName === undefined ? null : byName,
     from: 'reviewing',
     to: 'testing',
     note: 'review approved' + (target.review.reasons === null ? '' : ': ' + target.review.reasons),
@@ -623,7 +629,7 @@ export function approveReview(board, id, now, by) {
   return done(next, [{ kind: 'review-approved', id: id, who: by }], { task: target })
 }
 
-export function requestChanges(board, id, reasons, now, by) {
+export function requestChanges(board, id, reasons, now, by, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'reviewing') return fail('not-reviewing', id + ' is ' + task.status + ', not reviewing')
@@ -632,7 +638,7 @@ export function requestChanges(board, id, reasons, now, by) {
   if (text === '') return fail('missing-reasons', 'requestChanges needs reasons the worker can act on')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
-  target.review = Object.assign({}, target.review, { status: 'changes-requested', by: by, at: iso(now), reasons: text })
+  target.review = Object.assign({}, target.review, { status: 'changes-requested', by: by, byName: byName === undefined ? null : byName, at: iso(now), reasons: text })
   target.status = 'running'
   target.leaseUntil = iso(now + TASK_LEASE_MS)
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, { status: 'changes-requested', at: iso(now) })
@@ -640,6 +646,7 @@ export function requestChanges(board, id, reasons, now, by) {
   pushHistory(target, {
     at: iso(now),
     by: by,
+    byName: byName === undefined ? null : byName,
     from: 'reviewing',
     to: 'running',
     note: 'changes requested: ' + text,
@@ -651,18 +658,19 @@ export function requestChanges(board, id, reasons, now, by) {
  * The test phase: a tester's pass makes the request merge-eligible (the queue
  * turns the task DONE after the merge), a failure sends it back to running.
  */
-export function passTest(board, id, now, by) {
+export function passTest(board, id, now, by, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'testing') return fail('not-testing', id + ' is ' + task.status + ', not testing')
   if (task.test === null || task.test.status !== 'pending') return fail('no-pending-test', id + ' has no test decision to pass')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
-  target.test = Object.assign({}, target.test, { status: 'passed', by: by, at: iso(now) })
+  target.test = Object.assign({}, target.test, { status: 'passed', by: by, byName: byName === undefined ? null : byName, at: iso(now) })
   touch(target, now)
   pushHistory(target, {
     at: iso(now),
     by: by,
+    byName: byName === undefined ? null : byName,
     from: 'testing',
     to: 'testing',
     note: 'tests passed; waiting for the merge',
@@ -670,7 +678,7 @@ export function passTest(board, id, now, by) {
   return done(next, [{ kind: 'test-passed', id: id, who: by }], { task: target })
 }
 
-export function failTest(board, id, evidence, now, by) {
+export function failTest(board, id, evidence, now, by, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'testing') return fail('not-testing', id + ' is ' + task.status + ', not testing')
@@ -679,7 +687,7 @@ export function failTest(board, id, evidence, now, by) {
   if (text === '') return fail('missing-evidence', 'failTest needs the evidence the worker can act on')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
-  target.test = Object.assign({}, target.test, { status: 'failed', by: by, at: iso(now), evidence: text })
+  target.test = Object.assign({}, target.test, { status: 'failed', by: by, byName: byName === undefined ? null : byName, at: iso(now), evidence: text })
   target.status = 'running'
   target.leaseUntil = iso(now + TASK_LEASE_MS)
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, { status: 'test-failed', at: iso(now) })
@@ -687,6 +695,7 @@ export function failTest(board, id, evidence, now, by) {
   pushHistory(target, {
     at: iso(now),
     by: by,
+    byName: byName === undefined ? null : byName,
     from: 'testing',
     to: 'running',
     note: 'tests failed: ' + text,

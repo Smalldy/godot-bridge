@@ -414,6 +414,8 @@ window.__ModuleLoader__.load({
 				detailMinutes: '分钟',
 				detailHours: '小时',
 				detailSeconds: '秒',
+				detailTestDuration: '用时',
+				actorUnknown: '成员 {id}',
 				evtCreate: '创建',
 				evtOutcomePass: '通过',
 				evtOutcomeReject: '打回',
@@ -852,6 +854,8 @@ window.__ModuleLoader__.load({
 				detailMinutes: 'min',
 				detailHours: 'h',
 				detailSeconds: 's',
+				detailTestDuration: 'took',
+				actorUnknown: 'member {id}',
 				evtCreate: 'Created',
 				evtOutcomePass: 'passed',
 				evtOutcomeReject: 'rejected',
@@ -2972,8 +2976,8 @@ window.__ModuleLoader__.load({
 					if (agents.lead !== null && agents.lead !== undefined) roster.push(agents.lead)
 					if (Array.isArray(agents.members)) agents.members.forEach(function (member) { roster.push(member) })
 				}
-				function memberName(value) {
-					return resolveAgentName(value, roster, t)
+				function memberName(value, byName) {
+					return actorDisplay(value, byName, roster, t)
 				}
 				function whyNotRunning() {
 					if (active !== true) {
@@ -3065,19 +3069,10 @@ window.__ModuleLoader__.load({
 				stream.sort(function (left, right) { return new Date(right.at).getTime() - new Date(left.at).getTime() })
 				const recentStream = stream.slice(0, 30)
 				function reviewWho(entry, review) {
-					const value = entry !== null && entry !== undefined && typeof entry.by === 'string' && entry.by !== '' ? entry.by : review === null ? null : review.by
-					return value === null || value === undefined ? '' : ' · ' + memberName(value)
-				}
-				function testSummary(test) {
-					if (test === null) return ''
-					const parts = []
-					const evidence = typeof test.evidence === 'string' ? test.evidence.split('\n')[0].trim() : ''
-					if (evidence !== '') parts.push(evidence.slice(0, 60) + (evidence.length > 60 ? '…' : ''))
-					const hostCheck = typeof test.hostCheck === 'object' && test.hostCheck !== null ? test.hostCheck : null
-					if (hostCheck !== null) {
-						parts.push('exit ' + String(hostCheck.exitCode === null || hostCheck.exitCode === undefined ? '—' : hostCheck.exitCode) + (hostCheck.durationMs === undefined || hostCheck.durationMs === null ? '' : ' · ' + String(Math.round(hostCheck.durationMs / 1000)) + 's'))
-					}
-					return parts.length === 0 ? '' : ' · ' + parts.join(' · ')
+					const fromEvent = entry !== null && entry !== undefined && typeof entry.by === 'string' && entry.by !== ''
+					const value = fromEvent ? entry.by : review === null ? null : review.by
+					const name = fromEvent ? entry.byName : review === null ? null : review.byName
+					return value === null || value === undefined ? '' : ' · ' + memberName(value, name)
 				}
 				function eventText(type, task, assignee, review, test, entry, note, eventRound, noteSha) {
 					// The row already renders the kind as a chip, so the description starts
@@ -3089,8 +3084,8 @@ window.__ModuleLoader__.load({
 					if (type === 'submit') return task.id + (noteSha === '' && shortSha(task.commit) === '' ? '' : ' · ' + (noteSha === '' ? shortSha(task.commit) : noteSha)) + ' · ' + t('detailFilesDeclared').replace('{n}', String(Array.isArray(task.writeFiles) ? task.writeFiles.length : 0))
 					if (type === 'review-pass') return subject + ' · ' + t('evtOutcomePass') + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
 					if (type === 'review-reject') return subject + ' · ' + t('evtOutcomeReject') + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
-					if (type === 'test-pass') return task.id + ' · ' + t('evtOutcomePass') + (test === null ? '' : ' · ' + memberName(test.by)) + testSummary(test)
-					if (type === 'test-fail') return task.id + ' · ' + t('evtOutcomeFail') + (test === null ? '' : ' · ' + memberName(test.by)) + testSummary(test)
+					if (type === 'test-pass') return task.id + ' · ' + (test === null ? '' : memberName(test.by, test.byName) + ' · ') + testSummaryText(test, review, t)
+					if (type === 'test-fail') return task.id + ' · ' + (test === null ? '' : memberName(test.by, test.byName) + ' · ') + testSummaryText(test, review, t)
 					if (type === 'blocked') return task.id
 					if (type === 'cancel') return task.id
 					return task.id
@@ -3312,6 +3307,35 @@ window.__ModuleLoader__.load({
 				return String(raw).replace(/^session-/, '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
 			}
 
+			/** Prefer the name the host wrote (byName); otherwise resolve the label against
+			 * the roster; an unresolved id shows as 成员 <label>, never a bare @. */
+			function actorDisplay(by, byName, roster, t) {
+				if (typeof byName === 'string' && byName !== '') return byName
+				const resolved = resolveAgentName(by, roster, t)
+				if (typeof resolved === 'string' && resolved.charAt(0) === '@') {
+					const label = resolved.slice(1).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+					return t('actorUnknown').replace('{id}', label === '' ? resolved : label)
+				}
+				return resolved
+			}
+
+			/** Structured test summary: 通过 · exit 0 · 21s (no evidence text). */
+			function testSummaryText(test, review, t) {
+				if (test === null || test === undefined) return ''
+				const passed = test.status === 'passed'
+				const label = passed ? t('statusResultPassed') : t('detailHostCheckFailed')
+				const hostCheck = typeof test.hostCheck === 'object' && test.hostCheck !== null ? test.hostCheck : null
+				const parts = [label]
+				if (hostCheck !== null) parts.push('exit ' + String(hostCheck.exitCode === null || hostCheck.exitCode === undefined ? '—' : hostCheck.exitCode))
+				const duration = hostCheck !== null && Number.isFinite(hostCheck.durationMs) ? hostCheck.durationMs : null
+				if (duration !== null) parts.push(String(Math.max(1, Math.round(duration / 1000))) + 's')
+				else if (review !== null && review !== undefined && typeof review.at === 'string' && typeof test.at === 'string') {
+					const ms = new Date(test.at).getTime() - new Date(review.at).getTime()
+					if (Number.isFinite(ms) && ms > 0) parts.push(t('detailTestDuration') + ' ' + String(Math.max(1, Math.round(ms / 1000))) + 's')
+				}
+				return parts.join(' · ')
+			}
+
 			/** Map an @label / @session id to the roster member name; unresolved values stay verbatim. */
 			function resolveAgentName(value, roster, t) {
 				if (typeof value !== 'string' || value === '') return '—'
@@ -3397,8 +3421,8 @@ window.__ModuleLoader__.load({
 					if (snapshot.agents.lead !== null && snapshot.agents.lead !== undefined) roster.push(snapshot.agents.lead)
 					if (Array.isArray(snapshot.agents.members)) snapshot.agents.members.forEach(function (member) { roster.push(member) })
 				}
-				function actorName(value) {
-					return resolveAgentName(value, roster, t)
+				function actorName(value, byName) {
+					return actorDisplay(value, byName, roster, t)
 				}
 
 				const actions = []
@@ -3484,7 +3508,7 @@ window.__ModuleLoader__.load({
 							{ key: 'sub-' + String(index), className: 'gbt-detailevent', 'data-detail-event': 'submit' },
 							h('span', { className: 'gbt-detailpill', 'data-tone': 'ok' }, t('detailSubmitted')),
 							h('b', null, t('stageImplement')),
-							h('span', { className: 'gbt-detailwho' }, (entry.by === null || entry.by === undefined ? '—' : actorName(entry.by)) + (submissions.length > 1 ? ' · ' + t('detailSubmitCount').replace('{n}', String(index + 1)) : '')),
+							h('span', { className: 'gbt-detailwho' }, (entry.by === null || entry.by === undefined ? '—' : actorName(entry.by, entry.byName)) + (submissions.length > 1 ? ' · ' + t('detailSubmitCount').replace('{n}', String(index + 1)) : '')),
 							h('span', { className: 'gbt-detailwhen' }, new Date(entry.at).toTimeString().slice(0, 5)),
 							sha === null ? null : h('div', { className: 'gbt-detailex gbt-mono' }, sha + ' · ' + t('detailFilesDeclared').replace('{n}', String(files.length)) + (actualFiles.length === 0 ? '' : ' = ' + t('detailFilesActual').replace('{n}', String(actualFiles.length)))),
 						),
@@ -3498,7 +3522,7 @@ window.__ModuleLoader__.load({
 							{ key: 'review', className: 'gbt-detailevent', 'data-detail-event': 'review', 'data-review-status': String(review.status) },
 							h('span', { className: 'gbt-detailpill', 'data-tone': review.status === 'approved' ? 'ok' : review.status === 'changes-requested' ? 'bad' : 'wait' }, tcReviewLabel(review.status, t)),
 							h('b', null, t('stageReview')),
-							h('span', { className: 'gbt-detailwho' }, actorName(review.by) + ' · ' + t('detailRound').replace('{n}', String(tcRound(review)))),
+							h('span', { className: 'gbt-detailwho' }, actorName(review.by, review.byName) + ' · ' + t('detailRound').replace('{n}', String(tcRound(review)))),
 							h('span', { className: 'gbt-detailwhen' }, new Date(review.at).toTimeString().slice(0, 5)),
 							reasons === '' ? null : h('div', { className: review.status === 'changes-requested' ? 'gbt-detailreason' : 'gbt-detailreason good', 'data-detail-reason': String(review.status) }, reasons),
 						),
@@ -3522,18 +3546,16 @@ window.__ModuleLoader__.load({
 				if (test !== null) {
 					const full = typeof test.evidence === 'string' ? test.evidence : ''
 					const firstRaw = full === '' ? '' : full.split('\n')[0]
-					const hostCheckNow = test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? test.hostCheck : null
-					const summarySuffix = hostCheckNow === null ? '' : ' · exit ' + String(hostCheckNow.exitCode === null || hostCheckNow.exitCode === undefined ? '—' : hostCheckNow.exitCode) + (hostCheckNow.durationMs === undefined || hostCheckNow.durationMs === null ? '' : ' · ' + String(Math.round(hostCheckNow.durationMs / 1000)) + 's')
-					const firstLine = (full === '' ? t('noEvidence') : firstRaw.slice(0, 160) + (firstRaw.length > 160 ? '…' : '')) + summarySuffix
+					const summaryLine = testSummaryText(test, review, t)
 					events.push(
 						h(
 							'div',
 							{ key: 'test', className: 'gbt-detailevent', 'data-detail-event': 'test', 'data-test-status': String(test.status) },
 							h('span', { className: 'gbt-detailpill', 'data-tone': test.status === 'passed' ? 'ok' : 'bad' }, tcTestLabel(test.status, t)),
 							h('b', null, t('stageTest')),
-							h('span', { className: 'gbt-detailwho' }, actorName(test.by) + (full === '' ? '' : ' · ' + t('detailRound').replace('{n}', String(tcRound(test))))),
+							h('span', { className: 'gbt-detailwho' }, actorName(test.by, test.byName) + ' · ' + t('detailRound').replace('{n}', String(tcRound(test)))),
 							h('span', { className: 'gbt-detailwhen' }, new Date(test.at).toTimeString().slice(0, 5)),
-							h('div', { className: 'gbt-detailex gbt-mono' }, firstLine),
+							h('div', { className: 'gbt-detailex gbt-mono' }, summaryLine),
 							evidenceOpen
 								? h('pre', { className: 'gbt-detailpreview', 'data-detail-evidence': 'full' }, (function () {
 										const lines = full.split('\n')
