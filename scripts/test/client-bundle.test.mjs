@@ -1049,13 +1049,77 @@ await flush()
     streamTask.history = savedStreamHistory
   }
 
+  // ── per-event round and sha, @user pause, blocked note hidden ──
+  {
+    const eventTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedEventHistory = eventTask.history
+    const savedEventCommit = eventTask.commit
+    eventTask.commit = '1234567890abcdef'
+    eventTask.history = [
+      { from: 'running', to: 'reviewing', at: new Date(Date.now() - 50000).toISOString(), by: '@session-fixer', note: 'submitted for review round 1 @aaaaaaa' },
+      { from: 'reviewing', to: 'running', at: new Date(Date.now() - 40000).toISOString(), by: '@session-reviewer-1', note: 'changes requested' },
+      { from: 'running', to: 'reviewing', at: new Date(Date.now() - 30000).toISOString(), by: '@session-fixer', note: 'submitted for review round 2 @bbbbbbb' },
+      { from: 'reviewing', to: 'testing', at: new Date(Date.now() - 20000).toISOString(), by: '@session-reviewer-1', note: 'approved' },
+    ]
+    let eventTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    eventTree = withHooks(panel, { initialView: 'status' })
+    const rows = findAll(eventTree, (node) => node.props && node.props['data-activity-kind'] !== undefined)
+    const submits = rows.filter((row) => row.props['data-activity-kind'] === 'submit')
+    const rejects = rows.filter((row) => row.props['data-activity-kind'] === 'review-reject')
+    const passes = rows.filter((row) => row.props['data-activity-kind'] === 'review-pass')
+    check(
+      'each submit row carries its own commit sha from the note, not the current head',
+      submits.length === 2 && submits.map((row) => textOf(row)).join(' | ').indexOf('aaaaaaa') >= 0 && submits.map((row) => textOf(row)).join(' | ').indexOf('bbbbbbb') >= 0 && submits.every((row) => textOf(row).indexOf('1234567') < 0),
+      submits.map((row) => textOf(row)).join(' | '),
+    )
+    check(
+      'each review row carries its own round (reject 1, pass 2), not the latest record round',
+      rejects.length === 1 && textOf(rejects[0]).indexOf('第 1 轮') >= 0 && passes.length === 1 && textOf(passes[0]).indexOf('第 2 轮') >= 0,
+      rejects.concat(passes).map((row) => textOf(row)).join(' | '),
+    )
+    eventTask.history = savedEventHistory
+    eventTask.commit = savedEventCommit
+  }
+  {
+    const savedPause = HOST.dispatch
+    HOST.dispatch = Object.assign({}, savedPause, { by: '@user' })
+    let pauseTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    pauseTree = withHooks(panel, { initialView: 'status' })
+    const pauseText = textOf(pauseTree)
+    check(
+      'a @user pause reason reads 你, not the raw id',
+      pauseText.indexOf('由 你 暂停') >= 0 && pauseText.indexOf('@user') < 0,
+      pauseText.slice(0, 300),
+    )
+    HOST.dispatch = savedPause
+  }
+  {
+    const blockedTask = HOST.tasks.filter((entry) => entry.id === 'T-7')[0]
+    const savedBlockedHistory = blockedTask.history
+    blockedTask.history = [{ from: 'running', to: 'blocked', at: new Date(Date.now() - 5000).toISOString(), by: '@scheduler', note: 'lease expired after 30s of silence' }]
+    let blockedTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    blockedTree = withHooks(panel, { initialView: 'status' })
+    const blockedRow = findAll(blockedTree, (node) => node.props && node.props['data-activity-kind'] === 'blocked')[0]
+    check(
+      'a blocked row keeps the English note out of the text (hover only)',
+      blockedRow !== undefined && textOf(blockedRow).indexOf('lease expired') < 0 && String(blockedRow.props.title).indexOf('lease expired') >= 0,
+      blockedRow && (textOf(blockedRow) + ' | title=' + String(blockedRow.props.title)),
+    )
+    blockedTask.history = savedBlockedHistory
+  }
+
   // ── empty states are plain text, not a card inside a card ──
   {
     const savedEmptyAgents = HOST.agents
     const savedEmptyActivity = HOST.activity
+    const savedEmptyTasks = HOST.tasks
     HOST.agents = { lead: null, members: [] }
     HOST.activity = { available: true, limit: 100, count: 0, entries: [] }
     HOST.worktrees = { available: true, error: null, total: 0, active: 0, counts: {}, worktrees: [] }
+    HOST.tasks = []
     let emptyTree = withHooks(panel, { initialView: 'status' })
     await flush()
     emptyTree = withHooks(panel, { initialView: 'status' })
@@ -1067,6 +1131,7 @@ await flush()
     )
     HOST.agents = savedEmptyAgents
     HOST.activity = savedEmptyActivity
+    HOST.tasks = savedEmptyTasks
   }
 
   const savedWorktrees = HOST.worktrees

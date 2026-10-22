@@ -2970,9 +2970,7 @@ window.__ModuleLoader__.load({
 				const activity = snapshot.activity
 				const agents = snapshot.agents
 				const entries = activity !== null && activity !== undefined && Array.isArray(activity.entries) ? activity.entries : []
-				const realEntries = entries.filter(function (entry) { return entry.kind !== 'sweep' })
-				const sweepCount = entries.length - realEntries.length
-				const shownEntries = showAllActivity ? entries : realEntries
+				const sweepCount = entries.filter(function (entry) { return entry.kind === 'sweep' }).length
 				const lastActivity = entries.length === 0 || typeof entries[0].at !== 'string' ? null : entries[0].at
 				// One resolver shared with the detail page: the tool writes @labels, the
 				// panel shows member names (unresolved ids stay verbatim).
@@ -2988,9 +2986,9 @@ window.__ModuleLoader__.load({
 					if (active !== true) {
 						const since = typeof dispatch.since === 'string' ? dispatch.since : null
 						const by = typeof dispatch.by === 'string' && dispatch.by !== '' ? memberName(dispatch.by) : null
-						if (since === null) return t('statusWhyPaused')
-						const clock = new Date(since).toTimeString().slice(0, 5)
 						const who = by === null ? null : by
+						if (since === null) return t('statusWhyPaused') + (who === null ? '' : '（' + t('statusPausedBy').replace('{by}', who) + '）')
+						const clock = new Date(since).toTimeString().slice(0, 5)
 						return t('statusWhyPaused') + '（' + clock + (who === null ? '' : ' ' + t('statusPausedBy').replace('{by}', who)) + '）'
 					}
 					if (ready === 0) return t('statusWhyNoReady')
@@ -3006,7 +3004,9 @@ window.__ModuleLoader__.load({
 				}
 				const stream = []
 				tasks.forEach(function (task) {
-					const hist = Array.isArray(task.history) ? task.history : []
+					const hist = Array.isArray(task.history) ? task.history.slice().sort(function (left, right) { return new Date(left.at).getTime() - new Date(right.at).getTime() }) : []
+					let reviewRound = 0
+					let submitRound = 0
 					hist.forEach(function (entry) {
 						const to = typeof entry.to === 'string' ? entry.to : ''
 						const from = typeof entry.from === 'string' ? entry.from : null
@@ -3023,16 +3023,23 @@ window.__ModuleLoader__.load({
 						else if (to === 'blocked') type = 'blocked'
 						else if (to === 'cancelled') type = 'cancel'
 						if (type === null) return
+						if (type === 'submit') submitRound += 1
+						if (type === 'review-pass' || type === 'review-reject') reviewRound += 1
+						const eventRound = type === 'submit' ? submitRound : reviewRound
 						const review = task.review !== null && task.review !== undefined ? task.review : null
 						const test = task.test !== null && task.test !== undefined ? task.test : null
 						const round = review === null ? null : tcRound(review)
 						const note = typeof entry.note === 'string' && entry.note !== '' ? entry.note : null
+						const noteSha = (function () {
+							const match = /@([0-9a-fA-F]{7,40})/.exec(note === null ? '' : note)
+							return match === null ? '' : match[1].slice(0, 7)
+						})()
 						stream.push({
 							key: 'hist-' + task.id + '-' + String(entry.at) + '-' + type,
 							at: entry.at,
 							type: type,
 							taskId: task.id,
-							html: eventText(type, task, assignee, review, round, test, entry, note),
+							html: eventText(type, task, assignee, review, round, test, entry, note, eventRound, noteSha),
 							raw: note,
 						})
 					})
@@ -3066,18 +3073,19 @@ window.__ModuleLoader__.load({
 					})
 				})
 				stream.sort(function (left, right) { return new Date(right.at).getTime() - new Date(left.at).getTime() })
-				function eventText(type, task, assignee, review, round, test, entry, note) {
+				const recentStream = stream.slice(0, 30)
+				function eventText(type, task, assignee, review, round, test, entry, note, eventRound, noteSha) {
 					const subject = task.id + ' · ' + task.title
 					if (type === 'create') return t('evtCreate') + ' ' + subject
 					if (type === 'retry') return t('evtRetry') + ' ' + task.id
 					if (type === 'dispatch') return t('evtDispatch') + ' ' + task.id + (assignee === null ? '' : ' → ' + assignee)
-					if (type === 'submit') return t('evtSubmit') + ' ' + task.id + (shortSha(task.commit) === '' ? '' : ' · ' + shortSha(task.commit)) + ' · ' + t('detailFilesDeclared').replace('{n}', String(Array.isArray(task.writeFiles) ? task.writeFiles.length : 0))
-					if (type === 'review-pass') return t('evtReviewPass') + ' ' + task.id + (review === null ? '' : ' · ' + memberName(review.by) + ' · ' + t('detailRound').replace('{n}', String(round === null ? 1 : round)))
-					if (type === 'review-reject') return t('evtReviewReject') + ' ' + task.id + (review === null ? '' : ' · ' + memberName(review.by) + ' · ' + t('detailRound').replace('{n}', String(round === null ? 1 : round)))
+					if (type === 'submit') return t('evtSubmit') + ' ' + task.id + (noteSha === '' && shortSha(task.commit) === '' ? '' : ' · ' + (noteSha === '' ? shortSha(task.commit) : noteSha)) + ' · ' + t('detailFilesDeclared').replace('{n}', String(Array.isArray(task.writeFiles) ? task.writeFiles.length : 0))
+					if (type === 'review-pass') return t('evtReviewPass') + ' ' + task.id + (review === null ? '' : ' · ' + memberName(review.by)) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
+					if (type === 'review-reject') return t('evtReviewReject') + ' ' + task.id + (review === null ? '' : ' · ' + memberName(review.by)) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
 					if (type === 'test-pass') return t('evtTestPass') + ' ' + task.id + (test === null ? '' : ' · ' + memberName(test.by))
 					if (type === 'test-fail') return t('evtTestFail') + ' ' + task.id + (test === null ? '' : ' · ' + memberName(test.by))
-					if (type === 'blocked') return t('evtBlocked') + ' ' + task.id + (note === null ? '' : ' · ' + note)
-					if (type === 'cancel') return t('evtCancel') + ' ' + task.id + (note === null ? '' : ' · ' + note)
+					if (type === 'blocked') return t('evtBlocked') + ' ' + task.id
+					if (type === 'cancel') return t('evtCancel') + ' ' + task.id
 					return t('evtEvent') + ' ' + task.id
 				}
 				/** Minutes since this member's newest activity entry (entries are newest-first). */
@@ -3215,16 +3223,16 @@ window.__ModuleLoader__.load({
 				const activityCard = h(
 					'section',
 					{ className: 'gbt-statuscard', 'data-status-card': 'activity' },
-					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardActivity'), h('span', { className: 'gbt-statusmeta' }, t('statusLatestActivity') + ' ' + String(stream.length) + ' ' + t('statusEventUnit'))),
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardActivity'), h('span', { className: 'gbt-statusmeta' }, t('statusLatestActivity') + ' ' + String(recentStream.length) + ' ' + t('statusEventUnit'))),
 					h(
 						'div',
 						{ className: 'gbt-statuscardbody' },
 						activity === null || activity === undefined || activity.available !== true
 							? h('div', { className: 'gbt-statusnote' }, t('statusActivityUnavailable'))
-							: stream.length === 0 && sweepRows.length === 0
+							: recentStream.length === 0 && sweepRows.length === 0
 								? h('div', { className: 'gbt-statusnote' }, t('statusActivityEmpty'))
 								: h('div', null,
-									stream.map(function (event) {
+									recentStream.map(function (event) {
 										return h(
 											'div',
 											{ key: event.key, className: 'gbt-statusev', 'data-activity': event.type, 'data-activity-kind': event.type, 'data-activity-task': event.taskId, title: event.raw === null ? undefined : event.raw },
@@ -3374,7 +3382,8 @@ window.__ModuleLoader__.load({
 			/** Map an @label / @session id to the roster member name; unresolved values stay verbatim. */
 			function resolveAgentName(value, roster, t) {
 				if (typeof value !== 'string' || value === '') return '—'
-				if (value.charAt(0) !== '@') return value === 'user' ? t('statusYou') : value
+				if (value === '@user' || value === 'user') return t('statusYou')
+				if (value.charAt(0) !== '@') return value
 				const id = value.slice(1)
 				const idKey = id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
 				const hit = roster.filter(function (member) {
