@@ -178,11 +178,6 @@ window.__ModuleLoader__.load({
 				files: '文件',
 				noFiles: '未声明文件',
 				noDeps: '无依赖',
-				locks: '文件锁',
-				lockPath: '路径',
-				lockHolder: '持有者',
-				lockSince: '开始',
-				lockLease: '租约',
 				release: '释放',
 				status: '状态',
 				priority: '优先级',
@@ -203,7 +198,6 @@ window.__ModuleLoader__.load({
 				blockedCol: '阻塞',
 				emptyBoard: '还没有任务。点“新建任务”开始。',
 				emptyQueue: '没有可派发的任务。',
-				emptyLocks: '当前没有文件锁。',
 				emptyHistory: '没有历史记录。',
 				workersTab: '执行者',
 				workersLead: 'Team Lead',
@@ -224,7 +218,6 @@ window.__ModuleLoader__.load({
 				workersErrNoLead: '没有活着的 Team Lead',
 				workersErrRoster: '花名册不可读',
 				waiters: '等待者',
-				locksWaitersHint: '等待者 = 当前会等这个文件的任务；这不是 FIFO 队列——调度器没有锁队列，只在每轮派发时重试。',
 				unknownProjectHint: '还没有项目。在会话里调用一次 task_center，或在下方填写项目目录。',
 				offline: '宿主没有响应',
 				error: '操作失败',
@@ -624,11 +617,6 @@ window.__ModuleLoader__.load({
 				files: 'Files',
 				noFiles: 'No declared files',
 				noDeps: 'No dependencies',
-				locks: 'File locks',
-				lockPath: 'Path',
-				lockHolder: 'Holder',
-				lockSince: 'Since',
-				lockLease: 'Lease',
 				release: 'Release',
 				status: 'Status',
 				priority: 'Priority',
@@ -649,7 +637,6 @@ window.__ModuleLoader__.load({
 				blockedCol: 'Blocked',
 				emptyBoard: 'No tasks yet. Use “New task” to start.',
 				emptyQueue: 'Nothing is ready to dispatch.',
-				emptyLocks: 'No file locks right now.',
 				emptyHistory: 'No history yet.',
 				workersTab: 'Workers',
 				workersLead: 'Team lead',
@@ -670,7 +657,6 @@ window.__ModuleLoader__.load({
 				workersErrNoLead: 'no live Team Lead',
 				workersErrRoster: 'the roster could not be read',
 				waiters: 'Waiters',
-				locksWaitersHint: 'Waiters are the tasks that would wait on this file right now. This is not a FIFO queue — the scheduler keeps no lock queue and simply retries on each dispatch pass.',
 				unknownProjectHint: 'No project yet. Call task_center once in a session, or enter a project directory below.',
 				offline: 'The host did not answer',
 				error: 'Action failed',
@@ -3314,77 +3300,352 @@ window.__ModuleLoader__.load({
 				)
 			}
 
-			function LocksView(props) {
-				const locks = props.snapshot.locks
-				const hint = h('p', { key: 'hint', className: 'gbt-footnote' }, props.t('locksWaitersHint'))
-				if (locks.length === 0) return h('div', null, hint, h('div', { key: 'empty', className: 'gbt-empty' }, props.t('emptyLocks')))
+			function StatusView(props) {
+				const t = props.t
+				const snapshot = props.snapshot
+				const now = props.now
+				const store = props.store
+				// Mirrored into a module store so a re-mount (view switch, polling) keeps
+				// the toggle/menu state; the React state still drives the live render.
+				const [showAllActivity, setShowAllActivity] = React.useState(statusUiState.showAll === true)
+				const [openSession, setOpenSession] = React.useState(statusUiState.session)
+				const [copied, setCopied] = React.useState(statusUiState.copied)
+				const dispatch = snapshot.dispatch === undefined || snapshot.dispatch === null ? { state: 'paused' } : snapshot.dispatch
+				const active = dispatch.state === 'running'
+				const counts = snapshot.counts === undefined || snapshot.counts === null ? {} : snapshot.counts
+				const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : []
+				const queue = Array.isArray(snapshot.queue) ? snapshot.queue : []
+				const scheduler = snapshot.scheduler === undefined || snapshot.scheduler === null ? null : snapshot.scheduler
+				const running = tasks.filter(function (task) { return task.status === 'running' })
+				const maxConcurrent = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
+				const ready = counts.ready === undefined || counts.ready === null ? 0 : counts.ready
+				const blocked = counts.blocked || 0
+				const worktrees = snapshot.worktrees
+				const activity = snapshot.activity
+				const agents = snapshot.agents
+				const entries = activity !== null && activity !== undefined && Array.isArray(activity.entries) ? activity.entries : []
+				const sweepCount = entries.filter(function (entry) { return entry.kind === 'sweep' }).length
+				const lastActivity = entries.length === 0 || typeof entries[0].at !== 'string' ? null : entries[0].at
+				// One resolver shared with the detail page: the tool writes @labels, the
+				// panel shows member names (unresolved ids stay verbatim).
+				const roster = []
+				if (agents !== null && agents !== undefined) {
+					if (agents.lead !== null && agents.lead !== undefined) roster.push(agents.lead)
+					if (Array.isArray(agents.members)) agents.members.forEach(function (member) { roster.push(member) })
+				}
+				function memberName(value) {
+					return resolveAgentName(value, roster, t)
+				}
+				function whyNotRunning() {
+					if (active !== true) {
+						const since = typeof dispatch.since === 'string' ? dispatch.since : null
+						const by = typeof dispatch.by === 'string' && dispatch.by !== '' ? memberName(dispatch.by) : null
+						const who = by === null ? null : by
+						if (since === null) return t('statusWhyPaused') + (who === null ? '' : '（' + t('statusPausedBy').replace('{by}', who) + '）')
+						const clock = new Date(since).toTimeString().slice(0, 5)
+						return t('statusWhyPaused') + '（' + clock + (who === null ? '' : ' ' + t('statusPausedBy').replace('{by}', who)) + '）'
+					}
+					if (ready === 0) return t('statusWhyNoReady')
+					if (running.length >= maxConcurrent) return t('statusWhyFull')
+					if (blocked > 0) return t('statusWhyBlocked').replace('{n}', String(blocked))
+					return t('statusWhyRunning')
+				}
+				const lastActivityText = lastActivity === null ? null : t('statusLastActivity') + ' ' + tcAgo(lastActivity, now)
+
+				// ── the activity stream: localized events for the phases ──
+				function shortSha(value) {
+					return typeof value === 'string' && value !== '' ? value.slice(0, 7) : ''
+				}
+				const stream = []
+				tasks.forEach(function (task) {
+					const hist = Array.isArray(task.history) ? task.history.slice().sort(function (left, right) { return new Date(left.at).getTime() - new Date(right.at).getTime() }) : []
+					let reviewRound = 0
+					hist.forEach(function (entry) {
+						const to = typeof entry.to === 'string' ? entry.to : ''
+						const from = typeof entry.from === 'string' ? entry.from : null
+						const assignee = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.name === 'string' ? memberName(task.assignee.name) : null
+						let type = null
+						if (to === 'pending' && from === null) type = 'create'
+						else if (to === 'pending') type = 'retry'
+						else if (to === 'running' && (from === 'pending' || from === null)) type = 'dispatch'
+						else if (to === 'reviewing') type = 'submit'
+						else if (to === 'running' && from === 'reviewing') type = 'review-reject'
+						else if (to === 'testing') type = 'review-pass'
+						else if (to === 'running' && from === 'testing') type = 'test-fail'
+						else if (to === 'done') type = 'test-pass'
+						else if (to === 'blocked') type = 'blocked'
+						else if (to === 'cancelled') type = 'cancel'
+						if (type === null) return
+						if (type === 'review-pass' || type === 'review-reject') reviewRound += 1
+						const eventRound = reviewRound
+						const review = task.review !== null && task.review !== undefined ? task.review : null
+						const test = task.test !== null && task.test !== undefined ? task.test : null
+						const note = typeof entry.note === 'string' && entry.note !== '' ? entry.note : null
+						const noteSha = (function () {
+							const match = /@([0-9a-fA-F]{7,40})/.exec(note === null ? '' : note)
+							return match === null ? '' : match[1].slice(0, 7)
+						})()
+						stream.push({
+							key: 'hist-' + task.id + '-' + String(entry.at) + '-' + type,
+							at: entry.at,
+							type: type,
+							taskId: task.id,
+							html: eventText(type, task, assignee, review, test, entry, note, eventRound, noteSha),
+							raw: note,
+						})
+					})
+					const merge = tcMergeOf(task)
+					if (merge !== null && typeof merge.at === 'string') {
+						const commit = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? shortSha(merge.mergeCommit) : ''
+						stream.push({
+							key: 'merge-' + task.id,
+							at: merge.at,
+							type: 'merge',
+							taskId: task.id,
+							html: task.id + ' · ' + task.title + ' → ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit),
+							raw: typeof merge.output === 'string' ? merge.output.split('\n')[0] : null,
+						})
+					}
+				})
+				// Host-only events that never appear as a status transition.
+				entries.forEach(function (entry, index) {
+					const kind = String(entry.kind === undefined || entry.kind === null ? '' : entry.kind)
+					if (kind === 'sweep' || kind === 'worktree-create' || kind === 'worktree-remove') return
+					if (kind === 'review-end' || kind === 'test-end' || kind === 'review-start' || kind === 'test-start' || kind === 'merge' || kind === 'role-config' || kind === 'role-provision' || kind === 'role-replace') return
+					if (kind !== 'host-check' && kind !== 'error' && kind !== 'host-action-timeout') return
+					if (typeof entry.taskId === 'string' && stream.some(function (event) { return event.taskId === entry.taskId && event.type === 'test-fail' })) return
+					stream.push({
+						key: 'sys-' + String(index),
+						at: entry.at,
+						type: kind === 'host-check' ? 'host-check' : 'blocked',
+						taskId: typeof entry.taskId === 'string' ? entry.taskId : '',
+						html: (typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId + ' · ' : '') + t(kind === 'host-check' ? 'evtHostCheck' : 'evtError'),
+						raw: typeof entry.detail === 'string' ? entry.detail : null,
+					})
+				})
+				stream.sort(function (left, right) { return new Date(right.at).getTime() - new Date(left.at).getTime() })
+				const recentStream = stream.slice(0, 30)
+				function reviewWho(entry, review) {
+					const value = entry !== null && entry !== undefined && typeof entry.by === 'string' && entry.by !== '' ? entry.by : review === null ? null : review.by
+					return value === null || value === undefined ? '' : ' · ' + memberName(value)
+				}
+				function testSummary(test) {
+					if (test === null) return ''
+					const parts = []
+					const evidence = typeof test.evidence === 'string' ? test.evidence.split('\n')[0].trim() : ''
+					if (evidence !== '') parts.push(evidence.slice(0, 60) + (evidence.length > 60 ? '…' : ''))
+					const hostCheck = typeof test.hostCheck === 'object' && test.hostCheck !== null ? test.hostCheck : null
+					if (hostCheck !== null) {
+						parts.push('exit ' + String(hostCheck.exitCode === null || hostCheck.exitCode === undefined ? '—' : hostCheck.exitCode) + (hostCheck.durationMs === undefined || hostCheck.durationMs === null ? '' : ' · ' + String(Math.round(hostCheck.durationMs / 1000)) + 's'))
+					}
+					return parts.length === 0 ? '' : ' · ' + parts.join(' · ')
+				}
+				function eventText(type, task, assignee, review, test, entry, note, eventRound, noteSha) {
+					// The row already renders the kind as a chip, so the description starts
+					// with the subject and never repeats the verb.
+					const subject = task.id + ' · ' + task.title
+					if (type === 'create') return subject
+					if (type === 'retry') return task.id
+					if (type === 'dispatch') return task.id + (assignee === null ? '' : ' → ' + assignee)
+					if (type === 'submit') return task.id + (noteSha === '' && shortSha(task.commit) === '' ? '' : ' · ' + (noteSha === '' ? shortSha(task.commit) : noteSha)) + ' · ' + t('detailFilesDeclared').replace('{n}', String(Array.isArray(task.writeFiles) ? task.writeFiles.length : 0))
+					if (type === 'review-pass') return subject + ' · ' + t('evtOutcomePass') + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
+					if (type === 'review-reject') return subject + ' · ' + t('evtOutcomeReject') + reviewWho(entry, review) + ' · ' + t('detailRound').replace('{n}', String(eventRound))
+					if (type === 'test-pass') return task.id + ' · ' + t('evtOutcomePass') + (test === null ? '' : ' · ' + memberName(test.by)) + testSummary(test)
+					if (type === 'test-fail') return task.id + ' · ' + t('evtOutcomeFail') + (test === null ? '' : ' · ' + memberName(test.by)) + testSummary(test)
+					if (type === 'blocked') return task.id
+					if (type === 'cancel') return task.id
+					return task.id
+				}
+				/** Minutes since this member's newest activity entry (entries are newest-first). */
+				function idleMinutesFor(name) {
+					const hit = entries.filter(function (entry) { return (entry.actor === name || entry.actorName === name) && typeof entry.at === 'string' })[0]
+					if (hit === undefined) return null
+					const age = now - new Date(hit.at).getTime()
+					return Number.isFinite(age) ? Math.max(0, Math.round(age / 60000)) : null
+				}
+				function lastResultFor(name) {
+					const hit = entries.filter(function (entry) { return (entry.actor === name || entry.actorName === name) && typeof entry.taskId === 'string' })[0]
+					if (hit === undefined) return '—'
+					if (hit.kind === 'test-end' && String(hit.detail).indexOf('passed') >= 0) return hit.taskId + ' ' + t('statusResultPassed')
+					if (hit.kind === 'merge') return hit.taskId + ' ' + t('statusResultCompleted')
+					if (hit.kind === 'submit') return hit.taskId + ' ' + t('statusResultSubmitted')
+					return hit.taskId
+				}
+				function agentRow(member, isLead, index) {
+					const name = typeof member.name === 'string' ? member.name : typeof member.id === 'string' ? member.id : String(index)
+					const session = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' ? member.id : ''
+					const current = member.currentTask === null || member.currentTask === undefined ? null : member.currentTask
+					const idleMinutes = idleMinutesFor(name)
+					const statusText = isLead
+						? '—'
+						: current !== null
+							? current.id
+							: idleMinutes === null
+								? t('statusIdle')
+								: t('statusIdle') + ' ' + String(idleMinutes) + ' ' + t('statusMinutes')
+					const resultText = isLead ? typeof member.description === 'string' && member.description !== '' ? member.description : '—' : lastResultFor(name)
+					const expanded = openSession === name
+					return h(
+						'div',
+						{ key: 'agent-' + name, className: 'gbt-statusrow', 'data-status-agent': name },
+						h('span', { className: 'gbt-statuswho gbt-mono' }, name),
+						h('span', { className: 'gbt-statusrole' }, roleKindLabel(isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate', t)),
+						h('span', { className: 'gbt-statustask' }, statusText),
+						h('span', { className: 'gbt-statustime' }, resultText),
+						h(
+							'button',
+							{ type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } },
+							'⋯',
+						),
+						expanded
+							? h(
+									'div',
+									{ className: 'gbt-sessionrow', 'data-status-session': name },
+									h('span', { className: 'gbt-footnote' }, t('statusSession')),
+									h('code', { className: 'gbt-mono' }, session === '' ? '—' : session),
+									session === ''
+										? null
+										: h(
+												'button',
+												{ type: 'button', className: 'gbt-btn', 'data-action': 'copy-session', 'data-session': session, onClick: function () { void copyToClipboard(session).then(function (okopy) { const next = okopy === true ? session : 'failed'; statusUiState.copied = next; setCopied(next) }) } },
+												copied === session ? t('sessionCopied') : t('copySession'),
+											),
+								)
+							: null,
+					)
+				}
+				const dispatchCard = h(
+					'section',
+					{ className: 'gbt-statuscard', 'data-status-card': 'dispatch' },
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }), t('statusCardDispatch'), h('span', { className: 'gbt-statusmeta' }, active ? t('running') : t('paused'))),
+					h(
+						'div',
+						{ className: 'gbt-statuscardbody' },
+						h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), h('span', { className: 'gbt-statuskv' }, h('b', null, String(queue.length)), h('span', null, t('statusQueueLen')))),
+						h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
+						h('div', { className: 'gbt-statusscan' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—') + ' · ' + t('statusMergeQueue') + ' ' + String(queue.length) + ' ' + t('statusMergeQueueUnit')),
+					),
+				)
+				const wtList = worktrees !== null && worktrees !== undefined && worktrees.available === true && Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
+				const mainWt = wtList.filter(function (entry) { return entry.type === 'main' })[0]
+				const activeWts = wtList.filter(function (entry) { return entry !== mainWt && entry.active === true })
+				const staleWts = wtList.filter(function (entry) { return entry !== mainWt && entry.active !== true })
+				const dispatchCardRow = h(
+					'div',
+					{ className: 'gbt-statusrow', 'data-worktree-row': 'main' },
+					h('span', { className: 'gbt-statuswho gbt-mono' }, mainWt === undefined ? '—' : String(mainWt.path).split(/[\\/]/).filter(Boolean).slice(-1)[0] || String(mainWt.path)),
+					h('span', { className: 'gbt-statusrole' }, t('statusWtMain')),
+					h('span', { className: 'gbt-statustask gbt-mono' }, mainWt === undefined ? '—' : String(mainWt.branch || '—') + ' · ' + String(mainWt.head || '—').slice(0, 7)),
+					h('span', { className: 'gbt-statustime' }, t('statusWtActiveState')),
+				)
+				const worktreesCard = h(
+					'section',
+					{ className: 'gbt-statuscard', 'data-status-card': 'worktrees' },
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardWorktrees'), h('span', { className: 'gbt-statusmeta' }, String(wtList.length) + ' ' + t('statusWtTotal') + ' · ' + String(activeWts.length + (mainWt === undefined ? 0 : 1)) + ' ' + t('statusWtActive'))),
+					h(
+						'div',
+						{ className: 'gbt-statuscardbody' },
+						worktrees === null || worktrees === undefined || worktrees.available !== true
+							? h('div', { className: 'gbt-statusnote' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : t('statusWorktreesUnavailable'))
+							: h('div', null, dispatchCardRow, activeWts.map(function (entry) {
+									const path = String(entry.path)
+									return h(
+										'div',
+										{ key: 'wt-' + path, className: 'gbt-statusrow', 'data-worktree-row': String(entry.taskId === undefined || entry.taskId === null ? path : entry.taskId) },
+										h('span', { className: 'gbt-statuswho gbt-mono' }, typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId : path.split(/[\\/]/).filter(Boolean).slice(-1)[0]),
+										h('span', { className: 'gbt-statusrole' }, t('statusWtTask')),
+										h('span', { className: 'gbt-statustask gbt-mono' }, String(entry.branch || '—') + ' · ' + String(entry.head || '—').slice(0, 7)),
+										h('span', { className: 'gbt-statustime' }, t('statusWtActiveState')),
+									)
+								})),
+						staleWts.length === 0
+							? null
+							: h(
+									'div',
+									{ className: 'gbt-statusfold', 'data-status-stale': String(staleWts.length) },
+									h('span', null, String(staleWts.length) + ' ' + t('statusStaleWorktrees') + '（' + staleWts.slice(0, 6).map(function (entry) { return typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId : '—' }).join(' · ') + '）'),
+									h('span', { className: 'gbt-statusnote' }, t('statusCleanupUnavailable')),
+								),
+					),
+				)
+				const lead = agents !== null && agents !== undefined ? agents.lead : null
+				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+				const agentRows = []
+				if (lead !== null && lead !== undefined) agentRows.push(agentRow(lead, true, -1))
+				members.forEach(function (member, index) { agentRows.push(agentRow(member, false, index)) })
+				const agentsCard = h(
+					'section',
+					{ className: 'gbt-statuscard', 'data-status-card': 'agents' },
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot', 'data-running': members.some(function (member) { return member.status === 'running' }) ? 'true' : 'false' }), t('statusCardAgents'), h('span', { className: 'gbt-statusmeta' }, String(agentRows.length) + ' ' + t('statusAgentUnit'))),
+					h(
+						'div',
+						{ className: 'gbt-statuscardbody' },
+						agents === null || agents === undefined
+							? h('div', { className: 'gbt-statusnote' }, t('statusAgentsUnavailable'))
+							: agentRows.length === 0
+								? h('div', { className: 'gbt-statusnote' }, t('workersEmpty'))
+								: h('div', null, agentRows),
+					),
+				)
+				const sweepRows = showAllActivity ? entries.filter(function (entry) { return entry.kind === 'sweep' }) : []
+				const activityCard = h(
+					'section',
+					{ className: 'gbt-statuscard', 'data-status-card': 'activity' },
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardActivity'), h('span', { className: 'gbt-statusmeta' }, t('statusLatestActivity') + ' ' + String(recentStream.length) + ' ' + t('statusEventUnit'))),
+					h(
+						'div',
+						{ className: 'gbt-statuscardbody' },
+						activity === null || activity === undefined || activity.available !== true
+							? h('div', { className: 'gbt-statusnote' }, t('statusActivityUnavailable'))
+							: recentStream.length === 0 && sweepRows.length === 0 && sweepCount === 0
+								? h('div', { className: 'gbt-statusnote' }, t('statusActivityEmpty'))
+								: h('div', null,
+									recentStream.map(function (event) {
+										return h(
+											'div',
+											{ key: event.key, className: 'gbt-statusev', 'data-activity': event.type, 'data-activity-kind': event.type, 'data-activity-task': event.taskId, title: event.raw === null ? undefined : event.raw },
+											h('span', { className: 'gbt-statusevtime gbt-mono' }, typeof event.at === 'string' ? new Date(event.at).toTimeString().slice(0, 5) : '—'),
+											h('span', { className: 'gbt-statusevkind' }, activityLabel(event.type)),
+											h('span', { className: 'gbt-statusevtext' }, event.html),
+										)
+									}),
+									sweepRows.map(function (entry, index) {
+										return h(
+											'div',
+											{ key: 'sweep-' + String(index), className: 'gbt-statusev', 'data-activity': 'sweep', 'data-activity-kind': 'sweep', title: entry.detail === null ? undefined : String(entry.detail) },
+											h('span', { className: 'gbt-statusevtime gbt-mono' }, typeof entry.at === 'string' ? new Date(entry.at).toTimeString().slice(0, 5) : '—'),
+											h('span', { className: 'gbt-statusevkind' }, t('statusEvtSweep')),
+											h('span', { className: 'gbt-statusevtext' }, t('statusSweepsShown') + ' · ' + t('statusSweepInterval')),
+										)
+									}),
+								),
+						sweepCount === 0
+							? null
+							: h(
+									'div',
+									{ className: 'gbt-statusfold' },
+									h('span', null, (showAllActivity ? t('statusSweepsShown') : t('statusSweepFolded')) + ' · ' + t('statusSweepInterval') + '（' + t('statusMergeQueue') + ' ' + String(queue.length) + ' ' + t('statusMergeQueueUnit') + '）'),
+									h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'status-show-all', 'data-show-all': showAllActivity ? 'true' : 'false', onClick: function () { const next = !showAllActivity; statusUiState.showAll = next; setShowAllActivity(next) } }, showAllActivity ? t('statusShowReal') : t('statusShowAll')),
+								),
+					),
+				)
+				function activityLabel(type) {
+					return t('evtLabel-' + type)
+				}
 				return h(
 					'div',
-					null,
-					hint,
+					{ className: 'gbt-statusview', 'data-status': 'cards' },
 					h(
-						'table',
-						{ className: 'gbt-locktable' },
+						'div',
+						{ className: 'gbt-statustop', 'data-status-top': 'true' },
+						h('div', { className: 'gbt-statussummary' }, lastActivityText === null ? '' : lastActivityText),
 						h(
-							'thead',
-							null,
-							h(
-								'tr',
-								null,
-								h('th', null, props.t('lockPath')),
-								h('th', null, props.t('taskCount')),
-								h('th', null, props.t('lockHolder')),
-								h('th', null, props.t('waiters')),
-								h('th', null, props.t('lockLease')),
-								h('th', null, ''),
-							),
-						),
-						h(
-							'tbody',
-							null,
-							locks.map(function (lock) {
-								const lease = tcLease(lock.leaseUntil, props.now, props.t)
-								const waiters = Array.isArray(lock.waiters) ? lock.waiters : []
-								return h(
-									'tr',
-									{ key: lock.path },
-									h('td', { className: 'gbt-mono' }, lock.path),
-									h('td', null, lock.taskId === null || lock.taskId === undefined ? '—' : lock.taskId + (lock.taskTitle === null || lock.taskTitle === undefined ? '' : ' · ' + lock.taskTitle)),
-									h('td', null, lock.agent === null || lock.agent === undefined ? '—' : lock.agent),
-									h(
-										'td',
-										{ 'data-col': 'waiters' },
-										waiters.length === 0
-											? '—'
-											: h(
-												'div',
-												{ className: 'gbt-waiters' },
-												waiters.map(function (waiter, index) {
-													return h('span', { key: waiter !== null && waiter !== undefined && waiter.id !== undefined ? String(waiter.id) : String(index), className: 'gbt-chip', 'data-tone': 'waiting' }, waiterLabel(waiter))
-												}),
-											),
-									),
-									h('td', { 'data-warn': lease !== null && lease.warn ? 'true' : 'false' }, lease === null ? '—' : lease.text),
-									h(
-										'td',
-										null,
-										h(
-											'button',
-											{
-												type: 'button',
-												className: 'gbt-btn',
-												'data-size': 'sm',
-												onClick: function () {
-													void store.send('forceUnlock', { paths: [lock.path] })
-												},
-											},
-											props.t('release'),
-										),
-									),
-								)
-							}),
+							'div',
+							{ className: 'gbt-statusactions' },
+							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
 						),
 					),
+					h('div', { className: 'gbt-statusgrid', 'data-status-grid': 'true' }, dispatchCard, worktreesCard, agentsCard, activityCard),
 				)
 			}
 
@@ -3998,7 +4259,7 @@ window.__ModuleLoader__.load({
 				const snapshot = useSnapshot()
 				const now = useNow(5000)
 				// Rendering tests may pick the first view; the production slot passes no props.
-				const initialView = props !== undefined && props !== null && ['board', 'queue', 'workers', 'locks', 'status', 'roles'].indexOf(props.initialView) >= 0 ? props.initialView : panelState.view
+				const initialView = props !== undefined && props !== null && ['board', 'queue', 'workers', 'status', 'roles'].indexOf(props.initialView) >= 0 ? props.initialView : panelState.view
 				const [view, setViewState] = React.useState(initialView)
 				const [selectedId, setSelectedIdState] = React.useState(panelState.selectedId)
 				const [editing, setEditing] = React.useState(null)
@@ -4056,7 +4317,6 @@ window.__ModuleLoader__.load({
 					{ key: 'board', label: t('boardTab') },
 					{ key: 'queue', label: t('queue') },
 					{ key: 'workers', label: t('workersTab') },
-					{ key: 'locks', label: t('locks') },
 					{ key: 'status', label: t('statusTab') },
 					{ key: 'roles', label: t('rolesTab') },
 				]
@@ -4197,7 +4457,7 @@ window.__ModuleLoader__.load({
 									? h(StatusView, { snapshot: snapshot, t: t, now: now, store: store })
 									: view === 'roles'
 										? h(RolesView, { snapshot: snapshot, t: t, store: store })
-										: h(LocksView, { snapshot: snapshot, t: t, now: now })
+										: h(RolesView, { snapshot: snapshot, t: t, store: store })
 
 				const tabsView = h(
 					'div',

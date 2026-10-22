@@ -100,10 +100,7 @@ export const ACTIONS = [
   'block',
   'unblock',
   'retry',
-  'lock',
-  'unlock',
   'locks',
-  'forceUnlock',
   'openProject',
 ]
 
@@ -2583,89 +2580,6 @@ export function createApi(ctx, options) {
         if (released.ok === true) state.memory.locks = released.locks
       }
       return result
-    }
-    if (action === 'lock') {
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      let taskId = null
-      if (source.taskId !== undefined && source.taskId !== null) taskId = String(source.taskId)
-      else if (source.id !== undefined && source.id !== null) taskId = String(source.id)
-      else if (ownerOf(context) !== null) {
-        const owner = ownerOf(context)
-        const owned = read.board.tasks.filter(
-          (task) =>
-            task.status === 'running' &&
-            task.assignee !== null &&
-            ((owner.session !== null && task.assignee.session === owner.session) ||
-              (owner.name !== null && task.assignee.name === owner.name)),
-        )[0]
-        if (owned !== undefined) taskId = owned.id
-      }
-      let paths
-      try {
-        paths = locks.canonicalList(projectPath, source.paths === undefined ? [] : source.paths)
-      } catch (error) {
-        return failure('invalid-path', messageOf(error))
-      }
-      if (paths.length === 0) return failure('no-path', 'lock needs paths: [ ... ]')
-      const owner = ownerOf(context)
-      const acquired = locks.acquire(
-        state.memory.locks,
-        paths,
-        { taskId: taskId, agent: context.by },
-        clock(),
-        TASK_LEASE_MS,
-      )
-      if (acquired.ok !== true) return acquired
-      if (acquired.granted === true) state.memory.locks = acquired.locks
-      const held = locks.view(state.memory.locks, read.board, clock()).filter((lock) => paths.indexOf(lock.path) >= 0)
-      return ok({
-        granted: acquired.granted === true,
-        paths: paths,
-        taskId: taskId,
-        conflicts: acquired.conflicts === undefined ? [] : acquired.conflicts,
-        locks: held,
-        owner: owner,
-      })
-    }
-    if (action === 'unlock') {
-      let paths
-      try {
-        paths = locks.canonicalList(projectPath, source.paths === undefined ? [] : source.paths)
-      } catch (error) {
-        return failure('invalid-path', messageOf(error))
-      }
-      let taskId = source.taskId === undefined || source.taskId === null ? null : String(source.taskId)
-      const owner = ownerOf(context)
-      if (taskId === null && owner !== null) {
-        const read = await readBoardOrFail(projectPath)
-        if (read.failed === undefined) {
-          const owned = read.board.tasks.filter(
-            (task) =>
-              task.status === 'running' &&
-              task.assignee !== null &&
-              ((owner.session !== null && task.assignee.session === owner.session) ||
-                (owner.name !== null && task.assignee.name === owner.name)),
-          )[0]
-          if (owned !== undefined) taskId = owned.id
-        }
-      }
-      const released = locks.release(state.memory.locks, paths, { taskId: taskId, agent: context.by })
-      if (released.ok !== true) return released
-      state.memory.locks = released.locks
-      return ok({ released: released.released })
-    }
-    if (action === 'forceUnlock') {
-      let paths
-      try {
-        paths = locks.canonicalList(projectPath, source.paths === undefined ? [] : source.paths)
-      } catch (error) {
-        return failure('invalid-path', messageOf(error))
-      }
-      const released = locks.forceRelease(state.memory.locks, paths)
-      if (released.ok !== true) return released
-      state.memory.locks = released.locks
-      return ok({ released: released.released })
     }
     return failure('unknown-action', 'unknown action ' + String(action))
   }

@@ -169,14 +169,16 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
   check('a missing directory is refused', missing.json().ok === false && missing.json().code === 'not-a-directory', missing.text)
 }
 
-// locks through the route
+// the manual lock route is gone: refusals stay readable, diagnostics stay readable
 {
-  const res = await post({ action: 'lock', paths: ['scripts/a.gd'] })
-  const payload = res.json()
-  check('the route can take a user lock', payload.ok === true && payload.granted === true, res.text)
-  check('the lock is visible in the snapshot', payload.snapshot.locks.some((lock) => lock.path === 'scripts/a.gd'))
-  const forced = await post({ action: 'forceUnlock', paths: ['scripts/a.gd'] })
-  check('the route can force a lock away', forced.json().ok === true && forced.json().released.join(',') === 'scripts/a.gd', forced.text)
+  const lockRes = await post({ action: 'lock', paths: ['scripts/a.gd'] })
+  check('the lock action is now an unknown action', lockRes.json().ok === false && lockRes.json().code === 'unknown-action', lockRes.text)
+  const unlockRes = await post({ action: 'unlock', paths: ['scripts/a.gd'] })
+  check('unlock is an unknown action too', unlockRes.json().ok === false && unlockRes.json().code === 'unknown-action', unlockRes.text)
+  const forceRes = await post({ action: 'forceUnlock', paths: ['scripts/a.gd'] })
+  check('forceUnlock is an unknown action', forceRes.json().ok === false && forceRes.json().code === 'unknown-action', forceRes.text)
+  const read = await post({ action: 'locks' })
+  check('the read-only locks diagnostic still answers', read.json().ok === true && Array.isArray(read.json().locks), read.text)
 }
 
 // waiting reasons: why a pending task has not been dispatched (report only)
@@ -238,8 +240,9 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
   const projectUrl = STATE_PATH + '?project=' + encodeURIComponent(PROJECT)
   const loaded = await call(waitingSurface, projectUrl, {})
   check('a seeded board is read back', loaded.json().ok === true && loaded.json().tasks.length === 6, loaded.text)
-  const held = await postTo(waitingSurface, { action: 'lock', paths: ['scripts/shared.gd'], taskId: 'T-1' })
-  check('one task can hold the file another task declares', held.json().ok === true && held.json().granted === true, held.text)
+  holdFile(waitingRig, 'scripts/shared.gd')
+  const held = await postTo(waitingSurface, { action: 'board' })
+  check('the running task holds the file through the automatic lock', held.json().ok === true && held.json().locks.length === 1 && held.json().locks[0].taskId === 'T-1', held.text)
   const runningBoard = await postTo(waitingSurface, { action: 'board' })
   const reasons = new Map(runningBoard.json().tasks.map((entry) => [entry.id, entry.waitingReason]))
   check('a file lock another task holds reports file-lock', reasons.get('T-2') === 'file-lock', String(reasons.get('T-2')))
@@ -259,6 +262,14 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
   const roomyReasons = new Map(roomyBoard.json().tasks.map((entry) => [entry.id, entry.waitingReason]))
   check('a ready task with a free slot has no waiting reason', roomyReasons.get('T-3') === null, String(roomyReasons.get('T-3')))
   check('a file lock still outranks a free slot', roomyReasons.get('T-2') === 'file-lock', String(roomyReasons.get('T-2')))
+  // When the holder finishes, its automatic lock is released and the waiter becomes dispatchable.
+  waitingRig.state.memory.locks = {}
+  const finished = JSON.parse(JSON.stringify(board))
+  finished.tasks[0].status = 'done'
+  seedBoard(waitingRig.fs, waitingRig.project, JSON.stringify(finished))
+  const freedBoard = await postTo(waitingSurface, { action: 'board' })
+  const freedReasons = new Map(freedBoard.json().tasks.map((entry) => [entry.id, entry.waitingReason]))
+  check('once the holder finishes the same-file task is no longer file-locked', freedReasons.get('T-2') !== 'file-lock', JSON.stringify([freedReasons.get('T-2')]))
   const paused = await postTo(waitingSurface, { action: 'pause' })
   check('dispatch can be paused over this board', paused.json().ok === true && paused.json().dispatch.state === 'paused', paused.text)
   const pausedBoard = await postTo(waitingSurface, { action: 'board' })
@@ -360,10 +371,12 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
   )
   check('an idle teammate owns no task', workers.members[1].currentTask === null, JSON.stringify(workers.members[1].currentTask))
 
-  const poolLock = await postTo(poolSurface, { action: 'lock', paths: ['scripts/shared.gd'], taskId: 'T-1' })
-  check('the running task holds its file', poolLock.json().ok === true && poolLock.json().granted === true, poolLock.text)
-  await postTo(poolSurface, { action: 'lock', paths: ['scripts/other.gd'] })
-  await postTo(poolSurface, { action: 'lock', paths: ['scripts/free.gd'] })
+  const poolHold = function (path, taskId) {
+    poolRig.state.memory.locks[path] = { path: path, taskId: taskId, agent: 'fixer', since: new Date().toISOString(), leaseUntil: new Date(Date.now() + 600000).toISOString() }
+  }
+  poolHold('scripts/shared.gd', 'T-1')
+  poolHold('scripts/other.gd', null)
+  poolHold('scripts/free.gd', null)
   const lockedBoard = await postTo(poolSurface, { action: 'board' })
   const lockRows = lockedBoard.json().locks
   const sharedRow = lockRows.filter((row) => row.path === 'scripts/shared.gd')[0]

@@ -316,18 +316,12 @@ async function submitAndMerge(rig, id, evidence) {
     JSON.stringify({ leaseUntil: read.task.leaseUntil, clock: clock }),
   )
   // The activities that never write the board must renew exactly like the rest,
-  // together with a read and a board-writing action.
+  // together with a read and a board-writing action. (The manual lock actions are
+  // gone; the read-only locks diagnostic still renews.)
   const leaseOf = async function () { return Date.parse((await rig.action('get', { id: A })).task.leaseUntil) }
   clock += 2 * 60 * 1000
-  const locked = await rig.api.perform('lock', { paths: ['scripts/extra.gd'] }, asAssignee)
-  check('lock renews the lease like any other activity', locked.ok === true && (await leaseOf()) === clock + TASK_LEASE_MS, JSON.stringify({ clock: clock, lease: await leaseOf() }))
-  clock += 2 * 60 * 1000
-  const unlocked = await rig.api.perform('unlock', { paths: ['scripts/extra.gd'] }, asAssignee)
-  check('unlock renews the lease too', unlocked.ok === true && (await leaseOf()) === clock + TASK_LEASE_MS, JSON.stringify({ clock: clock, lease: await leaseOf() }))
-  clock += 2 * 60 * 1000
   const listed = await rig.api.perform('locks', {}, asAssignee)
-  check('locks renews the lease', listed.ok === true && (await leaseOf()) === clock + TASK_LEASE_MS, JSON.stringify({ clock: clock, lease: await leaseOf() }))
-  clock += 2 * 60 * 1000
+  check('locks renews the lease like any other activity', listed.ok === true && (await leaseOf()) === clock + TASK_LEASE_MS, JSON.stringify({ clock: clock, lease: await leaseOf() }))
   const updated = await rig.api.perform('update', { id: A, note: 'still working' }, asAssignee)
   check('a board-writing action renews the lease', updated.ok === true && (await leaseOf()) === clock + TASK_LEASE_MS, JSON.stringify({ clock: clock, lease: await leaseOf() }))
   snap = await snapshot(rig)

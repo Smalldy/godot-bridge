@@ -92,7 +92,11 @@ check(
   check('the description no longer duplicates the manual', String(rig.tool.description).indexOf('候选 worktree') < 0)
 }
 check('the old setStatus vocabulary is gone', actions.indexOf('setStatus') < 0, actions.join(','))
-check('the tool exposes lock and forceUnlock', actions.indexOf('lock') >= 0 && actions.indexOf('forceUnlock') >= 0)
+check(
+  'the tool no longer exposes the manual lock actions, but keeps the read-only locks diagnostic',
+  ['lock', 'unlock', 'forceUnlock'].every((action) => actions.indexOf(action) < 0) && actions.indexOf('locks') >= 0,
+  actions.join(','),
+)
 check(
   'user-only role administration is hidden from the tool',
   ['rolesList', 'rolesCreate', 'rolesUpdate', 'rolesDelete', 'rolesBind', 'rolesDrain', 'rolesReplace', 'rolesReset', 'skillsCatalog'].every((action) => actions.indexOf(action) < 0),
@@ -151,21 +155,32 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
   check('the tool pauses dispatch', paused.dispatch.state === 'paused')
 }
 
-// locks owned by the running task
+// automatic locks only: dispatch locks writeFiles, submit releases them, the
+// manual lock/unlock/forceUnlock actions are refusals now.
 {
-  const created = await call({ action: 'create', title: 'locked work', writeFiles: [] })
+  const created = await call({ action: 'create', title: 'auto locked work', writeFiles: ['scripts/auto.gd'] })
   const id = created.task.id
   rig.team.setStatus('fixer', 'inactive')
   await rig.api.perform('start', {}, rig.user)
-  const locks = await call({ action: 'lock', paths: ['scripts/extra.gd'] }, { id: 'session-idle' })
-  check('the assignee can lock an extra file', locks.ok === true && locks.granted === true, JSON.stringify(locks))
-  check('the lock is attached to the running task', typeof locks.taskId === 'string' && locks.taskId.length > 0, String(locks.taskId))
+  const board = await call({ action: 'board' })
+  const runningTask = board.tasks.filter((task) => task.status === 'running')[0]
   const listed = await call({ action: 'locks' })
-  check('locks lists the file', listed.locks.some((lock) => lock.path === 'scripts/extra.gd'), JSON.stringify(listed.locks))
-  const unlocked = await call({ action: 'unlock', paths: ['scripts/extra.gd'] }, { id: 'session-idle' })
-  check('the assignee can unlock it', unlocked.ok === true && unlocked.released.join(',') === 'scripts/extra.gd', JSON.stringify(unlocked))
-  await call({ action: 'submit', id: id, evidence: 'done' }, { id: 'session-idle' })
+  check(
+    'dispatch locks the running task files automatically',
+    listed.ok === true && runningTask !== undefined && listed.locks.some((lock) => lock.taskId === runningTask.id && runningTask.writeFiles.indexOf(lock.path) >= 0),
+    JSON.stringify({ locks: listed.locks, running: runningTask && runningTask.id }),
+  )
+  const manualLock = await call({ action: 'lock', paths: ['scripts/extra.gd'] }, { id: 'session-idle' })
+  check('the lock action is a readable unknown-action refusal', manualLock.error !== undefined && manualLock.code === 'unknown-action', JSON.stringify(manualLock))
+  const unlock = await call({ action: 'unlock', paths: ['scripts/extra.gd'] }, { id: 'session-idle' })
+  check('the unlock action is refused too', unlock.error !== undefined && unlock.code === 'unknown-action', JSON.stringify(unlock))
+  const forced = await call({ action: 'forceUnlock', paths: ['scripts/extra.gd'] }, rig.user)
+  check('forceUnlock is refused for the user as well', forced.error !== undefined && forced.code === 'unknown-action', JSON.stringify(forced))
+  await call({ action: 'submit', id: runningTask.id, evidence: 'done' }, { id: 'session-idle' })
+  const released = await call({ action: 'locks' })
+  check('submit released the automatic lock of that task', released.locks.every((lock) => lock.taskId !== runningTask.id), JSON.stringify(released.locks))
   await call({ action: 'pause' })
+  void id
 }
 
 // read-only actions may run concurrently
