@@ -16,12 +16,20 @@
    ```
    取返回的 `url`（`http://127.0.0.1:<port>/?token=<token>`）与 `cookie`/`port`/`token`；也可用 `task_center { action: "harnessStatus" }` 顶层字段。
 
-2. 关掉首次弹窗：
+2. 关掉首次弹窗（按首启形态二选一）：
    ```
-   key Escape
+   # A. 预览版说明 / 继续
+   click text="继续"
    wait 500
+
+   # B. 开始使用 / 登录（先聚焦再 Escape）
+   wait 1000
+   click text="开始使用"
+   wait 300
+   key Escape
+   wait 900
    ```
-   真实截图（`.investigate/visual/shell.png`）里首屏弹窗是 **「预览版说明」**，按钮是 **「继续」**；遮罩会挡住点击。用 `key Escape` 或 `click text="继续"` 关掉。
+   真实截图（`.investigate/visual/shell.png`）里是 **「预览版说明」+「继续」**；新版首启可能是 **「开始使用」/登录** 弹窗，此时先点「开始使用」让它获得焦点，再 `key Escape` 关闭，最后等 900ms 让遮罩消失再继续点击。
 
 3. 进入任务中心面板（先点 glyph，之后才可能有打开项目表单）：
    ```

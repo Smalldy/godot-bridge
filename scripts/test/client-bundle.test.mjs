@@ -874,10 +874,15 @@ await flush()
       findAll(statusTree, (node) => node.props && node.props['data-status-top'] === 'true').length === 1,
     JSON.stringify(statusCards.map((card) => card.props['data-status-card'])),
   )
+  const statusRoot = findAll(statusTree, (node) => node.props && node.props['data-status'] === 'cards')[0]
   check(
-    'the summary line reports the dispatch state, the running count and the last activity',
-    statusText.indexOf('已暂停') >= 0 && statusText.indexOf('有 1 个任务在跑') >= 0 && statusText.indexOf('最近活动') >= 0,
-    statusText.slice(0, 300),
+    'the page header keeps only the last-activity line and refresh (the panel already has the paused line and start button)',
+    statusRoot !== undefined &&
+      textOf(statusRoot).indexOf('最近活动') >= 0 &&
+      findAll(statusRoot, (node) => node.type === 'button' && textOf(node).indexOf('开始派发') >= 0).length === 0 &&
+      findAll(statusRoot, (node) => node.type === 'button' && textOf(node).indexOf('暂停派发') >= 0).length === 0 &&
+      findAll(statusRoot, (node) => node.props && node.props['data-action'] === 'status-refresh').length === 1,
+    statusRoot && textOf(statusRoot).slice(0, 200),
   )
   check(
     'the old counter strips and bare tables are gone',
@@ -996,6 +1001,228 @@ await flush()
     textOf(shownActivity).slice(0, 300),
   )
   HOST.activity = savedActivity
+
+  // ── activity stream: localized phase events, no raw English notes or @ids ──
+  {
+    const streamTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedStreamHistory = streamTask.history
+    streamTask.history = [
+      { from: null, to: 'pending', at: new Date(Date.now() - 60000).toISOString(), by: '@session-lead', note: 'created by lead' },
+      { from: 'pending', to: 'running', at: new Date(Date.now() - 50000).toISOString(), by: '@session-lead', note: 'dispatched to fixer' },
+      { from: 'running', to: 'reviewing', at: new Date(Date.now() - 40000).toISOString(), by: '@session-fixer', note: 'submitted for review round 1 @f158b35c' },
+      { from: 'reviewing', to: 'testing', at: new Date(Date.now() - 30000).toISOString(), by: '@session-reviewer-1', note: 'approved by reviewer' },
+      { from: 'testing', to: 'done', at: new Date(Date.now() - 20000).toISOString(), by: '@session-tester-1', note: 'passed' },
+    ]
+    let streamTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    streamTree = withHooks(panel, { initialView: 'status' })
+    const events = findAll(streamTree, (node) => node.props && node.props['data-activity-kind'] !== undefined)
+    const kinds = events.map((node) => node.props['data-activity-kind'])
+    check(
+      'the activity stream renders dispatch and submit as separate localized events',
+      kinds.filter((kind) => kind === 'dispatch').length === 1 && kinds.filter((kind) => kind === 'submit').length === 1,
+      JSON.stringify(kinds),
+    )
+    check(
+      'the stream covers review, test and merge with localized labels',
+      kinds.indexOf('review-pass') >= 0 && kinds.indexOf('test-pass') >= 0 &&
+        findAll(streamTree, (node) => node.props && node.props['data-activity-kind'] === 'merge').length >= 1,
+      JSON.stringify(kinds),
+    )
+    const streamText = textOf(streamTree)
+    check(
+      'the events are localized and show member names, never the @id or the raw English note',
+      streamText.indexOf('派发') >= 0 && streamText.indexOf('提交') >= 0 && streamText.indexOf('评审') >= 0 && streamText.indexOf('通过') >= 0 && streamText.indexOf('测试') >= 0 && streamText.indexOf('合并') >= 0 &&
+        streamText.indexOf('@session') < 0 && streamText.indexOf('@f158b35c') < 0 && streamText.indexOf('submitted for review round') < 0 && streamText.indexOf('dispatched to fixer') < 0 && streamText.indexOf('created by lead') < 0,
+      streamText.slice(0, 400),
+    )
+    const mergeRow = findAll(streamTree, (node) => node.props && node.props['data-activity-kind'] === 'merge')[0]
+    check(
+      'the description starts with the subject and never repeats the kind chip verb',
+      streamText.indexOf('派发派发') < 0 && streamText.indexOf('提交提交') < 0 && streamText.indexOf('评审评审') < 0 && streamText.indexOf('测试测试') < 0 && streamText.indexOf('合并合并') < 0 &&
+        mergeRow !== undefined && textOf(mergeRow).indexOf('T-3 · Tail output feature') >= 0 && textOf(mergeRow).indexOf('feat/task-center-v2') >= 0,
+      (mergeRow && textOf(mergeRow)) + ' | ' + streamText.slice(0, 300),
+    )
+    check(
+      'the stream names the assignee rather than an opaque id',
+      streamText.indexOf('fixer') >= 0,
+      streamText.slice(0, 300),
+    )
+    check(
+      'worktree events are not separate activity rows',
+      kinds.indexOf('worktree-create') < 0 && kinds.indexOf('worktree-remove') < 0 && streamText.indexOf('worktree') < 0,
+      JSON.stringify(kinds),
+    )
+    streamTask.history = savedStreamHistory
+  }
+
+  // ── per-event round and sha, @user pause, blocked note hidden ──
+  {
+    const eventTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedEventHistory = eventTask.history
+    const savedEventCommit = eventTask.commit
+    eventTask.commit = '1234567890abcdef'
+    eventTask.history = [
+      { from: 'running', to: 'reviewing', at: new Date(Date.now() - 50000).toISOString(), by: '@session-fixer', note: 'submitted for review round 1 @aaaaaaa' },
+      { from: 'reviewing', to: 'running', at: new Date(Date.now() - 40000).toISOString(), by: '@session-reviewer-1', note: 'changes requested' },
+      { from: 'running', to: 'reviewing', at: new Date(Date.now() - 30000).toISOString(), by: '@session-fixer', note: 'submitted for review round 2 @bbbbbbb' },
+      { from: 'reviewing', to: 'testing', at: new Date(Date.now() - 20000).toISOString(), by: '@session-reviewer-1', note: 'approved' },
+    ]
+    let eventTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    eventTree = withHooks(panel, { initialView: 'status' })
+    const rows = findAll(eventTree, (node) => node.props && node.props['data-activity-kind'] !== undefined)
+    const submits = rows.filter((row) => row.props['data-activity-kind'] === 'submit')
+    const rejects = rows.filter((row) => row.props['data-activity-kind'] === 'review-reject')
+    const passes = rows.filter((row) => row.props['data-activity-kind'] === 'review-pass')
+    check(
+      'each submit row carries its own commit sha from the note, not the current head',
+      submits.length === 2 && submits.map((row) => textOf(row)).join(' | ').indexOf('aaaaaaa') >= 0 && submits.map((row) => textOf(row)).join(' | ').indexOf('bbbbbbb') >= 0 && submits.every((row) => textOf(row).indexOf('1234567') < 0),
+      submits.map((row) => textOf(row)).join(' | '),
+    )
+    check(
+      'each review row carries its own round (reject 1, pass 2), not the latest record round',
+      rejects.length === 1 && textOf(rejects[0]).indexOf('第 1 轮') >= 0 && passes.length === 1 && textOf(passes[0]).indexOf('第 2 轮') >= 0,
+      rejects.concat(passes).map((row) => textOf(row)).join(' | '),
+    )
+    eventTask.history = savedEventHistory
+    eventTask.commit = savedEventCommit
+  }
+  {
+    // A test row must carry the suite summary (evidence first line + host check exit/duration).
+    const summaryTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
+    const savedSummaryTest = summaryTask.test
+    const savedSummaryHistory = summaryTask.history
+    summaryTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 4000).toISOString(), by: '@session-tester-1', note: 'passed' }]
+    summaryTask.test = Object.assign({}, savedSummaryTest, {
+      hostCheck: { command: 'npm run verify', exitCode: 0, timedOut: false, durationMs: 21000 },
+      evidence: '11/11 suites passed in 21s',
+    })
+    let summaryTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    summaryTree = withHooks(panel, { initialView: 'status' })
+    const testRow = findAll(summaryTree, (node) => node.props && node.props['data-activity-kind'] === 'test-pass' && node.props['data-activity-task'] === 'T-3')[0]
+    check(
+      'a test row carries the suite summary (evidence line + exit code/duration)',
+      testRow !== undefined && textOf(testRow).indexOf('11/11 suites') >= 0 && textOf(testRow).indexOf('exit 0') >= 0 && textOf(testRow).indexOf('21s') >= 0,
+      testRow && textOf(testRow),
+    )
+    summaryTask.test = savedSummaryTest
+    summaryTask.history = savedSummaryHistory
+  }
+  {
+    // The rejection reason folds into the row title, never the visible text.
+    const rejectTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedRejectHistory = rejectTask.history
+    rejectTask.history = [
+      { from: 'running', to: 'reviewing', at: new Date(Date.now() - 30000).toISOString(), by: '@session-fixer', note: 'submitted for review round 1 @ccccccc' },
+      { from: 'reviewing', to: 'running', at: new Date(Date.now() - 20000).toISOString(), by: '@session-reviewer-1', note: 'changes requested: the six counters are still rendered' },
+    ]
+    let rejectTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    rejectTree = withHooks(panel, { initialView: 'status' })
+    const rejectRow = findAll(rejectTree, (node) => node.props && node.props['data-activity-kind'] === 'review-reject')[0]
+    check(
+      'a rejection row shows the member name and round, with the reason folded into the title',
+      rejectRow !== undefined && textOf(rejectRow).indexOf('reviewer-1') >= 0 && textOf(rejectRow).indexOf('第 1 轮') >= 0 && textOf(rejectRow).indexOf('six counters') < 0 && String(rejectRow.props.title).indexOf('six counters') >= 0,
+      rejectRow && (textOf(rejectRow) + ' | title=' + String(rejectRow.props.title)),
+    )
+    rejectTask.history = savedRejectHistory
+  }
+  {
+    // A bare session id in dispatch.by also resolves through the roster labels.
+    const savedPauseBare = HOST.dispatch
+    HOST.dispatch = Object.assign({}, savedPauseBare, { by: 'session-reviewer-1' })
+    let bareTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    bareTree = withHooks(panel, { initialView: 'status' })
+    const bareText = textOf(bareTree)
+    check(
+      'a bare session id in the paused reason resolves to the member name',
+      bareText.indexOf('由 reviewer-1 暂停') >= 0 && bareText.indexOf('session-reviewer-1') < 0,
+      bareText.slice(0, 300),
+    )
+    HOST.dispatch = savedPauseBare
+  }
+  {
+    // Only heartbeats: folded line, no "no activity" text.
+    const savedSweepTasks = HOST.tasks
+    const savedSweepActivity = HOST.activity
+    HOST.tasks = []
+    HOST.activity = { available: true, limit: 100, count: 2, entries: [
+      { at: new Date().toISOString(), kind: 'sweep', actor: 'system', actorName: null, taskId: null, detail: 'merge sweep: merged none' },
+      { at: new Date(Date.now() - 5000).toISOString(), kind: 'sweep', actor: 'system', actorName: null, taskId: null, detail: null },
+    ] }
+    let sweepTree2 = withHooks(panel, { initialView: 'status' })
+    await flush()
+    sweepTree2 = withHooks(panel, { initialView: 'status' })
+    const toggle2 = findAll(sweepTree2, (node) => node.props && node.props['data-action'] === 'status-show-all')[0]
+    if (toggle2 !== undefined && toggle2.props['data-show-all'] === 'true') {
+      toggle2.props.onClick()
+      await flush()
+      sweepTree2 = withHooks(panel, { initialView: 'status' })
+    }
+    const sweepCard2 = findAll(sweepTree2, (node) => node.props && node.props['data-status-card'] === 'activity')[0]
+    check(
+      'with only heartbeats the card shows the folded line and no no-activity text',
+      sweepCard2 !== undefined && textOf(sweepCard2).indexOf('心跳已折叠') >= 0 && textOf(sweepCard2).indexOf('没有活动记录') < 0,
+      sweepCard2 && textOf(sweepCard2),
+    )
+    HOST.tasks = savedSweepTasks
+    HOST.activity = savedSweepActivity
+  }
+  {
+    const savedPause = HOST.dispatch
+    HOST.dispatch = Object.assign({}, savedPause, { by: '@user' })
+    let pauseTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    pauseTree = withHooks(panel, { initialView: 'status' })
+    const pauseText = textOf(pauseTree)
+    check(
+      'a @user pause reason reads 你, not the raw id',
+      pauseText.indexOf('由 你 暂停') >= 0 && pauseText.indexOf('@user') < 0,
+      pauseText.slice(0, 300),
+    )
+    HOST.dispatch = savedPause
+  }
+  {
+    const blockedTask = HOST.tasks.filter((entry) => entry.id === 'T-7')[0]
+    const savedBlockedHistory = blockedTask.history
+    blockedTask.history = [{ from: 'running', to: 'blocked', at: new Date(Date.now() - 5000).toISOString(), by: '@scheduler', note: 'lease expired after 30s of silence' }]
+    let blockedTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    blockedTree = withHooks(panel, { initialView: 'status' })
+    const blockedRow = findAll(blockedTree, (node) => node.props && node.props['data-activity-kind'] === 'blocked')[0]
+    check(
+      'a blocked row keeps the English note out of the text (hover only)',
+      blockedRow !== undefined && textOf(blockedRow).indexOf('lease expired') < 0 && String(blockedRow.props.title).indexOf('lease expired') >= 0,
+      blockedRow && (textOf(blockedRow) + ' | title=' + String(blockedRow.props.title)),
+    )
+    blockedTask.history = savedBlockedHistory
+  }
+
+  // ── empty states are plain text, not a card inside a card ──
+  {
+    const savedEmptyAgents = HOST.agents
+    const savedEmptyActivity = HOST.activity
+    const savedEmptyTasks = HOST.tasks
+    HOST.agents = { lead: null, members: [] }
+    HOST.activity = { available: true, limit: 100, count: 0, entries: [] }
+    HOST.worktrees = { available: true, error: null, total: 0, active: 0, counts: {}, worktrees: [] }
+    HOST.tasks = []
+    let emptyTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    emptyTree = withHooks(panel, { initialView: 'status' })
+    const emptyRoot = findAll(emptyTree, (node) => node.props && node.props['data-status'] === 'cards')[0]
+    check(
+      'the empty states use plain text with no inner dashed box',
+      emptyRoot !== undefined && findAll(emptyRoot, (node) => node.props && typeof node.props.className === 'string' && node.props.className.indexOf('gbt-empty') >= 0).length === 0,
+      JSON.stringify(findAll(emptyRoot, (node) => node.props && typeof node.props.className === 'string').map((node) => node.props.className).filter((name) => name.indexOf('empty') >= 0)),
+    )
+    HOST.agents = savedEmptyAgents
+    HOST.activity = savedEmptyActivity
+    HOST.tasks = savedEmptyTasks
+  }
 
   const savedWorktrees = HOST.worktrees
   HOST.worktrees = { available: false, error: 'no-git-service', total: 0, active: 0, counts: {}, worktrees: [] }
