@@ -3451,9 +3451,10 @@ window.__ModuleLoader__.load({
 				// The detail is wide content: lay it out by the CONTAINER width, which the
 				// panel approximates from the window when no explicit probe is passed.
 				const viewport = typeof props.detailWidth === 'number' ? props.detailWidth : typeof window !== 'undefined' && Number.isFinite(window.innerWidth) && window.innerWidth > 0 ? window.innerWidth : 1440
-				// The overlay pads 24px on each side and the panel is capped at 1080px,
-				// so the CONTENT width is not the viewport width.
-				const probe = Math.min(Math.max(0, viewport - 96), 1080)
+				// Above 900 the overlay pads 24px per side and the panel is capped at 1080,
+				// so the content width is viewport-96; below 900 the media rule makes the
+				// overlay full screen, so the container IS the viewport.
+				const probe = viewport < 900 ? viewport : Math.min(viewport - 96, 1080)
 				const wide = probe >= 900
 				const layout = wide ? 'two-column' : probe >= 700 ? 'compact' : 'single'
 				const widthClass = wide ? 'wide' : 'narrow'
@@ -3681,31 +3682,47 @@ window.__ModuleLoader__.load({
 					if (minutes < 60) return String(minutes) + ' ' + t('detailMinutes')
 					return String(Math.floor(minutes / 60)) + ' ' + t('detailHours') + ' ' + String(minutes % 60) + ' ' + t('detailMinutes')
 				})()
-				const summary = h(
-					'div',
-					{ className: 'gbt-detailsummary', 'data-detail': 'summary' },
-					h('div', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
-					h('div', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit'), ' · ', t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit'), ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
-					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailDeclaredFiles')), h('b', null, String(files.length)), h('span', null, t('detailActualFiles')), h('b', null, actualFiles.length === 0 ? '—' : String(actualFiles.length))),
-					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailHostCheck')), h('b', { 'data-detail-hostcheck': 'true' }, task.verify === null || task.verify === undefined ? t('detailHostCheckUndeclared') : test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? (test.hostCheck.exitCode === 0 && test.hostCheck.timedOut !== true ? t('statusResultPassed') : t('detailHostCheckFailed')) : t('detailHostCheckIncomplete'))),
-					h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'detail-spec', onClick: function () { detailUiState.spec = !specOpen; setSpecOpen(!specOpen) } }, specOpen ? t('collapse') : t('detailSpecExpand')),
-					specOpen
-						? h(
-								'div',
-								{ 'data-detail-spec': 'full' },
-								h('div', { className: 'gbt-subhead' }, t('spec')),
-								h('p', { className: 'gbt-prose' }, task.spec === '' ? t('noSpec') : task.spec),
-								h('div', { className: 'gbt-subhead' }, t('acceptance')),
-								h('p', { className: 'gbt-prose' }, task.acceptance === '' ? t('noSpec') : task.acceptance),
-							)
-						: h('p', { className: 'gbt-footnote', 'data-detail-spec': 'collapsed' }, t('detailSpecHint')),
-				)
-
 				const compactSummary = h(
 					'div',
 					{ className: 'gbt-detailsummary gbt-detailsummary-one', 'data-detail': 'summary', 'data-detail-summary': 'one-line' },
 					h('span', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
 					h('span', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit') + ' · ' + t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit')),
+				)
+				const specToggle = h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'detail-spec', onClick: function () { detailUiState.spec = !specOpen; setSpecOpen(!specOpen) } }, specOpen ? t('collapse') : t('detailSpecExpand'))
+				const specBody = specOpen
+					? h(
+							'div',
+							{ 'data-detail-spec': 'full' },
+							h('div', { className: 'gbt-subhead' }, t('spec')),
+							h('p', { className: 'gbt-prose' }, task.spec === '' ? t('noSpec') : task.spec),
+							h('div', { className: 'gbt-subhead' }, t('acceptance')),
+							h('p', { className: 'gbt-prose' }, task.acceptance === '' ? t('noSpec') : task.acceptance),
+						)
+					: h('p', { className: 'gbt-footnote', 'data-detail-spec': 'collapsed' }, t('detailSpecHint'))
+				const summaryFacts = h(
+					'div',
+					null,
+					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailDeclaredFiles')), h('b', null, String(files.length)), h('span', null, t('detailActualFiles')), h('b', null, actualFiles.length === 0 ? '—' : String(actualFiles.length))),
+					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailHostCheck')), h('b', { 'data-detail-hostcheck': 'true' }, task.verify === null || task.verify === undefined ? t('detailHostCheckUndeclared') : test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? (test.hostCheck.exitCode === 0 && test.hostCheck.timedOut !== true ? t('statusResultPassed') : t('detailHostCheckFailed')) : t('detailHostCheckIncomplete'))),
+					h('div', { className: 'gbt-detailstatline' }, t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+				)
+				const summary = h(
+					'div',
+					{ className: 'gbt-detailsummary', 'data-detail': 'summary', 'data-detail-summary': 'full' },
+					h('div', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
+					h('div', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit'), ' · ', t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit'), ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+					summaryFacts,
+					specToggle,
+					specBody,
+				)
+				// In the single-column layout the elapsed/rounds move into the one-line
+				// card, so the details card keeps only files/host-check/attempts/spec.
+				const summaryDetails = h(
+					'div',
+					{ className: 'gbt-detailsummary', 'data-detail': 'summary', 'data-detail-summary': 'details' },
+					summaryFacts,
+					specToggle,
+					specBody,
 				)
 
 				const blocks = []
@@ -3721,7 +3738,7 @@ window.__ModuleLoader__.load({
 				if (deleteError === 'failed') blocks.push(h('p', { key: 'deletefail', className: 'gbt-footnote' }, t('error')))
 				blocks.push(stages)
 				const eventsCard = h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody)
-				blocks.push(h('div', { className: 'gbt-detailbody', 'data-detail-body': layout, 'data-detail-layout': layout }, layout === 'single' ? compactSummary : null, eventsCard, summary))
+				blocks.push(h('div', { className: 'gbt-detailbody', 'data-detail-body': layout, 'data-detail-layout': layout }, layout === 'single' ? compactSummary : null, eventsCard, layout === 'single' ? summaryDetails : summary))
 
 				if (task.status === 'running') {
 					blocks.push(

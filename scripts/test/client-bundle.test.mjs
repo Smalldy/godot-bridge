@@ -2347,6 +2347,24 @@ check(
       JSON.stringify(findAll(narrowDrawer, (node) => node.props && node.props['data-detail'] === 'summary').map((node) => node.props['data-detail-summary'])),
     )
 
+    check(
+      'the single layout does not duplicate elapsed/rounds below the one-line card',
+      (function () {
+        const oneLine = findAll(narrowDrawer, (node) => node.props && node.props['data-detail-summary'] === 'one-line')[0]
+        const details = findAll(narrowDrawer, (node) => node.props && node.props['data-detail-summary'] === 'details')[0]
+        return oneLine !== undefined && details !== undefined && textOf(oneLine).indexOf('用时') >= 0 && textOf(details).indexOf('用时') < 0
+      })(),
+      JSON.stringify(findAll(narrowDrawer, (node) => node.props && node.props['data-detail-summary'] !== undefined).map((node) => textOf(node))),
+    )
+
+    setWidth(760)
+    const midNarrowDrawer = await openDetail('Tail output feature')
+    check(
+      'a 760px viewport (full-screen overlay, no padding) is compact, not single',
+      midNarrowDrawer.props['data-detail-width'] === 'narrow' && midNarrowDrawer.props['data-detail-layout'] === 'compact',
+      JSON.stringify({ width: midNarrowDrawer.props['data-detail-width'], layout: midNarrowDrawer.props['data-detail-layout'] }),
+    )
+
     setWidth(920)
     const boundaryDrawer = await openDetail('Tail output feature')
     check(
