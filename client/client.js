@@ -217,7 +217,6 @@ window.__ModuleLoader__.load({
 				workersErrNoService: '当前 profile 没有 Agent Teams 服务',
 				workersErrNoLead: '没有活着的 Team Lead',
 				workersErrRoster: '花名册不可读',
-				waiters: '等待者',
 				unknownProjectHint: '还没有项目。在会话里调用一次 task_center，或在下方填写项目目录。',
 				offline: '宿主没有响应',
 				error: '操作失败',
@@ -656,7 +655,6 @@ window.__ModuleLoader__.load({
 				workersErrNoService: 'this profile has no Agent Teams services',
 				workersErrNoLead: 'no live Team Lead',
 				workersErrRoster: 'the roster could not be read',
-				waiters: 'Waiters',
 				unknownProjectHint: 'No project yet. Call task_center once in a session, or enter a project directory below.',
 				offline: 'The host did not answer',
 				error: 'Action failed',
@@ -1098,7 +1096,6 @@ window.__ModuleLoader__.load({
 			'.gbt-locktable{width:100%;border-collapse:collapse;font-size:11px}',
 			'.gbt-locktable th{text-align:left;font-weight:500;color:var(--dsw-alias-label-tertiary);padding:6px 8px;border-bottom:0.5px solid var(--dsw-alias-border-l4);position:sticky;top:0;background:var(--dsw-alias-bg-layer-2);z-index:1}',
 			'.gbt-locktable td{padding:6px 8px;border-bottom:0.5px solid var(--dsw-alias-border-l4);vertical-align:middle;color:var(--dsw-alias-label-secondary)}',
-			'.gbt-waiters{display:flex;gap:4px;flex-wrap:wrap}',
 			'.gbt-mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}',
 			'.gbt-overlay{position:fixed;inset:0;background:rgba(15,18,24,.42);display:grid;place-items:center;z-index:100;padding:20px}',
 			'.gbt-modal{width:min(580px,100%);max-height:86vh;overflow:auto;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.22),0 2px 8px rgba(0,0,0,.08);padding:18px}',
@@ -2037,15 +2034,6 @@ window.__ModuleLoader__.load({
 					),
 				)
 				return h('div', null, blocks)
-			}
-
-			/** Waiter chips read "T-3 · title"; a missing title must not invent one. */
-			function waiterLabel(waiter) {
-				if (waiter === null || waiter === undefined) return ''
-				const id = typeof waiter.id === 'string' ? waiter.id : ''
-				const title = typeof waiter.title === 'string' ? waiter.title : ''
-				if (id === '') return title
-				return title === '' ? id : id + ' · ' + title
 			}
 
 			const WORKER_STATUS = { running: 'workersBusy', inactive: 'workersIdle', provisioning: 'workersProvisioning', failed: 'workersFailed' }
