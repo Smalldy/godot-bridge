@@ -1711,6 +1711,11 @@ function driftRig(options) {
       approved.json().task.test.attempt === 1,
     approved.text,
   )
+  check(
+    'a user review writes the member name 你 on the record and the history entry',
+    approved.json().task.review.byName === '你' && approved.json().task.history[approved.json().task.history.length - 1].byName === '你',
+    JSON.stringify({ review: approved.json().task.review, history: approved.json().task.history.slice(-1) }),
+  )
   const pending = await rig.api.autoMergePending(PROJECT)
   check('a pending test is not merged by the sweep', pending.ok === true && pending.merged.length === 0, JSON.stringify(pending))
   const passed = await postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1' })
@@ -1718,6 +1723,11 @@ function driftRig(options) {
     'passTest records the pass without completing the task',
     passed.json().ok === true && passed.json().task.status === 'testing' && passed.json().task.test.status === 'passed',
     passed.text,
+  )
+  check(
+    'a user test pass writes the member name 你 on the test record',
+    passed.json().task.test.byName === '你',
+    JSON.stringify(passed.json().task.test),
   )
   const sweep = await rig.api.autoMergePending(PROJECT)
   check('the host sweep merges after a passed test without a merger agent', sweep.ok === true && sweep.merged.join(',') === 'T-1', JSON.stringify(sweep))
@@ -1889,6 +1899,11 @@ function testStageTask(overrides) {
   check('a tester cannot approve a review', testerReview.ok === false && testerReview.code === 'wrong-role', JSON.stringify(testerReview))
   const reviewerApprove = await rig.api.perform('approveReview', { id: 'T-1' }, agentCaller('session-reviewer-1'))
   check('a reviewer approves the review', reviewerApprove.ok === true && reviewerApprove.task.status === 'testing', JSON.stringify(reviewerApprove))
+  check(
+    'the review record and history carry the reviewer member name',
+    reviewerApprove.task.review.byName === 'reviewer-1' && reviewerApprove.task.history[reviewerApprove.task.history.length - 1].byName === 'reviewer-1',
+    JSON.stringify({ review: reviewerApprove.task.review, history: reviewerApprove.task.history.slice(-1) }),
+  )
   rig.scheduler.dispose()
 }
 
@@ -1902,6 +1917,32 @@ function testStageTask(overrides) {
   check('a worker cannot test its own task', workerPass.ok === false && workerPass.code === 'worker-cannot-self-test', JSON.stringify(workerPass))
   const testerPass = await rig.api.perform('passTest', { id: 'T-1', evidence: 'ok' }, agentCaller('session-tester-1'))
   check('a tester passes the test phase', testerPass.ok === true && testerPass.task.test.status === 'passed', JSON.stringify(testerPass))
+  check(
+    'the test record and history carry the tester member name',
+    testerPass.task.test.byName === 'tester-1' && testerPass.task.history[testerPass.task.history.length - 1].byName === 'tester-1',
+    JSON.stringify({ test: testerPass.task.test, history: testerPass.task.history.slice(-1) }),
+  )
+  rig.scheduler.dispose()
+}
+
+{
+  // The user's lifecycle actions write 你; a member's write their member name.
+  const rig = createRig({ allowSpawn: false })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [reviewStageTask()] }))
+  const surface = install(rig)
+  const blocked = await postTo(surface, { action: 'block', project: PROJECT, id: 'T-1', note: 'user holds it' })
+  const blockedHistory = blocked.json().task.history[blocked.json().task.history.length - 1]
+  check('a user block writes 你 as the event name', blocked.json().ok === true && blockedHistory.byName === '你', JSON.stringify(blockedHistory))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+{
+  const fake = fakeGit()
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fake.git })
+  seedRunningTask(rig, runningWorktreeTask())
+  const workerBlock = await rig.api.perform('block', { id: 'T-1', note: 'agent holds it' }, agentCaller('session-fixer'))
+  const agentHistory = workerBlock.task.history[workerBlock.task.history.length - 1]
+  check('an agent block writes the member name', workerBlock.ok === true && agentHistory.byName === 'fixer', JSON.stringify(agentHistory))
   rig.scheduler.dispose()
 }
 

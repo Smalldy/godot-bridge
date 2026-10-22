@@ -677,7 +677,7 @@ function mergeNote(outcome) {
  * `conflict`, `output`, `reviewer`, `at`) are replaced; candidate/base/head and
  * the declared/actual file lists are left as the submission recorded them.
  */
-export function recordMergeResult(board, id, outcome, now, by) {
+export function recordMergeResult(board, id, outcome, now, by, byName) {
   const next = JSON.parse(JSON.stringify(board))
   const task = next.tasks.filter((candidate) => candidate.id === id)[0]
   if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
@@ -702,6 +702,7 @@ export function recordMergeResult(board, id, outcome, now, by) {
   task.history.push({
     at: at,
     by: by,
+    byName: byName === undefined || byName === null || byName === '' ? null : String(byName),
     from: from,
     to: task.status,
     note: mergeNote(outcome),
@@ -746,7 +747,7 @@ export function mergeEligible(task) {
  * task returns to the REVIEW phase with a fresh round; the test record is
  * cleared and is created again when the review is approved.
  */
-export function refreshMergeRequest(board, id, base, head, actualFiles, now, by) {
+export function refreshMergeRequest(board, id, base, head, actualFiles, now, by, byName) {
   const next = JSON.parse(JSON.stringify(board))
   const task = next.tasks.filter((candidate) => candidate.id === id)[0]
   if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
@@ -787,6 +788,7 @@ export function refreshMergeRequest(board, id, base, head, actualFiles, now, by)
   task.history.push({
     at: at,
     by: by,
+    byName: byName === undefined || byName === null || byName === '' ? null : String(byName),
     from: from,
     to: 'reviewing',
     note: 'merge request refreshed: base ' + String(previousBase) + ' -> ' + base + ', head ' + String(previousHead) + ' -> ' + head,
