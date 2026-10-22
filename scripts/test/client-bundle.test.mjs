@@ -874,10 +874,15 @@ await flush()
       findAll(statusTree, (node) => node.props && node.props['data-status-top'] === 'true').length === 1,
     JSON.stringify(statusCards.map((card) => card.props['data-status-card'])),
   )
+  const statusRoot = findAll(statusTree, (node) => node.props && node.props['data-status'] === 'cards')[0]
   check(
-    'the summary line reports the dispatch state, the running count and the last activity',
-    statusText.indexOf('已暂停') >= 0 && statusText.indexOf('有 1 个任务在跑') >= 0 && statusText.indexOf('最近活动') >= 0,
-    statusText.slice(0, 300),
+    'the page header keeps only the last-activity line and refresh (the panel already has the paused line and start button)',
+    statusRoot !== undefined &&
+      textOf(statusRoot).indexOf('最近活动') >= 0 &&
+      findAll(statusRoot, (node) => node.type === 'button' && textOf(node).indexOf('开始派发') >= 0).length === 0 &&
+      findAll(statusRoot, (node) => node.type === 'button' && textOf(node).indexOf('暂停派发') >= 0).length === 0 &&
+      findAll(statusRoot, (node) => node.props && node.props['data-action'] === 'status-refresh').length === 1,
+    statusRoot && textOf(statusRoot).slice(0, 200),
   )
   check(
     'the old counter strips and bare tables are gone',
@@ -996,6 +1001,73 @@ await flush()
     textOf(shownActivity).slice(0, 300),
   )
   HOST.activity = savedActivity
+
+  // ── activity stream: localized phase events, no raw English notes or @ids ──
+  {
+    const streamTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedStreamHistory = streamTask.history
+    streamTask.history = [
+      { from: null, to: 'pending', at: new Date(Date.now() - 60000).toISOString(), by: '@session-lead', note: 'created by lead' },
+      { from: 'pending', to: 'running', at: new Date(Date.now() - 50000).toISOString(), by: '@session-lead', note: 'dispatched to fixer' },
+      { from: 'running', to: 'reviewing', at: new Date(Date.now() - 40000).toISOString(), by: '@session-fixer', note: 'submitted for review round 1 @f158b35c' },
+      { from: 'reviewing', to: 'testing', at: new Date(Date.now() - 30000).toISOString(), by: '@session-reviewer-1', note: 'approved by reviewer' },
+      { from: 'testing', to: 'done', at: new Date(Date.now() - 20000).toISOString(), by: '@session-tester-1', note: 'passed' },
+    ]
+    let streamTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    streamTree = withHooks(panel, { initialView: 'status' })
+    const events = findAll(streamTree, (node) => node.props && node.props['data-activity-kind'] !== undefined)
+    const kinds = events.map((node) => node.props['data-activity-kind'])
+    check(
+      'the activity stream renders dispatch and submit as separate localized events',
+      kinds.filter((kind) => kind === 'dispatch').length === 1 && kinds.filter((kind) => kind === 'submit').length === 1,
+      JSON.stringify(kinds),
+    )
+    check(
+      'the stream covers review, test and merge with localized labels',
+      kinds.indexOf('review-pass') >= 0 && kinds.indexOf('test-pass') >= 0 &&
+        findAll(streamTree, (node) => node.props && node.props['data-activity-kind'] === 'merge').length >= 1,
+      JSON.stringify(kinds),
+    )
+    const streamText = textOf(streamTree)
+    check(
+      'the events are localized and show member names, never the @id or the raw English note',
+      streamText.indexOf('派发') >= 0 && streamText.indexOf('提交') >= 0 && streamText.indexOf('评审通过') >= 0 && streamText.indexOf('测试通过') >= 0 && streamText.indexOf('合并') >= 0 &&
+        streamText.indexOf('@session') < 0 && streamText.indexOf('@f158b35c') < 0 && streamText.indexOf('submitted for review round') < 0 && streamText.indexOf('dispatched to fixer') < 0 && streamText.indexOf('created by lead') < 0,
+      streamText.slice(0, 400),
+    )
+    check(
+      'the stream names the assignee rather than an opaque id',
+      streamText.indexOf('fixer') >= 0,
+      streamText.slice(0, 300),
+    )
+    check(
+      'worktree events are not separate activity rows',
+      kinds.indexOf('worktree-create') < 0 && kinds.indexOf('worktree-remove') < 0 && streamText.indexOf('worktree') < 0,
+      JSON.stringify(kinds),
+    )
+    streamTask.history = savedStreamHistory
+  }
+
+  // ── empty states are plain text, not a card inside a card ──
+  {
+    const savedEmptyAgents = HOST.agents
+    const savedEmptyActivity = HOST.activity
+    HOST.agents = { lead: null, members: [] }
+    HOST.activity = { available: true, limit: 100, count: 0, entries: [] }
+    HOST.worktrees = { available: true, error: null, total: 0, active: 0, counts: {}, worktrees: [] }
+    let emptyTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    emptyTree = withHooks(panel, { initialView: 'status' })
+    const emptyRoot = findAll(emptyTree, (node) => node.props && node.props['data-status'] === 'cards')[0]
+    check(
+      'the empty states use plain text with no inner dashed box',
+      emptyRoot !== undefined && findAll(emptyRoot, (node) => node.props && typeof node.props.className === 'string' && node.props.className.indexOf('gbt-empty') >= 0).length === 0,
+      JSON.stringify(findAll(emptyRoot, (node) => node.props && typeof node.props.className === 'string').map((node) => node.props.className).filter((name) => name.indexOf('empty') >= 0)),
+    )
+    HOST.agents = savedEmptyAgents
+    HOST.activity = savedEmptyActivity
+  }
 
   const savedWorktrees = HOST.worktrees
   HOST.worktrees = { available: false, error: 'no-git-service', total: 0, active: 0, counts: {}, worktrees: [] }

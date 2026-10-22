@@ -422,6 +422,33 @@ window.__ModuleLoader__.load({
 				detailMinutes: '分钟',
 				detailHours: '小时',
 				detailSeconds: '秒',
+				evtCreate: '创建',
+				evtRetry: '重试',
+				evtDispatch: '派发',
+				evtSubmit: '提交',
+				evtReviewPass: '评审通过',
+				evtReviewReject: '评审打回',
+				evtTestPass: '测试通过',
+				evtTestFail: '测试失败',
+				evtMerge: '合并',
+				evtBlocked: '阻塞',
+				evtCancel: '取消',
+				evtEvent: '事件',
+				evtHostCheck: '宿主检查',
+				evtError: '异常',
+				'evtLabel-create': '创建',
+				'evtLabel-retry': '重试',
+				'evtLabel-dispatch': '派发',
+				'evtLabel-submit': '提交',
+				'evtLabel-review-pass': '评审',
+				'evtLabel-review-reject': '打回',
+				'evtLabel-test-pass': '测试',
+				'evtLabel-test-fail': '测试',
+				'evtLabel-merge': '合并',
+				'evtLabel-blocked': '阻塞',
+				'evtLabel-cancel': '取消',
+				'evtLabel-host-check': '宿主检查',
+				'evtLabel-sweep': '心跳',
 				viewFull: '查看全文',
 				collapse: '收起',
 				statusSweepInterval: '每 5 秒扫描',
@@ -838,6 +865,33 @@ window.__ModuleLoader__.load({
 				detailMinutes: 'min',
 				detailHours: 'h',
 				detailSeconds: 's',
+				evtCreate: 'Created',
+				evtRetry: 'Retried',
+				evtDispatch: 'Dispatched',
+				evtSubmit: 'Submitted',
+				evtReviewPass: 'Review passed',
+				evtReviewReject: 'Review rejected',
+				evtTestPass: 'Test passed',
+				evtTestFail: 'Test failed',
+				evtMerge: 'Merged',
+				evtBlocked: 'Blocked',
+				evtCancel: 'Cancelled',
+				evtEvent: 'Event',
+				evtHostCheck: 'Host check',
+				evtError: 'Error',
+				'evtLabel-create': 'create',
+				'evtLabel-retry': 'retry',
+				'evtLabel-dispatch': 'dispatch',
+				'evtLabel-submit': 'submit',
+				'evtLabel-review-pass': 'review',
+				'evtLabel-review-reject': 'rejected',
+				'evtLabel-test-pass': 'test',
+				'evtLabel-test-fail': 'test',
+				'evtLabel-merge': 'merge',
+				'evtLabel-blocked': 'blocked',
+				'evtLabel-cancel': 'cancelled',
+				'evtLabel-host-check': 'host check',
+				'evtLabel-sweep': 'heartbeat',
 				viewFull: 'View full',
 				collapse: 'Collapse',
 				statusSweepInterval: 'scans every 5s',
@@ -2920,18 +2974,23 @@ window.__ModuleLoader__.load({
 				const sweepCount = entries.length - realEntries.length
 				const shownEntries = showAllActivity ? entries : realEntries
 				const lastActivity = entries.length === 0 || typeof entries[0].at !== 'string' ? null : entries[0].at
-				function summaryText() {
-					const head = active ? t('statusSummaryRunning') : t('statusSummaryPaused')
-					const middle = running.length === 0 ? t('statusNoRunning') : t('statusRunningCount').replace('{n}', String(running.length))
-					return head + ' · ' + middle + (lastActivity === null ? '' : ' · ' + t('statusLastActivity') + ' ' + tcAgo(lastActivity, now))
+				// One resolver shared with the detail page: the tool writes @labels, the
+				// panel shows member names (unresolved ids stay verbatim).
+				const roster = []
+				if (agents !== null && agents !== undefined) {
+					if (agents.lead !== null && agents.lead !== undefined) roster.push(agents.lead)
+					if (Array.isArray(agents.members)) agents.members.forEach(function (member) { roster.push(member) })
+				}
+				function memberName(value) {
+					return resolveAgentName(value, roster, t)
 				}
 				function whyNotRunning() {
 					if (active !== true) {
 						const since = typeof dispatch.since === 'string' ? dispatch.since : null
-						const by = typeof dispatch.by === 'string' && dispatch.by !== '' ? dispatch.by.replace(/^@/, '') : null
+						const by = typeof dispatch.by === 'string' && dispatch.by !== '' ? memberName(dispatch.by) : null
 						if (since === null) return t('statusWhyPaused')
 						const clock = new Date(since).toTimeString().slice(0, 5)
-						const who = by === null ? null : by === 'user' ? t('statusYou') : by
+						const who = by === null ? null : by
 						return t('statusWhyPaused') + '（' + clock + (who === null ? '' : ' ' + t('statusPausedBy').replace('{by}', who)) + '）'
 					}
 					if (ready === 0) return t('statusWhyNoReady')
@@ -2939,21 +2998,87 @@ window.__ModuleLoader__.load({
 					if (blocked > 0) return t('statusWhyBlocked').replace('{n}', String(blocked))
 					return t('statusWhyRunning')
 				}
-				function activityKindLabel(kind) {
-					const keys = {
-						dispatch: 'statusEvtDispatch',
-						submit: 'statusEvtSubmit',
-						'review-start': 'statusEvtReview',
-						'review-end': 'statusEvtReview',
-						'test-start': 'statusEvtTest',
-						'test-end': 'statusEvtTest',
-						merge: 'statusEvtMerge',
-						error: 'statusEvtError',
-						'host-check': 'statusEvtHostCheck',
-						sweep: 'statusEvtSweep',
+				const lastActivityText = lastActivity === null ? null : t('statusLastActivity') + ' ' + tcAgo(lastActivity, now)
+
+				// ── the activity stream: localized events for the phases ──
+				function shortSha(value) {
+					return typeof value === 'string' && value !== '' ? value.slice(0, 7) : ''
+				}
+				const stream = []
+				tasks.forEach(function (task) {
+					const hist = Array.isArray(task.history) ? task.history : []
+					hist.forEach(function (entry) {
+						const to = typeof entry.to === 'string' ? entry.to : ''
+						const from = typeof entry.from === 'string' ? entry.from : null
+						const assignee = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.name === 'string' ? memberName(task.assignee.name) : null
+						let type = null
+						if (to === 'pending' && from === null) type = 'create'
+						else if (to === 'pending') type = 'retry'
+						else if (to === 'running' && (from === 'pending' || from === null)) type = 'dispatch'
+						else if (to === 'reviewing') type = 'submit'
+						else if (to === 'running' && from === 'reviewing') type = 'review-reject'
+						else if (to === 'testing') type = 'review-pass'
+						else if (to === 'running' && from === 'testing') type = 'test-fail'
+						else if (to === 'done') type = 'test-pass'
+						else if (to === 'blocked') type = 'blocked'
+						else if (to === 'cancelled') type = 'cancel'
+						if (type === null) return
+						const review = task.review !== null && task.review !== undefined ? task.review : null
+						const test = task.test !== null && task.test !== undefined ? task.test : null
+						const round = review === null ? null : tcRound(review)
+						const note = typeof entry.note === 'string' && entry.note !== '' ? entry.note : null
+						stream.push({
+							key: 'hist-' + task.id + '-' + String(entry.at) + '-' + type,
+							at: entry.at,
+							type: type,
+							taskId: task.id,
+							html: eventText(type, task, assignee, review, round, test, entry, note),
+							raw: note,
+						})
+					})
+					const merge = tcMergeOf(task)
+					if (merge !== null && typeof merge.at === 'string') {
+						const commit = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? shortSha(merge.mergeCommit) : ''
+						stream.push({
+							key: 'merge-' + task.id,
+							at: merge.at,
+							type: 'merge',
+							taskId: task.id,
+							html: t('evtMerge') + ' ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit),
+							raw: typeof merge.output === 'string' ? merge.output.split('\n')[0] : null,
+						})
 					}
-					const key = keys[kind]
-					return key === undefined ? String(kind) : t(key)
+				})
+				// Host-only events that never appear as a status transition.
+				entries.forEach(function (entry, index) {
+					const kind = String(entry.kind === undefined || entry.kind === null ? '' : entry.kind)
+					if (kind === 'sweep' || kind === 'worktree-create' || kind === 'worktree-remove') return
+					if (kind === 'review-end' || kind === 'test-end' || kind === 'review-start' || kind === 'test-start' || kind === 'merge' || kind === 'role-config' || kind === 'role-provision' || kind === 'role-replace') return
+					if (kind !== 'host-check' && kind !== 'error' && kind !== 'host-action-timeout') return
+					if (typeof entry.taskId === 'string' && stream.some(function (event) { return event.taskId === entry.taskId && event.type === 'test-fail' })) return
+					stream.push({
+						key: 'sys-' + String(index),
+						at: entry.at,
+						type: kind === 'host-check' ? 'host-check' : 'blocked',
+						taskId: typeof entry.taskId === 'string' ? entry.taskId : '',
+						html: t(kind === 'host-check' ? 'evtHostCheck' : 'evtError'),
+						raw: typeof entry.detail === 'string' ? entry.detail : null,
+					})
+				})
+				stream.sort(function (left, right) { return new Date(right.at).getTime() - new Date(left.at).getTime() })
+				function eventText(type, task, assignee, review, round, test, entry, note) {
+					const subject = task.id + ' · ' + task.title
+					if (type === 'create') return t('evtCreate') + ' ' + subject
+					if (type === 'retry') return t('evtRetry') + ' ' + task.id
+					if (type === 'dispatch') return t('evtDispatch') + ' ' + task.id + (assignee === null ? '' : ' → ' + assignee)
+					if (type === 'submit') return t('evtSubmit') + ' ' + task.id + (shortSha(task.commit) === '' ? '' : ' · ' + shortSha(task.commit)) + ' · ' + t('detailFilesDeclared').replace('{n}', String(Array.isArray(task.writeFiles) ? task.writeFiles.length : 0))
+					if (type === 'review-pass') return t('evtReviewPass') + ' ' + task.id + (review === null ? '' : ' · ' + memberName(review.by) + ' · ' + t('detailRound').replace('{n}', String(round === null ? 1 : round)))
+					if (type === 'review-reject') return t('evtReviewReject') + ' ' + task.id + (review === null ? '' : ' · ' + memberName(review.by) + ' · ' + t('detailRound').replace('{n}', String(round === null ? 1 : round)))
+					if (type === 'test-pass') return t('evtTestPass') + ' ' + task.id + (test === null ? '' : ' · ' + memberName(test.by))
+					if (type === 'test-fail') return t('evtTestFail') + ' ' + task.id + (test === null ? '' : ' · ' + memberName(test.by))
+					if (type === 'blocked') return t('evtBlocked') + ' ' + task.id + (note === null ? '' : ' · ' + note)
+					if (type === 'cancel') return t('evtCancel') + ' ' + task.id + (note === null ? '' : ' · ' + note)
+					return t('evtEvent') + ' ' + task.id
 				}
 				/** Minutes since this member's newest activity entry (entries are newest-first). */
 				function idleMinutesFor(name) {
@@ -3045,7 +3170,7 @@ window.__ModuleLoader__.load({
 						'div',
 						{ className: 'gbt-statuscardbody' },
 						worktrees === null || worktrees === undefined || worktrees.available !== true
-							? h('div', { className: 'gbt-empty' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : t('statusWorktreesUnavailable'))
+							? h('div', { className: 'gbt-statusnote' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : t('statusWorktreesUnavailable'))
 							: h('div', null, dispatchCardRow, activeWts.map(function (entry) {
 									const path = String(entry.path)
 									return h(
@@ -3080,33 +3205,45 @@ window.__ModuleLoader__.load({
 						'div',
 						{ className: 'gbt-statuscardbody' },
 						agents === null || agents === undefined
-							? h('div', { className: 'gbt-empty' }, t('statusAgentsUnavailable'))
+							? h('div', { className: 'gbt-statusnote' }, t('statusAgentsUnavailable'))
 							: agentRows.length === 0
-								? h('div', { className: 'gbt-empty' }, t('workersEmpty'))
+								? h('div', { className: 'gbt-statusnote' }, t('workersEmpty'))
 								: h('div', null, agentRows),
 					),
 				)
+				const sweepRows = showAllActivity ? entries.filter(function (entry) { return entry.kind === 'sweep' }) : []
 				const activityCard = h(
 					'section',
 					{ className: 'gbt-statuscard', 'data-status-card': 'activity' },
-					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardActivity'), h('span', { className: 'gbt-statusmeta' }, t('statusLatestActivity') + ' ' + String(shownEntries.length) + ' ' + t('statusEventUnit'))),
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardActivity'), h('span', { className: 'gbt-statusmeta' }, t('statusLatestActivity') + ' ' + String(stream.length) + ' ' + t('statusEventUnit'))),
 					h(
 						'div',
 						{ className: 'gbt-statuscardbody' },
 						activity === null || activity === undefined || activity.available !== true
-							? h('div', { className: 'gbt-empty' }, t('statusActivityUnavailable'))
-							: shownEntries.length === 0
-								? h('div', { className: 'gbt-empty' }, t('statusActivityEmpty'))
-								: shownEntries.map(function (entry, index) {
+							? h('div', { className: 'gbt-statusnote' }, t('statusActivityUnavailable'))
+							: stream.length === 0 && sweepRows.length === 0
+								? h('div', { className: 'gbt-statusnote' }, t('statusActivityEmpty'))
+								: h('div', null,
+									stream.map(function (event) {
 										return h(
 											'div',
-											{ key: 'ev-' + String(index), className: 'gbt-statusev', 'data-activity': String(index), 'data-activity-kind': String(entry.kind) },
-											h('span', { className: 'gbt-statusevtime gbt-mono' }, typeof entry.at === 'string' ? new Date(entry.at).toTimeString().slice(0, 5) : '—'),
-											h('span', { className: 'gbt-statusevkind' }, activityKindLabel(entry.kind)),
-											h('span', { className: 'gbt-statusevtext' }, (typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId + ' · ' : '') + String(entry.detail === undefined || entry.detail === null ? '' : entry.detail), entry.actor === undefined || entry.actor === null ? null : h('span', { className: 'gbt-statusnote' }, ' ' + actorLabel(entry, t))),
+											{ key: event.key, className: 'gbt-statusev', 'data-activity': event.type, 'data-activity-kind': event.type, 'data-activity-task': event.taskId, title: event.raw === null ? undefined : event.raw },
+											h('span', { className: 'gbt-statusevtime gbt-mono' }, typeof event.at === 'string' ? new Date(event.at).toTimeString().slice(0, 5) : '—'),
+											h('span', { className: 'gbt-statusevkind' }, activityLabel(event.type)),
+											h('span', { className: 'gbt-statusevtext' }, event.html),
 										)
 									}),
-						sweepCount === 0 && entries.length === shownEntries.length
+									sweepRows.map(function (entry, index) {
+										return h(
+											'div',
+											{ key: 'sweep-' + String(index), className: 'gbt-statusev', 'data-activity': 'sweep', 'data-activity-kind': 'sweep', title: entry.detail === null ? undefined : String(entry.detail) },
+											h('span', { className: 'gbt-statusevtime gbt-mono' }, typeof entry.at === 'string' ? new Date(entry.at).toTimeString().slice(0, 5) : '—'),
+											h('span', { className: 'gbt-statusevkind' }, t('statusEvtSweep')),
+											h('span', { className: 'gbt-statusevtext' }, t('statusSweepsShown') + ' · ' + t('statusSweepInterval')),
+										)
+									}),
+								),
+						sweepCount === 0
 							? null
 							: h(
 									'div',
@@ -3116,22 +3253,20 @@ window.__ModuleLoader__.load({
 								),
 					),
 				)
+				function activityLabel(type) {
+					return t('evtLabel-' + type)
+				}
 				return h(
 					'div',
 					{ className: 'gbt-statusview', 'data-status': 'cards' },
 					h(
 						'div',
 						{ className: 'gbt-statustop', 'data-status-top': 'true' },
-						h('div', { className: 'gbt-statussummary' }, h('b', null, summaryText())),
+						h('div', { className: 'gbt-statussummary' }, lastActivityText === null ? '' : lastActivityText),
 						h(
 							'div',
 							{ className: 'gbt-statusactions' },
 							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
-							h(
-								'button',
-								{ type: 'button', className: 'gbt-btn', 'data-variant': active ? undefined : 'primary', 'data-action': 'status-toggle-dispatch', onClick: function () { void store.send(active ? 'pause' : 'start') } },
-								active ? '⏸ ' + t('pause') : '▶ ' + t('start'),
-							),
 						),
 					),
 					h('div', { className: 'gbt-statusgrid', 'data-status-grid': 'true' }, dispatchCard, worktreesCard, agentsCard, activityCard),
@@ -3230,6 +3365,24 @@ window.__ModuleLoader__.load({
 				)
 			}
 
+			/** The label the host tool writes for an agent: session- stripped, non-alphanumerics removed, 8 chars. */
+			function agentToolLabel(member) {
+				const raw = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' ? member.id : ''
+				return String(raw).replace(/^session-/, '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+			}
+
+			/** Map an @label / @session id to the roster member name; unresolved values stay verbatim. */
+			function resolveAgentName(value, roster, t) {
+				if (typeof value !== 'string' || value === '') return '—'
+				if (value.charAt(0) !== '@') return value === 'user' ? t('statusYou') : value
+				const id = value.slice(1)
+				const idKey = id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+				const hit = roster.filter(function (member) {
+					return agentToolLabel(member) === idKey || member.name === id || member.kind === id || member.id === id || member.id === value
+				})[0]
+				return hit === undefined ? value : typeof hit.name === 'string' && hit.name !== '' ? hit.name : value
+			}
+
 			/** Detail-page disclosure state that must survive a re-mount. */
 			const detailUiState = { evidence: false, spec: false }
 
@@ -3281,20 +3434,8 @@ window.__ModuleLoader__.load({
 					if (snapshot.agents.lead !== null && snapshot.agents.lead !== undefined) roster.push(snapshot.agents.lead)
 					if (Array.isArray(snapshot.agents.members)) snapshot.agents.members.forEach(function (member) { roster.push(member) })
 				}
-				/** The same label the tool puts in review.by/test.by: session- stripped, non-alphanumerics removed, 8 chars. */
-				function agentLabel(member) {
-					const raw = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' ? member.id : ''
-					return String(raw).replace(/^session-/, '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
-				}
 				function actorName(value) {
-					if (typeof value !== 'string' || value === '') return '—'
-					if (value.charAt(0) !== '@') return value === 'user' ? t('statusYou') : value
-					const id = value.slice(1)
-					const idKey = id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
-					const hit = roster.filter(function (member) {
-						return agentLabel(member) === idKey || member.name === id || member.kind === id || member.id === id || member.id === value
-					})[0]
-					return hit === undefined ? value : typeof hit.name === 'string' && hit.name !== '' ? hit.name : value
+					return resolveAgentName(value, roster, t)
 				}
 
 				const actions = []
