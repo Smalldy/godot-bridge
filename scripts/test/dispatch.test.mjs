@@ -26,6 +26,8 @@ import {
   roleKindOf,
   roleTemplateValuesFor,
   recordPhaseActivity,
+  recordStageSlot,
+  stageSlotOf,
   phaseActivityAt,
   serialiseWorktreeCreate,
   workerPool,
@@ -2445,6 +2447,94 @@ function fakeHostSubprocess(result) {
     after.ok === true && after.created.length === 1 && after.created[0].name === 'reviewer-2' && after.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drain-timeout'),
     JSON.stringify({ created: after.created, replaced: after.replaced }),
   )
+}
+
+// ── review role slots: one task at a time, the rest queue ─────────────────
+{
+  const rig = createRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+        { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'running' },
+        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const A = (await createTask(rig, { title: 'slot A' })).id
+  const B = (await createTask(rig, { title: 'slot B' })).id
+  await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 4 })
+  await rig.action('start')
+  await rig.settle()
+  const running = await snapshot(rig)
+  check('both tasks run before the review queue is exercised', byId(running, A).status === 'running' && byId(running, B).status === 'running', JSON.stringify(ids(running)))
+  await submitAsUser(rig, A, 'A ready')
+  await submitAsUser(rig, B, 'B ready')
+  const reviewing = await snapshot(rig)
+  const briefs = () => rig.team.calls.filter((call) => call.target === 'reviewer-1').length
+  check(
+    'only the first review round is delivered while the single reviewer slot is busy',
+    byId(reviewing, A).status === 'reviewing' && byId(reviewing, B).status === 'reviewing' && briefs() === 1,
+    JSON.stringify({ a: byId(reviewing, A).status, b: byId(reviewing, B).status, briefs: briefs() }),
+  )
+  check('the second round reports its queue position', byId(reviewing, B).queuePosition === 1 && byId(reviewing, A).queuePosition === null, JSON.stringify([byId(reviewing, A).queuePosition, byId(reviewing, B).queuePosition]))
+  await rig.action('approveReview', { id: A })
+  await rig.settle()
+  const promoted = await snapshot(rig)
+  check('the freed reviewer slot delivers the queued round', briefs() === 2 && byId(promoted, B).queuePosition === null, JSON.stringify({ briefs: briefs(), queue: byId(promoted, B).queuePosition }))
+  rig.scheduler.dispose()
+}
+{
+  const rig = createRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+        { id: 'session-reviewer-2', name: 'reviewer-2', role: 'teammate', status: 'running' },
+        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const config = defaultRoleConfig()
+  config.profiles.reviewer.instances = 2
+  rig.fs.files.set(rolesPath(PROJECT), { text: JSON.stringify(config), version: 'seed' })
+  const A = (await createTask(rig, { title: 'parallel A' })).id
+  const B = (await createTask(rig, { title: 'parallel B' })).id
+  await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 4 })
+  await rig.action('start')
+  await rig.settle()
+  await submitAsUser(rig, A, 'A ready')
+  await submitAsUser(rig, B, 'B ready')
+  const snap = await snapshot(rig)
+  const delivered = rig.team.calls.filter((call) => call.target === 'reviewer-1').length
+  check('with two reviewer instances both review rounds are delivered', delivered === 2 && byId(snap, A).queuePosition === null && byId(snap, B).queuePosition === null, JSON.stringify({ delivered: delivered, queue: [byId(snap, A).queuePosition, byId(snap, B).queuePosition] }))
+  rig.scheduler.dispose()
+}
+{
+  const rig = createRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'running' },
+      ],
+    }),
+  })
+  const old = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
+  const reviewTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'reviewing', review: { status: 'pending', by: null, at: old, reasons: null, attempt: 1 } })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [reviewTask('T-1', 'delivered'), reviewTask('T-2', 'queued')] }))
+  recordStageSlot(rig.ctx, 'T-2', null, 1)
+  const activity = createActivity()
+  const scheduler = createDispatcher(rig.ctx, { state: createState(rig.ctx), projectPath: () => PROJECT, allowSpawn: false, git: null, roles: rig.manager, activity: activity, reviewTimeoutMs: 60, phaseGraceMs: 600 })
+  await scheduler.tick(PROJECT)
+  const read = await createState(rig.ctx).read(PROJECT)
+  check(
+    'a queued review round is not reminded or blocked while it waits for the slot',
+    findTask(read.board, 'T-2').status === 'reviewing' && rig.team.calls.filter((call) => String(call.text).indexOf('T-2') >= 0).length === 0,
+    JSON.stringify({ status: findTask(read.board, 'T-2').status, calls: rig.team.calls.length }),
+  )
+  check('the queued task carries a slot position', stageSlotOf(rig.ctx, 'T-2').position === 1 && stageSlotOf(rig.ctx, 'T-2').at === null)
+  scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

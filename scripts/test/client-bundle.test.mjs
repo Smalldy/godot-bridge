@@ -1302,6 +1302,29 @@ await flush()
     HOST.activity = savedOldActivity
   }
 
+  // A queued review round is visible on the card, the detail and the status page.
+  {
+    const queuedTask = HOST.tasks.filter((entry) => entry.id === 'T-4')[0]
+    const savedQueue = queuedTask.queuePosition
+    queuedTask.queuePosition = 1
+    let queueTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    queueTree = withHooks(panel, { initialView: 'board' })
+    const queuedCard = findAll(queueTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card' && textOf(node).indexOf('Review the crate API') >= 0)[0]
+    check('a queued review round shows its position on the card', queuedCard !== undefined && textOf(queuedCard).indexOf('排队中') >= 0 && textOf(queuedCard).indexOf('前面 1 条') >= 0, queuedCard && textOf(queuedCard))
+    let statusQueueTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    statusQueueTree = withHooks(panel, { initialView: 'status' })
+    const reviewerRow = findAll(statusQueueTree, (node) => node.props && node.props['data-status-agent'] === 'reviewer-1')[0]
+    check('the status agents card shows the reviewer queue length', reviewerRow !== undefined && textOf(reviewerRow).indexOf('队列 1') >= 0, reviewerRow && textOf(reviewerRow))
+    queuedCard.props.onClick()
+    const detailQueueTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    const detailQueueDrawer = findAll(detailQueueTree, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
+    check('the detail page shows the queue position pill', detailQueueDrawer !== undefined && textOf(detailQueueDrawer).indexOf('排队中') >= 0 && textOf(detailQueueDrawer).indexOf('前面 1 条') >= 0, detailQueueDrawer && textOf(detailQueueDrawer).slice(0, 200))
+    queuedTask.queuePosition = savedQueue
+  }
+
   // ── empty states are plain text, not a card inside a card ──
   {
     const savedEmptyAgents = HOST.agents

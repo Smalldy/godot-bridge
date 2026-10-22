@@ -415,6 +415,8 @@ window.__ModuleLoader__.load({
 				detailHours: '小时',
 				detailSeconds: '秒',
 				detailTestDuration: '用时',
+				queuedChip: '排队中 · 前面 {n} 条',
+				queueLengthChip: '队列 {n}',
 				actorUnknown: '成员 {id}',
 				actorRoleReviewer: '评审者',
 				actorRoleTester: '测试者',
@@ -860,6 +862,8 @@ window.__ModuleLoader__.load({
 				detailHours: 'h',
 				detailSeconds: 's',
 				detailTestDuration: 'took',
+				queuedChip: 'queued · {n} ahead',
+				queueLengthChip: 'queue {n}',
 				actorUnknown: 'member {id}',
 				actorRoleReviewer: 'reviewer',
 				actorRoleTester: 'tester',
@@ -1795,6 +1799,9 @@ window.__ModuleLoader__.load({
 				if (commit !== '') meta.push(h('span', { key: 'commit', className: 'gbt-chip', title: commit }, '● ' + commit.slice(0, 10)))
 				if (worktree !== '') meta.push(h('span', { key: 'worktree', className: 'gbt-chip', title: worktree }, '🌿 ' + tcBaseName(worktree)))
 				if (dispatchError !== null && task.status !== 'running') meta.push(h('span', { key: 'error', className: 'gbt-chip', 'data-tone': 'blocked', title: dispatchError }, '⚠ ' + t('dispatchError')))
+				if (Number.isFinite(task.queuePosition) && task.queuePosition > 0) {
+					meta.push(h('span', { key: 'queued', className: 'gbt-chip', 'data-tone': 'waiting', 'data-queue': String(task.queuePosition) }, '⏳ ' + t('queuedChip').replace('{n}', String(task.queuePosition))))
+				}
 				const waiting = waitingChip(task, t, 'waiting')
 				if (waiting !== null) meta.push(waiting)
 				if (meta.length > 0) children.push(h('div', { key: 'meta', className: 'gbt-cardmeta' }, meta))
@@ -3130,13 +3137,15 @@ window.__ModuleLoader__.load({
 					const session = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' ? member.id : ''
 					const current = member.currentTask === null || member.currentTask === undefined ? null : member.currentTask
 					const idleMinutes = idleMinutesFor(name)
-					const statusText = isLead
+					const roleKind = isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate'
+					const queueLength = roleKind === 'reviewer' ? reviewerQueue : roleKind === 'tester' ? testerQueue : 0
+					const statusText = (isLead
 						? '—'
 						: current !== null
 							? current.id
 							: idleMinutes === null
 								? t('statusIdle')
-								: t('statusIdle') + ' ' + String(idleMinutes) + ' ' + t('statusMinutes')
+								: t('statusIdle') + ' ' + String(idleMinutes) + ' ' + t('statusMinutes')) + (queueLength > 0 ? ' · ' + t('queueLengthChip').replace('{n}', String(queueLength)) : '')
 					const resultText = isLead ? typeof member.description === 'string' && member.description !== '' ? member.description : '—' : lastResultFor(name)
 					const expanded = openSession === name
 					return h(
@@ -3222,6 +3231,8 @@ window.__ModuleLoader__.load({
 								),
 					),
 				)
+				const reviewerQueue = tasks.filter(function (task) { return task.status === 'reviewing' && Number.isFinite(task.queuePosition) && task.queuePosition > 0 }).length
+				const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && Number.isFinite(task.queuePosition) && task.queuePosition > 0 }).length
 				const lead = agents !== null && agents !== undefined ? agents.lead : null
 				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
 				const agentRows = []
@@ -3775,7 +3786,7 @@ window.__ModuleLoader__.load({
 						h(
 							'div',
 							{ className: 'gbt-detailhead' },
-							h('div', { className: 'gbt-cardmeta' }, h('span', { className: 'gbt-id' }, task.id), h('span', { className: 'gbt-pill', 'data-status': task.status }, t(tcStatusKey(task.status))), waitingChip(task, t, 'waiting')),
+							h('div', { className: 'gbt-cardmeta' }, h('span', { className: 'gbt-id' }, task.id), h('span', { className: 'gbt-pill', 'data-status': task.status }, t(tcStatusKey(task.status))), Number.isFinite(task.queuePosition) && task.queuePosition > 0 ? h('span', { className: 'gbt-pill', 'data-queue': String(task.queuePosition) }, t('queuedChip').replace('{n}', String(task.queuePosition))) : null, waitingChip(task, t, 'waiting')),
 							h('h2', { className: 'gbt-drawertitle' }, task.title),
 							h('div', { className: 'gbt-detailmeta' }, h('span', null, t('assignee') + ' ' + (task.assignee === null || task.assignee === undefined ? '—' : task.assignee.name)), h('span', { className: 'gbt-detailspan' }, new Date(task.createdAt).toTimeString().slice(0, 5) + ' → ' + (finishedAt === null ? t('detailNow') : new Date(finishedAt).toTimeString().slice(0, 5)) + ' · ' + elapsedText)),
 						),
