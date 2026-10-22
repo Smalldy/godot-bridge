@@ -35,7 +35,7 @@
 
 ## 任务中心（task-center）
 
-同一个包还会挂载第二个组件行 `godot-bridge/task-center`：项目级任务板 + 阶段驱动的派发器（含独立评审与测试）+ 文件锁 + 角色系统，以及中栏 GUI 面板（左侧栏「任务」）。
+同一个包还会挂载第二个组件行 `godot-bridge/task-center`：项目级任务板 + 阶段驱动的派发器（含独立评审与测试）+ 文件锁 + 角色系统，以及中栏 GUI 面板（左侧栏「任务」）。插件激活时还会注册运行时技能 `godot-bridge-task-center`，并注入四条常驻硬规则（见下文）。
 
 ### 执行流程
 
@@ -43,23 +43,26 @@
 
 1. **执行**：assignee 只在该 checkout 内修改文件，在那里运行项目测试，并可加载角色 profile 声明的技能。
 2. **提交**：`submit` 在 worktree 内提交、记录 base..head diff，并把任务推进到 REVIEW。submit 不是完成。
-3. **评审**：宿主准备 reviewer 角色（只读、独立上下文），并发送每轮 brief——spec 与验收标准、diff、声明 vs 实际文件、worker 证据以及评审清单。`approveReview` 进入 TESTING；`requestChanges` 带着具体原因退回 running。连续 3 轮未通过则阻塞；评审 10 分钟无结论先提醒，再过 10 分钟阻塞。
-4. **测试**：评审通过时，以当前 target head + 任务分支构建一次性候选 `<项目>/.worktrees/test-<id>`（分支 `test/<id>`），连同自包含 brief（验收标准、候选路径/分支、运行手册、证据格式）交给 tester 角色。tester 在那里完成验收并记录 `passTest` 或 `failTest`（含证据）；失败会带着证据退回 running。测试轮 10 分钟提醒、20 分钟阻塞。
-5. **合并**：测试通过后由宿主的串行合并队列（每 5 秒扫描）合并——每个任务只有一个被接受的候选，在一次性 `merge-<id>` worktree 中整合，且最多合并一次。若 verdict 之后 target head 又移动，则从新 head 重建候选并重开测试轮，绝不合并过期树。
+3. **评审**：宿主准备 reviewer 角色（只读、独立上下文），并发送每轮 brief——spec 与验收标准、diff、声明 vs 实际文件、worker 证据、评审清单，以及宿主已经采集好的机械证据（git 统计的声明/实际文件，加上上一轮的 `verify` 结果），让 reviewer 做判断而不是为了核清单再跑一遍测试。`approveReview` 进入 TESTING；`requestChanges` 带着具体原因退回 running。连续 3 轮未通过则阻塞；评审超时由下面的看门狗处理。
+4. **测试**：评审通过时，以当前 target head + 任务分支构建一次性候选 `<项目>/.worktrees/test-<id>`（分支 `test/<id>`）。**在任何 tester 介入之前**，宿主机先在候选里执行任务声明的 `verify` 命令（见下文「宿主机械验证」）：绿了才进入 TESTING，并把基线结果写进 tester 的 brief；红了由宿主直接判失败，不会产生 tester 轮次。tester 在候选里完成验收并记录 `passTest` 或 `failTest`（含证据）；失败会带着证据退回 running。brief 会明确写着：宿主基线**不是** tester 的结论，tester 必须自己设计并执行脚本覆盖不到的探针，证据分【宿主基线】与【我的探针】两段；怀疑 flaky 或环境差异时可以说明理由复跑，也可以跑别的套件——宿主那次是下限，不是上限。
+5. **合并**：测试通过后由宿主的串行合并队列（每 5 秒扫描）合并——每个任务只有一个被接受的候选，在一次性 `merge-<id>` worktree 中整合，且最多合并一次。若 verdict 之后 target head 又移动，则从新 head 重建候选、**在新树上重跑宿主机械验证**，并重开测试轮，绝不合并过期树。
 6. **异常**：冲突或 target 移动会标记该申请并通知 owner，target 分支保持不变。`mergeRequest` / `rejectMerge` / `refreshMerge` 仍保留给用户或 `merger` 队友，用于手动整合、审计或修复。
 
 - **任务板**：`<项目>/.agents/tasks.json`。schema v2；读到 v1 会自动迁移（旧状态映射到当前词表、`blockedBy` 变成 `dependsOn`、旧 claim 被释放）。重复 id、非法条目、未来版本会被拒绝而不是覆盖。建议把该文件加入项目 `.gitignore`（它是运行态，不是源码）。
-- **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / approveReview / requestChanges / passTest / failTest / mergeRequest / refreshMerge / rejectMerge / cancel / reopen / block / unblock / retry / lock / unlock / locks / forceUnlock / openProject / rolesList / rolesCreate / rolesUpdate / rolesDelete / rolesBind / rolesDrain / rolesReplace / rolesReset / skillsCatalog / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`。
+- **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / approveReview / requestChanges / passTest / failTest / mergeRequest / refreshMerge / rejectMerge / cancel / reopen / block / unblock / retry / locks / openProject / rolesList / rolesPreview / rolesCreate / rolesUpdate / rolesDelete / rolesBind / rolesDrain / rolesReplace / rolesReset / skillsCatalog / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`。`verify` 不是动作而是任务字段：`create` / `update` 可带，工具侧暴露为对象参数（`null` 清除）。
+- **运行时技能与常驻规则**：激活该行会向宿主技能目录注册 `godot-bridge-task-center`。正文由动作注册表生成（定位、何时用、最小工作流、动作矩阵、写卡规范、拒绝码、Godot 启动规则与面板结构），因此不会与 API 漂移。另有四条常驻硬规则随系统提示注入：`start` 只是需要用户批准的申请；评审/测试结论只属于对应角色；任务工作只在任务 worktree 里、绝不提交到 target；不要手改 `.agents/tasks.json`。`task_center` 工具描述刻意收敛为指向该技能的短路由。宿主没有技能注册表或系统提示服务时两者都静默跳过，工具、路由与调度照常可用。
 - **依赖**：`B.dependsOn = [A]` 表示 A 完成**且已合并**后才派发 B。就绪任务按 `priority` 降序、创建时间升序取。`A <- B <- C`、`D`、`E <- F` 会先派发 A、D、E；A 完成后派发 B，E 完成后派发 F。
 - **派发**：开始/暂停是项目级状态（持久化在板子里）。GUI 只暴露**最大并发**：最多同时跑这么多个任务；执行者上限自动设为并发 + 1，没有空闲执行者时会自动新建，连续失败 3 次后任务阻塞（高级调用仍可用 `settings` 覆盖）。每次派发先 claim（60 分钟租约；assignee 任何活动都会续租，另有固定节奏的宿主心跳）再交给 Agent Teams：优先 `sendMessage` 给空闲成员，否则 `spawnTeammate`。
 - **租约与 liveness**：运行中的任务持有 **60 分钟租约**。assignee 的任意一次 `task_center` 调用都会**无条件续租**，且每轮调度都有宿主心跳按固定 5 分钟节奏续租，因此长时间工具运行不会丢 claim。失效租约按 **liveness** 判定而非只看时钟：holder 仍活着就保住任务（单次尝试 4 小时硬上限），只有 session 消失/failed 才在中断后交接。同一任务绝不会有两条活跃 agent；交接时若上一尝试留有 commit，则 adopt 其 worktree 与分支。看板暴露 `leaseRemaining`/`leaseReminder`，并记录 `lease-extended`/`lease-handover`/`attempt-adopt` 事件。
 - **角色**：`<项目>/.agents/roles.json`（version 1；规范化的 `worker`/`reviewer`/`tester` profile 始终存在）。一个 profile 指定三种固定角色之一、阶段绑定（implement / review / test）、1–8 个实例、允许的权限、fresh 或 fork 上下文、要加载的技能，以及一个 prompt **模板**。宿主通过活着的 Lead 自动补齐缺失的阶段角色、替换死亡或超时的实例；reviewer 与 tester 是只读独立上下文，worker 永远不能裁决自己的任务。
-  - 在 GUI **角色**页管理：选择 实现 / 测试 / 评审，查看绑定 profile 的宿主上下文，**Fork** 它，编辑模板与技能，**保存**，再**应用**（绑定阶段并替换在跑实例）。`rolesList` / `rolesCreate` / `rolesUpdate` / `rolesDelete` / `rolesBind` / `rolesDrain` / `rolesReplace` / `rolesReset` 通过动作 API 做同样的事。所有角色管理与 `skillsCatalog` 都是**仅限用户**（工具枚举中隐藏，对 agent 直接拒绝）。
+  - 三个内置 profile 是**不可改**的（可读的默认提示词随插件发布；直接编辑会返回 `builtin-profile-immutable`）。要改行为就 **Fork** 一份：Fork 出来的是有名字的**草稿副本**，保存时一次性创建 profile、绑定阶段并替换在跑实例。面板里不再有单独的「绑定/应用/替换」词汇：只有一个「当前使用」选择器和一次保存；删掉正在使用的副本会立即回落到内置默认。
+  - 编辑器是两栏：左栏是**原始提示词**（自定义 profile 可编辑；内置 profile 只读并提示 Fork），右栏是宿主真正会注入的文本，通过 `rolesPreview` 由真实 brief 生成器产出，绝不是面板自造的文案。身份行负责 profile 选择与「当前使用」；实例数与技能在同一张卡里，技能选择器读 `skillsCatalog`。`rolesList` / `rolesPreview` / `rolesCreate` / `rolesUpdate` / `rolesDelete` / `rolesBind` / `rolesDrain` / `rolesReplace` / `rolesReset` 通过动作 API 提供同样的操作。所有角色管理与 `skillsCatalog` 都是**仅限用户**（工具枚举中隐藏，对 agent 直接拒绝）。
   - 模板可注入 `{{TASK_ID}}`、`{{TASK_TITLE}}`、`{{SPEC}}`、`{{COMPLETIONS_DEF}}`、`{{GIT_INFO}}`、`{{PROJECT}}`、`{{LEAD}}`、`{{ROLE}}`、`{{STAGE}}`。出现其它 `{{NAME}}` 时保存会被 `invalid-role-variable` 拒绝并列出允许变量；空模板合法。固定头部、任务数据、职责/权限边界/结论格式都由宿主生成，绝不是模板输出。
-- **文件锁**：任务用 `writeFiles` 声明要写的文件；调度器在派发前原子获取全部锁，任务完成/阻塞/取消/租约交接时释放。agent 也可以 `lock` 为自己的运行任务追加锁。路径规范化为项目相对路径，目录锁会与子路径冲突。
-- **GUI**：六个页签——看板（七列：就绪、等待、进行中、评审中、测试中、完成、阻塞）、队列、执行者、文件锁、状态、角色。执行者页显示 Lead、上限、忙/闲/启动中/失败计数以及每个 WorkAgent 的当前任务；文件锁页显示持有任务/Agent 与“会等待该文件”的就绪任务（竞争提示，不是 FIFO 队列）；状态页列出在线 agent、工作树清单与宿主活动环；角色页就是上面那张唯一的角色上下文编辑器。Agent 的 start 申请显示为带“批准并开始 / 拒绝”的横幅。2.5 秒轮询宿主快照。
+- **文件锁（只有自动锁）**：任务用 `writeFiles` 声明要写的文件；调度器在派发前原子获取全部锁，任务完成/阻塞/取消/租约交接时释放。**没有手动加锁动作**：agent 既不能加锁也不能解锁，面板也没有「文件锁」页签；`locks` 只作为只读诊断动作保留（持有任务/Agent，以及会等待该路径的就绪任务）。路径规范化为项目相对路径，目录锁会与子路径冲突。
+- **宿主机械验证（`verify`）**：任务可在 `create` / `update` 时声明 `verify: { command, timeoutMs? }`（`task_center` 工具暴露为对象参数，`null` 清除）。`command` 是 shell 字符串——可以链式（`npm run verify && npm run e2e`），由宿主通过不受沙箱约束的 subprocess 服务在候选 checkout 里原样执行，上限 `timeoutMs`（默认 10 分钟）。结果写在任务的 `test.hostCheck`（`command`、`exitCode`、`timedOut`、`durationMs`、≤4 KB 的输出 `tail`、`at`）。退出码 0 正常进入 TESTING，基线随 tester brief 一起发出；非 0 或超时则是**宿主记录的失败测试**（`by: host`，证据 = 命令 + 退出码 + tail）：任务回 running、不产生 tester 轮次、候选被丢弃、owner 收到通知，且永远进不了合并队列。畸形声明会以 `invalid-verify` 拒绝，而不是被静默丢弃。未声明 `verify` 的任务保持历史流程（tester 自己跑套件）。
+- **GUI**：五个页签——**看板**（七列：就绪、等待、进行中、评审中、测试中、完成、阻塞）、**队列**、**执行者**、**状态**、**角色**。页签本身不再带计数，数字放在看板表头。执行者页显示 Lead、上限、忙/闲/启动中/失败计数以及每个 WorkAgent 的当前任务。**状态页**顶部是一句话状态（派发状态、未完成的工作、正在落地什么）与派发控件，下面三张卡——派发、工作树、执行者——再下方是整宽的**活动流**：每条事件都是一句面板语言的可读描述（派发、提交、评审轮、测试轮、合并、宿主检查、租约事件），不再是裸 kind。**任务详情**是宽浮层，按容器宽度自适应（≥900 px 两栏，700–900 紧凑，更窄单栏，<900 全屏）：阶段条（派发 → 实现 → 评审 → 测试 → 合并）带轮次与完成时间、一段「现在做到哪了」、一列摘要，并把关键事件与最近一次打回原因前置。角色页就是上面那张两栏角色上下文编辑器。Agent 的 start 申请显示为带「批准并开始 / 拒绝」的横幅。2.5 秒轮询宿主快照。
 - **同意**：agent 调 `start` 只写入 `dispatch.request`，不会启动调度器；面板显示申请，只有用户的 `approveStart` 才真正开始。`pause` 双方都可直接调；`settings` 仅用户可改。
-- **超时与宿主动作看门狗**：评审 10 分钟无结论提醒一次、再过 10 分钟阻塞待人工处理；测试轮 10 分钟提醒、20 分钟阻塞；连续 3 轮评审未通过同样阻塞。每个异步宿主动作（候选构建、候选合并、merge request、角色准备、通知）上限 2 分钟：卡住的动作用 `queue-timeout`/`action-timeout` 返回，被放弃单元的迟到写入会被拒绝，因此一个挂起的 await 无法永久占住动作或合并队列。
+- **超时与宿主动作看门狗**：看门狗量的是**沉默时间，而不是墙上时间**——reviewer/tester 每一次可识别的 `task_center` 调用都会续上该阶段的活动时钟（只存内存：宿主重启可能让一个本来就已经沉默的轮次直接阻塞）。评审沉默 10 分钟提醒一次、20 分钟发「即将阻塞」通知，再过 2 分钟宽限才阻塞待人工处理；测试轮 10 分钟提醒、20 分钟 + 同样宽限阻塞，因此正好踩线的结论不会被丢掉；连续 3 轮评审未通过同样阻塞。每个异步宿主动作（候选构建、候选合并、merge request、角色准备、通知）上限 2 分钟：卡住的动作用 `queue-timeout`/`action-timeout` 返回，被放弃单元的迟到写入会被拒绝，因此一个挂起的 await 无法永久占住动作或合并队列。`passTest` 触发的合并会等足声明的 `verify` 预算，因为 target 移动时会重建候选并重跑该检查。
 - **worktree 健壮性**：每次 `git worktree add` 使用独立的 180 秒超时（不与通用的 git 与子进程预算共用）；超时或失败会回滚它可能登记的一切（worktree 条目、分支、锁、已 prune 的元数据），失败后重试一次，且同一仓库内的创建串行执行，两个任务不会争抢同一份 worktree 元数据。
 - **安全**：HTTP 写动作要求 `application/json` 且校验同源 `Origin`；`?project=` 只是读提示，切换项目走 `openProject`（校验目录存在）。
 
@@ -69,13 +72,13 @@
 - Godot 必须通过 `godot_*` 工具启动，绝不能走 shell 工具（文件沙箱会让它崩溃——见「坑」）。
 - 隔离 harness 需要配置 `dshCommand`（通常还有 `dshArgs`）；CLI 不可用时 smoke 会返回可读失败，而不是算通过。
 - 同一时刻只处理一个项目、只使用一个 Team/Lead：共享状态只保留一个项目 hint，派发解析第一个活着的 Lead。缺少 Agent Teams 服务时任务保持 pending 并给出明确原因。
-- verdict 之后 target 分支若又移动，会按设计触发「重建 + 重测」；合并绝不会落到过期树上。
+- verdict 之后 target 分支若又移动，会按设计触发「重建 + 重测」（含宿主机械验证）；合并绝不会落到过期树上。
 
 ```sh
 # 在 GUI 之外创建任务（任意 HTTP 客户端）
 curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
   -H 'content-type: application/json' \
-  -d '{"action":"create","project":"/path/to/game","title":"A","writeFiles":["scripts/a.gd"]}'
+  -d '{"action":"create","project":"/path/to/game","title":"A","writeFiles":["scripts/a.gd"],"verify":{"command":"npm run verify"}}'
 # 开始 / 暂停派发
 curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
   -H 'content-type: application/json' -d '{"action":"start","project":"/path/to/game"}'
@@ -115,6 +118,18 @@ curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
 ### 它遵守的 web 契约
 
 真实 `dsh web` 带 token 鉴权：launcher 打印 `dsh web: http://127.0.0.1:<port>/?token=<一次性>`；该 URL 返回 **303 + Set-Cookie**，而 `/` 在没有 cookie 时返回 401。Node 的 `fetch` 没有 cookie jar，因此 harness 先从头日志里取出 token、自行完成交换，再用 cookie 探测 health/页面。任务中心插件路由不鉴权，smoke 直接访问。生产版本探测顺序：显式配置 → `DSH_VERSION` → 打包目录里的 manifest → Electron `app.asar` 头部（普通 `fs` 无法穿过 asar 路径）；都拿不到时结果为 `unknown`，smoke **失败**而不是算通过。
+
+### 视觉验证
+
+隔离实例同时也是 UI/面板工作「对真实渲染」验收的地方——截图绝不用生产页面。`harnessStatus` 在顶层直接镜像 `port`、`token`、`url` 与 `cookie`，截图工具可以直接拿到实例地址，不必翻嵌套记录：
+
+1. `harnessStart`（tester 或用户），取 `url`（`http://127.0.0.1:<port>/?token=<一次性>`）与 `cookie`。
+2. 打开页面：token URL 返回 303 + `Set-Cookie`，后面加载的就是插件面板。
+3. 用稳定选择器导航：点 `[data-panel="task-center"]`，等 `[data-panel-root="task-center"]`，用 `[data-view="board|queue|workers|status|roles"]` 切页签，角色页内用 `[data-roles-tab="worker|tester|reviewer"]` / `[data-roles-pane="raw|injected"]`；任务详情浮层带 `[data-detail]`。
+4. 按 1440×900 截图。每次开新页面的截图工具都会丢掉面板的内存态，所以**每一张**都要重走一遍导航前缀；输出放在普通（非隐藏）目录。
+5. 结束时 `harnessStop`。
+
+首次启动可能有一个弹窗挡在面板前面：预览版用 `click text="继续"`；登录版先聚焦再 Escape（`click text="开始使用"; key Escape`）。完整流程见 `.agents/notes/design/visual-check.md`。
 
 ### 真实冒烟证据（本工作区）
 
@@ -250,7 +265,7 @@ Godot 可执行文件解析顺序：每次调用的 `godot_path` 参数 → `god
 
 ```
 plugin/godot-bridge.mjs           # 插件入口（标准 DSH 模块，命名导出 name/inject/apply）
-plugin/task-center/               # 任务中心宿主半侧（board / service / locks / dispatch / merge / api / tool / routes / roles / harness）
+plugin/task-center/               # 任务中心宿主半侧（schema / board / service / locks / dispatch / merge / git / api / state / tool / routes / skill / harness / index）
 client/client.js                  # 浏览器半侧：引擎路径配置 + 任务中心面板（dsh.client）
 plugin/mcp_interaction_server.gd  # 取自 godot-mcp（MIT）——游戏内 TCP 服务器 autoload
 plugin/godot_operations.gd        # 取自 godot-mcp（MIT）——headless 操作脚本

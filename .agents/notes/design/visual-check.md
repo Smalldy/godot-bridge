@@ -16,20 +16,20 @@
    ```
    取返回的 `url`（`http://127.0.0.1:<port>/?token=<token>`）与 `cookie`/`port`/`token`；也可用 `task_center { action: "harnessStatus" }` 顶层字段。
 
-2. 关掉首次弹窗（按首启形态二选一）：
+2. 关掉首次弹窗（首启有两种形态，二选一；不要两种都执行）：
    ```
-   # A. 预览版说明 / 继续
+   # A. 「预览版说明」+「继续」按钮
    click text="继续"
    wait 500
 
-   # B. 开始使用 / 登录（先聚焦再 Escape）
+   # B. 「开始使用」/ 登录弹窗（先聚焦再 Escape）
    wait 1000
    click text="开始使用"
    wait 300
    key Escape
    wait 900
    ```
-   真实截图（`.investigate/visual/shell.png`）里是 **「预览版说明」+「继续」**；新版首启可能是 **「开始使用」/登录** 弹窗，此时先点「开始使用」让它获得焦点，再 `key Escape` 关闭，最后等 900ms 让遮罩消失再继续点击。
+   两种形态：**A = 预览版说明 + 继续**（旧版首启，真实截图 `.investigate/visual/shell.png` 就是这一种，点「继续」直关）；**B = 开始使用 / 登录**（新版首启的登录弹窗，Escape 不会直接生效——必须先用 `click text="开始使用"` 让它拿到焦点，再 `key Escape`，最后 `wait 900` 等遮罩退场，否则后面的点击都会落在遮罩上）。判断依据是页面上有没有「继续」按钮；有就走 A，没有就走 B。
 
 3. 进入任务中心面板（先点 glyph，之后才可能有打开项目表单）：
    ```
@@ -51,7 +51,7 @@
    click [data-view="roles"]
    waitfor [data-roles-tab="worker"]
    ```
-   六个导航按钮都带 `data-view`（board/queue/workers/locks/status/roles）。
+   五个导航按钮都带 `data-view`（board/queue/workers/status/roles）。**没有 locks 页签**：文件锁已收敛为纯自动锁，`locks` 只是只读动作，面板不再有锁视图，任何 `[data-view="locks"]` 的步骤都是过期写法。
 
 6. 三个页签各截一张 1440×900（缺一不可）：
    ```
@@ -77,6 +77,8 @@
 ## oil_ui_shoot 示例（三次独立运行，每次都要重新导航）
 
 每次 `oil_ui_shoot` 都新开一个页面：插件面板的 view 是内存态（新页面回到 `board`），所以**每次都要重走一遍导航前缀**（关弹窗 → glyph → 等面板根 → 需要时打开项目 → `[data-view="roles"]` → 目标页签）。缺前缀的后两次会在 `waitfor [data-roles-tab=...]` 上挂住。
+
+**输出路径**：`oil_ui_shoot` 不接受隐藏输出目录（`.investigate/…`、`.tmp/…` 之类会被拒绝）；`out` 一律写普通目录（如 `shots/visual/roles-worker.png`），需要归档到隐藏目录时先写在普通目录再拷贝，主工作树保持干净。
 
 ```
 oil_ui_shoot({ target: "http://127.0.0.1:<port>/?token=<token>", size: "1440x900",

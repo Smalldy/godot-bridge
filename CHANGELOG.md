@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Runtime skill and always-on rules for the task center**: activating the row registers the skill `godot-bridge-task-center` (its body is generated from the action registry: positioning, workflow, action matrix, write-card rules, refusal codes, the Godot launch rule and the panel layout) and injects four always-on rules — `start` is only a request the user approves, verdicts belong to the matching role, task work never commits to the target, and `.agents/tasks.json` is never hand-edited. The `task_center` tool description is now a short router to that skill instead of a two-kilobyte API narrative. A host without the skill registry or system-prompt service skips both silently. The registration carries `source: 'runtime'`, which the registry validates when the skill is **loaded** (a missing source listed the skill and then failed the load).
+- **Host mechanical verification (`verify`)**: a task can declare `verify: { command, timeoutMs? }` (a shell string that may chain). After an approval builds the test candidate the HOST runs it there through the unconfined subprocess service (default bound 10 minutes) and records `test.hostCheck` — command, exit code, timeout flag, duration, a ≤4 KB output tail and a timestamp. Exit 0 enters TESTING with the baseline in the tester's brief; a non-zero exit or a timeout is recorded as a failed test by the host, returns the task to running with the evidence, discards the candidate, notifies the owner and never opens a tester round or reaches the merge queue. A malformed declaration is refused with `invalid-verify` instead of being dropped. The tool exposes `verify` as an object parameter (`null` clears it), and a moved target re-runs the check on the rebuilt candidate.
+- **Two-part tester evidence**: the tester brief carries the host baseline and requires the evidence to separate 【host baseline】 from 【my probes】 — the host run is a floor, not a ceiling, and the tester may re-run the same command (stating why) or run any other suite.
+- **Visual verification on the isolated instance**: `harnessStatus` mirrors `port` / `token` / `url` / `cookie` at the top level so a screenshot tool can open the token URL directly, and the panel exposes stable `data-*` hooks (`[data-panel-root]`, `[data-view]`, `[data-roles-tab]`, `[data-roles-pane]`, `[data-detail]`) for the navigation-and-shoot flow documented in the README and `.agents/notes/design/visual-check.md`.
+- **Status page and task detail rebuilt**: the status tab is a one-line status plus dispatch, worktree and agent cards with a full-width activity stream whose events are localized sentences; the task detail is a wide, container-width-aware overlay with a dispatch → implement → review → test → merge stage spine (rounds and completion times), a "where it is now" body, a summary column, and the key events and latest rejection reasons up front. `rolesPreview` joins the action list so the panel can show the exact text the host would inject.
+
+### Changed
+
+- **Watchdogs measure silence, not wall time**: every identifiable `task_center` call by the reviewer or tester renews that phase's activity clock (memory only, so a host restart can block a round that was already silent). A review is reminded at 10 minutes of silence, warned at 20, and blocked after a further 2-minute grace; a test round is reminded at 10 and blocked at 20 plus the grace, so a verdict landing on the boundary is not lost. `passTest`'s merge waits out the declared `verify` budget, because a moved target rebuilds the candidate and re-runs that check.
+- **Role profiles are edited as copies**: the built-in worker / reviewer / tester profiles are immutable (`builtin-profile-immutable`); Fork creates a named draft copy, and Save creates it, binds its stage and replaces the running instances in one click. The panel no longer has a separate bind / apply / replace vocabulary — one "current use" picker — and the editor is two columns: the raw prompt and the exact text the host injects, produced by the real brief builders. Deleting the profile in use falls back to the built-in default immediately.
+- **Panel navigation**: five tabs (board, queue, workers, status, roles). The tab strip carries no counts any more (the numbers live in the board header) and the file-lock tab is gone.
+
+### Removed
+
+- The manual file-lock surface: the `lock` / `unlock` / `forceUnlock` actions and the file-lock tab are gone. Locking is entirely automatic; `locks` stays as a read-only diagnostic.
+
+### Fixed
+
+- The roles page could show a fake "saved ✓" banner after a refused save; the banner now reports the actual outcome.
+- The roles editor could render an empty left column for built-in profiles, duplicate anchors and double card borders; the empty state, section grouping and single card are corrected, and the injected preview no longer shows a different identity's text.
+- The task detail used to be a fixed 400 px drawer; it is now a wide overlay that adapts to the container width (full screen under 900 px).
+
 ## [0.3.0] - 2026-10-20
 
 ### Added
