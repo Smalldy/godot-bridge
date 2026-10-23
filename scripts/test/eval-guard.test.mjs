@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
   buildLaunchArgv,
+  classifyDebuggerExit,
   classifyProbe,
   debuggerNote,
   debuggerRecoveryPlan,
@@ -87,6 +88,33 @@ test('the recovery input is exactly quit (never continue), with a 3s fallback', 
   assert.match(BRIDGE, /handle\.terminate\(\)/)
 })
 
+test('the debugger exit is classified by exit code, not by "it exited fast"', () => {
+  const clean = classifyDebuggerExit({ exited: true, exitCode: 0, killed: false })
+  assert.equal(clean.diagnosis, 'debugger-quit')
+  assert.equal(clean.crash, false)
+  assert.equal(clean.killed, false)
+  // Godot 4.7.2 win64: writing quit under the local debugger exits with an
+  // ACCESS_VIOLATION (3221225477 = 0xC0000005), not a clean exit.
+  const crashed = classifyDebuggerExit({ exited: true, exitCode: 3221225477, killed: false })
+  assert.equal(crashed.diagnosis, 'debugger-trap')
+  assert.equal(crashed.crash, true)
+  assert.equal(crashed.exitCode, 3221225477)
+  const killed = classifyDebuggerExit({ exited: false, exitCode: null, killed: true })
+  assert.equal(killed.diagnosis, 'debugger-trap')
+  assert.equal(killed.killed, true)
+  assert.equal(killed.crash, false)
+  assert.match(BRIDGE, /classifyDebuggerExit\(\{ exited: debuggerWatch\.exited/)
+  assert.match(BRIDGE, /exitCodeOf\(handle\)/)
+  assert.match(BRIDGE, /crash: classified\.crash/)
+})
+
+test('the docs record the real exit code and the EOF reproduction baseline', () => {
+  const docs = readFileSync(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8') + readFileSync(fileURLToPath(new URL('../../CHANGELOG.md', import.meta.url)), 'utf8')
+  assert.match(docs, /0xC0000005|3221225477|ACCESS_VIOLATION/)
+  assert.match(docs, /12089|12,089/)
+  assert.match(docs, /1\.78 MB|1,78 MB/)
+})
+
 test('a connection that never answers is running but unresponsive', () => {
   assert.deepEqual(classifyProbe({ success: true }), { game_running: true, responsive: true, diagnosis: null })
   const stuck = classifyProbe({ error: 'bridge timeout' })
@@ -129,7 +157,7 @@ test('the server exposes a pure debugger predicate and guards every reload()', (
 test('eval refusals and debugger results carry a next step; SCRIPT ERROR carries a hint', () => {
   assert.match(BRIDGE, /resp\.diagnosis === 'debugger-trap'/)
   assert.match(BRIDGE, /resp\.next = 'eval is disabled/)
-  assert.match(BRIDGE, /diagnosis: debuggerWatch\.exited \? 'debugger-quit' : 'debugger-trap'/)
+  assert.match(BRIDGE, /classifyDebuggerExit\(\{ exited: debuggerWatch\.exited/)
   assert.match(BRIDGE, /debuggerTrace: debuggerWatch\.trace/)
   assert.match(BRIDGE, /scriptErrorHint/)
   assert.match(BRIDGE, /restart with debug:true/)
