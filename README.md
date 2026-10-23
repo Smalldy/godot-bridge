@@ -11,14 +11,16 @@ No MCP protocol, no Python server, no editor addon. The game side is untouched: 
 
 ## Tools
 
+`godot_run_project` starts **without** the local debugger (`-d`) by default, so `godot_command eval` works normally. `debug:true` is **diagnostic mode**: the instance runs with the local debugger, the interaction server **refuses `eval`** (a syntax error would otherwise enter the interactive `debug>` prompt and deadlock, issue #13), and a script error returns a `debuggerTrace` (break reason, `*Frame N` stack frames with `file:line`, ≤4 KB raw tail) plus a `next` step and ends that run. In diagnostic mode the bridge watches stdout for the debugger, writes exactly one `quit` (never `continue`), and terminates the instance it started after 3 s. To run code under the debugger, use `godot_run_headless --script`.
+
 | Tool | Replaces (godot-mcp) | Purpose |
 | --- | --- | --- |
-| `godot_run_project` | `run_project` | Launch the project in debug mode (`godot -d --path …`), wait for port 9090 |
+| `godot_run_project` | `run_project` | Launch the project (`godot --path …`, **no local debugger by default**), wait for port 9090. `debug:true` = diagnostic mode (`-d`, eval disabled, script errors return `debuggerTrace`) |
 | `godot_stop_project` | `stop_project` | Terminate the game process (tree-scoped kill) |
 | `godot_get_debug_output` | `get_debug_output` | Incremental stdout/stderr of the launched process |
 | `godot_command` | all `game_*` (~105) | Send any interaction-server command: `get_scene_tree`, `get_ui_elements`, `eval`, `get/set_property`, `call_method`, `click`, `key_press`, `screenshot`, `raycast`, `serialize_state`, `ui_*`, … |
 | `godot_screenshot` | `game_screenshot` | Viewport capture as base64 PNG |
-| `godot_ping` | — | Probe whether the game answers on 9090 (also reports installed/latest plugin version) |
+| `godot_ping` | — | Probe whether the game answers on 9090 (also reports installed/latest plugin version, and `responsive:false` when the port accepts but never answers) |
 | `godot_set_engine_path` | — | Persist the Godot engine executable path into the plugin's config (the model asks the user for it, then saves it here; hot-reloaded — reports `persisted: 'profile-patch'` on DSH 0.2.x, `'settings'` on the legacy path) |
 | `godot_headless_op` | `read_scene`, `modify_scene_node`, `remove_scene_node`, `attach_script`, `create_resource`, `save_scene`, `create_scene`, `add_node`, `get_uid`, `manage_scene_signals`, … | Headless static operations (`godot --headless --script godot_operations.gd`): 16 ops, no running game needed |
 | `godot_run_headless` | — | Bounded **non-interactive** run of the project, a scene, or a test script (`godot --headless --path … [--quit-after N] [--script …]`) through the unconfined subprocess service; returns stdout/stderr and flags a sandbox-crash diagnosis |

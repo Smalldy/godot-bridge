@@ -29,6 +29,16 @@
 import { defineTool as defineToolOfficial } from '@deepseek-ai/dsh-tools'
 import Schema from '@deepseek-ai/schemastery'
 import { readFileSync, existsSync } from 'node:fs'
+import {
+  buildLaunchArgv,
+  classifyProbe,
+  debuggerNote,
+  debuggerRecoveryPlan,
+  detectDebuggerTrap,
+  evalTimeoutResult,
+  logSizeWarning,
+  parseDebuggerTrace,
+} from './debug-guard.mjs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -176,6 +186,13 @@ export function apply(ctx, config) {
           name: 'godot-bridge:launch-channel',
           order: 151,
           text: 'GODOT LAUNCH CHANNEL (sandbox crash prevention) - ALWAYS start Godot through the godot_* tools, NEVER through the pwsh/bash shell tools. Godot writes its user:// logs and config under the user home directory on startup; the file sandbox blocks those writes for processes spawned from pwsh/bash, so `godot --headless ...` run inside a shell crashes with signal 11 / segmentation fault. The godot_* tools instead spawn Godot through the unconfined subprocess service, so no permission escalation is ever needed. Use: godot_run_project for an interactive run; godot_run_headless for a bounded headless scene/logic/test run (pass --quit-after N or have the script call get_tree().quit()); godot_headless_op for static .tscn/resource operations; godot_export_project for exports. If a godot_* result ever returns diagnosis:"sandbox-crash", do not investigate a project bug — the root cause is the launch channel; re-run via the godot_* tool, never retry the shell command. / 中文：始终通过 godot_* 工具启动 Godot，严禁用 pwsh/bash shell 工具运行 godot。Godot 启动时会向用户主目录写 user:// 日志与配置；文件沙箱会拦截由 pwsh/bash 派生的进程的这些写入，导致 `godot --headless` 在 shell 内以 signal 11（段错误）崩溃。godot_* 工具则通过不受沙箱约束的 subprocess 服务启动 Godot，因此无需申请任何权限。若某个 godot_* 结果返回 diagnosis:"sandbox-crash"，根因是启动通道而非项目 bug，请改用 godot_* 工具重跑，切勿重复 shell 命令。',
+        })
+      })
+      ctx.effect(function () {
+        return systemPrompt.section({
+          name: 'godot-bridge:debug-eval',
+          order: 153,
+          text: 'GODOT DEBUGGER / EVAL (issue #13) - godot_run_project starts WITHOUT the local debugger by default (debug:false), so godot_command eval works. debug:true is DIAGNOSTIC mode: it enables the local debugger, eval is DISABLED (the server refuses it), and a script error ends that run with a debuggerTrace and a next step instead of hanging. Read script errors from errors first; only use debug:true when you need a multi-frame stack. / 中文：脚本报错先看 errors；需要多帧栈才用 debug:true——该模式启用本地调试器，eval 不可用，脚本报错会带 debuggerTrace 并结束本次运行；跑代码改用 godot_run_headless --script。',
         })
       })
       ctx.effect(function () {
@@ -877,13 +894,91 @@ export function apply(ctx, config) {
     return await spawnOwnInstance(gp, projectPath, wantPort, opts, exec, { adopted: false })
   }
 
+  /** Write to a spawned process's stdin through whichever handle API exists. */
+  function writeStdinTo(handle, text) {
+    if (!handle) return false
+    try {
+      if (handle.stdin && typeof handle.stdin.write === 'function') {
+        handle.stdin.write(text)
+        return true
+      }
+      if (typeof handle.write === 'function') {
+        handle.write(text)
+        return true
+      }
+      if (typeof handle.writeStdin === 'function') {
+        handle.writeStdin(text)
+        return true
+      }
+    } catch (e) {}
+    return false
+  }
+
+  /** True when the handle reports its process already exited. */
+  function handleExited(handle) {
+    if (!handle) return true
+    if (handle.exited === true) return true
+    if (typeof handle.exitCode === 'number') return true
+    return false
+  }
+
+  /**
+   * Diagnostic-mode watchdog: watch stdout for the interactive debugger, write
+   * exactly one "quit" (never "continue" - a syntax error breaks again), wait up
+   * to 3s, then terminate our own instance. Returns the captured trace so the
+   * stack information is not lost.
+   */
+  async function watchForDebugger(handle, exec, timeoutMs) {
+    const plan = debuggerRecoveryPlan()
+    const deadline = Date.now() + (Number.isFinite(timeoutMs) ? timeoutMs : 20000)
+    let trapText = ''
+    while (Date.now() < deadline) {
+      let out = ''
+      try {
+        if (handle.collected && handle.collected.stdout) out = handle.collected.stdout.readFrom(0).text || ''
+      } catch (e) {}
+      if (detectDebuggerTrap(out)) {
+        trapText = out
+        break
+      }
+      if (handleExited(handle)) return null
+      await ctx.timeout(250)
+    }
+    if (trapText === '') return null
+    const trace = parseDebuggerTrace(trapText)
+    const wroteQuit = writeStdinTo(handle, plan.input)
+    const exited = await Promise.race([
+      Promise.resolve(handle.waitForExit(exec.signal)).then(function () { return true }).catch(function () { return true }),
+      ctx.timeout(plan.waitMs).then(function () { return false }),
+    ])
+    if (exited !== true) {
+      try { handle.terminate() } catch (e) {}
+      try { await handle.waitForExit(exec.signal) } catch (e) {}
+    }
+    return { trace: trace, wroteQuit: wroteQuit, quitInput: plan.input, exited: exited === true, killed: exited !== true }
+  }
+
+  /** Best-effort user:// log size warning; never deletes anything. */
+  async function userLogWarning(projectPath) {
+    try {
+      if (!ctx.fs || typeof ctx.fs.stat !== 'function') return null
+      const appData = process.env.APPDATA
+      if (!appData) return null
+      const name = String(projectPath).split(/[\\/]/).filter(Boolean).slice(-1)[0]
+      const path = join(appData, 'Godot', 'app_userdata', name, 'logs', 'godot.log')
+      const info = await ctx.fs.stat(path)
+      if (!info || typeof info.size !== 'number') return null
+      return logSizeWarning(info.size)
+    } catch (e) {
+      return null
+    }
+  }
+
   // Spawn one Godot process on a concrete port (managed, owned by us).
   async function spawnOwnInstance(gp, projectPath, port, opts, exec, extra) {
     const token = newToken()
-    const argv = [gp]
-    if (opts.debug !== false) argv.push('-d')
-    argv.push('--path', projectPath)
-    if (opts.scene) argv.push(String(opts.scene))
+    const debugMode = opts.debug === true
+    const argv = buildLaunchArgv(gp, projectPath, { debug: debugMode, scene: opts.scene })
     let handle
     try {
       handle = subprocess.spawn({
@@ -894,7 +989,9 @@ export function apply(ctx, config) {
           GODOT_BRIDGE_TOKEN: token,
         },
         stdio: {
-          stdin: 'ignore',
+          // Diagnostic mode keeps a stdin pipe so the watchdog can write "quit";
+          // the default instance has no debugger and needs no stdin at all.
+          stdin: debugMode ? 'pipe' : 'ignore',
           stdout: { collect: { maxBytes: 4 * 1024 * 1024, spill: { maxBytes: 32 * 1024 * 1024 } } },
           stderr: { collect: { maxBytes: 4 * 1024 * 1024, spill: { maxBytes: 32 * 1024 * 1024 } } },
         },
@@ -916,8 +1013,10 @@ export function apply(ctx, config) {
       externalPid: null,
     }
     const ready = await waitForGame(exec.signal, opts.wait_ms || 20000, port)
+    let debuggerWatch = null
+    if (debugMode) debuggerWatch = await watchForDebugger(handle, exec, opts.wait_ms || 20000)
     let diagnosis = null
-    if (!ready) {
+    if (!ready && debuggerWatch === null) {
       let out = ''
       let err = ''
       try {
@@ -926,23 +1025,48 @@ export function apply(ctx, config) {
       } catch (e) {}
       diagnosis = diagnoseCrash(out, err)
     }
+    const debugNote = debuggerNote(debugMode)
+    const logWarning = debugMode ? await userLogWarning(projectPath) : null
+    let scriptErrorText = ''
+    try {
+      if (handle.collected && handle.collected.stdout) scriptErrorText += handle.collected.stdout.readFrom(0).text || ''
+      if (handle.collected && handle.collected.stderr) scriptErrorText += handle.collected.stderr.readFrom(0).text || ''
+    } catch (e) {}
+    const scriptErrorHint = /SCRIPT ERROR/.test(scriptErrorText)
+      ? 'A SCRIPT ERROR was captured: read it here first (file and line are included). Only if you need the multi-frame stack, restart with debug:true (diagnostic mode: eval is disabled, and the run ends with a debuggerTrace).'
+      : null
+    const watchResult = debuggerWatch === null
+      ? null
+      : {
+          diagnosis: debuggerWatch.exited ? 'debugger-quit' : 'debugger-trap',
+          debuggerTrace: debuggerWatch.trace,
+          next: 'The local debugger trapped a script error. Fix it using debuggerTrace (errors also appear without debug:true), restart without debug:true, and run code with godot_run_headless --script because eval is disabled in diagnostic mode.',
+          debugger: { quit_written: debuggerWatch.wroteQuit, input: debuggerWatch.quitInput, killed: debuggerWatch.killed },
+        }
     return {
       pid: handle.pid,
       project_path: projectPath,
       godot_path: gp,
       scene: opts.scene || null,
       autoload: opts.autoload,
-      game_ready: ready,
+      game_ready: ready && debuggerWatch === null,
       managed: true,
       external: false,
       port: port,
+      debug: debugMode,
+      ...(scriptErrorHint ? { hint: scriptErrorHint } : {}),
+      ...(debugNote ? debugNote : {}),
+      ...(logWarning ? { log_warning: logWarning } : {}),
       ...(extra.conflictNote ? { conflict: extra.conflictNote } : {}),
       ...(diagnosis || {}),
-      note: ready
+      ...(watchResult || {}),
+      note: ready && debuggerWatch === null
         ? 'Game interaction server reachable on 127.0.0.1:' + port
-        : (diagnosis
-          ? diagnosis.hint
-          : 'Game process started but the interaction server did not answer in time; call godot_get_debug_output to diagnose'),
+        : watchResult !== null
+          ? 'The instance entered the local debugger (diagnostic mode); it was stopped and the trace is in debuggerTrace.'
+          : (diagnosis
+            ? diagnosis.hint
+            : 'Game process started but the interaction server did not answer in time; call godot_get_debug_output to diagnose'),
     }
   }
 
@@ -1227,16 +1351,19 @@ export function apply(ctx, config) {
       },
       async execute(args, exec) {
         const resp = await runGameCommand('get_performance', {}, args.timeout_ms || 5000, exec.signal)
-        const running = !(resp && resp.error)
+        const classified = classifyProbe(resp)
         const probePort = (godot && Number.isInteger(godot.port)) ? godot.port : PORT
         return {
-          game_running: running,
+          game_running: classified.game_running,
+          responsive: classified.responsive,
           port: probePort,
           plugin_version: INSTALLED_VERSION,
           latest_version: updateState.latest,
           update_available: updateState.available,
           detail: resp,
-          ...(running ? {} : {
+          ...(classified.diagnosis ? { diagnosis: classified.diagnosis } : {}),
+          ...(classified.note ? { note: classified.note } : {}),
+          ...(classified.game_running ? {} : {
             note: 'No game is answering on 127.0.0.1:' + probePort + '. Call godot_run_project with the project path to start it (it auto-installs the McpInteractionServer autoload when missing).',
           }),
         }
@@ -1245,12 +1372,12 @@ export function apply(ctx, config) {
 
     defineTool({
       name: 'godot_run_project',
-      description: 'Launch the Godot project in debug mode (godot -d --path <project>) and wait for the in-game interaction server. Automatically installs the McpInteractionServer autoload when the project lacks it — no manual setup needed. Port/ownership handling: if a game instance of THIS project is already answering on the port (e.g. you started a scene in the editor), the plugin ADOPTS it (returns external:true) instead of starting a duplicate; if a DIFFERENT project occupies the port it falls back to the next free port (9091+) or takes the port you pass. Returns process info, ownership (managed/external), port, and game_ready. IMPORTANT: do NOT launch Godot via the pwsh/bash shell tools — the file sandbox blocks Godot\'s user:// log writes and it crashes (signal 11); this plugin spawns Godot through the unconfined subprocess service, so godot_run_project is the safe way to start it. For a NON-interactive headless scene/logic/test run, use godot_run_headless instead. To stop a user/editor-launched (external) instance, press F8 in the editor or quit in-game — godot_stop_project refuses external processes.',
+      description: 'Launch the Godot project (godot --path <project>; NO local debugger by default, so godot_command eval works) and wait for the in-game interaction server. debug:true is DIAGNOSTIC mode: it starts with the local debugger (-d), eval is DISABLED on that instance, and a script error returns a debuggerTrace plus a next step and ends the run instead of hanging in the debugger. Automatically installs the McpInteractionServer autoload when the project lacks it — no manual setup needed. Port/ownership handling: if a game instance of THIS project is already answering on the port (e.g. you started a scene in the editor), the plugin ADOPTS it (returns external:true) instead of starting a duplicate; if a DIFFERENT project occupies the port it falls back to the next free port (9091+) or takes the port you pass. Returns process info, ownership (managed/external), port, and game_ready. IMPORTANT: do NOT launch Godot via the pwsh/bash shell tools — the file sandbox blocks Godot\'s user:// log writes and it crashes (signal 11); this plugin spawns Godot through the unconfined subprocess service, so godot_run_project is the safe way to start it. For a NON-interactive headless scene/logic/test run, use godot_run_headless instead. To stop a user/editor-launched (external) instance, press F8 in the editor or quit in-game — godot_stop_project refuses external processes.',
       properties: {
         project_path: { type: 'string', description: 'Path to the Godot project (default: current session workspace)' },
         scene: { type: 'string', description: 'Optional scene to run relative to the project, e.g. scenes/main/main_menu.tscn' },
         godot_path: { type: 'string', description: "Godot executable. Default: the plugin's Godot engine path setting, then the godot command on PATH. Use the REAL exe full path - never a shim." },
-        debug: { type: 'boolean', description: 'Run with -d (debug mode). Default true.' },
+        debug: { type: 'boolean', description: 'Diagnostic mode: run with -d (local debugger). Default false. In this mode eval is disabled and script errors return debuggerTrace; use godot_run_headless --script to run code.' },
         wait_ms: { type: 'number', description: 'How long to wait for the interaction server before giving up (default 20000)' },
         port: { type: 'number', description: 'Interaction-server port for the spawned instance (default 9090; auto-falls back to 9091+ when occupied by a different project)' },
       },
@@ -1354,7 +1481,14 @@ export function apply(ctx, config) {
       timeoutMs: 60000,
       runtime: true,
       async execute(args, exec) {
-        return await runGameCommand(args.command, args.params || {}, args.timeout_ms || 15000, exec.signal)
+        const command = String(args.command)
+        const timeoutMs = args.timeout_ms || 15000
+        const resp = await runGameCommand(command, args.params || {}, timeoutMs, exec.signal)
+        if (resp && typeof resp.error === 'string' && /timeout|timed out/i.test(resp.error)) return evalTimeoutResult(command, timeoutMs)
+        if (command === 'eval' && resp && resp.diagnosis === 'debugger-trap') {
+          resp.next = 'eval is disabled on an instance started with debug:true; use godot_run_headless --script, or restart without debug:true.'
+        }
+        return resp
       },
     }),
 

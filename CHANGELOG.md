@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **eval no longer deadlocks under the local debugger (issue #13).** `godot_run_project` now starts **without** `-d` by default, so `godot_command eval` compiles user code without entering the interactive `debug>` prompt; a syntax error still reports its message and file:line in the captured output. `debug:true` is now explicitly **diagnostic mode**: the instance runs with the local debugger, the interaction server detects `-d`/`--debug` from `OS.get_cmdline_args()` and **refuses eval** (no `reload()`) with a `next` step, and the bridge keeps a stdin pipe so that a detected `debug>`/`Debugger Break` writes exactly one `quit` (never `continue`), waits 3 s and then terminates the instance it started, returning `diagnosis: debugger-trap`/`debugger-quit` together with a `debuggerTrace` (break reason, `*Frame N` frames with `file:line`, ≤4 KB tail). `godot_command eval` timeouts now answer `{ error: "bridge timeout", diagnosis: "unresponsive", next }`, `godot_ping` reports `responsive: false` when the port accepts a connection but never answers instead of `game_running: false`, and an oversized `user://logs/godot.log` gets a warning (never deleted). Regression tests: `scripts/test/eval-guard.test.mjs` (self-contained, `node --test`) and `scripts/test/eval_guard.gd` (`godot_run_headless --script`).
+
 ## [0.2.0] - 2026-10-01
 
 ### Added
