@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The sidebar entry names its plugin**: the task-center sidebar label is now `GodotBridge 任务中心` (English `GodotBridge Task Center`) instead of the bare `任务` / `Tasks`, so users can tell which plugin the UI entry comes from; the panel title stays `任务中心` / `Task Center`.
+
 - **Watchdogs measure silence, not wall time**: every identifiable `task_center` call by the reviewer or tester renews that phase's activity clock (memory only, so a host restart can block a round that was already silent). A review is reminded at 10 minutes of silence, warned at 20, and blocked after a further 2-minute grace; a test round is reminded at 10 and blocked at 20 plus the grace, so a verdict landing on the boundary is not lost. `passTest`'s merge waits out the declared `verify` budget, because a moved target rebuilds the candidate and re-runs that check.
 - **Role profiles are edited as copies**: the built-in worker / reviewer / tester profiles are immutable (`builtin-profile-immutable`); Fork creates a named draft copy, and Save creates it, binds its stage and replaces the running instances in one click. The panel no longer has a separate bind / apply / replace vocabulary — one "current use" picker — and the editor is two columns: the raw prompt and the exact text the host injects, produced by the real brief builders. Deleting the profile in use falls back to the built-in default immediately.
 - **Panel navigation**: five tabs (board, queue, workers, status, roles). The tab strip carries no counts any more (the numbers live in the board header) and the file-lock tab is gone.

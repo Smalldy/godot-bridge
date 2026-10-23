@@ -124,9 +124,9 @@ check('registers one sidebar entry', registrations.filter((entry) => entry.meta.
 check('registers one main panel', registrations.filter((entry) => entry.meta.name === 'main').length === 1)
 check('panel key is task-center', registrations.filter((entry) => entry.meta.name === 'main')[0].meta.key === 'task-center')
 const glyph = registrations.filter((entry) => entry.meta.name === 'sidebar.panellist')[0]
-check('label follows the locale', glyph.meta.label() === '任务', glyph.meta.label())
+check('label follows the locale', glyph.meta.label() === 'GodotBridge 任务中心', glyph.meta.label())
 locale = 'en'
-check('label follows an English switch', glyph.meta.label() === 'Tasks', glyph.meta.label())
+check('label follows an English switch', glyph.meta.label() === 'GodotBridge Task Center', glyph.meta.label())
 locale = 'zh'
 {
   const glyphEntry = registrations.filter((entry) => entry.meta.name === 'sidebar.panellist')[0]

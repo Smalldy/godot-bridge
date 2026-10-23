@@ -141,7 +141,7 @@ window.__ModuleLoader__.load({
 
 		const TC_DICT = {
 			zh: {
-				nav: '任务',
+				nav: 'GodotBridge 任务中心',
 				title: '任务中心',
 				boardTab: '看板',
 				taskTitle: '标题',
@@ -592,7 +592,7 @@ window.__ModuleLoader__.load({
 				roleReused: '复用',
 			},
 			en: {
-				nav: 'Tasks',
+				nav: 'GodotBridge Task Center',
 				title: 'Task Center',
 				boardTab: 'Board',
 				taskTitle: 'Title',
