@@ -19,6 +19,7 @@
  */
 
 import { join } from 'node:path'
+import { serialiseWorktreeCreate } from './git.mjs'
 import { HOST_ACTION_TIMEOUT_MS } from './schema.mjs'
 
 export const DEFAULT_VERIFY_COMMAND = 'npm run verify'
@@ -417,7 +418,11 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     const integrationPath = join(projectPath, root, 'merge-' + task.id)
     const mergeBranch = 'merge/' + targetSlug(task.target) + '/' + task.id
 
-    const added = await callGit('worktreeAdd', [projectPath, { path: integrationPath, branch: mergeBranch, base: targetHead }])
+    // Share dispatch's global gate: two parallel target merges must not race on
+    // git's worktree metadata.
+    const added = await serialiseWorktreeCreate(projectPath, () =>
+      callGit('worktreeAdd', [projectPath, { path: integrationPath, branch: mergeBranch, base: targetHead }]),
+    )
     if (added === null || added === undefined || added.ok !== true) {
       // A refused add may leave a stale integration checkout/branch behind from
       // an earlier crash; discard it so the next attempt can start clean.
@@ -563,7 +568,9 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     if (targetHead === null) return failure('target-unreadable', 'could not read the head of target branch ' + task.target)
     const candidate = candidateAt(projectPath, req.worktreeRoot, task.id)
     await discardCandidateAt(projectPath, candidate)
-    const added = await callGit('worktreeAdd', [projectPath, { path: candidate.path, branch: candidate.branch, base: targetHead }])
+    const added = await serialiseWorktreeCreate(projectPath, () =>
+      callGit('worktreeAdd', [projectPath, { path: candidate.path, branch: candidate.branch, base: targetHead }]),
+    )
     if (added === null || added === undefined || added.ok !== true) {
       await discardCandidateAt(projectPath, candidate)
       return failure('candidate-unavailable', 'could not create the test candidate for ' + task.id + ': ' + messageOf(added))

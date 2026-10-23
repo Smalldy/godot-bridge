@@ -3,7 +3,7 @@
 // every case injects a fake runner.
 
 import { join, resolve } from 'node:path'
-import { DEFAULT_WORKTREE_TIMEOUT_MS, createGit } from '../../plugin/task-center/git.mjs'
+import { DEFAULT_WORKTREE_TIMEOUT_MS, createGit, serialiseWorktreeCreate } from '../../plugin/task-center/git.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -439,6 +439,36 @@ function recorder(handler) {
     },
   }).worktreeAdd(ROOT, { path: '../escape', branch: 'feat' })
   check('a refused path is still refused before the runner is consulted', isFailure(throwingCreate, 'outside-root'), JSON.stringify(throwingCreate))
+}
+
+// ── the shared worktree-create gate ────────────────────────────────────────
+{
+  const order = []
+  let active = 0
+  let overlapped = false
+  const first = serialiseWorktreeCreate(ROOT, async () => {
+    active++
+    if (active > 1) overlapped = true
+    order.push('first-start')
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    order.push('first-end')
+    active--
+    return 'first'
+  })
+  const second = serialiseWorktreeCreate(ROOT, async () => {
+    active++
+    if (active > 1) overlapped = true
+    order.push('second-start')
+    active--
+    return 'second'
+  })
+  const results = await Promise.all([first, second])
+  check('the shared gate runs worktree creations one at a time', overlapped === false && order.join(',') === 'first-start,first-end,second-start', JSON.stringify(order))
+  check('the gate returns each unit\'s own result', results[0] === 'first' && results[1] === 'second', JSON.stringify(results))
+  let ran = false
+  await serialiseWorktreeCreate(ROOT, async () => { throw new Error('boom') }).catch(() => {})
+  await serialiseWorktreeCreate(ROOT, async () => { ran = true })
+  check('a failed unit does not poison the chain', ran === true)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
