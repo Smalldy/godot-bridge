@@ -1,0 +1,8 @@
+; Minimal project so the headless guard test can be run with
+; godot_run_headless --script scripts/test/eval_guard.gd (issue #13).
+config_version=5
+
+[application]
+
+config/name="godot-bridge tests"
+config/features=PackedStringArray("4.4")

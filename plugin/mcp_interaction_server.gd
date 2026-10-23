@@ -16,11 +16,37 @@ var _token: String = ""
 const BUSY_TIMEOUT: float = 120.0
 var _key_map: Dictionary
 var _held_keys: Dictionary = {}
+# True when this instance runs with Godot's LOCAL DEBUGGER (-d/--debug). The
+# debugger turns a GDScript compile error into an interactive debug prompt;
+# the plugin spawns Godot with stdin ignored/pipe, so eval would deadlock and
+# flood the log (issue #13). eval is refused in that mode.
+var _local_debugger: bool = false
+
+const EVAL_DEBUGGER_REFUSAL: String = "eval is disabled because this instance runs with the local debugger (-d); use godot_run_headless --script, or start without debug"
+
+# Pure predicate so the guard is testable without launching a game. Accepts the
+# process command line (Array or PackedStringArray).
+static func is_local_debugger(args, debugger_flag: String = "") -> bool:
+	# The bridge sets GODOT_BRIDGE_DEBUGGER=1 because Godot consumes -d/--debug
+	# itself: on a real spawn OS.get_cmdline_args() never contains them (measured
+	# on 4.7.2 - both launches report ["--script","args.gd"]). The argv loop is
+	# kept only for callers that pass a synthetic command line.
+	if debugger_flag == "":
+		debugger_flag = OS.get_environment("GODOT_BRIDGE_DEBUGGER")
+	if debugger_flag == "1" or debugger_flag == "true":
+		return true
+	for arg in args:
+		if String(arg) == "-d" or String(arg) == "--debug":
+			return true
+	return false
 
 func _ready() -> void:
 	# Ensure MCP server keeps processing even when game is paused
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_init_key_map()
+	# Detect the local debugger from the process command line. Godot accepts
+	# both the short and the long form; either one enables the debugger.
+	_local_debugger = is_local_debugger(OS.get_cmdline_args())
 	# Port and ownership token are injected by the godot-bridge plugin when it
 	# spawns this process (GODOT_BRIDGE_PORT / GODOT_BRIDGE_TOKEN). A plain
 	# editor-launched run gets neither and stays on 9090 with an empty token,
@@ -567,6 +593,9 @@ func _string_to_keycode(key_str: String) -> int:
 
 # --- Eval: Execute arbitrary GDScript at runtime ---
 func _cmd_eval(params: Dictionary) -> void:
+	if _local_debugger:
+		_send_response({"error": EVAL_DEBUGGER_REFUSAL, "diagnosis": "debugger-trap", "next": "run the code with godot_run_headless --script, or restart the instance without debug:true"})
+		return
 	var code: String = params.get("code", "")
 	if code.is_empty():
 		_send_response({"error": "No code provided"})
@@ -3069,6 +3098,9 @@ func _cmd_script(params: Dictionary) -> void:
 			if source.is_empty():
 				_send_response({"error": "source is required for attach"})
 				return
+			if _local_debugger:
+				_send_response({"error": EVAL_DEBUGGER_REFUSAL, "diagnosis": "debugger-trap", "next": "restart without debug:true, or run a script with godot_run_headless --script"})
+				return
 			var s: GDScript = GDScript.new()
 			s.source_code = source
 			var err: int = s.reload()
@@ -3758,9 +3790,13 @@ func _cmd_canvas_draw(params: Dictionary) -> void:
 		if parent == null:
 			_send_response({"error": "Parent not found: %s" % parent_path})
 			return
+		var draw_script: GDScript = _create_draw_script()
+		if draw_script == null:
+			_send_response({"error": EVAL_DEBUGGER_REFUSAL, "diagnosis": "debugger-trap", "next": "restart without debug:true, or run a script with godot_run_headless --script"})
+			return
 		_canvas_draw_node = Node2D.new()
 		_canvas_draw_node.name = "_McpCanvasDraw"
-		_canvas_draw_node.set_script(_create_draw_script())
+		_canvas_draw_node.set_script(draw_script)
 		parent.add_child(_canvas_draw_node)
 		_canvas_draw_node.set("draw_commands", _draw_commands)
 	var color_d: Dictionary = params.get("color", {"r": 1.0, "g": 1.0, "b": 1.0, "a": 1.0})
@@ -3771,6 +3807,10 @@ func _cmd_canvas_draw(params: Dictionary) -> void:
 	_send_response({"success": true, "action": action})
 
 func _create_draw_script() -> GDScript:
+	# Compiling a script under the local debugger can enter the interactive debug
+	# prompt (issue #13); the caller reports the refusal instead.
+	if _local_debugger:
+		return null
 	var s: GDScript = GDScript.new()
 	s.source_code = """extends Node2D
 var draw_commands: Array = []
