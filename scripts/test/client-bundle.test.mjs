@@ -1347,6 +1347,47 @@ await flush()
     queuedTask.queuePosition = savedQueue
   }
 
+  // The dispatch card names its three KVs and does not repeat the merge queue.
+  {
+    const savedQueue = HOST.queue
+    HOST.queue = [{ id: 'T-1' }, { id: 'T-2' }]
+    let kvTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    kvTree = withHooks(panel, { initialView: 'status' })
+    const dispatchCard = findAll(kvTree, (node) => node.props && node.props['data-status-card'] === 'dispatch')[0]
+    const kv = (key) => findAll(dispatchCard, (node) => node.props && node.props['data-kv'] === key)[0]
+    const expectedRunning = HOST.tasks.filter((task) => task.status === 'running').length
+    check(
+      'the dispatch card labels its three KVs 并发 / 就绪 / 合并队列',
+      dispatchCard !== undefined && kv('concurrent') !== undefined && kv('ready') !== undefined && kv('merge-queue') !== undefined && textOf(kv('concurrent')).indexOf('并发') >= 0 && textOf(kv('ready')).indexOf('就绪') >= 0 && textOf(kv('merge-queue')).indexOf('合并队列') >= 0,
+      dispatchCard && textOf(dispatchCard).slice(0, 200),
+    )
+    check(
+      'the three KVs carry running / ready / snapshot.queue.length',
+      String(textOf(kv('concurrent')).replace(/[^0-9/]/g, '')) === String(expectedRunning) + '/' + String(HOST.dispatch.maxConcurrent) && textOf(kv('merge-queue')).indexOf('2') >= 0,
+      JSON.stringify({ concurrent: textOf(kv('concurrent')), merge: textOf(kv('merge-queue')) }),
+    )
+    const scanFooter = findAll(dispatchCard, (node) => node.props && node.props['data-status-scan'] === 'true')[0]
+    check(
+      'the footer keeps only the last scan and no merge-queue count',
+      scanFooter !== undefined && textOf(scanFooter).indexOf('上次扫描') >= 0 && textOf(scanFooter).indexOf('合并队列') < 0 && textOf(scanFooter).indexOf('2') < 0,
+      scanFooter && textOf(scanFooter),
+    )
+    locale = 'en'
+    let enTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    enTree = withHooks(panel, { initialView: 'status' })
+    const enCard = findAll(enTree, (node) => node.props && node.props['data-status-card'] === 'dispatch')[0]
+    const enFooter = findAll(enCard, (node) => node.props && node.props['data-status-scan'] === 'true')[0]
+    check(
+      'the English card says merge queue and the footer does not repeat it',
+      textOf(enCard).indexOf('merge queue') >= 0 && textOf(enFooter).indexOf('merge queue') < 0 && textOf(enFooter).indexOf('last scan') >= 0,
+      textOf(enCard).slice(0, 200),
+    )
+    locale = 'zh'
+    HOST.queue = savedQueue
+  }
+
   // ── empty states are plain text, not a card inside a card ──
   {
     const savedEmptyAgents = HOST.agents
