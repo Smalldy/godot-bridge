@@ -502,6 +502,8 @@ export const DISPATCH_DEFAULTS = {
   allowSpawn: true,
   maxWorkAgents: 4,
   maxAttempts: 3,
+  // The project's default target branch; null follows the main checkout's branch.
+  defaultTarget: null,
   request: null,
   worktree: { root: '.worktrees' },
 }
@@ -645,6 +647,7 @@ export function normaliseDispatch(raw) {
     allowSpawn: source.allowSpawn === undefined ? DISPATCH_DEFAULTS.allowSpawn : source.allowSpawn === true,
     maxWorkAgents: clamp(source.maxWorkAgents, DISPATCH_LIMITS.maxWorkAgents, DISPATCH_DEFAULTS.maxWorkAgents),
     maxAttempts: clamp(source.maxAttempts, DISPATCH_LIMITS.maxAttempts, DISPATCH_DEFAULTS.maxAttempts),
+    defaultTarget: typeof source.defaultTarget === 'string' && source.defaultTarget.trim() !== '' ? source.defaultTarget.trim() : null,
     request: normaliseRequest(source.request),
     worktree: normaliseWorktree(source.worktree),
   }

@@ -735,14 +735,16 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadli
   if (headNow.ok !== true) return worktreeFallback('base-unreadable: ' + String(headNow.message))
   const current = await git.currentBranch(projectPath)
   const defaultBranch = current.ok === true && typeof current.branch === 'string' ? current.branch : null
-  // The task's own target wins. Legacy boards without one follow the project's
-  // de-facto default target: the branch the main checkout is on. There is no
-  // separate configured default-target setting in the board, so this IS the
-  // project setting; documenting it here rather than inventing a second source.
+  // The task's own target wins; otherwise the project's configured default target
+  // (board dispatch.defaultTarget) applies, and only when THAT is unset does the
+  // main checkout's branch act as the fallback default.
   const taskTarget = typeof task.target === 'string' && task.target.trim() !== '' ? task.target.trim() : null
-  const targetBranch = taskTarget === null ? defaultBranch : taskTarget
+  const dispatchSettings = dispatch === undefined || dispatch === null ? null : dispatch
+  const configuredDefault = dispatchSettings !== null && typeof dispatchSettings.defaultTarget === 'string' && dispatchSettings.defaultTarget.trim() !== '' ? dispatchSettings.defaultTarget.trim() : null
+  const targetBranch = taskTarget === null ? (configuredDefault === null ? defaultBranch : configuredDefault) : taskTarget
+  const mustResolveRef = taskTarget !== null || (configuredDefault !== null && configuredDefault !== defaultBranch)
   let base = headNow
-  if (taskTarget !== null) {
+  if (mustResolveRef) {
     // An explicit target pins the base to THAT branch's head even when the main
     // checkout sits elsewhere; a legacy task keeps the old current-HEAD base.
     const resolved = await git.revParse(projectPath, 'refs/heads/' + targetBranch)

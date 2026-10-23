@@ -419,6 +419,8 @@ window.__ModuleLoader__.load({
 				targetBranch: '目标分支',
 				targetFollowDefault: '跟随默认（留空）',
 				targetDefaultLabel: '默认',
+				defaultTargetLabel: '默认目标分支',
+				defaultTargetHint: '留空则跟随主检出的当前分支',
 				queuedChip: '排队中 · 前面 {n} 条',
 				queueLengthChip: '队列 {n}',
 				actorUnknown: '成员 {id}',
@@ -870,6 +872,8 @@ window.__ModuleLoader__.load({
 				targetBranch: 'Target branch',
 				targetFollowDefault: 'Follow default (leave empty)',
 				targetDefaultLabel: 'default',
+				defaultTargetLabel: 'Default target branch',
+				defaultTargetHint: 'Empty follows the main checkout branch',
 				queuedChip: 'queued · {n} ahead',
 				queueLengthChip: 'queue {n}',
 				actorUnknown: 'member {id}',
@@ -3932,6 +3936,7 @@ window.__ModuleLoader__.load({
 				const t = props.t
 				const dispatch = props.dispatch
 				const concurrent = React.useRef(null)
+				const defaultTarget = React.useRef(null)
 				const [error, setError] = React.useState('')
 				function save() {
 					const raw = concurrent.current === null ? dispatch.maxConcurrent : concurrent.current.value
@@ -3940,7 +3945,8 @@ window.__ModuleLoader__.load({
 						setError(t('invalidConcurrency'))
 						return
 					}
-					void store.send('settings', { maxConcurrent: value }).then(function (result) {
+					const targetValue = defaultTarget.current === null ? '' : String(defaultTarget.current.value || '').trim()
+					void store.send('settings', { maxConcurrent: value, defaultTarget: targetValue }).then(function (result) {
 						if (result.ok === true) props.onClose()
 						else setError(t('error'))
 					})
@@ -3956,6 +3962,12 @@ window.__ModuleLoader__.load({
 							{ className: 'gbt-field' },
 							h('label', null, t('maxConcurrent')),
 							h('input', { className: 'gbt-input', type: 'number', min: 1, max: 8, step: 1, ref: concurrent, defaultValue: String(dispatch.maxConcurrent) }),
+						),
+						h(
+							'div',
+							{ className: 'gbt-field' },
+							h('label', null, t('defaultTargetLabel')),
+							h('input', { className: 'gbt-input', 'data-field': 'default-target', ref: defaultTarget, defaultValue: typeof dispatch.defaultTarget === 'string' ? dispatch.defaultTarget : '', placeholder: t('defaultTargetHint') }),
 						),
 						h('p', { className: 'gbt-footnote' }, t('concurrencyHint')),
 						error === '' ? null : h('p', { className: 'gbt-footnote', style: { color: 'var(--dsw-alias-label-error,#e5484d)' } }, error),

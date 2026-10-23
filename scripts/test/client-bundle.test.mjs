@@ -2639,6 +2639,10 @@ await flush()
     )
     const clientSource = readFileSync(new URL('../../client/client.js', import.meta.url), 'utf8')
     check(
+      'the settings form exposes the default target branch',
+      clientSource.indexOf("'data-field': 'default-target'") >= 0 && clientSource.indexOf('defaultTarget') >= 0,
+    )
+    check(
       'the task form offers an optional target field with a follow-the-default placeholder',
       clientSource.indexOf("'data-field': 'target-branch'") >= 0 && clientSource.indexOf('targetFollowDefault') >= 0 && clientSource.indexOf('target: targetBranch.current') >= 0,
     )

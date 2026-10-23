@@ -2664,6 +2664,28 @@ function fakeHostSubprocess(result) {
   await Promise.all([a, b])
   check('merges into the same target stay serial', serial.join(',') === 'a,b', JSON.stringify(serial))
 }
+// ── the configured default target applies to tasks without their own ───────
+{
+  const fake = createFakeGit()
+  fake.currentBranch = async function () { return { ok: true, branch: 'feat/x' } }
+  fake.revParse = async function (root, ref) {
+    return { ok: true, hash: ref.indexOf('release/1.4') >= 0 ? 'release-sha' : 'other-sha' }
+  }
+  const rig = createWorktreeRig({ git: fake })
+  const configured = await rig.action('settings', { defaultTarget: 'release/1.4' })
+  check('the default target is a dispatch setting', configured.ok === true && configured.dispatch.defaultTarget === 'release/1.4', JSON.stringify(configured))
+  const task = await createTask(rig, { title: 'follows the default target' })
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const claimed = byId(snap, task.id)
+  check(
+    'a task without its own target follows the configured default target, not the checkout branch',
+    claimed.status === 'running' && claimed.target === 'release/1.4' && claimed.base === 'release-sha',
+    JSON.stringify({ status: claimed.status, target: claimed.target, base: claimed.base }),
+  )
+  rig.scheduler.dispose()
+}
 // ── merge refusals and per-target advance with the main checkout elsewhere ──
 {
   const control = createFakeGit()
@@ -2674,10 +2696,16 @@ function fakeHostSubprocess(result) {
   }
   control.currentBranch = async function () { return { ok: true, branch: 'feat/x' } }
   control.head = async function () { return { ok: true, hash: 'feat-head' } }
+  control.worktreeList = async function () { return { ok: true, worktrees: [{ path: PROJECT, head: 'feat-head', branch: 'feat/x' }] } }
   const updates = []
+  const fastForwards = []
   control.updateRef = async function (root, ref, hash) {
     updates.push(ref + '=' + hash)
     return { ok: true, ref: ref, hash: hash }
+  }
+  control.mergeFfOnly = async function (root, branch) {
+    fastForwards.push(root + '|' + branch)
+    return { ok: true }
   }
   const merger = createMerger({ git: control })
   const hotfix = { id: 'T-1', title: 'hotfix', status: 'testing', branch: 'task/T-1-1', target: 'main', merge: { status: 'open', base: 'main-head', head: 'h', target: 'main' } }
@@ -2686,15 +2714,27 @@ function fakeHostSubprocess(result) {
   const featureResult = await merger.mergeRequest(feature, PROJECT, { worktreeRoot: '.worktrees' })
   check(
     'the main checkout stays on feat while a hotfix advances main and a feature advances feat',
-    hotfixResult.ok === true && hotfixResult.status === 'merged' && featureResult.ok === true && featureResult.status === 'merged' && updates.length === 2 && updates[0].indexOf('main=') === 0 && updates[1].indexOf('feat/x=') === 0,
+    hotfixResult.ok === true && hotfixResult.status === 'merged' && featureResult.ok === true && featureResult.status === 'merged' && updates.length === 1 && updates[0].indexOf('main=') === 0,
     JSON.stringify({ hotfix: hotfixResult, feature: featureResult, updates: updates }),
   )
   const addBases = control.calls.filter((call) => call.name === 'worktreeAdd').map((call) => call.detail.base)
   check('each integration checkout starts from its own target head', addBases.join(',') === 'main-head,feat-head', JSON.stringify(addBases))
+  check(
+    'a checked-out target is fast-forwarded in its own worktree, not update-ref\'d under it',
+    updates.length === 1 && updates[0].indexOf('main=') === 0 && fastForwards.length === 1 && fastForwards[0] === PROJECT + '|merge/feat-x/T-2',
+    JSON.stringify({ updates: updates, fastForwards: fastForwards }),
+  )
   const dirtyGit = createFakeGit({ clean: false })
   const dirtyMerger = createMerger({ git: dirtyGit })
   const dirty = await dirtyMerger.mergeRequest(hotfix, PROJECT, { worktreeRoot: '.worktrees' })
   check('a dirty worktree is refused with a readable message', dirty.ok === false && String(dirty.code) === 'dirty-worktree', JSON.stringify(dirty))
+  const wrongGit = createFakeGit()
+  wrongGit.revParse = async function () { return { ok: true, hash: 'main-head' } }
+  wrongGit.worktreeList = async function () { return { ok: true, worktrees: [{ path: PROJECT, head: 'h', branch: 'main' }] } }
+  wrongGit.currentBranch = async function () { return { ok: true, branch: 'feat/x' } }
+  const wrongMerger = createMerger({ git: wrongGit })
+  const wrong = await wrongMerger.mergeRequest(hotfix, PROJECT, { worktreeRoot: '.worktrees' })
+  check('a worktree checked out on the wrong branch is refused with wrong-target', wrong.ok === false && String(wrong.code) === 'wrong-target', JSON.stringify(wrong))
   const missingGit = createFakeGit()
   missingGit.revParse = async function () { return { ok: false, message: 'missing' } }
   missingGit.currentBranch = async function () { return { ok: true, branch: 'feat/other' } }

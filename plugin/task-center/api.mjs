@@ -2215,7 +2215,7 @@ export function createApi(ctx, options) {
         return failure('user-only', 'Dispatch settings belong to the user; ask them to change it in the task center panel.')
       }
       const patch = {}
-      for (const key of ['maxConcurrent', 'allowSpawn', 'maxWorkAgents', 'maxAttempts']) {
+      for (const key of ['maxConcurrent', 'allowSpawn', 'maxWorkAgents', 'maxAttempts', 'defaultTarget']) {
         if (source[key] !== undefined) patch[key] = source[key]
       }
       // The GUI exposes a single number: maximum concurrency. The worker cap
