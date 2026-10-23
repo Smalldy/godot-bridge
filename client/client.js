@@ -3343,7 +3343,16 @@ window.__ModuleLoader__.load({
 			/** Prefer the name the host wrote (byName); otherwise resolve the label against
 			 * the roster; an unresolved id shows as 成员 <label>, never a bare @. */
 			function actorDisplay(by, byName, roster, t, fallbackKey) {
-				if (typeof byName === 'string' && byName !== '') return byName
+				// An old host wrote the tool label (@xxxxxxxx) into byName: it is NOT a
+				// name, so it goes through the role-word fallback instead of rendering.
+				if (typeof byName === 'string' && byName !== '') {
+					if (byName.charAt(0) !== '@') return byName
+					const label = byName.slice(1).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+					const role = typeof fallbackKey === 'string' && fallbackKey !== '' ? t(fallbackKey) : ''
+					if (role !== '') return label === '' ? role : role + ' ' + label
+					// A degenerate '@' byName carries no id at all: show the bare word, never '@'.
+					return label === '' ? t('actorUnknown').replace(' {id}', '') : t('actorUnknown').replace('{id}', label)
+				}
 				const resolved = resolveAgentName(by, roster, t)
 				if (typeof resolved === 'string' && resolved.charAt(0) === '@') {
 					const label = resolved.slice(1).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
