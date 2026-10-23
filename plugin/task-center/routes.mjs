@@ -100,11 +100,8 @@ export function registerTaskRoutes(ctx, options) {
     try {
       const project = await resolveProject(req, null)
       if (project === null) {
-        sendJson(res, 200, {
-          ok: false,
-          code: 'unknown-project',
-          message: 'No project is known yet. Open one from the panel, or run a task_center call in a session first.',
-        })
+        // UI-facing: the panel localizes by code; no English sentence crosses the wire.
+        sendJson(res, 200, { ok: false, code: 'unknown-project', params: {} })
         return
       }
       state.noteProject(project)
@@ -116,29 +113,30 @@ export function registerTaskRoutes(ctx, options) {
 
   async function handleAction(req, res) {
     if (!isJson(req)) {
-      sendJson(res, 415, { ok: false, code: 'content-type', message: 'send application/json' })
+      sendJson(res, 415, { ok: false, code: 'content-type', params: { expected: 'application/json' } })
       return
     }
     if (!originAllowed(req)) {
-      sendJson(res, 403, { ok: false, code: 'origin', message: 'cross-origin request refused' })
+      sendJson(res, 403, { ok: false, code: 'origin', params: {} })
       return
     }
     let body
     try {
       body = await readJsonBody(req)
     } catch (error) {
-      sendJson(res, 400, { ok: false, code: 'bad-request', message: String((error && error.message) || error) })
+      // The parse error itself is diagnostic; the panel shows its own sentence for the code.
+      sendJson(res, 400, { ok: false, code: 'bad-request', params: {} })
       return
     }
     const action = String(body.action === undefined ? '' : body.action)
     if (action === '') {
-      sendJson(res, 400, { ok: false, code: 'no-action', message: 'An action is required.' })
+      sendJson(res, 400, { ok: false, code: 'no-action', params: {} })
       return
     }
     try {
       const project = await resolveProject(req, body)
       if (action !== 'openProject' && project === null) {
-        sendJson(res, 200, { ok: false, code: 'unknown-project', message: 'No project is known yet.' })
+        sendJson(res, 200, { ok: false, code: 'unknown-project', params: {} })
         return
       }
       if (project !== null) state.noteProject(project)

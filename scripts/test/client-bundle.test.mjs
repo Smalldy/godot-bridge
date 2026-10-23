@@ -2691,6 +2691,52 @@ await flush()
     targetTask.base = savedBase
   }
 
+  // Host failures are localized by code; an unknown code falls back to the message.
+  {
+    const savedFetch = globalThis.fetch
+    globalThis.fetch = async () => ({ json: async () => ({ ok: false, code: 'unknown-project', params: {} }) })
+    let zhTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    zhTree = withHooks(panel, { initialView: 'board' })
+    check(
+      'the unknown-project banner is Chinese in the zh UI',
+      textOf(zhTree).indexOf('还没有已知项目') >= 0 && textOf(zhTree).indexOf('No project is known yet') < 0,
+      textOf(zhTree).slice(0, 220),
+    )
+    locale = 'en'
+    let enTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    enTree = withHooks(panel, { initialView: 'board' })
+    check(
+      'the same banner is English in the en UI',
+      textOf(enTree).indexOf('No project is known yet') >= 0 && textOf(enTree).indexOf('还没有已知项目') < 0,
+      textOf(enTree).slice(0, 220),
+    )
+    locale = 'zh'
+    globalThis.fetch = async () => ({ json: async () => ({ ok: false, message: 'legacy host says hi' }) })
+    let actionTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    const refreshButton = findAll(actionTree, (node) => node.type === 'button' && textOf(node).indexOf('刷新') >= 0)[0]
+    if (refreshButton !== undefined) refreshButton.props.onClick()
+    await flush()
+    await flush()
+    actionTree = withHooks(panel, { initialView: 'board' })
+    check(
+      'an unknown code / legacy host falls back to the Host message',
+      textOf(actionTree).indexOf('legacy host says hi') >= 0,
+      textOf(actionTree).slice(0, 260),
+    )
+    globalThis.fetch = savedFetch
+    const recoveredTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    const recoveredRefresh = findAll(recoveredTree, (node) => node.type === 'button' && textOf(node).indexOf('刷新') >= 0)[0]
+    if (recoveredRefresh !== undefined) recoveredRefresh.props.onClick()
+    await flush()
+    await flush()
+    withHooks(panel, { initialView: 'board' })
+    await flush()
+  }
+
   // Elapsed is the finished span, not the growing age.
   const doneTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
   const elapsedDrawer = await openDetail('Tail output feature')

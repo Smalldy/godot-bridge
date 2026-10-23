@@ -218,6 +218,12 @@ window.__ModuleLoader__.load({
 				workersErrNoLead: '没有活着的 Team Lead',
 				workersErrRoster: '花名册不可读',
 				unknownProjectHint: '还没有项目。在会话里调用一次 task_center，或在下方填写项目目录。',
+				err_unknown_project: '还没有已知项目。请在面板里打开一个项目，或先在会话里调用一次 task_center。',
+				err_content_type: '请求格式不正确：请发送 application/json。',
+				err_origin: '跨源请求已被拒绝。',
+				err_bad_request: '请求体无法解析。',
+				err_no_action: '缺少 action 参数。',
+				err_failed: '宿主处理该操作时出错。',
 				offline: '宿主没有响应',
 				error: '操作失败',
 				startRequestTitle: '请求开始派发',
@@ -669,6 +675,12 @@ window.__ModuleLoader__.load({
 				workersErrNoLead: 'no live Team Lead',
 				workersErrRoster: 'the roster could not be read',
 				unknownProjectHint: 'No project yet. Call task_center once in a session, or enter a project directory below.',
+				err_unknown_project: 'No project is known yet. Open one from the panel, or run a task_center call in a session first.',
+				err_content_type: 'Wrong request format: send application/json.',
+				err_origin: 'A cross-origin request was refused.',
+				err_bad_request: 'The request body could not be parsed.',
+				err_no_action: 'The action field is required.',
+				err_failed: 'The host failed that action.',
 				offline: 'The host did not answer',
 				error: 'Action failed',
 				startRequestTitle: 'Start requested',
@@ -1543,11 +1555,33 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * Localized text for a Host failure. The Host sends a stable code (+ optional
+		 * params); the panel renders the code from TC_DICT. An unknown code falls back
+		 * to the Host's own message so an older/newer Host still says something real.
+		 */
+		function tcErrorMessage(payload, t) {
+			if (payload === null || payload === undefined || typeof payload !== 'object') return t('error')
+			const code = typeof payload.code === 'string' ? payload.code.trim() : ''
+			const params = payload.params !== null && typeof payload.params === 'object' ? payload.params : {}
+			if (code !== '') {
+				const key = 'err_' + code.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()
+				const localized = t(key)
+				if (typeof localized === 'string' && localized !== key) {
+					return localized.replace(/\{([A-Za-z0-9_]+)\}/g, function (match, name) {
+						return params[name] === undefined || params[name] === null ? match : String(params[name])
+					})
+				}
+			}
+			if (typeof payload.message === 'string' && payload.message !== '') return payload.message
+			return t('error')
+		}
+
+		/**
 		 * The Host binding. It owns two things only: fetch the snapshot, send an
 		 * action. It keeps no board state of its own, so a failed request cannot
 		 * fabricate work.
 		 */
-		function createTaskStore() {
+		function createTaskStore(t) {
 			let snapshot = tcSnapshot({
 				ok: false,
 				project: tcRememberedProject(),
@@ -1594,7 +1628,7 @@ window.__ModuleLoader__.load({
 							next.actionError = snapshot.actionError
 							emit(next)
 						} else {
-							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', String((payload && payload.message) || 'the host did not answer'))
+							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
 							failed.actionResult = snapshot.actionResult
 							failed.actionError = snapshot.actionError
 							emit(failed)
@@ -1646,7 +1680,7 @@ window.__ModuleLoader__.load({
 						return { ok: true, payload: payload }
 					}
 					if (!quiet) {
-						emit(Object.assign({}, snapshot, { message: String((payload && payload.message) || 'the host refused that action'), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
+						emit(Object.assign({}, snapshot, { message: tcErrorMessage(payload, t), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
 					}
 					return { ok: false, payload: payload }
 				} catch (error) {
@@ -3898,7 +3932,7 @@ window.__ModuleLoader__.load({
 							return
 						}
 						const payload = result.payload === undefined || result.payload === null ? {} : result.payload
-						setError(String(payload.message === undefined ? (result.error && result.error.message) || t('error') : payload.message))
+						setError(result.payload !== undefined && result.payload !== null ? tcErrorMessage(result.payload, t) : String((result.error && result.error.message) || t('error')))
 					})
 				}
 
@@ -3993,7 +4027,7 @@ window.__ModuleLoader__.load({
 							return
 						}
 						const payload = result.payload === undefined || result.payload === null ? {} : result.payload
-						setError(String(payload.message || t('error')))
+						setError(tcErrorMessage(payload, t))
 					})
 				}
 				return h(
@@ -4487,7 +4521,7 @@ window.__ModuleLoader__.load({
 					}
 				}, 'godot-bridge: task center styles')
 				ctx.effect(() => {
-					const store = createTaskStore()
+					const store = createTaskStore(ctx.locale.bind(TC_NS))
 					const views = createTaskCenterViews(ctx, store)
 					const dropGlyph = ctx.slots.inject('sidebar.panellist', () =>
 						ctx.slots.register(

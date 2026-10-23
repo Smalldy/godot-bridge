@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The task-center panel localizes Host failures instead of showing English sentences**: the panel routes (`unknown-project`, `content-type`, `origin`, `bad-request`, `no-action`) now answer with a stable `code` and optional `params` instead of a hardcoded English sentence, and the browser half renders that code from the bilingual `TC_DICT` (`err_*` keys), falling back to the Host's own `message` for an unknown code so older/newer Hosts still say something truthful. Tool-facing errors for agents stay English by design (they are a different audience; the 500 `failed` message carries diagnostic exception text, not UI copy).
+
 - The roles page could show a fake "saved ✓" banner after a refused save; the banner now reports the actual outcome.
 - The roles editor could render an empty left column for built-in profiles, duplicate anchors and double card borders; the empty state, section grouping and single card are corrected, and the injected preview no longer shows a different identity's text.
 - The task detail used to be a fixed 400 px drawer; it is now a wide overlay that adapts to the container width (full screen under 900 px).
