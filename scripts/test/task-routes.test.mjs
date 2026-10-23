@@ -4187,5 +4187,50 @@ rig.scheduler.dispose()
   rig.scheduler.dispose()
 }
 
+// ── parallel target merges share the worktree-create gate ──────────────────
+{
+  let active = 0
+  let overlapped = false
+  const addOrder = []
+  const updates = []
+  const git = {
+    async isClean() { return { ok: true, clean: true } },
+    async currentBranch() { return { ok: true, branch: 'feat/x' } },
+    async revParse(root, ref) { return { ok: true, hash: ref === 'main' ? 'main-head' : 'feat-head' } },
+    async worktreeList() { return { ok: true, worktrees: [] } },
+    async head() { return { ok: true, hash: 'merge-sha' } },
+    async worktreeAdd(root, input) {
+      active++
+      if (active > 1) overlapped = true
+      addOrder.push('start:' + input.branch)
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      addOrder.push('end:' + input.branch)
+      active--
+      return { ok: true, path: input.path, branch: input.branch, base: input.base }
+    },
+    async mergeNoFf() { return { ok: true } },
+    async conflictedFiles() { return { ok: true, files: [] } },
+    async worktreeRemove() { return { ok: true } },
+    async deleteBranch() { return { ok: true } },
+    async updateRef(root, ref, hash) { updates.push(ref + '=' + hash); return { ok: true, ref: ref, hash: hash } },
+  }
+  const merger = createMerger({ git: git })
+  const taskFor = (id, target, branch) => ({ id: id, title: 'merge ' + id, status: 'testing', branch: branch, target: target, merge: { status: 'open', base: target + '-head', head: 'h', target: target } })
+  const results = await Promise.all([
+    merger.mergeRequest(taskFor('T-1', 'main', 'task/T-1-1'), PROJECT, { worktreeRoot: '.worktrees' }),
+    merger.mergeRequest(taskFor('T-2', 'feat/x', 'task/T-2-1'), PROJECT, { worktreeRoot: '.worktrees' }),
+  ])
+  check(
+    'two target merges both complete while their worktree creations never overlap',
+    results[0].ok === true && results[0].status === 'merged' && results[1].ok === true && results[1].status === 'merged' && overlapped === false && addOrder.length === 4,
+    JSON.stringify({ results: results.map((entry) => entry.status), addOrder: addOrder, overlapped: overlapped }),
+  )
+  check(
+    'each merge advances only its own target',
+    updates.length === 2 && updates[0].indexOf('main=') === 0 && updates[1].indexOf('feat/x=') === 0,
+    JSON.stringify(updates),
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

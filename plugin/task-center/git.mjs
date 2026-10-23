@@ -135,6 +135,30 @@ function refName(value, label) {
 }
 
 /**
+ * One worktree creation per repository at a time. Dispatch and the merge pipeline
+ * both create checkouts; git contends for index.lock and a slow add can be killed
+ * half-way (T-41 left a registered, locked checkout exactly that way). A
+ * per-project promise chain keeps every add ordered without blocking unrelated
+ * repositories. Shared here so merge.mjs reuses the SAME gate dispatch uses.
+ */
+const worktreeGates = new Map()
+
+function noopGate() {
+  return undefined
+}
+
+/** Run `work` after every earlier worktree creation for the same project. The
+ * chain survives a rejection, so one failed add cannot poison the next. */
+export function serialiseWorktreeCreate(projectPath, work) {
+  const key = String(projectPath === undefined || projectPath === null ? '' : projectPath)
+  const previous = worktreeGates.get(key)
+  const start = previous === undefined ? Promise.resolve() : previous.then(noopGate, noopGate)
+  const run = start.then(() => work())
+  worktreeGates.set(key, run.then(noopGate, noopGate))
+  return run
+}
+
+/**
  * @param options.run - the injected runner (`args, cwd -> { code, stdout, stderr }`,
  *   sync or async). Omitted, a real `git` process is used.
  */

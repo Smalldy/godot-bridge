@@ -25,6 +25,7 @@
  */
 
 import { join } from 'node:path'
+import { serialiseWorktreeCreate } from './git.mjs'
 import { randomUUID } from 'node:crypto'
 import { boardPath, readRoleConfig } from './board.mjs'
 import { writePolicyFor } from './state.mjs'
@@ -703,22 +704,9 @@ async function withinWorktreeDeadline(work, timeoutMs) {
  * locked checkout exactly that way). A per-project promise chain keeps the adds
  * ordered without blocking unrelated repositories.
  */
-const worktreeGates = new Map()
-
-function noopGate() {
-  return undefined
-}
-
-/** Run `work` after every earlier worktree creation for the same project. The
- * chain survives a rejection, so one failed add cannot poison the next. */
-export function serialiseWorktreeCreate(projectPath, work) {
-  const key = String(projectPath === undefined || projectPath === null ? '' : projectPath)
-  const previous = worktreeGates.get(key)
-  const start = previous === undefined ? Promise.resolve() : previous.then(noopGate, noopGate)
-  const run = start.then(() => work())
-  worktreeGates.set(key, run.then(noopGate, noopGate))
-  return run
-}
+// The gate lives in git.mjs so the merge pipeline shares it; re-exported here for
+// the scheduler and the existing tests.
+export { serialiseWorktreeCreate }
 
 /**
  * Prepare this attempt's worktree. It is the only execution mode: no worktree
