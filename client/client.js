@@ -356,7 +356,6 @@ window.__ModuleLoader__.load({
 				statusCardActivity: '活动',
 				statusConcurrent: '并发',
 				statusReady: '就绪',
-				statusQueueLen: '队列',
 				statusWhyPaused: '派发已暂停。恢复后，就绪任务按优先级派发',
 				statusWhyNoReady: '没有就绪任务（全部完成或被依赖挡住）',
 				statusWhyFull: '并发已满',
@@ -364,7 +363,6 @@ window.__ModuleLoader__.load({
 				statusWhyRunning: '派发中，队列已清空',
 				statusLastScan: '上次扫描',
 				statusMergeQueue: '合并队列',
-				statusMergeQueueUnit: '条',
 				statusWtTotal: '个工作树',
 				statusWtActive: '活跃',
 				statusWtMain: '主',
@@ -809,7 +807,6 @@ window.__ModuleLoader__.load({
 				statusCardActivity: 'Activity',
 				statusConcurrent: 'concurrent',
 				statusReady: 'ready',
-				statusQueueLen: 'queued',
 				statusWhyPaused: 'Dispatch is paused. Once resumed, ready tasks are dispatched by priority',
 				statusWhyNoReady: 'no ready task (all done or blocked by dependencies)',
 				statusWhyFull: 'concurrency is full',
@@ -817,7 +814,6 @@ window.__ModuleLoader__.load({
 				statusWhyRunning: 'dispatching; queue is empty',
 				statusLastScan: 'last scan',
 				statusMergeQueue: 'merge queue',
-				statusMergeQueueUnit: '',
 				statusWtTotal: 'worktrees',
 				statusWtActive: 'active',
 				statusWtMain: 'main',
@@ -3197,9 +3193,9 @@ window.__ModuleLoader__.load({
 					h(
 						'div',
 						{ className: 'gbt-statuscardbody' },
-						h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), h('span', { className: 'gbt-statuskv' }, h('b', null, String(queue.length)), h('span', null, t('statusQueueLen')))),
+						h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv', 'data-kv': 'concurrent' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'merge-queue' }, h('b', null, String(queue.length)), h('span', null, t('statusMergeQueue')))),
 						h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
-						h('div', { className: 'gbt-statusscan' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—') + ' · ' + t('statusMergeQueue') + ' ' + String(queue.length) + ' ' + t('statusMergeQueueUnit')),
+						h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
 					),
 				)
 				const wtList = worktrees !== null && worktrees !== undefined && worktrees.available === true && Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
