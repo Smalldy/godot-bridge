@@ -18,6 +18,8 @@
 
 ### 变更
 
+- **任务中心技能正文补齐 Lead 角色与进入流程，并纠正四处误导**：正文开头新增「你是谁：Lead」（Lead 做什么、系统里的其它角色、明确不做什么），随后是进入流程（解析项目根、`openProject`、读 `board`、固定简报模板、无副作用）；把 `pause` 写清为派发器开关、`tick` 为立即 settle 的排查手段，「一次性小改动直接改」改为「任何改动都不要直接提交 target」（应急走独立 hotfix 分支并在守卫里登记例外），`unknown-project` 补充「尚未绑定或路径不对，先 `openProject`」；另补角色槽位串行（`queuePosition`、排队不计沉默）、`merged` 语义（ref 真的前进了，否则 `target-not-advanced`）、每卡可带 `target`，以及禁止给自己开守卫豁免。合并了面板/角色两节重复的 provision 描述，收紧只读 `skillsCatalog` 措辞；动作清单仍由注册表生成。
+
 - **侧边栏入口点名插件**：任务中心的侧边栏文案由 `任务` / `Tasks` 改为 `GodotBridge 任务中心` / `GodotBridge Task Center`，让用户能看出该 UI 入口来自哪个插件；面板内标题仍为 `任务中心` / `Task Center`。
 
 - **看门狗按沉默时间而非墙上时间**：reviewer/tester 每一次可识别的 `task_center` 调用都会续上该阶段的活动时钟（只存内存，宿主重启可能让已经沉默的轮次直接阻塞）。评审沉默 10 分钟提醒、20 分钟警告、再过 2 分钟宽限才阻塞；测试轮 10 分钟提醒、20 分钟 + 同样宽限阻塞，正好踩线的结论不会被丢掉。`passTest` 触发的合并会等足声明的 `verify` 预算，因为 target 移动会重建候选并重跑该检查。
