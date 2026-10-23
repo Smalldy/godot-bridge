@@ -83,6 +83,11 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
 {
   const res = await call(surface, STATE_PATH, {})
   check('state without a project says so', res.status === 200 && res.json().ok === false && res.json().code === 'unknown-project', res.text)
+  check(
+    'the UI-facing unknown-project answer is a code plus params, not an English sentence',
+    res.json().message === undefined && res.json().params !== null && typeof res.json().params === 'object',
+    res.text,
+  )
 }
 
 // a project in the query is adopted
@@ -153,6 +158,7 @@ check('registers state, action and diagnostics', surface.specs.length === 3, Str
   check('a same-origin action is allowed', same.status === 200 && same.json().ok === true)
   const bad = await call(surface, ACTION_PATH, { method: 'POST', headers: { 'content-type': 'application/json' } })
   check('an empty action is refused', bad.status === 400 && bad.json().code === 'no-action', bad.text)
+  check('the empty-action answer carries no English UI sentence', bad.json().message === undefined, bad.text)
   const unknown = await post({ action: 'launchRockets' })
   check('an unknown action is a refusal, not a crash', unknown.status === 200 && unknown.json().ok === false && unknown.json().code === 'unknown-action', unknown.text)
 }
