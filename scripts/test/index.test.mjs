@@ -175,17 +175,24 @@ check(
   )
   {
     const userLine = generated.split('\n').filter((line) => line.indexOf('仅用户') >= 0)[0] || ''
-    const tokens = (userLine.match(/`([^`]+)`/g) || []).map((token) => token.slice(1, -1))
+    const tokens = (userLine.match(/`([^`]+)`/g) || []).map((token) => token.slice(1, -1)).filter((token) => token !== 'user-only')
     check('the user-only section lists every user action', USER_ONLY_ACTIONS.every((action) => tokens.indexOf(action) >= 0), tokens.join(','))
     check('the user-only section lists nothing but user actions', tokens.length > 0 && tokens.every((token) => USER_ONLY_ACTIONS.indexOf(token) >= 0), tokens.join(','))
   }
   check(
-    'the body carries the workflow the tool description no longer repeats',
-    ['worker / reviewer / tester', 'implement / review / test', '.agents/roles.json', 'provision', '候选 worktree', 'godot_run_headless', '立即合并'].every(
+    'the body defines the Lead role and the entry flow',
+    ['你是谁：Lead', '进入流程', 'openProject', '拆卡', '不替 reviewer', '不要**自动', '停下来问'].every((needle) => generated.indexOf(needle) >= 0),
+    ['你是谁：Lead', '进入流程', 'openProject', '拆卡', '不替 reviewer', '不要**自动', '停下来问'].filter((needle) => generated.indexOf(needle) < 0).join(','),
+  )
+  check(
+    'the body carries the workflow, the slot/merge/target rules and the corrections',
+    ['worker', 'reviewer', 'provision', '候选', 'godot_run_headless', '自动合并', 'queuePosition', 'target-not-advanced', 'ref 真的前进了', '一个 reviewer / tester 槽位'].every(
       (needle) => generated.indexOf(needle) >= 0,
     ),
-    ['worker / reviewer / tester', 'implement / review / test', '.agents/roles.json', 'provision', '候选 worktree', 'godot_run_headless', '立即合并'].filter((needle) => generated.indexOf(needle) < 0).join(','),
+    ['worker', 'reviewer', 'provision', '候选', 'godot_run_headless', '自动合并', 'queuePosition', 'target-not-advanced', 'ref 真的前进了', '一个 reviewer / tester 槽位'].filter((needle) => generated.indexOf(needle) < 0).join(','),
   )
+  check('the outdated "small changes can be committed directly" advice is gone', generated.indexOf('一次性小改动直接改') < 0)
+  check('pause is documented as the dispatcher switch, not a single card', generated.indexOf('暂停/恢复**派发器**') >= 0 && generated.indexOf('tick') >= 0 && generated.indexOf('立即跑一轮 settle') >= 0)
   check(
     'the body carries the verdict gates and the refusal codes',
     ['worker-cannot-self-review', 'worker-cannot-self-test', 'merger-only', 'user-only', 'head-drift', 'needs-consent', 'worktree-*', 'test-required'].every(
@@ -193,7 +200,7 @@ check(
     ),
     ['worker-cannot-self-review', 'worker-cannot-self-test', 'merger-only', 'user-only', 'head-drift', 'needs-consent', 'worktree-*', 'test-required'].filter((needle) => generated.indexOf(needle) < 0).join(','),
   )
-  check('the body keeps the prompt-template contract', generated.indexOf('{{TASK_ID}}') >= 0 && generated.indexOf('invalid-role-variable') >= 0)
+  check('the body keeps the guard-exemption prohibition', generated.indexOf('不给自己的提交开守卫豁免') >= 0)
   check('the body keeps the Godot launch rule', generated.indexOf('pwsh') >= 0 && generated.indexOf('sandbox-crash') >= 0)
 }
 

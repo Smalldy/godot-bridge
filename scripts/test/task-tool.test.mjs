@@ -80,14 +80,14 @@ check(
   )
   {
     const userLine = content.split('\n').filter((line) => line.indexOf('仅用户') >= 0)[0] || ''
-    const tokens = (userLine.match(/`([^`]+)`/g) || []).map((token) => token.slice(1, -1))
+    const tokens = (userLine.match(/`([^`]+)`/g) || []).map((token) => token.slice(1, -1)).filter((token) => token !== 'user-only')
     check('the skill user-only section lists every user action', USER_ONLY_ACTIONS.every((action) => tokens.indexOf(action) >= 0), tokens.join(','))
     check('the skill user-only section lists nothing but user actions', tokens.length > 0 && tokens.every((token) => USER_ONLY_ACTIONS.indexOf(token) >= 0), tokens.join(','))
   }
   check(
     'the skill body carries the narrative the description gave up',
-    ['候选 worktree', 'godot_run_headless', '{{TASK_ID}}', 'invalid-role-variable', 'merger-only', 'head-drift'].every((needle) => content.indexOf(needle) >= 0),
-    ['候选 worktree', 'godot_run_headless', '{{TASK_ID}}', 'invalid-role-variable', 'merger-only', 'head-drift'].filter((needle) => content.indexOf(needle) < 0).join(','),
+    ['候选', 'godot_run_headless', 'merger-only', 'head-drift', 'queuePosition', 'target-not-advanced', 'ref 真的前进了'].every((needle) => content.indexOf(needle) >= 0),
+    ['候选', 'godot_run_headless', 'merger-only', 'head-drift', 'queuePosition', 'target-not-advanced', 'ref 真的前进了'].filter((needle) => content.indexOf(needle) < 0).join(','),
   )
   check('the description no longer duplicates the manual', String(rig.tool.description).indexOf('候选 worktree') < 0)
 }
@@ -105,12 +105,12 @@ check(
 {
   const content = buildSkillContent({ actions: ACTIONS, agentActions: AGENT_ACTIONS, readActions: READ_ACTIONS, userOnlyActions: USER_ONLY_ACTIONS })
   check(
-    'the skill documents the prompt template variables and the refusal code',
-    content.indexOf('{{TASK_ID}}') >= 0 && content.indexOf('{{SPEC}}') >= 0 && content.indexOf('invalid-role-variable') >= 0,
-    content.slice(-600),
+    'the skill defines the Lead role and the entry flow',
+    content.indexOf('你是谁：Lead') >= 0 && content.indexOf('进入流程') >= 0 && content.indexOf('停下来问') >= 0,
+    content.slice(0, 400),
   )
-  check('the skill says the fixed brief sections are host-generated', content.indexOf('固定头部') >= 0, content.slice(-400))
-  check('the skill names the read-only skills catalog for the panel', content.indexOf('skillsCatalog') >= 0 && content.indexOf('skills-unavailable') >= 0, content.slice(-400))
+  check('the skill forbids guard exemptions', content.indexOf('不给自己的提交开守卫豁免') >= 0, content.slice(-600))
+  check('the skill keeps user-only panel actions hidden from the tool', content.indexOf('工具不暴露') >= 0, content.slice(-600))
 }
 check(
   'the tool exposes the isolated DSH harness',
