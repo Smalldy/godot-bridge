@@ -1581,10 +1581,23 @@ export function createApi(ctx, options) {
     if (task === undefined || task === null) return null
     if (task.status !== 'cancelled' && task.status !== 'blocked') return null
     const member = callerMemberOf(context)
+    // cancel/block clear the live assignee, so the worker that held the task is
+    // recognised through `lastAssignee` as well: without it the soft refusal
+    // would never fire for the transitions that actually produce these statuses.
+    const previous = task.lastAssignee === null || task.lastAssignee === undefined ? null : task.lastAssignee
+    function matchesMember(candidate, who) {
+      if (candidate === null || candidate === undefined) return false
+      const sessionMatch =
+        typeof candidate.session === 'string' && candidate.session !== '' && who.id !== undefined && candidate.session === who.id
+      const nameMatch = typeof candidate.name === 'string' && candidate.name !== '' && who.name !== undefined && candidate.name === who.name
+      return sessionMatch || nameMatch
+    }
     const mine =
-      member !== null
-        ? isAssignee(task, member)
-        : owner !== null && owner !== undefined && task.assignee !== null && task.assignee !== undefined && owner.name === task.assignee.name
+      (member !== null && isAssignee(task, member)) ||
+      (previous !== null &&
+        (member !== null
+          ? matchesMember(previous, member)
+          : owner !== null && owner !== undefined && typeof previous.name === 'string' && previous.name === owner.name))
     if (mine !== true) return null
     const code = task.status === 'cancelled' ? 'task-cancelled' : 'task-blocked'
     return failure(

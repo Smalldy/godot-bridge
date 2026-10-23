@@ -2032,12 +2032,22 @@ function testStageTask(overrides) {
 }
 
 {
-  // The soft half: the assignee's own later calls are refused with a code that
-  // tells its model to stop. Another agent and the user are unaffected.
+  // The soft half, through the REAL transition: cancel clears the live assignee,
+  // so the refusal must recognise the worker through the retained last owner.
   const rig = createSubmitRig({ team: interruptTeam(interruptRoster()) })
-  seedRunningTask(rig, runningWorktreeTask({ status: 'cancelled', assignee: { name: 'fixer', session: 'session-fixer' } }))
+  seedRunningTask(rig, runningWorktreeTask())
+  const cancelled = await rig.api.perform('cancel', { id: 'T-1', note: 'not needed' }, rig.user)
+  check(
+    'cancel keeps the last owner after clearing the assignee',
+    cancelled.ok === true &&
+      cancelled.task.assignee === null &&
+      cancelled.task.lastAssignee !== null &&
+      cancelled.task.lastAssignee.name === 'fixer' &&
+      cancelled.task.lastAssignee.session === 'session-fixer',
+    JSON.stringify({ assignee: cancelled.task.assignee, lastAssignee: cancelled.task.lastAssignee }),
+  )
   const got = await rig.api.perform('get', { id: 'T-1' }, agentCaller('session-fixer'))
-  check('a worker is refused on its cancelled task', got.ok === false && got.code === 'task-cancelled', JSON.stringify(got))
+  check('a worker is refused on the task it just saw cancelled', got.ok === false && got.code === 'task-cancelled', JSON.stringify(got))
   const submitted = await rig.api.perform('submit', { id: 'T-1', evidence: 'x' }, agentCaller('session-fixer'))
   check('submit on a cancelled task is refused with the same code', submitted.ok === false && submitted.code === 'task-cancelled', JSON.stringify(submitted))
   check(
@@ -2045,6 +2055,14 @@ function testStageTask(overrides) {
     String(got.message).indexOf('stop working') >= 0 && String(got.message).indexOf('discard') >= 0,
     String(got.message),
   )
+  const memberShape = {
+    projectPath: PROJECT,
+    by: 'fixer',
+    role: 'agent',
+    agent: { id: 'session-fixer', name: 'fixer', session: 'session-fixer' },
+  }
+  const gotShaped = await rig.api.perform('get', { id: 'T-1' }, memberShape)
+  check('the member-shaped identity is refused too', gotShaped.ok === false && gotShaped.code === 'task-cancelled', JSON.stringify(gotShaped))
   const other = await rig.api.perform('get', { id: 'T-1' }, agentCaller('session-reviewer-1'))
   check('another agent can still read the cancelled task', other.ok === true && other.task !== undefined, JSON.stringify(other))
   const user = await rig.api.perform('get', { id: 'T-1' }, rig.user)
@@ -2054,9 +2072,15 @@ function testStageTask(overrides) {
 
 {
   const rig = createSubmitRig({ team: interruptTeam(interruptRoster()) })
-  seedRunningTask(rig, runningWorktreeTask({ status: 'blocked', assignee: { name: 'fixer', session: 'session-fixer' } }))
+  seedRunningTask(rig, runningWorktreeTask())
+  const blocked = await rig.api.perform('block', { id: 'T-1', note: 'triage' }, rig.user)
+  check(
+    'block keeps the last owner after clearing the assignee',
+    blocked.ok === true && blocked.task.assignee === null && blocked.task.lastAssignee !== null && blocked.task.lastAssignee.name === 'fixer',
+    JSON.stringify({ assignee: blocked.task.assignee, lastAssignee: blocked.task.lastAssignee }),
+  )
   const got = await rig.api.perform('get', { id: 'T-1' }, agentCaller('session-fixer'))
-  check('a worker is refused on its blocked task', got.ok === false && got.code === 'task-blocked', JSON.stringify(got))
+  check('a worker is refused on the task it just saw blocked', got.ok === false && got.code === 'task-blocked', JSON.stringify(got))
   rig.scheduler.dispose()
 }
 

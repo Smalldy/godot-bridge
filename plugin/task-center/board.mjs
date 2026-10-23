@@ -181,6 +181,16 @@ function normaliseTask(raw, index, now) {
           session: typeof raw.assignee.session === 'string' ? raw.assignee.session : null,
         }
       : null
+  // The worker that held the task before it left 'running'. cancel/block clear
+  // `assignee`, but the soft refusal still has to recognise that worker, so the
+  // last owner is kept as history (typed like the assignee).
+  const lastAssignee =
+    raw.lastAssignee !== null && typeof raw.lastAssignee === 'object' && !Array.isArray(raw.lastAssignee)
+      ? {
+          name: stringOf(raw.lastAssignee.name, ''),
+          session: typeof raw.lastAssignee.session === 'string' ? raw.lastAssignee.session : null,
+        }
+      : null
   const history = []
   if (Array.isArray(raw.history)) {
     for (const entry of raw.history) {
@@ -235,6 +245,7 @@ function normaliseTask(raw, index, now) {
       review: review,
       test: test,
       assignee: assignee,
+      lastAssignee: lastAssignee,
       attempts: attempts,
       maxAttempts: maxAttempts,
       evidence: stringOf(raw.evidence, ''),
