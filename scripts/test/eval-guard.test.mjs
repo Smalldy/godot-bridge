@@ -14,6 +14,7 @@ import {
   debuggerRecoveryPlan,
   detectDebuggerTrap,
   evalTimeoutResult,
+  launchEnv,
   logSizeWarning,
   parseDebuggerTrace,
 } from '../../plugin/debug-guard.mjs'
@@ -31,6 +32,15 @@ test('the default launch has no local debugger; diagnostic mode adds -d', () => 
   const scene = buildLaunchArgv('C:/godot/godot.exe', 'C:/proj', { debug: false, scene: 'main.tscn' })
   assert.equal(scene.includes('-d'), false)
   assert.equal(scene.includes('main.tscn'), true)
+})
+
+test('the spawn environment carries the debugger flag (argv cannot carry -d)', () => {
+  assert.deepEqual(launchEnv(true), { GODOT_BRIDGE_DEBUGGER: '1' })
+  assert.deepEqual(launchEnv(false), { GODOT_BRIDGE_DEBUGGER: '0' })
+  assert.deepEqual(launchEnv(undefined), { GODOT_BRIDGE_DEBUGGER: '0' })
+  assert.match(BRIDGE, /launchEnv\(opts\.debug === true\)/)
+  assert.match(SERVER, /GODOT_BRIDGE_DEBUGGER/)
+  assert.match(BRIDGE, /debuggerTrapResult/)
 })
 
 test('diagnostic mode returns the eval-disabled warning and a next step', () => {
@@ -143,7 +153,7 @@ test('the log-size warning never deletes user files', () => {
 })
 
 test('the server exposes a pure debugger predicate and guards every reload()', () => {
-  assert.match(SERVER, /static func is_local_debugger\(args\) -> bool:/)
+  assert.match(SERVER, /static func is_local_debugger\(args, debugger_flag: String = ""\) -> bool:/)
   assert.match(SERVER, /String\(arg\) == "-d" or String\(arg\) == "--debug"/)
   assert.match(SERVER, /_local_debugger = is_local_debugger\(OS\.get_cmdline_args\(\)\)/)
   assert.match(SERVER, /EVAL_DEBUGGER_REFUSAL/)

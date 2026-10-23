@@ -37,6 +37,7 @@ import {
   debuggerRecoveryPlan,
   detectDebuggerTrap,
   evalTimeoutResult,
+  launchEnv,
   logSizeWarning,
   parseDebuggerTrace,
 } from './debug-guard.mjs'
@@ -975,6 +976,34 @@ export function apply(ctx, config) {
     }
   }
 
+  /**
+   * Describe a managed instance that is sitting in the local debugger. Called
+   * when a command times out, so a debugger trap reads as one instead of a bare
+   * "bridge timeout". Best effort: writes quit and stops our own instance, keeps
+   * the parsed trace.
+   */
+  function debuggerTrapResult(command) {
+    if (!godot || godot.external || !godot.handle) return null
+    let text = ''
+    try {
+      if (godot.handle.collected && godot.handle.collected.stdout) text = godot.handle.collected.stdout.readFrom(0).text || ''
+    } catch (e) {
+      return null
+    }
+    if (text === '' || !detectDebuggerTrap(text)) return null
+    const plan = debuggerRecoveryPlan()
+    const wroteQuit = writeStdinTo(godot.handle, plan.input)
+    try { godot.handle.terminate() } catch (e) {}
+    return {
+      error: 'bridge timeout',
+      diagnosis: 'debugger-trap',
+      command: String(command),
+      debuggerTrace: parseDebuggerTrace(text),
+      quit_written: wroteQuit,
+      next: 'The instance entered the local debugger (a script error) and was stopped; the stack is in debuggerTrace. Restart without debug:true, or run code with godot_run_headless --script.',
+    }
+  }
+
   /** Best-effort user:// log size warning; never deletes anything. */
   async function userLogWarning(projectPath) {
     try {
@@ -1004,6 +1033,7 @@ export function apply(ctx, config) {
         env: {
           GODOT_BRIDGE_PORT: String(port),
           GODOT_BRIDGE_TOKEN: token,
+          ...launchEnv(opts.debug === true),
         },
         stdio: {
           // Diagnostic mode keeps a stdin pipe so the watchdog can write "quit";
@@ -1510,7 +1540,11 @@ export function apply(ctx, config) {
         const command = String(args.command)
         const timeoutMs = args.timeout_ms || 15000
         const resp = await runGameCommand(command, args.params || {}, timeoutMs, exec.signal)
-        if (resp && typeof resp.error === 'string' && /timeout|timed out/i.test(resp.error)) return evalTimeoutResult(command, timeoutMs)
+        if (resp && typeof resp.error === 'string' && /timeout|timed out/i.test(resp.error)) {
+          const trapped = debuggerTrapResult(command)
+          if (trapped !== null) return trapped
+          return evalTimeoutResult(command, timeoutMs)
+        }
         if (command === 'eval' && resp && resp.diagnosis === 'debugger-trap') {
           resp.next = 'eval is disabled on an instance started with debug:true; use godot_run_headless --script, or restart without debug:true.'
         }

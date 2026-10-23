@@ -24,6 +24,14 @@ func _init() -> void:
 	if server.is_local_debugger(["--path", "x"]):
 		failures += 1
 		push_error("eval_guard: --path alone must not enable the guard")
+	# Godot consumes -d before the script sees the command line, so the bridge
+	# passes GODOT_BRIDGE_DEBUGGER=1 in the spawn environment instead.
+	if not server.is_local_debugger([], "1"):
+		failures += 1
+		push_error("eval_guard: GODOT_BRIDGE_DEBUGGER=1 must enable the guard")
+	if server.is_local_debugger([], "0"):
+		failures += 1
+		push_error("eval_guard: GODOT_BRIDGE_DEBUGGER=0 must not enable the guard")
 	var constants: Dictionary = server.get_script_constant_map()
 	if not constants.has("EVAL_DEBUGGER_REFUSAL"):
 		failures += 1

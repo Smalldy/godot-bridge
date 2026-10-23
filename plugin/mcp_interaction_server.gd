@@ -26,7 +26,15 @@ const EVAL_DEBUGGER_REFUSAL: String = "eval is disabled because this instance ru
 
 # Pure predicate so the guard is testable without launching a game. Accepts the
 # process command line (Array or PackedStringArray).
-static func is_local_debugger(args) -> bool:
+static func is_local_debugger(args, debugger_flag: String = "") -> bool:
+	# The bridge sets GODOT_BRIDGE_DEBUGGER=1 because Godot consumes -d/--debug
+	# itself: on a real spawn OS.get_cmdline_args() never contains them (measured
+	# on 4.7.2 - both launches report ["--script","args.gd"]). The argv loop is
+	# kept only for callers that pass a synthetic command line.
+	if debugger_flag == "":
+		debugger_flag = OS.get_environment("GODOT_BRIDGE_DEBUGGER")
+	if debugger_flag == "1" or debugger_flag == "true":
+		return true
 	for arg in args:
 		if String(arg) == "-d" or String(arg) == "--debug":
 			return true

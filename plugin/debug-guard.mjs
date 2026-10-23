@@ -17,6 +17,19 @@ export function buildLaunchArgv(godotPath, projectPath, opts) {
   return argv
 }
 
+/**
+ * Environment the bridge must pass to a spawned Godot so the in-game server can
+ * tell it runs under the local debugger.
+ *
+ * The argv heuristic inside the server cannot work on a real spawn: Godot
+ * consumes -d/--debug itself, so OS.get_cmdline_args() never contains them
+ * (measured on 4.7.2: both launches report ["--script","args.gd"]). The
+ * environment variable is the reliable channel.
+ */
+export function launchEnv(debug) {
+  return { GODOT_BRIDGE_DEBUGGER: debug === true ? '1' : '0' }
+}
+
 /** True when captured stdout shows the interactive local debugger. */
 export function detectDebuggerTrap(text) {
   const value = typeof text === 'string' ? text : ''
