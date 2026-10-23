@@ -2294,22 +2294,16 @@ export function createDispatcher(ctx, options) {
    * the handover itself must not depend on it (the dispatcher liveness guard is
    * the safety net).
    */
-  async function interruptMember(identity) {
+  async function interruptMember(task, identity) {
     const who = identity === null || identity === undefined ? {} : identity
-    const target = typeof who.session === 'string' && who.session !== '' ? who.session : typeof who.name === 'string' && who.name !== '' ? who.name : null
-    if (target === null) return { ok: false, code: 'no-identity' }
-    const team = ctx.get('agentTeams')
-    if (team === null || team === undefined) return { ok: false, code: 'no-team-service' }
-    for (const method of ['interrupt', 'interruptMember', 'stopMember', 'stop']) {
-      if (typeof team[method] !== 'function') continue
-      try {
-        await team[method](target)
-        return { ok: true, via: method }
-      } catch (error) {
-        return { ok: false, code: 'interrupt-failed', message: String((error && error.message) || error) }
-      }
-    }
-    return { ok: false, code: 'no-interrupt-api' }
+    const name = typeof who.name === 'string' && who.name !== '' ? who.name : null
+    if (name === null) return { ok: false, code: 'no-identity' }
+    return interruptMemberNamed(ctx, {
+      name: name,
+      key: String(task === null || task === undefined ? '' : task.id) + '@lease-handover@' + name,
+      message:
+        'Task ' + String(task === null || task === undefined ? '' : task.id) + ' left your attempt (lease handover); stop working on it now and discard uncommitted changes.',
+    })
   }
 
   async function reap(projectPath, board, now) {
@@ -2390,7 +2384,7 @@ export function createDispatcher(ctx, options) {
         current = next
         for (const entry of handover) {
           releaseTaskLocks(entry.id)
-          const interrupted = await interruptMember(entry.holder)
+          const interrupted = await interruptMember(entry, entry.holder)
           emit('lease-handover', 'host', {
             taskId: entry.id,
             detail:
@@ -2606,6 +2600,16 @@ export function createDispatcher(ctx, options) {
         memory.reviewGrace.delete(key)
         blocked.push(task.id)
         emit('error', 'system', { taskId: task.id, detail: 'review timed out; task blocked for triage' })
+        // The stalled reviewer is interrupted too: the task left reviewing, so
+        // its turn must not keep running (interrupt lands at the next boundary).
+        if (names.length > 0) {
+          await interruptMemberNamed(ctx, {
+            name: names[0],
+            key: String(task.id) + '@blocked@' + names[0],
+            message:
+              'Task ' + String(task.id) + ' is blocked (review timed out with no verdict). Stop working on it now and discard uncommitted changes.',
+          })
+        }
         const owner = task.assignee === null || task.assignee === undefined ? null : task.assignee.name
         const notice =
           'Review for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
@@ -2715,6 +2719,16 @@ export function createDispatcher(ctx, options) {
         memory.testGrace.delete(key)
         blocked.push(task.id)
         emit('error', 'system', { taskId: task.id, detail: (blockNote === null ? 'test timeout' : blockNote) + '; task blocked for triage' })
+        // The stalled tester is interrupted for the same reason as the reviewer.
+        const stalledTester = typeof tester === 'string' && tester !== '' ? tester : null
+        if (stalledTester !== null) {
+          await interruptMemberNamed(ctx, {
+            name: stalledTester,
+            key: String(task.id) + '@blocked@' + stalledTester,
+            message:
+              'Task ' + String(task.id) + ' is blocked (test timed out with no verdict). Stop working on it now and discard uncommitted changes.',
+          })
+        }
         const owner = task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' ? null : task.assignee.name
         const notice =
           'Test for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
@@ -3083,4 +3097,104 @@ export function createDispatcher(ctx, options) {
   }
 
   return { kick: kick, tick: tick, settle: settle, status: status, dispose: dispose, memory: memory, boot: boot }
+}
+
+// ── host-side interruption of a worker that no longer owns the task ─────────
+
+// One WeakMap per row: the memory dies with the row, so a reload starts clean.
+const interruptMemory = new WeakMap()
+
+/**
+ * Interrupt one teammate turn because the task it served is no longer running.
+ *
+ * DSH's interrupt takes effect at the NEXT step boundary: it stops the teammate
+ * before it starts another step, so it is "stop as soon as possible", never
+ * "stop the current tool call". The call goes through the Team Lead (the Team
+ * edge's caller) and one (task, status, member) triple is interrupted at most
+ * once per row, so a repeated cancel cannot spam the worker. After the hard
+ * interrupt a best-effort inbox note tells the worker why it must stop.
+ *
+ * @param ctx - the row context (needs the optional agentTeams service).
+ * @param options.name - the durable teammate name.
+ * @param options.key - idempotency key; defaults to the name.
+ * @param options.message - the inbox note; a default is used when absent.
+ * @returns { ok: true, previousStatus } or a readable refusal (never throws).
+ */
+export async function interruptMemberNamed(ctx, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const name = typeof opts.name === 'string' && opts.name !== '' ? opts.name : null
+  if (name === null) return { ok: false, code: 'no-name' }
+  const { agentTeams } = servicesFor(ctx)
+  if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service' }
+  const lead = resolveLead(ctx)
+  if (lead === null) return { ok: false, code: 'no-lead' }
+  let members = []
+  try {
+    members = agentTeams.listMembers(lead)
+  } catch (error) {
+    return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
+  }
+  const member = (Array.isArray(members) ? members : []).filter(
+    (entry) => entry !== null && typeof entry === 'object' && entry.name === name,
+  )[0]
+  if (member === undefined) return { ok: false, code: 'unknown-member' }
+  // Only a member that is actually running is interrupted: an idle member has
+  // no turn to stop, and a fresh inbox entry would become the NEXT step's work.
+  if (member.status !== 'running') return { ok: false, code: 'not-running' }
+  const key = typeof opts.key === 'string' && opts.key !== '' ? opts.key : name
+  let memo = interruptMemory.get(ctx)
+  if (memo === undefined) {
+    memo = new Set()
+    interruptMemory.set(ctx, memo)
+  }
+  if (memo.has(key)) return { ok: false, code: 'already-interrupted' }
+  if (memo.size > 500) memo.clear()
+  if (typeof agentTeams.interrupt !== 'function') return { ok: false, code: 'no-interrupt-api' }
+  memo.add(key)
+  let previousStatus = null
+  try {
+    const outcome = await agentTeams.interrupt(lead, name)
+    if (outcome !== null && outcome !== undefined && typeof outcome === 'object' && typeof outcome.previousStatus === 'string') {
+      previousStatus = outcome.previousStatus
+    }
+  } catch (error) {
+    memo.delete(key)
+    return { ok: false, code: 'interrupt-failed', message: String((error && error.message) || error) }
+  }
+  // The inbox note is the soft half: the interrupt lands at a step boundary, so
+  // the worker is told why to stop. A refused mailbox never fails the caller.
+  const text =
+    typeof opts.message === 'string' && opts.message !== ''
+      ? opts.message
+      : 'Your task is no longer running; stop working on it now and discard uncommitted changes.'
+  try {
+    const request = { target: name, content: [{ type: 'text', text: text }] }
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      request.signal = AbortSignal.timeout(SEND_TIMEOUT_MS)
+    }
+    await agentTeams.sendMessage(lead, request)
+  } catch (error) {}
+  return { ok: true, previousStatus: previousStatus }
+}
+
+/**
+ * Interrupt the assignee of a task that just left `running` (cancelled, blocked,
+ * or a withdrawn start request). The caller passes the task as it was BEFORE the
+ * transition: that record still names the worker, and its status is the reason
+ * baked into the idempotency key.
+ */
+export async function interruptAssignee(ctx, task, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const assignee = task === null || task === undefined ? null : task.assignee
+  const name = assignee !== null && assignee !== undefined && typeof assignee.name === 'string' ? assignee.name : null
+  if (name === null || name === '') return { ok: false, code: 'no-assignee' }
+  const reason = typeof opts.reason === 'string' && opts.reason !== '' ? opts.reason : 'no longer running'
+  const state = typeof opts.state === 'string' && opts.state !== '' ? opts.state : String(task.status)
+  return interruptMemberNamed(ctx, {
+    name: name,
+    key: String(task.id) + '@' + state + '@' + name,
+    message:
+      'Task ' + String(task.id) + ' (' + String(task.title) + ') is ' + reason +
+      '. Stop working on it now and discard uncommitted changes; do not submit.',
+  })
 }

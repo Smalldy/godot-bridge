@@ -424,6 +424,7 @@ export function claimTask(board, id, worker, now) {
   const worktree = worker.worktree === undefined || worker.worktree === null ? {} : worker.worktree
   const adopted = worker.adopt === undefined || worker.adopt === null ? null : worker.adopt
   target.status = 'running'
+  target.lastAssignee = null
   target.assignee = {
     name: worker.name === undefined ? '@worker' : String(worker.name),
     session: worker.session === undefined || worker.session === null ? null : String(worker.session),
@@ -503,6 +504,7 @@ export function failDispatch(board, id, error, now, maxAttempts) {
   const limit = Number.isFinite(maxAttempts) ? maxAttempts : target.maxAttempts
   const exhausted = target.attempts >= limit
   target.status = exhausted ? 'blocked' : 'pending'
+  target.lastAssignee = target.assignee === null || target.assignee === undefined ? target.lastAssignee : Object.assign({}, target.assignee)
   target.assignee = null
   target.leaseUntil = null
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
@@ -546,6 +548,7 @@ export function expireLeases(board, now, maxAttempts, options) {
     const exhausted = target.attempts >= limit
     const who = target.assignee === null ? 'unknown' : target.assignee.name
     target.status = exhausted ? 'blocked' : 'pending'
+    target.lastAssignee = target.assignee === null || target.assignee === undefined ? target.lastAssignee : Object.assign({}, target.assignee)
     target.assignee = null
     target.leaseUntil = null
     target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
@@ -731,6 +734,9 @@ export function cancelTask(board, id, now, by, note, byName) {
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   target.status = 'cancelled'
+  // Keep the last owner: the assignee is cleared here, but the soft refusal has
+  // to recognise this worker if it calls again on the cancelled task.
+  target.lastAssignee = target.assignee === null || target.assignee === undefined ? null : Object.assign({}, target.assignee)
   target.assignee = null
   target.leaseUntil = null
   touch(target, now)
@@ -767,6 +773,7 @@ export function blockTask(board, id, now, by, note, byName) {
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   target.status = 'blocked'
+  target.lastAssignee = target.assignee === null || target.assignee === undefined ? null : Object.assign({}, target.assignee)
   target.assignee = null
   target.leaseUntil = null
   touch(target, now)
@@ -935,6 +942,7 @@ export function summary(board, task, now) {
     review: task.review,
     test: task.test,
     assignee: task.assignee,
+    lastAssignee: task.lastAssignee,
     attempts: task.attempts,
     maxAttempts: task.maxAttempts,
     leaseUntil: task.leaseUntil,
