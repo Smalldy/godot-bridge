@@ -48,6 +48,13 @@ const TRACED_BRANCH = /^(task|test|merge)\//
  * task/test merge. Each entry names WHY it was allowed and which task cards cover
  * it; CHANGELOG.md records the same hashes. Adding an entry without a retro task
  * card is exactly what this guard exists to prevent.
+ *
+ * Rule boundary: a hotfix branch merged in from `main` does NOT become traceable
+ * by itself. TRACED_BRANCH only accepts task/test/merge merges, and the merge into
+ * the target reads "Merge origin/main …", which names no traced branch — so its
+ * side commits are untraceable and must be listed here explicitly. This is the
+ * intended behaviour, not a blind spot in the guard: the registration is what
+ * forces the retro card and the CHANGELOG note.
  */
 export const EMERGENCY_EXCEPTIONS = [
   {
@@ -56,6 +63,22 @@ export const EMERGENCY_EXCEPTIONS = [
     branch: 'hotfix/merge-queue',
     reason: 'idempotent candidate merge + bounded git subprocesses (stuck merge queue, unbounded waits)',
     tasks: ['T-30', 'T-38'],
+  },
+  {
+    commit: '745c7b0a35c7c2ee3e5d8d4a02fd530f5598c3f9',
+    merge: '90a5427d86d65ad719e12150de276e60c0385aa6',
+    branch: 'fix/eval-debugger-trap (via main)',
+    reason:
+      'diagnostic-mode guard correction (issue #13): the first cut looked for -d in OS.get_cmdline_args(), but Godot consumes engine flags before that API sees them, so the check was dead code on a real spawn; the bridge now sets GODOT_BRIDGE_DEBUGGER=1 and the server reads it (argv stays a fallback). Shipped out of band in v0.2.1 (fix/eval-debugger-trap -> main -> feat/task-center-v2).',
+    tasks: ['T-74', 'T-76'],
+  },
+  {
+    commit: '21459a55043d87ad79045f2e02031b5a6b0976be',
+    merge: '90a5427d86d65ad719e12150de276e60c0385aa6',
+    branch: 'main',
+    reason:
+      'release commit for the v0.2.1 out-of-band hotfix (version bump + bilingual CHANGELOG; no runtime change of its own) that carries the diagnostic-guard correction and the by-exit-code outcome classification documented in 0.2.1.',
+    tasks: ['T-74', 'T-76'],
   },
 ]
 

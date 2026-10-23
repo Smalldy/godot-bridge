@@ -271,10 +271,34 @@ function captureConsole(run) {
   )
   if (result.skipped !== 'unknown-target') {
     check(
-      'the merge-queue hotfix is honored as a declared emergency exception',
-      result.exceptions === 1 && result.declaredExceptions.some((entry) => entry.commit === '2c895b4eb95c4435d0df03365205870f006ae07b'),
+      'every out-of-band hotfix is honored as a declared emergency exception',
+      result.exceptions === 3 &&
+        [
+          '2c895b4eb95c4435d0df03365205870f006ae07b',
+          '745c7b0a35c7c2ee3e5d8d4a02fd530f5598c3f9',
+          '21459a55043d87ad79045f2e02031b5a6b0976be',
+        ].every((hash) => result.declaredExceptions.some((entry) => entry.commit === hash)),
       JSON.stringify({ exceptions: result.exceptions, declared: result.declaredExceptions.map((entry) => entry.commit) }),
     )
+    {
+      const v021 = result.declaredExceptions.filter(
+        (entry) => entry.commit === '745c7b0a35c7c2ee3e5d8d4a02fd530f5598c3f9' || entry.commit === '21459a55043d87ad79045f2e02031b5a6b0976be',
+      )
+      check(
+        'the v0.2.1 hotfix entries carry a reason, the merge and their covering cards',
+        v021.length === 2 &&
+          v021.every(
+            (entry) =>
+              typeof entry.reason === 'string' &&
+              entry.reason.length > 40 &&
+              entry.merge === '90a5427d86d65ad719e12150de276e60c0385aa6' &&
+              Array.isArray(entry.tasks) &&
+              entry.tasks.indexOf('T-74') >= 0 &&
+              entry.tasks.indexOf('T-76') >= 0,
+          ),
+        JSON.stringify(v021),
+      )
+    }
     check('and the legacy range is reported rather than hidden', result.legacySkipped > 0, String(result.legacySkipped))
     check('the shipped board path resolves next to the shared git directory', existsSync(join(result.project, '.agents')) || result.project !== repository, result.project)
     check('the guard is wired into the package scripts', readFileSync(join(repository, 'package.json'), 'utf8').indexOf('check:target') >= 0)
