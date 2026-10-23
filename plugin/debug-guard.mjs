@@ -119,3 +119,19 @@ export function logSizeWarning(bytes, threshold) {
 export function debuggerRecoveryPlan() {
   return { action: 'quit', input: 'quit\n', waitMs: 3000, forbidden: ['continue'] }
 }
+
+/**
+ * Classify how the diagnostic instance ended. Godot 4.7.2 exits with an
+ * ACCESS_VIOLATION (3221225477 / 0xC0000005) after we write "quit" under the
+ * local debugger, so a fast exit is NOT a clean exit: only exit code 0 may be
+ * called "debugger-quit"; every other code is a crash trap, and a still-running
+ * process we had to terminate is a killed trap.
+ */
+export function classifyDebuggerExit(input) {
+  const value = input === undefined || input === null ? {} : input
+  const exitCode = Number.isFinite(value.exitCode) ? value.exitCode : null
+  if (value.killed === true) return { diagnosis: 'debugger-trap', exitCode: exitCode, crash: false, killed: true }
+  if (value.exited !== true) return { diagnosis: 'debugger-trap', exitCode: exitCode, crash: false, killed: true }
+  if (exitCode === 0) return { diagnosis: 'debugger-quit', exitCode: 0, crash: false, killed: false }
+  return { diagnosis: 'debugger-trap', exitCode: exitCode, crash: true, killed: false }
+}

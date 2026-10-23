@@ -31,6 +31,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { readFileSync, existsSync } from 'node:fs'
 import {
   buildLaunchArgv,
+  classifyDebuggerExit,
   classifyProbe,
   debuggerNote,
   debuggerRecoveryPlan,
@@ -914,6 +915,15 @@ export function apply(ctx, config) {
     return false
   }
 
+  /** The process exit code, when the handle exposes one. */
+  function exitCodeOf(handle) {
+    if (!handle) return null
+    if (Number.isFinite(handle.exitCode)) return handle.exitCode
+    if (Number.isFinite(handle.code)) return handle.code
+    if (handle.result && Number.isFinite(handle.result.exitCode)) return handle.result.exitCode
+    return null
+  }
+
   /** True when the handle reports its process already exited. */
   function handleExited(handle) {
     if (!handle) return true
@@ -955,7 +965,14 @@ export function apply(ctx, config) {
       try { handle.terminate() } catch (e) {}
       try { await handle.waitForExit(exec.signal) } catch (e) {}
     }
-    return { trace: trace, wroteQuit: wroteQuit, quitInput: plan.input, exited: exited === true, killed: exited !== true }
+    return {
+      trace: trace,
+      wroteQuit: wroteQuit,
+      quitInput: plan.input,
+      exited: exited === true,
+      killed: exited !== true,
+      exitCode: exitCodeOf(handle),
+    }
   }
 
   /** Best-effort user:// log size warning; never deletes anything. */
@@ -1037,12 +1054,21 @@ export function apply(ctx, config) {
       : null
     const watchResult = debuggerWatch === null
       ? null
-      : {
-          diagnosis: debuggerWatch.exited ? 'debugger-quit' : 'debugger-trap',
-          debuggerTrace: debuggerWatch.trace,
-          next: 'The local debugger trapped a script error. Fix it using debuggerTrace (errors also appear without debug:true), restart without debug:true, and run code with godot_run_headless --script because eval is disabled in diagnostic mode.',
-          debugger: { quit_written: debuggerWatch.wroteQuit, input: debuggerWatch.quitInput, killed: debuggerWatch.killed },
-        }
+      : (function () {
+          const classified = classifyDebuggerExit({ exited: debuggerWatch.exited, exitCode: debuggerWatch.exitCode, killed: debuggerWatch.killed })
+          return {
+            diagnosis: classified.diagnosis,
+            exitCode: classified.exitCode,
+            crash: classified.crash,
+            killed: classified.killed,
+            debuggerTrace: debuggerWatch.trace,
+            next:
+              classified.diagnosis === 'debugger-quit'
+                ? 'The local debugger exited cleanly (exit 0). The script error is in debuggerTrace; fix it and restart without debug:true, or run code with godot_run_headless --script.'
+                : 'The instance did not exit cleanly after quit (exit ' + String(classified.exitCode) + (classified.crash ? ', access violation / crash' : ', killed') + '). The script error is in debuggerTrace; fix it and restart without debug:true, and run code with godot_run_headless --script because eval is disabled in diagnostic mode.',
+            debugger: { quit_written: debuggerWatch.wroteQuit, input: debuggerWatch.quitInput, killed: classified.killed },
+          }
+        })()
     return {
       pid: handle.pid,
       project_path: projectPath,
