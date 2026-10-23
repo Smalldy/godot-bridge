@@ -39,6 +39,7 @@ function recorder(handler) {
     'isClean',
     'branchExists',
     'revParse',
+    'updateRef',
     'worktreeAdd',
     'worktreeRemove',
     'worktreeList',

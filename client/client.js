@@ -416,6 +416,11 @@ window.__ModuleLoader__.load({
 				detailSeconds: '秒',
 				detailTestDuration: '用时',
 				detailQueueWait: '排队',
+				targetBranch: '目标分支',
+				targetFollowDefault: '跟随默认（留空）',
+				targetDefaultLabel: '默认',
+				defaultTargetLabel: '默认目标分支',
+				defaultTargetHint: '留空则跟随主检出的当前分支',
 				queuedChip: '排队中 · 前面 {n} 条',
 				queueLengthChip: '队列 {n}',
 				actorUnknown: '成员 {id}',
@@ -864,6 +869,11 @@ window.__ModuleLoader__.load({
 				detailSeconds: 's',
 				detailTestDuration: 'took',
 				detailQueueWait: 'queue',
+				targetBranch: 'Target branch',
+				targetFollowDefault: 'Follow default (leave empty)',
+				targetDefaultLabel: 'default',
+				defaultTargetLabel: 'Default target branch',
+				defaultTargetHint: 'Empty follows the main checkout branch',
 				queuedChip: 'queued · {n} ahead',
 				queueLengthChip: 'queue {n}',
 				actorUnknown: 'member {id}',
@@ -1797,6 +1807,7 @@ window.__ModuleLoader__.load({
 				if (merge !== null) {
 					meta.push(h('span', { key: 'merge', className: 'gbt-chip', 'data-tone': tcMergeTone(merge.status), title: t('mergeTitle') }, '⇄ ' + tcMergeLabel(merge.status, t)))
 				}
+				if (typeof task.target === 'string' && task.target !== '') meta.push(h('span', { key: 'target', className: 'gbt-chip', 'data-target-branch': task.target, title: t('targetBranch') }, '🎯 ' + task.target))
 				if (branch !== '') meta.push(h('span', { key: 'branch', className: 'gbt-chip', title: branch }, '⎇ ' + branch))
 				if (commit !== '') meta.push(h('span', { key: 'commit', className: 'gbt-chip', title: commit }, '● ' + commit.slice(0, 10)))
 				if (worktree !== '') meta.push(h('span', { key: 'worktree', className: 'gbt-chip', title: worktree }, '🌿 ' + tcBaseName(worktree)))
@@ -3715,6 +3726,7 @@ window.__ModuleLoader__.load({
 					h('div', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
 					h('div', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit'), ' · ', t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit'), ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
 					metricsNode,
+					h('div', { className: 'gbt-detailstatline', 'data-detail-target': 'true' }, t('targetBranch') + ': ' + (typeof task.target === 'string' && task.target !== '' ? task.target : t('targetDefaultLabel')) + (typeof task.base === 'string' && task.base !== '' ? ' · ' + String(task.base).slice(0, 10) + ' → ' + (typeof task.target === 'string' && task.target !== '' ? task.target : t('targetDefaultLabel')) : '')),
 					summaryFacts,
 					specToggle,
 					specBody,
@@ -3844,6 +3856,7 @@ window.__ModuleLoader__.load({
 				const deps = React.useRef(null)
 				const files = React.useRef(null)
 				const note = React.useRef(null)
+				const targetBranch = React.useRef(null)
 				const [busy, setBusy] = React.useState(false)
 				const [error, setError] = React.useState('')
 				const running = task !== null && task.status === 'running'
@@ -3870,6 +3883,8 @@ window.__ModuleLoader__.load({
 						spec: spec.current === null ? '' : String(spec.current.value || ''),
 						acceptance: acceptance.current === null ? '' : String(acceptance.current.value || ''),
 						priority: priority.current === null ? 0 : Number(priority.current.value || 0),
+						// Empty clears back to the project default; a name pins this task's target.
+						target: targetBranch.current === null ? '' : String(targetBranch.current.value || '').trim(),
 					}
 					if (!running) {
 						body.dependsOn = tcParseList(deps.current === null ? '' : deps.current.value)
@@ -3907,6 +3922,7 @@ window.__ModuleLoader__.load({
 							h('input', { className: 'gbt-input', ref: deps, defaultValue: task === null ? '' : (task.dependsOn || []).join(', '), placeholder: t('dependsPlaceholder'), disabled: running }),
 							running ? null : h('div', { className: 'gbt-cardmeta' }, suggestions.slice(0, 12).map(function (entry) { return h('button', { key: entry.id, type: 'button', className: 'gbt-chip', onClick: function () { appendDependency(entry.id) } }, entry.id + ' · ' + entry.title) }))),
 						h('div', { className: 'gbt-field' }, h('label', null, t('files')), h('textarea', { className: 'gbt-area', ref: files, defaultValue: task === null ? '' : (task.writeFiles || []).join('\n'), placeholder: t('filesPlaceholder'), disabled: running })),
+						h('div', { className: 'gbt-field' }, h('label', null, t('targetBranch')), h('input', { className: 'gbt-input', ref: targetBranch, 'data-field': 'target-branch', defaultValue: task === null || typeof task.target !== 'string' ? '' : task.target, placeholder: t('targetFollowDefault') })),
 						h('div', { className: 'gbt-field' }, h('label', null, t('note')), h('input', { className: 'gbt-input', ref: note, placeholder: t('notePlaceholder') })),
 						error === '' ? null : h('p', { className: 'gbt-footnote', style: { color: 'var(--dsw-alias-label-error,#e5484d)' } }, error),
 						h('div', { className: 'gbt-actions' },
@@ -3920,6 +3936,7 @@ window.__ModuleLoader__.load({
 				const t = props.t
 				const dispatch = props.dispatch
 				const concurrent = React.useRef(null)
+				const defaultTarget = React.useRef(null)
 				const [error, setError] = React.useState('')
 				function save() {
 					const raw = concurrent.current === null ? dispatch.maxConcurrent : concurrent.current.value
@@ -3928,7 +3945,8 @@ window.__ModuleLoader__.load({
 						setError(t('invalidConcurrency'))
 						return
 					}
-					void store.send('settings', { maxConcurrent: value }).then(function (result) {
+					const targetValue = defaultTarget.current === null ? '' : String(defaultTarget.current.value || '').trim()
+					void store.send('settings', { maxConcurrent: value, defaultTarget: targetValue }).then(function (result) {
 						if (result.ok === true) props.onClose()
 						else setError(t('error'))
 					})
@@ -3944,6 +3962,12 @@ window.__ModuleLoader__.load({
 							{ className: 'gbt-field' },
 							h('label', null, t('maxConcurrent')),
 							h('input', { className: 'gbt-input', type: 'number', min: 1, max: 8, step: 1, ref: concurrent, defaultValue: String(dispatch.maxConcurrent) }),
+						),
+						h(
+							'div',
+							{ className: 'gbt-field' },
+							h('label', null, t('defaultTargetLabel')),
+							h('input', { className: 'gbt-input', 'data-field': 'default-target', ref: defaultTarget, defaultValue: typeof dispatch.defaultTarget === 'string' ? dispatch.defaultTarget : '', placeholder: t('defaultTargetHint') }),
 						),
 						h('p', { className: 'gbt-footnote' }, t('concurrencyHint')),
 						error === '' ? null : h('p', { className: 'gbt-footnote', style: { color: 'var(--dsw-alias-label-error,#e5484d)' } }, error),

@@ -103,13 +103,21 @@ function reaches(tasksById, start, target) {
  *   not allocated yet; self-reference is then impossible).
  * @param dependsOn - proposed ids.
  */
-export function validateDepends(board, taskId, dependsOn) {
+export function validateDepends(board, taskId, dependsOn, selfTarget) {
   const ids = normaliseList(dependsOn)
   if (taskId !== undefined && ids.indexOf(taskId) >= 0) return fail('self-dependency', 'a task cannot depend on itself')
   const byId = new Map(board.tasks.map((task) => [task.id, task]))
+  const self = taskId === undefined ? null : byId.get(taskId)
+  const selfBranch = selfTarget === undefined ? (self === null ? null : normaliseTarget(self.target)) : selfTarget
   for (const id of ids) {
     const task = byId.get(id)
     if (task === undefined) return fail('unknown-dependency', 'depends on ' + id + ', which does not exist')
+    if (normaliseTarget(task.target) !== selfBranch) {
+      return fail(
+        'cross-target-dependency',
+        'depends on ' + id + ' (' + (normaliseTarget(task.target) === null ? 'default target' : normaliseTarget(task.target)) + ') but this task targets ' + (selfBranch === null ? 'the default target' : selfBranch) + '; dependencies must share one target branch, so sequence the two lines by hand instead',
+      )
+    }
     if (task.status === 'cancelled') return fail('cancelled-dependency', 'depends on ' + id + ', which is cancelled')
     if (taskId !== undefined && reaches(byId, id, taskId)) {
       return fail('dependency-cycle', 'depends on ' + id + ', which already depends on ' + taskId + ' (a cycle)')
@@ -132,7 +140,7 @@ export function createTask(board, input, now, by) {
     )
   }
   const declaredVerify = input.verify === undefined ? null : checkedVerify.verify
-  const checked = validateDepends(board, undefined, input.dependsOn)
+  const checked = validateDepends(board, undefined, input.dependsOn, normaliseTarget(input.target))
   if (checked.ok !== true) return checked
   const next = clone(board)
   const id = 'T-' + String(next.seq)
@@ -148,7 +156,7 @@ export function createTask(board, input, now, by) {
     writeFiles: normaliseList(input.writeFiles),
     verify: declaredVerify,
     base: null,
-    target: null,
+    target: normaliseTarget(input.target),
     branch: null,
     worktree: null,
     worktreeError: null,
@@ -182,7 +190,14 @@ export function createTask(board, input, now, by) {
 }
 
 /** Git-derived fields the host writes; an ordinary update may not forge them. */
-const HOST_ONLY_FIELDS = ['base', 'target', 'branch', 'worktree', 'commit', 'actualFiles', 'merge']
+const HOST_ONLY_FIELDS = ['base', 'branch', 'worktree', 'commit', 'actualFiles', 'merge']
+
+/** A task's target branch: a trimmed name, or null for "follow the default". */
+export function normaliseTarget(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed === '' ? null : trimmed
+}
 
 /**
  * Change content or structure.
@@ -203,7 +218,8 @@ export function updateTask(board, id, input, now, by) {
     return fail('running-structural', id + ' is running; finish it or cancel it before changing dependencies')
   }
   if (input.dependsOn !== undefined) {
-    const checked = validateDepends(board, id, input.dependsOn)
+    const proposedTarget = input.target === undefined ? normaliseTarget(task.target) : normaliseTarget(input.target)
+    const checked = validateDepends(board, id, input.dependsOn, proposedTarget)
     if (checked.ok !== true) return checked
   }
   if (input.title !== undefined && String(input.title).trim() === '') return fail('missing-title', 'a task needs a title')
@@ -227,6 +243,10 @@ export function updateTask(board, id, input, now, by) {
   if (input.dependsOn !== undefined) {
     target.dependsOn = normaliseList(input.dependsOn)
     notes.push('dependencies: ' + (target.dependsOn.length === 0 ? 'none' : target.dependsOn.join(', ')))
+  }
+  if (input.target !== undefined) {
+    target.target = normaliseTarget(input.target)
+    notes.push('target: ' + (target.target === null ? 'default' : target.target))
   }
   if (input.writeFiles !== undefined) {
     target.writeFiles = normaliseList(input.writeFiles)

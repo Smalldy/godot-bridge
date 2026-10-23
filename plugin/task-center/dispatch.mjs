@@ -731,10 +731,28 @@ export function serialiseWorktreeCreate(projectPath, work) {
 async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadlineMs) {
   const probe = await probeWorktree(git, projectPath)
   if (probe.ok !== true) return worktreeFallback(probe.code + ': ' + probe.message)
-  const base = await git.head(projectPath)
-  if (base.ok !== true) return worktreeFallback('base-unreadable: ' + String(base.message))
+  const headNow = await git.head(projectPath)
+  if (headNow.ok !== true) return worktreeFallback('base-unreadable: ' + String(headNow.message))
   const current = await git.currentBranch(projectPath)
-  const targetBranch = current.ok === true && typeof current.branch === 'string' ? current.branch : null
+  const defaultBranch = current.ok === true && typeof current.branch === 'string' ? current.branch : null
+  // The task's own target wins; otherwise the project's configured default target
+  // (board dispatch.defaultTarget) applies, and only when THAT is unset does the
+  // main checkout's branch act as the fallback default.
+  const taskTarget = typeof task.target === 'string' && task.target.trim() !== '' ? task.target.trim() : null
+  const dispatchSettings = dispatch === undefined || dispatch === null ? null : dispatch
+  const configuredDefault = dispatchSettings !== null && typeof dispatchSettings.defaultTarget === 'string' && dispatchSettings.defaultTarget.trim() !== '' ? dispatchSettings.defaultTarget.trim() : null
+  const targetBranch = taskTarget === null ? (configuredDefault === null ? defaultBranch : configuredDefault) : taskTarget
+  const mustResolveRef = taskTarget !== null || (configuredDefault !== null && configuredDefault !== defaultBranch)
+  let base = headNow
+  if (mustResolveRef) {
+    // An explicit target pins the base to THAT branch's head even when the main
+    // checkout sits elsewhere; a legacy task keeps the old current-HEAD base.
+    const resolved = await git.revParse(projectPath, 'refs/heads/' + targetBranch)
+    if (resolved.ok !== true) {
+      return worktreeFallback('target-unreadable: ' + targetBranch + ' could not be resolved (' + String(resolved.message) + ')')
+    }
+    base = resolved
+  }
   // Handover adoption: a previous attempt that left a COMMIT keeps its checkout,
   // so the next attempt continues that work instead of restarting from the
   // target. The branch must still resolve; anything else falls through to a

@@ -212,6 +212,19 @@ export function createGit(options) {
     return ok({ exists: result.code === 0 })
   }
 
+  /** Point an existing ref (e.g. refs/heads/main) at a commit without checking it out. */
+  async function updateRef(root, ref, hash) {
+    const base = rootOf(root)
+    if (base.ok !== true) return base
+    const target = refName(ref)
+    if (target.ok !== true) return target
+    const commit = typeof hash === 'string' ? hash.trim() : ''
+    if (commit === '') return failure('invalid-commit', 'update-ref needs a commit hash')
+    const result = await exec(['update-ref', target.name, commit], base.path)
+    if (result.code !== 0) return failed(result, 'update-ref-failed', 'could not move ' + target.name + ' to ' + commit)
+    return ok({ ref: target.name, hash: commit })
+  }
+
   /** Resolve a ref to a full commit hash. */
   async function revParse(root, ref) {
     const base = rootOf(root)
@@ -480,6 +493,7 @@ export function createGit(options) {
     isClean: isClean,
     branchExists: branchExists,
     revParse: revParse,
+    updateRef: updateRef,
     worktreeAdd: worktreeAdd,
     worktreeRemove: worktreeRemove,
     worktreeList: worktreeList,

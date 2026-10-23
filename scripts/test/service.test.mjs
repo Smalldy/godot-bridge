@@ -516,12 +516,17 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
 // git-derived identity is host-only
 {
   const board = make(base(), 'A').board
-  for (const field of ['base', 'target', 'branch', 'worktree', 'commit', 'actualFiles']) {
+  for (const field of ['base', 'branch', 'worktree', 'commit', 'actualFiles']) {
     const refused = updateTask(board, 'T-1', { [field]: field === 'actualFiles' ? ['x'] : 'x' }, T0, '@me')
     check('update refuses host-written ' + field, refused.code === 'host-only', JSON.stringify(refused))
   }
   const merge = updateTask(board, 'T-1', { merge: { status: 'open' } }, T0, '@me')
   check('update refuses a host-written merge', merge.code === 'host-only', JSON.stringify(merge))
+  // T-71: target is a user/agent field now (a task may pick its own branch).
+  const retargeted = updateTask(board, 'T-1', { target: 'main' }, T0 + 1, '@me')
+  check('update accepts an explicit target branch', retargeted.ok === true && retargeted.task.target === 'main', JSON.stringify(retargeted))
+  const clearedTarget = updateTask(board, 'T-1', { target: '' }, T0 + 1, '@me')
+  check('an empty target clears back to the default', clearedTarget.ok === true && clearedTarget.task.target === null, JSON.stringify(clearedTarget))
   check('a refused update leaves the task untouched', findTask(board, 'T-1').base === null && findTask(board, 'T-1').merge === null)
 }
 
