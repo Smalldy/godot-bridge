@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-24
+
 ### Fixed
 
 - **eval no longer deadlocks under the local debugger (issue #13).** `godot_run_project` now starts **without** `-d` by default, so `godot_command eval` compiles user code without entering the interactive `debug>` prompt; a syntax error still reports its message and file:line in the captured output. `debug:true` is now explicitly **diagnostic mode**: the instance runs with the local debugger, the interaction server detects diagnostic mode from the `GODOT_BRIDGE_DEBUGGER=1` environment variable the bridge sets (an argv check alone cannot work: Godot consumes `-d` before `OS.get_cmdline_args()`, measured on 4.7.2) and **refuses eval** (no `reload()`) with a `next` step, and the bridge keeps a stdin pipe so that a detected `debug>`/`Debugger Break` writes exactly one `quit` (never `continue`), waits 3 s and then terminates the instance it started. The outcome is classified **by exit code, not by speed**: exit 0 → `diagnosis: "debugger-quit"`; any non-zero code → `diagnosis: "debugger-trap"` with `exitCode` and `crash: true`; still running after 3 s → `debugger-trap` with `killed: true`; all three carry a `debuggerTrace` (break reason, `*Frame N` frames with `file:line`, ≤4 KB tail). This is deliberately honest: on Godot 4.7.2-stable win64, writing `quit` exits in ~38 ms with **3221225477 (0xC0000005, ACCESS_VIOLATION)** and a C++ backtrace, so that run is a crash trap rather than a graceful exit. Measured baseline (minimal project + syntax-error script): no `-d` exits in ~372 ms with `SCRIPT ERROR … at: GDScript::reload`; `-d` with stdin at EOF prints **12089** break/prompt lines in 3 s (1.78 MB, ~590 KB/s) and must be killed (the issue #13 loop); `-d` with a stdin pipe prints one break/prompt (2.4 KB) because the debugger waits for input. `godot_command eval` timeouts now answer `{ error: "bridge timeout", diagnosis: "unresponsive", next }`, `godot_ping` reports `responsive: false` when the port accepts a connection but never answers instead of `game_running: false`, and an oversized `user://logs/godot.log` gets a warning (never deleted). Regression tests: `scripts/test/eval-guard.test.mjs` (self-contained, `node --test`) and `scripts/test/eval_guard.gd` (`godot_run_headless --script`).
@@ -166,3 +168,4 @@ Initial release — a standard DSH bundle that replaces the godot-mcp MCP server
 [0.1.2]: https://github.com/Smalldy/godot-bridge/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Smalldy/godot-bridge/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Smalldy/godot-bridge/releases/tag/v0.1.0
+[0.2.1]: https://github.com/Smalldy/godot-bridge/compare/v0.2.0...v0.2.1

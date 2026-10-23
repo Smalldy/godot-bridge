@@ -5,6 +5,14 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.2.1] - 2026-10-24
+
+### 修复
+
+- **本地调试器下的 `eval` 死锁（issue #13）**：`godot_run_project` 默认不再带 `-d`，`godot_command eval` 正常编译用户代码；语法错误仍会在捕获输出里给出错误与文件:行号。`debug:true` 明确为**诊断模式**：实例带本地调试器运行，交互服务器依据桥注入的 `GODOT_BRIDGE_DEBUGGER=1` 环境变量判定（仅靠 `OS.get_cmdline_args()` 不可行——Godot 会先消费 `-d`，4.7.2 实测），并在 `reload()` 之前**拒绝 eval** 并给出 `next`；桥保留 stdin 管道，检测到 `debug>`/`Debugger Break` 时只写一次 `quit`（绝不 `continue`），3 秒未退再终止自己启动的实例。退出结果**按退出码而非速度**分类：0 → `debugger-quit`；非 0 → `debugger-trap` + `exitCode`/`crash`；3 秒未退 → `debugger-trap` + `killed`；三者都带 `debuggerTrace`（break 原因、`*Frame N` 的 `file:line`、≤4KB 尾部）。如实记录：在 4.7.2-stable win64 上写 `quit` 约 38ms 后以 **3221225477（0xC0000005，访问违例）** 退出并打印 C++ 回溯，因此那次运行判为崩溃陷阱而非优雅退出。实测基线（最小工程 + 语法错误脚本）：无 `-d` 约 372ms 退出并输出 `SCRIPT ERROR … at: GDScript::reload`；带 `-d` 且 stdin 为 EOF 时 3 秒内打印 **12089** 行 break/prompt（1.78 MB，约 590 KB/s）必须强杀（issue #13 的死循环）；带 `-d` 且 stdin 为管道时只有一次 break/prompt（2.4 KB），因为调试器在等输入。
+- **诊断守卫的纠正**：第一版从 `OS.get_cmdline_args()` 里找 `-d`，真机上是死代码（`eval` 仍会进入 `debug>`）。现在由桥在启动时注入 `GODOT_BRIDGE_DEBUGGER=1`，服务端读取它（`is_local_debugger(args, debugger_flag)`），argv 只作兜底；仍漏网的陷阱会以 `diagnosis: "debugger-trap"` + `debuggerTrace` 返回，而不是一个光秃秃的超时。回归测试：`scripts/test/eval-guard.test.mjs`（自包含）与 `scripts/test/eval_guard.gd`（`godot_run_headless --script`）。
+- `godot_command` 超时返回 `bridge timeout` / `diagnosis: unresponsive` / `next`；`godot_ping` 在“端口连上但不应答”时报 `responsive: false`，不再误报 `game_running: false`；`user://logs/godot.log` 过大时告警（不删除用户文件）。
+
 ## [0.2.0] - 2026-10-01
 
 ### 新增
@@ -158,3 +166,4 @@
 [0.1.2]: https://github.com/Smalldy/godot-bridge/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Smalldy/godot-bridge/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Smalldy/godot-bridge/releases/tag/v0.1.0
+[0.2.1]: https://github.com/Smalldy/godot-bridge/compare/v0.2.0...v0.2.1
