@@ -36,6 +36,8 @@ import {
   briefFor,
   briefPartsFor,
   hostCheckEvidence,
+  interruptAssignee,
+  interruptMemberNamed,
   probeWorktree,
   resolveLead,
   reviewBriefFor,
@@ -1083,6 +1085,15 @@ export function createApi(ctx, options) {
     )
     if (blocked.ok !== true) return null
     emitActivity(null, 'error', 'review round limit reached; task blocked', task.id, 'system')
+    // The reviewer slot no longer has work: interrupt it when it is still running.
+    const reviewer = roleSlotNameOf('reviewer')
+    if (reviewer !== null) {
+      await interruptMemberNamed(ctx, {
+        name: reviewer,
+        key: String(task.id) + '@blocked@' + reviewer,
+        message: 'Task ' + String(task.id) + ' is blocked (review round limit). Stop working on it now and discard uncommitted changes.',
+      })
+    }
     const owner =
       task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' || task.assignee.name === ''
         ? null
@@ -1531,6 +1542,58 @@ export function createApi(ctx, options) {
     return task.assignee.session === null || task.assignee.session === undefined
   }
 
+  /** Actions that address one task: the stopped-task guard reads the board for
+   * them only, so board/list/openProject stay free of a second read. */
+  const STOPPED_GUARD_ACTIONS = [
+    'get',
+    'update',
+    'delete',
+    'submit',
+    'approveReview',
+    'requestChanges',
+    'passTest',
+    'failTest',
+    'mergeRequest',
+    'refreshMerge',
+    'rejectMerge',
+    'cancel',
+    'reopen',
+    'block',
+    'unblock',
+    'retry',
+  ]
+
+  /**
+   * A cancelled/blocked task is not work any more. The assignee's later calls are
+   * refused with a readable code (/task-cancelled/, /task-blocked/) so its model
+   * stops instead of continuing to patch a task the board no longer runs — the
+   * host interrupt is the hard half, this is the soft one. Other agents and the
+   * user are unaffected: they may still inspect or repair the task.
+   */
+  async function stoppedTaskRefusal(projectPath, action, source, context, owner) {
+    if (context === undefined || context === null || context.role !== 'agent') return null
+    if (STOPPED_GUARD_ACTIONS.indexOf(action) < 0) return null
+    const id = typeof source.id === 'string' ? source.id : typeof source.taskId === 'string' ? source.taskId : ''
+    if (id === '') return null
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return null
+    const task = model.findTask(read.board, id)
+    if (task === undefined || task === null) return null
+    if (task.status !== 'cancelled' && task.status !== 'blocked') return null
+    const member = callerMemberOf(context)
+    const mine =
+      member !== null
+        ? isAssignee(task, member)
+        : owner !== null && owner !== undefined && task.assignee !== null && task.assignee !== undefined && owner.name === task.assignee.name
+    if (mine !== true) return null
+    const code = task.status === 'cancelled' ? 'task-cancelled' : 'task-blocked'
+    return failure(
+      code,
+      id + ' is ' + task.status + '; stop working on it now. Do not submit and discard uncommitted changes — the host already interrupted the worker.',
+      { taskId: id, status: task.status },
+    )
+  }
+
   /** One board write. The heartbeat is NOT repeated here: perform() already ran it
    * for this call, so re-running it would double-write for every write action. */
   async function mutate(projectPath, mutator, context) {
@@ -1861,6 +1924,8 @@ export function createApi(ctx, options) {
     // into expiry, and it stops an action from renewing twice.
     const owner = ownerOf(context)
     if (owner !== null) await heartbeat(projectPath, owner)
+    const stopped = await stoppedTaskRefusal(projectPath, action, source, context, owner)
+    if (stopped !== null) return stopped
     // Any task-scoped call by a role renews that round's silence clock. The
     // watchdog measures silence from this, so a tester that keeps calling
     // get/passTest is never mistaken for a stuck one.
@@ -2208,6 +2273,12 @@ export function createApi(ctx, options) {
         context,
       )
       if (result.ok !== true) return result
+      // A request normally exists while dispatch is paused, but if anything had
+      // already been dispatched, withdrawing the request stops it too.
+      for (const task of result.board.tasks) {
+        if (task.status !== 'running' || task.assignee === null || task.assignee === undefined) continue
+        await interruptAssignee(ctx, task, { reason: 'the dispatch start request was withdrawn' })
+      }
       return ok({ dispatch: result.board.dispatch, events: result.events })
     }
     if (action === 'settings') {
@@ -2737,6 +2808,10 @@ export function createApi(ctx, options) {
     if (action === 'cancel') {
       const id = String(source.id === undefined ? '' : source.id)
       if (id === '') return failure('missing-id', 'cancel needs a task id')
+      // The pre-transition record still names the worker and its state: that is
+      // what the interrupt needs after the board has moved on.
+      const before = await readBoardOrFail(projectPath)
+      const priorTask = before.failed === undefined ? model.findTask(before.board, id) : undefined
       const result = await writeTask(
         projectPath,
         id,
@@ -2746,6 +2821,10 @@ export function createApi(ctx, options) {
       if (result.ok === true) {
         const released = locks.releaseTask(state.memory.locks, id)
         if (released.ok === true) state.memory.locks = released.locks
+        if (priorTask !== undefined && priorTask !== null && priorTask.status === 'running') {
+          // Best-effort: a refusal (no Team, idle member) never fails the cancel.
+          await interruptAssignee(ctx, priorTask, { reason: 'cancelled' })
+        }
       }
       return result
     }
@@ -2766,6 +2845,8 @@ export function createApi(ctx, options) {
     if (action === 'block') {
       const id = String(source.id === undefined ? '' : source.id)
       if (id === '') return failure('missing-id', 'block needs a task id')
+      const before = await readBoardOrFail(projectPath)
+      const priorTask = before.failed === undefined ? model.findTask(before.board, id) : undefined
       const result = await writeTask(
         projectPath,
         id,
@@ -2775,6 +2856,9 @@ export function createApi(ctx, options) {
       if (result.ok === true) {
         const released = locks.releaseTask(state.memory.locks, id)
         if (released.ok === true) state.memory.locks = released.locks
+        if (priorTask !== undefined && priorTask !== null && priorTask.status === 'running') {
+          await interruptAssignee(ctx, priorTask, { reason: 'blocked' })
+        }
       }
       return result
     }

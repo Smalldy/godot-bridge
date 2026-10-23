@@ -1868,6 +1868,27 @@ function agentCaller(id) {
   return { projectPath: PROJECT, by: '@' + id, role: 'agent', agent: { id: id } }
 }
 
+/** The fake Team plus the interrupt edge the host uses to stop a worker whose
+ * task left running. interrupt() is the real contract: (Lead caller, member). */
+function interruptTeam(options) {
+  const team = createTeam(options)
+  team.interrupts = []
+  team.interrupt = function (caller, name) {
+    team.interrupts.push({ caller: caller === null || caller === undefined ? null : caller.id, name: name })
+    return { previousStatus: 'running' }
+  }
+  return team
+}
+
+function interruptRoster(overrides) {
+  return {
+    roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      Object.assign({ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' }, overrides === undefined ? {} : overrides),
+    ],
+  }
+}
+
 function reviewStageTask(overrides) {
   const stamp = new Date().toISOString()
   return runningWorktreeTask(
@@ -1951,6 +1972,104 @@ function testStageTask(overrides) {
   const workerBlock = await rig.api.perform('block', { id: 'T-1', note: 'agent holds it' }, agentCaller('session-fixer'))
   const agentHistory = workerBlock.task.history[workerBlock.task.history.length - 1]
   check('an agent block writes the member name', workerBlock.ok === true && agentHistory.byName === 'fixer', JSON.stringify(agentHistory))
+  rig.scheduler.dispose()
+}
+
+// ── leaving running interrupts the worker (hard) and refuses its later calls ─
+{
+  const team = interruptTeam(interruptRoster())
+  const rig = createSubmitRig({ team: team })
+  seedRunningTask(rig, runningWorktreeTask())
+  holdFile(rig, join(PROJECT, 'scripts/a.gd'))
+  const cancelled = await rig.api.perform('cancel', { id: 'T-1', note: 'not needed' }, rig.user)
+  check(
+    'cancelling a running task interrupts its assignee through the Lead',
+    cancelled.ok === true && team.interrupts.length === 1 && team.interrupts[0].name === 'fixer' && team.interrupts[0].caller === 'session-lead',
+    JSON.stringify(team.interrupts),
+  )
+  const inbox = team.calls.filter((call) => call.kind === 'send' && call.target === 'fixer')
+  check(
+    'the interrupted worker is told why to stop',
+    inbox.length === 1 && inbox[0].text.indexOf('cancelled') >= 0 && inbox[0].text.indexOf('discard') >= 0,
+    JSON.stringify(inbox.map((call) => call.text.slice(0, 120))),
+  )
+  check('the cancelled task releases its file locks', Object.keys(rig.state.memory.locks).length === 0, JSON.stringify(Object.keys(rig.state.memory.locks)))
+  const again = await rig.api.perform('cancel', { id: 'T-1', note: 'again' }, rig.user)
+  check('a repeated cancel does not interrupt twice', again.ok === false && team.interrupts.length === 1, JSON.stringify({ ok: again.ok, code: again.code, interrupts: team.interrupts.length }))
+  rig.scheduler.dispose()
+}
+
+{
+  const team = interruptTeam(interruptRoster())
+  const rig = createSubmitRig({ team: team })
+  seedRunningTask(rig, runningWorktreeTask())
+  const blocked = await rig.api.perform('block', { id: 'T-1', note: 'triage' }, rig.user)
+  check('blocking a running task interrupts its assignee', blocked.ok === true && team.interrupts.length === 1 && team.interrupts[0].name === 'fixer', JSON.stringify(team.interrupts))
+  check(
+    'and the inbox note says it is blocked',
+    team.calls.some((call) => call.kind === 'send' && call.target === 'fixer' && call.text.indexOf('blocked') >= 0),
+    JSON.stringify(team.calls.filter((call) => call.kind === 'send').map((call) => call.text.slice(0, 80))),
+  )
+  rig.scheduler.dispose()
+}
+
+{
+  // A member that is already idle has no turn to stop; neither does a task with
+  // no assignee. Both skip the interrupt instead of failing the lifecycle action.
+  const idleTeam = interruptTeam(interruptRoster({ status: 'inactive' }))
+  const idleRig = createSubmitRig({ team: idleTeam })
+  seedRunningTask(idleRig, runningWorktreeTask())
+  const idleCancel = await idleRig.api.perform('cancel', { id: 'T-1' }, idleRig.user)
+  check('an inactive member is not interrupted', idleCancel.ok === true && idleTeam.interrupts.length === 0, JSON.stringify(idleTeam.interrupts))
+  idleRig.scheduler.dispose()
+
+  const emptyTeam = interruptTeam(interruptRoster())
+  const emptyRig = createSubmitRig({ team: emptyTeam })
+  seedRunningTask(emptyRig, runningWorktreeTask({ assignee: null }))
+  const emptyCancel = await emptyRig.api.perform('cancel', { id: 'T-1' }, emptyRig.user)
+  check('a task without an assignee is not interrupted', emptyCancel.ok === true && emptyTeam.interrupts.length === 0, JSON.stringify(emptyTeam.interrupts))
+  emptyRig.scheduler.dispose()
+}
+
+{
+  // The soft half: the assignee's own later calls are refused with a code that
+  // tells its model to stop. Another agent and the user are unaffected.
+  const rig = createSubmitRig({ team: interruptTeam(interruptRoster()) })
+  seedRunningTask(rig, runningWorktreeTask({ status: 'cancelled', assignee: { name: 'fixer', session: 'session-fixer' } }))
+  const got = await rig.api.perform('get', { id: 'T-1' }, agentCaller('session-fixer'))
+  check('a worker is refused on its cancelled task', got.ok === false && got.code === 'task-cancelled', JSON.stringify(got))
+  const submitted = await rig.api.perform('submit', { id: 'T-1', evidence: 'x' }, agentCaller('session-fixer'))
+  check('submit on a cancelled task is refused with the same code', submitted.ok === false && submitted.code === 'task-cancelled', JSON.stringify(submitted))
+  check(
+    'the refusal tells the worker to stop and discard',
+    String(got.message).indexOf('stop working') >= 0 && String(got.message).indexOf('discard') >= 0,
+    String(got.message),
+  )
+  const other = await rig.api.perform('get', { id: 'T-1' }, agentCaller('session-reviewer-1'))
+  check('another agent can still read the cancelled task', other.ok === true && other.task !== undefined, JSON.stringify(other))
+  const user = await rig.api.perform('get', { id: 'T-1' }, rig.user)
+  check('the user can still read the cancelled task', user.ok === true && user.task !== undefined, JSON.stringify(user))
+  rig.scheduler.dispose()
+}
+
+{
+  const rig = createSubmitRig({ team: interruptTeam(interruptRoster()) })
+  seedRunningTask(rig, runningWorktreeTask({ status: 'blocked', assignee: { name: 'fixer', session: 'session-fixer' } }))
+  const got = await rig.api.perform('get', { id: 'T-1' }, agentCaller('session-fixer'))
+  check('a worker is refused on its blocked task', got.ok === false && got.code === 'task-blocked', JSON.stringify(got))
+  rig.scheduler.dispose()
+}
+
+{
+  // Happy paths never interrupt: submit and a reviewer approval both run with a
+  // live Team and must leave the interrupt edge untouched.
+  const team = interruptTeam(interruptRoster())
+  const rig = createSubmitRig({ team: team, roles: true, git: fakeGit().git })
+  seedRunningTask(rig, runningWorktreeTask())
+  const submitted = await rig.api.perform('submit', { id: 'T-1', evidence: 'done' }, agentCaller('session-fixer'))
+  check('a normal submit does not interrupt the worker', submitted.ok === true && team.interrupts.length === 0, JSON.stringify({ ok: submitted.ok, code: submitted.code, interrupts: team.interrupts }))
+  const approved = await rig.api.perform('approveReview', { id: 'T-1' }, agentCaller('session-reviewer-1'))
+  check('a normal review approval does not interrupt anyone', team.interrupts.length === 0, JSON.stringify({ ok: approved.ok, code: approved.code, interrupts: team.interrupts }))
   rig.scheduler.dispose()
 }
 
