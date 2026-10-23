@@ -735,8 +735,10 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadli
   if (headNow.ok !== true) return worktreeFallback('base-unreadable: ' + String(headNow.message))
   const current = await git.currentBranch(projectPath)
   const defaultBranch = current.ok === true && typeof current.branch === 'string' ? current.branch : null
-  // The task's own target wins; legacy boards without one follow the branch the
-  // main checkout is on (the old global default).
+  // The task's own target wins. Legacy boards without one follow the project's
+  // de-facto default target: the branch the main checkout is on. There is no
+  // separate configured default-target setting in the board, so this IS the
+  // project setting; documenting it here rather than inventing a second source.
   const taskTarget = typeof task.target === 'string' && task.target.trim() !== '' ? task.target.trim() : null
   const targetBranch = taskTarget === null ? defaultBranch : taskTarget
   let base = headNow

@@ -2664,17 +2664,43 @@ function fakeHostSubprocess(result) {
   await Promise.all([a, b])
   check('merges into the same target stay serial', serial.join(',') === 'a,b', JSON.stringify(serial))
 }
-// ── merge refusals: wrong target and dirty worktree are readable ───────────
+// ── merge refusals and per-target advance with the main checkout elsewhere ──
 {
-  const wrongGit = createFakeGit({ branch: 'feat/other' })
-  const wrongMerger = createMerger({ git: wrongGit })
-  const task = { id: 'T-9', title: 'wrong target', branch: 'task/T-9-1', target: 'main', merge: { status: 'open', base: 'b', head: 'h', target: 'main', mergeCommit: 'cand-sha' } }
-  const wrong = await wrongMerger.mergeCandidate(task, PROJECT, { worktreeRoot: '.worktrees' })
-  check('a checkout on another branch is refused with a readable target message', wrong.ok === false && String(wrong.code) === 'target-mismatch' && String(wrong.message).indexOf('main') >= 0, JSON.stringify(wrong))
+  const control = createFakeGit()
+  control.revParse = async function (root, ref) {
+    if (ref === 'main') return { ok: true, hash: 'main-head' }
+    if (ref === 'feat/x') return { ok: true, hash: 'feat-head' }
+    return { ok: false, message: 'unknown ref ' + ref }
+  }
+  control.currentBranch = async function () { return { ok: true, branch: 'feat/x' } }
+  control.head = async function () { return { ok: true, hash: 'feat-head' } }
+  const updates = []
+  control.updateRef = async function (root, ref, hash) {
+    updates.push(ref + '=' + hash)
+    return { ok: true, ref: ref, hash: hash }
+  }
+  const merger = createMerger({ git: control })
+  const hotfix = { id: 'T-1', title: 'hotfix', status: 'testing', branch: 'task/T-1-1', target: 'main', merge: { status: 'open', base: 'main-head', head: 'h', target: 'main' } }
+  const feature = { id: 'T-2', title: 'feature', status: 'testing', branch: 'task/T-2-1', target: 'feat/x', merge: { status: 'open', base: 'feat-head', head: 'h', target: 'feat/x' } }
+  const hotfixResult = await merger.mergeRequest(hotfix, PROJECT, { worktreeRoot: '.worktrees' })
+  const featureResult = await merger.mergeRequest(feature, PROJECT, { worktreeRoot: '.worktrees' })
+  check(
+    'the main checkout stays on feat while a hotfix advances main and a feature advances feat',
+    hotfixResult.ok === true && hotfixResult.status === 'merged' && featureResult.ok === true && featureResult.status === 'merged' && updates.length === 2 && updates[0].indexOf('main=') === 0 && updates[1].indexOf('feat/x=') === 0,
+    JSON.stringify({ hotfix: hotfixResult, feature: featureResult, updates: updates }),
+  )
+  const addBases = control.calls.filter((call) => call.name === 'worktreeAdd').map((call) => call.detail.base)
+  check('each integration checkout starts from its own target head', addBases.join(',') === 'main-head,feat-head', JSON.stringify(addBases))
   const dirtyGit = createFakeGit({ clean: false })
   const dirtyMerger = createMerger({ git: dirtyGit })
-  const dirty = await dirtyMerger.mergeCandidate(task, PROJECT, { worktreeRoot: '.worktrees' })
+  const dirty = await dirtyMerger.mergeRequest(hotfix, PROJECT, { worktreeRoot: '.worktrees' })
   check('a dirty worktree is refused with a readable message', dirty.ok === false && String(dirty.code) === 'dirty-worktree', JSON.stringify(dirty))
+  const missingGit = createFakeGit()
+  missingGit.revParse = async function () { return { ok: false, message: 'missing' } }
+  missingGit.currentBranch = async function () { return { ok: true, branch: 'feat/other' } }
+  const missingMerger = createMerger({ git: missingGit })
+  const missing = await missingMerger.mergeRequest(hotfix, PROJECT, { worktreeRoot: '.worktrees' })
+  check('a target branch that does not resolve is refused with a readable message', missing.ok === false && String(missing.code) === 'target-unreadable' && String(missing.message).indexOf('main') >= 0, JSON.stringify(missing))
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

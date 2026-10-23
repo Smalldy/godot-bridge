@@ -352,6 +352,19 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     return { ok: code === 0, output: formatVerificationOutput(verifyCommand, code, result) }
   }
 
+  /** Resolve a branch ref to its commit without touching any checkout. */
+  async function branchHeadOf(projectPath, branch) {
+    const resolved = await callGit('revParse', [projectPath, branch])
+    if (resolved !== null && resolved !== undefined && resolved.ok === true && typeof resolved.hash === 'string' && resolved.hash !== '') {
+      return resolved.hash
+    }
+    // Single-checkout compatibility: if the main checkout IS on that branch, its
+    // HEAD is the target head (the pre-T-71 behavior).
+    const current = await currentBranchOf(projectPath)
+    if (current.ok === true && current.branch === branch) return headOf(projectPath)
+    return null
+  }
+
   /**
    * Run the integration pipeline for one open merge request.
    *
@@ -365,19 +378,13 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     if (git === null) return failure('no-git-service', 'the merge queue needs the git service, and this profile has none; merging is unavailable')
     if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', task.id + ' has no candidate branch to merge')
     if (typeof task.target !== 'string' || task.target.length === 0) return failure('missing-target', task.id + ' has no target branch to merge into')
-    const current = await currentBranchOf(projectPath)
-    if (current.ok !== true) return failure('branch-unreadable', 'could not read the branch of ' + projectPath + ': ' + current.message)
-    if (current.branch !== task.target) {
-      return failure(
-        'target-mismatch',
-        task.id + ' targets ' + task.target + ', but ' + projectPath + ' is on ' + (current.branch === null ? 'a detached HEAD' : current.branch) + '; check out the target branch and retry',
-      )
-    }
+    // The merge advances the TASK target ref, not whatever the main checkout has
+    // checked out, so a hotfix (main) and a feature (feat/x) can merge in parallel.
     const clean = await cleanOf(projectPath)
     if (clean.ok !== true) return failure('clean-unreadable', 'could not check whether ' + projectPath + ' is clean: ' + clean.message)
     if (clean.clean !== true) return failure('dirty-worktree', 'the main working tree is not clean; commit or stash it before merging ' + task.id)
-    const targetHead = await headOf(projectPath)
-    if (targetHead === null) return failure('head-unreadable', 'could not read the target HEAD of ' + projectPath)
+    const targetHead = await branchHeadOf(projectPath, task.target)
+    if (targetHead === null) return failure('target-unreadable', 'could not read the head of target branch ' + task.target)
 
     const root = typeof req.worktreeRoot === 'string' && req.worktreeRoot.length > 0 ? req.worktreeRoot : '.worktrees'
     const integrationPath = join(projectPath, root, 'merge-' + task.id)
@@ -454,20 +461,22 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
         integration: { created: true, path: integrationPath },
       }
     }
-    const stillOnTarget = await currentBranchOf(projectPath)
-    if (stillOnTarget.ok !== true || stillOnTarget.branch !== task.target) {
+    const stillTargetHead = await branchHeadOf(projectPath, task.target)
+    if (stillTargetHead !== targetHead) {
       await discardIntegration(projectPath, integrationPath, mergeBranch)
       return {
         ok: true,
         status: 'failed',
         mergeCommit: null,
         conflict: null,
-        output: clip('the main checkout left ' + task.target + ' during verification; nothing was merged'),
+        output: clip(task.target + ' moved during verification (now ' + String(stillTargetHead).slice(0, 10) + '); nothing was merged'),
         integration: { created: true, path: integrationPath },
       }
     }
 
-    const forwarded = await callGit('mergeFfOnly', [projectPath, mergeBranch])
+    // Advance the target BRANCH to the integration commit; the main checkout's
+    // branch is never touched, so two targets can merge concurrently.
+    const forwarded = await callGit('updateRef', [projectPath, task.target, mergeCommit])
     if (forwarded === null || forwarded === undefined || forwarded.ok !== true) {
       await discardIntegration(projectPath, integrationPath, mergeBranch)
       return {
@@ -475,7 +484,7 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
         status: 'failed',
         mergeCommit: null,
         conflict: null,
-        output: clip('could not fast-forward ' + task.target + ': ' + messageOf(forwarded)),
+        output: clip('could not advance ' + task.target + ' to ' + String(mergeCommit).slice(0, 10) + ': ' + messageOf(forwarded)),
         integration: { created: true, path: integrationPath },
       }
     }
@@ -518,16 +527,11 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     if (git === null) return failure('no-git-service', 'the tester workflow needs the git service, and this profile has none')
     if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', task.id + ' has no candidate branch to test')
     if (typeof task.target !== 'string' || task.target.length === 0) return failure('missing-target', task.id + ' has no target branch to test against')
-    const current = await currentBranchOf(projectPath)
-    if (current.ok !== true) return failure('branch-unreadable', 'could not read the branch of ' + projectPath + ': ' + current.message)
-    if (current.branch !== task.target) {
-      return failure('target-mismatch', task.id + ' targets ' + task.target + ', but ' + projectPath + ' is on ' + (current.branch === null ? 'a detached HEAD' : current.branch))
-    }
     const clean = await cleanOf(projectPath)
     if (clean.ok !== true) return failure('clean-unreadable', 'could not check whether ' + projectPath + ' is clean: ' + clean.message)
     if (clean.clean !== true) return failure('dirty-worktree', 'the main working tree is not clean; commit or stash it before building a test candidate for ' + task.id)
-    const targetHead = await headOf(projectPath)
-    if (targetHead === null) return failure('head-unreadable', 'could not read the target HEAD of ' + projectPath)
+    const targetHead = await branchHeadOf(projectPath, task.target)
+    if (targetHead === null) return failure('target-unreadable', 'could not read the head of target branch ' + task.target)
     const candidate = candidateAt(projectPath, req.worktreeRoot, task.id)
     await discardCandidateAt(projectPath, candidate)
     const added = await callGit('worktreeAdd', [projectPath, { path: candidate.path, branch: candidate.branch, base: targetHead }])
@@ -572,23 +576,18 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     const base = typeof task.base === 'string' && task.base.length > 0 ? task.base : typeof merge.base === 'string' ? merge.base : null
     const mergeCommit = typeof merge.mergeCommit === 'string' && merge.mergeCommit.length > 0 ? merge.mergeCommit : null
     if (base === null || mergeCommit === null) return failure('no-candidate', task.id + ' has no recorded test candidate to merge')
-    const current = await currentBranchOf(projectPath)
-    if (current.ok !== true) return failure('branch-unreadable', 'could not read the branch of ' + projectPath + ': ' + current.message)
-    if (current.branch !== task.target) {
-      return failure('target-mismatch', task.id + ' targets ' + task.target + ', but ' + projectPath + ' is on ' + (current.branch === null ? 'a detached HEAD' : current.branch))
-    }
     const clean = await cleanOf(projectPath)
     if (clean.ok !== true) return failure('clean-unreadable', 'could not check whether ' + projectPath + ' is clean: ' + clean.message)
     if (clean.clean !== true) return failure('dirty-worktree', 'the main working tree is not clean; the tested candidate cannot be merged right now')
-    const currentHead = await headOf(projectPath)
-    if (currentHead === null) return failure('head-unreadable', 'could not read the target HEAD of ' + projectPath)
+    const currentHead = await branchHeadOf(projectPath, task.target)
+    if (currentHead === null) return failure('target-unreadable', 'could not read the head of target branch ' + task.target)
     if (currentHead !== base) {
       return { ok: true, status: 'stale', base: base, currentHead: currentHead, mergeCommit: mergeCommit }
     }
     const candidate = candidateAt(projectPath, req.worktreeRoot, task.id)
-    const forwarded = await callGit('mergeFfOnly', [projectPath, candidate.branch])
+    const forwarded = await callGit('updateRef', [projectPath, task.target, mergeCommit])
     if (forwarded === null || forwarded === undefined || forwarded.ok !== true) {
-      return failure('candidate-merge-failed', 'could not fast-forward ' + task.target + ' to the tested candidate: ' + messageOf(forwarded))
+      return failure('candidate-merge-failed', 'could not advance ' + task.target + ' to the tested candidate: ' + messageOf(forwarded))
     }
     await discardCandidateAt(projectPath, candidate)
     let taskWorktreeRemoved = false

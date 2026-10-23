@@ -923,8 +923,8 @@ function seedMergeTask(rig, task) {
     candidate !== undefined && candidate.cwd === integration && candidate.args.join(' ') === 'merge --no-ff --no-edit task/T-1-1',
     JSON.stringify(candidate && candidate.args),
   )
-  const forward = byCommand('merge --ff-only merge/main/T-1')[0]
-  check('main is fast-forwarded to the integration branch', forward !== undefined && forward.cwd === PROJECT, JSON.stringify(forward))
+  const forward = fake.calls.filter((entry) => entry.args[0] === 'update-ref' && entry.args[1] === 'main')[0]
+  check('the main BRANCH is advanced to the integration commit', forward !== undefined && forward.cwd === PROJECT && forward.args[2] === 'merge-sha', JSON.stringify(forward))
   check(
     'the temporary integration checkout and branch are cleaned up',
     byCommand('worktree remove --force ' + integration).length === 1 && byCommand('branch -d merge/main/T-1').length === 1,
@@ -964,7 +964,7 @@ function seedMergeTask(rig, task) {
   check('the conflict names the unmerged files', String(payload.task.merge.conflict).indexOf('scripts/a.gd') >= 0, JSON.stringify(payload.task.merge.conflict))
   const abort = fake.calls.filter((entry) => entry.args[0] === 'merge' && entry.args[1] === '--abort')[0]
   check('the integration merge is aborted', abort !== undefined && abort.cwd === integration, JSON.stringify(abort))
-  check('main is never fast-forwarded on a conflict', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/main/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check('main is never advanced on a conflict', fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'main')), JSON.stringify(fake.calls.map((entry) => entry.args)))
   check(
     'the temporary checkout and branch are cleaned up after a conflict',
     fake.calls.some((entry) => entry.args.join(' ') === 'worktree remove --force ' + integration) &&
@@ -995,7 +995,7 @@ function seedMergeTask(rig, task) {
   check('the failed merge records no merge commit', payload.task.merge.mergeCommit === null, JSON.stringify(payload.task.merge))
   const reset = fake.calls.filter((entry) => entry.args[0] === 'reset')[0]
   check('the integration checkout is reset', reset !== undefined && reset.cwd === integration && reset.args.join(' ') === 'reset --hard HEAD', JSON.stringify(reset))
-  check('main is never fast-forwarded on a red verification', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/main/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check('main is never advanced on a red verification', fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'main')), JSON.stringify(fake.calls.map((entry) => entry.args)))
   check(
     'the task worktree is kept for repair',
     fake.calls.every((entry) => entry.args.join(' ') !== 'worktree remove --force ' + join(PROJECT, '.worktrees', 'T-1')),
@@ -1276,7 +1276,7 @@ function mergerTeam(options) {
   check('the output does not dump the opening PASS wall', output.indexOf('PASS  head check 0 ') < 0, output.slice(0, 400))
   check('the output stays capped near 8 KiB', Buffer.byteLength(output, 'utf8') <= 8 * 1024, String(Buffer.byteLength(output, 'utf8')))
   check('the truncated output never splits a UTF-8 character', output.indexOf('\uFFFD') < 0, output.slice(-400))
-  check('the long red verification still never fast-forwards main', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/main/T-1'))
+  check('the long red verification still never advances main', fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'main')))
   mergeSurface.dispose()
   mergeRig.scheduler.dispose()
 }
@@ -1340,7 +1340,7 @@ function driftRig(options) {
     res.text,
   )
   check('no integration worktree is created on drift', ctx.fake.calls.every((entry) => !(entry.args[0] === 'worktree' && entry.args[1] === 'add')), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
-  check('main is never fast-forwarded on drift', ctx.fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/main/T-1'), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
+  check('main is never advanced on drift', ctx.fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'main')), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
   check('no verification starts on drift', ctx.verifier.calls.length === 0, String(ctx.verifier.calls.length))
   const after = await call(ctx.surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
   check(
@@ -1741,7 +1741,7 @@ function driftRig(options) {
     typeof mergeHistory.byName === 'string' && mergeHistory.byName.charAt(0) !== '@' && mergeHistory.byName === 'system',
     JSON.stringify(mergeHistory),
   )
-  const forwards = () => fake.calls.filter((entry) => entry.args.join(' ') === 'merge --ff-only merge/main/T-1').length
+  const forwards = () => fake.calls.filter((entry) => entry.args[0] === 'update-ref' && entry.args[1] === 'main').length
   check('main is fast-forwarded exactly once', forwards() === 1, String(forwards()))
   const again = await rig.api.autoMergePending(PROJECT)
   check('a second sweep is a no-op', again.ok === true && again.merged.length === 0, JSON.stringify(again))
@@ -2662,8 +2662,8 @@ function fakeHostSubprocess(result) {
   check('the passed verdict keeps the tester evidence', payload.task.test.status === 'passed' && payload.task.test.evidence === 'npm test: PASS', JSON.stringify(payload.task.test))
   check('the merged record names the candidate commit', payload.task.merge.mergeCommit === 'candidate-sha', JSON.stringify(payload.task.merge))
   const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
-  const forward = fake.calls.filter((call) => call.args.join(' ') === 'merge --ff-only test/T-1')[0]
-  check('main is fast-forwarded to the candidate', forward !== undefined && forward.cwd === PROJECT, JSON.stringify(forward))
+  const forward = fake.calls.filter((call) => call.args[0] === 'update-ref' && call.args[1] === 'main')[0]
+  check('the main branch is advanced to the candidate commit', forward !== undefined && forward.cwd === PROJECT && forward.args[2] === 'candidate-sha', JSON.stringify(forward))
   check(
     'the candidate checkout and branch are cleaned up',
     fake.calls.some((call) => call.args.join(' ') === 'worktree remove --force ' + candidatePath) && fake.calls.some((call) => call.args.join(' ') === 'branch -D test/T-1'),
@@ -2693,7 +2693,7 @@ function fakeHostSubprocess(result) {
     fake.calls.some((call) => call.args.join(' ') === 'worktree remove --force ' + candidatePath) && fake.calls.some((call) => call.args.join(' ') === 'branch -D test/T-1'),
     JSON.stringify(fake.calls.map((call) => call.args)),
   )
-  check('main is never fast-forwarded on a failed test', fake.calls.every((call) => call.args.join(' ') !== 'merge --ff-only test/T-1'), JSON.stringify(fake.calls.map((call) => call.args)))
+  check('main is never advanced on a failed test', fake.calls.every((call) => !(call.args[0] === 'update-ref' && call.args[1] === 'main')), JSON.stringify(fake.calls.map((call) => call.args)))
   const ownerSent = ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'fixer')
   check('the worker is told what failed, with the evidence', ownerSent.length === 1 && ownerSent[0].text.indexOf('boss room') >= 0, JSON.stringify(ownerSent))
   surface.dispose()
@@ -2713,7 +2713,7 @@ function fakeHostSubprocess(result) {
   check('a moved target invalidates the verdict and keeps testing', payload.ok === true && payload.task.status === 'testing' && payload.task.test.status === 'pending', passed.text)
   check('a new test round starts', payload.task.test.attempt === 2, JSON.stringify(payload.task.test))
   check('the stale candidate was replaced from the new target head', payload.task.base === 'moved-sha' && payload.task.merge.mergeCommit === 'candidate-sha', JSON.stringify({ base: payload.task.base, merge: payload.task.merge }))
-  check('main is never fast-forwarded for a stale verdict', fake.calls.every((call) => call.args.join(' ') !== 'merge --ff-only test/T-1'), JSON.stringify(fake.calls.map((call) => call.args)))
+  check('main is never advanced for a stale verdict', fake.calls.every((call) => !(call.args[0] === 'update-ref' && call.args[1] === 'main')), JSON.stringify(fake.calls.map((call) => call.args)))
   const adds = fake.calls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'add')
   check('the candidate is rebuilt from the moved target', adds.length === 2 && adds[1].args.join(' ') === 'worktree add -b test/T-1 ' + join(PROJECT, '.worktrees', 'test-T-1') + ' moved-sha', JSON.stringify(adds.map((call) => call.args)))
   const testerSends = ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'tester-1')
@@ -2804,7 +2804,7 @@ async function withDeadline(promise, ms) {
     merged !== null && merged.__timedOut !== true && merged.ok === true && merged.task.status === 'done' && merged.task.merge.status === 'merged',
     JSON.stringify(merged === null || merged.__timedOut === true ? merged : { ok: merged.ok, status: merged.task && merged.task.status }),
   )
-  const forwards = fake.calls.filter((call) => call.args.join(' ') === 'merge --ff-only test/T-1')
+  const forwards = fake.calls.filter((call) => call.args[0] === 'update-ref' && call.args[1] === 'main')
   check('the target is fast-forwarded exactly once', forwards.length === 1 && forwards[0].cwd === PROJECT, JSON.stringify(forwards.map((call) => call.args)))
   check('the candidate is not rebuilt during or after the merge', counts.createCandidate === 1 && counts.discardCandidate === 0, JSON.stringify(counts))
   check(
@@ -2961,7 +2961,7 @@ async function withDeadline(promise, ms) {
   if (gateRelease !== null) gateRelease()
   const merged = await withDeadline(mergePromise, 2000)
   check('the paused merge still completes', merged !== null && merged.__timedOut !== true && merged.ok === true && merged.task.status === 'done', JSON.stringify(merged === null || merged.__timedOut === true ? merged : { ok: merged.ok, status: merged.task && merged.task.status }))
-  const forwards = fake.calls.filter((call) => call.args.join(' ') === 'merge --ff-only test/T-1')
+  const forwards = fake.calls.filter((call) => call.args[0] === 'update-ref' && call.args[1] === 'main')
   check('the race window produced exactly one fast-forward', forwards.length === 1, JSON.stringify(forwards.map((call) => call.args)))
   check('the merge-write window produced no other candidate', counts.createCandidate === 1 && counts.discardCandidate === 0, JSON.stringify(counts))
   const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
