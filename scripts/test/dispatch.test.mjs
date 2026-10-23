@@ -2689,9 +2689,11 @@ function fakeHostSubprocess(result) {
 // ── merge refusals and per-target advance with the main checkout elsewhere ──
 {
   const control = createFakeGit()
+  const heads = { main: 'main-head', 'feat/x': 'feat-head' }
+  const shortName = (ref) => (String(ref).startsWith('refs/heads/') ? String(ref).slice('refs/heads/'.length) : String(ref))
   control.revParse = async function (root, ref) {
-    if (ref === 'main') return { ok: true, hash: 'main-head' }
-    if (ref === 'feat/x') return { ok: true, hash: 'feat-head' }
+    const name = shortName(ref)
+    if (heads[name] !== undefined) return { ok: true, hash: heads[name] }
     return { ok: false, message: 'unknown ref ' + ref }
   }
   control.currentBranch = async function () { return { ok: true, branch: 'feat/x' } }
@@ -2700,11 +2702,14 @@ function fakeHostSubprocess(result) {
   const updates = []
   const fastForwards = []
   control.updateRef = async function (root, ref, hash) {
+    heads[shortName(ref)] = hash
     updates.push(ref + '=' + hash)
     return { ok: true, ref: ref, hash: hash }
   }
   control.mergeFfOnly = async function (root, branch) {
     fastForwards.push(root + '|' + branch)
+    // A fast-forward in the checked-out worktree moves that branch to the merge.
+    heads['feat/x'] = 'feat-head'
     return { ok: true }
   }
   const merger = createMerger({ git: control })
@@ -2714,14 +2719,14 @@ function fakeHostSubprocess(result) {
   const featureResult = await merger.mergeRequest(feature, PROJECT, { worktreeRoot: '.worktrees' })
   check(
     'the main checkout stays on feat while a hotfix advances main and a feature advances feat',
-    hotfixResult.ok === true && hotfixResult.status === 'merged' && featureResult.ok === true && featureResult.status === 'merged' && updates.length === 1 && updates[0].indexOf('main=') === 0,
+    hotfixResult.ok === true && hotfixResult.status === 'merged' && featureResult.ok === true && featureResult.status === 'merged' && updates.length === 1 && updates[0].indexOf('refs/heads/main=') === 0,
     JSON.stringify({ hotfix: hotfixResult, feature: featureResult, updates: updates }),
   )
   const addBases = control.calls.filter((call) => call.name === 'worktreeAdd').map((call) => call.detail.base)
   check('each integration checkout starts from its own target head', addBases.join(',') === 'main-head,feat-head', JSON.stringify(addBases))
   check(
     'a checked-out target is fast-forwarded in its own worktree, not update-ref\'d under it',
-    updates.length === 1 && updates[0].indexOf('main=') === 0 && fastForwards.length === 1 && fastForwards[0] === PROJECT + '|merge/feat-x/T-2',
+    updates.length === 1 && updates[0].indexOf('refs/heads/main=') === 0 && fastForwards.length === 1 && fastForwards[0] === PROJECT + '|merge/feat-x/T-2',
     JSON.stringify({ updates: updates, fastForwards: fastForwards }),
   )
   const dirtyGit = createFakeGit({ clean: false })

@@ -921,7 +921,11 @@ export function createApi(ctx, options) {
       return failure('no-git-service', 'this profile has no git service, so the target branch ' + ref + ' cannot be read')
     }
     try {
-      const resolved = await git.revParse(projectPath, ref)
+      // Fully-qualified ref: a short target name can be ambiguous (git reports
+      // "refname is ambiguous" for e.g. fix/eval-debugger-trap), which made a
+      // merge look successful while the branch never moved.
+      const qualified = String(ref).startsWith('refs/heads/') ? String(ref) : 'refs/heads/' + String(ref)
+      const resolved = await git.revParse(projectPath, qualified)
       if (resolved !== null && resolved !== undefined && resolved.ok === true && typeof resolved.hash === 'string' && resolved.hash.length > 0) {
         return ok({ head: String(resolved.hash) })
       }

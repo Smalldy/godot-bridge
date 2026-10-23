@@ -801,9 +801,22 @@ function mergeGit(replies) {
   const integration = join(PROJECT, '.worktrees', 'merge-T-1')
   const taskWorktree = join(PROJECT, '.worktrees', 'T-1')
   const calls = []
+  const advancedRefs = new Map()
   const run = (args, cwd) => {
     calls.push({ args: args.slice(), cwd: cwd })
     const key = args.join(' ')
+    // An explicit reply may model a silent update-ref failure.
+    if (replies !== undefined && replies[key] !== undefined && args[0] === 'update-ref') return replies[key](args, cwd)
+    // A real update-ref moves the branch; the post-advance verification reads it back.
+    if (args[0] === 'update-ref' && typeof args[1] === 'string' && args[1].startsWith('refs/heads/')) {
+      advancedRefs.set(args[1], args[2])
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (args[0] === 'rev-parse' && args[1] === '--verify' && advancedRefs.has(args[2])) return { code: 0, stdout: advancedRefs.get(args[2]) + '\n', stderr: '' }
+    // Slash targets other than main get a default head so the full flow can run.
+    if (args[0] === 'rev-parse' && args[1] === '--verify' && typeof args[2] === 'string' && args[2].startsWith('refs/heads/') && args[2] !== 'refs/heads/main') {
+      return { code: 0, stdout: 'target-sha\n', stderr: '' }
+    }
     if (replies !== undefined && replies[key] !== undefined) return replies[key](args, cwd)
     if (key === 'branch --show-current') return { code: 0, stdout: 'main\n', stderr: '' }
     if (key === 'status --porcelain') return { code: 0, stdout: '', stderr: '' }
@@ -923,7 +936,7 @@ function seedMergeTask(rig, task) {
     candidate !== undefined && candidate.cwd === integration && candidate.args.join(' ') === 'merge --no-ff --no-edit task/T-1-1',
     JSON.stringify(candidate && candidate.args),
   )
-  const forward = fake.calls.filter((entry) => entry.args[0] === 'update-ref' && entry.args[1] === 'main')[0]
+  const forward = fake.calls.filter((entry) => entry.args[0] === 'update-ref' && entry.args[1] === 'refs/heads/main')[0]
   check('the main BRANCH is advanced to the integration commit', forward !== undefined && forward.cwd === PROJECT && forward.args[2] === 'merge-sha', JSON.stringify(forward))
   check(
     'the temporary integration checkout and branch are cleaned up',
@@ -964,7 +977,7 @@ function seedMergeTask(rig, task) {
   check('the conflict names the unmerged files', String(payload.task.merge.conflict).indexOf('scripts/a.gd') >= 0, JSON.stringify(payload.task.merge.conflict))
   const abort = fake.calls.filter((entry) => entry.args[0] === 'merge' && entry.args[1] === '--abort')[0]
   check('the integration merge is aborted', abort !== undefined && abort.cwd === integration, JSON.stringify(abort))
-  check('main is never advanced on a conflict', fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'main')), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check('main is never advanced on a conflict', fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'refs/heads/main')), JSON.stringify(fake.calls.map((entry) => entry.args)))
   check(
     'the temporary checkout and branch are cleaned up after a conflict',
     fake.calls.some((entry) => entry.args.join(' ') === 'worktree remove --force ' + integration) &&
@@ -995,7 +1008,7 @@ function seedMergeTask(rig, task) {
   check('the failed merge records no merge commit', payload.task.merge.mergeCommit === null, JSON.stringify(payload.task.merge))
   const reset = fake.calls.filter((entry) => entry.args[0] === 'reset')[0]
   check('the integration checkout is reset', reset !== undefined && reset.cwd === integration && reset.args.join(' ') === 'reset --hard HEAD', JSON.stringify(reset))
-  check('main is never advanced on a red verification', fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'main')), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check('main is never advanced on a red verification', fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'refs/heads/main')), JSON.stringify(fake.calls.map((entry) => entry.args)))
   check(
     'the task worktree is kept for repair',
     fake.calls.every((entry) => entry.args.join(' ') !== 'worktree remove --force ' + join(PROJECT, '.worktrees', 'T-1')),
@@ -1276,7 +1289,7 @@ function mergerTeam(options) {
   check('the output does not dump the opening PASS wall', output.indexOf('PASS  head check 0 ') < 0, output.slice(0, 400))
   check('the output stays capped near 8 KiB', Buffer.byteLength(output, 'utf8') <= 8 * 1024, String(Buffer.byteLength(output, 'utf8')))
   check('the truncated output never splits a UTF-8 character', output.indexOf('\uFFFD') < 0, output.slice(-400))
-  check('the long red verification still never advances main', fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'main')))
+  check('the long red verification still never advances main', fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'refs/heads/main')))
   mergeSurface.dispose()
   mergeRig.scheduler.dispose()
 }
@@ -1296,7 +1309,7 @@ function driftRig(options) {
       stderr: '',
     }),
     // A refresh re-bases on the target's current head, then diffs from it.
-    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
+    'rev-parse --verify refs/heads/main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
     ['diff --name-only target-sha ' + worktreeHead]: () => ({ code: 0, stdout: 'scripts/a.gd\nscripts/b.gd\n', stderr: '' }),
     ['diff --name-only base-sha ' + worktreeHead]: () => ({ code: 0, stdout: 'scripts/a.gd\nscripts/b.gd\n', stderr: '' }),
   })
@@ -1340,7 +1353,7 @@ function driftRig(options) {
     res.text,
   )
   check('no integration worktree is created on drift', ctx.fake.calls.every((entry) => !(entry.args[0] === 'worktree' && entry.args[1] === 'add')), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
-  check('main is never advanced on drift', ctx.fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'main')), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
+  check('main is never advanced on drift', ctx.fake.calls.every((entry) => !(entry.args[0] === 'update-ref' && entry.args[1] === 'refs/heads/main')), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
   check('no verification starts on drift', ctx.verifier.calls.length === 0, String(ctx.verifier.calls.length))
   const after = await call(ctx.surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
   check(
@@ -1517,7 +1530,7 @@ function driftRig(options) {
       stdout: (cwd === integration ? 'merge-sha' : cwd === worktree ? 'branch-new-sha' : 'target-sha') + '\n',
       stderr: '',
     }),
-    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-new-sha\n', stderr: '' }),
+    'rev-parse --verify refs/heads/main': () => ({ code: 0, stdout: 'target-new-sha\n', stderr: '' }),
     'diff --name-only target-new-sha branch-new-sha': () => ({ code: 0, stdout: 'scripts/a.gd\n', stderr: '' }),
     'diff --name-only old-base-sha branch-new-sha': () => ({ code: 0, stdout: 'scripts/a.gd\ndependency/file.gd\n', stderr: '' }),
   })
@@ -1741,7 +1754,7 @@ function driftRig(options) {
     typeof mergeHistory.byName === 'string' && mergeHistory.byName.charAt(0) !== '@' && mergeHistory.byName === 'system',
     JSON.stringify(mergeHistory),
   )
-  const forwards = () => fake.calls.filter((entry) => entry.args[0] === 'update-ref' && entry.args[1] === 'main').length
+  const forwards = () => fake.calls.filter((entry) => entry.args[0] === 'update-ref' && entry.args[1] === 'refs/heads/main').length
   check('main is fast-forwarded exactly once', forwards() === 1, String(forwards()))
   const again = await rig.api.autoMergePending(PROJECT)
   check('a second sweep is a no-op', again.ok === true && again.merged.length === 0, JSON.stringify(again))
@@ -2289,7 +2302,7 @@ function testStageTask(overrides) {
 
 {
   const fake = mergeGit({
-    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
+    'rev-parse --verify refs/heads/main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
   })
   const team = roleTeam()
   const rig = createSubmitRig({ team: team, roles: true, git: fake.git })
@@ -2381,6 +2394,12 @@ function testerGit(options) {
     if (key === 'rev-parse HEAD') {
       return { code: 0, stdout: (String(cwd).indexOf('test-T-1') >= 0 ? 'candidate-sha' : targetHead) + '\n', stderr: '' }
     }
+    // A real update-ref moves the branch; the post-advance verification reads it back.
+    if (args[0] === 'update-ref') {
+      if (args[1] === 'refs/heads/main') targetHead = args[2]
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (key === 'rev-parse --verify refs/heads/main') return { code: 0, stdout: targetHead + '\n', stderr: '' }
     return { code: 0, stdout: '', stderr: '' }
   }
   run.calls = calls
@@ -2805,7 +2824,7 @@ function fakeHostSubprocess(result) {
   check('the passed verdict keeps the tester evidence', payload.task.test.status === 'passed' && payload.task.test.evidence === 'npm test: PASS', JSON.stringify(payload.task.test))
   check('the merged record names the candidate commit', payload.task.merge.mergeCommit === 'candidate-sha', JSON.stringify(payload.task.merge))
   const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
-  const forward = fake.calls.filter((call) => call.args[0] === 'update-ref' && call.args[1] === 'main')[0]
+  const forward = fake.calls.filter((call) => call.args[0] === 'update-ref' && call.args[1] === 'refs/heads/main')[0]
   check('the main branch is advanced to the candidate commit', forward !== undefined && forward.cwd === PROJECT && forward.args[2] === 'candidate-sha', JSON.stringify(forward))
   check(
     'the candidate checkout and branch are cleaned up',
@@ -2836,7 +2855,7 @@ function fakeHostSubprocess(result) {
     fake.calls.some((call) => call.args.join(' ') === 'worktree remove --force ' + candidatePath) && fake.calls.some((call) => call.args.join(' ') === 'branch -D test/T-1'),
     JSON.stringify(fake.calls.map((call) => call.args)),
   )
-  check('main is never advanced on a failed test', fake.calls.every((call) => !(call.args[0] === 'update-ref' && call.args[1] === 'main')), JSON.stringify(fake.calls.map((call) => call.args)))
+  check('main is never advanced on a failed test', fake.calls.every((call) => !(call.args[0] === 'update-ref' && call.args[1] === 'refs/heads/main')), JSON.stringify(fake.calls.map((call) => call.args)))
   const ownerSent = ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'fixer')
   check('the worker is told what failed, with the evidence', ownerSent.length === 1 && ownerSent[0].text.indexOf('boss room') >= 0, JSON.stringify(ownerSent))
   surface.dispose()
@@ -2856,7 +2875,7 @@ function fakeHostSubprocess(result) {
   check('a moved target invalidates the verdict and keeps testing', payload.ok === true && payload.task.status === 'testing' && payload.task.test.status === 'pending', passed.text)
   check('a new test round starts', payload.task.test.attempt === 2, JSON.stringify(payload.task.test))
   check('the stale candidate was replaced from the new target head', payload.task.base === 'moved-sha' && payload.task.merge.mergeCommit === 'candidate-sha', JSON.stringify({ base: payload.task.base, merge: payload.task.merge }))
-  check('main is never advanced for a stale verdict', fake.calls.every((call) => !(call.args[0] === 'update-ref' && call.args[1] === 'main')), JSON.stringify(fake.calls.map((call) => call.args)))
+  check('main is never advanced for a stale verdict', fake.calls.every((call) => !(call.args[0] === 'update-ref' && call.args[1] === 'refs/heads/main')), JSON.stringify(fake.calls.map((call) => call.args)))
   const adds = fake.calls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'add')
   check('the candidate is rebuilt from the moved target', adds.length === 2 && adds[1].args.join(' ') === 'worktree add -b test/T-1 ' + join(PROJECT, '.worktrees', 'test-T-1') + ' moved-sha', JSON.stringify(adds.map((call) => call.args)))
   const testerSends = ctx.team.calls.filter((call) => call.kind === 'send' && call.target === 'tester-1')
@@ -2947,7 +2966,7 @@ async function withDeadline(promise, ms) {
     merged !== null && merged.__timedOut !== true && merged.ok === true && merged.task.status === 'done' && merged.task.merge.status === 'merged',
     JSON.stringify(merged === null || merged.__timedOut === true ? merged : { ok: merged.ok, status: merged.task && merged.task.status }),
   )
-  const forwards = fake.calls.filter((call) => call.args[0] === 'update-ref' && call.args[1] === 'main')
+  const forwards = fake.calls.filter((call) => call.args[0] === 'update-ref' && call.args[1] === 'refs/heads/main')
   check('the target is fast-forwarded exactly once', forwards.length === 1 && forwards[0].cwd === PROJECT, JSON.stringify(forwards.map((call) => call.args)))
   check('the candidate is not rebuilt during or after the merge', counts.createCandidate === 1 && counts.discardCandidate === 0, JSON.stringify(counts))
   check(
@@ -3104,7 +3123,7 @@ async function withDeadline(promise, ms) {
   if (gateRelease !== null) gateRelease()
   const merged = await withDeadline(mergePromise, 2000)
   check('the paused merge still completes', merged !== null && merged.__timedOut !== true && merged.ok === true && merged.task.status === 'done', JSON.stringify(merged === null || merged.__timedOut === true ? merged : { ok: merged.ok, status: merged.task && merged.task.status }))
-  const forwards = fake.calls.filter((call) => call.args[0] === 'update-ref' && call.args[1] === 'main')
+  const forwards = fake.calls.filter((call) => call.args[0] === 'update-ref' && call.args[1] === 'refs/heads/main')
   check('the race window produced exactly one fast-forward', forwards.length === 1, JSON.stringify(forwards.map((call) => call.args)))
   check('the merge-write window produced no other candidate', counts.createCandidate === 1 && counts.discardCandidate === 0, JSON.stringify(counts))
   const candidatePath = join(PROJECT, '.worktrees', 'test-T-1')
@@ -3962,7 +3981,7 @@ async function withDeadline(promise, ms) {
   const activity = createActivity({ limit: 30 })
   const fake = mergeGit({
     'status --porcelain': () => ({ code: 0, stdout: ' M scripts/a.gd\n', stderr: '' }),
-    'rev-parse --verify main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
+    'rev-parse --verify refs/heads/main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
   })
   const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
   const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }), activity: activity })
@@ -4336,10 +4355,12 @@ rig.scheduler.dispose()
   let overlapped = false
   const addOrder = []
   const updates = []
+  const heads = { main: 'main-head', 'feat/x': 'feat-head' }
+  const shortName = (ref) => (String(ref).startsWith('refs/heads/') ? String(ref).slice('refs/heads/'.length) : String(ref))
   const git = {
     async isClean() { return { ok: true, clean: true } },
     async currentBranch() { return { ok: true, branch: 'feat/x' } },
-    async revParse(root, ref) { return { ok: true, hash: ref === 'main' ? 'main-head' : 'feat-head' } },
+    async revParse(root, ref) { return { ok: true, hash: heads[shortName(ref)] || 'merge-sha' } },
     async worktreeList() { return { ok: true, worktrees: [] } },
     async head() { return { ok: true, hash: 'merge-sha' } },
     async worktreeAdd(root, input) {
@@ -4355,7 +4376,7 @@ rig.scheduler.dispose()
     async conflictedFiles() { return { ok: true, files: [] } },
     async worktreeRemove() { return { ok: true } },
     async deleteBranch() { return { ok: true } },
-    async updateRef(root, ref, hash) { updates.push(ref + '=' + hash); return { ok: true, ref: ref, hash: hash } },
+    async updateRef(root, ref, hash) { heads[shortName(ref)] = hash; updates.push(ref + '=' + hash); return { ok: true, ref: ref, hash: hash } },
   }
   const merger = createMerger({ git: git })
   const taskFor = (id, target, branch) => ({ id: id, title: 'merge ' + id, status: 'testing', branch: branch, target: target, merge: { status: 'open', base: target + '-head', head: 'h', target: target } })
@@ -4370,9 +4391,63 @@ rig.scheduler.dispose()
   )
   check(
     'each merge advances only its own target',
-    updates.length === 2 && updates[0].indexOf('main=') === 0 && updates[1].indexOf('feat/x=') === 0,
+    updates.length === 2 && updates[0].indexOf('refs/heads/main=') === 0 && updates[1].indexOf('refs/heads/feat/x=') === 0,
     JSON.stringify(updates),
   )
+}
+
+// ── T-77: fully-qualified refs and post-advance verification ───────────────
+{
+  // Silent failure: git claims success but the target ref never moves.
+  const fake = mergeGit({
+    'update-ref refs/heads/main merge-sha': () => ({ code: 0, stdout: '', stderr: '' }),
+    'rev-parse --verify refs/heads/main': () => ({ code: 0, stdout: 'target-sha\n', stderr: '' }),
+  })
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  seedMergeTask(rig, openMergeTask())
+  const surface = install(rig)
+  const merged = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  const payload = merged.json()
+  check(
+    'a target that does not move after update-ref is refused with target-not-advanced',
+    payload.ok === false && payload.code === 'target-not-advanced' && String(payload.message).indexOf('refs/heads/main') >= 0,
+    merged.text,
+  )
+  const after = await rig.api.snapshot(PROJECT)
+  const still = after.tasks.filter((task) => task.id === 'T-1')[0]
+  check('the task stays testing and is never marked done', still.status === 'testing' && still.merge.status === 'open', JSON.stringify({ status: still.status, merge: still.merge && still.merge.status }))
+  check(
+    'the advance used the fully-qualified ref',
+    fake.calls.some((call) => call.args[0] === 'update-ref' && call.args[1] === 'refs/heads/main'),
+    JSON.stringify(fake.calls.filter((call) => call.args[0] === 'update-ref').map((call) => call.args)),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+{
+  // Normal path with a slash in the target: full flow, ref advanced, task done.
+  const fake = mergeGit({})
+  const verifier = fakeVerifier({ code: 0, stdout: '', stderr: '' })
+  const rig = createSubmitRig({ git: fake.git, merger: createMerger({ git: fake.git, verify: verifier.verify }) })
+  const task = openMergeTask({ target: 'fix/x', merge: Object.assign({}, openMergeTask().merge, { target: 'fix/x' }) })
+  seedMergeTask(rig, task)
+  const surface = install(rig)
+  const merged = await postTo(surface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
+  const payload = merged.json()
+  check(
+    'a target containing a slash merges through the fully-qualified ref',
+    payload.ok === true && payload.task.status === 'done' && payload.task.merge.status === 'merged' && payload.task.merge.mergeCommit === 'merge-sha',
+    merged.text,
+  )
+  const refCalls = fake.calls.filter((call) => call.args[0] === 'update-ref' || (call.args[0] === 'rev-parse' && call.args[1] === '--verify'))
+  check(
+    'every ref is addressed as refs/heads/fix/x, never the short ambiguous name',
+    refCalls.length > 0 && refCalls.every((call) => call.args.join(' ').indexOf('refs/heads/fix/x') >= 0),
+    JSON.stringify(refCalls.map((call) => call.args)),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
