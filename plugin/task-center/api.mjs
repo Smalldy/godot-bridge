@@ -249,9 +249,22 @@ export function createApi(ctx, options) {
   let worktreeCache = { at: -Infinity, project: null, value: null }
 
   /** Merge actions are one-at-a-time: the queue serialises the whole read+git+write. */
-  function serialised(work) {
-    if (merger !== null && typeof merger.enqueue === 'function') return merger.enqueue(work)
+  function serialised(work, key) {
+    if (merger !== null && typeof merger.enqueue === 'function') return merger.enqueue(work, key)
     return work()
+  }
+
+  /** The queue key of a task: merges into one target are serial, targets are not. */
+  async function mergeQueueKey(projectPath, id) {
+    try {
+      const read = await readBoardOrFail(projectPath)
+      if (read.failed !== undefined) return '_global'
+      const task = model.findTask(read.board, id)
+      if (task === undefined || task === null) return '_global'
+      return typeof task.target === 'string' && task.target !== '' ? task.target : '_default'
+    } catch (error) {
+      return '_global'
+    }
   }
 
   /**
@@ -384,7 +397,8 @@ export function createApi(ctx, options) {
     const mergeOptions = options === undefined || options === null ? {} : options
     // When the caller already holds the merge-queue turn (mergeOne inside
     // serialised), enqueueing again would deadlock: run the queue methods inline.
-    const viaQueue = mergeOptions.inQueue === true ? function (work) { return work() } : function (work) { return serialised(work) }
+    let queueTarget = '_global'
+    const viaQueue = mergeOptions.inQueue === true ? function (work) { return work() } : function (work) { return serialised(work, queueTarget) }
     const isAbandoned = function () {
       return mergeOptions.token !== undefined && mergeOptions.token !== null && mergeOptions.token.aborted === true
     }
@@ -395,6 +409,7 @@ export function createApi(ctx, options) {
     if (read.failed !== undefined) return read.failed
     const task = model.findTask(read.board, id)
     if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
+    queueTarget = typeof task.target === 'string' && task.target !== '' ? task.target : '_default'
     if (task.status !== 'testing' || !mergeEligible(task)) {
       return failure('no-open-merge', id + ' is no longer waiting to merge')
     }
@@ -1551,11 +1566,38 @@ export function createApi(ctx, options) {
     const files = canonicalFiles(projectPath, source.writeFiles)
     if (files.ok !== true) return files
     const result = {}
-    for (const key of ['title', 'spec', 'acceptance', 'priority', 'maxAttempts', 'dependsOn', 'note', 'verify']) {
+    for (const key of ['title', 'spec', 'acceptance', 'priority', 'maxAttempts', 'dependsOn', 'note', 'verify', 'target']) {
       if (source[key] !== undefined) result[key] = source[key]
     }
     if (files.files !== undefined) result.writeFiles = files.files
     return { ok: true, input: result }
+  }
+
+  /** Validate a requested target branch: legal name, exists locally. */
+  async function checkTarget(projectPath, value) {
+    if (value === undefined) return { ok: true, target: undefined }
+    if (value === null || String(value).trim() === '') return { ok: true, target: null }
+    const target = String(value).trim()
+    if (target.length > 200 || /[\s~^:?*\[\\]/.test(target) || target.indexOf('..') >= 0 || target.charAt(0) === '/' || target.charAt(0) === '.' || target.slice(-1) === '/' || target.slice(-5) === '.lock') {
+      return failure('invalid-target', 'target ' + JSON.stringify(target) + ' is not a legal branch name')
+    }
+    if (git === null) return { ok: true, target: target }
+    let exists = false
+    try {
+      const checked = await git.branchExists(projectPath, target)
+      exists = checked.ok === true && checked.exists === true
+    } catch (error) {
+      exists = false
+    }
+    if (exists === true) return { ok: true, target: target }
+    const read = await readBoardOrFail(projectPath)
+    const available = new Set(['main'])
+    if (read.failed === undefined) {
+      const current = await git.currentBranch(projectPath)
+      if (current.ok === true && typeof current.branch === 'string' && current.branch !== '') available.add(current.branch)
+      for (const task of read.board.tasks) if (typeof task.target === 'string' && task.target !== '') available.add(task.target)
+    }
+    return failure('unknown-target', 'target branch ' + target + ' does not exist in this repository; available branches: ' + Array.from(available).join(', '))
   }
 
   function taskForContext(board, id, context) {
@@ -1779,7 +1821,8 @@ export function createApi(ctx, options) {
     for (const id of candidates) {
       let result = null
       try {
-        result = await serialised((token) => mergeOne(projectPath, id, 'system', systemContext, 'system', token))
+        const key = (() => { const entry = read.board.tasks.filter((task) => task.id === id)[0]; return entry === undefined || entry.target === null || entry.target === undefined ? '_default' : entry.target })()
+        result = await serialised((token) => mergeOne(projectPath, id, 'system', systemContext, 'system', token), key)
       } catch (error) {
         result = failure('merge-error', messageOf(error))
       }
@@ -2037,6 +2080,11 @@ export function createApi(ctx, options) {
     if (action === 'create') {
       const built = taskInput(projectPath, source)
       if (built.ok !== true) return built
+      if (built.input.target !== undefined) {
+        const checkedTarget = await checkTarget(projectPath, built.input.target)
+        if (checkedTarget.ok !== true) return checkedTarget
+        built.input.target = checkedTarget.target
+      }
       const result = await mutate(
         projectPath,
         (board) => model.createTask(board, built.input, clock(), context.by),
@@ -2052,6 +2100,11 @@ export function createApi(ctx, options) {
       if (id === '') return failure('missing-id', 'update needs a task id')
       const built = taskInput(projectPath, source)
       if (built.ok !== true) return built
+      if (built.input.target !== undefined) {
+        const checkedTarget = await checkTarget(projectPath, built.input.target)
+        if (checkedTarget.ok !== true) return checkedTarget
+        built.input.target = checkedTarget.target
+      }
       return writeTask(
         projectPath,
         id,
@@ -2198,7 +2251,8 @@ export function createApi(ctx, options) {
       if (id === '') return failure('missing-id', 'mergeRequest needs a task id')
       // The whole pipeline (re-read, integrate, verify, record) runs inside the
       // queue so a second request sees the first one's result, never its state.
-      const result = await serialised((token) => mergeOne(projectPath, id, context.by, context, undefined, token))
+      const queueKey = await mergeQueueKey(projectPath, id)
+      const result = await serialised((token) => mergeOne(projectPath, id, context.by, context, undefined, token), queueKey)
       // Notifications happen after the queue releases, and never change the answer.
       if (result.ok === true && result.task !== null && result.task !== undefined) {
         await notifyMergeOutcome(projectPath, result.task)

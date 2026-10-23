@@ -913,8 +913,8 @@ function seedMergeTask(rig, task) {
   const byCommand = (label) => fake.calls.filter((entry) => entry.args.join(' ') === label)
   const addCall = fake.calls.filter((entry) => entry.args[0] === 'worktree' && entry.args[1] === 'add')[0]
   check(
-    'the integration worktree is created from the target HEAD on merge/<id>',
-    addCall !== undefined && addCall.cwd === PROJECT && addCall.args.join(' ') === 'worktree add -b merge/T-1 ' + integration + ' target-sha',
+    'the integration worktree is created from the target HEAD on merge/<target>/<id>',
+    addCall !== undefined && addCall.cwd === PROJECT && addCall.args.join(' ') === 'worktree add -b merge/main/T-1 ' + integration + ' target-sha',
     JSON.stringify(addCall && addCall.args),
   )
   const candidate = fake.calls.filter((entry) => entry.args[0] === 'merge' && entry.args[1] === '--no-ff')[0]
@@ -923,11 +923,11 @@ function seedMergeTask(rig, task) {
     candidate !== undefined && candidate.cwd === integration && candidate.args.join(' ') === 'merge --no-ff --no-edit task/T-1-1',
     JSON.stringify(candidate && candidate.args),
   )
-  const forward = byCommand('merge --ff-only merge/T-1')[0]
+  const forward = byCommand('merge --ff-only merge/main/T-1')[0]
   check('main is fast-forwarded to the integration branch', forward !== undefined && forward.cwd === PROJECT, JSON.stringify(forward))
   check(
     'the temporary integration checkout and branch are cleaned up',
-    byCommand('worktree remove --force ' + integration).length === 1 && byCommand('branch -d merge/T-1').length === 1,
+    byCommand('worktree remove --force ' + integration).length === 1 && byCommand('branch -d merge/main/T-1').length === 1,
     JSON.stringify(fake.calls.map((entry) => entry.args)),
   )
   check(
@@ -964,11 +964,11 @@ function seedMergeTask(rig, task) {
   check('the conflict names the unmerged files', String(payload.task.merge.conflict).indexOf('scripts/a.gd') >= 0, JSON.stringify(payload.task.merge.conflict))
   const abort = fake.calls.filter((entry) => entry.args[0] === 'merge' && entry.args[1] === '--abort')[0]
   check('the integration merge is aborted', abort !== undefined && abort.cwd === integration, JSON.stringify(abort))
-  check('main is never fast-forwarded on a conflict', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check('main is never fast-forwarded on a conflict', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/main/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
   check(
     'the temporary checkout and branch are cleaned up after a conflict',
     fake.calls.some((entry) => entry.args.join(' ') === 'worktree remove --force ' + integration) &&
-      fake.calls.some((entry) => entry.args.join(' ') === 'branch -D merge/T-1'),
+      fake.calls.some((entry) => entry.args.join(' ') === 'branch -D merge/main/T-1'),
     JSON.stringify(fake.calls.map((entry) => entry.args)),
   )
   check(
@@ -995,7 +995,7 @@ function seedMergeTask(rig, task) {
   check('the failed merge records no merge commit', payload.task.merge.mergeCommit === null, JSON.stringify(payload.task.merge))
   const reset = fake.calls.filter((entry) => entry.args[0] === 'reset')[0]
   check('the integration checkout is reset', reset !== undefined && reset.cwd === integration && reset.args.join(' ') === 'reset --hard HEAD', JSON.stringify(reset))
-  check('main is never fast-forwarded on a red verification', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
+  check('main is never fast-forwarded on a red verification', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/main/T-1'), JSON.stringify(fake.calls.map((entry) => entry.args)))
   check(
     'the task worktree is kept for repair',
     fake.calls.every((entry) => entry.args.join(' ') !== 'worktree remove --force ' + join(PROJECT, '.worktrees', 'T-1')),
@@ -1276,7 +1276,7 @@ function mergerTeam(options) {
   check('the output does not dump the opening PASS wall', output.indexOf('PASS  head check 0 ') < 0, output.slice(0, 400))
   check('the output stays capped near 8 KiB', Buffer.byteLength(output, 'utf8') <= 8 * 1024, String(Buffer.byteLength(output, 'utf8')))
   check('the truncated output never splits a UTF-8 character', output.indexOf('\uFFFD') < 0, output.slice(-400))
-  check('the long red verification still never fast-forwards main', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'))
+  check('the long red verification still never fast-forwards main', fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/main/T-1'))
   mergeSurface.dispose()
   mergeRig.scheduler.dispose()
 }
@@ -1340,7 +1340,7 @@ function driftRig(options) {
     res.text,
   )
   check('no integration worktree is created on drift', ctx.fake.calls.every((entry) => !(entry.args[0] === 'worktree' && entry.args[1] === 'add')), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
-  check('main is never fast-forwarded on drift', ctx.fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/T-1'), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
+  check('main is never fast-forwarded on drift', ctx.fake.calls.every((entry) => entry.args.join(' ') !== 'merge --ff-only merge/main/T-1'), JSON.stringify(ctx.fake.calls.map((entry) => entry.args)))
   check('no verification starts on drift', ctx.verifier.calls.length === 0, String(ctx.verifier.calls.length))
   const after = await call(ctx.surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
   check(
@@ -1741,7 +1741,7 @@ function driftRig(options) {
     typeof mergeHistory.byName === 'string' && mergeHistory.byName.charAt(0) !== '@' && mergeHistory.byName === 'system',
     JSON.stringify(mergeHistory),
   )
-  const forwards = () => fake.calls.filter((entry) => entry.args.join(' ') === 'merge --ff-only merge/T-1').length
+  const forwards = () => fake.calls.filter((entry) => entry.args.join(' ') === 'merge --ff-only merge/main/T-1').length
   check('main is fast-forwarded exactly once', forwards() === 1, String(forwards()))
   const again = await rig.api.autoMergePending(PROJECT)
   check('a second sweep is a no-op', again.ok === true && again.merged.length === 0, JSON.stringify(again))
@@ -4155,6 +4155,34 @@ rig.scheduler.dispose()
     'the handover is a host activity entry naming the reason',
     handover.length === 1 && handover[0].actor === 'host' && String(handover[0].detail).indexOf('failed') >= 0,
     JSON.stringify(handover),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── per-task target branch ─────────────────────────────────────────────────
+{
+  const fake = fakeGit()
+  const git = fake.git
+  git.branchExists = async function (root, name) { return { ok: true, exists: name === 'main' || name === 'feat/other' } }
+  const rig = createSubmitRig({ git: git })
+  const created = await rig.action('create', { title: 'hotfix card', target: 'main' })
+  check('a task can be created on an explicit target', created.ok === true && created.task.target === 'main', JSON.stringify(created.task && created.task.target))
+  const cleared = await rig.action('update', { id: created.task.id, target: '' })
+  check('an empty target clears back to the default', cleared.ok === true && cleared.task.target === null, JSON.stringify(cleared.task && cleared.task.target))
+  const pinned = await rig.action('update', { id: created.task.id, target: 'feat/other' })
+  check('an update can pin another existing target', pinned.ok === true && pinned.task.target === 'feat/other', JSON.stringify(pinned.task && pinned.task.target))
+  const unknown = await rig.action('update', { id: created.task.id, target: 'release/9.9' })
+  check(
+    'an unknown target is refused with the available branches',
+    unknown.ok === false && unknown.code === 'unknown-target' && String(unknown.message).indexOf('main') >= 0,
+    JSON.stringify(unknown),
+  )
+  const mainCard = await rig.action('create', { title: 'main card', target: 'main' })
+  const cross = await rig.action('create', { title: 'cross card', target: 'feat/other', dependsOn: [mainCard.task.id] })
+  check(
+    'a cross-target dependency is refused with a readable reason',
+    cross.ok === false && cross.code === 'cross-target-dependency' && String(cross.message).indexOf('target branch') >= 0,
+    JSON.stringify(cross),
   )
   rig.scheduler.dispose()
 }

@@ -2614,6 +2614,38 @@ await flush()
     metricTask.history = savedMetricHistory
   }
 
+  // Target branch is visible on the card, the detail and the task form.
+  {
+    const targetTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const savedTarget = targetTask.target
+    const savedBase = targetTask.base
+    targetTask.target = 'main'
+    targetTask.base = 'abcdef1234567890'
+    let targetTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    targetTree = withHooks(panel, { initialView: 'board' })
+    const targetCard = findAll(targetTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card' && textOf(node).indexOf('Build damage system') >= 0)[0]
+    check(
+      'the task card shows its target branch',
+      targetCard !== undefined && findAll(targetCard, (node) => node.props && node.props['data-target-branch'] === 'main').length === 1,
+      targetCard && textOf(targetCard),
+    )
+    const targetDrawer = await openDetail('Build damage system')
+    const targetLine = findAll(targetDrawer, (node) => node.props && node.props['data-detail-target'] === 'true')[0]
+    check(
+      'the detail summary shows base → target',
+      targetLine !== undefined && textOf(targetLine).indexOf('目标分支') >= 0 && textOf(targetLine).indexOf('main') >= 0 && textOf(targetLine).indexOf('abcdef1234') >= 0,
+      targetLine && textOf(targetLine),
+    )
+    const clientSource = readFileSync(new URL('../../client/client.js', import.meta.url), 'utf8')
+    check(
+      'the task form offers an optional target field with a follow-the-default placeholder',
+      clientSource.indexOf("'data-field': 'target-branch'") >= 0 && clientSource.indexOf('targetFollowDefault') >= 0 && clientSource.indexOf('target: targetBranch.current') >= 0,
+    )
+    targetTask.target = savedTarget
+    targetTask.base = savedBase
+  }
+
   // Elapsed is the finished span, not the growing age.
   const doneTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
   const elapsedDrawer = await openDetail('Tail output feature')

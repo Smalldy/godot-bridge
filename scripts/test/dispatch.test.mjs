@@ -34,6 +34,7 @@ import {
 } from '../../plugin/task-center/dispatch.mjs'
 import { DEFAULT_ROLE_PROMPTS, ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, VERIFY_TAIL_BYTES, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
+import { createMerger } from '../../plugin/task-center/merge.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, createFakeGit, seedBoard, PROJECT } from './support/fixtures.mjs'
 
@@ -2615,6 +2616,65 @@ function fakeHostSubprocess(result) {
     JSON.stringify(stageSlotOf(rig.ctx, 'T-3', 'reviewer')),
   )
   rig.scheduler.dispose()
+}
+
+// ── per-task target: the base is that branch's head, not the checkout's ────
+{
+  const fake = createFakeGit()
+  fake.revParse = async function (root, ref) {
+    return { ok: true, hash: ref.indexOf('release/1.4') >= 0 ? 'release-sha' : 'main-sha' }
+  }
+  fake.branchExists = async function () { return { ok: true, exists: true } }
+  const rig = createWorktreeRig({ git: fake })
+  const strictTask = await createTask(rig, { title: 'hotfix on main', target: 'main' })
+  const releaseTask = await createTask(rig, { title: 'feature on release', target: 'release/1.4' })
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const strict = byId(snap, strictTask.id)
+  const release = byId(snap, releaseTask.id)
+  check(
+    'each task worktree starts from its own target head',
+    strict.target === 'main' && strict.base === 'main-sha' && release.target === 'release/1.4' && release.base === 'release-sha',
+    JSON.stringify({ strict: [strict.target, strict.base], release: [release.target, release.base] }),
+  )
+  rig.scheduler.dispose()
+}
+// ── merge queue: targets run in parallel, one target stays serial ──────────
+{
+  const merger = createMerger({ git: createFakeGit() })
+  const order = []
+  const slow = merger.enqueue(async function () {
+    await sleep(80)
+    order.push('slow-main')
+  }, 'main')
+  const fast = merger.enqueue(async function () {
+    order.push('fast-feature')
+  }, 'feat/x')
+  await Promise.all([slow, fast])
+  check('merges into different targets run in parallel', order[0] === 'fast-feature' && order[1] === 'slow-main', JSON.stringify(order))
+  const serial = []
+  const a = merger.enqueue(async function () {
+    await sleep(60)
+    serial.push('a')
+  }, 'main')
+  const b = merger.enqueue(async function () {
+    serial.push('b')
+  }, 'main')
+  await Promise.all([a, b])
+  check('merges into the same target stay serial', serial.join(',') === 'a,b', JSON.stringify(serial))
+}
+// ── merge refusals: wrong target and dirty worktree are readable ───────────
+{
+  const wrongGit = createFakeGit({ branch: 'feat/other' })
+  const wrongMerger = createMerger({ git: wrongGit })
+  const task = { id: 'T-9', title: 'wrong target', branch: 'task/T-9-1', target: 'main', merge: { status: 'open', base: 'b', head: 'h', target: 'main', mergeCommit: 'cand-sha' } }
+  const wrong = await wrongMerger.mergeCandidate(task, PROJECT, { worktreeRoot: '.worktrees' })
+  check('a checkout on another branch is refused with a readable target message', wrong.ok === false && String(wrong.code) === 'target-mismatch' && String(wrong.message).indexOf('main') >= 0, JSON.stringify(wrong))
+  const dirtyGit = createFakeGit({ clean: false })
+  const dirtyMerger = createMerger({ git: dirtyGit })
+  const dirty = await dirtyMerger.mergeCandidate(task, PROJECT, { worktreeRoot: '.worktrees' })
+  check('a dirty worktree is refused with a readable message', dirty.ok === false && String(dirty.code) === 'dirty-worktree', JSON.stringify(dirty))
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

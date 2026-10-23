@@ -232,7 +232,10 @@ export function createMerger(options) {
   // a hung unit that is not waiting on an action (e.g. a sweep turn).
   const enqueueTimeoutMs = Number.isFinite(opts.enqueueTimeoutMs) ? Math.max(1, Math.floor(opts.enqueueTimeoutMs)) : HOST_ACTION_TIMEOUT_MS + 15 * 1000
   const QUEUE_TIMEOUT = Symbol('queue-timeout')
-  let chain = Promise.resolve()
+  // Per key: one chain per target branch, so a hotfix and a feature line merge in
+  // parallel while two requests into the SAME target stay strictly ordered.
+  const chains = new Map()
+
 
   /**
    * Run one unit of merge work; every caller queues behind the previous one.
@@ -243,7 +246,7 @@ export function createMerger(options) {
    * api checks the token before writing the board, so an abandoned turn cannot
    * record a late result.
    */
-  function enqueue(work) {
+  function enqueue(work, key) {
     const token = { aborted: false }
     // The bound covers EXECUTION, not time spent waiting in the queue: it starts
     // when the unit begins. A timeout abandons the unit (token) and resolves the
@@ -274,10 +277,15 @@ export function createMerger(options) {
         },
       )
     }
+    const queueKey = typeof key === 'string' && key !== '' ? key : '_global'
+    const chain = chains.get(queueKey) === undefined ? Promise.resolve() : chains.get(queueKey)
     const run = chain.then(guardUnit, guardUnit)
-    chain = run.then(
-      function () {},
-      function () {},
+    chains.set(
+      queueKey,
+      run.then(
+        function () {},
+        function () {},
+      ),
     )
     return run
   }
@@ -316,7 +324,14 @@ export function createMerger(options) {
   }
 
   /** Best-effort removal of the throwaway integration checkout and its branch. */
-  async function discardIntegration(projectPath, integrationPath, mergeBranch) {
+  /** Branch-safe slug for a target (feature/a.b -> feature-a-b). */
+function targetSlug(target) {
+  const value = typeof target === 'string' ? target : ''
+  const slug = value.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+  return slug === '' ? 'default' : slug
+}
+
+async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     await callGit('worktreeRemove', [projectPath, integrationPath, { force: true }])
     await callGit('deleteBranch', [projectPath, mergeBranch, { force: true }])
   }
@@ -366,7 +381,7 @@ export function createMerger(options) {
 
     const root = typeof req.worktreeRoot === 'string' && req.worktreeRoot.length > 0 ? req.worktreeRoot : '.worktrees'
     const integrationPath = join(projectPath, root, 'merge-' + task.id)
-    const mergeBranch = 'merge/' + task.id
+    const mergeBranch = 'merge/' + targetSlug(task.target) + '/' + task.id
 
     const added = await callGit('worktreeAdd', [projectPath, { path: integrationPath, branch: mergeBranch, base: targetHead }])
     if (added === null || added === undefined || added.ok !== true) {
