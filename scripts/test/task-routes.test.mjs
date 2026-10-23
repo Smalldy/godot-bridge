@@ -897,6 +897,8 @@ function seedMergeTask(rig, task) {
   const res = await postTo(mergeSurface, { action: 'mergeRequest', project: PROJECT, id: 'T-1' })
   const payload = res.json()
   check('mergeRequest merges an open request', payload.ok === true && payload.task.merge.status === 'merged', res.text)
+  const userMergeHistory = payload.task.history[payload.task.history.length - 1]
+  check('a user merge writes 你 as the event name, not the raw "user"', userMergeHistory !== undefined && userMergeHistory.byName === '你', JSON.stringify(userMergeHistory))
   check(
     'the merged record names the merge commit, reviewer and time',
     payload.task.merge.mergeCommit === 'merge-sha' && payload.task.merge.reviewer === '@user' && typeof payload.task.merge.at === 'string',

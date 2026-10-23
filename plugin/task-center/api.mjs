@@ -425,7 +425,7 @@ export function createApi(ctx, options) {
       const recorded = await writeTask(
         projectPath,
         id,
-        (board) => recordMergeResult(board, id, { status: 'merged', mergeCommit: outcome.mergeCommit, conflict: null, output: null }, clock(), by, typeof by === 'string' && by !== '' && by.charAt(0) !== '@' ? by : writeByName(context)),
+        (board) => recordMergeResult(board, id, { status: 'merged', mergeCommit: outcome.mergeCommit, conflict: null, output: null }, clock(), by, by === 'system' || by === 'host' || by === 'scheduler' ? by : writeByName(context)),
         context,
       )
       if (recorded.ok !== true) return recorded

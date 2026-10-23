@@ -3350,7 +3350,8 @@ window.__ModuleLoader__.load({
 					const label = byName.slice(1).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
 					const role = typeof fallbackKey === 'string' && fallbackKey !== '' ? t(fallbackKey) : ''
 					if (role !== '') return label === '' ? role : role + ' ' + label
-					return t('actorUnknown').replace('{id}', label === '' ? byName : label)
+					// A degenerate '@' byName carries no id at all: show the bare word, never '@'.
+					return label === '' ? t('actorUnknown').replace(' {id}', '') : t('actorUnknown').replace('{id}', label)
 				}
 				const resolved = resolveAgentName(by, roster, t)
 				if (typeof resolved === 'string' && resolved.charAt(0) === '@') {
