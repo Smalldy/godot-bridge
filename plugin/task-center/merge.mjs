@@ -353,6 +353,16 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     return { ok: code === 0, output: formatVerificationOutput(verifyCommand, code, result) }
   }
 
+  /**
+   * Always address a branch as refs/heads/<name>. A short name can be ambiguous
+   * (git check-ref-format --branch "fix/eval-debugger-trap" reports so), and an
+   * ambiguous update-ref can silently fail while the merge is still recorded.
+   */
+  function qualifiedRef(branch) {
+    const value = String(branch === undefined || branch === null ? '' : branch).trim()
+    return value.startsWith('refs/heads/') ? value : 'refs/heads/' + value
+  }
+
   /** The worktree that has a branch checked out (or null when none does). */
   async function worktreeOfBranch(projectPath, branch) {
     const listed = await callGit('worktreeList', [projectPath])
@@ -369,7 +379,11 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
    */
   async function advanceTarget(projectPath, target, commit, mergeBranch) {
     const checkedOut = await worktreeOfBranch(projectPath, target)
-    if (checkedOut === null) return await callGit('updateRef', [projectPath, target, commit])
+    if (checkedOut === null) {
+      const updated = await callGit('updateRef', [projectPath, qualifiedRef(target), commit])
+      if (updated === null || updated === undefined || updated.ok !== true) return updated
+      return await verifyAdvanced(projectPath, target, commit, updated)
+    }
     const current = await currentBranchOf(checkedOut)
     if (current.ok !== true || current.branch !== target) {
       return failure('wrong-target', 'the worktree at ' + checkedOut + ' is supposed to be on ' + target + ' but reports ' + (current.ok === true ? String(current.branch) : 'no branch'))
@@ -377,12 +391,24 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     const clean = await cleanOf(checkedOut)
     if (clean.ok !== true) return failure('clean-unreadable', 'could not check whether ' + checkedOut + ' is clean: ' + clean.message)
     if (clean.clean !== true) return failure('dirty-worktree', 'the worktree checked out on ' + target + ' is not clean; commit or stash it before merging')
-    return await callGit('mergeFfOnly', [checkedOut, mergeBranch])
+    const forwarded = await callGit('mergeFfOnly', [checkedOut, mergeBranch])
+    if (forwarded === null || forwarded === undefined || forwarded.ok !== true) return forwarded
+    return await verifyAdvanced(projectPath, target, commit, forwarded)
+  }
+
+  /** Re-read the target ref after advancing: the merge only counts if it moved. */
+  async function verifyAdvanced(projectPath, target, commit, gitResult) {
+    const after = await branchHeadOf(projectPath, target)
+    if (after === commit) return { ok: true, ref: qualifiedRef(target), hash: after }
+    return failure(
+      'target-not-advanced',
+      'the merge was refused: ' + qualifiedRef(target) + ' is at ' + String(after) + ' instead of ' + String(commit) + '; git said: ' + messageOf(gitResult),
+    )
   }
 
   /** Resolve a branch ref to its commit without touching any checkout. */
   async function branchHeadOf(projectPath, branch) {
-    const resolved = await callGit('revParse', [projectPath, branch])
+    const resolved = await callGit('revParse', [projectPath, qualifiedRef(branch)])
     if (resolved !== null && resolved !== undefined && resolved.ok === true && typeof resolved.hash === 'string' && resolved.hash !== '') {
       return resolved.hash
     }
@@ -512,7 +538,7 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     if (forwarded === null || forwarded === undefined || forwarded.ok !== true) {
       await discardIntegration(projectPath, integrationPath, mergeBranch)
       const code = forwarded === null || forwarded === undefined ? null : forwarded.code
-      if (code === 'wrong-target' || code === 'dirty-worktree' || code === 'clean-unreadable') return forwarded
+      if (code === 'wrong-target' || code === 'dirty-worktree' || code === 'clean-unreadable' || code === 'target-not-advanced' || code === 'update-ref-failed' || code === 'merge-ff-only-failed') return forwarded
       return {
         ok: true,
         status: 'failed',
