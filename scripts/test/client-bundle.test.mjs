@@ -1289,6 +1289,17 @@ await flush()
       mergeRow && textOf(mergeRow),
     )
     mergeTask.history = savedMergeHistory
+    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 9000).toISOString(), by: '@b7cc6c31', byName: '@b7cc6c31', note: 'merged as fedcba0987654321' }]
+    let legacyMergeTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    legacyMergeTree = withHooks(panel, { initialView: 'status' })
+    const legacyMergeRow = findAll(legacyMergeTree, (node) => node.props && node.props['data-activity-kind'] === 'merge' && node.props['data-activity-task'] === 'T-3')[0]
+    check(
+      'a legacy @label byName on a merge row falls back to 合并者 and never renders the @',
+      legacyMergeRow !== undefined && textOf(legacyMergeRow).indexOf('合并者 b7cc6c31') >= 0 && textOf(legacyMergeRow).indexOf('@') < 0,
+      legacyMergeRow && textOf(legacyMergeRow),
+    )
+    mergeTask.history = savedMergeHistory
     const systemPassRow = findAll(oldTree, (node) => node.props && node.props['data-activity-kind'] === 'review-pass')[0]
     check(
       'a host/system event keeps its literal word instead of a role fallback',

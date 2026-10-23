@@ -1733,6 +1733,12 @@ function driftRig(options) {
   check('the host sweep merges after a passed test without a merger agent', sweep.ok === true && sweep.merged.join(',') === 'T-1', JSON.stringify(sweep))
   const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
   check('the task is done and merged', after.json().tasks[0].status === 'done' && after.json().tasks[0].merge.status === 'merged', after.text)
+  const mergeHistory = after.json().tasks[0].history[after.json().tasks[0].history.length - 1]
+  check(
+    'the automatic sweep writes a literal name, never the @ tool label',
+    typeof mergeHistory.byName === 'string' && mergeHistory.byName.charAt(0) !== '@' && mergeHistory.byName === 'system',
+    JSON.stringify(mergeHistory),
+  )
   const forwards = () => fake.calls.filter((entry) => entry.args.join(' ') === 'merge --ff-only merge/T-1').length
   check('main is fast-forwarded exactly once', forwards() === 1, String(forwards()))
   const again = await rig.api.autoMergePending(PROJECT)

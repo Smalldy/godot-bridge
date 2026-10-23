@@ -293,11 +293,13 @@ export function createApi(ctx, options) {
    * caller's Team membership, so the panel never has to reverse an @label. */
   function writeByName(context) {
     if (context === undefined || context === null) return null
+    const by = typeof context.by === 'string' ? context.by : ''
+    // Host automation keeps its literal word even when the call is routed with a
+    // user-shaped context (the automatic merge sweep does exactly that).
+    if (by === 'system' || by === 'host' || by === 'scheduler') return by
     if (context.role === 'user') return '你'
     const member = callerMemberOf(context)
     if (member !== null && member !== undefined && typeof member.name === 'string' && member.name !== '') return member.name
-    const by = typeof context.by === 'string' ? context.by : ''
-    if (by === 'system' || by === 'host' || by === 'scheduler') return by
     return null
   }
 
@@ -423,7 +425,7 @@ export function createApi(ctx, options) {
       const recorded = await writeTask(
         projectPath,
         id,
-        (board) => recordMergeResult(board, id, { status: 'merged', mergeCommit: outcome.mergeCommit, conflict: null, output: null }, clock(), by, by),
+        (board) => recordMergeResult(board, id, { status: 'merged', mergeCommit: outcome.mergeCommit, conflict: null, output: null }, clock(), by, typeof by === 'string' && by !== '' && by.charAt(0) !== '@' ? by : writeByName(context)),
         context,
       )
       if (recorded.ok !== true) return recorded
