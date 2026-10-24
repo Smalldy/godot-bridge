@@ -96,6 +96,16 @@ curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
 
 `npm test` covers board, service, locks, dispatch, git, harness, routes, tool, activation, target history and the browser half.
 
+### Candidate drift: automatic vs. manual
+
+The candidate is built at review time, but the merge happens after the tests; the target usually advances in between. The host sweep (not the worker) handles drift:
+
+- **Base-only drift** (target moved, the branch head still equals the verified commit): the sweep rebuilds the candidate against the current target head and merges it directly. Evidence records "only the base changed, diff identical to the verified commit"; **no new review or test round** is created.
+- **Build-time conflict**: a candidate that conflicts with the target is no longer thrown back as candidate-conflict. The card is marked candidate-stale with the conflicted file list and rebuilt automatically; a second conflict becomes needs-rebase (file list kept) and waits for the worker/Lead, while other cards keep running.
+- **Changed content** (the branch moved past the verified commit): the drift is never merged blindly. The card is marked candidate-stale ("diff changed") and refreshMerge re-opens review, so review + tests run again.
+- **Known boundary**: automatic drift detection only recognises real hex commit bases; synthetic labels such as "base-sha" in fixtures or hand-written boards keep the historical behaviour. Real repositories always carry hex commits.
+- The conflicted files are kept in the task's waitingDetail, so the panel can show exactly why a card is waiting.
+
 ## Isolated DSH test harness
 
 The task center also ships a real-DSH smoke for the candidate plugin: `plugin/task-center/harness.mjs` starts a **disposable DSH instance** and proves that the candidate loads and answers — without touching the production profile, session or port. Only the tester role (or the user) drives it through `task_center` `harnessStart` / `harnessStatus` / `harnessSmoke` / `harnessRestart` / `harnessStop`; `POST /godot-bridge/task-center/action` exposes the same actions to the GUI.

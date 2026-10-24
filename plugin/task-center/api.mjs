@@ -2513,6 +2513,85 @@ export function createApi(ctx, options) {
    * integrate without any model action.
    */
   /**
+   * Base drift fast path (T-94). Rebuild the test candidate against the CURRENT
+   * target head and merge it directly when the verified branch head did not move:
+   * only the base changed, so the tested content is identical and no new review
+   * or test round is needed. A real conflict is downgraded to candidate-stale
+   * with the conflicted files; a repeated conflict becomes needs-rebase. A branch
+   * that moved past the verified commit keeps the normal (re-review) path.
+   */
+  async function rebuildAndMergeStale(projectPath, id, context) {
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const task = model.findTask(read.board, id)
+    if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
+    if (task.status !== 'testing' || task.merge === null || task.merge === undefined) {
+      return failure('not-testing', id + ' is not a testing card with an open merge request')
+    }
+    if (merger === null || typeof merger.createCandidate !== 'function') {
+      await markWaiting(projectPath, id, 'candidate-stale', 'no merge service to rebuild the candidate', context)
+      return failure('candidate-stale', 'the merge service cannot rebuild the candidate')
+    }
+    const branchHead = await readBranchHead(projectPath, task)
+    if (branchHead.ok !== true) {
+      await markWaiting(projectPath, id, 'candidate-stale', 'branch head unreadable: ' + String(branchHead.message || branchHead.code || ''), context)
+      return failure('candidate-stale', 'could not read the branch head')
+    }
+    const verified = typeof task.commit === 'string' && task.commit !== '' ? task.commit : null
+    const diffUnchanged = verified !== null && branchHead.head === verified
+    const built = await merger.createCandidate(task, projectPath, { worktreeRoot: worktreeRootOf(read.board) })
+    if (built === null || built === undefined || built.ok !== true) {
+      const conflicted = built !== null && built !== undefined && built.code === 'candidate-conflict'
+      const files = built !== null && built !== undefined && typeof built.conflict === 'string' && built.conflict !== '' ? built.conflict : built !== null && built !== undefined ? String(built.message) : 'candidate rebuild failed'
+      const previous = typeof task.waitingDetail === 'string' ? task.waitingDetail : ''
+      if (conflicted && /conflict/i.test(previous)) {
+        await markWaiting(projectPath, id, 'needs-rebase', files, context)
+        return failure('needs-rebase', 'the candidate still conflicts after an automatic rebuild: ' + files)
+      }
+      await markWaiting(projectPath, id, 'candidate-stale', conflictsPrefix(conflicted) + files, context)
+      return failure('candidate-stale', 'the candidate rebuild conflicts: ' + files)
+    }
+    if (diffUnchanged !== true) {
+      // The branch moved past the tested commit: content changed, so the normal
+      // review + test path must run again.
+      try {
+        if (typeof merger.discardCandidate === 'function') await merger.discardCandidate(task, projectPath, { worktreeRoot: worktreeRootOf(read.board) })
+      } catch (error) {}
+      await markWaiting(projectPath, id, 'candidate-stale', 'diff changed: verified ' + String(verified) + ', branch is ' + String(branchHead.head), context)
+      return failure('diff-changed', 'the branch moved past the verified commit; a new review and test round is required')
+    }
+    const recorded = await writeTask(
+      projectPath,
+      id,
+      (board) => {
+        const tasks = board.tasks.map((entry) => {
+          if (String(entry.id) !== String(id) || entry.merge === null || entry.merge === undefined) return entry
+          const evidence = String(entry.evidence === undefined || entry.evidence === null ? '' : entry.evidence)
+          const note = '仅 base 变化，diff 与已验证提交一致（' + String(task.merge.base) + ' -> ' + String(built.base) + '）；自动重建候选并直接合并，不新增评审轮次。'
+          return Object.assign({}, entry, {
+            waitingReason: null,
+            waitingDetail: null,
+            base: built.base,
+            merge: Object.assign({}, entry.merge, { base: built.base, mergeCommit: built.head }),
+            evidence: evidence === '' ? note : evidence + '\n' + note,
+          })
+        })
+        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+      },
+      context,
+    )
+    if (recorded.ok !== true) return recorded
+    const merged = await mergeTestedCandidate(projectPath, id, 'system', context, { inQueue: false })
+    if (merged.ok === true) return { ok: true, code: 'merged', merged: merged }
+    await markWaiting(projectPath, id, 'candidate-stale', 'rebuilt candidate could not be merged: ' + String(merged.message || merged.code || ''), context)
+    return failure('candidate-stale', 'the rebuilt candidate could not be merged: ' + String(merged.message || merged.code || ''))
+  }
+
+  function conflictsPrefix(conflicted) {
+    return conflicted ? 'conflicted files: ' : ''
+  }
+
+  /**
    * The executor may have become available after a gate wrote waitingReason.
    * Every host sweep retries provisioning and clears the marker on success, so a
    * waiting task resumes without a human reopen.
@@ -2530,12 +2609,31 @@ export function createApi(ctx, options) {
         recovered.push(task.id)
       }
     }
-    // A stale candidate is rebuilt here, before the merge queue runs; a failed
-    // rebuild keeps the readable candidate-stale marker.
+    // A stale candidate is rebuilt here, before the merge queue runs. A testing
+    // card takes the base-only fast path (direct merge, no new review round); a
+    // reviewing card (build-time conflict) re-opens its merge request so the
+    // candidate is built again. needs-rebase waits for a human/worker rebase.
     for (const task of board.tasks) {
+      if (task.waitingReason === 'needs-rebase') continue
       if (task.waitingReason !== 'candidate-stale') continue
-      const refreshed = await performResolved('refreshMerge', { id: task.id }, context, projectPath)
-      if (refreshed.ok === true) recovered.push(task.id)
+      if (task.status === 'testing') {
+        const fast = await rebuildAndMergeStale(projectPath, task.id, context)
+        if (fast.ok === true) {
+          recovered.push(task.id)
+          continue
+        }
+        // The branch moved past the tested commit: content changed, so the card
+        // must go back through review + test rather than merge silently.
+        if (fast.code === 'diff-changed') {
+          const refreshed = await performResolved('refreshMerge', { id: task.id }, context, projectPath)
+          if (refreshed.ok === true) recovered.push(task.id)
+        }
+        continue
+      }
+      if (task.status === 'reviewing') {
+        const refreshed = await performResolved('refreshMerge', { id: task.id }, context, projectPath)
+        if (refreshed.ok === true) recovered.push(task.id)
+      }
     }
     return recovered
   }
@@ -2593,10 +2691,11 @@ export function createApi(ctx, options) {
         const headLooksReal = head.ok === true && /^[0-9a-f]{7,40}$/i.test(String(head.head))
         const stale = baseLooksReal && headLooksReal && before.merge.base !== head.head
         if (stale) {
-          // Marked here (inside the sweep, but outside the merge queue); the next
-          // sweep's recovery pass rebuilds the candidate where it is safe to.
-          await markWaiting(projectPath, id, 'candidate-stale', 'candidate base ' + String(before.merge.base) + ' is behind target ' + String(head.head), systemContext)
-          skipped.push({ id: id, code: 'candidate-stale' })
+          // Fast path: rebuild against the new head and merge directly when the
+          // verified branch head did not move (base-only drift).
+          const fast = await rebuildAndMergeStale(projectPath, id, systemContext)
+          skipped.push({ id: id, code: fast.ok === true ? 'candidate-fast-merged' : String(fast.code || 'candidate-stale'), conflict: fast.conflict })
+          if (fast.ok === true) merged.push(id)
           continue
         }
       }
@@ -3303,6 +3402,13 @@ export function createApi(ctx, options) {
         }
         candidate = boundedCandidate.value
         if (candidate === null || candidate === undefined || candidate.ok !== true) {
+          if (candidate !== null && candidate !== undefined && candidate.code === 'candidate-conflict') {
+            // Build-time conflict is not handed to a human: downgrade to
+            // candidate-stale with the conflicted files and let the sweep rebuild.
+            const files = typeof candidate.conflict === 'string' && candidate.conflict !== '' ? candidate.conflict : String(candidate.message)
+            await markWaiting(projectPath, id, 'candidate-stale', files, context)
+            return failure('candidate-stale', 'the test candidate conflicts with the target (' + files + '); the card is marked candidate-stale and will be rebuilt automatically')
+          }
           return failure(
             candidate === null || candidate === undefined || candidate.code === undefined ? 'candidate-failed' : String(candidate.code),
             candidate === null || candidate === undefined || candidate.message === undefined ? 'could not build the test candidate' : String(candidate.message),
