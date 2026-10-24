@@ -1846,7 +1846,8 @@ window.__ModuleLoader__.load({
 				const now = props.now
 				const lease = task.status === 'running' ? tcLease(task.leaseUntil, now, t, task) : null
 				const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
-				const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
+				const files = Array.isArray(task.writeFiles) ? task.writeFiles : null
+				const fileCount = files !== null ? files.length : Number.isFinite(task.writeFileCount) ? task.writeFileCount : 0
 				const dispatchError = task.dispatch !== null && task.dispatch !== undefined ? task.dispatch.error : null
 				const merge = tcMergeOf(task)
 				const review = tcReviewOf(task)
@@ -1898,7 +1899,7 @@ window.__ModuleLoader__.load({
 						),
 					)
 				}
-				if (files.length > 0) meta.push(h('span', { key: 'files', className: 'gbt-chip' }, '🔒 ' + String(files.length)))
+				if (fileCount > 0) meta.push(h('span', { key: 'files', className: 'gbt-chip' }, '🔒 ' + String(fileCount)))
 				if (merge !== null) {
 					meta.push(h('span', { key: 'merge', className: 'gbt-chip', 'data-tone': tcMergeTone(merge.status), title: t('mergeTitle') }, '⇄ ' + tcMergeLabel(merge.status, t)))
 				}
@@ -2020,7 +2021,8 @@ window.__ModuleLoader__.load({
 			function QueueRow(props) {
 				const task = props.task
 				const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
-				const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
+				const files = Array.isArray(task.writeFiles) ? task.writeFiles : null
+				const fileCount = files !== null ? files.length : Number.isFinite(task.writeFileCount) ? task.writeFileCount : 0
 				return h(
 					'div',
 					{ className: 'gbt-row', role: 'button', tabIndex: 0, onClick: function () { props.onOpen(task.id) } },
@@ -2037,7 +2039,7 @@ window.__ModuleLoader__.load({
 							deps.length > 0
 								? h('span', { className: 'gbt-chip', 'data-tone': 'waiting' }, '↳ ' + deps.join(', '))
 								: h('span', { className: 'gbt-chip', 'data-tone': 'ready' }, props.t('noDeps')),
-							files.length > 0 ? h('span', { className: 'gbt-chip' }, '🔒 ' + files.join(', ')) : null,
+							fileCount > 0 ? h('span', { className: 'gbt-chip' }, '🔒 ' + (files === null ? String(fileCount) : files.join(', '))) : null,
 						),
 					),
 					h(

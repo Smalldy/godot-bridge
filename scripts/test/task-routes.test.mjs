@@ -1,6 +1,8 @@
 // HTTP route tests: the GUI's contract, its transport hardening and the fact
 // that it calls the same actions as the tool.
 
+import { existsSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH } from '../../plugin/task-center/routes.mjs'
 import { createFakeFs, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
@@ -1511,9 +1513,45 @@ function driftRig(options) {
     fake.calls.some((entry) => entry.cwd === PROJECT && entry.args.join(' ') === 'rev-parse --verify task/T-1-1'),
     JSON.stringify(fake.calls.filter((entry) => entry.args[0] === 'rev-parse').map((entry) => ({ cwd: entry.cwd, args: entry.args }))),
   )
+  // The acceptance is about the REAL board, not a synthetic one: when this
+  // checkout has .agents/tasks.json (the worktree or the main repo behind it),
+  // serve it through the same route handler and measure the actual body.
+  {
+    const candidates = [
+      fileURLToPath(new URL('../../.agents/tasks.json', import.meta.url)),
+      fileURLToPath(new URL('../../../.agents/tasks.json', import.meta.url)),
+      fileURLToPath(new URL('../../../../.agents/tasks.json', import.meta.url)),
+    ]
+    const boardPath = candidates.filter((path) => existsSync(path))[0]
+    if (boardPath !== undefined) {
+      const realRig = createRig({ allowSpawn: false })
+      const raw = readFileSync(boardPath, 'utf8')
+      seedBoard(realRig.fs, PROJECT, raw)
+      const realSurface = install(realRig)
+      const realRes = await call(realSurface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+      const realBytes = Buffer.byteLength(realRes.text, 'utf8')
+      const real = realRes.json()
+      check(
+        'the REAL repository board state stays under 200 KB',
+        real.ok === true && real.full === true && real.tasks.length > 0 && realBytes < 200 * 1024,
+        boardPath + ' -> ' + String(realTasksCount(real)) + ' tasks, ' + String(realBytes) + ' bytes',
+      )
+      check(
+        'the real-board summary drops merge.output/tests and test evidence',
+        real.tasks.every((task) => task.merge === null || (task.merge.output === undefined && task.merge.tests === undefined)) &&
+          real.tasks.every((task) => task.test === null || task.test.evidence === undefined),
+        JSON.stringify({ first: real.tasks[0] && Object.keys(real.tasks[0].merge || {}) }),
+      )
+      realSurface.dispose()
+      realRig.scheduler.dispose()
+    } else {
+      console.log('REALBOARD_SKIP no .agents/tasks.json in this checkout')
+    }
+  }
   surface.dispose()
   rig.scheduler.dispose()
 }
+function realTasksCount(payload) { return Array.isArray(payload.tasks) ? payload.tasks.length : 0 }
 
 // ── refreshMerge re-bases the request on the target's current head ─────────
 {
@@ -4481,7 +4519,20 @@ rig.scheduler.dispose()
       commit: 'commit-sha',
       actualFiles: [],
       requiredRole: null,
-      merge: { status: 'merged', base: 'base-sha', target: 'feat/task-center-v2', head: 'commit-sha', mergeCommit: 'merge-sha', declaredFiles: [], actualFiles: [], tests: 'npm test', reviewer: null, conflict: null, output: null, at: stamp },
+      merge: {
+        status: 'merged',
+        base: 'base-sha',
+        target: 'feat/task-center-v2',
+        head: 'commit-sha',
+        mergeCommit: 'merge-sha',
+        declaredFiles: ['scripts/a.gd', 'scripts/b.gd'],
+        actualFiles: ['scripts/a.gd', 'scripts/b.gd'],
+        tests: 'npm test '.repeat(800),
+        reviewer: null,
+        conflict: null,
+        output: 'Verification tail '.repeat(800),
+        at: stamp,
+      },
       review: { status: 'approved', by: '@reviewer', byName: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
       test: { status: 'passed', by: '@tester', byName: 'tester-1', at: stamp, evidence: bigEvidence, attempt: 1 },
       assignee: null,
@@ -4509,6 +4560,19 @@ rig.scheduler.dispose()
   const full = fullRes.json()
   const bytes = Buffer.byteLength(fullRes.text, 'utf8')
   check('an 81-card snapshot is under 200 KB', full.ok === true && full.tasks.length === 81 && bytes < 200 * 1024, String(bytes) + ' bytes')
+  check(
+    'the summary drops the detail-class merge/test strings but keeps status and counts',
+    full.tasks[0].merge.status === 'merged' &&
+      full.tasks[0].merge.output === undefined &&
+      full.tasks[0].merge.tests === undefined &&
+      full.tasks[0].merge.declaredFiles === undefined &&
+      typeof full.tasks[0].merge.declaredCount === 'number' &&
+      full.tasks[0].merge.declaredCount === 2 &&
+      full.tasks[0].test.evidence === undefined &&
+      typeof full.tasks[0].test.evidenceLength === 'number' &&
+      full.tasks[0].review.reasons === undefined,
+    JSON.stringify(full.tasks[0].merge),
+  )
   check(
     'the summary carries render fields but no spec/acceptance/evidence/history',
     full.tasks[0].title !== undefined &&

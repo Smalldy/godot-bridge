@@ -1397,25 +1397,54 @@ export function createApi(ctx, options) {
    * The snapshot summary: only the fields the panel renders. spec / acceptance /
    * evidence / full history stay behind /task so a 3-second poll does not resend
    * them (81 done cards were ~1.2 MB, half of it detail). A bounded tail of the
-   * history is kept as `events` because the status page's activity stream needs
+   * history (last 2 rows) is kept as `events` because the status page's activity stream needs
    * the newest rows; full history is fetched on demand.
    */
   function summaryOf(board, task, now) {
     const detail = detailOf(board, task, now)
-    const hist = Array.isArray(task.history) ? task.history.slice(-3).map((entry) => ({
+    const hist = Array.isArray(task.history) ? task.history.slice(-2).map((entry) => ({
       at: entry.at,
       by: entry.by,
       byName: entry.byName === undefined ? null : entry.byName,
       from: entry.from === undefined ? null : entry.from,
       to: entry.to === undefined ? null : entry.to,
-      note: typeof entry.note === 'string' ? entry.note.slice(0, 300) : '',
+      note: typeof entry.note === 'string' ? entry.note.slice(0, 120) : '',
     })) : []
-    const review = detail.review === null || detail.review === undefined ? null : Object.assign({}, detail.review, {
-      reasons: typeof detail.review.reasons === 'string' ? detail.review.reasons.slice(0, 300) : detail.review.reasons,
-    })
-    const test = detail.test === null || detail.test === undefined ? null : Object.assign({}, detail.test, {
-      evidence: typeof detail.test.evidence === 'string' ? detail.test.evidence.slice(0, 300) : detail.test.evidence,
-    })
+    // Detail-class strings never ride the summary: merge verification output /
+    // tests, the test evidence, the review reasons and the file lists are what
+    // made a real 84-card board answer ~545 KB. Counts/statuses stay; /task keeps
+    // the strings (the drawer fetches it on open).
+    const merge = detail.merge === null || detail.merge === undefined ? null : {
+      status: detail.merge.status,
+      base: detail.merge.base,
+      target: detail.merge.target,
+      head: detail.merge.head,
+      mergeCommit: detail.merge.mergeCommit,
+      reviewer: detail.merge.reviewer,
+      conflict: detail.merge.conflict === undefined ? null : detail.merge.conflict,
+      at: detail.merge.at,
+      declaredCount: Array.isArray(detail.merge.declaredFiles) ? detail.merge.declaredFiles.length : 0,
+      actualCount: Array.isArray(detail.merge.actualFiles) ? detail.merge.actualFiles.length : 0,
+      outputLength: typeof detail.merge.output === 'string' ? detail.merge.output.length : 0,
+      testsLength: typeof detail.merge.tests === 'string' ? detail.merge.tests.length : 0,
+    }
+    const review = detail.review === null || detail.review === undefined ? null : {
+      status: detail.review.status,
+      by: detail.review.by,
+      byName: detail.review.byName === undefined ? null : detail.review.byName,
+      at: detail.review.at,
+      attempt: detail.review.attempt,
+      deliveredAt: detail.review.deliveredAt === undefined ? null : detail.review.deliveredAt,
+    }
+    const test = detail.test === null || detail.test === undefined ? null : {
+      status: detail.test.status,
+      by: detail.test.by,
+      byName: detail.test.byName === undefined ? null : detail.test.byName,
+      at: detail.test.at,
+      attempt: detail.test.attempt,
+      deliveredAt: detail.test.deliveredAt === undefined ? null : detail.test.deliveredAt,
+      evidenceLength: typeof detail.test.evidence === 'string' ? detail.test.evidence.length : 0,
+    }
     return {
       id: detail.id,
       title: detail.title,
@@ -1423,7 +1452,7 @@ export function createApi(ctx, options) {
       priority: detail.priority,
       dependsOn: detail.dependsOn,
       dependency: detail.dependency,
-      writeFiles: detail.writeFiles,
+      writeFileCount: Array.isArray(detail.writeFiles) ? detail.writeFiles.length : 0,
       target: detail.target,
       base: detail.base,
       branch: detail.branch,
@@ -1431,7 +1460,7 @@ export function createApi(ctx, options) {
       worktreeError: detail.worktreeError,
       commit: detail.commit,
       requiredRole: detail.requiredRole,
-      merge: detail.merge,
+      merge: merge,
       review: review,
       test: test,
       assignee: detail.assignee,
