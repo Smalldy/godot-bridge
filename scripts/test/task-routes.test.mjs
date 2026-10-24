@@ -4094,7 +4094,9 @@ async function withDeadline(promise, ms) {
   const originalWrite = rig.fs.writeText
   let sandboxSeen = null
   rig.fs.writeText = async function (target, text, expected, signal, policy) {
-    sandboxSeen = policy
+    // The registry write also goes through writeText; only the role config write
+    // carries the project sandbox policy.
+    if (String(target.targetKey === undefined ? target.displayPath : target.targetKey).indexOf('roles.json') >= 0) sandboxSeen = policy
     return originalWrite.call(this, target, text, expected)
   }
   const created = await rig.api.perform(
@@ -4791,6 +4793,18 @@ rig.scheduler.dispose()
     'the adopted project is persisted in the registry',
     registry.registry.projects.some((entry) => entry.id === projectIdOf(OTHER) && entry.root === OTHER),
     JSON.stringify(registry.registry.projects),
+  )
+  // Two surfaces (two panel sessions/instances) each adopt a different project:
+  // the registry write is read-merge-write, so the second adoption must not
+  // clobber the first (the end-to-end script caught exactly this).
+  const secondSurface = createState({ fs: rig.fs, get() { return undefined } }, { homeDir: homedir(), now: () => Date.now() })
+  await secondSurface.adoptPanelProject(PROJECT)
+  await secondSurface.flushRegistry()
+  const mergedRegistry = await readProjectRegistry({ fs: rig.fs }, { homeDir: homedir() })
+  check(
+    'two adopting surfaces merge into one registry instead of overwriting',
+    mergedRegistry.registry.projects.some((entry) => entry.root === OTHER) && mergedRegistry.registry.projects.some((entry) => entry.root === PROJECT),
+    JSON.stringify(mergedRegistry.registry.projects.map((entry) => entry.root)),
   )
   // Restart: a fresh state over the SAME fs loads the registry and drives both
   // projects without any openProject call.

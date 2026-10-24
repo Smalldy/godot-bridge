@@ -42,6 +42,18 @@ export function createState(ctx, options) {
 
   let registryWrite = Promise.resolve()
 
+  /** Merge two registry snapshots by project id, newest lastSeenAt wins. */
+  function mergeRegistries(left, right) {
+    const byId = new Map()
+    for (const entry of left.projects.concat(right.projects)) {
+      const current = byId.get(entry.id)
+      if (current === undefined || String(entry.lastSeenAt).localeCompare(String(current.lastSeenAt)) >= 0) {
+        byId.set(entry.id, entry)
+      }
+    }
+    return { version: 1, projects: Array.from(byId.values()) }
+  }
+
   /** Load the persisted project registry once per process. */
   async function loadRegistry() {
     if (memory.registryLoaded) return memory.registry
@@ -51,11 +63,23 @@ export function createState(ctx, options) {
     return memory.registry
   }
 
+  /**
+   * Persist by READ-MERGE-WRITE: another surface (a second panel session, another
+   * plugin instance) can touch its own project between our read and our write,
+   * and a last-writer-wins whole-file write would silently drop it. On a CAS
+   * loss the merge is retried against the fresh file.
+   */
   function persistRegistry() {
-    registryWrite = registryWrite.then(
-      () => writeProjectRegistry({ fs: ctx.fs }, { homeDir: homeDir }, memory.registry),
-      () => writeProjectRegistry({ fs: ctx.fs }, { homeDir: homeDir }, memory.registry),
-    )
+    const run = async function () {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const disk = await readProjectRegistry({ fs: ctx.fs }, { homeDir: homeDir })
+        memory.registry = mergeRegistries(memory.registry, disk.registry)
+        const written = await writeProjectRegistry({ fs: ctx.fs }, { homeDir: homeDir }, memory.registry)
+        if (written.ok !== false) return written
+      }
+      return { ok: false }
+    }
+    registryWrite = registryWrite.then(run, run)
     return registryWrite
   }
 

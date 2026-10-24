@@ -204,11 +204,16 @@ async function main() {
     const beforeB = readFileSync(join(B.root, ".agents", "tasks.json"), "utf8");
     const beforeA = readFileSync(join(A.root, ".agents", "tasks.json"), "utf8");
     // One background-loop iteration for BOTH projects.
+    const sweeps = [];
     for (const entry of active) {
       const row = entry.root === A.root ? rowA : rowB;
       const tick = row.scheduler.kick(entry.root);
       if (tick !== undefined && tick !== null && typeof tick.then === "function") await tick;
-      await row.api.autoMergePending(entry.root);
+      const sweep = await row.api.autoMergePending(entry.root);
+      sweeps.push({ root: entry.root, sweep: sweep });
+    }
+    for (const row of sweeps) {
+      console.log("      sweep " + row.root + " -> " + JSON.stringify(row.sweep));
     }
     const afterA = readFileSync(join(A.root, ".agents", "tasks.json"), "utf8");
     const afterB = readFileSync(join(B.root, ".agents", "tasks.json"), "utf8");
@@ -231,17 +236,27 @@ async function main() {
     // A sandbox that refuses to spawn reports it as skipped with the reason.
     let forkSkipped = null;
     try {
-      const childCode = 'import { createState } from ' + JSON.stringify(new URL("../../plugin/task-center/state.mjs", import.meta.url).href) + ';' +
-        'import { readFileSync, statSync } from "node:fs";' +
-        'const fs = { async resolve(p){return {targetKey:p}}, async stat(t){ try { const s=require("fs").statSync(t.targetKey); return {type:s.isDirectory()?"directory":"file",version:"v"+s.mtimeMs+"-"+s.size,size:s.size} } catch { return undefined } }, async readText(t){return readFileSync(t.targetKey,"utf8")}, async writeText(){throw new Error("read-only child")} };' +
-        'const state = createState({ fs, get(){return undefined} }, { homeDir: ' + JSON.stringify(home) + ' });' +
-        '(async () => { await state.loadRegistry(); console.log(JSON.stringify(state.activeProjects(Date.now()).map((e) => e.root))); })();';
-      const childPath = join(work, "child.mjs");
-      writeFileSync(childPath, childCode);
-      const out = execFileSync(process.execPath, [childPath], { encoding: "utf8", timeout: 15000 });
-      const roots = JSON.parse(out.trim().split("\n").pop());
-      check("a real child process sees both projects", roots.length === 2);
+      // A real file + an absolute argument: no -e snippet, no quoting/backslash
+      // games with a Windows temp path.
+      const childPath = new URL("./e2e-child.mjs", import.meta.url).pathname;
+      const childFile = process.platform === "win32" ? decodeURIComponent(childPath).replace(/^\//, "") : decodeURIComponent(childPath);
+      const out = execFileSync(process.execPath, [childFile, home], { encoding: "utf8", timeout: 20000 });
+      const line = out.split(/\r?\n/).map((entry) => entry.trim()).filter((entry) => entry.length > 0).pop();
+      let parsed = null;
+      try {
+        parsed = JSON.parse(line);
+      } catch (error) {
+        console.log("      child raw stdout: " + JSON.stringify(out));
+        check("a real child process sees both projects", false, "unparseable child output: " + String(line).slice(0, 200));
+      }
+      if (parsed !== null) {
+        check("a real child process sees both projects", Array.isArray(parsed.roots) && parsed.roots.length === 2, "child=" + JSON.stringify(parsed));
+      }
     } catch (error) {
+      const stdout = error !== null && error !== undefined && error.stdout !== undefined ? String(error.stdout) : "";
+      const stderr = error !== null && error !== undefined && error.stderr !== undefined ? String(error.stderr) : "";
+      if (stdout.length > 0 || stderr.length > 0) console.log("      child raw stdout: " + JSON.stringify(stdout) + " stderr: " + JSON.stringify(stderr));
+      // spawn EPERM is a sandbox fact, not a pass; record it as SKIP explicitly.
       forkSkipped = String((error && error.message) || error);
       console.log("SKIP  process-boundary fork (spawn refused by this sandbox): " + forkSkipped);
     }
