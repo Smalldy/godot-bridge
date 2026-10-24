@@ -650,6 +650,10 @@ export function normaliseMerge(raw) {
     conflict: typeof raw.conflict === 'string' || typeof raw.conflict === 'boolean' ? raw.conflict : null,
     output: typeof raw.output === 'string' ? raw.output : null,
     at: typeof raw.at === 'string' ? raw.at : null,
+    // Cross-round automatic rebuild failures. It lives on the CARD (not in the
+    // sweep's memory) so "the same conflict every round" can escalate to
+    // needs-rebase instead of spinning candidate-stale forever.
+    rebuildAttempts: Number.isFinite(raw.rebuildAttempts) ? Math.max(0, Math.min(10, Math.floor(raw.rebuildAttempts))) : 0,
   }
 }
 

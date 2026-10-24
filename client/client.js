@@ -322,6 +322,8 @@ window.__ModuleLoader__.load({
 				waitDependencyBroken: '依赖已破',
 				waitFileLock: '等待文件锁',
 				waitConcurrency: '并发已满',
+				waitCandidateStale: '候选过期，自动重建中',
+				waitNeedsRebase: '等待人工 rebase',
 				loadFailed: '读取失败',
 				checkoutTitle: '执行工作树',
 				mergeTitle: '合并请求',
@@ -812,6 +814,8 @@ window.__ModuleLoader__.load({
 				waitDependencyBroken: 'dependency broken',
 				waitFileLock: 'waiting for file lock',
 				waitConcurrency: 'concurrency full',
+				waitCandidateStale: 'candidate stale, rebuilding',
+				waitNeedsRebase: 'waiting for a manual rebase',
 				loadFailed: 'load failed',
 				checkoutTitle: 'Working checkout',
 				mergeTitle: 'Merge request',
@@ -2203,6 +2207,10 @@ window.__ModuleLoader__.load({
 				'dependency-broken': { key: 'waitDependencyBroken', tone: 'broken' },
 				'file-lock': { key: 'waitFileLock', tone: 'waiting' },
 				concurrency: { key: 'waitConcurrency', tone: 'waiting' },
+				// Merge-side waits: a stale candidate is rebuilt automatically; a
+				// needs-rebase card is NOT retried and needs a human rebase.
+				'candidate-stale': { key: 'waitCandidateStale', tone: 'waiting' },
+				'needs-rebase': { key: 'waitNeedsRebase', tone: 'broken' },
 			}
 
 			/** The waiting-reason chip, or null when the Host reported none. */
@@ -2211,7 +2219,10 @@ window.__ModuleLoader__.load({
 				if (typeof reason !== 'string') return null
 				const entry = WAITING_REASON[reason]
 				if (entry === undefined) return null
-				return h('span', { key: key, className: 'gbt-chip', 'data-tone': entry.tone, title: t(entry.key) }, '⏳ ' + t(entry.key))
+				// The host's detail is the WHY (conflicted files, which branch/target to
+				// rebase onto); the visible label stays short.
+				const detail = typeof task.waitingDetail === 'string' && task.waitingDetail !== '' ? task.waitingDetail : t(entry.key)
+				return h('span', { key: key, className: 'gbt-chip', 'data-tone': entry.tone, 'data-waiting': reason, title: detail }, '⏳ ' + t(entry.key))
 			}
 
 			function TaskCard(props) {
