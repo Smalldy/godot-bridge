@@ -377,6 +377,10 @@ window.__ModuleLoader__.load({
 				statusSession: '会话',
 				statusCurrentTask: '当前任务',
 				statusSessionHint: '当前 DSH 没有可用的会话跳转 API：可以复制 session id，或从 Team 列表打开该会话。',
+				panelSession: '面板会话',
+				sessionSourceHost: '宿主提供的当前会话',
+				sessionSourceUrl: 'URL 指定',
+				sessionSourceWindow: '本窗口自造（宿主未提供会话）',
 				copySession: '复制会话',
 				sessionCopied: '已复制',
 				copyFailed: '复制失败',
@@ -863,6 +867,10 @@ window.__ModuleLoader__.load({
 				statusSession: 'Session',
 				statusCurrentTask: 'Current task',
 				statusSessionHint: 'This DSH build has no jump-to-session API: copy the session id, or open the session from the Team list.',
+				panelSession: 'Panel session',
+				sessionSourceHost: 'the session the host shows',
+				sessionSourceUrl: 'from the URL',
+				sessionSourceWindow: 'per-window fallback (the host reported no session)',
 				copySession: 'Copy session',
 				sessionCopied: 'Copied',
 				copyFailed: 'Copy failed',
@@ -1615,23 +1623,118 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * The session id this panel acts as. A ?session= on the page URL wins (the
-		 * Host can embed it); otherwise one is minted per browser window and kept in
-		 * sessionStorage so two windows are two sessions.
+		 * The client Context captured in apply(), so the session resolver can ask the
+		 * DSH shell which session it is showing (T-99). Null in a build that never
+		 * called apply (tests that only exercise a helper).
+		 */
+		let tcHostContext = null
+
+		/**
+		 * The REAL session id the Host UI is showing, or null when it does not say.
+		 *
+		 * DSH's browser shell keeps the shown session in two places, both owned by the
+		 * Host: `uiWorkspace.selection` (a persisted snapshot store, localStorage key
+		 * `dsh.sessions.current`, written whenever the main session is swapped) and
+		 * `uiSession.current` (the main-view binding). They carry the SAME id the tool
+		 * path receives as `agent.id`, which is what makes the panel share the session
+		 * binding without any URL parameter.
+		 *
+		 * This is deliberately a read, never a guess: a missing service, an empty
+		 * selection or a closed session returns null, and the caller falls back to the
+		 * per-window id — never to "the most recently active session" or a global slot.
+		 */
+		function tcHostSessionId() {
+			const read = function (value) {
+				return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
+			}
+			const service = function (name) {
+				try {
+					return tcHostContext !== null && tcHostContext !== undefined && typeof tcHostContext.get === 'function' ? tcHostContext.get(name) : null
+				} catch (error) {
+					return null
+				}
+			}
+			try {
+				const workspace = service('uiWorkspace')
+				if (workspace !== null && workspace !== undefined) {
+					const selection = workspace.selection
+					if (selection !== null && selection !== undefined && typeof selection.getSnapshot === 'function') {
+						const saved = selection.getSnapshot()
+						const chosen = read(saved === null || saved === undefined ? null : saved.sessionId)
+						if (chosen !== null) return chosen
+					}
+					// The live retained reference covers the moment before the persisted
+					// selection is written (and a shell that keeps the store empty).
+					const retained = read(workspace.mainReference === null || workspace.mainReference === undefined ? null : workspace.mainReference.sessionId)
+					if (retained !== null) return retained
+				}
+			} catch (error) {
+				/* a shell that throws on inspection tells us nothing: fall through */
+			}
+			try {
+				const session = service('uiSession')
+				// Two shapes of the same binding: the underlying source and the
+				// renderer-facing adapter (what a session-scoped slot would receive).
+				const sources = []
+				if (session !== null && session !== undefined) {
+					sources.push(session.current)
+					if (session.adapter !== null && session.adapter !== undefined) sources.push(session.adapter.current)
+				}
+				for (const current of sources) {
+					if (current === null || current === undefined) continue
+					const value = typeof current.getSnapshot === 'function' ? current.getSnapshot() : current.value
+					if (value === null || value === undefined) continue
+					const key = read(value.key)
+					if (key !== null) return key
+					const id = read(value.sessionId)
+					if (id !== null) return id
+				}
+			} catch (error) {
+				/* same: no identity from this source */
+			}
+			return null
+		}
+
+		/**
+		 * The session id this panel acts as, plus where it came from (T-99):
+		 *
+		 *   'url'    an explicit ?session= on the page URL (Host or tool override);
+		 *   'host'   the DSH shell's own current session — the id the tool path gets
+		 *            as agent.id, so the panel follows the session with no parameter;
+		 *   'window' a per-window id minted here, kept in sessionStorage so two windows
+		 *            are two sessions (the T-96 fallback when the Host says nothing).
 		 */
 		let tcFallbackSessionId = null
 
-		function tcSessionId() {
+		function tcSessionIdInfo() {
+			let fromUrl = null
 			try {
-				const fromUrl =
+				fromUrl =
 					typeof window.location === 'object' && window.location !== null && typeof window.location.search === 'string'
 						? new URLSearchParams(window.location.search).get('session')
 						: null
-				if (typeof fromUrl === 'string' && fromUrl.length > 0) return fromUrl
+			} catch (error) {
+				fromUrl = null
+			}
+			if (typeof fromUrl === 'string' && fromUrl.length > 0) return { id: fromUrl, source: 'url' }
+			const hosted = tcHostSessionId()
+			if (hosted !== null) return { id: hosted, source: 'host' }
+			return { id: tcWindowSessionId(), source: 'window' }
+		}
+
+		function tcSessionId() {
+			return tcSessionIdInfo().id
+		}
+
+		/** The per-window fallback identity (T-96): minted once, kept in sessionStorage. */
+		function tcWindowSessionId() {
+			try {
 				const store =
 					typeof window.sessionStorage === 'object' && window.sessionStorage !== null && typeof window.sessionStorage.getItem === 'function'
 						? window.sessionStorage
 						: window.localStorage
+				// The self-minted id must not collide with a Host id either.
+
 				let id = store.getItem(TC_SESSION_KEY)
 				if (typeof id !== 'string' || id.length === 0) {
 					id = 'web-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
@@ -3826,6 +3929,18 @@ window.__ModuleLoader__.load({
 							: null,
 					)
 				}
+				// T-99: which session this panel speaks as, and where that identity came
+				// from. The row is the visible half of the session story: "host" means the
+				// panel follows the session with no parameter, "window" is the fallback.
+				const panelSession = tcSessionIdInfo()
+				const panelSessionLine = h(
+					'div',
+					{ className: 'gbt-statusscan', 'data-panel-session': panelSession.id, 'data-session-source': panelSession.source },
+					t('panelSession') + ' ',
+					h('code', { className: 'gbt-mono' }, panelSession.id),
+					' · ',
+					h('span', null, panelSession.source === 'host' ? t('sessionSourceHost') : panelSession.source === 'url' ? t('sessionSourceUrl') : t('sessionSourceWindow')),
+				)
 				const dispatchCard = h(
 					'section',
 					{ className: 'gbt-statuscard', 'data-status-card': 'dispatch' },
@@ -3836,6 +3951,7 @@ window.__ModuleLoader__.load({
 						h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv', 'data-kv': 'concurrent' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'merge-queue' }, h('b', null, String(queue.length)), h('span', null, t('statusMergeQueue')))),
 						h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
 						h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
+						panelSessionLine,
 						archivedCount > 0
 							? h('div', { className: 'gbt-statusscan', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)), ' ', h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'archive-open', onClick: function () { if (props.onOpenArchive !== undefined) props.onOpenArchive() } }, t('archiveOpen')))
 							: null,
@@ -5299,6 +5415,9 @@ window.__ModuleLoader__.load({
 			/** Cordis services this browser half needs; slots is mandatory here. */
 			inject: ['slots', 'locale'],
 			apply(ctx) {
+				// T-99: the session resolver asks this context for the Host's own
+				// services (uiWorkspace / uiSession) at request time.
+				tcHostContext = ctx
 				ctx.effect(
 					() => ctx.locale.register(LOCALE_NS, { zh, en }),
 					'godot-bridge: dictionaries',
@@ -5339,6 +5458,25 @@ window.__ModuleLoader__.load({
 				ctx.effect(() => {
 					const store = createTaskStore(ctx.locale.bind(TC_NS))
 					const views = createTaskCenterViews(ctx, store)
+					// T-99: when the Host switches the session it shows, follow it at once
+					// instead of waiting for the next poll. A shell without the service
+					// simply never fires this; the poll still picks the session up.
+					ctx.inject(['uiWorkspace'], (scoped) => {
+						const workspace = scoped === null || scoped === undefined ? null : scoped.uiWorkspace
+						const selection = workspace === null || workspace === undefined ? null : workspace.selection
+						if (selection === null || selection === undefined || typeof selection.subscribe !== 'function') return
+						let seen = tcSessionIdInfo().id
+						ctx.effect(
+							() =>
+								selection.subscribe(() => {
+									const next = tcSessionIdInfo().id
+									if (next === seen) return
+									seen = next
+									void store.load()
+								}),
+							'godot-bridge: follow the host session',
+						)
+					})
 					const dropGlyph = ctx.slots.inject('sidebar.panellist', () =>
 						ctx.slots.register(
 							{
