@@ -505,6 +505,16 @@ window.__ModuleLoader__.load({
 				evtBlocked: '阻塞',
 				evtCancel: '取消',
 				evtEvent: '事件',
+				verdictReviewTitle: '评审裁决（以 @user 身份记录）',
+				verdictTestTitle: '测试裁决（以 @user 身份记录）',
+				verdictReviewPass: '通过评审',
+				verdictReviewReject: '打回评审',
+				verdictTestPass: '通过测试',
+				verdictTestFail: '测试失败',
+				verdictReasonLabel: '理由（打回/失败必填）',
+				verdictReasonRequired: '打回或测试失败必须填写理由',
+				verdictSubmit: '提交裁决',
+				verdictCancel: '取消',
 				evtHostCheck: '宿主检查',
 				evtError: '异常',
 				'evtLabel-create': '创建',
@@ -1010,6 +1020,16 @@ window.__ModuleLoader__.load({
 				evtBlocked: 'Blocked',
 				evtCancel: 'Cancelled',
 				evtEvent: 'Event',
+				verdictReviewTitle: 'Review verdict (recorded as @user)',
+				verdictTestTitle: 'Test verdict (recorded as @user)',
+				verdictReviewPass: 'Approve review',
+				verdictReviewReject: 'Request changes',
+				verdictTestPass: 'Pass test',
+				verdictTestFail: 'Fail test',
+				verdictReasonLabel: 'Reason (required to reject / fail)',
+				verdictReasonRequired: 'A reason is required to reject or fail',
+				verdictSubmit: 'Record verdict',
+				verdictCancel: 'Cancel',
 				evtHostCheck: 'Host check',
 				evtError: 'Error',
 				'evtLabel-create': 'create',
@@ -2310,6 +2330,23 @@ window.__ModuleLoader__.load({
 				const branch = typeof task.branch === 'string' ? task.branch : ''
 				const commit = typeof task.commit === 'string' ? task.commit : ''
 				const worktree = typeof task.worktree === 'string' ? task.worktree : ''
+				// T-113: the user can record the review/test verdict from the card. The
+				// server still decides permissions; this is only the missing entry point.
+				const [verdictOpen, setVerdictOpen] = React.useState(null)
+				const [verdictReason, setVerdictReason] = React.useState('')
+				const verdictKind = task.status === 'reviewing' ? 'review' : task.status === 'testing' ? 'test' : null
+				function recordVerdict(action, extra) {
+					if (typeof props.onVerdict !== 'function') return
+					props.onVerdict(action, task.id, extra === undefined ? {} : extra)
+					setVerdictOpen(null)
+					setVerdictReason('')
+				}
+				function verdictEvent(event, work) {
+					return function (clickEvent) {
+						if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation()
+						work(clickEvent)
+					}
+				}
 				const children = []
 				const top = [h('span', { key: 'id', className: 'gbt-id' }, task.id)]
 				if (task.priority !== 0) top.push(h('span', { key: 'prio', className: 'gbt-chip', 'data-tone': 'running' }, 'P' + String(task.priority)))
@@ -2369,6 +2406,87 @@ window.__ModuleLoader__.load({
 				const waiting = waitingChip(task, t, 'waiting')
 				if (waiting !== null) meta.push(waiting)
 				if (meta.length > 0) children.push(h('div', { key: 'meta', className: 'gbt-cardmeta' }, meta))
+				if (verdictKind !== null) {
+					const title = verdictKind === 'review' ? t('verdictReviewTitle') : t('verdictTestTitle')
+					const passing = verdictKind === 'review' ? 'approveReview' : 'passTest'
+					const blocking = verdictKind === 'review' ? 'requestChanges' : 'failTest'
+					const needsReason = verdictOpen === blocking
+					children.push(
+						h(
+							'div',
+							{ key: 'verdict', className: 'gbt-cardverdict', 'data-verdict-phase': verdictKind },
+							h('div', { className: 'gbt-cardverdicthead' }, title),
+							h(
+								'div',
+								{ className: 'gbt-cardverdictactions' },
+								h(
+									'button',
+									{
+										type: 'button',
+										className: 'gbt-btn',
+										'data-verdict-action': passing,
+										onClick: function (clickEvent) {
+											if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation()
+											recordVerdict(passing, verdictKind === 'test' ? { evidence: '' } : {})
+										},
+									},
+									verdictKind === 'review' ? t('verdictReviewPass') : t('verdictTestPass'),
+								),
+								h(
+									'button',
+									{
+										type: 'button',
+										className: 'gbt-btn',
+										'data-variant': 'danger',
+										'data-verdict-action': blocking,
+										// The blocking verdict needs a reason before it can be recorded.
+										'data-verdict-needs-reason': 'true',
+										onClick: function (clickEvent) {
+											if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation()
+											setVerdictOpen(blocking)
+										},
+									},
+									verdictKind === 'review' ? t('verdictReviewReject') : t('verdictTestFail'),
+								),
+							),
+							needsReason
+								? h(
+									'div',
+									{ className: 'gbt-cardverdictform', 'data-verdict-form': 'true' },
+									h('label', { className: 'gbt-footnote' }, t('verdictReasonLabel')),
+									h('textarea', {
+										rows: 3,
+										value: verdictReason,
+										'data-verdict-reason': 'true',
+										onInput: function (inputEvent) { setVerdictReason(String(inputEvent.target.value)) },
+										onClick: function (clickEvent) { if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation() },
+									}),
+									h(
+										'div',
+										{ className: 'gbt-cardverdictactions' },
+										h(
+											'button',
+											{
+												type: 'button',
+												className: 'gbt-btn',
+												'data-variant': 'primary',
+												'data-verdict-submit': 'true',
+												disabled: verdictReason.trim() === '',
+												title: verdictReason.trim() === '' ? t('verdictReasonRequired') : undefined,
+												onClick: function (clickEvent) {
+													if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation()
+													if (verdictReason.trim() !== '') recordVerdict(blocking, verdictKind === 'test' ? { evidence: verdictReason.trim() } : { reasons: verdictReason.trim() })
+												},
+											},
+											t('verdictSubmit'),
+										),
+										h('button', { type: 'button', className: 'gbt-btn', 'data-verdict-cancel': 'true', onClick: function () { setVerdictOpen(null); setVerdictReason('') } }, t('verdictCancel')),
+									),
+									)
+								: null,
+							)
+						)
+				}
 				if (deps.length > 0) {
 					children.push(
 						h(
@@ -2439,6 +2557,7 @@ window.__ModuleLoader__.load({
 												now: props.now,
 												selected: props.selectedId === task.id,
 												onOpen: props.onOpen,
+												onVerdict: props.onVerdict,
 											})
 										}),
 							),
@@ -2502,6 +2621,7 @@ window.__ModuleLoader__.load({
 								now: props.now,
 								selectedId: props.selectedId,
 								onOpen: props.onOpen,
+								onVerdict: props.onVerdict,
 								onToggle: function () { toggle(group.key) },
 								footer:
 									doneCount === 0
@@ -2526,8 +2646,9 @@ window.__ModuleLoader__.load({
 							t: t,
 							now: props.now,
 							selectedId: props.selectedId,
-							onOpen: props.onOpen,
-							onToggle: function () { toggle(group.key) },
+						onOpen: props.onOpen,
+						onVerdict: props.onVerdict,
+						onToggle: function () { toggle(group.key) },
 						})
 					}),
 				)
@@ -5355,6 +5476,11 @@ window.__ModuleLoader__.load({
 											now: now,
 											selectedId: selectedId,
 											onOpen: openTask,
+											// T-113: the user records review/test verdicts through the same /action
+											// route, so the host records role=user (agents cannot impersonate it).
+											onVerdict: function (action, id, payload) {
+												void store.send(action, Object.assign({ id: id }, payload === undefined ? {} : payload))
+											},
 											onOpenDoneAll: function () { doneAllReset(); setDoneAllArchived(false); setDoneAllOpen(true) },
 											onColumnToggle: function () { setColumnTick(function (count) { return count + 1 }) },
 										})
@@ -5376,7 +5502,18 @@ window.__ModuleLoader__.load({
 									})
 									: view === 'roles'
 										? h(RolesView, { snapshot: snapshot, t: t, store: store })
-										: h(Board, { snapshot: snapshot, t: t, now: now, selectedId: selectedId, onOpen: openTask })
+										: h(Board, {
+						snapshot: snapshot,
+						t: t,
+						now: now,
+						selectedId: selectedId,
+						onOpen: openTask,
+						// T-113: the user records verdicts through the same /action route, so
+						// the host sees role=user (the tool path cannot impersonate it).
+						onVerdict: function (action, id, payload) {
+							void store.send(action, Object.assign({ id: id }, payload === undefined ? {} : payload))
+						},
+					})
 
 				const tabsView = h(
 					'div',

@@ -1884,6 +1884,14 @@ function realTasksCount(payload) { return Array.isArray(payload.tasks) ? payload
     approved.json().task.review.byName === '你' && approved.json().task.history[approved.json().task.history.length - 1].byName === '你',
     JSON.stringify({ review: approved.json().task.review, history: approved.json().task.history.slice(-1) }),
   )
+  // T-113: the panel's verdict buttons use the SAME route, so the audit trail
+  // must show @user (never an agent label) and stay distinguishable.
+  const userReviewHistory = approved.json().task.history[approved.json().task.history.length - 1]
+  check(
+    'T-113 a user verdict is recorded as @user, not as an agent action',
+    userReviewHistory.by === '@user' && approved.json().task.review.by === '@user',
+    JSON.stringify({ history: userReviewHistory, reviewBy: approved.json().task.review.by }),
+  )
   const pending = await rig.api.autoMergePending(PROJECT)
   check('a pending test is not merged by the sweep', pending.ok === true && pending.merged.length === 0, JSON.stringify(pending))
   const passed = await postTo(surface, { action: 'passTest', project: PROJECT, id: 'T-1' })
@@ -1930,6 +1938,13 @@ function realTasksCount(payload) { return Array.isArray(payload.tasks) ? payload
   const surface = install(rig)
   const submitted = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'v1' })
   check('the first submission opens review round one', submitted.json().task.review.attempt === 1, submitted.text)
+  // T-113: the panel requires a reason for reject/fail; the SERVER enforces it too.
+  const changesWithoutReason = await postTo(surface, { action: 'requestChanges', project: PROJECT, id: 'T-1' })
+  check(
+    'T-113 requestChanges without reasons is refused by the server',
+    changesWithoutReason.json().ok === false && changesWithoutReason.json().code === 'missing-reasons',
+    changesWithoutReason.text,
+  )
   const changes = await postTo(surface, { action: 'requestChanges', project: PROJECT, id: 'T-1', reasons: 'rename the helper' })
   check('requestChanges returns the task to running', changes.json().ok === true && changes.json().task.status === 'running', changes.text)
   check(
