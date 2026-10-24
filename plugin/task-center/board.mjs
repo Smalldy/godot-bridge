@@ -520,6 +520,11 @@ function normaliseTask(raw, index, now) {
       executors: executors,
       evidence: stringOf(raw.evidence, ''),
       dispatch: dispatch,
+      // Set by the stage gate when the target phase has no executor yet; the
+      // watchdog skips such a task and the next host tick clears it once the
+      // executor can be provisioned.
+      waitingReason: typeof raw.waitingReason === 'string' && raw.waitingReason !== '' ? raw.waitingReason : null,
+      waitingDetail: typeof raw.waitingDetail === 'string' && raw.waitingDetail !== '' ? raw.waitingDetail : null,
       leaseUntil: isIso(raw.leaseUntil) ? raw.leaseUntil : null,
       createdBy: stringOf(raw.createdBy, 'unknown'),
       createdAt: isIso(raw.createdAt) ? raw.createdAt : iso(now),

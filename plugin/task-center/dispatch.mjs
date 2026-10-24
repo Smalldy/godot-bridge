@@ -2800,6 +2800,7 @@ export function createDispatcher(ctx, options) {
     const pending = board.tasks.filter(
       (task) =>
         task.status === 'reviewing' &&
+        (task.waitingReason === null || task.waitingReason === undefined || task.waitingReason === '') &&
         task.review !== null &&
         task.review !== undefined &&
         task.review.status === 'pending' &&
@@ -2908,6 +2909,7 @@ export function createDispatcher(ctx, options) {
     const pending = board.tasks.filter(
       (task) =>
         task.status === 'testing' &&
+        (task.waitingReason === null || task.waitingReason === undefined || task.waitingReason === '') &&
         task.test !== null &&
         task.test !== undefined &&
         task.test.status === 'pending' &&

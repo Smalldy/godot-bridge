@@ -1463,7 +1463,59 @@ export function createApi(ctx, options) {
    * file another owner holds, a full concurrency budget). Dispatch never reads
    * it back, so it cannot change what runs — only explain what did not.
    */
+  /** Why provisioning failed, as a stable waiting reason. */
+  function provisionFailedHard(provisioned) {
+    if (provisioned === null || provisioned === undefined || provisioned.ok !== false) return false
+    if (provisioned.__timedOut === true) return false
+    const code = String(provisioned.code === undefined || provisioned.code === null ? '' : provisioned.code)
+    return code.indexOf('timeout') < 0 && code !== 'provision-timeout'
+  }
+
+  function provisionReasonOf(provisioned) {
+    if (provisioned === null || provisioned === undefined || provisioned.ok !== false) return null
+    const code = String(provisioned.code === undefined || provisioned.code === null ? '' : provisioned.code)
+    if (code === 'no-lead') return 'no-lead'
+    if (code === 'no-team-service') return 'no-team-service'
+    if (code === 'spawn-refused' || code === 'spawn-failed') return 'spawn-refused'
+    return code === '' ? 'role-unavailable' : code
+  }
+
+  /** Record that a phase is waiting for an executor (no advance happened). */
+  async function markWaiting(projectPath, id, reason, detail, context) {
+    // state.apply, not writeTask: recording a waiting reason must not kick the
+    // scheduler (which could requeue the still-running card and lose its lease).
+    return state.apply(
+      projectPath,
+      (board) => {
+        const task = model.findTask(board, id)
+        if (task === undefined) return null
+        const tasks = board.tasks.map((entry) =>
+          String(entry.id) === String(id) ? Object.assign({}, entry, { waitingReason: reason, waitingDetail: detail === undefined || detail === null ? null : String(detail) }) : entry,
+        )
+        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+      },
+      writePolicyFor(projectPath),
+    )
+  }
+
+  /** The executor showed up: forget the waiting marker. */
+  async function clearWaiting(projectPath, id, context) {
+    return state.apply(
+      projectPath,
+      (board) => {
+        const task = model.findTask(board, id)
+        if (task === undefined || (task.waitingReason === null && task.waitingDetail === null)) return null
+        const tasks = board.tasks.map((entry) =>
+          String(entry.id) === String(id) ? Object.assign({}, entry, { waitingReason: null, waitingDetail: null }) : entry,
+        )
+        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+      },
+      writePolicyFor(projectPath),
+    )
+  }
+
   function waitingReasonOf(board, task) {
+    if (typeof task.waitingReason === 'string' && task.waitingReason !== '') return task.waitingReason
     if (task.status !== 'pending') return null
     const dispatch = board.dispatch === undefined || board.dispatch === null ? {} : board.dispatch
     if (dispatch.state !== 'running') return 'dispatch-paused'
@@ -1483,6 +1535,7 @@ export function createApi(ctx, options) {
     const base = model.detail(board, task, now)
     return Object.assign(base, {
       waitingReason: waitingReasonOf(board, task),
+      waitingDetail: typeof task.waitingDetail === 'string' && task.waitingDetail !== '' ? task.waitingDetail : null,
       // Live executors carry the project each was dispatched for, so a reader can
       // see that a member belongs to this board (a cross-project borrow would be
       // visible instead of silent). model.detail only reports their count.
@@ -2439,6 +2492,34 @@ export function createApi(ctx, options) {
    * out. The index row calls this on a timer, which is what lets a passed test
    * integrate without any model action.
    */
+  /**
+   * The executor may have become available after a gate wrote waitingReason.
+   * Every host sweep retries provisioning and clears the marker on success, so a
+   * waiting task resumes without a human reopen.
+   */
+  async function recoverWaiting(projectPath, board, context) {
+    const recovered = []
+    for (const task of board.tasks) {
+      if (typeof task.waitingReason !== 'string' || task.waitingReason === '') continue
+      let provisioned = null
+      if (task.status === 'running' || task.status === 'reviewing') provisioned = await provisionRole('reviewer', projectPath, task)
+      else if (task.status === 'testing') provisioned = await provisionRole('tester', projectPath, task)
+      else continue
+      if (provisioned !== null && provisioned !== undefined && provisioned.ok === true) {
+        await clearWaiting(projectPath, task.id, context)
+        recovered.push(task.id)
+      }
+    }
+    // A stale candidate is rebuilt here, before the merge queue runs; a failed
+    // rebuild keeps the readable candidate-stale marker.
+    for (const task of board.tasks) {
+      if (task.waitingReason !== 'candidate-stale') continue
+      const refreshed = await performResolved('refreshMerge', { id: task.id }, context, projectPath)
+      if (refreshed.ok === true) recovered.push(task.id)
+    }
+    return recovered
+  }
+
   async function autoMergePending(projectPath) {
     // The host calls this every few seconds (index.mjs), so this is the sweep's
     // real trigger: due at boot and once per 24h after that. A failure here never
@@ -2449,9 +2530,21 @@ export function createApi(ctx, options) {
     } catch (error) {
       archiveResult = null
     }
+    // Recovery runs even when merging is disabled: a waiting card must resume as
+    // soon as its executor exists.
+    {
+      const waiting = await readBoardOrFail(projectPath)
+      if (waiting.failed === undefined && waiting.board.tasks.some((task) => typeof task.waitingReason === 'string' && task.waitingReason !== '')) {
+        await recoverWaiting(projectPath, waiting.board, { projectPath: projectPath, by: 'system', role: 'user', agent: null })
+      }
+    }
     if (autoMerge !== true) return ok({ merged: [], skipped: [], disabled: true, archive: archiveResult })
     if (merger === null) return ok({ merged: [], skipped: [], disabled: true })
-    const read = await readBoardOrFail(projectPath)
+    let read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const systemContext = { projectPath: projectPath, by: 'system', role: 'user', agent: null }
+    await recoverWaiting(projectPath, read.board, systemContext)
+    read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const candidates = read.board.tasks
       .filter((task) => mergeEligible(task))
@@ -2459,8 +2552,34 @@ export function createApi(ctx, options) {
       .sort()
     const merged = []
     const skipped = []
-    const systemContext = { projectPath: projectPath, by: 'system', role: 'user', agent: null }
     for (const id of candidates) {
+      if (mergingCandidates.has(id)) {
+        skipped.push({ id: id, code: 'merge-in-flight' })
+        continue
+      }
+      const before = model.findTask(read.board, id)
+      if (before !== undefined && before !== null && before.merge !== null && before.merge !== undefined && typeof before.target === 'string') {
+        const baseLooksReal = typeof before.merge.base === 'string' && /^[0-9a-f]{7,40}$/i.test(before.merge.base)
+        const head = baseLooksReal ? await readTargetHead(projectPath, before.target) : { ok: false, unread: true }
+        if (head.ok !== true && baseLooksReal) {
+          // The target head could not be read: say so instead of leaving a
+          // testing+passed+open card that nobody will ever advance.
+          await markWaiting(projectPath, id, 'candidate-stale', 'target ' + String(before.target) + ' head is unreadable: ' + String(head.message || head.code || ''), systemContext)
+          skipped.push({ id: id, code: 'candidate-stale' })
+          continue
+        }
+        // Only real commits can be stale; synthetic/legacy labels ("base-sha")
+        // and hand-written boards keep their historical behaviour.
+        const headLooksReal = head.ok === true && /^[0-9a-f]{7,40}$/i.test(String(head.head))
+        const stale = baseLooksReal && headLooksReal && before.merge.base !== head.head
+        if (stale) {
+          // Marked here (inside the sweep, but outside the merge queue); the next
+          // sweep's recovery pass rebuilds the candidate where it is safe to.
+          await markWaiting(projectPath, id, 'candidate-stale', 'candidate base ' + String(before.merge.base) + ' is behind target ' + String(head.head), systemContext)
+          skipped.push({ id: id, code: 'candidate-stale' })
+          continue
+        }
+      }
       let result = null
       try {
         const key = (() => { const entry = read.board.tasks.filter((task) => task.id === id)[0]; return entry === undefined || entry.target === null || entry.target === undefined ? '_default' : entry.target })()
@@ -3035,6 +3154,11 @@ export function createApi(ctx, options) {
         // phases and the queue waits for review + tests again. Ensure the
         // reviewer before the write so the scheduler's stage pass cannot race.
         const provisioned = await provisionRole('reviewer', projectPath, task)
+        if (provisionFailedHard(provisioned)) {
+          const reason = provisionReasonOf(provisioned)
+          await markWaiting(projectPath, id, reason, provisioned.message, context)
+          return failure('reviewer-unavailable', 'no reviewer could be provisioned for ' + id + ' (' + reason + '); the merge request was not refreshed')
+        }
         const recorded = await writeTask(
           projectPath,
           id,
@@ -3042,6 +3166,7 @@ export function createApi(ctx, options) {
           context,
         )
         if (recorded.ok !== true) return recorded
+        await clearWaiting(projectPath, id, context)
         // A refreshed head starts a fresh review round: ensure the reviewer and
         // send it the new brief, exactly like a submit would.
         if (recorded.task !== null && recorded.task !== undefined && recorded.task.status === 'reviewing') {
@@ -3091,12 +3216,20 @@ export function createApi(ctx, options) {
         input.actualFiles = prepared.mr.actualFiles
         input.merge = prepared.mr.merge
       }
+      if (willReview && provisionFailedHard(provisioned)) {
+        // No reviewer: do NOT advance into an empty phase. The card stays running
+        // with a waiting reason; the next host tick retries provisioning.
+        const reason = provisionReasonOf(provisioned)
+        await markWaiting(projectPath, id, reason, provisioned.message, context)
+        return failure('reviewer-unavailable', 'no reviewer could be provisioned for ' + id + ' (' + reason + '); the task stays running and will be retried by the host')
+      }
       const result = await writeTask(
         projectPath,
         id,
         (board) => model.submitTask(board, id, input, clock(), context.by, writeByName(context)),
         context,
       )
+      if (result.ok === true) await clearWaiting(projectPath, id, context)
       if (result.ok === true && result.task !== null && result.task.status !== 'running') {
         // A stale test slot from an earlier round must not describe this one.
         recordStageSlot(ctx, id, 'tester', null, null)
@@ -3267,6 +3400,11 @@ export function createApi(ctx, options) {
         if (candidate !== null) emitActivity(null, 'worktree-create', 'test candidate ' + String(candidate.path), id, 'host')
         const provisioned = await provisionRole('tester', projectPath, result.task)
         if (provisioned !== null) result.provisioned = provisioned
+        if (provisionFailedHard(provisioned)) {
+          const reason = provisionReasonOf(provisioned)
+          await markWaiting(projectPath, id, reason, provisioned.message, context)
+          return failure('tester-unavailable', 'no tester could be provisioned for ' + id + ' (' + reason + '); the task waits in testing with that reason and will be retried by the host')
+        }
         if (candidate !== null) {
           result.candidate = candidate
           if (state.memory.testCandidates === undefined || state.memory.testCandidates === null) state.memory.testCandidates = {}

@@ -5232,5 +5232,94 @@ rig.scheduler.dispose()
   rig.scheduler.dispose()
 }
 
+// ── T-89: no empty phases, waitingReason, recovery ──
+{
+  const lead = { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }
+  // A role manager that cannot provision (the real no-lead shape): ensure refuses.
+  let canProvision = false
+  const stubRoles = {
+    ensure: async function () {
+      if (canProvision) return { ok: true, kind: 'reviewer', created: [{ name: 'reviewer-1', id: 'session-reviewer-1' }], reused: [], replaced: [], waiting: [], refused: [] }
+      return { ok: false, code: 'no-lead', message: 'no live Lead can provision a reviewer' }
+    },
+    status: () => ({ available: false }),
+  }
+  const rig = createSubmitRig({ roles: stubRoles, git: fakeGit().git })
+  const task = seedRunningTask(rig, runningWorktreeTask())
+  const refused = await rig.api.perform('submit', { id: 'T-1', evidence: 'done' }, rig.user)
+  const board = boardJson(rig.fs, PROJECT)
+  check(
+    'without a Lead, submit does not advance and names reviewer-unavailable',
+    refused.ok === false && refused.code === 'reviewer-unavailable' && board.tasks[0].status === 'running' && board.tasks[0].waitingReason === 'no-lead',
+    JSON.stringify({ code: refused.code, status: board.tasks[0].status, waiting: board.tasks[0].waitingReason }),
+  )
+  // Recovery: provisioning becomes possible, the next host sweep clears the
+  // reason and the card can be submitted again without a human reopen.
+  canProvision = true
+  await rig.api.autoMergePending(PROJECT)
+  const recoveredBoard = boardJson(rig.fs, PROJECT)
+  check(
+    'the next host sweep clears waitingReason once the executor is available',
+    recoveredBoard.tasks[0].waitingReason === null || recoveredBoard.tasks[0].waitingReason === undefined,
+    JSON.stringify({ waiting: recoveredBoard.tasks[0].waitingReason }),
+  )
+  rig.scheduler.dispose()
+
+  // The watchdog must not punish a card that is waiting for its executor.
+  const waitRig = createRig({ allowSpawn: false })
+  seedRunningTask(waitRig, Object.assign(runningWorktreeTask(), { status: 'reviewing', waitingReason: 'no-lead', review: { status: 'pending', by: null, at: new Date(Date.now() - 60 * 60 * 1000).toISOString(), attempt: 1 } }))
+  await waitRig.scheduler.settle(PROJECT)
+  const waited = boardJson(waitRig.fs, PROJECT).tasks[0]
+  check(
+    'a waiting card is skipped by the review watchdog instead of being blocked',
+    waited.status === 'reviewing' && waited.waitingReason === 'no-lead',
+    JSON.stringify({ status: waited.status, waiting: waited.waitingReason }),
+  )
+  waitRig.scheduler.dispose()
+}
+
+// ── T-89: a stale candidate is rebuilt, never silently left in testing ──
+{
+  const roles = {
+    ensure: async function () {
+      return { ok: true, kind: 'reviewer', created: [{ name: 'reviewer-1', id: 'session-reviewer-1' }], reused: [], replaced: [], waiting: [], refused: [] }
+    },
+    status: () => ({ available: true }),
+  }
+  const fake = mergeGit({
+    'rev-parse --verify refs/heads/main': () => ({ code: 0, stdout: '2222222\n', stderr: '' }),
+  })
+  const merger = createMerger({ git: fake.git, verify: async () => ({ ok: true, code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' }) })
+  const rig = createSubmitRig({ roles: roles, git: fake.git, merger: merger, autoMerge: true })
+  const task = openMergeTask({ status: 'testing' })
+  // The target advanced after the candidate was tested: base is behind main.
+  task.merge.base = '1111111'
+  task.target = 'main'
+  seedMergeTask(rig, task)
+  const first = await rig.api.autoMergePending(PROJECT)
+  const midBoard = boardJson(rig.fs, PROJECT).tasks[0]
+  check(
+    'a stale candidate is detected and marked candidate-stale, not left silently in testing',
+    first.ok === true &&
+      (first.skipped.some((entry) => entry.code === 'candidate-stale' || entry.code === 'candidate-rebuilt') || midBoard.status === 'reviewing') &&
+      (midBoard.waitingReason === 'candidate-stale' || midBoard.status === 'reviewing'),
+    JSON.stringify({ skipped: first.skipped, status: midBoard.status, waiting: midBoard.waitingReason }),
+  )
+  // The next sweep rebuilds the candidate (refreshMerge) or keeps a readable reason.
+  const second = await rig.api.autoMergePending(PROJECT)
+  const board = boardJson(rig.fs, PROJECT).tasks[0]
+  check(
+    'the next sweep rebuilds the stale candidate and leaves no silent testing+open state',
+    second.ok === true && (board.status === 'reviewing' || (board.waitingReason === 'candidate-stale' && board.status === 'testing')),
+    JSON.stringify({ status: board.status, waiting: board.waitingReason, skipped: second.skipped }),
+  )
+  check(
+    'the rebuilt card is not simultaneously testing, passed, open and unowned',
+    !(board.status === 'testing' && board.test !== null && board.test.status === 'passed' && board.merge.status === 'open' && (board.waitingReason === null || board.waitingReason === undefined)),
+    JSON.stringify({ status: board.status, test: board.test && board.test.status, merge: board.merge.status, waiting: board.waitingReason }),
+  )
+  rig.scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
