@@ -38,7 +38,11 @@ import {
   hostCheckEvidence,
   interruptAssignee,
   interruptMemberNamed,
+  memberProjectOf,
   probeWorktree,
+  projectSlotKey,
+  roleShortName,
+  roleSlotOf,
   resolveLead,
   reviewBriefFor,
   reworkBriefFor,
@@ -62,6 +66,7 @@ import {
   archiveYears,
   isArchivable,
   archiveYearOf,
+  projectIdOf,
   projectRefOf,
   readArchive,
   readArchiveIndex,
@@ -848,6 +853,24 @@ export function createApi(ctx, options) {
     try {
       const ensured = await ensureRoleBounded(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: clock() })
       emitRoleProvision(ensured)
+      // A slot owned by another project is never reused (its session workspace is
+      // that project): the card keeps a history row saying so.
+      if (
+        ensured !== null &&
+        ensured !== undefined &&
+        Array.isArray(ensured.refused) &&
+        ensured.refused.length > 0 &&
+        task !== null &&
+        task !== undefined
+      ) {
+        const systemContext = { projectPath: projectPath, by: 'system', role: 'user', agent: null }
+        await writeTask(
+          projectPath,
+          task.id,
+          (board) => model.noteReuseRefused(board, task.id, clock(), ensured.refused, 'role slot belongs to another project'),
+          systemContext,
+        )
+      }
       return ensured
     } catch (error) {
       return { ok: false, code: 'role-ensure-failed', message: messageOf(error) }
@@ -1184,6 +1207,29 @@ export function createApi(ctx, options) {
     )
   }
 
+  /**
+   * A worker may only submit to the board of the project it was dispatched for.
+   * The member's project is the one the host recorded when it handed out the
+   * brief, or the project baked into its role slot name. A member with no record
+   * (a restart, a hand-spawned teammate) is not refused: there is nothing to
+   * compare, and the project-scoped slot names still keep projects apart.
+   */
+  function wrongProjectRefusal(context, projectPath) {
+    const member = callerMemberOf(context)
+    if (member === null) return null
+    const known = memberProjectOf(ctx, member.name)
+    const slot = roleSlotOf(member.name)
+    const callerKey = known !== null ? known.key : slot === null ? null : slot.project
+    if (callerKey === null || callerKey === undefined || callerKey === '') return null
+    if (callerKey === projectSlotKey(projectPath)) return null
+    return failure(
+      'wrong-project',
+      'you were dispatched for another project (' + (known !== null ? known.root : 'slot ' + String(callerKey)) + '); this card belongs to ' + projectPath +
+        '. Do not submit another project\'s card; a worker is only accepted by the board it was dispatched for.',
+      { project: projectIdOf(projectPath), dispatchedFor: known === null ? callerKey : known.root },
+    )
+  }
+
   /** Role provisioning with a bound: a hung ensure must not hold the action. */
   async function ensureRoleBounded(kind, request) {
     const startedAt = Date.now()
@@ -1281,13 +1327,22 @@ export function createApi(ctx, options) {
     }
     const instances = (Array.isArray(roster) ? roster : [])
       .filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string' && roleKindOf(member.name) !== null)
-      .map((member) => ({
-        name: String(member.name),
-        kind: roleKindOf(member.name),
-        id: member.id === undefined || member.id === null ? null : String(member.id),
-        status: String(member.status === undefined || member.status === null ? 'unknown' : member.status),
-        description: typeof member.description === 'string' ? member.description : null,
-      }))
+      .map((member) => {
+        const slot = roleSlotOf(member.name)
+        const remembered = memberProjectOf(ctx, String(member.name))
+        return {
+          name: String(member.name),
+          // The panel shows the short, project-free name; the long name is the
+          // internal key (it carries the project so two projects never collide).
+          shortName: roleShortName(String(member.name)),
+          project: slot === null ? null : slot.project,
+          projectRoot: remembered === null ? null : remembered.root,
+          kind: roleKindOf(member.name),
+          id: member.id === undefined || member.id === null ? null : String(member.id),
+          status: String(member.status === undefined || member.status === null ? 'unknown' : member.status),
+          description: typeof member.description === 'string' ? member.description : null,
+        }
+      })
     return { available: true, error: null, instances: instances, manager: roles === null ? null : roles.status() }
   }
 
@@ -1323,7 +1378,21 @@ export function createApi(ctx, options) {
     const opts = options === undefined ? {} : options
     const roster = roleRoster()
     if (roster.ok !== true) return roster
-    const member = roster.members.filter((entry) => entry !== null && typeof entry === 'object' && String(entry.name) === name)[0]
+    const exact = roster.members.filter((entry) => entry !== null && typeof entry === 'object' && String(entry.name) === name)[0]
+    // The panel (and a person) name a slot SHORT: reviewer-1. Resolve that to the
+    // project-scoped live instance (reviewer-p<key>-1) of the same kind, because
+    // the long name is an internal key, not something anyone types.
+    const member =
+      exact !== undefined
+        ? exact
+        : roster.members.filter(
+            (entry) =>
+              entry !== null &&
+              typeof entry === 'object' &&
+              roleSlotOf(entry.name) !== null &&
+              roleShortName(String(entry.name)) === name &&
+              (opts.allowFailed === true || entry.status !== 'failed'),
+          )[0]
     if (member === undefined) return { ok: false, code: 'unknown-role-instance', message: 'no live role instance named ' + name }
     if (member.status === 'failed' && opts.allowFailed !== true) {
       return { ok: false, code: 'not-live', message: name + ' has failed; the host auto-provisioning will replace it (or replace the role kind)' }
@@ -1402,9 +1471,24 @@ export function createApi(ctx, options) {
     return null
   }
 
-  /** model.detail plus the one report field this API adds on top of it. */
+  /** model.detail plus the report fields this API adds on top of it. */
   function detailOf(board, task, now) {
-    return Object.assign(model.detail(board, task, now), { waitingReason: waitingReasonOf(board, task) })
+    const base = model.detail(board, task, now)
+    return Object.assign(base, {
+      waitingReason: waitingReasonOf(board, task),
+      // Live executors carry the project each was dispatched for, so a reader can
+      // see that a member belongs to this board (a cross-project borrow would be
+      // visible instead of silent). model.detail only reports their count.
+      liveExecutors: model.liveExecutors(task).map(function (entry) {
+        const slot = roleSlotOf(entry.name)
+        const remembered = memberProjectOf(ctx, entry.name)
+        return Object.assign({}, entry, {
+          displayName: roleShortName(entry.name),
+          project: remembered !== null ? remembered.key : slot === null ? null : slot.project,
+          projectRoot: remembered !== null ? remembered.root : null,
+        })
+      }),
+    })
   }
 
   /**
@@ -1482,6 +1566,9 @@ export function createApi(ctx, options) {
       maxAttempts: detail.maxAttempts,
       interruptions: detail.interruptions,
       executors: Array.isArray(detail.executors) ? detail.executors.slice(-3) : [],
+      // Live executors carry the project they were dispatched for, so a reader can
+      // see that a member belongs to this board (and a cross-project borrow would
+      // be visible instead of silent).
       liveExecutors: detail.liveExecutors,
       leaseUntil: detail.leaseUntil,
       leaseRemaining: detail.leaseRemaining,
@@ -2541,7 +2628,7 @@ export function createApi(ctx, options) {
           if (member.ok !== true) return member
           // A failed instance is already replaced by ensure (failed slot), so a
           // replace skips the drain; a live one is drained with the wait deadline.
-          targets = String(member.member.status) === 'failed' && action === 'rolesReplace' ? [] : [requested]
+          targets = String(member.member.status) === 'failed' && action === 'rolesReplace' ? [] : [String(member.member.name)]
         } else if (action === 'rolesReplace' && ROLE_KINDS.indexOf(requested) >= 0) {
           kind = requested
           const live = liveRoleNames(kind)
@@ -2958,6 +3045,8 @@ export function createApi(ctx, options) {
     if (action === 'submit') {
       const id = String(source.id === undefined ? '' : source.id)
       if (id === '') return failure('missing-id', 'submit needs a task id')
+      const wrongProject = wrongProjectRefusal(context, projectPath)
+      if (wrongProject !== null) return wrongProject
       if (roles !== null) {
         const caller = callerRole(context)
         if (caller !== null && (caller.kind === 'reviewer' || caller.kind === 'tester')) {

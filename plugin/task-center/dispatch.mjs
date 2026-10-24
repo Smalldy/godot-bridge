@@ -26,8 +26,9 @@
 
 import { join } from 'node:path'
 import { serialiseWorktreeCreate } from './git.mjs'
-import { randomUUID } from 'node:crypto'
-import { boardPath, readRoleConfig } from './board.mjs'
+import { createHash, randomUUID } from 'node:crypto'
+import { realpathSync } from 'node:fs'
+import { boardPath, projectIdOf, readRoleConfig } from './board.mjs'
 import { writePolicyFor } from './state.mjs'
 import {
   ROLE_KINDS,
@@ -242,21 +243,101 @@ export const REVIEW_MAX_ROUNDS = 3
 
 const RERUN_DELAY_MS = 250
 
-/** Role slot names are fixed per kind and index: worker-1, reviewer-1, tester-1. */
-export function roleSlotName(kind, index) {
-  return String(kind) + '-' + String(index)
+/** A short, teammate-name-safe handle for one project: the first 10 hex chars
+ * of sha1(projectIdOf(root)). A teammate name allows only [a-z0-9-], so a root
+ * (which holds ':' and '/') cannot appear verbatim; the digest is the stable,
+ * case-folded key used in slot names, the executor ledger and history. */
+export function projectSlotKey(root) {
+  const id = typeof root === 'string' && root !== '' ? projectIdOf(canonicalRoot(root)) : ''
+  return createHash('sha1').update(id).digest('hex').slice(0, 10)
 }
 
-/** The role kind of a teammate name, or null. Feature workers are work-<task>-<n>,
- * so they never match; role slots are worker-<n>/reviewer-<n>/tester-<n>. */
-export function roleKindOf(name) {
+/** One absolute root, symlinks resolved when the path exists. projectIdOf then
+ * case-folds and normalizes separators, so the same project written in different
+ * ways (trailing slash, drive-letter case, a symlinked path) hashes identically. */
+function canonicalRoot(root) {
+  const text = String(root)
+  try {
+    return realpathSync.native(text)
+  } catch (error) {
+    return text
+  }
+}
+
+/** Role slot names are fixed per kind, project and index. With a known project
+ * the name is `reviewer-p<key>-1` (the slot KEY is `reviewer@<key>-1`, see
+ * roleSlotKey); without one the legacy `reviewer-1` is kept verbatim, which is
+ * also what a profile without a project still spawns. */
+export function roleSlotName(kind, index, projectRoot) {
+  const key = typeof projectRoot === 'string' && projectRoot !== '' ? projectSlotKey(projectRoot) : null
+  return String(kind) + (key === null ? '' : '-p' + key) + '-' + String(index)
+}
+
+/** Parse a slot name into { kind, project (key|null), index }, or null. Feature
+ * workers are work-<task>-<n>, so they never match. */
+export function roleSlotOf(name) {
   if (typeof name !== 'string') return null
-  const match = /^(worker|reviewer|tester)-(\d+)$/.exec(name)
-  return match === null ? null : match[1]
+  const match = /^(worker|reviewer|tester)(?:-p([0-9a-f]{6,}))?-(\d+)$/.exec(name)
+  if (match === null) return null
+  return { kind: match[1], project: match[2] === undefined ? null : match[2], index: Number(match[3]) }
+}
+
+/** The role kind of a teammate name, or null. */
+export function roleKindOf(name) {
+  const slot = roleSlotOf(name)
+  return slot === null ? null : slot.kind
+}
+
+/** The internal slot key: `reviewer@<projectKey>-1` when the slot carries a
+ * project, the bare `reviewer-1` for a legacy slot. This is the identifier the
+ * panel/ledger use; the teammate NAME is roleSlotName (name-safe form). */
+export function roleSlotKey(name) {
+  const slot = roleSlotOf(name)
+  if (slot === null) return null
+  return slot.kind + (slot.project === null ? '' : '@' + slot.project) + '-' + String(slot.index)
+}
+
+/** The short, model-facing name the panel shows: reviewer-p<key>-1 -> reviewer-1. */
+export function roleShortName(name) {
+  const slot = roleSlotOf(name)
+  return slot === null ? (typeof name === 'string' ? name : '') : slot.kind + '-' + String(slot.index)
 }
 
 export function isRoleName(name) {
   return roleKindOf(name) !== null
+}
+
+// ── which project a teammate works for ─────────────────────────────────────
+// The roster carries no session workspace, and a teammate spawned while one row
+// drove project A keeps A's workspace even when the row now drives B. So the
+// host records the project it dispatched a member FOR (role spawn or worker
+// brief) and checks that record before reusing the member or accepting its
+// submit. A member with no record (a restart, a hand-spawned teammate) is not
+// refused: liveness and the project-scoped slot name still keep projects apart.
+const MEMBER_PROJECTS = new WeakMap()
+
+function memberProjectsFor(ctx) {
+  let map = MEMBER_PROJECTS.get(ctx)
+  if (map === undefined) {
+    map = new Map()
+    MEMBER_PROJECTS.set(ctx, map)
+  }
+  return map
+}
+
+/** Record that `name` was dispatched for `root` (absolute project root). */
+export function rememberMemberProject(ctx, name, root) {
+  if (ctx === null || ctx === undefined || typeof name !== 'string' || name === '' || typeof root !== 'string' || root === '') return null
+  const entry = { key: projectSlotKey(root), root: root }
+  memberProjectsFor(ctx).set(name, entry)
+  return entry
+}
+
+/** The project a member was last dispatched for: { key, root } or null. */
+export function memberProjectOf(ctx, name) {
+  if (ctx === null || ctx === undefined || typeof name !== 'string') return null
+  const entry = memberProjectsFor(ctx).get(name)
+  return entry === undefined ? null : entry
 }
 
 /** A process-stable boot id. globalThis survives a plugin reload in the same
@@ -1033,7 +1114,10 @@ export function briefPartsFor(task, projectPath, leadName, roleConfig) {
     parts.push({
       key: 'task',
       group: 'task',
-      text: 'Task ' + task.id + ': ' + task.title + '\n\nProject: ' + projectPath + '\nYou have been assigned this task. Do the work in that project.',
+      text:
+        'Task ' + task.id + ': ' + task.title + '\n\nProject: ' + projectPath +
+        '\nYou have been assigned this task. Do the work in that project.' +
+        '\nFirst call task_center { action: "openProject", path: "' + projectPath + '" } so the board and the dispatch settings belong to that project.',
     })
   }
   if (typeof task.worktree === 'string' && task.worktree.length > 0) {
@@ -1150,7 +1234,10 @@ export function roleBriefSections(kind, task, config, options) {
   const header = []
   header.push('Task center role: ' + String(kind))
   header.push('Stage: ' + stage + ' (this role owns the ' + stage + ' stage; role profiles replace manual Lead spawns).')
-  if (typeof opts.projectPath === 'string' && opts.projectPath.length > 0) header.push('Project: ' + opts.projectPath)
+  if (typeof opts.projectPath === 'string' && opts.projectPath.length > 0) {
+    header.push('Project: ' + opts.projectPath)
+    header.push('First action: task_center { action: "openProject", path: "' + opts.projectPath + '" } so the board you act on is this project.')
+  }
   if (typeof opts.leadName === 'string' && opts.leadName.length > 0) header.push('Team Lead: ' + opts.leadName)
   const meta = []
   if (profile !== null && profile !== undefined && Array.isArray(profile.permissions) && profile.permissions.length > 0) {
@@ -1798,13 +1885,13 @@ export function createRoleManager(ctx, options) {
     return run
   }
 
-  function nextSlotName(kind, roster) {
+  function nextSlotName(kind, roster, projectPath) {
     const used = new Set(memory.pending)
     for (const member of roster) {
       if (member !== null && typeof member === 'object' && typeof member.name === 'string') used.add(member.name)
     }
     for (let index = 1; index <= 999; index += 1) {
-      const name = roleSlotName(kind, index)
+      const name = roleSlotName(kind, index, projectPath)
       if (!used.has(name)) return name
     }
     return null
@@ -1830,13 +1917,38 @@ export function createRoleManager(ctx, options) {
     }
     if (!Array.isArray(roster)) roster = []
     const now = Number.isFinite(req.now) ? req.now : clock()
+    // The project this ensure pass is provisioning for. A slot that belongs to a
+    // DIFFERENT project is never reused (its session workspace is that project);
+    // a legacy slot (no project in its name) is adopted by the first project that
+    // uses it and refuses the next one, which is how a pre-upgrade roster stays
+    // usable without letting a second project inherit it.
+    const projectPath = typeof req.projectPath === 'string' && req.projectPath !== '' ? req.projectPath : null
+    const projectKey = projectPath === null ? null : projectSlotKey(projectPath)
     const reused = []
     const replaced = []
     const waiting = []
+    const refused = []
     for (const member of roster) {
       if (member === null || typeof member !== 'object' || member.role !== 'teammate') continue
-      if (roleKindOf(member.name) !== kind) continue
+      const slot = roleSlotOf(member.name)
+      if (slot === null || slot.kind !== kind) continue
       const name = String(member.name)
+      if (projectKey !== null) {
+        if (slot.project === null) {
+          const seen = memberProjectOf(ctx, name)
+          if (seen !== null && seen.key !== projectKey) {
+            refused.push({ name: name, kind: kind, project: seen.key, root: seen.root })
+            continue
+          }
+          rememberMemberProject(ctx, name, projectPath)
+        } else if (slot.project !== projectKey) {
+          const seen = memberProjectOf(ctx, name)
+          refused.push({ name: name, kind: kind, project: slot.project, root: seen === null ? null : seen.root })
+          continue
+        } else {
+          rememberMemberProject(ctx, name, projectPath)
+        }
+      }
       const status = String(member.status === undefined || member.status === null ? 'unknown' : member.status)
       if (memory.drained.has(name)) {
         const until = memory.drainUntil.get(name)
@@ -1873,7 +1985,7 @@ export function createRoleManager(ctx, options) {
     if (missing > 0) {
       const leadName = lead.name === undefined || lead.name === null ? String(lead.id) : String(lead.name)
       for (let slot = 0; slot < missing; slot += 1) {
-        const name = nextSlotName(kind, roster)
+        const name = nextSlotName(kind, roster, projectPath)
         if (name === null) {
           return { ok: false, code: 'no-name', message: 'no free ' + String(kind) + ' role slot name', created: created, reused: reused, replaced: replaced }
         }
@@ -1908,6 +2020,7 @@ export function createRoleManager(ctx, options) {
         }
         memory.spawnedAt.set(name, now)
         memory.drained.delete(name)
+        if (projectPath !== null) rememberMemberProject(ctx, name, projectPath)
         created.push({ name: name, id: delivered.member.id === undefined ? null : String(delivered.member.id) })
         roster.push(Object.assign({}, delivered.member))
       }
@@ -1921,6 +2034,10 @@ export function createRoleManager(ctx, options) {
       reused: reused,
       replaced: replaced,
       waiting: waiting,
+      // Slots skipped because they belong to another project (never reused, never
+      // drained: another project's role keeps working). Callers record a history
+      // row so the refusal is visible on the card.
+      refused: refused,
       ready: reused.length + created.length + waiting.length,
     }
     memory.last = result
@@ -3150,6 +3267,9 @@ export function createDispatcher(ctx, options) {
           results.push({ id: task.id, error: memory.lastError })
           continue
         }
+        // The member now works for THIS project; a later submit from it is only
+        // accepted here (a worker handed another project's card cannot slip in).
+        rememberMemberProject(ctx, picked.target.name, project)
         if (picked.spawn === true) {
           const member = delivered.member === undefined || delivered.member === null ? null : delivered.member
           const attached = await state.apply(

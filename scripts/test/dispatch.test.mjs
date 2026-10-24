@@ -24,6 +24,13 @@ import {
   roleBriefSections,
   roleContextPreview,
   roleKindOf,
+  roleSlotName,
+  roleSlotOf,
+  roleSlotKey,
+  roleShortName,
+  projectSlotKey,
+  rememberMemberProject,
+  memberProjectOf,
   roleTemplateValuesFor,
   recordPhaseActivity,
   recordStageSlot,
@@ -33,6 +40,10 @@ import {
   workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
 import { DEFAULT_ROLE_PROMPTS, ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, VERIFY_TAIL_BYTES, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
+
+// Project-scoped slot names: a role slot carries the project it was provisioned
+// for, so two projects never share one reviewer instance.
+const slot = (kind, index) => roleSlotName(kind, index, PROJECT)
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
@@ -635,7 +646,7 @@ async function submitAndMerge(rig, id, evidence) {
   check('the history says the attempt was refunded', notes.indexOf('attempt refunded') >= 0, notes)
   check(
     'the interrupted executor is no longer live',
-    reaped.liveExecutors === 0 && reaped.executors.length === 1,
+    reaped.liveExecutors.length === 0 && reaped.executors.length === 1,
     JSON.stringify(reaped.executors),
   )
   check('board exposes the executor ledger', Array.isArray(reaped.executors) && reaped.executors[0].retiredAt !== null, JSON.stringify(reaped.executors))
@@ -660,7 +671,7 @@ async function submitAndMerge(rig, id, evidence) {
   await rig.settle()
   const got = await rig.action('get', { id: A })
   check('get exposes the interruption count', got.ok === true && got.task.interruptions === 1, JSON.stringify(got.task === undefined ? got : { interruptions: got.task.interruptions }))
-  check('get exposes the live executor count', got.ok === true && got.task.liveExecutors === 0, JSON.stringify(got.task === undefined ? got : { live: got.task.liveExecutors }))
+  check('get exposes the live executor count', got.ok === true && got.task.liveExecutors.length === 0, JSON.stringify(got.task === undefined ? got : { live: got.task.liveExecutors }))
   check('get exposes the executor ledger', got.ok === true && Array.isArray(got.task.executors) && got.task.executors.length === 1, JSON.stringify(got.task === undefined ? got : got.task.executors))
   // Hand the card out again and submit: real work clears the streak.
   await rig.action('start')
@@ -731,7 +742,7 @@ async function submitAndMerge(rig, id, evidence) {
   await rig.settle()
   const first = byId(await snapshot(rig), A)
   const firstWorker = first.assignee === null ? null : first.assignee.name
-  check('a fresh claim leaves exactly one live executor', first.liveExecutors === 1 && first.executors.length === 1, JSON.stringify(first.executors))
+  check('a fresh claim leaves exactly one live executor', first.liveExecutors.length === 1 && first.executors.length === 1, JSON.stringify(first.executors))
   // The host restarts while the old worker is still listed as running.
   await rig.action('pause')
   await patchTask(rig, A, (task) => {
@@ -743,7 +754,7 @@ async function submitAndMerge(rig, id, evidence) {
   const second = byId(await snapshot(rig), A)
   check('the re-dispatch interrupts the previous executor', firstWorker !== null && interrupted.indexOf(firstWorker) >= 0, JSON.stringify(interrupted))
   check('the re-dispatched card runs again', second.status === 'running' && second.assignee !== null, JSON.stringify(ids(await snapshot(rig))))
-  check('only one executor is live after the re-dispatch', second.liveExecutors === 1, JSON.stringify(second.executors))
+  check('only one executor is live after the re-dispatch', second.liveExecutors.length === 1, JSON.stringify(second.executors))
   const live = second.executors.filter((entry) => entry.retiredAt === null).map((entry) => entry.name)
   check('and it is the new worker', live.length === 1 && live[0] === second.assignee.name, JSON.stringify({ live: live, assignee: second.assignee }))
   check(
@@ -777,7 +788,7 @@ async function submitAndMerge(rig, id, evidence) {
   const history = Array.isArray(after.history) ? after.history : []
   check('an executor that cannot be stopped blocks the second dispatch', after.status === 'pending', JSON.stringify(after.status))
   check('and the refusal code is already-dispatched', history.some((entry) => String(entry.note).indexOf('already-dispatched') >= 0), JSON.stringify(history.slice(-2)))
-  check('no second executor was added', after.liveExecutors === 0 || after.executors.length === 1, JSON.stringify(after.executors))
+  check('no second executor was added', after.liveExecutors.length === 0 || after.executors.length === 1, JSON.stringify(after.executors))
   rig.scheduler.dispose()
 }
 
@@ -1705,6 +1716,15 @@ function roleTask(overrides) {
     'without a role config there is no prompt or skills section',
     briefFor(full, PROJECT, 'lead').indexOf('Profile instructions:') < 0 && briefFor(full, PROJECT, 'lead').indexOf('Skills:') < 0,
   )
+  // With a role config the brief pins the project: the worker must open the board
+  // of THAT project first, so a session workspace left over from another project
+  // cannot silently drive the wrong board.
+  const pinned = briefFor(full, PROJECT, 'lead', defaultRoleConfig())
+  check(
+    'the role-aware worker brief tells the worker to open the project first',
+    pinned.indexOf('openProject') >= 0 && pinned.indexOf('path: "' + PROJECT + '"') >= 0,
+    pinned.slice(0, 500),
+  )
 }
 {
   // Delivery covers BOTH handover paths: a spawned WorkAgent and a reused idle
@@ -1763,25 +1783,87 @@ function roleTask(overrides) {
   check('role slots are never feature workers', none.ok === false && none.code === 'no-teammates', JSON.stringify(none))
 }
 
+// ── role slots belong to one project: a second project never reuses one ────
+{
+  const rig = createRoleRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        // A slot spawned before the project key existed (or by another project).
+        { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+      ],
+    }),
+  })
+  const config = defaultRoleConfig()
+  const otherRoot = join(PROJECT, 'sibling-project')
+  const adopted = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1000 })
+  check('a legacy slot is adopted by the first project', adopted.ok === true && adopted.reused.indexOf('reviewer-1') >= 0 && adopted.refused.length === 0, JSON.stringify(adopted))
+  const second = await rig.manager.ensure('reviewer', { config: config, projectPath: otherRoot, task: roleTask(), now: 2000 })
+  check(
+    'another project refuses to reuse the first project\'s slot',
+    second.ok === true && second.refused.length === 1 && second.refused[0].name === 'reviewer-1' && second.refused[0].root === PROJECT,
+    JSON.stringify({ reused: second.reused, refused: second.refused }),
+  )
+  check(
+    'and spawns its own project-scoped slot instead',
+    second.created.length === 1 && second.created[0].name === roleSlotName('reviewer', 1, otherRoot),
+    JSON.stringify(second.created),
+  )
+  check('the two projects hash to different slot keys', projectSlotKey(PROJECT) !== projectSlotKey(otherRoot), JSON.stringify([projectSlotKey(PROJECT), projectSlotKey(otherRoot)]))
+  check(
+    'the same kind in two projects still reads as one short name',
+    roleSlotOf(roleSlotName('reviewer', 1, PROJECT)).kind === 'reviewer' &&
+      roleSlotOf(roleSlotName('reviewer', 1, otherRoot)).kind === 'reviewer' &&
+      roleSlotOf(roleSlotName('reviewer', 1, PROJECT)).index === roleSlotOf(roleSlotName('reviewer', 1, otherRoot)).index,
+    JSON.stringify([roleSlotName('reviewer', 1, PROJECT), roleSlotName('reviewer', 1, otherRoot)]),
+  )
+  const again = await rig.manager.ensure('reviewer', { config: config, projectPath: otherRoot, task: roleTask(), now: 3000 })
+  check(
+    'the same project keeps reusing its own slot',
+    again.ok === true && again.created.length === 0 && again.reused.indexOf(roleSlotName('reviewer', 1, otherRoot)) >= 0 && again.refused.length === 1,
+    JSON.stringify({ created: again.created, reused: again.reused, refused: again.refused }),
+  )
+  check(
+    'the same project written differently hashes to one key',
+    projectSlotKey(PROJECT) === projectSlotKey(PROJECT.replace(/\\/g, '/')) &&
+      projectSlotKey(PROJECT) === projectSlotKey(PROJECT.toUpperCase()) &&
+      projectSlotKey(PROJECT) === projectSlotKey(PROJECT + (PROJECT.endsWith('/') ? '' : '/')),
+    JSON.stringify([PROJECT, projectSlotKey(PROJECT), projectSlotKey(PROJECT.toUpperCase())]),
+  )
+  const scopedKey = roleSlotKey(roleSlotName('reviewer', 1, otherRoot))
+  check('the internal slot key carries the project', scopedKey === 'reviewer@' + projectSlotKey(otherRoot) + '-1', scopedKey)
+  check('the short display name drops the project', String(roleShortName(roleSlotName('reviewer', 2, otherRoot))) === 'reviewer-2', roleSlotName('reviewer', 2, otherRoot))
+}
+
 {
   const rig = createRoleRig()
   const config = defaultRoleConfig()
   const task = roleTask()
   const first = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 1000 })
-  check('ensureRole spawns the missing reviewer', first.ok === true && first.created.length === 1 && first.created[0].name === 'reviewer-1', JSON.stringify(first))
+  check('ensureRole spawns the missing reviewer', first.ok === true && first.created.length === 1 && first.created[0].name === slot('reviewer', 1), JSON.stringify(first))
+  check(
+    'the slot name carries the project it was provisioned for',
+    roleSlotOf(first.created[0].name).project === projectSlotKey(PROJECT),
+    JSON.stringify({ name: first.created[0].name, key: projectSlotKey(PROJECT) }),
+  )
   const spawnCall = rig.team.calls.filter((call) => call.kind === 'spawn')[0]
   check(
     'the spawn carries the reviewer role brief',
-    spawnCall !== undefined && spawnCall.name === 'reviewer-1' && spawnCall.text.indexOf('Task center role: reviewer') >= 0 && spawnCall.text.indexOf('Do the thing') >= 0 && spawnCall.text.indexOf('READ-ONLY') >= 0,
+    spawnCall !== undefined && spawnCall.name === slot('reviewer', 1) && spawnCall.text.indexOf('Task center role: reviewer') >= 0 && spawnCall.text.indexOf('Do the thing') >= 0 && spawnCall.text.indexOf('READ-ONLY') >= 0,
     spawnCall === undefined ? '' : spawnCall.text.slice(0, 500),
   )
+  check(
+    'the role brief tells it to open the project first',
+    spawnCall !== undefined && spawnCall.text.indexOf('openProject') >= 0 && spawnCall.text.indexOf(String(PROJECT)) >= 0,
+    spawnCall === undefined ? '' : spawnCall.text.slice(0, 400),
+  )
   const again = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 2000 })
-  check('an existing live reviewer is reused, not respawned', again.ok === true && again.created.length === 0 && again.reused.indexOf('reviewer-1') >= 0, JSON.stringify(again))
+  check('an existing live reviewer is reused, not respawned', again.ok === true && again.created.length === 0 && again.reused.indexOf(slot('reviewer', 1)) >= 0, JSON.stringify(again))
   check('and no second spawn happened', rig.team.calls.filter((call) => call.kind === 'spawn').length === 1, JSON.stringify(rig.team.calls.map((call) => call.kind + ':' + call.name)))
   const tester = await rig.manager.ensure('tester', { config: config, projectPath: PROJECT, task: task, now: 2000 })
-  check('the tester role is provisioned too', tester.ok === true && tester.created[0].name === 'tester-1', JSON.stringify(tester))
+  check('the tester role is provisioned too', tester.ok === true && tester.created[0].name === slot('tester', 1), JSON.stringify(tester))
   const viaName = await ensureRole(rig.ctx, 'tester', { config: config, projectPath: PROJECT, task: task, now: 2500 })
-  check('ensureRole is exposed as a host function', viaName.ok === true && viaName.created.length === 0 && viaName.reused.indexOf('tester-1') >= 0, JSON.stringify(viaName))
+  check('ensureRole is exposed as a host function', viaName.ok === true && viaName.created.length === 0 && viaName.reused.indexOf(slot('tester', 1)) >= 0, JSON.stringify(viaName))
 }
 
 {
@@ -1789,18 +1871,18 @@ function roleTask(overrides) {
   const config = defaultRoleConfig()
   const task = roleTask()
   await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 1000 })
-  rig.team.setStatus('reviewer-1', 'failed')
+  rig.team.setStatus(slot('reviewer', 1), 'failed')
   const replaced = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 2000 })
   check(
     'a failed reviewer is replaced on the next ensure',
-    replaced.ok === true && replaced.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'failed') && replaced.created[0].name === 'reviewer-2',
+    replaced.ok === true && replaced.replaced.some((entry) => entry.name === slot('reviewer', 1) && entry.reason === 'failed') && replaced.created[0].name === slot('reviewer', 2),
     JSON.stringify(replaced),
   )
-  rig.team.setStatus('reviewer-2', 'provisioning')
+  rig.team.setStatus(slot('reviewer', 2), 'provisioning')
   const timedOut = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 2000 + ROLE_PROVISION_TIMEOUT_MS + 1 })
   check(
     'a provisioning timeout is replaced',
-    timedOut.ok === true && timedOut.replaced.some((entry) => entry.name === 'reviewer-2' && entry.reason === 'timeout') && timedOut.created[0].name === 'reviewer-3',
+    timedOut.ok === true && timedOut.replaced.some((entry) => entry.name === slot('reviewer', 2) && entry.reason === 'timeout') && timedOut.created[0].name === slot('reviewer', 3),
     JSON.stringify(timedOut),
   )
 }
@@ -1810,12 +1892,12 @@ function roleTask(overrides) {
   const config = defaultRoleConfig()
   const task = roleTask()
   await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 1000 })
-  const drained = rig.manager.drain('reviewer-1')
+  const drained = rig.manager.drain(slot('reviewer', 1))
   check('drain marks a slot for replacement', drained.ok === true, JSON.stringify(drained))
   const afterDrain = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: task, now: 2000 })
   check(
     'a drained reviewer is replaced',
-    afterDrain.ok === true && afterDrain.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drained') && afterDrain.created[0].name === 'reviewer-2',
+    afterDrain.ok === true && afterDrain.replaced.some((entry) => entry.name === slot('reviewer', 1) && entry.reason === 'drained') && afterDrain.created[0].name === slot('reviewer', 2),
     JSON.stringify(afterDrain),
   )
 }
@@ -1836,7 +1918,7 @@ function roleTask(overrides) {
   const doubled = await two.manager.ensure('reviewer', { config: config2, projectPath: PROJECT, task: roleTask(), now: 1000 })
   check(
     'configured instances are filled with fixed slot names',
-    doubled.ok === true && doubled.created.map((entry) => entry.name).join(',') === 'reviewer-1,reviewer-2',
+    doubled.ok === true && doubled.created.map((entry) => entry.name).join(',') === slot('reviewer', 1) + ',' + slot('reviewer', 2),
     JSON.stringify(doubled.created),
   )
   check(
@@ -1875,14 +1957,14 @@ function roleTask(overrides) {
   const first = await scheduler.tick(PROJECT)
   check(
     'the tick provisions the reviewer for a reviewing task',
-    first.ok === true && rig.team.calls.filter((call) => call.kind === 'spawn' && call.name === 'reviewer-1').length === 1,
+    first.ok === true && rig.team.calls.filter((call) => call.kind === 'spawn' && call.name === slot('reviewer', 1)).length === 1,
     JSON.stringify(first.roles),
   )
   await scheduler.tick(PROJECT)
   check('a second tick reuses the live reviewer', rig.team.calls.filter((call) => call.kind === 'spawn').length === 1, JSON.stringify(rig.team.calls.map((call) => call.name)))
-  rig.team.setStatus('reviewer-1', 'failed')
+  rig.team.setStatus(slot('reviewer', 1), 'failed')
   await scheduler.tick(PROJECT)
-  check('a dead reviewer is replaced by the next tick', rig.team.calls.filter((call) => call.kind === 'spawn' && call.name === 'reviewer-2').length === 1, JSON.stringify(rig.team.calls.map((call) => call.name)))
+  check('a dead reviewer is replaced by the next tick', rig.team.calls.filter((call) => call.kind === 'spawn' && call.name === slot('reviewer', 2)).length === 1, JSON.stringify(rig.team.calls.map((call) => call.name)))
   scheduler.dispose()
 }
 
@@ -2522,6 +2604,8 @@ function fakeHostSubprocess(result) {
   })
   await scheduler.tick(PROJECT)
   check('a live reviewer is reused without a provisioning event', activity.list(20).every((entry) => entry.kind !== 'role-provision'), JSON.stringify(activity.list(20)))
+  // The roster still holds a legacy slot (adopted by this project), so the dead
+  // one is reviewer-1 and its replacement is the project-scoped slot.
   rig.team.setStatus('reviewer-1', 'failed')
   await scheduler.tick(PROJECT)
   const entries = activity.list(20)
@@ -2533,7 +2617,7 @@ function fakeHostSubprocess(result) {
   )
   check(
     'the replacement slot is provisioned as a system event too',
-    entries.some((entry) => entry.kind === 'role-provision' && entry.actor === 'system' && String(entry.detail).indexOf('reviewer-2') >= 0),
+    entries.some((entry) => entry.kind === 'role-provision' && entry.actor === 'system' && String(entry.detail).indexOf(slot('reviewer', 1)) >= 0),
     JSON.stringify(entries.filter((entry) => entry.kind === 'role-provision')),
   )
   scheduler.dispose()
@@ -2577,11 +2661,11 @@ function fakeHostSubprocess(result) {
   const replaced = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 2000 })
   check(
     'the next ensure drains and replaces the instance through the Lead',
-    replaced.ok === true && replaced.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drained') && replaced.created.length === 1 && replaced.created[0].name === 'reviewer-2',
+    replaced.ok === true && replaced.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drained') && replaced.created.length === 1 && replaced.created[0].name === slot('reviewer', 1),
     JSON.stringify(replaced),
   )
   const defaults = await rig.manager.ensure('reviewer', { config: defaultRoleConfig(), projectPath: PROJECT, task: roleTask(), now: 3000 })
-  check('the default config reuses the live replacement', defaults.ok === true && defaults.created.length === 0 && defaults.reused.indexOf('reviewer-2') >= 0, JSON.stringify(defaults))
+  check('the default config reuses the live replacement', defaults.ok === true && defaults.created.length === 0 && defaults.reused.indexOf(slot('reviewer', 1)) >= 0, JSON.stringify(defaults))
 }
 
 {
@@ -2600,7 +2684,11 @@ function fakeHostSubprocess(result) {
   const drained = await rig.manager.drainKind('reviewer')
   check('drainKind drains every instance of the kind', drained.ok === true && drained.drained.length === 2, JSON.stringify(drained))
   const replaced = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 2000 })
-  check('every drained slot is replaced', replaced.ok === true && replaced.created.length === 2 && replaced.created.map((entry) => entry.name).join(',') === 'reviewer-3,reviewer-4', JSON.stringify(replaced))
+  check(
+    'every drained slot is replaced',
+    replaced.ok === true && replaced.created.length === 2 && replaced.created.map((entry) => entry.name).join(',') === slot('reviewer', 1) + ',' + slot('reviewer', 2),
+    JSON.stringify(replaced),
+  )
 }
 
 {
@@ -2628,7 +2716,7 @@ function fakeHostSubprocess(result) {
   check('the deferred state is visible in the manager status', rig.manager.status().pending.some((entry) => entry.name === 'reviewer-1'), JSON.stringify(rig.manager.status().pending))
   rig.team.setStatus('reviewer-1', 'inactive')
   const idle = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1060 })
-  check('an idle drained instance is replaced before its deadline', idle.created.length === 1 && idle.created[0].name === 'reviewer-2', JSON.stringify({ created: idle.created, waiting: idle.waiting }))
+  check('an idle drained instance is replaced before its deadline', idle.created.length === 1 && idle.created[0].name === slot('reviewer', 1), JSON.stringify({ created: idle.created, waiting: idle.waiting }))
 }
 
 {
@@ -2648,7 +2736,7 @@ function fakeHostSubprocess(result) {
   const after = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1060 })
   check(
     'after the deadline the instance is replaced',
-    after.ok === true && after.created.length === 1 && after.created[0].name === 'reviewer-2' && after.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drain-timeout'),
+    after.ok === true && after.created.length === 1 && after.created[0].name === slot('reviewer', 1) && after.replaced.some((entry) => entry.name === 'reviewer-1' && entry.reason === 'drain-timeout'),
     JSON.stringify({ created: after.created, replaced: after.replaced }),
   )
 }
