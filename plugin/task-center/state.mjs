@@ -35,9 +35,9 @@ export function createState(ctx, options) {
     projectHint: null,
     registry: { version: 1, projects: [] },
     registryLoaded: false,
-    sessionRoot: null,
     // T-96: session id -> { root, at }. The panel and the tool each carry their
-    // own session id; no request may read another session's binding.
+    // own session id; no request may read another session's binding. This Map is
+    // the ONLY store, and sessionRootOf(id) is the only reader.
     sessionRoots: new Map(),
   }
   const SESSION_TTL_MS = 12 * 60 * 60 * 1000
@@ -45,7 +45,7 @@ export function createState(ctx, options) {
 
   /** Sessions expire and are capped so a long-lived host cannot grow unbounded. */
   function pruneSessions() {
-    const nowNow = Date.now()
+    const nowNow = clock()
     for (const [key, entry] of memory.sessionRoots) {
       if (entry === undefined || nowNow - entry.at > SESSION_TTL_MS) memory.sessionRoots.delete(key)
     }
@@ -243,15 +243,9 @@ export function createState(ctx, options) {
     activeProjects: activeProjects,
     adoptPanelProject: adoptPanelProject,
     setSessionRoot: function (sessionId, root) {
-      if (root === undefined) {
-        // Legacy one-argument form: a workspace for tests/tools, never a session
-        // binding, and no HTTP request reads it.
-        memory.sessionRoot = typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null
-        return
-      }
-      if (typeof sessionId !== 'string' || sessionId === '') return null
+      if (typeof sessionId !== 'string' || sessionId === '' || root === undefined) return null
       pruneSessions()
-      memory.sessionRoots.set(sessionId, { root: typeof root === 'string' && root.length > 0 ? root : null, at: Date.now() })
+      memory.sessionRoots.set(sessionId, { root: typeof root === 'string' && root.length > 0 ? root : null, at: clock() })
       return memory.sessionRoots.get(sessionId)
     },
     sessionRootOf: function (sessionId) {

@@ -189,7 +189,9 @@ check('registers state, action, task, list and diagnostics', surface.specs.lengt
   check('a missing directory is refused', missing.json().ok === false && missing.json().code === 'not-a-directory', missing.text)
 }
 
-// the manual lock route is gone: refusals stay readable, diagnostics stay readable
+// the manual lock route is gone: refusals stay readable, diagnostics stay readable.
+// These calls pass project explicitly on purpose: without a session id the
+// resolver answers no-project-bound before the action can be called unknown.
 {
   const lockRes = await post({ action: 'lock', project: PROJECT, paths: ['scripts/a.gd'] })
   check('the lock action is now an unknown action', lockRes.json().ok === false && lockRes.json().code === 'unknown-action', lockRes.text)

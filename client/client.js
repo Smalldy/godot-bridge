@@ -1619,6 +1619,8 @@ window.__ModuleLoader__.load({
 		 * Host can embed it); otherwise one is minted per browser window and kept in
 		 * sessionStorage so two windows are two sessions.
 		 */
+		let tcFallbackSessionId = null
+
 		function tcSessionId() {
 			try {
 				const fromUrl =
@@ -1637,7 +1639,12 @@ window.__ModuleLoader__.load({
 				}
 				return id
 			} catch (error) {
-				return 'web-anonymous'
+				// Storage is unavailable: mint a page-level id instead of one shared
+				// constant, which would make every window the same session again.
+				if (tcFallbackSessionId === null) {
+					tcFallbackSessionId = 'web-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+				}
+				return tcFallbackSessionId
 			}
 		}
 
@@ -1960,7 +1967,10 @@ window.__ModuleLoader__.load({
 				if (typeof opts.cursor === 'string' && opts.cursor !== '') params.push('cursor=' + encodeURIComponent(opts.cursor))
 				params.push('limit=' + String(Number.isFinite(opts.limit) ? opts.limit : 50))
 				try {
-					const listUrl = TC_LIST_URL + '?' + params.join('&')
+					// /list and /task need the same session identity as /state: the Host
+					// only reads the requesting session's binding, so without it "follow
+					// the session" would show an empty done/archive list forever.
+					const listUrl = tcWithSession(TC_LIST_URL + '?' + params.join('&'))
 					const payload = await fetchJson(listUrl, { headers: { accept: 'application/json' } })
 					return payload === null || payload === undefined ? { ok: false, tasks: [], nextCursor: null } : payload
 				} catch (error) {
@@ -1983,7 +1993,7 @@ window.__ModuleLoader__.load({
 				detailInFlight.add(id)
 				try {
 					const project = tcPinnedProject()
-					const url = TC_TASK_URL + '?id=' + encodeURIComponent(id) + (project === null ? '' : '&project=' + encodeURIComponent(project))
+					const url = tcWithSession(TC_TASK_URL + '?id=' + encodeURIComponent(id) + (project === null ? '' : '&project=' + encodeURIComponent(project)))
 					const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
 					if (payload && payload.ok === true && payload.task !== undefined && payload.task !== null) {
 						emit(Object.assign({}, snapshot, {
