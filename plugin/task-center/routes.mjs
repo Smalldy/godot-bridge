@@ -115,13 +115,19 @@ export function registerTaskRoutes(ctx, options) {
       // T-102: when this session never called a tool, its DSH session directory
       // still names the workspace, so the panel binds before the first tool call.
       sessionId: sessionId === null || sessionId === undefined ? null : sessionId,
+      // T-103: with no pin and no session answer, the panel falls back to the ONE
+      // project that was active when the host last ran (or reports "nothing
+      // activated" — never "some recently active project").
+      allowLastActive: true,
       explicitSource: explicit !== null ? 'panel' : undefined,
     })
     if (resolved.ok !== true) return { failed: resolved }
     // A looked-up project is ACTIVATED: it joins the registry (lastSeen) and the
-    // background drive exactly like a panel-pinned one.
+    // background drive exactly like a panel-pinned one. A last-active project is
+    // already recorded — re-touching it every /state poll would rewrite the
+    // registry on a timer for no gain.
     if (explicit !== null || resolved.resolvedFrom === 'session-lookup') await state.adoptPanelProject(resolved.project.root)
-    else state.touchProject(resolved.project.root)
+    else if (resolved.resolvedFrom !== 'last-active') state.touchProject(resolved.project.root)
     return { root: resolved.project.root, resolvedFrom: resolved.resolvedFrom }
   }
 

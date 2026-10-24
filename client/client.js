@@ -257,6 +257,9 @@ window.__ModuleLoader__.load({
 				workersErrNoLead: '没有活着的 Team Lead',
 				workersErrRoster: '花名册不可读',
 				unknownProjectHint: '这个会话还没有绑定项目。请在会话里调用一次 task_center，或在下方手动打开一个项目。',
+				notActivatedTitle: '未激活任何项目',
+				notActivatedStepCall: '在会话里调用一次 task_center——宿主会把当前项目记为「上次项目」并激活它。',
+				notActivatedStepOpen: '或者手动选择一个项目目录打开；此后启动会直接回到它。',
 				err_unknown_project: '这个会话还没有绑定项目。请在会话里调用一次 task_center，或在面板里手动打开一个项目。',
 				err_content_type: '请求格式不正确：请发送 application/json。',
 				err_origin: '跨源请求已被拒绝。',
@@ -749,6 +752,9 @@ window.__ModuleLoader__.load({
 				workersErrNoLead: 'no live Team Lead',
 				workersErrRoster: 'the roster could not be read',
 				unknownProjectHint: 'This session is not bound to a project yet. Call task_center once in the session, or open a project manually below.',
+				notActivatedTitle: 'No project is active',
+				notActivatedStepCall: 'Call task_center once in this session: the host records the current project as its last active project and activates it.',
+				notActivatedStepOpen: 'Or open a project directory manually; every later start returns to it.',
 				err_unknown_project: 'This session is not bound to a project yet. Call task_center once in the session, or open a project from the panel.',
 				err_content_type: 'Wrong request format: send application/json.',
 				err_origin: 'A cross-origin request was refused.',
@@ -5211,7 +5217,12 @@ window.__ModuleLoader__.load({
 								// project: show that instead of flashing an "open project" form.
 								snapshot.source === 'loading'
 									? h('p', { className: 'gbt-footnote', 'data-project-resolving': 'true' }, t('projectResolving'))
-									: h('p', { className: 'gbt-footnote' }, t('unknownProjectHint')),
+									: h(
+											'div',
+											{ 'data-not-activated': 'true' },
+											h('p', { className: 'gbt-footnote', 'data-not-activated-title': 'true' }, t('notActivatedTitle')),
+											h('ol', { className: 'gbt-footnote', 'data-not-activated-steps': 'true' }, h('li', { key: 'call' }, t('notActivatedStepCall')), h('li', { key: 'open' }, t('notActivatedStepOpen'))),
+										),
 								snapshot.source === 'loading'
 									? null
 									: h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }),

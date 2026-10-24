@@ -39,7 +39,7 @@ export function createState(ctx, options) {
   const memory = {
     locks: emptyLocks(),
     projectHint: null,
-    registry: { version: 1, projects: [] },
+    registry: { version: 1, projects: [], lastActiveProjectId: null },
     registryLoaded: false,
     // T-96: session id -> { root, at }. The panel and the tool each carry their
     // own session id; no request may read another session's binding. This Map is
@@ -109,7 +109,20 @@ export function createState(ctx, options) {
         byId.set(entry.id, entry)
       }
     }
-    return { version: 1, projects: Array.from(byId.values()) }
+    // The last-active marker follows the newer copy, exactly like the file merge in
+    // board.mjs — a touch made while this read was in flight must win.
+    let lastActiveProjectId = null
+    let best = null
+    for (const candidate of [left.lastActiveProjectId, right.lastActiveProjectId]) {
+      if (typeof candidate !== 'string' || candidate === '') continue
+      const entry = byId.get(candidate)
+      if (entry === undefined) continue
+      if (best === null || String(entry.lastSeenAt).localeCompare(best) > 0) {
+        best = entry.lastSeenAt
+        lastActiveProjectId = candidate
+      }
+    }
+    return { version: 1, projects: Array.from(byId.values()), lastActiveProjectId: lastActiveProjectId }
   }
 
   /** Load the persisted project registry once per process. projectRootOverride is
@@ -205,7 +218,8 @@ export function createState(ctx, options) {
       worktreeRoot: extra !== undefined && extra !== null && typeof extra.worktreeRoot === 'string' ? extra.worktreeRoot : previous === undefined ? null : previous.worktreeRoot,
       preflight: extra !== undefined && extra !== null && extra.preflight !== undefined ? extra.preflight : previous === undefined ? null : previous.preflight,
     })
-    memory.registry = { version: 1, projects: projects }
+    // Every successful activation stamps the single "last active" id.
+    memory.registry = { version: 1, projects: projects, lastActiveProjectId: ref.id }
     memory.projectHint = ref.root
     persistRegistry()
     return ref
@@ -269,8 +283,30 @@ export function createState(ctx, options) {
     }
     const start = typeof o.sessionRoot === 'string' && o.sessionRoot.length > 0 ? o.sessionRoot : null
     const resolved = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: start })
-    if (resolved.ok !== true) return resolved
-    return { ok: true, project: projectRefOf(resolved.root), resolvedFrom: resolved.resolvedFrom }
+    if (resolved.ok === true) return { ok: true, project: projectRefOf(resolved.root), resolvedFrom: resolved.resolvedFrom }
+    // LAST resort, only for the panel/startup path (o.allowLastActive): the single
+    // project the host activated last time. Absent => the readable unbound answer
+    // above (never "some recently active project").
+    if (o.allowLastActive === true) {
+      const lastActive = lastActiveProject()
+      if (lastActive !== null) {
+        const viaLast = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: lastActive.root })
+        if (viaLast.ok === true) return { ok: true, project: projectRefOf(viaLast.root), resolvedFrom: 'last-active' }
+      }
+    }
+    return resolved
+  }
+
+  /**
+   * The project that was active when the host last ran, or null when NOTHING was
+   * ever activated. Deliberately NOT "the most recently seen project": startup
+   * must be able to say "nothing activated" instead of picking a card.
+   */
+  function lastActiveProject() {
+    const id = memory.registry.lastActiveProjectId
+    if (typeof id !== 'string' || id === '') return null
+    const entry = memory.registry.projects.filter((candidate) => candidate.id === id)[0]
+    return entry === undefined ? null : entry
   }
 
   /** Projects the background loop should drive right now (seen in the last 24h). */
@@ -353,6 +389,7 @@ export function createState(ctx, options) {
     loadRegistry: loadRegistry,
     flushRegistry: flushRegistry,
     lookupSessionRoot: lookupSessionRoot,
+    lastActiveProject: lastActiveProject,
     resolveProject: resolveProject,
     activeProjects: activeProjects,
     adoptPanelProject: adoptPanelProject,
