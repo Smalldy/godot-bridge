@@ -6547,92 +6547,108 @@ rig.scheduler.dispose()
   rig.scheduler.dispose()
 }
 
-// ── T-112: verdict gates resolve the CALLER'S session/team, not the first Lead ──
+// ── T-112/T-114: verdict gates resolve the CALLER'S session/team, both directions ──
+// T-114: the same assertions run for reviewer (approveReview) and tester
+// (passTest). A future change that sends only one side back to "the first Lead"
+// must fail here.
 {
-  const fs = createFakeFs()
-  const leadA = { id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }
-  const leadB = { id: 'lead-session-b', name: 'lead-b', role: 'lead', status: 'running' }
-  // A's tester is a DURABLE member named tester-1 while B's is the project slot
-  // name tester-p<key>-1: both must be recognised by logical role.
-  const rosterA = [leadA, { id: 'session-legacy-tester', name: 'tester-1', role: 'teammate', status: 'inactive' }]
-  const rosterB = [leadB, { id: 'session-tester-b', name: 'tester-pdeadbeef-1', role: 'teammate', status: 'inactive' }]
-  const everyone = rosterA.concat(rosterB)
-  const team = {
-    tryMembership(candidate) {
-      const member = everyone.filter((entry) => entry.id === candidate.id)[0]
-      return member === undefined ? undefined : { role: member.role, name: member.name }
-    },
-    listMembers(lead) {
-      return (lead.id === leadA.id ? rosterA : lead.id === leadB.id ? rosterB : []).map((entry) => Object.assign({}, entry))
-    },
-    async sendMessage() { return { ok: true } },
-    async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
-  }
-  const ctx = {
-    fs: fs,
-    sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
-    get(key) {
-      if (key === 'agents') return { list: () => everyone.filter((entry) => entry.role === 'lead') }
-      if (key === 'agentTeams') return team
-      return undefined
-    },
-  }
-  const state = createState(ctx)
-  const api = createApi(ctx, { state: state, git: createFakeGit(), roles: { ensure: async () => ({ ok: true, created: [], reused: [], replaced: [], waiting: [], refused: [] }), status: () => ({}) }, autoMerge: false })
-  function card(id, owner) {
-    const stamp = new Date().toISOString()
-    return {
-      id: id,
-      title: 'verdict ' + id,
-      status: 'testing',
-      priority: 0,
-      dependsOn: [],
-      writeFiles: [],
-      spec: 's',
-      acceptance: 'a',
-      evidence: '',
-      ownerSession: owner,
-      base: 'base-sha',
-      target: 'main',
-      branch: 'task/' + id + '-1',
-      commit: 'head-sha',
-      review: { status: 'approved', by: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
-      test: { status: 'pending', by: null, at: null, evidence: null, attempt: 1 },
-      merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: null, reviewer: null, conflict: null, at: stamp },
-      history: [],
-      createdAt: stamp,
-      updatedAt: stamp,
-      attempts: 1,
-      maxAttempts: 3,
+  const apiSource = readFileSync(new URL('../../plugin/task-center/api.mjs', import.meta.url), 'utf8')
+  const verdictStart = apiSource.indexOf('function verdictRefusal(')
+  const verdictEnd = verdictStart < 0 ? -1 : apiSource.indexOf('function worktreeRootOf(', verdictStart)
+  const verdictBody = verdictStart < 0 || verdictEnd < 0 ? '' : apiSource.slice(verdictStart, verdictEnd)
+  check(
+    'T-114 both verdict paths resolve the caller session (verdictRefusal -> callerLookup, which walks every Lead)',
+    verdictBody.indexOf('callerLookup(context)') >= 0 && apiSource.indexOf('liveLeads(ctx)') >= 0,
+    JSON.stringify({ hasCallerLookup: verdictBody.indexOf('callerLookup(context)') >= 0 }),
+  )
+
+  for (const kind of ['reviewer', 'tester']) {
+    const slotName = kind + '-pdeadbeef-1'
+    const durableName = kind + '-1'
+    const action = kind === 'reviewer' ? 'approveReview' : 'passTest'
+    const fs = createFakeFs()
+    const leadA = { id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }
+    const leadB = { id: 'lead-session-b', name: 'lead-b', role: 'lead', status: 'running' }
+    const rosterA = [leadA, { id: 'session-durable-' + kind, name: durableName, role: 'teammate', status: 'inactive' }]
+    const rosterB = [leadB, { id: 'session-slot-' + kind, name: slotName, role: 'teammate', status: 'inactive' }]
+    const everyone = rosterA.concat(rosterB)
+    const team = {
+      tryMembership(candidate) {
+        const member = everyone.filter((entry) => entry.id === candidate.id)[0]
+        return member === undefined ? undefined : { role: member.role, name: member.name }
+      },
+      listMembers(lead) {
+        return (lead.id === leadA.id ? rosterA : lead.id === leadB.id ? rosterB : []).map((entry) => Object.assign({}, entry))
+      },
+      async sendMessage() { return { ok: true } },
+      async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
     }
+    const ctx = {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+      get(key) {
+        if (key === 'agents') return { list: () => everyone.filter((entry) => entry.role === 'lead') }
+        if (key === 'agentTeams') return team
+        return undefined
+      },
+    }
+    const state = createState(ctx)
+    const api = createApi(ctx, { state: state, git: createFakeGit(), roles: { ensure: async () => ({ ok: true, created: [], reused: [], replaced: [], waiting: [], refused: [] }), status: () => ({}) }, autoMerge: false })
+    function card(id, owner) {
+      const stamp = new Date().toISOString()
+      return {
+        id: id,
+        title: kind + ' verdict ' + id,
+        status: kind === 'reviewer' ? 'reviewing' : 'testing',
+        priority: 0,
+        dependsOn: [],
+        writeFiles: [],
+        spec: 's',
+        acceptance: 'a',
+        evidence: '',
+        ownerSession: owner,
+        base: 'base-sha',
+        target: 'main',
+        branch: 'task/' + id + '-1',
+        commit: 'head-sha',
+        review: kind === 'reviewer' ? { status: 'pending', by: null, at: stamp, reasons: null, attempt: 1 } : { status: 'approved', by: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
+        test: kind === 'tester' ? { status: 'pending', by: null, at: null, evidence: null, attempt: 1 } : null,
+        merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: null, reviewer: null, conflict: null, at: stamp },
+        history: [],
+        createdAt: stamp,
+        updatedAt: stamp,
+        attempts: 1,
+        maxAttempts: 3,
+      }
+    }
+    seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [card('T-1', leadA.id), card('T-2', leadB.id)] }))
+    const durableA = { projectPath: PROJECT, by: '@' + durableName, role: 'agent', agent: { id: 'session-durable-' + kind, name: durableName } }
+    const slotB = { projectPath: PROJECT, by: '@' + slotName, role: 'agent', agent: { id: 'session-slot-' + kind, name: slotName } }
+    const cross = await api.perform(action, { id: 'T-1', evidence: 'B must not decide A', reasons: 'no' }, slotB)
+    check(
+      'T-114 a ' + kind + ' from another Lead session cannot decide this card (wrong-session, readable)',
+      cross.ok === false && cross.code === 'wrong-session' && String(cross.message).indexOf('会话') >= 0,
+      JSON.stringify(cross),
+    )
+    const ownA = await api.perform(action, { id: 'T-1', evidence: 'durable ' + kind + ' decides A', reasons: 'ok' }, durableA)
+    check(
+      'T-114 a durable ' + durableName + ' in the card owner session is accepted (slot alias)',
+      ownA.ok === true,
+      JSON.stringify(ownA),
+    )
+    const ownB = await api.perform(action, { id: 'T-2', evidence: 'slot ' + kind + ' decides B', reasons: 'ok' }, slotB)
+    check(
+      'T-114 a project-slot ' + slotName + ' member is accepted for its own Lead',
+      ownB.ok === true,
+      JSON.stringify(ownB),
+    )
+    const outsider = await api.perform(action, { id: 'T-1', evidence: 'nobody', reasons: 'no' }, { projectPath: PROJECT, by: '@fixer', role: 'agent', agent: { id: 'session-fixer', name: 'fixer' } })
+    check(
+      'T-114 a member with no ' + kind + ' role is refused with a readable roster',
+      outsider.ok === false && outsider.code === 'role-required' && String(outsider.message).indexOf('roster') >= 0,
+      JSON.stringify(outsider),
+    )
   }
-  seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [card('T-1', leadA.id), card('T-2', leadB.id)] }))
-  const testerA = { projectPath: PROJECT, by: '@tester-1', role: 'agent', agent: { id: 'session-legacy-tester', name: 'tester-1' } }
-  const testerB = { projectPath: PROJECT, by: '@tester-pdeadbeef-1', role: 'agent', agent: { id: 'session-tester-b', name: 'tester-pdeadbeef-1' } }
-  const cross = await api.perform('passTest', { id: 'T-1', evidence: 'B must not decide A' }, testerB)
-  check(
-    'T-112 a tester from another Lead session cannot decide this card (wrong-session, readable)',
-    cross.ok === false && cross.code === 'wrong-session' && String(cross.message).indexOf('会话') >= 0,
-    JSON.stringify(cross),
-  )
-  const ownA = await api.perform('passTest', { id: 'T-1', evidence: 'A tester passes A card' }, testerA)
-  check(
-    'T-112 a durable tester-1 in the card owner session is accepted (slot alias)',
-    ownA.ok === true,
-    JSON.stringify(ownA),
-  )
-  const ownB = await api.perform('passTest', { id: 'T-2', evidence: 'B tester passes B card' }, testerB)
-  check(
-    'T-112 a project-slot tester-p<key>-1 member is accepted for its own Lead',
-    ownB.ok === true,
-    JSON.stringify(ownB),
-  )
-  const outsider = await api.perform('passTest', { id: 'T-1', evidence: 'nobody' }, { projectPath: PROJECT, by: '@fixer', role: 'agent', agent: { id: 'session-fixer', name: 'fixer' } })
-  check(
-    'T-112 a member with no tester role is refused with a readable roster',
-    outsider.ok === false && outsider.code === 'role-required' && String(outsider.message).indexOf('roster') >= 0,
-    JSON.stringify(outsider),
-  )
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

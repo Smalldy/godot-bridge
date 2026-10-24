@@ -1,3 +1,11 @@
+## 裁决权限测试必须双向覆盖
+
+审查（approveReview/requestChanges）与测试（passTest/failTest）是两条独立的权限路径，但共用 `verdictRefusal`。历史上有测试只覆盖 tester 方向，reviewer 侧被改回"第一个 Lead"时不会变红。规则：
+
+- `scripts/test/task-routes.test.mjs` 的 T-112/T-114 区块以参数化 `kind = reviewer|tester` 跑同一组断言：跨会话 `wrong-session`、durable 名（reviewer-1/tester-1）在所属会话被接受、项目槽位（reviewer-p<key>-1/tester-p<key>-1）对自家 Lead 被接受、无角色成员 `role-required` 且消息含 roster。
+- 新增权限方向（merge 等）时，必须同样补对称断言，而不是只测一侧。
+- 静态守卫（dispatch.test.mjs）同时保证 `plugin/task-center/*.mjs` 没有裸 `resolveLead(ctx)`；展示类只允许显式 `resolveAnyLead`。
+
 # 在 DSH 沙箱里跑真实进程（任务中心测试通道）
 
 这个目录里的测试默认用 `node --test` 直接跑，不需要子进程。但 **e2e / 需要真实
