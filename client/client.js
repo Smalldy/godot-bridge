@@ -324,6 +324,9 @@ window.__ModuleLoader__.load({
 				waitDependency: '等待依赖',
 				waitDependencyBroken: '依赖已破',
 				waitFileLock: '等待文件锁',
+				waitEnvironmentDirty: '等待主树干净（自动重试）',
+				environmentTransient: '主树当前有未提交改动（合并进行中常见）· 受影响的卡本轮跳过，下一轮自动重试 · 最近检查 {ago}',
+				environmentSustained: '主树持续有未提交改动：{ids} 暂时无法派发 · 提交或暂存后会自动恢复 · 最近检查 {ago}',
 				waitConcurrency: '并发已满',
 				waitCandidateStale: '候选过期，自动重建中',
 				waitNeedsRebase: '等待人工 rebase',
@@ -819,6 +822,9 @@ window.__ModuleLoader__.load({
 				waitDependency: 'waiting on dependencies',
 				waitDependencyBroken: 'dependency broken',
 				waitFileLock: 'waiting for file lock',
+				waitEnvironmentDirty: 'waiting for a clean main tree (auto-retry)',
+				environmentTransient: 'The main tree has uncommitted changes (common while a merge runs) · affected cards were skipped this pass and will retry automatically · last checked {ago}',
+				environmentSustained: 'The main tree stays dirty: {ids} cannot be dispatched · it recovers once the tree is committed or stashed · last checked {ago}',
 				waitConcurrency: 'concurrency full',
 				waitCandidateStale: 'candidate stale, rebuilding',
 				waitNeedsRebase: 'waiting for a manual rebase',
@@ -1864,6 +1870,10 @@ window.__ModuleLoader__.load({
 				// The Host's own note when its registry last drove another project; the
 				// source badge shows it as a tooltip instead of a second banner.
 				projectWarning: typeof payload.projectWarning === 'string' ? payload.projectWarning : null,
+				// T-108: main-checkout cleanliness, when it was read and which cards
+				// are waiting on it — the panel separates a merge-window blip from a
+				// really dirty checkout with this.
+				environment: payload.environment === undefined || payload.environment === null ? null : payload.environment,
 				// How full the board file is: { bytes, limit, percent, level, cards,
 				// bytesPerCard, headroomCards, warning }. The status page warns at 50%
 				// and 75% of the cap, before the file stops loading at all.
@@ -2212,6 +2222,8 @@ window.__ModuleLoader__.load({
 				dependency: { key: 'waitDependency', tone: 'waiting' },
 				'dependency-broken': { key: 'waitDependencyBroken', tone: 'broken' },
 				'file-lock': { key: 'waitFileLock', tone: 'waiting' },
+				// T-108: a transient dirty window is a wait, not a fault.
+				'dirty-worktree': { key: 'waitEnvironmentDirty', tone: 'waiting' },
 				concurrency: { key: 'waitConcurrency', tone: 'waiting' },
 				// Merge-side waits: a stale candidate is rebuilt automatically; a
 				// needs-rebase card is NOT retried and needs a human rebase.
@@ -5091,6 +5103,34 @@ window.__ModuleLoader__.load({
 								),
 							)
 
+				// T-108: the main checkout's cleanliness, worded for what it is. While a
+				// merge runs the tree is briefly dirty — that is a passing notice ("will
+				// retry"), not an alarm. Only a sustained streak (the cards escalated by
+				// the scheduler) turns it into a warning that still says how it heals.
+				const environment = snapshot.environment === null || snapshot.environment === undefined ? null : snapshot.environment
+				const escalatedCards = environment !== null && Array.isArray(environment.escalated) ? environment.escalated.map(String) : []
+				const environmentBar =
+					environment === null || environment.clean !== false
+						? null
+						: h(
+								'div',
+								{
+									className: 'gbt-banner',
+									'data-tone': escalatedCards.length === 0 ? 'info' : 'warn',
+									'data-environment': escalatedCards.length === 0 ? 'dirty-transient' : 'dirty-sustained',
+									'data-environment-code': environment.code === null || environment.code === undefined ? '' : String(environment.code),
+								},
+								h(
+									'span',
+									{ style: { flex: '1', minWidth: '220px' } },
+									(escalatedCards.length === 0 ? t('environmentTransient') : t('environmentSustained'))
+										.split('{ids}')
+										.join(escalatedCards.join(', '))
+										.split('{ago}')
+										.join(environment.checkedAt === null || environment.checkedAt === undefined ? '—' : tcAgo(environment.checkedAt, now)),
+								),
+							)
+
 				const busyBar = busy === null
 					? null
 					: h(
@@ -5205,6 +5245,7 @@ window.__ModuleLoader__.load({
 					{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center' },
 					header,
 					statusline,
+					environmentBar,
 					projectMismatchBar,
 					busyBar,
 					banner,

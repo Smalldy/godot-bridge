@@ -38,6 +38,7 @@ import {
   hostCheckEvidence,
   interruptAssignee,
   interruptMemberNamed,
+  isTransientEnvironmentCode,
   memberProjectOf,
   probeWorktree,
   projectSlotKey,
@@ -80,6 +81,9 @@ import {
 } from './board.mjs'
 import { mergeEligible, recordCandidate, recordMergeResult, refreshMergeRequest, testCandidateFor } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
+
+/** How long one main-checkout cleanliness read is trusted by the panel payload. */
+const ENVIRONMENT_CACHE_MS = 4000
 
 /** Every action this API exposes. The tool enum and the route allowlist are
  * generated from this list, so they cannot disagree. */
@@ -1885,6 +1889,10 @@ export function createApi(ctx, options) {
   async function worktreeRefusal(projectPath) {
     const probe = await probeWorktree(git, projectPath)
     if (probe.ok === true) return null
+    // T-108: a dirty main tree (or an unreadable git status) is a TRANSIENT window —
+    // the merge pipeline works in the main checkout while dispatch runs. Starting
+    // is allowed: the affected card is skipped and retried, never paused for it.
+    if (isTransientEnvironmentCode(probe.code)) return null
     return failure(
       'worktree-unavailable',
       'Cannot start dispatch: every task runs in its own git worktree, and this project cannot host one right now — ' +
@@ -1892,6 +1900,64 @@ export function createApi(ctx, options) {
         '. Fix the git environment (install/enable the subprocess service, initialise the repository, commit or stash the working tree), then start dispatch again.',
       { worktree: probe.code },
     )
+  }
+
+  /**
+   * The main-checkout environment the panel shows next to dispatch: is the tree
+   * clean right now, when was that read, and are any cards waiting on it? The
+   * read is cached for a few seconds (it is a git subprocess on a 2.5 s poll) and
+   * the per-card streaks come from the dispatcher, which owns them (T-108).
+   */
+  const environmentCache = { project: null, at: 0, value: null }
+
+  async function environmentSnapshot(projectPath, now, board) {
+    const schedulerStatus = scheduler === null || scheduler === undefined || typeof scheduler.status !== 'function' ? null : scheduler.status()
+    const fromDispatcher = schedulerStatus !== null && schedulerStatus.environment !== undefined && schedulerStatus.environment !== null ? schedulerStatus.environment : null
+    const retrying = fromDispatcher === null || !Array.isArray(fromDispatcher.retrying) ? [] : fromDispatcher.retrying
+    const escalated = fromDispatcher === null || !Array.isArray(fromDispatcher.escalated) ? [] : fromDispatcher.escalated
+    // The dispatcher probes once per running pass; its reading is the one to show.
+    // The API only probes itself while dispatch runs and no pass has reported yet —
+    // a paused board costs no git call just because a panel is polling.
+    if (fromDispatcher !== null && typeof fromDispatcher.checkedAt === 'string') {
+      return {
+        clean: fromDispatcher.clean === true,
+        code: fromDispatcher.clean === true || fromDispatcher.code === undefined ? null : fromDispatcher.code,
+        message: fromDispatcher.clean === true || fromDispatcher.message === undefined ? null : fromDispatcher.message,
+        checkedAt: fromDispatcher.checkedAt,
+        transient: fromDispatcher.clean === true ? false : isTransientEnvironmentCode(fromDispatcher.code),
+        retrying: retrying,
+        escalated: escalated,
+        dirty: fromDispatcher !== null && Array.isArray(fromDispatcher.dirty) ? fromDispatcher.dirty : [],
+      }
+    }
+    const dispatch = board === undefined || board === null || board.dispatch === undefined || board.dispatch === null ? null : board.dispatch
+    if (dispatch === null || dispatch.state !== 'running') {
+      return { clean: null, code: null, message: null, checkedAt: null, transient: false, retrying: [], escalated: [], dirty: [] }
+    }
+    if (environmentCache.project === projectPath && environmentCache.value !== null && now - environmentCache.at < ENVIRONMENT_CACHE_MS) {
+      return environmentCache.value
+    }
+    let probe = null
+    try {
+      probe = await probeWorktree(git, projectPath)
+    } catch (error) {
+      probe = { ok: false, code: 'git-unavailable', message: String((error && error.message) || error) }
+    }
+    const value = {
+      clean: probe.ok === true,
+      code: probe.ok === true ? null : String(probe.code === undefined || probe.code === null ? 'git-unavailable' : probe.code),
+      message: probe.ok === true ? null : String(probe.message === undefined || probe.message === null ? '' : probe.message),
+      checkedAt: new Date(now).toISOString(),
+      // A transient window is expected to fix itself; a hard code is not.
+      transient: probe.ok === true ? false : isTransientEnvironmentCode(probe.code),
+      retrying: retrying,
+      escalated: escalated,
+      dirty: fromDispatcher !== null && Array.isArray(fromDispatcher.dirty) ? fromDispatcher.dirty : [],
+    }
+    environmentCache.project = projectPath
+    environmentCache.at = now
+    environmentCache.value = value
+    return value
   }
 
   async function snapshot(projectPath, options) {
@@ -2040,6 +2106,9 @@ export function createApi(ctx, options) {
         Object.assign({}, lock, { waiters: lockWaiters(board, lock) }),
       ),
       scheduler: scheduler === null ? null : scheduler.status(),
+      // T-108: "is the main tree clean, and when was that checked" — the panel uses
+      // it to tell a merge-window blip from a really dirty checkout.
+      environment: await environmentSnapshot(projectPath, now, board),
       serverTime: new Date(now).toISOString(),
     })
   }

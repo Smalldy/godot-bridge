@@ -852,9 +852,30 @@ export function gitFor(ctx, options) {
   return createGit({ run: runnerFromSubprocess(subprocess), worktreeTimeoutMs: opts.worktreeTimeoutMs })
 }
 
-/** The descriptor a task records when no worktree could be made. */
-function worktreeFallback(error) {
-  return { base: null, target: null, branch: null, path: null, keep: false, error: error }
+/**
+ * How many consecutive TRANSIENT environment failures one card may collect before
+ * it asks for a human. The merge pipeline works in the main checkout, so "the main
+ * tree is clean" is briefly false while it runs; a card that hits that window must
+ * not be turned into an alarm on the first try.
+ */
+export const ENVIRONMENT_RETRY_LIMIT = 5
+/** …or this long, whichever comes first (a slower timer still escalates). */
+export const ENVIRONMENT_RETRY_WINDOW_MS = 30 * 1000
+
+/** Environment codes that are expected to fix themselves (a merge is running). */
+const TRANSIENT_ENVIRONMENT_CODES = ['dirty-worktree', 'status-unreadable']
+
+/** Is this failure something the next pass can plausibly fix on its own? */
+export function isTransientEnvironmentCode(code) {
+  return TRANSIENT_ENVIRONMENT_CODES.indexOf(String(code === undefined || code === null ? '' : code)) >= 0
+}
+
+/** The descriptor a task records when no worktree could be made. The code travels
+ * separately so the caller can tell a self-healing window from a broken setup. */
+function worktreeFallback(code, message) {
+  const name = typeof code === 'string' && code !== '' ? code : 'worktree-unavailable'
+  const text = typeof message === 'string' && message !== '' ? message : name
+  return { base: null, target: null, branch: null, path: null, keep: false, error: name + ': ' + text, code: name, message: text }
 }
 
 /**
@@ -880,7 +901,10 @@ export async function probeWorktree(git, projectPath) {
     if (repo.repo !== true) return { ok: false, code: 'not-a-git-repository', message: projectPath + ' is not a git repository' }
     const clean = await git.isClean(projectPath)
     if (clean.ok !== true) {
-      return { ok: false, code: 'git-unavailable', message: 'git status failed in ' + projectPath + ': ' + String(clean.message) }
+      // A failed READ is not proof of a broken environment: the merge pipeline
+      // holds index.lock in the main checkout for a moment. Treat it like the
+      // dirty window — skip the card, retry next pass.
+      return { ok: false, code: 'status-unreadable', message: 'git status failed in ' + projectPath + ': ' + String(clean.message) }
     }
     if (clean.clean !== true) {
       return {
@@ -945,9 +969,9 @@ export { serialiseWorktreeCreate }
  */
 async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadlineMs) {
   const probe = await probeWorktree(git, projectPath)
-  if (probe.ok !== true) return worktreeFallback(probe.code + ': ' + probe.message)
+  if (probe.ok !== true) return worktreeFallback(probe.code, probe.message)
   const headNow = await git.head(projectPath)
-  if (headNow.ok !== true) return worktreeFallback('base-unreadable: ' + String(headNow.message))
+  if (headNow.ok !== true) return worktreeFallback('base-unreadable', String(headNow.message))
   const current = await git.currentBranch(projectPath)
   const defaultBranch = current.ok === true && typeof current.branch === 'string' ? current.branch : null
   // The task's own target wins; otherwise the project's configured default target
@@ -964,7 +988,7 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadli
     // checkout sits elsewhere; a legacy task keeps the old current-HEAD base.
     const resolved = await git.revParse(projectPath, 'refs/heads/' + targetBranch)
     if (resolved.ok !== true) {
-      return worktreeFallback('target-unreadable: ' + targetBranch + ' could not be resolved (' + String(resolved.message) + ')')
+      return worktreeFallback('target-unreadable', targetBranch + ' could not be resolved (' + String(resolved.message) + ')')
     }
     base = resolved
   }
@@ -1046,7 +1070,8 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadli
   const lastCleanup = await rollbackWorktree(git, projectPath, { path: path, branch: branch })
   const cleanupNote = cleanup.summary === lastCleanup.summary ? lastCleanup.summary : cleanup.summary + ' | retry: ' + lastCleanup.summary
   return worktreeFallback(
-    'worktree-add-failed after 2 attempts: ' +
+    'worktree-add-failed',
+    'worktree add failed after 2 attempts: ' +
       String(second.message) +
       ' (path ' + path + ', branch ' + branch + ', ' + String(elapsedMs) + 'ms; cleanup: ' + cleanupNote + ')',
   )
@@ -2407,6 +2432,11 @@ export function createDispatcher(ctx, options) {
     // One 'about to block' notice per phase round: key id@phase.at -> sent.
     reviewGrace: new Map(),
     testGrace: new Map(),
+    // The last environment probe (is the main tree clean, when was it checked) and
+    // the per-card streak of TRANSIENT failures, so a momentary dirty window skips
+    // one card instead of pausing the project (T-108).
+    environment: null,
+    environmentDirty: new Map(),
   }
   // undefined means "ask the context"; null means "this host has no git runner",
   // which now means dispatch cannot start at all. Resolved lazily and cached for
@@ -2420,6 +2450,27 @@ export function createDispatcher(ctx, options) {
     return gitCache
   }
 
+  /** The transient-failure picture the panel renders (never the board write). */
+  function environmentStatus() {
+    const dirty = []
+    memory.environmentDirty.forEach((entry, id) => {
+      dirty.push({
+        id: String(id),
+        retries: entry.count,
+        since: new Date(entry.firstAt).toISOString(),
+        escalated: entry.escalated === true,
+      })
+    })
+    const probe = memory.environment === null ? { clean: null, code: null, message: null, checkedAt: null } : memory.environment
+    return Object.assign({}, probe, {
+      retrying: dirty.filter((entry) => entry.escalated !== true),
+      escalated: dirty.filter((entry) => entry.escalated === true).map((entry) => entry.id),
+      // Every streak with its count, so the panel (and a test) can say "3rd retry"
+      // instead of only "somewhere between fine and alarming".
+      dirty: dirty,
+    })
+  }
+
   function status() {
     return {
       boot: boot,
@@ -2428,6 +2479,7 @@ export function createDispatcher(ctx, options) {
       lastError: memory.lastError,
       lastResults: memory.lastResults,
       ticks: memory.ticks,
+      environment: environmentStatus(),
     }
   }
 
@@ -2504,10 +2556,91 @@ export function createDispatcher(ctx, options) {
   }
 
   /**
-   * A worktree could not be prepared for this attempt: pause dispatch, record the
-   * reason on the task for the panel, and leave the task pending. Pausing is the
-   * backoff — a paused dispatcher is not retried by the timer, so a broken git
-   * environment cannot turn into a five-second retry storm.
+   * Count one TRANSIENT environment failure for a card (T-108). The card is
+   * skipped for this pass; the streak decides when it stops being "a merge is
+   * running" and becomes "someone must look at this checkout".
+   */
+  function noteEnvironmentFailure(taskId, code, message, now) {
+    const previous = memory.environmentDirty.get(taskId)
+    const entry = previous === undefined ? { count: 0, firstAt: now, lastAt: now, code: null, message: null, escalated: false } : previous
+    entry.count += 1
+    entry.lastAt = now
+    entry.code = String(code === undefined || code === null ? '' : code)
+    entry.message = String(message === undefined || message === null ? '' : message)
+    entry.escalated = entry.count >= ENVIRONMENT_RETRY_LIMIT || now - entry.firstAt >= ENVIRONMENT_RETRY_WINDOW_MS
+    memory.environmentDirty.set(taskId, entry)
+    return entry
+  }
+
+  /** The card made it through the window: forget its streak. */
+  function clearEnvironmentFailure(taskId) {
+    if (memory.environmentDirty.size > 0) memory.environmentDirty.delete(taskId)
+  }
+
+  /** Record the pass-level probe: what the panel shows as "is the main tree clean". */
+  async function probeEnvironment(projectPath, now) {
+    let probe
+    try {
+      probe = await probeWorktree(gitFacade(), projectPath)
+    } catch (error) {
+      probe = { ok: false, code: 'git-unavailable', message: String((error && error.message) || error) }
+    }
+    memory.environment = {
+      clean: probe.ok === true,
+      code: probe.ok === true ? null : String(probe.code === undefined || probe.code === null ? 'git-unavailable' : probe.code),
+      message: probe.ok === true ? null : String(probe.message === undefined || probe.message === null ? '' : probe.message),
+      checkedAt: new Date(now).toISOString(),
+    }
+    if (probe.ok !== true) return { environment: memory.environment, board: null }
+    // The window closed: every streak and every "waiting for the tree" marker is
+    // obsolete, so a recovered project stops asking without a human reopen.
+    memory.environmentDirty.clear()
+    const cleared = await clearEnvironmentWaiting(projectPath, null)
+    return { environment: memory.environment, board: cleared }
+  }
+
+  /** Put the "waiting for a clean main tree" marker on one card (panel-visible). */
+  async function markEnvironmentWaiting(projectPath, taskId, detail) {
+    const applied = await state.apply(
+      projectPath,
+      (board) => {
+        const task = model.findTask(board, taskId)
+        if (task === undefined) return null
+        if (task.waitingReason === 'dirty-worktree' && task.waitingDetail === detail) return null
+        const tasks = board.tasks.map((entry) =>
+          String(entry.id) === String(taskId) ? Object.assign({}, entry, { waitingReason: 'dirty-worktree', waitingDetail: detail }) : entry,
+        )
+        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+      },
+      writePolicyFor(projectPath),
+    )
+    return applied.failed === null ? applied.board : null
+  }
+
+  /** Drop the marker (one card when `onlyId` is set, otherwise every card). */
+  async function clearEnvironmentWaiting(projectPath, onlyId) {
+    const applied = await state.apply(
+      projectPath,
+      (board) => {
+        const targets = board.tasks.filter(
+          (task) => task.waitingReason === 'dirty-worktree' && (onlyId === null || String(task.id) === String(onlyId)),
+        )
+        if (targets.length === 0) return null
+        const ids = new Set(targets.map((task) => String(task.id)))
+        const tasks = board.tasks.map((task) => (ids.has(String(task.id)) ? Object.assign({}, task, { waitingReason: null, waitingDetail: null }) : task))
+        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+      },
+      writePolicyFor(projectPath),
+    )
+    return applied.failed === null ? applied.board : null
+  }
+
+  /**
+   * A worktree could not be prepared for this attempt and the cause is NOT
+   * transient: pause dispatch, record the reason on the task for the panel, and
+   * leave the task pending. Pausing is the backoff — a paused dispatcher is not
+   * retried by the timer, so a broken git environment cannot turn into a
+   * five-second retry storm. A dirty window is NOT this path (T-108).
    */
   async function pauseForWorktree(projectPath, taskId, reason, message) {
     memory.lastError = message
@@ -3244,6 +3377,10 @@ export function createDispatcher(ctx, options) {
       if (dispatch.state !== 'running') {
         return { ok: true, state: 'paused', tasks: current.tasks.length, results: results }
       }
+      // One environment probe per pass: what the panel shows (clean? checked when?)
+      // and, when the window has closed, the sweep that clears stale markers.
+      const probed = await probeEnvironment(project, now)
+      if (probed.board !== null) current = probed.board
       const running = current.tasks.filter((task) => task.status === 'running').length
       let slots = dispatch.maxConcurrent - running
       if (slots <= 0) return { ok: true, state: 'running', slots: 0, results: results }
@@ -3362,20 +3499,57 @@ export function createDispatcher(ctx, options) {
         try {
           worktree = await prepareWorktree(gitFacade(), project, task, dispatch, model.attemptSlot(task), worktreeDeadlineMs)
         } catch (error) {
-          worktree = worktreeFallback('worktree-error: ' + String((error && error.message) || error))
+          worktree = worktreeFallback('worktree-error', String((error && error.message) || error))
         }
         if (worktree.error !== null) {
-          // Release what this attempt reserved, put the task back in the pool
-          // and stop the pass: pausing dispatch is what prevents the five-second
-          // timer from retrying a broken project forever. The user fixes the
-          // environment and starts dispatch again.
+          // Release what this attempt reserved before deciding what to do with it.
           releaseTaskLocks(task.id)
-          const message = 'worktree refused for ' + task.id + ' (' + worktree.error + '); dispatch paused until the environment is fixed'
+          reserved.delete(picked.target.name)
+          if (isTransientEnvironmentCode(worktree.code)) {
+            // The merge pipeline works in the MAIN checkout, so "the main tree is
+            // clean" is briefly false while it runs. That is not a broken
+            // environment: skip THIS card, keep dispatch running and retry it next
+            // pass. Only a sustained streak escalates to a human (T-108).
+            const entry = noteEnvironmentFailure(task.id, worktree.code, worktree.message, state.clock())
+            const detail = String(worktree.code) + ': ' + String(worktree.message)
+            if (entry.escalated === true) {
+              const marked = await markEnvironmentWaiting(project, task.id, detail)
+              if (marked !== null) current = marked
+            }
+            emit(entry.escalated === true ? 'environment-dirty-sustained' : 'environment-dirty', entry.escalated === true ? 'system' : 'host', {
+              taskId: task.id,
+              detail:
+                'transient environment failure (' + detail + '); card skipped this pass, dispatch keeps running' +
+                (entry.escalated === true
+                  ? ' — retried ' + String(entry.count) + ' times, needs a clean main tree (commit or stash)'
+                  : ''),
+            })
+            results.push({
+              id: task.id,
+              skipped: 'environment-dirty',
+              reason: String(worktree.code),
+              detail: String(worktree.message),
+              retries: entry.count,
+              escalated: entry.escalated === true,
+            })
+            continue
+          }
+          // A real setup problem (no git runner, not a repository, an add that
+          // keeps failing): pausing is the backoff, and the panel says so.
+          const message =
+            'worktree refused for ' + task.id + ' (' + worktree.error + '); dispatch paused for this project until the git environment can host a task worktree'
           emit('error', 'system', { taskId: task.id, detail: 'worktree refused: ' + String(worktree.error) })
           await pauseForWorktree(project, task.id, worktree.error, message)
           results.push({ id: task.id, error: message, code: 'worktree-unavailable' })
           paused = true
           break
+        }
+        // The window passed for this card: forget its streak and its marker so the
+        // claim cannot inherit a stale "waiting for a clean tree".
+        clearEnvironmentFailure(task.id)
+        if (task.waitingReason === 'dirty-worktree') {
+          const cleared = await clearEnvironmentWaiting(project, task.id)
+          if (cleared !== null) current = cleared
         }
         if (worktree.retried === true) {
           // The add failed once, was rolled back and succeeded on the retry in the
