@@ -367,15 +367,39 @@ export function servicesFor(ctx) {
   return { agents: get('agents'), agentTeams: get('agentTeams') }
 }
 
-/** The session this profile belongs to, if the host can name it. */
+/**
+ * Read an OPTIONAL context property without tripping Cordis' activation guard.
+ * A property that was not declared in `inject` THROWS on read; that must never
+ * take the whole row down, so every optional identity read goes through here
+ * (or through ctx.get(name), which is guarded the same way).
+ */
+function optionalContextValue(ctx, name) {
+  if (ctx === undefined || ctx === null) return undefined
+  try {
+    const direct = ctx[name]
+    if (direct !== undefined && direct !== null) return direct
+  } catch (error) {
+    // Not injected: fall through to the service lookup.
+  }
+  try {
+    if (typeof ctx.get === 'function') {
+      const viaGet = ctx.get(name)
+      if (viaGet !== undefined && viaGet !== null) return viaGet
+    }
+  } catch (error) {
+    // A profile without the service simply has no value.
+  }
+  return undefined
+}
+
+/** The session this profile belongs to, if the host can name it. Optional by design. */
 export function sessionIdOfContext(ctx) {
-  if (ctx === undefined || ctx === null) return null
-  const agent = ctx.agent !== undefined && ctx.agent !== null ? ctx.agent : null
+  const agent = optionalContextValue(ctx, 'agent')
   const candidates = [
-    agent === null ? null : agent.id,
-    agent === null ? null : agent.session,
-    ctx.sessionId,
-    ctx.session,
+    agent !== null && agent !== undefined ? agent.id : null,
+    agent !== null && agent !== undefined ? agent.session : null,
+    optionalContextValue(ctx, 'sessionId'),
+    optionalContextValue(ctx, 'session'),
   ]
   for (const candidate of candidates) {
     if (typeof candidate === 'string' && candidate.length > 0) return candidate

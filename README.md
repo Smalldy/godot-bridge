@@ -110,6 +110,17 @@ The candidate is built at review time, but the merge happens after the tests; th
 - **Known boundary**: automatic drift detection only recognises real hex commit bases; synthetic labels such as "base-sha" in fixtures or hand-written boards keep the historical behaviour. Real repositories always carry hex commits.
 - The conflicted files are kept in the task's waitingDetail, so the panel can show exactly why a card is waiting.
 
+### Service access rules (Cordis activation guard)
+
+Cordis THROWS when a plugin reads a service it did not declare in `inject`. A bare `ctx.agent` read once killed the whole task-center row (tool missing, routes 404) while every test stayed green, because the test context was a plain object. The rules:
+
+- **Declared services** (`inject = ['fs', 'sandboxPolicy', 'tools', 'webServer']`) may be read directly.
+- **Every other service** is read through `ctx.get(name)` or the guarded `optionalContextValue` helper (try/catch), and `serviceOf(injected, name)` also guards its property read.
+- **Optional identity** (`agent`, `sessionId`, `session`) is never injected: the guarded helper returns `null` when the host cannot provide it, instead of dragging the row down.
+- Optional feature services (`skills`, `systemPrompt`, `agents`, `agentTeams`, `subagents`, `subprocess`) are requested with `ctx.inject([name], ...)` or `ctx.get(name)` and only used when present.
+- **Tests use a strict ctx** (`createStrictCtx` in `scripts/test/support/fixtures.mjs`): reading an undeclared property throws the same Cordis message, so this class of bug fails in the suite.
+- **Activation failures are diagnostics, not silence**: apply errors and load failures are appended to `~/.dsh/godot-bridge/activation-error.log` (override with `GODOT_BRIDGE_ACTIVATION_LOG`) and reported through `ctx.logger.error`.
+
 ## Isolated DSH test harness
 
 The task center also ships a real-DSH smoke for the candidate plugin: `plugin/task-center/harness.mjs` starts a **disposable DSH instance** and proves that the candidate loads and answers — without touching the production profile, session or port. Only the tester role (or the user) drives it through `task_center` `harnessStart` / `harnessStatus` / `harnessSmoke` / `harnessRestart` / `harnessStop`; `POST /godot-bridge/task-center/action` exposes the same actions to the GUI.

@@ -5,8 +5,10 @@
 import { register } from 'node:module'
 register('./stubs/hooks.mjs', import.meta.url)
 
-const { apply } = await import('../../plugin/task-center/index.mjs')
-const { createFakeFs, PROJECT } = await import('./support/fixtures.mjs')
+const { apply, recordActivationError, reportLoadFailure } = await import('../../plugin/task-center/index.mjs')
+const { readFileSync, rmSync } = await import('node:fs')
+const { join } = await import('node:path')
+const { createFakeFs, createStrictCtx, PROJECT } = await import('./support/fixtures.mjs')
 const { SKILL_NAME, buildSkillContent } = await import('../../plugin/task-center/skill.mjs')
 const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
 
@@ -95,12 +97,38 @@ const ctx = {
 }
 
 let activationError = null
+// T-104: Cordis-shaped strict context - an undeclared service read throws.
+const strictCtx = createStrictCtx(ctx, ['fs', 'sandboxPolicy', 'tools', 'webServer'])
 try {
-  apply(ctx)
+  apply(strictCtx)
 } catch (error) {
   activationError = error
 }
 check('the row activates without a host', activationError === null, activationError && activationError.stack)
+check(
+  'T-104 a strict Cordis ctx throws on an undeclared service read',
+  (() => {
+    try {
+      void strictCtx.agent
+      return false
+    } catch (error) {
+      return String(error && error.message).indexOf('cannot get property "agent" without inject') >= 0
+    }
+  })(),
+)
+check(
+  'T-104 a bare undeclared read would fail activation (the guard is real)',
+  (() => {
+    try {
+      (function badApply(badCtx) {
+        void badCtx.agent
+      })(strictCtx)
+      return false
+    } catch (error) {
+      return String(error && error.message).indexOf('without inject') >= 0
+    }
+  })(),
+)
 check('the tool is registered', tools.length === 1 && tools[0].name === 'task_center', String(tools.length))
 check('five routes are registered', routes.length === 5, routes.map((route) => route.path).join(','))
 check(
@@ -363,7 +391,7 @@ check('teardown disposes the skill registration', skillDisposals.length === 1 &&
   }
   let secondError = null
   try {
-    apply(secondCtx)
+    apply(createStrictCtx(secondCtx, ['fs', 'sandboxPolicy', 'tools', 'webServer']))
   } catch (error) {
     secondError = error
   }
@@ -405,7 +433,7 @@ check('teardown disposes the skill registration', skillDisposals.length === 1 &&
   }
   let thirdError = null
   try {
-    apply(thirdCtx)
+    apply(createStrictCtx(thirdCtx, ['fs', 'sandboxPolicy', 'tools', 'webServer']))
   } catch (error) {
     thirdError = error
   }
@@ -416,6 +444,61 @@ check('teardown disposes the skill registration', skillDisposals.length === 1 &&
     requested.indexOf('skills') >= 0 && requested.indexOf('systemPrompt') >= 0,
     requested.join('|'),
   )
+}
+
+// ── T-104: activation failures are persisted and reported, never silent ──
+{
+  const logPath = join(process.cwd(), '.tmp-activation-' + String(Date.now()) + '.log')
+  const saved = process.env.GODOT_BRIDGE_ACTIVATION_LOG
+  process.env.GODOT_BRIDGE_ACTIVATION_LOG = logPath
+  const reported = []
+  const loggerCtx = { logger: { error(message) { reported.push(String(message)) } } }
+  const written = recordActivationError('apply', new Error('simulated activation failure'), loggerCtx)
+  reportLoadFailure(new Error('simulated import failure'), loggerCtx)
+  let logged = ''
+  try {
+    logged = readFileSync(logPath, 'utf8')
+  } catch (error) {
+    logged = ''
+  }
+  check(
+    'T-104 an apply failure is written to the activation log with its stage and error',
+    written.path === logPath && logged.indexOf('apply FAILED') >= 0 && logged.indexOf('simulated activation failure') >= 0,
+    logged.slice(0, 200),
+  )
+  check(
+    'T-104 a module-load failure is written too (load stage)',
+    logged.indexOf('load FAILED') >= 0 && logged.indexOf('simulated import failure') >= 0,
+    logged.slice(0, 300),
+  )
+  check(
+    'T-104 the failure is reported through ctx.logger.error as well',
+    reported.length === 2 && reported[0].indexOf('apply') >= 0 && reported[1].indexOf('load') >= 0,
+    JSON.stringify(reported),
+  )
+  // The real wrapper: apply(null) cannot activate, so it must throw AND log.
+  let threw = false
+  try {
+    apply(null)
+  } catch (error) {
+    threw = true
+  }
+  let wrapped = ''
+  try {
+    wrapped = readFileSync(logPath, 'utf8')
+  } catch (error) {
+    wrapped = ''
+  }
+  check(
+    'T-104 a throwing apply is wrapped: it still throws, but only after logging',
+    threw && wrapped.indexOf('apply FAILED') >= 0 && wrapped !== logged,
+    String(wrapped.length),
+  )
+  if (saved === undefined) delete process.env.GODOT_BRIDGE_ACTIVATION_LOG
+  else process.env.GODOT_BRIDGE_ACTIVATION_LOG = saved
+  try {
+    rmSync(logPath, { force: true })
+  } catch (error) {}
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

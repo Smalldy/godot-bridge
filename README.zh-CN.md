@@ -107,6 +107,17 @@ curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
 - **已知边界**：自动漂移判定只认真实 hex commit base；夹具/手写板里的 "base-sha" 之类标签保持旧行为。真实仓库始终是 hex commit。
 - 冲突文件写入卡片的 waitingDetail，面板可以直接显示等待原因。
 
+### 服务访问规则（Cordis 激活守卫）
+
+Cordis 规定：**未在 `inject` 中声明的服务，读取即抛异常**。曾经的 `ctx.agent` 裸读让整行任务中心静默死亡（工具消失、接口 404），而测试全绿——因为测试 ctx 是普通对象。规则：
+
+- **inject 声明的服务**（`fs`、`sandboxPolicy`、`tools`、`webServer`）可以直接读。
+- **其它服务**一律通过 `ctx.get(name)` 或带 try/catch 的 `optionalContextValue` 读取；`serviceOf(injected, name)` 的属性读取也有守卫。
+- **可选身份**（`agent`、`sessionId`、`session`）不进 inject：拿不到就返回 `null`，绝不拖死整行。
+- 可选能力服务（`skills`、`systemPrompt`、`agents`、`agentTeams`、`subagents`、`subprocess`）用 `ctx.inject([name], ...)` 或 `ctx.get(name)`，存在才用。
+- **测试使用严格 ctx**（`scripts/test/support/fixtures.mjs` 的 `createStrictCtx`）：读未声明属性会抛同样的 Cordis 错误，这类 bug 会在测试里失败。
+- **激活失败可见**：apply 失败与模块加载失败都会追加到 `~/.dsh/godot-bridge/activation-error.log`（可用 `GODOT_BRIDGE_ACTIVATION_LOG` 覆盖），并通过 `ctx.logger.error` 上报。
+
 ## 隔离 DSH 测试 harness
 
 任务中心同时提供「真实 DSH 冒烟」：`plugin/task-center/harness.mjs` 启动一个**用完即弃的 DSH 实例**，证明候选插件能装、能加载、能应答，而完全不碰生产 profile、会话与端口。只有 tester 角色（或用户）能通过 `task_center` 的 `harnessStart` / `harnessStatus` / `harnessSmoke` / `harnessRestart` / `harnessStop` 驱动；`POST /godot-bridge/task-center/action` 对 GUI 暴露同一组动作。
