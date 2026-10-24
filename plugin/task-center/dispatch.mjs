@@ -407,23 +407,105 @@ export function sessionIdOfContext(ctx) {
   return null
 }
 
-/** The Lead of the team this profile belongs to. tryMembership answers undefined
- * for a non-Team agent instead of throwing, which is a normal outcome. */
-export function resolveLead(ctx) {
+/** The session an agent descriptor belongs to (its id IS the session id). */
+export function agentSessionOf(agent) {
+  if (agent === null || agent === undefined) return null
+  if (typeof agent.id === 'string' && agent.id !== '') return agent.id
+  return typeof agent.session === 'string' && agent.session !== '' ? agent.session : null
+}
+
+function membershipOrNull(agentTeams, agent) {
+  try {
+    const membership = agentTeams.tryMembership(agent)
+    return membership !== undefined && membership !== null ? membership : null
+  } catch (error) {
+    return null
+  }
+}
+
+/**
+ * The Lead of the team this profile belongs to.
+ *
+ * With `sessionId` this is SESSION-SCOPED and never guesses: only an agent whose
+ * own id is that session may answer (it IS the lead), otherwise its membership is
+ * followed to the team's lead. A session with no Team root returns null — the
+ * caller records `no-lead-for-project` — and it NEVER falls back to "the first
+ * lead in the list", which is how every card used to land in one session.
+ *
+ * Without `sessionId` (a legacy profile with no session identity) the historical
+ * behaviour is kept: the first live lead.
+ */
+export function resolveLead(ctx, options) {
+  const opts = options === undefined || options === null ? {} : options
   const { agents, agentTeams } = servicesFor(ctx)
   if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return null
   let all = []
   try {
-    all = agents.list()
+    const listed = agents.list()
+    all = Array.isArray(listed) ? listed : []
   } catch (error) {
     return null
   }
-  for (const candidate of all) {
-    try {
-      const membership = agentTeams.tryMembership(candidate)
-      if (membership !== undefined && membership !== null && membership.role === 'lead') return candidate
-    } catch (error) {}
+  const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
+  if (sessionId === null) {
+    for (const candidate of all) {
+      const membership = membershipOrNull(agentTeams, candidate)
+      if (membership !== null && membership.role === 'lead') return candidate
+    }
+    return null
   }
+  // Only the agents that BELONG to this session are candidates.
+  const owned = all.filter((candidate) => agentSessionOf(candidate) === sessionId)
+  for (const agent of owned) {
+    const membership = membershipOrNull(agentTeams, agent)
+    if (membership !== null && membership.role === 'lead') return agent
+  }
+  for (const agent of owned) {
+    const membership = membershipOrNull(agentTeams, agent)
+    if (membership === null) continue
+    // The membership may name the lead directly (object, or its id/name).
+    const direct =
+      membership.lead !== undefined && membership.lead !== null
+        ? membership.lead
+        : membership.leadName !== undefined && membership.leadName !== null
+          ? membership.leadName
+          : membership.leadId !== undefined && membership.leadId !== null
+            ? membership.leadId
+            : null
+    if (direct !== null) {
+      const directId = typeof direct === 'string' ? direct : typeof direct.id === 'string' ? direct.id : null
+      const directName = typeof direct === 'object' && direct !== null && typeof direct.name === 'string' ? direct.name : typeof direct === 'string' ? direct : null
+      const found = all.filter((candidate) => (directId !== null && agentSessionOf(candidate) === directId) || (directName !== null && candidate.name === directName))[0]
+      if (found !== undefined) {
+        const foundMembership = membershipOrNull(agentTeams, found)
+        if (foundMembership !== null && foundMembership.role === 'lead') return found
+      }
+    }
+    // Otherwise walk the team's members: the one with role 'lead' IS the lead.
+    const team = membership.team !== undefined && membership.team !== null ? membership.team : membership.teamId !== undefined && membership.teamId !== null ? membership.teamId : null
+    if (team !== null) {
+      let members = []
+      try {
+        const listed = agentTeams.listMembers(team)
+        members = Array.isArray(listed) ? listed : []
+      } catch (error) {
+        members = []
+      }
+      const leadMember = members.filter((member) => member !== null && typeof member === 'object' && member.role === 'lead')[0]
+      if (leadMember !== undefined) {
+        const byId = all.filter((candidate) => agentSessionOf(candidate) === agentSessionOf(leadMember))[0]
+        return byId !== undefined ? byId : leadMember
+      }
+    }
+  }
+  // A host with exactly ONE lead has a single team: there is no other session's
+  // team to steal, so the legacy single-team profile keeps working. With two or
+  // more leads this is exactly the "first lead in the list" bug and is refused.
+  const everyLead = all.filter((candidate) => {
+    const membership = membershipOrNull(agentTeams, candidate)
+    return membership !== null && membership.role === 'lead'
+  })
+  if (everyLead.length === 1) return everyLead[0]
   return null
 }
 
@@ -467,12 +549,16 @@ export function pickTarget(ctx, options) {
   if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
     return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
   }
-  const lead = resolveLead(ctx)
+  const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
+  const lead = resolveLead(ctx, { sessionId: sessionId })
   if (lead === null) {
     return {
       ok: false,
-      code: 'no-lead',
-      message: 'no live Team root, so there is nobody to hand pooled work to; tasks stay pending',
+      code: sessionId === null ? 'no-lead' : 'no-lead-for-project',
+      message:
+        sessionId === null
+          ? 'no live Team root, so there is nobody to hand pooled work to; tasks stay pending'
+          : 'session ' + sessionId + ' has no live Team root, so this card cannot be dispatched to another session’s team',
     }
   }
   let members = []
@@ -1967,8 +2053,20 @@ export function createRoleManager(ctx, options) {
     if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
       return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
     }
-    const lead = req.lead === undefined || req.lead === null ? resolveLead(ctx) : req.lead
-    if (lead === null) return { ok: false, code: 'no-lead', message: 'no live Team root, so the ' + String(kind) + ' role cannot be provisioned' }
+    // T-106: provision under the Lead that owns THIS session/project — never the
+    // first lead in the host, which is how executors ended up in another session.
+    const sessionId = req.sessionId === undefined || req.sessionId === null || req.sessionId === '' ? null : String(req.sessionId)
+    const lead = req.lead === undefined || req.lead === null ? resolveLead(ctx, { sessionId: sessionId }) : req.lead
+    if (lead === null) {
+      return {
+        ok: false,
+        code: sessionId === null ? 'no-lead' : 'no-lead-for-project',
+        message:
+          sessionId === null
+            ? 'no live Team root, so the ' + String(kind) + ' role cannot be provisioned'
+            : 'session ' + sessionId + ' has no live Team root, so the ' + String(kind) + ' role stays unprovisioned (no cross-session borrowing)',
+      }
+    }
     let roster = []
     try {
       roster = agentTeams.listMembers(lead)
@@ -2136,8 +2234,9 @@ export function createRoleManager(ctx, options) {
     const opts = options === undefined || options === null ? {} : options
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
-    const lead = resolveLead(ctx)
-    if (lead === null) return { ok: false, code: 'no-lead', message: 'no live Team root' }
+    const sessionId = opts.sessionId === undefined || opts.sessionId === null || opts.sessionId === '' ? null : String(opts.sessionId)
+    const lead = resolveLead(ctx, { sessionId: sessionId })
+    if (lead === null) return { ok: false, code: sessionId === null ? 'no-lead' : 'no-lead-for-project', message: sessionId === null ? 'no live Team root' : 'session ' + sessionId + ' has no live Team root' }
     let roster = []
     try {
       roster = agentTeams.listMembers(lead)
@@ -3202,10 +3301,13 @@ export function createDispatcher(ctx, options) {
           maxWorkAgents: dispatch.maxWorkAgents,
           name: workAgentName(task.id, model.attemptSlot(task)),
           projectKey: projectKey,
+          // The LEAD that creates the executor is the one this card BELONGS to.
+          // An ownerless (legacy) card keeps the historical first-Lead behaviour.
+          sessionId: ownerSession,
         })
         if (picked.ok !== true) {
           const reason =
-            picked.code === 'no-lead' || picked.code === 'no-team-service' || picked.code === 'roster-unreadable'
+            picked.code === 'no-lead' || picked.code === 'no-lead-for-project' || picked.code === 'no-team-service' || picked.code === 'roster-unreadable'
               ? 'no-lead-for-project'
               : picked.code === 'no-teammates'
                 ? 'no-roster'
@@ -3297,6 +3399,10 @@ export function createDispatcher(ctx, options) {
                 via: picked.spawn === true ? 'spawn' : 'message',
                 host: boot,
                 lead: picked.lead !== undefined && picked.lead !== null && picked.lead.name !== undefined ? String(picked.lead.name) : null,
+                leadSession: agentSessionOf(picked.lead),
+                // NOTE: `session` is the WORKER's identity (assignee.session); the
+                // card's own session travels as cardSession.
+                cardSession: ownerSession === null ? selfSessionId : ownerSession,
                 project: project,
                 worktree: worktree,
                 adopt:
@@ -3308,6 +3414,16 @@ export function createDispatcher(ctx, options) {
             ),
           writePolicyFor(project),
         )
+        // Requirement: if the lead we resolved does not belong to the card's own
+        // session, say so loudly instead of shipping work into another team.
+        const resolvedLeadSession = agentSessionOf(picked.lead)
+        const cardSession = ownerSession
+        if (cardSession !== null && resolvedLeadSession !== null && resolvedLeadSession !== cardSession) {
+          emit('warn', 'host', {
+            taskId: task.id,
+            detail: 'dispatch used Lead ' + String(picked.lead.name === undefined ? picked.lead.id : picked.lead.name) + ' of session ' + resolvedLeadSession + ' for a card owned by session ' + cardSession,
+          })
+        }
         if (claimed.failed !== null) {
           releaseTaskLocks(task.id)
           // The claim lost: a worktree made for a task that never started must
