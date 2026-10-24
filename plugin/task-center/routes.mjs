@@ -92,27 +92,38 @@ export function registerTaskRoutes(ctx, options) {
   const api = opts.api
   const scheduler = opts.scheduler === undefined ? null : opts.scheduler
 
+  /**
+   * One resolver for the panel and the tool. An explicit ?project= is adopted
+   * (and written to the registry, so the background loop drives it); otherwise
+   * only the session workspace can bind a project. Never a global hint.
+   */
   async function resolveProject(req, body) {
     const explicit = projectFromRequest(req, body)
-    const hint = state.memory.projectHint
-    const project = explicit !== null ? explicit : hint
-    if (typeof project !== 'string' || project.length === 0) return null
-    return resolve(project)
+    const resolved = await state.resolveProject({
+      explicit: explicit,
+      sessionRoot: state.memory.sessionRoot,
+      explicitSource: explicit !== null ? 'panel' : undefined,
+    })
+    if (resolved.ok !== true) return { failed: resolved }
+    if (explicit !== null) await state.adoptPanelProject(resolved.project.root)
+    else state.touchProject(resolved.project.root)
+    return { root: resolved.project.root, resolvedFrom: resolved.resolvedFrom }
   }
 
   async function handleState(req, res) {
     try {
-      const project = await resolveProject(req, null)
-      if (project === null) {
+      const target = await resolveProject(req, null)
+      if (target.failed !== undefined) {
         // UI-facing: the panel localizes by code; no English sentence crosses the wire.
-        sendJson(res, 200, { ok: false, code: 'unknown-project', params: {} })
+        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return
       }
+      const project = target.root
       state.noteProject(project)
       const url = queryOf(req)
       const sinceRaw = url === null ? null : url.searchParams.get('since')
       const since = sinceRaw === null || sinceRaw === '' ? null : Number(sinceRaw)
-      sendJson(res, 200, await api.snapshot(project, { full: false, since: Number.isFinite(since) ? since : null }))
+      sendJson(res, 200, await api.snapshot(project, { full: false, since: Number.isFinite(since) ? since : null, resolvedFrom: target.resolvedFrom }))
     } catch (error) {
       sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
     }
@@ -141,22 +152,24 @@ export function registerTaskRoutes(ctx, options) {
       return
     }
     try {
-      const project = await resolveProject(req, body)
-      if (action !== 'openProject' && project === null) {
-        sendJson(res, 200, { ok: false, code: 'unknown-project', params: {} })
+      const target = await resolveProject(req, body)
+      if (action !== 'openProject' && target.failed !== undefined) {
+        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return
       }
-      if (project !== null) state.noteProject(project)
-      const result = await api.perform(action, body, {
+      const project = target.root
+      if (project !== null && project !== undefined) state.noteProject(project)
+      const result = await api.perform(action, Object.assign({}, body, project === undefined ? {} : { project: project }), {
         projectPath: project,
         by: '@user',
         role: 'user',
         agent: null,
+        resolvedFrom: target.resolvedFrom,
       })
       if (result.ok === true && action !== 'openProject' && project !== null) {
         if (result.board !== undefined) delete result.board
         try {
-          result.snapshot = await api.snapshot(project, { full: false })
+          result.snapshot = await api.snapshot(project, { full: false, resolvedFrom: target.resolvedFrom })
         } catch (error) {
           result.snapshotError = String((error && error.message) || error)
         }
@@ -169,11 +182,12 @@ export function registerTaskRoutes(ctx, options) {
 
   async function handleTask(req, res) {
     try {
-      const project = await resolveProject(req, null)
-      if (project === null) {
-        sendJson(res, 200, { ok: false, code: 'unknown-project', params: {} })
+      const target = await resolveProject(req, null)
+      if (target.failed !== undefined) {
+        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return
       }
+      const project = target.root
       const url = queryOf(req)
       const id = url === null ? '' : String(url.searchParams.get('id') === null ? '' : url.searchParams.get('id'))
       if (id === '') {
@@ -189,11 +203,12 @@ export function registerTaskRoutes(ctx, options) {
 
   async function handleList(req, res) {
     try {
-      const project = await resolveProject(req, null)
-      if (project === null) {
-        sendJson(res, 200, { ok: false, code: 'unknown-project', params: {} })
+      const target = await resolveProject(req, null)
+      if (target.failed !== undefined) {
+        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return
       }
+      const project = target.root
       const url = queryOf(req)
       state.noteProject(project)
       const get = (name) => (url === null ? null : url.searchParams.get(name))

@@ -62,8 +62,10 @@ import {
   archiveYears,
   isArchivable,
   archiveYearOf,
+  projectRefOf,
   readArchive,
   readArchiveIndex,
+  resolveProjectRoot,
   readRoleConfig,
   writeArchive,
   writeArchiveIndex,
@@ -1803,8 +1805,20 @@ export function createApi(ctx, options) {
         }
       }
     }
+    const projectRef = projectRefOf(projectPath)
+    const lastTouched = state.activeProjects(now)[0]
+    const registryConsistent = lastTouched === undefined || lastTouched.id === projectRef.id
     return ok({
       project: projectPath,
+      projectId: projectRef.id,
+      projectRoot: projectRef.root,
+      worktreeRoot: projectRef.worktreeRoot,
+      resolvedFrom: opts.resolvedFrom === undefined ? 'explicit' : opts.resolvedFrom,
+      registryConsistent: registryConsistent,
+      projectWarning:
+        registryConsistent || lastTouched === undefined
+          ? null
+          : 'this board (' + projectRef.root + ') is not the last project the host drove (' + lastTouched.root + '); check that the session and the panel point at the same project',
       version: board.version,
       seq: seq,
       full: full,
@@ -2367,15 +2381,38 @@ export function createApi(ctx, options) {
 
   // ── actions ──────────────────────────────────────────────────────────────
 
+  /**
+   * The one project-resolution rule for the tool and the API: an explicit
+   * `project` argument wins, otherwise the session workspace is walked up to the
+   * nearest git project, otherwise a readable no-project-bound refusal. There is
+   * no process.cwd() or global-hint fallback.
+   */
+  async function resolveIncoming(source, context) {
+    const explicit = typeof source.project === 'string' && source.project.trim().length > 0 ? source.project.trim() : ''
+    if (explicit !== '') return { ok: true, root: resolve(explicit), resolvedFrom: 'explicit' }
+    const sessionRoot = context === undefined || context === null ? null : typeof context.sessionRoot === 'string' ? context.sessionRoot : typeof context.projectPath === 'string' ? context.projectPath : null
+    if (sessionRoot === null) {
+      return failure('no-project-bound', 'No project is bound to this session. Pass project, or open a project from the panel.')
+    }
+    if (state !== null && typeof state.setSessionRoot === 'function') state.setSessionRoot(sessionRoot)
+    const resolved = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: sessionRoot })
+    if (resolved.ok !== true) return resolved
+    return { ok: true, root: resolved.root, resolvedFrom: resolved.resolvedFrom }
+  }
+
   async function perform(action, input, context) {
     const source = input === undefined || input === null ? {} : input
-    const projectPath = projectFrom(source, context)
     if (action === 'openProject') {
       return openProject(source)
     }
-    if (projectPath === null) {
-      return failure('unknown-project', 'no project is known yet; call openProject or run a task tool in a session first')
-    }
+    const incoming = await resolveIncoming(source, context)
+    if (incoming.ok !== true) return incoming
+    const projectPath = incoming.root
+    const actionContext = Object.assign({}, context, { resolvedFrom: incoming.resolvedFrom })
+    return performResolved(action, source, actionContext, projectPath)
+  }
+
+  async function performResolved(action, source, context, projectPath) {
     remember(projectPath)
     const now = clock()
     // Any activity by the assignee renews its lease and file locks, so the

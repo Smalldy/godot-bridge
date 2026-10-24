@@ -142,15 +142,43 @@ export function apply(ctx) {
     autoMerge: true,
   })
 
+  // The project registry is what makes restarts seamless: load it once, before
+  // the timers below can ask which projects to drive.
+  void state.loadRegistry()
+
+  // One in-flight promise per project for the merge sweep, so a slow project
+  // never blocks another and a tick never stacks duplicate work.
+  const mergeInFlight = new Map()
+  function driveProjects() {
+    for (const entry of state.activeProjects()) {
+      if (mergeInFlight.has(entry.id)) continue
+      let pending
+      try {
+        pending = api.autoMergePending(entry.root)
+      } catch (error) {
+        continue
+      }
+      if (pending === undefined || pending === null || typeof pending.then !== 'function') continue
+      mergeInFlight.set(entry.id, true)
+      pending
+        .catch(function () {})
+        .then(function () {
+          mergeInFlight.delete(entry.id)
+        })
+    }
+  }
+
   // An idle WorkAgent is a chance to hand out more work. A reload must not
   // accumulate listeners, so the subscription is an effect.
   ctx.effect(function () {
     if (typeof ctx.on !== 'function') return function () {}
     const off = ctx.on('agent/status', function () {
-      try {
-        const pending = scheduler.kick()
-        if (pending !== undefined && pending !== null && typeof pending.catch === 'function') pending.catch(function () {})
-      } catch (error) {}
+      for (const entry of state.activeProjects()) {
+        try {
+          const pending = scheduler.kick(entry.root)
+          if (pending !== undefined && pending !== null && typeof pending.catch === 'function') pending.catch(function () {})
+        } catch (error) {}
+      }
     })
     return function () {
       if (typeof off === 'function') off()
@@ -162,37 +190,25 @@ export function apply(ctx) {
   // board, and what restarts queued work after a host restart.
   ctx.effect(function () {
     const timer = setInterval(function () {
-      try {
-        const pending = scheduler.kick()
-        if (pending !== undefined && pending !== null && typeof pending.catch === 'function') pending.catch(function () {})
-      } catch (error) {}
+      for (const entry of state.activeProjects()) {
+        try {
+          const pending = scheduler.kick(entry.root)
+          if (pending !== undefined && pending !== null && typeof pending.catch === 'function') pending.catch(function () {})
+        } catch (error) {}
+      }
+      driveProjects()
     }, TICK_MS)
     if (timer !== null && typeof timer.unref === 'function') timer.unref()
     return function () {
       clearInterval(timer)
       scheduler.dispose()
     }
-  }, 'godot-bridge: task center tick')
+  }, 'godot-bridge: task center tick + auto-merge sweep')
 
   // The merge queue is host-driven: every tick, a request whose review was
   // approved and whose test phase passed is merged through the same serial queue
   // the manual action uses. Nothing here depends on a model acting; a failure
   // leaves the request in its recorded state.
-  ctx.effect(function () {
-    const timer = setInterval(function () {
-      const project = state.memory.projectHint
-      if (typeof project !== 'string' || project.length === 0) return
-      try {
-        const pending = api.autoMergePending(project)
-        if (pending !== undefined && pending !== null && typeof pending.catch === 'function') pending.catch(function () {})
-      } catch (error) {}
-    }, TICK_MS)
-    if (timer !== null && typeof timer.unref === 'function') timer.unref()
-    return function () {
-      clearInterval(timer)
-    }
-  }, 'godot-bridge: auto-merge sweep')
-
   // The write end: the model's tool. Guarded so a registration failure costs the
   // tool, not the whole row.
   ctx.effect(function () {
