@@ -110,6 +110,32 @@ export function registerTaskRoutes(ctx, options) {
     return { root: resolved.project.root, resolvedFrom: resolved.resolvedFrom }
   }
 
+  /**
+   * What the SESSION resolves to, independent of any ?project= the panel pins.
+   *
+   * The panel needs this to show an actionable mismatch ("panel: A · session: B →
+   * switch"): without it a hand-pinned path silently splits the GUI from the
+   * project the session (and therefore the scheduler) actually drives, which is
+   * exactly the confusion this route is meant to end. Never throws: a host with no
+   * session workspace simply reports null.
+   */
+  async function sessionProjectOf() {
+    try {
+      const resolved = await state.resolveProject({ explicit: null, sessionRoot: state.memory.sessionRoot })
+      if (resolved === null || resolved === undefined || resolved.ok !== true) return null
+      return resolved.project.root
+    } catch (error) {
+      return null
+    }
+  }
+
+  /** Attach the session resolution to a snapshot-shaped payload. */
+  function withSessionProject(payload, sessionProject) {
+    if (payload === null || typeof payload !== 'object') return payload
+    payload.sessionProject = sessionProject
+    return payload
+  }
+
   async function handleState(req, res) {
     try {
       const target = await resolveProject(req, null)
@@ -123,7 +149,9 @@ export function registerTaskRoutes(ctx, options) {
       const url = queryOf(req)
       const sinceRaw = url === null ? null : url.searchParams.get('since')
       const since = sinceRaw === null || sinceRaw === '' ? null : Number(sinceRaw)
-      sendJson(res, 200, await api.snapshot(project, { full: false, since: Number.isFinite(since) ? since : null, resolvedFrom: target.resolvedFrom }))
+      const snapshot = await api.snapshot(project, { full: false, since: Number.isFinite(since) ? since : null, resolvedFrom: target.resolvedFrom })
+      const sessionProject = target.resolvedFrom === 'session' ? project : await sessionProjectOf()
+      sendJson(res, 200, withSessionProject(snapshot, sessionProject))
     } catch (error) {
       sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
     }
@@ -174,6 +202,11 @@ export function registerTaskRoutes(ctx, options) {
           result.snapshotError = String((error && error.message) || error)
         }
       }
+      // openProject answers with the snapshot itself; the panel renders that
+      // answer, so it needs the session resolution just like /state does.
+      const sessionProject = target.resolvedFrom === 'session' ? project : await sessionProjectOf()
+      if (result.snapshot !== undefined && result.snapshot !== null) withSessionProject(result.snapshot, sessionProject)
+      if (action === 'openProject' && result.ok === true) withSessionProject(result, sessionProject)
       sendJson(res, 200, result)
     } catch (error) {
       sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })

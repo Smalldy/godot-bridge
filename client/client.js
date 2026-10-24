@@ -150,6 +150,15 @@ window.__ModuleLoader__.load({
 				subtitle: '依赖驱动的派发 · 文件锁保护 · 跨会话共享',
 				project: '项目',
 				projectUnknown: '尚未选择项目',
+				projectResolving: '正在解析当前会话的项目…',
+				projectSourceSession: '会话',
+				projectSourceManual: '手动',
+				projectSourceRegistry: '注册表',
+				projectSourceHint: '这个项目路径是从哪里来的',
+				projectMismatch: '面板：{panel} · 当前会话：{session}',
+				projectSwitch: '切换到会话项目',
+				useCurrentProject: '使用当前项目',
+				useCurrentProjectHint: '填入服务端当前解析的项目路径',
 				start: '开始派发',
 				pause: '暂停派发',
 				running: '派发中',
@@ -626,6 +635,15 @@ window.__ModuleLoader__.load({
 				subtitle: 'Dependency-driven dispatch · file locks · shared across sessions',
 				project: 'Project',
 				projectUnknown: 'No project selected',
+				projectResolving: 'Resolving this session’s project…',
+				projectSourceSession: 'Session',
+				projectSourceManual: 'Manual',
+				projectSourceRegistry: 'Registry',
+				projectSourceHint: 'Where this project path came from',
+				projectMismatch: 'Panel: {panel} · Session: {session}',
+				projectSwitch: 'Switch to the session project',
+				useCurrentProject: 'Use current project',
+				useCurrentProjectHint: 'Fill in the project path the host resolves right now',
 				start: 'Start dispatch',
 				pause: 'Pause dispatch',
 				running: 'Dispatching',
@@ -1102,6 +1120,9 @@ window.__ModuleLoader__.load({
 			'.gbt-brand{display:flex;align-items:center;gap:10px;min-width:0}',
 			'.gbt-mark{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:linear-gradient(135deg,#4f7cff,#7a5cff);color:#fff;font-weight:600;font-size:15px;flex:none}',
 			'.gbt-title{margin:0;font-size:15px;font-weight:600;letter-spacing:.01em}',
+			'.gbt-titleline{display:flex;align-items:center;gap:7px;min-width:0}' +
+				'.gbt-projectsource{flex:none;font-size:10px;line-height:1.6;padding:0 6px;border-radius:999px;text-transform:none;letter-spacing:0;background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-secondary);border:0.5px solid var(--dsw-alias-border-l4);cursor:default}' +
+				'.gbt-projectsource[data-project-source="session"]{color:var(--dsw-alias-state-business-primary,#4f7cff);border-color:rgba(79,124,255,.35)}',
 			'.gbt-project{margin:0;font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
 			'.gbt-counts{display:flex;gap:6px;flex-wrap:wrap}',
 			'.gbt-count{display:flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;background:var(--dsw-alias-bg-layer-4);font-size:11px;color:var(--dsw-alias-label-secondary)}',
@@ -1362,7 +1383,9 @@ window.__ModuleLoader__.load({
 			'.gbt-check{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-check input{accent-color:var(--dsw-alias-state-business-primary,#4f7cff)}',
 			'.gbt-banner{margin:10px 18px 0;padding:8px 11px;border-radius:8px;background:rgba(229,72,77,.10);border:0.5px solid rgba(229,72,77,.3);color:#c92a2a;font-size:12px;display:flex;gap:8px;align-items:center}',
-			'.gbt-banner[data-tone="info"]{background:rgba(79,124,255,.10);border-color:rgba(79,124,255,.28);color:#3b5bdb}',
+			'.gbt-banner[data-tone="info"]{background:rgba(79,124,255,.10);border-color:rgba(79,124,255,.28);color:#3b5bdb}' +
+				'.gbt-banner[data-tone="warn"]{background:rgba(245,159,0,.10);border-color:rgba(245,159,0,.32);color:#b26a00}' +
+				'.gbt-banner[data-project-mismatch="true"]{cursor:pointer}',
 			'.gbt-footnote{font-size:10px;color:var(--dsw-alias-label-tertiary);margin:0}',
 			'.gbt-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:500;background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-secondary)}',
 			'.gbt-pill[data-status="running"]{background:rgba(79,124,255,.14);color:#3b5bdb}',
@@ -1565,7 +1588,15 @@ window.__ModuleLoader__.load({
 				.filter(function (part) { return part.length > 0 })
 		}
 
-		function tcRememberedProject() {
+		/**
+		 * The project the human PINNED in this browser (T-90). Empty means "follow
+		 * the host": the panel sends no project at all and the server resolves the
+		 * session workspace, so a fresh browser never asks for a path. Only an
+		 * explicit switch writes this key — the panel no longer records whatever the
+		 * Host happened to answer, which is what turned the session's project into a
+		 * stale manual pin.
+		 */
+		function tcPinnedProject() {
 			try {
 				const value = window.localStorage.getItem(TC_PROJECT_KEY)
 				return typeof value === 'string' && value.length > 0 ? value : null
@@ -1574,12 +1605,23 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		function tcRememberProject(project) {
+		/** Pin a project for this browser (write = bind: the caller also sends openProject). */
+		function tcPinProject(project) {
 			try {
 				if (typeof project === 'string' && project.length > 0) window.localStorage.setItem(TC_PROJECT_KEY, project)
 			} catch (error) {
-				/* storage can be disabled; remembering is a convenience */
+				/* storage can be disabled; pinning is a convenience */
 			}
+		}
+
+		/** Same project, however the two sides spell the path (mirrors projectIdOf). */
+		function tcSameProject(left, right) {
+			if (typeof left !== 'string' || typeof right !== 'string' || left === '' || right === '') return false
+			const normalise = function (value) {
+				const text = String(value).replace(/\\/g, '/').replace(/\/+$/, '')
+				return /^[A-Za-z]:\//.test(text) ? text.toLowerCase() : text
+			}
+			return normalise(left) === normalise(right)
 		}
 
 		const TC_COLUMNS_KEY = 'godotBridge.taskCenter.columns'
@@ -1620,6 +1662,17 @@ window.__ModuleLoader__.load({
 				source: source,
 				message: message === undefined ? '' : message,
 				project: typeof payload.project === 'string' ? payload.project : null,
+				projectRoot: typeof payload.projectRoot === 'string' ? payload.projectRoot : typeof payload.project === 'string' ? payload.project : null,
+				// Where the Host got this project: 'session' (walked up from the session
+				// workspace), 'panel' (this browser pinned it) or 'registry'. The panel
+				// shows it beside the title so "which project is this" is answerable.
+				resolvedFrom: typeof payload.resolvedFrom === 'string' ? payload.resolvedFrom : null,
+				// What the SESSION resolves to, independent of the panel's pin. The
+				// mismatch bar compares it with `project`.
+				sessionProject: typeof payload.sessionProject === 'string' ? payload.sessionProject : null,
+				// The Host's own note when its registry last drove another project; the
+				// source badge shows it as a tooltip instead of a second banner.
+				projectWarning: typeof payload.projectWarning === 'string' ? payload.projectWarning : null,
 				dispatch: payload.dispatch !== undefined && payload.dispatch !== null ? payload.dispatch : { state: 'paused' },
 				counts: payload.counts !== undefined && payload.counts !== null ? payload.counts : {},
 				queue: Array.isArray(payload.queue) ? payload.queue : [],
@@ -1702,9 +1755,12 @@ window.__ModuleLoader__.load({
 		 * fabricate work.
 		 */
 		function createTaskStore(t) {
+			// The first paint shows the pinned project when there is one; with an empty
+			// pin it shows nothing yet and the first /state answers with the project the
+			// session resolves to (no path to type, T-90).
 			let snapshot = tcSnapshot({
 				ok: false,
-				project: tcRememberedProject(),
+				project: tcPinnedProject(),
 				dispatch: { state: 'paused' },
 				tasks: [],
 				counts: {},
@@ -1734,14 +1790,17 @@ window.__ModuleLoader__.load({
 
 			async function load() {
 				if (loading !== null) return loading
-				const remembered = tcRememberedProject()
-				let url = remembered === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(remembered)
+				// No pin means NO ?project=: the Host resolves the session workspace and
+				// answers with the project, which is the whole point of T-90.
+				const pinned = tcPinnedProject()
+				let url = pinned === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(pinned)
 				if (snapshot.seq !== null && snapshot.seq !== undefined) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'since=' + String(snapshot.seq)
 				loading = (async function () {
 					try {
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
 						if (payload && payload.ok === true && (Array.isArray(payload.tasks) || payload.full === false)) {
-							if (typeof payload.project === 'string') tcRememberProject(payload.project)
+							// The Host's answer is NOT written to localStorage: only an explicit
+							// switch pins a project, so "follow the session" stays the default.
 							// A routine poll keeps the outcome of the user's last action until
 							// the next action replaces it; only the board data is refreshed.
 							const next = tcMergeSnapshot(snapshot, payload)
@@ -1777,7 +1836,7 @@ window.__ModuleLoader__.load({
 				const opts = options === undefined || options === null ? {} : options
 				const quiet = opts.quiet === true
 				const payloadBody = Object.assign({ action: action }, body === undefined ? {} : body)
-				const project = tcRememberedProject()
+				const project = tcPinnedProject()
 				if (project !== null) payloadBody.project = project
 				const token = { action: action, id: body !== undefined && body !== null && (body.id !== undefined ? body.id : body.requestId !== undefined ? body.requestId : body.taskId !== undefined ? body.taskId : body.path !== undefined ? body.path : null) }
 				setBusy(token)
@@ -1798,7 +1857,6 @@ window.__ModuleLoader__.load({
 							}
 							emit(next)
 						}
-						if (host && typeof host.project === 'string') tcRememberProject(host.project)
 						return { ok: true, payload: payload }
 					}
 					if (!quiet) {
@@ -1817,7 +1875,7 @@ window.__ModuleLoader__.load({
 			async function listTasks(query) {
 				const opts = query === undefined || query === null ? {} : query
 				const params = []
-				const project = tcRememberedProject()
+				const project = tcPinnedProject()
 				if (project !== null) params.push('project=' + encodeURIComponent(project))
 				params.push('status=' + encodeURIComponent(opts.status === undefined ? 'done' : String(opts.status)))
 				if (opts.archived === true) params.push('archived=1')
@@ -1847,7 +1905,7 @@ window.__ModuleLoader__.load({
 				if (detailInFlight.has(id)) return
 				detailInFlight.add(id)
 				try {
-					const project = tcRememberedProject()
+					const project = tcPinnedProject()
 					const url = TC_TASK_URL + '?id=' + encodeURIComponent(id) + (project === null ? '' : '&project=' + encodeURIComponent(project))
 					const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
 					if (payload && payload.ok === true && payload.task !== undefined && payload.task !== null) {
@@ -1860,6 +1918,23 @@ window.__ModuleLoader__.load({
 				} finally {
 					detailInFlight.delete(id)
 				}
+			}
+
+			/**
+			 * Switch the panel's project (T-90). "Write is bind": the browser pin and
+			 * the HOST binding move together — the pin alone would leave the panel on
+			 * A while the scheduler keeps driving B. openProject proves the directory
+			 * (and, since T-86, writes the project registry), so a failed switch pins
+			 * nothing.
+			 */
+			async function switchProject(path) {
+				const next = typeof path === 'string' ? path.trim() : ''
+				if (next === '') return { ok: false, payload: { ok: false, code: 'missing-path' } }
+				const result = await send('openProject', { path: next })
+				if (result.ok !== true) return result
+				tcPinProject(next)
+				emit(Object.assign({}, snapshot, { project: next, projectRoot: next, resolvedFrom: 'panel' }))
+				return result
 			}
 
 			function startPolling(ms) {
@@ -1886,6 +1961,7 @@ window.__ModuleLoader__.load({
 				},
 				load: load,
 				send: send,
+				switchProject: switchProject,
 				listTasks: listTasks,
 				loadDetail: loadDetail,
 				startPolling: startPolling,
@@ -4457,14 +4533,30 @@ window.__ModuleLoader__.load({
 				const t = props.t
 				const input = React.useRef(null)
 				const [error, setError] = React.useState('')
+				// The project the Host resolves right now (the session project when this
+				// browser has not pinned one). It is what "use current project" fills in,
+				// so returning to this project never needs a hand-typed path (T-90).
+				const hostProject = typeof props.hostProject === 'string' && props.hostProject !== '' ? props.hostProject : null
+				const draft = projectFormState.value !== null ? projectFormState.value : typeof props.project === 'string' ? props.project : hostProject === null ? '' : hostProject
+				function useCurrent() {
+					if (hostProject === null) return
+					projectFormState.value = hostProject
+					setError('')
+					if (input.current !== null && input.current !== undefined) input.current.value = hostProject
+				}
 				function open() {
-					const value = input.current === null ? '' : String(input.current.value || '').trim()
+					const typed = input.current === null || input.current === undefined ? null : String(input.current.value || '').trim()
+					// Nothing typed: the prefilled draft (Host project or the pinned one) is
+					// the value — "open project" on the dialog's own suggestion is valid.
+					const value = typed !== null && typed !== '' ? typed : typeof draft === 'string' ? draft.trim() : ''
 					if (value === '') {
 						setError(t('projectRequired'))
 						return
 					}
-					void store.send('openProject', { path: value }).then(function (result) {
+					// Write = bind: the pin and the Host's openProject move together.
+					void store.switchProject(value).then(function (result) {
 						if (result.ok === true) {
+							projectFormState.value = null
 							props.onClose()
 							return
 						}
@@ -4478,13 +4570,49 @@ window.__ModuleLoader__.load({
 					h(
 						'div',
 						{ className: 'gbt-form' },
-						h('div', { className: 'gbt-field' }, h('label', null, t('project')), h('input', { className: 'gbt-input', ref: input, placeholder: t('projectPlaceholder'), defaultValue: props.project || '' })),
+						h('div', { className: 'gbt-field' }, h('label', null, t('project')), h('input', { className: 'gbt-input', ref: input, placeholder: t('projectPlaceholder'), defaultValue: draft, 'data-project-input': 'true' })),
+						hostProject === null ? null : h('p', { className: 'gbt-footnote', 'data-host-project': hostProject }, t('useCurrentProjectHint') + ' · ' + hostProject),
 						error === '' ? null : h('p', { className: 'gbt-footnote' }, error),
 						h('div', { className: 'gbt-actions' },
+							h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'use-current-project', title: t('useCurrentProjectHint'), disabled: hostProject === null, onClick: useCurrent }, '⌖ ' + t('useCurrentProject')),
 							h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: open }, t('openProject')),
 							h('button', { type: 'button', className: 'gbt-btn', onClick: props.onClose }, t('cancel'))),
 					),
 				)
+			}
+
+			/**
+			 * Where the Host got the project on screen (T-90): 'session' means it came
+			 * from the session workspace walk-up, 'manual' from a path this browser or
+			 * a caller pinned, 'registry' from the project registry.
+			 */
+			function projectSourceKey(snapshot) {
+				if (snapshot === null || snapshot === undefined) return null
+				const from = snapshot.resolvedFrom
+				if (from === 'session') return 'session'
+				if (from === 'registry') return 'registry'
+				if (from === 'panel' || from === 'explicit' || from === 'manual') return 'manual'
+				return null
+			}
+
+			function projectSourceLabel(key, t) {
+				if (key === 'session') return t('projectSourceSession')
+				if (key === 'registry') return t('projectSourceRegistry')
+				if (key === 'manual') return t('projectSourceManual')
+				return null
+			}
+
+			/**
+			 * The session project when it is NOT the one the panel shows. A hand-pinned
+			 * path would otherwise silently split the GUI from the project the session
+			 * (and the scheduler) drives — the exact split T-90 exists to surface.
+			 */
+			function projectMismatchOf(snapshot) {
+				if (snapshot === null || snapshot === undefined) return null
+				const shown = typeof snapshot.projectRoot === 'string' && snapshot.projectRoot !== '' ? snapshot.projectRoot : snapshot.project
+				const session = typeof snapshot.sessionProject === 'string' && snapshot.sessionProject !== '' ? snapshot.sessionProject : null
+				if (typeof shown !== 'string' || shown === '' || session === null) return null
+				return tcSameProject(shown, session) ? null : session
 			}
 
 			// The main slot unmounts when the user switches to the chat panel. React
@@ -4492,6 +4620,9 @@ window.__ModuleLoader__.load({
 			// the views closure (one per plugin activation) and carries the view and
 			// selected task across that remount. Modals are deliberately not here.
 			const panelState = { view: 'board', selectedId: null, doneAllOpen: false, doneAllArchived: false }
+			// The project dialog's draft: "use current project" fills this so a re-render
+			// (or a reopened dialog) keeps the value the Host resolved.
+			const projectFormState = { value: null }
 			// The drawer's list state lives here (not only in React state) so the
 			// fetches that resolve between renders are visible to the next one; a
 			// state counter still drives the real React re-render.
@@ -4539,7 +4670,17 @@ window.__ModuleLoader__.load({
 				// Rendering tests may open the settings modal; the production slot passes no props.
 				const initialSettingsOpen = props !== undefined && props !== null && props.initialSettingsOpen === true
 				const [settingsOpen, setSettingsOpen] = React.useState(initialSettingsOpen)
-				const [projectOpen, setProjectOpen] = React.useState(false)
+				// Rendering tests may open the project dialog; the production slot passes no props.
+				const initialProjectOpen = props !== undefined && props !== null && props.initialProjectOpen === true
+				const [projectOpen, setProjectOpen] = React.useState(initialProjectOpen)
+				function openProjectDialog() {
+					projectFormState.value = null
+					setProjectOpen(true)
+				}
+				/** Switch to the session project: pin + openProject on the Host (T-90). */
+				function switchToProject(path) {
+					void store.switchProject(path)
+				}
 
 				React.useEffect(function () {
 					void store.load()
@@ -4603,7 +4744,18 @@ window.__ModuleLoader__.load({
 						h(
 							'div',
 							null,
-							h('h1', { className: 'gbt-title' }, t('title')),
+							h(
+								'div',
+								{ className: 'gbt-titleline' },
+								h('h1', { className: 'gbt-title' }, t('title')),
+								projectSourceLabel(projectSourceKey(snapshot), t) === null
+									? null
+									: h(
+											'span',
+											{ className: 'gbt-projectsource', 'data-project-source': projectSourceKey(snapshot), title: snapshot.projectWarning === null ? t('projectSourceHint') : snapshot.projectWarning },
+											projectSourceLabel(projectSourceKey(snapshot), t),
+										),
+							),
 							h('p', { className: 'gbt-project', title: snapshot.project || '' }, snapshot.project === null ? t('projectUnknown') : snapshot.project),
 						),
 					),
@@ -4633,7 +4785,7 @@ window.__ModuleLoader__.load({
 						h('button', { type: 'button', className: 'gbt-btn', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
 						snapshot.project === null || snapshot.project === undefined
 							? null
-							: h('button', { type: 'button', className: 'gbt-btn', onClick: function () { setProjectOpen(true) } }, '⌂ ' + t('project')),
+							: h('button', { type: 'button', className: 'gbt-btn', onClick: function () { openProjectDialog() } }, '⌂ ' + t('project')),
 						h('button', { type: 'button', className: 'gbt-btn', onClick: function () { setSettingsOpen(true) } }, '⚙ ' + t('settings')),
 					),
 				)
@@ -4654,6 +4806,55 @@ window.__ModuleLoader__.load({
 						: null,
 					h('span', { style: { marginLeft: 'auto' } }, t('subtitle')),
 				)
+
+				// The actionable split: the panel is pinned to A while the session resolves
+				// B. One click pins B AND opens it on the Host, so the GUI and the
+				// scheduler agree again (T-90).
+				const mismatchProject = projectMismatchOf(snapshot)
+				const projectMismatchBar =
+					mismatchProject === null
+						? null
+						: h(
+								'div',
+								{
+									className: 'gbt-banner',
+									'data-tone': 'warn',
+									'data-project-mismatch': 'true',
+									role: 'button',
+									tabIndex: 0,
+									onClick: function () { switchToProject(mismatchProject) },
+									onKeyDown: function (event) {
+										if (event.key === 'Enter' || event.key === ' ') {
+											event.preventDefault()
+											switchToProject(mismatchProject)
+										}
+									},
+								},
+								h(
+									'span',
+									{ style: { flex: '1', minWidth: '220px' } },
+									t('projectMismatch').split('{panel}').join(String(snapshot.project)).split('{session}').join(mismatchProject),
+								),
+								h(
+									'div',
+									{ className: 'gbt-actions' },
+									h(
+										'button',
+										{
+											type: 'button',
+											className: 'gbt-btn',
+											'data-variant': 'primary',
+											'data-action': 'switch-to-session-project',
+											disabled: busy !== null,
+											onClick: function (event) {
+												if (event !== undefined && event !== null && typeof event.stopPropagation === 'function') event.stopPropagation()
+												switchToProject(mismatchProject)
+											},
+										},
+										t('projectSwitch'),
+									),
+								),
+							)
 
 				const busyBar = busy === null
 					? null
@@ -4760,7 +4961,7 @@ window.__ModuleLoader__.load({
 						)
 					}),
 					snapshot.project === null || snapshot.project === undefined
-						? h('button', { type: 'button', className: 'gbt-tab', onClick: function () { setProjectOpen(true) } }, '+ ' + t('openProject'))
+						? h('button', { type: 'button', className: 'gbt-tab', onClick: function () { openProjectDialog() } }, '+ ' + t('openProject'))
 						: null,
 				)
 
@@ -4769,6 +4970,7 @@ window.__ModuleLoader__.load({
 					{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center' },
 					header,
 					statusline,
+					projectMismatchBar,
 					busyBar,
 					banner,
 					requestBanner,
@@ -4776,8 +4978,14 @@ window.__ModuleLoader__.load({
 						? h(
 								'div',
 								{ className: 'gbt-view' },
-								h('p', { className: 'gbt-footnote' }, t('unknownProjectHint')),
-								h(ProjectForm, { t: t, project: snapshot.project, onClose: function () { setProjectOpen(false) } }),
+								// While the first /state is in flight the Host is resolving the session
+								// project: show that instead of flashing an "open project" form.
+								snapshot.source === 'loading'
+									? h('p', { className: 'gbt-footnote', 'data-project-resolving': 'true' }, t('projectResolving'))
+									: h('p', { className: 'gbt-footnote' }, t('unknownProjectHint')),
+								snapshot.source === 'loading'
+									? null
+									: h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }),
 							)
 						: null,
 					snapshot.project === null || snapshot.project === undefined
@@ -4816,7 +5024,7 @@ window.__ModuleLoader__.load({
 						onSaved: function () { setEditing(null) },
 					}),
 					settingsOpen ? h(SettingsForm, { t: t, dispatch: dispatch, onClose: function () { setSettingsOpen(false) } }) : null,
-					projectOpen ? h(ProjectForm, { t: t, project: snapshot.project, onClose: function () { setProjectOpen(false) } }) : null,
+					projectOpen ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,
 				)
 			}
 
