@@ -145,9 +145,40 @@ export function createFakeGit(options) {
     calls.push({ name: name, detail: detail })
   }
   let lastRoot = opts.project === undefined ? null : opts.project
+  const fakeStaged = []
   return {
     calls: calls,
     async raw(root, args) {
+      if (args[0] === 'add') {
+        if (opts.nothingToCommit === true) return { ok: true, code: 0, stdout: '', stderr: '' }
+        if (args[1] === '-u') {
+          if (fakeStaged.length === 0) fakeStaged.push('scripts/a.gd')
+        } else if (args.indexOf('--') >= 0) {
+          for (const path of args.slice(args.indexOf('--') + 1)) if (fakeStaged.indexOf(path) < 0) fakeStaged.push(path)
+        }
+        return { ok: true, code: 0, stdout: '', stderr: '' }
+      }
+      if (args[0] === 'diff' && args[1] === '--cached') {
+        return { ok: true, code: 0, stdout: fakeStaged.length === 0 ? '' : fakeStaged.join('\n') + '\n', stderr: '' }
+      }
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+        return { ok: true, code: 0, stdout: String(opts.commitHash === undefined ? 'commit-sha' : opts.commitHash) + '\n', stderr: '' }
+      }
+      if (args[0] === 'ls-files') return { ok: true, code: 0, stdout: '', stderr: '' }
+      if (args[0] === 'reset') {
+        const path = args[args.length - 1]
+        const at = fakeStaged.indexOf(path)
+        if (at >= 0) fakeStaged.splice(at, 1)
+        return { ok: true, code: 0, stdout: '', stderr: '' }
+      }
+      if (args[0] === 'status') return { ok: true, code: 0, stdout: '', stderr: '' }
+      if (args[0] === 'commit') {
+        if (opts.commitFails === true) return { ok: false, code: 1, stdout: '', stderr: 'fatal: commit refused' }
+        if (opts.commit !== undefined && opts.commit !== null) {
+          return { ok: false, code: opts.commit.code === undefined ? 1 : opts.commit.code, stdout: opts.commit.stdout || '', stderr: opts.commit.stderr || '' }
+        }
+        return { ok: true, code: 0, stdout: '', stderr: '' }
+      }
       record('raw', args)
       lastRoot = root
       if (args[0] === 'rev-parse' && args[1] === '--git-path') {

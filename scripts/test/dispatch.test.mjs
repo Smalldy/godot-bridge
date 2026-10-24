@@ -830,13 +830,33 @@ async function submitAndMerge(rig, id, evidence) {
 // test can assert the exact command and cwd without starting git.
 function fakeRunner(replies) {
   const calls = []
+  const staged = []
+  let committed = false
   const run = (args, cwd) => {
     calls.push({ args: args.slice(), cwd: cwd })
     const key = args.join(' ')
     if (replies !== undefined && replies[key] !== undefined) return replies[key](args, cwd)
+    // T-101: enough staging semantics for the scoped submit commit.
+    if (key === 'add -u') {
+      if (staged.length === 0) staged.push('scripts/a.gd')
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (args[0] === 'add' && args.indexOf('--') >= 0) {
+      for (const path of args.slice(args.indexOf('--') + 1)) if (staged.indexOf(path) < 0) staged.push(path)
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (key === 'diff --cached --name-only') return { code: 0, stdout: staged.length === 0 ? '' : staged.join('\n') + '\n', stderr: '' }
+    if (key === 'ls-files --stage -z') return { code: 0, stdout: '', stderr: '' }
+    if (args[0] === 'status' && args[1] === '--porcelain') return { code: 0, stdout: '', stderr: '' }
+    if (args[0] === 'reset') return { code: 0, stdout: '', stderr: '' }
+    if (args[0] === 'commit') {
+      committed = true
+      return { code: 0, stdout: '', stderr: '' }
+    }
     if (key === 'rev-parse --is-inside-work-tree') return { code: 0, stdout: 'true\n', stderr: '' }
     if (key === 'status --porcelain') return { code: 0, stdout: '', stderr: '' }
-    if (key === 'rev-parse HEAD') return { code: 0, stdout: 'base-sha\n', stderr: '' }
+    // T-101: a real commit moves HEAD; before the scoped commit it stays base-sha.
+    if (key === 'rev-parse HEAD') return { code: 0, stdout: (committed ? 'commit-sha' : 'base-sha') + '\n', stderr: '' }
     if (key === 'branch --show-current') return { code: 0, stdout: 'main\n', stderr: '' }
     return { code: 0, stdout: '', stderr: '' }
   }
