@@ -86,6 +86,8 @@ export function normaliseProjectRegistry(value) {
           root: entry.root,
           lastSeenAt: typeof entry.lastSeenAt === 'string' ? entry.lastSeenAt : new Date(0).toISOString(),
           lastSessionId: typeof entry.lastSessionId === 'string' ? entry.lastSessionId : null,
+          worktreeRoot: typeof entry.worktreeRoot === 'string' && entry.worktreeRoot.length > 0 ? entry.worktreeRoot : null,
+          preflight: entry.preflight !== undefined && entry.preflight !== null && typeof entry.preflight === 'object' ? entry.preflight : null,
         })
       }
     }

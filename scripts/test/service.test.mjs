@@ -481,8 +481,8 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   )
   const worktree = setDispatch(board, { worktree: { enabled: true, root: '/tmp/wt' } }, T0, '@user')
   check(
-    'dispatch settings normalise the worktree root and drop enabled',
-    worktree.ok === true && worktree.dispatch.worktree.root === '.worktrees' && worktree.dispatch.worktree.enabled === undefined,
+    'dispatch settings keep an absolute worktree root and drop enabled',
+    worktree.ok === true && worktree.dispatch.worktree.root === '/tmp/wt' && worktree.dispatch.worktree.enabled === undefined,
     JSON.stringify(worktree.dispatch && worktree.dispatch.worktree),
   )
   check('dispatch no longer carries a testing switch', board.dispatch.testing === undefined, JSON.stringify(board.dispatch))

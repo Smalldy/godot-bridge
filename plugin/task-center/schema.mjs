@@ -538,8 +538,12 @@ export function normaliseWorktreeRoot(raw) {
   if (typeof raw !== 'string') return fallback
   const text = raw.trim()
   if (text === '' || text.indexOf('\u0000') >= 0) return fallback
-  // POSIX-absolute, Windows drive-absolute or UNC: none is project-relative.
-  if (text.startsWith('/') || text.startsWith('\\') || /^[a-zA-Z]:/.test(text)) return fallback
+  // Absolute roots are allowed only because the readiness gate validates them;
+  // the dispatcher resolves them outside the project.
+  if (text.startsWith('/') || text.startsWith('\\') || /^[a-zA-Z]:/.test(text)) {
+    if (text.indexOf('..') >= 0) return fallback
+    return text
+  }
   const segments = []
   for (const segment of text.split(/[\\/]+/)) {
     if (segment === '' || segment === '.') continue
@@ -649,6 +653,9 @@ export function normaliseDispatch(raw) {
     maxAttempts: clamp(source.maxAttempts, DISPATCH_LIMITS.maxAttempts, DISPATCH_DEFAULTS.maxAttempts),
     defaultTarget: typeof source.defaultTarget === 'string' && source.defaultTarget.trim() !== '' ? source.defaultTarget.trim() : null,
     request: normaliseRequest(source.request),
+    // The readiness gate writes the missing items here so the panel can say what
+    // blocked dispatch; a successful gate clears it.
+    error: typeof source.error === 'string' && source.error !== '' ? source.error : null,
     worktree: normaliseWorktree(source.worktree),
   }
 }

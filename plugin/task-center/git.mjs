@@ -510,8 +510,37 @@ export function createGit(options) {
     return ok({ onto: target.name })
   }
 
+  /** Run a raw git command in the project (preflight probes use this). */
+  async function raw(root, args) {
+    const base = await rootOf(root)
+    if (base.ok !== true) return { ok: false, code: 'bad-root', message: base.message }
+    const result = await exec(args, base.path)
+    return { ok: result.code === 0, code: result.code, stdout: result.stdout, stderr: result.stderr }
+  }
+
+  /** The path of a git-internal file, resolved by git itself. */
+  async function gitPath(root, name) {
+    const result = await raw(root, ['rev-parse', '--git-path', name])
+    if (result.ok !== true) return failed(result, 'git-path-failed', 'git rev-parse --git-path failed')
+    return ok({ path: String(result.stdout).trim() })
+  }
+
+  /** Which of the given paths git treats as ignored. */
+  async function checkIgnore(root, paths) {
+    const list = Array.isArray(paths) ? paths.filter((entry) => typeof entry === 'string' && entry.length > 0) : []
+    if (list.length === 0) return ok({ ignored: [], notIgnored: [] })
+    const result = await raw(root, ['check-ignore', '--', ...list])
+    // Exit 1 means "none ignored"; that is not a failure of the probe.
+    if (result.ok !== true && result.code !== 1) return failed(result, 'check-ignore-failed', 'git check-ignore failed')
+    const ignored = String(result.stdout).split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0)
+    return ok({ ignored: ignored, notIgnored: list.filter((entry) => ignored.indexOf(entry) < 0) })
+  }
+
   return {
     isRepo: isRepo,
+    raw: raw,
+    gitPath: gitPath,
+    checkIgnore: checkIgnore,
     head: head,
     currentBranch: currentBranch,
     isClean: isClean,
