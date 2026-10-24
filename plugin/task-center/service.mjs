@@ -505,6 +505,10 @@ export function claimTask(board, id, worker, now) {
     via: adopted === null ? (worker.via === undefined ? null : String(worker.via)) : 'adopt',
     error: null,
     host: worker.host === undefined || worker.host === null ? null : String(worker.host),
+    // T-97: who dispatched this card and for which project/team, so history and
+    // the panel can prove it never crossed sessions.
+    lead: worker.lead === undefined || worker.lead === null ? null : String(worker.lead),
+    project: worker.project === undefined || worker.project === null ? null : String(worker.project),
     keep: worktree.keep === true,
   }
   touch(target, now)
@@ -516,6 +520,8 @@ export function claimTask(board, id, worker, now) {
     to: 'running',
     note:
       'dispatched to ' + target.assignee.name + (target.attempts > 1 ? ' (attempt ' + String(target.attempts) + ')' : '') +
+      (worker.lead === undefined || worker.lead === null ? '' : ' under Lead ' + String(worker.lead)) +
+      (worker.project === undefined || worker.project === null ? '' : ' for ' + String(worker.project)) +
       (adopted === null
         ? ''
         : ' adopting ' + String(adopted.branch) +

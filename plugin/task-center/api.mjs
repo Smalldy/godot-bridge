@@ -3005,9 +3005,19 @@ export function createApi(ctx, options) {
         if (checkedTarget.ok !== true) return checkedTarget
         built.input.target = checkedTarget.target
       }
+      const owner = sessionIdOf(context)
       const result = await mutate(
         projectPath,
-        (board) => model.createTask(board, built.input, clock(), context.by),
+        (board) => {
+          const createdBoard = model.createTask(board, built.input, clock(), context.by)
+          if (createdBoard.ok !== true || owner === null) return createdBoard
+          // T-97: remember WHICH session created the card in the same write, so
+          // dispatch only offers it to that session's team.
+          const createdId = createdBoard.events.length === 0 ? null : createdBoard.events[0].id
+          if (createdId === null) return createdBoard
+          const tasks = createdBoard.board.tasks.map((entry) => (String(entry.id) === String(createdId) ? Object.assign({}, entry, { ownerSession: owner }) : entry))
+          return { ok: true, board: Object.assign({}, createdBoard.board, { tasks: tasks }), events: createdBoard.events }
+        },
         context,
       )
       if (result.ok !== true) return result

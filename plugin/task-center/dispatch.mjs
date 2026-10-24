@@ -367,6 +367,22 @@ export function servicesFor(ctx) {
   return { agents: get('agents'), agentTeams: get('agentTeams') }
 }
 
+/** The session this profile belongs to, if the host can name it. */
+export function sessionIdOfContext(ctx) {
+  if (ctx === undefined || ctx === null) return null
+  const agent = ctx.agent !== undefined && ctx.agent !== null ? ctx.agent : null
+  const candidates = [
+    agent === null ? null : agent.id,
+    agent === null ? null : agent.session,
+    ctx.sessionId,
+    ctx.session,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.length > 0) return candidate
+  }
+  return null
+}
+
 /** The Lead of the team this profile belongs to. tryMembership answers undefined
  * for a non-Team agent instead of throwing, which is a normal outcome. */
 export function resolveLead(ctx) {
@@ -445,7 +461,14 @@ export function pickTarget(ctx, options) {
   const teammates = members.filter(
     (member) => member.role === 'teammate' && member.status !== 'failed' && member.name !== MERGER_NAME && !isRoleName(member.name),
   )
-  const idle = teammates.filter((member) => member.status === 'inactive' && !reserved.has(member.name))
+  const projectKey = typeof opts.projectKey === 'string' && opts.projectKey.length > 0 ? opts.projectKey : null
+  const idle = teammates.filter((member) => {
+    if (member.status !== 'inactive' || reserved.has(member.name)) return false
+    if (projectKey === null) return true
+    const remembered = memberProjectOf(ctx, member.name)
+    // A member created for another project is NOT idle for this one.
+    return remembered === null || remembered.key === projectKey
+  })
   if (idle.length > 0) {
     return { ok: true, lead: lead, spawn: false, target: { name: idle[0].name, id: idle[0].id, status: idle[0].status }, members: members }
   }
@@ -536,6 +559,7 @@ export function workerPool(ctx, board, options) {
     currentTask: null,
   }
   report.kinds.lead = 1
+  report.session = sessionIdOfContext(ctx)
   let roster = []
   try {
     roster = agentTeams.listMembers(lead)
@@ -586,10 +610,15 @@ export function workerPool(ctx, board, options) {
       return sessionMatch || nameMatch
     })[0]
     const name = member.name === undefined || member.name === null ? null : String(member.name)
+    const remembered = name === null ? null : memberProjectOf(ctx, name)
     report.members.push({
       id: String(member.id),
       name: name,
       kind: kind,
+      // T-97: which project (and therefore which session's team) this executor
+      // was dispatched for, so the panel can show cross-project borrowing.
+      project: remembered === null ? null : remembered.key,
+      projectRoot: remembered === null ? null : remembered.root,
       description: typeof member.description === 'string' && member.description !== '' ? member.description : descriptions[kind],
       session: member.id === undefined || member.id === null ? (member.session === undefined ? null : String(member.session)) : String(member.id),
       status: status,
@@ -2199,6 +2228,9 @@ export function createDispatcher(ctx, options) {
   const state = opts.state
   const projectOf = typeof opts.projectPath === 'function' ? opts.projectPath : () => state.memory.projectHint
   const boot = bootId()
+  // T-97: cards carry the session that owns them; this dispatcher only hands work
+  // to its own session's team. Without an identity it refuses to borrow.
+  const selfSessionId = typeof opts.sessionId === 'string' && opts.sessionId.length > 0 ? opts.sessionId : sessionIdOfContext(ctx)
   const spawnAllowed = opts.allowSpawn !== false
   // The host-side role provisioner. Null means this caller did not opt into
   // role provisioning (older tests / direct API users); dispatch still works.
@@ -3030,6 +3062,27 @@ export function createDispatcher(ctx, options) {
     }
     return { reminded: reminded, blocked: blocked, board: nextBoard }
   }
+  /** Record why a card could not be handed to its own team, without borrowing. */
+  async function markExecutorMissing(project, taskId, reason, detail) {
+    try {
+      const applied = await state.apply(
+        project,
+        (board) => {
+          const tasks = board.tasks.map((entry) =>
+            String(entry.id) === String(taskId)
+              ? Object.assign({}, entry, { waitingReason: reason, waitingDetail: detail === undefined ? null : String(detail) })
+              : entry,
+          )
+          return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+        },
+        writePolicyFor(project),
+      )
+      return applied
+    } catch (error) {
+      return null
+    }
+  }
+
   async function tick(projectPath) {
     const project = typeof projectPath === 'string' && projectPath.length > 0 ? projectPath : projectOf()
     if (typeof project !== 'string' || project.length === 0) return { ok: true, skipped: 'unknown-project' }
@@ -3093,6 +3146,17 @@ export function createDispatcher(ctx, options) {
         // dispatched while the previous holder is still alive, no matter which
         // pass requeued it. A liveness-capped handover is the single exception —
         // that holder was explicitly told to stop.
+        // T-97: a card belongs to the session that created it. This dispatcher
+        // serves ONE session; anything else is refused, never handed to its team.
+        const ownerSession = typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
+        // With no session identity (legacy profile) the dispatcher keeps serving
+        // every card; with one, it serves strictly its own.
+        if (ownerSession !== null && selfSessionId !== null && ownerSession !== selfSessionId) {
+          // Not ours: leave the card untouched for the dispatcher that owns it.
+          const detail = 'task belongs to session ' + ownerSession + (selfSessionId === null ? '; this dispatcher has no session identity' : '; this dispatcher serves ' + selfSessionId)
+          results.push({ id: task.id, skipped: 'other-session', message: detail })
+          continue
+        }
         if (task.dispatch !== null && task.dispatch.status === 'lease-expired' && task.dispatch.error !== TASK_LEASE_CAP_ERROR) {
           const previous = memberLiveness({ name: task.dispatch.target, session: task.dispatch.targetId })
           if (previous.alive === true) {
@@ -3107,13 +3171,28 @@ export function createDispatcher(ctx, options) {
             continue
           }
         }
+        const projectKey = projectSlotKey(project)
         const picked = pickTarget(ctx, {
           reserved: reserved,
           spawn: dispatch.allowSpawn === true && spawnAllowed,
           maxWorkAgents: dispatch.maxWorkAgents,
           name: workAgentName(task.id, model.attemptSlot(task)),
+          projectKey: projectKey,
         })
         if (picked.ok !== true) {
+          const reason =
+            picked.code === 'no-lead' || picked.code === 'no-team-service' || picked.code === 'roster-unreadable'
+              ? 'no-lead-for-project'
+              : picked.code === 'no-teammates'
+                ? 'no-roster'
+                : null
+          if (reason !== null && ownerSession !== null) {
+            // Only a session-owned card records this reason; legacy/ownerless
+            // cards keep the historical "stays pending, no waiting reason".
+            await markExecutorMissing(project, task.id, reason, picked.message)
+            results.push({ id: task.id, skipped: reason, message: picked.message })
+            break
+          }
           results.push({ id: task.id, skipped: picked.code, message: picked.message })
           break
         }
@@ -3193,6 +3272,8 @@ export function createDispatcher(ctx, options) {
                 session: picked.target.id,
                 via: picked.spawn === true ? 'spawn' : 'message',
                 host: boot,
+                lead: picked.lead !== undefined && picked.lead !== null && picked.lead.name !== undefined ? String(picked.lead.name) : null,
+                project: project,
                 worktree: worktree,
                 adopt:
                   worktree.adopted === true
@@ -3213,6 +3294,19 @@ export function createDispatcher(ctx, options) {
           continue
         }
         current = claimed.board
+        rememberMemberProject(ctx, picked.target.name, project)
+        // Claimed: the waiting marker (if any) no longer applies.
+        const cleared = await state.apply(
+          project,
+          (board) => {
+            const tasks = board.tasks.map((entry) =>
+              String(entry.id) === String(task.id) ? Object.assign({}, entry, { waitingReason: null, waitingDetail: null }) : entry,
+            )
+            return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+          },
+          writePolicyFor(project),
+        )
+        if (cleared.failed === null) current = cleared.board
         if (worktree.adopted === true) {
           emit('attempt-adopt', 'host', {
             taskId: task.id,
