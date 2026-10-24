@@ -5971,6 +5971,47 @@ rig.scheduler.dispose()
   }
 }
 
+
+// ── T-109: /state reports the Team inventory the plugin actually sees ────────
+{
+  const team = createTeam({
+    roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-other', name: 'root-of-other-session', role: 'teammate', status: 'inactive' },
+    ],
+  })
+  const rig = createRig({
+    allowSpawn: false,
+    team: team,
+    agents: { list: () => [{ id: 'session-lead', name: 'lead' }, { id: 'session-other', name: 'root-of-other-session' }] },
+  })
+  const surface = install(rig)
+  async function http(url) {
+    const res = response()
+    await surface.byPath.get(url.split('?')[0]).handler(request(url), res)
+    return res.json()
+  }
+  const state = await http(STATE_PATH + '?session=test-session')
+  check(
+    'T-109 /state exposes the Team inventory: scanned agents, non-leads, Leads',
+    state.ok === true &&
+      state.teams !== undefined &&
+      state.teams.available === true &&
+      state.teams.scanned === 2 &&
+      state.teams.nonLeads === 1 &&
+      Array.isArray(state.teams.leads) &&
+      state.teams.leads.length === 1,
+    JSON.stringify(state.teams),
+  )
+  check(
+    'T-109 each reported Lead carries its name, session and roster size',
+    state.teams.leads[0].name === 'lead' && state.teams.leads[0].session === 'session-lead' && state.teams.leads[0].members === 2,
+    JSON.stringify(state.teams.leads[0]),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
 // ── T-97: a card is dispatched only to its own session/project team ──
 {
   const { createFakeGit: makeGit } = await import('./support/fixtures.mjs')

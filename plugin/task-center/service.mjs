@@ -515,6 +515,9 @@ export function claimTask(board, id, worker, now) {
     project: worker.project === undefined || worker.project === null ? null : String(worker.project),
     // T-107: an ownerless (pre-T-97) card dispatched on a single-team host says so.
     ownerCompat: worker.ownerCompat === true,
+    // Why the compatibility path was taken (Lead inventory), kept on the record so
+    // the panel/history can explain a single-team host without re-scanning.
+    compatDetail: worker.compatDetail === undefined || worker.compatDetail === null ? null : String(worker.compatDetail),
     keep: worktree.keep === true,
   }
   touch(target, now)
@@ -528,7 +531,9 @@ export function claimTask(board, id, worker, now) {
       'dispatched to ' + target.assignee.name + (target.attempts > 1 ? ' (attempt ' + String(target.attempts) + ')' : '') +
       (worker.lead === undefined || worker.lead === null ? '' : ' under Lead ' + String(worker.lead)) +
       (worker.project === undefined || worker.project === null ? '' : ' for ' + String(worker.project)) +
-      (worker.ownerCompat === true ? ' (single-team compatibility: card had no ownerSession)' : '') +
+      (worker.ownerCompat === true
+        ? ' (' + (worker.compatDetail === undefined || worker.compatDetail === null ? 'compat: same-project single team; card had no ownerSession' : String(worker.compatDetail)) + ')'
+        : '') +
       (worker.cardSession === undefined || worker.cardSession === null ? '' : ' (session ' + String(worker.cardSession) + ')') +
       (adopted === null
         ? ''

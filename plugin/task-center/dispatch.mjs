@@ -512,22 +512,112 @@ export function resolveLead(ctx, options) {
 /** Every live Lead in this profile. Dispatch uses the COUNT to decide whether an
  * ownerless (pre-T-97) card may fall back to the single team. */
 export function liveLeads(ctx) {
+  return leadInventory(ctx).leads
+}
+
+/**
+ * The raw Team inventory: every agent the service lists, which of them are Leads,
+ * and the size of each Lead's roster. The panel needs this to answer "how many
+ * Leads does the plugin actually see, and whose session is each one?" — without
+ * it, a wrong-session dispatch can only be inferred.
+ */
+export function leadInventory(ctx) {
   const { agents, agentTeams } = servicesFor(ctx)
-  if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return []
+  const empty = { available: false, error: null, scanned: 0, nonLeads: 0, leads: [] }
+  if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
+    return Object.assign({}, empty, { error: 'no-team-service' })
+  }
   let all = []
   try {
-    all = agents.list()
+    const listed = agents.list()
+    all = Array.isArray(listed) ? listed : []
   } catch (error) {
-    return []
+    return Object.assign({}, empty, { error: 'agents-unreadable' })
   }
   const leads = []
   for (const candidate of all) {
+    let membership = null
     try {
-      const membership = agentTeams.tryMembership(candidate)
-      if (membership !== undefined && membership !== null && membership.role === 'lead') leads.push(candidate)
+      membership = agentTeams.tryMembership(candidate)
+    } catch (error) {
+      membership = null
+    }
+    if (membership === undefined || membership === null || membership.role !== 'lead') continue
+    let members = 0
+    try {
+      const roster = agentTeams.listMembers(candidate)
+      members = Array.isArray(roster) ? roster.length : 0
+    } catch (error) {
+      members = 0
+    }
+    leads.push({
+      name: typeof candidate.name === 'string' && candidate.name !== '' ? candidate.name : null,
+      id: candidate.id === undefined || candidate.id === null ? null : String(candidate.id),
+      session: agentSessionOf(candidate),
+      members: members,
+    })
+  }
+  return { available: true, error: null, scanned: all.length, nonLeads: all.length - leads.length, leads: leads }
+}
+
+/** One readable sentence about the inventory, for details and activity rows. */
+export function leadInventoryText(inventory) {
+  const leads = inventory === null || inventory === undefined || !Array.isArray(inventory.leads) ? [] : inventory.leads
+  const scanned = inventory === null || inventory === undefined ? 0 : inventory.scanned
+  if (leads.length === 0) return '宿主内没有发现任何 Lead（共扫描 ' + String(scanned) + ' 个 agent）'
+  const listed = leads.map((lead) => String(lead.name === null ? lead.id : lead.name) + '/' + String(lead.session === null ? lead.id : lead.session)).join(', ')
+  return '宿主内发现 ' + String(leads.length) + ' 个 Lead（' + listed + '），共扫描 ' + String(scanned) + ' 个 agent'
+}
+
+/**
+ * The workspace a session actually runs in: what the resolver recorded (panel,
+ * tool call, task binding), else its DSH sessions-tree directory. A dispatcher
+ * MUST judge cross-project reachability by THIS, not by the row's sandbox policy:
+ * the policy covers every project the plugin knows, the session covers one.
+ */
+export async function sessionWorkspaceOf(state, sessionId) {
+  if (typeof sessionId !== 'string' || sessionId === '' || state === null || state === undefined) return null
+  try {
+    const recorded = typeof state.sessionRootOf === 'function' ? state.sessionRootOf(sessionId) : null
+    if (typeof recorded === 'string' && recorded !== '') return recorded
+  } catch (error) {}
+  if (typeof state.lookupSessionRoot === 'function') {
+    try {
+      const looked = await state.lookupSessionRoot(sessionId)
+      if (looked !== null && looked !== undefined && looked.ok === true && typeof looked.path === 'string' && looked.path !== '') return looked.path
     } catch (error) {}
   }
-  return leads
+  return null
+}
+
+/** Does this session run in the card's project? null = the session is unknown. */
+export async function sessionOwnsProject(state, sessionId, project) {
+  const workspace = await sessionWorkspaceOf(state, sessionId)
+  if (workspace === null) return null
+  return projectIdOf(workspace) === projectIdOf(project)
+}
+
+/**
+ * The sessions that can host this project's work: every session the state knows
+ * whose workspace IS this project and whose team has a live Lead. This is how an
+ * ownerless (pre-T-97) card is adopted by the right project instead of landing in
+ * whichever Lead happens to be first.
+ */
+export async function projectSessions(ctx, state, project, selfSessionId) {
+  const ids = []
+  try {
+    if (state !== null && state !== undefined && state.memory !== undefined && state.memory.sessionRoots instanceof Map) {
+      for (const id of state.memory.sessionRoots.keys()) ids.push(id)
+    }
+  } catch (error) {}
+  if (typeof selfSessionId === 'string' && selfSessionId !== '' && ids.indexOf(selfSessionId) < 0) ids.push(selfSessionId)
+  const matches = []
+  for (const id of ids) {
+    if ((await sessionOwnsProject(state, id, project)) !== true) continue
+    const lead = resolveLead(ctx, { sessionId: id })
+    if (lead !== null) matches.push({ sessionId: id, lead: lead })
+  }
+  return matches
 }
 
 /** The SUBAGENT provider registry is not the LLM provider registry; asking it is
@@ -3438,38 +3528,82 @@ export function createDispatcher(ctx, options) {
           results.push({ id: task.id, skipped: 'other-session', message: detail })
           continue
         }
-        // T-107: an ownerless (pre-T-97) card must not fall back to "the first
-        // Lead" when this host runs several teams. It waits for a session to
-        // adopt it; a single-team host keeps the historical compatibility path.
+        // T-109: the session whose team will do the work. An owned card uses its
+        // OWNER's session; an ownerless card is adopted by a session that runs in
+        // THIS project, never by whichever Lead is first.
+        let dispatchSession = ownerSession === null ? null : ownerSession
         let ownerCompat = false
-        if (ownerSession === null && selfSessionId !== null) {
-          const leads = liveLeads(ctx)
-          if (leads.length > 1) {
+        let compatDetail = null
+        if (ownerSession !== null) {
+          // Cross-project is decided by the OWNER session's workspace (the real
+          // executor), not by the row's sandbox policy (which spans every project).
+          const owns = await sessionOwnsProject(state, ownerSession, project)
+          if (owns === false) {
+            const workspace = await sessionWorkspaceOf(state, ownerSession)
             const detail =
-              '这张卡没有所属会话（ownerSession 为空），本宿主有多个 Team；请在它所属的项目会话里 reopen 一次以认领，宿主不会回退到第一个 Lead'
-            await markExecutorMissing(project, task.id, 'owner-unknown', detail)
-            results.push({ id: task.id, skipped: 'owner-unknown', message: detail })
-            continue
-          }
-          ownerCompat = true
-        }
-        // T-107: never dispatch a card whose project is not this session's
-        // workspace: the worker could neither write nor run the declared gate.
-        if (selfSessionId !== null) {
-          let workspaceRoot = null
-          try {
-            const policy = ctx.sandboxPolicy
-            const resolved = policy !== null && policy !== undefined && typeof policy.resolve === 'function' ? policy.resolve() : null
-            workspaceRoot = resolved !== null && resolved !== undefined && typeof resolved.workspaceRoot === 'string' ? resolved.workspaceRoot : null
-          } catch (error) {
-            workspaceRoot = null
-          }
-          if (workspaceRoot !== null && projectIdOf(workspaceRoot) !== projectIdOf(project)) {
-            const detail =
-              '这张卡属于项目 ' + project + '，而当前会话的 workspace 是 ' + workspaceRoot + '；跨项目派发会让 worker 无法写入或跑验证，请在卡片所属项目的会话里派发'
+              '这张卡属于项目 ' + project + '，但所属会话 ' + ownerSession + ' 的 workspace 是 ' + String(workspace) +
+              '；跨项目派发会让 worker 无法写入或跑验证，请在该项目的会话里派发'
             await markExecutorMissing(project, task.id, 'wrong-session', detail)
             results.push({ id: task.id, skipped: 'wrong-session', message: detail })
             continue
+          }
+          if (owns === null && selfSessionId !== null) {
+            // The owner session is unknown to the state: fall back to THIS
+            // dispatcher's workspace, which is the only one we can vouch for.
+            const dispatcherOwns = await sessionOwnsProject(state, selfSessionId, project)
+            if (dispatcherOwns === false) {
+              const workspace = await sessionWorkspaceOf(state, selfSessionId)
+              const detail =
+                '这张卡属于项目 ' + project + '，而派发会话 ' + selfSessionId + ' 的 workspace 是 ' + String(workspace) +
+                '；跨项目派发会让 worker 无法写入或跑验证，请在该项目的会话里派发'
+              await markExecutorMissing(project, task.id, 'wrong-session', detail)
+              results.push({ id: task.id, skipped: 'wrong-session', message: detail })
+              continue
+            }
+          }
+        } else if (selfSessionId !== null) {
+          // Ownerless (pre-T-97) card: adopt it in a session that RUNS in this
+          // project. Never hand it to another project's Lead, even when the host
+          // has exactly one team.
+          const candidates = await projectSessions(ctx, state, project, selfSessionId)
+          if (candidates.length > 0) {
+            // A real session of THIS project adopted the card: that is a normal
+            // dispatch, not the compatibility path.
+            dispatchSession = candidates[0].sessionId
+            ownerCompat = false
+          } else {
+            const leads = liveLeads(ctx)
+            const leadSession = leads.length === 1 ? agentSessionOf(leads[0]) : null
+            const dispatcherOwns = await sessionOwnsProject(state, selfSessionId, project)
+            const leadOwns = leadSession === null ? null : await sessionOwnsProject(state, leadSession, project)
+            if (dispatcherOwns === false || leadOwns === false) {
+              // Some session involved is KNOWN to run in another project: refuse
+              // instead of quietly handing the card to that project's Lead.
+              const workspace = dispatcherOwns === false ? await sessionWorkspaceOf(state, selfSessionId) : await sessionWorkspaceOf(state, leadSession)
+              const detail =
+                '这张卡属于项目 ' + project + '，而派发会话 ' + String(dispatcherOwns === false ? selfSessionId : leadSession) +
+                ' 的 workspace 是 ' + String(workspace) + '；跨项目派发会让 worker 无法写入或跑验证，请在卡片所属项目的会话里派发'
+              await markExecutorMissing(project, task.id, 'wrong-session', detail)
+              results.push({ id: task.id, skipped: 'wrong-session', message: detail })
+              continue
+            }
+            if (leads.length === 1) {
+              // Single-team host with no session evidence either way: the legacy
+              // profile shape. Still limited to a same-project session.
+              dispatchSession = leadSession === null ? selfSessionId : leadSession
+              ownerCompat = true
+              const inventory = leadInventory(ctx)
+              compatDetail =
+                leadInventoryText(inventory) + '；按「同项目单团队」兼容路径派发（卡片没有 ownerSession）'
+              emit('warn', 'host', { taskId: task.id, detail: compatDetail })
+            } else {
+              const detail =
+                '这张卡没有所属会话（ownerSession 为空），且项目 ' + project +
+                ' 没有可用的会话团队（' + leadInventoryText(leadInventory(ctx)) + '）；请在它所属的项目会话里 reopen 一次以认领，或在该项目会话启用 Agent Teams。宿主不会把它派给别的项目的 Lead'
+              await markExecutorMissing(project, task.id, 'no-team-for-project', detail)
+              results.push({ id: task.id, skipped: 'no-team-for-project', message: detail })
+              continue
+            }
           }
         }
         if (task.dispatch !== null && task.dispatch.status === 'lease-expired' && task.dispatch.error !== TASK_LEASE_CAP_ERROR) {
@@ -3493,9 +3627,9 @@ export function createDispatcher(ctx, options) {
           maxWorkAgents: dispatch.maxWorkAgents,
           name: workAgentName(task.id, model.attemptSlot(task)),
           projectKey: projectKey,
-          // The LEAD that creates the executor is the one this card BELONGS to.
-          // An ownerless (legacy) card keeps the historical first-Lead behaviour.
-          sessionId: ownerSession,
+          // The LEAD that creates the executor is the one this card BELONGS to
+          // (owned card) or the project session that adopted it (ownerless card).
+          sessionId: dispatchSession,
         })
         if (picked.ok !== true) {
           const reason =
@@ -3631,8 +3765,9 @@ export function createDispatcher(ctx, options) {
                 leadSession: agentSessionOf(picked.lead),
                 // NOTE: `session` is the WORKER's identity (assignee.session); the
                 // card's own session travels as cardSession.
-                cardSession: ownerSession === null ? selfSessionId : ownerSession,
+                cardSession: dispatchSession === null ? selfSessionId : dispatchSession,
                 ownerCompat: ownerCompat,
+                compatDetail: compatDetail,
                 project: project,
                 worktree: worktree,
                 adopt:
