@@ -9,7 +9,8 @@ import { boardJson, createFakeFs, createRig, createTeam, PROJECT, seedBoard, sle
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
 import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, roleBriefFor } from '../../plugin/task-center/dispatch.mjs'
-import { archivePath, boardPath as boardPathOf, rolesPath } from '../../plugin/task-center/board.mjs'
+import { archivePath, boardPath as boardPathOf, projectIdOf, projectRefOf, readProjectRegistry, rolesPath } from '../../plugin/task-center/board.mjs'
+import { homedir } from 'node:os'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { phaseActivityAt } from '../../plugin/task-center/dispatch.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
@@ -83,8 +84,10 @@ check('registers state, action, task, list and diagnostics', surface.specs.lengt
 
 // no project yet
 {
+  rig.state.setSessionRoot(null)
   const res = await call(surface, STATE_PATH, {})
-  check('state without a project says so', res.status === 200 && res.json().ok === false && res.json().code === 'unknown-project', res.text)
+  rig.state.setSessionRoot(PROJECT)
+  check('state without a bound project says so', res.status === 200 && res.json().ok === false && res.json().code === 'no-project-bound', res.text)
   check(
     'the UI-facing unknown-project answer is a code plus params, not an English sentence',
     res.json().message === undefined && res.json().params !== null && typeof res.json().params === 'object',
@@ -430,6 +433,8 @@ function createSubmitRig(options) {
   const opts = options === undefined ? {} : options
   const fs = createFakeFs()
   fs.dirs.add(PROJECT)
+  fs.dirs.add(join(PROJECT, '.git'))
+  fs.dirs.add(join(PROJECT, '.agents'))
   const team = opts.team === undefined || opts.team === null ? null : opts.team
   // A team service is optional: the commit path must work without one, and the
   // notification path is exactly what a team adds.
@@ -445,6 +450,7 @@ function createSubmitRig(options) {
     },
   }
   const state = createState(ctx)
+  state.setSessionRoot(PROJECT)
   const roles = opts.roles === true ? createRoleManager(ctx) : opts.roles === undefined ? null : opts.roles
   const activity = opts.activity === undefined ? null : opts.activity
   const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: opts.git, roles: roles, activity: activity })
@@ -3487,7 +3493,7 @@ async function withDeadline(promise, ms) {
     { name: 'godot-reviewer', profile: { role: 'reviewer', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check Godot idioms.' } },
     rig.user,
   )
-  check('the custom profile exists before the preview', created.ok === true && created.config.profiles['godot-reviewer'].prompt === 'Check Godot idioms.')
+  check('the custom profile exists before the preview', created.ok === true && created.config.profiles['godot-reviewer'].prompt === 'Check Godot idioms.', JSON.stringify(created).slice(0, 300))
   const snapshot = await rig.api.snapshot(PROJECT)
   const previews = snapshot.rolePreviews
   check(
@@ -4088,7 +4094,9 @@ async function withDeadline(promise, ms) {
   const originalWrite = rig.fs.writeText
   let sandboxSeen = null
   rig.fs.writeText = async function (target, text, expected, signal, policy) {
-    sandboxSeen = policy
+    // The registry write also goes through writeText; only the role config write
+    // carries the project sandbox policy.
+    if (String(target.targetKey === undefined ? target.displayPath : target.targetKey).indexOf('roles.json') >= 0) sandboxSeen = policy
     return originalWrite.call(this, target, text, expected)
   }
   const created = await rig.api.perform(
@@ -4760,6 +4768,82 @@ rig.scheduler.dispose()
   rig.state.memory.lastArchive = null
   const recovered = await rig.api.autoMergePending(PROJECT)
   check('the sweep recovers once the archive write works again', recovered.ok === true && recovered.archive !== null && recovered.archive.archived >= 1 && boardJson(rig.fs, PROJECT).tasks.every((task) => task.id !== 'T-5'), JSON.stringify(recovered.archive))
+  rig.scheduler.dispose()
+}
+
+// ── T-86: first-class project ref, registry, one resolver ──
+{
+  const OTHER = PROJECT + '-other'
+  const rig = createRig({ allowSpawn: false })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [] }))
+  seedBoard(rig.fs, OTHER, JSON.stringify({ version: 2, seq: 7, dispatch: { state: 'paused' }, tasks: [] }))
+  const surface = install(rig)
+  // The panel carries ?project= on its first visit: it must be adopted and written
+  // to the registry so the background loop drives that project.
+  const panelRes = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(OTHER), {})
+  const panel = panelRes.json()
+  check(
+    'a panel ?project= is adopted as the explicit project',
+    panel.ok === true && panel.projectId === projectIdOf(OTHER) && panel.resolvedFrom === 'panel' && panel.projectRoot === OTHER,
+    JSON.stringify({ id: panel.projectId, from: panel.resolvedFrom }),
+  )
+  await rig.state.flushRegistry()
+  const registry = await readProjectRegistry({ fs: rig.fs }, { homeDir: homedir() })
+  check(
+    'the adopted project is persisted in the registry',
+    registry.registry.projects.some((entry) => entry.id === projectIdOf(OTHER) && entry.root === OTHER),
+    JSON.stringify(registry.registry.projects),
+  )
+  // Two surfaces (two panel sessions/instances) each adopt a different project:
+  // the registry write is read-merge-write, so the second adoption must not
+  // clobber the first (the end-to-end script caught exactly this).
+  const secondSurface = createState({ fs: rig.fs, get() { return undefined } }, { homeDir: homedir(), now: () => Date.now() })
+  await secondSurface.adoptPanelProject(PROJECT)
+  await secondSurface.flushRegistry()
+  const mergedRegistry = await readProjectRegistry({ fs: rig.fs }, { homeDir: homedir() })
+  check(
+    'two adopting surfaces merge into one registry instead of overwriting',
+    mergedRegistry.registry.projects.some((entry) => entry.root === OTHER) && mergedRegistry.registry.projects.some((entry) => entry.root === PROJECT),
+    JSON.stringify(mergedRegistry.registry.projects.map((entry) => entry.root)),
+  )
+  // Restart: a fresh state over the SAME fs loads the registry and drives both
+  // projects without any openProject call.
+  const restarted = createState({ fs: rig.fs, get() { return undefined } }, { now: () => Date.now() })
+  const loaded = await restarted.loadRegistry()
+  const active = restarted.activeProjects(Date.now())
+  check(
+    'in-process restart simulation: a fresh state over the same fs reloads the registry and its active projects',
+    loaded.projects.length >= 1 && active.some((entry) => entry.root === OTHER),
+    JSON.stringify(active.map((entry) => entry.root)),
+  )
+  // Two projects are both active: the loop iterates every one, not the last touched.
+  restarted.touchProject(PROJECT)
+  const both = restarted.activeProjects(Date.now())
+  check(
+    'in-process: both projects stay in the background-drive set',
+    both.some((entry) => entry.root === PROJECT) && both.some((entry) => entry.root === OTHER),
+    JSON.stringify(both.map((entry) => entry.root)),
+  )
+  // Visibility: an explicit snapshot says where the project came from, and warns
+  // when the host last drove a different project.
+  restarted.touchProject(PROJECT)
+  rig.state.touchProject(PROJECT)
+  const snap = await rig.api.snapshot(OTHER, { full: false, resolvedFrom: 'panel' })
+  check(
+    'the snapshot exposes the project ref, resolution source and a registry warning',
+    snap.ok === true && snap.projectId === projectIdOf(OTHER) && snap.resolvedFrom === 'panel' && typeof snap.projectWarning === 'string' && snap.registryConsistent === false,
+    JSON.stringify({ id: snap.projectId, from: snap.resolvedFrom, warning: snap.projectWarning }),
+  )
+  // The resolver has no cwd/hint fallback: with no explicit and no session
+  // workspace it refuses, even though the registry knows projects.
+  const unboundRig = createRig({ allowSpawn: false })
+  unboundRig.state.setSessionRoot(null)
+  const unboundSurface = install(unboundRig)
+  const unbound = await call(unboundSurface, STATE_PATH, {})
+  check('an unbound session refuses with no-project-bound (registry is not a fallback)', unbound.json().ok === false && unbound.json().code === 'no-project-bound', unbound.text.slice(0, 160))
+  unboundSurface.dispose()
+  unboundRig.scheduler.dispose()
+  surface.dispose()
   rig.scheduler.dispose()
 }
 

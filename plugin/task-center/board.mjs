@@ -16,7 +16,7 @@
  * previous result) on a lost race.
  */
 
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import {
   BOARD_DIRECTORY,
   BOARD_FILENAME,
@@ -44,6 +44,131 @@ export function boardPath(projectPath) {
 
 /** Refuse a role config large enough to be a mistake. */
 export const MAX_ROLE_CONFIG_BYTES = 256 * 1024
+
+/** How long a project stays in the background-drive set after its last touch. */
+export const PROJECT_ACTIVE_MS = 24 * 60 * 60 * 1000
+
+/** Canonical project id: case-folded, slash-normalized, no trailing separator. */
+export function projectIdOf(root) {
+  const normalized = String(root).replace(/\\/g, '/').replace(/\/+$/, '')
+  return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized
+}
+
+/**
+ * The first-class project. Everything the task center stores or dispatches is
+ * keyed by this ref, so one project can never be confused with another.
+ */
+export function projectRefOf(root) {
+  const projectRoot = String(root)
+  return {
+    id: projectIdOf(projectRoot),
+    root: projectRoot,
+    boardPath: boardPath(projectRoot),
+    worktreeRoot: join(projectRoot, '.worktrees'),
+  }
+}
+
+/** Where the host remembers projects across process restarts. */
+export function projectRegistryPath(homeDir) {
+  return join(homeDir, '.dsh', 'godot-bridge', 'projects.json')
+}
+
+export function normaliseProjectRegistry(value) {
+  const projects = []
+  if (value !== null && typeof value === 'object' && value.projects !== undefined) {
+    const source = value.projects
+    if (Array.isArray(source)) {
+      for (const entry of source) {
+        if (entry === null || typeof entry !== 'object') continue
+        if (typeof entry.root !== 'string' || entry.root.length === 0) continue
+        projects.push({
+          id: typeof entry.id === 'string' && entry.id.length > 0 ? entry.id : projectIdOf(entry.root),
+          root: entry.root,
+          lastSeenAt: typeof entry.lastSeenAt === 'string' ? entry.lastSeenAt : new Date(0).toISOString(),
+          lastSessionId: typeof entry.lastSessionId === 'string' ? entry.lastSessionId : null,
+        })
+      }
+    }
+  }
+  return { version: 1, projects: projects }
+}
+
+export async function readProjectRegistry(io, options) {
+  const homeDir = options.homeDir
+  if (typeof homeDir !== 'string' || homeDir.length === 0) return { ok: true, registry: normaliseProjectRegistry(null) }
+  try {
+    const target = await io.fs.resolve(projectRegistryPath(homeDir), { cwd: homeDir, signal: options.signal })
+    const info = await io.fs.stat(target, options.signal)
+    if (info === undefined) return { ok: true, registry: normaliseProjectRegistry(null) }
+    const text = await io.fs.readText(target, options.signal)
+    return { ok: true, registry: normaliseProjectRegistry(JSON.parse(text)) }
+  } catch (error) {
+    return { ok: true, registry: normaliseProjectRegistry(null) }
+  }
+}
+
+export async function writeProjectRegistry(io, options, registry) {
+  const homeDir = options.homeDir
+  if (typeof homeDir !== 'string' || homeDir.length === 0) return { ok: true, skipped: true }
+  try {
+    const target = await io.fs.resolve(projectRegistryPath(homeDir), { cwd: homeDir, signal: options.signal })
+    const info = await io.fs.stat(target, options.signal)
+    const text = JSON.stringify(normaliseProjectRegistry(registry), null, 2) + '\n'
+    const expected = info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version }
+    const written = await io.fs.writeText(target, text, expected, options.signal, options.sandboxPolicy)
+    return { ok: true, version: written.version }
+  } catch (error) {
+    return { ok: false, code: 'registry-unwritable', message: 'could not persist the project registry: ' + describe(error) }
+  }
+}
+
+async function isDir(io, path, options) {
+  try {
+    const target = await io.fs.resolve(path, { cwd: options.cwd, signal: options.signal })
+    const info = await io.fs.stat(target, options.signal)
+    return info !== undefined && info.type === 'directory'
+  } catch (error) {
+    return false
+  }
+}
+
+async function isFile(io, path, options) {
+  try {
+    const target = await io.fs.resolve(path, { cwd: options.cwd, signal: options.signal })
+    const info = await io.fs.stat(target, options.signal)
+    return info !== undefined && info.type === 'file'
+  } catch (error) {
+    return false
+  }
+}
+
+/**
+ * The ONE project-resolution rule: an explicit path wins; otherwise walk the
+ * session workspace upwards to the nearest git root that carries .agents/ or
+ * project.godot; otherwise refuse with no-project-bound. There is deliberately
+ * no process.cwd() or global-hint fallback.
+ */
+export async function resolveProjectRoot(io, options) {
+  const opts = options === undefined ? {} : options
+  const explicit = typeof opts.explicit === 'string' ? opts.explicit.trim() : ''
+  if (explicit.length > 0) {
+    return { ok: true, root: resolve(explicit), resolvedFrom: opts.explicitSource === 'panel' ? 'panel' : 'explicit' }
+  }
+  const start = typeof opts.sessionRoot === 'string' ? opts.sessionRoot.trim() : ''
+  if (start.length === 0) {
+    return failure('no-project-bound', 'No project is bound to this session. Pass project, or open a project from the panel.')
+  }
+  let current = resolve(start)
+  for (;;) {
+    if (await isDir(io, join(current, '.git'), opts) && ((await isDir(io, join(current, '.agents'), opts)) || (await isFile(io, join(current, 'project.godot'), opts)))) {
+      return { ok: true, root: current, resolvedFrom: 'session' }
+    }
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return failure('no-project-bound', 'No git project with .agents/ or project.godot was found above the session workspace (' + start + '). Pass project explicitly or open one from the panel.')
+}
 
 /** Archive of done tasks that have aged out of the board (one file per year). */
 export const ARCHIVE_VERSION = 1

@@ -63,6 +63,10 @@ export function createFakeFs() {
 
 export function seedBoard(fs, project, text) {
   fs.dirs.add(project)
+  // A project root is a git checkout with a task board, so the resolver's walk
+  // (nearest git root carrying .agents/ or project.godot) finds it.
+  fs.dirs.add(join(project, '.git'))
+  fs.dirs.add(join(project, '.agents'))
   fs.files.set(boardPath(project), { text, version: 'seed' })
 }
 
@@ -207,6 +211,8 @@ export function createRig(options) {
   const project = opts.project === undefined ? PROJECT : opts.project
   const fs = createFakeFs()
   fs.dirs.add(project)
+  fs.dirs.add(join(project, '.git'))
+  fs.dirs.add(join(project, '.agents'))
   const team = opts.team === undefined ? createTeam(opts.teamOptions) : opts.team
   const agents = opts.agents === undefined ? { list: () => [{ id: 'session-lead' }] } : opts.agents
   const subagents = { list: () => ['spawn'] }
@@ -221,6 +227,9 @@ export function createRig(options) {
     },
   }
   const state = createState(ctx, { now: opts.now })
+  // A rig is one session on one project: the resolver's session workspace is
+  // this project unless a test clears it to exercise no-project-bound.
+  state.setSessionRoot(project)
   // Worktrees are mandatory, so a rig that does not name a git facade gets a
   // working fake one; pass { git: null } (or a broken createFakeGit) to test
   // the refusal path.

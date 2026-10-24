@@ -839,6 +839,8 @@ function createWorktreeRig(options) {
   const opts = options === undefined ? {} : options
   const fs = createFakeFs()
   fs.dirs.add(PROJECT)
+  fs.dirs.add(join(PROJECT, '.git'))
+  fs.dirs.add(join(PROJECT, '.agents'))
   const team = createTeam(opts.teamOptions)
   const ctx = {
     fs,
@@ -852,6 +854,7 @@ function createWorktreeRig(options) {
     },
   }
   const state = createState(ctx)
+  state.setSessionRoot(PROJECT)
   const git = opts.git === undefined ? gitFor(ctx) : opts.git
   const scheduler = createDispatcher(ctx, {
     state: state,
@@ -1368,6 +1371,8 @@ function createRoleRig(options) {
   const opts = options === undefined ? {} : options
   const fs = createFakeFs()
   fs.dirs.add(PROJECT)
+  fs.dirs.add(join(PROJECT, '.git'))
+  fs.dirs.add(join(PROJECT, '.agents'))
   const team =
     opts.team === undefined
       ? createTeam({
