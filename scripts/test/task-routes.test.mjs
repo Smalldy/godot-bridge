@@ -8,7 +8,11 @@ import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH } fro
 import { boardJson, createFakeFs, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
-import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, roleBriefFor } from '../../plugin/task-center/dispatch.mjs'
+import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, memberProjectOf, projectSlotKey, rememberMemberProject, roleBriefFor, roleSlotName } from '../../plugin/task-center/dispatch.mjs'
+
+// Role slots carry the project they were provisioned for; tests name them through
+// the same generator the host uses instead of a hard-coded legacy name.
+const slot = (kind, index) => roleSlotName(kind, index, PROJECT)
 import { archivePath, boardPath as boardPathOf, projectIdOf, projectRefOf, readProjectRegistry, rolesPath } from '../../plugin/task-center/board.mjs'
 import { homedir } from 'node:os'
 import { createApi } from '../../plugin/task-center/api.mjs'
@@ -2184,12 +2188,12 @@ function testStageTask(overrides) {
   const submitted = await rig.action('submit', { id: 'T-1', evidence: 'unit tests' })
   check(
     'submit enters review and provisions a reviewer',
-    submitted.ok === true && submitted.task.status === 'reviewing' && submitted.provisioned !== undefined && submitted.provisioned.created[0].name === 'reviewer-1',
+    submitted.ok === true && submitted.task.status === 'reviewing' && submitted.provisioned !== undefined && submitted.provisioned.created[0].name === slot('reviewer', 1),
     JSON.stringify(submitted.provisioned),
   )
   const spawns = team.calls.filter((call) => call.kind === 'spawn').map((call) => call.name)
-  check('the host spawned the reviewer without a Lead prompt', spawns.join(',') === 'reviewer-1', JSON.stringify(spawns))
-  const reviewerCall = team.calls.filter((call) => call.kind === 'spawn' && call.name === 'reviewer-1')[0]
+  check('the host spawned the reviewer without a Lead prompt', spawns.join(',') === slot('reviewer', 1), JSON.stringify(spawns))
+  const reviewerCall = team.calls.filter((call) => call.kind === 'spawn' && call.name === slot('reviewer', 1))[0]
   check(
     'the spawned reviewer brief carries the task and the boundary',
     reviewerCall !== undefined &&
@@ -2203,11 +2207,11 @@ function testStageTask(overrides) {
   const approved = await rig.action('approveReview', { id: 'T-1' })
   check(
     'approving the review provisions a tester',
-    approved.ok === true && approved.task.status === 'testing' && approved.provisioned !== undefined && approved.provisioned.created[0].name === 'tester-1',
+    approved.ok === true && approved.task.status === 'testing' && approved.provisioned !== undefined && approved.provisioned.created[0].name === slot('tester', 1),
     JSON.stringify(approved.provisioned),
   )
   const names = team.calls.filter((call) => call.kind === 'spawn').map((call) => call.name)
-  check('both stage roles are live', names.join(',') === 'reviewer-1,tester-1', JSON.stringify(names))
+  check('both stage roles are live', names.join(',') === slot('reviewer', 1) + ',' + slot('tester', 1), JSON.stringify(names))
   rig.scheduler.dispose()
 }
 
@@ -2226,7 +2230,7 @@ function testStageTask(overrides) {
   const submitted = await rig.action('submit', { id: 'T-1', evidence: 'x' })
   check(
     'the project role config fills two reviewer instances',
-    submitted.provisioned !== undefined && submitted.provisioned.created.map((entry) => entry.name).join(',') === 'reviewer-1,reviewer-2',
+    submitted.provisioned !== undefined && submitted.provisioned.created.map((entry) => entry.name).join(',') === slot('reviewer', 1) + ',' + slot('reviewer', 2),
     JSON.stringify(submitted.provisioned && submitted.provisioned.created),
   )
   const reviewerCalls = team.calls.filter((call) => call.kind === 'spawn' && call.name.indexOf('reviewer-') === 0)
@@ -2262,10 +2266,98 @@ function testStageTask(overrides) {
   const two = await rig.action('submit', { id: 'T-2', evidence: 'y' })
   check(
     'the second submit reuses the live reviewer',
-    two.provisioned !== undefined && two.provisioned.created.length === 0 && two.provisioned.reused.indexOf('reviewer-1') >= 0,
+    two.provisioned !== undefined && two.provisioned.created.length === 0 && two.provisioned.reused.indexOf(slot('reviewer', 1)) >= 0,
     JSON.stringify({ ok: two.ok, status: two.task && two.task.status, code: two.code, provisioned: two.provisioned }),
   )
-  check('only one reviewer was spawned', team.calls.filter((call) => call.kind === 'spawn' && call.name === 'reviewer-1').length === 1, JSON.stringify(team.calls.map((call) => call.name)))
+  check('only one reviewer was spawned', team.calls.filter((call) => call.kind === 'spawn' && call.name === slot('reviewer', 1)).length === 1, JSON.stringify(team.calls.map((call) => call.name)))
+  rig.scheduler.dispose()
+}
+
+// ── project isolation: a worker submits only to the project it was dispatched for
+{
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git })
+  const seeded = runningWorktreeTask()
+  seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, seeded)
+  const otherProject = PROJECT + '-other-project'
+  seedBoard(
+    rig.fs,
+    otherProject,
+    JSON.stringify({
+      version: 2,
+      seq: 2,
+      dispatch: { state: 'paused' },
+      tasks: [Object.assign({}, seeded, { worktree: join(otherProject, '.worktrees', 'T-1') })],
+    }),
+  )
+  rememberMemberProject(rig.ctx, 'fixer', PROJECT)
+  const refused = await rig.api.perform('submit', { id: 'T-1', project: otherProject, evidence: 'x' }, agentCaller('session-fixer'))
+  check(
+    'a worker from another project is refused with wrong-project',
+    refused.ok === false && refused.code === 'wrong-project' && String(refused.message).indexOf(PROJECT) >= 0,
+    JSON.stringify(refused),
+  )
+  const own = await rig.api.perform('submit', { id: 'T-1', evidence: 'x' }, agentCaller('session-fixer'))
+  check('the same worker is accepted by its own project', own.ok === true, JSON.stringify({ ok: own.ok, code: own.code }))
+  rig.scheduler.dispose()
+}
+
+// ── a slot from another project is refused, and the card says why ──────────
+{
+  const team = createTeam({
+    roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      // Spawned before slots carried a project (or by the other project).
+      { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+    ],
+  })
+  const rig = createSubmitRig({ team: team, roles: true, git: fakeGit().git })
+  const otherProject = PROJECT + '-other-project'
+  const taskA = runningWorktreeTask({ id: 'T-1', title: 'A' })
+  taskA.dispatch = Object.assign({}, taskA.dispatch, { host: rig.scheduler.boot })
+  const taskB = runningWorktreeTask({ id: 'T-1', title: 'B', worktree: join(otherProject, '.worktrees', 'T-1') })
+  taskB.dispatch = Object.assign({}, taskB.dispatch, { host: rig.scheduler.boot })
+  seedRunningTask(rig, taskA)
+  seedBoard(rig.fs, otherProject, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [taskB] }))
+  const first = await rig.api.perform('submit', { id: 'T-1', evidence: 'a' }, agentCaller('session-fixer'))
+  check(
+    'the first project adopts the legacy reviewer slot',
+    first.ok === true && first.provisioned !== undefined && first.provisioned.reused.indexOf('reviewer-1') >= 0,
+    JSON.stringify(first.provisioned),
+  )
+  const second = await rig.api.perform('submit', { id: 'T-1', project: otherProject, evidence: 'b' }, agentCaller('session-fixer'))
+  check(
+    'the second project refuses that slot and spawns its own',
+    second.ok === true &&
+      Array.isArray(second.provisioned.refused) &&
+      second.provisioned.refused.length === 1 &&
+      second.provisioned.refused[0].name === 'reviewer-1' &&
+      second.provisioned.created[0].name === roleSlotName('reviewer', 1, otherProject),
+    JSON.stringify(second.ok === true ? second.provisioned : { ok: second.ok, code: second.code, message: second.message }),
+  )
+  const otherBoard = boardJson(rig.fs, otherProject)
+  const notes = otherBoard.tasks[0].history.map((entry) => String(entry.note))
+  check(
+    'the refusal is written to the card history',
+    notes.some((note) => note.indexOf('reuse refused') >= 0 && note.indexOf('reviewer-1') >= 0 && note.indexOf(PROJECT) >= 0),
+    JSON.stringify(notes.slice(-3)),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── live executors say which project they work for ─────────────────────────
+{
+  const rig = createSubmitRig({ team: roleTeam() })
+  seedRunningTask(rig, runningWorktreeTask())
+  rememberMemberProject(rig.ctx, 'fixer', PROJECT)
+  const got = await rig.api.perform('get', { id: 'T-1' }, rig.user)
+  const live = got.task.liveExecutors
+  check(
+    'live executors carry the project they were dispatched for',
+    live.length >= 1 && live[0].project === projectSlotKey(PROJECT) && live[0].projectRoot === PROJECT && live[0].displayName === 'fixer',
+    JSON.stringify(live),
+  )
+  check('the member project memory is readable', memberProjectOf(rig.ctx, 'fixer').root === PROJECT, JSON.stringify(memberProjectOf(rig.ctx, 'fixer')))
   rig.scheduler.dispose()
 }
 
@@ -2319,10 +2411,10 @@ function testStageTask(overrides) {
   const submitted = await rig.action('submit', { id: 'T-1', evidence: 'checked' })
   check(
     'the host provisions a reviewer when the roster has none',
-    submitted.provisioned !== undefined && submitted.provisioned.created[0].name === 'reviewer-1',
+    submitted.provisioned !== undefined && submitted.provisioned.created[0].name === slot('reviewer', 1),
     JSON.stringify(submitted.provisioned),
   )
-  const sends = team.calls.filter((call) => call.kind === 'send' && call.target === 'reviewer-1')
+  const sends = team.calls.filter((call) => call.kind === 'send' && call.target === slot('reviewer', 1))
   check('the new reviewer receives the round brief', sends.length >= 1 && sends[0].text.indexOf('Review round 1') >= 0, JSON.stringify(sends.map((call) => call.text.slice(0, 60))))
   rig.scheduler.dispose()
 }
@@ -4009,7 +4101,7 @@ async function withDeadline(promise, ms) {
   const submitted = await rig.action('submit', { id: 'T-1', evidence: 'checked' })
   check(
     'a missing reviewer is provisioned on submit',
-    submitted.ok === true && submitted.provisioned !== undefined && submitted.provisioned.created[0].name === 'reviewer-1',
+    submitted.ok === true && submitted.provisioned !== undefined && submitted.provisioned.created[0].name === slot('reviewer', 1),
     JSON.stringify(submitted.provisioned),
   )
   const provisioned = activity.snapshot()
@@ -4163,9 +4255,11 @@ async function withDeadline(promise, ms) {
   check('the built-in profiles cannot be deleted', delDefault.ok === false && delDefault.code === 'default-profile', JSON.stringify(delDefault))
 
   const replaced = await rig.api.perform('rolesReplace', { name: 'reviewer-1' }, user)
+  const replacedOk = replaced.ok === true && replaced.drained.length === 1 && replaced.created.length >= 1
+  const replacement = replacedOk ? String(replaced.created[0].name) : ''
   check(
     'replacing an instance drains it and spawns a replacement through the Lead',
-    replaced.ok === true && replaced.drained.join(',') === 'reviewer-1' && replaced.created.length >= 1 && replaced.created[0].name === 'reviewer-2',
+    replacedOk && replacement.indexOf('reviewer-') === 0 && replacement !== String(replaced.drained[0]),
     JSON.stringify(replaced.ok ? { drained: replaced.drained, created: replaced.created } : replaced),
   )
   // A drained instance must no longer receive briefs: the next submit's review
@@ -4178,14 +4272,14 @@ async function withDeadline(promise, ms) {
   const reviewerSends = rig.team.calls.filter((call) => call.kind === 'send' && String(call.target).indexOf('reviewer-') === 0)
   check(
     'the replacement reviewer receives the new brief, the drained one does not',
-    reviewerSends.length >= 1 && String(reviewerSends[reviewerSends.length - 1].target) === 'reviewer-2' && reviewerSends.every((call) => String(call.target) !== 'reviewer-1'),
+    replacement !== '' && reviewerSends.length >= 1 && String(reviewerSends[reviewerSends.length - 1].target) === replacement && reviewerSends.every((call) => String(call.target) !== String(replaced.drained[0])),
     JSON.stringify(reviewerSends.map((call) => call.target)),
   )
 
   // A replace waits for the old instance's in-flight turn before spawning.
-  rig.team.setStatus('reviewer-2', 'running')
-  setTimeout(() => rig.team.setStatus('reviewer-2', 'inactive'), 20)
-  const waitedReplace = await rig.api.perform('rolesReplace', { name: 'reviewer-2' }, user)
+  rig.team.setStatus(replacement, 'running')
+  setTimeout(() => rig.team.setStatus(replacement, 'inactive'), 20)
+  const waitedReplace = await rig.api.perform('rolesReplace', { name: replacement }, user)
   check(
     'replace waits for the drained instance to go idle',
     waitedReplace.ok === true && waitedReplace.waited.timedOut === false && waitedReplace.waited.waitedMs >= 15 && waitedReplace.created.length >= 1,
@@ -4197,7 +4291,7 @@ async function withDeadline(promise, ms) {
   const replacedKind = await rig.api.perform('rolesReplace', { name: 'tester' }, user)
   check(
     'replacing a role kind drains every instance and spawns replacements',
-    replacedKind.ok === true && replacedKind.drained.indexOf('tester-1') >= 0 && replacedKind.created.length === 1 && replacedKind.created[0].name === 'tester-2',
+    replacedKind.ok === true && replacedKind.drained.indexOf('tester-1') >= 0 && replacedKind.created.length === 1 && replacedKind.created[0].name === slot('tester', 1),
     JSON.stringify(replacedKind.ok ? { drained: replacedKind.drained, created: replacedKind.created } : replacedKind),
   )
   const badInstance = await rig.api.perform('rolesDrain', { name: 'not-a-slot' }, user)
@@ -4308,7 +4402,7 @@ async function withDeadline(promise, ms) {
   const replacedFailed = await rig.api.perform('rolesReplace', { name: 'reviewer-1' }, rig.user)
   check(
     'a failed instance can be replaced directly',
-    replacedFailed.ok === true && replacedFailed.drained.length === 0 && replacedFailed.created.length >= 1 && replacedFailed.created[0].name === 'reviewer-2',
+    replacedFailed.ok === true && replacedFailed.drained.length === 0 && replacedFailed.created.length >= 1 && replacedFailed.created[0].name === slot('reviewer', 1),
     JSON.stringify(replacedFailed.ok ? { drained: replacedFailed.drained, created: replacedFailed.created } : replacedFailed),
   )
   rig.scheduler.dispose()

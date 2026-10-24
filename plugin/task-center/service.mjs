@@ -661,6 +661,39 @@ export function noteDispatchRefused(board, id, now, names, reason) {
   return done(next, [{ kind: 'already-dispatched', id: id }], { task: target })
 }
 
+/**
+ * Record a role slot that was NOT reused because it belongs to another project
+ * (its session workspace is that project). The status is untouched: the point is
+ * the trace, so cross-project reuse is visible on the card instead of silently
+ * borrowing another project's teammate.
+ */
+export function noteReuseRefused(board, id, now, refused, reason) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  const list = Array.isArray(refused) ? refused.filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.name === 'string') : []
+  const who =
+    list.length === 0
+      ? 'an unknown executor'
+      : list
+          .map(function (entry) {
+            if (typeof entry.root === 'string' && entry.root !== '') return entry.name + ' (' + entry.root + ')'
+            if (typeof entry.project === 'string' && entry.project !== '') return entry.name + ' (project ' + entry.project + ')'
+            return entry.name
+          })
+          .join(', ')
+  touch(target, now)
+  pushHistory(target, {
+    at: iso(now),
+    by: 'scheduler',
+    from: target.status,
+    to: target.status,
+    note: 'reuse refused: executor ' + who + ' belongs to another project' + (typeof reason === 'string' && reason !== '' ? ' (' + reason + ')' : ''),
+  })
+  return done(next, [{ kind: 'reuse-refused', id: id }], { task: target })
+}
+
 /** A dispatch that failed before or while delivering: drop the claim, count the
  * attempt that was already spent, and block once the budget is gone. */
 export function failDispatch(board, id, error, now, maxAttempts) {
