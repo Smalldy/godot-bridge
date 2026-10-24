@@ -64,6 +64,8 @@ import {
   archiveIndexPath,
   archivePath,
   archiveYears,
+  boardPath,
+  boardSizeReport,
   isArchivable,
   archiveYearOf,
   projectIdOf,
@@ -1442,6 +1444,19 @@ export function createApi(ctx, options) {
     return { board: read.board }
   }
 
+  /** How full the board FILE is (bytes vs the cap) for the panel's warning. The
+   * load path already refuses over the limit; this only describes the approach
+   * to it, so a read of the stat failing degrades to a null-size report. */
+  async function boardSizeOf(projectPath, board) {
+    let bytes = null
+    try {
+      const target = await ctx.fs.resolve(boardPath(projectPath), { cwd: projectPath })
+      const info = await ctx.fs.stat(target)
+      if (info !== undefined && info !== null && Number.isFinite(info.size)) bytes = info.size
+    } catch (error) {}
+    return boardSizeReport(bytes, Array.isArray(board.tasks) ? board.tasks.length : 0)
+  }
+
   /** Release locks whose task is gone or no longer running. */
   function reconcileLocks(board) {
     let next = state.memory.locks
@@ -1905,6 +1920,7 @@ export function createApi(ctx, options) {
         }
       }
     }
+    const boardSize = await boardSizeOf(projectPath, board)
     const projectRef = projectRefOf(projectPath)
     const lastTouched = state.activeProjects(now)[0]
     const registryConsistent = lastTouched === undefined || lastTouched.id === projectRef.id
@@ -1945,6 +1961,10 @@ export function createApi(ctx, options) {
       worktrees: worktrees,
       activity: activitySnapshot(),
       counts: model.counts(board),
+      // Board file size vs its cap: bytes, limit, percent, level (ok/half/
+      // three-quarters), cards, bytesPerCard, headroomCards and a readable
+      // warning. The status page shows it from 50% on.
+      boardSize: boardSize,
       queue: model.readyTasks(board).map((task) => model.summary(board, task, now)),
       tasks: tasks,
       locks: locks.view(state.memory.locks, board, now).map((lock) =>

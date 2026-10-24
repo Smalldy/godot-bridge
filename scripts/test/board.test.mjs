@@ -2,7 +2,7 @@
 // hand-edited board from corrupting the model.
 
 import { join } from 'node:path'
-import { readBoard, updateBoard, emptyBoard, boardPath, MAX_HISTORY, readRoleConfig, writeRoleConfig, rolesPath } from '../../plugin/task-center/board.mjs'
+import { boardSizeReport, readBoard, updateBoard, emptyBoard, boardPath, MAX_BOARD_BYTES, MAX_HISTORY, readRoleConfig, writeRoleConfig, rolesPath } from '../../plugin/task-center/board.mjs'
 import {
   DEFAULT_ROLE_PROMPTS,
   ROLE_TEMPLATE_VARIABLES,
@@ -33,6 +33,62 @@ const empty = emptyBoard(1000)
 check('empty board is version 2', empty.version === 2)
 check('empty board starts paused', empty.dispatch.state === 'paused')
 check('empty board has a sequence', empty.seq === 1)
+
+// ── board file size: the cap, the warnings and the readable refusal ────────
+{
+  const limit = MAX_BOARD_BYTES
+  check('the board cap was raised to 32 MB', limit === 32 * 1024 * 1024, String(limit))
+  const mb = 1024 * 1024
+  const quiet = boardSizeReport(Math.round(10 * mb), 500, limit)
+  check(
+    'a small board reports ok with a headroom forecast',
+    quiet.level === 'ok' && quiet.warning === null && quiet.percent === 31.3 && quiet.bytesPerCard > 0 && quiet.headroomCards > 0,
+    JSON.stringify(quiet),
+  )
+  const half = boardSizeReport(Math.round(16 * mb), 1000, limit)
+  check(
+    'at 50% the report warns with size, limit and the cards left',
+    half.level === 'half' && half.percent === 50 && typeof half.warning === 'string' &&
+      half.warning.indexOf('16 MB') >= 0 && half.warning.indexOf('32 MB') >= 0 && half.warning.indexOf('more cards fit') >= 0,
+    JSON.stringify(half),
+  )
+  check(
+    'the headroom forecast follows the average card size',
+    half.bytesPerCard === Math.round((16 * mb) / 1000) && half.headroomCards === Math.floor((limit - 16 * mb) / Math.round((16 * mb) / 1000)),
+    JSON.stringify({ per: half.bytesPerCard, left: half.headroomCards }),
+  )
+  const three = boardSizeReport(Math.round(24 * mb), 1500, limit)
+  check('at 75% the level escalates', three.level === 'three-quarters' && three.percent === 75, JSON.stringify(three))
+  const emptyReport = boardSizeReport(0, 0, limit)
+  check('an empty board has no per-card forecast', emptyReport.level === 'ok' && emptyReport.bytesPerCard === null && emptyReport.headroomCards === null, JSON.stringify(emptyReport))
+  const unknown = boardSizeReport(null, 3, limit)
+  check('an unreadable stat degrades readably', unknown.bytes === 0 && unknown.level === 'ok', JSON.stringify(unknown))
+}
+
+{
+  // A board just under the cap still LOADS; the guard only refuses past it.
+  const fs = createFakeFs()
+  seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: 2, tasks: [] }))
+  const target = boardPath(PROJECT)
+  const originalStat = fs.stat
+  fs.stat = async function (value) {
+    if (String(value.targetKey) === target) return { version: 'seed', type: 'file', size: MAX_BOARD_BYTES - 1 }
+    return originalStat.call(this, value)
+  }
+  const near = await read(fs)
+  check('a board just under the limit loads', near.ok === true && near.limit === MAX_BOARD_BYTES && near.size > 0, JSON.stringify({ ok: near.ok, size: near.size, limit: near.limit }))
+  fs.stat = async function (value) {
+    if (String(value.targetKey) === target) return { version: 'seed', type: 'file', size: MAX_BOARD_BYTES + 1 }
+    return originalStat.call(this, value)
+  }
+  const over = await read(fs)
+  check(
+    'a board over the limit is refused with the size and the limit, not a crash',
+    isFailure(over, 'too-large') && over.message.indexOf(String(MAX_BOARD_BYTES + 1)) >= 0 && over.message.indexOf(String(MAX_BOARD_BYTES)) >= 0,
+    JSON.stringify(over),
+  )
+  fs.stat = originalStat
+}
 
 // sequential writes and id allocation
 {

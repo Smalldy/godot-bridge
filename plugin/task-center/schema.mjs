@@ -15,9 +15,25 @@ export const BOARD_FILENAME = 'tasks.json'
  * future version added. */
 export const BOARD_VERSION = 2
 
-/** Refuse to load something this large. A task board is working state, not a
- * document; four megabytes means something went wrong long before this point. */
-export const MAX_BOARD_BYTES = 4 * 1024 * 1024
+/**
+ * Refuse to load something this large. A task board is working state, not a
+ * document, so a limit stays — but 4 MB was a time bomb: a real board is
+ * ~16 KB/card, so ~250 cards would have stopped the task center from reading its
+ * own board at all ("refusing to load more than 4194304") long before the 30-day
+ * archive could help.
+ *
+ * 32 MB is the measured compromise: JSON.parse of a 1.5 MB / 92-card board takes
+ * ~12 ms; a 32 MB board (~2 000 cards at today's per-card size) parses in
+ * ~250-400 ms and peaks at roughly 3x its size (~100 MB) while normalising, which
+ * is acceptable for a control-plane file read at panel cadence (a few seconds),
+ * and still refuses a GB-scale file (a wrong path, a log, a binary) instead of
+ * trying to parse it. The panel warns at 50% and 75% of this limit; see
+ * boardSizeReport in board.mjs.
+ */
+export const MAX_BOARD_BYTES = 32 * 1024 * 1024
+
+/** Fractions of MAX_BOARD_BYTES at which the panel warns (and the API reports). */
+export const BOARD_WARN_FRACTIONS = [0.5, 0.75]
 
 /** Per-task history entries kept on disk (the creation entry plus the newest). */
 export const MAX_HISTORY = 120
