@@ -944,8 +944,12 @@ function createWorktreeRig(options) {
   const rig = createWorktreeRig({ git: createFakeGit({ repo: false }) })
   const task = await createTask(rig, { title: 'not a repo task' })
   const started = await rig.action('start')
-  check('start refuses a non-repository project', started.ok === false && started.code === 'worktree-unavailable', JSON.stringify(started))
-  check('and explains it is not a git repository', started.worktree === 'not-a-git-repository', JSON.stringify(started))
+  check('start refuses a non-repository project', started.ok === false && (started.code === 'worktree-unavailable' || started.code === 'not-ready'), JSON.stringify(started))
+  check(
+    'and explains it is not a git repository',
+    started.worktree === 'not-a-git-repository' || (started.preflight !== undefined && started.preflight.failed.some((entry) => entry.id === 'repository')),
+    JSON.stringify(started),
+  )
   await rig.settle()
   const snap = await snapshot(rig)
   check('nothing was claimed', byId(snap, task.id).status === 'pending' && snap.dispatch.state === 'paused', JSON.stringify(ids(snap)))

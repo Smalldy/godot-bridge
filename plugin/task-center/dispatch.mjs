@@ -765,7 +765,8 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadli
   // The checkout directory carries the attempt number: a failed attempt keeps
   // its worktree for inspection, so a retry must not try to re-add the same
   // path. The branch already carries the attempt, so the two stay in step.
-  const path = join(projectPath, root === '' ? '.worktrees' : root, String(task.id) + '-' + String(attempt))
+  const checkoutRoot = root === '' ? '.worktrees' : root
+    const path = /^([a-zA-Z]:[\\/]|[\\/]{2}|[\\/])/.test(checkoutRoot) ? join(checkoutRoot, String(task.id) + '-' + String(attempt)) : join(projectPath, checkoutRoot, String(task.id) + '-' + String(attempt))
   const startedAt = Date.now()
   const budget = Number.isFinite(deadlineMs) && deadlineMs > 0 ? Math.floor(deadlineMs) : WORKTREE_CREATE_DEADLINE_MS
   // Serialised per repository, with its own (wider) budget and a hard deadline:

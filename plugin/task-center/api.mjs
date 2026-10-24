@@ -11,7 +11,7 @@
  * never throws; the caller turns it into a tool error or an HTTP body.
  */
 
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import {
   HOST_ACTION_TIMEOUT_MS,
   ROLE_KINDS,
@@ -1812,7 +1812,11 @@ export function createApi(ctx, options) {
       project: projectPath,
       projectId: projectRef.id,
       projectRoot: projectRef.root,
-      worktreeRoot: projectRef.worktreeRoot,
+      worktreeRoot:
+        typeof opts.worktreeRoot === 'string' && opts.worktreeRoot.length > 0
+          ? opts.worktreeRoot
+          : (state.memory.registry.projects.filter((entry) => entry.id === projectRef.id)[0] || {}).worktreeRoot || projectRef.worktreeRoot,
+      preflight: (state.memory.registry.projects.filter((entry) => entry.id === projectRef.id)[0] || {}).preflight || null,
       resolvedFrom: opts.resolvedFrom === undefined ? 'explicit' : opts.resolvedFrom,
       registryConsistent: registryConsistent,
       projectWarning:
@@ -2693,6 +2697,10 @@ export function createApi(ctx, options) {
       return ok({ deleted: id, events: result.events })
     }
     if (action === 'start') {
+      {
+        const gate = await preflightRefusal(projectPath)
+        if (gate !== null) return gate
+      }
       if (context !== undefined && context !== null && context.role === 'agent') {
         const read = await readBoardOrFail(projectPath)
         if (read.failed !== undefined) return read.failed
@@ -2749,6 +2757,10 @@ export function createApi(ctx, options) {
         return failure('user-only', 'Starting dispatch is the user\'s decision; ask them to approve it in the task center panel.')
       }
       if (action === 'approveStart') {
+        {
+          const gate = await preflightRefusal(projectPath)
+          if (gate !== null) return gate
+        }
         const read = await readBoardOrFail(projectPath)
         if (read.failed !== undefined) return read.failed
         if (read.board.dispatch.state !== 'running') {
@@ -3371,6 +3383,192 @@ export function createApi(ctx, options) {
   /** Set the project the panel and scheduler follow, after proving it is a
    * directory. This is the only place a caller can point the task center at a
    * new tree, and it is a user action on the route. */
+  /**
+   * Workspace hygiene: the task center creates .agents/ and .worktrees/ inside
+   * the project, so they must be ignored by git or the working tree goes dirty
+   * and worktree creation is refused. Only .git/info/exclude is touched - never
+   * .gitignore, so nothing enters a commit. Idempotent.
+   */
+  async function ensureLocalExclusions(projectPath) {
+    const located = await git.gitPath(projectPath, 'info/exclude')
+    if (located.ok !== true) return failure('cannot-exclude', 'could not locate .git/info/exclude: ' + String(located.message || ''))
+    const absolute = String(located.path)
+    let text = ''
+    try {
+      const target = await ctx.fs.resolve(absolute, { cwd: projectPath })
+      const info = await ctx.fs.stat(target)
+      if (info !== undefined) text = await ctx.fs.readText(target)
+    } catch (error) {
+      text = ''
+    }
+    const lines = text.split(/\r?\n/)
+    const wanted = ['/.agents/', '/.worktrees/']
+    const added = []
+    for (const entry of wanted) {
+      if (lines.some((line) => line.trim() === entry)) continue
+      lines.push(entry)
+      added.push(entry)
+    }
+    const next = lines.join('\n').replace(/\n+$/, '') + '\n'
+    if (added.length > 0) {
+      try {
+        const target = await ctx.fs.resolve(absolute, { cwd: projectPath })
+        const info = await ctx.fs.stat(target)
+        const expected = info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version }
+        await ctx.fs.writeText(target, next, expected, undefined, writePolicyFor(projectPath))
+      } catch (error) {
+        return failure('cannot-exclude', 'could not write .git/info/exclude: ' + messageOf(error))
+      }
+    }
+    return ok({ path: absolute, added: added })
+  }
+
+  /** Where this project's task checkouts live: registry override or .worktrees/. */
+  function worktreeRootFor(projectPath) {
+    const ref = projectRefOf(projectPath)
+    const entry = state.memory.registry.projects.filter((candidate) => candidate.id === ref.id)[0]
+    if (entry !== undefined && entry !== null && typeof entry.worktreeRoot === 'string' && entry.worktreeRoot.length > 0) return entry.worktreeRoot
+    return join(ref.root, '.worktrees')
+  }
+
+  /**
+   * The readiness gate openProject returns and dispatch enforces. Every check is
+   * reported, so a refusal says exactly what is missing instead of a bare
+   * "cannot start".
+   */
+  async function preflightProject(projectPath, options) {
+    const opts = options === undefined || options === null ? {} : options
+    const checks = []
+    const record = (id, label, verdict, detail) => checks.push({ id: id, label: label, ok: verdict === true, detail: detail === undefined ? null : String(detail) })
+
+    const repo = git === null ? { ok: false, repo: false } : await git.isRepo(projectPath)
+    const isRepo = repo.ok === true && repo.repo === true
+    record('repository', 'git repository', isRepo, isRepo ? null : 'not a git working tree')
+
+    let exclusions = null
+    if (isRepo && git !== null) {
+      exclusions = await ensureLocalExclusions(projectPath)
+      record('exclude', '.agents/ and .worktrees/ excluded locally', exclusions.ok === true, exclusions.ok === true ? (exclusions.added.length === 0 ? 'already ignored' : 'added ' + exclusions.added.join(', ')) : exclusions.message)
+      const ignored = await git.checkIgnore(projectPath, ['.agents', '.worktrees'])
+      let excludeText = ''
+      if (exclusions.ok === true) {
+        try {
+          const target = await ctx.fs.resolve(exclusions.path, { cwd: projectPath })
+          excludeText = await ctx.fs.readText(target)
+        } catch (error) {
+          excludeText = ''
+        }
+      }
+      const wanted = ['.agents', '.worktrees']
+      const effective = wanted.filter((path) => ignored.ignored.indexOf(path) >= 0 || excludeText.indexOf('/' + path + '/') >= 0)
+      const both = ignored.ok === true && effective.length === 2
+      record('ignored', '.agents/ and .worktrees/ resolve as ignored', both, both ? null : JSON.stringify(ignored.notIgnored || ignored.message))
+    } else {
+      record('exclude', '.agents/ and .worktrees/ excluded locally', false, 'no repository to exclude in')
+      record('ignored', '.agents/ and .worktrees/ resolve as ignored', false, 'no repository to check')
+    }
+
+    const worktreeRoot = typeof opts.worktreeRoot === 'string' && opts.worktreeRoot.trim().length > 0 ? resolve(opts.worktreeRoot.trim()) : worktreeRootFor(projectPath)
+    let worktreeOk = false
+    let worktreeDetail = worktreeRoot
+    try {
+      const target = await ctx.fs.resolve(worktreeRoot, { cwd: projectPath })
+      const info = await ctx.fs.stat(target)
+      if (info !== undefined && info.type === 'directory') {
+        worktreeOk = true
+      } else {
+        const parent = await ctx.fs.stat(await ctx.fs.resolve(dirname(worktreeRoot), { cwd: projectPath }))
+        worktreeOk = parent !== undefined && parent.type === 'directory'
+        worktreeDetail = worktreeRoot + (worktreeOk ? ' (parent writable, will be created)' : ' (parent missing)')
+      }
+    } catch (error) {
+      worktreeDetail = worktreeRoot + ' (' + messageOf(error) + ')'
+    }
+    record('worktree', 'worktree root can be created', worktreeOk, worktreeDetail)
+
+    let leadOk = false
+    let leadDetail = 'no Team service'
+    try {
+      const team = ctx.get('agentTeams')
+      const roster = team !== null && team !== undefined && Array.isArray(team.roster) ? team.roster : []
+      const lead = roster.filter((member) => member.role === 'lead' && member.status === 'running')[0]
+      if (lead !== undefined) {
+        leadOk = true
+        leadDetail = lead.name
+      } else {
+        const agents = ctx.get('agents')
+        const list = agents !== null && agents !== undefined && typeof agents.list === 'function' ? agents.list() : []
+        leadOk = Array.isArray(list) && list.length > 0
+        leadDetail = leadOk ? 'agent sessions are visible' : 'no running Lead'
+      }
+    } catch (error) {
+      leadDetail = messageOf(error)
+    }
+    record('lead', 'a live Team Lead exists', leadOk, leadDetail)
+
+    let rolesOk = false
+    let rolesDetail = 'no role manager'
+    try {
+      const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
+      const reviewer = roleRead.config.profiles[roleRead.config.stages.review]
+      const tester = roleRead.config.profiles[roleRead.config.stages.test]
+      rolesOk = reviewer !== undefined && tester !== undefined
+      rolesDetail = rolesOk ? 'reviewer and tester profiles are bound (provision dry-run)' : 'missing reviewer/tester profile'
+    } catch (error) {
+      rolesDetail = messageOf(error)
+    }
+    record('roles', 'reviewer/tester can be provisioned', rolesOk, rolesDetail)
+
+    const boardRead = await readBoardOrFail(projectPath)
+    record('board', 'board is readable', boardRead.failed === undefined, boardRead.failed === undefined ? null : boardRead.failed.message)
+
+    const failed = checks.filter((check) => check.ok !== true)
+    return {
+      ok: failed.length === 0,
+      checkedAt: new Date(clock()).toISOString(),
+      worktreeRoot: worktreeRoot,
+      checks: checks,
+      failed: failed,
+    }
+  }
+
+  /** Refuse to start dispatch when any readiness check fails; keep the reason. */
+  async function preflightRefusal(projectPath) {
+    // A host without a git facade keeps its dedicated worktree-unavailable path.
+    if (git === null) return null
+    const preflight = await preflightProject(projectPath)
+    if (preflight.ok === true) {
+      // A ready project clears an old refusal so the panel stops showing it.
+      const current = await readBoardOrFail(projectPath)
+      if (current.failed === undefined && current.board.dispatch.error !== null) {
+        try {
+          await state.apply(
+            projectPath,
+            (board) => ({ ok: true, board: Object.assign({}, board, { dispatch: Object.assign({}, board.dispatch, { error: null }) }), events: [] }),
+            writePolicyFor(projectPath),
+          )
+        } catch (error) {}
+      }
+      return null
+    }
+    const missing = preflight.failed.map((check) => check.label + (check.detail === null ? '' : ' (' + check.detail + ')')).join('; ')
+    const message = 'Cannot start dispatch: ' + missing
+    try {
+      await state.apply(
+        projectPath,
+        (board) => ({
+          ok: true,
+          board: Object.assign({}, board, { dispatch: Object.assign({}, board.dispatch, { state: 'paused', error: missing }) }),
+          events: [],
+        }),
+        writePolicyFor(projectPath),
+      )
+    } catch (error) {}
+    const refused = failure('not-ready', message)
+    refused.preflight = preflight
+    return refused
+  }
+
   async function openProject(input) {
     const path = typeof input.path === 'string' ? input.path.trim() : ''
     if (path === '') return failure('missing-path', 'openProject needs a path')
@@ -3385,8 +3583,17 @@ export function createApi(ctx, options) {
     } catch (error) {
       return failure('invalid-project', messageOf(error))
     }
+    const preflight = await preflightProject(absolute, { worktreeRoot: input.worktreeRoot })
+    if (preflight.ok !== true) {
+      const first = preflight.failed[0]
+      const code = first === undefined ? 'not-ready' : first.id === 'repository' ? 'not-a-repository' : first.id === 'exclude' ? 'cannot-exclude' : 'not-ready'
+      const refused = failure(code, 'project is not ready: ' + preflight.failed.map((check) => check.label + (check.detail === null ? '' : ' (' + check.detail + ')')).join('; '))
+      refused.preflight = preflight
+      return refused
+    }
     remember(absolute)
-    return snapshot(absolute)
+    state.touchProject(absolute, undefined, { worktreeRoot: preflight.worktreeRoot, preflight: preflight })
+    return Object.assign({}, await snapshot(absolute, { worktreeRoot: preflight.worktreeRoot }), { preflight: preflight })
   }
 
   return { perform: perform, snapshot: snapshot, taskDetail: taskDetail, taskList: taskList, autoMergePending: autoMergePending, actions: ACTIONS, readActions: READ_ACTIONS }

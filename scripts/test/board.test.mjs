@@ -376,8 +376,8 @@ const MERGE = {
     normaliseWorktree({}).root === '.worktrees' && normaliseWorktree({}).enabled === undefined,
     JSON.stringify(normaliseWorktree({})),
   )
-  check('an absolute worktree root falls back', normaliseWorktree({ root: '/tmp/wt' }).root === '.worktrees')
-  check('a Windows drive worktree root falls back', normaliseWorktree({ root: 'C:/wt' }).root === '.worktrees')
+  check('an absolute worktree root is preserved (validated by the readiness gate)', normaliseWorktree({ root: '/tmp/wt' }).root === '/tmp/wt')
+  check('a Windows drive worktree root is preserved', normaliseWorktree({ root: 'C:/wt' }).root === 'C:/wt')
   check('an escaping worktree root falls back', normaliseWorktree({ root: '../outside' }).root === '.worktrees')
   check('a nested worktree root is normalised to POSIX', normaliseWorktree({ root: 'tmp\\worktrees\\' }).root === 'tmp/worktrees')
   check(
@@ -388,15 +388,15 @@ const MERGE = {
   const dispatch = normaliseDispatch({ worktree: { enabled: true, root: '/outside' }, maxConcurrent: 1 })
   check(
     'normaliseDispatch carries a normalised worktree without an enabled switch',
-    dispatch.worktree.root === '.worktrees' && dispatch.worktree.enabled === undefined,
+    dispatch.worktree.root === '/outside' && dispatch.worktree.enabled === undefined,
     JSON.stringify(dispatch.worktree),
   )
   const fs = createFakeFs()
   seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: 2, tasks: [], dispatch: { worktree: { enabled: true, root: '/etc/wt' } } }))
   const loaded = await read(fs)
   check(
-    'a board read normalises an absolute worktree root and drops enabled',
-    loaded.board.dispatch.worktree.root === '.worktrees' && loaded.board.dispatch.worktree.enabled === undefined,
+    'a board read keeps an absolute worktree root and drops enabled',
+    loaded.board.dispatch.worktree.root === '/etc/wt' && loaded.board.dispatch.worktree.enabled === undefined,
     JSON.stringify(loaded.board.dispatch.worktree),
   )
 }

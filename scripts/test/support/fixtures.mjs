@@ -144,8 +144,39 @@ export function createFakeGit(options) {
   const record = (name, detail) => {
     calls.push({ name: name, detail: detail })
   }
+  let lastRoot = opts.project === undefined ? null : opts.project
   return {
     calls: calls,
+    async raw(root, args) {
+      record('raw', args)
+      lastRoot = root
+      if (args[0] === 'rev-parse' && args[1] === '--git-path') {
+        return { ok: true, code: 0, stdout: String(root).replace(/[\\/]+$/, '') + '/.git/' + args[2] + '\n', stderr: '' }
+      }
+      if (args[0] === 'check-ignore') {
+        const wanted = args.slice(2)
+        let ignored = wanted
+        if (opts.fs !== undefined && lastRoot !== null) {
+          const key = String(lastRoot).replace(/[\\/]+$/, '') + '/.git/info/exclude'
+          const entry = opts.fs.files.get(key)
+          const text = entry === undefined ? '' : entry.text
+          ignored = wanted.filter((path) => text.indexOf('/' + path + '/') >= 0)
+        } else if (opts.ignored === false) {
+          ignored = []
+        }
+        return { ok: ignored.length > 0, code: ignored.length > 0 ? 0 : 1, stdout: ignored.map((path) => path + '\n').join(''), stderr: '' }
+      }
+      return { ok: true, code: 0, stdout: '', stderr: '' }
+    },
+    async gitPath(root, name) {
+      lastRoot = root
+      return { ok: true, path: String(root).replace(/[\\/]+$/, '') + '/.git/' + name }
+    },
+    async checkIgnore(root, paths) {
+      const result = await this.raw(root, ['check-ignore', '--', ...paths])
+      const ignored = String(result.stdout).split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0)
+      return { ok: true, ignored: ignored, notIgnored: paths.filter((path) => ignored.indexOf(path) < 0) }
+    },
     async isRepo() {
       record('isRepo')
       return { ok: true, repo: opts.repo !== false }

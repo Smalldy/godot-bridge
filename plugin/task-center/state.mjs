@@ -47,7 +47,12 @@ export function createState(ctx, options) {
     const byId = new Map()
     for (const entry of left.projects.concat(right.projects)) {
       const current = byId.get(entry.id)
-      if (current === undefined || String(entry.lastSeenAt).localeCompare(String(current.lastSeenAt)) >= 0) {
+      const newer = current === undefined || String(entry.lastSeenAt).localeCompare(String(current.lastSeenAt)) > 0
+      const sameInstant = current !== undefined && String(entry.lastSeenAt) === String(current.lastSeenAt)
+      // Two touches in the same millisecond must not drop a worktreeRoot/preflight
+      // that only one of them carries.
+      const richer = sameInstant && (entry.worktreeRoot !== null || entry.preflight !== null) && (current.worktreeRoot === null && current.preflight === null)
+      if (newer || (sameInstant && (richer || current === undefined))) {
         byId.set(entry.id, entry)
       }
     }
@@ -89,12 +94,20 @@ export function createState(ctx, options) {
   }
 
   /** Remember a project as active: memory now, disk soon, never blocking the caller. */
-  function touchProject(projectPath, sessionId) {
+  function touchProject(projectPath, sessionId, extra) {
     if (typeof projectPath !== 'string' || projectPath.length === 0) return null
     const ref = projectRefOf(resolve(projectPath))
     const nowIso = new Date(clock()).toISOString()
+    const previous = memory.registry.projects.filter((entry) => entry.id === ref.id)[0]
     const projects = memory.registry.projects.filter((entry) => entry.id !== ref.id)
-    projects.unshift({ id: ref.id, root: ref.root, lastSeenAt: nowIso, lastSessionId: typeof sessionId === 'string' ? sessionId : null })
+    projects.unshift({
+      id: ref.id,
+      root: ref.root,
+      lastSeenAt: nowIso,
+      lastSessionId: typeof sessionId === 'string' ? sessionId : null,
+      worktreeRoot: extra !== undefined && extra !== null && typeof extra.worktreeRoot === 'string' ? extra.worktreeRoot : previous === undefined ? null : previous.worktreeRoot,
+      preflight: extra !== undefined && extra !== null && extra.preflight !== undefined ? extra.preflight : previous === undefined ? null : previous.preflight,
+    })
     memory.registry = { version: 1, projects: projects }
     memory.projectHint = ref.root
     persistRegistry()

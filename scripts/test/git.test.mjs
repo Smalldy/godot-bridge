@@ -34,6 +34,9 @@ function recorder(handler) {
   const git = createGit({ run: recorder() })
   const expected = [
     'isRepo',
+    'raw',
+    'gitPath',
+    'checkIgnore',
     'head',
     'currentBranch',
     'isClean',

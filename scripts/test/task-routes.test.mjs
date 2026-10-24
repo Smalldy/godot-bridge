@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH } from '../../plugin/task-center/routes.mjs'
-import { boardJson, createFakeFs, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
+import { boardJson, createFakeFs, createFakeGit, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
 import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, roleBriefFor } from '../../plugin/task-center/dispatch.mjs'
@@ -735,21 +735,22 @@ function holdFile(rig, path) {
   await call(noGitSurface, projectUrl, {})
   const created = await postTo(noGitSurface, { action: 'create', title: 'needs a worktree' })
   const refused = await postTo(noGitSurface, { action: 'start' })
-  check('start refuses without a git service', refused.json().ok === false && refused.json().code === 'worktree-unavailable', refused.text)
+  check('start refuses without a git service', refused.json().ok === false && (refused.json().code === 'worktree-unavailable' || refused.json().code === 'not-ready'), refused.text)
   check(
     'and the refusal names the worktree problem',
-    refused.json().worktree === 'no-git-service' && String(refused.json().message).indexOf('worktree') >= 0,
+    (refused.json().worktree === 'no-git-service' || (refused.json().preflight !== undefined && refused.json().preflight.failed.length > 0)) &&
+      (String(refused.json().message).toLowerCase().indexOf('worktree') >= 0 || String(refused.json().message).indexOf('git repository') >= 0),
     refused.text,
   )
   const state = await call(noGitSurface, projectUrl, {})
   check('dispatch stays paused after the refusal', state.json().dispatch.state === 'paused', state.text)
   check('and the task stays pending', state.json().tasks[0].status === 'pending' && state.json().tasks[0].id === created.json().task.id, state.text)
   const agentRequest = await noGit.api.perform('start', { note: 'try it' }, { projectPath: PROJECT, by: '@agent', role: 'agent', agent: { id: 'session-agent' } })
-  check('an agent start is refused for the same reason', agentRequest.ok === false && agentRequest.code === 'worktree-unavailable', JSON.stringify(agentRequest))
+  check('an agent start is refused for the same reason', agentRequest.ok === false && (agentRequest.code === 'worktree-unavailable' || agentRequest.code === 'not-ready'), JSON.stringify(agentRequest))
   const agentState = await call(noGitSurface, projectUrl, {})
   check('and no start request is recorded', agentState.json().dispatch.request === null, agentState.text)
   const approved = await postTo(noGitSurface, { action: 'approveStart' })
-  check('approveStart refuses the same environment', approved.json().ok === false && approved.json().code === 'worktree-unavailable', approved.text)
+  check('approveStart refuses the same environment', approved.json().ok === false && ((approved.json().code === 'worktree-unavailable' || approved.json().code === 'not-ready') || approved.json().code === 'not-ready'), approved.text)
   check('and dispatch never enters running', approved.json().dispatch === undefined && (await call(noGitSurface, projectUrl, {})).json().dispatch.state === 'paused', approved.text)
   noGitSurface.dispose()
   noGit.scheduler.dispose()
@@ -762,10 +763,53 @@ function holdFile(rig, path) {
   await call(notRepoSurface, projectUrl, {})
   await postTo(notRepoSurface, { action: 'create', title: 'not a repo' })
   const refused = await postTo(notRepoSurface, { action: 'start' })
-  check('start refuses a project that is not a git repository', refused.json().ok === false && refused.json().code === 'worktree-unavailable', refused.text)
-  check('and says so', refused.json().worktree === 'not-a-git-repository', refused.text)
+  check('start refuses a project that is not a git repository', refused.json().ok === false && (refused.json().code === 'worktree-unavailable' || refused.json().code === 'not-ready'), refused.text)
+  check('and says so', (refused.json().worktree === 'not-a-git-repository' || (refused.json().preflight !== undefined && refused.json().preflight.failed.some((check) => check.id === 'repository'))), refused.text)
   notRepoSurface.dispose()
   notRepo.scheduler.dispose()
+
+  // External worktree root: dispatch really creates the checkout outside the project.
+  const extRig = createRig({ allowSpawn: false })
+  const { resolve: resolveWt } = await import('node:path')
+  const externalRoot = resolveWt('C:/external/task-checkouts')
+  extRig.fs.dirs.add(externalRoot)
+  seedBoard(
+    extRig.fs,
+    PROJECT,
+    JSON.stringify({
+      version: 2,
+      seq: 2,
+      dispatch: { state: 'paused', worktree: { root: externalRoot } },
+      tasks: [{ id: 'T-1', title: 'external checkout', status: 'pending', priority: 0, dependsOn: [], writeFiles: ['scripts/a.gd'], spec: 's', acceptance: 'a', evidence: '', history: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), attempts: 0, maxAttempts: 3 }],
+    }),
+  )
+  const started = await extRig.action('start')
+  await extRig.settle()
+  const added = extRig.git.calls.filter((call) => call.name === 'worktreeAdd')
+  check(
+    'an external worktree root is used by dispatch',
+    started.ok === true && added.length >= 1 && String(added[0].detail.path).indexOf(externalRoot) === 0,
+    JSON.stringify({ started: started.ok, calls: added.map((call) => call.detail && call.detail.path) }),
+  )
+  extRig.scheduler.dispose()
+
+  // A .git that cannot be written: readable refusal, never a silent pass.
+  const lockedRig = createRig({ allowSpawn: false })
+  const lockedExclude = join(PROJECT, '.git', 'info', 'exclude')
+  lockedRig.git.gitPath = async (root, name) => ({ ok: true, path: join(root, '.git', name) })
+  lockedRig.git.checkIgnore = async () => ({ ok: true, ignored: [], notIgnored: ['.agents', '.worktrees'] })
+  const originalWrite = lockedRig.fs.writeText
+  lockedRig.fs.writeText = async function (target, content, expected, signal, policy) {
+    if (String(target.targetKey === undefined ? target.displayPath : target.targetKey).indexOf('.git') >= 0) throw new Error('EACCES: read-only .git')
+    return originalWrite.call(this, target, content, expected, signal, policy)
+  }
+  const lockedOpen = await lockedRig.action('openProject', { path: PROJECT })
+  check(
+    'a read-only .git is refused as cannot-exclude',
+    lockedOpen.ok === false && lockedOpen.code === 'cannot-exclude' && lockedRig.fs.files.get(lockedExclude) === undefined,
+    JSON.stringify({ code: lockedOpen.code }),
+  )
+  lockedRig.scheduler.dispose()
 }
 
 {
@@ -775,7 +819,7 @@ function holdFile(rig, path) {
   await call(dirtySurface, projectUrl, {})
   await postTo(dirtySurface, { action: 'create', title: 'dirty tree' })
   const refused = await postTo(dirtySurface, { action: 'start' })
-  check('start refuses a dirty working tree', refused.json().ok === false && refused.json().code === 'worktree-unavailable', refused.text)
+  check('start refuses a dirty working tree', refused.json().ok === false && (refused.json().code === 'worktree-unavailable' || refused.json().code === 'not-ready'), refused.text)
   check('and says the tree is dirty', refused.json().worktree === 'dirty-worktree', refused.text)
   const state = await call(dirtySurface, projectUrl, {})
   check('a dirty tree keeps the board pending and paused', state.json().dispatch.state === 'paused' && state.json().tasks[0].status === 'pending', state.text)
@@ -4845,6 +4889,68 @@ rig.scheduler.dispose()
   unboundRig.scheduler.dispose()
   surface.dispose()
   rig.scheduler.dispose()
+}
+
+// ── T-87: readiness gate, local exclusions, refusals, external worktree root ──
+{
+  const { resolve: resolvePath } = await import('node:path')
+  const rig = createRig({ allowSpawn: false })
+  const excludeKey = join(PROJECT, '.git', 'info', 'exclude')
+  rig.git.gitPath = async (root, name) => ({ ok: true, path: join(root, '.git', name) })
+  rig.git.checkIgnore = async (root, paths) => {
+    const entry = rig.fs.files.get(excludeKey)
+    const text = entry === undefined ? '' : entry.text
+    const ignored = paths.filter((path) => text.indexOf('/' + path + '/') >= 0)
+    return { ok: true, ignored: ignored, notIgnored: paths.filter((path) => ignored.indexOf(path) < 0) }
+  }
+  const opened = await rig.action('openProject', { path: PROJECT })
+  check(
+    'openProject returns a readiness checklist and writes local exclusions',
+    opened.ok === true && Array.isArray(opened.preflight.checks) && opened.preflight.checks.length >= 6 &&
+      opened.preflight.checks.every((entry) => entry.ok === true) && opened.preflight.checks.some((entry) => entry.id === 'exclude' && /added/.test(String(entry.detail))),
+    JSON.stringify(opened.preflight && opened.preflight.checks),
+  )
+  const excludeText = rig.fs.files.get(excludeKey) === undefined ? '' : rig.fs.files.get(excludeKey).text
+  check('the local exclude file gains exactly the two task-center paths', excludeText.indexOf('/.agents/') >= 0 && excludeText.indexOf('/.worktrees/') >= 0, excludeText)
+  const again = await rig.action('openProject', { path: PROJECT })
+  const excludeAgain = rig.fs.files.get(excludeKey).text
+  check(
+    'a second openProject is idempotent (no duplicate exclude lines)',
+    again.ok === true && (excludeAgain.match(/\/\.agents\//g) || []).length === 1 && (excludeAgain.match(/\/\.worktrees\//g) || []).length === 1,
+    excludeAgain,
+  )
+  check('the persisted registry carries the preflight result', rig.state.memory.registry.projects[0].preflight !== null && rig.state.memory.registry.projects[0].preflight.ok === true, JSON.stringify(rig.state.memory.registry.projects[0].preflight))
+  // External worktree root: accepted, validated and recorded on the ProjectRef.
+  const external = resolvePath('C:/external/godot-worktrees')
+  rig.fs.dirs.add(external)
+  const externalOpen = await rig.action('openProject', { path: PROJECT, worktreeRoot: 'C:/external/godot-worktrees' })
+  check(
+    'an external worktree root is validated and persisted',
+    externalOpen.ok === true && externalOpen.preflight.worktreeRoot === external && externalOpen.worktreeRoot === external &&
+      rig.state.memory.registry.projects[0].worktreeRoot === external,
+    JSON.stringify({ ok: externalOpen.ok, expected: external, preflight: externalOpen.preflight && externalOpen.preflight.worktreeRoot, snapshot: externalOpen.worktreeRoot, registry: rig.state.memory.registry.projects.map((entry) => ({ root: entry.root, wt: entry.worktreeRoot })) }),
+  )
+  rig.scheduler.dispose()
+
+  // Non-git project: refused, and nothing is created for it.
+  const notRepo = createRig({ allowSpawn: false, git: createFakeGit({ repo: false }) })
+  const missing = join(PROJECT, 'not-a-repo')
+  notRepo.fs.dirs.add(missing)
+  const refused = await notRepo.action('openProject', { path: missing })
+  check(
+    'a non-git project is refused as not-a-repository without creating anything',
+    refused.ok === false && refused.code === 'not-a-repository' && refused.preflight.failed.some((entry) => entry.id === 'repository') &&
+      notRepo.fs.files.get(join(missing, '.agents', 'tasks.json')) === undefined,
+    JSON.stringify({ code: refused.code, created: notRepo.fs.files.has(join(missing, '.agents', 'tasks.json')) }),
+  )
+  const gate = await notRepo.action('start')
+  check(
+    'dispatch is refused with the missing items and records them in dispatch.error',
+    gate.ok === false && gate.code === 'not-ready' && Array.isArray(gate.preflight.failed) &&
+      String(JSON.parse(notRepo.fs.files.get(boardPathOf(PROJECT)).text).dispatch.error).indexOf('git repository') >= 0,
+    JSON.stringify(gate.preflight && gate.preflight.failed),
+  )
+  notRepo.scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
