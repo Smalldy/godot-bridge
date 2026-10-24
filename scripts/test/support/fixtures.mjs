@@ -322,7 +322,15 @@ export function createRig(options) {
     },
     ['fs', 'sandboxPolicy', 'tools', 'webServer'],
   )
-  const state = createState(ctx, { now: opts.now })
+  const state = createState(ctx, {
+    now: opts.now,
+    // T-102: tests inject the sessions-tree fixture (and its own home) so the
+    // reverse lookup never touches the developer's real ~/.dsh.
+    homeDir: opts.homeDir,
+    // Test rigs opt OUT of the real sessions tree unless they pass a fixture.
+    sessionLookup: opts.sessionLookup === undefined ? null : opts.sessionLookup,
+    isDir: opts.isDir,
+  })
   // A rig is one session on one project: the resolver's session workspace is
   // this project unless a test clears it to exercise no-project-bound.
   // Every rig is one session; tests pass ?session=test-session on HTTP calls.

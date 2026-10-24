@@ -22,6 +22,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname } from 'node:path'
+import { createSessionLookup } from './session-lookup.mjs'
 import { createState } from './state.mjs'
 import { createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
 import { createMerger } from './merge.mjs'
@@ -176,6 +177,9 @@ function applyRow(ctx) {
     onRegistryError: function (status) {
       warnSkipped(ctx, 'project registry', new Error(String(status.error === null ? 'unwritable' : status.error)))
     },
+    // T-102: reverse-look a session id up in the host's DSH sessions tree, so the
+    // panel knows its project before any tool call has recorded one.
+    sessionLookup: createSessionLookup({ homeDir: homedir() }),
   })
   // Git comes from the host's unconfined subprocess service. It is REQUIRED now:
   // tasks run in git worktrees, so without a facade start/approveStart refuse
