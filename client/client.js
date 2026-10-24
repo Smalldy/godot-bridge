@@ -198,6 +198,9 @@ window.__ModuleLoader__.load({
 				testingCol: '测试中',
 				doneCol: '完成',
 				archiveLine: '已归档 {n} 张·{range}',
+				archiveTitle: '已归档任务',
+				archiveOpen: '查看归档',
+				archiveEmpty: '没有匹配的已归档任务',
 				viewAllDone: '查看全部',
 				doneAllTitle: '已完成任务',
 				doneAllSearch: '按标题或编号搜索',
@@ -671,6 +674,9 @@ window.__ModuleLoader__.load({
 				testingCol: 'Testing',
 				doneCol: 'Done',
 				archiveLine: '{n} archived · {range}',
+				archiveTitle: 'Archived tasks',
+				archiveOpen: 'View archived',
+				archiveEmpty: 'No archived task matches',
 				viewAllDone: 'View all',
 				doneAllTitle: 'Completed tasks',
 				doneAllSearch: 'Search by title or id',
@@ -1814,6 +1820,7 @@ window.__ModuleLoader__.load({
 				const project = tcRememberedProject()
 				if (project !== null) params.push('project=' + encodeURIComponent(project))
 				params.push('status=' + encodeURIComponent(opts.status === undefined ? 'done' : String(opts.status)))
+				if (opts.archived === true) params.push('archived=1')
 				if (typeof opts.q === 'string' && opts.q !== '') params.push('q=' + encodeURIComponent(opts.q))
 				if (typeof opts.cursor === 'string' && opts.cursor !== '') params.push('cursor=' + encodeURIComponent(opts.cursor))
 				params.push('limit=' + String(Number.isFinite(opts.limit) ? opts.limit : 50))
@@ -2201,6 +2208,7 @@ window.__ModuleLoader__.load({
 			function DoneAllDrawer(props) {
 				const t = props.t
 				const list = props.store
+				const archived = props.archived === true
 				const [, setVersion] = React.useState(0)
 				const bump = function () { setVersion(function (value) { return value + 1 }) }
 				const items = doneAllState.items
@@ -2242,7 +2250,7 @@ window.__ModuleLoader__.load({
 					doneAllState.error = false
 					doneAllState.failedMore = false
 					const handle = setTimeout(function () {
-						void list.listTasks({ status: 'done', q: query, limit: 50 }).then(function (payload) {
+						void list.listTasks({ status: 'done', q: query, limit: 50, archived: archived }).then(function (payload) {
 							if (token !== doneAllState.token) return
 							applyPage(payload, true)
 						})
@@ -2256,7 +2264,7 @@ window.__ModuleLoader__.load({
 					doneAllState.loading = true
 					bump()
 					const token = doneAllState.token
-					void list.listTasks({ status: 'done', q: query, cursor: next, limit: 50 }).then(function (payload) {
+					void list.listTasks({ status: 'done', q: query, cursor: next, limit: 50, archived: archived }).then(function (payload) {
 						doneAllState.busy = false
 						if (token !== doneAllState.token) return
 						if (!applyPage(payload, false)) {
@@ -2272,7 +2280,7 @@ window.__ModuleLoader__.load({
 					doneAllState.loading = true
 					doneAllState.error = false
 					bump()
-					void list.listTasks({ status: 'done', q: query, limit: 50 }).then(function (payload) {
+					void list.listTasks({ status: 'done', q: query, limit: 50, archived: archived }).then(function (payload) {
 						applyPage(payload, true)
 					})
 				}
@@ -2295,7 +2303,7 @@ window.__ModuleLoader__.load({
 						h(
 							'div',
 							{ className: 'gbt-drawerhead' },
-							h('strong', null, t('doneAllTitle')),
+							h('strong', null, t(archived ? 'archiveTitle' : 'doneAllTitle')),
 							h('span', { className: 'gbt-muted' }, ' · ' + t('doneAllCount').replace('{n}', String(Number.isFinite(props.total) ? props.total : items.length))),
 							h('span', { className: 'gbt-muted' }, ' · ' + t('doneAllLoaded').replace('{n}', String(items.length))),
 							h('button', { type: 'button', className: 'gbt-iconbtn', onClick: props.onClose, 'aria-label': t('doneAllTitle') }, '×'),
@@ -2332,7 +2340,7 @@ window.__ModuleLoader__.load({
 											}),
 										)
 									: items.length === 0
-										? h('div', { className: 'gbt-donelist' }, h('div', { className: 'gbt-empty' }, t('doneAllEmpty')))
+										? h('div', { className: 'gbt-donelist' }, h('div', { className: 'gbt-empty' }, t(archived ? 'archiveEmpty' : 'doneAllEmpty')))
 										: h(
 												'div',
 												{
@@ -3662,7 +3670,7 @@ window.__ModuleLoader__.load({
 						h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
 						h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
 						archivedCount > 0
-							? h('div', { className: 'gbt-statusscan', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)))
+							? h('div', { className: 'gbt-statusscan', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)), ' ', h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'archive-open', onClick: function () { if (props.onOpenArchive !== undefined) props.onOpenArchive() } }, t('archiveOpen')))
 							: null,
 					),
 				)
@@ -4483,7 +4491,7 @@ window.__ModuleLoader__.load({
 			// state alone therefore resets to the board on return; this object lives in
 			// the views closure (one per plugin activation) and carries the view and
 			// selected task across that remount. Modals are deliberately not here.
-			const panelState = { view: 'board', selectedId: null, doneAllOpen: false }
+			const panelState = { view: 'board', selectedId: null, doneAllOpen: false, doneAllArchived: false }
 			// The drawer's list state lives here (not only in React state) so the
 			// fetches that resolve between renders are visible to the next one; a
 			// state counter still drives the real React re-render.
@@ -4510,6 +4518,11 @@ window.__ModuleLoader__.load({
 				const [selectedId, setSelectedIdState] = React.useState(panelState.selectedId)
 				const [editing, setEditing] = React.useState(null)
 				const [doneAllOpen, setDoneAllOpenState] = React.useState(panelState.doneAllOpen)
+				const [doneAllArchived, setDoneAllArchivedState] = React.useState(panelState.doneAllArchived)
+				function setDoneAllArchived(next) {
+					panelState.doneAllArchived = next
+					setDoneAllArchivedState(next)
+				}
 				function setDoneAllOpen(next) {
 					panelState.doneAllOpen = next
 					setDoneAllOpenState(next)
@@ -4713,7 +4726,7 @@ window.__ModuleLoader__.load({
 											now: now,
 											selectedId: selectedId,
 											onOpen: openTask,
-											onOpenDoneAll: function () { doneAllReset(); setDoneAllOpen(true) },
+											onOpenDoneAll: function () { doneAllReset(); setDoneAllArchived(false); setDoneAllOpen(true) },
 											onColumnToggle: function () { setColumnTick(function (count) { return count + 1 }) },
 										})
 						: view === 'queue'
@@ -4721,7 +4734,17 @@ window.__ModuleLoader__.load({
 							: view === 'workers'
 								? h(WorkersView, { snapshot: snapshot, t: t })
 								: view === 'status'
-									? h(StatusView, { snapshot: snapshot, t: t, now: now, store: store })
+									? h(StatusView, {
+										snapshot: snapshot,
+										t: t,
+										now: now,
+										store: store,
+										onOpenArchive: function () {
+											doneAllReset()
+											setDoneAllArchived(true)
+											setDoneAllOpen(true)
+										},
+									})
 									: view === 'roles'
 										? h(RolesView, { snapshot: snapshot, t: t, store: store })
 										: h(Board, { snapshot: snapshot, t: t, now: now, selectedId: selectedId, onOpen: openTask })
@@ -4775,6 +4798,7 @@ window.__ModuleLoader__.load({
 								? h(DoneAllDrawer, {
 										t: t,
 										store: store,
+										archived: doneAllArchived === true,
 										total: Number.isFinite(counts.done) ? counts.done : null,
 										onClose: function () { setDoneAllOpen(false) },
 										onOpen: function (id) {

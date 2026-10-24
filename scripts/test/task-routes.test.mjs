@@ -4672,11 +4672,16 @@ rig.scheduler.dispose()
   const rig = createRig({ allowSpawn: false })
   const board = { version: 2, seq: 5, dispatch: { state: 'paused' }, tasks: [taskOf('T-1', 'done', 40), taskOf('T-2', 'done', 45), taskOf('T-3', 'done', 2), taskOf('T-4', 'running', 1)] }
   seedBoard(rig.fs, PROJECT, JSON.stringify(board))
+  // Normalise the seed first: the archive drop must be measured between two
+  // normalised writes, not against a raw hand-written board.
+  await rig.state.apply(PROJECT, (current) => ({ ok: true, board: current, events: [] }), undefined)
   const beforeText = rig.fs.files.get(boardPathOf(PROJECT)).text
   const before = boardJson(rig.fs, PROJECT)
-  const tick = await rig.action('tick')
+  // The host's 5s background loop calls autoMergePending: that is the trigger,
+  // NOT an explicit tick action.
+  const tick = await rig.api.autoMergePending(PROJECT)
   check(
-    'a tick archives done cards older than 30 days',
+    'the host background sweep archives done cards older than 30 days (no explicit tick)',
     tick.ok === true && tick.archive !== null && tick.archive.ok === true && tick.archive.archived === 2,
     JSON.stringify(tick.archive),
   )
@@ -4701,11 +4706,14 @@ rig.scheduler.dispose()
     archived !== null && archived.tasks.length === 2 && archived.tasks[0].spec !== undefined && archived.tasks[0].history.length === 4 && archived.tasks[0].evidence !== undefined,
     archivedText === null ? 'missing' : String(archivedText.length) + ' bytes',
   )
-  // Idempotent: a second sweep moves nothing and does not duplicate the archive.
+  // Throttle: a second host sweep within 24h does not run at all.
+  const sequent = await rig.api.autoMergePending(PROJECT)
+  check('a second sweep within 24h is throttled off', sequent.ok === true && sequent.archive === null, JSON.stringify(sequent.archive))
+  // Idempotency: after clearing the throttle, a sweep with nothing due is a no-op.
   rig.state.memory.lastArchive = null
-  const again = await rig.action('tick')
+  const again = await rig.api.autoMergePending(PROJECT)
   const archivedAgain = JSON.parse(rig.fs.files.get(archivePath(PROJECT, year)).text)
-  check('a second sweep is a no-op', again.ok === true && again.archive !== null && again.archive.archived === 0 && archivedAgain.tasks.length === 2, JSON.stringify(again.archive))
+  check('an unthrottled second sweep moves nothing and does not duplicate', again.ok === true && again.archive !== null && again.archive.archived === 0 && archivedAgain.tasks.length === 2, JSON.stringify(again.archive))
   // Visibility: archivedCount/range in the snapshot; the state is a full rebuild.
   const surface = install(rig)
   const stateRes = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT) + '&since=' + String(before.seq), {})
@@ -4741,7 +4749,7 @@ rig.scheduler.dispose()
     return undefined
   }
   rig.state.memory.lastArchive = null
-  const failedTick = await rig.action('tick')
+  const failedTick = await rig.api.autoMergePending(PROJECT)
   rig.fs.hooks.beforeWrite = null
   const afterFailure = boardJson(rig.fs, PROJECT)
   check(
@@ -4750,7 +4758,7 @@ rig.scheduler.dispose()
     JSON.stringify({ archive: failedTick.archive, ids: afterFailure.tasks.map((task) => task.id) }),
   )
   rig.state.memory.lastArchive = null
-  const recovered = await rig.action('tick')
+  const recovered = await rig.api.autoMergePending(PROJECT)
   check('the sweep recovers once the archive write works again', recovered.ok === true && recovered.archive !== null && recovered.archive.archived >= 1 && boardJson(rig.fs, PROJECT).tasks.every((task) => task.id !== 'T-5'), JSON.stringify(recovered.archive))
   rig.scheduler.dispose()
 }

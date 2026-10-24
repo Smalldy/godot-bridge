@@ -1562,6 +1562,28 @@ export function createApi(ctx, options) {
     return ok({ archived: archivedIds.length, years: years, seq: applied.board.seq, ids: archivedIds })
   }
 
+  /** Run the sweep only when due (boot, project switch, or 24h since the last one). */
+  async function maybeArchive(projectPath) {
+    if (state.memory.archiveInFlight !== undefined && state.memory.archiveInFlight !== null) return state.memory.archiveInFlight
+    const run = archiveIfDue(projectPath)
+    state.memory.archiveInFlight = run
+    try {
+      return await run
+    } finally {
+      state.memory.archiveInFlight = null
+    }
+  }
+
+  async function archiveIfDue(projectPath) {
+    const now = clock()
+    const last = state.memory.lastArchive
+    const due = last === undefined || last === null || last.project !== projectPath || now - last.at >= 24 * 60 * 60 * 1000
+    if (!due) return null
+    const result = await archiveOldDone(projectPath)
+    state.memory.lastArchive = { project: projectPath, at: now }
+    return result
+  }
+
   /** Archived cards' count and date range, cached briefly (the panel polls fast). */
   const archiveInfoCache = { project: null, at: 0, value: null }
   async function archiveInfo(projectPath, now) {
@@ -2300,7 +2322,16 @@ export function createApi(ctx, options) {
    * integrate without any model action.
    */
   async function autoMergePending(projectPath) {
-    if (autoMerge !== true) return ok({ merged: [], skipped: [], disabled: true })
+    // The host calls this every few seconds (index.mjs), so this is the sweep's
+    // real trigger: due at boot and once per 24h after that. A failure here never
+    // blocks merging.
+    let archiveResult = null
+    try {
+      archiveResult = await maybeArchive(projectPath)
+    } catch (error) {
+      archiveResult = null
+    }
+    if (autoMerge !== true) return ok({ merged: [], skipped: [], disabled: true, archive: archiveResult })
     if (merger === null) return ok({ merged: [], skipped: [], disabled: true })
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
@@ -2747,14 +2778,7 @@ export function createApi(ctx, options) {
     }
     if (action === 'tick') {
       if (scheduler === null) return failure('no-scheduler', 'the dispatcher is not available in this profile')
-      const nowTick = clock()
-      const last = state.memory.lastArchive
-      const due = last === undefined || last === null || last.project !== projectPath || nowTick - last.at >= 24 * 60 * 60 * 1000
-      let archiveResult = null
-      if (due) {
-        archiveResult = await archiveOldDone(projectPath)
-        state.memory.lastArchive = { project: projectPath, at: nowTick }
-      }
+      const archiveResult = await maybeArchive(projectPath)
       return ok({ tick: await scheduler.settle(projectPath), archive: archiveResult })
     }
     if (action === 'mergeRequest') {

@@ -3188,6 +3188,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
 // ── T-83: done column folds to 5, "view all" drawer pages/searches, state persists ──
 {
   const COLUMNS_KEY = 'godotBridge.taskCenter.columns'
+  const t83SavedFetch = globalThis.fetch
   STORAGE.delete(COLUMNS_KEY)
   const day = 24 * 60 * 60 * 1000
   const nowMs = Date.now()
@@ -3341,6 +3342,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   tree = withHooks(panel, { initialView: 'board' })
   check('retry recovers the list', rowIds(drawer(tree)).length > 0, String(rowIds(drawer(tree)).length))
   STORAGE.delete(COLUMNS_KEY)
+  globalThis.fetch = t83SavedFetch
 }
 
 // ── T-83: the summary snapshot shape (T-82) drives the board/queue/status ──
@@ -3765,6 +3767,52 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     JSON.stringify({ collapsed: blockedSection && blockedSection.props['data-collapsed'], cards: cardsIn(blockedSection).length }),
   )
   STORAGE.delete(COLUMNS_KEY)
+  globalThis.fetch = savedFetch
+}
+
+// ── T-84: the archived view is reachable from the status page ──
+{
+  const savedFetch = globalThis.fetch
+  const savedArchived = HOST.archivedCount
+  const savedRange = HOST.archiveRange
+  const listCalls = []
+  HOST.archivedCount = 3
+  HOST.archiveRange = { from: '2025-01-01T00:00:00.000Z', to: '2025-06-01T00:00:00.000Z' }
+  globalThis.fetch = async function (url, options) {
+    const text = String(url)
+    if (text.indexOf('/list?') >= 0) {
+      listCalls.push(text)
+      return { json: async () => ({ ok: true, tasks: [{ id: 'A-1', title: 'Old done', status: 'done', updatedAt: '2025-01-02T00:00:00.000Z' }, { id: 'A-2', title: 'Older', status: 'done', updatedAt: '2025-01-01T00:00:00.000Z' }], nextCursor: null }) }
+    }
+    if (text.indexOf('/state') >= 0) return { json: async () => Object.assign({}, HOST, { archivedCount: 3, archiveRange: { from: '2025-01-01T00:00:00.000Z', to: '2025-06-01T00:00:00.000Z' } }) }
+    return savedFetch(url, options)
+  }
+  let tree = withHooks(panel, { initialView: 'status' })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await flush()
+  tree = withHooks(panel, { initialView: 'status' })
+  const archiveNode = findAll(tree, (node) => node.props && node.props['data-status-archive'] !== undefined)[0]
+  const archiveChildren = archiveNode === undefined ? [] : Array.isArray(archiveNode.props.children) ? archiveNode.props.children : [archiveNode.props.children]
+  const archiveHead = archiveChildren.filter((child) => typeof child === 'string').join('')
+  const archiveButton = findAll(tree, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'archive-open')[0]
+  check('the status page shows the archive line with a link', archiveButton !== undefined && archiveHead.indexOf('已归档 3 张') >= 0, JSON.stringify({ head: archiveHead, button: archiveButton !== undefined }))
+  archiveButton.props.onClick()
+  tree = withHooks(panel, { initialView: 'status' })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  await flush()
+  await flush()
+  tree = withHooks(panel, { initialView: 'status' })
+  const overlay = findAll(tree, (node) => node.props && node.props['data-done-all-overlay'] === 'true')[0]
+  check(
+    'the archived view pages through /list?archived=1 and renders rows',
+    overlay !== undefined && listCalls.some((url) => url.indexOf('archived=1') >= 0) && textOf(overlay).indexOf('Old done') >= 0 && textOf(overlay).indexOf('已归档任务') >= 0,
+    JSON.stringify({ calls: listCalls.length, text: overlay && textOf(overlay).slice(0, 120) }),
+  )
+  const mask = overlay === undefined ? undefined : findAll(overlay, (node) => node.props && node.props.className === 'gbt-detailmask')[0]
+  if (mask !== undefined) mask.props.onClick()
+  withHooks(panel, { initialView: 'status' })
+  HOST.archivedCount = savedArchived
+  HOST.archiveRange = savedRange
   globalThis.fetch = savedFetch
 }
 
