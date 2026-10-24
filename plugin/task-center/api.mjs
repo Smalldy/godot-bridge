@@ -2525,6 +2525,53 @@ export function createApi(ctx, options) {
    * with the conflicted files; a repeated conflict becomes needs-rebase. A branch
    * that moved past the verified commit keeps the normal (re-review) path.
    */
+  /** How many automatic rebuild failures escalate candidate-stale to needs-rebase. */
+  const REBUILD_ATTEMPT_LIMIT = 2
+
+  /**
+   * Does the task branch already contain the CURRENT target head? A branch that
+   * does not is BEHIND: an automatic candidate rebuild can conflict, and no
+   * amount of rebuilding fixes that — only a rebase does. The trigger upgrades to
+   * needs-rebase on the FIRST conflict instead of spinning rounds of
+   * candidate-stale. Unknown git/ref is "not behind": the guard must not misfire.
+   */
+  async function branchBehind(projectPath, task) {
+    if (git === null || typeof git.isAncestor !== 'function') return { behind: false, known: false }
+    const targetRef = typeof task.target === 'string' && task.target !== '' ? task.target : 'main'
+    const branch = typeof task.branch === 'string' && task.branch !== '' ? task.branch : ''
+    if (branch === '') return { behind: false, known: false }
+    const check = await git.isAncestor(projectPath, targetRef, branch)
+    if (check === null || check === undefined || check.ok !== true) return { behind: false, known: false, targetRef: targetRef }
+    return { behind: check.ancestor === false, known: true, targetRef: targetRef }
+  }
+
+  /** Persist the cross-round rebuild counter on the merge record. */
+  async function setRebuildAttempts(projectPath, id, value, context) {
+    await writeTask(
+      projectPath,
+      id,
+      (board) => {
+        const tasks = board.tasks.map((entry) => {
+          if (String(entry.id) !== String(id) || entry.merge === null || entry.merge === undefined) return entry
+          return Object.assign({}, entry, { merge: Object.assign({}, entry.merge, { rebuildAttempts: value }) })
+        })
+        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+      },
+      context,
+    )
+  }
+
+  /** The readable "you must rebase" sentence, with the conflicted files when known. */
+  function rebaseDetail(task, ancestry, files) {
+    const target = ancestry.targetRef === undefined || ancestry.targetRef === null ? 'the target' : String(ancestry.targetRef)
+    const branch = typeof task.branch === 'string' && task.branch !== '' ? task.branch : '(no branch)'
+    return (
+      'branch ' + branch + ' does not contain ' + target + ' head, so no automatic rebuild can succeed: rebase the branch onto ' + target +
+      ', push the worktree commit and refresh the merge request' +
+      (files ? '; conflicted files: ' + files : '')
+    )
+  }
+
   async function rebuildAndMergeStale(projectPath, id, context) {
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
@@ -2532,6 +2579,11 @@ export function createApi(ctx, options) {
     if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
     if (task.status !== 'testing' || task.merge === null || task.merge === undefined) {
       return failure('not-testing', id + ' is not a testing card with an open merge request')
+    }
+    // A card already waiting for a human rebase is NOT rebuilt again: rebuilding
+    // the same behind-branch re-runs the same conflict and wakes the same roles.
+    if (task.waitingReason === 'needs-rebase') {
+      return failure('needs-rebase', id + ' is waiting for a manual rebase: ' + String(task.waitingDetail === null ? '' : task.waitingDetail))
     }
     if (merger === null || typeof merger.createCandidate !== 'function') {
       await markWaiting(projectPath, id, 'candidate-stale', 'no merge service to rebuild the candidate', context)
@@ -2544,17 +2596,29 @@ export function createApi(ctx, options) {
     }
     const verified = typeof task.commit === 'string' && task.commit !== '' ? task.commit : null
     const diffUnchanged = verified !== null && branchHead.head === verified
+    const ancestry = await branchBehind(projectPath, task)
     const built = await merger.createCandidate(task, projectPath, { worktreeRoot: worktreeRootOf(read.board) })
     if (built === null || built === undefined || built.ok !== true) {
       const conflicted = built !== null && built !== undefined && built.code === 'candidate-conflict'
       const files = built !== null && built !== undefined && typeof built.conflict === 'string' && built.conflict !== '' ? built.conflict : built !== null && built !== undefined ? String(built.message) : 'candidate rebuild failed'
-      const previous = typeof task.waitingDetail === 'string' ? task.waitingDetail : ''
-      if (conflicted && /conflict/i.test(previous)) {
-        await markWaiting(projectPath, id, 'needs-rebase', files, context)
-        return failure('needs-rebase', 'the candidate still conflicts after an automatic rebuild: ' + files)
+      if (conflicted) {
+        const attempts = Number.isFinite(task.merge.rebuildAttempts) ? task.merge.rebuildAttempts : 0
+        const nextAttempts = Math.min(10, attempts + 1)
+        await setRebuildAttempts(projectPath, id, nextAttempts, context)
+        // Behind the target, or the same conflict again: rebuilding cannot fix it.
+        if (ancestry.behind === true || nextAttempts >= REBUILD_ATTEMPT_LIMIT) {
+          const detail =
+            ancestry.behind === true
+              ? rebaseDetail(task, ancestry, files)
+              : 'the candidate still conflicts after ' + String(nextAttempts) + ' automatic rebuilds (' + files + '); rebase the branch and refresh the merge request'
+          await markWaiting(projectPath, id, 'needs-rebase', detail, context)
+          return failure('needs-rebase', detail)
+        }
+        await markWaiting(projectPath, id, 'candidate-stale', conflictsPrefix(conflicted) + files + ' (automatic rebuild ' + String(nextAttempts) + '/' + String(REBUILD_ATTEMPT_LIMIT) + ')', context)
+        return failure('candidate-stale', 'the candidate rebuild conflicts: ' + files)
       }
-      await markWaiting(projectPath, id, 'candidate-stale', conflictsPrefix(conflicted) + files, context)
-      return failure('candidate-stale', 'the candidate rebuild conflicts: ' + files)
+      await markWaiting(projectPath, id, 'candidate-stale', conflictsPrefix(false) + files, context)
+      return failure('candidate-stale', 'the candidate rebuild failed: ' + files)
     }
     if (diffUnchanged !== true) {
       // The branch moved past the tested commit: content changed, so the normal
@@ -2577,7 +2641,7 @@ export function createApi(ctx, options) {
             waitingReason: null,
             waitingDetail: null,
             base: built.base,
-            merge: Object.assign({}, entry.merge, { base: built.base, mergeCommit: built.head }),
+            merge: Object.assign({}, entry.merge, { base: built.base, mergeCommit: built.head, rebuildAttempts: 0 }),
             evidence: evidence === '' ? note : evidence + '\n' + note,
           })
         })
@@ -2601,10 +2665,14 @@ export function createApi(ctx, options) {
    * Every host sweep retries provisioning and clears the marker on success, so a
    * waiting task resumes without a human reopen.
    */
-  async function recoverWaiting(projectPath, board, context) {
+  async function recoverWaiting(projectPath, board, context, attempted) {
     const recovered = []
+    const tried = attempted === undefined || attempted === null ? new Set() : attempted
     for (const task of board.tasks) {
       if (typeof task.waitingReason !== 'string' || task.waitingReason === '') continue
+      // A needs-rebase card waits for a HUMAN: provisioning must not clear that
+      // marker (which would hand it straight back to the rebuild loop).
+      if (task.waitingReason === 'needs-rebase') continue
       let provisioned = null
       if (task.status === 'running' || task.status === 'reviewing') provisioned = await provisionRole('reviewer', projectPath, task)
       else if (task.status === 'testing') provisioned = await provisionRole('tester', projectPath, task)
@@ -2622,6 +2690,7 @@ export function createApi(ctx, options) {
       if (task.waitingReason === 'needs-rebase') continue
       if (task.waitingReason !== 'candidate-stale') continue
       if (task.status === 'testing') {
+        tried.add(task.id)
         const fast = await rebuildAndMergeStale(projectPath, task.id, context)
         if (fast.ok === true) {
           recovered.push(task.id)
@@ -2636,6 +2705,7 @@ export function createApi(ctx, options) {
         continue
       }
       if (task.status === 'reviewing') {
+        tried.add(task.id)
         const refreshed = await performResolved('refreshMerge', { id: task.id }, context, projectPath)
         if (refreshed.ok === true) recovered.push(task.id)
       }
@@ -2655,10 +2725,14 @@ export function createApi(ctx, options) {
     }
     // Recovery runs even when merging is disabled: a waiting card must resume as
     // soon as its executor exists.
+    // One rebuild attempt per card per sweep: recoverWaiting may already have
+    // retried a candidate-stale card, and the merge loop must not retry it again
+    // (which would double-count the cross-round counter and rebuild twice).
+    const rebuiltThisSweep = new Set()
     {
       const waiting = await readBoardOrFail(projectPath)
       if (waiting.failed === undefined && waiting.board.tasks.some((task) => typeof task.waitingReason === 'string' && task.waitingReason !== '')) {
-        await recoverWaiting(projectPath, waiting.board, { projectPath: projectPath, by: 'system', role: 'user', agent: null })
+        await recoverWaiting(projectPath, waiting.board, { projectPath: projectPath, by: 'system', role: 'user', agent: null }, rebuiltThisSweep)
       }
     }
     if (autoMerge !== true) return ok({ merged: [], skipped: [], disabled: true, archive: archiveResult })
@@ -2666,7 +2740,7 @@ export function createApi(ctx, options) {
     let read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const systemContext = { projectPath: projectPath, by: 'system', role: 'user', agent: null }
-    await recoverWaiting(projectPath, read.board, systemContext)
+    await recoverWaiting(projectPath, read.board, systemContext, rebuiltThisSweep)
     read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const candidates = read.board.tasks
@@ -2681,6 +2755,16 @@ export function createApi(ctx, options) {
         continue
       }
       const before = model.findTask(read.board, id)
+      // Waiting for a manual rebase: not rebuilt, not re-notified. The card leaves
+      // this queue entirely until a human/worker rebases and refreshes it.
+      if (before !== undefined && before !== null && before.waitingReason === 'needs-rebase') {
+        skipped.push({ id: id, code: 'needs-rebase' })
+        continue
+      }
+      if (rebuiltThisSweep.has(id)) {
+        skipped.push({ id: id, code: 'candidate-stale' })
+        continue
+      }
       if (before !== undefined && before !== null && before.merge !== null && before.merge !== undefined && typeof before.target === 'string') {
         const baseLooksReal = typeof before.merge.base === 'string' && /^[0-9a-f]{7,40}$/i.test(before.merge.base)
         const head = baseLooksReal ? await readTargetHead(projectPath, before.target) : { ok: false, unread: true }
@@ -3429,9 +3513,18 @@ export function createApi(ctx, options) {
         candidate = boundedCandidate.value
         if (candidate === null || candidate === undefined || candidate.ok !== true) {
           if (candidate !== null && candidate !== undefined && candidate.code === 'candidate-conflict') {
-            // Build-time conflict is not handed to a human: downgrade to
-            // candidate-stale with the conflicted files and let the sweep rebuild.
+            // A behind branch can never rebuild cleanly: say "rebase" on the FIRST
+            // conflict. Otherwise downgrade to candidate-stale with the conflicted
+            // files and let the sweep rebuild (counting the attempt on the card).
             const files = typeof candidate.conflict === 'string' && candidate.conflict !== '' ? candidate.conflict : String(candidate.message)
+            const ancestry = await branchBehind(projectPath, reviewTask)
+            if (ancestry.behind === true) {
+              const detail = rebaseDetail(reviewTask, ancestry, files)
+              await markWaiting(projectPath, id, 'needs-rebase', detail, context)
+              return failure('needs-rebase', detail)
+            }
+            const prior = reviewTask.merge !== null && reviewTask.merge !== undefined && Number.isFinite(reviewTask.merge.rebuildAttempts) ? reviewTask.merge.rebuildAttempts : 0
+            await setRebuildAttempts(projectPath, id, Math.min(10, prior + 1), context)
             await markWaiting(projectPath, id, 'candidate-stale', files, context)
             return failure('candidate-stale', 'the test candidate conflicts with the target (' + files + '); the card is marked candidate-stale and will be rebuilt automatically')
           }

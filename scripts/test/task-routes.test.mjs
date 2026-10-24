@@ -5450,6 +5450,10 @@ rig.scheduler.dispose()
   const replies = (over) => Object.assign({
     'rev-parse --verify refs/heads/main': () => ({ code: 0, stdout: '2222222\n', stderr: '' }),
     'rev-parse --verify refs/heads/task/T-1': () => ({ code: 0, stdout: over.branchHead || '3333333', stderr: '' }),
+    // Does the task branch already contain the target head? Default NO (behind),
+    // which is the T-94 base-only drift situation: the branch was cut from an
+    // older target. over.ancestor === true models "branch already contains it".
+    'merge-base --is-ancestor main task/T-1': () => ({ code: over.ancestor === true ? 0 : 1, stdout: '', stderr: '' }),
   }, over)
   const makeRig = (over) => {
     over = over === undefined ? {} : over
@@ -5481,7 +5485,9 @@ rig.scheduler.dispose()
     rig.scheduler.dispose()
   }
 
-  // (b) a real conflict at build time is downgraded, not handed to a human.
+  // (b) a branch that does NOT contain the target head conflicts: the FIRST
+  // conflict escalates to needs-rebase (no round of candidate-stale spin), with
+  // the reason and the conflicted files.
   {
     const { rig, fake } = makeRig({})
     fake.git.mergeNoFf = async function () { return { ok: false, code: 'merge-conflict', message: 'CONFLICT (content): Merge conflict in scripts/a.gd' } }
@@ -5489,14 +5495,50 @@ rig.scheduler.dispose()
     const sweep = await rig.api.autoMergePending(PROJECT)
     const card = boardJson(rig.fs, PROJECT).tasks[0]
     check(
-      'a build-time conflict is downgraded to candidate-stale with the conflicted files',
-      sweep.ok === true && card.status === 'testing' && card.waitingReason === 'candidate-stale' && String(card.waitingDetail).indexOf('scripts/a.gd') >= 0,
+      'a behind branch that conflicts is needs-rebase on the FIRST conflict',
+      sweep.ok === true && card.status === 'testing' && card.waitingReason === 'needs-rebase' &&
+        String(card.waitingDetail).indexOf('rebase') >= 0 && String(card.waitingDetail).indexOf('main') >= 0 && String(card.waitingDetail).indexOf('scripts/a.gd') >= 0,
       JSON.stringify({ status: card.status, waiting: card.waitingReason, detail: card.waitingDetail, skipped: sweep.skipped }),
     )
     check(
-      'the conflicted card does not block other work in the same sweep',
-      sweep.ok === true && (sweep.merged === undefined || sweep.merged.length === 0),
-      JSON.stringify({ merged: sweep.merged }),
+      'the card is reported as needs-rebase instead of a stay in the rebuild queue',
+      sweep.ok === true && (sweep.merged === undefined || sweep.merged.length === 0) && (sweep.skipped || []).some((entry) => entry.id === 'T-1' && entry.code === 'needs-rebase'),
+      JSON.stringify({ merged: sweep.merged, skipped: sweep.skipped }),
+    )
+    // A needs-rebase card is never rebuilt again: no new merge attempt, no role wake.
+    const attemptsBefore = card.merge.rebuildAttempts
+    const mergeCallsBefore = fake.calls.filter((call) => call.args[0] === 'merge').length
+    const again = await rig.api.autoMergePending(PROJECT)
+    const after = boardJson(rig.fs, PROJECT).tasks[0]
+    const mergeCallsAfter = fake.calls.filter((call) => call.args[0] === 'merge').length
+    check(
+      'a needs-rebase card leaves the rebuild queue and stops rebuilding',
+      after.waitingReason === 'needs-rebase' && after.merge.rebuildAttempts === attemptsBefore && mergeCallsAfter === mergeCallsBefore,
+      JSON.stringify({ waiting: after.waitingReason, attempts: after.merge.rebuildAttempts, mergeCallsBefore: mergeCallsBefore, mergeCallsAfter: mergeCallsAfter }),
+    )
+    check('and the sweep names it as needs-rebase', (again.skipped || []).some((entry) => entry.id === 'T-1' && entry.code === 'needs-rebase'), JSON.stringify(again.skipped))
+    rig.scheduler.dispose()
+  }
+
+  // (b2) branch already contains the target head, yet the rebuild conflicts: the
+  // cross-round counter escalates candidate-stale -> needs-rebase after 2 tries.
+  {
+    const { rig, fake } = makeRig({ ancestor: true })
+    fake.git.mergeNoFf = async function () { return { ok: false, code: 'merge-conflict', message: 'CONFLICT (content): Merge conflict in scripts/a.gd' } }
+    fake.git.conflictedFiles = async function () { return { ok: true, files: ['scripts/a.gd'] } }
+    const first = await rig.api.autoMergePending(PROJECT)
+    const one = boardJson(rig.fs, PROJECT).tasks[0]
+    check(
+      'the first rebuild failure is candidate-stale and counts the attempt on the card',
+      one.waitingReason === 'candidate-stale' && one.merge.rebuildAttempts === 1 && (first.skipped || []).some((entry) => entry.id === 'T-1' && entry.code === 'candidate-stale'),
+      JSON.stringify({ waiting: one.waitingReason, attempts: one.merge.rebuildAttempts, skipped: first.skipped }),
+    )
+    const second = await rig.api.autoMergePending(PROJECT)
+    const two = boardJson(rig.fs, PROJECT).tasks[0]
+    check(
+      'the second failure escalates to needs-rebase across rounds',
+      two.waitingReason === 'needs-rebase' && two.merge.rebuildAttempts === 2 && (second.skipped || []).some((entry) => entry.id === 'T-1' && entry.code === 'needs-rebase'),
+      JSON.stringify({ waiting: two.waitingReason, attempts: two.merge.rebuildAttempts, skipped: second.skipped }),
     )
     rig.scheduler.dispose()
   }

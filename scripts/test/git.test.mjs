@@ -57,6 +57,8 @@ function recorder(handler) {
     'deleteBranch',
     'conflictedFiles',
     'rebaseOnto',
+    // T-100: the ancestor probe behind candidate-stale vs needs-rebase.
+    'isAncestor',
   ]
   check(
     'the module exposes every git command the task center needs',

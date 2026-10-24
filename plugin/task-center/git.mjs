@@ -263,6 +263,24 @@ export function createGit(options) {
   }
 
   /**
+   * Does `descendant` already contain `ancestor`? `git merge-base --is-ancestor`
+   * answers with its exit code (0 = yes, 1 = no), which is NOT an error: a
+   * branch that does not contain the target head simply needs a rebase.
+   */
+  async function isAncestor(root, ancestor, descendant) {
+    const base = rootOf(root)
+    if (base.ok !== true) return base
+    const a = refName(ancestor)
+    if (a.ok !== true) return a
+    const d = refName(descendant)
+    if (d.ok !== true) return d
+    const result = await exec(['merge-base', '--is-ancestor', a.name, d.name], base.path)
+    if (result.code === 0) return ok({ ancestor: true })
+    if (result.code === 1) return ok({ ancestor: false })
+    return failed(result, 'ancestor-check-failed', 'git merge-base --is-ancestor failed')
+  }
+
+  /**
    * Add a worktree and ALWAYS create its branch: `-b <branch>` from `base`, or
    * from HEAD when no base is given. It never silently checks out an existing
    * branch, so a caller that wants a fresh checkout cannot accidentally share
@@ -546,6 +564,7 @@ export function createGit(options) {
     isClean: isClean,
     branchExists: branchExists,
     revParse: revParse,
+    isAncestor: isAncestor,
     updateRef: updateRef,
     worktreeAdd: worktreeAdd,
     worktreeRemove: worktreeRemove,
