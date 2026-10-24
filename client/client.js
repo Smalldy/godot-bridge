@@ -136,6 +136,8 @@ window.__ModuleLoader__.load({
 
 		const TC_NS = 'godotBridgeTaskCenter'
 		const TC_STATE_URL = '/godot-bridge/task-center/state'
+		const TC_TASK_URL = '/godot-bridge/task-center/task'
+		const TC_LIST_URL = '/godot-bridge/task-center/list'
 		const TC_ACTION_URL = '/godot-bridge/task-center/action'
 		const TC_PROJECT_KEY = 'godotBridge.taskCenter.project'
 
@@ -195,6 +197,20 @@ window.__ModuleLoader__.load({
 				reviewingCol: '评审中',
 				testingCol: '测试中',
 				doneCol: '完成',
+				viewAllDone: '查看全部',
+				doneAllTitle: '已完成任务',
+				doneAllSearch: '按标题或编号搜索',
+				doneAllToday: '今天',
+				doneAllYesterday: '昨天',
+				doneAllEarlier: '更早',
+				doneAllLoadMore: '加载更多',
+				doneAllEmpty: '没有匹配的已完成任务',
+				doneAllLoading: '正在加载…',
+				doneAllError: '加载失败',
+				doneAllRetry: '重试',
+				doneAllCount: '共 {n} 张',
+				collapseColumn: '收起',
+				expandColumn: '展开',
 				blockedCol: '阻塞',
 				emptyBoard: '还没有任务。点“新建任务”开始。',
 				emptyQueue: '没有可派发的任务。',
@@ -652,6 +668,20 @@ window.__ModuleLoader__.load({
 				reviewingCol: 'Reviewing',
 				testingCol: 'Testing',
 				doneCol: 'Done',
+				viewAllDone: 'View all',
+				doneAllTitle: 'Completed tasks',
+				doneAllSearch: 'Search by title or id',
+				doneAllToday: 'Today',
+				doneAllYesterday: 'Yesterday',
+				doneAllEarlier: 'Earlier',
+				doneAllLoadMore: 'Load more',
+				doneAllEmpty: 'No completed task matches',
+				doneAllLoading: 'Loading…',
+				doneAllError: 'Could not load the list',
+				doneAllRetry: 'Retry',
+				doneAllCount: '{n} tasks',
+				collapseColumn: 'Collapse',
+				expandColumn: 'Expand',
 				blockedCol: 'Blocked',
 				emptyBoard: 'No tasks yet. Use “New task” to start.',
 				emptyQueue: 'Nothing is ready to dispatch.',
@@ -1088,7 +1118,21 @@ window.__ModuleLoader__.load({
 			'.gbt-board{display:flex;gap:12px;align-items:stretch;min-height:100%}',
 			'.gbt-col{flex:1 1 0;min-width:172px;max-width:330px;background:var(--dsw-alias-bg-layer-3);border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;display:flex;flex-direction:column;max-height:100%;min-height:120px}',
 			'.gbt-colhead{display:flex;align-items:center;gap:7px;padding:9px 11px;border-bottom:0.5px solid var(--dsw-alias-border-l4);font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary);letter-spacing:.04em;text-transform:uppercase}',
-			'.gbt-colcount{margin-left:auto;font-weight:500;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-4);border-radius:999px;padding:0 7px;font-size:10px}',
+			'.gbt-colhead[data-collapsible="true"]{cursor:pointer;user-select:none}' +
+				'.gbt-colhead[data-collapsible="true"]:hover{color:var(--dsw-alias-label-primary)}' +
+				'.gbt-colchev{font-size:10px;opacity:.75;width:9px}' +
+				'.gbt-colfoot{padding:8px 11px;border-top:0.5px solid var(--dsw-alias-border-l4)}' +
+				'.gbt-colfoot .gbt-linkbtn{font-size:12px}' +
+				'.gbt-donelist{display:flex;flex-direction:column;gap:6px;padding:10px 12px}' +
+				'.gbt-donetitle{margin:12px 12px 4px;font-size:11.5px;color:var(--dsw-alias-label-tertiary)}' +
+				'.gbt-donerow{display:flex;align-items:center;gap:9px;width:100%;padding:7px 9px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:7px;background:var(--dsw-alias-bg-layer-3);color:inherit;font:inherit;text-align:left;cursor:pointer}' +
+				'.gbt-donerow:hover{border-color:var(--dsw-alias-state-business-primary,#4f7cff)}' +
+				'.gbt-donerow .gbt-id{flex:none}' +
+				'.gbt-donetitletext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+				'.gbt-donewhen{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary);font-family:var(--mono,monospace)}' +
+				'.gbt-skel{height:34px;border-radius:7px;background:linear-gradient(90deg,var(--dsw-alias-bg-layer-3),var(--dsw-alias-bg-layer-4),var(--dsw-alias-bg-layer-3));background-size:200% 100%;animation:gbt-skel 1.2s linear infinite}' +
+				'@keyframes gbt-skel{0%{background-position:200% 0}100%{background-position:-200% 0}}' +
+				'.gbt-colcount{margin-left:auto;font-weight:500;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-4);border-radius:999px;padding:0 7px;font-size:10px}',
 			'.gbt-cards{display:flex;flex-direction:column;gap:8px;padding:9px;overflow:auto;min-height:40px}',
 			'.gbt-card{border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;padding:9px 10px;background:var(--dsw-alias-bg-layer-2);cursor:pointer;display:flex;flex-direction:column;gap:6px;transition:border-color .12s ease,box-shadow .12s ease}',
 			'.gbt-card:hover{border-color:rgba(79,124,255,.6)}',
@@ -1527,6 +1571,36 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		const TC_COLUMNS_KEY = 'godotBridge.taskCenter.columns'
+		const DONE_COLUMN_PREVIEW = 5
+
+		/** Column collapse state, remembered across reloads (done starts collapsed). */
+		function tcReadColumnState() {
+			try {
+				const raw = window.localStorage.getItem(TC_COLUMNS_KEY)
+				const parsed = raw === null ? null : JSON.parse(raw)
+				return parsed !== null && typeof parsed === 'object' ? parsed : {}
+			} catch (error) {
+				return {}
+			}
+		}
+
+		function tcColumnCollapsed(key) {
+			const state = tcReadColumnState()
+			if (typeof state[key] === 'boolean') return state[key]
+			return key === 'done'
+		}
+
+		function tcWriteColumnCollapsed(key, collapsed) {
+			try {
+				const state = tcReadColumnState()
+				state[key] = collapsed === true
+				window.localStorage.setItem(TC_COLUMNS_KEY, JSON.stringify(state))
+			} catch (error) {
+				/* storage can be disabled; collapsing is a convenience */
+			}
+		}
+
 		/** One shape for the view, whatever the Host answered. */
 		function tcSnapshot(payload, source, message, actionResult) {
 			const tasks = Array.isArray(payload.tasks) ? payload.tasks : []
@@ -1726,6 +1800,25 @@ window.__ModuleLoader__.load({
 				}
 			}
 
+			/** One page of the server-side completed list (T-82 /list route). */
+			async function listTasks(query) {
+				const opts = query === undefined || query === null ? {} : query
+				const params = []
+				const project = tcRememberedProject()
+				if (project !== null) params.push('project=' + encodeURIComponent(project))
+				params.push('status=' + encodeURIComponent(opts.status === undefined ? 'done' : String(opts.status)))
+				if (typeof opts.q === 'string' && opts.q !== '') params.push('q=' + encodeURIComponent(opts.q))
+				if (typeof opts.cursor === 'string' && opts.cursor !== '') params.push('cursor=' + encodeURIComponent(opts.cursor))
+				params.push('limit=' + String(Number.isFinite(opts.limit) ? opts.limit : 50))
+				try {
+					const listUrl = TC_LIST_URL + '?' + params.join('&')
+					const payload = await fetchJson(listUrl, { headers: { accept: 'application/json' } })
+					return payload === null || payload === undefined ? { ok: false, tasks: [], nextCursor: null } : payload
+				} catch (error) {
+					return { ok: false, tasks: [], nextCursor: null }
+				}
+			}
+
 			/**
 			 * Fetch one task's full detail on demand (drawer/view open). Cached per
 			 * task updatedAt, so a poll that did not change the card never refetches;
@@ -1779,6 +1872,7 @@ window.__ModuleLoader__.load({
 				},
 				load: load,
 				send: send,
+				listTasks: listTasks,
 				loadDetail: loadDetail,
 				startPolling: startPolling,
 				stopPolling: stopPolling,
@@ -1945,37 +2039,56 @@ window.__ModuleLoader__.load({
 			}
 
 			function Column(props) {
+				const t = props.t
+				const group = props.group
+				const collapsed = props.collapsed === true
+				const count = typeof props.count === 'number' ? props.count : group.tasks.length
+				const visible = props.visibleTasks !== undefined ? props.visibleTasks : group.tasks
+				const showBody = collapsed !== true || props.previewWhenCollapsed === true
 				return h(
 					'section',
-					{ className: 'gbt-col', 'data-group': props.group.key },
+					{ className: 'gbt-col', 'data-group': group.key, 'data-collapsed': collapsed ? 'true' : 'false' },
 					h(
 						'div',
-						{ className: 'gbt-colhead' },
-						h('span', null, props.group.label),
-						h('span', { className: 'gbt-colcount' }, String(props.group.tasks.length)),
+						{
+							className: 'gbt-colhead',
+							role: 'button',
+							tabIndex: 0,
+							'data-collapsible': 'true',
+							title: collapsed ? t('expandColumn') : t('collapseColumn'),
+							onClick: props.onToggle,
+						},
+						h('span', { className: 'gbt-colchev' }, collapsed ? '▸' : '▾'),
+						h('span', null, group.label),
+						h('span', { className: 'gbt-colcount' }, String(count)),
 					),
-					h(
-						'div',
-						{ className: 'gbt-cards' },
-						props.group.tasks.length === 0
-							? h('div', { className: 'gbt-empty' }, props.t('noTasks'))
-							: props.group.tasks.map(function (task) {
-									return h(TaskCard, {
-										key: task.id,
-										task: task,
-										allTasks: props.allTasks,
-										t: props.t,
-										now: props.now,
-										selected: props.selectedId === task.id,
-										onOpen: props.onOpen,
-									})
-								}),
-					),
+					showBody === false
+						? null
+						: h(
+								'div',
+								{ className: 'gbt-cards' },
+								visible.length === 0
+									? h('div', { className: 'gbt-empty' }, t('noTasks'))
+									: visible.map(function (task) {
+											return h(TaskCard, {
+												key: task.id,
+												task: task,
+												allTasks: props.allTasks,
+												t: t,
+												now: props.now,
+												selected: props.selectedId === task.id,
+												onOpen: props.onOpen,
+											})
+										}),
+							),
+					props.footer === undefined || props.footer === null ? null : h('div', { className: 'gbt-colfoot' }, props.footer),
 				)
 			}
 
 			function Board(props) {
+				const t = props.t
 				const tasks = props.snapshot.tasks
+				const counts = props.snapshot.counts === undefined || props.snapshot.counts === null ? {} : props.snapshot.counts
 				// Recently finished work is the first thing a reader looks for; the done
 				// and blocked columns are therefore newest-first. The other columns keep
 				// the host's scheduling order (priority, then age).
@@ -1987,65 +2100,273 @@ window.__ModuleLoader__.load({
 				}
 				const ready = tasks.filter(function (task) { return task.status === 'pending' && task.dependency !== undefined && task.dependency.state === 'ready' })
 				const waiting = tasks.filter(function (task) { return task.status === 'pending' && (task.dependency === undefined || task.dependency.state !== 'ready') })
+				const doneTasks = tasks.filter(function (task) { return task.status === 'done' }).slice().sort(recentFirst)
+				const doneCount = Number.isFinite(counts.done) ? counts.done : doneTasks.length
 				const groups = [
-					{ key: 'ready', label: props.t('ready'), tasks: ready },
-					{ key: 'waiting', label: props.t('waiting'), tasks: waiting },
-					{ key: 'running', label: props.t('runningCol'), tasks: tasks.filter(function (task) { return task.status === 'running' }) },
-					{ key: 'reviewing', label: props.t('reviewingCol'), tasks: tasks.filter(function (task) { return task.status === 'reviewing' }) },
-					{ key: 'testing', label: props.t('testingCol'), tasks: tasks.filter(function (task) { return task.status === 'testing' }) },
-					{ key: 'done', label: props.t('doneCol'), tasks: tasks.filter(function (task) { return task.status === 'done' }).slice().sort(recentFirst) },
+					{ key: 'ready', label: t('ready'), tasks: ready },
+					{ key: 'waiting', label: t('waiting'), tasks: waiting },
+					{ key: 'running', label: t('runningCol'), tasks: tasks.filter(function (task) { return task.status === 'running' }) },
+					{ key: 'reviewing', label: t('reviewingCol'), tasks: tasks.filter(function (task) { return task.status === 'reviewing' }) },
+					{ key: 'testing', label: t('testingCol'), tasks: tasks.filter(function (task) { return task.status === 'testing' }) },
+					{ key: 'done', label: t('doneCol'), tasks: doneTasks },
 					{
 						key: 'blocked',
-						label: props.t('blockedCol'),
+						label: t('blockedCol'),
 						tasks: tasks.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst),
 					},
 				]
-				if (tasks.length === 0) return h('div', { className: 'gbt-empty' }, props.t('emptyBoard'))
+				if (tasks.length === 0) return h('div', { className: 'gbt-empty' }, t('emptyBoard'))
+				function toggle(key) {
+					tcWriteColumnCollapsed(key, !tcColumnCollapsed(key))
+					if (props.onColumnToggle !== undefined) props.onColumnToggle()
+				}
 				return h(
 					'div',
 					{ className: 'gbt-board' },
 					groups.map(function (group) {
+						const collapsed = tcColumnCollapsed(group.key)
+						// The done column folds to the newest five cards, not to nothing:
+						// the preview must stay readable while the archive stays out of the way.
+						if (group.key === 'done') {
+							const visible = collapsed ? group.tasks.slice(0, DONE_COLUMN_PREVIEW) : group.tasks
+							return h(Column, {
+								key: group.key,
+								group: group,
+								count: doneCount,
+								visibleTasks: visible,
+								collapsed: collapsed,
+								allTasks: tasks,
+								previewWhenCollapsed: true,
+								t: t,
+								now: props.now,
+								selectedId: props.selectedId,
+								onOpen: props.onOpen,
+								onToggle: function () { toggle(group.key) },
+								footer:
+									doneCount === 0
+										? null
+										: h(
+												'button',
+												{
+													type: 'button',
+													className: 'gbt-linkbtn',
+													'data-action': 'done-all',
+													onClick: function () { if (props.onOpenDoneAll !== undefined) props.onOpenDoneAll() },
+												},
+												t('viewAllDone') + ' · ' + String(doneCount),
+											),
+							})
+						}
 						return h(Column, {
 							key: group.key,
 							group: group,
+							collapsed: collapsed,
 							allTasks: tasks,
-							t: props.t,
+							t: t,
 							now: props.now,
 							selectedId: props.selectedId,
 							onOpen: props.onOpen,
+							onToggle: function () { toggle(group.key) },
 						})
 					}),
 				)
 			}
 
-			function QueueRow(props) {
-				const task = props.task
-				const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
-				const files = Array.isArray(task.writeFiles) ? task.writeFiles : null
-				const fileCount = files !== null ? files.length : Number.isFinite(task.writeFileCount) ? task.writeFileCount : 0
+			/** Local day bucket for the completed-tasks drawer. */
+			function tcDayKey(iso, nowMs) {
+				const at = tcTime(iso)
+				if (at === null) return 'earlier'
+				const day = new Date(at)
+				const today = new Date(nowMs)
+				const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+				const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000
+				if (at >= startOfToday) return 'today'
+				if (at >= startOfYesterday) return 'yesterday'
+				return 'earlier'
+			}
+
+			/**
+			 * The "all completed tasks" drawer: paged (50/page) through the T-82
+			 * /list route, searched server-side with a debounce, grouped by local day,
+			 * and summary-only - a click opens the detail drawer, which fetches one
+			 * card, instead of pulling 50 details up front.
+			 */
+			function DoneAllDrawer(props) {
+				const t = props.t
+				const list = props.store
+				const [, setVersion] = React.useState(0)
+				const bump = function () { setVersion(function (value) { return value + 1 }) }
+				const items = doneAllState.items
+				const next = doneAllState.next
+				const query = doneAllState.query
+				const loading = doneAllState.loading
+				const error = doneAllState.error
+				const failedMore = doneAllState.failedMore
+				const now = Date.now()
+
+				function applyPage(payload, reset) {
+					if (payload === null || payload === undefined || payload.ok !== true) {
+						doneAllState.error = true
+						doneAllState.loading = false
+						bump()
+						return false
+					}
+					const page = Array.isArray(payload.tasks) ? payload.tasks : []
+					if (reset === true) {
+						doneAllState.items = page
+					} else {
+						const seen = new Set(doneAllState.items.map(function (task) { return task.id }))
+						doneAllState.items = doneAllState.items.concat(page.filter(function (task) { return !seen.has(task.id) }))
+					}
+					doneAllState.next = typeof payload.nextCursor === 'string' && payload.nextCursor !== '' ? payload.nextCursor : null
+					doneAllState.error = false
+					doneAllState.failedMore = false
+					doneAllState.loading = false
+					bump()
+					return true
+				}
+
+				React.useEffect(function () {
+					if (doneAllState.loadedQuery === query) return
+					doneAllState.loadedQuery = query
+					const token = doneAllState.token + 1
+					doneAllState.token = token
+					doneAllState.loading = true
+					doneAllState.error = false
+					doneAllState.failedMore = false
+					const handle = setTimeout(function () {
+						void list.listTasks({ status: 'done', q: query, limit: 50 }).then(function (payload) {
+							if (token !== doneAllState.token) return
+							applyPage(payload, true)
+						})
+					}, query === '' ? 0 : 250)
+					return function () { clearTimeout(handle) }
+				}, [query])
+
+				function loadMore() {
+					if (next === null || doneAllState.busy === true) return
+					doneAllState.busy = true
+					doneAllState.loading = true
+					bump()
+					const token = doneAllState.token
+					void list.listTasks({ status: 'done', q: query, cursor: next, limit: 50 }).then(function (payload) {
+						doneAllState.busy = false
+						if (token !== doneAllState.token) return
+						if (!applyPage(payload, false)) {
+							doneAllState.failedMore = true
+							bump()
+						}
+					})
+				}
+
+				function retry() {
+					doneAllState.loadedQuery = null
+					doneAllState.token += 1
+					doneAllState.loading = true
+					doneAllState.error = false
+					bump()
+					void list.listTasks({ status: 'done', q: query, limit: 50 }).then(function (payload) {
+						applyPage(payload, true)
+					})
+				}
+
+				const buckets = { today: [], yesterday: [], earlier: [] }
+				for (const task of items) buckets[tcDayKey(task.updatedAt, now)].push(task)
+				const sections = [
+					{ key: 'today', label: t('doneAllToday') },
+					{ key: 'yesterday', label: t('doneAllYesterday') },
+					{ key: 'earlier', label: t('doneAllEarlier') },
+				].filter(function (section) { return buckets[section.key].length > 0 })
+
 				return h(
 					'div',
-					{ className: 'gbt-row', role: 'button', tabIndex: 0, onClick: function () { props.onOpen(task.id) } },
-					h('span', { className: 'gbt-order' }, props.index === undefined ? '·' : String(props.index + 1)),
-					h('span', { className: 'gbt-id' }, task.id),
+					{ className: 'gbt-detailoverlay', 'data-done-all-overlay': 'true' },
+					h('div', { className: 'gbt-detailmask', onClick: props.onClose }),
 					h(
 						'div',
-						null,
-						h('div', { className: 'gbt-rowtitle' }, task.title),
+						{ className: 'gbt-detailpanel', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('doneAllTitle') },
 						h(
 							'div',
-							{ className: 'gbt-cardmeta' },
-							task.priority !== 0 ? h('span', { className: 'gbt-chip' }, 'P' + String(task.priority)) : null,
-							deps.length > 0
-								? h('span', { className: 'gbt-chip', 'data-tone': 'waiting' }, '↳ ' + deps.join(', '))
-								: h('span', { className: 'gbt-chip', 'data-tone': 'ready' }, props.t('noDeps')),
-							fileCount > 0 ? h('span', { className: 'gbt-chip' }, '🔒 ' + (files === null ? String(fileCount) : files.join(', '))) : null,
+							{ className: 'gbt-drawerhead' },
+							h('strong', null, t('doneAllTitle')),
+							h('span', { className: 'gbt-muted' }, ' · ' + t('doneAllCount').replace('{n}', String(items.length))),
+							h('button', { type: 'button', className: 'gbt-iconbtn', onClick: props.onClose, 'aria-label': t('doneAllTitle') }, '×'),
 						),
-					),
-					h(
-						'div',
-						{ className: 'gbt-rowmeta' },
-						props.stateLabel === undefined ? null : h('span', { className: 'gbt-chip', 'data-tone': props.tone }, props.stateLabel),
+						h(
+							'div',
+							{ className: 'gbt-drawerbody', style: { display: 'flex', flexDirection: 'column' } },
+							h('div', { className: 'gbt-donelist', style: { paddingBottom: 0 } }, h('input', {
+								type: 'search',
+								className: 'gbt-input',
+								value: query,
+								placeholder: t('doneAllSearch'),
+								'aria-label': t('doneAllSearch'),
+								onChange: function (event) {
+									doneAllState.query = String(event.target.value)
+									doneAllState.loadedQuery = null
+									doneAllState.loading = true
+									bump()
+								},
+							})),
+							error === true && items.length === 0
+								? h(
+										'div',
+										{ className: 'gbt-donelist' },
+										h('div', { className: 'gbt-banner' }, t('doneAllError')),
+										h('div', null, h('button', { type: 'button', className: 'gbt-btn', onClick: retry }, t('doneAllRetry'))),
+									)
+								: loading === true && items.length === 0
+									? h(
+											'div',
+											{ className: 'gbt-donelist', 'data-done-all-loading': 'true' },
+											Array.from({ length: 6 }).map(function (value, index) {
+												return h('div', { key: 'skeleton-' + String(index), className: 'gbt-skel' })
+											}),
+										)
+									: items.length === 0
+										? h('div', { className: 'gbt-donelist' }, h('div', { className: 'gbt-empty' }, t('doneAllEmpty')))
+										: h(
+												'div',
+												{
+													className: 'gbt-donelist',
+													style: { overflow: 'auto', flex: '1', minHeight: 0 },
+													onScroll: function (event) {
+														const node = event.target
+														if (node.scrollTop + node.clientHeight >= node.scrollHeight - 48) loadMore()
+													},
+												},
+												sections.map(function (section) {
+													return h(
+														'div',
+														{ key: section.key, 'data-done-group': section.key },
+														h('div', { className: 'gbt-donetitle' }, section.label),
+														buckets[section.key].map(function (task) {
+															return h(
+																'button',
+																{
+																	key: task.id,
+																	type: 'button',
+																	className: 'gbt-donerow',
+																	'data-done-row': task.id,
+																	onClick: function () { props.onOpen(task.id) },
+																},
+																h('span', { className: 'gbt-id' }, task.id),
+																h('span', { className: 'gbt-donetitletext' }, String(task.title === undefined ? '' : task.title)),
+																h('span', { className: 'gbt-donewhen' }, task.updatedAt === null || task.updatedAt === undefined ? '' : String(task.updatedAt).slice(0, 10)),
+															)
+														}),
+													)
+												}),
+												failedMore === true ? h('div', { className: 'gbt-banner' }, t('doneAllError')) : null,
+												next === null
+													? null
+													: h(
+															'div',
+															{ style: { padding: '10px 0 4px' } },
+															h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'done-more', disabled: loading, onClick: loadMore }, loading ? t('doneAllLoading') : t('doneAllLoadMore')),
+														),
+											),
+						),
 					),
 				)
 			}
@@ -4116,7 +4437,22 @@ window.__ModuleLoader__.load({
 			// state alone therefore resets to the board on return; this object lives in
 			// the views closure (one per plugin activation) and carries the view and
 			// selected task across that remount. Modals are deliberately not here.
-			const panelState = { view: 'board', selectedId: null }
+			const panelState = { view: 'board', selectedId: null, doneAllOpen: false }
+			// The drawer's list state lives here (not only in React state) so the
+			// fetches that resolve between renders are visible to the next one; a
+			// state counter still drives the real React re-render.
+			const doneAllState = { items: [], next: null, loading: true, error: false, failedMore: false, query: '', loadedQuery: null, token: 0, busy: false }
+			function doneAllReset() {
+				doneAllState.items = []
+				doneAllState.next = null
+				doneAllState.loading = true
+				doneAllState.error = false
+				doneAllState.failedMore = false
+				doneAllState.query = ''
+				doneAllState.loadedQuery = null
+				doneAllState.busy = false
+				doneAllState.token += 1
+			}
 
 			function TaskCenter(props) {
 				const t = useTranslate()
@@ -4127,6 +4463,12 @@ window.__ModuleLoader__.load({
 				const [view, setViewState] = React.useState(initialView)
 				const [selectedId, setSelectedIdState] = React.useState(panelState.selectedId)
 				const [editing, setEditing] = React.useState(null)
+				const [doneAllOpen, setDoneAllOpenState] = React.useState(panelState.doneAllOpen)
+				function setDoneAllOpen(next) {
+					panelState.doneAllOpen = next
+					setDoneAllOpenState(next)
+				}
+				const [, setColumnTick] = React.useState(0)
 				function setView(next) {
 					panelState.view = next
 					setViewState(next)
@@ -4319,7 +4661,15 @@ window.__ModuleLoader__.load({
 
 				const content =
 					view === 'board'
-						? h(Board, { snapshot: snapshot, t: t, now: now, selectedId: selectedId, onOpen: openTask })
+						? h(Board, {
+											snapshot: snapshot,
+											t: t,
+											now: now,
+											selectedId: selectedId,
+											onOpen: openTask,
+											onOpenDoneAll: function () { doneAllReset(); setDoneAllOpen(true) },
+											onColumnToggle: function () { setColumnTick(function (count) { return count + 1 }) },
+										})
 						: view === 'queue'
 							? h(QueueView, { snapshot: snapshot, t: t, onOpen: openTask })
 							: view === 'workers'
@@ -4375,6 +4725,17 @@ window.__ModuleLoader__.load({
 									onClose: closeDetail,
 									onEdit: startEdit,
 								}),
+							doneAllOpen
+								? h(DoneAllDrawer, {
+										t: t,
+										store: store,
+										onClose: function () { setDoneAllOpen(false) },
+										onOpen: function (id) {
+											setDoneAllOpen(false)
+											openTask(id)
+										},
+									})
+								: null,
 							),
 					editing === null ? null : h(TaskForm, {
 						task: editingTask,
