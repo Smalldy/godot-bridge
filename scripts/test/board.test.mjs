@@ -2,7 +2,7 @@
 // hand-edited board from corrupting the model.
 
 import { join } from 'node:path'
-import { boardSizeReport, readBoard, updateBoard, emptyBoard, boardPath, MAX_BOARD_BYTES, MAX_HISTORY, readRoleConfig, writeRoleConfig, rolesPath } from '../../plugin/task-center/board.mjs'
+import { boardSizeReport, readBoard, readProjectRegistry, updateBoard, writeProjectRegistry, workspaceRegistryPath, emptyBoard, boardPath, MAX_BOARD_BYTES, MAX_HISTORY, readRoleConfig, writeRoleConfig, rolesPath } from '../../plugin/task-center/board.mjs'
 import {
   DEFAULT_ROLE_PROMPTS,
   ROLE_TEMPLATE_VARIABLES,
@@ -33,6 +33,54 @@ const empty = emptyBoard(1000)
 check('empty board is version 2', empty.version === 2)
 check('empty board starts paused', empty.dispatch.state === 'paused')
 check('empty board has a sequence', empty.seq === 1)
+
+// ── the project registry: locations, fallback and readable failures ────────
+{
+  const fs = createFakeFs()
+  const home = join(PROJECT, 'home')
+  const entry = { id: 'p1', root: PROJECT, lastSeenAt: new Date().toISOString() }
+  const dirs = []
+  const ensureDir = async function (dir) {
+    dirs.push(String(dir))
+  }
+  const written = await writeProjectRegistry({ fs: fs }, { homeDir: home, projectRoot: PROJECT, ensureDir: ensureDir }, { version: 1, projects: [entry] })
+  check(
+    'the registry prefers the home path and creates its parent directory first',
+    written.ok === true && written.location === 'home' && written.path === join(home, '.dsh', 'godot-bridge', 'projects.json') && dirs.indexOf(join(home, '.dsh', 'godot-bridge')) >= 0,
+    JSON.stringify({ written: written, dirs: dirs }),
+  )
+
+  // A workspace-write sandbox denies the home path: fall back to the project copy.
+  const denied = createFakeFs()
+  const originalWrite = denied.writeText
+  denied.writeText = async function (target, content, expected, signal, policy) {
+    if (String(target.targetKey).indexOf('.dsh') >= 0) throw new Error('sandbox: file access denied')
+    return originalWrite.call(this, target, content, expected, signal, policy)
+  }
+  const fallback = await writeProjectRegistry({ fs: denied }, { homeDir: home, projectRoot: PROJECT, ensureDir: ensureDir }, { version: 1, projects: [entry] })
+  check(
+    'a denied home write falls back to the workspace registry',
+    fallback.ok === true && fallback.location === 'workspace' && fallback.path === workspaceRegistryPath(PROJECT) && Array.isArray(fallback.attempts) && fallback.attempts.length === 1 && fallback.attempts[0].location === 'home',
+    JSON.stringify(fallback),
+  )
+  const mergedRead = await readProjectRegistry({ fs: denied }, { homeDir: home, projectRoot: PROJECT })
+  check(
+    'the read merges the workspace registry and reports where it came from',
+    mergedRead.registry.projects.length === 1 && mergedRead.registry.projects[0].root === PROJECT && mergedRead.locations.indexOf('workspace') >= 0,
+    JSON.stringify(mergedRead),
+  )
+
+  const unwritable = createFakeFs()
+  unwritable.writeText = async function () {
+    throw new Error('denied by policy')
+  }
+  const refused = await writeProjectRegistry({ fs: unwritable }, { homeDir: home, projectRoot: PROJECT, ensureDir: ensureDir }, { version: 1, projects: [entry] })
+  check(
+    'when no location is writable the failure is returned, not thrown',
+    refused.ok === false && refused.code === 'registry-unwritable' && refused.attempts.length === 2 && String(refused.message).indexOf('home') >= 0 && String(refused.message).indexOf('workspace') >= 0,
+    JSON.stringify(refused),
+  )
+}
 
 // ── board file size: the cap, the warnings and the readable refusal ────────
 {

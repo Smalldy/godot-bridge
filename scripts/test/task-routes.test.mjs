@@ -1,9 +1,9 @@
 // HTTP route tests: the GUI's contract, its transport hardening and the fact
 // that it calls the same actions as the tool.
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH } from '../../plugin/task-center/routes.mjs'
 import { boardJson, createFakeFs, createFakeGit, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
@@ -4538,8 +4538,11 @@ async function withDeadline(promise, ms) {
 
 {
   // A running instance that never goes idle is replaced after the bounded wait.
+  // The budget is generous on purpose: 40 ms flaked under a loaded suite (the
+  // replace pass polls every 5 ms, so the wait itself consumed the whole budget
+  // and the spawn never ran). Timing stays bounded, just not knife-edge.
   const team = roleTeam()
-  const rig = createSubmitRig({ team: team, roles: true, git: fakeGit().git, drainTimeoutMs: 40, drainIntervalMs: 5 })
+  const rig = createSubmitRig({ team: team, roles: true, git: fakeGit().git, drainTimeoutMs: 250, drainIntervalMs: 5 })
   rig.team.setStatus('reviewer-1', 'running')
   const replaced = await rig.api.perform('rolesReplace', { name: 'reviewer-1' }, rig.user)
   check(
@@ -5079,6 +5082,95 @@ rig.scheduler.dispose()
   const recovered = await rig.api.autoMergePending(PROJECT)
   check('the sweep recovers once the archive write works again', recovered.ok === true && recovered.archive !== null && recovered.archive.archived >= 1 && boardJson(rig.fs, PROJECT).tasks.every((task) => task.id !== 'T-5'), JSON.stringify(recovered.archive))
   rig.scheduler.dispose()
+}
+
+// ── T-98: the project registry really lands on disk (REAL fs, no fixture) ──
+{
+  // A filesystem adapter over the real disk for the plugin's ctx.fs contract, so
+  // this block proves the production path: write → read back → a NEW state loads
+  // it and sees active projects. The sandbox only allows the workspace, so the
+  // temp tree lives under it (the OS temp dir is not writable here).
+  function realFs() {
+    let counter = 0
+    const versionOf = (path) => {
+      try {
+        const s = statSync(path)
+        return s.isDirectory() ? 'dir' : 'v' + String(s.mtimeMs) + '-' + String(s.size)
+      } catch (error) {
+        return undefined
+      }
+    }
+    return {
+      async resolve(path) {
+        return { targetKey: path, displayPath: path }
+      },
+      async stat(target) {
+        const version = versionOf(target.targetKey)
+        if (version === undefined) return undefined
+        const s = statSync(target.targetKey)
+        return { type: s.isDirectory() ? 'directory' : 'file', version, size: s.size }
+      },
+      async readText(target) {
+        return readFileSync(target.targetKey, 'utf8')
+      },
+      async writeText(target, content, expected) {
+        const path = target.targetKey
+        const current = versionOf(path)
+        if (expected !== undefined && expected.kind === 'createIfAbsent' && current !== undefined) {
+          throw Object.assign(new Error('FS_STALE_VERSION: exists'), { code: 'FS_STALE_VERSION' })
+        }
+        if (expected !== undefined && expected.kind === 'replaceIfVersion' && current !== expected.version) {
+          throw Object.assign(new Error('FS_STALE_VERSION: moved'), { code: 'FS_STALE_VERSION' })
+        }
+        mkdirSync(dirname(path), { recursive: true })
+        writeFileSync(path, content)
+        return { operation: current === undefined ? 'create' : 'update', version: 'v' + String(++counter) }
+      },
+    }
+  }
+  const root = mkdtempSync(join(process.cwd(), '.tmp-registry-'))
+  try {
+    const home = join(root, 'home')
+    const projectRoot = join(root, 'project')
+    mkdirSync(join(projectRoot, '.agents'), { recursive: true })
+    const options = {
+      homeDir: home,
+      ensureDir: (dir) => mkdirSync(dir, { recursive: true }),
+      sandboxPolicyFor: (project) => ({ mode: 'workspace-write', workspaceRoot: project }),
+    }
+    const first = createState({ fs: realFs() }, options)
+    await first.loadRegistry()
+    first.touchProject(projectRoot)
+    await first.flushRegistry()
+    const registryPath = join(home, '.dsh', 'godot-bridge', 'projects.json')
+    check(
+      'the registry really lands on disk under the home path',
+      existsSync(registryPath) && JSON.parse(readFileSync(registryPath, 'utf8')).projects.some((entry) => entry.root === projectRoot),
+      registryPath,
+    )
+    check('and the state reports where it landed', first.registryStatus().ok === true && first.registryStatus().location === 'home', JSON.stringify(first.registryStatus()))
+    const restarted = createState({ fs: realFs() }, options)
+    await restarted.loadRegistry()
+    const active = restarted.activeProjects(Date.now())
+    check('a fresh state loads the registry and has an active project (restart recovery)', active.length === 1 && active[0].root === projectRoot, JSON.stringify(active))
+
+    // The home path cannot be created (a FILE sits where the directory must go):
+    // the writer must fall back to the workspace registry and say so.
+    const blocker = join(root, 'blocker')
+    writeFileSync(blocker, 'not a directory')
+    const blocked = createState({ fs: realFs() }, Object.assign({}, options, { homeDir: join(blocker, 'home') }))
+    await blocked.loadRegistry()
+    blocked.touchProject(projectRoot)
+    await blocked.flushRegistry()
+    const workspacePath = join(projectRoot, '.agents', 'projects.json')
+    check(
+      'a home that cannot be created falls back to the workspace registry, readably',
+      existsSync(workspacePath) && blocked.registryStatus().ok === true && blocked.registryStatus().location === 'workspace',
+      JSON.stringify(blocked.registryStatus()),
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 }
 
 // ── T-86: first-class project ref, registry, one resolver ──

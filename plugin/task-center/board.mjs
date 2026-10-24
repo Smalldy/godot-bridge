@@ -69,9 +69,33 @@ export function projectRefOf(root) {
   }
 }
 
-/** Where the host remembers projects across process restarts. */
+/** Where the host remembers projects across process restarts (user-wide). */
 export function projectRegistryPath(homeDir) {
   return join(homeDir, '.dsh', 'godot-bridge', 'projects.json')
+}
+
+/**
+ * The WORKSPACE fallback for the same registry. The user-wide path needs a
+ * writable home (and a policy that allows it); a workspace-write sandbox denies
+ * that, which is how the registry silently never persisted. Inside the project
+ * the board already lives in `.agents/`, so the fallback needs no new directory.
+ */
+export function workspaceRegistryPath(projectRoot) {
+  return join(projectRoot, BOARD_DIRECTORY, 'projects.json')
+}
+
+/** The registry locations to try, in order: user-wide first, workspace second. */
+export function registryTargets(options) {
+  const targets = []
+  const homeDir = options === undefined || options === null ? null : options.homeDir
+  if (typeof homeDir === 'string' && homeDir.length > 0) {
+    targets.push({ location: 'home', path: projectRegistryPath(homeDir), cwd: homeDir, sandboxPolicy: options.homePolicy })
+  }
+  const projectRoot = options === undefined || options === null ? null : options.projectRoot
+  if (typeof projectRoot === 'string' && projectRoot.length > 0) {
+    targets.push({ location: 'workspace', path: workspaceRegistryPath(projectRoot), cwd: projectRoot, sandboxPolicy: options.sandboxPolicy })
+  }
+  return targets
 }
 
 export function normaliseProjectRegistry(value) {
@@ -96,32 +120,82 @@ export function normaliseProjectRegistry(value) {
   return { version: 1, projects: projects }
 }
 
-export async function readProjectRegistry(io, options) {
-  const homeDir = options.homeDir
-  if (typeof homeDir !== 'string' || homeDir.length === 0) return { ok: true, registry: normaliseProjectRegistry(null) }
+/** One registry file, or an empty registry when it is absent/unreadable. */
+async function readRegistryAt(io, target, signal) {
   try {
-    const target = await io.fs.resolve(projectRegistryPath(homeDir), { cwd: homeDir, signal: options.signal })
-    const info = await io.fs.stat(target, options.signal)
-    if (info === undefined) return { ok: true, registry: normaliseProjectRegistry(null) }
-    const text = await io.fs.readText(target, options.signal)
-    return { ok: true, registry: normaliseProjectRegistry(JSON.parse(text)) }
+    const resolved = await io.fs.resolve(target.path, { cwd: target.cwd, signal: signal })
+    const info = await io.fs.stat(resolved, signal)
+    if (info === undefined) return { ok: true, registry: normaliseProjectRegistry(null), found: false }
+    const text = await io.fs.readText(resolved, signal)
+    return { ok: true, registry: normaliseProjectRegistry(JSON.parse(text)), found: true }
   } catch (error) {
-    return { ok: true, registry: normaliseProjectRegistry(null) }
+    return { ok: true, registry: normaliseProjectRegistry(null), found: false, error: describe(error) }
   }
 }
 
+/** Merge two registries by project id, the newer lastSeenAt winning. */
+function mergeProjectRegistries(left, right) {
+  const byId = new Map()
+  for (const entry of left.projects.concat(right.projects)) {
+    const current = byId.get(entry.id)
+    if (current === undefined || String(entry.lastSeenAt).localeCompare(String(current.lastSeenAt)) >= 0) byId.set(entry.id, entry)
+  }
+  return { version: 1, projects: Array.from(byId.values()) }
+}
+
+/**
+ * Read the registry from EVERY candidate location and merge them. A home registry
+ * is optional (a sandbox may deny it); the workspace copy is authoritative for
+ * that project. A missing/unreadable file is an empty registry, never an error:
+ * losing the registry must not break the board.
+ */
+export async function readProjectRegistry(io, options) {
+  const targets = registryTargets(options)
+  if (targets.length === 0) return { ok: true, registry: normaliseProjectRegistry(null), locations: [] }
+  let registry = normaliseProjectRegistry(null)
+  const locations = []
+  for (const target of targets) {
+    const read = await readRegistryAt(io, target, options.signal)
+    if (read.found === true) {
+      locations.push(target.location)
+      registry = mergeProjectRegistries(registry, read.registry)
+    }
+  }
+  return { ok: true, registry: registry, locations: locations }
+}
+
+/**
+ * Persist the registry to the first WRITABLE candidate, creating its directory
+ * first. The home path is preferred (one registry for the whole user); a sandbox
+ * that denies it falls back to the workspace copy, which the board's own policy
+ * allows. Every failure is RETURNED — never swallowed — so the caller can show
+ * "not persisted" instead of pretending it worked.
+ */
 export async function writeProjectRegistry(io, options, registry) {
-  const homeDir = options.homeDir
-  if (typeof homeDir !== 'string' || homeDir.length === 0) return { ok: true, skipped: true }
-  try {
-    const target = await io.fs.resolve(projectRegistryPath(homeDir), { cwd: homeDir, signal: options.signal })
-    const info = await io.fs.stat(target, options.signal)
-    const text = JSON.stringify(normaliseProjectRegistry(registry), null, 2) + '\n'
-    const expected = info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version }
-    const written = await io.fs.writeText(target, text, expected, options.signal, options.sandboxPolicy)
-    return { ok: true, version: written.version }
-  } catch (error) {
-    return { ok: false, code: 'registry-unwritable', message: 'could not persist the project registry: ' + describe(error) }
+  const targets = registryTargets(options)
+  if (targets.length === 0) return { ok: true, skipped: true, location: null, attempts: [] }
+  const text = JSON.stringify(normaliseProjectRegistry(registry), null, 2) + '\n'
+  const attempts = []
+  for (const target of targets) {
+    try {
+      if (typeof options.ensureDir === 'function') await options.ensureDir(dirname(target.path))
+      const resolved = await io.fs.resolve(target.path, { cwd: target.cwd, signal: options.signal })
+      const info = await io.fs.stat(resolved, options.signal)
+      const expected = info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version }
+      const written = await io.fs.writeText(resolved, text, expected, options.signal, target.sandboxPolicy)
+      return { ok: true, version: written.version, location: target.location, path: target.path, attempts: attempts }
+    } catch (error) {
+      attempts.push({ location: target.location, path: target.path, message: describe(error) })
+    }
+  }
+  return {
+    ok: false,
+    code: 'registry-unwritable',
+    message:
+      'could not persist the project registry to any location (' +
+      attempts.map((entry) => entry.location + ': ' + entry.message).join('; ') +
+      '); multi-project driving and restart recovery will not survive a restart',
+    attempts: attempts,
   }
 }
 

@@ -39,6 +39,9 @@ export function createState(ctx, options) {
     // own session id; no request may read another session's binding. This Map is
     // the ONLY store, and sessionRootOf(id) is the only reader.
     sessionRoots: new Map(),
+    // Where the registry actually landed (or why it did not). Surfaced in the
+    // snapshot and in openProject so "not persisted" is never silent again.
+    registryStatus: { location: null, path: null, error: null, attempts: [], ok: false },
   }
   const SESSION_TTL_MS = 12 * 60 * 60 * 1000
   const SESSION_MAX = 64
@@ -62,8 +65,15 @@ export function createState(ctx, options) {
       memory.sessionRoots.delete(oldestKey)
     }
   }
+
   const homeDir = typeof opts.homeDir === 'string' && opts.homeDir.length > 0 ? opts.homeDir : homedir()
   const afterWrite = typeof opts.afterWrite === 'function' ? opts.afterWrite : null
+  // The registry needs a directory that may not exist yet (`~/.dsh/godot-bridge`),
+  // and a write policy that allows the target. Both come from the row; the
+  // defaults degrade to "no directory creation, board policy".
+  const ensureDir = typeof opts.ensureDir === 'function' ? opts.ensureDir : null
+  const policyFor = typeof opts.sandboxPolicyFor === 'function' ? opts.sandboxPolicyFor : writePolicyFor
+  const onRegistryError = typeof opts.onRegistryError === 'function' ? opts.onRegistryError : null
 
   let registryWrite = Promise.resolve()
 
@@ -84,12 +94,21 @@ export function createState(ctx, options) {
     return { version: 1, projects: Array.from(byId.values()) }
   }
 
-  /** Load the persisted project registry once per process. */
-  async function loadRegistry() {
+  /** Load the persisted project registry once per process. projectRootOverride is
+   * the session's workspace (T-96's per-session binding): it lets the workspace
+   * fallback registry be merged even when the home copy is sandboxed away. */
+  async function loadRegistry(projectRootOverride) {
     if (memory.registryLoaded) return memory.registry
-    const result = await readProjectRegistry({ fs: ctx.fs }, { homeDir: homeDir })
-    memory.registry = result.registry
+    const projectRoot =
+      typeof projectRootOverride === 'string' && projectRootOverride !== '' ? projectRootOverride : memory.projectHint
+    const result = await readProjectRegistry({ fs: ctx.fs }, { homeDir: homeDir, projectRoot: projectRoot })
+    // The disk is the older source: a project touched while this read was in
+    // flight stays (the merge keeps the newer lastSeenAt per id).
+    memory.registry = mergeRegistries(memory.registry, result.registry)
     memory.registryLoaded = true
+    if (result.locations.length > 0) {
+      memory.registryStatus = Object.assign({}, memory.registryStatus, { location: result.locations[0], ok: true, error: null })
+    }
     return memory.registry
   }
 
@@ -101,16 +120,51 @@ export function createState(ctx, options) {
    */
   function persistRegistry() {
     const run = async function () {
+      let written = null
       for (let attempt = 0; attempt < 3; attempt++) {
-        const disk = await readProjectRegistry({ fs: ctx.fs }, { homeDir: homeDir })
+        const projectRoot = memory.projectHint
+        const disk = await readProjectRegistry({ fs: ctx.fs }, { homeDir: homeDir, projectRoot: projectRoot })
+        // Merge, never replace: a touch may have landed while the read was in
+        // flight, and that project must not be dropped by disk's older snapshot.
         memory.registry = mergeRegistries(memory.registry, disk.registry)
-        const written = await writeProjectRegistry({ fs: ctx.fs }, { homeDir: homeDir }, memory.registry)
-        if (written.ok !== false) return written
+        written = await writeProjectRegistry(
+          { fs: ctx.fs },
+          {
+            homeDir: homeDir,
+            projectRoot: projectRoot,
+            sandboxPolicy: projectRoot === null ? undefined : policyFor(projectRoot),
+            ensureDir: ensureDir,
+          },
+          memory.registry,
+        )
+        if (written.ok === true) break
       }
-      return { ok: false }
+      if (written !== null && written.ok === true) {
+        memory.registryStatus = { location: written.location, path: written.path, error: null, attempts: written.attempts === undefined ? [] : written.attempts, ok: true }
+      } else {
+        const failure = written === null ? { message: 'the registry write never ran', attempts: [] } : written
+        memory.registryStatus = {
+          location: null,
+          path: null,
+          error: failure.message === undefined ? 'registry-unwritable' : failure.message,
+          attempts: failure.attempts === undefined ? [] : failure.attempts,
+          ok: false,
+        }
+        if (onRegistryError !== null) {
+          try {
+            onRegistryError(memory.registryStatus)
+          } catch (error) {}
+        }
+      }
+      return written === null ? { ok: false } : written
     }
     registryWrite = registryWrite.then(run, run)
     return registryWrite
+  }
+
+  /** Where the registry was persisted, or the readable reason it was not. */
+  function registryStatus() {
+    return Object.assign({}, memory.registryStatus)
   }
 
   /** Wait for any pending registry write (tests and clean shutdown). */
@@ -246,7 +300,12 @@ export function createState(ctx, options) {
       if (typeof sessionId !== 'string' || sessionId === '' || root === undefined) return null
       pruneSessions()
       memory.sessionRoots.set(sessionId, { root: typeof root === 'string' && root.length > 0 ? root : null, at: clock() })
-      return memory.sessionRoots.get(sessionId)
+      const entry = memory.sessionRoots.get(sessionId)
+      // T-98: a session root is the first chance to merge THAT project's workspace
+      // registry (the home copy may be sandboxed away). Only when the registry is
+      // still empty, so a concurrent touch cannot be dropped by this read.
+      if (memory.registryLoaded !== true && entry.root !== null && memory.registry.projects.length === 0) void loadRegistry(entry.root)
+      return entry
     },
     sessionRootOf: function (sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') return null
@@ -254,6 +313,7 @@ export function createState(ctx, options) {
       const entry = memory.sessionRoots.get(sessionId)
       return entry === undefined || entry.root === null ? null : entry.root
     },
+    registryStatus: registryStatus,
   }
 }
 
