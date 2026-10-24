@@ -3185,5 +3185,588 @@ check('teardown runs without throwing', teardownError === null, teardownError &&
 check('teardown withdraws both slots', slotWithdrawals === 2, String(slotWithdrawals))
 check('teardown removes the styles', styleTags.every((tag) => tag.removed === true))
 
+// ── T-83: done column folds to 5, "view all" drawer pages/searches, state persists ──
+{
+  const COLUMNS_KEY = 'godotBridge.taskCenter.columns'
+  STORAGE.delete(COLUMNS_KEY)
+  const day = 24 * 60 * 60 * 1000
+  const nowMs = Date.now()
+  const doneTasks = Array.from({ length: 120 }).map(function (value, index) {
+    const id = 'D-' + String(index + 1)
+    return Object.assign({}, HOST.tasks[0], {
+      id: id,
+      title: 'Done card ' + String(index + 1),
+      status: 'done',
+      updatedAt: new Date(index < 40 ? nowMs - index * 60 * 1000 : index < 80 ? nowMs - day : nowMs - 3 * day).toISOString(),
+    })
+  })
+  const doneHost = Object.assign({}, HOST, { tasks: doneTasks, counts: Object.assign({}, HOST.counts, { done: 120 }) })
+  const listCalls = []
+  const detailCalls = []
+  let listMode = 'ok'
+  globalThis.fetch = async function (url, options) {
+    if (options !== undefined && options.method === 'POST') return { json: async () => ({ ok: true, snapshot: doneHost }) }
+    const text = String(url)
+    if (text.indexOf('/list?') >= 0) {
+      listCalls.push(text)
+      if (listMode === 'error') return { json: async () => ({ ok: false, code: 'failed' }) }
+      const query = new URL('http://x' + text).searchParams
+      const q = (query.get('q') || '').toLowerCase()
+      const cursor = query.get('cursor')
+      const filtered = doneTasks.filter(function (task) { return q === '' || task.title.toLowerCase().indexOf(q) >= 0 || task.id.toLowerCase().indexOf(q) >= 0 })
+      const start = cursor === null ? 0 : filtered.findIndex(function (task) { return task.updatedAt + '|' + task.id === cursor }) + 1
+      const page = filtered.slice(start >= 0 ? start : 0, (start >= 0 ? start : 0) + 50)
+      const last = page.length === 0 ? null : page[page.length - 1]
+      const more = (start >= 0 ? start : 0) + page.length < filtered.length
+      return { json: async () => ({ ok: true, tasks: page, nextCursor: more ? last.updatedAt + '|' + last.id : null }) }
+    }
+    if (text.indexOf('/task?') >= 0) {
+      detailCalls.push(text)
+      const wanted = new URL('http://x' + text).searchParams.get('id')
+      const base = doneTasks.filter((task) => task.id === wanted)[0] || doneTasks[0]
+      return { json: async () => ({ ok: true, task: Object.assign({}, base, { title: 'DETAIL-TITLE-83', spec: 'DONE-DETAIL-SPEC' }) }) }
+    }
+    return { json: async () => doneHost }
+  }
+  function cardCount(node) { return findAll(node, (child) => child.props && child.props.className === 'gbt-card').length }
+  async function settle() {
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    await flush()
+    await flush()
+  }
+  let tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  const doneSection = function (root) { return findAll(root, (node) => node.props && node.props['data-group'] === 'done')[0] }
+  const headerOf = function (section) { return findAll(section, (node) => node.props && node.props.className === 'gbt-colhead')[0] }
+  check(
+    'the done column starts collapsed to five cards and shows the server count',
+    doneSection(tree).props['data-collapsed'] === 'true' && cardCount(doneSection(tree)) === 5 && textOf(headerOf(doneSection(tree))).indexOf('120') >= 0,
+    JSON.stringify({ collapsed: doneSection(tree).props['data-collapsed'], cards: cardCount(doneSection(tree)), head: textOf(headerOf(doneSection(tree))) }),
+  )
+  const viewAll = findAll(tree, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'done-all')[0]
+  check('the done column offers a view-all entry named after the total', viewAll !== undefined && textOf(viewAll).indexOf('查看全部') >= 0 && textOf(viewAll).indexOf('120') >= 0, viewAll && textOf(viewAll))
+  // Expanding the blocked column is remembered (localStorage), done is independent.
+  const blockedSection = function (root) { return findAll(root, (node) => node.props && node.props['data-group'] === 'blocked')[0] }
+  headerOf(blockedSection(tree)).props.onClick()
+  const saved = JSON.parse(STORAGE.get(COLUMNS_KEY) || '{}')
+  check('toggling a column writes the collapse state to localStorage', saved.blocked === true && saved.done !== false, JSON.stringify(saved))
+  tree = withHooks(panel, { initialView: 'board' })
+  check('the remembered state survives a remount', blockedSection(tree).props['data-collapsed'] === 'true', JSON.stringify(blockedSection(tree).props['data-collapsed']))
+  STORAGE.delete(COLUMNS_KEY)
+  // The drawer: page 1 has 50 rows, scroll/load more appends page 2 without duplicates.
+  viewAll.props.onClick()
+  tree = withHooks(panel, { initialView: 'board' })
+  await settle()
+  tree = withHooks(panel, { initialView: 'board' })
+  const drawer = function (root) { return findAll(root, (node) => node.props && node.props['data-done-all-overlay'] === 'true')[0] }
+  const rowIds = function (node) { return findAll(node, (child) => child.props && child.props['data-done-row'] !== undefined).map((child) => child.props['data-done-row']) }
+  check(
+    'the view-all drawer loads the first page of 50 summary rows',
+    drawer(tree) !== undefined && rowIds(drawer(tree)).length === 50 && textOf(drawer(tree)).indexOf('今天') >= 0,
+    JSON.stringify({ rows: rowIds(drawer(tree)).length }),
+  )
+  const more = findAll(drawer(tree), (node) => node.type === 'button' && node.props && node.props['data-action'] === 'done-more')[0]
+  if (more !== undefined) more.props.onClick()
+  await settle()
+  tree = withHooks(panel, { initialView: 'board' })
+  const ids = rowIds(drawer(tree))
+  check(
+    'load more appends the next page with no duplicate and no gap',
+    ids.length === 100 && new Set(ids).size === ids.length && ids[0] === 'D-1' && ids.indexOf('D-50') >= 0,
+    JSON.stringify({ count: ids.length, unique: new Set(ids).size }),
+  )
+  // Search goes to the server (q=) after the debounce.
+  const searchInput = findAll(drawer(tree), (node) => node.type === 'input' && node.props && node.props.type === 'search')[0]
+  searchInput.props.onChange({ target: { value: 'card 11' } })
+  withHooks(panel, { initialView: 'board' })
+  await new Promise((resolve) => setTimeout(resolve, 320))
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  const searchCall = listCalls.filter((url) => url.indexOf('q=card%2011') >= 0)[0]
+  const searched = rowIds(drawer(tree))
+  check(
+    'search is debounced and executed by the server (q=)',
+    searchCall !== undefined && searched.length > 0 && searched.every((id) => id.indexOf('D-11') === 0 || id === 'D-11'),
+    JSON.stringify({ call: searchCall, rows: searched.slice(0, 5) }),
+  )
+  // A row opens the card's detail by id (one detail request, not 50).
+  const row = findAll(drawer(tree), (node) => node.props && node.props['data-done-row'] !== undefined)[0]
+  row.props.onClick()
+  tree = withHooks(panel, { initialView: 'board' })
+  await settle()
+  tree = withHooks(panel, { initialView: 'board' })
+  const detailOverlay = findAll(tree, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
+  check(
+    'a drawer row opens the detail drawer and fetches exactly that card',
+    detailCalls.length === 1 && detailCalls[0].indexOf('id=D-') >= 0 && detailOverlay !== undefined && textOf(detailOverlay).indexOf('DETAIL-TITLE-83') >= 0,
+    JSON.stringify({ calls: detailCalls.length }),
+  )
+  // 500 completed cards: the collapsed column must keep the DOM at five cards.
+  {
+    const savedManyFetch = globalThis.fetch
+    const many = Array.from({ length: 500 }).map(function (value, index) {
+      return Object.assign({}, doneTasks[0], { id: 'M-' + String(index + 1), title: 'Many ' + String(index + 1) })
+    })
+    const manyHost = Object.assign({}, doneHost, { tasks: many, counts: Object.assign({}, doneHost.counts, { done: 500 }) })
+    globalThis.fetch = async function (url, options) {
+      if (options !== undefined && options.method === 'POST') return { json: async () => ({ ok: true, snapshot: manyHost }) }
+      return { json: async () => manyHost }
+    }
+    const started = Date.now()
+    let manyTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    manyTree = withHooks(panel, { initialView: 'board' })
+    const elapsed = Date.now() - started
+    const manyDone = findAll(manyTree, (node) => node.props && node.props['data-group'] === 'done')[0]
+    check(
+      '500 completed cards still render only five cards in the column',
+      cardCount(manyDone) === 5 && elapsed < 1500,
+      JSON.stringify({ cards: cardCount(manyDone), elapsed: elapsed }),
+    )
+    globalThis.fetch = savedManyFetch
+  }
+  // Error state offers a retry; an empty search shows the empty text.
+  listMode = 'error'
+  const reopen = findAll(tree, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'done-all')[0]
+  reopen.props.onClick()
+  tree = withHooks(panel, { initialView: 'board' })
+  await settle()
+  tree = withHooks(panel, { initialView: 'board' })
+  check('the drawer has a retryable error state', textOf(drawer(tree)).indexOf('加载失败') >= 0 && findAll(drawer(tree), (node) => node.type === 'button' && textOf(node).indexOf('重试') >= 0).length === 1, textOf(drawer(tree)).slice(0, 200))
+  listMode = 'ok'
+  const retry = findAll(drawer(tree), (node) => node.type === 'button' && textOf(node).indexOf('重试') >= 0)[0]
+  if (retry !== undefined) retry.props.onClick()
+  await settle()
+  tree = withHooks(panel, { initialView: 'board' })
+  check('retry recovers the list', rowIds(drawer(tree)).length > 0, String(rowIds(drawer(tree)).length))
+  STORAGE.delete(COLUMNS_KEY)
+}
+
+// ── T-83: the summary snapshot shape (T-82) drives the board/queue/status ──
+// The fixture above clones a full-detail task. GET /state after T-82 answers
+// SUMMARIES: writeFiles is a count (writeFileCount), history is two events, and
+// merge/test/review keep statuses and lengths but never the detail strings.
+// The board and the queue must render every fact from those fields alone.
+{
+  const COLUMNS_KEY = 'godotBridge.taskCenter.columns'
+  STORAGE.delete(COLUMNS_KEY)
+  const nowMs = Date.now()
+  const DAY = 24 * 60 * 60 * 1000
+  function summaryTask(id, title, status, ageMs, extra) {
+    const at = new Date(nowMs - ageMs).toISOString()
+    return Object.assign({
+      id: id,
+      title: title,
+      status: status,
+      priority: 0,
+      dependsOn: [],
+      dependency: { state: 'ready', waitingOn: [], brokenOn: [] },
+      writeFileCount: 0,
+      target: 'feat/task-center-v2',
+      base: 'fe43171',
+      branch: null,
+      worktree: null,
+      worktreeError: null,
+      commit: null,
+      requiredRole: null,
+      merge: null,
+      review: null,
+      test: null,
+      assignee: null,
+      attempts: 0,
+      maxAttempts: 3,
+      queuePosition: null,
+      waitingReason: null,
+      candidate: null,
+      createdAt: at,
+      updatedAt: at,
+      events: [],
+    }, extra === undefined ? {} : extra)
+  }
+  function doneSummary(index) {
+    const ageMs = index < 40 ? (index + 1) * 60000 : index < 80 ? DAY + index * 60000 : 3 * DAY + index * 60000
+    const at = new Date(nowMs - ageMs).toISOString()
+    return summaryTask('D-' + String(index + 1), 'Done card ' + String(index + 1), 'done', ageMs, {
+      writeFileCount: 2,
+      merge: { status: 'merged', base: 'fe43171', target: 'feat/task-center-v2', head: 'abc1234', mergeCommit: 'abcdef1234', reviewer: '@reviewer', conflict: null, at: at, declaredCount: 2, actualCount: 2, outputLength: 120, testsLength: 40 },
+      review: { status: 'approved', by: '@reviewer', byName: 'reviewer-1', at: at, attempt: 1, deliveredAt: null },
+      test: { status: 'passed', by: '@tester', byName: 'tester-1', at: at, attempt: 1, deliveredAt: null, evidenceLength: 900 },
+    })
+  }
+  const doneRows = Array.from({ length: 120 }).map(function (value, index) { return doneSummary(index) })
+  const blockedSummary = summaryTask('B-1', 'Blocked by a lock', 'blocked', 3600000, {
+    writeFileCount: 2,
+    dependency: { state: 'broken', waitingOn: [], brokenOn: ['T-9'] },
+  })
+  const runningSummary = summaryTask('R-1', 'Running now', 'running', 60000, {
+    writeFileCount: 3,
+    requiredRole: 'worker',
+    assignee: { name: 'work-x' },
+    leaseUntil: new Date(nowMs + 600000).toISOString(),
+    leaseRemaining: 600000,
+  })
+  const readySummary = summaryTask('P-1', 'Ready to dispatch', 'pending', 120000, { writeFileCount: 2 })
+  function hostOf(tasks, doneCount) {
+    return {
+      ok: true,
+      project: PROJECT,
+      dispatch: { state: 'paused', maxConcurrent: 3, request: null },
+      counts: { total: tasks.length, pending: 1, ready: 1, running: 1, reviewing: 0, testing: 0, done: doneCount, blocked: 1, cancelled: 0 },
+      queue: tasks.filter(function (task) { return task.id === 'P-1' }),
+      tasks: tasks,
+      locks: [],
+      workers: null,
+      agents: null,
+      worktrees: null,
+      activity: null,
+      roles: null,
+      scheduler: null,
+      serverTime: new Date().toISOString(),
+    }
+  }
+  let host = hostOf([readySummary, runningSummary, blockedSummary].concat(doneRows), 120)
+  let listRows = doneRows
+  let listMode = 'ok'
+  const listCalls = []
+  const detailCalls = []
+  const savedFetch = globalThis.fetch
+  globalThis.fetch = async function (url, options) {
+    const text = String(url)
+    if (options !== undefined && options.method === 'POST') return { json: async () => ({ ok: true, snapshot: host }) }
+    if (text.indexOf('/list?') >= 0) {
+      listCalls.push(text)
+      if (listMode === 'error') return { json: async () => ({ ok: false, code: 'failed' }) }
+      const params = new URL('http://x' + text).searchParams
+      const needle = String(params.get('q') || '').toLowerCase()
+      const filtered = listRows.filter(function (task) {
+        return needle === '' || task.id.toLowerCase().indexOf(needle) >= 0 || task.title.toLowerCase().indexOf(needle) >= 0
+      })
+      const cursor = params.get('cursor')
+      let start = 0
+      if (cursor !== null) {
+        const at = filtered.findIndex(function (task) { return task.updatedAt + '|' + task.id === cursor })
+        start = at < 0 ? filtered.length : at + 1
+      }
+      const limit = Number(params.get('limit') || 50)
+      const page = filtered.slice(start, start + limit)
+      const last = page[page.length - 1]
+      const more = last !== undefined && start + page.length < filtered.length
+      return { json: async () => ({ ok: true, tasks: page.slice(), nextCursor: more ? last.updatedAt + '|' + last.id : null }) }
+    }
+    if (text.indexOf('/task?') >= 0) {
+      detailCalls.push(text)
+      const id = new URL('http://x' + text).searchParams.get('id')
+      const base = listRows.filter(function (task) { return task.id === id })[0] || listRows[0]
+      return { json: async () => ({ ok: true, task: Object.assign({}, base, { writeFiles: ['client/client.js'], history: [] }) }) }
+    }
+    return { json: async () => host }
+  }
+
+  function sectionOf(root, key) {
+    return findAll(root, function (node) { return node.props && node.props.className === 'gbt-col' && node.props['data-group'] === key })[0]
+  }
+  function cardsIn(section) {
+    return section === undefined ? [] : findAll(section, function (node) { return node.type === 'article' && node.props && node.props.className === 'gbt-card' })
+  }
+  function drawerOf(root) {
+    return findAll(root, function (node) { return node.props && node.props['data-done-all-overlay'] === 'true' })[0]
+  }
+  function rowsOf(drawer) {
+    return drawer === undefined ? [] : findAll(drawer, function (node) { return node.props && node.props['data-done-row'] !== undefined }).map(function (node) { return node.props['data-done-row'] })
+  }
+  function groupsOf(drawer) {
+    return drawer === undefined ? [] : findAll(drawer, function (node) { return node.props && node.props['data-done-group'] !== undefined }).map(function (node) { return node.props['data-done-group'] })
+  }
+  function searchOf(drawer) {
+    return drawer === undefined ? undefined : findAll(drawer, function (node) { return node.type === 'input' && node.props && node.props.type === 'search' })[0]
+  }
+  async function settleSearch() {
+    await new Promise(function (resolve) { setTimeout(resolve, 320) })
+    await flush()
+    await flush()
+  }
+
+  let tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  // The previous block left its drawer open; close it so this block starts at the board.
+  const leftover = drawerOf(tree)
+  if (leftover !== undefined) {
+    findAll(leftover, function (node) { return node.type === 'button' && node.props && node.props.className === 'gbt-iconbtn' })[0].props.onClick()
+    tree = withHooks(panel, { initialView: 'board' })
+  }
+  findButton(tree, '刷新').props.onClick()
+  await flush()
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+
+  const doneSection = sectionOf(tree, 'done')
+  check(
+    'T-83 summary: the done column folds to five summary cards and shows 完成 · 120',
+    doneSection !== undefined && doneSection.props['data-collapsed'] === 'true' && cardsIn(doneSection).length === 5 &&
+      textOf(doneSection).indexOf('完成') >= 0 && textOf(doneSection).indexOf('120') >= 0,
+    JSON.stringify({ collapsed: doneSection && doneSection.props['data-collapsed'], cards: cardsIn(doneSection).length, head: doneSection && textOf(doneSection).slice(0, 40) }),
+  )
+  const viewAll = findAll(tree, function (node) { return node.type === 'button' && node.props && node.props['data-action'] === 'done-all' })[0]
+  check(
+    'T-83 summary: the folded column ends with 查看全部 · 120',
+    viewAll !== undefined && textOf(viewAll).indexOf('查看全部') >= 0 && textOf(viewAll).indexOf('120') >= 0,
+    viewAll && textOf(viewAll),
+  )
+  const blockedSection = sectionOf(tree, 'blocked')
+  check(
+    'T-83 summary: the files chip falls back to writeFileCount when writeFiles is absent',
+    blockedSection !== undefined && textOf(blockedSection).indexOf('🔒 2') >= 0,
+    blockedSection && textOf(blockedSection),
+  )
+  check(
+    'T-83 summary: the done card renders merge/review/test from summary statuses',
+    textOf(doneSection).indexOf('⇄ 已合并') >= 0 && textOf(doneSection).indexOf('👁 评审通过') >= 0 && textOf(doneSection).indexOf('🧪 测试通过') >= 0,
+    textOf(doneSection).slice(0, 260),
+  )
+  check(
+    'T-83 summary: no summary-shape field leaks as "undefined" into the board',
+    textOf(tree).indexOf('undefined') < 0,
+    textOf(tree).slice(0, 300),
+  )
+  {
+    const queueTree = withHooks(panel, { initialView: 'queue' })
+    // The fake React tolerates h(undefined, ...) and renders nothing for it, so a
+    // deleted component was invisible here while a real browser would throw
+    // "Element type is invalid". Walk the tree for orphan nodes to pin that.
+    function orphansOf(node, out) {
+      if (node === null || node === undefined || typeof node !== 'object') return out
+      if (Array.isArray(node)) {
+        node.forEach(function (child) { orphansOf(child, out) })
+        return out
+      }
+      if (node.type === undefined && node.props !== undefined) out.push(node)
+      if (node.props !== undefined && node.props !== null) orphansOf(node.props.children, out)
+      return out
+    }
+    check(
+      'T-83 summary: the queue renders a summary row (writeFileCount, no writeFiles array)',
+      textOf(queueTree).indexOf('Ready to dispatch') >= 0 && textOf(queueTree).indexOf('🔒 2') >= 0 && textOf(queueTree).indexOf('undefined') < 0,
+      textOf(queueTree).slice(0, 240),
+    )
+    check(
+      'T-83 summary: every queue row renders a real component (no orphan h(undefined))',
+      orphansOf(queueTree, []).length === 0,
+      JSON.stringify(orphansOf(queueTree, []).map(function (node) { return node.props && node.props.className })),
+    )
+    const statusTree = withHooks(panel, { initialView: 'status' })
+    check(
+      'T-83 summary: the status view renders a summary snapshot without a history list',
+      statusTree !== null && textOf(statusTree).indexOf('最近活动') >= 0 && textOf(statusTree).indexOf('undefined') < 0,
+      textOf(statusTree).slice(0, 240),
+    )
+    tree = withHooks(panel, { initialView: 'board' })
+  }
+
+  // No detail fetches for the list: 120 summary rows come from /list alone.
+  findAll(tree, function (node) { return node.type === 'button' && node.props && node.props['data-action'] === 'done-all' })[0].props.onClick()
+  const skeletonTree = withHooks(panel, { initialView: 'board' })
+  const skeleton = drawerOf(skeletonTree)
+  check(
+    'T-83 summary: the drawer opens on skeleton rows while the first page loads',
+    skeleton !== undefined && findAll(skeleton, function (node) { return node.props && node.props.className === 'gbt-skel' }).length === 6 && rowsOf(skeleton).length === 0,
+    skeleton === undefined ? 'no drawer' : String(findAll(skeleton, function (node) { return node.props && node.props.className === 'gbt-skel' }).length),
+  )
+  await flush()
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  let drawer = drawerOf(tree)
+  check(
+    'T-83 summary: the first page is 50 newest summaries with zero /task requests',
+    drawer !== undefined && rowsOf(drawer).length === 50 && rowsOf(drawer)[0] === 'D-1' && rowsOf(drawer)[49] === 'D-50' && detailCalls.length === 0,
+    JSON.stringify({ rows: rowsOf(drawer).length, details: detailCalls.length }),
+  )
+  check(
+    'T-83 summary: page one is grouped 今天 / 昨天 and not 更早',
+    groupsOf(drawer).join(',') === 'today,yesterday',
+    groupsOf(drawer).join(','),
+  )
+  for (let page = 0; page < 2; page += 1) {
+    const more = findAll(drawer, function (node) { return node.type === 'button' && node.props && node.props['data-action'] === 'done-more' })[0]
+    if (more === undefined) break
+    more.props.onClick()
+    await flush()
+    await flush()
+    tree = withHooks(panel, { initialView: 'board' })
+    drawer = drawerOf(tree)
+  }
+  const pagedIds = rowsOf(drawer)
+  const expectedIds = Array.from({ length: 120 }).map(function (value, index) { return 'D-' + String(index + 1) })
+  check(
+    'T-83 summary: paging the archive is complete and duplicate-free (120 of 120, newest first)',
+    pagedIds.length === 120 && new Set(pagedIds).size === 120 && pagedIds.join(',') === expectedIds.join(','),
+    JSON.stringify({ rows: pagedIds.length, unique: new Set(pagedIds).size, first: pagedIds[0], last: pagedIds[pagedIds.length - 1] }),
+  )
+  check(
+    'T-83 summary: the last page carries all three day groups and ends the list',
+    groupsOf(drawer).join(',') === 'today,yesterday,earlier' &&
+      findAll(drawer, function (node) { return node.type === 'button' && node.props && node.props['data-action'] === 'done-more' }).length === 0,
+    groupsOf(drawer).join(','),
+  )
+  check(
+    'T-83 summary: the drawer head reports the server total and the loaded count',
+    textOf(drawer).indexOf('共 120 张') >= 0 && textOf(drawer).indexOf('已加载 120 张') >= 0,
+    textOf(drawer).slice(0, 100),
+  )
+
+  // Server-side search after the debounce.
+  const callsBefore = listCalls.length
+  searchOf(drawer).props.onChange({ target: { value: 'card 42' } })
+  tree = withHooks(panel, { initialView: 'board' })
+  check(
+    'T-83 summary: typing is immediate and the request waits for the debounce',
+    searchOf(drawerOf(tree)) !== undefined && searchOf(drawerOf(tree)).props.value === 'card 42' && listCalls.length === callsBefore,
+    JSON.stringify({ value: searchOf(drawerOf(tree)) && searchOf(drawerOf(tree)).props.value, calls: listCalls.length - callsBefore }),
+  )
+  await settleSearch()
+  tree = withHooks(panel, { initialView: 'board' })
+  drawer = drawerOf(tree)
+  check(
+    'T-83 summary: the debounced search runs on the Host (q=) and replaces the page',
+    listCalls.some(function (url) { return url.indexOf('q=card%2042') >= 0 }) && rowsOf(drawer).join(',') === 'D-42',
+    JSON.stringify({ rows: rowsOf(drawer), last: listCalls[listCalls.length - 1] }),
+  )
+
+  // Empty state. (The fake harness runs effects inside render, so the debounce
+  // starts on the render that follows the change.)
+  searchOf(drawer).props.onChange({ target: { value: 'no-such-card' } })
+  withHooks(panel, { initialView: 'board' })
+  await settleSearch()
+  tree = withHooks(panel, { initialView: 'board' })
+  drawer = drawerOf(tree)
+  check(
+    'T-83 summary: a search with no match shows the drawer empty state',
+    drawer !== undefined && rowsOf(drawer).length === 0 && textOf(drawer).indexOf('没有匹配的已完成任务') >= 0,
+    textOf(drawer).slice(0, 160),
+  )
+
+  // Error + retry.
+  listMode = 'error'
+  searchOf(drawer).props.onChange({ target: { value: 'card 4' } })
+  withHooks(panel, { initialView: 'board' })
+  await settleSearch()
+  tree = withHooks(panel, { initialView: 'board' })
+  drawer = drawerOf(tree)
+  const retry = findAll(drawer, function (node) { return node.type === 'button' && String(textOf(node)).indexOf('重试') >= 0 })[0]
+  check(
+    'T-83 summary: a failed page shows the error state with a retry action',
+    drawer !== undefined && retry !== undefined && textOf(drawer).indexOf('加载失败') >= 0,
+    textOf(drawer).slice(0, 200),
+  )
+  listMode = 'ok'
+  retry.props.onClick()
+  await flush()
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  drawer = drawerOf(tree)
+  check(
+    'T-83 summary: retry recovers the page without a reload',
+    rowsOf(drawer).length > 0 && textOf(drawer).indexOf('加载失败') < 0,
+    JSON.stringify({ rows: rowsOf(drawer).length }),
+  )
+
+  // One row -> exactly one /task detail.
+  const rowId = rowsOf(drawer)[0]
+  findAll(drawer, function (node) { return node.props && node.props['data-done-row'] === rowId })[0].props.onClick()
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  const detail = findAll(tree, function (node) { return node.props && node.props['data-detail-overlay'] === 'true' })[0]
+  check(
+    'T-83 summary: one row costs exactly one /task request and opens the detail drawer',
+    detailCalls.length === 1 && detailCalls[0].indexOf('id=' + rowId) >= 0 && detail !== undefined && textOf(detail).indexOf('client/client.js') >= 0,
+    JSON.stringify({ calls: detailCalls.length }),
+  )
+
+  // 500 summary completions: bounded first screen, measured.
+  const bigRows = Array.from({ length: 500 }).map(function (value, index) {
+    const base = doneSummary(index % 120)
+    return Object.assign({}, base, { id: 'B-' + String(index + 1), title: 'Big card ' + String(index + 1) })
+  })
+  host = hostOf(bigRows, 500)
+  listRows = bigRows
+  const started = Date.now()
+  const bigFirst = withHooks(panel, { initialView: 'board' })
+  await flush()
+  const bigTree = withHooks(panel, { initialView: 'board' })
+  const elapsed = Date.now() - started
+  const bigDone = sectionOf(bigTree, 'done')
+  const bigCards = findAll(bigTree, function (node) { return node.type === 'article' && node.props && node.props.className === 'gbt-card' })
+  check(
+    'T-83 summary: 500 completions still render five done cards on the first screen',
+    bigFirst !== null && bigDone !== undefined && cardsIn(bigDone).length === 5 && bigCards.length === 5 && textOf(bigDone).indexOf('500') >= 0,
+    JSON.stringify({ doneCards: cardsIn(bigDone).length, allCards: bigCards.length }),
+  )
+  console.log('T-83 metrics: ' + JSON.stringify({ snapshotTasks: 500, boardCards: bigCards.length, doneCards: cardsIn(bigDone).length, renderMs: elapsed }))
+
+  globalThis.fetch = savedFetch
+  STORAGE.delete(COLUMNS_KEY)
+}
+
+// ── T-83: the remembered fold state survives a real reload ────────────────
+// A fresh module instance reads localStorage at render time: this is the same
+// thing a browser refresh does (new script evaluation, same storage).
+{
+  const COLUMNS_KEY = 'godotBridge.taskCenter.columns'
+  STORAGE.set(COLUMNS_KEY, JSON.stringify({ done: false, blocked: true }))
+  const savedFetch = globalThis.fetch
+  const nowMs = Date.now()
+  const host = {
+    ok: true,
+    project: PROJECT,
+    dispatch: { state: 'paused', maxConcurrent: 3, request: null },
+    counts: { total: 8, pending: 0, ready: 0, running: 0, reviewing: 0, testing: 0, done: 7, blocked: 1, cancelled: 0 },
+    queue: [],
+    tasks: Array.from({ length: 7 }).map(function (value, index) {
+      const at = new Date(nowMs - (index + 1) * 60000).toISOString()
+      return {
+        id: 'S-' + String(index + 1), title: 'Reload card ' + String(index + 1), status: 'done', priority: 0, dependsOn: [],
+        dependency: { state: 'ready', waitingOn: [], brokenOn: [] }, writeFileCount: 1, merge: null, review: null, test: null,
+        assignee: null, attempts: 0, maxAttempts: 3, requiredRole: null, queuePosition: null, waitingReason: null,
+        createdAt: at, updatedAt: at, events: [],
+      }
+    }).concat([{
+      id: 'SB-1', title: 'Reload blocked', status: 'blocked', priority: 0, dependsOn: [],
+      dependency: { state: 'broken', waitingOn: [], brokenOn: ['T-9'] }, writeFileCount: 0, merge: null, review: null, test: null,
+      assignee: null, attempts: 0, maxAttempts: 3, requiredRole: null, queuePosition: null, waitingReason: null,
+      createdAt: new Date(nowMs - 60000).toISOString(), updatedAt: new Date(nowMs - 60000).toISOString(), events: [],
+    }]),
+    locks: [], workers: null, agents: null, worktrees: null, activity: null, roles: null, scheduler: null,
+    serverTime: new Date().toISOString(),
+  }
+  globalThis.fetch = async function () { return { json: async () => host } }
+  new Function(readFileSync(SRC, 'utf8'))()
+  const plugin = registration.factory(function (specifier) {
+    if (specifier === 'react') return React
+    throw new Error('unexpected require: ' + specifier)
+  })
+  plugin.apply(ctx)
+  const panel2 = registrations.filter(function (entry) { return entry.meta.name === 'main' }).slice(-1)[0].component
+  let tree = withHooks(panel2, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel2, { initialView: 'board' })
+  const doneSection = findAll(tree, function (node) { return node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done' })[0]
+  const blockedSection = findAll(tree, function (node) { return node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'blocked' })[0]
+  function cardsIn(section) {
+    return section === undefined ? [] : findAll(section, function (node) { return node.type === 'article' && node.props && node.props.className === 'gbt-card' })
+  }
+  check(
+    'T-83 reload: the expanded done column is restored from localStorage',
+    doneSection !== undefined && doneSection.props['data-collapsed'] === 'false' && cardsIn(doneSection).length === 7,
+    JSON.stringify({ collapsed: doneSection && doneSection.props['data-collapsed'], cards: cardsIn(doneSection).length }),
+  )
+  check(
+    'T-83 reload: the folded blocked column is restored from localStorage',
+    blockedSection !== undefined && blockedSection.props['data-collapsed'] === 'true' && cardsIn(blockedSection).length === 0,
+    JSON.stringify({ collapsed: blockedSection && blockedSection.props['data-collapsed'], cards: cardsIn(blockedSection).length }),
+  )
+  STORAGE.delete(COLUMNS_KEY)
+  globalThis.fetch = savedFetch
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
