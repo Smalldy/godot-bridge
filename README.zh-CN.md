@@ -93,6 +93,16 @@ curl -s -X POST http://127.0.0.1:<port>/godot-bridge/task-center/action \
 
 运行 `npm test` 覆盖 board / service / locks / dispatch / git / harness / routes / tool / activation / target 历史 与浏览器半侧。
 
+### 候选漂移：哪些自动处理，哪些仍需人工
+
+候选在评审时构建，合并却发生在测试通过之后，中间目标分支几乎总会前进。漂移由宿主 sweep（不是 worker）处理：
+
+- **仅 base 漂移**（目标前进，分支 head 仍等于已验证提交）：sweep 以当前 target head 重建候选并直接合并，evidence 记「仅 base 变化，diff 与已验证提交一致」，**不新增评审/测试轮次**。
+- **构建期冲突**：候选与目标冲突时不再直接抛 candidate-conflict，而是把卡片标为 candidate-stale 并附冲突文件清单，自动重建；再次冲突升级为 needs-rebase（保留文件清单），等待 worker/Lead 处理，**不阻塞其他卡**。
+- **内容变化**（分支超过已验证提交）：绝不盲目合并；卡片标 candidate-stale（diff changed）并走 refreshMerge 重开评审，重新评审 + 测试。
+- **已知边界**：自动漂移判定只认真实 hex commit base；夹具/手写板里的 "base-sha" 之类标签保持旧行为。真实仓库始终是 hex commit。
+- 冲突文件写入卡片的 waitingDetail，面板可以直接显示等待原因。
+
 ## 隔离 DSH 测试 harness
 
 任务中心同时提供「真实 DSH 冒烟」：`plugin/task-center/harness.mjs` 启动一个**用完即弃的 DSH 实例**，证明候选插件能装、能加载、能应答，而完全不碰生产 profile、会话与端口。只有 tester 角色（或用户）能通过 `task_center` 的 `harnessStart` / `harnessStatus` / `harnessSmoke` / `harnessRestart` / `harnessStop` 驱动；`POST /godot-bridge/task-center/action` 对 GUI 暴露同一组动作。

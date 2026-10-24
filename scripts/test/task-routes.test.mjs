@@ -5301,8 +5301,10 @@ rig.scheduler.dispose()
   check(
     'a stale candidate is detected and marked candidate-stale, not left silently in testing',
     first.ok === true &&
-      (first.skipped.some((entry) => entry.code === 'candidate-stale' || entry.code === 'candidate-rebuilt') || midBoard.status === 'reviewing') &&
-      (midBoard.waitingReason === 'candidate-stale' || midBoard.status === 'reviewing'),
+      (first.skipped.some((entry) => entry.code === 'candidate-fast-merged' || entry.code === 'candidate-stale' || entry.code === 'candidate-rebuilt') ||
+        midBoard.status === 'reviewing' ||
+        midBoard.status === 'done') &&
+      (midBoard.waitingReason === 'candidate-stale' || midBoard.status === 'reviewing' || midBoard.status === 'done'),
     JSON.stringify({ skipped: first.skipped, status: midBoard.status, waiting: midBoard.waitingReason }),
   )
   // The next sweep rebuilds the candidate (refreshMerge) or keeps a readable reason.
@@ -5310,7 +5312,7 @@ rig.scheduler.dispose()
   const board = boardJson(rig.fs, PROJECT).tasks[0]
   check(
     'the next sweep rebuilds the stale candidate and leaves no silent testing+open state',
-    second.ok === true && (board.status === 'reviewing' || (board.waitingReason === 'candidate-stale' && board.status === 'testing')),
+    second.ok === true && (board.status === 'done' || board.status === 'reviewing' || (board.waitingReason === 'candidate-stale' && board.status === 'testing')),
     JSON.stringify({ status: board.status, waiting: board.waitingReason, skipped: second.skipped }),
   )
   check(
@@ -5319,6 +5321,80 @@ rig.scheduler.dispose()
     JSON.stringify({ status: board.status, test: board.test && board.test.status, merge: board.merge.status, waiting: board.waitingReason }),
   )
   rig.scheduler.dispose()
+}
+
+// ── T-94: base-only drift fast path, build-time conflict downgrade, diff change ──
+{
+  const replies = (over) => Object.assign({
+    'rev-parse --verify refs/heads/main': () => ({ code: 0, stdout: '2222222\n', stderr: '' }),
+    'rev-parse --verify refs/heads/task/T-1': () => ({ code: 0, stdout: over.branchHead || '3333333', stderr: '' }),
+  }, over)
+  const makeRig = (over) => {
+    over = over === undefined ? {} : over
+    const fake = mergeGit(replies(over))
+    const merger = createMerger({ git: fake.git, verify: async () => ({ ok: true, code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' }) })
+    const rig = createSubmitRig({ roles: { ensure: async () => ({ ok: true, created: [{ name: 'tester-1', id: 'session-tester-1' }], reused: [], replaced: [], waiting: [], refused: [] }), status: () => ({ available: true }) }, git: fake.git, merger: merger, autoMerge: true })
+    const task = openMergeTask({ status: 'testing' })
+    task.merge.base = '1111111'
+    task.commit = over.commit === undefined ? 'head-sha' : over.commit
+    task.target = 'main'
+    task.branch = 'task/T-1'
+    seedMergeTask(rig, task)
+    return { rig: rig, fake: fake }
+  }
+
+  // (a) target advanced, branch head unchanged: base-only drift merges directly.
+  {
+    const { rig } = makeRig({})
+    const before = boardJson(rig.fs, PROJECT).tasks[0]
+    const sweep = await rig.api.autoMergePending(PROJECT)
+    const after = boardJson(rig.fs, PROJECT).tasks[0]
+    check(
+      'a base-only drift is rebuilt and merged without a new review round',
+      sweep.ok === true && after.status === 'done' &&
+        (after.review === null || after.review.attempt === before.review.attempt) &&
+        String(after.evidence).indexOf('仅 base 变化') >= 0,
+      JSON.stringify({ status: after.status, beforeReview: before.review && before.review.attempt, afterReview: after.review && after.review.attempt, skipped: sweep.skipped }),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // (b) a real conflict at build time is downgraded, not handed to a human.
+  {
+    const { rig, fake } = makeRig({})
+    fake.git.mergeNoFf = async function () { return { ok: false, code: 'merge-conflict', message: 'CONFLICT (content): Merge conflict in scripts/a.gd' } }
+    fake.git.conflictedFiles = async function () { return { ok: true, files: ['scripts/a.gd'] } }
+    const sweep = await rig.api.autoMergePending(PROJECT)
+    const card = boardJson(rig.fs, PROJECT).tasks[0]
+    check(
+      'a build-time conflict is downgraded to candidate-stale with the conflicted files',
+      sweep.ok === true && card.status === 'testing' && card.waitingReason === 'candidate-stale' && String(card.waitingDetail).indexOf('scripts/a.gd') >= 0,
+      JSON.stringify({ status: card.status, waiting: card.waitingReason, detail: card.waitingDetail, skipped: sweep.skipped }),
+    )
+    check(
+      'the conflicted card does not block other work in the same sweep',
+      sweep.ok === true && (sweep.merged === undefined || sweep.merged.length === 0),
+      JSON.stringify({ merged: sweep.merged }),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // (c) the branch moved past the verified commit: content changed, so review again.
+  {
+    const { rig } = makeRig({ branchHead: '4444444', commit: '3333333' })
+    const before = boardJson(rig.fs, PROJECT).tasks[0]
+    await rig.api.autoMergePending(PROJECT)
+    const mid = boardJson(rig.fs, PROJECT).tasks[0]
+    const second = await rig.api.autoMergePending(PROJECT)
+    const after = boardJson(rig.fs, PROJECT).tasks[0]
+    check(
+      'a changed diff still goes through review instead of merging',
+      mid.status === 'testing' && mid.waitingReason === 'candidate-stale' && String(mid.waitingDetail).indexOf('diff changed') >= 0 &&
+        second.ok === true && after.status === 'reviewing' && after.review !== null && after.review.attempt > (before.review === null ? 0 : before.review.attempt),
+      JSON.stringify({ mid: mid.status + '/' + mid.waitingReason, after: after.status, attempt: after.review && after.review.attempt }),
+    )
+    rig.scheduler.dispose()
+  }
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
