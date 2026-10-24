@@ -513,6 +513,8 @@ export function claimTask(board, id, worker, now) {
     // The CARD's session (worker.session is the worker's own identity above).
     session: worker.cardSession === undefined || worker.cardSession === null ? null : String(worker.cardSession),
     project: worker.project === undefined || worker.project === null ? null : String(worker.project),
+    // T-107: an ownerless (pre-T-97) card dispatched on a single-team host says so.
+    ownerCompat: worker.ownerCompat === true,
     keep: worktree.keep === true,
   }
   touch(target, now)
@@ -526,6 +528,7 @@ export function claimTask(board, id, worker, now) {
       'dispatched to ' + target.assignee.name + (target.attempts > 1 ? ' (attempt ' + String(target.attempts) + ')' : '') +
       (worker.lead === undefined || worker.lead === null ? '' : ' under Lead ' + String(worker.lead)) +
       (worker.project === undefined || worker.project === null ? '' : ' for ' + String(worker.project)) +
+      (worker.ownerCompat === true ? ' (single-team compatibility: card had no ownerSession)' : '') +
       (worker.cardSession === undefined || worker.cardSession === null ? '' : ' (session ' + String(worker.cardSession) + ')') +
       (adopted === null
         ? ''
@@ -1153,6 +1156,7 @@ export function summary(board, task, now) {
     id: task.id,
     title: task.title,
     status: task.status,
+    ownerSession: task.ownerSession === undefined ? null : task.ownerSession,
     priority: task.priority,
     dependsOn: task.dependsOn,
     dependency: dependency,

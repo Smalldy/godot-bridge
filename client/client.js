@@ -164,6 +164,7 @@ window.__ModuleLoader__.load({
 				projectSourceRegistry: '注册表',
 				projectSourceHint: '这个项目路径是从哪里来的',
 				projectMismatch: '面板：{panel} · 当前会话：{session}',
+			ownerMismatch: '卡片的所属会话 {owner} 与派发 Lead 的会话 {lead} 不一致',
 				projectSwitch: '切换到会话项目',
 				useCurrentProject: '使用当前项目',
 				useCurrentProjectHint: '填入服务端当前解析的项目路径',
@@ -659,6 +660,7 @@ window.__ModuleLoader__.load({
 				projectSourceRegistry: 'Registry',
 				projectSourceHint: 'Where this project path came from',
 				projectMismatch: 'Panel: {panel} · Session: {session}',
+			ownerMismatch: 'The card\'s owner session {owner} differs from the dispatching Lead session {lead}',
 				projectSwitch: 'Switch to the session project',
 				useCurrentProject: 'Use current project',
 				useCurrentProjectHint: 'Fill in the project path the host resolves right now',
@@ -4596,6 +4598,10 @@ window.__ModuleLoader__.load({
 									null,
 									h('div', { className: 'gbt-subhead' }, t('dispatch')),
 									h('dl', { className: 'gbt-meta' }, h('dt', null, t('status')), h('dd', null, String(dispatch.status === null || dispatch.status === undefined ? '—' : dispatch.status)), h('dt', null, t('assignee')), h('dd', null, String(dispatch.target === null || dispatch.target === undefined ? '—' : dispatch.target)), dispatch.error === null || dispatch.error === undefined ? null : h('dt', null, t('dispatchError')), dispatch.error === null || dispatch.error === undefined ? null : h('dd', null, String(dispatch.error))),
+									// T-107: an owner session that differs from the dispatching Lead's session is a red flag, not noise.
+									task.ownerSession !== null && task.ownerSession !== undefined && dispatch.leadSession !== null && dispatch.leadSession !== undefined && task.ownerSession !== dispatch.leadSession
+										? h('p', { className: 'gbt-footnote', 'data-owner-mismatch': 'true' }, t('ownerMismatch').replace('{owner}', String(task.ownerSession)).replace('{lead}', String(dispatch.leadSession)))
+										: null,
 								),
 						h('div', { className: 'gbt-subhead' }, t('history')),
 						history.length === 0 ? h('p', { className: 'gbt-footnote' }, t('emptyHistory')) : h('div', { className: 'gbt-timeline' }, history.slice().reverse().map(function (entry, index) {

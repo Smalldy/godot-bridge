@@ -3059,5 +3059,125 @@ function fakeHostSubprocess(result) {
   check('a target branch that does not resolve is refused with a readable message', missing.ok === false && String(missing.code) === 'target-unreadable' && String(missing.message).indexOf('main') >= 0, JSON.stringify(missing))
 }
 
+// ── T-107: an ownerless card never falls back to "the first Lead" on a multi-team host ──
+{
+  function teamWith(leads, teammates) {
+    const roster = leads.concat(teammates)
+    return {
+      roster: roster,
+      tryMembership(candidate) {
+        const member = roster.filter((entry) => entry.id === candidate.id)[0]
+        return member === undefined ? undefined : { role: member.role, name: member.name }
+      },
+      listMembers() {
+        return roster.map((entry) => Object.assign({}, entry))
+      },
+      async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
+      async sendMessage() { return { ok: true } },
+    }
+  }
+  function ctxFor(fs, leads, team, workspaceRoot) {
+    return {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: workspaceRoot === undefined ? PROJECT : workspaceRoot }) },
+      get(key) {
+        if (key === 'agents') return { list: () => leads }
+        if (key === 'agentTeams') return team
+        return undefined
+      },
+    }
+  }
+  function seedOwnerless(fs) {
+    const now = new Date().toISOString()
+    seedBoard(fs, PROJECT, JSON.stringify({
+      version: 2,
+      seq: 2,
+      dispatch: { state: 'running', allowSpawn: true, maxConcurrent: 2 },
+      tasks: [{ id: 'T-1', title: 'legacy card', status: 'pending', priority: 0, dependsOn: [], writeFiles: [], spec: 's', acceptance: 'a', evidence: '', ownerSession: null, history: [], createdAt: now, updatedAt: now, attempts: 0, maxAttempts: 3 }],
+    }))
+  }
+
+  // (b) two Leads + ownerless card: owner-unknown, never the first Lead.
+  {
+    const fs = createFakeFs()
+    const leads = [
+      { id: 'lead-a', name: 'lead-a', role: 'lead', status: 'running' },
+      { id: 'lead-b', name: 'lead-b', role: 'lead', status: 'running' },
+    ]
+    const team = teamWith(leads, [{ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' }])
+    seedOwnerless(fs)
+    const ctx = ctxFor(fs, leads, team)
+    const state = createState(ctx)
+    const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: createFakeGit(), sessionId: 'session-x' })
+    await scheduler.settle(PROJECT)
+    const card = JSON.parse(fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text).tasks[0]
+    check(
+      'T-107 a two-Lead host refuses an ownerless card with owner-unknown instead of using the first Lead',
+      card.status === 'pending' && card.waitingReason === 'owner-unknown' && card.assignee === null,
+      JSON.stringify({ status: card.status, waiting: card.waitingReason, assignee: card.assignee }),
+    )
+    check(
+      'T-107 the owner-unknown detail tells the user to reopen the card in its session',
+      typeof card.waitingDetail === 'string' && card.waitingDetail.indexOf('reopen') >= 0,
+      String(card.waitingDetail),
+    )
+    scheduler.dispose()
+  }
+
+  // (c) a single-Lead host keeps the historical compatibility dispatch.
+  {
+    const fs = createFakeFs()
+    const leads = [{ id: 'lead-solo', name: 'lead-solo', role: 'lead', status: 'running' }]
+    const team = teamWith(leads, [{ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' }])
+    seedOwnerless(fs)
+    const ctx = ctxFor(fs, leads, team)
+    const state = createState(ctx)
+    const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: createFakeGit(), sessionId: 'session-x' })
+    await scheduler.settle(PROJECT)
+    const card = JSON.parse(fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text).tasks[0]
+    check(
+      'T-107 a single-Lead host still dispatches an ownerless card (compatibility)',
+      card.status === 'running' && card.assignee !== null && card.assignee.name === 'fixer',
+      JSON.stringify({ status: card.status, assignee: card.assignee }),
+    )
+    check(
+      'T-107 the compatibility dispatch records leadSession and ownerCompat',
+      card.dispatch !== null && card.dispatch.leadSession === 'lead-solo' && card.dispatch.ownerCompat === true,
+      JSON.stringify({ dispatch: card.dispatch }),
+    )
+    check(
+      'T-107 the history says why an ownerless card was dispatched here',
+      (card.history || []).some((entry) => String(entry.note).indexOf('single-team compatibility') >= 0),
+      JSON.stringify((card.history || []).map((entry) => entry.note)),
+    )
+    scheduler.dispose()
+  }
+
+  // (d) the card's project is not this session's workspace: refuse BEFORE dispatch.
+  {
+    const fs = createFakeFs()
+    const leads = [{ id: 'lead-solo', name: 'lead-solo', role: 'lead', status: 'running' }]
+    const team = teamWith(leads, [{ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' }])
+    seedOwnerless(fs)
+    const otherRoot = join(PROJECT, '..', 'other-project')
+    const ctx = ctxFor(fs, leads, team, otherRoot)
+    const state = createState(ctx)
+    const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: createFakeGit(), sessionId: 'session-x' })
+    await scheduler.settle(PROJECT)
+    const card = JSON.parse(fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text).tasks[0]
+    check(
+      'T-107 a cross-project dispatch is refused before any worker is spawned',
+      card.status === 'pending' && card.assignee === null && card.waitingReason === 'wrong-session',
+      JSON.stringify({ status: card.status, assignee: card.assignee, waiting: card.waitingReason }),
+    )
+    check(
+      'T-107 the wrong-session detail names the workspace and where to dispatch',
+      typeof card.waitingDetail === 'string' && card.waitingDetail.indexOf(otherRoot) >= 0 && card.waitingDetail.indexOf('所属项目') >= 0,
+      String(card.waitingDetail),
+    )
+    scheduler.dispose()
+  }
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

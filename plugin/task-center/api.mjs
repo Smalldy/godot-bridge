@@ -2264,7 +2264,31 @@ export function createApi(ctx, options) {
   }
 
   async function writeTask(projectPath, id, mutator, context) {
-    const result = await mutate(projectPath, mutator, context)
+    const adoptedBy = sessionIdOf(context)
+    const adopting = function (board) {
+      const outcome = mutator(board)
+      if (outcome === null || outcome === undefined || outcome.ok !== true || adoptedBy === null) return outcome
+      // T-107: a pre-T-97 card has no ownerSession. The first session that writes
+      // it adopts it, in the SAME transaction, and the history says so.
+      let changed = false
+      const tasks = outcome.board.tasks.map((entry) => {
+        if (String(entry.id) !== String(id)) return entry
+        if (typeof entry.ownerSession === 'string' && entry.ownerSession !== '') return entry
+        changed = true
+        const history = Array.isArray(entry.history) ? entry.history : []
+        // Prepend: the adoption is context for this write, and the write's own
+        // history entry (verdict/transition) stays the newest one.
+        return Object.assign({}, entry, {
+          ownerSession: adoptedBy,
+          history: [
+            { at: new Date(clock()).toISOString(), by: 'host', byName: null, from: entry.status, to: entry.status, note: 'owner session adopted: ' + adoptedBy },
+          ].concat(history),
+        })
+      })
+      if (!changed) return outcome
+      return Object.assign({}, outcome, { board: Object.assign({}, outcome.board, { tasks: tasks }) })
+    }
+    const result = await mutate(projectPath, adopting, context)
     if (result.ok !== true) return result
     const task = model.findTask(result.board, id)
     return ok({
