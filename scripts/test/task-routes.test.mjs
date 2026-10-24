@@ -5671,9 +5671,19 @@ rig.scheduler.dispose()
     stateA.ok === true && stateA.projectRoot === projectA && stateB.ok === true && stateB.projectRoot === projectB,
     JSON.stringify({ a: stateA.projectRoot, b: stateB.projectRoot }),
   )
+  // T-103: no pin + no resolvable session falls back to the host's OWN last-active
+  // record — never to another session's binding; with no record the answer is unbound.
+  const lastActiveBefore = rig.state.memory.registry.lastActiveProjectId
+  const borrowed = await http(STATE_PATH + '?session=' + encodeURIComponent('never-seen'))
+  check(
+    'T-96 an unknown session never borrows another session’s binding (last-active only)',
+    lastActiveBefore !== null ? borrowed.ok === true && borrowed.resolvedFrom === 'last-active' : borrowed.ok === false && borrowed.code === 'no-project-bound',
+    JSON.stringify({ lastActive: lastActiveBefore, ok: borrowed.ok, resolvedFrom: borrowed.resolvedFrom, code: borrowed.code }),
+  )
+  rig.state.memory.registry = Object.assign({}, rig.state.memory.registry, { lastActiveProjectId: null })
   const unknown = await http(STATE_PATH + '?session=' + encodeURIComponent('never-seen'))
   check(
-    'T-96 an unknown session id is unbound (no borrowed project)',
+    'T-96 an unknown session id is unbound when nothing was ever activated',
     unknown.ok === false && unknown.code === 'no-project-bound',
     JSON.stringify(unknown),
   )
@@ -5768,10 +5778,19 @@ rig.scheduler.dispose()
       rig.state.activeProjects(Date.now()).some((entry) => entry.root === wsProj),
       JSON.stringify(rig.state.activeProjects(Date.now()).map((entry) => entry.root)),
     )
-    // Unknown id: refuse. The active project above must NOT be borrowed.
+    // Unknown id: the SESSION lookup must not be invented. T-103 makes the host's
+    // own last-active record a legitimate fallback, so clear it to pin down the
+    // "nothing knowable" answer; the resolution source must never claim "session".
+    const borrowed = await http(STATE_PATH + '?session=never-seen')
+    check(
+      'T-102 an unknown session never resolves as a session binding',
+      borrowed.ok === true ? borrowed.resolvedFrom === 'last-active' : borrowed.code === 'no-project-bound',
+      JSON.stringify({ ok: borrowed.ok, resolvedFrom: borrowed.resolvedFrom, code: borrowed.code }),
+    )
+    rig.state.memory.registry = Object.assign({}, rig.state.memory.registry, { lastActiveProjectId: null })
     const unknown = await http(STATE_PATH + '?session=never-seen')
     check(
-      'T-102 an unknown session id refuses instead of borrowing the last project',
+      'T-102 an unknown session id with no recorded last project refuses',
       unknown.ok === false && unknown.code === 'no-project-bound',
       JSON.stringify(unknown),
     )
@@ -5815,6 +5834,122 @@ rig.scheduler.dispose()
     )
   } finally {
     rmSync(tempHome, { recursive: true, force: true })
+  }
+}
+
+
+// ── T-103: startup activates the last project (or says nothing is active) ────
+{
+  function registryWith(root, lastActive) {
+    const id = projectIdOf(root)
+    return {
+      version: 1,
+      projects: [{ id: id, root: root, lastSeenAt: new Date().toISOString(), lastSessionId: null, worktreeRoot: null, preflight: null }],
+      lastActiveProjectId: lastActive === false ? null : id,
+    }
+  }
+  function unboundRig(options) {
+    const opts = options === undefined ? {} : options
+    const rig = createRig({ allowSpawn: false, sessionLookup: opts.sessionLookup })
+    // Clear the rig's own session binding: this is the "fresh host, no pin" case.
+    rig.state.setSessionRoot('test-session', null)
+    if (opts.registry !== undefined) rig.state.memory.registry = opts.registry
+    return rig
+  }
+
+  // (a) a recorded last-active project is activated at startup.
+  {
+    const rig = unboundRig({ registry: registryWith(PROJECT) })
+    const surface = install(rig)
+    async function http(url) {
+      const res = response()
+      await surface.byPath.get(url.split('?')[0]).handler(request(url), res)
+      return res.json()
+    }
+    const started = await http(STATE_PATH + '?session=test-session')
+    check(
+      'T-103 startup activates the recorded last project and names the source',
+      started.ok === true && started.projectRoot === PROJECT && started.resolvedFrom === 'last-active',
+      JSON.stringify({ ok: started.ok, projectRoot: started.projectRoot, resolvedFrom: started.resolvedFrom }),
+    )
+    check(
+      'T-103 the last-active project is reported by the state',
+      rig.state.lastActiveProject() !== null && rig.state.lastActiveProject().root === PROJECT,
+      JSON.stringify(rig.state.lastActiveProject()),
+    )
+    surface.dispose()
+    rig.scheduler.dispose()
+  }
+
+  // (b) nothing recorded: say so, never pick a "recently active" project.
+  {
+    const rig = unboundRig({ registry: registryWith(PROJECT, false) })
+    const surface = install(rig)
+    async function http(url) {
+      const res = response()
+      await surface.byPath.get(url.split('?')[0]).handler(request(url), res)
+      return res.json()
+    }
+    const started = await http(STATE_PATH + '?session=test-session')
+    check(
+      'T-103 with no record the panel is told nothing is active (no pick-a-project fallback)',
+      started.ok === false && started.code === 'no-project-bound' && rig.state.lastActiveProject() === null,
+      JSON.stringify({ ok: started.ok, code: started.code, lastActive: rig.state.lastActiveProject() }),
+    )
+    surface.dispose()
+    rig.scheduler.dispose()
+  }
+
+  // (c) a session that CAN be resolved always wins over the last-active record.
+  {
+    const otherRoot = join(PROJECT, '..', 'proj-other')
+    const rig = unboundRig({
+      registry: registryWith(PROJECT),
+      sessionLookup: { lookup: (id) => (id === 'abc' ? { ok: true, path: otherRoot } : { ok: false, code: 'no-session' }) },
+    })
+    for (const dir of [otherRoot, join(otherRoot, '.git'), join(otherRoot, '.agents')]) rig.fs.dirs.add(dir)
+    const surface = install(rig)
+    async function http(url) {
+      const res = response()
+      await surface.byPath.get(url.split('?')[0]).handler(request(url), res)
+      return res.json()
+    }
+    const sessionFirst = await http(STATE_PATH + '?session=abc')
+    check(
+      'T-103 a resolvable session beats the last-active record',
+      sessionFirst.ok === true && sessionFirst.projectRoot === otherRoot && sessionFirst.resolvedFrom === 'session-lookup',
+      JSON.stringify({ projectRoot: sessionFirst.projectRoot, resolvedFrom: sessionFirst.resolvedFrom }),
+    )
+    surface.dispose()
+    rig.scheduler.dispose()
+  }
+
+  // (d) every successful activation stamps the single last-active id.
+  {
+    const rig = createRig({ allowSpawn: false })
+    const surface = install(rig)
+    async function post(body) {
+      const res = response()
+      await surface.byPath.get(ACTION_PATH).handler(request(ACTION_PATH, { method: 'POST', body: body, headers: { 'content-type': 'application/json' } }), res)
+      return res.json()
+    }
+    rig.state.memory.registry = { version: 1, projects: [], lastActiveProjectId: null }
+    const opened = await post({ action: 'openProject', project: PROJECT, path: PROJECT })
+    check(
+      'T-103 openProject records the project as last active',
+      opened.ok === true && rig.state.memory.registry.lastActiveProjectId === projectIdOf(PROJECT),
+      JSON.stringify({ ok: opened.ok, lastActive: rig.state.memory.registry.lastActiveProjectId }),
+    )
+    // The marker is part of the PERSISTED registry: a restart must read it back.
+    await rig.state.flushRegistry()
+    const readBack = await readProjectRegistry({ fs: rig.fs }, { homeDir: homedir(), projectRoot: PROJECT })
+    check(
+      'T-103 the last-active id survives the registry round-trip',
+      readBack.ok === true && readBack.registry.lastActiveProjectId === projectIdOf(PROJECT),
+      JSON.stringify({ ok: readBack.ok, lastActive: readBack.registry && readBack.registry.lastActiveProjectId }),
+    )
+    surface.dispose()
+    rig.scheduler.dispose()
   }
 }
 

@@ -117,7 +117,14 @@ export function normaliseProjectRegistry(value) {
       }
     }
   }
-  return { version: 1, projects: projects }
+  // T-103: the ONE project to re-activate at startup. It is a separate field (not
+  // "the most recently seen project") so startup never guesses: no field means
+  // "nothing was ever activated", which the panel renders as such.
+  const lastActiveProjectId =
+    value !== null && typeof value === 'object' && typeof value.lastActiveProjectId === 'string' && value.lastActiveProjectId.length > 0
+      ? value.lastActiveProjectId
+      : null
+  return { version: 1, projects: projects, lastActiveProjectId: lastActiveProjectId }
 }
 
 /** One registry file, or an empty registry when it is absent/unreadable. */
@@ -140,7 +147,21 @@ function mergeProjectRegistries(left, right) {
     const current = byId.get(entry.id)
     if (current === undefined || String(entry.lastSeenAt).localeCompare(String(current.lastSeenAt)) >= 0) byId.set(entry.id, entry)
   }
-  return { version: 1, projects: Array.from(byId.values()) }
+  // The last-active id follows the newer of the two copies (the copy that was
+  // written last wins); an id whose project is gone is dropped rather than kept
+  // as a dangling activation.
+  let lastActiveProjectId = null
+  let best = null
+  for (const candidate of [left.lastActiveProjectId, right.lastActiveProjectId]) {
+    if (typeof candidate !== 'string' || candidate === '') continue
+    const entry = byId.get(candidate)
+    if (entry === undefined) continue
+    if (best === null || String(entry.lastSeenAt).localeCompare(best) > 0) {
+      best = entry.lastSeenAt
+      lastActiveProjectId = candidate
+    }
+  }
+  return { version: 1, projects: Array.from(byId.values()), lastActiveProjectId: lastActiveProjectId }
 }
 
 /**
