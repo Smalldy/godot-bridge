@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH } from '../../plugin/task-center/routes.mjs'
-import { boardJson, createFakeFs, createFakeGit, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
+import { boardJson, createFakeFs, createFakeGit, createRig, createStrictCtx, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
 import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, memberProjectOf, projectSlotKey, recordStageSlot, rememberMemberProject, roleBriefFor, roleSlotName } from '../../plugin/task-center/dispatch.mjs'
@@ -450,16 +450,20 @@ function createSubmitRig(options) {
   // A team service is optional: the commit path must work without one, and the
   // notification path is exactly what a team adds.
   const agents = opts.agents === undefined ? (team === null ? undefined : { list: () => [{ id: 'session-lead' }] }) : opts.agents
-  const ctx = {
-    fs: fs,
-    sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
-    get(key) {
-      if (key === 'agents') return agents
-      if (key === 'agentTeams') return team
-      if (key === 'subprocess') return opts.subprocess
-      return undefined
+  // T-104: strict Cordis-shaped ctx; an undeclared service read throws.
+  const ctx = createStrictCtx(
+    {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+      get(key) {
+        if (key === 'agents') return agents
+        if (key === 'agentTeams') return team
+        if (key === 'subprocess') return opts.subprocess
+        return undefined
+      },
     },
-  }
+    ['fs', 'sandboxPolicy', 'tools', 'webServer'],
+  )
   const state = createState(ctx)
   state.setSessionRoot(TEST_SESSION, PROJECT)
   const roles = opts.roles === true ? createRoleManager(ctx) : opts.roles === undefined ? null : opts.roles

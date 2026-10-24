@@ -19,7 +19,8 @@
  * events and the tick all call the same scheduler, which never overlaps itself.
  */
 
-import { mkdirSync } from 'node:fs'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import { createState } from './state.mjs'
 import { createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
@@ -39,6 +40,48 @@ import {
 
 export const inject = ['fs', 'sandboxPolicy', 'tools', 'webServer']
 
+/**
+ * Where activation failures are written. The file lives next to the project
+ * registry so a dead row is diagnosable without a live host; tests override the
+ * path through GODOT_BRIDGE_ACTIVATION_LOG.
+ */
+export function activationLogPath() {
+  const override = typeof process.env.GODOT_BRIDGE_ACTIVATION_LOG === 'string' ? process.env.GODOT_BRIDGE_ACTIVATION_LOG.trim() : ''
+  if (override !== '') return override
+  return homedir() + '/.dsh/godot-bridge/activation-error.log'
+}
+
+/**
+ * Persist one activation failure (module load or apply) and report it through
+ * the host logger. Never throws: a broken logger/file must not hide the failure
+ * it is trying to report.
+ */
+export function recordActivationError(stage, error, ctx) {
+  const at = new Date().toISOString()
+  const detail = error === null || error === undefined ? 'unknown error' : String(error && error.stack ? error.stack : error)
+  const line = '[' + at + '] ' + String(stage) + ' FAILED\n' + detail + '\n'
+  let path = null
+  try {
+    path = activationLogPath()
+    mkdirSync(dirname(path), { recursive: true })
+    appendFileSync(path, line)
+  } catch (writeError) {
+    path = null
+  }
+  try {
+    const logger = ctx === undefined || ctx === null ? undefined : ctx.logger
+    if (logger !== undefined && logger !== null && typeof logger.error === 'function') {
+      logger.error('[godot-bridge] task center ' + String(stage) + ' failed: ' + detail)
+    }
+  } catch (logError) {}
+  return { at: at, stage: String(stage), path: path, line: line }
+}
+
+/** The host loader cannot call into a module that failed to import: this is the entry point it can use when it catches that failure. */
+export function reportLoadFailure(error, ctx) {
+  return recordActivationError('load', error, ctx)
+}
+
 const TICK_MS = 5000
 // After the main row's always-on sections (150-152) and before later guidance.
 const SYSTEM_RULES_ORDER = 155
@@ -46,9 +89,19 @@ const SYSTEM_RULES_ORDER = 155
 /** Read one service from an injected context (property first, then get()). */
 function serviceOf(injected, name) {
   if (injected === undefined || injected === null) return undefined
-  const direct = injected[name]
-  if (direct !== undefined && direct !== null) return direct
-  if (typeof injected.get === 'function') return injected.get(name)
+  // Cordis throws when a non-injected property is read; the service callback may
+  // still be a strict context, so even this read stays guarded.
+  try {
+    const direct = injected[name]
+    if (direct !== undefined && direct !== null) return direct
+  } catch (error) {
+    /* fall through to get() */
+  }
+  try {
+    if (typeof injected.get === 'function') return injected.get(name)
+  } catch (error) {
+    return undefined
+  }
   return undefined
 }
 
@@ -94,6 +147,17 @@ function holdDisposer(ctx, disposer, label) {
 }
 
 export function apply(ctx) {
+  try {
+    return applyRow(ctx)
+  } catch (error) {
+    // A row that cannot activate must leave a trace: silently dying is the bug
+    // this guard exists to prevent.
+    recordActivationError('apply', error, ctx)
+    throw error
+  }
+}
+
+function applyRow(ctx) {
   let scheduler = null
   const state = createState(ctx, {
     afterWrite: function (event) {

@@ -14,6 +14,34 @@ import { createApi } from '../../../plugin/task-center/api.mjs'
 
 export const PROJECT = join(process.cwd(), 'demo-project')
 
+/**
+ * A Cordis-shaped STRICT context for tests (T-104). Cordis throws on reading a
+ * service that was not declared in `inject`; a plain object never does, which is
+ * exactly how a bare `ctx.agent` read killed the row in production while the
+ * suite stayed green. Wrapping the fixture context in this Proxy makes the same
+ * mistake fail here.
+ */
+export function createStrictCtx(base, declared) {
+  const allowed = new Set(Array.isArray(declared) ? declared : [])
+  const ctxMethods = ['get', 'inject', 'effect', 'on', 'off', 'once', 'emit', 'logger']
+  return new Proxy(base === undefined || base === null ? {} : base, {
+    get(target, prop) {
+      if (typeof prop === 'symbol' || prop === 'then') return undefined
+      const name = String(prop)
+      if (ctxMethods.indexOf(name) >= 0) return target[name]
+      if (allowed.has(name)) return target[name]
+      throw new Error('cannot get property "' + name + '" without inject')
+    },
+    set(target, prop, value) {
+      target[prop] = value
+      return true
+    },
+    has(target, prop) {
+      return typeof prop === 'string' && (allowed.has(prop) || ctxMethods.indexOf(prop) >= 0)
+    },
+  })
+}
+
 export function createFakeFs() {
   const files = new Map()
   const dirs = new Set()
@@ -278,16 +306,22 @@ export function createRig(options) {
   const team = opts.team === undefined ? createTeam(opts.teamOptions) : opts.team
   const agents = opts.agents === undefined ? { list: () => [{ id: 'session-lead' }] } : opts.agents
   const subagents = { list: () => ['spawn'] }
-  const ctx = {
-    fs,
-    sandboxPolicy: { resolve: () => ({ workspaceRoot: project }) },
-    get(key) {
-      if (key === 'agents') return agents
-      if (key === 'agentTeams') return team
-      if (key === 'subagents') return subagents
-      return undefined
+  // T-104: the fixture ctx is Cordis-shaped and STRICT: reading a service that
+  // was not declared in inject throws, exactly like the real host. A bare
+  // `ctx.agent` read therefore fails here instead of only killing production.
+  const ctx = createStrictCtx(
+    {
+      fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: project }) },
+      get(key) {
+        if (key === 'agents') return agents
+        if (key === 'agentTeams') return team
+        if (key === 'subagents') return subagents
+        return undefined
+      },
     },
-  }
+    ['fs', 'sandboxPolicy', 'tools', 'webServer'],
+  )
   const state = createState(ctx, { now: opts.now })
   // A rig is one session on one project: the resolver's session workspace is
   // this project unless a test clears it to exercise no-project-bound.
