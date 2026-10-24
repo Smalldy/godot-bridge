@@ -6281,5 +6281,37 @@ rig.scheduler.dispose()
   emptyRig.scheduler.dispose()
 }
 
+// ── T-107: a pre-T-97 card without ownerSession is adopted by the session that writes it ──
+{
+  const rig = createRig({ allowSpawn: false })
+  const now = new Date().toISOString()
+  seedBoard(rig.fs, PROJECT, JSON.stringify({
+    version: 2,
+    seq: 2,
+    dispatch: { state: 'paused' },
+    tasks: [{ id: 'T-1', title: 'legacy card', status: 'pending', priority: 0, dependsOn: [], writeFiles: [], spec: 's', acceptance: 'a', evidence: '', ownerSession: null, history: [], createdAt: now, updatedAt: now, attempts: 0, maxAttempts: 3 }],
+  }))
+  const adopted = await rig.api.perform('block', { id: 'T-1', reason: 'triaged' }, { projectPath: PROJECT, by: '@user', role: 'user', agent: { id: 'session-adopter' } })
+  const card = boardJson(rig.fs, PROJECT).tasks[0]
+  check(
+    'T-107 a card without ownerSession is adopted by the writing session',
+    adopted.ok === true && card.ownerSession === 'session-adopter' && card.status === 'blocked',
+    JSON.stringify({ ok: adopted.ok, owner: card.ownerSession, status: card.status }),
+  )
+  check(
+    'T-107 adoption is recorded in history as owner session adopted: <id>',
+    (card.history || []).some((entry) => String(entry.note) === 'owner session adopted: session-adopter'),
+    JSON.stringify((card.history || []).map((entry) => entry.note)),
+  )
+  const detail = await rig.api.perform('get', { id: 'T-1' }, { projectPath: PROJECT, by: '@user', role: 'user' })
+  check(
+    'T-107 get exposes ownerSession and dispatch.leadSession',
+    detail.ok === true && detail.task.ownerSession === 'session-adopter' &&
+      (detail.task.dispatch === null || Object.prototype.hasOwnProperty.call(detail.task.dispatch, 'leadSession')),
+    JSON.stringify({ owner: detail.task && detail.task.ownerSession }),
+  )
+  rig.scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

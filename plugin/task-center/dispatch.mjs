@@ -509,6 +509,27 @@ export function resolveLead(ctx, options) {
   return null
 }
 
+/** Every live Lead in this profile. Dispatch uses the COUNT to decide whether an
+ * ownerless (pre-T-97) card may fall back to the single team. */
+export function liveLeads(ctx) {
+  const { agents, agentTeams } = servicesFor(ctx)
+  if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return []
+  let all = []
+  try {
+    all = agents.list()
+  } catch (error) {
+    return []
+  }
+  const leads = []
+  for (const candidate of all) {
+    try {
+      const membership = agentTeams.tryMembership(candidate)
+      if (membership !== undefined && membership !== null && membership.role === 'lead') leads.push(candidate)
+    } catch (error) {}
+  }
+  return leads
+}
+
 /** The SUBAGENT provider registry is not the LLM provider registry; asking it is
  * the only way to avoid the "no subagent provider registered" failure. */
 export function subagentProviderFor(ctx, preferred) {
@@ -3280,6 +3301,40 @@ export function createDispatcher(ctx, options) {
           results.push({ id: task.id, skipped: 'other-session', message: detail })
           continue
         }
+        // T-107: an ownerless (pre-T-97) card must not fall back to "the first
+        // Lead" when this host runs several teams. It waits for a session to
+        // adopt it; a single-team host keeps the historical compatibility path.
+        let ownerCompat = false
+        if (ownerSession === null && selfSessionId !== null) {
+          const leads = liveLeads(ctx)
+          if (leads.length > 1) {
+            const detail =
+              '这张卡没有所属会话（ownerSession 为空），本宿主有多个 Team；请在它所属的项目会话里 reopen 一次以认领，宿主不会回退到第一个 Lead'
+            await markExecutorMissing(project, task.id, 'owner-unknown', detail)
+            results.push({ id: task.id, skipped: 'owner-unknown', message: detail })
+            continue
+          }
+          ownerCompat = true
+        }
+        // T-107: never dispatch a card whose project is not this session's
+        // workspace: the worker could neither write nor run the declared gate.
+        if (selfSessionId !== null) {
+          let workspaceRoot = null
+          try {
+            const policy = ctx.sandboxPolicy
+            const resolved = policy !== null && policy !== undefined && typeof policy.resolve === 'function' ? policy.resolve() : null
+            workspaceRoot = resolved !== null && resolved !== undefined && typeof resolved.workspaceRoot === 'string' ? resolved.workspaceRoot : null
+          } catch (error) {
+            workspaceRoot = null
+          }
+          if (workspaceRoot !== null && projectIdOf(workspaceRoot) !== projectIdOf(project)) {
+            const detail =
+              '这张卡属于项目 ' + project + '，而当前会话的 workspace 是 ' + workspaceRoot + '；跨项目派发会让 worker 无法写入或跑验证，请在卡片所属项目的会话里派发'
+            await markExecutorMissing(project, task.id, 'wrong-session', detail)
+            results.push({ id: task.id, skipped: 'wrong-session', message: detail })
+            continue
+          }
+        }
         if (task.dispatch !== null && task.dispatch.status === 'lease-expired' && task.dispatch.error !== TASK_LEASE_CAP_ERROR) {
           const previous = memberLiveness({ name: task.dispatch.target, session: task.dispatch.targetId })
           if (previous.alive === true) {
@@ -3403,6 +3458,7 @@ export function createDispatcher(ctx, options) {
                 // NOTE: `session` is the WORKER's identity (assignee.session); the
                 // card's own session travels as cardSession.
                 cardSession: ownerSession === null ? selfSessionId : ownerSession,
+                ownerCompat: ownerCompat,
                 project: project,
                 worktree: worktree,
                 adopt:

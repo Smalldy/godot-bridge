@@ -533,6 +533,7 @@ function normaliseTask(raw, index, now) {
           // record, so the panel/history can prove dispatch never crossed sessions.
           leadSession: typeof raw.dispatch.leadSession === 'string' ? raw.dispatch.leadSession : null,
           session: typeof raw.dispatch.session === 'string' ? raw.dispatch.session : null,
+          ownerCompat: raw.dispatch.ownerCompat === true,
           project: typeof raw.dispatch.project === 'string' ? raw.dispatch.project : null,
           keep: raw.dispatch.keep === true,
         }
