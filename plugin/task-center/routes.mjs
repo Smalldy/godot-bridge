@@ -60,6 +60,15 @@ function queryOf(req) {
   }
 }
 
+/** The caller's session id: body first, then ?session=. Anything unreadable is null. */
+function sessionFromRequest(req, body) {
+  const fromBody = body !== undefined && body !== null && typeof body.session === 'string' ? body.session.trim() : ''
+  if (fromBody !== '') return fromBody.slice(0, 128)
+  const url = queryOf(req)
+  const fromQuery = url === null ? null : url.searchParams.get('session')
+  return typeof fromQuery === 'string' && fromQuery.trim() !== '' ? fromQuery.trim().slice(0, 128) : null
+}
+
 function projectFromRequest(req, body) {
   if (body !== undefined && body !== null && typeof body.project === 'string' && body.project.length > 0) return body.project
   const url = queryOf(req)
@@ -97,11 +106,12 @@ export function registerTaskRoutes(ctx, options) {
    * (and written to the registry, so the background loop drives it); otherwise
    * only the session workspace can bind a project. Never a global hint.
    */
-  async function resolveProject(req, body) {
+  async function resolveProject(req, body, sessionId) {
     const explicit = projectFromRequest(req, body)
     const resolved = await state.resolveProject({
       explicit: explicit,
-      sessionRoot: state.memory.sessionRoot,
+      // T-96: only THIS session's binding may answer; no session means no slot.
+      sessionRoot: sessionId === null || sessionId === undefined ? null : state.sessionRootOf(sessionId),
       explicitSource: explicit !== null ? 'panel' : undefined,
     })
     if (resolved.ok !== true) return { failed: resolved }
@@ -119,9 +129,12 @@ export function registerTaskRoutes(ctx, options) {
    * exactly the confusion this route is meant to end. Never throws: a host with no
    * session workspace simply reports null.
    */
-  async function sessionProjectOf() {
+  async function sessionProjectOf(sessionId) {
     try {
-      const resolved = await state.resolveProject({ explicit: null, sessionRoot: state.memory.sessionRoot })
+      const resolved = await state.resolveProject({
+        explicit: null,
+        sessionRoot: sessionId === null || sessionId === undefined ? null : state.sessionRootOf(sessionId),
+      })
       if (resolved === null || resolved === undefined || resolved.ok !== true) return null
       return resolved.project.root
     } catch (error) {
@@ -138,7 +151,8 @@ export function registerTaskRoutes(ctx, options) {
 
   async function handleState(req, res) {
     try {
-      const target = await resolveProject(req, null)
+      const sessionId = sessionFromRequest(req, null)
+      const target = await resolveProject(req, null, sessionId)
       if (target.failed !== undefined) {
         // UI-facing: the panel localizes by code; no English sentence crosses the wire.
         sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
@@ -150,7 +164,7 @@ export function registerTaskRoutes(ctx, options) {
       const sinceRaw = url === null ? null : url.searchParams.get('since')
       const since = sinceRaw === null || sinceRaw === '' ? null : Number(sinceRaw)
       const snapshot = await api.snapshot(project, { full: false, since: Number.isFinite(since) ? since : null, resolvedFrom: target.resolvedFrom })
-      const sessionProject = target.resolvedFrom === 'session' ? project : await sessionProjectOf()
+      const sessionProject = target.resolvedFrom === 'session' ? project : await sessionProjectOf(sessionId)
       sendJson(res, 200, withSessionProject(snapshot, sessionProject))
     } catch (error) {
       sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
@@ -180,7 +194,8 @@ export function registerTaskRoutes(ctx, options) {
       return
     }
     try {
-      const target = await resolveProject(req, body)
+      const sessionId = sessionFromRequest(req, body)
+      const target = await resolveProject(req, body, sessionId)
       if (action !== 'openProject' && target.failed !== undefined) {
         sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return
@@ -204,7 +219,15 @@ export function registerTaskRoutes(ctx, options) {
       }
       // openProject answers with the snapshot itself; the panel renders that
       // answer, so it needs the session resolution just like /state does.
-      const sessionProject = target.resolvedFrom === 'session' ? project : await sessionProjectOf()
+      let sessionProject = target.resolvedFrom === 'session' ? project : await sessionProjectOf(sessionId)
+      if (action === 'openProject' && result.ok === true) {
+        // Bind the result to the session that ASKED, never to a process-global slot.
+        const opened = typeof result.snapshot !== 'undefined' && result.snapshot !== null ? result.snapshot.project : result.project
+        if (sessionId !== null && typeof opened === 'string' && opened.length > 0) {
+          state.setSessionRoot(sessionId, opened)
+          sessionProject = opened
+        }
+      }
       if (result.snapshot !== undefined && result.snapshot !== null) withSessionProject(result.snapshot, sessionProject)
       if (action === 'openProject' && result.ok === true) withSessionProject(result, sessionProject)
       sendJson(res, 200, result)
@@ -215,7 +238,7 @@ export function registerTaskRoutes(ctx, options) {
 
   async function handleTask(req, res) {
     try {
-      const target = await resolveProject(req, null)
+      const target = await resolveProject(req, null, sessionFromRequest(req, null))
       if (target.failed !== undefined) {
         sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return
@@ -236,7 +259,7 @@ export function registerTaskRoutes(ctx, options) {
 
   async function handleList(req, res) {
     try {
-      const target = await resolveProject(req, null)
+      const target = await resolveProject(req, null, sessionFromRequest(req, null))
       if (target.failed !== undefined) {
         sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return

@@ -2758,7 +2758,7 @@ await flush()
     zhTree = withHooks(panel, { initialView: 'board' })
     check(
       'the unknown-project banner is Chinese in the zh UI',
-      textOf(zhTree).indexOf('还没有已知项目') >= 0 && textOf(zhTree).indexOf('No project is known yet') < 0,
+      textOf(zhTree).indexOf('这个会话还没有绑定项目') >= 0 && textOf(zhTree).indexOf('This session is not bound') < 0,
       textOf(zhTree).slice(0, 220),
     )
     locale = 'en'
@@ -2767,7 +2767,7 @@ await flush()
     enTree = withHooks(panel, { initialView: 'board' })
     check(
       'the same banner is English in the en UI',
-      textOf(enTree).indexOf('No project is known yet') >= 0 && textOf(enTree).indexOf('还没有已知项目') < 0,
+      textOf(enTree).indexOf('This session is not bound') >= 0 && textOf(enTree).indexOf('这个会话还没有绑定项目') < 0,
       textOf(enTree).slice(0, 220),
     )
     locale = 'zh'

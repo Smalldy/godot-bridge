@@ -72,9 +72,14 @@ function response() {
   }
 }
 
+const TEST_SESSION = 'test-session'
+
 async function call(surface, url, options) {
   const res = response()
-  await surface.byPath.get(url.split('?')[0]).handler(request(url, options), res)
+  // T-96: every panel request carries its session id; without one the Host has
+  // no slot to read (and must never borrow another session's project).
+  const withSession = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'session=' + encodeURIComponent(TEST_SESSION)
+  await surface.byPath.get(url.split('?')[0]).handler(request(withSession, options), res)
   return res
 }
 const post = (body, headers) =>
@@ -88,9 +93,9 @@ check('registers state, action, task, list and diagnostics', surface.specs.lengt
 
 // no project yet
 {
-  rig.state.setSessionRoot(null)
+  rig.state.setSessionRoot(TEST_SESSION, null)
   const res = await call(surface, STATE_PATH, {})
-  rig.state.setSessionRoot(PROJECT)
+  rig.state.setSessionRoot(TEST_SESSION, PROJECT)
   check('state without a bound project says so', res.status === 200 && res.json().ok === false && res.json().code === 'no-project-bound', res.text)
   check(
     'the UI-facing unknown-project answer is a code plus params, not an English sentence',
@@ -186,13 +191,13 @@ check('registers state, action, task, list and diagnostics', surface.specs.lengt
 
 // the manual lock route is gone: refusals stay readable, diagnostics stay readable
 {
-  const lockRes = await post({ action: 'lock', paths: ['scripts/a.gd'] })
+  const lockRes = await post({ action: 'lock', project: PROJECT, paths: ['scripts/a.gd'] })
   check('the lock action is now an unknown action', lockRes.json().ok === false && lockRes.json().code === 'unknown-action', lockRes.text)
-  const unlockRes = await post({ action: 'unlock', paths: ['scripts/a.gd'] })
+  const unlockRes = await post({ action: 'unlock', project: PROJECT, paths: ['scripts/a.gd'] })
   check('unlock is an unknown action too', unlockRes.json().ok === false && unlockRes.json().code === 'unknown-action', unlockRes.text)
-  const forceRes = await post({ action: 'forceUnlock', paths: ['scripts/a.gd'] })
+  const forceRes = await post({ action: 'forceUnlock', project: PROJECT, paths: ['scripts/a.gd'] })
   check('forceUnlock is an unknown action', forceRes.json().ok === false && forceRes.json().code === 'unknown-action', forceRes.text)
-  const read = await post({ action: 'locks' })
+  const read = await post({ action: 'locks', project: PROJECT })
   check('the read-only locks diagnostic still answers', read.json().ok === true && Array.isArray(read.json().locks), read.text)
 }
 
@@ -454,7 +459,7 @@ function createSubmitRig(options) {
     },
   }
   const state = createState(ctx)
-  state.setSessionRoot(PROJECT)
+  state.setSessionRoot(TEST_SESSION, PROJECT)
   const roles = opts.roles === true ? createRoleManager(ctx) : opts.roles === undefined ? null : opts.roles
   const activity = opts.activity === undefined ? null : opts.activity
   const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: opts.git, roles: roles, activity: activity })
@@ -5140,7 +5145,7 @@ rig.scheduler.dispose()
   // The resolver has no cwd/hint fallback: with no explicit and no session
   // workspace it refuses, even though the registry knows projects.
   const unboundRig = createRig({ allowSpawn: false })
-  unboundRig.state.setSessionRoot(null)
+  unboundRig.state.setSessionRoot(TEST_SESSION, null)
   const unboundSurface = install(unboundRig)
   const unbound = await call(unboundSurface, STATE_PATH, {})
   check('an unbound session refuses with no-project-bound (registry is not a fallback)', unbound.json().ok === false && unbound.json().code === 'no-project-bound', unbound.text.slice(0, 160))
@@ -5239,18 +5244,18 @@ rig.scheduler.dispose()
   const opened = (await call(surface, ACTION_PATH, { method: 'POST', body: { action: 'openProject', path: OTHER }, headers: { 'content-type': 'application/json' } })).json()
   check(
     'T-90 the openProject answer carries the session project',
-    opened.ok === true && opened.projectRoot === OTHER && opened.sessionProject === PROJECT,
+    opened.ok === true && opened.projectRoot === OTHER && opened.sessionProject === OTHER,
     JSON.stringify({ root: opened.projectRoot, session: opened.sessionProject }),
   )
   // A host with no session workspace reports null instead of inventing one.
-  rig.state.setSessionRoot(null)
+  rig.state.setSessionRoot(TEST_SESSION, null)
   const unbound = (await call(surface, STATE_PATH + '?project=' + encodeURIComponent(OTHER), {})).json()
   check(
     'T-90 an unbound session reports sessionProject null, never a guess',
     unbound.ok === true && unbound.sessionProject === null && unbound.projectRoot === OTHER,
     JSON.stringify({ root: unbound.projectRoot, session: unbound.sessionProject }),
   )
-  rig.state.setSessionRoot(PROJECT)
+  rig.state.setSessionRoot(TEST_SESSION, PROJECT)
   surface.dispose()
   rig.scheduler.dispose()
 }
@@ -5418,6 +5423,66 @@ rig.scheduler.dispose()
     )
     rig.scheduler.dispose()
   }
+}
+
+// ── T-96: the panel project is per-session, never a process-global slot ──
+{
+  const sessionA = 'window-a'
+  const sessionB = 'window-b'
+  const projectA = PROJECT
+  const projectB = join(PROJECT, '..', 'project-b')
+  const rig = createRig({ allowSpawn: false })
+  rig.fs.dirs.add(projectB)
+  rig.fs.dirs.add(join(projectB, '.git'))
+  rig.fs.dirs.add(join(projectB, '.agents'))
+  const surface = install(rig)
+  async function http(url, options) {
+    const res = response()
+    await surface.byPath.get(url.split('?')[0]).handler(request(url, options), res)
+    return res.json()
+  }
+  function openFor(session, path) {
+    return http(ACTION_PATH + '?session=' + encodeURIComponent(session), {
+      method: 'POST',
+      body: { action: 'openProject', path: path },
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const openedA = await openFor(sessionA, projectA)
+  const openedB = await openFor(sessionB, projectB)
+  check(
+    'T-96 openProject records the project for the requesting session only',
+    openedA.ok === true && openedB.ok === true && rig.state.sessionRootOf(sessionA) === projectA && rig.state.sessionRootOf(sessionB) === projectB,
+    JSON.stringify({ a: rig.state.sessionRootOf(sessionA), b: rig.state.sessionRootOf(sessionB) }),
+  )
+  const stateA = await http(STATE_PATH + '?session=' + encodeURIComponent(sessionA))
+  const stateB = await http(STATE_PATH + '?session=' + encodeURIComponent(sessionB))
+  check(
+    'T-96 two sessions each see their own project',
+    stateA.ok === true && stateA.projectRoot === projectA && stateB.ok === true && stateB.projectRoot === projectB,
+    JSON.stringify({ a: stateA.projectRoot, b: stateB.projectRoot }),
+  )
+  const unknown = await http(STATE_PATH + '?session=' + encodeURIComponent('never-seen'))
+  check(
+    'T-96 an unknown session id is unbound (no borrowed project)',
+    unknown.ok === false && unknown.code === 'no-project-bound',
+    JSON.stringify(unknown),
+  )
+  const anonymous = await http(STATE_PATH)
+  check(
+    'T-96 a request without a session id never reads another session’s project',
+    anonymous.ok === false && anonymous.code === 'no-project-bound',
+    JSON.stringify(anonymous),
+  )
+  // A tool-side binding is not shared with the panel either: the tool session id
+  // is its own key.
+  rig.state.setSessionRoot('tool-session', projectB)
+  const toolState = await http(STATE_PATH + '?session=' + encodeURIComponent('tool-session'))
+  check(
+    'T-96 a tool-bound session resolves its own project',
+    toolState.ok === true && toolState.projectRoot === projectB,
+    JSON.stringify({ project: toolState.projectRoot }),
+  )
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

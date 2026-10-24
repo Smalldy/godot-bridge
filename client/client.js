@@ -140,6 +140,9 @@ window.__ModuleLoader__.load({
 		const TC_LIST_URL = '/godot-bridge/task-center/list'
 		const TC_ACTION_URL = '/godot-bridge/task-center/action'
 		const TC_PROJECT_KEY = 'godotBridge.taskCenter.project'
+		// T-96: the panel must tell the Host WHICH session it belongs to, otherwise
+		// every window shares one process-global project slot.
+		const TC_SESSION_KEY = 'godotBridge.taskCenter.session'
 		// T-95: values written before T-90 were the panel auto-recording whatever
 		// the Host answered, not a user choice. Explicit pins carry this prefix, so
 		// an unmarked legacy value is migrated (cleared) instead of being honoured.
@@ -253,8 +256,8 @@ window.__ModuleLoader__.load({
 				workersErrNoService: '当前 profile 没有 Agent Teams 服务',
 				workersErrNoLead: '没有活着的 Team Lead',
 				workersErrRoster: '花名册不可读',
-				unknownProjectHint: '还没有项目。在会话里调用一次 task_center，或在下方填写项目目录。',
-				err_unknown_project: '还没有已知项目。请在面板里打开一个项目，或先在会话里调用一次 task_center。',
+				unknownProjectHint: '这个会话还没有绑定项目。请在会话里调用一次 task_center，或在下方手动打开一个项目。',
+				err_unknown_project: '这个会话还没有绑定项目。请在会话里调用一次 task_center，或在面板里手动打开一个项目。',
 				err_content_type: '请求格式不正确：请发送 application/json。',
 				err_origin: '跨源请求已被拒绝。',
 				err_bad_request: '请求体无法解析。',
@@ -739,8 +742,8 @@ window.__ModuleLoader__.load({
 				workersErrNoService: 'this profile has no Agent Teams services',
 				workersErrNoLead: 'no live Team Lead',
 				workersErrRoster: 'the roster could not be read',
-				unknownProjectHint: 'No project yet. Call task_center once in a session, or enter a project directory below.',
-				err_unknown_project: 'No project is known yet. Open one from the panel, or run a task_center call in a session first.',
+				unknownProjectHint: 'This session is not bound to a project yet. Call task_center once in the session, or open a project manually below.',
+				err_unknown_project: 'This session is not bound to a project yet. Call task_center once in the session, or open a project from the panel.',
 				err_content_type: 'Wrong request format: send application/json.',
 				err_origin: 'A cross-origin request was refused.',
 				err_bad_request: 'The request body could not be parsed.',
@@ -1612,6 +1615,37 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * The session id this panel acts as. A ?session= on the page URL wins (the
+		 * Host can embed it); otherwise one is minted per browser window and kept in
+		 * sessionStorage so two windows are two sessions.
+		 */
+		function tcSessionId() {
+			try {
+				const fromUrl =
+					typeof window.location === 'object' && window.location !== null && typeof window.location.search === 'string'
+						? new URLSearchParams(window.location.search).get('session')
+						: null
+				if (typeof fromUrl === 'string' && fromUrl.length > 0) return fromUrl
+				const store =
+					typeof window.sessionStorage === 'object' && window.sessionStorage !== null && typeof window.sessionStorage.getItem === 'function'
+						? window.sessionStorage
+						: window.localStorage
+				let id = store.getItem(TC_SESSION_KEY)
+				if (typeof id !== 'string' || id.length === 0) {
+					id = 'web-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+					store.setItem(TC_SESSION_KEY, id)
+				}
+				return id
+			} catch (error) {
+				return 'web-anonymous'
+			}
+		}
+
+		function tcWithSession(url) {
+			return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'session=' + encodeURIComponent(tcSessionId())
+		}
+
+		/**
 		 * The project the human PINNED in this browser (T-90). Empty means "follow
 		 * the host": the panel sends no project at all and the server resolves the
 		 * session workspace, so a fresh browser never asks for a path. Only an
@@ -1836,6 +1870,7 @@ window.__ModuleLoader__.load({
 				const pinned = tcPinnedProject()
 				let url = pinned === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(pinned)
 				if (snapshot.seq !== null && snapshot.seq !== undefined) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'since=' + String(snapshot.seq)
+				url = tcWithSession(url)
 				loading = (async function () {
 					try {
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
@@ -1877,12 +1912,13 @@ window.__ModuleLoader__.load({
 				const opts = options === undefined || options === null ? {} : options
 				const quiet = opts.quiet === true
 				const payloadBody = Object.assign({ action: action }, body === undefined ? {} : body)
+				payloadBody.session = tcSessionId()
 				const project = tcPinnedProject()
 				if (project !== null) payloadBody.project = project
 				const token = { action: action, id: body !== undefined && body !== null && (body.id !== undefined ? body.id : body.requestId !== undefined ? body.requestId : body.taskId !== undefined ? body.taskId : body.path !== undefined ? body.path : null) }
 				setBusy(token)
 				try {
-					const payload = await fetchJson(TC_ACTION_URL, {
+					const payload = await fetchJson(tcWithSession(TC_ACTION_URL), {
 						method: 'POST',
 						headers: { 'content-type': 'application/json' },
 						body: JSON.stringify(payloadBody),
