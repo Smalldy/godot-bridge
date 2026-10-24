@@ -54,6 +54,7 @@
 - **依赖**：`B.dependsOn = [A]` 表示 A 完成**且已合并**后才派发 B。就绪任务按 `priority` 降序、创建时间升序取。`A <- B <- C`、`D`、`E <- F` 会先派发 A、D、E；A 完成后派发 B，E 完成后派发 F。
 - **派发**：开始/暂停是项目级状态（持久化在板子里）。GUI 只暴露**最大并发**：最多同时跑这么多个任务；执行者上限自动设为并发 + 1，没有空闲执行者时会自动新建，连续失败 3 次后任务阻塞（高级调用仍可用 `settings` 覆盖）。每次派发先 claim（60 分钟租约；assignee 任何活动都会续租，另有固定节奏的宿主心跳）再交给 Agent Teams：优先 `sendMessage` 给空闲成员，否则 `spawnTeammate`。
 - **租约与 liveness**：运行中的任务持有 **60 分钟租约**。assignee 的任意一次 `task_center` 调用都会**无条件续租**，且每轮调度都有宿主心跳按固定 5 分钟节奏续租，因此长时间工具运行不会丢 claim。失效租约按 **liveness** 判定而非只看时钟：holder 仍活着就保住任务（单次尝试 4 小时硬上限），只有 session 消失/failed 才在中断后交接。同一任务绝不会有两条活跃 agent；交接时若上一尝试留有 commit，则 adopt 其 worktree 与分支。看板暴露 `leaseRemaining`/`leaseReminder`，并记录 `lease-extended`/`lease-handover`/`attempt-adopt` 事件。
+- **宿主重启退还尝试（`interruptions` 与 `attempts` 两条轴）**：claim 被发现属于上一个宿主进程（重启/插件重载）时，那是基础设施事件，不是执行者失败。`interruptDispatch` 会**退还**这次 claim 记下的 attempt（`attempts` 回到 claim 之前的值），只累加独立的 `interruptions` 计数、退休执行者台账里的那条记录，并写一条 `interrupted by worker lost (host restart); attempt refunded` 历史——所以开发宿主重载五次也不会把健康的卡弄成阻塞。真正的失败（投递错误、超时、坏提交）仍照旧消耗 `maxAttempts`；提交成功或一次真失败都会把中断连击清零。**连续** 5 次中断且始终没有提交，才会以 `interrupted-too-often` 阻塞，避免无限重试。`get` / `board` 暴露 `interruptions`、有界的 `executors` 台账和 `liveExecutors`；重派发会先中断/退休上一个执行者再 claim——若旧执行者仍活着且停不下来，本轮以 `already-dispatched` 跳过并留一条历史，所以一张卡永远不会同时有两个活执行者。重试时会**优先复用**上一次那个干净且没有提交的 worktree（脏工作区绝不继承），而 attempt 槽位（`attempts + interruptions + 1`）保证退还之后执行者名字与 checkout 路径不会撞车。
 - **角色**：`<项目>/.agents/roles.json`（version 1；规范化的 `worker`/`reviewer`/`tester` profile 始终存在）。一个 profile 指定三种固定角色之一、阶段绑定（implement / review / test）、1–8 个实例、允许的权限、fresh 或 fork 上下文、要加载的技能，以及一个 prompt **模板**。宿主通过活着的 Lead 自动补齐缺失的阶段角色、替换死亡或超时的实例；reviewer 与 tester 是只读独立上下文，worker 永远不能裁决自己的任务。
   - 三个内置 profile 是**不可改**的（可读的默认提示词随插件发布；直接编辑会返回 `builtin-profile-immutable`）。要改行为就 **Fork** 一份：Fork 出来的是有名字的**草稿副本**，保存时一次性创建 profile、绑定阶段并替换在跑实例。面板里不再有单独的「绑定/应用/替换」词汇：只有一个「当前使用」选择器和一次保存；删掉正在使用的副本会立即回落到内置默认。
   - 编辑器是两栏：左栏是**原始提示词**（自定义 profile 可编辑；内置 profile 只读并提示 Fork），右栏是宿主真正会注入的文本，通过 `rolesPreview` 由真实 brief 生成器产出，绝不是面板自造的文案。身份行负责 profile 选择与「当前使用」；实例数与技能在同一张卡里，技能选择器读 `skillsCatalog`。`rolesList` / `rolesPreview` / `rolesCreate` / `rolesUpdate` / `rolesDelete` / `rolesBind` / `rolesDrain` / `rolesReplace` / `rolesReset` 通过动作 API 提供同样的操作。所有角色管理与 `skillsCatalog` 都是**仅限用户**（工具枚举中隐藏，对 agent 直接拒绝）。
@@ -74,6 +75,7 @@
 - 隔离 harness 需要配置 `dshCommand`（通常还有 `dshArgs`）；CLI 不可用时 smoke 会返回可读失败，而不是算通过。
 - 同一时刻只处理一个项目、只使用一个 Team/Lead：共享状态只保留一个项目 hint，派发解析第一个活着的 Lead。缺少 Agent Teams 服务时任务保持 pending 并给出明确原因。
 - verdict 之后 target 分支若又移动，会按设计触发「重建 + 重测」（含宿主机械验证）；合并绝不会落到过期树上。
+- 上一任执行者仍活着且拒绝被中断的卡会停在 `pending` 等人工处理：`already-dispatched` 拒绝既不消耗 attempt 也不增加 interruption，所以调度器每轮都会重试（并记一条活动）而不是把卡交给第二个执行者。五次中断的防死循环规则只覆盖「中断型 claim」，不覆盖这种拒绝。
 - **历史**测试事件里的 exit 与耗时取自任务最新一条测试记录（板子只保留当前轮），所以较早的失败行可能显示后来那一轮的数字；裁决标签本身来自事件自身，失败轮的证据文本仍留在该历史条目的 note 里（活动行以悬停文本携带），详情页「查看全文」显示当前轮证据。
 
 ```sh
