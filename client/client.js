@@ -209,6 +209,7 @@ window.__ModuleLoader__.load({
 				doneAllError: '加载失败',
 				doneAllRetry: '重试',
 				doneAllCount: '共 {n} 张',
+				doneAllLoaded: '已加载 {n} 张',
 				collapseColumn: '收起',
 				expandColumn: '展开',
 				blockedCol: '阻塞',
@@ -680,6 +681,7 @@ window.__ModuleLoader__.load({
 				doneAllError: 'Could not load the list',
 				doneAllRetry: 'Retry',
 				doneAllCount: '{n} tasks',
+				doneAllLoaded: '{n} loaded',
 				collapseColumn: 'Collapse',
 				expandColumn: 'Expand',
 				blockedCol: 'Blocked',
@@ -1123,6 +1125,7 @@ window.__ModuleLoader__.load({
 				'.gbt-colchev{font-size:10px;opacity:.75;width:9px}' +
 				'.gbt-colfoot{padding:8px 11px;border-top:0.5px solid var(--dsw-alias-border-l4)}' +
 				'.gbt-colfoot .gbt-linkbtn{font-size:12px}' +
+				'.gbt-muted{color:var(--dsw-alias-label-tertiary);font-size:11px}' +
 				'.gbt-donelist{display:flex;flex-direction:column;gap:6px;padding:10px 12px}' +
 				'.gbt-donetitle{margin:12px 12px 4px;font-size:11.5px;color:var(--dsw-alias-label-tertiary)}' +
 				'.gbt-donerow{display:flex;align-items:center;gap:9px;width:100%;padding:7px 9px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:7px;background:var(--dsw-alias-bg-layer-3);color:inherit;font:inherit;text-align:left;cursor:pointer}' +
@@ -2058,8 +2061,8 @@ window.__ModuleLoader__.load({
 							title: collapsed ? t('expandColumn') : t('collapseColumn'),
 							onClick: props.onToggle,
 						},
-						h('span', { className: 'gbt-colchev' }, collapsed ? '▸' : '▾'),
-						h('span', null, group.label),
+						h('span', { className: 'gbt-colchev', 'aria-hidden': 'true' }, collapsed ? '▸' : '▾'),
+						h('span', null, group.key === 'done' ? group.label + ' · ' : group.label),
 						h('span', { className: 'gbt-colcount' }, String(count)),
 					),
 					showBody === false
@@ -2289,7 +2292,8 @@ window.__ModuleLoader__.load({
 							'div',
 							{ className: 'gbt-drawerhead' },
 							h('strong', null, t('doneAllTitle')),
-							h('span', { className: 'gbt-muted' }, ' · ' + t('doneAllCount').replace('{n}', String(items.length))),
+							h('span', { className: 'gbt-muted' }, ' · ' + t('doneAllCount').replace('{n}', String(Number.isFinite(props.total) ? props.total : items.length))),
+							h('span', { className: 'gbt-muted' }, ' · ' + t('doneAllLoaded').replace('{n}', String(items.length))),
 							h('button', { type: 'button', className: 'gbt-iconbtn', onClick: props.onClose, 'aria-label': t('doneAllTitle') }, '×'),
 						),
 						h(
@@ -2367,6 +2371,39 @@ window.__ModuleLoader__.load({
 														),
 											),
 						),
+					),
+				)
+			}
+
+			/** One ready/waiting queue row: id, title, and summary-only chips. */
+			function QueueRow(props) {
+				const task = props.task
+				const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
+				const files = Array.isArray(task.writeFiles) ? task.writeFiles : null
+				const fileCount = files !== null ? files.length : Number.isFinite(task.writeFileCount) ? task.writeFileCount : 0
+				return h(
+					'div',
+					{ className: 'gbt-row', role: 'button', tabIndex: 0, onClick: function () { props.onOpen(task.id) } },
+					h('span', { className: 'gbt-order' }, props.index === undefined ? '·' : String(props.index + 1)),
+					h('span', { className: 'gbt-id' }, task.id),
+					h(
+						'div',
+						null,
+						h('div', { className: 'gbt-rowtitle' }, task.title),
+						h(
+							'div',
+							{ className: 'gbt-cardmeta' },
+							task.priority !== 0 ? h('span', { className: 'gbt-chip' }, 'P' + String(task.priority)) : null,
+							deps.length > 0
+								? h('span', { className: 'gbt-chip', 'data-tone': 'waiting' }, '↳ ' + deps.join(', '))
+								: h('span', { className: 'gbt-chip', 'data-tone': 'ready' }, props.t('noDeps')),
+							fileCount > 0 ? h('span', { className: 'gbt-chip' }, '🔒 ' + (files === null ? String(fileCount) : files.join(', '))) : null,
+						),
+					),
+					h(
+						'div',
+						{ className: 'gbt-rowmeta' },
+						props.stateLabel === undefined ? null : h('span', { className: 'gbt-chip', 'data-tone': props.tone }, props.stateLabel),
 					),
 				)
 			}
@@ -4729,6 +4766,7 @@ window.__ModuleLoader__.load({
 								? h(DoneAllDrawer, {
 										t: t,
 										store: store,
+										total: Number.isFinite(counts.done) ? counts.done : null,
 										onClose: function () { setDoneAllOpen(false) },
 										onOpen: function (id) {
 											setDoneAllOpen(false)
