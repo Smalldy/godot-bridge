@@ -593,15 +593,15 @@ export function createApi(ctx, options) {
         await discardRebuilt()
         emitActivity(null, 'host-check', 'retest mechanical verification failed (' + String(retestCheck.timedOut === true ? 'timed out' : 'exit ' + String(retestCheck.exitCode)) + '); back to running', id, 'host')
         const ownerName = recorded.task !== null && recorded.task !== undefined && recorded.task.assignee !== null && recorded.task.assignee !== undefined && typeof recorded.task.assignee.name === 'string' ? recorded.task.assignee.name : null
-        if (ownerName !== null) await notifyMember(ownerName, 'Host mechanical verification FAILED for ' + id + ' (' + String(recorded.task.title) + ').\n\n' + hostCheckEvidence(retestCheck))
+        if (ownerName !== null) await notifyMember(ownerName, 'Host mechanical verification FAILED for ' + id + ' (' + String(recorded.task.title) + ').\n\n' + hostCheckEvidence(retestCheck), recorded.task.ownerSession)
         return recorded
       }
       recorded.candidate = rebuilt
       const provisioned = await provisionRole('tester', projectPath, recorded.task)
       if (provisioned !== null) recorded.provisioned = provisioned
-      const tester = roleSlotNameOf('tester')
+      const tester = roleSlotNameOf('tester', recorded.task.ownerSession)
       if (tester !== null) {
-        await notifyMember(tester, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck }))
+        await notifyMember(tester, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck }), recorded.task.ownerSession)
       }
       return recorded
     }
@@ -860,7 +860,15 @@ export function createApi(ctx, options) {
     if (roles === null || typeof roles.ensure !== 'function') return null
     const config = await roleConfigFor(projectPath)
     try {
-      const ensured = await ensureRoleBounded(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: clock() })
+      const ensured = await ensureRoleBounded(kind, {
+        config: config === null ? undefined : config,
+        projectPath: projectPath,
+        task: task,
+        now: clock(),
+        // T-106: the role must belong to the CARD's session team (null = legacy
+        // ownerless card, which keeps the old first-lead behaviour).
+        sessionId: task !== null && task !== undefined && typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null,
+      })
       emitRoleProvision(ensured)
       // A slot owned by another project is never reused (its session workspace is
       // that project): the card keeps a history row saying so.
@@ -987,13 +995,15 @@ export function createApi(ctx, options) {
    * service, no lead, no such member, a refused mailbox — is swallowed: a
    * notification must never fail a submit or a merge.
    */
-  async function notifyMember(target, text) {
+  async function notifyMember(target, text, sessionId) {
     const name = typeof target === 'string' ? target.trim() : ''
     if (name === '' || typeof text !== 'string' || text === '') return null
     try {
       const { agentTeams } = servicesFor(ctx)
       if (agentTeams === undefined || agentTeams === null) return null
-      const lead = resolveLead(ctx)
+      // T-106: message the member of THIS card's team, never a same-named slot in
+      // another session's team.
+      const lead = resolveLead(ctx, { sessionId: typeof sessionId === 'string' && sessionId !== '' ? sessionId : null })
       if (lead === null) return null
       let members = []
       try {
@@ -1093,10 +1103,10 @@ export function createApi(ctx, options) {
 
   /** The live member of a role kind (reviewer, tester, worker), or null. Drained
    * and failed instances are skipped, so a replaced slot receives the work. */
-  function roleSlotNameOf(kind) {
+  function roleSlotNameOf(kind, sessionId) {
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return null
-    const lead = resolveLead(ctx)
+    const lead = resolveLead(ctx, { sessionId: typeof sessionId === 'string' && sessionId !== '' ? sessionId : null })
     if (lead === null) return null
     let members = []
     try {
@@ -1136,7 +1146,7 @@ export function createApi(ctx, options) {
     if (blocked.ok !== true) return null
     emitActivity(null, 'error', 'review round limit reached; task blocked', task.id, 'system')
     // The reviewer slot no longer has work: interrupt it when it is still running.
-    const reviewer = roleSlotNameOf('reviewer')
+    const reviewer = roleSlotNameOf('reviewer', task.ownerSession)
     if (reviewer !== null) {
       await interruptMemberNamed(ctx, {
         name: reviewer,
@@ -1152,6 +1162,7 @@ export function createApi(ctx, options) {
       await notifyMember(
         owner,
         'Task ' + task.id + ' was blocked after ' + String(REVIEW_MAX_ROUNDS) + ' review rounds without approval. Read the review reasons on the board and ask the Lead for triage.',
+        task.ownerSession,
       )
     }
     return blocked
@@ -3554,9 +3565,9 @@ export function createApi(ctx, options) {
         if (recorded.task !== null && recorded.task !== undefined && recorded.task.status === 'reviewing') {
           const round = recorded.task.review === null || recorded.task.review === undefined ? 1 : recorded.task.review.attempt
           emitActivity(context, 'review-start', 'merge request refreshed; review round ' + String(round), id)
-          const reviewer = roleSlotNameOf('reviewer')
+          const reviewer = roleSlotNameOf('reviewer', recorded.task.ownerSession)
           const slot = await assignStageSlot(projectPath, recorded.task, 'reviewer')
-          if (slot.delivered === true && reviewer !== null) await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath))
+          if (slot.delivered === true && reviewer !== null) await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath), recorded.task.ownerSession)
           return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned, queuePosition: slot.position })
         }
         return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
@@ -3635,10 +3646,10 @@ export function createApi(ctx, options) {
           }
           const round = result.task.review === null || result.task.review === undefined ? 1 : result.task.review.attempt
           emitActivity(context, 'review-start', 'submitted for review round ' + String(round), id)
-          const reviewer = roleSlotNameOf('reviewer')
+          const reviewer = roleSlotNameOf('reviewer', result.task.ownerSession)
           const slot = await assignStageSlot(projectPath, result.task, 'reviewer')
           result.queuePosition = slot.position
-          if (slot.delivered === true && reviewer !== null) await notifyMember(reviewer, reviewBriefFor(result.task, projectPath))
+          if (slot.delivered === true && reviewer !== null) await notifyMember(reviewer, reviewBriefFor(result.task, projectPath), result.task.ownerSession)
           if (provisioned !== null) result.provisioned = provisioned
         }
       }
@@ -3811,7 +3822,7 @@ export function createApi(ctx, options) {
           result.candidate = candidate
           if (state.memory.testCandidates === undefined || state.memory.testCandidates === null) state.memory.testCandidates = {}
           state.memory.testCandidates[result.task.id] = { candidate: candidate, hostCheck: hostCheck }
-          const tester = roleSlotNameOf('tester')
+          const tester = roleSlotNameOf('tester', result.task.ownerSession)
           const testSlot = await assignStageSlot(projectPath, result.task, 'tester')
           result.queuePosition = testSlot.position
           if (testSlot.delivered === true && tester !== null) {
@@ -3821,6 +3832,7 @@ export function createApi(ctx, options) {
                 godot: await godotInfoFor(projectPath, candidate.path),
                 hostCheck: hostCheck,
               }),
+              result.task.ownerSession,
             )
           }
         }
@@ -3831,9 +3843,9 @@ export function createApi(ctx, options) {
       // The verdict frees this reviewer slot: hand it to the next queued round.
       const promotedReview = await promoteStageSlots(projectPath, 'reviewer')
       if (promotedReview.length > 0) {
-        const reviewerSlot = roleSlotNameOf('reviewer')
+        const reviewerSlot = roleSlotNameOf('reviewer', result.task.ownerSession)
         if (reviewerSlot !== null) {
-          for (const promoted of promotedReview) await notifyMember(reviewerSlot, reviewBriefFor(promoted, projectPath))
+          for (const promoted of promotedReview) await notifyMember(reviewerSlot, reviewBriefFor(promoted, projectPath), promoted.ownerSession)
         }
       }
       return ok({ task: result.task, events: result.events, provisioned: result.provisioned, candidate: result.candidate, hostCheck: hostCheck })
@@ -3878,7 +3890,7 @@ export function createApi(ctx, options) {
       // Keep the tester delivery timestamp for the finished round's duration.
       const promotedTest = await promoteStageSlots(projectPath, 'tester')
       if (promotedTest.length > 0) {
-        const testerSlot = roleSlotNameOf('tester')
+        const testerSlot = roleSlotNameOf('tester', result.task.ownerSession)
         if (testerSlot !== null) {
           for (const promoted of promotedTest) {
             const stored = state.memory.testCandidates === undefined || state.memory.testCandidates === null ? null : state.memory.testCandidates[promoted.id]
@@ -3893,6 +3905,7 @@ export function createApi(ctx, options) {
                 godot: await godotInfoFor(projectPath, candidateForBrief.path),
                 hostCheck: storedHostCheck,
               }),
+              promoted.ownerSession,
             )
           }
         }

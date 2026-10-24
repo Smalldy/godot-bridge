@@ -5956,20 +5956,24 @@ rig.scheduler.dispose()
 // ── T-97: a card is dispatched only to its own session/project team ──
 {
   const { createFakeGit: makeGit } = await import('./support/fixtures.mjs')
-  function teamFor(leadName, workerName, workerStatus) {
-    return createTeam({
+  // A session's Lead agent carries that session's id — the model T-106 relies on.
+  function teamFor(session, leadName, workerName, workerStatus) {
+    const team = createTeam({
+      leadId: session,
       roster: [
-        { id: 'session-lead', name: leadName, role: 'lead', status: 'running' },
+        { id: session, name: leadName, role: 'lead', status: 'running' },
         { id: 'session-' + workerName, name: workerName, role: 'teammate', status: workerStatus === undefined ? 'inactive' : workerStatus },
       ],
     })
+    team.agents = [{ id: session, name: leadName, role: 'lead', status: 'running' }]
+    return team
   }
   function contextFor(fs, team) {
     return {
       fs: fs,
       sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
       get(key) {
-        if (key === 'agents') return team === null ? undefined : { list: () => [team.roster[0]] }
+        if (key === 'agents') return team === null ? undefined : { list: () => team.agents }
         if (key === 'agentTeams') return team
         return undefined
       },
@@ -6010,7 +6014,7 @@ rig.scheduler.dispose()
     await scheduler.settle(PROJECT)
     return { fs: fs, state: state, ctx: ctx, scheduler: scheduler, git: git }
   }
-  const rigA = await dispatcherFor('session-a', teamFor('lead-a', 'fixer-a'))
+  const rigA = await dispatcherFor('session-a', teamFor('session-a', 'lead-a', 'fixer-a'))
   const boardA = boardJson(rigA.fs, PROJECT).tasks
   check(
     'T-97 session A dispatches its own card to its own worker',
@@ -6022,7 +6026,7 @@ rig.scheduler.dispose()
     boardA[1].status === 'pending' && boardA[1].assignee === null && boardA[1].waitingReason === null,
     JSON.stringify({ status: boardA[1].status, assignee: boardA[1].assignee, waiting: boardA[1].waitingReason }),
   )
-  const rigB = await dispatcherFor('session-b', teamFor('lead-b', 'fixer-b'))
+  const rigB = await dispatcherFor('session-b', teamFor('session-b', 'lead-b', 'fixer-b'))
   const boardB = boardJson(rigB.fs, PROJECT).tasks
   check(
     'T-97 session B dispatches its own card to its own worker',
@@ -6048,7 +6052,7 @@ rig.scheduler.dispose()
   noTeamRig.scheduler.dispose()
 
   // A member remembered for another project is not idle for this one.
-  const projectRig = await dispatcherFor('session-a', teamFor('lead-a', 'fixer-a'))
+  const projectRig = await dispatcherFor('session-a', teamFor('session-a', 'lead-a', 'fixer-a'))
   rememberMemberProject(projectRig.ctx, 'fixer-a', join(PROJECT, '..', 'other-project'))
   projectRig.fs.files.set(join(PROJECT, '.agents', 'tasks.json'), { text: boardWith(['session-a']), version: 'seed2' })
   await projectRig.scheduler.settle(PROJECT)
@@ -6065,6 +6069,160 @@ rig.scheduler.dispose()
     JSON.stringify(remembered),
   )
   projectRig.scheduler.dispose()
+
+  // ── T-106: the Lead that creates the executor is the CARD's session's Lead ──
+  {
+    function multiTeam(specs) {
+      // specs: [{ leadId, leadName, workerName, workerStatus?, worker? }]
+      const calls = []
+      const teams = specs.map((spec) => ({
+        spec: spec,
+        team: createTeam({
+          leadId: spec.leadId,
+          roster: spec.worker === false
+            ? [{ id: spec.leadId, name: spec.leadName, role: 'lead', status: 'running' }]
+            : [
+                { id: spec.leadId, name: spec.leadName, role: 'lead', status: 'running' },
+                { id: 'session-' + spec.workerName, name: spec.workerName, role: 'teammate', status: spec.workerStatus === undefined ? 'inactive' : spec.workerStatus },
+              ],
+        }),
+      }))
+      const agents = teams.map((entry) => ({ id: entry.spec.leadId, name: entry.spec.leadName, role: 'lead', status: 'running' }))
+      const service = {
+        tryMembership(candidate) {
+          const owner = teams.filter((entry) => entry.spec.leadId === candidate.id)[0]
+          if (owner !== undefined) return owner.team.tryMembership(candidate)
+          return { role: 'teammate', name: candidate.id }
+        },
+        listMembers(lead) {
+          const owner = teams.filter((entry) => entry.spec.leadId === (lead === null || lead === undefined ? null : lead.id))[0]
+          return owner === undefined ? [] : owner.team.listMembers()
+        },
+        async spawnTeammate(caller, request) {
+          calls.push({ kind: 'spawn', caller: caller.id, name: request.name })
+          const owner = teams.filter((entry) => entry.spec.leadId === caller.id)[0]
+          if (owner !== undefined) owner.team.roster.push({ id: 'session-' + request.name, name: request.name, role: 'teammate', status: 'running' })
+          return { member: { id: 'session-' + request.name, name: request.name, role: 'teammate', status: 'running' } }
+        },
+        async sendMessage(caller, request) {
+          calls.push({ kind: 'send', caller: caller.id, target: request.target })
+          return { status: 'accepted', messageId: 'm-' + String(calls.length) }
+        },
+      }
+      return { service: service, agents: agents, teams: teams, calls: calls }
+    }
+    function ctxFor(fs, multi) {
+      return {
+        fs: fs,
+        sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+        get(key) {
+          if (key === 'agents') return { list: () => multi.agents }
+          if (key === 'agentTeams') return multi.service
+          return undefined
+        },
+      }
+    }
+    async function dispatchWith(session, multi) {
+      const fs = createFakeFs()
+      seedBoard(fs, PROJECT, boardWith(['session-a', 'session-b']))
+      const ctx = ctxFor(fs, multi)
+      const state = createState(ctx)
+      const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: makeGit(), sessionId: session })
+      await scheduler.settle(PROJECT)
+      return { fs: fs, scheduler: scheduler }
+    }
+
+    // (a) each session's card goes to ITS OWN Lead; the history names both.
+    {
+      const multi = multiTeam([
+        { leadId: 'session-a', leadName: 'lead-a', workerName: 'fixer-a' },
+        { leadId: 'session-b', leadName: 'lead-b', workerName: 'fixer-b' },
+      ])
+      const rigA = await dispatchWith('session-a', multi)
+      const boardA = boardJson(rigA.fs, PROJECT).tasks
+      check(
+        'T-106 a card is dispatched under the Lead of ITS session',
+        boardA[0].status === 'running' && boardA[0].dispatch.lead === 'lead-a' && boardA[0].dispatch.leadSession === 'session-a' && boardA[0].dispatch.session === 'session-a',
+        JSON.stringify({ lead: boardA[0].dispatch && boardA[0].dispatch.lead, leadSession: boardA[0].dispatch && boardA[0].dispatch.leadSession, session: boardA[0].dispatch && boardA[0].dispatch.session }),
+      )
+      check(
+        'T-106 the history records the worker, the Lead, the project and the session',
+        String(boardA[0].history[0].note).indexOf('dispatched to fixer-a under Lead lead-a for ' + PROJECT + ' (session session-a)') >= 0,
+        JSON.stringify(boardA[0].history[0].note),
+      )
+      check(
+        'T-106 session A leaves session B’s card untouched',
+        boardA[1].status === 'pending' && boardA[1].assignee === null,
+        JSON.stringify({ status: boardA[1].status, assignee: boardA[1].assignee }),
+      )
+      rigA.scheduler.dispose()
+      const rigB = await dispatchWith('session-b', multi)
+      const boardB = boardJson(rigB.fs, PROJECT).tasks
+      check(
+        'T-106 session B dispatches its own card to its own Lead’s team',
+        boardB[1].status === 'running' && boardB[1].assignee.name === 'fixer-b' && boardB[1].dispatch.lead === 'lead-b' && boardB[1].dispatch.leadSession === 'session-b',
+        JSON.stringify({ assignee: boardB[1].assignee && boardB[1].assignee.name, lead: boardB[1].dispatch && boardB[1].dispatch.lead }),
+      )
+      rigB.scheduler.dispose()
+    }
+
+    // (b) a spawn happens UNDER the card's Lead, never the first one in the host.
+    {
+      const multi = multiTeam([
+        { leadId: 'session-a', leadName: 'lead-a', workerName: 'fixer-a' },
+        { leadId: 'session-b', leadName: 'lead-b', worker: false },
+      ])
+      const rigB = await dispatchWith('session-b', multi)
+      const boardB = boardJson(rigB.fs, PROJECT).tasks
+      const spawns = multi.calls.filter((call) => call.kind === 'spawn')
+      check(
+        'T-106 a spawned executor is created under the card session’s Lead',
+        spawns.length === 1 && spawns[0].caller === 'session-b' && boardB[1].status === 'running' && boardB[1].dispatch.lead === 'lead-b',
+        JSON.stringify({ spawns: spawns, status: boardB[1].status, lead: boardB[1].dispatch && boardB[1].dispatch.lead }),
+      )
+      rigB.scheduler.dispose()
+    }
+
+    // (c) the card's session has NO Lead: record the reason, never borrow A's team.
+    {
+      const multi = multiTeam([
+        { leadId: 'session-a', leadName: 'lead-a', workerName: 'fixer-a' },
+        { leadId: 'session-c', leadName: 'lead-c', workerName: 'fixer-c' },
+      ])
+      const rigB = await dispatchWith('session-b', multi)
+      const boardB = boardJson(rigB.fs, PROJECT).tasks
+      check(
+        'T-106 a session with no Lead records no-lead-for-project instead of borrowing',
+        boardB[1].status === 'pending' && boardB[1].waitingReason === 'no-lead-for-project' && boardB[1].assignee === null,
+        JSON.stringify({ status: boardB[1].status, waiting: boardB[1].waitingReason, assignee: boardB[1].assignee }),
+      )
+      check(
+        'T-106 the other session’s worker is never used for that card',
+        boardB.every((task) => task.assignee === null || task.assignee.name !== 'fixer-a'),
+        JSON.stringify(boardB.map((task) => task.assignee && task.assignee.name)),
+      )
+      rigB.scheduler.dispose()
+    }
+
+    // (d) a legacy profile with no session identity keeps the historical behaviour.
+    {
+      const multi = multiTeam([{ leadId: 'session-lead', leadName: 'lead', workerName: 'fixer' }])
+      const fs = createFakeFs()
+      seedBoard(fs, PROJECT, boardWith([null]))
+      const ctx = ctxFor(fs, multi)
+      const state = createState(ctx)
+      const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: makeGit() })
+      await scheduler.settle(PROJECT)
+      const board = boardJson(fs, PROJECT).tasks
+      check(
+        'T-106 a legacy profile without session identity still dispatches (first Lead)',
+        board[0].status === 'running' && board[0].assignee.name === 'fixer' && board[0].dispatch.lead === 'lead',
+        JSON.stringify({ status: board[0].status, assignee: board[0].assignee && board[0].assignee.name, lead: board[0].dispatch && board[0].dispatch.lead }),
+      )
+      scheduler.dispose()
+    }
+  }
+
 }
 
 // ── T-101: submit commits only declared files + tracked modifications ──

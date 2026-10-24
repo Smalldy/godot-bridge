@@ -125,8 +125,10 @@ export function createTeam(options) {
       const member = roster.filter((entry) => entry.name === name)[0]
       if (member !== undefined) member.status = status
     },
+    // The lead is identified by id; a multi-session rig names its own (T-106).
     tryMembership(candidate) {
-      return { role: candidate.id === 'session-lead' ? 'lead' : 'teammate', name: candidate.id }
+      const leadId = opts.leadId === undefined ? 'session-lead' : opts.leadId
+      return { role: candidate.id === leadId ? 'lead' : 'teammate', name: candidate.id }
     },
     listMembers() {
       return roster.map((member) => Object.assign({}, member))

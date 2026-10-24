@@ -505,9 +505,13 @@ export function claimTask(board, id, worker, now) {
     via: adopted === null ? (worker.via === undefined ? null : String(worker.via)) : 'adopt',
     error: null,
     host: worker.host === undefined || worker.host === null ? null : String(worker.host),
-    // T-97: who dispatched this card and for which project/team, so history and
-    // the panel can prove it never crossed sessions.
+    // T-97/T-106: who dispatched this card, under WHICH Lead (and that Lead's
+    // session) and for which project/team, so history and the panel can prove it
+    // never crossed sessions.
     lead: worker.lead === undefined || worker.lead === null ? null : String(worker.lead),
+    leadSession: worker.leadSession === undefined || worker.leadSession === null ? null : String(worker.leadSession),
+    // The CARD's session (worker.session is the worker's own identity above).
+    session: worker.cardSession === undefined || worker.cardSession === null ? null : String(worker.cardSession),
     project: worker.project === undefined || worker.project === null ? null : String(worker.project),
     keep: worktree.keep === true,
   }
@@ -522,6 +526,7 @@ export function claimTask(board, id, worker, now) {
       'dispatched to ' + target.assignee.name + (target.attempts > 1 ? ' (attempt ' + String(target.attempts) + ')' : '') +
       (worker.lead === undefined || worker.lead === null ? '' : ' under Lead ' + String(worker.lead)) +
       (worker.project === undefined || worker.project === null ? '' : ' for ' + String(worker.project)) +
+      (worker.cardSession === undefined || worker.cardSession === null ? '' : ' (session ' + String(worker.cardSession) + ')') +
       (adopted === null
         ? ''
         : ' adopting ' + String(adopted.branch) +

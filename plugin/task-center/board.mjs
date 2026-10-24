@@ -529,6 +529,10 @@ function normaliseTask(raw, index, now) {
           error: typeof raw.dispatch.error === 'string' ? raw.dispatch.error : null,
           host: typeof raw.dispatch.host === 'string' ? raw.dispatch.host : null,
           lead: typeof raw.dispatch.lead === 'string' ? raw.dispatch.lead : null,
+          // T-106: the Lead's session and the card's session are part of the
+          // record, so the panel/history can prove dispatch never crossed sessions.
+          leadSession: typeof raw.dispatch.leadSession === 'string' ? raw.dispatch.leadSession : null,
+          session: typeof raw.dispatch.session === 'string' ? raw.dispatch.session : null,
           project: typeof raw.dispatch.project === 'string' ? raw.dispatch.project : null,
           keep: raw.dispatch.keep === true,
         }
