@@ -5459,7 +5459,7 @@ rig.scheduler.dispose()
     'rev-parse --verify refs/heads/main': () => ({ code: 0, stdout: '2222222\n', stderr: '' }),
   })
   const merger = createMerger({ git: fake.git, verify: async () => ({ ok: true, code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' }) })
-  const rig = createSubmitRig({ roles: roles, git: fake.git, merger: merger, autoMerge: true })
+  const rig = createSubmitRig({ roles: roles, git: fake.git, merger: merger, autoMerge: true, subprocess: fakeHostSubprocess({ code: 0, stdout: 'ok' }).subprocess })
   const task = openMergeTask({ status: 'testing' })
   // The target advanced after the candidate was tested: base is behind main.
   task.merge.base = '1111111'
@@ -5506,7 +5506,13 @@ rig.scheduler.dispose()
     over = over === undefined ? {} : over
     const fake = mergeGit(replies(over))
     const merger = createMerger({ git: fake.git, verify: async () => ({ ok: true, code: 0, stdout: 'ALL CHECKS PASSED', stderr: '' }) })
-    const rig = createSubmitRig({ roles: { ensure: async () => ({ ok: true, created: [{ name: 'tester-1', id: 'session-tester-1' }], reused: [], replaced: [], waiting: [], refused: [] }), status: () => ({ available: true }) }, git: fake.git, merger: merger, autoMerge: true })
+    const rig = createSubmitRig({
+      roles: { ensure: async () => ({ ok: true, created: [{ name: 'tester-1', id: 'session-tester-1' }], reused: [], replaced: [], waiting: [], refused: [] }), status: () => ({ available: true }) },
+      git: fake.git,
+      merger: merger,
+      autoMerge: true,
+      subprocess: over.subprocess === undefined ? fakeHostSubprocess({ code: 0, stdout: 'ALL CHECKS PASSED' }).subprocess : over.subprocess,
+    })
     const task = openMergeTask({ status: 'testing' })
     task.merge.base = '1111111'
     task.commit = over.commit === undefined ? 'head-sha' : over.commit
@@ -5526,8 +5532,28 @@ rig.scheduler.dispose()
       'a base-only drift is rebuilt and merged without a new review round',
       sweep.ok === true && after.status === 'done' &&
         (after.review === null || after.review.attempt === before.review.attempt) &&
-        String(after.evidence).indexOf('仅 base 变化') >= 0,
+        String(after.evidence).indexOf('base-only drift') >= 0 && String(after.evidence).indexOf('复跑验证') >= 0 &&
+        (after.history || []).some((entry) => String(entry.note).indexOf('自动重建并合并（无冲突）') >= 0),
       JSON.stringify({ status: after.status, beforeReview: before.review && before.review.attempt, afterReview: after.review && after.review.attempt, skipped: sweep.skipped }),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // (a2) the rebuilt candidate fails its verification: no merge, readable reason.
+  {
+    const { rig } = makeRig({ subprocess: fakeHostSubprocess({ code: 1, stdout: 'FAIL candidate.test.mjs', stderr: 'exit code 1' }).subprocess })
+    const sweep = await rig.api.autoMergePending(PROJECT)
+    const card = boardJson(rig.fs, PROJECT).tasks[0]
+    check(
+      'T-105 a rebuilt candidate that fails verification is not merged and reports why',
+      sweep.ok === true && card.status === 'testing' && card.waitingReason === 'candidate-stale' &&
+        String(card.waitingDetail).indexOf('verification FAILED') >= 0 && card.merge.status === 'open',
+      JSON.stringify({ status: card.status, waiting: card.waitingReason, detail: card.waitingDetail, merge: card.merge && card.merge.status }),
+    )
+    check(
+      'T-105 the failed rebuild counts on merge.rebuildAttempts',
+      card.merge.rebuildAttempts === 1,
+      JSON.stringify({ attempts: card.merge.rebuildAttempts }),
     )
     rig.scheduler.dispose()
   }

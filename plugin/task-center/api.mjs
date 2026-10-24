@@ -2739,6 +2739,26 @@ export function createApi(ctx, options) {
       await markWaiting(projectPath, id, 'candidate-stale', 'diff changed: verified ' + String(verified) + ', branch is ' + String(branchHead.head), context)
       return failure('diff-changed', 'the branch moved past the verified commit; a new review and test round is required')
     }
+    // T-105: a clean rebuild is only merged after the verification command has
+    // actually run in the rebuilt candidate. The card's declared command wins;
+    // without one the project's standard gate is used.
+    const declaredVerify = normaliseVerify(task.verify)
+    const verifySpec = declaredVerify !== null ? declaredVerify : { command: 'npm run verify', timeoutMs: VERIFY_DEFAULT_TIMEOUT_MS }
+    const checked = await runHostCheck(ctx, { verify: verifySpec, cwd: built.path, now: () => clock() })
+    if (checked.ok !== true) {
+      await markWaiting(projectPath, id, 'candidate-stale', 'verification could not run on the rebuilt candidate (' + String(checked.code) + '): ' + String(checked.message), context)
+      return failure('verify-unavailable', 'the rebuilt candidate could not be verified: ' + String(checked.message))
+    }
+    const check = checked.check
+    if (check.timedOut === true || check.exitCode !== 0) {
+      const attempts = Number.isFinite(task.merge.rebuildAttempts) ? task.merge.rebuildAttempts : 0
+      await setRebuildAttempts(projectPath, id, Math.min(10, attempts + 1), context)
+      const detail =
+        'verification FAILED on the rebuilt candidate: ' + String(verifySpec.command) +
+        ' (exit ' + String(check.timedOut === true ? 'timeout' : check.exitCode) + '); the card was not merged'
+      await markWaiting(projectPath, id, 'candidate-stale', detail, context)
+      return failure('verify-failed', detail)
+    }
     const recorded = await writeTask(
       projectPath,
       id,
@@ -2746,13 +2766,24 @@ export function createApi(ctx, options) {
         const tasks = board.tasks.map((entry) => {
           if (String(entry.id) !== String(id) || entry.merge === null || entry.merge === undefined) return entry
           const evidence = String(entry.evidence === undefined || entry.evidence === null ? '' : entry.evidence)
-          const note = '仅 base 变化，diff 与已验证提交一致（' + String(task.merge.base) + ' -> ' + String(built.base) + '）；自动重建候选并直接合并，不新增评审轮次。'
+          const note =
+            'base-only drift：已在 ' + String(built.base) + ' 上重建候选并复跑验证（' + String(verifySpec.command) + '，通过），diff 与已验证提交等价，不新增评审轮次。'
           return Object.assign({}, entry, {
             waitingReason: null,
             waitingDetail: null,
             base: built.base,
             merge: Object.assign({}, entry.merge, { base: built.base, mergeCommit: built.head, rebuildAttempts: 0 }),
             evidence: evidence === '' ? note : evidence + '\n' + note,
+            history: (Array.isArray(entry.history) ? entry.history : []).concat([
+              {
+                at: new Date(clock()).toISOString(),
+                by: 'scheduler',
+                byName: null,
+                from: 'testing',
+                to: 'testing',
+                note: '自动重建并合并（无冲突）：候选重建到 ' + String(built.base) + '，验证 ' + String(verifySpec.command) + ' 通过，不新增评审轮次',
+              },
+            ]),
           })
         })
         return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
