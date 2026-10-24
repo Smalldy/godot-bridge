@@ -48,6 +48,8 @@ import {
   roleShortName,
   roleSlotOf,
   resolveLead,
+  liveLeads,
+  agentSessionOf,
   reviewBriefFor,
   reworkBriefFor,
   roleBriefFor,
@@ -303,34 +305,113 @@ export function createApi(ctx, options) {
    * agent id the tool layer hands over, then falls back to the display label, so
    * an older caller that only sends a name still resolves.
    */
-  function callerMemberOf(context) {
-    if (context === undefined || context === null) return null
-    const agent = context.agent === undefined || context.agent === null ? null : context.agent
-    const by = typeof context.by === 'string' && context.by.length > 0 ? context.by : null
-    if (agent === null && by === null) return null
-    const { agentTeams } = servicesFor(ctx)
-    if (agentTeams === undefined || agentTeams === null) return null
-    const lead = resolveLead(ctx)
-    if (lead === null) return null
-    let members = []
-    try {
-      members = agentTeams.listMembers(lead)
-    } catch (error) {
-      return null
-    }
-    if (!Array.isArray(members)) return null
-    if (agent !== null && agent.id !== undefined && agent.id !== null) {
-      const match = members.filter(
-        (member) =>
-          member !== null && typeof member === 'object' && member.id !== undefined && member.id !== null && String(member.id) === String(agent.id),
-      )[0]
-      if (match !== undefined) return match
+  /** The identifiers a call carries for its caller: agent session/id and display label. */
+  function callerIdentifiers(context) {
+    const agent = context !== undefined && context !== null && context.agent !== undefined && context.agent !== null ? context.agent : null
+    const by = context !== undefined && context !== null && typeof context.by === 'string' && context.by.length > 0 ? context.by : null
+    const ids = []
+    const names = []
+    if (agent !== null) {
+      if (agent.id !== undefined && agent.id !== null && String(agent.id) !== '') ids.push(String(agent.id))
+      if (agent.session !== undefined && agent.session !== null && String(agent.session) !== '') ids.push(String(agent.session))
+      if (agent.name !== undefined && agent.name !== null && String(agent.name) !== '') names.push(String(agent.name))
     }
     if (by !== null) {
-      const match = members.filter((member) => member !== null && typeof member === 'object' && member.name === by)[0]
-      if (match !== undefined) return match
+      names.push(by)
+      if (by.charAt(0) === '@') names.push(by.slice(1))
     }
-    return null
+    return { ids: ids, names: names, by: by }
+  }
+
+  /** The logical role of an identifier: legacy tester-1, project slot tester-p<key>-1, or @label. */
+  function callerRoleKindOf(value) {
+    if (typeof value !== 'string' || value === '') return null
+    const trimmed = value.charAt(0) === '@' ? value.slice(1) : value
+    const kind = roleKindOf(trimmed)
+    if (kind !== null) return kind
+    // A durable member name may be plain 'tester-1' while the project slot is
+    // tester-p<key>-1; strip the session prefix to compare logically.
+    const short = trimmed.replace(/^session-/, '')
+    return roleKindOf(short)
+  }
+
+  /**
+   * The Team member this call comes from, resolved inside the CALLER'S OWN Team.
+   * Never "the first Lead": every live Lead's roster is searched, so a host with
+   * several sessions matches the right one. A project slot (tester-p<key>-1) is
+   * accepted as the logical role of a durable member named tester-1 and vice
+   * versa, because T-88 renamed slots while member names stayed stable.
+   */
+  function callerLookup(context) {
+    if (context === undefined || context === null) return { member: null, lead: null, leads: [] }
+    const { ids, names, by } = callerIdentifiers(context)
+    if (ids.length === 0 && names.length === 0) return { member: null, lead: null, leads: [] }
+    const { agentTeams } = servicesFor(ctx)
+    if (agentTeams === undefined || agentTeams === null) return { member: null, lead: null, leads: [] }
+    let leads = liveLeads(ctx)
+    if (leads.length === 0) {
+      const legacy = resolveLead(ctx)
+      if (legacy !== null) leads = [legacy]
+    }
+    const rosters = []
+    for (const lead of leads) {
+      let members = []
+      try {
+        members = agentTeams.listMembers(lead)
+      } catch (error) {
+        continue
+      }
+      if (!Array.isArray(members)) continue
+      rosters.push({ lead: lead, members: members })
+    }
+    // 1) exact member id / session.
+    for (const entry of rosters) {
+      for (const member of entry.members) {
+        if (member === null || typeof member !== 'object' || member.id === undefined || member.id === null) continue
+        if (ids.indexOf(String(member.id)) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters }
+      }
+    }
+    // 2) exact member name / display label.
+    for (const entry of rosters) {
+      for (const member of entry.members) {
+        if (member === null || typeof member !== 'object' || typeof member.name !== 'string') continue
+        if (names.indexOf(member.name) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters }
+      }
+    }
+    // 3) logical role alias: durable tester-1 <-> project slot tester-p<key>-1.
+    const wantedKinds = []
+    for (const value of names.concat(ids)) {
+      const kind = callerRoleKindOf(value)
+      if (kind !== null && wantedKinds.indexOf(kind) < 0) wantedKinds.push(kind)
+    }
+    for (const entry of rosters) {
+      for (const member of entry.members) {
+        if (member === null || typeof member !== 'object' || typeof member.name !== 'string') continue
+        const kind = callerRoleKindOf(member.name)
+        if (kind !== null && wantedKinds.indexOf(kind) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters }
+      }
+    }
+    return { member: null, lead: null, leads: leads, rosters: rosters, by: by }
+  }
+
+  function callerMemberOf(context) {
+    const found = callerLookup(context)
+    return found.member === undefined ? null : found.member
+  }
+
+  /** Human-readable "who a Lead's roster carries", for refusal messages. */
+  function rosterSummary(rosters) {
+    if (!Array.isArray(rosters) || rosters.length === 0) return 'no readable roster'
+    return rosters
+      .map((entry) => {
+        const leadName = entry.lead === null || entry.lead === undefined ? '?' : String(entry.lead.name === undefined ? entry.lead.id : entry.lead.name)
+        const roles = entry.members
+          .filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string')
+          .map((member) => callerRoleKindOf(member.name) || member.name)
+          .filter((value, index, all) => all.indexOf(value) === index)
+        return leadName + ' -> ' + (roles.length === 0 ? '(empty)' : roles.join(', '))
+      })
+      .join('; ')
   }
 
   /** The member NAME written alongside an event: resolved at write time from the
@@ -370,9 +451,26 @@ export function createApi(ctx, options) {
   function verdictRefusal(context, task, kind) {
     if (roles === null) return null
     if (context !== undefined && context !== null && context.role === 'user') return null
-    const caller = callerRole(context)
-    if (caller === null) {
-      return failure('role-required', 'Only a ' + kind + ' role member or the user can record this verdict.')
+    const found = callerLookup(context)
+    if (found.member === null || found.member === undefined) {
+      return failure(
+        'role-required',
+        '你在 ' + rosterSummary(found.rosters) + ' 里没有 ' + kind + ' 角色；当前 roster 角色见前。只有该角色的成员或用户能记录此裁决。',
+      )
+    }
+    const caller = { member: found.member, kind: roleKindOf(found.member.name) === null ? callerRoleKindOf(found.member.name) : roleKindOf(found.member.name) }
+    // T-112: a verdict belongs to the team of the session that OWNS the card.
+    // A tester from another Lead's roster must not decide this card.
+    const cardSession = task !== null && task !== undefined && typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
+    const leadSession = found.lead === null || found.lead === undefined ? null : agentSessionOf(found.lead)
+    // Only a KNOWN Lead session can own a card: worker/tool sessions are not
+    // teams, so a worker's own session id never blocks its reviewer/tester.
+    const ownerLead = cardSession === null ? null : (found.leads || []).filter((lead) => agentSessionOf(lead) === cardSession)[0]
+    if (caller !== null && caller.kind !== null && ownerLead !== undefined && ownerLead !== null && leadSession !== null && cardSession !== leadSession) {
+      return failure(
+        'wrong-session',
+        '这张卡属于会话 ' + cardSession + '，而你的裁决来自 Lead ' + String(found.lead.name === undefined ? found.lead.id : found.lead.name) + ' 的会话 ' + leadSession + '；跨会话裁决已被拒绝，请在卡片所属会话里裁决。',
+      )
     }
     if (isAssignee(task, caller.member)) {
       return failure(
