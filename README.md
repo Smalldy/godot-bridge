@@ -123,6 +123,14 @@ Cordis THROWS when a plugin reads a service it did not declare in `inject`. A ba
 - **Tests use a strict ctx** (`createStrictCtx` in `scripts/test/support/fixtures.mjs`): reading an undeclared property throws the same Cordis message, so this class of bug fails in the suite.
 - **Activation failures are diagnostics, not silence**: apply errors and load failures are appended to `~/.dsh/godot-bridge/activation-error.log` (override with `GODOT_BRIDGE_ACTIVATION_LOG`) and reported through `ctx.logger.error`.
 
+### Lead resolution: session or explicit `resolveAnyLead`
+
+Authority code (dispatch, verdicts, merge, role provisioning) must resolve a Lead with `resolveLead(ctx, { sessionId })`. A bare `resolveLead(ctx)` throws on purpose: "the first Lead" silently picked the wrong team twice and broke dispatch and verdicts.
+
+- `resolveLead(ctx, { sessionId })` — the only authority form; resolves inside that session's team.
+- `resolveAnyLead(ctx)` — explicit **read-only / display / preflight** lookup (worker-pool inventory, preview names, diagnostics). It must never gate a permission, a dispatch or a verdict.
+- A static test scans `plugin/task-center/*.mjs` and fails on any bare `resolveLead(ctx)`, printing file and line.
+
 ## Isolated DSH test harness
 
 The task center also ships a real-DSH smoke for the candidate plugin: `plugin/task-center/harness.mjs` starts a **disposable DSH instance** and proves that the candidate loads and answers — without touching the production profile, session or port. Only the tester role (or the user) drives it through `task_center` `harnessStart` / `harnessStatus` / `harnessSmoke` / `harnessRestart` / `harnessStop`; `POST /godot-bridge/task-center/action` exposes the same actions to the GUI.

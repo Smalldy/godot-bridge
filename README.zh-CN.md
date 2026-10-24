@@ -120,6 +120,14 @@ Cordis 规定：**未在 `inject` 中声明的服务，读取即抛异常**。�
 - **测试使用严格 ctx**（`scripts/test/support/fixtures.mjs` 的 `createStrictCtx`）：读未声明属性会抛同样的 Cordis 错误，这类 bug 会在测试里失败。
 - **激活失败可见**：apply 失败与模块加载失败都会追加到 `~/.dsh/godot-bridge/activation-error.log`（可用 `GODOT_BRIDGE_ACTIVATION_LOG` 覆盖），并通过 `ctx.logger.error` 上报。
 
+### Lead 解析：按会话，或显式 \`resolveAnyLead\`
+
+权限路径（派发、裁决、合并、角色 provision）必须用 `resolveLead(ctx, { sessionId })` 在调用者/卡片的会话内解析 Lead。裸 `resolveLead(ctx)` 会直接抛错：历史上“第一个 Lead”两次静默选错团队，导致派发挂错和裁决被拒。
+
+- `resolveLead(ctx, { sessionId })` —— 唯一的权限形式，按会话解析。
+- `resolveAnyLead(ctx)` —— 显式的**只读/展示/预检**用途（worker 池清单、预览名、诊断），禁止用于权限、派发或裁决。
+- 静态测试会扫描 `plugin/task-center/*.mjs`，出现裸 `resolveLead(ctx)` 即失败并打印文件与行号。
+
 ## 隔离 DSH 测试 harness
 
 任务中心同时提供「真实 DSH 冒烟」：`plugin/task-center/harness.mjs` 启动一个**用完即弃的 DSH 实例**，证明候选插件能装、能加载、能应答，而完全不碰生产 profile、会话与端口。只有 tester 角色（或用户）能通过 `task_center` 的 `harnessStart` / `harnessStatus` / `harnessSmoke` / `harnessRestart` / `harnessStop` 驱动；`POST /godot-bridge/task-center/action` 对 GUI 暴露同一组动作。

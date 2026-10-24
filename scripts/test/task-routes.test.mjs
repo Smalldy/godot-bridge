@@ -6547,5 +6547,93 @@ rig.scheduler.dispose()
   rig.scheduler.dispose()
 }
 
+// ── T-112: verdict gates resolve the CALLER'S session/team, not the first Lead ──
+{
+  const fs = createFakeFs()
+  const leadA = { id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }
+  const leadB = { id: 'lead-session-b', name: 'lead-b', role: 'lead', status: 'running' }
+  // A's tester is a DURABLE member named tester-1 while B's is the project slot
+  // name tester-p<key>-1: both must be recognised by logical role.
+  const rosterA = [leadA, { id: 'session-legacy-tester', name: 'tester-1', role: 'teammate', status: 'inactive' }]
+  const rosterB = [leadB, { id: 'session-tester-b', name: 'tester-pdeadbeef-1', role: 'teammate', status: 'inactive' }]
+  const everyone = rosterA.concat(rosterB)
+  const team = {
+    tryMembership(candidate) {
+      const member = everyone.filter((entry) => entry.id === candidate.id)[0]
+      return member === undefined ? undefined : { role: member.role, name: member.name }
+    },
+    listMembers(lead) {
+      return (lead.id === leadA.id ? rosterA : lead.id === leadB.id ? rosterB : []).map((entry) => Object.assign({}, entry))
+    },
+    async sendMessage() { return { ok: true } },
+    async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
+  }
+  const ctx = {
+    fs: fs,
+    sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+    get(key) {
+      if (key === 'agents') return { list: () => everyone.filter((entry) => entry.role === 'lead') }
+      if (key === 'agentTeams') return team
+      return undefined
+    },
+  }
+  const state = createState(ctx)
+  const api = createApi(ctx, { state: state, git: createFakeGit(), roles: { ensure: async () => ({ ok: true, created: [], reused: [], replaced: [], waiting: [], refused: [] }), status: () => ({}) }, autoMerge: false })
+  function card(id, owner) {
+    const stamp = new Date().toISOString()
+    return {
+      id: id,
+      title: 'verdict ' + id,
+      status: 'testing',
+      priority: 0,
+      dependsOn: [],
+      writeFiles: [],
+      spec: 's',
+      acceptance: 'a',
+      evidence: '',
+      ownerSession: owner,
+      base: 'base-sha',
+      target: 'main',
+      branch: 'task/' + id + '-1',
+      commit: 'head-sha',
+      review: { status: 'approved', by: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
+      test: { status: 'pending', by: null, at: null, evidence: null, attempt: 1 },
+      merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: null, reviewer: null, conflict: null, at: stamp },
+      history: [],
+      createdAt: stamp,
+      updatedAt: stamp,
+      attempts: 1,
+      maxAttempts: 3,
+    }
+  }
+  seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [card('T-1', leadA.id), card('T-2', leadB.id)] }))
+  const testerA = { projectPath: PROJECT, by: '@tester-1', role: 'agent', agent: { id: 'session-legacy-tester', name: 'tester-1' } }
+  const testerB = { projectPath: PROJECT, by: '@tester-pdeadbeef-1', role: 'agent', agent: { id: 'session-tester-b', name: 'tester-pdeadbeef-1' } }
+  const cross = await api.perform('passTest', { id: 'T-1', evidence: 'B must not decide A' }, testerB)
+  check(
+    'T-112 a tester from another Lead session cannot decide this card (wrong-session, readable)',
+    cross.ok === false && cross.code === 'wrong-session' && String(cross.message).indexOf('会话') >= 0,
+    JSON.stringify(cross),
+  )
+  const ownA = await api.perform('passTest', { id: 'T-1', evidence: 'A tester passes A card' }, testerA)
+  check(
+    'T-112 a durable tester-1 in the card owner session is accepted (slot alias)',
+    ownA.ok === true,
+    JSON.stringify(ownA),
+  )
+  const ownB = await api.perform('passTest', { id: 'T-2', evidence: 'B tester passes B card' }, testerB)
+  check(
+    'T-112 a project-slot tester-p<key>-1 member is accepted for its own Lead',
+    ownB.ok === true,
+    JSON.stringify(ownB),
+  )
+  const outsider = await api.perform('passTest', { id: 'T-1', evidence: 'nobody' }, { projectPath: PROJECT, by: '@fixer', role: 'agent', agent: { id: 'session-fixer', name: 'fixer' } })
+  check(
+    'T-112 a member with no tester role is refused with a readable roster',
+    outsider.ok === false && outsider.code === 'role-required' && String(outsider.message).indexOf('roster') >= 0,
+    JSON.stringify(outsider),
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

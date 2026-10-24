@@ -435,8 +435,37 @@ function membershipOrNull(agentTeams, agent) {
  * Without `sessionId` (a legacy profile with no session identity) the historical
  * behaviour is kept: the first live lead.
  */
+/** The old "first Lead" scan, now ONLY reachable through resolveAnyLead: display
+ * and preflight surfaces. Never authority (dispatch/verdicts/merge). */
+function anyLeadOf(ctx) {
+  const { agents, agentTeams } = servicesFor(ctx)
+  if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return null
+  let all = []
+  try {
+    all = agents.list()
+  } catch (error) {
+    return null
+  }
+  for (const candidate of all) {
+    try {
+      const membership = agentTeams.tryMembership(candidate)
+      if (membership !== undefined && membership !== null && membership.role === 'lead') return candidate
+    } catch (error) {}
+  }
+  return null
+}
+
+/** Read-only global lookup: some display/preflight surface needs a Lead, any
+ * Lead. NEVER use it for permissions or dispatch. */
+export function resolveAnyLead(ctx) {
+  return anyLeadOf(ctx)
+}
+
 export function resolveLead(ctx, options) {
-  const opts = options === undefined || options === null ? {} : options
+  // T-112: authority must name the session it resolves for. A missing sessionId
+  // returns null (the caller decides); it must never silently mean "the first
+  // Lead", and the static guard keeps new bare authority calls out of the code.
+  const opts = options !== null && typeof options === 'object' ? options : {}
   const { agents, agentTeams } = servicesFor(ctx)
   if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return null
   let all = []
@@ -447,13 +476,11 @@ export function resolveLead(ctx, options) {
     return null
   }
   const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-  if (sessionId === null) {
-    for (const candidate of all) {
-      const membership = membershipOrNull(agentTeams, candidate)
-      if (membership !== null && membership.role === 'lead') return candidate
-    }
-    return null
+  if (opts.anyLead === true) {
+    // Explicit read-only escape hatch (display / preflight only).
+    return anyLeadOf(ctx)
   }
+  if (sessionId === null) return null
   // Only the agents that BELONG to this session are candidates.
   const owned = all.filter((candidate) => agentSessionOf(candidate) === sessionId)
   for (const agent of owned) {
@@ -553,7 +580,7 @@ export function projectTeamState(ctx, options) {
   if (base.available !== true) return Object.assign({}, base, { error: 'no-team-service' })
   let lead = null
   try {
-    lead = resolveLead(ctx, sessionId === null ? {} : { sessionId: sessionId })
+    lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
   } catch (error) {
     return Object.assign({}, base, { error: 'team-unreadable' })
   }
@@ -754,7 +781,7 @@ export function pickTarget(ctx, options) {
     return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
   }
   const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-  const lead = resolveLead(ctx, { sessionId: sessionId })
+  const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
   if (lead === null) {
     return {
       ok: false,
@@ -857,7 +884,7 @@ export function workerPool(ctx, board, options) {
     report.error = 'no-team-service'
     return report
   }
-  const lead = resolveLead(ctx)
+  const lead = resolveAnyLead(ctx)
   if (lead === null) {
     report.error = 'no-lead'
     return report
@@ -2285,7 +2312,7 @@ export function createRoleManager(ctx, options) {
     // T-106: provision under the Lead that owns THIS session/project — never the
     // first lead in the host, which is how executors ended up in another session.
     const sessionId = req.sessionId === undefined || req.sessionId === null || req.sessionId === '' ? null : String(req.sessionId)
-    const lead = req.lead === undefined || req.lead === null ? resolveLead(ctx, { sessionId: sessionId }) : req.lead
+    const lead = req.lead === undefined || req.lead === null ? (sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })) : req.lead
     if (lead === null) {
       return {
         ok: false,
@@ -2464,7 +2491,8 @@ export function createRoleManager(ctx, options) {
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
     const sessionId = opts.sessionId === undefined || opts.sessionId === null || opts.sessionId === '' ? null : String(opts.sessionId)
-    const lead = resolveLead(ctx, { sessionId: sessionId })
+    // Legacy role operations without a session use the single-team path explicitly.
+    const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
     if (lead === null) return { ok: false, code: sessionId === null ? 'no-lead' : 'no-lead-for-project', message: sessionId === null ? 'no live Team root' : 'session ' + sessionId + ' has no live Team root' }
     let roster = []
     try {
@@ -2549,7 +2577,7 @@ export function probeDispatch(ctx) {
       report.agentCount = 'error: ' + String((error && error.message) || error)
     }
   }
-  const lead = resolveLead(ctx)
+  const lead = resolveAnyLead(ctx)
   if (lead === null) return report
   report.lead = String(lead.id)
   try {
@@ -2899,7 +2927,7 @@ export function createDispatcher(ctx, options) {
     const name = typeof who.name === 'string' && who.name !== '' ? who.name : null
     if (session === null && name === null) return { known: false, alive: false, status: null, name: null }
     const team = ctx.get('agentTeams')
-    const lead = resolveLead(ctx)
+    const lead = resolveAnyLead(ctx)
     if (team === null || team === undefined || typeof team.listMembers !== 'function' || lead === null) {
       return { known: false, alive: false, status: null, name: name }
     }
@@ -3195,7 +3223,7 @@ export function createDispatcher(ctx, options) {
   function reviewerNames() {
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return []
-    const lead = resolveLead(ctx)
+    const lead = resolveAnyLead(ctx)
     if (lead === null) return []
     let roster = []
     try {
@@ -3232,7 +3260,7 @@ export function createDispatcher(ctx, options) {
     const out = names.slice()
     if (names.length === 0) return out
     const { agentTeams } = servicesFor(ctx)
-    const lead = resolveLead(ctx)
+    const lead = resolveAnyLead(ctx)
     if (agentTeams === undefined || agentTeams === null || lead === null) return out
     try {
       const roster = agentTeams.listMembers(lead)
@@ -3250,7 +3278,7 @@ export function createDispatcher(ctx, options) {
   function testerNames() {
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return []
-    const lead = resolveLead(ctx)
+    const lead = resolveAnyLead(ctx)
     if (lead === null) return []
     let roster = []
     try {
@@ -3300,7 +3328,7 @@ export function createDispatcher(ctx, options) {
     )
     if (pending.length === 0) return { reminded: [], blocked: [], board: null }
     const pendingKeys = new Set(pending.map((task) => String(task.id) + '@' + String(task.review.at)))
-    const lead = resolveLead(ctx)
+    const lead = resolveAnyLead(ctx)
     const names = reviewerNames()
     const reminded = []
     const blocked = []
@@ -3409,7 +3437,7 @@ export function createDispatcher(ctx, options) {
     )
     if (pending.length === 0) return { reminded: [], blocked: [], board: null }
     const pendingKeys = new Set(pending.map((task) => String(task.id) + '@' + String(task.test.at)))
-    const lead = resolveLead(ctx)
+    const lead = resolveAnyLead(ctx)
     const names = testerNames()
     const reminded = []
     const blocked = []
@@ -4086,7 +4114,7 @@ export async function interruptMemberNamed(ctx, options) {
   if (name === null) return { ok: false, code: 'no-name' }
   const { agentTeams } = servicesFor(ctx)
   if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service' }
-  const lead = resolveLead(ctx)
+  const lead = resolveAnyLead(ctx)
   if (lead === null) return { ok: false, code: 'no-lead' }
   let members = []
   try {
