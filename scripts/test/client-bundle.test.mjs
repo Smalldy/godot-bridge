@@ -2758,7 +2758,7 @@ await flush()
     zhTree = withHooks(panel, { initialView: 'board' })
     check(
       'the unknown-project banner is Chinese in the zh UI',
-      textOf(zhTree).indexOf('还没有已知项目') >= 0 && textOf(zhTree).indexOf('No project is known yet') < 0,
+      textOf(zhTree).indexOf('这个会话还没有绑定项目') >= 0 && textOf(zhTree).indexOf('This session is not bound') < 0,
       textOf(zhTree).slice(0, 220),
     )
     locale = 'en'
@@ -2767,7 +2767,7 @@ await flush()
     enTree = withHooks(panel, { initialView: 'board' })
     check(
       'the same banner is English in the en UI',
-      textOf(enTree).indexOf('No project is known yet') >= 0 && textOf(enTree).indexOf('还没有已知项目') < 0,
+      textOf(enTree).indexOf('This session is not bound') >= 0 && textOf(enTree).indexOf('这个会话还没有绑定项目') < 0,
       textOf(enTree).slice(0, 220),
     )
     locale = 'zh'
@@ -3362,7 +3362,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   const detailOverlay = findAll(tree, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
   check(
     'a drawer row opens the detail drawer and fetches exactly that card',
-    detailCalls.length === 1 && detailCalls[0].indexOf('id=D-') >= 0 && detailOverlay !== undefined && textOf(detailOverlay).indexOf('DETAIL-TITLE-83') >= 0,
+    detailCalls.length === 1 && detailCalls[0].indexOf('id=D-') >= 0 && /[?&]session=[^&]+/.test(detailCalls[0]) && detailOverlay !== undefined && textOf(detailOverlay).indexOf('DETAIL-TITLE-83') >= 0,
     JSON.stringify({ calls: detailCalls.length }),
   )
   // 500 completed cards: the collapsed column must keep the DOM at five cards.
@@ -3867,7 +3867,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   const overlay = findAll(tree, (node) => node.props && node.props['data-done-all-overlay'] === 'true')[0]
   check(
     'the archived view pages through /list?archived=1 and renders rows',
-    overlay !== undefined && listCalls.some((url) => url.indexOf('archived=1') >= 0) && textOf(overlay).indexOf('Old done') >= 0 && textOf(overlay).indexOf('已归档任务') >= 0,
+    overlay !== undefined && listCalls.some((url) => url.indexOf('archived=1') >= 0) && listCalls.every((url) => /[?&]session=[^&]+/.test(url)) && textOf(overlay).indexOf('Old done') >= 0 && textOf(overlay).indexOf('已归档任务') >= 0,
     JSON.stringify({ calls: listCalls.length, text: overlay && textOf(overlay).slice(0, 120) }),
   )
   const mask = overlay === undefined ? undefined : findAll(overlay, (node) => node.props && node.props.className === 'gbt-detailmask')[0]

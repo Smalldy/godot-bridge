@@ -260,7 +260,8 @@ export function createRig(options) {
   const state = createState(ctx, { now: opts.now })
   // A rig is one session on one project: the resolver's session workspace is
   // this project unless a test clears it to exercise no-project-bound.
-  state.setSessionRoot(project)
+  // Every rig is one session; tests pass ?session=test-session on HTTP calls.
+  state.setSessionRoot('test-session', project)
   // Worktrees are mandatory, so a rig that does not name a git facade gets a
   // working fake one; pass { git: null } (or a broken createFakeGit) to test
   // the refusal path.

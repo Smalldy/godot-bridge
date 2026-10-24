@@ -156,7 +156,7 @@ function boardText(project) {
 function makeRow(fs, projectRoot, homeDir, gitFacade, verify) {
   const ctx = { fs, get() { return undefined; } };
   const state = createState(ctx, { homeDir });
-  state.setSessionRoot(projectRoot);
+  state.setSessionRoot("e2e-session", projectRoot);
   const scheduler = createDispatcher(ctx, { state, projectPath: () => projectRoot, allowSpawn: false, git: gitFacade });
   const merger = createMerger({ git: gitFacade, verify });
   const api = createApi(ctx, { state, scheduler, git: gitFacade, merger, autoMerge: true });

@@ -37,6 +37,8 @@ The remaining godot-mcp tools were implemented in the MCP server's own Node proc
 
 ## Task Center
 
+The panel's current project is bound **per session**: `/state`, `/task`, `/list` and every action carry `?session=<id>`, and the Host reads only that session's binding (`state.sessionRootOf(id)` is the single reader — there is no process-global project slot). A request without a session id is unbound and never borrows another session's project.
+
 The same package mounts a second component row, `godot-bridge/task-center`: a project task board, a phase-driven dispatcher with independent review and testing, file locks, a role system, and a centre-column GUI panel (sidebar entry “Tasks”).
 
 ### Execution flow

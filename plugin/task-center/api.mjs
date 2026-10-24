@@ -2729,6 +2729,14 @@ export function createApi(ctx, options) {
    * nearest git project, otherwise a readable no-project-bound refusal. There is
    * no process.cwd() or global-hint fallback.
    */
+  /** The session this tool call belongs to (agent id/session), or null. */
+  function sessionIdOf(context) {
+    if (context === undefined || context === null) return null
+    const agent = context.agent
+    const id = agent !== null && agent !== undefined && typeof agent.id === 'string' && agent.id.length > 0 ? agent.id : agent !== null && agent !== undefined && typeof agent.session === 'string' ? agent.session : typeof context.sessionId === 'string' ? context.sessionId : null
+    return id !== null && id.length > 0 ? id : null
+  }
+
   async function resolveIncoming(source, context) {
     const explicit = typeof source.project === 'string' && source.project.trim().length > 0 ? source.project.trim() : ''
     if (explicit !== '') return { ok: true, root: resolve(explicit), resolvedFrom: 'explicit' }
@@ -2736,7 +2744,10 @@ export function createApi(ctx, options) {
     if (sessionRoot === null) {
       return failure('no-project-bound', 'No project is bound to this session. Pass project, or open a project from the panel.')
     }
-    if (state !== null && typeof state.setSessionRoot === 'function') state.setSessionRoot(sessionRoot)
+    if (state !== null && typeof state.setSessionRoot === 'function') {
+      const sessionId = sessionIdOf(context)
+      if (sessionId !== null) state.setSessionRoot(sessionId, sessionRoot)
+    }
     const resolved = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: sessionRoot })
     if (resolved.ok !== true) return resolved
     return { ok: true, root: resolved.root, resolvedFrom: resolved.resolvedFrom }
@@ -2745,7 +2756,7 @@ export function createApi(ctx, options) {
   async function perform(action, input, context) {
     const source = input === undefined || input === null ? {} : input
     if (action === 'openProject') {
-      return openProject(source)
+      return openProject(source, context)
     }
     const incoming = await resolveIncoming(source, context)
     if (incoming.ok !== true) return incoming
@@ -3941,7 +3952,7 @@ export function createApi(ctx, options) {
     return refused
   }
 
-  async function openProject(input) {
+  async function openProject(input, context) {
     const path = typeof input.path === 'string' ? input.path.trim() : ''
     if (path === '') return failure('missing-path', 'openProject needs a path')
     const base = state.memory.projectHint === null ? process.cwd() : state.memory.projectHint
@@ -3965,6 +3976,12 @@ export function createApi(ctx, options) {
     }
     remember(absolute)
     state.touchProject(absolute, undefined, { worktreeRoot: preflight.worktreeRoot, preflight: preflight })
+    // Bind the opened project to the session that asked (tool call); the HTTP
+    // route binds its own session after this answer.
+    if (state !== null && typeof state.setSessionRoot === 'function') {
+      const sessionId = sessionIdOf(context)
+      if (sessionId !== null) state.setSessionRoot(sessionId, absolute)
+    }
     return Object.assign({}, await snapshot(absolute, { worktreeRoot: preflight.worktreeRoot }), { preflight: preflight })
   }
 

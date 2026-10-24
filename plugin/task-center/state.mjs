@@ -35,7 +35,32 @@ export function createState(ctx, options) {
     projectHint: null,
     registry: { version: 1, projects: [] },
     registryLoaded: false,
-    sessionRoot: null,
+    // T-96: session id -> { root, at }. The panel and the tool each carry their
+    // own session id; no request may read another session's binding. This Map is
+    // the ONLY store, and sessionRootOf(id) is the only reader.
+    sessionRoots: new Map(),
+  }
+  const SESSION_TTL_MS = 12 * 60 * 60 * 1000
+  const SESSION_MAX = 64
+
+  /** Sessions expire and are capped so a long-lived host cannot grow unbounded. */
+  function pruneSessions() {
+    const nowNow = clock()
+    for (const [key, entry] of memory.sessionRoots) {
+      if (entry === undefined || nowNow - entry.at > SESSION_TTL_MS) memory.sessionRoots.delete(key)
+    }
+    while (memory.sessionRoots.size > SESSION_MAX) {
+      let oldestKey = null
+      let oldestAt = Infinity
+      for (const [key, entry] of memory.sessionRoots) {
+        if (entry.at < oldestAt) {
+          oldestAt = entry.at
+          oldestKey = key
+        }
+      }
+      if (oldestKey === null) break
+      memory.sessionRoots.delete(oldestKey)
+    }
   }
   const homeDir = typeof opts.homeDir === 'string' && opts.homeDir.length > 0 ? opts.homeDir : homedir()
   const afterWrite = typeof opts.afterWrite === 'function' ? opts.afterWrite : null
@@ -129,7 +154,7 @@ export function createState(ctx, options) {
     if (explicit !== '') {
       return { ok: true, project: projectRefOf(resolve(explicit)), resolvedFrom: o.explicitSource === 'panel' ? 'panel' : 'explicit' }
     }
-    const start = typeof o.sessionRoot === 'string' && o.sessionRoot.length > 0 ? o.sessionRoot : memory.sessionRoot
+    const start = typeof o.sessionRoot === 'string' && o.sessionRoot.length > 0 ? o.sessionRoot : null
     const resolved = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: start })
     if (resolved.ok !== true) return resolved
     return { ok: true, project: projectRefOf(resolved.root), resolvedFrom: resolved.resolvedFrom }
@@ -217,8 +242,17 @@ export function createState(ctx, options) {
     resolveProject: resolveProject,
     activeProjects: activeProjects,
     adoptPanelProject: adoptPanelProject,
-    setSessionRoot: function (root) {
-      memory.sessionRoot = typeof root === 'string' && root.length > 0 ? root : null
+    setSessionRoot: function (sessionId, root) {
+      if (typeof sessionId !== 'string' || sessionId === '' || root === undefined) return null
+      pruneSessions()
+      memory.sessionRoots.set(sessionId, { root: typeof root === 'string' && root.length > 0 ? root : null, at: clock() })
+      return memory.sessionRoots.get(sessionId)
+    },
+    sessionRootOf: function (sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return null
+      pruneSessions()
+      const entry = memory.sessionRoots.get(sessionId)
+      return entry === undefined || entry.root === null ? null : entry.root
     },
   }
 }

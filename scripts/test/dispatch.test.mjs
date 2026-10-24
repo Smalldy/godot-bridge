@@ -865,7 +865,7 @@ function createWorktreeRig(options) {
     },
   }
   const state = createState(ctx)
-  state.setSessionRoot(PROJECT)
+  state.setSessionRoot('test-session', PROJECT)
   const git = opts.git === undefined ? gitFor(ctx) : opts.git
   const scheduler = createDispatcher(ctx, {
     state: state,
