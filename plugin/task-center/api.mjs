@@ -1333,6 +1333,164 @@ export function createApi(ctx, options) {
     return { available: true, error: null, total: worktrees.length, active: active, counts: counts, worktrees: worktrees }
   }
 
+  /**
+   * T-111: what ONE board transition MEANS. The note is load-bearing: the
+   * scheduler writes same-status rows twice per round (testing -> testing for the
+   * built candidate, then for the tester's verdict), and a card only becomes
+   * `done` through the merge. Reading from/to alone fabricated a review-pass for
+   * every candidate build and a test-pass for every merge.
+   */
+  function timelineMeaning(from, to, note) {
+    const merged = /^(?:merge request )?merged(?: as ([0-9a-fA-F]{7,40}))?/.exec(note)
+    if (merged !== null) return { kind: 'merge', sha: merged[1] === undefined ? null : merged[1] }
+    if (to === 'pending') {
+      if (from === null) return { kind: 'create', sha: null }
+      // pending -> pending is an edit ("updated"); only a return to the pool retries.
+      if (from === 'running' || from === 'blocked' || from === 'cancelled' || from === 'done') return { kind: 'retry', sha: null }
+      return null
+    }
+    if (to === 'running') {
+      if (from === 'reviewing') return { kind: 'review-reject', sha: null }
+      if (from === 'testing') return { kind: 'test-fail', sha: null }
+      if (from === 'pending' || from === null) return { kind: 'dispatch', sha: null }
+      // running -> running is an edit ("files: ..."), never a dispatch.
+      return null
+    }
+    if (to === 'reviewing') {
+      // Every non-noop return to review is a submission (a refreshed merge request
+      // goes testing -> reviewing) and opens a review round.
+      return from === 'reviewing' ? null : { kind: 'submit', sha: null }
+    }
+    if (to === 'testing') {
+      if (from === 'reviewing') return { kind: 'review-pass', sha: null }
+      // The real verdict row; the candidate-built row before it stays plumbing.
+      if (from === 'testing') return /^tests passed/.test(note) ? { kind: 'test-pass', sha: null } : null
+      return null
+    }
+    if (to === 'blocked') return { kind: 'blocked', sha: null }
+    if (to === 'cancelled') return { kind: 'cancel', sha: null }
+    return null
+  }
+
+  /**
+   * T-111: the status timeline is DERIVED from the board at request time — each
+   * card's own history (already persisted in tasks.json) plus its merge record.
+   * Nothing is stored: the board is the authoritative event log, so a restart
+   * cannot lose it and a 5-second heartbeat cannot flush it. A `since` cursor
+   * (the composite "<at>|<key>" of the last event the client saw) makes the
+   * answer incremental, which is "send it as it happens" without a stream.
+   *
+   * Bounded by design: at most `perTask` events per card (the newest ones) and
+   * `limit` events overall, newest first.
+   */
+  function boardTimeline(board, options) {
+    const opts = options === undefined || options === null ? {} : options
+    const limit = Number.isFinite(opts.limit) ? Math.max(1, Math.min(200, Math.floor(opts.limit))) : 50
+    const perTask = Number.isFinite(opts.perTask) ? Math.max(1, Math.min(20, Math.floor(opts.perTask))) : 3
+    const since = typeof opts.since === 'string' && opts.since !== '' ? opts.since : null
+    const tasks = Array.isArray(board.tasks) ? board.tasks : []
+    const all = []
+    for (const task of tasks) {
+      const history = Array.isArray(task.history) ? task.history : []
+      const merge = task.merge !== null && typeof task.merge === 'object' && !Array.isArray(task.merge) ? task.merge : null
+      const mergeAt = merge !== null && typeof merge.at === 'string' && merge.at !== '' ? merge.at : null
+      const mergeTarget = merge !== null && typeof merge.target === 'string' && merge.target !== '' ? merge.target : null
+      let round = 0
+      const events = []
+      const seen = new Set()
+      for (const entry of history) {
+        if (entry === null || typeof entry !== 'object') continue
+        const at = typeof entry.at === 'string' && entry.at !== '' ? entry.at : null
+        if (at === null) continue
+        const from = typeof entry.from === 'string' ? entry.from : null
+        const to = typeof entry.to === 'string' ? entry.to : ''
+        const note = typeof entry.note === 'string' ? entry.note : ''
+        const meaning = timelineMeaning(from, to, note)
+        if (meaning === null) continue
+        // Every return to review opens a round: the first approval is round 1.
+        if (meaning.kind === 'submit') round += 1
+        const key = String(task.id) + '@' + at + '@' + meaning.kind
+        if (seen.has(key)) continue
+        seen.add(key)
+        const isMerge = meaning.kind === 'merge' || meaning.kind === 'merge-rejected'
+        const noteSha = meaning.sha === null ? /@([0-9a-fA-F]{7,40})/.exec(note) : null
+        events.push({
+          key: key,
+          at: at,
+          kind: meaning.kind,
+          taskId: String(task.id),
+          from: from,
+          to: to,
+          by: typeof entry.by === 'string' ? entry.by : null,
+          byName: typeof entry.byName === 'string' ? entry.byName : null,
+          // The panel localizes merge rows from these two fields; the raw English
+          // note never reaches the visible row.
+          target: isMerge ? mergeTarget : null,
+          // Purely a tooltip; capped so a chatty host note cannot grow the payload
+          // (T-82's budget). Merge rows are localized from target/sha instead.
+          detail: isMerge || note === '' ? null : note.length > 240 ? note.slice(0, 239) + '\u2026' : note,
+          eventRound: round,
+          sha: meaning.sha !== null ? meaning.sha : noteSha === null ? null : noteSha[1],
+        })
+      }
+      const mergeStatus = merge !== null && mergeAt !== null && (merge.status === 'merged' || merge.status === 'rejected') ? merge.status : null
+      if (mergeStatus !== null) {
+        const kind = mergeStatus === 'merged' ? 'merge' : 'merge-rejected'
+        const sha = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? merge.mergeCommit.slice(0, 7) : null
+        // The merge record is the authority for the target and the merge commit;
+        // the history row that recorded it keeps the actor.
+        const existing = events.filter((event) => event.at === mergeAt && (event.kind === 'merge' || event.kind === 'merge-rejected'))[0]
+        if (existing !== undefined) {
+          existing.key = String(task.id) + '@' + mergeAt + '@' + kind
+          existing.kind = kind
+          existing.target = mergeTarget
+          existing.detail = null
+          if (sha !== null) existing.sha = sha
+        } else {
+          events.push({
+            key: String(task.id) + '@' + mergeAt + '@' + kind,
+            at: mergeAt,
+            kind: kind,
+            taskId: String(task.id),
+            from: null,
+            to: mergeStatus,
+            by: null,
+            byName: typeof merge.reviewer === 'string' && merge.reviewer !== '' ? merge.reviewer : null,
+            target: mergeTarget,
+            detail: null,
+            eventRound: round,
+            sha: sha,
+          })
+        }
+      }
+      // Newest per card only: a card with 40 rounds must not push every other card
+      // out of the panel.
+      events.sort((left, right) => String(left.at).localeCompare(String(right.at)) || String(left.key).localeCompare(String(right.key)))
+      for (const event of events.slice(-perTask)) all.push(event)
+    }
+    all.sort((left, right) => String(left.at).localeCompare(String(right.at)) || String(left.key).localeCompare(String(right.key)))
+    const cursorOf = (event) => event.at + '|' + event.key
+    const fresh = since === null ? all : all.filter((event) => cursorOf(event) > since)
+    // The newest page is what an unfiltered request shows. A CURSORED request
+    // takes the OLDEST new events instead, so a burst larger than one page is
+    // delivered across polls instead of losing its middle.
+    const page = fresh.length > limit ? (since === null ? fresh.slice(-limit) : fresh.slice(0, limit)) : fresh
+    const newest = page[page.length - 1]
+    return {
+      available: true,
+      source: 'board',
+      limit: limit,
+      perTask: perTask,
+      since: since,
+      count: page.length,
+      total: all.length,
+      // True when there were MORE new events than this page could carry.
+      truncated: fresh.length > page.length,
+      cursor: newest === undefined ? since : cursorOf(newest),
+      entries: page.slice().reverse(),
+    }
+  }
+
   /** The in-memory activity ring for the snapshot (newest first). */
   function activitySnapshot() {
     if (activity === null || typeof activity.snapshot !== 'function') {
@@ -2111,6 +2269,15 @@ export function createApi(ctx, options) {
       },
       worktrees: worktrees,
       activity: activitySnapshot(),
+      // T-111: the status timeline is DERIVED from the board (task history + merge
+      // records) on every request, so it survives restarts and no heartbeat can
+      // flush it. `since` makes the answer incremental.
+      activityEvents: boardTimeline(board, {
+        since: typeof opts.activitySince === 'string' ? opts.activitySince : null,
+        limit: Number.isFinite(opts.activityLimit) ? opts.activityLimit : undefined,
+      }),
+      // Sweep telemetry (merged/skipped counts) — deliberately NOT an event.
+      lastSweep: state !== null && state !== undefined && state.memory !== undefined && state.memory.lastSweep !== undefined ? state.memory.lastSweep : null,
       counts: model.counts(board),
       // Where the project registry landed, or why it did not: restart recovery and
       // multi-project driving depend on that file, so "not persisted" is visible.
@@ -3075,7 +3242,13 @@ export function createApi(ctx, options) {
         skipped.push({ id: id, code: result.code === undefined || result.code === null ? 'merge-refused' : String(result.code) })
       }
     }
-    emitActivity(null, 'sweep', 'merge sweep: merged ' + (merged.length === 0 ? 'none' : merged.join(',')) + '; skipped ' + String(skipped.length), null, 'system')
+    // T-111: the merge sweep is a HEARTBEAT, not an event. Writing it into the
+    // activity ring every 5 seconds flushed every real event out of the 100-slot
+    // buffer (the panel then looked like "only merges"). The sweep only records
+    // telemetry now, which the panel shows separately.
+    if (state !== null && state !== undefined && state.memory !== undefined) {
+      state.memory.lastSweep = { at: new Date(clock()).toISOString(), merged: merged.length, skipped: skipped.length }
+    }
     return ok({ merged: merged, skipped: skipped })
   }
 

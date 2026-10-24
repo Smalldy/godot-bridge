@@ -590,6 +590,7 @@ const HOST = {
       { kind: 'worktree-create', actor: 'host', actorName: null, taskId: 'T-4', detail: 'test candidate', at: new Date(now - 7000).toISOString() },
     ],
   },
+
   roles: {
     version: 1,
     defaultProfile: 'worker',
@@ -1016,27 +1017,74 @@ await flush()
   await flush()
   check('copying puts the session id on the clipboard', copied === 'session-fixer', String(copied))
 
+  // T-111: the summary tasks carry NO history (the payload that used to show
+  // only merges); the Host's derived timeline is what the card renders.
+  const savedTasks = HOST.tasks
+  const savedTimeline = HOST.activityEvents
+  HOST.tasks = HOST.tasks.map((entry) => Object.assign({}, entry, { history: undefined }))
+  const timelineTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+  HOST.activityEvents = {
+    available: true,
+    source: 'board',
+    limit: 50,
+    perTask: 3,
+    since: null,
+    count: 3,
+    total: 3,
+    truncated: false,
+    cursor: 'cursor-1',
+    entries: [
+      { key: 'T-3@2026-01-01T00:00:03.000Z@merge', at: new Date(now - 3000).toISOString(), kind: 'merge', taskId: 'T-3', from: null, to: 'merged', by: null, byName: 'reviewer-1', target: 'feat/task-center-v2', detail: null, eventRound: 1, sha: 'fedcba0' },
+      { key: 'T-1@2026-01-01T00:00:05.000Z@review-pass', at: new Date(now - 5000).toISOString(), kind: 'review-pass', taskId: 'T-1', from: 'reviewing', to: 'testing', by: 'reviewer-1', byName: 'reviewer-1', detail: null, eventRound: 1, sha: null },
+      { key: 'T-1@2026-01-01T00:00:07.000Z@test-pass', at: new Date(now - 7000).toISOString(), kind: 'test-pass', taskId: 'T-1', from: 'testing', to: 'testing', by: 'tester-1', byName: 'tester-1', detail: 'tests passed; waiting for the merge', eventRound: 1, sha: null },
+    ],
+  }
+  let timelineTree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  timelineTree = withHooks(panel, { initialView: 'status' })
+  const timelineCard = findAll(timelineTree, (node) => node.props && node.props['data-status-card'] === 'activity')[0]
+  const timelineKinds = findAll(timelineCard, (node) => node.props && node.props['data-activity-kind'] !== undefined).map((row) => row.props['data-activity-kind'])
+  check(
+    'T-111 summary tasks without history still render review/test events from the Host timeline',
+    timelineTask !== undefined &&
+      timelineTask.history === undefined &&
+      timelineKinds.length === 3 &&
+      timelineKinds.indexOf('review-pass') >= 0 &&
+      timelineKinds.indexOf('test-pass') >= 0 &&
+      timelineKinds.indexOf('merge') >= 0,
+    JSON.stringify(timelineKinds),
+  )
+  const derivedMergeRow = findAll(timelineCard, (node) => node.props && node.props['data-activity-kind'] === 'merge')[0]
+  const derivedMergeText = derivedMergeRow === undefined ? '' : textOf(derivedMergeRow)
+  check(
+    'T-111 the derived merge row names the subject, the target branch and the merge commit (localized, no raw note)',
+    derivedMergeText.indexOf('T-3 · Tail output feature') >= 0 &&
+      derivedMergeText.indexOf('feat/task-center-v2') >= 0 &&
+      derivedMergeText.indexOf('fedcba0') >= 0 &&
+      derivedMergeText.indexOf('merged into') < 0,
+    derivedMergeText,
+  )
+  HOST.tasks = savedTasks
+  HOST.activityEvents = savedTimeline
+
   const activityCard = statusCards.filter((card) => card.props['data-status-card'] === 'activity')[0]
   check('real activity events render as rows', findAll(activityCard, (node) => node.props && node.props['data-activity-kind'] !== undefined).length === 3, textOf(activityCard))
 
-  const savedActivity = HOST.activity
-  HOST.activity = {
-    available: true,
-    limit: 100,
-    count: savedActivity.entries.length + 1,
-    entries: [{ at: new Date().toISOString(), kind: 'sweep', actor: 'system', taskId: null, detail: 'heartbeat' }].concat(savedActivity.entries),
-  }
+  // T-111: a heartbeat is telemetry, so it can never displace a real event.
+  const savedSweep = HOST.lastSweep
+  HOST.lastSweep = { at: new Date(now - 1000).toISOString(), merged: 2, skipped: 1 }
   let sweepTree = withHooks(panel, { initialView: 'status' })
   await flush()
   sweepTree = withHooks(panel, { initialView: 'status' })
   const sweepActivity = findAll(sweepTree, (node) => node.props && node.props['data-status-card'] === 'activity')[0]
   const sweepFold = findAll(sweepActivity, (node) => node.props && node.props['data-action'] === 'status-show-all')[0]
   check(
-    'heartbeats are filtered by default and folded into one line',
+    'T-111 heartbeats are telemetry: folded into one line and never a stream row',
     findAll(sweepActivity, (node) => node.props && node.props['data-activity-kind'] === 'sweep').length === 0 &&
       findAll(sweepActivity, (node) => node.props && node.props['data-activity-kind'] !== undefined).length === 3 &&
       sweepFold !== undefined &&
-      textOf(sweepActivity).indexOf('心跳已折叠') >= 0,
+      textOf(sweepActivity).indexOf('心跳已折叠') >= 0 &&
+      textOf(sweepActivity).indexOf('merged 2') >= 0,
     textOf(sweepActivity).slice(0, 300),
   )
   sweepFold.props.onClick()
@@ -1044,7 +1092,7 @@ await flush()
   sweepTree = withHooks(panel, { initialView: 'status' })
   const shownActivity = findAll(sweepTree, (node) => node.props && node.props['data-status-card'] === 'activity')[0]
   check(
-    'the show-all toggle reveals the raw events including sweeps',
+    'the show-all toggle reveals the sweep telemetry row',
     findAll(shownActivity, (node) => node.props && node.props['data-activity-kind'] === 'sweep').length === 1 &&
       findAll(shownActivity, (node) => node.props && node.props['data-activity-kind'] !== undefined).length === 4 &&
       textOf(shownActivity).indexOf('仅真实事件') >= 0 &&
@@ -1052,7 +1100,7 @@ await flush()
       textOf(shownActivity).indexOf('心跳已折叠') < 0,
     textOf(shownActivity).slice(0, 300),
   )
-  HOST.activity = savedActivity
+  HOST.lastSweep = savedSweep
 
   // ── activity stream: localized phase events, no raw English notes or @ids ──
   {
@@ -1063,7 +1111,7 @@ await flush()
       { from: 'pending', to: 'running', at: new Date(Date.now() - 50000).toISOString(), by: '@session-lead', note: 'dispatched to fixer' },
       { from: 'running', to: 'reviewing', at: new Date(Date.now() - 40000).toISOString(), by: '@session-fixer', note: 'submitted for review round 1 @f158b35c' },
       { from: 'reviewing', to: 'testing', at: new Date(Date.now() - 30000).toISOString(), by: '@session-reviewer-1', note: 'approved by reviewer' },
-      { from: 'testing', to: 'done', at: new Date(Date.now() - 20000).toISOString(), by: '@session-tester-1', note: 'passed' },
+      { from: 'testing', to: 'testing', at: new Date(Date.now() - 20000).toISOString(), by: '@session-tester-1', note: 'tests passed; waiting for the merge' },
     ]
     let streamTree = withHooks(panel, { initialView: 'status' })
     await flush()
@@ -1145,7 +1193,7 @@ await flush()
     const summaryTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
     const savedSummaryTest = summaryTask.test
     const savedSummaryHistory = summaryTask.history
-    summaryTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 4000).toISOString(), by: '@session-tester-1', note: 'passed' }]
+    summaryTask.history = [{ from: 'testing', to: 'testing', at: new Date(Date.now() - 4000).toISOString(), by: '@session-tester-1', note: 'tests passed; waiting for the merge' }]
     summaryTask.test = Object.assign({}, savedSummaryTest, {
       hostCheck: { command: 'npm run verify', exitCode: 0, timedOut: false, durationMs: 21000 },
       evidence: '11/11 suites passed in 21s',
@@ -1199,12 +1247,13 @@ await flush()
   {
     // Only heartbeats: folded line, no "no activity" text.
     const savedSweepTasks = HOST.tasks
-    const savedSweepActivity = HOST.activity
+    const savedSweepEvents = HOST.activityEvents
+    const savedSweepTelemetry = HOST.lastSweep
     HOST.tasks = []
-    HOST.activity = { available: true, limit: 100, count: 2, entries: [
-      { at: new Date().toISOString(), kind: 'sweep', actor: 'system', actorName: null, taskId: null, detail: 'merge sweep: merged none' },
-      { at: new Date(Date.now() - 5000).toISOString(), kind: 'sweep', actor: 'system', actorName: null, taskId: null, detail: null },
-    ] }
+    // T-111: heartbeats are telemetry now — the ring carries no sweep entries and
+    // the timeline is empty; only lastSweep says "the host is alive".
+    HOST.activityEvents = { available: true, source: 'board', limit: 50, perTask: 3, since: null, count: 0, total: 0, truncated: false, cursor: null, entries: [] }
+    HOST.lastSweep = { at: new Date().toISOString(), merged: 0, skipped: 0 }
     let sweepTree2 = withHooks(panel, { initialView: 'status' })
     await flush()
     sweepTree2 = withHooks(panel, { initialView: 'status' })
@@ -1221,7 +1270,8 @@ await flush()
       sweepCard2 && textOf(sweepCard2),
     )
     HOST.tasks = savedSweepTasks
-    HOST.activity = savedSweepActivity
+    HOST.activityEvents = savedSweepEvents
+    HOST.lastSweep = savedSweepTelemetry
   }
   {
     const savedPause = HOST.dispatch
