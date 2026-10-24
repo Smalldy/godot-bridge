@@ -39,6 +39,8 @@ import {
   interruptAssignee,
   interruptMemberNamed,
   isTransientEnvironmentCode,
+  leadInventory,
+  leadInventoryText,
   memberProjectOf,
   probeWorktree,
   projectSlotKey,
@@ -1337,6 +1339,15 @@ export function createApi(ctx, options) {
     return Object.assign({ available: true }, activity.snapshot())
   }
 
+  /** The Team inventory for the snapshot (T-109). Never throws. */
+  function teamsSnapshot() {
+    try {
+      return leadInventory(ctx)
+    } catch (error) {
+      return { available: false, error: messageOf(error), scanned: 0, nonLeads: 0, leads: [] }
+    }
+  }
+
   /** Live role-slot instances (worker-N/reviewer-N/tester-N) for the role panel. */
   function roleInstanceList() {
     const { agentTeams } = servicesFor(ctx)
@@ -2081,6 +2092,11 @@ export function createApi(ctx, options) {
       roles: roleRead.config,
       rolePreviews: rolePreviewsFor(projectPath, roleRead.config),
       workers: workers,
+      // T-109: what the Team service ACTUALLY exposes — every Lead it can see,
+      // with its session and roster size, plus how many agents were scanned. This
+      // is what answers "how many Leading teams does the plugin see?", which a
+      // wrong-session dispatch otherwise leaves to inference.
+      teams: teamsSnapshot(),
       // Agents are the live Team members (lead + teammates), with their kind,
       // session and current task. System/host work is NOT listed here.
       agents: {

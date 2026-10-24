@@ -3244,7 +3244,8 @@ function fakeHostSubprocess(result) {
     }))
   }
 
-  // (b) two Leads + ownerless card: owner-unknown, never the first Lead.
+  // (b) two Leads + ownerless card in a project with no session of its own:
+  // no-team-for-project, never the first Lead (T-109 renamed the refusal).
   {
     const fs = createFakeFs()
     const leads = [
@@ -3259,13 +3260,13 @@ function fakeHostSubprocess(result) {
     await scheduler.settle(PROJECT)
     const card = JSON.parse(fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text).tasks[0]
     check(
-      'T-107 a two-Lead host refuses an ownerless card with owner-unknown instead of using the first Lead',
-      card.status === 'pending' && card.waitingReason === 'owner-unknown' && card.assignee === null,
+      'T-109 a multi-Lead host refuses an ownerless card it cannot place in this project',
+      card.status === 'pending' && card.waitingReason === 'no-team-for-project' && card.assignee === null,
       JSON.stringify({ status: card.status, waiting: card.waitingReason, assignee: card.assignee }),
     )
     check(
-      'T-107 the owner-unknown detail tells the user to reopen the card in its session',
-      typeof card.waitingDetail === 'string' && card.waitingDetail.indexOf('reopen') >= 0,
+      'T-109 the refusal detail tells the user to reopen the card in its project session',
+      typeof card.waitingDetail === 'string' && card.waitingDetail.indexOf('reopen') >= 0 && card.waitingDetail.indexOf('Lead') >= 0,
       String(card.waitingDetail),
     )
     scheduler.dispose()
@@ -3293,14 +3294,20 @@ function fakeHostSubprocess(result) {
       JSON.stringify({ dispatch: card.dispatch }),
     )
     check(
-      'T-107 the history says why an ownerless card was dispatched here',
-      (card.history || []).some((entry) => String(entry.note).indexOf('single-team compatibility') >= 0),
-      JSON.stringify((card.history || []).map((entry) => entry.note)),
+      'T-109 the compatibility dispatch explains itself with the Lead inventory',
+      card.dispatch !== null &&
+        typeof card.dispatch.compatDetail === 'string' &&
+        card.dispatch.compatDetail.indexOf('1 个 Lead') >= 0 &&
+        card.dispatch.compatDetail.indexOf('agent') >= 0 &&
+        (card.history || []).some((entry) => String(entry.note).indexOf('宿主内发现 1 个 Lead') >= 0),
+      JSON.stringify({ compatDetail: card.dispatch && card.dispatch.compatDetail, history: (card.history || []).map((entry) => entry.note) }),
     )
     scheduler.dispose()
   }
 
   // (d) the card's project is not this session's workspace: refuse BEFORE dispatch.
+  // The judge is the SESSION's workspace (what it can actually write), not the
+  // row's sandbox policy (which spans every project the plugin knows).
   {
     const fs = createFakeFs()
     const leads = [{ id: 'lead-solo', name: 'lead-solo', role: 'lead', status: 'running' }]
@@ -3309,6 +3316,7 @@ function fakeHostSubprocess(result) {
     const otherRoot = join(PROJECT, '..', 'other-project')
     const ctx = ctxFor(fs, leads, team, otherRoot)
     const state = createState(ctx)
+    state.setSessionRoot('session-x', otherRoot)
     const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: createFakeGit(), sessionId: 'session-x' })
     await scheduler.settle(PROJECT)
     const card = JSON.parse(fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text).tasks[0]
@@ -3323,6 +3331,224 @@ function fakeHostSubprocess(result) {
       String(card.waitingDetail),
     )
     scheduler.dispose()
+  }
+}
+
+
+// ── T-109: cross-project is refused; single-Lead compat is same-project only ──
+{
+  function teamWith(leads, teammates) {
+    const roster = leads.concat(teammates)
+    return {
+      roster: roster,
+      tryMembership(candidate) {
+        const member = roster.filter((entry) => entry.id === candidate.id)[0]
+        return member === undefined ? undefined : { role: member.role, name: member.name }
+      },
+      listMembers(lead) {
+        const owner = roster.filter((entry) => entry.id === (lead === undefined || lead === null ? null : lead.id))[0]
+        if (owner === undefined || owner.role !== 'lead') return []
+        return [owner].concat(teammates).map((member) => Object.assign({}, member))
+      },
+      async spawnTeammate(caller, request) {
+        return { member: { id: 'session-' + request.name, name: request.name, role: 'teammate', status: 'running' } }
+      },
+      async sendMessage() {
+        return { ok: true }
+      },
+    }
+  }
+  function rigFor(options) {
+    const fs = createFakeFs()
+    const now = new Date().toISOString()
+    const owner = options.ownerSession === undefined ? null : options.ownerSession
+    seedBoard(fs, PROJECT, JSON.stringify({
+      version: 2,
+      seq: 2,
+      dispatch: { state: 'running', allowSpawn: true, maxConcurrent: 2 },
+      tasks: [{ id: 'T-1', title: 'card', status: 'pending', priority: 0, dependsOn: [], writeFiles: [], spec: 's', acceptance: 'a', evidence: '', ownerSession: owner, history: [], createdAt: now, updatedAt: now, attempts: 0, maxAttempts: 3 }],
+    }))
+    const ctx = {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: options.projectWorkspace === undefined ? PROJECT : options.projectWorkspace }) },
+      get(key) {
+        if (key === 'agents') return { list: () => options.agents }
+        if (key === 'agentTeams') return options.team
+        return undefined
+      },
+    }
+    const state = createState(ctx)
+    for (const session of options.sessions || []) state.setSessionRoot(session.id, session.root)
+    const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: createFakeGit(), sessionId: options.sessionId })
+    return { fs: fs, state: state, scheduler: scheduler }
+  }
+  function cardOf(fs) {
+    return JSON.parse(fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text).tasks[0]
+  }
+  const otherRoot = join(PROJECT, '..', 'other-project')
+
+  // (a) single Lead in the host, card belongs to ANOTHER project: refuse.
+  {
+    const rig = rigFor({
+      agents: [{ id: 'session-x', name: 'lead-x', role: 'lead', status: 'running' }],
+      team: teamWith([{ id: 'session-x', name: 'lead-x', role: 'lead', status: 'running' }], [{ id: 'session-fixer', name: 'fixer-x', role: 'teammate', status: 'inactive' }]),
+      sessionId: 'session-x',
+      sessions: [{ id: 'session-x', root: otherRoot }],
+    })
+    await rig.scheduler.settle(PROJECT)
+    const card = cardOf(rig.fs)
+    check(
+      'T-109 a single-Lead host still refuses a card from another project',
+      card.status === 'pending' && card.assignee === null && (card.waitingReason === 'wrong-session' || card.waitingReason === 'no-team-for-project'),
+      JSON.stringify({ status: card.status, assignee: card.assignee, waiting: card.waitingReason }),
+    )
+    check(
+      'T-109 the refusal names the router workspace and where to dispatch it instead',
+      typeof card.waitingDetail === 'string' && card.waitingDetail.indexOf(otherRoot) >= 0 && card.waitingDetail.indexOf('所属项目') >= 0,
+      String(card.waitingDetail),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // (b) same project, single Lead, no session evidence: the compatibility path.
+  {
+    const rig = rigFor({
+      agents: [{ id: 'session-x', name: 'lead-x', role: 'lead', status: 'running' }],
+      team: teamWith([{ id: 'session-x', name: 'lead-x', role: 'lead', status: 'running' }], [{ id: 'session-fixer', name: 'fixer-x', role: 'teammate', status: 'inactive' }]),
+      sessionId: 'session-x',
+    })
+    await rig.scheduler.settle(PROJECT)
+    const card = cardOf(rig.fs)
+    check(
+      'T-109 the same-project compatibility path still dispatches',
+      card.status === 'running' && card.assignee !== null && card.assignee.name === 'fixer-x',
+      JSON.stringify({ status: card.status, assignee: card.assignee }),
+    )
+    check(
+      'T-109 ownerCompat is set only on that compatibility path',
+      card.dispatch !== null && card.dispatch.ownerCompat === true && card.dispatch.lead === 'lead-x' && card.dispatch.leadSession === 'session-x',
+      JSON.stringify(card.dispatch),
+    )
+    check(
+      'T-109 the compatibility reason names the single Lead and the scanned agent count',
+      card.dispatch !== null && typeof card.dispatch.compatDetail === 'string' && card.dispatch.compatDetail.indexOf('1 个 Lead') >= 0 && card.dispatch.compatDetail.indexOf('agent') >= 0,
+      String(card.dispatch && card.dispatch.compatDetail),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // (c) an OWNED card whose session runs in another project: wrong-session.
+  {
+    const rig = rigFor({
+      agents: [{ id: 'session-x', name: 'lead-x', role: 'lead', status: 'running' }],
+      team: teamWith([{ id: 'session-x', name: 'lead-x', role: 'lead', status: 'running' }], [{ id: 'session-fixer', name: 'fixer-x', role: 'teammate', status: 'inactive' }]),
+      sessionId: 'session-x',
+      sessions: [{ id: 'session-x', root: otherRoot }],
+      ownerSession: 'session-x',
+    })
+    await rig.scheduler.settle(PROJECT)
+    const card = cardOf(rig.fs)
+    check(
+      'T-109 an owned card from another project is refused as wrong-session',
+      card.status === 'pending' && card.assignee === null && card.waitingReason === 'wrong-session',
+      JSON.stringify({ status: card.status, assignee: card.assignee, waiting: card.waitingReason }),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // (d) this project has its OWN session/Lead: the card is dispatched there.
+  {
+    const rig = rigFor({
+      agents: [
+        { id: 'session-x', name: 'lead-x', role: 'lead', status: 'running' },
+        { id: 'session-y', name: 'lead-y', role: 'lead', status: 'running' },
+      ],
+      team: {
+        tryMembership(candidate) {
+          if (candidate.id === 'session-x') return { role: 'lead', name: 'lead-x' }
+          if (candidate.id === 'session-y') return { role: 'lead', name: 'lead-y' }
+          return { role: 'teammate', name: candidate.id }
+        },
+        listMembers(lead) {
+          if (lead !== null && lead !== undefined && lead.id === 'session-y') {
+            return [
+              { id: 'session-y', name: 'lead-y', role: 'lead', status: 'running' },
+              { id: 'session-fixer-y', name: 'fixer-y', role: 'teammate', status: 'inactive' },
+            ]
+          }
+          return []
+        },
+        async spawnTeammate() { return { member: { id: 'session-spawned', name: 'spawned', role: 'teammate', status: 'running' } } },
+        async sendMessage() { return { ok: true } },
+      },
+      sessionId: 'session-x',
+      sessions: [
+        { id: 'session-x', root: otherRoot },
+        { id: 'session-y', root: PROJECT },
+      ],
+    })
+    await rig.scheduler.settle(PROJECT)
+    const card = cardOf(rig.fs)
+    check(
+      'T-109 an ownerless card is adopted by the session that runs in this project',
+      card.status === 'running' && card.assignee !== null && card.assignee.name === 'fixer-y',
+      JSON.stringify({ status: card.status, assignee: card.assignee, waiting: card.waitingReason }),
+    )
+    check(
+      'T-109 the adopted dispatch names that project session and Lead',
+      card.dispatch !== null && card.dispatch.lead === 'lead-y' && card.dispatch.leadSession === 'session-y' && card.dispatch.session === 'session-y' && card.dispatch.ownerCompat === false,
+      JSON.stringify(card.dispatch),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // (8) the inventory mirrors what the service exposes.
+  {
+    async function inventoryFor(agents, isLeadIds) {
+      const fs = createFakeFs()
+      seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [] }))
+      const team = {
+        tryMembership(candidate) {
+          return { role: isLeadIds.indexOf(candidate.id) >= 0 ? 'lead' : 'teammate', name: candidate.id }
+        },
+        listMembers(lead) {
+          return isLeadIds.indexOf(lead.id) >= 0 ? [{ id: lead.id, name: 'lead', role: 'lead' }, { id: 'session-fixer', name: 'fixer', role: 'teammate' }] : []
+        },
+        async spawnTeammate() { return { member: { name: 'spawned', id: 'session-spawned', role: 'teammate' } } },
+        async sendMessage() { return { ok: true } },
+      }
+      const ctx = {
+        fs: fs,
+        sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+        get(key) {
+          if (key === 'agents') return { list: () => agents }
+          if (key === 'agentTeams') return team
+          return undefined
+        },
+      }
+      const state = createState(ctx)
+      const api = createApi(ctx, { state: state, git: createFakeGit() })
+      const snap = await api.snapshot(PROJECT)
+      return snap.teams
+    }
+    const oneLead = await inventoryFor(
+      [{ id: 'session-lead', name: 'lead-a' }, { id: 'session-other', name: 'root-of-other-session' }],
+      ['session-lead'],
+    )
+    check(
+      'T-109 teams lists only real Leads and counts the agents it scanned',
+      oneLead.available === true && oneLead.scanned === 2 && oneLead.nonLeads === 1 && oneLead.leads.length === 1 && oneLead.leads[0].session === 'session-lead' && oneLead.leads[0].members === 2,
+      JSON.stringify(oneLead),
+    )
+    const twoLeads = await inventoryFor(
+      [{ id: 'session-a', name: 'lead-a' }, { id: 'session-b', name: 'lead-b' }],
+      ['session-a', 'session-b'],
+    )
+    check(
+      'T-109 a second Leading session shows up as a second Lead',
+      twoLeads.available === true && twoLeads.scanned === 2 && twoLeads.nonLeads === 0 && twoLeads.leads.length === 2 && twoLeads.leads.map((lead) => lead.session).join(',') === 'session-a,session-b',
+      JSON.stringify(twoLeads),
+    )
   }
 }
 
