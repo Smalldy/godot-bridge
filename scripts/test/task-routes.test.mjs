@@ -4428,8 +4428,16 @@ async function withDeadline(promise, ms) {
   const sweep = await rig.api.autoMergePending(PROJECT)
   check('the sweep merges the eligible request', sweep.ok === true && sweep.merged.join(',') === 'T-1', JSON.stringify(sweep))
   const entries = activity.list(40)
-  const sweepEvent = entries.filter((entry) => entry.kind === 'sweep')[0]
-  check('the sweep is a system event', sweepEvent !== undefined && sweepEvent.actor === 'system' && sweepEvent.actorName === null, JSON.stringify(sweepEvent))
+  // T-111: the sweep is a HEARTBEAT, not an event: it must not enter the ring at
+  // all (it used to flush every real event out of the 100-slot buffer).
+  check(
+    'T-111 the merge sweep writes telemetry instead of an activity event',
+    entries.filter((entry) => entry.kind === 'sweep').length === 0 &&
+      rig.state.memory.lastSweep !== undefined &&
+      rig.state.memory.lastSweep.merged === 1 &&
+      typeof rig.state.memory.lastSweep.at === 'string',
+    JSON.stringify({ sweeps: entries.filter((entry) => entry.kind === 'sweep').length, lastSweep: rig.state.memory.lastSweep }),
+  )
   const mergeEvent = entries.filter((entry) => entry.kind === 'merge')[0]
   check('the merge outcome is a system event on the sweep path', mergeEvent !== undefined && mergeEvent.actor === 'system' && String(mergeEvent.detail).indexOf('merged') >= 0, JSON.stringify(mergeEvent))
   const create = entries.filter((entry) => entry.kind === 'worktree-create')[0]
@@ -4437,6 +4445,22 @@ async function withDeadline(promise, ms) {
   check('the real integration worktree is recorded as created', create !== undefined && create.actor === 'system' && String(create.detail).indexOf('merge-T-1') >= 0, JSON.stringify(create))
   check('its cleanup and the task worktree removal are recorded', remove.length >= 2 && remove.some((entry) => entry.actor === 'host'), JSON.stringify(remove))
   check('the sweep path records no agent activity', entries.every((entry) => entry.actor !== 'agent'), JSON.stringify(entries.map((entry) => entry.actor)))
+  // T-111: 200 further sweeps must not flush anything: the ring ignores them and
+  // the timeline is derived from the board on demand.
+  for (let index = 0; index < 200; index++) await rig.api.autoMergePending(PROJECT)
+  const afterSweeps = activity.list(40)
+  check(
+    'T-111 200 sweeps add no ring entries and leave the derived timeline whole',
+    afterSweeps.every((entry) => entry.kind !== 'sweep') &&
+      afterSweeps.some((entry) => entry.kind === 'merge' || entry.kind === 'worktree-create'),
+    JSON.stringify({ kinds: afterSweeps.map((entry) => entry.kind) }),
+  )
+  const timelineAfter = await rig.api.snapshot(PROJECT, { full: false })
+  check(
+    'T-111 after 200 sweeps the board still yields the merge event',
+    timelineAfter.ok === true && timelineAfter.activityEvents.entries.some((entry) => entry.kind === 'merge' && entry.taskId === 'T-1'),
+    JSON.stringify(timelineAfter.activityEvents && timelineAfter.activityEvents.entries.map((entry) => entry.kind)),
+  )
 }
 
 // ── role management API: user-only CRUD, binding, drain/replace, reset ─────
@@ -6009,6 +6033,99 @@ rig.scheduler.dispose()
     JSON.stringify(state.teams.leads[0]),
   )
   surface.dispose()
+  rig.scheduler.dispose()
+}
+
+
+// ── T-111: the activity timeline is derived from the board, incrementally ────
+{
+  const base = Date.now()
+  const iso = (ms) => new Date(ms).toISOString()
+  function historyFor(start) {
+    return [
+      { at: iso(start), by: '@lead', byName: 'lead', from: null, to: 'pending', note: 'created by lead' },
+      { at: iso(start + 1000), by: 'scheduler', byName: 'fixer', from: 'pending', to: 'running', note: 'dispatched to fixer' },
+      { at: iso(start + 2000), by: 'fixer', byName: 'fixer', from: 'running', to: 'reviewing', note: 'submitted @abcdef1' },
+      { at: iso(start + 3000), by: 'reviewer-1', byName: 'reviewer-1', from: 'reviewing', to: 'testing', note: 'approved' },
+      { at: iso(start + 4000), by: 'tester-1', byName: 'tester-1', from: 'testing', to: 'done', note: 'tests pass' },
+    ]
+  }
+  function taskWith(id, start, mergeState) {
+    return {
+      id: id,
+      title: 'card ' + id,
+      status: 'done',
+      priority: 0,
+      dependsOn: [],
+      writeFiles: [],
+      spec: 's',
+      acceptance: 'a',
+      evidence: '',
+      ownerSession: 'session-x',
+      review: { status: 'approved', by: 'reviewer-1', at: iso(start + 3000), reasons: null, attempt: 1 },
+      test: { status: 'passed', by: 'tester-1', at: iso(start + 4000), evidence: 'PASS', attempt: 1 },
+      merge: mergeState === undefined ? null : mergeState,
+      history: historyFor(start),
+      createdAt: iso(start),
+      updatedAt: iso(start + 4000),
+      attempts: 1,
+      maxAttempts: 3,
+    }
+  }
+  function boardJson(tasks) {
+    return JSON.stringify({ version: 2, seq: 4, dispatch: { state: 'paused' }, tasks: tasks })
+  }
+  const merged = { status: 'merged', base: 'b', target: 'feat/task-center-v2', head: 'h', mergeCommit: 'abcdef1234', at: iso(base + 5000), reviewer: null, conflict: null, output: null, declaredFiles: [], actualFiles: [], tests: null }
+  const rig = createRig({ allowSpawn: false })
+  seedBoard(rig.fs, PROJECT, boardJson([taskWith('T-1', base, merged), taskWith('T-2', base + 1000, undefined)]))
+  const first = await rig.api.snapshot(PROJECT, { full: false })
+  check(
+    'T-111 the timeline is derived from board history, not the memory ring',
+    first.ok === true && first.activity !== null && first.activity.entries.length === 0 && first.activityEvents !== undefined && first.activityEvents.available === true && first.activityEvents.source === 'board' && first.activityEvents.entries.length > 0,
+    JSON.stringify({ ring: first.activity && first.activity.entries.length, timeline: first.activityEvents && first.activityEvents.entries.map((entry) => entry.kind) }),
+  )
+  const kinds = first.activityEvents.entries.map((entry) => entry.kind)
+  check(
+    'T-111 review, test and merge events are all present',
+    kinds.indexOf('review-pass') >= 0 && kinds.indexOf('test-pass') >= 0 && kinds.indexOf('merge') >= 0,
+    JSON.stringify(kinds),
+  )
+  check(
+    'T-111 nothing is persisted to an activity file',
+    rig.fs.files.has(join(PROJECT, '.agents', 'activity.json')) !== true,
+    'activity.json exists',
+  )
+  const cursor = first.activityEvents.cursor
+  check('T-111 the timeline reports a cursor', typeof cursor === 'string' && cursor.length > 0, String(cursor))
+  // A new transition lands on the board: the incremental answer carries ONLY it.
+  const current = JSON.parse(rig.fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text)
+  const t1 = current.tasks.filter((entry) => entry.id === 'T-1')[0]
+  t1.status = 'blocked'
+  t1.history.push({ at: iso(base + 9000), by: 'scheduler', byName: 'system', from: 'done', to: 'blocked', note: 'review round limit reached' })
+  seedBoard(rig.fs, PROJECT, JSON.stringify(current))
+  const incremental = await rig.api.snapshot(PROJECT, { full: false, activitySince: cursor })
+  check(
+    'T-111 an activitySince request returns only the new event, no duplicates',
+    incremental.ok === true && incremental.activityEvents.entries.length === 1 && incremental.activityEvents.entries[0].kind === 'blocked' && incremental.activityEvents.entries[0].taskId === 'T-1',
+    JSON.stringify(incremental.activityEvents && incremental.activityEvents.entries.map((entry) => entry.kind + ':' + entry.taskId)),
+  )
+  const replay = await rig.api.snapshot(PROJECT, { full: false, activitySince: cursor })
+  check(
+    'T-111 replaying the same cursor is idempotent',
+    replay.ok === true && replay.activityEvents.entries.length === 1,
+    JSON.stringify(replay.activityEvents && replay.activityEvents.entries.length),
+  )
+  // Bounded: many cards with long histories must not blow up the response.
+  const many = []
+  for (let index = 0; index < 40; index++) many.push(taskWith('T-' + String(index + 10), base + index * 10, index % 3 === 0 ? merged : undefined))
+  seedBoard(rig.fs, PROJECT, boardJson(many))
+  const bounded = await rig.api.snapshot(PROJECT, { full: false })
+  const bytes = JSON.stringify(bounded.activityEvents).length
+  check(
+    'T-111 the derived timeline is bounded (limit 50, 3 transitions per card)',
+    bounded.activityEvents.entries.length === 50 && bytes < 20000,
+    JSON.stringify({ entries: bounded.activityEvents.entries.length, bytes: bytes }),
+  )
   rig.scheduler.dispose()
 }
 

@@ -175,9 +175,19 @@ export function registerTaskRoutes(ctx, options) {
       const url = queryOf(req)
       const sinceRaw = url === null ? null : url.searchParams.get('since')
       const since = sinceRaw === null || sinceRaw === '' ? null : Number(sinceRaw)
+      // T-111: the activity timeline is incremental on its OWN cursor (the last
+      // derived event key), independent of the board's numeric seq.
+      const activitySinceRaw = url === null ? null : url.searchParams.get('activitySince')
+      const activitySince = activitySinceRaw === null || activitySinceRaw === '' ? null : String(activitySinceRaw)
       // T-110: the Team belongs to the session, so the panel snapshot is resolved
       // for the SAME session the rest of its calls speak as.
-      const snapshot = await api.snapshot(project, { full: false, since: Number.isFinite(since) ? since : null, resolvedFrom: target.resolvedFrom, sessionId: sessionId })
+      const snapshot = await api.snapshot(project, {
+        full: false,
+        since: Number.isFinite(since) ? since : null,
+        activitySince: activitySince,
+        resolvedFrom: target.resolvedFrom,
+        sessionId: sessionId,
+      })
       const sessionProject = target.resolvedFrom === 'session' ? project : await sessionProjectOf(sessionId)
       sendJson(res, 200, withSessionProject(snapshot, sessionProject))
     } catch (error) {

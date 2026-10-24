@@ -1909,6 +1909,11 @@ window.__ModuleLoader__.load({
 				agents: payload.agents === undefined || payload.agents === null ? null : payload.agents,
 				worktrees: payload.worktrees === undefined || payload.worktrees === null ? null : payload.worktrees,
 				activity: payload.activity === undefined || payload.activity === null ? null : payload.activity,
+				// T-111: the status timeline the Host derives from the board (task
+				// history + merge records); no memory ring, survives restarts.
+				activityEvents: payload.activityEvents === undefined || payload.activityEvents === null ? null : payload.activityEvents,
+				// The merge sweep is telemetry now, never an activity event.
+				lastSweep: payload.lastSweep === undefined || payload.lastSweep === null ? null : payload.lastSweep,
 				roles: payload.roles === undefined || payload.roles === null ? null : payload.roles,
 				scheduler: payload.scheduler === undefined ? null : payload.scheduler,
 				actionResult: actionResult === undefined || actionResult === null ? null : actionResult,
@@ -1992,6 +1997,10 @@ window.__ModuleLoader__.load({
 				tasks: [],
 				counts: {},
 			}, 'loading', '')
+			// T-111: the Host answers the activity timeline incrementally. Keep what we
+			// already have and ask only for events after the last one we saw.
+			let activityCursor = null
+			let activityLog = []
 			const listeners = new Set()
 			let loading = null
 			let timer = null
@@ -2022,6 +2031,7 @@ window.__ModuleLoader__.load({
 				const pinned = tcPinnedProject()
 				let url = pinned === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(pinned)
 				if (snapshot.seq !== null && snapshot.seq !== undefined) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'since=' + String(snapshot.seq)
+				if (activityCursor !== null) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'activitySince=' + encodeURIComponent(activityCursor)
 				url = tcWithSession(url)
 				loading = (async function () {
 					try {
@@ -2032,6 +2042,24 @@ window.__ModuleLoader__.load({
 							// A routine poll keeps the outcome of the user's last action until
 							// the next action replaces it; only the board data is refreshed.
 							const next = tcMergeSnapshot(snapshot, payload)
+							// T-111: accumulate the incremental activity page. A project switch
+							// starts a new log (the old project's events no longer apply).
+							if (next.project !== snapshot.project) {
+								activityLog = []
+								activityCursor = null
+							}
+							if (payload.activityEvents !== undefined && payload.activityEvents !== null && Array.isArray(payload.activityEvents.entries)) {
+								const known = new Set(activityLog.map(function (entry) { return entry.key }))
+								payload.activityEvents.entries.forEach(function (entry) {
+									if (entry !== null && typeof entry === 'object' && typeof entry.key === 'string' && !known.has(entry.key)) activityLog.push(entry)
+								})
+								activityLog.sort(function (left, right) { return new Date(right.at).getTime() - new Date(left.at).getTime() })
+								activityLog = activityLog.slice(0, 100)
+								if (typeof payload.activityEvents.cursor === 'string' && payload.activityEvents.cursor !== '') activityCursor = payload.activityEvents.cursor
+							}
+							if (next.activityEvents !== null && next.activityEvents !== undefined) {
+								next.activityEvents = Object.assign({}, next.activityEvents, { entries: activityLog.slice(0, 50) })
+							}
 							next.actionResult = snapshot.actionResult
 							next.actionError = snapshot.actionError
 							next.message = snapshot.message
@@ -3785,9 +3813,10 @@ window.__ModuleLoader__.load({
 				const blocked = counts.blocked || 0
 				const worktrees = snapshot.worktrees
 				const activity = snapshot.activity
+				// T-111: the sweep is telemetry, not an event.
+				const lastSweep = snapshot.lastSweep !== null && snapshot.lastSweep !== undefined && typeof snapshot.lastSweep.at === 'string' ? snapshot.lastSweep : null
 				const agents = snapshot.agents
 				const entries = activity !== null && activity !== undefined && Array.isArray(activity.entries) ? activity.entries : []
-				const sweepCount = entries.filter(function (entry) { return entry.kind === 'sweep' }).length
 				// One resolver shared with the detail page: the tool writes @labels, the
 				// panel shows member names (unresolved ids stay verbatim).
 				const roster = []
@@ -3814,63 +3843,97 @@ window.__ModuleLoader__.load({
 				}
 
 
-				// ── the activity stream: localized events for the phases ──
+				// ── the activity stream: the Host's board-derived timeline (T-111) ──
+				// The Host derives these from each card's history + merge record, so they
+				// survive a restart and a 5-second heartbeat cannot flush them. The panel
+				// only formats them (time · event · object).
 				function shortSha(value) {
 					return typeof value === 'string' && value !== '' ? value.slice(0, 7) : ''
 				}
 				const stream = []
-				tasks.forEach(function (task) {
-					const hist = Array.isArray(task.history) ? task.history.slice().sort(function (left, right) { return new Date(left.at).getTime() - new Date(right.at).getTime() }) : []
-					let reviewRound = 0
-					hist.forEach(function (entry) {
-						const to = typeof entry.to === 'string' ? entry.to : ''
-						const from = typeof entry.from === 'string' ? entry.from : null
-						const assignee = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.name === 'string' ? memberName(task.assignee.name) : null
-						let type = null
-						if (to === 'pending' && from === null) type = 'create'
-						else if (to === 'pending') type = 'retry'
-						else if (to === 'running' && (from === 'pending' || from === null)) type = 'dispatch'
-						else if (to === 'reviewing') type = 'submit'
-						else if (to === 'running' && from === 'reviewing') type = 'review-reject'
-						else if (to === 'testing') type = 'review-pass'
-						else if (to === 'running' && from === 'testing') type = 'test-fail'
-						else if (to === 'done') type = 'test-pass'
-						else if (to === 'blocked') type = 'blocked'
-						else if (to === 'cancelled') type = 'cancel'
-						if (type === null) return
-						if (type === 'review-pass' || type === 'review-reject') reviewRound += 1
-						const eventRound = reviewRound
-						const review = task.review !== null && task.review !== undefined ? task.review : null
-						const test = task.test !== null && task.test !== undefined ? task.test : null
-						const note = typeof entry.note === 'string' && entry.note !== '' ? entry.note : null
-						const noteSha = (function () {
-							const match = /@([0-9a-fA-F]{7,40})/.exec(note === null ? '' : note)
-							return match === null ? '' : match[1].slice(0, 7)
-						})()
-						stream.push({
-							key: 'hist-' + task.id + '-' + String(entry.at) + '-' + type,
-							at: entry.at,
-							type: type,
-							taskId: task.id,
-							html: eventText(type, task, assignee, review, test, entry, note, eventRound, noteSha),
-							raw: note,
-						})
-					})
-					const merge = tcMergeOf(task)
-					if (merge !== null && typeof merge.at === 'string') {
-						const commit = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? shortSha(merge.mergeCommit) : ''
-						const mergeActor = mergeActorOf(task)
-						stream.push({
-							key: 'merge-' + task.id,
-							at: merge.at,
-							type: 'merge',
-							taskId: task.id,
-							html: task.id + ' · ' + task.title + ' → ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit) +
-								(mergeActor === null ? '' : ' · ' + memberName(mergeActor.by, mergeActor.byName, 'actorRoleMerger')),
-							raw: typeof merge.output === 'string' ? merge.output.split('\n')[0] : null,
-						})
-					}
+				const derivedEvents =
+					snapshot.activityEvents !== null && snapshot.activityEvents !== undefined && Array.isArray(snapshot.activityEvents.entries)
+						? snapshot.activityEvents.entries
+						: []
+				if (snapshot.activityEvents !== null && snapshot.activityEvents !== undefined) {
+				derivedEvents.forEach(function (event) {
+					if (event === null || typeof event !== 'object' || typeof event.at !== 'string') return
+					const task = tasks.filter(function (entry) { return String(entry.id) === String(event.taskId) })[0]
+					if (task === undefined) return
+					const assignee =
+						typeof event.byName === 'string' && event.byName !== ''
+							? memberName(event.by, event.byName)
+							: task.assignee !== null && task.assignee !== undefined && typeof task.assignee.name === 'string'
+								? memberName(task.assignee.name)
+								: null
+					const note = typeof event.detail === 'string' && event.detail !== '' ? event.detail : null
+					const html =
+						event.kind === 'merge'
+							? task.id + ' · ' + task.title + ' → ' + (note === null ? t('evtLabel-merge') : note)
+							: eventText(
+								event.kind,
+								task,
+								assignee,
+								task.review === undefined ? null : task.review,
+								task.test === undefined ? null : task.test,
+								{ at: event.at, by: event.by, byName: event.byName },
+								note,
+								Number.isFinite(event.eventRound) ? event.eventRound : 0,
+								typeof event.sha === 'string' ? event.sha : '',
+							)
+					stream.push({ key: 'evt-' + event.key, at: event.at, type: event.kind, taskId: task.id, html: html, raw: note })
 				})
+				} else {
+					// Legacy Host (no derived timeline yet): fall back to the card's own history.
+					tasks.forEach(function (task) {
+						const hist = Array.isArray(task.history) ? task.history.slice().sort(function (left, right) { return new Date(left.at).getTime() - new Date(right.at).getTime() }) : []
+						let reviewRound = 0
+						hist.forEach(function (entry) {
+							const to = typeof entry.to === 'string' ? entry.to : ''
+							const from = typeof entry.from === 'string' ? entry.from : null
+							const assignee = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.name === 'string' ? memberName(task.assignee.name) : null
+							let type = null
+							if (to === 'pending' && from === null) type = 'create'
+							else if (to === 'pending') type = 'retry'
+							else if (to === 'running' && (from === 'pending' || from === null)) type = 'dispatch'
+							else if (to === 'reviewing') type = 'submit'
+							else if (to === 'running' && from === 'reviewing') type = 'review-reject'
+							else if (to === 'testing') type = 'review-pass'
+							else if (to === 'running' && from === 'testing') type = 'test-fail'
+							else if (to === 'done') type = 'test-pass'
+							else if (to === 'blocked') type = 'blocked'
+							else if (to === 'cancelled') type = 'cancel'
+							if (type === null) return
+							if (type === 'review-pass' || type === 'review-reject') reviewRound += 1
+							const note = typeof entry.note === 'string' && entry.note !== '' ? entry.note : null
+							const noteSha = (function () {
+								const match = /@([0-9a-fA-F]{7,40})/.exec(note === null ? '' : note)
+								return match === null ? '' : match[1].slice(0, 7)
+							})()
+							stream.push({
+								key: 'hist-' + task.id + '-' + String(entry.at) + '-' + type,
+								at: entry.at,
+								type: type,
+								taskId: task.id,
+								html: eventText(type, task, assignee, task.review === undefined ? null : task.review, task.test === undefined ? null : task.test, entry, note, reviewRound, noteSha),
+								raw: note,
+							})
+						})
+						const merge = tcMergeOf(task)
+						if (merge !== null && typeof merge.at === 'string') {
+							const commit = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? shortSha(merge.mergeCommit) : ''
+							const mergeActor = mergeActorOf(task)
+							stream.push({
+								key: 'merge-' + task.id,
+								at: merge.at,
+								type: 'merge',
+								taskId: task.id,
+								html: task.id + ' · ' + task.title + ' → ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit) + (mergeActor === null ? '' : ' · ' + memberName(mergeActor.by, mergeActor.byName, 'actorRoleMerger')),
+								raw: typeof merge.output === 'string' ? merge.output.split('\n')[0] : null,
+							})
+						}
+					})
+				}
 				// Host-only events that never appear as a status transition.
 				entries.forEach(function (entry, index) {
 					const kind = String(entry.kind === undefined || entry.kind === null ? '' : entry.kind)
@@ -3897,7 +3960,7 @@ window.__ModuleLoader__.load({
 				if (newestEntryAt !== null && (newestAt === null || new Date(newestEntryAt).getTime() > new Date(newestAt).getTime())) newestAt = newestEntryAt
 				const lastActivityText = newestAt !== null
 					? t('statusLastActivity') + ' ' + tcAgo(newestAt, now)
-					: sweepCount > 0 ? t('statusLastActivity') + ' ' + t('statusOnlyHeartbeats') : null
+					: lastSweep !== null ? t('statusLastActivity') + ' ' + tcAgo(lastSweep.at, now) + ' · ' + t('statusOnlyHeartbeats') : null
 				function reviewWho(entry, review) {
 					const fromEvent = entry !== null && entry !== undefined && typeof entry.by === 'string' && entry.by !== ''
 					const value = fromEvent ? entry.by : review === null ? null : review.by
@@ -4089,7 +4152,14 @@ window.__ModuleLoader__.load({
 								: h('div', null, agentRows),
 					),
 				)
-				const sweepRows = showAllActivity ? entries.filter(function (entry) { return entry.kind === 'sweep' }) : []
+				const timeline = snapshot.activityEvents
+				// Available when the Host sends the derived timeline OR (legacy Host) the ring.
+				const activityAvailable =
+					(timeline !== null && timeline !== undefined && timeline.available === true) ||
+					(activity !== null && activity !== undefined && activity.available === true) ||
+					recentStream.length > 0
+				// The sweep is telemetry: one folded row with the last counts, never a stream entry.
+				const sweepRows = showAllActivity && lastSweep !== null ? [lastSweep] : []
 				const activityCard = h(
 					'section',
 					{ className: 'gbt-statuscard', 'data-status-card': 'activity' },
@@ -4097,9 +4167,9 @@ window.__ModuleLoader__.load({
 					h(
 						'div',
 						{ className: 'gbt-statuscardbody' },
-						activity === null || activity === undefined || activity.available !== true
+						!activityAvailable
 							? h('div', { className: 'gbt-statusnote' }, t('statusActivityUnavailable'))
-							: recentStream.length === 0 && sweepRows.length === 0 && sweepCount === 0
+							: recentStream.length === 0 && sweepRows.length === 0 && lastSweep === null
 								? h('div', { className: 'gbt-statusnote' }, t('statusActivityEmpty'))
 								: h('div', null,
 									recentStream.map(function (event) {
@@ -4114,19 +4184,19 @@ window.__ModuleLoader__.load({
 									sweepRows.map(function (entry, index) {
 										return h(
 											'div',
-											{ key: 'sweep-' + String(index), className: 'gbt-statusev', 'data-activity': 'sweep', 'data-activity-kind': 'sweep', title: entry.detail === null ? undefined : String(entry.detail) },
+											{ key: 'sweep-' + String(index), className: 'gbt-statusev', 'data-activity': 'sweep', 'data-activity-kind': 'sweep', title: t('statusSweepInterval') },
 											h('span', { className: 'gbt-statusevtime gbt-mono' }, typeof entry.at === 'string' ? new Date(entry.at).toTimeString().slice(0, 5) : '—'),
 											h('span', { className: 'gbt-statusevkind' }, t('statusEvtSweep')),
-											h('span', { className: 'gbt-statusevtext' }, t('statusSweepsShown') + ' · ' + t('statusSweepInterval')),
+											h('span', { className: 'gbt-statusevtext' }, 'merged ' + String(entry.merged === undefined ? 0 : entry.merged) + ' · skipped ' + String(entry.skipped === undefined ? 0 : entry.skipped)),
 										)
 									}),
 								),
-						sweepCount === 0
+						lastSweep === null
 							? null
 							: h(
 									'div',
 									{ className: 'gbt-statusfold' },
-									h('span', null, (showAllActivity ? t('statusSweepsShown') : t('statusSweepFolded')) + ' · ' + t('statusSweepInterval') + '（' + t('statusMergeQueue') + ' ' + String(queue.length) + ' ' + t('statusMergeQueueUnit') + '）'),
+									h('span', null, (showAllActivity ? t('statusSweepsShown') : t('statusSweepFolded')) + ' · ' + t('statusSweepInterval') + '（merged ' + String(lastSweep !== null && lastSweep.merged !== undefined ? lastSweep.merged : 0) + ' · skipped ' + String(lastSweep !== null && lastSweep.skipped !== undefined ? lastSweep.skipped : 0) + '）'),
 									h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'status-show-all', 'data-show-all': showAllActivity ? 'true' : 'false', onClick: function () { const next = !showAllActivity; statusUiState.showAll = next; setShowAllActivity(next) } }, showAllActivity ? t('statusShowReal') : t('statusShowAll')),
 								),
 					),
