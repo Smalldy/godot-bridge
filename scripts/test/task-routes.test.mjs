@@ -492,9 +492,27 @@ function createSubmitRig(options) {
 function fakeGit(options) {
   const opts = options === undefined ? {} : options
   const calls = []
+  const staged = []
   const run = (args, cwd) => {
     calls.push({ args: args.slice(), cwd: cwd })
     const key = args.join(' ')
+    if (key === 'add -u') {
+      if (staged.length === 0) staged.push('scripts/a.gd')
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (args[0] === 'add' && args.indexOf('--') >= 0) {
+      for (const path of args.slice(args.indexOf('--') + 1)) if (staged.indexOf(path) < 0) staged.push(path)
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (key === 'diff --cached --name-only') return { code: 0, stdout: staged.length === 0 ? '' : staged.join('\n') + '\n', stderr: '' }
+    if (key === 'ls-files --stage -z') return opts.indexEntries === undefined ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: opts.indexEntries, stderr: '' }
+    if (key === 'status --porcelain -z') return opts.status === undefined ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: opts.status, stderr: '' }
+    if (args[0] === 'reset') {
+      const path = args[args.length - 1]
+      const at = staged.indexOf(path)
+      if (at >= 0) staged.splice(at, 1)
+      return { code: 0, stdout: '', stderr: '' }
+    }
     if (key === 'rev-parse HEAD') return { code: 0, stdout: String(opts.head === undefined ? 'head-sha' : opts.head) + '\n', stderr: '' }
     if (key === 'worktree list --porcelain' && opts.worktrees !== undefined) {
       const blocks = opts.worktrees.map(
@@ -593,12 +611,15 @@ function holdFile(rig, path) {
   check('submit opens the first review round', payload.task.review !== null && payload.task.review.status === 'pending' && payload.task.review.attempt === 1, JSON.stringify(payload.task.review))
   check('and records no verdict on the merge', merge.verdict === undefined, JSON.stringify(merge.verdict))
   check('submit keeps the worktree for the merge request', payload.task.worktree === task.worktree, String(payload.task.worktree))
-  const addCall = fake.calls.filter((entry) => entry.args.join(' ') === 'add -A')[0]
+  // T-101: tracked updates only (add -u), never add -A; declared files are added
+  // explicitly and the diff compared is the recorded base..head one.
+  const addCall = fake.calls.filter((entry) => entry.args.join(' ') === 'add -u')[0]
   const commitCall = fake.calls.filter((entry) => entry.args[0] === 'commit')[0]
-  const diffCall = fake.calls.filter((entry) => entry.args[0] === 'diff')[0]
+  const diffCall = fake.calls.filter((entry) => entry.args.join(' ') === 'diff --name-only base-sha head-sha')[0]
   check(
     'git commits only inside the task worktree',
-    addCall !== undefined && addCall.cwd === task.worktree && commitCall !== undefined && commitCall.cwd === task.worktree && diffCall !== undefined && diffCall.cwd === task.worktree,
+    addCall !== undefined && addCall.cwd === task.worktree && commitCall !== undefined && commitCall.cwd === task.worktree &&
+      diffCall !== undefined && diffCall.cwd === task.worktree && fake.calls.every((entry) => entry.args.join(' ') !== 'add -A'),
     JSON.stringify(fake.calls),
   )
   check(
@@ -679,7 +700,7 @@ function holdFile(rig, path) {
   const res = await postTo(submitSurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'retry' })
   const payload = res.json()
   check('a retry reuses an already committed worktree', payload.ok === true && payload.task.commit === 'prior-sha', res.text)
-  const diffCall = fake.calls.filter((entry) => entry.args[0] === 'diff')[0]
+  const diffCall = fake.calls.filter((entry) => entry.args.join(' ') === 'diff --name-only base-sha prior-sha')[0]
   check(
     'the retry diffs the recorded base against the existing head',
     diffCall !== undefined && diffCall.args.join(' ') === 'diff --name-only base-sha prior-sha',
@@ -5754,6 +5775,62 @@ rig.scheduler.dispose()
     JSON.stringify(remembered),
   )
   projectRig.scheduler.dispose()
+}
+
+// ── T-101: submit commits only declared files + tracked modifications ──
+{
+  const untracked = '?? .tmp-run/' + '\0' + '?? node_modules/pkg/index.js' + '\0'
+  const gitlink = '160000 abcdef1234567890 0\tvendor/sub' + '\0'
+  const fake = fakeGit({ status: untracked, indexEntries: gitlink })
+  const rig = createSubmitRig({ git: fake.git })
+  seedRunningTask(rig, runningWorktreeTask({ writeFiles: ['scripts/declared.gd'] }))
+  const surface = install(rig)
+  const res = await postTo(surface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'scoped' })
+  const payload = res.json()
+  const calls = fake.calls.map((entry) => entry.args.join(' '))
+  check(
+    'T-101 only tracked updates and the declared file are staged (never add -A)',
+    calls.indexOf('add -u') >= 0 && calls.indexOf('add -- scripts/declared.gd') >= 0 && calls.every((call) => call !== 'add -A'),
+    JSON.stringify(calls),
+  )
+  check(
+    'T-101 a gitlink is unstaged and reported instead of committed',
+    calls.indexOf('reset -- vendor/sub') >= 0 &&
+      payload.commitScope !== undefined &&
+      payload.commitScope.skipped.some((entry) => entry.path === 'vendor/sub' && /gitlink/.test(entry.reason)),
+    JSON.stringify(payload.commitScope),
+  )
+  check(
+    'T-101 untracked temp/build content is reported as not committed',
+    payload.commitScope !== undefined &&
+      payload.commitScope.notCommitted.some((entry) => entry.path.indexOf('.tmp-run') === 0) &&
+      payload.commitScope.notCommitted.some((entry) => entry.path.indexOf('node_modules') === 0) &&
+      typeof payload.commitScope.hint === 'string',
+    JSON.stringify(payload.commitScope && payload.commitScope.notCommitted),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+
+  // Declared set empty: tracked modifications only, nothing untracked.
+  const emptyFake = fakeGit({ status: '?? scratch.txt' + '\0' })
+  const emptyRig = createSubmitRig({ git: emptyFake.git })
+  seedRunningTask(emptyRig, runningWorktreeTask({ writeFiles: [] }))
+  const emptySurface = install(emptyRig)
+  const emptyRes = await postTo(emptySurface, { action: 'submit', project: PROJECT, id: 'T-1', evidence: 'no declarations' })
+  const emptyPayload = emptyRes.json()
+  const emptyCalls = emptyFake.calls.map((entry) => entry.args.join(' '))
+  check(
+    'T-101 an empty declaration falls back to tracked modifications only',
+    emptyPayload.ok === true && emptyCalls.indexOf('add -u') >= 0 && emptyCalls.every((call) => call.indexOf('add -- ') !== 0),
+    JSON.stringify(emptyCalls),
+  )
+  check(
+    'T-101 the untracked fallback file is reported, never committed',
+    emptyPayload.commitScope !== undefined && emptyPayload.commitScope.notCommitted.some((entry) => entry.path === 'scratch.txt'),
+    JSON.stringify(emptyPayload.commitScope),
+  )
+  emptySurface.dispose()
+  emptyRig.scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

@@ -2329,6 +2329,113 @@ export function createApi(ctx, options) {
    * refusal is returned as-is and nothing is written, so the task stays running,
    * keeps its lease and keeps its file locks for a retry.
    */
+  /**
+   * Scoped auto-commit for submit (T-101). Stages ONLY:
+   *   - modifications to already-tracked files (git add -u), and
+   *   - the card's declared writeFiles.
+   * Untracked files outside that set are never added, gitlinks (mode 160000)
+   * are unstaged and reported, and declared directories/unsafe roots are
+   * skipped. The caller gets the skipped and uncommitted paths so it can tell
+   * the worker instead of silently polluting the branch.
+   */
+  async function commitScoped(worktree, message, declared) {
+    if (git === null) {
+      return failure('no-git-service', 'this profile has no git service that can scope a commit')
+    }
+    if (typeof git.raw !== 'function') {
+      // Legacy/bespoke facades have no raw runner; keep the historical commit so
+      // a non-standard host still works. Real hosts (the production facade) always
+      // provide raw and therefore always take the scoped path.
+      return git.commitAll(worktree, message)
+    }
+    const raw = async function () {
+      return git.raw(worktree, Array.prototype.slice.call(arguments))
+    }
+    const UNSAFE = ['.tmp-run', 'node_modules', '.cache', '.investigate', '.worktrees']
+    const declaredList = Array.isArray(declared) ? declared.map((entry) => String(entry)).filter((entry) => entry !== '') : []
+    const skipped = []
+    const notCommitted = []
+    const clean = (value) => String(value).replace(/\\/g, '/').replace(/^\.\//, '')
+    // 1. Tracked modifications only; no -A, no untracked files.
+    const stagedTracked = await raw('add', '-u')
+    if (stagedTracked.ok !== true) return failure('add-failed', 'git add -u failed: ' + String(stagedTracked.stderr || stagedTracked.message || ''))
+    // 2. Declared files, one by one, refusing directories and unsafe roots.
+    for (const entry of declaredList) {
+      const rel = clean(entry)
+      const rootSegment = rel.split('/')[0]
+      if (UNSAFE.indexOf(rootSegment) >= 0) {
+        skipped.push({ path: rel, reason: 'unsafe-directory (untracked build/temp content is never committed)' })
+        continue
+      }
+      let info = undefined
+      try {
+        info = await ctx.fs.stat(await ctx.fs.resolve(join(worktree, rel), { cwd: worktree }))
+      } catch (error) {
+        info = undefined
+      }
+      if (info !== undefined && info.type === 'directory') {
+        skipped.push({ path: rel, reason: 'declared path is a directory, not a file' })
+        continue
+      }
+      const added = await raw('add', '--', rel)
+      if (added.ok !== true) {
+        skipped.push({ path: rel, reason: 'git add failed: ' + String(added.stderr || added.message || '') })
+      }
+    }
+    // 3. Never commit a gitlink (mode 160000): unstage it and report.
+    const indexed = await raw('ls-files', '--stage', '-z')
+    if (indexed.ok === true && typeof indexed.stdout === 'string') {
+      for (const record of indexed.stdout.split('\0')) {
+        const match = /^(\d{6}) ([0-9a-f]+) (\d)\t(.+)$/.exec(record)
+        if (match === null || match[3] !== '0') continue
+        if (match[1] !== '160000') continue
+        const path = match[4]
+        await raw('reset', '--', path)
+        skipped.push({ path: path, reason: 'gitlink (mode 160000); submodule pointers are never committed' })
+      }
+    }
+    // 4. Untracked content left behind is reported, not staged.
+    const status = await raw('status', '--porcelain', '-z')
+    if (status.ok === true && typeof status.stdout === 'string') {
+      const parts = status.stdout.split('\0')
+      for (let index = 0; index < parts.length; index++) {
+        const record = parts[index]
+        if (record.length < 4) continue
+        const code = record.slice(0, 2)
+        if (code.charAt(0) === 'R' || code.charAt(0) === 'C' || code.charAt(1) === 'R' || code.charAt(1) === 'C') index += 1
+        if (code !== '??') continue
+        const path = clean(record.slice(3))
+        const declaredAlready = declaredList.some((entry) => clean(entry) === path)
+        if (!declaredAlready) notCommitted.push({ path: path, reason: 'untracked and not declared in writeFiles' })
+      }
+    }
+    // 5. Commit only what is staged.
+    const staged = await raw('diff', '--cached', '--name-only')
+    if (staged.ok !== true) return failure('diff-failed', 'could not inspect the staged changes: ' + String(staged.stderr || staged.message || ''))
+    if (String(staged.stdout).trim() === '') {
+      return {
+        ok: false,
+        code: 'nothing-to-commit',
+        message: 'there were no declared or tracked changes to commit',
+        commitScope: { skipped: skipped, notCommitted: notCommitted },
+      }
+    }
+    const committed = await raw('commit', '-m', message)
+    if (committed.ok !== true) {
+      if (/nothing to commit|no changes added|working tree clean/i.test(String(committed.stdout || '') + String(committed.stderr || ''))) {
+        return { ok: false, code: 'nothing-to-commit', message: 'there were no changes to commit', commitScope: { skipped: skipped, notCommitted: notCommitted } }
+      }
+      return failure('commit-failed', 'git commit failed: ' + String(committed.stderr || committed.message || ''))
+    }
+    const resolved = await raw('rev-parse', 'HEAD')
+    if (resolved.ok !== true || String(resolved.stdout).trim() === '') return failure('rev-parse-failed', 'the new commit hash could not be read')
+    return {
+      ok: true,
+      hash: String(resolved.stdout).trim(),
+      commitScope: { skipped: skipped, notCommitted: notCommitted, hint: skipped.length + notCommitted.length === 0 ? null : 'these paths were NOT committed; add the intended ones to writeFiles and re-submit' },
+    }
+  }
+
   async function prepareMergeRequest(task, source, now) {
     if (typeof task.worktree !== 'string' || task.worktree.length === 0) return { ok: true, mr: null }
     if (git === null) {
@@ -2340,7 +2447,7 @@ export function createApi(ctx, options) {
     }
     let committed
     try {
-      committed = await git.commitAll(task.worktree, 'task-center: ' + task.id + ' ' + task.title)
+      committed = await commitScoped(task.worktree, 'task-center: ' + task.id + ' ' + task.title, Array.isArray(task.writeFiles) ? task.writeFiles : [])
     } catch (error) {
       return failure('commit-failed', 'could not commit ' + task.id + ' in ' + task.worktree + ': ' + messageOf(error))
     }
@@ -2359,7 +2466,9 @@ export function createApi(ctx, options) {
         current = null
       }
       if (current === null || current === undefined || current.ok !== true || String(current.hash) === base) {
-        return failure('nothing-to-commit', 'there were no changes to commit for ' + task.id)
+        const refused = failure('nothing-to-commit', 'there were no changes to commit for ' + task.id)
+        if (committed.commitScope !== undefined) refused.commitScope = committed.commitScope
+        return refused
       }
       head = String(current.hash)
     } else {
@@ -2386,6 +2495,7 @@ export function createApi(ctx, options) {
       mr: {
         commit: head,
         actualFiles: actualFiles,
+        commitScope: committed !== null && committed !== undefined && committed.commitScope !== undefined ? committed.commitScope : { skipped: [], notCommitted: [] },
         merge: {
           status: 'open',
           base: base,
@@ -3458,6 +3568,10 @@ export function createApi(ctx, options) {
         (board) => model.submitTask(board, id, input, clock(), context.by, writeByName(context)),
         context,
       )
+      if (result.ok === true && prepared.mr !== null && prepared.mr !== undefined && prepared.mr.commitScope !== undefined) {
+        // T-101: tell the worker exactly what was skipped and what stayed out.
+        result.commitScope = prepared.mr.commitScope
+      }
       if (result.ok === true) await clearWaiting(projectPath, id, context)
       if (result.ok === true && result.task !== null && result.task.status !== 'running') {
         // A stale test slot from an earlier round must not describe this one.
