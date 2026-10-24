@@ -1351,6 +1351,37 @@ await flush()
     await flush()
     const detailQueueDrawer = findAll(detailQueueTree, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
     check('the detail page shows the queue position pill', detailQueueDrawer !== undefined && textOf(detailQueueDrawer).indexOf('排队中') >= 0 && textOf(detailQueueDrawer).indexOf('前面 1 条') >= 0, detailQueueDrawer && textOf(detailQueueDrawer).slice(0, 200))
+    // A DELIVERED round is already being worked on: even if a stale queuePosition
+    // survived, the card, the detail and the status queue count must not show it.
+    const savedReview = queuedTask.review
+    queuedTask.review = Object.assign({}, savedReview, { deliveredAt: new Date().toISOString() })
+    let deliveredTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    deliveredTree = withHooks(panel, { initialView: 'board' })
+    const deliveredCard = findAll(deliveredTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card' && textOf(node).indexOf('Review the crate API') >= 0)[0]
+    check('a delivered review round shows no queued chip', deliveredCard !== undefined && textOf(deliveredCard).indexOf('排队中') < 0, deliveredCard && textOf(deliveredCard))
+    let deliveredStatus = withHooks(panel, { initialView: 'status' })
+    await flush()
+    deliveredStatus = withHooks(panel, { initialView: 'status' })
+    const deliveredReviewerRow = findAll(deliveredStatus, (node) => node.props && node.props['data-status-agent'] === 'reviewer-1')[0]
+    check(
+      'a delivered round is not counted as queued on the status page',
+      deliveredReviewerRow !== undefined && textOf(deliveredReviewerRow).indexOf('队列 1') < 0 && textOf(deliveredReviewerRow).indexOf('队列 2') < 0,
+      deliveredReviewerRow && textOf(deliveredReviewerRow),
+    )
+    // The same guard covers the testing stage.
+    const savedStatus = queuedTask.status
+    const savedTest = queuedTask.test
+    queuedTask.status = 'testing'
+    queuedTask.test = { status: 'pending', by: null, at: new Date().toISOString(), deliveredAt: new Date().toISOString(), evidence: null, attempt: 1 }
+    let testingTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    testingTree = withHooks(panel, { initialView: 'board' })
+    const testingCard = findAll(testingTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card' && textOf(node).indexOf('Review the crate API') >= 0)[0]
+    check('a delivered test round shows no queued chip either', testingCard !== undefined && textOf(testingCard).indexOf('排队中') < 0, testingCard && textOf(testingCard))
+    queuedTask.status = savedStatus
+    queuedTask.test = savedTest
+    queuedTask.review = savedReview
     queuedTask.queuePosition = savedQueue
   }
 

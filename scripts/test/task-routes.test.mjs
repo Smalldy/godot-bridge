@@ -8,7 +8,7 @@ import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH } fro
 import { boardJson, createFakeFs, createFakeGit, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
-import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, memberProjectOf, projectSlotKey, rememberMemberProject, roleBriefFor, roleSlotName } from '../../plugin/task-center/dispatch.mjs'
+import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, memberProjectOf, projectSlotKey, recordStageSlot, rememberMemberProject, roleBriefFor, roleSlotName } from '../../plugin/task-center/dispatch.mjs'
 
 // Role slots carry the project they were provisioned for; tests name them through
 // the same generator the host uses instead of a hard-coded legacy name.
@@ -2418,6 +2418,144 @@ function testStageTask(overrides) {
     JSON.stringify(snapshot.roles),
   )
   plain.scheduler.dispose()
+}
+
+// ── a delivered stage round never keeps the queued badge ───────────────────
+{
+  const fake = fakeGit()
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fake.git })
+  const host = rig.scheduler.boot
+  const makeTask = function (id, title) {
+    const task = runningWorktreeTask({ id: id, title: title, worktree: join(PROJECT, '.worktrees', id), branch: 'task/' + id + '-1' })
+    task.dispatch = Object.assign({}, task.dispatch, { host: host })
+    return task
+  }
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 4, dispatch: { state: 'paused' }, tasks: [makeTask('T-1', 'A'), makeTask('T-2', 'B'), makeTask('T-3', 'C')] }))
+  const viewOf = function (snapshot, id) {
+    return snapshot.tasks.filter(function (entry) { return entry.id === id })[0]
+  }
+  const queueOf = function (snapshot, id) {
+    const task = viewOf(snapshot, id)
+    return task === undefined ? undefined : task.queuePosition
+  }
+  await rig.action('submit', { id: 'T-1', evidence: 'a' })
+  await rig.action('submit', { id: 'T-2', evidence: 'b' })
+  await rig.action('submit', { id: 'T-3', evidence: 'c' })
+  let snapshot = await rig.action('board')
+  check(
+    'one review round is delivered and the others wait in order',
+    queueOf(snapshot, 'T-1') === null && queueOf(snapshot, 'T-2') === 1 && queueOf(snapshot, 'T-3') === 2,
+    JSON.stringify([queueOf(snapshot, 'T-1'), queueOf(snapshot, 'T-2'), queueOf(snapshot, 'T-3')]),
+  )
+  await rig.action('approveReview', { id: 'T-1' })
+  snapshot = await rig.action('board')
+  check(
+    'the freed review slot clears the badge at once and the queue moves up',
+    queueOf(snapshot, 'T-2') === null && queueOf(snapshot, 'T-3') === 1,
+    JSON.stringify([queueOf(snapshot, 'T-2'), queueOf(snapshot, 'T-3')]),
+  )
+  check(
+    'the delivered round records when it started',
+    typeof viewOf(snapshot, 'T-2').review.deliveredAt === 'string' && viewOf(snapshot, 'T-2').review.deliveredAt !== '',
+    JSON.stringify(viewOf(snapshot, 'T-2').review),
+  )
+  check(
+    'the first card is now in testing with no queue position',
+    viewOf(snapshot, 'T-1').status === 'testing' && queueOf(snapshot, 'T-1') === null,
+    JSON.stringify({ status: viewOf(snapshot, 'T-1').status, queue: queueOf(snapshot, 'T-1') }),
+  )
+  await rig.action('approveReview', { id: 'T-2' })
+  snapshot = await rig.action('board')
+  check(
+    'the queued review position does not survive into testing',
+    viewOf(snapshot, 'T-2').status === 'testing' && queueOf(snapshot, 'T-2') === null,
+    JSON.stringify({ status: viewOf(snapshot, 'T-2').status, queue: queueOf(snapshot, 'T-2'), review: viewOf(snapshot, 'T-2').review }),
+  )
+  await rig.action('passTest', { id: 'T-1', evidence: 'ok' })
+  snapshot = await rig.action('board')
+  check(
+    'the finished test round leaves no queue residue',
+    viewOf(snapshot, 'T-2').status === 'testing' && queueOf(snapshot, 'T-2') === null,
+    JSON.stringify({ status: viewOf(snapshot, 'T-2').status, queue: queueOf(snapshot, 'T-2') }),
+  )
+  const staged = snapshot.tasks.filter(function (entry) { return entry.status === 'reviewing' || entry.status === 'testing' })
+  check(
+    'no delivered card advertises a queue position',
+    staged.every(function (entry) { return entry.queuePosition === null }),
+    JSON.stringify(staged.map(function (entry) { return [entry.id, entry.queuePosition] })),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── testing stage: a queued round is delivered when the tester frees up ────
+{
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git })
+  const host = rig.scheduler.boot
+  const stamp = new Date().toISOString()
+  const testingTask = function (id) {
+    const task = runningWorktreeTask({
+      id: id,
+      title: id,
+      status: 'testing',
+      review: { status: 'approved', by: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
+      test: { status: 'pending', by: null, at: stamp, evidence: null, attempt: 1 },
+      worktree: join(PROJECT, '.worktrees', id),
+      branch: 'task/' + id + '-1',
+    })
+    task.dispatch = Object.assign({}, task.dispatch, { host: host })
+    return task
+  }
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [testingTask('T-1'), testingTask('T-2')] }))
+  const viewOf = function (snapshot, id) {
+    return snapshot.tasks.filter(function (entry) { return entry.id === id })[0]
+  }
+  // Exactly what the host leaves behind: one delivered tester round, one waiting.
+  recordStageSlot(rig.ctx, 'T-1', 'tester', Date.now(), null)
+  recordStageSlot(rig.ctx, 'T-2', 'tester', null, 1)
+  let snapshot = await rig.action('board')
+  check(
+    'a waiting test round reports its queue position',
+    viewOf(snapshot, 'T-1').queuePosition === null && viewOf(snapshot, 'T-2').queuePosition === 1,
+    JSON.stringify([viewOf(snapshot, 'T-1').queuePosition, viewOf(snapshot, 'T-2').queuePosition]),
+  )
+  await rig.action('failTest', { id: 'T-1', evidence: 'the check failed at step 3' })
+  snapshot = await rig.action('board')
+  check(
+    'the freed test slot delivers the waiting round and clears its badge',
+    viewOf(snapshot, 'T-2').queuePosition === null && viewOf(snapshot, 'T-2').test.deliveredAt !== null,
+    JSON.stringify({ queue: viewOf(snapshot, 'T-2').queuePosition, test: viewOf(snapshot, 'T-2').test }),
+  )
+  check(
+    'the failed round goes back to running without a queue',
+    viewOf(snapshot, 'T-1').status === 'running' && viewOf(snapshot, 'T-1').queuePosition === null,
+    JSON.stringify({ status: viewOf(snapshot, 'T-1').status, queue: viewOf(snapshot, 'T-1').queuePosition }),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── the slot record cannot hold a stale position ────────────────────────────
+{
+  const rig = createSubmitRig({ team: roleTeam(), roles: true, git: fakeGit().git })
+  const task = runningWorktreeTask({ id: 'T-9', status: 'reviewing', review: { status: 'pending', by: null, at: new Date().toISOString(), reasons: null, attempt: 1 }, worktree: join(PROJECT, '.worktrees', 'T-9'), branch: 'task/T-9-1' })
+  seedRunningTask(rig, task)
+  // A delivered slot handed a stale position, and a leftover TEST position from an
+  // earlier round, are both residues the guard must swallow.
+  recordStageSlot(rig.ctx, 'T-9', 'reviewer', Date.now(), 1)
+  const delivered = await rig.action('board')
+  check(
+    'a delivered slot never reports a queue position',
+    delivered.tasks.filter(function (entry) { return entry.id === 'T-9' })[0].queuePosition === null,
+    JSON.stringify(delivered.tasks.filter(function (entry) { return entry.id === 'T-9' })[0].queuePosition),
+  )
+  recordStageSlot(rig.ctx, 'T-9', 'reviewer', null, null)
+  recordStageSlot(rig.ctx, 'T-9', 'tester', null, 1)
+  const stale = await rig.action('board')
+  check(
+    'a stale test position is not rendered during review',
+    stale.tasks.filter(function (entry) { return entry.id === 'T-9' })[0].queuePosition === null,
+    JSON.stringify(stale.tasks.filter(function (entry) { return entry.id === 'T-9' })[0].queuePosition),
+  )
+  rig.scheduler.dispose()
 }
 
 // ── reviewer workflow: brief, hand-back and the round policy ───────────────

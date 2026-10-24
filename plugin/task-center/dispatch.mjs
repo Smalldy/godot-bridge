@@ -154,14 +154,21 @@ function slotKey(taskId, kind) {
   return String(taskId) + '@' + String(kind === 'tester' ? 'tester' : 'reviewer')
 }
 
-/** Record one stage's slot state: delivered (at set) or queued (position set). */
+/** Record one stage's slot state: delivered (at set) or queued (position set).
+ *
+ * A delivered slot NEVER keeps a position. The card has started the stage, so a
+ * caller that still holds a stale position cannot leave `{ at, position }` behind
+ * — that residue is exactly what kept the "queued" chip on a reviewing card.
+ */
 export function recordStageSlot(ctx, taskId, kind, at, position) {
   if (typeof taskId !== 'string' || taskId === '') return
   try {
     const bucket = slotBucket(ctx, true)
     const key = slotKey(taskId, kind)
-    if (at === null && position === null) bucket.delete(key)
-    else bucket.set(key, { at: Number.isFinite(at) ? at : null, position: Number.isFinite(position) ? position : null })
+    const deliveredAt = Number.isFinite(at) ? at : null
+    const queued = deliveredAt === null && Number.isFinite(position) ? position : null
+    if (deliveredAt === null && queued === null) bucket.delete(key)
+    else bucket.set(key, { at: deliveredAt, position: queued })
   } catch (error) {}
 }
 
