@@ -850,16 +850,34 @@ function holdFile(rig, path) {
 }
 
 {
+  // T-108: a dirty main tree is a transient window (a merge is running in the main
+  // checkout): start is allowed, the card is skipped and retried — never paused.
   const dirty = createRig({ gitOptions: { clean: false } })
   const dirtySurface = install(dirty)
   const projectUrl = STATE_PATH + '?project=' + encodeURIComponent(PROJECT)
   await call(dirtySurface, projectUrl, {})
   await postTo(dirtySurface, { action: 'create', title: 'dirty tree' })
-  const refused = await postTo(dirtySurface, { action: 'start' })
-  check('start refuses a dirty working tree', refused.json().ok === false && (refused.json().code === 'worktree-unavailable' || refused.json().code === 'not-ready'), refused.text)
-  check('and says the tree is dirty', refused.json().worktree === 'dirty-worktree', refused.text)
+  const started = await postTo(dirtySurface, { action: 'start' })
+  check('start is allowed while the tree is transiently dirty', started.json().ok === true && started.json().dispatch.state === 'running', started.text.slice(0, 300))
+  const run = await dirty.settle()
   const state = await call(dirtySurface, projectUrl, {})
-  check('a dirty tree keeps the board pending and paused', state.json().dispatch.state === 'paused' && state.json().tasks[0].status === 'pending', state.text)
+  const payload = state.json()
+  const skipped = Array.isArray(run.results) ? run.results.filter((entry) => entry.skipped === 'environment-dirty')[0] : undefined
+  check(
+    'the dirty window skips the card but keeps dispatch running',
+    payload.dispatch.state === 'running' && payload.tasks[0].status === 'pending' && skipped !== undefined,
+    JSON.stringify({ dispatch: payload.dispatch.state, task: payload.tasks[0].status, skipped: skipped }),
+  )
+  check(
+    'the snapshot reports the unclean environment with a check time',
+    payload.environment !== null && payload.environment !== undefined && payload.environment.clean === false && typeof payload.environment.checkedAt === 'string' && payload.environment.transient === true,
+    JSON.stringify(payload.environment),
+  )
+  check(
+    'and names the card it is retrying',
+    Array.isArray(payload.environment.retrying) && payload.environment.retrying.some((entry) => entry.id === payload.tasks[0].id),
+    JSON.stringify(payload.environment.retrying),
+  )
   dirtySurface.dispose()
   dirty.scheduler.dispose()
 }

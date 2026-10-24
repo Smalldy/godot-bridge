@@ -988,17 +988,164 @@ function createWorktreeRig(options) {
   rig.scheduler.dispose()
 }
 
-// a dirty working tree cannot start dispatch
+// T-108: a dirty main tree is a TRANSIENT window, not a reason to refuse/stop
 {
   const rig = createWorktreeRig({ git: createFakeGit({ clean: false }) })
   const task = await createTask(rig, { title: 'dirty tree task' })
   const started = await rig.action('start')
-  check('start refuses a dirty working tree', started.ok === false && started.code === 'worktree-unavailable', JSON.stringify(started))
-  check('and says the tree is dirty', started.worktree === 'dirty-worktree', JSON.stringify(started))
-  await rig.settle()
+  check('start is allowed while the main tree is transiently dirty', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started))
+  const run = await rig.settle()
   const snap = await snapshot(rig)
-  check('the dirty tree keeps every task pending', byId(snap, task.id).status === 'pending' && snap.dispatch.state === 'paused', JSON.stringify(ids(snap)))
+  check('the dirty tree keeps the task pending', byId(snap, task.id).status === 'pending', JSON.stringify(ids(snap)))
+  check('but dispatch keeps running (no global pause)', snap.dispatch.state === 'running' && run.state === 'running', JSON.stringify({ dispatch: snap.dispatch.state, run: run.state }))
+  const skipped = (run.results || []).filter((entry) => entry.id === task.id)[0]
+  check(
+    'the card is skipped as environment-dirty with a reason',
+    skipped !== undefined && skipped.skipped === 'environment-dirty' && String(skipped.reason) === 'dirty-worktree',
+    JSON.stringify(skipped),
+  )
   check('and no worktree was added', rig.git.calls.filter((call) => call.name === 'worktreeAdd').length === 0, JSON.stringify(rig.git.calls))
+  check(
+    'the snapshot exposes the unclean environment and when it was checked',
+    snap.environment !== null && snap.environment !== undefined && snap.environment.clean === false && typeof snap.environment.checkedAt === 'string',
+    JSON.stringify(snap.environment),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-108: a momentary dirty main tree skips ONE card, never the project ────
+{
+  const git = createFakeGit()
+  const cleanOf = git.isClean
+  let probes = 0
+  let dirtyOnProbe = -1
+  // The merge pipeline works in the MAIN checkout, so one card's cleanliness probe
+  // can hit a dirty window while the next one sees a clean tree again.
+  git.isClean = async (root) => {
+    if (root === PROJECT) {
+      probes += 1
+      if (probes === dirtyOnProbe) return { ok: true, clean: false }
+    }
+    return cleanOf(root)
+  }
+  const rig = createWorktreeRig({ git: git })
+  const A = (await createTask(rig, { title: 'first card' })).id
+  const B = (await createTask(rig, { title: 'second card' })).id
+  // Turn dispatch on WITHOUT running a pass (the start action runs one), so this
+  // test owns the pass and can see its per-card results.
+  await updateBoard(
+    { fs: rig.fs },
+    {
+      projectPath: rig.project,
+      mutate: (board) => {
+        board.dispatch = Object.assign({}, board.dispatch, { state: 'running' })
+        return board
+      },
+      sandboxPolicy: writePolicyFor(rig.project),
+    },
+  )
+  // Probe 1 is the pass-level cleanliness check, probe 2 is card A: the merge
+  // window is open for exactly that one probe.
+  probes = 0
+  dirtyOnProbe = 2
+  const run = await rig.settle()
+  const snap = await snapshot(rig)
+  const skipped = (run.results || []).filter((entry) => entry.skipped === 'environment-dirty').map((entry) => entry.id)
+  check('T-108 only the card that hit the window is skipped', skipped.length === 1 && skipped[0] === A, JSON.stringify({ probes: probes, run: run, statuses: ids(snap) }))
+  check('T-108 the other card dispatches normally', byId(snap, B).status === 'running', JSON.stringify(ids(snap)))
+  check('T-108 dispatch stays running through the window', snap.dispatch.state === 'running', JSON.stringify(snap.dispatch.state))
+  check(
+    'T-108 the skipped card is reported as retrying, not as an error',
+    snap.environment !== null && typeof snap.environment.checkedAt === 'string' && Array.isArray(snap.environment.retrying) &&
+      snap.environment.retrying.some((entry) => entry.id === A && entry.retries >= 1) && snap.environment.escalated.length === 0,
+    JSON.stringify(snap.environment),
+  )
+  // (b) the window closes: the skipped card goes out on its own, no manual start.
+  dirtyOnProbe = -1
+  await rig.settle()
+  const after = await snapshot(rig)
+  check('T-108 the skipped card is retried automatically on the next pass', byId(after, A).status === 'running', JSON.stringify(ids(after)))
+  check(
+    'T-108 and its retry streak is forgotten',
+    after.environment !== null && after.environment.clean === true && after.environment.retrying.length === 0 && after.environment.escalated.length === 0,
+    JSON.stringify(after.environment),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-108: only a SUSTAINED dirty tree escalates to a human ────────────────
+{
+  const rig = createWorktreeRig({ git: createFakeGit({ clean: false }) })
+  const A = (await createTask(rig, { title: 'stuck on a dirty tree' })).id
+  await rig.action('start')
+  const seen = []
+  for (let round = 1; round <= 7; round += 1) {
+    await rig.settle()
+    const snap = await snapshot(rig)
+    const card = byId(snap, A)
+    const environment = snap.environment === null || snap.environment === undefined ? {} : snap.environment
+    const streak = (Array.isArray(environment.dirty) ? environment.dirty : []).filter((row) => row.id === A)[0]
+    seen.push({
+      round: round,
+      retries: streak === undefined ? 0 : streak.retries,
+      waiting: card.waitingReason === undefined ? null : card.waitingReason,
+      dispatch: snap.dispatch.state,
+      escalated: Array.isArray(environment.escalated) ? environment.escalated : [],
+    })
+  }
+  const escalatedRows = seen.filter((row) => row.waiting === 'dirty-worktree')
+  check(
+    'T-108 no pass escalates before the retry threshold',
+    seen.filter((row) => row.retries < 5).every((row) => row.waiting === null && row.escalated.length === 0),
+    JSON.stringify(seen),
+  )
+  check(
+    'T-108 the first escalation happens at the threshold, not on the first failure',
+    escalatedRows.length > 0 && escalatedRows[0].retries >= 5 && escalatedRows[0].escalated.indexOf(A) >= 0,
+    JSON.stringify(seen),
+  )
+  check(
+    'T-108 dispatch never pauses while the card waits',
+    seen.every((row) => row.dispatch === 'running'),
+    JSON.stringify(seen.map((row) => row.dispatch)),
+  )
+  const escalatedCard = byId(await snapshot(rig), A)
+  check(
+    'T-108 the waiting detail names the real reason',
+    typeof escalatedCard.waitingDetail === 'string' && escalatedCard.waitingDetail.indexOf('dirty-worktree') >= 0,
+    String(escalatedCard.waitingDetail),
+  )
+  // The human commits/stashes: the marker clears and the card goes out by itself.
+  rig.git.isClean = async () => ({ ok: true, clean: true })
+  await rig.settle()
+  const healed = await snapshot(rig)
+  check(
+    'T-108 a clean tree clears the marker and dispatches without a manual start',
+    byId(healed, A).status === 'running' && (byId(healed, A).waitingReason === null || byId(healed, A).waitingReason === undefined),
+    JSON.stringify({ status: byId(healed, A).status, waiting: byId(healed, A).waitingReason }),
+  )
+  check(
+    'T-108 and the escalation is gone from the snapshot',
+    healed.environment !== null && healed.environment.clean === true && healed.environment.escalated.length === 0,
+    JSON.stringify(healed.environment),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-108: a clean tree keeps the old behaviour exactly ────────────────────
+{
+  const rig = createWorktreeRig({ git: createFakeGit() })
+  const A = (await createTask(rig, { title: 'clean tree card' })).id
+  await rig.action('start')
+  const run = await rig.settle()
+  const snap = await snapshot(rig)
+  check('T-108 a clean tree dispatches as before', byId(snap, A).status === 'running', JSON.stringify(ids(snap)))
+  check('T-108 nothing is skipped and no marker is written', (run.results || []).every((entry) => entry.skipped === undefined) && byId(snap, A).waitingReason === null, JSON.stringify(run.results))
+  check(
+    'T-108 and the snapshot reports a clean environment with a check time',
+    snap.environment !== null && snap.environment.clean === true && typeof snap.environment.checkedAt === 'string' && snap.environment.escalated.length === 0,
+    JSON.stringify(snap.environment),
+  )
   rig.scheduler.dispose()
 }
 

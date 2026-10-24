@@ -510,6 +510,17 @@ const HOST = {
   projectRoot: PROJECT,
   resolvedFrom: 'panel',
   sessionProject: PROJECT,
+  // T-108: the main-checkout cleanliness the panel shows beside dispatch.
+  environment: {
+    clean: true,
+    code: null,
+    message: null,
+    checkedAt: new Date(now).toISOString(),
+    transient: false,
+    retrying: [],
+    escalated: [],
+    dirty: [],
+  },
   registryConsistent: true,
   projectWarning: null,
   // T-93: how full the board file is. 'ok' by default; the status page warns at
@@ -3449,7 +3460,15 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
 {
   const COLUMNS_KEY = 'godotBridge.taskCenter.columns'
   STORAGE.delete(COLUMNS_KEY)
-  const nowMs = Date.now()
+  // Anchored at local noon: the drawer buckets by CALENDAR DAY, and a fixture built
+  // from "now" puts the 1-day-plus-minutes rows on the day before yesterday when
+  // the suite runs just after local midnight. Noon keeps the shape deterministic
+  // at any hour.
+  const nowMs = (function () {
+    const anchor = new Date()
+    anchor.setHours(12, 0, 0, 0)
+    return anchor.getTime()
+  })()
   const DAY = 24 * 60 * 60 * 1000
   function summaryTask(id, title, status, ageMs, extra) {
     const at = new Date(nowMs - ageMs).toISOString()
@@ -4228,6 +4247,88 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   globalThis.fetch = savedFetch
   withHooks(panel, { initialView: 'board' })
   await flush()
+  await flush()
+}
+
+// ── T-108: the panel tells a self-healing dirty window from an alarm ───────
+{
+  const savedFetch = globalThis.fetch
+  const savedEnvironment = HOST.environment
+  const savedWaiting = HOST.tasks.map((task) => task.waitingReason)
+  globalThis.fetch = async function () {
+    return { json: async () => HOST }
+  }
+  const environmentBar = (tree) => findAll(tree, (node) => node.props && node.props['data-environment'] !== undefined)[0]
+
+  // A momentarily dirty tree: an INFO line that says it retries by itself.
+  HOST.environment = Object.assign({}, savedEnvironment, {
+    clean: false,
+    code: 'dirty-worktree',
+    transient: true,
+    checkedAt: new Date(Date.now() - 4000).toISOString(),
+    retrying: [{ id: 'T-1', retries: 2, since: new Date(Date.now() - 8000).toISOString(), escalated: false }],
+    escalated: [],
+  })
+  let tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  let bar = environmentBar(tree)
+  check(
+    'T-108 a transient dirty window is an info line, not an alarm',
+    bar !== undefined && bar.props['data-environment'] === 'dirty-transient' && bar.props['data-tone'] === 'info',
+    bar && JSON.stringify(bar.props),
+  )
+  check(
+    'T-108 and it says the cards will be retried, never "paused until fixed"',
+    bar !== undefined && textOf(bar).indexOf('自动重试') >= 0 && textOf(bar).indexOf('paused until') < 0 && textOf(bar).indexOf('暂停') < 0,
+    bar && textOf(bar),
+  )
+
+  // A sustained streak: a warning that still names the cards and how it heals.
+  HOST.environment = Object.assign({}, savedEnvironment, {
+    clean: false,
+    code: 'dirty-worktree',
+    transient: true,
+    checkedAt: new Date(Date.now() - 4000).toISOString(),
+    retrying: [],
+    escalated: ['T-1'],
+    dirty: [{ id: 'T-1', retries: 6, since: new Date(Date.now() - 40000).toISOString(), escalated: true }],
+  })
+  let alarmed = withHooks(panel, { initialView: 'board' })
+  await flush()
+  alarmed = withHooks(panel, { initialView: 'board' })
+  bar = environmentBar(alarmed)
+  check(
+    'T-108 a sustained dirty tree escalates to a warning',
+    bar !== undefined && bar.props['data-environment'] === 'dirty-sustained' && bar.props['data-tone'] === 'warn',
+    bar && JSON.stringify(bar.props),
+  )
+  check(
+    'T-108 the warning names the card and how it recovers',
+    bar !== undefined && textOf(bar).indexOf('T-1') >= 0 && textOf(bar).indexOf('提交或暂存') >= 0,
+    bar && textOf(bar),
+  )
+
+  // The card itself shows the wait chip (amber), not a broken/red chip.
+  HOST.tasks[0].waitingReason = 'dirty-worktree'
+  HOST.environment = savedEnvironment
+  let cleanTree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  cleanTree = withHooks(panel, { initialView: 'board' })
+  const chip = findAll(cleanTree, (node) => node.props && node.props['data-waiting'] === 'dirty-worktree')[0]
+  check(
+    'T-108 the waiting card carries an amber "waiting for a clean tree" chip',
+    chip !== undefined && chip.props['data-tone'] === 'waiting' && textOf(chip).indexOf('等待主树干净') >= 0,
+    chip && JSON.stringify({ tone: chip.props['data-tone'], text: textOf(chip) }),
+  )
+  check('T-108 a clean tree shows no environment line at all', environmentBar(cleanTree) === undefined)
+
+  HOST.environment = savedEnvironment
+  HOST.tasks.forEach((task, index) => {
+    task.waitingReason = savedWaiting[index]
+  })
+  globalThis.fetch = savedFetch
+  withHooks(panel, { initialView: 'board' })
   await flush()
 }
 
