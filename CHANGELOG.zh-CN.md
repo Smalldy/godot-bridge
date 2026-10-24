@@ -18,6 +18,8 @@
 
 ### 变更
 
+- **任务中心快照瘦身：只带摘要、详情按需、支持 `since` 增量**：`GET /state` 只返回面板渲染所需字段（不含 spec / acceptance / evidence / 完整 history），并带 `seq` / `full` / `removed`；新增 `GET /task?id=` 按需取单卡完整详情（详情抽屉与编辑表单打开时才拉取，按 `updatedAt` 缓存），`GET /list?status=&cursor=&limit=&q=` 分页返回摘要且搜索在服务端。`/state?since=<seq>` 返回 `{tasks: [变化的卡], removed: [id], full: false}`；seq 缺失或过新、切换项目、增量日志断层时回退 `full: true`。给 agent 的 `board` 动作保持完整详情不变。本仓库真板（84 卡，81 done）经候选路由实测：明细快照 1,275,964 B → 摘要 183,096 B（远低于 200 KB 目标）——`merge.output` / `merge.tests` / merge 文件数组 / `test.evidence` / `review.reasons` 不再进入摘要，只留状态、轮次、时间戳与 `declaredCount` / `actualCount` / `outputLength` / `testsLength` / `evidenceLength`；完整字符串仍由 `/task?id=` 提供。面板用增量游标轮询，不再每 2.5 秒重发明细。
+
 - **任务中心技能正文补齐 Lead 角色与进入流程，并纠正四处误导**：正文开头新增「你是谁：Lead」（Lead 做什么、系统里的其它角色、明确不做什么），随后是进入流程（解析项目根、`openProject`、读 `board`、固定简报模板、无副作用）；把 `pause` 写清为派发器开关、`tick` 为立即 settle 的排查手段，「一次性小改动直接改」改为「任何改动都不要直接提交 target」（应急走独立 hotfix 分支并在守卫里登记例外），`unknown-project` 补充「尚未绑定或路径不对，先 `openProject`」；另补角色槽位串行（`queuePosition`、排队不计沉默）、`merged` 语义（ref 真的前进了，否则 `target-not-advanced`）、每卡可带 `target`，以及禁止给自己开守卫豁免。合并了面板/角色两节重复的 provision 描述，收紧只读 `skillsCatalog` 措辞；动作清单仍由注册表生成。
 
 - **侧边栏入口点名插件**：任务中心的侧边栏文案由 `任务` / `Tasks` 改为 `GodotBridge 任务中心` / `GodotBridge Task Center`，让用户能看出该 UI 入口来自哪个插件；面板内标题仍为 `任务中心` / `Task Center`。

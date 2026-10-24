@@ -1394,6 +1394,145 @@ export function createApi(ctx, options) {
   }
 
   /**
+   * The snapshot summary: only the fields the panel renders. spec / acceptance /
+   * evidence / full history stay behind /task so a 3-second poll does not resend
+   * them (81 done cards were ~1.2 MB, half of it detail). A bounded tail of the
+   * history (last 2 rows) is kept as `events` because the status page's activity stream needs
+   * the newest rows; full history is fetched on demand.
+   */
+  function summaryOf(board, task, now) {
+    const detail = detailOf(board, task, now)
+    const hist = Array.isArray(task.history) ? task.history.slice(-2).map((entry) => ({
+      at: entry.at,
+      by: entry.by,
+      byName: entry.byName === undefined ? null : entry.byName,
+      from: entry.from === undefined ? null : entry.from,
+      to: entry.to === undefined ? null : entry.to,
+      note: typeof entry.note === 'string' ? entry.note.slice(0, 120) : '',
+    })) : []
+    // Detail-class strings never ride the summary: merge verification output /
+    // tests, the test evidence, the review reasons and the file lists are what
+    // made a real 84-card board answer ~545 KB. Counts/statuses stay; /task keeps
+    // the strings (the drawer fetches it on open).
+    const merge = detail.merge === null || detail.merge === undefined ? null : {
+      status: detail.merge.status,
+      base: detail.merge.base,
+      target: detail.merge.target,
+      head: detail.merge.head,
+      mergeCommit: detail.merge.mergeCommit,
+      reviewer: detail.merge.reviewer,
+      conflict: detail.merge.conflict === undefined ? null : detail.merge.conflict,
+      at: detail.merge.at,
+      declaredCount: Array.isArray(detail.merge.declaredFiles) ? detail.merge.declaredFiles.length : 0,
+      actualCount: Array.isArray(detail.merge.actualFiles) ? detail.merge.actualFiles.length : 0,
+      outputLength: typeof detail.merge.output === 'string' ? detail.merge.output.length : 0,
+      testsLength: typeof detail.merge.tests === 'string' ? detail.merge.tests.length : 0,
+    }
+    const review = detail.review === null || detail.review === undefined ? null : {
+      status: detail.review.status,
+      by: detail.review.by,
+      byName: detail.review.byName === undefined ? null : detail.review.byName,
+      at: detail.review.at,
+      attempt: detail.review.attempt,
+      deliveredAt: detail.review.deliveredAt === undefined ? null : detail.review.deliveredAt,
+    }
+    const test = detail.test === null || detail.test === undefined ? null : {
+      status: detail.test.status,
+      by: detail.test.by,
+      byName: detail.test.byName === undefined ? null : detail.test.byName,
+      at: detail.test.at,
+      attempt: detail.test.attempt,
+      deliveredAt: detail.test.deliveredAt === undefined ? null : detail.test.deliveredAt,
+      evidenceLength: typeof detail.test.evidence === 'string' ? detail.test.evidence.length : 0,
+    }
+    return {
+      id: detail.id,
+      title: detail.title,
+      status: detail.status,
+      priority: detail.priority,
+      dependsOn: detail.dependsOn,
+      dependency: detail.dependency,
+      writeFileCount: Array.isArray(detail.writeFiles) ? detail.writeFiles.length : 0,
+      target: detail.target,
+      base: detail.base,
+      branch: detail.branch,
+      worktree: detail.worktree,
+      worktreeError: detail.worktreeError,
+      commit: detail.commit,
+      requiredRole: detail.requiredRole,
+      merge: merge,
+      review: review,
+      test: test,
+      assignee: detail.assignee,
+      attempts: detail.attempts,
+      maxAttempts: detail.maxAttempts,
+      leaseUntil: detail.leaseUntil,
+      leaseRemaining: detail.leaseRemaining,
+      leaseExpired: detail.leaseExpired,
+      leaseReminder: detail.leaseReminder,
+      dispatch: detail.dispatch,
+      waitingReason: detail.waitingReason,
+      candidate: detail.candidate,
+      queuePosition: detail.queuePosition,
+      createdAt: detail.createdAt,
+      updatedAt: detail.updatedAt,
+      events: hist,
+    }
+  }
+
+  /** In-memory delta log: fingerprints per task, a bounded log, one project at a time. */
+  function deltaMemory() {
+    if (state.memory.taskDelta === undefined || state.memory.taskDelta === null) {
+      state.memory.taskDelta = { project: null, seq: 0, fingerprints: new Map(), log: [] }
+    }
+    return state.memory.taskDelta
+  }
+
+  function fingerprintOf(task) {
+    return [task.status, task.updatedAt, task.attempts, task.target, task.commit,
+      task.review === null || task.review === undefined ? null : task.review.status,
+      task.test === null || task.test === undefined ? null : task.test.status,
+      task.merge === null || task.merge === undefined ? null : task.merge.status].join('|')
+  }
+
+  /** Record the latest fingerprints and return the seq the client should send back. */
+  function recordDelta(projectPath, board) {
+    const mem = deltaMemory()
+    if (mem.project !== projectPath) {
+      mem.project = projectPath
+      mem.seq = 0
+      mem.log = []
+      mem.fingerprints = new Map()
+      for (const task of board.tasks) mem.fingerprints.set(task.id, fingerprintOf(task))
+      mem.seq = 1
+      return { changed: board.tasks.map((task) => task.id), removed: [], seq: mem.seq, reset: true }
+    }
+    const changed = []
+    const seen = new Set()
+    for (const task of board.tasks) {
+      seen.add(task.id)
+      const fingerprint = fingerprintOf(task)
+      if (mem.fingerprints.get(task.id) !== fingerprint) {
+        mem.fingerprints.set(task.id, fingerprint)
+        changed.push(task.id)
+      }
+    }
+    const removed = []
+    for (const id of Array.from(mem.fingerprints.keys())) {
+      if (!seen.has(id)) {
+        mem.fingerprints.delete(id)
+        removed.push(id)
+      }
+    }
+    if (changed.length > 0 || removed.length > 0) {
+      mem.seq += 1
+      mem.log.push({ seq: mem.seq, changed: changed.slice(), removed: removed.slice() })
+      if (mem.log.length > 300) mem.log = mem.log.slice(-300)
+    }
+    return { changed: changed, removed: removed, seq: mem.seq, reset: false }
+  }
+
+  /**
    * Which tasks would wait on one held file right now: pending, dependency
    * ready, declaring a conflicting path, and not the holder itself. The
    * scheduler has no FIFO lock queue, so this is a picture of contention, never
@@ -1432,7 +1571,9 @@ export function createApi(ctx, options) {
     )
   }
 
-  async function snapshot(projectPath) {
+  async function snapshot(projectPath, options) {
+    const opts = options === undefined || options === null ? {} : options
+    const summaryOnly = opts.full === false
     projectPath = resolve(projectPath)
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
@@ -1452,26 +1593,68 @@ export function createApi(ctx, options) {
       worktrees = await worktreeSnapshot(projectPath, board)
       worktreeCache = { at: now, project: projectPath, value: worktrees }
     }
-    const tasks = board.tasks
+    const isoOf = (slot) => (slot === null || slot.at === null ? null : new Date(slot.at).toISOString())
+    const buildTask = (task) => {
+      const view = summaryOnly
+        ? summaryOf(board, task, now)
+        : Object.assign(detailOf(board, task, now), { candidate: candidateOf(projectPath, board, task) })
+      const reviewSlot = stageSlotOf(ctx, task.id, 'reviewer')
+      const testSlot = stageSlotOf(ctx, task.id, 'tester')
+      view.queuePosition = reviewSlot !== null && reviewSlot.position !== null ? reviewSlot.position : testSlot !== null && testSlot.position !== null ? testSlot.position : null
+      if (view.review !== null && view.review !== undefined) view.review = Object.assign({}, view.review, { deliveredAt: isoOf(reviewSlot) })
+      if (view.test !== null && view.test !== undefined) view.test = Object.assign({}, view.test, { deliveredAt: isoOf(testSlot) })
+      return view
+    }
+    const allTasks = board.tasks
       .slice()
       .sort((left, right) => {
         const rank = STATUS_RANK[left.status] - STATUS_RANK[right.status]
         return rank !== 0 ? rank : left.id.localeCompare(right.id)
       })
-      .map((task) => {
-        const detail = Object.assign(detailOf(board, task, now), { candidate: candidateOf(projectPath, board, task) })
-        const reviewSlot = stageSlotOf(ctx, task.id, 'reviewer')
-        const testSlot = stageSlotOf(ctx, task.id, 'tester')
-        detail.queuePosition = reviewSlot !== null && reviewSlot.position !== null ? reviewSlot.position : testSlot !== null && testSlot.position !== null ? testSlot.position : null
-        const isoOf = (slot) => (slot === null || slot.at === null ? null : new Date(slot.at).toISOString())
-        if (detail.review !== null && detail.review !== undefined) detail.review = Object.assign({}, detail.review, { deliveredAt: isoOf(reviewSlot) })
-        if (detail.test !== null && detail.test !== undefined) detail.test = Object.assign({}, detail.test, { deliveredAt: isoOf(testSlot) })
-        return detail
-      })
+      .map(buildTask)
+    let tasks = allTasks
+    let removed = []
+    let full = true
+    let seq = board.seq
+    if (summaryOnly) {
+      const delta = recordDelta(projectPath, board)
+      seq = delta.seq
+      const since = Number.isFinite(opts.since) ? Math.floor(opts.since) : null
+      const mem = deltaMemory()
+      if (since === null || delta.reset === true) {
+        full = true
+      } else if (since > delta.seq) {
+        // A cursor from the future (or a stale host) forces a full rebuild.
+        full = true
+      } else if (since === delta.seq) {
+        tasks = []
+        removed = []
+        full = false
+      } else {
+        const oldest = mem.log.length === 0 ? delta.seq : mem.log[0].seq
+        if (since < oldest - 1) {
+          full = true
+        } else {
+          const changed = new Set()
+          const gone = new Set()
+          for (const entry of mem.log) {
+            if (entry.seq <= since) continue
+            for (const id of entry.changed) changed.add(id)
+            for (const id of entry.removed) gone.add(id)
+          }
+          const byId = new Map(allTasks.map((task) => [task.id, task]))
+          tasks = Array.from(changed).filter((id) => byId.has(id)).map((id) => byId.get(id))
+          removed = Array.from(gone).filter((id) => !byId.has(id))
+          full = false
+        }
+      }
+    }
     return ok({
       project: projectPath,
       version: board.version,
-      seq: board.seq,
+      seq: seq,
+      full: full,
+      removed: removed,
       updatedAt: board.updatedAt,
       dispatch: board.dispatch,
       roles: roleRead.config,
@@ -1496,6 +1679,58 @@ export function createApi(ctx, options) {
       scheduler: scheduler === null ? null : scheduler.status(),
       serverTime: new Date(now).toISOString(),
     })
+  }
+
+  /** One task's full detail, fetched by the panel only when a drawer opens. */
+  async function taskDetail(projectPath, id) {
+    projectPath = resolve(projectPath)
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const task = model.findTask(read.board, String(id))
+    if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
+    const now = clock()
+    return ok({ task: Object.assign(detailOf(read.board, task, now), { candidate: candidateOf(projectPath, read.board, task) }) })
+  }
+
+  /**
+   * Paged/summarized task list for the panel: server-side filter + search, summary
+   * fields only, cursor = "<updatedAt>|<id>" (descending). The client no longer
+   * needs the whole board to search.
+   */
+  async function taskList(projectPath, query) {
+    projectPath = resolve(projectPath)
+    const q = query === undefined || query === null ? {} : query
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const now = clock()
+    const status = typeof q.status === 'string' && q.status !== '' ? q.status : null
+    const needle = typeof q.q === 'string' ? q.q.trim().toLowerCase() : ''
+    const limit = Number.isFinite(q.limit) ? Math.max(1, Math.min(200, Math.floor(q.limit))) : 50
+    let rows = read.board.tasks
+      .filter((task) => (status === null ? true : task.status === status))
+      .filter((task) => {
+        if (needle === '') return true
+        const haystack = [task.id, task.title, task.spec, task.acceptance].join('\n').toLowerCase()
+        return haystack.indexOf(needle) >= 0
+      })
+      .sort((left, right) => {
+        const byTime = String(right.updatedAt).localeCompare(String(left.updatedAt))
+        return byTime !== 0 ? byTime : String(right.id).localeCompare(String(left.id))
+      })
+    const cursor = typeof q.cursor === 'string' && q.cursor !== '' ? q.cursor : null
+    if (cursor !== null) {
+      const at = cursor.indexOf('|')
+      const cursorTime = at < 0 ? cursor : cursor.slice(0, at)
+      const cursorId = at < 0 ? '' : cursor.slice(at + 1)
+      rows = rows.filter((task) => {
+        const time = String(task.updatedAt)
+        return time < cursorTime || (time === cursorTime && String(task.id) < cursorId)
+      })
+    }
+    const page = rows.slice(0, limit)
+    const last = page.length === 0 ? null : page[page.length - 1]
+    const nextCursor = rows.length > limit && last !== null ? String(last.updatedAt) + '|' + String(last.id) : null
+    return ok({ tasks: page.map((task) => summaryOf(read.board, task, now)), nextCursor: nextCursor, count: page.length })
   }
 
   /** Renew the lease of every running task the caller owns. Any activity by the
@@ -2903,5 +3138,5 @@ export function createApi(ctx, options) {
     return snapshot(absolute)
   }
 
-  return { perform: perform, snapshot: snapshot, autoMergePending: autoMergePending, actions: ACTIONS, readActions: READ_ACTIONS }
+  return { perform: perform, snapshot: snapshot, taskDetail: taskDetail, taskList: taskList, autoMergePending: autoMergePending, actions: ACTIONS, readActions: READ_ACTIONS }
 }

@@ -102,8 +102,12 @@ try {
 }
 check('the row activates without a host', activationError === null, activationError && activationError.stack)
 check('the tool is registered', tools.length === 1 && tools[0].name === 'task_center', String(tools.length))
-check('three routes are registered', routes.length === 3, routes.map((route) => route.path).join(','))
-check('the routes include state, action and diagnostics', routes.map((route) => route.path).join(',').indexOf('/state') >= 0 && routes.map((route) => route.path).join(',').indexOf('/action') >= 0)
+check('five routes are registered', routes.length === 5, routes.map((route) => route.path).join(','))
+check(
+  'the routes include state, action, task, list and diagnostics',
+  ['/state', '/action', '/task', '/list', '/diagnostics'].every((path) => routes.some((route) => route.path === '/godot-bridge/task-center' + path)),
+  routes.map((route) => route.path).join(','),
+)
 check('an agent status listener is installed', listeners.some((entry) => entry.event === 'agent/status'))
 check('the effects are labelled', effects.some((label) => label.indexOf('task center') >= 0) && effects.some((label) => label.indexOf('task_center') >= 0), effects.join(' | '))
 check('a host-driven auto-merge sweep is installed', effects.some((label) => label.indexOf('auto-merge') >= 0), effects.join(' | '))
@@ -364,7 +368,7 @@ check('teardown disposes the skill registration', skillDisposals.length === 1 &&
     secondError = error
   }
   check('the row activates with a subprocess service present', secondError === null, secondError && secondError.stack)
-  check('the tool and routes still wire up', secondTools.length === 1 && secondRoutes.length === 3, String(secondTools.length) + '/' + String(secondRoutes.length))
+  check('the tool and routes still wire up', secondTools.length === 1 && secondRoutes.length === 5, String(secondTools.length) + '/' + String(secondRoutes.length))
   check('activation spawns no git process', spawned.length === 0, JSON.stringify(spawned))
 }
 
@@ -406,7 +410,7 @@ check('teardown disposes the skill registration', skillDisposals.length === 1 &&
     thirdError = error
   }
   check('a host without the skills/systemPrompt services still activates', thirdError === null, thirdError && thirdError.stack)
-  check('the tool and routes still wire up without the guide services', thirdTools.length === 1 && thirdRoutes.length === 3, String(thirdTools.length) + '/' + String(thirdRoutes.length))
+  check('the tool and routes still wire up without the guide services', thirdTools.length === 1 && thirdRoutes.length === 5, String(thirdTools.length) + '/' + String(thirdRoutes.length))
   check(
     'both optional services are requested through inject',
     requested.indexOf('skills') >= 0 && requested.indexOf('systemPrompt') >= 0,

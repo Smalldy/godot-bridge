@@ -20,6 +20,10 @@ export const ROUTE_PREFIX = '/godot-bridge/task-center'
 export const STATE_PATH = ROUTE_PREFIX + '/state'
 export const ACTION_PATH = ROUTE_PREFIX + '/action'
 export const DIAGNOSTICS_PATH = ROUTE_PREFIX + '/diagnostics'
+/** On-demand single-task detail (summary snapshots leave details out). */
+export const TASK_PATH = ROUTE_PREFIX + '/task'
+/** Paged/summarized list with server-side status filter and search. */
+export const LIST_PATH = ROUTE_PREFIX + '/list'
 
 const MAX_BODY_BYTES = 256 * 1024
 
@@ -105,7 +109,10 @@ export function registerTaskRoutes(ctx, options) {
         return
       }
       state.noteProject(project)
-      sendJson(res, 200, await api.snapshot(project))
+      const url = queryOf(req)
+      const sinceRaw = url === null ? null : url.searchParams.get('since')
+      const since = sinceRaw === null || sinceRaw === '' ? null : Number(sinceRaw)
+      sendJson(res, 200, await api.snapshot(project, { full: false, since: Number.isFinite(since) ? since : null }))
     } catch (error) {
       sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
     }
@@ -149,12 +156,53 @@ export function registerTaskRoutes(ctx, options) {
       if (result.ok === true && action !== 'openProject' && project !== null) {
         if (result.board !== undefined) delete result.board
         try {
-          result.snapshot = await api.snapshot(project)
+          result.snapshot = await api.snapshot(project, { full: false })
         } catch (error) {
           result.snapshotError = String((error && error.message) || error)
         }
       }
       sendJson(res, 200, result)
+    } catch (error) {
+      sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
+    }
+  }
+
+  async function handleTask(req, res) {
+    try {
+      const project = await resolveProject(req, null)
+      if (project === null) {
+        sendJson(res, 200, { ok: false, code: 'unknown-project', params: {} })
+        return
+      }
+      const url = queryOf(req)
+      const id = url === null ? '' : String(url.searchParams.get('id') === null ? '' : url.searchParams.get('id'))
+      if (id === '') {
+        sendJson(res, 400, { ok: false, code: 'missing-id', params: {} })
+        return
+      }
+      state.noteProject(project)
+      sendJson(res, 200, await api.taskDetail(project, id))
+    } catch (error) {
+      sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
+    }
+  }
+
+  async function handleList(req, res) {
+    try {
+      const project = await resolveProject(req, null)
+      if (project === null) {
+        sendJson(res, 200, { ok: false, code: 'unknown-project', params: {} })
+        return
+      }
+      const url = queryOf(req)
+      state.noteProject(project)
+      const get = (name) => (url === null ? null : url.searchParams.get(name))
+      sendJson(res, 200, await api.taskList(project, {
+        status: get('status'),
+        cursor: get('cursor'),
+        limit: get('limit') === null ? null : Number(get('limit')),
+        q: get('q'),
+      }))
     } catch (error) {
       sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
     }
@@ -175,6 +223,8 @@ export function registerTaskRoutes(ctx, options) {
   const disposers = [
     ctx.webServer.register({ kind: 'exact', path: STATE_PATH, handler: handleState }),
     ctx.webServer.register({ kind: 'exact', path: ACTION_PATH, handler: handleAction }),
+    ctx.webServer.register({ kind: 'exact', path: TASK_PATH, handler: handleTask }),
+    ctx.webServer.register({ kind: 'exact', path: LIST_PATH, handler: handleList }),
     ctx.webServer.register({ kind: 'exact', path: DIAGNOSTICS_PATH, handler: handleDiagnostics }),
   ]
   return function dispose() {
