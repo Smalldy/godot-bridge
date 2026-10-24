@@ -509,6 +509,99 @@ export function resolveLead(ctx, options) {
   return null
 }
 
+/**
+ * What the model should DO when a project has no Team yet (T-110). The instruction
+ * rides the refusal code (no-team-for-project) and the snapshot nextStep, so the
+ * session that called us reads it and fixes it itself — the plugin never reaches
+ * into another session and never fabricates an agent on its own.
+ */
+export const TEAM_BOOTSTRAP_INSTRUCTION =
+  'This project has no Team yet. Do this in the session you are in, before creating cards or starting dispatch: ' +
+  '1) make sure a Team Lead exists whose workspace is this project (spawn/create the agent through the team tools, or from the task_center roles page); ' +
+  '2) provision the minimum roster — one worker, one reviewer, one tester (rolesCreate/rolesBind, or spawnTeammate on the Lead); ' +
+  '3) retry the action you were doing. Never borrow another project team, never create cards before the Team exists, and do not ask another session to do it for you.'
+
+/**
+ * The Team this project can dispatch to (T-110).
+ *
+ * The Team belongs to the SESSION that owns the project, so the caller session id
+ * is the only key: with it, resolveLead answers "is there a Lead for THIS
+ * session"; without it (a user/panel call that carries no session, or a legacy
+ * board) the single-lead fallback applies, exactly like dispatch.
+ *
+ * ok is about the TEAM, not the host: a profile with no team services at all
+ * reports available:false + error:no-team-service and the gate stays off (the
+ * board must keep working without team tools). A gate refusal is therefore
+ * available === true && ok === false.
+ */
+export function projectTeamState(ctx, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
+  const { agents, agentTeams } = servicesFor(ctx)
+  const base = {
+    ok: false,
+    available: agents !== undefined && agents !== null && agentTeams !== undefined && agentTeams !== null,
+    source: 'none',
+    sessionScoped: sessionId !== null,
+    session: sessionId,
+    lead: null,
+    leadId: null,
+    leadSession: null,
+    members: [],
+    error: null,
+  }
+  if (base.available !== true) return Object.assign({}, base, { error: 'no-team-service' })
+  let lead = null
+  try {
+    lead = resolveLead(ctx, sessionId === null ? {} : { sessionId: sessionId })
+  } catch (error) {
+    return Object.assign({}, base, { error: 'team-unreadable' })
+  }
+  if (lead === null || lead === undefined) {
+    return Object.assign({}, base, { error: sessionId === null ? 'no-lead' : 'no-lead-for-project' })
+  }
+  let members = []
+  try {
+    const roster = agentTeams.listMembers(lead)
+    members = (Array.isArray(roster) ? roster : [])
+      .filter((member) => member !== null && typeof member === 'object')
+      .map((member) => ({
+        name: typeof member.name === 'string' ? member.name : String(member.id),
+        role: typeof member.role === 'string' ? member.role : 'teammate',
+        status: typeof member.status === 'string' ? member.status : 'unknown',
+      }))
+  } catch (error) {
+    members = []
+  }
+  // The agent descriptor may carry no display name (a roster walk returns the raw
+  // row); fall back to the lead's roster entry, then to its id.
+  const leadMember = members.filter((member) => member.role === 'lead')[0]
+  const leadName =
+    typeof lead.name === 'string' && lead.name !== ''
+      ? lead.name
+      : leadMember !== undefined
+        ? leadMember.name
+        : typeof lead.id === 'string' && lead.id !== ''
+          ? lead.id
+          : null
+  return Object.assign({}, base, {
+    ok: true,
+    source: 'session',
+    lead: leadName,
+    leadId: typeof lead.id === 'string' && lead.id !== '' ? lead.id : null,
+    leadSession: agentSessionOf(lead),
+    members: members,
+    error: null,
+  })
+}
+
+/** The structured hint that tells the calling session to bootstrap the Team. */
+export function teamBootstrapStep(team) {
+  if (team !== undefined && team !== null && team.ok === true) return null
+  if (team !== undefined && team !== null && team.available === false) return null
+  return { code: 'bootstrap-team', instruction: TEAM_BOOTSTRAP_INSTRUCTION }
+}
+
 /** Every live Lead in this profile. Dispatch uses the COUNT to decide whether an
  * ownerless (pre-T-97) card may fall back to the single team. */
 export function liveLeads(ctx) {

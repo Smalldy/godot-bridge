@@ -323,7 +323,7 @@ function applyRow(ctx) {
   // additions tell any session what this board is and how to use it:
   //   1. a runtime skill the model loads on demand, its body GENERATED from the
   //      action registry so it cannot drift from api.mjs;
-  //   2. four always-on rules for the things an agent must never get wrong.
+  //   2. five always-on rules for the things an agent must never get wrong.
   // Both services are optional, and a registration failure costs the guide, not
   // the row: activation keeps its tool, its routes and its scheduler.
   optionalService(ctx, 'skills', function (skills) {

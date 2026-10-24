@@ -175,7 +175,9 @@ export function registerTaskRoutes(ctx, options) {
       const url = queryOf(req)
       const sinceRaw = url === null ? null : url.searchParams.get('since')
       const since = sinceRaw === null || sinceRaw === '' ? null : Number(sinceRaw)
-      const snapshot = await api.snapshot(project, { full: false, since: Number.isFinite(since) ? since : null, resolvedFrom: target.resolvedFrom })
+      // T-110: the Team belongs to the session, so the panel snapshot is resolved
+      // for the SAME session the rest of its calls speak as.
+      const snapshot = await api.snapshot(project, { full: false, since: Number.isFinite(since) ? since : null, resolvedFrom: target.resolvedFrom, sessionId: sessionId })
       const sessionProject = target.resolvedFrom === 'session' ? project : await sessionProjectOf(sessionId)
       sendJson(res, 200, withSessionProject(snapshot, sessionProject))
     } catch (error) {
@@ -224,7 +226,7 @@ export function registerTaskRoutes(ctx, options) {
       if (result.ok === true && action !== 'openProject' && project !== null) {
         if (result.board !== undefined) delete result.board
         try {
-          result.snapshot = await api.snapshot(project, { full: false, resolvedFrom: target.resolvedFrom })
+          result.snapshot = await api.snapshot(project, { full: false, resolvedFrom: target.resolvedFrom, sessionId: sessionId })
         } catch (error) {
           result.snapshotError = String((error && error.message) || error)
         }

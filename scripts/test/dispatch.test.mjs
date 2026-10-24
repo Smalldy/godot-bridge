@@ -825,6 +825,87 @@ async function submitAndMerge(rig, id, evidence) {
   rig.scheduler.dispose()
 }
 
+// ── T-110: no Team for the project → no cards, no dispatch, and a next step ──
+{
+  const agentRows = [{ id: 'session-nobody' }]
+  const team = createTeam({ roster: [] })
+  const rig = createRig({ team: team, agents: { list: () => agentRows } })
+
+  const created = await rig.action('create', { title: 'card before the team' })
+  check('T-110 create is refused while the project has no Team', created.ok === false && created.code === 'no-team-for-project', JSON.stringify(created).slice(0, 240))
+  check(
+    'T-110 and the refusal says which team it looked for',
+    created.team !== undefined && created.team.ok === false && created.team.available === true && created.team.source === 'none' && created.team.error === 'no-lead',
+    JSON.stringify(created.team),
+  )
+  check(
+    'T-110 and carries an executable next step for THIS session',
+    created.nextStep !== undefined && created.nextStep.code === 'bootstrap-team' && created.nextStep.instruction.indexOf('Team') >= 0 && created.nextStep.instruction.indexOf('worker') >= 0 && created.nextStep.instruction.indexOf('another session') >= 0,
+    JSON.stringify(created.nextStep).slice(0, 300),
+  )
+
+  const started = await rig.action('start')
+  check('T-110 start is refused for the same reason', started.ok === false && started.code === 'no-team-for-project', JSON.stringify(started).slice(0, 240))
+  check(
+    'T-110 and the preflight names the missing team item',
+    started.preflight !== undefined && started.preflight.failed.some((check) => check.id === 'team') && started.nextStep !== undefined && started.nextStep.code === 'bootstrap-team',
+    JSON.stringify({ preflight: started.preflight, nextStep: started.nextStep }).slice(0, 400),
+  )
+
+  const boardBefore = await rig.action('board')
+  check(
+    'T-110 the board repeats the instruction while the Team is missing',
+    boardBefore.team !== undefined && boardBefore.team.ok === false && boardBefore.nextStep !== undefined && boardBefore.nextStep.code === 'bootstrap-team',
+    JSON.stringify({ team: boardBefore.team, nextStep: boardBefore.nextStep }).slice(0, 300),
+  )
+
+  // The session creates the Team: a Lead agent exists and leads the roster.
+  agentRows.push({ id: 'session-lead' })
+  team.roster.push({ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' })
+
+  const afterCreate = await rig.action('create', { title: 'card after the team' })
+  check('T-110 the same create passes once the Team exists', afterCreate.ok === true && afterCreate.task.title === 'card after the team', JSON.stringify(afterCreate).slice(0, 240))
+  const afterStart = await rig.action('start')
+  check('T-110 and start passes too', afterStart.ok === true && afterStart.dispatch.state === 'running', JSON.stringify(afterStart).slice(0, 240))
+  const boardAfter = await rig.action('board')
+  check(
+    'T-110 the snapshot now reports the Team and drops the next step',
+    boardAfter.team !== undefined && boardAfter.team.ok === true && boardAfter.team.source === 'session' && boardAfter.team.lead === 'lead' && boardAfter.team.members.length >= 1 && boardAfter.nextStep === null,
+    JSON.stringify({ team: boardAfter.team, nextStep: boardAfter.nextStep }).slice(0, 300),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-110: the team check is part of the readiness gate, but never closes the
+// project: the panel must open it to show how to initialize ──────────────────
+{
+  const agentRows = [{ id: 'session-nobody' }]
+  const team = createTeam({ roster: [] })
+  const rig = createRig({ team: team, agents: { list: () => agentRows } })
+  const opened = await rig.action('openProject', { path: rig.project })
+  check('T-110 a project without a Team still opens so the panel can help', opened.ok === true, JSON.stringify(opened).slice(0, 240))
+  check(
+    'T-110 but its preflight reports the team item as missing',
+    opened.preflight !== undefined && opened.preflight.ok === false && opened.preflight.failed.some((check) => check.id === 'team') && opened.preflight.openOk === true,
+    JSON.stringify({ ok: opened.preflight && opened.preflight.ok, openOk: opened.preflight && opened.preflight.openOk, failed: opened.preflight && opened.preflight.failed }).slice(0, 400),
+  )
+  check(
+    'T-110 and the opened snapshot carries the bootstrap instruction',
+    opened.team !== undefined && opened.team.ok === false && opened.nextStep !== undefined && opened.nextStep.code === 'bootstrap-team',
+    JSON.stringify({ team: opened.team, nextStep: opened.nextStep }).slice(0, 300),
+  )
+  agentRows.push({ id: 'session-lead' })
+  team.roster.push({ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' })
+  const reopened = await rig.action('openProject', { path: rig.project })
+  const teamCheck = reopened.preflight === undefined ? undefined : reopened.preflight.checks.filter((check) => check.id === 'team')[0]
+  check(
+    'T-110 with a Team the same preflight item passes and names the Lead',
+    reopened.ok === true && reopened.preflight.ok === true && teamCheck !== undefined && teamCheck.ok === true && String(teamCheck.detail).indexOf('lead') >= 0,
+    JSON.stringify(teamCheck),
+  )
+  rig.scheduler.dispose()
+}
+
 // ── mandatory worktrees at claim time ──────────────────────────────────────
 // A fake git that answers like a clean repository; every call is recorded so a
 // test can assert the exact command and cwd without starting git.

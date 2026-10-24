@@ -328,6 +328,11 @@ window.__ModuleLoader__.load({
 				waitEnvironmentDirty: '等待主树干净（自动重试）',
 				environmentTransient: '主树当前有未提交改动（合并进行中常见）· 受影响的卡本轮跳过，下一轮自动重试 · 最近检查 {ago}',
 				environmentSustained: '主树持续有未提交改动：{ids} 暂时无法派发 · 提交或暂存后会自动恢复 · 最近检查 {ago}',
+				projectTeam: '该项目团队',
+				projectTeamOk: '{lead} · {n} 名成员',
+				projectTeamMissing: '无 → 请在该会话中初始化',
+				projectTeamUnavailable: '本 profile 没有团队服务（看板仍可用）',
+				projectTeamNext: '下一步（先建团队再建卡）：',
 				waitConcurrency: '并发已满',
 				waitCandidateStale: '候选过期，自动重建中',
 				waitNeedsRebase: '等待人工 rebase',
@@ -827,6 +832,11 @@ window.__ModuleLoader__.load({
 				waitEnvironmentDirty: 'waiting for a clean main tree (auto-retry)',
 				environmentTransient: 'The main tree has uncommitted changes (common while a merge runs) · affected cards were skipped this pass and will retry automatically · last checked {ago}',
 				environmentSustained: 'The main tree stays dirty: {ids} cannot be dispatched · it recovers once the tree is committed or stashed · last checked {ago}',
+				projectTeam: 'Project team',
+				projectTeamOk: '{lead} · {n} members',
+				projectTeamMissing: 'none → initialize it in this session',
+				projectTeamUnavailable: 'no team services in this profile (the board still works)',
+				projectTeamNext: 'Next step (create the team before cards):',
 				waitConcurrency: 'concurrency full',
 				waitCandidateStale: 'candidate stale, rebuilding',
 				waitNeedsRebase: 'waiting for a manual rebase',
@@ -1160,6 +1170,12 @@ window.__ModuleLoader__.load({
 				'.gbt-projectsource{flex:none;font-size:10px;line-height:1.6;padding:0 6px;border-radius:999px;text-transform:none;letter-spacing:0;background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-secondary);border:0.5px solid var(--dsw-alias-border-l4);cursor:default}' +
 				'.gbt-projectsource[data-project-source="session"]{color:var(--dsw-alias-state-business-primary,#4f7cff);border-color:rgba(79,124,255,.35)}',
 			'.gbt-project{margin:0;font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+			// T-110: the Team the board dispatches to. A missing team is a WAIT, not an
+			// error: amber-ish text that tells the session to create it.
+			'.gbt-projectteam{margin:1px 0 0;font-size:10px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px;color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-projectteam[data-project-team="ok"]{color:var(--dsw-alias-label-secondary)}',
+			'.gbt-projectteam[data-project-team="missing"]{color:var(--dsw-alias-state-warning-primary,#c98500)}',
+			'.gbt-projectteam[data-project-team="unavailable"]{color:var(--dsw-alias-label-tertiary);opacity:.75}',
 			'.gbt-counts{display:flex;gap:6px;flex-wrap:wrap}',
 			'.gbt-count{display:flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;background:var(--dsw-alias-bg-layer-4);font-size:11px;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-count b{font-weight:600;color:var(--dsw-alias-label-primary)}',
@@ -1876,6 +1892,10 @@ window.__ModuleLoader__.load({
 				// are waiting on it — the panel separates a merge-window blip from a
 				// really dirty checkout with this.
 				environment: payload.environment === undefined || payload.environment === null ? null : payload.environment,
+				// T-110: the project's Team and, when it does not exist, the one
+				// instruction the session must act on.
+				team: payload.team === undefined || payload.team === null ? null : payload.team,
+				nextStep: payload.nextStep === undefined || payload.nextStep === null ? null : payload.nextStep,
 				// How full the board file is: { bytes, limit, percent, level, cards,
 				// bytesPerCard, headroomCards, warning }. The status page warns at 50%
 				// and 75% of the cap, before the file stops loading at all.
@@ -3983,6 +4003,13 @@ window.__ModuleLoader__.load({
 						h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
 						h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
 						panelSessionLine,
+						snapshot.nextStep === null || snapshot.nextStep === undefined
+							? null
+							: h(
+									'div',
+									{ className: 'gbt-statuswhy', 'data-status-team': 'missing', 'data-status-next-step': String(snapshot.nextStep.code) },
+									t('projectTeamNext') + ' ' + String(snapshot.nextStep.instruction),
+								),
 						archivedCount > 0
 							? h('div', { className: 'gbt-statusscan', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)), ' ', h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'archive-open', onClick: function () { if (props.onOpenArchive !== undefined) props.onOpenArchive() } }, t('archiveOpen')))
 							: null,
@@ -4979,6 +5006,10 @@ window.__ModuleLoader__.load({
 					void store.send(active ? 'pause' : 'start')
 				}
 
+				// T-110: the project's Team (and the session's next step while it is
+				// missing) is read by the header line and the status card.
+				const projectTeam = snapshot.team === null || snapshot.team === undefined ? null : snapshot.team
+
 				const tabs = [
 					{ key: 'board', label: t('boardTab') },
 					{ key: 'queue', label: t('queue') },
@@ -5010,6 +5041,25 @@ window.__ModuleLoader__.load({
 										),
 							),
 							h('p', { className: 'gbt-project', title: snapshot.project || '' }, snapshot.project === null ? t('projectUnknown') : snapshot.project),
+							// T-110: whose Team the board dispatches to, and what to do
+							// while it does not exist (the session creates it, never the panel).
+							projectTeam === null
+								? null
+								: h(
+										'p',
+										{
+											className: 'gbt-projectteam',
+											'data-project-team': projectTeam.ok === true ? 'ok' : projectTeam.available === false ? 'unavailable' : 'missing',
+											'data-team-lead': projectTeam.lead === null || projectTeam.lead === undefined ? '' : String(projectTeam.lead),
+											title: snapshot.nextStep === null || snapshot.nextStep === undefined ? '' : String(snapshot.nextStep.instruction),
+										},
+										t('projectTeam') + '：' +
+											(projectTeam.ok === true
+												? t('projectTeamOk').replace('{lead}', String(projectTeam.lead === null || projectTeam.lead === undefined ? '—' : projectTeam.lead)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0))
+												: projectTeam.available === false
+													? t('projectTeamUnavailable')
+													: t('projectTeamMissing')),
+									),
 						),
 					),
 					h(
