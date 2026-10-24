@@ -1549,9 +1549,42 @@ window.__ModuleLoader__.load({
 				actionResult: actionResult === undefined || actionResult === null ? null : actionResult,
 				actionError: payload.actionError === undefined || payload.actionError === null ? null : payload.actionError,
 				version: payload.version,
+				seq: Number.isFinite(payload.seq) ? payload.seq : null,
+				full: payload.full !== false,
+				details: {},
 				updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : null,
 				serverTime: payload.serverTime,
 			}
+		}
+
+		/**
+		 * Apply a state answer to the previous snapshot. `full:false` is a delta
+		 * (changed summaries + removed ids) and is merged; `full:true` replaces
+		 * the board (the client clears and rebuilds, as the protocol requires).
+		 */
+		function tcMergeSnapshot(previous, payload) {
+			if (payload.full === false && previous !== null && previous !== undefined && previous.seq !== null && Array.isArray(previous.tasks)) {
+				const byId = new Map(previous.tasks.map(function (task) { return [task.id, task] }))
+				const details = Object.assign({}, previous.details)
+				for (const task of (Array.isArray(payload.tasks) ? payload.tasks : [])) {
+					const before = byId.get(task.id)
+					if (before !== undefined && before.updatedAt !== task.updatedAt) delete details[task.id]
+					byId.set(task.id, Object.assign({}, before === undefined ? {} : before, task))
+				}
+				for (const id of (Array.isArray(payload.removed) ? payload.removed : [])) {
+					byId.delete(id)
+					delete details[id]
+				}
+				return Object.assign({}, previous, payload, {
+					tasks: Array.from(byId.values()),
+					details: details,
+					seq: Number.isFinite(payload.seq) ? payload.seq : previous.seq,
+					full: false,
+				})
+			}
+			const next = tcSnapshot(payload, 'host', '')
+			next.details = {}
+			return next
 		}
 
 		/**
@@ -1615,17 +1648,19 @@ window.__ModuleLoader__.load({
 			async function load() {
 				if (loading !== null) return loading
 				const remembered = tcRememberedProject()
-				const url = remembered === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(remembered)
+				let url = remembered === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(remembered)
+				if (snapshot.seq !== null && snapshot.seq !== undefined) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'since=' + String(snapshot.seq)
 				loading = (async function () {
 					try {
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
-						if (payload && payload.ok === true && Array.isArray(payload.tasks)) {
+						if (payload && payload.ok === true && (Array.isArray(payload.tasks) || payload.full === false)) {
 							if (typeof payload.project === 'string') tcRememberProject(payload.project)
 							// A routine poll keeps the outcome of the user's last action until
 							// the next action replaces it; only the board data is refreshed.
-							const next = tcSnapshot(payload, 'host', '')
+							const next = tcMergeSnapshot(snapshot, payload)
 							next.actionResult = snapshot.actionResult
 							next.actionError = snapshot.actionError
+							next.message = snapshot.message
 							emit(next)
 						} else {
 							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
@@ -1691,6 +1726,35 @@ window.__ModuleLoader__.load({
 				}
 			}
 
+			/**
+			 * Fetch one task's full detail on demand (drawer/view open). Cached per
+			 * task updatedAt, so a poll that did not change the card never refetches;
+			 * a changed card drops its cache entry in tcMergeSnapshot.
+			 */
+			const detailInFlight = new Set()
+			async function loadDetail(id) {
+				const summary = snapshot.tasks.filter(function (task) { return task.id === id })[0]
+				if (summary === undefined) return
+				const cached = snapshot.details[id]
+				if (cached !== undefined && cached.updatedAt === summary.updatedAt) return
+				if (detailInFlight.has(id)) return
+				detailInFlight.add(id)
+				try {
+					const project = tcRememberedProject()
+					const url = TC_TASK_URL + '?id=' + encodeURIComponent(id) + (project === null ? '' : '&project=' + encodeURIComponent(project))
+					const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
+					if (payload && payload.ok === true && payload.task !== undefined && payload.task !== null) {
+						emit(Object.assign({}, snapshot, {
+							details: Object.assign({}, snapshot.details, { [id]: { task: payload.task, updatedAt: summary.updatedAt } }),
+						}))
+					}
+				} catch (error) {
+					// A failed detail fetch must not blank the card: the summary stays.
+				} finally {
+					detailInFlight.delete(id)
+				}
+			}
+
 			function startPolling(ms) {
 				if (timer !== null) return
 				timer = setInterval(function () {
@@ -1715,6 +1779,7 @@ window.__ModuleLoader__.load({
 				},
 				load: load,
 				send: send,
+				loadDetail: loadDetail,
 				startPolling: startPolling,
 				stopPolling: stopPolling,
 			}
@@ -4086,7 +4151,11 @@ window.__ModuleLoader__.load({
 				const counts = snapshot.counts === undefined || snapshot.counts === null ? {} : snapshot.counts
 				const tasks = snapshot.tasks
 				const selected = selectedId === null ? null : tasks.filter(function (task) { return task.id === selectedId })[0] || null
-				const editingTask = editing === null ? null : editing === 'new' ? null : tasks.filter(function (task) { return task.id === editing })[0] || null
+				const editingTask = editing === null || editing === 'new' ? null : (function () {
+					const base = tasks.filter(function (task) { return task.id === editing })[0]
+					if (base === undefined) return null
+					return Object.assign({}, base, snapshot.details[editing] === undefined ? {} : snapshot.details[editing].task)
+				})()
 				const queue = snapshot.queue === undefined || snapshot.queue === null ? [] : snapshot.queue
 				const scheduler = snapshot.scheduler
 				const workersPool = snapshot.workers
@@ -4099,12 +4168,15 @@ window.__ModuleLoader__.load({
 
 				function openTask(id) {
 					setSelectedId(id)
+					void store.loadDetail(id)
 				}
 				function closeDetail() {
 					setSelectedId(null)
 				}
 				function startEdit(task) {
-					setEditing(task === null || task === undefined ? 'new' : task.id)
+					const id = task === null || task === undefined ? 'new' : task.id
+					setEditing(id)
+					if (id !== 'new') void store.loadDetail(id)
 				}
 				function toggleDispatch() {
 					void store.send(active ? 'pause' : 'start')
@@ -4294,7 +4366,7 @@ window.__ModuleLoader__.load({
 								{ className: 'gbt-main' },
 								h('div', { className: 'gbt-content' }, tabsView, h('div', { className: 'gbt-view' }, content)),
 								selected === null ? null : h(DetailView, {
-									task: selected,
+									task: Object.assign({}, selected, snapshot.details[selected.id] === undefined ? {} : snapshot.details[selected.id].task),
 									snapshot: snapshot,
 									t: t,
 									now: now,

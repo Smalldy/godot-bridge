@@ -2,7 +2,7 @@
 // that it calls the same actions as the tool.
 
 import { join } from 'node:path'
-import { registerTaskRoutes, STATE_PATH, ACTION_PATH } from '../../plugin/task-center/routes.mjs'
+import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH } from '../../plugin/task-center/routes.mjs'
 import { createFakeFs, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
@@ -77,7 +77,7 @@ const postTo = (target, body) =>
 
 const rig = createRig({ allowSpawn: false })
 const surface = install(rig)
-check('registers state, action and diagnostics', surface.specs.length === 3, String(surface.specs.length))
+check('registers state, action, task, list and diagnostics', surface.specs.length === 5, String(surface.specs.length))
 
 // no project yet
 {
@@ -1754,7 +1754,8 @@ function driftRig(options) {
   check('the host sweep merges after a passed test without a merger agent', sweep.ok === true && sweep.merged.join(',') === 'T-1', JSON.stringify(sweep))
   const after = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
   check('the task is done and merged', after.json().tasks[0].status === 'done' && after.json().tasks[0].merge.status === 'merged', after.text)
-  const mergeHistory = after.json().tasks[0].history[after.json().tasks[0].history.length - 1]
+  const afterDetail = await call(surface, TASK_PATH + '?id=T-1&project=' + encodeURIComponent(PROJECT), {})
+  const mergeHistory = afterDetail.json().task.history[afterDetail.json().task.history.length - 1]
   check(
     'the automatic sweep writes a literal name, never the @ tool label',
     typeof mergeHistory.byName === 'string' && mergeHistory.byName.charAt(0) !== '@' && mergeHistory.byName === 'system',
@@ -4452,6 +4453,114 @@ rig.scheduler.dispose()
     refCalls.length > 0 && refCalls.every((call) => call.args.join(' ').indexOf('refs/heads/fix/x') >= 0),
     JSON.stringify(refCalls.map((call) => call.args)),
   )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── T-82: summary snapshots, since deltas, on-demand detail and paged list ──
+{
+  const bigSpec = 'Spec detail '.repeat(80)
+  const bigAccept = 'Acceptance detail '.repeat(80)
+  const bigEvidence = 'Evidence detail '.repeat(80)
+  const stamp = new Date().toISOString()
+  const tasks = []
+  for (let index = 1; index <= 81; index++) {
+    tasks.push({
+      id: 'T-' + String(index),
+      title: index === 7 ? 'unique-needle card' : 'Done card ' + String(index),
+      status: 'done',
+      priority: 0,
+      dependsOn: [],
+      writeFiles: [],
+      verify: null,
+      base: 'base-sha',
+      target: 'feat/task-center-v2',
+      branch: 'task/T-' + String(index) + '-1',
+      worktree: null,
+      worktreeError: null,
+      commit: 'commit-sha',
+      actualFiles: [],
+      requiredRole: null,
+      merge: { status: 'merged', base: 'base-sha', target: 'feat/task-center-v2', head: 'commit-sha', mergeCommit: 'merge-sha', declaredFiles: [], actualFiles: [], tests: 'npm test', reviewer: null, conflict: null, output: null, at: stamp },
+      review: { status: 'approved', by: '@reviewer', byName: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
+      test: { status: 'passed', by: '@tester', byName: 'tester-1', at: stamp, evidence: bigEvidence, attempt: 1 },
+      assignee: null,
+      attempts: 1,
+      maxAttempts: 3,
+      evidence: bigEvidence,
+      dispatch: null,
+      leaseUntil: null,
+      createdBy: '@user',
+      createdAt: stamp,
+      updatedAt: stamp,
+      spec: bigSpec,
+      acceptance: bigAccept,
+      history: [
+        { at: stamp, by: '@fixer', byName: 'fixer', from: 'pending', to: 'running', note: 'dispatched' },
+        { at: stamp, by: '@fixer', byName: 'fixer', from: 'running', to: 'reviewing', note: 'submitted' },
+        { at: stamp, by: '@reviewer', byName: 'reviewer-1', from: 'reviewing', to: 'testing', note: 'approved' },
+      ],
+    })
+  }
+  const rig = createRig({ allowSpawn: false })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 82, dispatch: { state: 'paused' }, tasks: tasks }))
+  const surface = install(rig)
+  const fullRes = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  const full = fullRes.json()
+  const bytes = Buffer.byteLength(fullRes.text, 'utf8')
+  check('an 81-card snapshot is under 200 KB', full.ok === true && full.tasks.length === 81 && bytes < 200 * 1024, String(bytes) + ' bytes')
+  check(
+    'the summary carries render fields but no spec/acceptance/evidence/history',
+    full.tasks[0].title !== undefined &&
+      full.tasks[0].status === 'done' &&
+      full.tasks[0].spec === undefined &&
+      full.tasks[0].acceptance === undefined &&
+      full.tasks[0].evidence === undefined &&
+      full.tasks[0].history === undefined &&
+      Array.isArray(full.tasks[0].events) === true,
+    JSON.stringify(Object.keys(full.tasks[0])),
+  )
+  check('the summary snapshot is marked full with a seq cursor', full.full === true && Number.isFinite(full.seq), JSON.stringify({ full: full.full, seq: full.seq }))
+  const boardFull = await rig.action('board')
+  const boardBytes = Buffer.byteLength(JSON.stringify(boardFull), 'utf8')
+  check(
+    'the agent board keeps full details while the HTTP state is slim',
+    boardFull.tasks[0].spec === bigSpec && boardFull.tasks[0].history.length === 3 && boardBytes > bytes * 2,
+    JSON.stringify({ boardBytes: boardBytes, stateBytes: bytes }),
+  )
+  const detailRes = await call(surface, TASK_PATH + '?id=T-1&project=' + encodeURIComponent(PROJECT), {})
+  const detail = detailRes.json()
+  check(
+    'the detail route returns the full task on demand',
+    detail.ok === true && detail.task.id === 'T-1' && detail.task.spec === bigSpec && Array.isArray(detail.task.history) && detail.task.history.length === 3,
+    detailRes.text.slice(0, 200),
+  )
+  const listRes = await call(surface, LIST_PATH + '?project=' + encodeURIComponent(PROJECT) + '&status=done&limit=10', {})
+  const list = listRes.json()
+  check('the list route pages summaries with a nextCursor', list.ok === true && list.tasks.length === 10 && typeof list.nextCursor === 'string' && list.tasks[0].history === undefined, JSON.stringify({ n: list.tasks.length, next: list.nextCursor }))
+  const searchRes = await call(surface, LIST_PATH + '?project=' + encodeURIComponent(PROJECT) + '&q=unique-needle', {})
+  const search = searchRes.json()
+  check('search happens on the server', search.ok === true && search.tasks.length === 1 && search.tasks[0].id === 'T-7', JSON.stringify(search.tasks.map((task) => task.id)))
+  // delta: one update then one delete
+  const seq = full.seq
+  await rig.action('update', { id: 'T-1', title: 'Done card 1 (edited)' })
+  const deltaRes = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT) + '&since=' + String(seq), {})
+  const delta = deltaRes.json()
+  check(
+    'a since cursor returns only the changed summary and full:false',
+    delta.ok === true && delta.full === false && Array.isArray(delta.tasks) && delta.tasks.length === 1 && delta.tasks[0].id === 'T-1' && Array.isArray(delta.removed),
+    deltaRes.text.slice(0, 200),
+  )
+  await rig.action('delete', { id: 'T-5', force: true })
+  const removedRes = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT) + '&since=' + String(delta.seq), {})
+  const removed = removedRes.json()
+  check('a deletion comes back as removed ids', removed.ok === true && removed.full === false && removed.removed.indexOf('T-5') >= 0, JSON.stringify(removed.removed))
+  const future = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT) + '&since=' + String(removed.seq + 50), {})
+  check('a cursor from the future falls back to full:true', future.json().ok === true && future.json().full === true, future.text.slice(0, 160))
+  // project switch: the delta log is per project and starts full
+  seedBoard(rig.fs, PROJECT + '-two', JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [Object.assign({}, tasks[0], { id: 'T-2', title: 'other project card' })] }))
+  const switched = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT + '-two') + '&since=' + String(removed.seq), {})
+  check('switching projects forces a full snapshot', switched.json().ok === true && switched.json().full === true && switched.json().tasks.length === 1, switched.text.slice(0, 160))
   surface.dispose()
   rig.scheduler.dispose()
 }
