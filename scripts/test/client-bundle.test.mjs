@@ -86,7 +86,15 @@ const registrations = []
 const injected = []
 const disposers = []
 let slotWithdrawals = 0
+// T-99: the fake Host shell. `hostServices` is what ctx.get(name) answers, so a
+// test can decide whether the panel sees the shell's real session or nothing at
+// all; `injectCalls` records the optional inject(cb) wiring a live shell runs.
+let hostServices = {}
+const injectCalls = []
 const ctx = {
+  get(name) {
+    return hostServices[name]
+  },
   locale: {
     register(ns, table) { dicts[ns] = table; return () => {} },
     bind(ns) {
@@ -108,7 +116,30 @@ const ctx = {
     if (typeof disposer === 'function') disposers.push({ label, disposer })
     return typeof disposer === 'function' ? disposer : () => {}
   },
-  inject() { return () => {} },
+  inject(deps, callback) {
+    if (typeof callback !== 'function') return () => {}
+    const list = Array.isArray(deps) ? deps : []
+    injectCalls.push({ deps: list, callback })
+    // A live shell runs the callback once its services are mounted, handing it a
+    // context where the injected services are properties.
+    if (list.every((dep) => hostServices[dep] !== undefined)) runInjected({ deps: list, callback })
+    return () => {}
+  },
+}
+
+/** Run one recorded inject() as the live shell would: deps as ctx properties. */
+function runInjected(entry) {
+  const scoped = Object.create(ctx)
+  entry.deps.forEach((dep) => {
+    scoped[dep] = hostServices[dep]
+  })
+  entry.callback(scoped)
+}
+/** Replay every recorded inject() whose services the test now provides. */
+function replayInjects() {
+  injectCalls.forEach((entry) => {
+    if (entry.deps.every((dep) => hostServices[dep] !== undefined)) runInjected(entry)
+  })
 }
 
 const plugin = registration.factory((specifier) => {
@@ -3203,6 +3234,9 @@ await flush()
     'input[placeholder="项目目录的绝对路径"]',
     '[data-project-source="session"]',
     '[data-project-mismatch="true"]',
+    '[data-panel-session]',
+    'data-session-source="host"',
+    'data-session-source="window"',
     '[data-action="use-current-project"]',
     '[data-action="switch-to-session-project"]',
     '打开项目',
@@ -4079,6 +4113,122 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     JSON.stringify({ badge: manualBadge && textOf(manualBadge), urls: urls.slice(-2) }),
   )
   globalThis.fetch = savedFetch
+}
+
+// ── T-99: the panel speaks as the host's real session, never a guess ───────
+// DSH's shell owns the shown session (uiWorkspace.selection, persisted as
+// dsh.sessions.current). When it is readable the panel uses that id everywhere —
+// /state, /list, /task and action bodies — so the panel and the tool path share
+// one binding with no URL parameter. When it is not readable the panel keeps the
+// per-window fallback and never borrows another session.
+{
+  const savedFetch = globalThis.fetch
+  const stateUrls = []
+  const subscribers = []
+  let hostSession = 'host-session-A'
+  hostServices = {
+    uiWorkspace: {
+      selection: {
+        getSnapshot: () => ({ sessionId: hostSession }),
+        subscribe: (listener) => { subscribers.push(listener); return () => {} },
+      },
+    },
+  }
+  // A live shell mounts the workspace service AFTER apply(): replay that wiring.
+  replayInjects()
+  globalThis.fetch = async function (url, options) {
+    if (options !== undefined && options.method === 'POST') {
+      const body = JSON.parse(options.body)
+      posts.push(body)
+      return { json: async () => ({ ok: true, snapshot: HOST }) }
+    }
+    stateUrls.push(String(url))
+    return { json: async () => HOST }
+  }
+  STORAGE.delete('godotBridge.taskCenter.session')
+  let t99 = withHooks(panel, { initialView: 'board' })
+  await flush()
+  t99 = withHooks(panel, { initialView: 'board' })
+  await flush()
+  t99 = withHooks(panel, { initialView: 'board' })
+  check(
+    'T-99 /state is asked as the host session, not a minted one',
+    stateUrls.length > 0 && stateUrls.every((url) => url.indexOf('session=host-session-A') >= 0),
+    JSON.stringify(stateUrls.slice(-2)),
+  )
+  const startButton = findAll(t99, (node) => node.type === 'button' && textOf(node).indexOf('开始派发') >= 0)[0]
+  const postsBefore = posts.length
+  if (startButton !== undefined) startButton.props.onClick()
+  await flush()
+  await flush()
+  const startPost = posts.slice(postsBefore).filter((post) => post.action === 'start')[0]
+  check('T-99 an action carries the host session too', startPost !== undefined && startPost.session === 'host-session-A', JSON.stringify(startPost))
+
+  // The host switches the shown session: the panel follows without a reload.
+  hostSession = 'host-session-B'
+  const stateBeforeSwitch = stateUrls.length
+  subscribers.slice(-1).forEach((listener) => listener())
+  await flush()
+  await flush()
+  check(
+    'T-99 switching the host session reloads as the new session',
+    stateUrls.length > stateBeforeSwitch && stateUrls[stateUrls.length - 1].indexOf('session=host-session-B') >= 0,
+    JSON.stringify(stateUrls.slice(-2)),
+  )
+
+  // The status page names the identity and its source (the visible half of the story).
+  const statusTree = withHooks(panel, { initialView: 'status' })
+  const sessionRow = findAll(statusTree, (node) => node.props && node.props['data-panel-session'] !== undefined)[0]
+  check(
+    'T-99 the status page shows the panel session and that the host provided it',
+    sessionRow !== undefined && sessionRow.props['data-panel-session'] === 'host-session-B' && sessionRow.props['data-session-source'] === 'host' && textOf(sessionRow).indexOf('宿主提供的当前会话') >= 0,
+    sessionRow && JSON.stringify({ id: sessionRow.props['data-panel-session'], source: sessionRow.props['data-session-source'], text: textOf(sessionRow) }),
+  )
+
+  // uiSession.current is the second host source (a shell that has no workspace store).
+  hostServices = { uiSession: { current: { getSnapshot: () => ({ key: 'host-session-C' }) } } }
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+  check(
+    'T-99 uiSession.current is used when the workspace store is silent',
+    stateUrls[stateUrls.length - 1].indexOf('session=host-session-C') >= 0,
+    JSON.stringify(stateUrls.slice(-1)),
+  )
+
+  // No host identity at all: the per-window fallback, still nothing borrowed.
+  hostServices = {}
+  STORAGE.delete('godotBridge.taskCenter.session')
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+  const fallbackUrl = stateUrls[stateUrls.length - 1]
+  check(
+    'T-99 without any host session the panel falls back to its own window id',
+    fallbackUrl.indexOf('session=web-') >= 0,
+    JSON.stringify(fallbackUrl),
+  )
+  check('T-99 and it writes that fallback for this window only', String(STORAGE.get('godotBridge.taskCenter.session')).indexOf('web-') === 0, String(STORAGE.get('godotBridge.taskCenter.session')))
+
+  // An EMPTY host selection is not a hint: no "most recent session" fallback.
+  hostServices = { uiWorkspace: { selection: { getSnapshot: () => ({}), subscribe: () => () => {} } } }
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+  check(
+    'T-99 an empty host selection is never guessed into some other session',
+    stateUrls[stateUrls.length - 1].indexOf('session=web-') >= 0,
+    JSON.stringify(stateUrls.slice(-1)),
+  )
+
+  hostServices = {}
+  globalThis.fetch = savedFetch
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+  await flush()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
