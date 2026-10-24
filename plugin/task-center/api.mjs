@@ -1974,6 +1974,7 @@ export function createApi(ctx, options) {
       }
     }
     const boardSize = await boardSizeOf(projectPath, board)
+    const registryStatus = typeof state.registryStatus === 'function' ? state.registryStatus() : null
     const projectRef = projectRefOf(projectPath)
     const lastTouched = state.activeProjects(now)[0]
     const registryConsistent = lastTouched === undefined || lastTouched.id === projectRef.id
@@ -2014,6 +2015,10 @@ export function createApi(ctx, options) {
       worktrees: worktrees,
       activity: activitySnapshot(),
       counts: model.counts(board),
+      // Where the project registry landed, or why it did not: restart recovery and
+      // multi-project driving depend on that file, so "not persisted" is visible.
+      registry: registryStatus,
+      registryError: registryStatus !== null && registryStatus.ok !== true ? String(registryStatus.error) : null,
       // Board file size vs its cap: bytes, limit, percent, level (ok/half/
       // three-quarters), cards, bytesPerCard, headroomCards and a readable
       // warning. The status page shows it from 50% on.
@@ -3992,7 +3997,16 @@ export function createApi(ctx, options) {
       const sessionId = sessionIdOf(context)
       if (sessionId !== null) state.setSessionRoot(sessionId, absolute)
     }
-    return Object.assign({}, await snapshot(absolute, { worktreeRoot: preflight.worktreeRoot }), { preflight: preflight })
+    // The registry write is asynchronous by design; openProject is a user action,
+    // so wait for it and report where it landed — or why it did not persist.
+    if (typeof state.flushRegistry === 'function') await state.flushRegistry()
+    const registryStatus = typeof state.registryStatus === 'function' ? state.registryStatus() : null
+    return Object.assign({}, await snapshot(absolute, { worktreeRoot: preflight.worktreeRoot }), {
+      preflight: preflight,
+      registry: registryStatus,
+      // A flat string for callers that only want "did it persist, and why not".
+      registryError: registryStatus !== null && registryStatus.ok !== true ? String(registryStatus.error) : null,
+    })
   }
 
   return { perform: perform, snapshot: snapshot, taskDetail: taskDetail, taskList: taskList, autoMergePending: autoMergePending, actions: ACTIONS, readActions: READ_ACTIONS }

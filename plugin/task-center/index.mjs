@@ -19,6 +19,8 @@
  * events and the tick all call the same scheduler, which never overlaps itself.
  */
 
+import { mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { createState } from './state.mjs'
 import { createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
 import { createMerger } from './merge.mjs'
@@ -96,6 +98,19 @@ export function apply(ctx) {
   const state = createState(ctx, {
     afterWrite: function (event) {
       return scheduler === null ? undefined : scheduler.kick(event.projectPath)
+    },
+    // The registry lives outside the workspace (`~/.dsh/godot-bridge`), whose
+    // parent directory may not exist yet: create it before the write.
+    ensureDir: function (dir) {
+      mkdirSync(dir, { recursive: true })
+    },
+    // A workspace-write policy denies the home path, so the writer falls back to
+    // `<project>/.agents/projects.json`; the workspace candidate uses THIS policy.
+    sandboxPolicyFor: function (projectRoot) {
+      return { mode: 'workspace-write', workspaceRoot: projectRoot }
+    },
+    onRegistryError: function (status) {
+      warnSkipped(ctx, 'project registry', new Error(String(status.error === null ? 'unwritable' : status.error)))
     },
   })
   // Git comes from the host's unconfined subprocess service. It is REQUIRED now:
