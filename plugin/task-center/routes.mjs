@@ -202,6 +202,7 @@ export function registerTaskRoutes(ctx, options) {
         cursor: get('cursor'),
         limit: get('limit') === null ? null : Number(get('limit')),
         q: get('q'),
+        archived: get('archived') === '1' || get('archived') === 'true',
       }))
     } catch (error) {
       sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })

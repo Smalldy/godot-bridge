@@ -5,11 +5,11 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH } from '../../plugin/task-center/routes.mjs'
-import { createFakeFs, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
+import { boardJson, createFakeFs, createRig, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
 import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, roleBriefFor } from '../../plugin/task-center/dispatch.mjs'
-import { rolesPath } from '../../plugin/task-center/board.mjs'
+import { archivePath, boardPath as boardPathOf, rolesPath } from '../../plugin/task-center/board.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { phaseActivityAt } from '../../plugin/task-center/dispatch.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
@@ -4626,6 +4626,140 @@ rig.scheduler.dispose()
   const switched = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT + '-two') + '&since=' + String(removed.seq), {})
   check('switching projects forces a full snapshot', switched.json().ok === true && switched.json().full === true && switched.json().tasks.length === 1, switched.text.slice(0, 160))
   surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ── T-84: 30-day archive, idempotent, queryable, failure-safe ──
+{
+  const day = 24 * 60 * 60 * 1000
+  const nowMs = Date.now()
+  const stamp = new Date(nowMs).toISOString()
+  function taskOf(id, status, daysAgo) {
+    return {
+      id: id,
+      title: 'Card ' + id,
+      status: status,
+      priority: 0,
+      dependsOn: [],
+      writeFiles: ['scripts/a.gd'],
+      verify: null,
+      base: 'base-sha',
+      target: 'feat/task-center-v2',
+      branch: 'task/' + id + '-1',
+      worktree: null,
+      worktreeError: null,
+      commit: 'commit-sha',
+      actualFiles: [],
+      requiredRole: null,
+      merge: status === 'done' ? { status: 'merged', base: 'base-sha', target: 'feat/task-center-v2', head: 'commit-sha', mergeCommit: 'merge-sha', declaredFiles: [], actualFiles: [], tests: 'npm test', reviewer: null, conflict: null, output: 'tail', at: stamp } : null,
+      review: status === 'done' ? { status: 'approved', by: '@reviewer', byName: 'reviewer-1', at: stamp, reasons: null, attempt: 1 } : null,
+      test: status === 'done' ? { status: 'passed', by: '@tester', byName: 'tester-1', at: stamp, evidence: 'EVIDENCE ' + id, attempt: 1 } : null,
+      assignee: null,
+      attempts: 0,
+      maxAttempts: 3,
+      evidence: 'EVIDENCE ' + id,
+      dispatch: null,
+      leaseUntil: null,
+      spec: 'SPEC ' + id + ' ' + 'detail filler '.repeat(120),
+      acceptance: 'ACCEPT ' + id + ' ' + 'criterion filler '.repeat(80),
+      history: Array.from({ length: 4 }).map(function (value, index) {
+        return { at: stamp, by: '@fixer', byName: 'fixer', from: 'running', to: status, note: 'done ' + id + ' step ' + String(index) + ' ' + 'note filler '.repeat(60) }
+      }),
+      createdAt: new Date(nowMs - (daysAgo + 2) * day).toISOString(),
+      updatedAt: new Date(nowMs - daysAgo * day).toISOString(),
+    }
+  }
+  const rig = createRig({ allowSpawn: false })
+  const board = { version: 2, seq: 5, dispatch: { state: 'paused' }, tasks: [taskOf('T-1', 'done', 40), taskOf('T-2', 'done', 45), taskOf('T-3', 'done', 2), taskOf('T-4', 'running', 1)] }
+  seedBoard(rig.fs, PROJECT, JSON.stringify(board))
+  // Normalise the seed first: the archive drop must be measured between two
+  // normalised writes, not against a raw hand-written board.
+  await rig.state.apply(PROJECT, (current) => ({ ok: true, board: current, events: [] }), undefined)
+  const beforeText = rig.fs.files.get(boardPathOf(PROJECT)).text
+  const before = boardJson(rig.fs, PROJECT)
+  // The host's 5s background loop calls autoMergePending: that is the trigger,
+  // NOT an explicit tick action.
+  const tick = await rig.api.autoMergePending(PROJECT)
+  check(
+    'the host background sweep archives done cards older than 30 days (no explicit tick)',
+    tick.ok === true && tick.archive !== null && tick.archive.ok === true && tick.archive.archived === 2,
+    JSON.stringify(tick.archive),
+  )
+  const afterText = rig.fs.files.get(boardPathOf(PROJECT)).text
+  const after = boardJson(rig.fs, PROJECT)
+  check(
+    'archiving shrinks the board file',
+    afterText.length < beforeText.length * 0.8,
+    String(beforeText.length) + ' -> ' + String(afterText.length) + ' bytes',
+  )
+  check(
+    'the board keeps only the active and recent cards',
+    after.tasks.map((task) => task.id).sort().join(',') === 'T-3,T-4',
+    after.tasks.map((task) => task.id).join(','),
+  )
+  check('the archive is a board change: seq advanced by one', after.seq === before.seq + 1, JSON.stringify({ before: before.seq, after: after.seq }))
+  const year = new Date(Date.parse(taskOf('T-1', 'done', 40).updatedAt)).getUTCFullYear()
+  const archivedText = rig.fs.files.get(archivePath(PROJECT, year)) === undefined ? null : rig.fs.files.get(archivePath(PROJECT, year)).text
+  const archived = archivedText === null ? null : JSON.parse(archivedText)
+  check(
+    'the year archive keeps the complete cards (spec/history/evidence)',
+    archived !== null && archived.tasks.length === 2 && archived.tasks[0].spec !== undefined && archived.tasks[0].history.length === 4 && archived.tasks[0].evidence !== undefined,
+    archivedText === null ? 'missing' : String(archivedText.length) + ' bytes',
+  )
+  // Throttle: a second host sweep within 24h does not run at all.
+  const sequent = await rig.api.autoMergePending(PROJECT)
+  check('a second sweep within 24h is throttled off', sequent.ok === true && sequent.archive === null, JSON.stringify(sequent.archive))
+  // Idempotency: after clearing the throttle, a sweep with nothing due is a no-op.
+  rig.state.memory.lastArchive = null
+  const again = await rig.api.autoMergePending(PROJECT)
+  const archivedAgain = JSON.parse(rig.fs.files.get(archivePath(PROJECT, year)).text)
+  check('an unthrottled second sweep moves nothing and does not duplicate', again.ok === true && again.archive !== null && again.archive.archived === 0 && archivedAgain.tasks.length === 2, JSON.stringify(again.archive))
+  // Visibility: archivedCount/range in the snapshot; the state is a full rebuild.
+  const surface = install(rig)
+  const stateRes = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT) + '&since=' + String(before.seq), {})
+  const state = stateRes.json()
+  check(
+    'the snapshot reports the archive count and range and forces a full rebuild',
+    state.ok === true && state.archivedCount === 2 && state.archiveRange !== null && state.full === true && state.tasks.every((task) => task.id !== 'T-1'),
+    JSON.stringify({ count: state.archivedCount, range: state.archiveRange, full: state.full }),
+  )
+  // Queryability: get and detail fall back to the archive.
+  const got = await rig.action('get', { id: 'T-1' })
+  check('get finds an archived card with its full detail', got.ok === true && got.task.id === 'T-1' && got.task.archived === true && got.task.evidence === 'EVIDENCE T-1', JSON.stringify(got.task && { id: got.task.id, archived: got.task.archived }))
+  const detailRes = await call(surface, TASK_PATH + '?id=T-2&project=' + encodeURIComponent(PROJECT), {})
+  check('the detail route also falls back to the archive', detailRes.json().ok === true && detailRes.json().task.id === 'T-2' && detailRes.json().task.archived === true, detailRes.text.slice(0, 160))
+  const listRes1 = await call(surface, LIST_PATH + '?project=' + encodeURIComponent(PROJECT) + '&archived=1&limit=1', {})
+  const page1 = listRes1.json()
+  const listRes2 = await call(surface, LIST_PATH + '?project=' + encodeURIComponent(PROJECT) + '&archived=1&limit=1&cursor=' + encodeURIComponent(page1.nextCursor), {})
+  const page2 = listRes2.json()
+  check(
+    'the archive list pages with a cursor over archived summaries',
+    page1.ok === true && page1.archived === true && page1.tasks.length === 1 && typeof page1.nextCursor === 'string' && page2.tasks.length === 1 && page2.tasks[0].id !== page1.tasks[0].id,
+    JSON.stringify({ p1: page1.tasks.map((task) => task.id), p2: page2.tasks.map((task) => task.id) }),
+  )
+  const searchRes = await call(surface, LIST_PATH + '?project=' + encodeURIComponent(PROJECT) + '&archived=1&q=SPEC%20T-2', {})
+  check('the archive view searches server-side', searchRes.json().ok === true && searchRes.json().tasks.length === 1 && searchRes.json().tasks[0].id === 'T-2', searchRes.text.slice(0, 160))
+  surface.dispose()
+  // Failure: an archive write error leaves the board untouched.
+  const withOld = boardJson(rig.fs, PROJECT)
+  withOld.tasks.push(taskOf('T-5', 'done', 50))
+  seedBoard(rig.fs, PROJECT, JSON.stringify(withOld))
+  rig.fs.hooks.beforeWrite = function (event) {
+    if (String(event.key).indexOf('.tmp') >= 0) throw new Error('disk full')
+    return undefined
+  }
+  rig.state.memory.lastArchive = null
+  const failedTick = await rig.api.autoMergePending(PROJECT)
+  rig.fs.hooks.beforeWrite = null
+  const afterFailure = boardJson(rig.fs, PROJECT)
+  check(
+    'a failed archive write leaves every card on the board',
+    failedTick.ok === true && failedTick.archive !== null && failedTick.archive.ok === false && afterFailure.tasks.some((task) => task.id === 'T-5'),
+    JSON.stringify({ archive: failedTick.archive, ids: afterFailure.tasks.map((task) => task.id) }),
+  )
+  rig.state.memory.lastArchive = null
+  const recovered = await rig.api.autoMergePending(PROJECT)
+  check('the sweep recovers once the archive write works again', recovered.ok === true && recovered.archive !== null && recovered.archive.archived >= 1 && boardJson(rig.fs, PROJECT).tasks.every((task) => task.id !== 'T-5'), JSON.stringify(recovered.archive))
   rig.scheduler.dispose()
 }
 
