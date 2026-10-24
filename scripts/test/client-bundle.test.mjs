@@ -13,7 +13,7 @@ function check(label, condition, detail) {
 
 const PROJECT = 'J:\\demo\\mm13d'
 const STORAGE = new Map()
-STORAGE.set('godotBridge.taskCenter.project', PROJECT)
+STORAGE.set('godotBridge.taskCenter.project', 'v2:' + PROJECT)
 const styleTags = []
 let registration = null
 globalThis.window = {
@@ -3935,7 +3935,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   check('T-90 no mismatch bar is shown when the two agree', findAll(t90, (node) => node.props && node.props['data-project-mismatch'] === 'true').length === 0)
 
   // 2. A pin that differs from the session: actionable mismatch bar.
-  STORAGE.set('godotBridge.taskCenter.project', pinnedOther)
+  STORAGE.set('godotBridge.taskCenter.project', 'v2:' + pinnedOther)
   let t90b = withHooks(panel, { initialView: 'board' })
   await flush()
   t90b = withHooks(panel, { initialView: 'board' })
@@ -3959,14 +3959,14 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   await flush()
   const switchPost = posts.slice(postsBefore).filter((post) => post.action === 'openProject')[0]
   check('T-90 switching sends openProject to the Host (write = bind)', switchPost !== undefined && switchPost.path === sessionRoot, JSON.stringify(posts.slice(postsBefore)))
-  check('T-90 and pins the session project in the browser', STORAGE.get('godotBridge.taskCenter.project') === sessionRoot, String(STORAGE.get('godotBridge.taskCenter.project')))
+  check('T-90 and pins the session project in the browser', STORAGE.get('godotBridge.taskCenter.project') === 'v2:' + sessionRoot, String(STORAGE.get('godotBridge.taskCenter.project')))
   t90b = withHooks(panel, { initialView: 'board' })
   await flush()
   t90b = withHooks(panel, { initialView: 'board' })
   check('T-90 after the switch the mismatch bar is gone', findAll(t90b, (node) => node.props && node.props['data-project-mismatch'] === 'true').length === 0, textOf(t90b).slice(0, 200))
 
   // 4. The project dialog offers the Host-resolved path instead of hand typing.
-  STORAGE.set('godotBridge.taskCenter.project', pinnedOther)
+  STORAGE.set('godotBridge.taskCenter.project', 'v2:' + pinnedOther)
   let formTree = withHooks(panel, { initialView: 'board', initialProjectOpen: true })
   await flush()
   formTree = withHooks(panel, { initialView: 'board', initialProjectOpen: true })
@@ -3999,12 +3999,86 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   check('T-90 the dialog opens through openProject, so the scheduler follows', openPost !== undefined && openPost.path === sessionRoot, JSON.stringify(posts.slice(postsBefore)))
 
   // restore
-  STORAGE.set('godotBridge.taskCenter.project', PROJECT)
+  STORAGE.set('godotBridge.taskCenter.project', 'v2:' + PROJECT)
   globalThis.fetch = savedFetch
   withHooks(panel, { initialView: 'board' })
   await flush()
   await flush()
   withHooks(panel, { initialView: 'board' })
+}
+
+// ── T-95: pre-T-90 auto-recorded project values migrate to "follow the session" ──
+{
+  const savedFetch = globalThis.fetch
+  const sessionRoot = 'J:\\demo\\session-project'
+  const legacy = 'J:\\demo\\legacy-auto'
+  const explicit = 'J:\\demo\\explicit'
+  const urls = []
+  function hostFor(shown, from) {
+    return Object.assign({}, HOST, { project: shown, projectRoot: shown, resolvedFrom: from, sessionProject: sessionRoot, registryConsistent: from !== 'panel' })
+  }
+  globalThis.fetch = async function (url, options) {
+    const text = String(url)
+    if (options !== undefined && options.method === 'POST') {
+      const body = JSON.parse(options.body)
+      return { json: async () => ({ ok: true, snapshot: hostFor(body.path === undefined ? sessionRoot : body.path, 'panel') }) }
+    }
+    if (text.indexOf('/state') >= 0) {
+      urls.push(text)
+      const match = /[?&]project=([^&]*)/.exec(text)
+      return { json: async () => (match === null ? hostFor(sessionRoot, 'session') : hostFor(decodeURIComponent(match[1]), 'panel')) }
+    }
+    return savedFetch(url, options)
+  }
+
+  // 1. A legacy (pre-T-90) value is NOT a pin: the panel follows the session.
+  STORAGE.set('godotBridge.taskCenter.project', legacy)
+  urls.length = 0
+  let tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  const legacyBadge = findAll(tree, (node) => node.props && node.props['data-project-source'] === 'session')[0]
+  check(
+    'T-95 a legacy auto-recorded project is treated as unpinned (session badge, no ?project)',
+    legacyBadge !== undefined && urls.length > 0 && urls.every((url) => url.indexOf('project=') < 0),
+    JSON.stringify({ badge: legacyBadge && textOf(legacyBadge), urls: urls.slice(-3), stored: STORAGE.get('godotBridge.taskCenter.project') }),
+  )
+  check(
+    'T-95 the migrated legacy value is no longer readable as a pin',
+    STORAGE.get('godotBridge.taskCenter.project') === '' || STORAGE.has('godotBridge.taskCenter.project') === false,
+    JSON.stringify({ stored: STORAGE.get('godotBridge.taskCenter.project') }),
+  )
+  check('T-95 the migration is recorded once for the panel notice', STORAGE.get('godotBridge.taskCenter.projectMigrated') === '1', String(STORAGE.get('godotBridge.taskCenter.projectMigrated')))
+
+  // 2. A second render after migration stays on the session (no re-read of the old value).
+  urls.length = 0
+  tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  check(
+    'T-95 after migration the panel keeps following the session',
+    urls.length > 0 && urls.every((url) => url.indexOf('project=') < 0),
+    JSON.stringify(urls.slice(-2)),
+  )
+
+  // 3. An explicit v2 pin still means manual and is honoured.
+  STORAGE.set('godotBridge.taskCenter.project', 'v2:' + explicit)
+  urls.length = 0
+  tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  const manualBadge = findAll(tree, (node) => node.props && node.props['data-project-source'] === 'manual')[0]
+  check(
+    'T-95 an explicit v2 pin is manual and still sent to /state',
+    manualBadge !== undefined && urls.some((url) => url.indexOf('project=' + encodeURIComponent(explicit)) >= 0),
+    JSON.stringify({ badge: manualBadge && textOf(manualBadge), urls: urls.slice(-2) }),
+  )
+  globalThis.fetch = savedFetch
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
