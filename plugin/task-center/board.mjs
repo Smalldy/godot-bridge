@@ -147,6 +147,36 @@ function highestTaskNumber(tasks) {
   }, 0)
 }
 
+/** How many handover identities a task remembers. Enough to diagnose a stampede
+ * ("three executors alive at once"), small enough that a long-lived card does not
+ * grow without bound. */
+export const MAX_EXECUTORS = 8
+
+/**
+ * The executors a task has been handed to, oldest first. An entry is retired when
+ * the dispatcher replaces that executor (handover, host restart, re-dispatch), so
+ * "how many executors are live" is answerable from the board alone — the panel and
+ * `get` do not need the Team roster for it. A hand-written board may omit the
+ * list entirely.
+ */
+function normaliseExecutors(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+    if (name === '') continue
+    out.push({
+      name: name,
+      session: typeof entry.session === 'string' ? entry.session : null,
+      at: isIso(entry.at) ? entry.at : null,
+      retiredAt: isIso(entry.retiredAt) ? entry.retiredAt : null,
+      retiredReason: typeof entry.retiredReason === 'string' ? entry.retiredReason : null,
+    })
+  }
+  return out.length > MAX_EXECUTORS ? out.slice(out.length - MAX_EXECUTORS) : out
+}
+
 /** Fill in the fields a hand-written board may omit, and reject what cannot be
  * repaired. Missing fields get defaults; a bad id is fatal because everything
  * else addresses tasks by it. */
@@ -211,6 +241,11 @@ function normaliseTask(raw, index, now) {
     history.length > MAX_HISTORY ? [history[0]].concat(history.slice(history.length - (MAX_HISTORY - 1))) : history
   const attempts = Number.isFinite(raw.attempts) ? Math.max(0, Math.floor(raw.attempts)) : 0
   const maxAttempts = Number.isFinite(raw.maxAttempts) ? Math.min(10, Math.max(1, Math.floor(raw.maxAttempts))) : 3
+  // Infrastructure interruptions (host restart, plugin reload) are counted
+  // SEPARATELY from attempts: they refund the attempt, so a development host that
+  // reloads five times does not block a healthy task. See interruptDispatch.
+  const interruptions = Number.isFinite(raw.interruptions) ? Math.max(0, Math.floor(raw.interruptions)) : 0
+  const executors = normaliseExecutors(raw.executors)
   // Worktree / merge-request fields are written by the HOST (claim, submit,
   // merge), never by a normal update; here they are only typed and defaulted so
   // an older or hand-written board stays readable.
@@ -248,6 +283,8 @@ function normaliseTask(raw, index, now) {
       lastAssignee: lastAssignee,
       attempts: attempts,
       maxAttempts: maxAttempts,
+      interruptions: interruptions,
+      executors: executors,
       evidence: stringOf(raw.evidence, ''),
       dispatch: dispatch,
       leaseUntil: isIso(raw.leaseUntil) ? raw.leaseUntil : null,

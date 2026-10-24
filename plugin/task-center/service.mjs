@@ -65,6 +65,63 @@ function touch(task, now) {
   task.updatedAt = iso(now)
 }
 
+/** How many infrastructure interruptions may hit one task before the streak is
+ * treated as a real problem. Deliberately independent of maxAttempts: a host
+ * reload is not the worker's fault, but five reloads with nothing committed IS a
+ * dispatch loop that must stop. */
+export const INTERRUPTION_LIMIT = 5
+
+const MAX_EXECUTORS = 8
+
+/** The identity a task remembers for one handover; a task never ran without one. */
+function executorOf(assignee, now) {
+  return {
+    name: assignee === null || assignee === undefined ? 'unknown' : String(assignee.name),
+    session: assignee === null || assignee === undefined || assignee.session === undefined ? null : assignee.session,
+    at: iso(now),
+    retiredAt: null,
+    retiredReason: null,
+  }
+}
+
+/** Mark every live executor entry retired (the caller replaces them). */
+function retireExecutorsIn(target, now, reason) {
+  const list = Array.isArray(target.executors) ? target.executors : []
+  target.executors = list.map((entry) => (entry.retiredAt !== null && entry.retiredAt !== undefined ? entry : Object.assign({}, entry, { retiredAt: iso(now), retiredReason: String(reason) })))
+}
+
+/** Append the executor this claim hands the task to, keeping the list bounded. */
+function pushExecutor(target, assignee, now) {
+  const list = Array.isArray(target.executors) ? target.executors.slice() : []
+  list.push(executorOf(assignee, now))
+  target.executors = list.length > MAX_EXECUTORS ? list.slice(list.length - MAX_EXECUTORS) : list
+}
+
+/**
+ * The slot number this attempt occupies. `attempts` alone is not enough once a
+ * host restart REFUNDS an attempt: without the interruption count, attempt 2
+ * would reuse attempt 1's worker name and worktree directory — a taken teammate
+ * name and a colliding checkout. Both counters are monotonic in the slot.
+ */
+export function attemptSlot(task) {
+  if (task === null || task === undefined) return 1
+  const attempts = Number.isFinite(task.attempts) ? Math.max(0, Math.floor(task.attempts)) : 0
+  const interruptions = Number.isFinite(task.interruptions) ? Math.max(0, Math.floor(task.interruptions)) : 0
+  return attempts + interruptions + 1
+}
+
+/** Executor identities still counted as live: handed the task, never retired.
+ * A running claim always counts as one, even on a board written before the ledger
+ * existed, so the panel never reports "0 live executors" for running work. */
+export function liveExecutors(task) {
+  const list = task === null || task === undefined || !Array.isArray(task.executors) ? [] : task.executors
+  const live = list.filter((entry) => entry !== null && typeof entry === 'object' && (entry.retiredAt === null || entry.retiredAt === undefined))
+  if (live.length === 0 && task !== null && task !== undefined && task.status === 'running' && task.assignee !== null && task.assignee !== undefined) {
+    return [{ name: String(task.assignee.name), session: task.assignee.session === undefined ? null : task.assignee.session, at: null, retiredAt: null, retiredReason: null }]
+  }
+  return live
+}
+
 function normaliseList(value) {
   if (!Array.isArray(value)) return []
   const seen = new Set()
@@ -431,6 +488,10 @@ export function claimTask(board, id, worker, now) {
   }
   target.leaseUntil = iso(now + TASK_LEASE_MS)
   target.attempts = target.attempts + 1
+  // One live executor per task: everything handed this card before is retired by
+  // this claim, so "live executors" is always 1 for a healthy running task.
+  retireExecutorsIn(target, now, 'superseded by ' + target.assignee.name)
+  pushExecutor(target, target.assignee, now)
   target.base = typeof worktree.base === 'string' ? worktree.base : null
   target.target = typeof worktree.target === 'string' ? worktree.target : null
   target.branch = typeof worktree.branch === 'string' ? worktree.branch : null
@@ -494,6 +555,112 @@ export function recordDispatch(board, id, patch, now) {
   return done(next, [{ kind: 'dispatched', id: id, status: patch.status }])
 }
 
+/**
+ * An INFRASTRUCTURE interruption (host restart, plugin reload): the worker never
+ * got to work, so the attempt it was charged is REFUNDED and the interruption is
+ * counted on its own axis.
+ *
+ * Requirements this encodes:
+ *   - attempts stays where it was before the claim (a reload is not a failure);
+ *   - interruptions + 1, visible in get/board;
+ *   - the history says what happened ("interrupted by host restart; attempt
+ *     refunded");
+ *   - five consecutive interruptions with NOTHING ever committed blocks the task
+ *     (interrupted-too-often) instead of retrying forever.
+ *
+ * The counter resets the moment real work lands (submit) or a genuine dispatch
+ * failure is recorded, because only CONSECUTIVE interruptions are a loop.
+ */
+export function interruptDispatch(board, id, error, now, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status !== 'running') return fail('not-running', id + ' is ' + task.status + ', not running')
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  const limit = Number.isFinite(opts.maxInterruptions) && opts.maxInterruptions >= 1 ? Math.floor(opts.maxInterruptions) : INTERRUPTION_LIMIT
+  const reason = error === null || error === undefined || String(error) === '' ? 'worker lost (host restart)' : String(error)
+  // The claim charged one attempt; the worker never ran, so give it back.
+  target.attempts = Math.max(0, target.attempts - 1)
+  target.interruptions = (Number.isFinite(target.interruptions) ? target.interruptions : 0) + 1
+  const committed = typeof target.commit === 'string' && target.commit !== ''
+  const tooMany = target.interruptions >= limit && committed !== true
+  target.status = tooMany ? 'blocked' : 'pending'
+  target.lastAssignee = target.assignee === null || target.assignee === undefined ? target.lastAssignee : Object.assign({}, target.assignee)
+  retireExecutorsIn(target, now, 'interrupted: ' + reason)
+  target.assignee = null
+  target.leaseUntil = null
+  target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
+    status: tooMany ? 'exhausted' : 'interrupted',
+    error: tooMany ? 'interrupted-too-often' : reason,
+    at: iso(now),
+  })
+  touch(target, now)
+  pushHistory(target, {
+    at: iso(now),
+    by: 'scheduler',
+    from: 'running',
+    to: target.status,
+    note:
+      'interrupted by ' + reason + '; attempt refunded (interruptions ' +
+      String(target.interruptions) + '/' + String(limit) + ')' +
+      (tooMany ? '; blocked: repeated interruptions without a submission (' + 'interrupted-too-often)' : ''),
+  })
+  return done(next, [{ kind: tooMany ? 'interrupted-out' : 'interrupted', id: id }], { task: target, tooMany: tooMany })
+}
+
+/**
+ * Retire the executors a re-dispatch replaces, and record it. This is the
+ * bookkeeping half of the one-live-executor rule: the dispatcher interrupts the
+ * old worker through the Team service and then calls this so the board itself
+ * remembers that identity is no longer live, even when no interrupt API exists.
+ */
+export function retireExecutors(board, id, identities, now, reason) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  const wanted = Array.isArray(identities) ? identities.filter((entry) => typeof entry === 'string' && entry !== '') : []
+  if (wanted.length === 0) return done(board, [])
+  const list = Array.isArray(target.executors) ? target.executors : []
+  target.executors = list.map((entry) =>
+    entry !== null && typeof entry === 'object' && entry.retiredAt === null && wanted.indexOf(entry.name) >= 0
+      ? Object.assign({}, entry, { retiredAt: iso(now), retiredReason: String(reason === undefined || reason === null ? 'retired' : reason) })
+      : entry,
+  )
+  touch(target, now)
+  pushHistory(target, {
+    at: iso(now),
+    by: 'scheduler',
+    from: target.status,
+    to: target.status,
+    note: 'retired executor ' + wanted.join(', ') + ' (' + String(reason === undefined || reason === null ? 'retired' : reason) + ')',
+  })
+  return done(next, [{ kind: 'retired', id: id, names: wanted }], { task: target })
+}
+
+/**
+ * Record a dispatch that was refused because another executor of the same task is
+ * still alive (the one-live-executor guard). It never changes the status: the
+ * point is the trace, so a stampede is visible instead of silent.
+ */
+export function noteDispatchRefused(board, id, now, names, reason) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  const who = Array.isArray(names) && names.length > 0 ? names.join(', ') : 'an unknown executor'
+  touch(target, now)
+  pushHistory(target, {
+    at: iso(now),
+    by: 'scheduler',
+    from: target.status,
+    to: target.status,
+    note: 'already-dispatched: ' + who + ' is still live; refusing a second executor' + (typeof reason === 'string' && reason !== '' ? ' (' + reason + ')' : ''),
+  })
+  return done(next, [{ kind: 'already-dispatched', id: id }], { task: target })
+}
+
 /** A dispatch that failed before or while delivering: drop the claim, count the
  * attempt that was already spent, and block once the budget is gone. */
 export function failDispatch(board, id, error, now, maxAttempts) {
@@ -505,6 +672,10 @@ export function failDispatch(board, id, error, now, maxAttempts) {
   const exhausted = target.attempts >= limit
   target.status = exhausted ? 'blocked' : 'pending'
   target.lastAssignee = target.assignee === null || target.assignee === undefined ? target.lastAssignee : Object.assign({}, target.assignee)
+  // A REAL failure is not an interruption: the streak restarts, so five host
+  // restarts can never be charged against a worker that actually broke something.
+  target.interruptions = 0
+  retireExecutorsIn(target, now, 'dispatch failed')
   target.assignee = null
   target.leaseUntil = null
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
@@ -593,6 +764,9 @@ export function submitTask(board, id, input, now, by, byName) {
   if (input !== undefined && input.commit !== undefined) target.commit = String(input.commit)
   if (input !== undefined && input.actualFiles !== undefined) target.actualFiles = normaliseList(input.actualFiles)
   if (input !== undefined && input.merge !== undefined) target.merge = normaliseMerge(input.merge)
+  // A submission is proof the worker ran: the infrastructure-interruption streak
+  // (and the attempt refunds that came with it) starts over.
+  target.interruptions = 0
   target.status = 'reviewing'
   target.leaseUntil = null
   target.review = {
@@ -737,6 +911,7 @@ export function cancelTask(board, id, now, by, note, byName) {
   // Keep the last owner: the assignee is cleared here, but the soft refusal has
   // to recognise this worker if it calls again on the cancelled task.
   target.lastAssignee = target.assignee === null || target.assignee === undefined ? null : Object.assign({}, target.assignee)
+  retireExecutorsIn(target, now, 'task cancelled')
   target.assignee = null
   target.leaseUntil = null
   touch(target, now)
@@ -756,6 +931,10 @@ export function reopenTask(board, id, now, by, note, byName) {
   target.assignee = null
   target.leaseUntil = null
   target.attempts = 0
+  // A reopened task starts over: the interruption streak and the executor ledger
+  // are history too, otherwise a triaged card would block again on the next restart.
+  target.interruptions = 0
+  target.executors = []
   target.dispatch = null
   // A reopened task starts the phase machine from scratch.
   target.review = null
@@ -774,6 +953,7 @@ export function blockTask(board, id, now, by, note, byName) {
   const target = findTaskIn(next.tasks, id)
   target.status = 'blocked'
   target.lastAssignee = target.assignee === null || target.assignee === undefined ? null : Object.assign({}, target.assignee)
+  retireExecutorsIn(target, now, 'task blocked')
   target.assignee = null
   target.leaseUntil = null
   touch(target, now)
@@ -800,6 +980,10 @@ export function retryTask(board, id, now, by, note, byName) {
   target.assignee = null
   target.leaseUntil = null
   target.attempts = 0
+  // Retrying is an explicit human decision: the interruption streak and the
+  // executor ledger are cleared so the card cannot block on old history.
+  target.interruptions = 0
+  target.executors = []
   target.dispatch = null
   touch(target, now)
   pushHistory(target, { at: iso(now), by: by, byName: byName === undefined ? null : byName, from: task.status, to: 'pending', note: note === undefined ? 'retry requested' : String(note) })
@@ -945,6 +1129,9 @@ export function summary(board, task, now) {
     lastAssignee: task.lastAssignee,
     attempts: task.attempts,
     maxAttempts: task.maxAttempts,
+    interruptions: Number.isFinite(task.interruptions) ? task.interruptions : 0,
+    executors: Array.isArray(task.executors) ? task.executors : [],
+    liveExecutors: liveExecutors(task).length,
     leaseUntil: task.leaseUntil,
     leaseRemaining: task.leaseUntil === null ? null : Math.max(0, Date.parse(task.leaseUntil) - at),
     leaseExpired: task.leaseUntil !== null && Date.parse(task.leaseUntil) <= at,

@@ -831,14 +831,39 @@ function sameWorktreePath(left, right) {
 }
 
 /**
- * The checkout a handover may reuse: the previous attempt path/branch when that
- * attempt left a commit and git still resolves the branch (and, when the facade
- * can list worktrees, still has the directory registered). Returns null when
- * there is nothing to adopt, which is the signal to prepare a fresh worktree.
+ * Is this checkout still registered with the repository? Returns 'yes', 'no', or
+ * 'unknown' when the facade cannot list worktrees (an empty list means "this
+ * facade does not report worktrees", so only a non-empty list can prove a path is
+ * gone). Never throws: a listing failure is not proof the checkout is gone.
+ */
+async function worktreeRegistered(git, projectPath, path) {
+  if (git === null || git === undefined || typeof git.worktreeList !== 'function') return 'unknown'
+  try {
+    const listed = await git.worktreeList(projectPath)
+    if (listed === null || listed === undefined || listed.ok !== true) return 'unknown'
+    const entries = Array.isArray(listed.worktrees) ? listed.worktrees : []
+    if (entries.length === 0) return 'unknown'
+    return entries.some((entry) => entry !== null && typeof entry === 'object' && sameWorktreePath(entry.path, path)) ? 'yes' : 'no'
+  } catch (error) {
+    return 'unknown'
+  }
+}
+
+/**
+ * The checkout a handover may reuse. Two cases:
+ *
+ *   - the previous attempt left a COMMIT: continue that work (the branch must
+ *     still resolve, so adoption can never strand a task on a checkout git lost);
+ *   - the previous attempt left a CLEAN checkout with nothing committed (the
+ *     host was restarted before the worker produced anything): reuse it instead
+ *     of adding a second worktree for the same card. A dirty checkout is never
+ *     adopted — a half-finished edit must not be silently inherited.
+ *
+ * Returns null when there is nothing safe to adopt, which is the signal to
+ * prepare a fresh worktree.
  */
 async function adoptionCandidate(git, projectPath, task, attempt) {
   if (Number.isFinite(attempt) && attempt <= 1) return null
-  if (typeof task.commit !== 'string' || task.commit === '') return null
   if (typeof task.branch !== 'string' || task.branch === '') return null
   if (typeof task.worktree !== 'string' || task.worktree === '') return null
   if (git === null || git === undefined) return null
@@ -849,20 +874,18 @@ async function adoptionCandidate(git, projectPath, task, attempt) {
     return null
   }
   if (resolved === null || resolved === undefined || resolved.ok !== true) return null
-  if (typeof git.worktreeList === 'function') {
-    try {
-      const listed = await git.worktreeList(projectPath)
-      if (listed !== null && listed !== undefined && listed.ok === true) {
-        const entries = Array.isArray(listed.worktrees) ? listed.worktrees : []
-        // An empty list means this facade does not report worktrees; only a
-        // non-empty list can prove the directory is gone.
-        if (entries.length > 0 && !entries.some((entry) => entry !== null && typeof entry === 'object' && sameWorktreePath(entry.path, task.worktree))) return null
-      }
-    } catch (error) {
-      /* a listing failure is not proof the checkout is gone */
-    }
+  if ((await worktreeRegistered(git, projectPath, task.worktree)) === 'no') return null
+  const committed = typeof task.commit === 'string' && task.commit !== ''
+  if (committed) return { branch: task.branch, path: task.worktree, fromAttempt: task.attempts, head: task.commit }
+  if (typeof git.isClean !== 'function') return null
+  let clean = null
+  try {
+    clean = await git.isClean(task.worktree)
+  } catch (error) {
+    return null
   }
-  return { branch: task.branch, path: task.worktree, fromAttempt: task.attempts, head: task.commit }
+  if (clean === null || clean === undefined || clean.ok !== true || clean.clean !== true) return null
+  return { branch: task.branch, path: task.worktree, fromAttempt: task.attempts, head: null, reuseClean: true }
 }
 
 /** Force-remove one worktree, ignoring every failure: a cleanup path must never
@@ -2306,6 +2329,84 @@ export function createDispatcher(ctx, options) {
     })
   }
 
+  /**
+   * One task, one live executor (T-85). Before a new worker is handed a card, the
+   * executors that card was handed to before are retired: interrupted through the
+   * Team service while it still lists them as running, and always recorded in the
+   * board's executor ledger plus one history row. A restart that re-dispatched a
+   * card while the old worker's inbox still held the brief is exactly how three
+   * executors ended up on one card; this is the guard that prevents it.
+   *
+   * Returns { board, retired, refused }. A non-empty `refused` means an executor
+   * is still alive and could not be stopped: the caller must NOT dispatch, keeping
+   * the one-live-executor invariant even then.
+   */
+  async function supersedeExecutors(projectPath, task, target) {
+    // The recent ledger, not only the un-retired rows: a host restart records its
+    // executor as retired (that attempt is over) while the worker process may
+    // still be running with the brief in its inbox. Liveness decides what needs an
+    // interrupt; an entry the roster no longer lists is bookkeeping only.
+    const ledger = Array.isArray(task.executors) ? task.executors.slice(-4) : []
+    const recent = ledger.filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.name === 'string' && entry.name !== target.name)
+    const unretired = model.liveExecutors(task).filter((entry) => entry !== null && typeof entry.name === 'string' && entry.name !== target.name)
+    const live = unretired.concat(recent.filter((entry) => unretired.every((done) => done.name !== entry.name)))
+    if (live.length === 0) return { board: null, retired: [], refused: [] }
+    const retired = []
+    const refused = []
+    for (const entry of live) {
+      const liveness = memberLiveness({ name: entry.name, session: entry.session })
+      if (liveness.alive !== true) {
+        // Already gone: retiring the ledger row is bookkeeping, not an interrupt,
+        // and an entry that is retired already needs no second row.
+        if (entry.retiredAt === null || entry.retiredAt === undefined) retired.push(entry.name)
+        continue
+      }
+      const stopped = await interruptMemberNamed(ctx, {
+        name: entry.name,
+        key: String(task.id) + '@supersede@' + entry.name,
+        message:
+          'Task ' + String(task.id) + ' (' + String(task.title) + ') is being handed to a new executor. Stop working on it now and discard uncommitted changes; do not submit.',
+      })
+      if (stopped.ok === true) {
+        retired.push(entry.name)
+        emit('executor-retired', 'host', { taskId: task.id, detail: 'interrupted ' + entry.name + ' before re-dispatching to ' + target.name })
+        continue
+      }
+      if (stopped.code === 'not-running' || stopped.code === 'unknown-member' || stopped.code === 'already-interrupted') {
+        // Nothing is actually running: an idle member has no turn to stop, an
+        // unknown one is gone, and an already-interrupted one was stopped before.
+        if (entry.retiredAt === null || entry.retiredAt === undefined) retired.push(entry.name)
+        continue
+      }
+      if (stopped.code === 'no-interrupt-api' || stopped.code === 'no-team-service' || stopped.code === 'no-lead') {
+        // The Team edge cannot stop a turn here. Record the retirement explicitly:
+        // a silent second executor is the failure mode this guard exists to avoid.
+        retired.push(entry.name)
+        emit('executor-retired', 'system', {
+          taskId: task.id,
+          detail: 'no way to interrupt ' + entry.name + ' (' + String(stopped.code) + '); recorded it as retired before re-dispatching to ' + target.name,
+        })
+        continue
+      }
+      // Alive and the interrupt was refused: refuse the second executor instead.
+      refused.push(entry.name)
+      emit('error', 'system', {
+        taskId: task.id,
+        detail: 'could not retire ' + entry.name + ' (' + String(stopped.code) + '); refusing a second executor for ' + String(task.id),
+      })
+    }
+    let board = null
+    if (retired.length > 0) {
+      const applied = await state.apply(
+        projectPath,
+        (value) => model.retireExecutors(value, task.id, retired, state.clock(), 'superseded by a re-dispatch to ' + target.name),
+        writePolicyFor(projectPath),
+      )
+      if (applied.failed === null) board = applied.board
+    }
+    return { board: board, retired: retired, refused: refused }
+  }
+
   async function reap(projectPath, board, now) {
     let current = board
     const limit = current.dispatch.maxAttempts
@@ -2315,17 +2416,39 @@ export function createDispatcher(ctx, options) {
       (task) => task.status === 'running' && (task.dispatch === null || task.dispatch.host !== boot),
     )
     if (stale.length > 0) {
+      // A claim made by a DIFFERENT host process is an infrastructure event, not a
+      // worker failure: the worker never had a chance to work. interruptDispatch
+      // refunds the attempt and counts the interruption instead, so a development
+      // host that reloads repeatedly cannot block a healthy task (T-85).
       const next = await applyReap(projectPath, (value) => {
         let mutated = value
         for (const task of stale) {
-          const result = model.failDispatch(mutated, task.id, 'worker lost (host restart)', now, limit)
+          const result = model.interruptDispatch(mutated, task.id, 'worker lost (host restart)', now, {
+            maxInterruptions: model.INTERRUPTION_LIMIT,
+          })
           if (result.ok === true) mutated = result.board
         }
         return mutated
       })
       if (next !== null) {
         current = next
-        for (const task of stale) releaseTaskLocks(task.id)
+        for (const task of stale) {
+          releaseTaskLocks(task.id)
+          const after = model.findTask(current, task.id)
+          if (after === undefined) continue
+          emit('interrupted', 'host', {
+            taskId: task.id,
+            detail:
+              'host restart interrupted the attempt; attempt refunded (attempts ' + String(after.attempts) +
+              '/' + String(after.maxAttempts) + ', interruptions ' + String(after.interruptions) + '/' + String(model.INTERRUPTION_LIMIT) + ')',
+          })
+          if (after.status === 'blocked') {
+            emit('error', 'system', {
+              taskId: task.id,
+              detail: 'interrupted-too-often: ' + String(after.interruptions) + ' interruptions and no submission; blocked for triage',
+            })
+          }
+        }
       }
     }
     // 2. Lapsed leases, even while dispatch is paused. A lapsed lease is NOT
@@ -2861,13 +2984,28 @@ export function createDispatcher(ctx, options) {
           reserved: reserved,
           spawn: dispatch.allowSpawn === true && spawnAllowed,
           maxWorkAgents: dispatch.maxWorkAgents,
-          name: workAgentName(task.id, task.attempts + 1),
+          name: workAgentName(task.id, model.attemptSlot(task)),
         })
         if (picked.ok !== true) {
           results.push({ id: task.id, skipped: picked.code, message: picked.message })
           break
         }
         reserved.add(picked.target.name)
+        // Retire whoever held this card before, THEN claim. A re-dispatch after a
+        // host restart must not leave the old worker running beside the new one.
+        const superseded = await supersedeExecutors(project, task, picked.target)
+        if (superseded.board !== null) current = superseded.board
+        if (superseded.refused.length > 0) {
+          reserved.delete(picked.target.name)
+          const noted = await state.apply(
+            project,
+            (value) => model.noteDispatchRefused(value, task.id, state.clock(), superseded.refused, 'the previous executor could not be interrupted'),
+            writePolicyFor(project),
+          )
+          if (noted.failed === null) current = noted.board
+          results.push({ id: task.id, skipped: 'already-dispatched', alive: superseded.refused })
+          continue
+        }
         let lockPaths = []
         if (task.writeFiles.length > 0) {
           const acquired = locks.acquire(
@@ -2890,7 +3028,7 @@ export function createDispatcher(ctx, options) {
         // a worktree cannot run the task.
         let worktree
         try {
-          worktree = await prepareWorktree(gitFacade(), project, task, dispatch, task.attempts + 1, worktreeDeadlineMs)
+          worktree = await prepareWorktree(gitFacade(), project, task, dispatch, model.attemptSlot(task), worktreeDeadlineMs)
         } catch (error) {
           worktree = worktreeFallback('worktree-error: ' + String((error && error.message) || error))
         }

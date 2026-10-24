@@ -247,6 +247,8 @@ async function submitAndMerge(rig, id, evidence) {
   check('repeated send failures block the task', byId(snap, A).status === 'blocked', JSON.stringify(ids(snap)))
   check('the refusal names the service error', byId(snap, A).dispatch.error === 'mailbox full', JSON.stringify(byId(snap, A).dispatch))
   check('attempts reached the ceiling', byId(snap, A).attempts === 2, String(byId(snap, A).attempts))
+  // T-85: a real failure is NOT an interruption — the two axes stay independent.
+  check('a real failure is never counted as an interruption', byId(snap, A).interruptions === 0, String(byId(snap, A).interruptions))
   const retried = await rig.action('retry', { id: A })
   check('a blocked task can be retried', retried.ok === true && retried.task.status === 'pending')
   check('retry clears the attempt count', retried.task.attempts === 0)
@@ -598,20 +600,184 @@ async function submitAndMerge(rig, id, evidence) {
   rig.scheduler.dispose()
 }
 
-// ── a task claimed by a previous host process is recovered ─────────────────
+// ── T-85: a host restart is an INTERRUPTION, not a worker failure ──────────
+// The claim was made by a host process that no longer exists: the worker never
+// had a chance to work, so the attempt is refunded and the interruption counted
+// on its own axis. This is the exact case that blocked T-83 after three restarts.
 {
   const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
   const A = (await createTask(rig, { title: 'A' })).id
+  const attemptsBeforeDispatch = byId(await snapshot(rig), A).attempts
   await rig.action('start')
   await rig.settle()
+  const claimed = byId(await snapshot(rig), A)
   await rig.action('pause')
   await patchTask(rig, A, (task) => {
     task.dispatch = Object.assign({}, task.dispatch, { host: 'a-previous-process' })
   })
   await rig.settle()
   const snap = await snapshot(rig)
-  check('a claim from another process is requeued', byId(snap, A).status === 'pending', JSON.stringify(ids(snap)))
-  check('with a readable reason', String(byId(snap, A).dispatch.error).indexOf('host restart') >= 0, JSON.stringify(byId(snap, A).dispatch))
+  const reaped = byId(snap, A)
+  const notes = (reaped.history || []).map((entry) => String(entry.note)).join(' | ')
+  check('a claim from another process is requeued', reaped.status === 'pending', JSON.stringify(ids(snap)))
+  check('with a readable reason', String(reaped.dispatch.error).indexOf('host restart') >= 0, JSON.stringify(reaped.dispatch))
+  check(
+    'the claim charged one attempt',
+    claimed.attempts === attemptsBeforeDispatch + 1,
+    JSON.stringify({ before: attemptsBeforeDispatch, claimed: claimed.attempts }),
+  )
+  check(
+    'the attempt is refunded instead of spent',
+    reaped.attempts === attemptsBeforeDispatch,
+    JSON.stringify({ before: attemptsBeforeDispatch, after: reaped.attempts }),
+  )
+  check('the interruption is counted separately', reaped.interruptions === 1, String(reaped.interruptions))
+  check('the history says the attempt was refunded', notes.indexOf('attempt refunded') >= 0, notes)
+  check(
+    'the interrupted executor is no longer live',
+    reaped.liveExecutors === 0 && reaped.executors.length === 1,
+    JSON.stringify(reaped.executors),
+  )
+  check('board exposes the executor ledger', Array.isArray(reaped.executors) && reaped.executors[0].retiredAt !== null, JSON.stringify(reaped.executors))
+  rig.scheduler.dispose()
+}
+
+// ── T-85: get exposes the interruption axes, and submitting clears the streak ─
+{
+  const team = createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }], spawnedStatus: 'running' })
+  team.interrupt = async (caller, name) => {
+    team.setStatus(name, 'inactive')
+    return { previousStatus: 'running' }
+  }
+  const rig = createRig({ team: team })
+  const A = (await createTask(rig, { title: 'visible axes' })).id
+  await rig.action('start')
+  await rig.settle()
+  await rig.action('pause')
+  await patchTask(rig, A, (task) => {
+    task.dispatch = Object.assign({}, task.dispatch, { host: 'previous-host' })
+  })
+  await rig.settle()
+  const got = await rig.action('get', { id: A })
+  check('get exposes the interruption count', got.ok === true && got.task.interruptions === 1, JSON.stringify(got.task === undefined ? got : { interruptions: got.task.interruptions }))
+  check('get exposes the live executor count', got.ok === true && got.task.liveExecutors === 0, JSON.stringify(got.task === undefined ? got : { live: got.task.liveExecutors }))
+  check('get exposes the executor ledger', got.ok === true && Array.isArray(got.task.executors) && got.task.executors.length === 1, JSON.stringify(got.task === undefined ? got : got.task.executors))
+  // Hand the card out again and submit: real work clears the streak.
+  await rig.action('start')
+  await rig.settle()
+  const running = byId(await snapshot(rig), A)
+  check('the interrupted card is dispatched again', running.status === 'running' && running.interruptions === 1, JSON.stringify({ status: running.status, interruptions: running.interruptions }))
+  const submitted = await rig.api.perform('submit', { id: A, evidence: 'done' }, { projectPath: rig.project, by: '@worker', role: 'agent', agent: { id: running.assignee.session } })
+  check('a submission clears the interruption streak', submitted.ok === true && submitted.task.interruptions === 0, JSON.stringify(submitted.ok === true ? { interruptions: submitted.task.interruptions } : submitted))
+  rig.scheduler.dispose()
+}
+
+// ── T-85: five host restarts with nothing committed block the task ─────────
+// The refund must not become an infinite retry loop: a card that keeps getting
+// interrupted and has never submitted is a dispatch loop, and the reason is said.
+{
+  const team = createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }], spawnedStatus: 'running' })
+  team.interrupt = async (caller, name) => {
+    team.setStatus(name, 'inactive')
+    return { previousStatus: 'running' }
+  }
+  const rig = createRig({ team: team })
+  await rig.action('settings', { maxWorkAgents: 10, maxConcurrent: 1 })
+  const A = (await createTask(rig, { title: 'restart loop' })).id
+  const attemptsSeen = []
+  for (let round = 1; round <= 5; round += 1) {
+    await rig.action('start')
+    await rig.settle()
+    const claimed = byId(await snapshot(rig), A)
+    if (claimed.status !== 'running') break
+    attemptsSeen.push(claimed.attempts)
+    await rig.action('pause')
+    await patchTask(rig, A, (task) => {
+      task.dispatch = Object.assign({}, task.dispatch, { host: 'host-' + String(round) })
+    })
+    await rig.settle()
+  }
+  const snap = await snapshot(rig)
+  const blocked = byId(snap, A)
+  check('five host restarts happen', attemptsSeen.length === 5, JSON.stringify(attemptsSeen))
+  check('and none of them consumes an attempt', attemptsSeen.every((value) => value === 1), JSON.stringify(attemptsSeen))
+  check('after five interruptions the task blocks', blocked.status === 'blocked', JSON.stringify(ids(snap)))
+  check('with the interrupted-too-often code', blocked.dispatch.error === 'interrupted-too-often', JSON.stringify(blocked.dispatch))
+  check('the interruption count is five', blocked.interruptions === 5, String(blocked.interruptions))
+  check('and the attempt count never moved', blocked.attempts === 0, String(blocked.attempts))
+  const history = Array.isArray(blocked.history) ? blocked.history : []
+  check(
+    'the block reason is in the history',
+    history.some((entry) => String(entry.note).indexOf('interrupted-too-often') >= 0),
+    JSON.stringify(history.slice(-1)),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-85: a re-dispatch retires the previous executor before claiming ──────
+// The one-live-executor rule: after a host restart the old worker is interrupted
+// and recorded as retired, so the card never runs two executors side by side.
+{
+  const team = createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }], spawnedStatus: 'running' })
+  const interrupted = []
+  team.interrupt = async (caller, name) => {
+    interrupted.push(name)
+    team.setStatus(name, 'inactive')
+    return { previousStatus: 'running' }
+  }
+  const rig = createRig({ team: team })
+  const A = (await createTask(rig, { title: 'one executor' })).id
+  await rig.action('start')
+  await rig.settle()
+  const first = byId(await snapshot(rig), A)
+  const firstWorker = first.assignee === null ? null : first.assignee.name
+  check('a fresh claim leaves exactly one live executor', first.liveExecutors === 1 && first.executors.length === 1, JSON.stringify(first.executors))
+  // The host restarts while the old worker is still listed as running.
+  await rig.action('pause')
+  await patchTask(rig, A, (task) => {
+    task.dispatch = Object.assign({}, task.dispatch, { host: 'previous-host' })
+  })
+  await rig.settle()
+  await rig.action('start')
+  await rig.settle()
+  const second = byId(await snapshot(rig), A)
+  check('the re-dispatch interrupts the previous executor', firstWorker !== null && interrupted.indexOf(firstWorker) >= 0, JSON.stringify(interrupted))
+  check('the re-dispatched card runs again', second.status === 'running' && second.assignee !== null, JSON.stringify(ids(await snapshot(rig))))
+  check('only one executor is live after the re-dispatch', second.liveExecutors === 1, JSON.stringify(second.executors))
+  const live = second.executors.filter((entry) => entry.retiredAt === null).map((entry) => entry.name)
+  check('and it is the new worker', live.length === 1 && live[0] === second.assignee.name, JSON.stringify({ live: live, assignee: second.assignee }))
+  check(
+    'the old executor is retired in the ledger',
+    second.executors.some((entry) => entry.name === firstWorker && entry.retiredAt !== null),
+    JSON.stringify(second.executors),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-85: an unstoppable executor refuses a second dispatch ────────────────
+// When the Team edge cannot stop the old worker, the dispatcher must NOT hand the
+// same card to a second one: the refusal is recorded and the task stays pending.
+{
+  const team = createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }], spawnedStatus: 'running' })
+  team.interrupt = async () => {
+    throw new Error('interrupt refused')
+  }
+  const rig = createRig({ team: team })
+  const A = (await createTask(rig, { title: 'unstoppable' })).id
+  await rig.action('start')
+  await rig.settle()
+  await rig.action('pause')
+  await patchTask(rig, A, (task) => {
+    task.dispatch = Object.assign({}, task.dispatch, { host: 'previous-host' })
+  })
+  await rig.settle()
+  await rig.action('start')
+  await rig.settle()
+  const after = byId(await snapshot(rig), A)
+  const history = Array.isArray(after.history) ? after.history : []
+  check('an executor that cannot be stopped blocks the second dispatch', after.status === 'pending', JSON.stringify(after.status))
+  check('and the refusal code is already-dispatched', history.some((entry) => String(entry.note).indexOf('already-dispatched') >= 0), JSON.stringify(history.slice(-2)))
+  check('no second executor was added', after.liveExecutors === 0 || after.executors.length === 1, JSON.stringify(after.executors))
   rig.scheduler.dispose()
 }
 
@@ -1012,22 +1178,50 @@ function createWorktreeRig(options) {
   const secondPath = join(PROJECT, '.worktrees', task.id + '-2')
   const adds = git.calls.filter((call) => call.name === 'worktreeAdd').map((call) => call.detail.path)
   check('the retry is attempt 2', retried.attempts === 2, String(retried.attempts))
+  // T-85: a CLEAN checkout with no commit is reused instead of adding a second
+  // directory for the same card — one card, one checkout. A host restart that
+  // re-dispatched repeatedly used to leave one worktree per retry.
   check(
-    'the retry runs in the attempt-2 worktree',
-    retried.status === 'running' && retried.worktree === secondPath,
-    JSON.stringify({ status: retried.status, worktree: retried.worktree }),
+    'the retry reuses the clean attempt-1 worktree',
+    retried.status === 'running' && retried.worktree === firstPath,
+    JSON.stringify({ status: retried.status, worktree: retried.worktree, first: firstPath }),
   )
-  check('with the matching attempt-2 branch', retried.branch === 'task/' + task.id + '-2', String(retried.branch))
+  check('and keeps the attempt-1 branch', retried.branch === 'task/' + task.id + '-1', String(retried.branch))
   check(
-    'attempt 1 and attempt 2 use different worktree directories',
-    adds.length === 1 && adds[0] === secondPath && firstPath !== secondPath,
-    JSON.stringify({ first: firstPath, adds: adds }),
+    'no second worktree directory is created',
+    adds.length === 0,
+    JSON.stringify({ adds: adds, second: secondPath }),
   )
   check(
-    'the old attempt-1 worktree is left untouched',
+    'the reused worktree is not removed either',
     git.calls.filter((call) => call.name === 'worktreeRemove').length === 0,
     JSON.stringify(git.calls.filter((call) => call.name === 'worktreeRemove')),
   )
+  rig.scheduler.dispose()
+}
+
+// T-85: a DIRTY previous checkout is never inherited — the retry gets its own
+// directory, so a half-finished edit cannot be silently adopted by attempt 2.
+{
+  const git = createFakeGit()
+  const rig = createRig({ allowSpawn: false, git: git })
+  const task = await createTask(rig, { title: 'retried over a dirty checkout' })
+  const firstPath = join(PROJECT, '.worktrees', task.id + '-1')
+  // The PROJECT is clean (disable dispatch otherwise); only attempt 1's checkout
+  // is dirty, which must prevent adoption.
+  const cleanOf = git.isClean
+  git.isClean = async (root) => (root === firstPath ? { ok: true, clean: false } : cleanOf(root))
+  await patchTask(rig, task.id, (entry) => {
+    entry.attempts = 1
+    entry.worktree = firstPath
+    entry.branch = 'task/' + task.id + '-1'
+  })
+  await rig.action('start')
+  const retried = byId(await snapshot(rig), task.id)
+  const secondPath = join(PROJECT, '.worktrees', task.id + '-2')
+  const adds = git.calls.filter((call) => call.name === 'worktreeAdd').map((call) => call.detail.path)
+  check('a dirty attempt-1 checkout is not adopted', retried.worktree === secondPath, JSON.stringify({ worktree: retried.worktree, first: firstPath }))
+  check('the retry adds its own worktree instead', adds.length === 1 && adds[0] === secondPath, JSON.stringify(adds))
   rig.scheduler.dispose()
 }
 
