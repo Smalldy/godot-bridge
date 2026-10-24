@@ -4798,7 +4798,7 @@ rig.scheduler.dispose()
   const loaded = await restarted.loadRegistry()
   const active = restarted.activeProjects(Date.now())
   check(
-    'a restarted process recovers the registry and its active projects',
+    'in-process restart simulation: a fresh state over the same fs reloads the registry and its active projects',
     loaded.projects.length >= 1 && active.some((entry) => entry.root === OTHER),
     JSON.stringify(active.map((entry) => entry.root)),
   )
@@ -4806,7 +4806,7 @@ rig.scheduler.dispose()
   restarted.touchProject(PROJECT)
   const both = restarted.activeProjects(Date.now())
   check(
-    'both projects stay in the background-drive set',
+    'in-process: both projects stay in the background-drive set',
     both.some((entry) => entry.root === PROJECT) && both.some((entry) => entry.root === OTHER),
     JSON.stringify(both.map((entry) => entry.root)),
   )
