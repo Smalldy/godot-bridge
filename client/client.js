@@ -140,6 +140,11 @@ window.__ModuleLoader__.load({
 		const TC_LIST_URL = '/godot-bridge/task-center/list'
 		const TC_ACTION_URL = '/godot-bridge/task-center/action'
 		const TC_PROJECT_KEY = 'godotBridge.taskCenter.project'
+		// T-95: values written before T-90 were the panel auto-recording whatever
+		// the Host answered, not a user choice. Explicit pins carry this prefix, so
+		// an unmarked legacy value is migrated (cleared) instead of being honoured.
+		const TC_PROJECT_PREFIX = 'v2:'
+		const TC_PROJECT_MIGRATED_KEY = 'godotBridge.taskCenter.projectMigrated'
 
 		const TC_DICT = {
 			zh: {
@@ -1617,7 +1622,21 @@ window.__ModuleLoader__.load({
 		function tcPinnedProject() {
 			try {
 				const value = window.localStorage.getItem(TC_PROJECT_KEY)
-				return typeof value === 'string' && value.length > 0 ? value : null
+				if (typeof value !== 'string' || value.length === 0) return null
+				if (value.indexOf(TC_PROJECT_PREFIX) === 0) {
+					const pinned = value.slice(TC_PROJECT_PREFIX.length)
+					return pinned.length > 0 ? pinned : null
+				}
+				// Legacy auto-recorded value (pre-T-90): not a user choice. Migrate it
+				// away once so it can never be misread as a manual pin again.
+				try {
+					if (typeof window.localStorage.removeItem === 'function') window.localStorage.removeItem(TC_PROJECT_KEY)
+					else window.localStorage.setItem(TC_PROJECT_KEY, '')
+					window.localStorage.setItem(TC_PROJECT_MIGRATED_KEY, '1')
+				} catch (error) {
+					/* storage can be disabled; the value is simply ignored */
+				}
+				return null
 			} catch (error) {
 				return null
 			}
@@ -1626,7 +1645,7 @@ window.__ModuleLoader__.load({
 		/** Pin a project for this browser (write = bind: the caller also sends openProject). */
 		function tcPinProject(project) {
 			try {
-				if (typeof project === 'string' && project.length > 0) window.localStorage.setItem(TC_PROJECT_KEY, project)
+				if (typeof project === 'string' && project.length > 0) window.localStorage.setItem(TC_PROJECT_KEY, TC_PROJECT_PREFIX + project)
 			} catch (error) {
 				/* storage can be disabled; pinning is a convenience */
 			}
