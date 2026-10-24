@@ -516,6 +516,7 @@ window.__ModuleLoader__.load({
 				'evtLabel-test-pass': '测试',
 				'evtLabel-test-fail': '测试',
 				'evtLabel-merge': '合并',
+				'evtLabel-merge-rejected': '合并失败',
 				'evtLabel-blocked': '阻塞',
 				'evtLabel-cancel': '取消',
 				'evtLabel-host-check': '宿主检查',
@@ -1020,6 +1021,7 @@ window.__ModuleLoader__.load({
 				'evtLabel-test-pass': 'test',
 				'evtLabel-test-fail': 'test',
 				'evtLabel-merge': 'merge',
+				'evtLabel-merge-rejected': 'merge failed',
 				'evtLabel-blocked': 'blocked',
 				'evtLabel-cancel': 'cancelled',
 				'evtLabel-host-check': 'host check',
@@ -3850,6 +3852,34 @@ window.__ModuleLoader__.load({
 				function shortSha(value) {
 					return typeof value === 'string' && value !== '' ? value.slice(0, 7) : ''
 				}
+				/**
+				 * T-111: what one board transition MEANS — the same note-aware rule the
+				 * Host applies. from/to alone fabricated a review-pass for every
+				 * candidate build and a test-pass for every merge.
+				 */
+				function historyMeaning(from, to, note) {
+					if (/^(?:merge request )?merged\b/.test(note)) return { kind: 'merge' }
+					if (to === 'pending') {
+						if (from === null) return { kind: 'create' }
+						if (from === 'running' || from === 'blocked' || from === 'cancelled' || from === 'done') return { kind: 'retry' }
+						return null
+					}
+					if (to === 'running') {
+						if (from === 'reviewing') return { kind: 'review-reject' }
+						if (from === 'testing') return { kind: 'test-fail' }
+						if (from === 'pending' || from === null) return { kind: 'dispatch' }
+						return null
+					}
+					if (to === 'reviewing') return from === 'reviewing' ? null : { kind: 'submit' }
+					if (to === 'testing') {
+						if (from === 'reviewing') return { kind: 'review-pass' }
+						if (from === 'testing') return /^tests passed/.test(note) ? { kind: 'test-pass' } : null
+						return null
+					}
+					if (to === 'blocked') return { kind: 'blocked' }
+					if (to === 'cancelled') return { kind: 'cancel' }
+					return null
+				}
 				const stream = []
 				const derivedEvents =
 					snapshot.activityEvents !== null && snapshot.activityEvents !== undefined && Array.isArray(snapshot.activityEvents.entries)
@@ -3867,10 +3897,12 @@ window.__ModuleLoader__.load({
 								? memberName(task.assignee.name)
 								: null
 					const note = typeof event.detail === 'string' && event.detail !== '' ? event.detail : null
-					const html =
-						event.kind === 'merge'
-							? task.id + ' · ' + task.title + ' → ' + (note === null ? t('evtLabel-merge') : note)
-							: eventText(
+					const isMerge = event.kind === 'merge' || event.kind === 'merge-rejected'
+					const mergeTarget = isMerge && typeof event.target === 'string' && event.target !== '' ? event.target : '—'
+					const mergeSha = isMerge && typeof event.sha === 'string' && event.sha !== '' ? shortSha(event.sha) : ''
+					const html = isMerge
+						? task.id + ' · ' + task.title + ' → ' + mergeTarget + (mergeSha === '' ? '' : ' · ' + mergeSha)
+						: eventText(
 								event.kind,
 								task,
 								assignee,
@@ -3887,25 +3919,21 @@ window.__ModuleLoader__.load({
 					// Legacy Host (no derived timeline yet): fall back to the card's own history.
 					tasks.forEach(function (task) {
 						const hist = Array.isArray(task.history) ? task.history.slice().sort(function (left, right) { return new Date(left.at).getTime() - new Date(right.at).getTime() }) : []
+						const merge = tcMergeOf(task)
+						const mergeAt = merge !== null && typeof merge.at === 'string' ? merge.at : null
 						let reviewRound = 0
 						hist.forEach(function (entry) {
 							const to = typeof entry.to === 'string' ? entry.to : ''
 							const from = typeof entry.from === 'string' ? entry.from : null
 							const assignee = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.name === 'string' ? memberName(task.assignee.name) : null
-							let type = null
-							if (to === 'pending' && from === null) type = 'create'
-							else if (to === 'pending') type = 'retry'
-							else if (to === 'running' && (from === 'pending' || from === null)) type = 'dispatch'
-							else if (to === 'reviewing') type = 'submit'
-							else if (to === 'running' && from === 'reviewing') type = 'review-reject'
-							else if (to === 'testing') type = 'review-pass'
-							else if (to === 'running' && from === 'testing') type = 'test-fail'
-							else if (to === 'done') type = 'test-pass'
-							else if (to === 'blocked') type = 'blocked'
-							else if (to === 'cancelled') type = 'cancel'
-							if (type === null) return
-							if (type === 'review-pass' || type === 'review-reject') reviewRound += 1
 							const note = typeof entry.note === 'string' && entry.note !== '' ? entry.note : null
+							const meaning = historyMeaning(from, to, note === null ? '' : note)
+							if (meaning === null) return
+							const type = meaning.kind
+							// A return to review opens a round: the first approval is round 1.
+							if (type === 'submit') reviewRound += 1
+							// The merge record is the richer row for this same merge.
+							if (type === 'merge' && mergeAt !== null && entry.at === mergeAt) return
 							const noteSha = (function () {
 								const match = /@([0-9a-fA-F]{7,40})/.exec(note === null ? '' : note)
 								return match === null ? '' : match[1].slice(0, 7)
@@ -3919,8 +3947,7 @@ window.__ModuleLoader__.load({
 								raw: note,
 							})
 						})
-						const merge = tcMergeOf(task)
-						if (merge !== null && typeof merge.at === 'string') {
+						if (merge !== null && mergeAt !== null) {
 							const commit = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? shortSha(merge.mergeCommit) : ''
 							const mergeActor = mergeActorOf(task)
 							stream.push({

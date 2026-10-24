@@ -6041,20 +6041,30 @@ rig.scheduler.dispose()
 {
   const base = Date.now()
   const iso = (ms) => new Date(ms).toISOString()
-  function historyFor(start) {
-    return [
+  const MERGE_COMMIT = 'abcdef1234567890'
+  // The REAL row shapes a board writes (verified against a live 111-card board):
+  // same-status rows carry the "candidate built"/"tests passed" split, and a card
+  // only reaches `done` through the merge.
+  function historyFor(start, mergeCommit, withMerge) {
+    const rows = [
       { at: iso(start), by: '@lead', byName: 'lead', from: null, to: 'pending', note: 'created by lead' },
+      { at: iso(start + 100), by: '@lead', byName: 'lead', from: 'pending', to: 'pending', note: 'updated' },
       { at: iso(start + 1000), by: 'scheduler', byName: 'fixer', from: 'pending', to: 'running', note: 'dispatched to fixer' },
-      { at: iso(start + 2000), by: 'fixer', byName: 'fixer', from: 'running', to: 'reviewing', note: 'submitted @abcdef1' },
-      { at: iso(start + 3000), by: 'reviewer-1', byName: 'reviewer-1', from: 'reviewing', to: 'testing', note: 'approved' },
-      { at: iso(start + 4000), by: 'tester-1', byName: 'tester-1', from: 'testing', to: 'done', note: 'tests pass' },
+      { at: iso(start + 1100), by: 'fixer', byName: 'fixer', from: 'running', to: 'running', note: 'files: plugin/task-center/api.mjs' },
+      { at: iso(start + 2000), by: 'fixer', byName: 'fixer', from: 'running', to: 'reviewing', note: 'submitted for review' },
+      { at: iso(start + 3000), by: 'reviewer-1', byName: 'reviewer-1', from: 'reviewing', to: 'testing', note: 'review approved' },
+      { at: iso(start + 3100), by: 'host', byName: null, from: 'testing', to: 'testing', note: 'test candidate built at 1111111111111111111111111111111111111111 for 2222222222222222222222222222222222222222' },
+      { at: iso(start + 4000), by: 'tester-1', byName: 'tester-1', from: 'testing', to: 'testing', note: 'tests passed; waiting for the merge' },
     ]
+    if (withMerge === true) rows.push({ at: iso(start + 5000), by: 'merger', byName: 'merger', from: 'testing', to: 'done', note: 'merge request merged as ' + mergeCommit })
+    return rows
   }
   function taskWith(id, start, mergeState) {
+    const withMerge = mergeState !== undefined && mergeState !== null
     return {
       id: id,
       title: 'card ' + id,
-      status: 'done',
+      status: withMerge ? 'done' : 'testing',
       priority: 0,
       dependsOn: [],
       writeFiles: [],
@@ -6065,9 +6075,9 @@ rig.scheduler.dispose()
       review: { status: 'approved', by: 'reviewer-1', at: iso(start + 3000), reasons: null, attempt: 1 },
       test: { status: 'passed', by: 'tester-1', at: iso(start + 4000), evidence: 'PASS', attempt: 1 },
       merge: mergeState === undefined ? null : mergeState,
-      history: historyFor(start),
+      history: historyFor(start, MERGE_COMMIT, withMerge),
       createdAt: iso(start),
-      updatedAt: iso(start + 4000),
+      updatedAt: iso(start + 5000),
       attempts: 1,
       maxAttempts: 3,
     }
@@ -6075,7 +6085,7 @@ rig.scheduler.dispose()
   function boardJson(tasks) {
     return JSON.stringify({ version: 2, seq: 4, dispatch: { state: 'paused' }, tasks: tasks })
   }
-  const merged = { status: 'merged', base: 'b', target: 'feat/task-center-v2', head: 'h', mergeCommit: 'abcdef1234', at: iso(base + 5000), reviewer: null, conflict: null, output: null, declaredFiles: [], actualFiles: [], tests: null }
+  const merged = { status: 'merged', base: 'b', target: 'feat/task-center-v2', head: 'h', mergeCommit: MERGE_COMMIT, at: iso(base + 5000), reviewer: null, conflict: null, output: null, declaredFiles: [], actualFiles: [], tests: null }
   const rig = createRig({ allowSpawn: false })
   seedBoard(rig.fs, PROJECT, boardJson([taskWith('T-1', base, merged), taskWith('T-2', base + 1000, undefined)]))
   const first = await rig.api.snapshot(PROJECT, { full: false })
@@ -6089,6 +6099,36 @@ rig.scheduler.dispose()
     'T-111 review, test and merge events are all present',
     kinds.indexOf('review-pass') >= 0 && kinds.indexOf('test-pass') >= 0 && kinds.indexOf('merge') >= 0,
     JSON.stringify(kinds),
+  )
+  // The tester failure: same-status rows were labeled as review-pass, and the
+  // merge was labeled as test-pass. Both fabrications are gone.
+  check(
+    'T-111 the testing-to-testing candidate row is not a review-pass',
+    first.activityEvents.entries.every((entry) => !(entry.kind === 'review-pass' && entry.from === 'testing')),
+    JSON.stringify(first.activityEvents.entries.map((entry) => entry.kind + ':' + entry.from + '->' + entry.to)),
+  )
+  check(
+    'T-111 test-pass is the real verdict row, never the merge',
+    first.activityEvents.entries.filter((entry) => entry.kind === 'test-pass').length === 2 &&
+      first.activityEvents.entries.filter((entry) => entry.kind === 'test-pass').every((entry) => entry.to === 'testing' && /^tests passed/.test(String(entry.detail))),
+    JSON.stringify(first.activityEvents.entries.filter((entry) => entry.kind === 'test-pass').map((entry) => entry.kind + ':' + entry.from + '->' + entry.to + '|' + entry.detail)),
+  )
+  const passRows = first.activityEvents.entries.filter((entry) => entry.kind === 'review-pass')
+  check(
+    'T-111 review-pass counts real approvals only, with the matching round',
+    passRows.length === 2 && passRows.every((entry) => entry.from === 'reviewing' && entry.to === 'testing' && entry.eventRound === 1),
+    JSON.stringify(passRows.map((entry) => entry.from + '->' + entry.to + ' r' + entry.eventRound)),
+  )
+  const mergeRows = first.activityEvents.entries.filter((entry) => entry.kind === 'merge')
+  check(
+    'T-111 the merge row is one row carrying the target branch and the merge commit',
+    mergeRows.length === 1 && mergeRows[0].taskId === 'T-1' && mergeRows[0].target === 'feat/task-center-v2' && mergeRows[0].sha === MERGE_COMMIT.slice(0, 7),
+    JSON.stringify(mergeRows.map((entry) => entry.taskId + ' ' + entry.target + ' ' + entry.sha)),
+  )
+  check(
+    'T-111 same-status edits ("updated", "files: ...") never become events',
+    first.activityEvents.entries.every((entry) => !(entry.from === entry.to && entry.from !== 'testing')),
+    JSON.stringify(first.activityEvents.entries.map((entry) => entry.kind + ':' + entry.from + '->' + entry.to)),
   )
   check(
     'T-111 nothing is persisted to an activity file',
@@ -6115,6 +6155,24 @@ rig.scheduler.dispose()
     replay.ok === true && replay.activityEvents.entries.length === 1,
     JSON.stringify(replay.activityEvents && replay.activityEvents.entries.length),
   )
+  // A burst bigger than one page is delivered oldest-first across polls, so no
+  // new event is lost between two refreshes.
+  const storm = []
+  for (let index = 0; index < 30; index++) storm.push(taskWith('T-' + String(index + 200), base + 200000 + index * 100, undefined))
+  seedBoard(rig.fs, PROJECT, boardJson(storm))
+  const stormFirst = await rig.api.snapshot(PROJECT, { full: false, activitySince: cursor })
+  const stormSecond = await rig.api.snapshot(PROJECT, { full: false, activitySince: stormFirst.activityEvents.cursor })
+  check(
+    'T-111 a burst larger than one page is truncated, and no new event is lost across polls',
+    stormFirst.ok === true &&
+      stormFirst.activityEvents.truncated === true &&
+      stormFirst.activityEvents.entries.length === 50 &&
+      stormFirst.activityEvents.cursor !== cursor &&
+      stormSecond.activityEvents.truncated === false &&
+      stormSecond.activityEvents.entries.length === 40 &&
+      new Set(stormFirst.activityEvents.entries.concat(stormSecond.activityEvents.entries).map((entry) => entry.key)).size === 90,
+    JSON.stringify({ first: stormFirst.activityEvents.entries.length, truncated1: stormFirst.activityEvents.truncated, second: stormSecond.activityEvents.entries.length, truncated2: stormSecond.activityEvents.truncated }),
+  )
   // Bounded: many cards with long histories must not blow up the response.
   const many = []
   for (let index = 0; index < 40; index++) many.push(taskWith('T-' + String(index + 10), base + index * 10, index % 3 === 0 ? merged : undefined))
@@ -6123,8 +6181,8 @@ rig.scheduler.dispose()
   const bytes = JSON.stringify(bounded.activityEvents).length
   check(
     'T-111 the derived timeline is bounded (limit 50, 3 transitions per card)',
-    bounded.activityEvents.entries.length === 50 && bytes < 20000,
-    JSON.stringify({ entries: bounded.activityEvents.entries.length, bytes: bytes }),
+    bounded.activityEvents.entries.length === 50 && bytes < 20000 && bounded.activityEvents.perTask === 3,
+    JSON.stringify({ entries: bounded.activityEvents.entries.length, bytes: bytes, perTask: bounded.activityEvents.perTask }),
   )
   rig.scheduler.dispose()
 }

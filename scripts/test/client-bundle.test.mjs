@@ -1034,9 +1034,9 @@ await flush()
     truncated: false,
     cursor: 'cursor-1',
     entries: [
-      { key: 'T-3@2026-01-01T00:00:03.000Z@merge', at: new Date(now - 3000).toISOString(), kind: 'merge', taskId: 'T-3', from: null, to: 'merged', by: null, byName: 'reviewer-1', detail: 'merged into feat/task-center-v2 @fedcba0', eventRound: 1, sha: 'fedcba0' },
+      { key: 'T-3@2026-01-01T00:00:03.000Z@merge', at: new Date(now - 3000).toISOString(), kind: 'merge', taskId: 'T-3', from: null, to: 'merged', by: null, byName: 'reviewer-1', target: 'feat/task-center-v2', detail: null, eventRound: 1, sha: 'fedcba0' },
       { key: 'T-1@2026-01-01T00:00:05.000Z@review-pass', at: new Date(now - 5000).toISOString(), kind: 'review-pass', taskId: 'T-1', from: 'reviewing', to: 'testing', by: 'reviewer-1', byName: 'reviewer-1', detail: null, eventRound: 1, sha: null },
-      { key: 'T-1@2026-01-01T00:00:07.000Z@test-pass', at: new Date(now - 7000).toISOString(), kind: 'test-pass', taskId: 'T-1', from: 'testing', to: 'done', by: 'tester-1', byName: 'tester-1', detail: null, eventRound: 1, sha: null },
+      { key: 'T-1@2026-01-01T00:00:07.000Z@test-pass', at: new Date(now - 7000).toISOString(), kind: 'test-pass', taskId: 'T-1', from: 'testing', to: 'testing', by: 'tester-1', byName: 'tester-1', detail: 'tests passed; waiting for the merge', eventRound: 1, sha: null },
     ],
   }
   let timelineTree = withHooks(panel, { initialView: 'status' })
@@ -1053,6 +1053,16 @@ await flush()
       timelineKinds.indexOf('test-pass') >= 0 &&
       timelineKinds.indexOf('merge') >= 0,
     JSON.stringify(timelineKinds),
+  )
+  const derivedMergeRow = findAll(timelineCard, (node) => node.props && node.props['data-activity-kind'] === 'merge')[0]
+  const derivedMergeText = derivedMergeRow === undefined ? '' : textOf(derivedMergeRow)
+  check(
+    'T-111 the derived merge row names the subject, the target branch and the merge commit (localized, no raw note)',
+    derivedMergeText.indexOf('T-3 · Tail output feature') >= 0 &&
+      derivedMergeText.indexOf('feat/task-center-v2') >= 0 &&
+      derivedMergeText.indexOf('fedcba0') >= 0 &&
+      derivedMergeText.indexOf('merged into') < 0,
+    derivedMergeText,
   )
   HOST.tasks = savedTasks
   HOST.activityEvents = savedTimeline
@@ -1101,7 +1111,7 @@ await flush()
       { from: 'pending', to: 'running', at: new Date(Date.now() - 50000).toISOString(), by: '@session-lead', note: 'dispatched to fixer' },
       { from: 'running', to: 'reviewing', at: new Date(Date.now() - 40000).toISOString(), by: '@session-fixer', note: 'submitted for review round 1 @f158b35c' },
       { from: 'reviewing', to: 'testing', at: new Date(Date.now() - 30000).toISOString(), by: '@session-reviewer-1', note: 'approved by reviewer' },
-      { from: 'testing', to: 'done', at: new Date(Date.now() - 20000).toISOString(), by: '@session-tester-1', note: 'passed' },
+      { from: 'testing', to: 'testing', at: new Date(Date.now() - 20000).toISOString(), by: '@session-tester-1', note: 'tests passed; waiting for the merge' },
     ]
     let streamTree = withHooks(panel, { initialView: 'status' })
     await flush()
@@ -1183,7 +1193,7 @@ await flush()
     const summaryTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
     const savedSummaryTest = summaryTask.test
     const savedSummaryHistory = summaryTask.history
-    summaryTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 4000).toISOString(), by: '@session-tester-1', note: 'passed' }]
+    summaryTask.history = [{ from: 'testing', to: 'testing', at: new Date(Date.now() - 4000).toISOString(), by: '@session-tester-1', note: 'tests passed; waiting for the merge' }]
     summaryTask.test = Object.assign({}, savedSummaryTest, {
       hostCheck: { command: 'npm run verify', exitCode: 0, timedOut: false, durationMs: 21000 },
       evidence: '11/11 suites passed in 21s',
