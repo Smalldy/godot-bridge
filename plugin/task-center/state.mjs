@@ -7,6 +7,7 @@
  */
 
 import { homedir } from 'node:os'
+import { createSessionLookup } from './session-lookup.mjs'
 import { resolve } from 'node:path'
 import {
   PROJECT_ACTIVE_MS,
@@ -18,6 +19,11 @@ import {
   writeProjectRegistry,
 } from './board.mjs'
 import { emptyLocks, expire as expireLocks } from './locks.mjs'
+
+/** A readable message for anything thrown; state must never throw at a caller. */
+function messageOf(error) {
+  return error === null || error === undefined ? 'unknown error' : String((error && error.message) || error)
+}
 
 /**
  * @param ctx - the row's context; needs fs.
@@ -74,6 +80,18 @@ export function createState(ctx, options) {
   const ensureDir = typeof opts.ensureDir === 'function' ? opts.ensureDir : null
   const policyFor = typeof opts.sandboxPolicyFor === 'function' ? opts.sandboxPolicyFor : writePolicyFor
   const onRegistryError = typeof opts.onRegistryError === 'function' ? opts.onRegistryError : null
+  // Session id -> workspace reverse lookup (T-102). Production injects the real
+  // <home>/.dsh/sessions reader; tests inject a fixture so nothing touches disk.
+  // undefined = build the real reader (production convenience); null = DISABLED
+  // (every test rig opts out, so no test ever reads the developer's ~/.dsh).
+  const lookupOption = opts.sessionLookup === undefined ? 'default' : opts.sessionLookup
+  let lookupInstance = null
+  function sessionLookup() {
+    if (lookupOption === null) return null
+    if (lookupInstance !== null) return lookupInstance
+    lookupInstance = lookupOption === 'default' ? createSessionLookup({ homeDir: homeDir, isDir: opts.isDir }) : lookupOption
+    return lookupInstance
+  }
 
   let registryWrite = Promise.resolve()
 
@@ -199,14 +217,55 @@ export function createState(ctx, options) {
   }
 
   /**
-   * The single resolution rule: explicit wins, then the session workspace walked
-   * up to the nearest git project, then a readable no-project-bound refusal.
+   * The workspace a session id maps to, by looking its DSH session directory up.
+   * Never guessed: an unknown id, an undecodable directory or an ambiguous name is
+   * a readable failure, and it does NOT fall back to "the most recent project".
+   */
+  async function lookupSessionRoot(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') return { ok: false, code: 'bad-session-id', message: 'no session id' }
+    let instance
+    try {
+      instance = sessionLookup()
+    } catch (error) {
+      return { ok: false, code: 'lookup-unavailable', message: messageOf(error) }
+    }
+    if (instance === null) return { ok: false, code: 'lookup-unavailable', message: 'session lookup is not configured' }
+    const fn = instance !== null && typeof instance === 'object' && typeof instance.lookup === 'function' ? instance.lookup : typeof instance === 'function' ? instance : null
+    if (fn === null) return { ok: false, code: 'lookup-unavailable', message: 'no session lookup adapter' }
+    try {
+      const result = await fn(sessionId)
+      if (result === null || result === undefined || result.ok !== true) {
+        return { ok: false, code: result !== null && result !== undefined && result.code !== undefined ? result.code : 'no-session', message: result !== null && result !== undefined && result.message !== undefined ? String(result.message) : 'session workspace unknown' }
+      }
+      return { ok: true, path: String(result.path), dir: result.dir === undefined ? null : result.dir }
+    } catch (error) {
+      return { ok: false, code: 'lookup-failed', message: messageOf(error) }
+    }
+  }
+
+  /**
+   * The single resolution rule: explicit wins, then the SESSION LOOKUP (so a
+   * panel that has not called a tool yet still knows its project), then the
+   * workspace this session recorded, then a readable no-project-bound refusal.
    */
   async function resolveProject(options) {
     const o = options === undefined || options === null ? {} : options
     const explicit = typeof o.explicit === 'string' && o.explicit.trim().length > 0 ? o.explicit.trim() : ''
     if (explicit !== '') {
       return { ok: true, project: projectRefOf(resolve(explicit)), resolvedFrom: o.explicitSource === 'panel' ? 'panel' : 'explicit' }
+    }
+    const sessionId = typeof o.sessionId === 'string' && o.sessionId.trim() !== '' ? o.sessionId.trim() : null
+    if (sessionId !== null) {
+      const looked = await lookupSessionRoot(sessionId)
+      if (looked.ok === true) {
+        // Walk the looked-up workspace UP to its nearest git project, exactly like
+        // a recorded session workspace: the sessions dir names the workspace, not
+        // necessarily the repository root.
+        const viaLookup = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: looked.path })
+        if (viaLookup.ok === true) {
+          return { ok: true, project: projectRefOf(viaLookup.root), resolvedFrom: 'session-lookup', sessionWarn: null }
+        }
+      }
     }
     const start = typeof o.sessionRoot === 'string' && o.sessionRoot.length > 0 ? o.sessionRoot : null
     const resolved = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: start })
@@ -293,6 +352,7 @@ export function createState(ctx, options) {
     touchProject: touchProject,
     loadRegistry: loadRegistry,
     flushRegistry: flushRegistry,
+    lookupSessionRoot: lookupSessionRoot,
     resolveProject: resolveProject,
     activeProjects: activeProjects,
     adoptPanelProject: adoptPanelProject,

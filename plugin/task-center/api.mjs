@@ -2939,6 +2939,18 @@ export function createApi(ctx, options) {
   async function resolveIncoming(source, context) {
     const explicit = typeof source.project === 'string' && source.project.trim().length > 0 ? source.project.trim() : ''
     if (explicit !== '') return { ok: true, root: resolve(explicit), resolvedFrom: 'explicit' }
+    // T-102: the session's DSH directory names its workspace, so a tool call made
+    // before openProject still lands on the right project. Unknown id => skip.
+    if (state !== null && typeof state.lookupSessionRoot === 'function') {
+      const lookedId = sessionIdOf(context)
+      if (lookedId !== null) {
+        const looked = await state.lookupSessionRoot(lookedId)
+        if (looked.ok === true) {
+          const viaLookup = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: looked.path })
+          if (viaLookup.ok === true) return { ok: true, root: viaLookup.root, resolvedFrom: 'session-lookup' }
+        }
+      }
+    }
     const sessionRoot = context === undefined || context === null ? null : typeof context.sessionRoot === 'string' ? context.sessionRoot : typeof context.projectPath === 'string' ? context.projectPath : null
     if (sessionRoot === null) {
       return failure('no-project-bound', 'No project is bound to this session. Pass project, or open a project from the panel.')

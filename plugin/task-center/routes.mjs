@@ -112,10 +112,15 @@ export function registerTaskRoutes(ctx, options) {
       explicit: explicit,
       // T-96: only THIS session's binding may answer; no session means no slot.
       sessionRoot: sessionId === null || sessionId === undefined ? null : state.sessionRootOf(sessionId),
+      // T-102: when this session never called a tool, its DSH session directory
+      // still names the workspace, so the panel binds before the first tool call.
+      sessionId: sessionId === null || sessionId === undefined ? null : sessionId,
       explicitSource: explicit !== null ? 'panel' : undefined,
     })
     if (resolved.ok !== true) return { failed: resolved }
-    if (explicit !== null) await state.adoptPanelProject(resolved.project.root)
+    // A looked-up project is ACTIVATED: it joins the registry (lastSeen) and the
+    // background drive exactly like a panel-pinned one.
+    if (explicit !== null || resolved.resolvedFrom === 'session-lookup') await state.adoptPanelProject(resolved.project.root)
     else state.touchProject(resolved.project.root)
     return { root: resolved.project.root, resolvedFrom: resolved.resolvedFrom }
   }
@@ -134,6 +139,7 @@ export function registerTaskRoutes(ctx, options) {
       const resolved = await state.resolveProject({
         explicit: null,
         sessionRoot: sessionId === null || sessionId === undefined ? null : state.sessionRootOf(sessionId),
+        sessionId: sessionId === null || sessionId === undefined ? null : sessionId,
       })
       if (resolved === null || resolved === undefined || resolved.ok !== true) return null
       return resolved.project.root

@@ -1,12 +1,13 @@
 // HTTP route tests: the GUI's contract, its transport hardening and the fact
 // that it calls the same actions as the tool.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH } from '../../plugin/task-center/routes.mjs'
 import { boardJson, createFakeFs, createFakeGit, createRig, createStrictCtx, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
+import { createSessionLookup, decodeSessionDirName } from '../../plugin/task-center/session-lookup.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
 import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRoleManager, memberProjectOf, projectSlotKey, recordStageSlot, rememberMemberProject, roleBriefFor, roleSlotName } from '../../plugin/task-center/dispatch.mjs'
 
@@ -5665,6 +5666,130 @@ rig.scheduler.dispose()
     toolState.ok === true && toolState.projectRoot === projectB,
     JSON.stringify({ project: toolState.projectRoot }),
   )
+}
+
+
+// ── T-102: session id -> workspace, before any tool call ──────────────────────
+{
+  // The directory name encodes the path (separators and ':' both become '-'), so
+  // the inverse is validated against existing directories — never guessed.
+  const dirs = new Set(['J:\\', 'J:\\ws', 'J:\\ws\\proj'])
+  const decoded = decodeSessionDirName('--J-ws-proj--', { isDir: (path) => dirs.has(path) })
+  check(
+    'T-102 a session directory name decodes back to its workspace path',
+    decoded.ok === true && decoded.path === join('J:\\', 'ws', 'proj'),
+    JSON.stringify(decoded),
+  )
+  const missing = decodeSessionDirName('--J-ws-nowhere--', { isDir: (path) => dirs.has(path) })
+  check(
+    'T-102 an undecodable name is a readable failure, never a guess',
+    missing.ok === false && missing.code === 'undecodable',
+    JSON.stringify(missing),
+  )
+  const ambiguousDirs = new Set(['J:\\', 'J:\\a', 'J:\\a-b', 'J:\\a\\b'])
+  const ambiguous = decodeSessionDirName('--J-a-b--', { isDir: (path) => ambiguousDirs.has(path) })
+  check(
+    'T-102 an ambiguous name is refused instead of picking one split',
+    ambiguous.ok === false && ambiguous.code === 'ambiguous',
+    JSON.stringify(ambiguous),
+  )
+  const zhDirs = new Set(['J:\\', 'J:\\ws', join('J:\\ws', '重装')])
+  const zh = decodeSessionDirName('--J-ws-~91CD~88C5--', { isDir: (path) => zhDirs.has(path) })
+  check(
+    'T-102 ~HEX~ escapes decode back to the non-ASCII directory',
+    zh.ok === true && zh.path === join('J:\\ws', '重装'),
+    JSON.stringify(zh),
+  )
+  // The exact shape DSH produced on this machine (a real workspace directory).
+  const realName = '--J-mm13dremake_workspace-~91CD~88C5~673A~51753d~91CD~7F6E~7248--'
+  const realPath = join('J:\\', 'mm13dremake_workspace', '重装机兵3d重置版')
+  const real = decodeSessionDirName(realName, { isDir: (path) => path === 'J:\\' || path === join('J:\\', 'mm13dremake_workspace') || path === realPath })
+  check(
+    'T-102 the live machine\'s escaped session name decodes to its real workspace',
+    real.ok === true && real.path === realPath,
+    JSON.stringify(real),
+  )
+}
+
+{
+  // REAL directory tree on disk: <temp>/.dsh/sessions/--J-ws-proj--/session-abc/,
+  // resolved through the same lookup the host wires into the row.
+  const tempHome = mkdtempSync(join(process.cwd(), '.tmp-sessions-'))
+  try {
+    const sessionDir = join(tempHome, '.dsh', 'sessions', '--J-ws-proj--', 'session-abc')
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileSync(join(sessionDir, 'session.v4.jsonl.zstd'), '')
+    const wsProj = join('J:\\', 'ws', 'proj')
+    const tree = new Set([join('J:\\'), join('J:\\', 'ws'), wsProj])
+    const lookup = createSessionLookup({ homeDir: tempHome, isDir: (path) => tree.has(path) })
+    const rig = createRig({ allowSpawn: false, homeDir: tempHome, sessionLookup: lookup })
+    for (const dir of [wsProj, join(wsProj, '.git'), join(wsProj, '.agents')]) rig.fs.dirs.add(dir)
+    const surface = install(rig)
+    async function http(url) {
+      const res = response()
+      await surface.byPath.get(url.split('?')[0]).handler(request(url), res)
+      return res.json()
+    }
+    // No tool call ever happened for 'abc': only its sessions directory exists.
+    const bound = await http(STATE_PATH + '?session=abc')
+    check(
+      'T-102 an untouched session resolves to its workspace from the sessions tree',
+      bound.ok === true && bound.projectRoot === wsProj && bound.resolvedFrom === 'session-lookup',
+      JSON.stringify({ ok: bound.ok, projectRoot: bound.projectRoot, resolvedFrom: bound.resolvedFrom }),
+    )
+    check(
+      'T-102 a looked-up project is ACTIVATED (registry lastSeen, background drive)',
+      rig.state.activeProjects(Date.now()).some((entry) => entry.root === wsProj),
+      JSON.stringify(rig.state.activeProjects(Date.now()).map((entry) => entry.root)),
+    )
+    // Unknown id: refuse. The active project above must NOT be borrowed.
+    const unknown = await http(STATE_PATH + '?session=never-seen')
+    check(
+      'T-102 an unknown session id refuses instead of borrowing the last project',
+      unknown.ok === false && unknown.code === 'no-project-bound',
+      JSON.stringify(unknown),
+    )
+    // An explicit pin still outranks the lookup.
+    const pinned = await http(STATE_PATH + '?session=abc&project=' + encodeURIComponent(PROJECT))
+    check(
+      'T-102 an explicit pin wins over the session lookup',
+      pinned.ok === true && pinned.projectRoot === PROJECT,
+      JSON.stringify({ projectRoot: pinned.projectRoot, resolvedFrom: pinned.resolvedFrom }),
+    )
+    surface.dispose()
+    rig.scheduler.dispose()
+
+    // Cache: the workspace listing and the answer are reused inside the TTL.
+    let clock = 1000
+    let listings = 0
+    const counted = createSessionLookup({
+      homeDir: tempHome,
+      isDir: (path) => tree.has(path),
+      now: () => clock,
+      ttlMs: 5000,
+      readdir: (dir) => {
+        listings++
+        return readdirSync(dir)
+      },
+    })
+    const first = counted.lookup('abc')
+    const second = counted.lookup('abc')
+    check(
+      'T-102 a repeated lookup is served from the cache (one listing)',
+      first.ok === true && second.ok === true && listings === 1,
+      JSON.stringify({ first: first.ok, listings: listings }),
+    )
+    clock += 6000
+    counted.lookup('abc')
+    check('T-102 the cache expires after its TTL', listings === 2, JSON.stringify({ listings: listings }))
+    check(
+      'T-102 an unknown id inside a known tree is a readable no-session',
+      counted.lookup('nope').ok === false && counted.lookup('nope').code === 'no-session',
+      JSON.stringify(counted.lookup('nope')),
+    )
+  } finally {
+    rmSync(tempHome, { recursive: true, force: true })
+  }
 }
 
 // ── T-97: a card is dispatched only to its own session/project team ──
