@@ -5487,5 +5487,119 @@ rig.scheduler.dispose()
   )
 }
 
+// ── T-97: a card is dispatched only to its own session/project team ──
+{
+  const { createFakeGit: makeGit } = await import('./support/fixtures.mjs')
+  function teamFor(leadName, workerName, workerStatus) {
+    return createTeam({
+      roster: [
+        { id: 'session-lead', name: leadName, role: 'lead', status: 'running' },
+        { id: 'session-' + workerName, name: workerName, role: 'teammate', status: workerStatus === undefined ? 'inactive' : workerStatus },
+      ],
+    })
+  }
+  function contextFor(fs, team) {
+    return {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+      get(key) {
+        if (key === 'agents') return team === null ? undefined : { list: () => [team.roster[0]] }
+        if (key === 'agentTeams') return team
+        return undefined
+      },
+    }
+  }
+  function boardWith(owners) {
+    const now = new Date().toISOString()
+    return JSON.stringify({
+      version: 2,
+      seq: 2,
+      dispatch: { state: 'running', allowSpawn: true, maxConcurrent: 2 },
+      tasks: owners.map((owner, index) => ({
+        id: 'T-' + String(index + 1),
+        title: 'owned by ' + owner,
+        status: 'pending',
+        priority: 0,
+        dependsOn: [],
+        writeFiles: [],
+        spec: 's',
+        acceptance: 'a',
+        evidence: '',
+        ownerSession: owner,
+        history: [],
+        createdAt: now,
+        updatedAt: now,
+        attempts: 0,
+        maxAttempts: 3,
+      })),
+    })
+  }
+  async function dispatcherFor(session, team) {
+    const fs = createFakeFs()
+    seedBoard(fs, PROJECT, boardWith(['session-a', 'session-b']))
+    const ctx = contextFor(fs, team)
+    const state = createState(ctx)
+    const git = makeGit()
+    const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: git, sessionId: session })
+    await scheduler.settle(PROJECT)
+    return { fs: fs, state: state, ctx: ctx, scheduler: scheduler, git: git }
+  }
+  const rigA = await dispatcherFor('session-a', teamFor('lead-a', 'fixer-a'))
+  const boardA = boardJson(rigA.fs, PROJECT).tasks
+  check(
+    'T-97 session A dispatches its own card to its own worker',
+    boardA[0].status === 'running' && boardA[0].assignee.name === 'fixer-a' && boardA[0].dispatch.lead === 'lead-a' && boardA[0].dispatch.project === PROJECT,
+    JSON.stringify(boardA.map((task) => ({ id: task.id, status: task.status, assignee: task.assignee && task.assignee.name, lead: task.dispatch && task.dispatch.lead }))),
+  )
+  check(
+    'T-97 session A never touches session B’s card',
+    boardA[1].status === 'pending' && boardA[1].assignee === null && boardA[1].waitingReason === null,
+    JSON.stringify({ status: boardA[1].status, assignee: boardA[1].assignee, waiting: boardA[1].waitingReason }),
+  )
+  const rigB = await dispatcherFor('session-b', teamFor('lead-b', 'fixer-b'))
+  const boardB = boardJson(rigB.fs, PROJECT).tasks
+  check(
+    'T-97 session B dispatches its own card to its own worker',
+    boardB[1].status === 'running' && boardB[1].assignee.name === 'fixer-b',
+    JSON.stringify(boardB.map((task) => ({ id: task.id, status: task.status, assignee: task.assignee && task.assignee.name }))),
+  )
+  rigA.scheduler.dispose()
+  rigB.scheduler.dispose()
+
+  // No team in this session: the card records a reason and never borrows B's member.
+  const noTeamRig = await dispatcherFor('session-a', null)
+  const noTeamBoard = boardJson(noTeamRig.fs, PROJECT).tasks
+  check(
+    'T-97 a session without a team records no-lead-for-project instead of borrowing',
+    noTeamBoard[0].status === 'pending' && noTeamBoard[0].waitingReason === 'no-lead-for-project' && noTeamBoard[0].assignee === null,
+    JSON.stringify({ status: noTeamBoard[0].status, waiting: noTeamBoard[0].waitingReason, assignee: noTeamBoard[0].assignee }),
+  )
+  check(
+    'T-97 the borrowed project’s member is never used',
+    noTeamBoard.every((task) => task.assignee === null || task.assignee.name.indexOf('fixer-b') < 0),
+    JSON.stringify(noTeamBoard.map((task) => task.assignee && task.assignee.name)),
+  )
+  noTeamRig.scheduler.dispose()
+
+  // A member remembered for another project is not idle for this one.
+  const projectRig = await dispatcherFor('session-a', teamFor('lead-a', 'fixer-a'))
+  rememberMemberProject(projectRig.ctx, 'fixer-a', join(PROJECT, '..', 'other-project'))
+  projectRig.fs.files.set(join(PROJECT, '.agents', 'tasks.json'), { text: boardWith(['session-a']), version: 'seed2' })
+  await projectRig.scheduler.settle(PROJECT)
+  const projectTasks = boardJson(projectRig.fs, PROJECT).tasks
+  check(
+    'T-97 a worker remembered for another project is not reused',
+    projectTasks[0].status === 'running' && projectTasks[0].assignee.name !== 'fixer-a' && projectTasks[0].assignee.name.indexOf('work-') === 0,
+    JSON.stringify({ assignee: projectTasks[0].assignee && projectTasks[0].assignee.name }),
+  )
+  const remembered = memberProjectOf(projectRig.ctx, projectTasks[0].assignee.name)
+  check(
+    'T-97 the new worker is remembered for this project',
+    remembered !== null && remembered.key === projectSlotKey(PROJECT),
+    JSON.stringify(remembered),
+  )
+  projectRig.scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

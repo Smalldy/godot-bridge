@@ -433,6 +433,8 @@ function normaliseTask(raw, index, now) {
           via: typeof raw.dispatch.via === 'string' ? raw.dispatch.via : null,
           error: typeof raw.dispatch.error === 'string' ? raw.dispatch.error : null,
           host: typeof raw.dispatch.host === 'string' ? raw.dispatch.host : null,
+          lead: typeof raw.dispatch.lead === 'string' ? raw.dispatch.lead : null,
+          project: typeof raw.dispatch.project === 'string' ? raw.dispatch.project : null,
           keep: raw.dispatch.keep === true,
         }
       : null
@@ -524,6 +526,9 @@ function normaliseTask(raw, index, now) {
       // Set by the stage gate when the target phase has no executor yet; the
       // watchdog skips such a task and the next host tick clears it once the
       // executor can be provisioned.
+      // T-97: the session that created (and therefore owns) this card. Dispatch
+      // only hands it to that session's team.
+      ownerSession: typeof raw.ownerSession === 'string' && raw.ownerSession !== '' ? raw.ownerSession : null,
       waitingReason: typeof raw.waitingReason === 'string' && raw.waitingReason !== '' ? raw.waitingReason : null,
       waitingDetail: typeof raw.waitingDetail === 'string' && raw.waitingDetail !== '' ? raw.waitingDetail : null,
       leaseUntil: isIso(raw.leaseUntil) ? raw.leaseUntil : null,
