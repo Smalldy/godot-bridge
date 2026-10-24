@@ -209,6 +209,7 @@ window.__ModuleLoader__.load({
 				archiveLine: '已归档 {n} 张·{range}',
 				archiveTitle: '已归档任务',
 				archiveOpen: '查看归档',
+			statusBoardSize: '板子 {mb} MB / {limit} MB 上限（{percent}%）· 按当前体积约还能建 {n} 张卡',
 				archiveEmpty: '没有匹配的已归档任务',
 				viewAllDone: '查看全部',
 				doneAllTitle: '已完成任务',
@@ -694,6 +695,7 @@ window.__ModuleLoader__.load({
 				archiveLine: '{n} archived · {range}',
 				archiveTitle: 'Archived tasks',
 				archiveOpen: 'View archived',
+			statusBoardSize: 'board {mb} MB of its {limit} MB limit ({percent}%) · about {n} more cards at this size',
 				archiveEmpty: 'No archived task matches',
 				viewAllDone: 'View all',
 				doneAllTitle: 'Completed tasks',
@@ -1689,6 +1691,10 @@ window.__ModuleLoader__.load({
 				// The Host's own note when its registry last drove another project; the
 				// source badge shows it as a tooltip instead of a second banner.
 				projectWarning: typeof payload.projectWarning === 'string' ? payload.projectWarning : null,
+				// How full the board file is: { bytes, limit, percent, level, cards,
+				// bytesPerCard, headroomCards, warning }. The status page warns at 50%
+				// and 75% of the cap, before the file stops loading at all.
+				boardSize: payload.boardSize !== undefined && payload.boardSize !== null && typeof payload.boardSize === 'object' ? payload.boardSize : null,
 				dispatch: payload.dispatch !== undefined && payload.dispatch !== null ? payload.dispatch : { state: 'paused' },
 				counts: payload.counts !== undefined && payload.counts !== null ? payload.counts : {},
 				queue: Array.isArray(payload.queue) ? payload.queue : [],
@@ -3547,6 +3553,10 @@ window.__ModuleLoader__.load({
 				const counts = snapshot.counts === undefined || snapshot.counts === null ? {} : snapshot.counts
 				const archivedCount = Number.isFinite(snapshot.archivedCount) ? snapshot.archivedCount : 0
 				const archiveRange = snapshot.archiveRange === undefined ? null : snapshot.archiveRange
+				// How full the board FILE is: the status page warns at 50%/75% of the cap
+				// long before the board would refuse to load at all.
+				const boardSize = snapshot.boardSize === undefined || snapshot.boardSize === null ? null : snapshot.boardSize
+				const boardSizeWarn = boardSize !== null && (boardSize.level === 'half' || boardSize.level === 'three-quarters')
 				const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : []
 				const queue = Array.isArray(snapshot.queue) ? snapshot.queue : []
 				const scheduler = snapshot.scheduler === undefined || snapshot.scheduler === null ? null : snapshot.scheduler
@@ -3763,6 +3773,17 @@ window.__ModuleLoader__.load({
 						h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
 						archivedCount > 0
 							? h('div', { className: 'gbt-statusscan', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)), ' ', h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'archive-open', onClick: function () { if (props.onOpenArchive !== undefined) props.onOpenArchive() } }, t('archiveOpen')))
+							: null,
+						boardSizeWarn
+							? h(
+									'div',
+									{ className: 'gbt-statusscan', 'data-status-board-size': boardSize.level, 'data-board-bytes': String(boardSize.bytes), title: boardSize.warning === null ? '' : String(boardSize.warning) },
+									t('statusBoardSize')
+										.replace('{mb}', String(Math.round((boardSize.bytes / (1024 * 1024)) * 10) / 10))
+										.replace('{limit}', String(Math.round(boardSize.limit / (1024 * 1024))))
+										.replace('{percent}', String(boardSize.percent))
+										.replace('{n}', boardSize.headroomCards === null ? '—' : String(boardSize.headroomCards)),
+								)
 							: null,
 					),
 				)

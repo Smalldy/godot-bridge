@@ -481,6 +481,9 @@ const HOST = {
   sessionProject: PROJECT,
   registryConsistent: true,
   projectWarning: null,
+  // T-93: how full the board file is. 'ok' by default; the status page warns at
+  // 50%/75% of the cap.
+  boardSize: { bytes: 1024 * 1024, limit: 32 * 1024 * 1024, percent: 3.1, level: 'ok', cards: 8, bytesPerCard: 131072, headroomCards: 248, warning: null },
   version: 2,
   seq: 8,
   updatedAt: new Date(now).toISOString(),
@@ -1383,6 +1386,23 @@ await flush()
     queuedTask.test = savedTest
     queuedTask.review = savedReview
     queuedTask.queuePosition = savedQueue
+  }
+
+  // T-93: a nearly full board is warned about on the status page, with the size,
+  // the cap and how many more cards fit — before the file stops loading.
+  {
+    const savedBoardSize = HOST.boardSize
+    HOST.boardSize = { bytes: 24 * 1024 * 1024, limit: 32 * 1024 * 1024, percent: 75, level: 'three-quarters', cards: 1500, bytesPerCard: 16777, headroomCards: 500, warning: 'the task board is 24 MB of its 32 MB limit (75%)' }
+    let sizeTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    sizeTree = withHooks(panel, { initialView: 'status' })
+    const sizeRow = findAll(sizeTree, (node) => node.props && typeof node.props['data-status-board-size'] === 'string')[0]
+    check(
+      'a nearly full board is warned about with size, cap and remaining cards',
+      sizeRow !== undefined && sizeRow.props['data-status-board-size'] === 'three-quarters' && textOf(sizeRow).indexOf('24 MB') >= 0 && textOf(sizeRow).indexOf('32 MB') >= 0 && textOf(sizeRow).indexOf('75') >= 0 && textOf(sizeRow).indexOf('500') >= 0,
+      sizeRow && textOf(sizeRow),
+    )
+    HOST.boardSize = savedBoardSize
   }
 
   // The dispatch card names its three KVs and does not repeat the merge queue.

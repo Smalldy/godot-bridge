@@ -21,6 +21,7 @@ import {
   BOARD_DIRECTORY,
   BOARD_FILENAME,
   BOARD_VERSION,
+  BOARD_WARN_FRACTIONS,
   DISPATCH_DEFAULTS,
   MAX_BOARD_BYTES,
   MAX_HISTORY,
@@ -645,10 +646,52 @@ async function writeOnce(io, options, board, version) {
   }
 }
 
+/** Average bytes per task on this board, or null for an empty one. */
+function bytesPerTask(bytes, tasks) {
+  return Number.isFinite(bytes) && tasks > 0 ? Math.round(bytes / tasks) : null
+}
+
+/**
+ * How full the board file is, relative to MAX_BOARD_BYTES, for the panel and the
+ * API. Pure so the thresholds are testable without a 16 MB fixture.
+ *
+ * @returns { bytes, limit, percent, level ('ok'|'half'|'three-quarters'), cards,
+ *   bytesPerCard, headroomCards, warning }
+ *   headroomCards is how many more cards of TODAY'S average size fit before the
+ *   limit — the number that turns "the board is big" into "you have N cards left".
+ */
+export function boardSizeReport(bytes, cards, limit) {
+  const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : MAX_BOARD_BYTES
+  const size = Number.isFinite(bytes) && bytes >= 0 ? Math.floor(bytes) : 0
+  const count = Number.isFinite(cards) && cards > 0 ? Math.floor(cards) : 0
+  const ratio = cap === 0 ? 0 : size / cap
+  const percent = Math.min(100, Math.round(ratio * 1000) / 10)
+  const level = ratio >= BOARD_WARN_FRACTIONS[1] ? 'three-quarters' : ratio >= BOARD_WARN_FRACTIONS[0] ? 'half' : 'ok'
+  const perCard = bytesPerTask(size, count)
+  const headroomCards = perCard === null || perCard === 0 ? null : Math.max(0, Math.floor((cap - size) / perCard))
+  const megabytes = (value) => Math.round((value / (1024 * 1024)) * 10) / 10
+  const warning =
+    level === 'ok'
+      ? null
+      : 'the task board is ' + String(megabytes(size)) + ' MB of its ' + String(megabytes(cap)) + ' MB limit (' + String(percent) + '%)' +
+        (headroomCards === null ? '' : '; at today\'s ~' + String(Math.round(perCard / 1024)) + ' KB per card about ' + String(headroomCards) + ' more cards fit') +
+        '. Archive finished cards or split the board before it stops loading.'
+  return {
+    bytes: size,
+    limit: cap,
+    percent: percent,
+    level: level,
+    cards: count,
+    bytesPerCard: perCard,
+    headroomCards: headroomCards,
+    warning: warning,
+  }
+}
+
 /**
  * Read and validate the board.
  *
- * @returns { ok: true, board, version, existed } or { ok: false, code, message }
+ * @returns { ok: true, board, version, existed, size, limit } or { ok: false, code, message }
  *   with code too-large, unparseable, unrecognisable, unsupported-version,
  *   invalid-task, duplicate-task or unreadable.
  */
@@ -660,7 +703,7 @@ export async function readBoard(io, options) {
       signal: options.signal,
     })
     const info = await io.fs.stat(target, options.signal)
-    if (info === undefined) return { ok: true, board: emptyBoard(now), version: null, existed: false }
+    if (info === undefined) return { ok: true, board: emptyBoard(now), version: null, existed: false, size: 0, limit: MAX_BOARD_BYTES }
     if (Number.isFinite(info.size) && info.size > MAX_BOARD_BYTES) {
       return failure('too-large', 'the board file is ' + String(info.size) + ' bytes; refusing to load more than ' + String(MAX_BOARD_BYTES))
     }
@@ -676,7 +719,7 @@ export async function readBoard(io, options) {
     }
     const normalised = normaliseBoard(parsed, now)
     if (normalised.ok !== true) return normalised
-    return { ok: true, board: normalised.board, version: info.version, existed: true }
+    return { ok: true, board: normalised.board, version: info.version, existed: true, size: Buffer.byteLength(text, 'utf8'), limit: MAX_BOARD_BYTES }
   } catch (error) {
     return failure('unreadable', describe(error))
   }

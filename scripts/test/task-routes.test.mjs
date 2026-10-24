@@ -13,7 +13,7 @@ import { ROLE_SAMPLE_TASK, briefFor, createActivity, createDispatcher, createRol
 // Role slots carry the project they were provisioned for; tests name them through
 // the same generator the host uses instead of a hard-coded legacy name.
 const slot = (kind, index) => roleSlotName(kind, index, PROJECT)
-import { archivePath, boardPath as boardPathOf, projectIdOf, projectRefOf, readProjectRegistry, rolesPath } from '../../plugin/task-center/board.mjs'
+import { MAX_BOARD_BYTES, archivePath, boardPath as boardPathOf, projectIdOf, projectRefOf, readProjectRegistry, rolesPath } from '../../plugin/task-center/board.mjs'
 import { homedir } from 'node:os'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { phaseActivityAt } from '../../plugin/task-center/dispatch.mjs'
@@ -2555,6 +2555,29 @@ function testStageTask(overrides) {
     stale.tasks.filter(function (entry) { return entry.id === 'T-9' })[0].queuePosition === null,
     JSON.stringify(stale.tasks.filter(function (entry) { return entry.id === 'T-9' })[0].queuePosition),
   )
+  rig.scheduler.dispose()
+}
+
+// ── the board snapshot reports how full the board file is ──────────────────
+{
+  const rig = createSubmitRig({ team: roleTeam() })
+  seedRunningTask(rig, runningWorktreeTask())
+  const file = join(PROJECT, '.agents', 'tasks.json')
+  const originalStat = rig.fs.stat
+  rig.fs.stat = async function (value) {
+    if (String(value.targetKey) === file) return { version: 'seed', type: 'file', size: Math.round(MAX_BOARD_BYTES * 0.6) }
+    return originalStat.call(this, value)
+  }
+  const board = await rig.action('board')
+  const size = board.boardSize
+  check(
+    'the board snapshot reports its size against the cap and warns from 50%',
+    size !== undefined && size.limit === MAX_BOARD_BYTES && size.level === 'half' && size.percent === 60 && typeof size.warning === 'string' && size.warning.indexOf('60%') >= 0,
+    JSON.stringify(size),
+  )
+  rig.fs.stat = originalStat
+  const quiet = await rig.action('board')
+  check('a small board reports no warning', quiet.boardSize.level === 'ok' && quiet.boardSize.warning === null, JSON.stringify(quiet.boardSize))
   rig.scheduler.dispose()
 }
 
