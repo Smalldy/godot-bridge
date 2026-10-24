@@ -1102,6 +1102,65 @@ await flush()
   )
   HOST.lastSweep = savedSweep
 
+
+  // ── T-113: the user records review/test verdicts from the card ─────────────
+  {
+    const reviewCard = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
+    const testCard = HOST.tasks.filter((entry) => entry.id === 'T-2')[0]
+    const savedStatuses = { review: reviewCard.status, test: testCard.status }
+    reviewCard.status = 'reviewing'
+    testCard.status = 'testing'
+    const postCountBefore = posts.length
+    let verdictTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    verdictTree = withHooks(panel, { initialView: 'board' })
+    const bars = findAll(verdictTree, (node) => node.props && node.props['data-verdict-phase'] !== undefined)
+    const reviewBar = bars.filter((bar) => bar.props['data-verdict-phase'] === 'review')[0]
+    const testBar = bars.filter((bar) => bar.props['data-verdict-phase'] === 'test')[0]
+    const verdictTasks = HOST.tasks.filter((entry) => entry.status === 'reviewing' || entry.status === 'testing')
+    const verdictCards = verdictTasks.map((entry) => findAll(verdictTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card' && textOf(node).indexOf(entry.title) >= 0)[0])
+    check(
+      'T-113 reviewing and testing cards offer the user verdict buttons (and no other card does)',
+      bars.length === verdictTasks.length &&
+        verdictCards.every((card) => card !== undefined && findAll(card, (node) => node.props && node.props['data-verdict-phase'] !== undefined).length === 1) &&
+        reviewBar !== undefined &&
+        testBar !== undefined &&
+        textOf(reviewBar).indexOf('通过评审') >= 0 &&
+        textOf(reviewBar).indexOf('打回评审') >= 0 &&
+        textOf(testBar).indexOf('通过测试') >= 0 &&
+        textOf(testBar).indexOf('测试失败') >= 0,
+      JSON.stringify({ bars: bars.length, review: reviewBar && textOf(reviewBar), test: testBar && textOf(testBar) }),
+    )
+    const blockingButtons = findAll(reviewBar, (node) => node.props && node.props['data-verdict-needs-reason'] !== undefined).concat(
+      findAll(testBar, (node) => node.props && node.props['data-verdict-needs-reason'] !== undefined),
+    )
+    check(
+      'T-113 reject and fail are marked as needing a reason',
+      blockingButtons.length === 2 && blockingButtons.every((button) => button.props['data-verdict-needs-reason'] === 'true'),
+      JSON.stringify(blockingButtons.map((button) => button.props['data-verdict-action'])),
+    )
+    // Approving is the direct path: it posts through the same /action route.
+    const approve = findAll(reviewBar, (node) => node.props && node.props['data-verdict-action'] === 'approveReview')[0]
+    approve.props.onClick()
+    await flush()
+    check(
+      'T-113 approving the review posts approveReview for that task',
+      posts.slice(postCountBefore).some((body) => body.action === 'approveReview' && body.id === 'T-1'),
+      JSON.stringify(posts.slice(postCountBefore).map((body) => body.action)),
+    )
+    // Rejecting does NOT post until a reason is provided (the form appears first).
+    const reject = findAll(reviewBar, (node) => node.props && node.props['data-verdict-action'] === 'requestChanges')[0]
+    reject.props.onClick()
+    await flush()
+    check(
+      'T-113 rejecting never posts without a reason',
+      posts.slice(postCountBefore).every((body) => body.action !== 'requestChanges'),
+      JSON.stringify(posts.slice(postCountBefore).map((body) => body.action)),
+    )
+    reviewCard.status = savedStatuses.review
+    testCard.status = savedStatuses.test
+  }
+
   // ── activity stream: localized phase events, no raw English notes or @ids ──
   {
     const streamTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
