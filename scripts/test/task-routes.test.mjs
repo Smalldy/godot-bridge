@@ -2751,7 +2751,13 @@ function testerGit(options) {
     if (key === 'branch --show-current') return { code: 0, stdout: 'main\n', stderr: '' }
     if (key === 'status --porcelain') return { code: 0, stdout: '', stderr: '' }
     if (key === 'rev-parse HEAD') {
-      return { code: 0, stdout: (String(cwd).indexOf('test-T-1') >= 0 ? 'candidate-sha' : targetHead) + '\n', stderr: '' }
+      // Match the candidate worktree by PATH SEGMENT, not by substring: the suite
+      // also runs inside a worktree of its own (e.g. `.worktrees/test-T-100`), and
+      // a substring test would make EVERY checkout look like the candidate. That
+      // turned merge-timeout fixtures into head-drift on exactly those branches.
+      const segments = String(cwd).replace(/\\/g, '/').split('/')
+      const isCandidate = segments.indexOf('test-T-1') >= 0
+      return { code: 0, stdout: (isCandidate ? 'candidate-sha' : targetHead) + '\n', stderr: '' }
     }
     // A real update-ref moves the branch; the post-advance verification reads it back.
     if (args[0] === 'update-ref') {
@@ -2766,6 +2772,21 @@ function testerGit(options) {
     targetHead = value
   }
   return { git: createGit({ run: run }), calls: calls, setTargetHead: run.setTargetHead }
+}
+
+// Regression for the test-worktree name collision: this suite can itself run from
+// a checkout whose directory CONTAINS "test-T-1" (e.g. .worktrees/test-T-100). Only
+// the real candidate worktree may answer candidate-sha; otherwise every merge-timeout
+// fixture reads the main checkout as the candidate and fails as head-drift.
+{
+  const fake = testerGit()
+  const candidate = await fake.git.head(join(PROJECT, '.worktrees', 'test-T-1'))
+  const harnessLike = await fake.git.head(join(PROJECT, '..', 'test-T-100', 'demo-project'))
+  check(
+    'the candidate head fixture only matches the candidate worktree, never a path containing its name',
+    candidate.ok === true && candidate.hash === 'candidate-sha' && harnessLike.ok === true && harnessLike.hash === 'target-sha',
+    JSON.stringify({ candidate: candidate === null || candidate === undefined ? null : candidate.hash, harnessLike: harnessLike === null || harnessLike === undefined ? null : harnessLike.hash }),
+  )
 }
 
 function testerTeam() {
