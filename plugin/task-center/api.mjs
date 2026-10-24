@@ -822,6 +822,13 @@ export function createApi(ctx, options) {
     return { delivered: false, position: position }
   }
 
+  /** Drop a task's stage-queue residue when it leaves a stage (rework, verdict,
+   * a new review round). A position from round N must never render in round N+1. */
+  function clearStageSlots(taskId) {
+    recordStageSlot(ctx, taskId, 'reviewer', null, null)
+    recordStageSlot(ctx, taskId, 'tester', null, null)
+  }
+
   /** Hand the next queued task(s) their slot after a verdict frees one. */
   async function promoteStageSlots(projectPath, kind) {
     const read = await readBoardOrFail(projectPath)
@@ -1838,7 +1845,13 @@ export function createApi(ctx, options) {
         : Object.assign(detailOf(board, task, now), { candidate: candidateOf(projectPath, board, task) })
       const reviewSlot = stageSlotOf(ctx, task.id, 'reviewer')
       const testSlot = stageSlotOf(ctx, task.id, 'tester')
-      view.queuePosition = reviewSlot !== null && reviewSlot.position !== null ? reviewSlot.position : testSlot !== null && testSlot.position !== null ? testSlot.position : null
+      // Only the CURRENT stage's slot can describe a wait, and only while the
+      // card is still queued (position set, not delivered). Falling back to the
+      // other stage's slot is what let a stale review position reappear during
+      // testing (and a stale test position during a later review round).
+      const currentSlot = task.status === 'reviewing' ? reviewSlot : task.status === 'testing' ? testSlot : null
+      view.queuePosition =
+        currentSlot !== null && currentSlot.at === null && currentSlot.position !== null ? currentSlot.position : null
       if (view.review !== null && view.review !== undefined) view.review = Object.assign({}, view.review, { deliveredAt: isoOf(reviewSlot) })
       if (view.test !== null && view.test !== undefined) view.test = Object.assign({}, view.test, { deliveredAt: isoOf(testSlot) })
       return view
@@ -3085,6 +3098,8 @@ export function createApi(ctx, options) {
         context,
       )
       if (result.ok === true && result.task !== null && result.task.status !== 'running') {
+        // A stale test slot from an earlier round must not describe this one.
+        recordStageSlot(ctx, id, 'tester', null, null)
         const released = locks.releaseTask(state.memory.locks, id)
         if (released.ok === true) state.memory.locks = released.locks
       }
@@ -3238,6 +3253,7 @@ export function createApi(ctx, options) {
         return ok({ task: result.task, events: result.events, hostCheck: hostCheck })
       }
       if (action === 'requestChanges' && result.task !== null && result.task !== undefined && result.task.status === 'running') {
+        clearStageSlots(id)
         // Tell the worker what to fix and that it continues in its own worktree.
         const owner =
           result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
@@ -3343,6 +3359,9 @@ export function createApi(ctx, options) {
       }
       if (action === 'passTest') emitActivity(context, 'test-end', 'passed', id)
       if (action === 'failTest') emitActivity(context, 'test-end', 'failed', id)
+      // failTest returns the card to running and passTest ends the stage: the
+      // test queue record is spent either way and must not leak to the next round.
+      if (action === 'failTest' || action === 'passTest') recordStageSlot(ctx, id, 'tester', null, null)
       if (action === 'passTest' && candidateWorkflow && hasCandidate) {
         // The tester accepted the candidate: the host merges that exact tree now
         // (no separate verify). A moved target comes back as a retest. The merge

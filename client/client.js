@@ -1488,6 +1488,22 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * True only while the card is still WAITING for its current stage's slot. A
+		 * delivered round (review.deliveredAt / test.deliveredAt set) is already being
+		 * worked on, so the queued chip must be gone even if a stale queuePosition
+		 * survives from the server.
+		 */
+		function tcStageQueued(task) {
+			if (task === null || task === undefined) return false
+			if (!Number.isFinite(task.queuePosition) || task.queuePosition <= 0) return false
+			const review = tcReviewOf(task)
+			const test = tcTestOf(task)
+			if (task.status === 'reviewing') return !(review !== null && typeof review.deliveredAt === 'string' && review.deliveredAt !== '')
+			if (task.status === 'testing') return !(test !== null && typeof test.deliveredAt === 'string' && test.deliveredAt !== '')
+			return false
+		}
+
+		/**
 		 * The current phase as the board shows it. A pending task is either READY
 		 * or WAITING; that split is derived from the Host's dependency report, not
 		 * guessed from the dependency list.
@@ -2092,7 +2108,7 @@ window.__ModuleLoader__.load({
 				if (commit !== '') meta.push(h('span', { key: 'commit', className: 'gbt-chip', title: commit }, '● ' + commit.slice(0, 10)))
 				if (worktree !== '') meta.push(h('span', { key: 'worktree', className: 'gbt-chip', title: worktree }, '🌿 ' + tcBaseName(worktree)))
 				if (dispatchError !== null && task.status !== 'running') meta.push(h('span', { key: 'error', className: 'gbt-chip', 'data-tone': 'blocked', title: dispatchError }, '⚠ ' + t('dispatchError')))
-				if (Number.isFinite(task.queuePosition) && task.queuePosition > 0) {
+				if (tcStageQueued(task)) {
 					meta.push(h('span', { key: 'queued', className: 'gbt-chip', 'data-tone': 'waiting', 'data-queue': String(task.queuePosition) }, '⏳ ' + t('queuedChip').replace('{n}', String(task.queuePosition))))
 				}
 				const waiting = waitingChip(task, t, 'waiting')
@@ -3792,8 +3808,8 @@ window.__ModuleLoader__.load({
 								),
 					),
 				)
-				const reviewerQueue = tasks.filter(function (task) { return task.status === 'reviewing' && Number.isFinite(task.queuePosition) && task.queuePosition > 0 }).length
-				const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && Number.isFinite(task.queuePosition) && task.queuePosition > 0 }).length
+				const reviewerQueue = tasks.filter(function (task) { return task.status === 'reviewing' && tcStageQueued(task) }).length
+				const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && tcStageQueued(task) }).length
 				const lead = agents !== null && agents !== undefined ? agents.lead : null
 				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
 				const agentRows = []
