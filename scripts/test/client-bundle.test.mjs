@@ -474,6 +474,13 @@ const TESTER_DEFAULT_PROMPT = 'Test the candidate against the acceptance criteri
 const HOST = {
   ok: true,
   project: PROJECT,
+  // T-90: the Host answers with the project REF and where it came from. The
+  // browser fixture pins PROJECT, so the Host reports it as a panel binding.
+  projectRoot: PROJECT,
+  resolvedFrom: 'panel',
+  sessionProject: PROJECT,
+  registryConsistent: true,
+  projectWarning: null,
   version: 2,
   seq: 8,
   updatedAt: new Date(now).toISOString(),
@@ -3143,6 +3150,10 @@ await flush()
     '[data-roles-pane="raw"]',
     '[data-roles-pane="injected"]',
     'input[placeholder="项目目录的绝对路径"]',
+    '[data-project-source="session"]',
+    '[data-project-mismatch="true"]',
+    '[data-action="use-current-project"]',
+    '[data-action="switch-to-session-project"]',
     '打开项目',
     'key Escape',
     'harnessStart',
@@ -3814,6 +3825,135 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   HOST.archivedCount = savedArchived
   HOST.archiveRange = savedRange
   globalThis.fetch = savedFetch
+}
+
+// ── T-90: the panel follows the session project; switching binds the Host ──
+// The browser pin is gone, so the panel asks the Host with no project at all and
+// renders what the session resolved. A pin that differs from the session gets an
+// actionable bar; switching writes both the pin and the Host binding.
+{
+  const savedFetch = globalThis.fetch
+  const sessionRoot = 'J:\\demo\\session-project'
+  const pinnedOther = 'J:\\demo\\pinned-other'
+  const stateUrls = []
+  let postsBefore = posts.length
+  function hostFor(shown, from) {
+    return Object.assign({}, HOST, {
+      project: shown,
+      projectRoot: shown,
+      resolvedFrom: from,
+      sessionProject: sessionRoot,
+      registryConsistent: from !== 'panel',
+    })
+  }
+  globalThis.fetch = async function (url, options) {
+    const text = String(url)
+    if (options !== undefined && options.method === 'POST') {
+      const body = JSON.parse(options.body)
+      posts.push(body)
+      return { json: async () => ({ ok: true, snapshot: hostFor(body.path === undefined ? pinnedOther : body.path, 'panel') }) }
+    }
+    if (text.indexOf('/state') >= 0) {
+      stateUrls.push(text)
+      const match = /[?&]project=([^&]*)/.exec(text)
+      return { json: async () => (match === null ? hostFor(sessionRoot, 'session') : hostFor(decodeURIComponent(match[1]), 'panel')) }
+    }
+    return savedFetch(url, options)
+  }
+
+  // 1. No pin: no path is typed, and the Host's session project is rendered.
+  STORAGE.delete('godotBridge.taskCenter.project')
+  let t90 = withHooks(panel, { initialView: 'board' })
+  await flush()
+  t90 = withHooks(panel, { initialView: 'board' })
+  await flush()
+  t90 = withHooks(panel, { initialView: 'board' })
+  check(
+    'T-90 an empty localStorage sends no project to /state',
+    stateUrls.length > 0 && stateUrls.every((url) => url.indexOf('project=') < 0),
+    JSON.stringify(stateUrls.slice(-3)),
+  )
+  check(
+    'T-90 the panel renders the session-resolved project without a typed path',
+    captured.getSnapshot().project === sessionRoot && textOf(t90).indexOf(sessionRoot) >= 0,
+    JSON.stringify({ project: captured.getSnapshot().project, text: textOf(t90).slice(0, 160) }),
+  )
+  const sessionBadge = findAll(t90, (node) => node.props && node.props['data-project-source'] === 'session')[0]
+  check('T-90 the source beside the title reads as the session', sessionBadge !== undefined && textOf(sessionBadge) === '会话', sessionBadge && textOf(sessionBadge))
+  check('T-90 loading alone never writes a pin', STORAGE.has('godotBridge.taskCenter.project') === false, String(STORAGE.get('godotBridge.taskCenter.project')))
+  check('T-90 no mismatch bar is shown when the two agree', findAll(t90, (node) => node.props && node.props['data-project-mismatch'] === 'true').length === 0)
+
+  // 2. A pin that differs from the session: actionable mismatch bar.
+  STORAGE.set('godotBridge.taskCenter.project', pinnedOther)
+  let t90b = withHooks(panel, { initialView: 'board' })
+  await flush()
+  t90b = withHooks(panel, { initialView: 'board' })
+  await flush()
+  t90b = withHooks(panel, { initialView: 'board' })
+  const manualBadge = findAll(t90b, (node) => node.props && node.props['data-project-source'] === 'manual')[0]
+  check('T-90 a pinned project is labelled as manual', manualBadge !== undefined && textOf(manualBadge) === '手动', manualBadge && textOf(manualBadge))
+  const mismatch = findAll(t90b, (node) => node.props && node.props['data-project-mismatch'] === 'true')[0]
+  check(
+    'T-90 a pinned panel that differs from the session shows the mismatch bar',
+    mismatch !== undefined && textOf(mismatch).indexOf(pinnedOther) >= 0 && textOf(mismatch).indexOf(sessionRoot) >= 0,
+    mismatch && textOf(mismatch),
+  )
+  const switchButton = mismatch === undefined ? undefined : findAll(mismatch, (node) => node.type === 'button' && node.props['data-action'] === 'switch-to-session-project')[0]
+  check('T-90 the bar carries one switch action', switchButton !== undefined, mismatch && mismatch.props.children === undefined)
+
+  // 3. Clicking it: openProject on the Host, then the pin follows.
+  postsBefore = posts.length
+  if (switchButton !== undefined) switchButton.props.onClick()
+  await flush()
+  await flush()
+  const switchPost = posts.slice(postsBefore).filter((post) => post.action === 'openProject')[0]
+  check('T-90 switching sends openProject to the Host (write = bind)', switchPost !== undefined && switchPost.path === sessionRoot, JSON.stringify(posts.slice(postsBefore)))
+  check('T-90 and pins the session project in the browser', STORAGE.get('godotBridge.taskCenter.project') === sessionRoot, String(STORAGE.get('godotBridge.taskCenter.project')))
+  t90b = withHooks(panel, { initialView: 'board' })
+  await flush()
+  t90b = withHooks(panel, { initialView: 'board' })
+  check('T-90 after the switch the mismatch bar is gone', findAll(t90b, (node) => node.props && node.props['data-project-mismatch'] === 'true').length === 0, textOf(t90b).slice(0, 200))
+
+  // 4. The project dialog offers the Host-resolved path instead of hand typing.
+  STORAGE.set('godotBridge.taskCenter.project', pinnedOther)
+  let formTree = withHooks(panel, { initialView: 'board', initialProjectOpen: true })
+  await flush()
+  formTree = withHooks(panel, { initialView: 'board', initialProjectOpen: true })
+  await flush()
+  formTree = withHooks(panel, { initialView: 'board', initialProjectOpen: true })
+  const projectInput = findAll(formTree, (node) => node.type === 'input' && node.props && node.props['data-project-input'] === 'true')[0]
+  check(
+    'T-90 the dialog starts on the pinned path',
+    projectInput !== undefined && projectInput.props.defaultValue === pinnedOther,
+    JSON.stringify({ input: projectInput && projectInput.props.defaultValue, snapshotProject: captured.getSnapshot().project, pinned: STORAGE.get('godotBridge.taskCenter.project'), urls: stateUrls.slice(-2) }),
+  )
+  const useCurrentButton = findAll(formTree, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'use-current-project')[0]
+  check('T-90 the dialog offers "use current project"', useCurrentButton !== undefined && textOf(useCurrentButton).indexOf('使用当前项目') >= 0, useCurrentButton && textOf(useCurrentButton))
+  if (useCurrentButton !== undefined) useCurrentButton.props.onClick()
+  formTree = withHooks(panel, { initialView: 'board', initialProjectOpen: true })
+  const filledInput = findAll(formTree, (node) => node.type === 'input' && node.props && node.props['data-project-input'] === 'true')[0]
+  check(
+    'T-90 clicking it fills the Host-resolved path, no typing needed',
+    filledInput !== undefined && filledInput.props.defaultValue === sessionRoot,
+    JSON.stringify(filledInput && filledInput.props.defaultValue),
+  )
+
+  // 5. Opening from the dialog goes through the Host too (not a pure UI value).
+  postsBefore = posts.length
+  const openButton = findAll(formTree, (node) => node.type === 'button' && textOf(node).indexOf('打开项目') >= 0)[0]
+  if (openButton !== undefined) openButton.props.onClick()
+  await flush()
+  await flush()
+  const openPost = posts.slice(postsBefore).filter((post) => post.action === 'openProject')[0]
+  check('T-90 the dialog opens through openProject, so the scheduler follows', openPost !== undefined && openPost.path === sessionRoot, JSON.stringify(posts.slice(postsBefore)))
+
+  // restore
+  STORAGE.set('godotBridge.taskCenter.project', PROJECT)
+  globalThis.fetch = savedFetch
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+  await flush()
+  withHooks(panel, { initialView: 'board' })
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

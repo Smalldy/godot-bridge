@@ -4953,5 +4953,48 @@ rig.scheduler.dispose()
   notRepo.scheduler.dispose()
 }
 
+// ── T-90: the panel learns what the SESSION resolves, not only its own pin ──
+{
+  const OTHER = PROJECT + '-panel'
+  const rig = createRig({ allowSpawn: false })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [] }))
+  seedBoard(rig.fs, OTHER, JSON.stringify({ version: 2, seq: 7, dispatch: { state: 'paused' }, tasks: [] }))
+  const surface = install(rig)
+  // A pinned panel asks for ANOTHER project while the session workspace is PROJECT:
+  // the answer must carry both, which is what lets the panel offer "switch".
+  const pinned = (await call(surface, STATE_PATH + '?project=' + encodeURIComponent(OTHER), {})).json()
+  check(
+    'T-90 a pinned /state still reports the session resolution',
+    pinned.ok === true && pinned.projectRoot === OTHER && pinned.resolvedFrom === 'panel' && pinned.sessionProject === PROJECT,
+    JSON.stringify({ root: pinned.projectRoot, from: pinned.resolvedFrom, session: pinned.sessionProject }),
+  )
+  // With no pin at all the panel follows the session — no path is required.
+  const followed = (await call(surface, STATE_PATH, {})).json()
+  check(
+    'T-90 an unpinned /state resolves the session project and reports it as both',
+    followed.ok === true && followed.projectRoot === PROJECT && followed.resolvedFrom === 'session' && followed.sessionProject === PROJECT,
+    JSON.stringify({ root: followed.projectRoot, from: followed.resolvedFrom, session: followed.sessionProject }),
+  )
+  // openProject answers with the snapshot itself; it must carry the session too,
+  // because the panel renders that answer when it switches.
+  const opened = (await call(surface, ACTION_PATH, { method: 'POST', body: { action: 'openProject', path: OTHER }, headers: { 'content-type': 'application/json' } })).json()
+  check(
+    'T-90 the openProject answer carries the session project',
+    opened.ok === true && opened.projectRoot === OTHER && opened.sessionProject === PROJECT,
+    JSON.stringify({ root: opened.projectRoot, session: opened.sessionProject }),
+  )
+  // A host with no session workspace reports null instead of inventing one.
+  rig.state.setSessionRoot(null)
+  const unbound = (await call(surface, STATE_PATH + '?project=' + encodeURIComponent(OTHER), {})).json()
+  check(
+    'T-90 an unbound session reports sessionProject null, never a guess',
+    unbound.ok === true && unbound.sessionProject === null && unbound.projectRoot === OTHER,
+    JSON.stringify({ root: unbound.projectRoot, session: unbound.sessionProject }),
+  )
+  rig.state.setSessionRoot(PROJECT)
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

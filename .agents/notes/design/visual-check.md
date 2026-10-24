@@ -96,6 +96,39 @@ oil_ui_shoot({ target: "http://127.0.0.1:<port>/?token=<token>", size: "1440x900
 
 如果某个页面里没有项目（面板里出现打开项目表单），在 `click [data-view="roles"]` 之前追加：`fill input[placeholder="项目目录的绝对路径"] <项目绝对路径>; click text="打开项目"; waitfor [data-panel-root="task-center"]`。
 
+## T-90：项目跟随会话（不再手填路径）
+
+目标：证明 (1) 新浏览器 localStorage 为空时面板直接显示会话项目；(2) 项目弹窗有「使用当前项目」；(3) 面板记住的路径 ≠ 会话项目时顶部有可点击提示；(4) 切换会调用 `openProject`（界面切换 = 调度器绑定）。
+
+准备：先把浏览器里的 pin 清掉，模拟“第一次打开”：`localStorage.removeItem('godotBridge.taskCenter.project')`（无痕窗口等效）。
+
+```
+# 1) 首次加载跟随会话
+oil_ui_shoot({ target: "http://127.0.0.1:<port>/?token=<token>", size: "1440x900",
+  steps: "key Escape; wait 500; click [data-panel=\"task-center\"]; waitfor [data-panel-root=\"task-center\"]; wait 800",
+  out: "shots/visual/t90-session-project.png" })
+```
+预期：项目行直接是会话项目，标题右侧有「会话」来源徽标（`[data-project-source="session"]`），**没有**出现打开项目表单，全程没有手打过路径。
+
+```
+# 2) 项目弹窗里的「使用当前项目」
+click text="⌂ 项目"
+waitfor [data-action="use-current-project"]
+click [data-action="use-current-project"]
+wait 300
+```
+预期：`[data-project-input]` 已被填入服务端解析的项目路径（输入框旁的小字给出同一个路径），不需要手打。
+
+```
+# 3) 不一致提示：手动切到另一个项目，再回到会话项目
+fill [data-project-input] <另一个真实存在的项目路径>
+click text="打开项目"
+wait 800
+```
+预期：顶部出现橙色 `[data-project-mismatch="true"]` 提示「面板：A · 当前会话：B」，右侧是「切换到会话项目」按钮（`[data-action="switch-to-session-project"]`）。点它之后：提示消失、项目行变成会话项目、来源徽标回到「会话」，并且 DSH 日志里能看到一次 `openProject` 动作（绑定同步，而不是只改了前端）。
+
+若 harness 里没有会话工作区（服务端解析不出项目），面板会退回「尚未选择项目」+ 项目表单，此时「使用当前项目」按钮是禁用的——这是预期形态，不是失败。
+
 ## 验收状态与限制
 
 - 本卡执行者是 worker：`harnessStart` 返回 `tester-only`；本环境也无法 headless 登录 DSH（401）。因此**三张 1440×900 截图仍需 tester/user 按修正后的流程重拍**，在完成前本卡不能算视觉验收通过。
