@@ -3633,5 +3633,31 @@ function fakeHostSubprocess(result) {
   }
 }
 
+// ── T-112: no bare resolveLead(ctx) anywhere in the plugin ──
+{
+  const fsMod = await import('node:fs')
+  const pathMod = await import('node:path')
+  const pluginDir = pathMod.resolve(import.meta.dirname, '../../plugin/task-center')
+  const offenders = []
+  for (const name of fsMod.readdirSync(pluginDir)) {
+    if (!name.endsWith('.mjs')) continue
+    const text = fsMod.readFileSync(pathMod.join(pluginDir, name), 'utf8')
+    const lines = text.split('\n')
+    lines.forEach((line, index) => {
+      if (/resolveLead\s*\(\s*ctx\s*\)/.test(line)) offenders.push(name + ':' + String(index + 1) + ': ' + line.trim())
+    })
+  }
+  check(
+    'T-112 the plugin has no bare resolveLead(ctx): authority must pass { sessionId }',
+    offenders.length === 0,
+    offenders.join(' | '),
+  )
+  // The escape hatch must stay explicit and named for what it is.
+  check(
+    'T-112 global read-only lookups go through resolveAnyLead',
+    fsMod.readFileSync(pathMod.join(pluginDir, 'dispatch.mjs'), 'utf8').indexOf('export function resolveAnyLead') >= 0,
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

@@ -49,6 +49,7 @@ import {
   roleSlotOf,
   resolveLead,
   liveLeads,
+  resolveAnyLead,
   agentSessionOf,
   reviewBriefFor,
   reworkBriefFor,
@@ -350,7 +351,7 @@ export function createApi(ctx, options) {
     if (agentTeams === undefined || agentTeams === null) return { member: null, lead: null, leads: [] }
     let leads = liveLeads(ctx)
     if (leads.length === 0) {
-      const legacy = resolveLead(ctx)
+      const legacy = resolveAnyLead(ctx)
       if (legacy !== null) leads = [legacy]
     }
     const rosters = []
@@ -749,7 +750,7 @@ export function createApi(ctx, options) {
   /** The Team Lead's name for the previewed brief, or null without a live Team. */
   function previewLeadName() {
     try {
-      const lead = resolveLead(ctx)
+      const lead = resolveAnyLead(ctx)
       if (lead === null || lead === undefined) return null
       if (typeof lead.name === 'string' && lead.name !== '') return lead.name
       return lead.id === undefined || lead.id === null ? null : String(lead.id)
@@ -1109,7 +1110,7 @@ export function createApi(ctx, options) {
       if (agentTeams === undefined || agentTeams === null) return null
       // T-106: message the member of THIS card's team, never a same-named slot in
       // another session's team.
-      const lead = resolveLead(ctx, { sessionId: typeof sessionId === 'string' && sessionId !== '' ? sessionId : null })
+      const lead = typeof sessionId === 'string' && sessionId !== '' ? resolveLead(ctx, { sessionId: sessionId }) : resolveAnyLead(ctx)
       if (lead === null) return null
       let members = []
       try {
@@ -1212,7 +1213,7 @@ export function createApi(ctx, options) {
   function roleSlotNameOf(kind, sessionId) {
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return null
-    const lead = resolveLead(ctx, { sessionId: typeof sessionId === 'string' && sessionId !== '' ? sessionId : null })
+    const lead = typeof sessionId === 'string' && sessionId !== '' ? resolveLead(ctx, { sessionId: sessionId }) : resolveAnyLead(ctx)
     if (lead === null) return null
     let members = []
     try {
@@ -1452,7 +1453,7 @@ export function createApi(ctx, options) {
   function roleInstanceList() {
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return { available: false, error: 'no-team-service', instances: [], manager: null }
-    const lead = resolveLead(ctx)
+    const lead = resolveAnyLead(ctx)
     if (lead === null) return { available: false, error: 'no-lead', instances: [], manager: null }
     let roster = []
     try {
@@ -1485,7 +1486,7 @@ export function createApi(ctx, options) {
   function roleRoster() {
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
-    const lead = resolveLead(ctx)
+    const lead = resolveAnyLead(ctx)
     if (lead === null) return { ok: false, code: 'no-lead', message: 'no live Team root' }
     let members = []
     try {
