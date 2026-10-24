@@ -44,6 +44,7 @@ import {
   memberProjectOf,
   probeWorktree,
   projectSlotKey,
+  projectTeamState,
   roleShortName,
   roleSlotOf,
   resolveLead,
@@ -55,6 +56,7 @@ import {
   roleKindOf,
   roleTemplateValuesFor,
   runHostCheck,
+  teamBootstrapStep,
   recordPhaseActivity,
   recordStageSlot,
   stageSlotOf,
@@ -1973,6 +1975,8 @@ export function createApi(ctx, options) {
 
   async function snapshot(projectPath, options) {
     const opts = options === undefined || options === null ? {} : options
+    // T-110: the Team is a property of the session that owns the project.
+    const snapshotTeam = projectTeamFor(projectPath, typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null)
     const summaryOnly = opts.full === false
     projectPath = resolve(projectPath)
     const read = await readBoardOrFail(projectPath)
@@ -2125,6 +2129,10 @@ export function createApi(ctx, options) {
       // T-108: "is the main tree clean, and when was that checked" — the panel uses
       // it to tell a merge-window blip from a really dirty checkout.
       environment: await environmentSnapshot(projectPath, now, board),
+      // T-110: the project's Team (ok/lead/source/members) and, while it does not
+      // exist, the one instruction the calling session must act on.
+      team: snapshotTeam.team,
+      nextStep: snapshotTeam.nextStep,
       serverTime: new Date(now).toISOString(),
     })
   }
@@ -3087,6 +3095,25 @@ export function createApi(ctx, options) {
     return id !== null && id.length > 0 ? id : null
   }
 
+  /**
+   * The session a call belongs to (T-110): the tool path carries it on the agent,
+   * the panel path carries it in the body/query (routes forward it as `session`).
+   * Null means "no identity" — the legacy single-lead fallback then applies to the
+   * team lookup, exactly like dispatch.
+   */
+  function callerSessionId(source, context) {
+    const fromContext = sessionIdOf(context)
+    if (fromContext !== null) return fromContext
+    const raw = source === undefined || source === null ? null : source.session
+    return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null
+  }
+
+  /** The project's Team + the structured next step when it does not exist yet. */
+  function projectTeamFor(projectPath, sessionId) {
+    const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath })
+    return { team: team, nextStep: teamBootstrapStep(team) }
+  }
+
   async function resolveIncoming(source, context) {
     const explicit = typeof source.project === 'string' && source.project.trim().length > 0 ? source.project.trim() : ''
     if (explicit !== '') return { ok: true, root: resolve(explicit), resolvedFrom: 'explicit' }
@@ -3329,7 +3356,7 @@ export function createApi(ctx, options) {
       }
       return failure('unknown-action', 'unknown role action ' + String(action))
     }
-    if (action === 'board') return snapshot(projectPath)
+    if (action === 'board') return snapshot(projectPath, { sessionId: callerSessionId(source, context) })
     if (action === 'locks') {
       const read = await readBoardOrFail(projectPath)
       if (read.failed !== undefined) return read.failed
@@ -3360,6 +3387,16 @@ export function createApi(ctx, options) {
       })
     }
     if (action === 'create') {
+      // T-110: no cards before the project has a Team. The refusal carries the
+      // instruction, so the calling session can bootstrap it and retry.
+      const gate = projectTeamFor(projectPath, callerSessionId(source, context))
+      if (gate.team.available === true && gate.team.ok !== true) {
+        return failure(
+          'no-team-for-project',
+          'This project has no Team (' + String(gate.team.error) + '), so a card cannot be created yet.',
+          { team: gate.team, nextStep: gate.nextStep },
+        )
+      }
       const built = taskInput(projectPath, source)
       if (built.ok !== true) return built
       if (built.input.target !== undefined) {
@@ -3419,7 +3456,7 @@ export function createApi(ctx, options) {
     }
     if (action === 'start') {
       {
-        const gate = await preflightRefusal(projectPath)
+        const gate = await preflightRefusal(projectPath, { sessionId: callerSessionId(source, context) })
         if (gate !== null) return gate
       }
       if (context !== undefined && context !== null && context.role === 'agent') {
@@ -3479,7 +3516,7 @@ export function createApi(ctx, options) {
       }
       if (action === 'approveStart') {
         {
-          const gate = await preflightRefusal(projectPath)
+          const gate = await preflightRefusal(projectPath, { sessionId: callerSessionId(source, context) })
           if (gate !== null) return gate
         }
         const read = await readBoardOrFail(projectPath)
@@ -4209,7 +4246,17 @@ export function createApi(ctx, options) {
   async function preflightProject(projectPath, options) {
     const opts = options === undefined || options === null ? {} : options
     const checks = []
-    const record = (id, label, verdict, detail) => checks.push({ id: id, label: label, ok: verdict === true, detail: detail === undefined ? null : String(detail) })
+    // `openBlocking: false` marks a check that tells the truth about readiness but
+    // must not slam the project shut: the Team belongs to a session (T-110), and the
+    // panel has to be able to OPEN the project to show "no team yet, do this".
+    const record = (id, label, verdict, detail, extra) =>
+      checks.push({
+        id: id,
+        label: label,
+        ok: verdict === true,
+        detail: detail === undefined || detail === null ? null : String(detail),
+        openBlocking: !(extra !== undefined && extra !== null && extra.openBlocking === false),
+      })
 
     const repo = git === null ? { ok: false, repo: false } : await git.isRepo(projectPath)
     const isRepo = repo.ok === true && repo.repo === true
@@ -4289,12 +4336,30 @@ export function createApi(ctx, options) {
     }
     record('roles', 'reviewer/tester can be provisioned', rolesOk, rolesDetail)
 
+    // T-110: the project's Team (session-scoped). A profile without team tools keeps
+    // its old behaviour — the board must work there — so the check only blocks when
+    // the services exist and answer "no Team".
+    const teamRead = projectTeamState(ctx, { sessionId: typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null, projectPath: projectPath })
+    const teamDetail =
+      teamRead.ok === true
+        ? String(teamRead.lead === null ? 'lead' : teamRead.lead) + ' · ' + String(teamRead.members.length) + ' members'
+        : teamRead.available === true
+          ? 'no Team for this project (' + String(teamRead.error) + ') — initialize it in the session that owns the project'
+          : 'this profile has no team services'
+    // Not applicable (no team services in this profile) is not a failure: such a
+    // host keeps the old board-only behaviour.
+    record('team', 'this project has a Team for its session', teamRead.ok === true || teamRead.available !== true, teamDetail, { openBlocking: false })
+
     const boardRead = await readBoardOrFail(projectPath)
     record('board', 'board is readable', boardRead.failed === undefined, boardRead.failed === undefined ? null : boardRead.failed.message)
 
     const failed = checks.filter((check) => check.ok !== true)
+    const openFailed = failed.filter((check) => check.openBlocking !== false)
     return {
       ok: failed.length === 0,
+      // openProject's gate: a missing Team is reported but never closes the project.
+      openOk: openFailed.length === 0,
+      openFailed: openFailed,
       checkedAt: new Date(clock()).toISOString(),
       worktreeRoot: worktreeRoot,
       checks: checks,
@@ -4303,10 +4368,11 @@ export function createApi(ctx, options) {
   }
 
   /** Refuse to start dispatch when any readiness check fails; keep the reason. */
-  async function preflightRefusal(projectPath) {
+  async function preflightRefusal(projectPath, options) {
+    const opts = options === undefined || options === null ? {} : options
     // A host without a git facade keeps its dedicated worktree-unavailable path.
     if (git === null) return null
-    const preflight = await preflightProject(projectPath)
+    const preflight = await preflightProject(projectPath, { sessionId: opts.sessionId })
     if (preflight.ok === true) {
       // A ready project clears an old refusal so the panel stops showing it.
       const current = await readBoardOrFail(projectPath)
@@ -4322,7 +4388,11 @@ export function createApi(ctx, options) {
       return null
     }
     const missing = preflight.failed.map((check) => check.label + (check.detail === null ? '' : ' (' + check.detail + ')')).join('; ')
-    const message = 'Cannot start dispatch: ' + missing
+    const teamMissing = preflight.failed.filter((check) => check.id === 'team').length > 0
+    // T-110: when the ONLY thing missing is the Team, say so with the code the model
+    // (and the panel) can act on, and carry the instruction.
+    const code = teamMissing && preflight.failed.length === 1 ? 'no-team-for-project' : 'not-ready'
+    const message = code === 'no-team-for-project' ? 'Cannot start dispatch: this project has no Team (' + missing + ')' : 'Cannot start dispatch: ' + missing
     try {
       await state.apply(
         projectPath,
@@ -4334,8 +4404,13 @@ export function createApi(ctx, options) {
         writePolicyFor(projectPath),
       )
     } catch (error) {}
-    const refused = failure('not-ready', message)
+    const refused = failure(code, message)
     refused.preflight = preflight
+    if (teamMissing) {
+      const teamRead = projectTeamFor(projectPath, opts.sessionId)
+      refused.team = teamRead.team
+      refused.nextStep = teamRead.nextStep
+    }
     return refused
   }
 
@@ -4353,12 +4428,22 @@ export function createApi(ctx, options) {
     } catch (error) {
       return failure('invalid-project', messageOf(error))
     }
-    const preflight = await preflightProject(absolute, { worktreeRoot: input.worktreeRoot })
-    if (preflight.ok !== true) {
-      const first = preflight.failed[0]
+    const sessionId = sessionIdOf(context)
+    const preflight = await preflightProject(absolute, { worktreeRoot: input.worktreeRoot, sessionId: sessionId })
+    // A missing Team is reported in `preflight` (and blocks start), but it never
+    // closes the project: the panel must open it to show how to initialize.
+    const openFailed = Array.isArray(preflight.openFailed) ? preflight.openFailed : preflight.failed
+    if (openFailed.length > 0) {
+      const first = openFailed[0]
       const code = first === undefined ? 'not-ready' : first.id === 'repository' ? 'not-a-repository' : first.id === 'exclude' ? 'cannot-exclude' : 'not-ready'
-      const refused = failure(code, 'project is not ready: ' + preflight.failed.map((check) => check.label + (check.detail === null ? '' : ' (' + check.detail + ')')).join('; '))
+      const refused = failure(code, 'project is not ready: ' + openFailed.map((check) => check.label + (check.detail === null ? '' : ' (' + check.detail + ')')).join('; '))
       refused.preflight = preflight
+      const teamMissing = preflight.failed.filter((check) => check.id === 'team').length > 0
+      if (teamMissing) {
+        const teamRead = projectTeamFor(absolute, sessionId)
+        refused.team = teamRead.team
+        refused.nextStep = teamRead.nextStep
+      }
       return refused
     }
     remember(absolute)
@@ -4373,7 +4458,7 @@ export function createApi(ctx, options) {
     // so wait for it and report where it landed — or why it did not persist.
     if (typeof state.flushRegistry === 'function') await state.flushRegistry()
     const registryStatus = typeof state.registryStatus === 'function' ? state.registryStatus() : null
-    return Object.assign({}, await snapshot(absolute, { worktreeRoot: preflight.worktreeRoot }), {
+    return Object.assign({}, await snapshot(absolute, { worktreeRoot: preflight.worktreeRoot, sessionId: sessionId }), {
       preflight: preflight,
       registry: registryStatus,
       // A flat string for callers that only want "did it persist, and why not".

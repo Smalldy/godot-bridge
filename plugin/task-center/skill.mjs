@@ -25,11 +25,12 @@ export const SKILL_WHEN_TO_USE =
 export const SYSTEM_RULES_NAME = 'godot-bridge:task-center-rules'
 
 export const SYSTEM_RULES_TEXT = [
-  'TASK CENTER (godot-bridge) - 4 条硬规则，任何时候都不能忘：',
-  '1) task_center 的 start 只是申请派发，返回 needs-consent 不是失败：必须等用户在任务中心面板批准，不要重试、不要自己开派发。',
-  '2) 评审/测试结论只能由对应角色的 agent 给出：approveReview/requestChanges 归 reviewer，passTest/failTest 归 tester，mergeRequest/rejectMerge 归 merger 或用户。',
-  '3) 任务工作只在该任务自己的 git worktree 里做，绝不直接 commit/push 到 target。',
-  '4) 不要手改 .agents/tasks.json：所有改动走 task_center 动作（或面板）。',
+  'TASK CENTER (godot-bridge) - 5 条硬规则，任何时候都不能忘：',
+  '1) 用任务中心之前先确认这个项目有团队：没有就先在本会话建最小团队（Lead + worker/reviewer/tester）再建卡；`create`/`start` 返回 no-team-for-project 时，响应里的 nextStep.instruction 就是让你照做的，不要建卡、不要借别的项目的团队、也不要叫别的会话来建。',
+  '2) task_center 的 start 只是申请派发，返回 needs-consent 不是失败：必须等用户在任务中心面板批准，不要重试、不要自己开派发。',
+  '3) 评审/测试结论只能由对应角色的 agent 给出：approveReview/requestChanges 归 reviewer，passTest/failTest 归 tester，mergeRequest/rejectMerge 归 merger 或用户。',
+  '4) 任务工作只在该任务自己的 git worktree 里做，绝不直接 commit/push 到 target。',
+  '5) 不要手改 .agents/tasks.json：所有改动走 task_center 动作（或面板）。',
   '需要工作流、动作矩阵和拒绝码时，先用 skill 工具加载 ' + SKILL_NAME + '。',
 ].join(' ')
 
@@ -86,9 +87,13 @@ export function buildSkillContent(options) {
     '',
     '- **你做**：拆卡、写卡、申请派发、追踪进度、triage 异常、把需要人的步骤走对话、结束时给证据。',
     '- **你不做**：不替 worker 写实现、不替 reviewer 下评审结论、不替 tester 下测试结论、不合并。越权会被 `wrong-role` / `merger-only` / `tester-only` / `user-only` 拒绝——那是分权，不是故障。',
-    '- **卡住先去查事实**：看板、分支、ref、合并记录，再决定 reopen / retry / 打回；不要用"直接改"绕过（见禁区）。',
+    '- **卡住先查事实**：看板、分支、ref、合并记录，再决定 reopen / retry / 打回；不要用"直接改"绕过。',
     '',
-    '系统里还有：**worker**（在任务 worktree 里实现）、**reviewer**（只读评审）、**tester**（只读测试，可用隔离 harness）、**merger**（用户或名为 `merger` 的成员）、**用户**（唯一能批准派发、改设置、管角色、代替任何角色下结论）。角色缺失由宿主经活的 Lead 自动 provision。',
+    '系统里还有 **worker** / **reviewer** / **tester** / **merger** / **用户**（用户专属：批准派发、改设置、管角色、替任何角色下结论）；角色缺失由宿主经活的 Lead 自动 provision。',
+    '',
+    '## 先有团队，再建卡',
+    '',
+    '- `board.team.ok` 为假时 `create`/`start` 返回 `no-team-for-project`，按 `nextStep` 先建 Lead + 最小团队再重试；无团队服务时不受限。',
     '',
     '## 进入流程',
     '',

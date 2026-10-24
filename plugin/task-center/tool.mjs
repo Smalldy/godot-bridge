@@ -132,6 +132,10 @@ export function registerTaskTool(ctx, options) {
           error: result.message,
           code: result.code,
           request: result.request === undefined ? null : result.request,
+          // T-110: a refusal that tells the model what to DO must survive the tool
+          // envelope, otherwise the instruction is lost on the way to the session.
+          nextStep: result.nextStep === undefined ? null : result.nextStep,
+          team: result.team === undefined ? null : result.team,
         }
       }
       if (result.board !== undefined) delete result.board

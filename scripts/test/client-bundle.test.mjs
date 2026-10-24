@@ -4332,5 +4332,78 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   await flush()
 }
 
+// ── T-110: the panel names the project's Team and the way to create it ─────
+{
+  const savedFetch = globalThis.fetch
+  const savedTeam = HOST.team
+  const savedNextStep = HOST.nextStep
+  globalThis.fetch = async function () {
+    return { json: async () => HOST }
+  }
+  const teamLine = (tree) => findAll(tree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
+
+  HOST.team = { ok: false, available: true, source: 'none', sessionScoped: true, session: 'host-session-A', lead: null, leadId: null, leadSession: null, members: [], error: 'no-lead-for-project' }
+  HOST.nextStep = { code: 'bootstrap-team', instruction: 'Create the Team in this session: a Lead for this project plus worker/reviewer/tester.' }
+  let tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  let line = teamLine(tree)
+  check(
+    'T-110 the header says the project has no Team',
+    line !== undefined && line.props['data-project-team'] === 'missing' && textOf(line).indexOf('该项目团队') >= 0 && textOf(line).indexOf('请在该会话中初始化') >= 0,
+    line && textOf(line),
+  )
+  let statusTree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  statusTree = withHooks(panel, { initialView: 'status' })
+  const guidance = findAll(statusTree, (node) => node.props && node.props['data-status-team'] === 'missing')[0]
+  check(
+    'T-110 and the panel repeats the executable next step',
+    guidance !== undefined && guidance.props['data-status-next-step'] === 'bootstrap-team' && textOf(guidance).indexOf('Lead for this project') >= 0,
+    guidance && textOf(guidance),
+  )
+
+  HOST.team = {
+    ok: true,
+    available: true,
+    source: 'session',
+    sessionScoped: true,
+    session: 'host-session-A',
+    lead: 'lead',
+    leadId: 'session-lead',
+    leadSession: 'session-lead',
+    members: [
+      { name: 'lead', role: 'lead', status: 'running' },
+      { name: 'worker-1', role: 'teammate', status: 'running' },
+    ],
+    error: null,
+  }
+  HOST.nextStep = null
+  let withTeam = withHooks(panel, { initialView: 'board' })
+  await flush()
+  withTeam = withHooks(panel, { initialView: 'board' })
+  line = teamLine(withTeam)
+  check(
+    'T-110 once the Team exists the line names the Lead and the roster size',
+    line !== undefined && line.props['data-project-team'] === 'ok' && line.props['data-team-lead'] === 'lead' && textOf(line).indexOf('2 名成员') >= 0,
+    line && textOf(line),
+  )
+  const healedStatus = withHooks(panel, { initialView: 'status' })
+  check('T-110 and the next-step guidance is gone', findAll(healedStatus, (node) => node.props && node.props['data-status-team'] !== undefined).length === 0)
+
+  HOST.team = null
+  HOST.nextStep = null
+  let legacy = withHooks(panel, { initialView: 'board' })
+  await flush()
+  legacy = withHooks(panel, { initialView: 'board' })
+  check('T-110 an older host without team data renders no line at all', teamLine(legacy) === undefined)
+
+  HOST.team = savedTeam
+  HOST.nextStep = savedNextStep
+  globalThis.fetch = savedFetch
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
