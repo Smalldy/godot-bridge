@@ -56,7 +56,19 @@ import {
   testerBriefFor,
   workerPool,
 } from './dispatch.mjs'
-import { readRoleConfig, writeRoleConfig } from './board.mjs'
+import {
+  archiveIndexPath,
+  archivePath,
+  archiveYears,
+  isArchivable,
+  archiveYearOf,
+  readArchive,
+  readArchiveIndex,
+  readRoleConfig,
+  writeArchive,
+  writeArchiveIndex,
+  writeRoleConfig,
+} from './board.mjs'
 import { mergeEligible, recordCandidate, recordMergeResult, refreshMergeRequest, testCandidateFor } from './merge.mjs'
 import { writePolicyFor } from './state.mjs'
 
@@ -1483,6 +1495,117 @@ export function createApi(ctx, options) {
     }
   }
 
+  /**
+   * Archive sweep: done cards older than 30 days move to .agents/archive/<year>.json.
+   * The archive file is written (temp -> verified -> promoted) BEFORE the board
+   * loses the card, so a failed archive write cannot drop work; the board write
+   * is a single CAS mutation that also bumps seq, and the next state answer is
+   * forced to full so the client rebuilds instead of seeing a half board.
+   * It runs from the explicit tick action at most once per 24h, never per write.
+   */
+  async function archiveOldDone(projectPath, options) {
+    const opts = options === undefined || options === null ? {} : options
+    const now = clock()
+    const io = { fs: ctx.fs }
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const board = read.board
+    const old = board.tasks.filter((task) => isArchivable(task, now))
+    if (old.length === 0) return ok({ archived: 0, years: [], seq: board.seq, empty: true })
+    const byYear = new Map()
+    for (const task of old) {
+      const year = archiveYearOf(task, now)
+      if (!byYear.has(year)) byYear.set(year, [])
+      byYear.get(year).push(task)
+    }
+    const archivedIds = []
+    for (const year of Array.from(byYear.keys())) {
+      const existing = await readArchive(io, { projectPath: projectPath, now: now }, year)
+      if (existing.ok !== true) return existing
+      const seen = new Set(existing.tasks.map((task) => String(task.id)))
+      const merged = existing.tasks.concat(byYear.get(year).filter((task) => !seen.has(String(task.id))))
+      if (merged.length === existing.tasks.length) continue
+      const written = await writeArchive(io, { projectPath: projectPath, now: now }, year, merged, existing.version)
+      if (written.ok !== true) return written
+      for (const task of byYear.get(year)) archivedIds.push(String(task.id))
+    }
+    if (archivedIds.length === 0) return ok({ archived: 0, years: [], seq: board.seq, empty: true })
+    const years = Array.from(new Set(Array.from(byYear.keys()))).sort((left, right) => right - left)
+    const known = await readArchiveIndex(io, { projectPath: projectPath, now: now })
+    const indexYears = Array.from(new Set(known.years.concat(years))).sort((left, right) => right - left)
+    const indexWritten = await writeArchiveIndex(io, { projectPath: projectPath, now: now }, indexYears, known.version)
+    if (indexWritten.ok !== true) return indexWritten
+    // All archive writes succeeded: now the board may drop the cards.
+    const removed = new Set(archivedIds)
+    const applied = await state.apply(
+      projectPath,
+      (current) => {
+        const remaining = current.tasks.filter((task) => !removed.has(String(task.id)))
+        if (remaining.length === current.tasks.length) return null
+        return {
+          ok: true,
+          board: Object.assign({}, current, {
+            tasks: remaining,
+            seq: (Number.isFinite(current.seq) ? current.seq : 1) + 1,
+          }),
+          events: [],
+        }
+      },
+      writePolicyFor(projectPath),
+    )
+    if (applied.failed !== null) {
+      // The cards are already safe in the archive; leaving them on the board is
+      // a duplicate, not a loss, and the next sweep removes them idempotently.
+      return applied.failed
+    }
+    state.memory.archiveEpoch = { project: projectPath, at: now }
+    return ok({ archived: archivedIds.length, years: years, seq: applied.board.seq, ids: archivedIds })
+  }
+
+  /** Archived cards' count and date range, cached briefly (the panel polls fast). */
+  const archiveInfoCache = { project: null, at: 0, value: null }
+  async function archiveInfo(projectPath, now) {
+    if (archiveInfoCache.project === projectPath && archiveInfoCache.value !== null && now - archiveInfoCache.at < 5000) return archiveInfoCache.value
+    const io = { fs: ctx.fs }
+    const years = await archiveYears(io, { projectPath: projectPath, now: now })
+    let count = 0
+    let oldest = null
+    let newest = null
+    for (const year of years) {
+      const read = await readArchive(io, { projectPath: projectPath, now: now }, year)
+      if (read.ok !== true) continue
+      count += read.tasks.length
+      for (const task of read.tasks) {
+        const at = Date.parse(String(task.updatedAt === undefined || task.updatedAt === null ? '' : task.updatedAt))
+        if (!Number.isFinite(at)) continue
+        if (oldest === null || at < oldest) oldest = at
+        if (newest === null || at > newest) newest = at
+      }
+    }
+    const value = {
+      archivedCount: count,
+      archiveRange: oldest === null || newest === null ? null : { from: new Date(oldest).toISOString(), to: new Date(newest).toISOString() },
+      archiveYears: years,
+    }
+    archiveInfoCache.project = projectPath
+    archiveInfoCache.at = now
+    archiveInfoCache.value = value
+    return value
+  }
+
+  /** Find an archived task by id (the board no longer has it). */
+  async function archivedTask(projectPath, id, now) {
+    const io = { fs: ctx.fs }
+    const years = await archiveYears(io, { projectPath: projectPath, now: now })
+    for (const year of years) {
+      const read = await readArchive(io, { projectPath: projectPath, now: now }, year)
+      if (read.ok !== true) continue
+      const task = read.tasks.filter((entry) => String(entry.id) === String(id))[0]
+      if (task !== undefined) return Object.assign(detailOf({ tasks: read.tasks }, task, now), { archived: true, archiveYear: year, candidate: null })
+    }
+    return null
+  }
+
   /** In-memory delta log: fingerprints per task, a bounded log, one project at a time. */
   function deltaMemory() {
     if (state.memory.taskDelta === undefined || state.memory.taskDelta === null) {
@@ -1587,6 +1710,7 @@ export function createApi(ctx, options) {
     // a pending task, and the stale board would then drop its locks.
     state.sweepLocks()
     reconcileLocks(board)
+    const archive = await archiveInfo(projectPath, now)
     const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
     const workers = workerPool(ctx, board, { roleConfig: roleRead.config })
     let worktrees = null
@@ -1624,7 +1748,12 @@ export function createApi(ctx, options) {
       seq = delta.seq
       const since = Number.isFinite(opts.since) ? Math.floor(opts.since) : null
       const mem = deltaMemory()
-      if (since === null || delta.reset === true) {
+      const epoch = state.memory.archiveEpoch
+      if (epoch !== undefined && epoch !== null && epoch.project === projectPath) {
+        // An archive sweep changed the board's content wholesale: rebuild.
+        delete state.memory.archiveEpoch
+        full = true
+      } else if (since === null || delta.reset === true) {
         full = true
       } else if (since > delta.seq) {
         // A cursor from the future (or a stale host) forces a full rebuild.
@@ -1658,6 +1787,8 @@ export function createApi(ctx, options) {
       seq: seq,
       full: full,
       removed: removed,
+      archivedCount: archive.archivedCount,
+      archiveRange: archive.archiveRange,
       updatedAt: board.updatedAt,
       dispatch: board.dispatch,
       roles: roleRead.config,
@@ -1690,7 +1821,11 @@ export function createApi(ctx, options) {
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const task = model.findTask(read.board, String(id))
-    if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
+    if (task === undefined) {
+      const archived = await archivedTask(projectPath, String(id), clock())
+      if (archived !== null) return ok({ task: archived, archived: true })
+      return failure('unknown-task', 'no task with id ' + String(id))
+    }
     const now = clock()
     return ok({ task: Object.assign(detailOf(read.board, task, now), { candidate: candidateOf(projectPath, read.board, task) }) })
   }
@@ -1703,9 +1838,49 @@ export function createApi(ctx, options) {
   async function taskList(projectPath, query) {
     projectPath = resolve(projectPath)
     const q = query === undefined || query === null ? {} : query
+    const now = clock()
+    if (q.archived === true || q.archived === '1' || q.archived === 1) {
+      // The archive view: same paging/search shape as the board list, over the
+      // archived cards only (they are all done).
+      const io = { fs: ctx.fs }
+      const years = await archiveYears(io, { projectPath: projectPath, now: now })
+      const all = []
+      for (const year of years) {
+        const read = await readArchive(io, { projectPath: projectPath, now: now }, year)
+        if (read.ok !== true) continue
+        for (const task of read.tasks) all.push(Object.assign({}, task, { archived: true, archiveYear: year }))
+      }
+      const needle = typeof q.q === 'string' ? q.q.trim().toLowerCase() : ''
+      const status = typeof q.status === 'string' && q.status !== '' ? q.status : null
+      const limit = Number.isFinite(q.limit) ? Math.max(1, Math.min(200, Math.floor(q.limit))) : 50
+      let rows = all
+        .filter((task) => (status === null ? true : task.status === status))
+        .filter((task) => {
+          if (needle === '') return true
+          return [task.id, task.title, task.spec, task.acceptance].join('\n').toLowerCase().indexOf(needle) >= 0
+        })
+        .sort((left, right) => {
+          const byTime = String(right.updatedAt).localeCompare(String(left.updatedAt))
+          return byTime !== 0 ? byTime : String(right.id).localeCompare(String(left.id))
+        })
+      const cursor = typeof q.cursor === 'string' && q.cursor !== '' ? q.cursor : null
+      if (cursor !== null) {
+        const at = cursor.indexOf('|')
+        const cursorTime = at < 0 ? cursor : cursor.slice(0, at)
+        const cursorId = at < 0 ? '' : cursor.slice(at + 1)
+        rows = rows.filter((task) => String(task.updatedAt) < cursorTime || (String(task.updatedAt) === cursorTime && String(task.id) < cursorId))
+      }
+      const page = rows.slice(0, limit)
+      const last = page.length === 0 ? null : page[page.length - 1]
+      return ok({
+        tasks: page.map((task) => summaryOf({ tasks: all }, task, now)),
+        nextCursor: rows.length > limit && last !== null ? String(last.updatedAt) + '|' + String(last.id) : null,
+        count: page.length,
+        archived: true,
+      })
+    }
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
-    const now = clock()
     const status = typeof q.status === 'string' && q.status !== '' ? q.status : null
     const needle = typeof q.q === 'string' ? q.q.trim().toLowerCase() : ''
     const limit = Number.isFinite(q.limit) ? Math.max(1, Math.min(200, Math.floor(q.limit))) : 50
@@ -2391,7 +2566,11 @@ export function createApi(ctx, options) {
       const read = await readBoardOrFail(projectPath)
       if (read.failed !== undefined) return read.failed
       const task = model.findTask(read.board, String(source.id === undefined ? '' : source.id))
-      if (task === undefined) return failure('unknown-task', 'no task with id ' + String(source.id))
+      if (task === undefined) {
+        const archived = await archivedTask(projectPath, String(source.id === undefined ? '' : source.id), now)
+        if (archived !== null) return ok({ task: archived, locks: [] })
+        return failure('unknown-task', 'no task with id ' + String(source.id))
+      }
       return ok({
         task: Object.assign(detailOf(read.board, task, now), { candidate: candidateOf(projectPath, read.board, task) }),
         locks: locks.view(state.memory.locks, read.board, now).filter((lock) => lock.taskId === task.id),
@@ -2568,7 +2747,15 @@ export function createApi(ctx, options) {
     }
     if (action === 'tick') {
       if (scheduler === null) return failure('no-scheduler', 'the dispatcher is not available in this profile')
-      return ok({ tick: await scheduler.settle(projectPath) })
+      const nowTick = clock()
+      const last = state.memory.lastArchive
+      const due = last === undefined || last === null || last.project !== projectPath || nowTick - last.at >= 24 * 60 * 60 * 1000
+      let archiveResult = null
+      if (due) {
+        archiveResult = await archiveOldDone(projectPath)
+        state.memory.lastArchive = { project: projectPath, at: nowTick }
+      }
+      return ok({ tick: await scheduler.settle(projectPath), archive: archiveResult })
     }
     if (action === 'mergeRequest') {
       const denied = mergeRefusal(context)

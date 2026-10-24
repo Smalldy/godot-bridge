@@ -45,6 +45,112 @@ export function boardPath(projectPath) {
 /** Refuse a role config large enough to be a mistake. */
 export const MAX_ROLE_CONFIG_BYTES = 256 * 1024
 
+/** Archive of done tasks that have aged out of the board (one file per year). */
+export const ARCHIVE_VERSION = 1
+export const ARCHIVE_AGE_MS = 30 * 24 * 60 * 60 * 1000
+
+export function archiveDir(projectPath) {
+  return join(projectPath, '.agents', 'archive')
+}
+
+export function archivePath(projectPath, year) {
+  return join(archiveDir(projectPath), String(year) + '.json')
+}
+
+export function archiveIndexPath(projectPath) {
+  return join(archiveDir(projectPath), 'index.json')
+}
+
+/** A done card older than 30 days is archived; everything else stays. */
+export function isArchivable(task, nowMs) {
+  if (task === null || task === undefined || task.status !== 'done') return false
+  const at = Date.parse(String(task.updatedAt === undefined || task.updatedAt === null ? '' : task.updatedAt))
+  return Number.isFinite(at) && at < nowMs - ARCHIVE_AGE_MS
+}
+
+export function archiveYearOf(task, nowMs) {
+  const at = Date.parse(String(task.updatedAt === undefined || task.updatedAt === null ? '' : task.updatedAt))
+  return new Date(Number.isFinite(at) ? at : nowMs).getUTCFullYear()
+}
+
+async function readJsonFile(io, path, options) {
+  const target = await io.fs.resolve(path, { cwd: options.projectPath, signal: options.signal })
+  const info = await io.fs.stat(target, options.signal)
+  if (info === undefined) return { ok: true, value: null, version: null }
+  const text = await io.fs.readText(target, options.signal)
+  try {
+    return { ok: true, value: JSON.parse(text), version: info.version }
+  } catch (error) {
+    return { ok: false, code: 'archive-unparseable', message: 'archive file ' + path + ' is not valid JSON: ' + describe(error) }
+  }
+}
+
+/** One archive file: { version, year, tasks, updatedAt }. */
+export async function readArchive(io, options, year) {
+  const read = await readJsonFile(io, archivePath(options.projectPath, year), options)
+  if (read.ok !== true) return read
+  if (read.value === null) return { ok: true, tasks: [], version: null }
+  const tasks = Array.isArray(read.value.tasks) ? read.value.tasks : []
+  return { ok: true, tasks: tasks, version: read.version }
+}
+
+export async function readArchiveIndex(io, options) {
+  const read = await readJsonFile(io, archiveIndexPath(options.projectPath), options)
+  if (read.ok !== true) return { ok: true, years: [] }
+  const years = read.value !== null && Array.isArray(read.value.years) ? read.value.years.filter((year) => Number.isFinite(year)) : []
+  return { ok: true, years: years, version: read.version }
+}
+
+/** The archived years, falling back to a scan when the index is missing/old. */
+export async function archiveYears(io, options) {
+  const index = await readArchiveIndex(io, options)
+  if (index.years.length > 0) return index.years
+  const nowYear = new Date(typeof options.now === 'number' ? options.now : Date.now()).getUTCFullYear()
+  const years = []
+  for (let year = nowYear; year >= nowYear - 8; year--) {
+    const read = await readArchive(io, options, year)
+    if (read.ok === true && read.tasks.length > 0) years.push(year)
+  }
+  return years
+}
+
+/**
+ * Write one archive file. A temp file is written and read back first (the fs
+ * service has no rename), so a truncated write never replaces the real archive;
+ * only after that succeeds is the year file promoted.
+ */
+export async function writeArchive(io, options, year, tasks, version) {
+  const payload = { version: ARCHIVE_VERSION, year: year, updatedAt: iso(Date.now()), tasks: tasks }
+  const text = JSON.stringify(payload, null, 2) + '\n'
+  const tempPath = archivePath(options.projectPath, year) + '.tmp'
+  try {
+    const temp = await io.fs.resolve(tempPath, { cwd: options.projectPath, signal: options.signal })
+    const tempInfo = await io.fs.stat(temp, options.signal)
+    await io.fs.writeText(temp, text, tempInfo === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: tempInfo.version }, options.signal, options.sandboxPolicy)
+    const check = await io.fs.readText(temp, options.signal)
+    JSON.parse(check)
+    const target = await io.fs.resolve(archivePath(options.projectPath, year), { cwd: options.projectPath, signal: options.signal })
+    const expected = version === null || version === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: version }
+    const written = await io.fs.writeText(target, text, expected, options.signal, options.sandboxPolicy)
+    return { ok: true, version: written.version }
+  } catch (error) {
+    return failure('archive-unwritable', 'could not write the archive file: ' + describe(error))
+  }
+}
+
+export async function writeArchiveIndex(io, options, years, version) {
+  const payload = { version: ARCHIVE_VERSION, years: years }
+  const text = JSON.stringify(payload, null, 2) + '\n'
+  try {
+    const target = await io.fs.resolve(archiveIndexPath(options.projectPath), { cwd: options.projectPath, signal: options.signal })
+    const expected = version === null || version === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: version }
+    const written = await io.fs.writeText(target, text, expected, options.signal, options.sandboxPolicy)
+    return { ok: true, version: written.version }
+  } catch (error) {
+    return failure('archive-unwritable', 'could not write the archive index: ' + describe(error))
+  }
+}
+
 /** Absolute path of the optional project role profile file. */
 export function rolesPath(projectPath) {
   return join(projectPath, BOARD_DIRECTORY, ROLE_CONFIG_FILENAME)

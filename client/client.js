@@ -197,6 +197,7 @@ window.__ModuleLoader__.load({
 				reviewingCol: '评审中',
 				testingCol: '测试中',
 				doneCol: '完成',
+				archiveLine: '已归档 {n} 张·{range}',
 				viewAllDone: '查看全部',
 				doneAllTitle: '已完成任务',
 				doneAllSearch: '按标题或编号搜索',
@@ -669,6 +670,7 @@ window.__ModuleLoader__.load({
 				reviewingCol: 'Reviewing',
 				testingCol: 'Testing',
 				doneCol: 'Done',
+				archiveLine: '{n} archived · {range}',
 				viewAllDone: 'View all',
 				doneAllTitle: 'Completed tasks',
 				doneAllSearch: 'Search by title or id',
@@ -1627,6 +1629,8 @@ window.__ModuleLoader__.load({
 				actionError: payload.actionError === undefined || payload.actionError === null ? null : payload.actionError,
 				version: payload.version,
 				seq: Number.isFinite(payload.seq) ? payload.seq : null,
+				archivedCount: Number.isFinite(payload.archivedCount) ? payload.archivedCount : 0,
+				archiveRange: payload.archiveRange === undefined ? null : payload.archiveRange,
 				full: payload.full !== false,
 				details: {},
 				updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : null,
@@ -3441,6 +3445,8 @@ window.__ModuleLoader__.load({
 				const dispatch = snapshot.dispatch === undefined || snapshot.dispatch === null ? { state: 'paused' } : snapshot.dispatch
 				const active = dispatch.state === 'running'
 				const counts = snapshot.counts === undefined || snapshot.counts === null ? {} : snapshot.counts
+				const archivedCount = Number.isFinite(snapshot.archivedCount) ? snapshot.archivedCount : 0
+				const archiveRange = snapshot.archiveRange === undefined ? null : snapshot.archiveRange
 				const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : []
 				const queue = Array.isArray(snapshot.queue) ? snapshot.queue : []
 				const scheduler = snapshot.scheduler === undefined || snapshot.scheduler === null ? null : snapshot.scheduler
@@ -3655,6 +3661,9 @@ window.__ModuleLoader__.load({
 						h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv', 'data-kv': 'concurrent' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'merge-queue' }, h('b', null, String(queue.length)), h('span', null, t('statusMergeQueue')))),
 						h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
 						h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
+						archivedCount > 0
+							? h('div', { className: 'gbt-statusscan', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)))
+							: null,
 					),
 				)
 				const wtList = worktrees !== null && worktrees !== undefined && worktrees.available === true && Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
