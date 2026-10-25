@@ -213,21 +213,28 @@ check(
       !/maxConcurrent|allowSpawn|maxAttempts|liveExecutors|\bpending\b|waitingReason|ownerSession/.test(block),
       block,
     )
-    const clean = renderStatusBrief({ path: 'J:\\workspace\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 3, running: 0, done: 0 })
+    const clean = renderStatusBrief({ path: 'J:\\workspace\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 3, running: 0, reviewing: 0, testing: 0, done: 0 })
     const cleanLines = clean.split('\n')
     check(
       'T-125 the rendered brief is exactly two lines and has no blocker suffix when nothing is blocked',
-      cleanLines.length === 2 && cleanLines[0] === '项目  J:\\workspace\\component_tool · master @ b6d4e5d' && cleanLines[1] === '任务  3 待办 · 0 进行 · 0 完成' && clean.indexOf('卡住') < 0,
+      cleanLines.length === 2 && cleanLines[0] === '项目  J:\\workspace\\component_tool · master @ b6d4e5d' && cleanLines[1] === '任务  3 待办 · 0 进行 · 0 待评审 · 0 待测试 · 0 完成' && clean.indexOf('卡住') < 0,
       clean,
     )
-    const blocked = renderStatusBrief({ path: 'J:\\workspace\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 3, running: 0, done: 0, blocked: '工作区有 53 个未跟踪文件' })
+    const blocked = renderStatusBrief({ path: 'J:\\workspace\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 3, running: 0, reviewing: 0, testing: 0, done: 0, blocked: '工作区有 53 个未跟踪文件' })
     const blockedLines = blocked.split('\n')
     check(
       'T-125 the rendered brief folds the blocker into the task line as a suffix',
-      blockedLines.length === 2 && blockedLines[1] === '任务  3 待办 · 0 进行 · 0 完成 · 卡住：工作区有 53 个未跟踪文件',
+      blockedLines.length === 2 && blockedLines[1] === '任务  3 待办 · 0 进行 · 0 待评审 · 0 待测试 · 0 完成 · 卡住：工作区有 53 个未跟踪文件',
       blocked,
     )
     check('T-125 the rendered brief uses Chinese counters only', blocked.indexOf('待办') >= 0 && blocked.indexOf('进行') >= 0 && blocked.indexOf('完成') >= 0, blocked)
+    const active = renderStatusBrief({ path: 'J:\\ws\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 0, running: 0, reviewing: 3, testing: 1, done: 2 })
+    const activeLines = active.split('\n')
+    check(
+      'T-125 the task line reports review and test counts (active board is not misreported)',
+      activeLines.length === 2 && activeLines[1] === '任务  0 待办 · 0 进行 · 3 待评审 · 1 待测试 · 2 完成',
+      active,
+    )
   }
   check(
     'the body names every agent action',

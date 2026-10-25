@@ -68,7 +68,12 @@ export function renderStatusBrief(input) {
   const branch = typeof f.branch === 'string' && f.branch !== '' ? f.branch : '<branch>'
   const head = typeof f.head === 'string' && f.head !== '' ? f.head : '<head>'
   const count = (value) => (Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0)
-  let task = String(count(f.pending)) + ' 待办 · ' + String(count(f.running)) + ' 进行 · ' + String(count(f.done)) + ' 完成'
+  let task =
+    String(count(f.pending)) + ' 待办 · ' +
+    String(count(f.running)) + ' 进行 · ' +
+    String(count(f.reviewing)) + ' 待评审 · ' +
+    String(count(f.testing)) + ' 待测试 · ' +
+    String(count(f.done)) + ' 完成'
   const blocked = typeof f.blocked === 'string' && f.blocked.trim() !== '' ? f.blocked.trim() : null
   if (blocked !== null) task += ' · 卡住：' + blocked
   return '项目  ' + path + ' · ' + branch + ' @ ' + head + '\n任务  ' + task
@@ -120,7 +125,7 @@ export function buildSkillContent(options) {
     '',
     '```',
     '项目  <path> · <branch> @ <head>',
-    '任务  <n> 待办 · <n> 进行 · <n> 完成[ · 卡住：<原因>]',
+    '任务  <n> 待办 · <n> 进行 · <n> 待评审 · <n> 待测试 · <n> 完成[ · 卡住：<原因>]',
     '```',
     '',
     '## 何时用 / 不用',
