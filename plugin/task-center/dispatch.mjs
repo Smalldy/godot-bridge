@@ -555,10 +555,9 @@ export function resolveLead(ctx, options) {
  * into another session and never fabricates an agent on its own.
  */
 export const TEAM_BOOTSTRAP_INSTRUCTION =
-  'This project has no Team yet. Do this in the session you are in, before creating cards or starting dispatch: ' +
-  '1) make sure a Team Lead exists whose workspace is this project (spawn/create the agent through the team tools, or from the task_center roles page); ' +
-  '2) provision the minimum roster — one worker, one reviewer, one tester (rolesCreate/rolesBind, or spawnTeammate on the Lead); ' +
-  '3) retry the action you were doing. Never borrow another project team, never create cards before the Team exists, and do not ask another session to do it for you.'
+  'This project has no Team yet. Do this NOW by calling task_center { action: "bootstrapTeam" } from this session — do not ask the user, it is your job. ' +
+  'bootstrapTeam creates the minimum roster (worker, reviewer, tester) inside THIS session\'s own team and returns the resulting team state; ' +
+  'it only works for the session that owns this project. Then retry the action you were doing. Never borrow another project team, never create cards before the Team exists.'
 
 /**
  * The Team this project can dispatch to (T-110).

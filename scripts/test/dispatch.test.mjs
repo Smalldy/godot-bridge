@@ -33,6 +33,7 @@ import {
   roleSlotKey,
   roleShortName,
   projectSlotKey,
+  TEAM_BOOTSTRAP_INSTRUCTION,
   rememberMemberProject,
   memberProjectOf,
   roleTemplateValuesFor,
@@ -48,7 +49,7 @@ import { DEFAULT_ROLE_PROMPTS, ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE
 // Project-scoped slot names: a role slot carries the project it was provisioned
 // for, so two projects never share one reviewer instance.
 const slot = (kind, index) => roleSlotName(kind, index, PROJECT)
-import { createApi } from '../../plugin/task-center/api.mjs'
+import { createApi, USER_ONLY_ACTIONS } from '../../plugin/task-center/api.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, createFakeGit, seedBoard, PROJECT } from './support/fixtures.mjs'
@@ -868,7 +869,7 @@ async function submitAndMerge(rig, id, evidence) {
   )
   check(
     'T-110 and carries an executable next step for THIS session',
-    created.nextStep !== undefined && created.nextStep.code === 'bootstrap-team' && created.nextStep.instruction.indexOf('Team') >= 0 && created.nextStep.instruction.indexOf('worker') >= 0 && created.nextStep.instruction.indexOf('another session') >= 0,
+    created.nextStep !== undefined && created.nextStep.code === 'bootstrap-team' && created.nextStep.instruction.indexOf('Team') >= 0 && created.nextStep.instruction.indexOf('worker') >= 0 && created.nextStep.instruction.indexOf('bootstrapTeam') >= 0 && created.nextStep.instruction.indexOf('do not ask the user') >= 0,
     JSON.stringify(created.nextStep).slice(0, 300),
   )
 
@@ -4168,6 +4169,59 @@ function fakeHostSubprocess(result) {
       JSON.stringify(foreignPrune),
     )
   }
+}
+
+// ── T-121: an agent can bootstrap its OWN team (roles* stay user-only) ──────
+{
+  const rig = createRoleRig({})
+  const state = createState(rig.ctx)
+  state.setSessionRoot('session-lead', PROJECT)
+  const manager = rig.manager
+  const git = createFakeGit()
+  const scheduler = createDispatcher(rig.ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: git })
+  const api = createApi(rig.ctx, { state: state, roles: manager, git: git, scheduler: scheduler })
+  const agent = { projectPath: PROJECT, by: '@lead', role: 'agent', agent: { id: 'session-lead' } }
+  const boot = await api.perform('bootstrapTeam', {}, agent)
+  check(
+    'T-121 an agent bootstraps the minimum roster in its own session',
+    boot.ok === true && boot.bootstrap === true && Array.isArray(boot.roles) && boot.roles.length === 3 && boot.roles.every((entry) => entry.ok === true),
+    JSON.stringify(boot).slice(0, 400),
+  )
+  const created = await api.perform('create', { title: 'after bootstrap' }, agent)
+  check('T-121 create passes after the agent bootstrapped the team', created.ok === true, JSON.stringify(created).slice(0, 240))
+  const started = await api.perform('start', {}, { projectPath: PROJECT, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' })
+  check('T-121 start passes after the agent bootstrapped the team', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started).slice(0, 240))
+
+  const noLead = await api.perform('bootstrapTeam', {}, { projectPath: PROJECT, by: '@other', role: 'agent', agent: { id: 'session-other' } })
+  check(
+    'T-121 bootstrapTeam without an own Lead is refused with no-lead-for-project',
+    noLead.ok === false && noLead.code === 'no-lead-for-project',
+    JSON.stringify(noLead),
+  )
+  state.setSessionRoot('session-lead', 'J:\\workspace\\t121-other-project')
+  const mismatch = await api.perform('bootstrapTeam', { project: PROJECT }, { by: '@lead', role: 'agent', agent: { id: 'session-lead' } })
+  check(
+    'T-121 bootstrapTeam for a project the session does not own is project-mismatch',
+    mismatch.ok === false && mismatch.code === 'project-mismatch',
+    JSON.stringify(mismatch),
+  )
+  state.setSessionRoot('session-lead', PROJECT)
+
+  const adminAttempt = await api.perform('rolesCreate', { name: 'x' }, agent)
+  check(
+    'T-121 rolesCreate stays user-only for agents',
+    adminAttempt.ok === false,
+    JSON.stringify(adminAttempt).slice(0, 200),
+  )
+  check(
+    'T-121 the bootstrap instruction is imperative and names bootstrapTeam',
+    TEAM_BOOTSTRAP_INSTRUCTION.indexOf('bootstrapTeam') >= 0 &&
+      TEAM_BOOTSTRAP_INSTRUCTION.indexOf('Do this NOW') >= 0 &&
+      TEAM_BOOTSTRAP_INSTRUCTION.indexOf('do not ask the user') >= 0 &&
+      TEAM_BOOTSTRAP_INSTRUCTION.indexOf('rolesCreate') < 0 &&
+      USER_ONLY_ACTIONS.indexOf('bootstrapTeam') < 0,
+    TEAM_BOOTSTRAP_INSTRUCTION,
+  )
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

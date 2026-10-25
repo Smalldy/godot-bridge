@@ -79,7 +79,7 @@ export function buildSkillContent(options) {
   const lines = [
     '# 任务中心（godot-bridge）',
     '',
-    '动作只通过 `task_center` 工具发起（面板走同一套 API）。',
+    '动作只通过 `task_center` 工具发起（面板同一套 API）。',
     '',
     '## 你是谁：Lead',
     '',

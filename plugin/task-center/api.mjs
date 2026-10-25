@@ -60,6 +60,7 @@ import {
   roleTemplateValuesFor,
   runHostCheck,
   teamBootstrapStep,
+  sessionOwnsProject,
   recordPhaseActivity,
   recordStageSlot,
   stageSlotOf,
@@ -129,6 +130,9 @@ export const ACTIONS = [
   'rolesPrune',
   'rolesReset',
   'skillsCatalog',
+  // T-121: the ONE team-building action an agent may call; it only ever touches
+  // the caller's own session/project (rolesCreate/rolesBind stay user-only).
+  'bootstrapTeam',
   'approveStart',
   'rejectStart',
   'cancelStartRequest',
@@ -3638,6 +3642,39 @@ export function createApi(ctx, options) {
       const denied = roleAdminRefusal(context, 'The skill catalog belongs to the user; open it from the task center panel.')
       if (denied !== null) return denied
       return skillsCatalog(projectPath)
+    }
+    if (action === 'bootstrapTeam') {
+      // T-121: an agent can bootstrap its OWN team instead of asking the user.
+      const sessionId = callerSessionId(source, context)
+      if (sessionId === null) {
+        return failure('no-lead-for-project', 'bootstrapTeam needs the caller session; no session context was provided, so no team can be created for it')
+      }
+      const lead = resolveLead(ctx, { sessionId: sessionId })
+      if (lead === null) {
+        return failure('no-lead-for-project', 'session ' + sessionId + ' has no own Team Lead, so bootstrapTeam cannot create a team here; open the project from the session that owns it')
+      }
+      const owns = await sessionOwnsProject(state, sessionId, projectPath)
+      if (owns !== true) {
+        return failure('project-mismatch', 'session ' + sessionId + ' does not run in project ' + projectPath + ', so bootstrapTeam refuses to create a team for another project')
+      }
+      if (roles === null || typeof roles.ensure !== 'function') {
+        return failure('no-role-manager', 'this profile has no role manager, so the minimum roster cannot be provisioned')
+      }
+      const config = await roleConfigFor(projectPath)
+      const synthetic = { id: 'bootstrap-team', title: 'Team bootstrap', status: 'running', dependsOn: [], writeFiles: [], ownerSession: sessionId, spec: '', acceptance: '' }
+      const provisioned = []
+      for (const kind of ['worker', 'reviewer', 'tester']) {
+        let ensured = null
+        try {
+          ensured = await ensureRoleBounded(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: synthetic, now: clock(), sessionId: sessionId })
+        } catch (error) {
+          ensured = null
+        }
+        emitRoleProvision(ensured)
+        provisioned.push({ kind: kind, ok: ensured !== null && ensured !== undefined && ensured.ok === true, created: ensured === null || ensured === undefined || !Array.isArray(ensured.created) ? [] : ensured.created.map((entry) => entry.name), reused: ensured === null || ensured === undefined || !Array.isArray(ensured.reused) ? [] : ensured.reused, refused: ensured === null || ensured === undefined || !Array.isArray(ensured.refused) ? [] : ensured.refused })
+      }
+      const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath })
+      return ok({ bootstrap: true, session: sessionId, lead: typeof lead.name === 'string' && lead.name !== '' ? lead.name : String(lead.id), roles: provisioned, team: team, nextStep: teamBootstrapStep(team) })
     }
     if (action.indexOf('roles') === 0 && USER_ONLY_ACTIONS.indexOf(action) >= 0) {
       const denied = roleAdminRefusal(context)
