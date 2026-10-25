@@ -172,6 +172,15 @@ export function registerTaskRoutes(ctx, options) {
       }
       const project = target.root
       state.noteProject(project)
+      // T-124: resolving a session's project records it, so later reads (team
+      // matchesSession, dispatch ownership) agree with this answer.
+      // Only a SESSION-derived answer is the session's project; a panel pin (or
+      // last-active fallback) must not rewrite the session binding.
+      if (sessionId !== null && typeof project === 'string' && project.length > 0 && (target.resolvedFrom === 'session' || target.resolvedFrom === 'session-lookup')) {
+        try {
+          state.setSessionRoot(sessionId, project)
+        } catch (error) {}
+      }
       const url = queryOf(req)
       const sinceRaw = url === null ? null : url.searchParams.get('since')
       const since = sinceRaw === null || sinceRaw === '' ? null : Number(sinceRaw)
@@ -226,6 +235,12 @@ export function registerTaskRoutes(ctx, options) {
       }
       const project = target.root
       if (project !== null && project !== undefined) state.noteProject(project)
+      // T-124: every action that resolved this session's project records it.
+      if (sessionId !== null && typeof project === 'string' && project.length > 0 && (target.resolvedFrom === 'session' || target.resolvedFrom === 'session-lookup')) {
+        try {
+          state.setSessionRoot(sessionId, project)
+        } catch (error) {}
+      }
       const result = await api.perform(action, Object.assign({}, body, project === undefined ? {} : { project: project }), {
         projectPath: project,
         by: '@user',

@@ -61,6 +61,7 @@ import {
   runHostCheck,
   teamBootstrapStep,
   sessionOwnsProject,
+  sessionWorkspaceOf,
   recordPhaseActivity,
   recordStageSlot,
   stageSlotOf,
@@ -1825,16 +1826,39 @@ export function createApi(ctx, options) {
     })
   }
 
-  function teamsSnapshot(sessionId) {
+  /** T-124: the requester's project, resolved through the full chain (memory ->
+   * DSH session directory -> none) and RECORDED so later reads agree. */
+  async function requesterRootOf(sessionId) {
+    if (sessionId === null || sessionId === undefined || sessionId === '') return { root: null, error: 'no-session' }
+    let root = null
+    try {
+      root = state.sessionRootOf(sessionId)
+    } catch (error) {
+      root = null
+    }
+    if (typeof root !== 'string' || root === '') {
+      try {
+        root = await sessionWorkspaceOf(state, sessionId)
+      } catch (error) {
+        root = null
+      }
+    }
+    if (typeof root === 'string' && root !== '') {
+      try {
+        state.setSessionRoot(sessionId, root)
+      } catch (error) {}
+      return { root: root, error: null }
+    }
+    return { root: null, error: 'session-workspace-unknown' }
+  }
+
+  async function teamsSnapshot(sessionId) {
     try {
       const inventory = leadInventory(ctx)
-      // T-122: matchesSession is relative to the REQUESTING session's project.
-      let requesterRoot = null
-      try {
-        requesterRoot = sessionId === null || sessionId === undefined ? null : state.sessionRootOf(sessionId)
-      } catch (error) {
-        requesterRoot = null
-      }
+      // T-122/T-124: matchesSession is relative to the REQUESTING session's
+      // project, resolved through the full chain (not just the memory map).
+      const requester = await requesterRootOf(sessionId)
+      const requesterRoot = requester.root
       const requesterKey = typeof requesterRoot === 'string' && requesterRoot !== '' ? projectSlotKey(requesterRoot) : null
       if (inventory.available !== true) return inventory
       const { agents, agentTeams } = servicesFor(ctx)
@@ -1885,7 +1909,7 @@ export function createApi(ctx, options) {
           })
         }
       }
-      return Object.assign({}, inventory, { members: members })
+      return Object.assign({}, inventory, { members: members, requesterRoot: requesterRoot, requesterError: requester.error })
     } catch (error) {
       return { available: false, error: messageOf(error), scanned: 0, nonLeads: 0, leads: [], members: [] }
     }
@@ -2517,7 +2541,7 @@ export function createApi(ctx, options) {
   async function snapshot(projectPath, options) {
     const opts = options === undefined || options === null ? {} : options
     // T-110: the Team is a property of the session that owns the project.
-    const snapshotTeam = projectTeamFor(projectPath, typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null)
+    const snapshotTeam = await projectTeamFor(projectPath, typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null)
     const summaryOnly = opts.full === false
     projectPath = resolve(projectPath)
     const read = await readBoardOrFail(projectPath)
@@ -2641,7 +2665,7 @@ export function createApi(ctx, options) {
       // with its session and roster size, plus how many agents were scanned. This
       // is what answers "how many Leading teams does the plugin see?", which a
       // wrong-session dispatch otherwise leaves to inference.
-      teams: teamsSnapshot(typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null),
+      teams: await teamsSnapshot(typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null),
       // Agents are the live Team members (lead + teammates), with their kind,
       // session and current task. System/host work is NOT listed here.
       agents: {
@@ -3675,14 +3699,13 @@ export function createApi(ctx, options) {
   }
 
   /** The project's Team + the structured next step when it does not exist yet. */
-  function projectTeamFor(projectPath, sessionId) {
-    let sessionRoot = null
-    try {
-      sessionRoot = sessionId === null || sessionId === undefined ? null : state.sessionRootOf(sessionId)
-    } catch (error) {
-      sessionRoot = null
-    }
-    const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath, sessionRoot: sessionRoot })
+  async function projectTeamFor(projectPath, sessionId) {
+    const requester = await requesterRootOf(sessionId)
+    const team = Object.assign({}, projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath, sessionRoot: requester.root }), {
+      requesterRoot: requester.root,
+      requesterError: requester.error,
+      requesterReason: requester.root === null ? '无法确定该会话的项目（内存无绑定，DSH 会话目录也未命中）；members[].matchesSession 为 null' : null,
+    })
     return { team: team, nextStep: teamBootstrapStep(team) }
   }
 
@@ -4012,7 +4035,7 @@ export function createApi(ctx, options) {
     if (action === 'create') {
       // T-110: no cards before the project has a Team. The refusal carries the
       // instruction, so the calling session can bootstrap it and retry.
-      const gate = projectTeamFor(projectPath, callerSessionId(source, context))
+      const gate = await projectTeamFor(projectPath, callerSessionId(source, context))
       if (gate.team.available === true && gate.team.ok !== true) {
         return failure(
           'no-team-for-project',
@@ -5045,7 +5068,7 @@ export function createApi(ctx, options) {
     const refused = failure(code, message)
     refused.preflight = preflight
     if (teamMissing) {
-      const teamRead = projectTeamFor(projectPath, opts.sessionId)
+      const teamRead = await projectTeamFor(projectPath, opts.sessionId)
       refused.team = teamRead.team
       refused.nextStep = teamRead.nextStep
     }
@@ -5078,7 +5101,7 @@ export function createApi(ctx, options) {
       refused.preflight = preflight
       const teamMissing = preflight.failed.filter((check) => check.id === 'team').length > 0
       if (teamMissing) {
-        const teamRead = projectTeamFor(absolute, sessionId)
+        const teamRead = await projectTeamFor(absolute, sessionId)
         refused.team = teamRead.team
         refused.nextStep = teamRead.nextStep
       }
