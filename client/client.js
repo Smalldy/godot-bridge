@@ -1929,6 +1929,8 @@ window.__ModuleLoader__.load({
 				// T-110: the project's Team and, when it does not exist, the one
 				// instruction the session must act on.
 				team: payload.team === undefined || payload.team === null ? null : payload.team,
+				// T-122: host-wide team inventory (diagnostics); the member table uses team.members.
+				teams: payload.teams === undefined || payload.teams === null ? null : payload.teams,
 				nextStep: payload.nextStep === undefined || payload.nextStep === null ? null : payload.nextStep,
 				// How full the board file is: { bytes, limit, percent, level, cards,
 				// bytesPerCard, headroomCards, warning }. The status page warns at 50%
@@ -3889,7 +3891,9 @@ window.__ModuleLoader__.load({
 				const [, bumpEditor] = React.useReducer(function (count) { return count + 1 }, 0)
 				const config = snapshot.roles === undefined || snapshot.roles === null ? null : snapshot.roles
 				const agents = snapshot.agents
-				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+				// T-122: the session's own team is the member source; the host inventory is separate.
+				const teamView = snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members) ? snapshot.team.members : null
+				const members = teamView !== null ? teamView : agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
 				const instances = members
 					.filter(function (member) {
 						return member !== null && typeof member === 'object' && typeof member.name === 'string' && /^(worker|reviewer|tester)-\d+$/.test(member.name)
@@ -4297,7 +4301,9 @@ window.__ModuleLoader__.load({
 				const reviewerQueue = tasks.filter(function (task) { return task.status === 'reviewing' && tcStageQueued(task) }).length
 				const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && tcStageQueued(task) }).length
 				const lead = agents !== null && agents !== undefined ? agents.lead : null
-				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+				// T-122: member table = the requesting session's team (team.members).
+				const teamMembersView = snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members) ? snapshot.team.members : null
+				const members = teamMembersView !== null ? teamMembersView : agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
 				// T-118: role instances whose slot project is NOT this session's project
 				// can only be leftovers from an older build; mark them instead of hiding.
 				const teams = snapshot.teams
@@ -4312,7 +4318,7 @@ window.__ModuleLoader__.load({
 					const leftoverName = typeof member.name === 'string' ? member.name : String(index)
 					return h(
 						'div',
-						{ key: 'leftover-' + leftoverName, className: 'gbt-statusrow', 'data-status-agent': leftoverName, 'data-leftover-role': leftoverName, 'data-tone': 'blocked' },
+						{ key: 'leftover-' + leftoverName, className: 'gbt-statusrow', 'data-leftover-role': leftoverName, 'data-tone': 'blocked' },
 						h('span', { className: 'gbt-statuswho gbt-mono' }, leftoverName),
 						h('span', { className: 'gbt-statusrole' }, t('leftoverRole')),
 						h('span', { className: 'gbt-statustask' }, t('leftoverRoleFrom').replace('{project}', projectLabelOf(member))),
@@ -4331,7 +4337,7 @@ window.__ModuleLoader__.load({
 						{ className: 'gbt-statuscardbody' },
 						agents === null || agents === undefined
 							? h('div', { className: 'gbt-statusnote' }, t('statusAgentsUnavailable'))
-							: agentRows.length === 0
+							: agentRows.length === 0 && leftoverRows.length === 0
 								? h('div', { className: 'gbt-statusnote' }, t('workersEmpty'))
 								: h('div', null, agentRows, leftoverRows),
 					),
@@ -4563,7 +4569,12 @@ window.__ModuleLoader__.load({
 				const roster = []
 				if (snapshot.agents !== null && snapshot.agents !== undefined) {
 					if (snapshot.agents.lead !== null && snapshot.agents.lead !== undefined) roster.push(snapshot.agents.lead)
-					if (Array.isArray(snapshot.agents.members)) snapshot.agents.members.forEach(function (member) { roster.push(member) })
+				}
+				// T-122: names resolve against the session's team, not the host inventory.
+				if (snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members)) {
+					snapshot.team.members.forEach(function (member) { roster.push(member) })
+				} else if (snapshot.agents !== null && snapshot.agents !== undefined && Array.isArray(snapshot.agents.members)) {
+					snapshot.agents.members.forEach(function (member) { roster.push(member) })
 				}
 				function actorName(value, byName, fallbackKey) {
 					return actorDisplay(value, byName, roster, t, fallbackKey)

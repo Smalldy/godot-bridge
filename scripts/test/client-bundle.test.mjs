@@ -548,6 +548,25 @@ const HOST = {
     cap: 4,
     error: null,
   },
+  // T-122: the session's own team is the member-table source.
+  team: {
+    ok: true,
+    available: true,
+    lead: 'lead',
+    leadId: 'session-lead',
+    members: [
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', kind: 'worker', description: 'feature worker', session: 'session-fixer', status: 'running', currentTask: { id: 'T-1', title: 'Build damage system' } },
+      { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', kind: 'reviewer', description: 'review role', session: 'session-reviewer-1', status: 'inactive', currentTask: null },
+      { id: 'session-tester-1', name: 'tester-1', role: 'teammate', kind: 'tester', description: 'test role', session: 'session-tester-1', status: 'idle', currentTask: null },
+    ],
+  },
+  // Host-wide inventory: one leftover slot from another project/session.
+  teams: {
+    available: true,
+    members: [
+      { name: 'foreign-reviewer', role: 'teammate', project: 'deadbeef', projectRoot: 'J:\\workspace\\component_tool', matchesSession: false },
+    ],
+  },
   agents: {
     lead: { id: 'session-lead', name: 'lead', kind: 'lead', description: 'Team lead', session: 'session-lead', status: 'running', currentTask: null },
     members: [
@@ -978,6 +997,17 @@ await flush()
   const agentsCard = statusCards.filter((card) => card.props['data-status-card'] === 'agents')[0]
   const agentRows = findAll(agentsCard, (node) => node.props && node.props['data-status-agent'] !== undefined)
   check('the agents card lists the lead and every teammate once', agentRows.length === 4, String(agentRows.length))
+  const leftoverRow = findAll(agentsCard, (node) => node.props && node.props['data-leftover-role'] !== undefined)[0]
+  check(
+    'T-122 a foreign role instance renders as a leftover row, independent of the member rows',
+    leftoverRow !== undefined && textOf(leftoverRow).indexOf('遗留实例（来自 component_tool）') >= 0,
+    leftoverRow === undefined ? 'no leftover row' : textOf(leftoverRow),
+  )
+  check(
+    'T-122 the member table does not list the other team’s member',
+    agentRows.every((row) => row.props['data-status-agent'] !== 'foreign-reviewer'),
+    JSON.stringify(agentRows.map((row) => row.props['data-status-agent'])),
+  )
   const fixerRow = agentRows.filter((row) => row.props['data-status-agent'] === 'fixer')[0]
   check(
     'an agent row carries the name, role and current task',
@@ -2995,7 +3025,9 @@ await flush()
   doneTask.test = Object.assign({}, doneTask.test, { hostCheck: savedHostCheck })
 
   const savedAgents = HOST.agents
+  const savedTeamView = HOST.team
   HOST.agents = { lead: null, members: [] }
+  HOST.team = { ok: false, members: [] }
   const unmappedDrawer = await openDetail('Build damage system')
   check(
     'an @id with no roster match shows the semantic role fallback, never a bare @',
@@ -3003,6 +3035,7 @@ await flush()
     textOf(unmappedDrawer).slice(0, 300),
   )
   HOST.agents = savedAgents
+  HOST.team = savedTeamView
 
   const reviewingDrawer = await openDetail('Review the crate API')
   check('a reviewing task highlights the review phase', stageOf(reviewingDrawer, 'reviewing').props['data-state'] === 'active', JSON.stringify(findAll(reviewingDrawer, (node) => node.props && node.props['data-stage'] !== undefined).map((node) => node.props['data-state'])))

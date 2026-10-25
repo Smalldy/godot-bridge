@@ -120,6 +120,14 @@ Cordis 规定：**未在 `inject` 中声明的服务，读取即抛异常**。�
 - **测试使用严格 ctx**（`scripts/test/support/fixtures.mjs` 的 `createStrictCtx`）：读未声明属性会抛同样的 Cordis 错误，这类 bug 会在测试里失败。
 - **激活失败可见**：apply 失败与模块加载失败都会追加到 `~/.dsh/godot-bridge/activation-error.log`（可用 `GODOT_BRIDGE_ACTIVATION_LOG` 覆盖），并通过 `ctx.logger.error` 上报。
 
+### 三份成员清单：面板该用哪一份
+
+- `team.members` —— **请求会话自己的团队**（Lead + roster，带 `project`、`projectRoot`，以及相对请求会话项目的 `matchesSession`）。面板成员表、角色页与抽屉的名字解析都读这一份。
+- `teams` —— 全宿主诊断清单（每个 Lead 及其槽位）。槽位项目不是请求会话项目时 `matchesSession: false`，面板渲染为「遗留实例（来自 X）」。
+- `agents.inventory` —— 全宿主只读 agent 清单（`id/name/role/session/project/matchesSession`），仅用于展示，绝不混入成员表。
+
+`agents.members` 保留为会话成员列表的兼容别名，新面板代码请用 `team.members`。
+
 ### Lead 解析：按会话，或显式 \`resolveAnyLead\`
 
 权限路径（派发、裁决、合并、角色 provision）必须用 `resolveLead(ctx, { sessionId })` 在调用者/卡片的会话内解析 Lead。裸 `resolveLead(ctx)` 会直接抛错：历史上“第一个 Lead”两次静默选错团队，导致派发挂错和裁决被拒。

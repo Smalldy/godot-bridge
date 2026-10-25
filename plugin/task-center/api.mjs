@@ -1825,9 +1825,17 @@ export function createApi(ctx, options) {
     })
   }
 
-  function teamsSnapshot() {
+  function teamsSnapshot(sessionId) {
     try {
       const inventory = leadInventory(ctx)
+      // T-122: matchesSession is relative to the REQUESTING session's project.
+      let requesterRoot = null
+      try {
+        requesterRoot = sessionId === null || sessionId === undefined ? null : state.sessionRootOf(sessionId)
+      } catch (error) {
+        requesterRoot = null
+      }
+      const requesterKey = typeof requesterRoot === 'string' && requesterRoot !== '' ? projectSlotKey(requesterRoot) : null
       if (inventory.available !== true) return inventory
       const { agents, agentTeams } = servicesFor(ctx)
       if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return Object.assign({}, inventory, { members: [] })
@@ -1873,7 +1881,7 @@ export function createApi(ctx, options) {
             session: leadSession,
             project: project,
             projectRoot: seen !== null && seen !== undefined && typeof seen.root === 'string' ? seen.root : null,
-            matchesSession: project === null || leadKey === null ? null : project === leadKey,
+            matchesSession: project === null || requesterKey === null ? null : project === requesterKey,
           })
         }
       }
@@ -2633,7 +2641,7 @@ export function createApi(ctx, options) {
       // with its session and roster size, plus how many agents were scanned. This
       // is what answers "how many Leading teams does the plugin see?", which a
       // wrong-session dispatch otherwise leaves to inference.
-      teams: teamsSnapshot(),
+      teams: teamsSnapshot(typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null),
       // Agents are the live Team members (lead + teammates), with their kind,
       // session and current task. System/host work is NOT listed here.
       agents: {
@@ -3668,7 +3676,13 @@ export function createApi(ctx, options) {
 
   /** The project's Team + the structured next step when it does not exist yet. */
   function projectTeamFor(projectPath, sessionId) {
-    const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath })
+    let sessionRoot = null
+    try {
+      sessionRoot = sessionId === null || sessionId === undefined ? null : state.sessionRootOf(sessionId)
+    } catch (error) {
+      sessionRoot = null
+    }
+    const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath, sessionRoot: sessionRoot })
     return { team: team, nextStep: teamBootstrapStep(team) }
   }
 

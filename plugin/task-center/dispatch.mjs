@@ -622,15 +622,27 @@ export function projectTeamState(ctx, options) {
     })
   }
   let members = []
+  // T-122: the requester's own project decides matchesSession; a member whose
+  // slot belongs to another project is a leftover FOR THIS SESSION.
+  const requesterKey = typeof opts.sessionRoot === 'string' && opts.sessionRoot !== '' ? projectSlotKey(opts.sessionRoot) : null
   try {
     const roster = agentTeams.listMembers(lead)
     members = (Array.isArray(roster) ? roster : [])
       .filter((member) => member !== null && typeof member === 'object')
-      .map((member) => ({
-        name: typeof member.name === 'string' ? member.name : String(member.id),
-        role: typeof member.role === 'string' ? member.role : 'teammate',
-        status: typeof member.status === 'string' ? member.status : 'unknown',
-      }))
+      .map((member) => {
+        const name = typeof member.name === 'string' ? member.name : String(member.id)
+        const slot = roleSlotOf(name)
+        const project = slot === null || slot.project === null ? null : slot.project
+        const remembered = memberProjectOf(ctx, name)
+        return {
+          name: name,
+          role: typeof member.role === 'string' ? member.role : 'teammate',
+          status: typeof member.status === 'string' ? member.status : 'unknown',
+          project: project,
+          projectRoot: remembered === null || remembered === undefined || typeof remembered.root !== 'string' ? null : remembered.root,
+          matchesSession: project === null || requesterKey === null ? null : project === requesterKey,
+        }
+      })
   } catch (error) {
     members = []
   }

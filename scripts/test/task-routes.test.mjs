@@ -6982,13 +6982,23 @@ rig.scheduler.dispose()
     )
     rig.scheduler.dispose()
   }
+}
 // ── T-122: the member table is the SESSION'S team, the inventory is global ──
 {
   const leadA = { id: 'lead-a', name: 'lead-a', role: 'lead', status: 'running' }
   const leadB = { id: 'lead-b', name: 'lead-b', role: 'lead', status: 'running' }
-  const rosterA = [leadA, { id: 'session-reviewer-a', name: 'reviewer-1', role: 'teammate', status: 'inactive' }]
+  const ownSlot = roleSlotName('reviewer', 1, PROJECT)
+  const foreignSlot = roleSlotName('reviewer', 1, PROJECT + '-foreign-project')
+  const rosterA = [
+    leadA,
+    { id: 'session-reviewer-a', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+    { id: 'session-own-slot', name: ownSlot, role: 'teammate', status: 'inactive' },
+    { id: 'session-foreign-slot', name: foreignSlot, role: 'teammate', status: 'inactive' },
+  ]
   const rosterB = [leadB, { id: 'session-work-b', name: 'work-b', role: 'teammate', status: 'inactive' }]
   const team = {
+    // The rig binds its session from roster; the first Lead must be lead-a.
+    roster: rosterA.concat(rosterB),
     tryMembership(candidate) {
       return candidate.id === 'lead-a' || candidate.id === 'lead-b' ? { role: 'lead', name: candidate.name } : { role: 'teammate', name: candidate.name }
     },
@@ -7039,6 +7049,14 @@ rig.scheduler.dispose()
     'T-122 a member queue counts the cards delivered to that member',
     reviewer !== undefined && reviewer.queue === 3 && reviewer.queuedTasks.join(',') === 'T-1,T-2,T-3',
     JSON.stringify(reviewer),
+  )
+  const teamRows = Array.isArray(snapA.teams.members) ? snapA.teams.members : []
+  const ownRow = teamRows.filter((row) => row.name === ownSlot)[0]
+  const foreignRow = teamRows.filter((row) => row.name === foreignSlot)[0]
+  check(
+    'T-122 teams.members computes matchesSession against the REQUESTING session',
+    ownRow !== undefined && ownRow.matchesSession === true && foreignRow !== undefined && foreignRow.matchesSession === false,
+    JSON.stringify({ own: ownRow, foreign: foreignRow }),
   )
   const noTeam = await rig.api.snapshot(PROJECT, { sessionId: 'lead-c' })
   check(
