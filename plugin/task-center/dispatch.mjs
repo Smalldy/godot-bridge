@@ -575,6 +575,7 @@ export function projectTeamState(ctx, options) {
     leadId: null,
     leadSession: null,
     members: [],
+    missingRoles: [],
     error: null,
   }
   if (base.available !== true) return Object.assign({}, base, { error: 'no-team-service' })
@@ -611,14 +612,34 @@ export function projectTeamState(ctx, options) {
         : typeof lead.id === 'string' && lead.id !== ''
           ? lead.id
           : null
+  // T-115: a Lead alone is NOT a qualified team. There must be at least one
+  // non-Lead member; otherwise create/start are gated and the panel asks the
+  // session to bootstrap the team.
+  const roleKinds = { worker: false, reviewer: false, tester: false }
+  let nonLead = 0
+  for (const member of members) {
+    if (member.role === 'lead') continue
+    nonLead += 1
+    const byName = roleKindOf(member.name)
+    const kind =
+      member.role === 'worker' || member.role === 'reviewer' || member.role === 'tester'
+        ? member.role
+        : byName === null
+          ? 'worker' // a generic teammate can do work; it counts as the worker slot
+          : byName
+    if (kind !== null && roleKinds[kind] !== undefined) roleKinds[kind] = true
+  }
+  const missingRoles = ['worker', 'reviewer', 'tester'].filter((kind) => roleKinds[kind] !== true)
+  const qualified = nonLead > 0
   return Object.assign({}, base, {
-    ok: true,
+    ok: qualified,
     source: 'session',
     lead: leadName,
     leadId: typeof lead.id === 'string' && lead.id !== '' ? lead.id : null,
     leadSession: agentSessionOf(lead),
     members: members,
-    error: null,
+    missingRoles: missingRoles,
+    error: qualified ? null : 'no-members',
   })
 }
 

@@ -331,6 +331,8 @@ window.__ModuleLoader__.load({
 				projectTeam: '该项目团队',
 				projectTeamOk: '{lead} · {n} 名成员',
 				projectTeamMissing: '无 → 请在该会话中初始化',
+			projectTeamNoMembers: '只有 Lead，缺 {roles} → 请在该会话中建队',
+			projectTeamMissingRoles: '缺 {roles}（角色管理器会在需要时自动创建）',
 				projectTeamUnavailable: '本 profile 没有团队服务（看板仍可用）',
 				projectTeamNext: '下一步（先建团队再建卡）：',
 				waitConcurrency: '并发已满',
@@ -846,6 +848,8 @@ window.__ModuleLoader__.load({
 				projectTeam: 'Project team',
 				projectTeamOk: '{lead} · {n} members',
 				projectTeamMissing: 'none → initialize it in this session',
+			projectTeamNoMembers: 'Lead only, missing {roles} → bootstrap the team in this session',
+			projectTeamMissingRoles: 'missing {roles} (the role manager creates them on demand)',
 				projectTeamUnavailable: 'no team services in this profile (the board still works)',
 				projectTeamNext: 'Next step (create the team before cards):',
 				waitConcurrency: 'concurrency full',
@@ -5273,10 +5277,15 @@ window.__ModuleLoader__.load({
 										},
 										t('projectTeam') + '：' +
 											(projectTeam.ok === true
-												? t('projectTeamOk').replace('{lead}', String(projectTeam.lead === null || projectTeam.lead === undefined ? '—' : projectTeam.lead)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0))
+												? t('projectTeamOk').replace('{lead}', String(projectTeam.lead === null || projectTeam.lead === undefined ? '—' : projectTeam.lead)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0)) +
+													(Array.isArray(projectTeam.missingRoles) && projectTeam.missingRoles.length > 0
+														? ' · ' + t('projectTeamMissingRoles').replace('{roles}', projectTeam.missingRoles.join(', '))
+														: '')
 												: projectTeam.available === false
 													? t('projectTeamUnavailable')
-													: t('projectTeamMissing')),
+													: projectTeam.error === 'no-members'
+														? t('projectTeamNoMembers').replace('{roles}', Array.isArray(projectTeam.missingRoles) ? projectTeam.missingRoles.join(', ') : '')
+														: t('projectTeamMissing')),
 									),
 						),
 					),
