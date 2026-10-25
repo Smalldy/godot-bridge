@@ -534,6 +534,7 @@ function normaliseTask(raw, index, now) {
           leadSession: typeof raw.dispatch.leadSession === 'string' ? raw.dispatch.leadSession : null,
           session: typeof raw.dispatch.session === 'string' ? raw.dispatch.session : null,
           ownerCompat: raw.dispatch.ownerCompat === true,
+          compat: raw.dispatch.compat === true,
           compatDetail: typeof raw.dispatch.compatDetail === 'string' ? raw.dispatch.compatDetail : null,
           project: typeof raw.dispatch.project === 'string' ? raw.dispatch.project : null,
           keep: raw.dispatch.keep === true,

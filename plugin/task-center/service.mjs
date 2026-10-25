@@ -515,6 +515,7 @@ export function claimTask(board, id, worker, now) {
     project: worker.project === undefined || worker.project === null ? null : String(worker.project),
     // T-107: an ownerless (pre-T-97) card dispatched on a single-team host says so.
     ownerCompat: worker.ownerCompat === true,
+    compat: worker.compat === true,
     // Why the compatibility path was taken (Lead inventory), kept on the record so
     // the panel/history can explain a single-team host without re-scanning.
     compatDetail: worker.compatDetail === undefined || worker.compatDetail === null ? null : String(worker.compatDetail),
