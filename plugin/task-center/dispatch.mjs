@@ -622,15 +622,27 @@ export function projectTeamState(ctx, options) {
     })
   }
   let members = []
+  // T-122: the requester's own project decides matchesSession; a member whose
+  // slot belongs to another project is a leftover FOR THIS SESSION.
+  const requesterKey = typeof opts.sessionRoot === 'string' && opts.sessionRoot !== '' ? projectSlotKey(opts.sessionRoot) : null
   try {
     const roster = agentTeams.listMembers(lead)
     members = (Array.isArray(roster) ? roster : [])
       .filter((member) => member !== null && typeof member === 'object')
-      .map((member) => ({
-        name: typeof member.name === 'string' ? member.name : String(member.id),
-        role: typeof member.role === 'string' ? member.role : 'teammate',
-        status: typeof member.status === 'string' ? member.status : 'unknown',
-      }))
+      .map((member) => {
+        const name = typeof member.name === 'string' ? member.name : String(member.id)
+        const slot = roleSlotOf(name)
+        const project = slot === null || slot.project === null ? null : slot.project
+        const remembered = memberProjectOf(ctx, name)
+        return {
+          name: name,
+          role: typeof member.role === 'string' ? member.role : 'teammate',
+          status: typeof member.status === 'string' ? member.status : 'unknown',
+          project: project,
+          projectRoot: remembered === null || remembered === undefined || typeof remembered.root !== 'string' ? null : remembered.root,
+          matchesSession: project === null || requesterKey === null ? null : project === requesterKey,
+        }
+      })
   } catch (error) {
     members = []
   }
@@ -1049,9 +1061,13 @@ export function workerPool(ctx, board, options) {
     report.error = 'no-team-service'
     return report
   }
-  const lead = resolveAnyLead(ctx)
+  // T-122: the member table is the SESSION'S team, never the host's whole roster.
+  const scopedSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
+  report.session = scopedSession === null ? sessionIdOfContext(ctx) : scopedSession
+  const lead = scopedSession === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: scopedSession })
   if (lead === null) {
-    report.error = 'no-lead'
+    const anyLead = leadInventory(ctx).leads.length > 0
+    report.error = scopedSession === null || anyLead !== true ? 'no-lead' : 'no-lead-for-project'
     return report
   }
   report.lead = lead.name === undefined || lead.name === null ? String(lead.id) : String(lead.name)
@@ -1065,7 +1081,6 @@ export function workerPool(ctx, board, options) {
     currentTask: null,
   }
   report.kinds.lead = 1
-  report.session = sessionIdOfContext(ctx)
   let roster = []
   try {
     roster = agentTeams.listMembers(lead)
@@ -1117,9 +1132,22 @@ export function workerPool(ctx, board, options) {
     })[0]
     const name = member.name === undefined || member.name === null ? null : String(member.name)
     const remembered = name === null ? null : memberProjectOf(ctx, name)
+    // T-122: this member's own queue, from the cards of THIS board that were
+    // delivered to it; it is not derived from another project's tasks.
+    const queuedTasks = tasks.filter((task) => {
+      if (task.status !== 'reviewing' && task.status !== 'testing') return false
+      const record = task.status === 'reviewing' ? task.review : task.test
+      const delivered = record === null || record === undefined || record.deliveredTo === undefined || record.deliveredTo === null ? null : record.deliveredTo
+      if (delivered === null) return false
+      const idMatch = delivered.id !== null && delivered.id !== undefined && member.id !== undefined && member.id !== null && String(delivered.id) === String(member.id)
+      const nameMatch = delivered.name !== null && delivered.name !== undefined && delivered.name === name
+      return idMatch || nameMatch
+    })
     report.members.push({
       id: String(member.id),
       name: name,
+      queue: queuedTasks.length,
+      queuedTasks: queuedTasks.map((task) => task.id),
       kind: kind,
       // T-97: which project (and therefore which session's team) this executor
       // was dispatched for, so the panel can show cross-project borrowing.

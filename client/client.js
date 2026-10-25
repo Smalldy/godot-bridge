@@ -250,8 +250,9 @@ window.__ModuleLoader__.load({
 				workerStatus: '状态',
 				workerCurrent: '当前任务',
 				workersHint: '执行者是当前 Team 的 WorkAgent：优先复用空闲成员，没有空闲时才新建；上限由派发设置决定（GUI 下默认是并发 + 1）。',
-				workersNoTeam: '没有可用的 Team Lead：任务会保持等待，直到有 Team 会话存在。',
-				workersEmpty: 'Team 里还没有 WorkAgent。',
+				workersNoTeam: '本会话没有团队：调用 task_center { action: "bootstrapTeam" } 建队后再派发。',
+			workerQueued: '排队 {n}',
+				workersEmpty: '本会话的 Team 里还没有成员 → 调用 bootstrapTeam 建最小团队。',
 				workersUnavailable: '宿主没有提供执行者池信息。',
 				workersError: '执行者池不可读',
 				workersErrNoService: '当前 profile 没有 Agent Teams 服务',
@@ -770,8 +771,9 @@ window.__ModuleLoader__.load({
 				workerStatus: 'Status',
 				workerCurrent: 'Current task',
 				workersHint: 'Workers are the WorkAgents of the current Team: idle members are reused first and a new one is spawned only when none is idle; the cap comes from the dispatch settings (concurrency + 1 by default in the GUI).',
-				workersNoTeam: 'No live Team Lead: tasks stay pending until a Team session exists.',
-				workersEmpty: 'The team has no WorkAgent yet.',
+				workersNoTeam: 'This session has no team: call task_center { action: "bootstrapTeam" } before dispatching.',
+			workerQueued: 'queued {n}',
+				workersEmpty: 'This session’s team has no members yet → call bootstrapTeam to create the minimum roster.',
 				workersUnavailable: 'The host did not report a worker pool.',
 				workersError: 'Worker pool unreadable',
 				workersErrNoService: 'this profile has no Agent Teams services',
@@ -1927,6 +1929,8 @@ window.__ModuleLoader__.load({
 				// T-110: the project's Team and, when it does not exist, the one
 				// instruction the session must act on.
 				team: payload.team === undefined || payload.team === null ? null : payload.team,
+				// T-122: host-wide team inventory (diagnostics); the member table uses team.members.
+				teams: payload.teams === undefined || payload.teams === null ? null : payload.teams,
 				nextStep: payload.nextStep === undefined || payload.nextStep === null ? null : payload.nextStep,
 				// How full the board file is: { bytes, limit, percent, level, cards,
 				// bytesPerCard, headroomCards, warning }. The status page warns at 50%
@@ -2998,7 +3002,10 @@ window.__ModuleLoader__.load({
 								let task = '—'
 								if (current !== null && typeof current.id === 'string' && current.id !== '') {
 									task = typeof current.title === 'string' && current.title !== '' ? current.id + ' · ' + current.title : current.id
-								} else if (status === 'inactive') {
+								}
+								const queued = Number.isFinite(member.queue) && member.queue > 0 ? ' · ' + t('workerQueued').replace('{n}', String(member.queue)) : ''
+								if (queued !== '') task = task === '—' ? queued.replace(/^ · /, '') : task + queued
+								if (current === null && status === 'inactive') {
 									task = t('workersIdle')
 								}
 								return h(
@@ -3884,7 +3891,9 @@ window.__ModuleLoader__.load({
 				const [, bumpEditor] = React.useReducer(function (count) { return count + 1 }, 0)
 				const config = snapshot.roles === undefined || snapshot.roles === null ? null : snapshot.roles
 				const agents = snapshot.agents
-				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+				// T-122: the session's own team is the member source; the host inventory is separate.
+				const teamView = snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members) ? snapshot.team.members : null
+				const members = teamView !== null ? teamView : agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
 				const instances = members
 					.filter(function (member) {
 						return member !== null && typeof member === 'object' && typeof member.name === 'string' && /^(worker|reviewer|tester)-\d+$/.test(member.name)
@@ -4292,7 +4301,9 @@ window.__ModuleLoader__.load({
 				const reviewerQueue = tasks.filter(function (task) { return task.status === 'reviewing' && tcStageQueued(task) }).length
 				const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && tcStageQueued(task) }).length
 				const lead = agents !== null && agents !== undefined ? agents.lead : null
-				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+				// T-122: member table = the requesting session's team (team.members).
+				const teamMembersView = snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members) ? snapshot.team.members : null
+				const members = teamMembersView !== null ? teamMembersView : agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
 				// T-118: role instances whose slot project is NOT this session's project
 				// can only be leftovers from an older build; mark them instead of hiding.
 				const teams = snapshot.teams
@@ -4307,7 +4318,7 @@ window.__ModuleLoader__.load({
 					const leftoverName = typeof member.name === 'string' ? member.name : String(index)
 					return h(
 						'div',
-						{ key: 'leftover-' + leftoverName, className: 'gbt-statusrow', 'data-status-agent': leftoverName, 'data-leftover-role': leftoverName, 'data-tone': 'blocked' },
+						{ key: 'leftover-' + leftoverName, className: 'gbt-statusrow', 'data-leftover-role': leftoverName, 'data-tone': 'blocked' },
 						h('span', { className: 'gbt-statuswho gbt-mono' }, leftoverName),
 						h('span', { className: 'gbt-statusrole' }, t('leftoverRole')),
 						h('span', { className: 'gbt-statustask' }, t('leftoverRoleFrom').replace('{project}', projectLabelOf(member))),
@@ -4326,7 +4337,7 @@ window.__ModuleLoader__.load({
 						{ className: 'gbt-statuscardbody' },
 						agents === null || agents === undefined
 							? h('div', { className: 'gbt-statusnote' }, t('statusAgentsUnavailable'))
-							: agentRows.length === 0
+							: agentRows.length === 0 && leftoverRows.length === 0
 								? h('div', { className: 'gbt-statusnote' }, t('workersEmpty'))
 								: h('div', null, agentRows, leftoverRows),
 					),
@@ -4558,7 +4569,12 @@ window.__ModuleLoader__.load({
 				const roster = []
 				if (snapshot.agents !== null && snapshot.agents !== undefined) {
 					if (snapshot.agents.lead !== null && snapshot.agents.lead !== undefined) roster.push(snapshot.agents.lead)
-					if (Array.isArray(snapshot.agents.members)) snapshot.agents.members.forEach(function (member) { roster.push(member) })
+				}
+				// T-122: names resolve against the session's team, not the host inventory.
+				if (snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members)) {
+					snapshot.team.members.forEach(function (member) { roster.push(member) })
+				} else if (snapshot.agents !== null && snapshot.agents !== undefined && Array.isArray(snapshot.agents.members)) {
+					snapshot.agents.members.forEach(function (member) { roster.push(member) })
 				}
 				function actorName(value, byName, fallbackKey) {
 					return actorDisplay(value, byName, roster, t, fallbackKey)

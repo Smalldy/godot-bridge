@@ -1794,9 +1794,48 @@ export function createApi(ctx, options) {
 
   /** The Team inventory for the snapshot (T-109), plus members with their slot
    * project and whether that project matches the Lead's session (T-118). */
-  function teamsSnapshot() {
+  /** T-122: every host agent with its session, display-only; never mixed into
+   * the session-scoped member table. */
+  function agentInventoryRows(sessionId) {
+    const { agents, agentTeams } = servicesFor(ctx)
+    if (agents === undefined || agents === null) return []
+    let all = []
+    try {
+      all = agents.list()
+    } catch (error) {
+      return []
+    }
+    return (Array.isArray(all) ? all : []).map((candidate) => {
+      let membership = null
+      try {
+        membership = agentTeams === undefined || agentTeams === null ? null : agentTeams.tryMembership(candidate)
+      } catch (error) {
+        membership = null
+      }
+      const session = candidate !== null && candidate !== undefined && candidate.id !== undefined && candidate.id !== null ? String(candidate.id) : null
+      const remembered = session === null ? null : memberProjectOf(ctx, session)
+      return {
+        id: session,
+        name: candidate !== null && candidate !== undefined && typeof candidate.name === 'string' && candidate.name !== '' ? candidate.name : null,
+        role: membership !== null && membership !== undefined && typeof membership.role === 'string' ? membership.role : null,
+        session: session,
+        project: remembered === null ? null : remembered.key,
+        matchesSession: sessionId !== null && sessionId !== undefined && session === sessionId,
+      }
+    })
+  }
+
+  function teamsSnapshot(sessionId) {
     try {
       const inventory = leadInventory(ctx)
+      // T-122: matchesSession is relative to the REQUESTING session's project.
+      let requesterRoot = null
+      try {
+        requesterRoot = sessionId === null || sessionId === undefined ? null : state.sessionRootOf(sessionId)
+      } catch (error) {
+        requesterRoot = null
+      }
+      const requesterKey = typeof requesterRoot === 'string' && requesterRoot !== '' ? projectSlotKey(requesterRoot) : null
       if (inventory.available !== true) return inventory
       const { agents, agentTeams } = servicesFor(ctx)
       if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return Object.assign({}, inventory, { members: [] })
@@ -1842,7 +1881,7 @@ export function createApi(ctx, options) {
             session: leadSession,
             project: project,
             projectRoot: seen !== null && seen !== undefined && typeof seen.root === 'string' ? seen.root : null,
-            matchesSession: project === null || leadKey === null ? null : project === leadKey,
+            matchesSession: project === null || requesterKey === null ? null : project === requesterKey,
           })
         }
       }
@@ -2492,7 +2531,7 @@ export function createApi(ctx, options) {
     reconcileLocks(board)
     const archive = await archiveInfo(projectPath, now)
     const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
-    const workers = workerPool(ctx, board, { roleConfig: roleRead.config })
+    const workers = workerPool(ctx, board, { roleConfig: roleRead.config, sessionId: typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null })
     let worktrees = null
     if (worktreeCache.project === projectPath && worktreeCache.value !== null && now - worktreeCache.at < 5000) {
       worktrees = worktreeCache.value
@@ -2602,7 +2641,7 @@ export function createApi(ctx, options) {
       // with its session and roster size, plus how many agents were scanned. This
       // is what answers "how many Leading teams does the plugin see?", which a
       // wrong-session dispatch otherwise leaves to inference.
-      teams: teamsSnapshot(),
+      teams: teamsSnapshot(typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null),
       // Agents are the live Team members (lead + teammates), with their kind,
       // session and current task. System/host work is NOT listed here.
       agents: {
@@ -2610,6 +2649,9 @@ export function createApi(ctx, options) {
         members: workers.members,
         kinds: workers.kinds,
         roles: workers.roles,
+        // T-122: the whole-host inventory is a separate field; the member table
+        // above is only this session's team.
+        inventory: agentInventoryRows(typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null),
       },
       worktrees: worktrees,
       activity: activitySnapshot(),
@@ -3634,7 +3676,13 @@ export function createApi(ctx, options) {
 
   /** The project's Team + the structured next step when it does not exist yet. */
   function projectTeamFor(projectPath, sessionId) {
-    const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath })
+    let sessionRoot = null
+    try {
+      sessionRoot = sessionId === null || sessionId === undefined ? null : state.sessionRootOf(sessionId)
+    } catch (error) {
+      sessionRoot = null
+    }
+    const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath, sessionRoot: sessionRoot })
     return { team: team, nextStep: teamBootstrapStep(team) }
   }
 

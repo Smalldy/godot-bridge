@@ -123,6 +123,14 @@ Cordis THROWS when a plugin reads a service it did not declare in `inject`. A ba
 - **Tests use a strict ctx** (`createStrictCtx` in `scripts/test/support/fixtures.mjs`): reading an undeclared property throws the same Cordis message, so this class of bug fails in the suite.
 - **Activation failures are diagnostics, not silence**: apply errors and load failures are appended to `~/.dsh/godot-bridge/activation-error.log` (override with `GODOT_BRIDGE_ACTIVATION_LOG`) and reported through `ctx.logger.error`.
 
+### Three member lists: which one the panel renders
+
+- `team.members` — the **requesting session's own team** (Lead + roster, with `project`, `projectRoot` and `matchesSession` relative to the requesting session's project). The panel member table, the roles view and the drawer name resolution read THIS list.
+- `teams` — host-wide diagnostic inventory of every Lead/roster slot. Rows whose slot project is not the requesting session's project carry `matchesSession: false` and render as "leftover instance (from X)".
+- `agents.inventory` — host-wide, read-only agent list (`id/name/role/session/project/matchesSession`). Display-only; it is never mixed into the member table.
+
+`agents.members` stays as a compatibility alias of the session-scoped member list, but new panel code should use `team.members`.
+
 ### Lead resolution: session or explicit `resolveAnyLead`
 
 Authority code (dispatch, verdicts, merge, role provisioning) must resolve a Lead with `resolveLead(ctx, { sessionId })`. A bare `resolveLead(ctx)` throws on purpose: "the first Lead" silently picked the wrong team twice and broke dispatch and verdicts.
