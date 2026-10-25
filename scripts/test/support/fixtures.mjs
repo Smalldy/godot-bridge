@@ -350,7 +350,7 @@ export function createRig(options) {
     // pass). Production uses the dispatcher default.
     worktreeDeadlineMs: opts.worktreeDeadlineMs,
   })
-  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, now: opts.now })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, now: opts.now, roles: opts.roles === undefined ? null : opts.roles })
   const user = { projectPath: project, by: '@user', role: 'user', agent: null }
   async function action(name, body) {
     return api.perform(name, body === undefined ? {} : body, user)

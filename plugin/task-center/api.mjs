@@ -126,6 +126,7 @@ export const ACTIONS = [
   'rolesBind',
   'rolesDrain',
   'rolesReplace',
+  'rolesPrune',
   'rolesReset',
   'skillsCatalog',
   'approveStart',
@@ -154,6 +155,7 @@ export const USER_ONLY_ACTIONS = [
   'rolesBind',
   'rolesDrain',
   'rolesReplace',
+  'rolesPrune',
   'rolesReset',
   'skillsCatalog',
 ]
@@ -1725,12 +1727,63 @@ export function createApi(ctx, options) {
     return Object.assign({ available: true }, activity.snapshot())
   }
 
-  /** The Team inventory for the snapshot (T-109). Never throws. */
+  /** The Team inventory for the snapshot (T-109), plus members with their slot
+   * project and whether that project matches the Lead's session (T-118). */
   function teamsSnapshot() {
     try {
-      return leadInventory(ctx)
+      const inventory = leadInventory(ctx)
+      if (inventory.available !== true) return inventory
+      const { agents, agentTeams } = servicesFor(ctx)
+      if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return Object.assign({}, inventory, { members: [] })
+      let all = []
+      try {
+        const listed = agents.list()
+        all = Array.isArray(listed) ? listed : []
+      } catch (error) {
+        return Object.assign({}, inventory, { members: [] })
+      }
+      const members = []
+      for (const lead of all) {
+        let membership = null
+        try {
+          membership = agentTeams.tryMembership(lead)
+        } catch (error) {
+          membership = null
+        }
+        if (membership === null || membership === undefined || membership.role !== 'lead') continue
+        const leadSession = agentSessionOf(lead)
+        let leadRoot = null
+        try {
+          leadRoot = leadSession === null ? null : state.sessionRootOf(leadSession)
+        } catch (error) {
+          leadRoot = null
+        }
+        const leadKey = typeof leadRoot === 'string' && leadRoot !== '' ? projectSlotKey(leadRoot) : null
+        let roster = []
+        try {
+          const listed = agentTeams.listMembers(lead)
+          roster = Array.isArray(listed) ? listed : []
+        } catch (error) {
+          roster = []
+        }
+        for (const member of roster) {
+          if (member === null || typeof member !== 'object' || typeof member.name !== 'string') continue
+          const slot = roleSlotOf(member.name)
+          const project = slot === null || slot.project === null ? null : slot.project
+          const seen = memberProjectOf(ctx, member.name)
+          members.push({
+            name: String(member.name),
+            role: typeof member.role === 'string' ? member.role : null,
+            session: leadSession,
+            project: project,
+            projectRoot: seen !== null && seen !== undefined && typeof seen.root === 'string' ? seen.root : null,
+            matchesSession: project === null || leadKey === null ? null : project === leadKey,
+          })
+        }
+      }
+      return Object.assign({}, inventory, { members: members })
     } catch (error) {
-      return { available: false, error: messageOf(error), scanned: 0, nonLeads: 0, leads: [] }
+      return { available: false, error: messageOf(error), scanned: 0, nonLeads: 0, leads: [], members: [] }
     }
   }
 
@@ -3136,6 +3189,13 @@ export function createApi(ctx, options) {
     const recorded = await writeTask(projectPath, id, (board) => recordMergeResult(board, id, outcome, clock(), by, writeByName(context)), context)
     if (recorded.ok !== true) return recorded
     emitActivity(context, 'merge', String(outcome.status) + (outcome.mergeCommit !== undefined && outcome.mergeCommit !== null ? ' as ' + String(outcome.mergeCommit) : ''), id, actorOverride)
+    // T-118: after integrating a card, the team should not keep role instances of
+    // OTHER projects. Best effort: a refused prune never fails the merge.
+    if (outcome.status === 'merged' && roles !== null && typeof roles.prune === 'function') {
+      try {
+        await roles.prune({ projectPath: projectPath, sessionId: sessionIdOf(context) })
+      } catch (error) {}
+    }
     if (outcome.status === 'merged' && outcome.taskWorktreeRemoved === true) {
       emitActivity(null, 'worktree-remove', 'task worktree removed after merge', id, 'host')
     }
@@ -3665,6 +3725,24 @@ export function createApi(ctx, options) {
         if (written.ok !== true) return written
         emitActivity(context, 'role-config', 'bound ' + stage + ' to ' + name, null)
         return ok({ config: written.config, bound: { stage: stage, profile: name }, source: 'file' })
+      }
+      if (action === 'rolesPrune') {
+        // T-118: drop role instances whose slot belongs to ANOTHER project. They
+        // only exist because an older build spawned them into the wrong team.
+        if (roles === null || typeof roles.prune !== 'function') {
+          return failure('roles-unavailable', 'the role manager is not available in this profile')
+        }
+        const pruned = await roles.prune({ projectPath: projectPath, sessionId: sessionIdOf(context) })
+        if (pruned.ok !== true) return failure(pruned.code === undefined ? 'roles-prune-failed' : pruned.code, pruned.message === undefined ? 'could not prune role instances' : pruned.message)
+        emitActivity(context, 'role-prune', 'pruned ' + String(pruned.pruned.length) + ' foreign role instance(s) in ' + String(pruned.lead), null)
+        return ok({
+          pruned: pruned.pruned,
+          kept: pruned.kept,
+          failed: pruned.failed,
+          lead: pruned.lead,
+          project: pruned.project,
+          instances: roleInstanceList(),
+        })
       }
       if (action === 'rolesDrain' || action === 'rolesReplace') {
         if (roles === null || typeof roles.drain !== 'function') {

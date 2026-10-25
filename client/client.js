@@ -517,6 +517,8 @@ window.__ModuleLoader__.load({
 				verdictReasonRequired: '打回或测试失败必须填写理由',
 				verdictSubmit: '提交裁决',
 				verdictCancel: '取消',
+				leftoverRoleFrom: '遗留实例（来自 {project}）',
+				leftoverRole: '遗留实例',
 				evtHostCheck: '宿主检查',
 				evtError: '异常',
 				'evtLabel-create': '创建',
@@ -1034,6 +1036,8 @@ window.__ModuleLoader__.load({
 				verdictReasonRequired: 'A reason is required to reject or fail',
 				verdictSubmit: 'Record verdict',
 				verdictCancel: 'Cancel',
+				leftoverRoleFrom: 'leftover instance (from {project})',
+				leftoverRole: 'leftover instance',
 				evtHostCheck: 'Host check',
 				evtError: 'Error',
 				'evtLabel-create': 'create',
@@ -4287,6 +4291,27 @@ window.__ModuleLoader__.load({
 				const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && tcStageQueued(task) }).length
 				const lead = agents !== null && agents !== undefined ? agents.lead : null
 				const members = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+				// T-118: role instances whose slot project is NOT this session's project
+				// can only be leftovers from an older build; mark them instead of hiding.
+				const teams = snapshot.teams
+				const teamMembers = teams !== null && teams !== undefined && Array.isArray(teams.members) ? teams.members : []
+				const leftoverRoles = teamMembers.filter(function (member) { return member !== null && typeof member === 'object' && member.matchesSession === false })
+				function projectLabelOf(member) {
+					const root = typeof member.projectRoot === 'string' && member.projectRoot !== '' ? member.projectRoot : null
+					if (root !== null) return String(root).split(/[\\/]/).filter(Boolean).slice(-1)[0] || root
+					return typeof member.project === 'string' ? 'p' + member.project.slice(0, 6) : '—'
+				}
+				const leftoverRows = leftoverRoles.map(function (member, index) {
+					const leftoverName = typeof member.name === 'string' ? member.name : String(index)
+					return h(
+						'div',
+						{ key: 'leftover-' + leftoverName, className: 'gbt-statusrow', 'data-status-agent': leftoverName, 'data-leftover-role': leftoverName, 'data-tone': 'blocked' },
+						h('span', { className: 'gbt-statuswho gbt-mono' }, leftoverName),
+						h('span', { className: 'gbt-statusrole' }, t('leftoverRole')),
+						h('span', { className: 'gbt-statustask' }, t('leftoverRoleFrom').replace('{project}', projectLabelOf(member))),
+						h('span', { className: 'gbt-statustime' }, ''),
+					)
+				})
 				const agentRows = []
 				if (lead !== null && lead !== undefined) agentRows.push(agentRow(lead, true, -1))
 				members.forEach(function (member, index) { agentRows.push(agentRow(member, false, index)) })
@@ -4301,7 +4326,7 @@ window.__ModuleLoader__.load({
 							? h('div', { className: 'gbt-statusnote' }, t('statusAgentsUnavailable'))
 							: agentRows.length === 0
 								? h('div', { className: 'gbt-statusnote' }, t('workersEmpty'))
-								: h('div', null, agentRows),
+								: h('div', null, agentRows, leftoverRows),
 					),
 				)
 				const timeline = snapshot.activityEvents

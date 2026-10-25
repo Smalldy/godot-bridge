@@ -191,7 +191,9 @@ function applyRow(ctx) {
   // each by default, bound to implement/review/test. It provisions a missing
   // reviewer/tester through the live Lead and replaces a dead or timed-out one,
   // so no Lead prompt is required.
-  const roles = createRoleManager(ctx)
+  // T-118: the manager gets the shared state so it can judge whether the team's
+  // session actually runs in the slot's project before spawning a role instance.
+  const roles = createRoleManager(ctx, { state: state })
   // The in-memory activity ring the status snapshot shows. One ring is shared by
   // the dispatcher and the API; it is pure memory and never writes the board.
   const activity = createActivity({})

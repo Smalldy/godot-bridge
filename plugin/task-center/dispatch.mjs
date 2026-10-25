@@ -2308,6 +2308,78 @@ export function createRoleManager(ctx, options) {
     return run
   }
 
+  /**
+   * T-118: does the SESSION that owns this team actually run in the slot's
+   * project? Returns a readable refusal when it does not, null when it does (or
+   * when no state/workspace is known, which is the legacy single-project case).
+   */
+  async function slotOwnership(opts, projectPath, sessionId, kind) {
+    if (projectPath === null || projectPath === undefined) return null
+    const state = opts.state
+    if (state === undefined || state === null || typeof state.sessionRootOf !== 'function') return null
+    if (typeof sessionId !== 'string' || sessionId === '') return null
+    const owns = await sessionOwnsProject(state, sessionId, projectPath)
+    if (owns !== false) return null
+    const workspace = await sessionWorkspaceOf(state, sessionId)
+    return {
+      ok: false,
+      code: 'no-team-for-project',
+      message:
+        'the ' + String(kind) + ' slot belongs to project ' + projectPath + ', but session ' + sessionId +
+        ' runs in ' + String(workspace) + '; a role instance is never created in another project’s team',
+      project: projectKeyOf(projectPath),
+      sessionProject: workspace === null ? null : projectKeyOf(workspace),
+    }
+  }
+
+  function projectKeyOf(root) {
+    return root === null || root === undefined || root === '' ? null : projectSlotKey(root)
+  }
+
+  /**
+   * T-118: drop role instances whose slot project is NOT this project's. They can
+   * only exist because an older build spawned them into the wrong team; pruning
+   * never touches this project's instances or non-role workers.
+   */
+  async function prune(options) {
+    const opts = options === undefined || options === null ? {} : options
+    const { agentTeams } = servicesFor(ctx)
+    if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
+    const projectPath = typeof opts.projectPath === 'string' && opts.projectPath !== '' ? opts.projectPath : null
+    if (projectPath === null) return { ok: false, code: 'no-project', message: 'rolesPrune needs the project it should keep' }
+    const key = projectSlotKey(projectPath)
+    const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
+    const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
+    if (lead === null) return { ok: false, code: sessionId === null ? 'no-lead' : 'no-lead-for-project', message: 'no live Team root to prune' }
+    let roster = []
+    try {
+      roster = agentTeams.listMembers(lead)
+    } catch (error) {
+      return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
+    }
+    const pruned = []
+    const kept = []
+    const failed = []
+    for (const member of Array.isArray(roster) ? roster : []) {
+      if (member === null || typeof member !== 'object' || typeof member.name !== 'string') continue
+      const slot = roleSlotOf(member.name)
+      if (slot === null) continue
+      if (slot.project === null || slot.project === key) {
+        kept.push(String(member.name))
+        continue
+      }
+      try {
+        if (typeof agentTeams.removeMember === 'function') await agentTeams.removeMember(lead, member.name)
+        else if (typeof agentTeams.interrupt === 'function' && member.status === 'running') await agentTeams.interrupt(lead, member.name)
+        memory.drained.add(String(member.name))
+        pruned.push({ name: String(member.name), project: slot.project })
+      } catch (error) {
+        failed.push({ name: String(member.name), message: String((error && error.message) || error) })
+      }
+    }
+    return { ok: true, project: projectPath, lead: lead.name === undefined || lead.name === null ? String(lead.id) : String(lead.name), pruned: pruned, kept: kept, failed: failed }
+  }
+
   function nextSlotName(kind, roster, projectPath) {
     const used = new Set(memory.pending)
     for (const member of roster) {
@@ -2344,6 +2416,19 @@ export function createRoleManager(ctx, options) {
             : 'session ' + sessionId + ' has no live Team root, so the ' + String(kind) + ' role stays unprovisioned (no cross-session borrowing)',
       }
     }
+    // The project this ensure pass is provisioning for. A slot that belongs to a
+    // DIFFERENT project is never reused (its session workspace is that project);
+    // a legacy slot (no project in its name) is adopted by the first project that
+    // uses it and refuses the next one, which is how a pre-upgrade roster stays
+    // usable without letting a second project inherit it.
+    const projectPath = typeof req.projectPath === 'string' && req.projectPath !== '' ? req.projectPath : null
+    const projectKey = projectPath === null ? null : projectSlotKey(projectPath)
+    // T-118: a role slot is named for a PROJECT, and a team belongs to a SESSION
+    // whose workspace is a project. Creating — or even reusing — project A's slot
+    // in project B's team is how another project's role instances ended up in a
+    // member list. Refuse before touching the roster.
+    const ownership = await slotOwnership(opts, projectPath, sessionId === null ? agentSessionOf(lead) : sessionId, kind)
+    if (ownership !== null) return ownership
     let roster = []
     try {
       roster = agentTeams.listMembers(lead)
@@ -2352,13 +2437,6 @@ export function createRoleManager(ctx, options) {
     }
     if (!Array.isArray(roster)) roster = []
     const now = Number.isFinite(req.now) ? req.now : clock()
-    // The project this ensure pass is provisioning for. A slot that belongs to a
-    // DIFFERENT project is never reused (its session workspace is that project);
-    // a legacy slot (no project in its name) is adopted by the first project that
-    // uses it and refuses the next one, which is how a pre-upgrade roster stays
-    // usable without letting a second project inherit it.
-    const projectPath = typeof req.projectPath === 'string' && req.projectPath !== '' ? req.projectPath : null
-    const projectKey = projectPath === null ? null : projectSlotKey(projectPath)
     const reused = []
     const replaced = []
     const waiting = []
@@ -2546,7 +2624,7 @@ export function createRoleManager(ctx, options) {
     }
   }
 
-  return { ensure: ensure, drain: drain, drainKind: drainKind, status: status, memory: memory }
+  return { ensure: ensure, drain: drain, drainKind: drainKind, prune: prune, status: status, memory: memory }
 }
 
 /** One implicit manager per context, so the named host helpers share state. */
