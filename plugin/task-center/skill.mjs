@@ -68,12 +68,16 @@ export function renderStatusBrief(input) {
   const branch = typeof f.branch === 'string' && f.branch !== '' ? f.branch : '<branch>'
   const head = typeof f.head === 'string' && f.head !== '' ? f.head : '<head>'
   const count = (value) => (Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0)
-  let task =
-    String(count(f.pending)) + ' 待办 · ' +
-    String(count(f.running)) + ' 进行 · ' +
-    String(count(f.reviewing)) + ' 待评审 · ' +
-    String(count(f.testing)) + ' 待测试 · ' +
-    String(count(f.done)) + ' 完成'
+  const parts = [
+    [count(f.pending), '待办'],
+    [count(f.running), '进行'],
+    [count(f.reviewing), '待评审'],
+    [count(f.testing), '待测试'],
+    [count(f.done), '完成'],
+  ]
+    .filter((entry) => entry[0] > 0)
+    .map((entry) => String(entry[0]) + ' ' + entry[1])
+  let task = parts.length === 0 ? '无卡' : parts.join(' · ')
   const blocked = typeof f.blocked === 'string' && f.blocked.trim() !== '' ? f.blocked.trim() : null
   if (blocked !== null) task += ' · 卡住：' + blocked
   return '项目  ' + path + ' · ' + branch + ' @ ' + head + '\n任务  ' + task
@@ -125,7 +129,7 @@ export function buildSkillContent(options) {
     '',
     '```',
     '项目  <path> · <branch> @ <head>',
-    '任务  <n> 待办 · <n> 进行 · <n> 待评审 · <n> 待测试 · <n> 完成[ · 卡住：<原因>]',
+    '任务  3 待办 · 2 待评审 · 1 完成[ · 卡住：<原因>]（只列非零，全 0 写“无卡”）',
     '```',
     '',
     '## 何时用 / 不用',

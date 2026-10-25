@@ -217,24 +217,30 @@ check(
     const cleanLines = clean.split('\n')
     check(
       'T-125 the rendered brief is exactly two lines and has no blocker suffix when nothing is blocked',
-      cleanLines.length === 2 && cleanLines[0] === '项目  J:\\workspace\\component_tool · master @ b6d4e5d' && cleanLines[1] === '任务  3 待办 · 0 进行 · 0 待评审 · 0 待测试 · 0 完成' && clean.indexOf('卡住') < 0,
+      cleanLines.length === 2 && cleanLines[0] === '项目  J:\\workspace\\component_tool · master @ b6d4e5d' && cleanLines[1] === '任务  3 待办' && clean.indexOf('卡住') < 0,
       clean,
     )
     const blocked = renderStatusBrief({ path: 'J:\\workspace\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 3, running: 0, reviewing: 0, testing: 0, done: 0, blocked: '工作区有 53 个未跟踪文件' })
     const blockedLines = blocked.split('\n')
     check(
       'T-125 the rendered brief folds the blocker into the task line as a suffix',
-      blockedLines.length === 2 && blockedLines[1] === '任务  3 待办 · 0 进行 · 0 待评审 · 0 待测试 · 0 完成 · 卡住：工作区有 53 个未跟踪文件',
+      blockedLines.length === 2 && blockedLines[1] === '任务  3 待办 · 卡住：工作区有 53 个未跟踪文件',
       blocked,
     )
-    check('T-125 the rendered brief uses Chinese counters only', blocked.indexOf('待办') >= 0 && blocked.indexOf('进行') >= 0 && blocked.indexOf('完成') >= 0, blocked)
+    check('T-125 the rendered brief uses Chinese counters only', blocked.indexOf('待办') >= 0 && blocked.indexOf('卡住：') >= 0 && /[0-9]+ (待办|进行|待评审|待测试|完成)/.test(blocked), blocked)
     const active = renderStatusBrief({ path: 'J:\\ws\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 0, running: 0, reviewing: 3, testing: 1, done: 2 })
     const activeLines = active.split('\n')
     check(
       'T-125 the task line reports review and test counts (active board is not misreported)',
-      activeLines.length === 2 && activeLines[1] === '任务  0 待办 · 0 进行 · 3 待评审 · 1 待测试 · 2 完成',
+      activeLines.length === 2 && activeLines[1] === '任务  3 待评审 · 1 待测试 · 2 完成',
       active,
     )
+    const ordered = renderStatusBrief({ path: 'p', branch: 'b', head: 'h', reviewing: 2, done: 1 })
+    check('T-125 only non-zero categories appear, in fixed order', ordered.split('\n')[1] === '任务  2 待评审 · 1 完成', ordered)
+    const testingOnly = renderStatusBrief({ path: 'p', branch: 'b', head: 'h', testing: 1 })
+    check('T-125 a testing-only board shows just 待测试', testingOnly.split('\n')[1] === '任务  1 待测试', testingOnly)
+    const empty = renderStatusBrief({ path: 'p', branch: 'b', head: 'h' })
+    check('T-125 an empty board says 无卡', empty.split('\n')[1] === '任务  无卡', empty)
   }
   check(
     'the body names every agent action',
