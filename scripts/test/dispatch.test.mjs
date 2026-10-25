@@ -3102,7 +3102,7 @@ function fakeHostSubprocess(result) {
     }),
   })
   const old = new Date(Date.now() - 60 * 60 * 1000).toISOString()
-  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
+  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, ownerSession: 'session-lead', attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
   const reviewTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'reviewing', review: { status: 'pending', by: null, at: old, reasons: null, attempt: 1 } })
   seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [reviewTask('T-1', 'delivered'), reviewTask('T-2', 'queued')] }))
   recordStageSlot(rig.ctx, 'T-2', 'reviewer', null, 1)
@@ -3130,7 +3130,7 @@ function fakeHostSubprocess(result) {
     }),
   })
   const old = new Date(Date.now() - 120000).toISOString()
-  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null }
+  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, ownerSession: 'session-lead', attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null }
   const testTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'testing', merge: { status: 'open', base: 'base-sha', target: 'feat/x', head: 'head-sha', mergeCommit: 'cand-' + id, declaredFiles: [], actualFiles: [], tests: 'npm test', reviewer: null, conflict: null, output: null, at: old }, review: { status: 'approved', by: 'reviewer-1', at: old, reasons: null, attempt: 1 }, test: { status: 'pending', by: null, at: old, evidence: null, attempt: 1 } })
   seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [testTask('T-1', 'delivered test'), testTask('T-2', 'queued test')] }))
   recordStageSlot(rig.ctx, 'T-1', 'tester', Date.now(), null)
@@ -3158,7 +3158,7 @@ function fakeHostSubprocess(result) {
     }),
   })
   const old = new Date(Date.now() - 120000).toISOString()
-  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
+  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, ownerSession: 'session-lead', attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
   const reviewTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'reviewing', review: { status: 'pending', by: null, at: old, reasons: null, attempt: 1 } })
   seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 4, dispatch: { state: 'paused' }, tasks: [reviewTask('T-1', 'A'), reviewTask('T-2', 'B'), reviewTask('T-3', 'C')] }))
   recordStageSlot(rig.ctx, 'T-1', 'reviewer', Date.now(), null)
@@ -3186,7 +3186,7 @@ function fakeHostSubprocess(result) {
     }),
   })
   const old = new Date(Date.now() - 120000).toISOString()
-  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
+  const base = { priority: 0, dependsOn: [], writeFiles: [], assignee: null, ownerSession: 'session-lead', attempts: 1, maxAttempts: 3, evidence: '', dispatch: null, leaseUntil: null, createdBy: '@test', createdAt: old, updatedAt: old, history: [], requiredRole: null, worktree: null, branch: null, commit: null, merge: null }
   const reviewTask = (id, title) => Object.assign({}, base, { id: id, title: title, status: 'reviewing', review: { status: 'pending', by: null, at: old, reasons: null, attempt: 1 } })
   seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 5, dispatch: { state: 'paused' }, tasks: [reviewTask('T-1', 'legacy 1'), reviewTask('T-2', 'legacy 2'), reviewTask('T-3', 'queued')] }))
   recordStageSlot(rig.ctx, 'T-3', 'reviewer', null, 1)

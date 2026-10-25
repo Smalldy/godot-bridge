@@ -550,6 +550,8 @@ function runningWorktreeTask(overrides) {
       branch: 'task/T-1-1',
       worktree: join(PROJECT, '.worktrees', 'T-1'),
       assignee: { name: 'fixer', session: 'session-fixer' },
+      // T-123: stage briefs are delivered to the card owner's session team only.
+      ownerSession: 'session-lead',
       attempts: 1,
       maxAttempts: 3,
       leaseUntil: new Date(now + 600000).toISOString(),
@@ -6874,6 +6876,112 @@ rig.scheduler.dispose()
       String(failedRead.message).indexOf('no readable roster') < 0,
     JSON.stringify(failedRead),
   )
+}
+
+
+// ── T-123: a stage brief never crosses teams ───────────────────────────────
+{
+  const otherProject = join(PROJECT, '..', 'other-project')
+  const ownSlot = slot('reviewer', 1)
+  const otherSlot = roleSlotName('reviewer', 1, otherProject)
+  const leads = [
+    { id: 'session-a', name: 'lead-a', role: 'lead', status: 'running' },
+    { id: 'session-b', name: 'lead-b', role: 'lead', status: 'running' },
+    { id: 'session-c', name: 'lead-c', role: 'lead', status: 'running' },
+  ]
+  // session-a owns PROJECT; session-b/session-c run elsewhere. The legacy
+  // 'reviewer-1' slot exists only so the old any-Lead fallback WOULD have
+  // delivered there — the test proves the new skip instead.
+  const rosters = {
+    'session-a': [
+      leads[0],
+      { id: 'session-ra', name: ownSlot, role: 'teammate', status: 'inactive' },
+      { id: 'session-legacy', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+    ],
+    'session-b': [leads[1], { id: 'session-rb', name: otherSlot, role: 'teammate', status: 'inactive' }],
+    'session-c': [leads[2], { id: 'session-rc', name: otherSlot, role: 'teammate', status: 'inactive' }],
+  }
+  const sent = []
+  const team = {
+    tryMembership(candidate) {
+      const hit = leads.filter((entry) => entry.id === candidate.id)[0]
+      return hit === undefined ? undefined : { role: hit.role, name: hit.name }
+    },
+    listMembers(lead) {
+      return (rosters[lead.id] === undefined ? [] : rosters[lead.id]).map((entry) => Object.assign({}, entry))
+    },
+    async spawnTeammate() {
+      return { member: { id: 'session-spawned', name: 'spawned', role: 'teammate' } }
+    },
+    async sendMessage(lead, request) {
+      sent.push({ session: lead.id, target: request.target, text: request.content[0].text })
+      return { ok: true }
+    },
+  }
+  function crossRig(activity) {
+    const rig = createSubmitRig({ team: team, agents: { list: () => leads }, git: fakeGit().git, activity: activity })
+    rig.state.setSessionRoot('session-a', PROJECT)
+    rig.state.setSessionRoot('session-b', otherProject)
+    rig.state.setSessionRoot('session-c', otherProject)
+    return rig
+  }
+  // (a) A's card is reviewed by A's reviewer only.
+  {
+    const activity = createActivity({ limit: 60 })
+    const rig = crossRig(activity)
+    const seeded = runningWorktreeTask({ ownerSession: 'session-a' })
+    seeded.dispatch = Object.assign({}, seeded.dispatch, { host: rig.scheduler.boot })
+    seedRunningTask(rig, seeded)
+    const submitted = await rig.action('submit', { id: 'T-1', evidence: 'checked' })
+    check('T-123 the card enters review', submitted.ok === true && submitted.task.status === 'reviewing', JSON.stringify(submitted).slice(0, 300))
+    const ownTeam = sent.filter((entry) => entry.session === 'session-a')
+    const crossTeam = sent.filter((entry) => entry.session === 'session-b' || entry.session === 'session-c')
+    check(
+      'T-123 the brief reaches only the card owner’s team',
+      ownTeam.length === 1 && ownTeam[0].target === ownSlot && crossTeam.length === 0,
+      JSON.stringify(sent.map((entry) => entry.session + ':' + entry.target)),
+    )
+    check(
+      'T-123 the brief names its project so the receiver can self-check',
+      ownTeam.length === 1 && ownTeam[0].text.indexOf('project: ' + PROJECT) === 0 && ownTeam[0].text.indexOf('wrong-project') >= 0,
+      ownTeam.length === 0 ? '' : ownTeam[0].text.slice(0, 220),
+    )
+    rig.scheduler.dispose()
+  }
+  // (b) A card without an owner session never guesses a team.
+  {
+    const bare = createActivity({ limit: 60 })
+    const rig = crossRig(bare)
+    const task = runningWorktreeTask({ ownerSession: null })
+    task.dispatch = Object.assign({}, task.dispatch, { host: rig.scheduler.boot })
+    seedRunningTask(rig, task)
+    const before = sent.length
+    const res = await rig.action('submit', { id: 'T-1', evidence: 'checked' })
+    check('T-123 an ownerless card is not delivered anywhere', res.ok === true && sent.length === before, JSON.stringify({ sent: sent.length - before }))
+    check(
+      'T-123 the skipped delivery is recorded as system activity',
+      bare.list(60).some((entry) => entry.kind === 'notify-skipped' && entry.actor === 'system'),
+      JSON.stringify(bare.list(12).map((entry) => entry.kind)),
+    )
+    rig.scheduler.dispose()
+  }
+  // (c) A same-named slot of another project's team is refused, not fed.
+  {
+    const mismatch = createActivity({ limit: 60 })
+    const rig = crossRig(mismatch)
+    const task = runningWorktreeTask({ ownerSession: 'session-c' })
+    task.dispatch = Object.assign({}, task.dispatch, { host: rig.scheduler.boot })
+    seedRunningTask(rig, task)
+    const before = sent.length
+    const res = await rig.action('submit', { id: 'T-1', evidence: 'checked' })
+    check('T-123 a project mismatch is refused, not delivered', res.ok === true && sent.length === before, JSON.stringify({ sent: sent.length - before }))
+    check(
+      'T-123 the refusal is recorded as notify-refused (project-mismatch)',
+      mismatch.list(60).some((entry) => entry.kind === 'notify-refused' && String(entry.detail).indexOf('project-mismatch') >= 0),
+      JSON.stringify(mismatch.list(12).map((entry) => entry.kind)),
+    )
+    rig.scheduler.dispose()
+  }
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
