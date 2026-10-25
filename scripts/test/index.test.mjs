@@ -200,6 +200,26 @@ check(
     const bytes = Buffer.byteLength(generated, 'utf8')
     check('the body stays inside its scannable size budget', bytes >= SKILL_BODY_MIN_BYTES && bytes <= SKILL_BODY_MAX_BYTES, String(bytes) + ' bytes')
   }
+  {
+    // T-125: the status brief is four lines of situation (plus one next step).
+    const start = generated.indexOf('项目  ')
+    const block = start < 0 ? '' : generated.slice(start, generated.indexOf('```', start))
+    const lines = block.split('\n').map((line) => line.trim()).filter((line) => line !== '')
+    check('T-125 the brief is at most four situation lines plus one next step', lines.length <= 5 && lines.filter((line) => line.indexOf('下一步') !== 0).length <= 4, JSON.stringify(lines))
+    check('T-125 the brief has no identity line', block.indexOf('身份') < 0 && lines.every((line) => line.indexOf('你是') < 0), block)
+    check(
+      'T-125 the brief never leaks internal field names',
+      !/maxConcurrent|allowSpawn|maxAttempts|liveExecutors|\bpending\b|waitingReason|ownerSession/.test(block),
+      block,
+    )
+    check('T-125 the team line distinguishes a missing team', block.indexOf('未建立') >= 0 && block.indexOf('团队') >= 0, block)
+    check('T-125 the stuck line is a single sentence and there is no in-flight variable dump', block.split('\n').filter((line) => line.trim().indexOf('卡住') === 0).length === 1 && block.indexOf('在途') < 0, block)
+    check(
+      'T-125 status words are Chinese, not internal states',
+      block.indexOf('待办') >= 0 && block.indexOf('进行中') >= 0 && block.indexOf('待评审') >= 0 && block.indexOf('待测试') >= 0 && block.indexOf('完成') >= 0,
+      block,
+    )
+  }
   check(
     'the body names every agent action',
     AGENT_ACTIONS.every((action) => generated.indexOf('`' + action + '`') >= 0),
