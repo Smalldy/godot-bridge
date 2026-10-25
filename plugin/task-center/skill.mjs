@@ -60,6 +60,20 @@ function names(list) {
  * @param options.userOnlyActions - the actions only the person at the GUI owns.
  * @returns the markdown body the skill tool hands to the model.
  */
+/** T-125: the status brief is exactly two lines. The blocker rides the task
+ * line as a suffix and is omitted when nothing is blocked. */
+export function renderStatusBrief(input) {
+  const f = input === undefined || input === null ? {} : input
+  const path = typeof f.path === 'string' && f.path !== '' ? f.path : '<path>'
+  const branch = typeof f.branch === 'string' && f.branch !== '' ? f.branch : '<branch>'
+  const head = typeof f.head === 'string' && f.head !== '' ? f.head : '<head>'
+  const count = (value) => (Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0)
+  let task = String(count(f.pending)) + ' 待办 · ' + String(count(f.running)) + ' 进行 · ' + String(count(f.done)) + ' 完成'
+  const blocked = typeof f.blocked === 'string' && f.blocked.trim() !== '' ? f.blocked.trim() : null
+  if (blocked !== null) task += ' · 卡住：' + blocked
+  return '项目  ' + path + ' · ' + branch + ' @ ' + head + '\n任务  ' + task
+}
+
 export function buildSkillContent(options) {
   const opts = options === undefined || options === null ? {} : options
   const actions = listOf(opts.actions)
@@ -106,10 +120,7 @@ export function buildSkillContent(options) {
     '',
     '```',
     '项目  <path> · <branch> @ <head>',
-    '团队  已建立（<lead>）/ 未建立（先建团队才能派卡）',
-    '任务  <n> 待办 · <n> 进行中 · <n> 待评审 · <n> 待测试 · <n> 完成',
-    '卡住  <一句：为什么没动，没有就写“无”>',
-    '下一步  <一句：谁做什么；需要用户决定时写明>',
+    '任务  <n> 待办 · <n> 进行 · <n> 完成[ · 卡住：<原因>]',
     '```',
     '',
     '## 何时用 / 不用',

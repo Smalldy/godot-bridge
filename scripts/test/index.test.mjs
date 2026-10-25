@@ -9,7 +9,7 @@ const { apply, recordActivationError, reportLoadFailure } = await import('../../
 const { readFileSync, rmSync } = await import('node:fs')
 const { join } = await import('node:path')
 const { createFakeFs, createStrictCtx, PROJECT } = await import('./support/fixtures.mjs')
-const { SKILL_NAME, buildSkillContent } = await import('../../plugin/task-center/skill.mjs')
+const { SKILL_NAME, buildSkillContent, renderStatusBrief } = await import('../../plugin/task-center/skill.mjs')
 const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
 
 /**
@@ -201,24 +201,33 @@ check(
     check('the body stays inside its scannable size budget', bytes >= SKILL_BODY_MIN_BYTES && bytes <= SKILL_BODY_MAX_BYTES, String(bytes) + ' bytes')
   }
   {
-    // T-125: the status brief is four lines of situation (plus one next step).
-    const start = generated.indexOf('项目  ')
-    const block = start < 0 ? '' : generated.slice(start, generated.indexOf('```', start))
+    // T-125: exactly two lines - project and tasks; the blocker rides the task
+    // line and is omitted when nothing is blocked.
+    const blockStart = generated.indexOf('项目  ')
+    const block = blockStart < 0 ? '' : generated.slice(blockStart, generated.indexOf('```', blockStart))
     const lines = block.split('\n').map((line) => line.trim()).filter((line) => line !== '')
-    check('T-125 the brief is at most four situation lines plus one next step', lines.length <= 5 && lines.filter((line) => line.indexOf('下一步') !== 0).length <= 4, JSON.stringify(lines))
-    check('T-125 the brief has no identity line', block.indexOf('身份') < 0 && lines.every((line) => line.indexOf('你是') < 0), block)
+    check('T-125 the brief template is exactly two lines', lines.length === 2 && lines[0].indexOf('项目') === 0 && lines[1].indexOf('任务') === 0, JSON.stringify(lines))
+    check('T-125 the brief has no identity, team, dispatch, in-flight or next-step line', block.indexOf('身份') < 0 && block.indexOf('你是') < 0 && block.indexOf('团队') < 0 && block.indexOf('派发') < 0 && block.indexOf('在途') < 0 && block.indexOf('下一步') < 0, block)
     check(
       'T-125 the brief never leaks internal field names',
       !/maxConcurrent|allowSpawn|maxAttempts|liveExecutors|\bpending\b|waitingReason|ownerSession/.test(block),
       block,
     )
-    check('T-125 the team line distinguishes a missing team', block.indexOf('未建立') >= 0 && block.indexOf('团队') >= 0, block)
-    check('T-125 the stuck line is a single sentence and there is no in-flight variable dump', block.split('\n').filter((line) => line.trim().indexOf('卡住') === 0).length === 1 && block.indexOf('在途') < 0, block)
+    const clean = renderStatusBrief({ path: 'J:\\workspace\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 3, running: 0, done: 0 })
+    const cleanLines = clean.split('\n')
     check(
-      'T-125 status words are Chinese, not internal states',
-      block.indexOf('待办') >= 0 && block.indexOf('进行中') >= 0 && block.indexOf('待评审') >= 0 && block.indexOf('待测试') >= 0 && block.indexOf('完成') >= 0,
-      block,
+      'T-125 the rendered brief is exactly two lines and has no blocker suffix when nothing is blocked',
+      cleanLines.length === 2 && cleanLines[0] === '项目  J:\\workspace\\component_tool · master @ b6d4e5d' && cleanLines[1] === '任务  3 待办 · 0 进行 · 0 完成' && clean.indexOf('卡住') < 0,
+      clean,
     )
+    const blocked = renderStatusBrief({ path: 'J:\\workspace\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 3, running: 0, done: 0, blocked: '工作区有 53 个未跟踪文件' })
+    const blockedLines = blocked.split('\n')
+    check(
+      'T-125 the rendered brief folds the blocker into the task line as a suffix',
+      blockedLines.length === 2 && blockedLines[1] === '任务  3 待办 · 0 进行 · 0 完成 · 卡住：工作区有 53 个未跟踪文件',
+      blocked,
+    )
+    check('T-125 the rendered brief uses Chinese counters only', blocked.indexOf('待办') >= 0 && blocked.indexOf('进行') >= 0 && blocked.indexOf('完成') >= 0, blocked)
   }
   check(
     'the body names every agent action',
