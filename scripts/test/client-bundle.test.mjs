@@ -1003,6 +1003,18 @@ await flush()
     leftoverRow !== undefined && textOf(leftoverRow).indexOf('遗留实例（来自 component_tool）') >= 0,
     leftoverRow === undefined ? 'no leftover row' : textOf(leftoverRow),
   )
+  const savedTeamsView = HOST.teams
+  HOST.teams = { available: true, members: [{ name: 'null-slot', role: 'teammate', project: 'abc', projectRoot: null, matchesSession: null }] }
+  let nullMatchTree = withHooks(panel, { initialView: 'status' })
+  findButton(nullMatchTree, '刷新').props.onClick()
+  await flush()
+  nullMatchTree = withHooks(panel, { initialView: 'status' })
+  check(
+    'T-124 a null matchesSession does NOT render a leftover row',
+    findAll(nullMatchTree, (node) => node.props && node.props['data-leftover-role'] !== undefined).length === 0,
+    textOf(nullMatchTree).slice(0, 300),
+  )
+  HOST.teams = savedTeamsView
   check(
     'T-122 the member table does not list the other team’s member',
     agentRows.every((row) => row.props['data-status-agent'] !== 'foreign-reviewer'),

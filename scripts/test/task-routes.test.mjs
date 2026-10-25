@@ -7067,5 +7067,70 @@ rig.scheduler.dispose()
   rig.scheduler.dispose()
 }
 
+// ── T-124: matchesSession resolves the requester through the DSH session dir ──
+{
+  const lead = { id: 'lead-a', name: 'lead-a', role: 'lead', status: 'running' }
+  const ownSlot = roleSlotName('reviewer', 1, PROJECT)
+  const foreignSlot = roleSlotName('reviewer', 1, PROJECT + '-foreign-project')
+  const roster = [
+    lead,
+    { id: 'session-remote', name: 'work-remote', role: 'teammate', status: 'inactive' },
+    { id: 'session-unknown', name: 'work-unknown', role: 'teammate', status: 'inactive' },
+    { id: 'session-own-slot', name: ownSlot, role: 'teammate', status: 'inactive' },
+    { id: 'session-foreign-slot', name: foreignSlot, role: 'teammate', status: 'inactive' },
+  ]
+  const team = {
+    roster: roster,
+    tryMembership(candidate) {
+      return candidate.id === 'lead-a' ? { role: 'lead', name: 'lead-a' } : { role: 'teammate', name: candidate.name }
+    },
+    listMembers() {
+      return roster.map((member) => Object.assign({}, member))
+    },
+    async sendMessage() { return { ok: true } },
+    async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
+  }
+  // The DSH session directory answers for session-remote only; nothing is put in
+  // the in-memory sessionRoots map for it.
+  const sessionLookup = {
+    lookup(sessionId) {
+      return sessionId === 'session-remote' ? { ok: true, path: PROJECT } : { ok: false, code: 'no-session', message: 'unknown session' }
+    },
+  }
+  const rig = createRig({ allowSpawn: false, team: team, agents: { list: () => [lead] }, sessionLookup: sessionLookup })
+  const before = rig.state.sessionRootOf('session-remote')
+  check('T-124 the requester session starts unbound in memory', before === null, String(before))
+  const snap = await rig.api.snapshot(PROJECT, { sessionId: 'session-remote' })
+  const ownRow = snap.team.members.filter((row) => row.name === ownSlot)[0]
+  const foreignRow = snap.team.members.filter((row) => row.name === foreignSlot)[0]
+  check(
+    'T-124 an unregistered session resolves via the DSH directory and marks its own slot true',
+    ownRow !== undefined && ownRow.matchesSession === true && foreignRow !== undefined && foreignRow.matchesSession === false,
+    JSON.stringify({ own: ownRow, foreign: foreignRow }),
+  )
+  check(
+    'T-124 the resolved requester root is reported and recorded',
+    snap.team.requesterRoot === PROJECT && rig.state.sessionRootOf('session-remote') === PROJECT,
+    JSON.stringify({ requesterRoot: snap.team.requesterRoot, bound: rig.state.sessionRootOf('session-remote') }),
+  )
+  const teamsOwn = (snap.teams.members || []).filter((row) => row.name === ownSlot)[0]
+  const teamsForeign = (snap.teams.members || []).filter((row) => row.name === foreignSlot)[0]
+  check(
+    'T-124 teams.members uses the same resolved requester',
+    teamsOwn !== undefined && teamsOwn.matchesSession === true && teamsForeign !== undefined && teamsForeign.matchesSession === false,
+    JSON.stringify({ own: teamsOwn, foreign: teamsForeign }),
+  )
+  const unknown = await rig.api.snapshot(PROJECT, { sessionId: 'session-unknown' })
+  check(
+    'T-124 an unresolvable session gets matchesSession null plus a readable reason',
+    unknown.team.members.every((row) => row.matchesSession === null) &&
+      unknown.team.requesterRoot === null &&
+      unknown.team.requesterError === 'session-workspace-unknown' &&
+      typeof unknown.team.requesterReason === 'string',
+    JSON.stringify({ members: unknown.team.members.map((row) => row.matchesSession), requesterRoot: unknown.team.requesterRoot, error: unknown.team.requesterError }),
+  )
+  rig.scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
