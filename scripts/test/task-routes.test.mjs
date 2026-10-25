@@ -145,7 +145,7 @@ check('registers state, action, task, list and diagnostics', surface.specs.lengt
 // consent: an agent can request dispatch, but only the user starts it
 {
   await post({ action: 'pause' })
-  const agent = { projectPath: PROJECT, by: '@agent', role: 'agent', agent: { id: 'session-agent' } }
+  const agent = { projectPath: PROJECT, by: '@agent', role: 'agent', agent: { id: 'session-lead' } }
   const requested = await rig.api.perform('start', { note: 'deps are ready' }, agent)
   check('an agent start returns needs-consent', requested.ok === false && requested.code === 'needs-consent', JSON.stringify(requested))
   check('and records a request', requested.request !== null && requested.request.by === '@agent', JSON.stringify(requested.request))
@@ -6277,7 +6277,7 @@ rig.scheduler.dispose()
   const surface2 = install(rig2)
   async function post(body) {
     const res = response()
-    await surface2.byPath.get(ACTION_PATH).handler(request(ACTION_PATH, { method: 'POST', body: body, headers: { 'content-type': 'application/json' } }), res)
+    await surface2.byPath.get(ACTION_PATH).handler(request(ACTION_PATH, { method: 'POST', body: Object.assign({ session: 'session-lead' }, body), headers: { 'content-type': 'application/json' } }), res)
     return res.json()
   }
   const pruned = await post({ action: 'rolesPrune', project: PROJECT })

@@ -526,14 +526,25 @@ export function resolveLead(ctx, options) {
       }
     }
   }
-  // A host with exactly ONE lead has a single team: there is no other session's
-  // team to steal, so the legacy single-team profile keeps working. With two or
-  // more leads this is exactly the "first lead in the list" bug and is refused.
-  const everyLead = all.filter((candidate) => {
+  // T-120: an explicit session may resolve the Lead of the team it is a MEMBER of
+  // (its own team), but never a Lead just because it is the only one on the host.
+  for (const candidate of all) {
     const membership = membershipOrNull(agentTeams, candidate)
-    return membership !== null && membership.role === 'lead'
-  })
-  if (everyLead.length === 1) return everyLead[0]
+    if (membership === null || membership.role !== 'lead') continue
+    let roster = []
+    try {
+      roster = agentTeams.listMembers(candidate)
+    } catch (error) {
+      continue
+    }
+    const isMember = (Array.isArray(roster) ? roster : []).some((member) => {
+      if (member === null || typeof member !== 'object') return false
+      const memberId = member.id === undefined || member.id === null ? null : String(member.id)
+      const memberName = typeof member.name === 'string' ? member.name : null
+      return memberId === sessionId || memberName === sessionId
+    })
+    if (isMember) return candidate
+  }
   return null
 }
 
@@ -917,7 +928,11 @@ export function pickTarget(ctx, options) {
   // names a stale Lead is refused with the date.
   const requested = sessionId === null ? null : inventory.leads.filter((row) => row.session === sessionId)[0]
   const requestedStale = requested !== undefined && requested !== null && requested.stale === true
-  let lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
+  // T-120: no session is only allowed to use the historical single-team path when
+  // the CALLER explicitly asks for legacy dispatch (an ownerless old card); the
+  // result says compat:true so the history can show it.
+  const legacyCompat = sessionId === null && opts.legacyDispatch === true
+  let lead = sessionId === null ? (legacyCompat ? resolveAnyLead(ctx) : null) : resolveLead(ctx, { sessionId: sessionId })
   const resolvedEntry =
     lead === null || lead === undefined
       ? null
@@ -939,7 +954,7 @@ export function pickTarget(ctx, options) {
       code: sessionId === null ? 'no-live-lead' : 'no-lead-for-project',
       message:
         sessionId === null
-          ? 'no LIVE Team Lead, so there is nobody to hand pooled work to; tasks stay pending (' + leadInventoryText(inventory) + ')'
+          ? (legacyCompat ? 'no LIVE Team Lead, so there is nobody to hand pooled work to; tasks stay pending (' + leadInventoryText(inventory) + ')' : 'no session context and no explicit legacy dispatch, so no team is guessed')
           : 'session ' + sessionId + ' has no Team root, so this card cannot be dispatched to another session’s team',
     }
   }
@@ -962,7 +977,7 @@ export function pickTarget(ctx, options) {
     return remembered === null || remembered.key === projectKey
   })
   if (idle.length > 0) {
-    return { ok: true, lead: lead, spawn: false, target: { name: idle[0].name, id: idle[0].id, status: idle[0].status }, members: members }
+    return { ok: true, lead: lead, spawn: false, target: { name: idle[0].name, id: idle[0].id, status: idle[0].status }, members: members, compat: legacyCompat }
   }
   if (opts.spawn !== true) {
     return {
@@ -2479,8 +2494,10 @@ export function createRoleManager(ctx, options) {
     if (projectPath === null) return { ok: false, code: 'no-project', message: 'rolesPrune needs the project it should keep' }
     const key = projectSlotKey(projectPath)
     const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-    const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
-    if (lead === null) return { ok: false, code: sessionId === null ? 'no-lead' : 'no-lead-for-project', message: 'no live Team root to prune' }
+    // T-120: prune only ever touches the CALLER session's own team. Without one
+    // there is nothing this call may delete (never another session's roster).
+    const lead = sessionId === null ? null : resolveLead(ctx, { sessionId: sessionId })
+    if (lead === null) return { ok: false, code: 'no-lead-for-project', message: 'this session has no own Team Lead, so there is nothing it may prune (never another session’s team)' }
     let roster = []
     try {
       roster = agentTeams.listMembers(lead)
@@ -3980,6 +3997,7 @@ export function createDispatcher(ctx, options) {
           // The LEAD that creates the executor is the one this card BELONGS to
           // (owned card) or the project session that adopted it (ownerless card).
           sessionId: dispatchSession,
+          legacyDispatch: dispatchSession === null,
         })
         if (picked.ok !== true) {
           const reason =
@@ -4119,6 +4137,7 @@ export function createDispatcher(ctx, options) {
                 // card's own session travels as cardSession.
                 cardSession: dispatchSession === null ? selfSessionId : dispatchSession,
                 ownerCompat: ownerCompat,
+                compat: picked.compat === true,
                 compatDetail: compatDetail,
                 project: project,
                 worktree: worktree,

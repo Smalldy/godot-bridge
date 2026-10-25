@@ -15,6 +15,8 @@ function check(label, condition, detail) {
 }
 
 const rig = createRig({ allowSpawn: false })
+// T-120: an agent session resolves its own team through roster membership.
+rig.team.roster.push({ id: 'session-abcdef12', name: 'agent', role: 'teammate', status: 'running' })
 rig.ctx.tools = {
   register(tool) {
     rig.tool = tool

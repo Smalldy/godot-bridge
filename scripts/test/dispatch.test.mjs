@@ -2056,7 +2056,7 @@ function roleTask(overrides) {
       ],
     }),
   })
-  const picked = pickTarget(rig.ctx, { spawn: false })
+  const picked = pickTarget(rig.ctx, { spawn: false, legacyDispatch: true })
   check('a feature task prefers the ordinary worker over role slots', picked.ok === true && picked.target.name === 'fixer', JSON.stringify(picked))
   const rolesOnly = createRoleRig({
     team: createTeam({
@@ -2068,7 +2068,7 @@ function roleTask(overrides) {
       ],
     }),
   })
-  const none = pickTarget(rolesOnly.ctx, { spawn: false })
+  const none = pickTarget(rolesOnly.ctx, { spawn: false, legacyDispatch: true })
   check('role slots are never feature workers', none.ok === false && none.code === 'no-teammates', JSON.stringify(none))
 }
 
@@ -4087,6 +4087,86 @@ function fakeHostSubprocess(result) {
     try {
       rmSync(root, { recursive: true, force: true })
     } catch (error) {}
+  }
+}
+
+// ── T-120: an explicit session never borrows another session's team ────────
+{
+  const lead = { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }
+  const roster = [lead, { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' }]
+  const team = {
+    tryMembership(candidate) { return candidate.id === 'session-lead' ? { role: 'lead', name: 'lead' } : { role: 'teammate', name: candidate.id } },
+    listMembers() { return roster.map((member) => Object.assign({}, member)) },
+    async sendMessage() { return { ok: true } },
+    async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
+  }
+  const ctx = {
+    fs: createFakeFs(),
+    sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+    get(key) {
+      if (key === 'agents') return { list: () => [lead] }
+      if (key === 'agentTeams') return team
+      return undefined
+    },
+  }
+  const otherSession = projectTeamState(ctx, { sessionId: 'session-other' })
+  check(
+    'T-120 a single-Lead host does NOT give its team to another session',
+    otherSession.ok === false && otherSession.lead === null && otherSession.source === 'none' && otherSession.error === 'no-lead-for-project',
+    JSON.stringify(otherSession),
+  )
+  const ownSession = projectTeamState(ctx, { sessionId: 'session-lead' })
+  check('T-120 the owning session still resolves its own team', ownSession.ok === true && ownSession.leadId === 'session-lead', JSON.stringify(ownSession))
+
+  // create/start from the foreign session are refused with the bootstrap step.
+  const rig = createRig({ allowSpawn: false })
+  const foreign = { projectPath: PROJECT, by: '@other', role: 'agent', agent: { id: 'session-other' } }
+  const foreignCreate = await rig.api.perform('create', { title: 'foreign card' }, foreign)
+  check(
+    'T-120 create from a session without its own Lead is refused with nextStep',
+    foreignCreate.ok === false && foreignCreate.code === 'no-team-for-project' && foreignCreate.nextStep !== undefined && foreignCreate.nextStep.code === 'bootstrap-team',
+    JSON.stringify(foreignCreate).slice(0, 260),
+  )
+  const foreignStart = await rig.api.perform('start', {}, foreign)
+  check('T-120 start from that session is refused for the same reason', foreignStart.ok === false && foreignStart.code === 'no-team-for-project', JSON.stringify(foreignStart).slice(0, 200))
+  rig.scheduler.dispose()
+
+  // (b) legacy dispatch of an ownerless card still uses the single team, marked compat.
+  {
+    const legacyRig = createRig({ allowSpawn: false })
+    const stamp = new Date().toISOString()
+    seedBoard(legacyRig.fs, PROJECT, JSON.stringify({
+      version: 2,
+      seq: 2,
+      dispatch: { state: 'paused' },
+      tasks: [{ id: 'T-1', title: 'legacy card', status: 'pending', priority: 0, dependsOn: [], writeFiles: [], spec: 's', acceptance: 'a', evidence: '', ownerSession: null, history: [], createdAt: stamp, updatedAt: stamp, attempts: 0, maxAttempts: 3 }],
+    }))
+    await legacyRig.action('start')
+    await legacyRig.settle()
+    const card = JSON.parse(legacyRig.fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text).tasks[0]
+    check(
+      'T-120 an ownerless legacy card still dispatches and records compat:true',
+      card.status === 'running' && card.assignee !== null && card.dispatch.compat === true,
+      JSON.stringify({ status: card.status, assignee: card.assignee, dispatch: card.dispatch }),
+    )
+    legacyRig.scheduler.dispose()
+  }
+
+  // (c) rolesPrune only touches the caller session's own team.
+  {
+    const roleRig = createRoleRig({})
+    const noSession = await roleRig.manager.prune({ projectPath: PROJECT })
+    check(
+      'T-120 rolesPrune without a session refuses instead of pruning a borrowed team',
+      noSession.ok === false && noSession.code === 'no-lead-for-project',
+      JSON.stringify(noSession),
+    )
+    const foreignPrune = await roleRig.manager.prune({ projectPath: PROJECT, sessionId: 'session-other' })
+    check(
+      'T-120 rolesPrune for a session without its own Lead refuses',
+      foreignPrune.ok === false && foreignPrune.code === 'no-lead-for-project',
+      JSON.stringify(foreignPrune),
+    )
   }
 }
 
