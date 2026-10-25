@@ -806,7 +806,7 @@ export function createApi(ctx, options) {
         await discardRebuilt()
         emitActivity(null, 'host-check', 'retest mechanical verification failed (' + String(retestCheck.timedOut === true ? 'timed out' : 'exit ' + String(retestCheck.exitCode)) + '); back to running', id, 'host')
         const ownerName = recorded.task !== null && recorded.task !== undefined && recorded.task.assignee !== null && recorded.task.assignee !== undefined && typeof recorded.task.assignee.name === 'string' ? recorded.task.assignee.name : null
-        if (ownerName !== null) await notifyMember(ownerName, 'Host mechanical verification FAILED for ' + id + ' (' + String(recorded.task.title) + ').\n\n' + hostCheckEvidence(retestCheck), recorded.task.ownerSession)
+        if (ownerName !== null) await notifyMember(ownerName, 'Host mechanical verification FAILED for ' + id + ' (' + String(recorded.task.title) + ').\n\n' + hostCheckEvidence(retestCheck), recorded.task.ownerSession, projectPath)
         return recorded
       }
       recorded.candidate = rebuilt
@@ -814,7 +814,7 @@ export function createApi(ctx, options) {
       if (provisioned !== null) recorded.provisioned = provisioned
       const tester = roleSlotNameOf('tester', recorded.task.ownerSession)
       if (tester !== null) {
-        await notifyMember(tester, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck }), recorded.task.ownerSession)
+        await notifyMember(tester, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck }), recorded.task.ownerSession, projectPath)
       }
       return recorded
     }
@@ -1235,16 +1235,24 @@ export function createApi(ctx, options) {
    * service, no lead, no such member, a refused mailbox — is swallowed: a
    * notification must never fail a submit or a merge.
    */
-  async function notifyMember(target, text, sessionId) {
+  async function notifyMember(target, text, sessionId, projectPath) {
     const name = typeof target === 'string' ? target.trim() : ''
     if (name === '' || typeof text !== 'string' || text === '') return null
     try {
       const { agentTeams } = servicesFor(ctx)
       if (agentTeams === undefined || agentTeams === null) return null
-      // T-106: message the member of THIS card's team, never a same-named slot in
-      // another session's team.
-      const lead = typeof sessionId === 'string' && sessionId !== '' ? resolveLead(ctx, { sessionId: sessionId }) : resolveAnyLead(ctx)
-      if (lead === null) return null
+      // T-123: a brief has no meaning without the session that owns the card.
+      // Falling back to "any Lead" is exactly how another project's card reached a
+      // same-named slot in THIS team; skip and record instead of guessing.
+      if (typeof sessionId !== 'string' || sessionId === '') {
+        emitActivity(null, 'notify-skipped', 'no session context for ' + name + '; brief not sent', null, 'system')
+        return null
+      }
+      const lead = resolveLead(ctx, { sessionId: sessionId })
+      if (lead === null) {
+        emitActivity(null, 'notify-skipped', 'no live Lead for session ' + sessionId + '; brief for ' + name + ' not sent', null, 'system')
+        return null
+      }
       let members = []
       try {
         members = agentTeams.listMembers(lead)
@@ -1252,9 +1260,52 @@ export function createApi(ctx, options) {
         return null
       }
       if (!Array.isArray(members)) return null
-      const member = members.filter((entry) => entry !== null && typeof entry === 'object' && entry.name === name)[0]
-      if (member === undefined) return null
-      const request = { target: name, content: [{ type: 'text', text: text }] }
+      let member = members.filter((entry) => entry !== null && typeof entry === 'object' && entry.name === name)[0]
+      // A pre-upgrade team carries the legacy slot name (reviewer-1) instead of the
+      // project-named one (reviewer-p<key>-1). The alias is resolved INSIDE this
+      // same team only: the session's own legacy slot may take over its work.
+      if (member === undefined) {
+        const legacy = legacySlotAliasOf(name)
+        if (legacy !== null) member = members.filter((entry) => entry !== null && typeof entry === 'object' && entry.name === legacy)[0]
+      }
+      if (member === undefined) {
+        emitActivity(null, 'notify-skipped', 'no member ' + name + ' in the session ' + sessionId + ' team', null, 'system')
+        return null
+      }
+      // T-123: a name hit is not enough — the team the member belongs to must run
+      // in the card's project. A slot of another project's team never receives it.
+      const ownedProject = typeof projectPath === 'string' && projectPath !== '' ? projectPath : null
+      if (ownedProject !== null) {
+        let owns = null
+        try {
+          owns = await sessionOwnsProject(state, sessionId, ownedProject)
+        } catch (error) {
+          owns = null
+        }
+        if (owns === false) {
+          let workspace = null
+          try {
+            workspace = await sessionWorkspaceOf(state, sessionId)
+          } catch (error) {
+            workspace = null
+          }
+          emitActivity(
+            null,
+            'notify-refused',
+            'project-mismatch: ' + name + ' is in ' + String(workspace === null ? 'another project' : workspace) + ' but the card is in ' + ownedProject,
+            null,
+            'system',
+          )
+          return null
+        }
+      }
+      // T-123: the brief names its project so a receiver can self-check and reply
+      // wrong-project instead of doing a wasted round in the wrong repository.
+      const body =
+        ownedProject === null || text.indexOf('project: ' + ownedProject) === 0
+          ? text
+          : 'project: ' + ownedProject + '\nIf you are not working in this project, reply wrong-project and stop.\n\n' + text
+      const request = { target: name, content: [{ type: 'text', text: body }] }
       if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
         request.signal = AbortSignal.timeout(notifyTimeoutMs)
       }
@@ -1268,6 +1319,13 @@ export function createApi(ctx, options) {
     } catch (error) {
       return null
     }
+  }
+
+  /** The legacy (project-less) name of a project-named role slot, or null. */
+  function legacySlotAliasOf(name) {
+    const parsed = roleSlotOf(name)
+    if (parsed === null || parsed.project === null) return null
+    return parsed.kind + '-' + String(parsed.index)
   }
 
   /** Tell the merger a merge request is open. No merger is a normal outcome. */
@@ -1291,7 +1349,7 @@ export function createApi(ctx, options) {
       'mergeRequest stays available as a manual entry (merger-only) and rejectMerge can close the request.',
       'Do not push. If it conflicts or verification fails, leave the repair to the task owner.',
     ]
-    await notifyMember(MERGER_NAME, lines.join('\n'))
+    await notifyMember(MERGER_NAME, lines.join('\n'), task.ownerSession, projectPath)
   }
 
   /** Tell the owner what a merge outcome needs from them; skipped without an owner or a team. */
@@ -1308,7 +1366,7 @@ export function createApi(ctx, options) {
       if (owner === null) return
       const commit = merge.mergeCommit === null || merge.mergeCommit === undefined ? '' : ' as ' + String(merge.mergeCommit)
       const target = merge.target === null || merge.target === undefined ? '' : String(merge.target)
-      await notifyMember(owner, 'Merge request ' + task.id + ' (' + task.title + ') was merged into ' + target + commit + '.')
+      await notifyMember(owner, 'Merge request ' + task.id + ' (' + task.title + ') was merged into ' + target + commit + '.', task.ownerSession, projectPath)
       return
     }
     if ((status !== 'conflict' && status !== 'failed') || owner === null) return
@@ -1327,6 +1385,8 @@ export function createApi(ctx, options) {
         '), then refresh the merge request with task_center { action: "refreshMerge", id: "' +
         task.id +
         '" } and tell the Lead so it can be retried.',
+      task.ownerSession,
+      projectPath,
     )
   }
 
@@ -1403,6 +1463,7 @@ export function createApi(ctx, options) {
         owner,
         'Task ' + task.id + ' was blocked after ' + String(REVIEW_MAX_ROUNDS) + ' review rounds without approval. Read the review reasons on the board and ask the Lead for triage.',
         task.ownerSession,
+        projectPath,
       )
     }
     return blocked
@@ -4228,7 +4289,7 @@ export function createApi(ctx, options) {
           const reviewer = roleSlotNameOf('reviewer', recorded.task.ownerSession)
           const slot = await assignStageSlot(projectPath, recorded.task, 'reviewer')
           if (slot.delivered === true && reviewer !== null) {
-            const sentTo = await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath), recorded.task.ownerSession)
+            const sentTo = await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath), recorded.task.ownerSession, projectPath)
             await recordDeliveredTo(projectPath, recorded.task.id, 'reviewer', sentTo)
           }
           return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned, queuePosition: slot.position })
@@ -4313,7 +4374,7 @@ export function createApi(ctx, options) {
           const slot = await assignStageSlot(projectPath, result.task, 'reviewer')
           result.queuePosition = slot.position
           if (slot.delivered === true && reviewer !== null) {
-          const sentTo = await notifyMember(reviewer, reviewBriefFor(result.task, projectPath), result.task.ownerSession)
+          const sentTo = await notifyMember(reviewer, reviewBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
           await recordDeliveredTo(projectPath, result.task.id, 'reviewer', sentTo)
         }
           if (provisioned !== null) result.provisioned = provisioned
@@ -4460,6 +4521,8 @@ export function createApi(ctx, options) {
           await notifyMember(
             ownerName,
             'Host mechanical verification FAILED for ' + id + ' (' + String(result.task.title) + ').\n\n' + hostCheckEvidence(hostCheck),
+            result.task.ownerSession,
+            projectPath,
           )
         }
         return ok({ task: result.task, events: result.events, hostCheck: hostCheck })
@@ -4471,7 +4534,7 @@ export function createApi(ctx, options) {
           result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
             ? null
             : result.task.assignee.name
-        if (owner !== null) await notifyMember(owner, reworkBriefFor(result.task, projectPath))
+        if (owner !== null) await notifyMember(owner, reworkBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
       }
       if (action === 'approveReview' && result.task !== null && result.task !== undefined && result.task.status === 'testing') {
         emitActivity(context, 'review-end', 'approved', id)
@@ -4499,6 +4562,7 @@ export function createApi(ctx, options) {
                 hostCheck: hostCheck,
               }),
               result.task.ownerSession,
+              projectPath,
             )
             await recordDeliveredTo(projectPath, result.task.id, 'tester', sentTo)
           }
@@ -4513,7 +4577,7 @@ export function createApi(ctx, options) {
         const reviewerSlot = roleSlotNameOf('reviewer', result.task.ownerSession)
         if (reviewerSlot !== null) {
           for (const promoted of promotedReview) {
-            const sentTo = await notifyMember(reviewerSlot, reviewBriefFor(promoted, projectPath), promoted.ownerSession)
+            const sentTo = await notifyMember(reviewerSlot, reviewBriefFor(promoted, projectPath), promoted.ownerSession, projectPath)
             await recordDeliveredTo(projectPath, promoted.id, 'reviewer', sentTo)
           }
         }
@@ -4576,6 +4640,7 @@ export function createApi(ctx, options) {
                 hostCheck: storedHostCheck,
               }),
               promoted.ownerSession,
+              projectPath,
             )
             await recordDeliveredTo(projectPath, promoted.id, 'tester', sentTo)
           }
@@ -4618,7 +4683,7 @@ export function createApi(ctx, options) {
           result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
             ? null
             : result.task.assignee.name
-        if (owner !== null) await notifyMember(owner, testFailureBriefFor(result.task, projectPath))
+        if (owner !== null) await notifyMember(owner, testFailureBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
       }
       return ok({ task: result.task, events: result.events })
     }
