@@ -231,6 +231,9 @@ export function registerTaskRoutes(ctx, options) {
         by: '@user',
         role: 'user',
         agent: null,
+        // T-117: the panel's session travels into the API, so team/lead resolution
+        // is session-scoped instead of falling back to "some Lead".
+        sessionId: sessionId,
         resolvedFrom: target.resolvedFrom,
       })
       if (result.ok === true && action !== 'openProject' && project !== null) {

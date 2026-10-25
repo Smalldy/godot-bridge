@@ -29,6 +29,7 @@ import { serialiseWorktreeCreate } from './git.mjs'
 import { createHash, randomUUID } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { boardPath, projectIdOf, readRoleConfig } from './board.mjs'
+import { createSessionLookup } from './session-lookup.mjs'
 import { writePolicyFor } from './state.mjs'
 import {
   ROLE_KINDS,
@@ -579,6 +580,14 @@ export function projectTeamState(ctx, options) {
     error: null,
   }
   if (base.available !== true) return Object.assign({}, base, { error: 'no-team-service' })
+  // T-117: without a session there is no project team to name. Never pick one of
+  // the host's (possibly long-dead) Lead sessions by guessing.
+  if (sessionId === null) {
+    return Object.assign({}, base, {
+      error: 'no-session-context',
+      hint: '这张请求没有 session 上下文；请在项目所属的会话里打开任务中心，或带上 session 再读取团队',
+    })
+  }
   let lead = null
   try {
     lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
@@ -586,7 +595,21 @@ export function projectTeamState(ctx, options) {
     return Object.assign({}, base, { error: 'team-unreadable' })
   }
   if (lead === null || lead === undefined) {
-    return Object.assign({}, base, { error: sessionId === null ? 'no-lead' : 'no-lead-for-project' })
+    return Object.assign({}, base, { error: 'no-lead-for-project' })
+  }
+  // T-117: a Lead whose session has gone quiet is not this project's live team.
+  const inventory = leadInventory(ctx)
+  const leadSession = agentSessionOf(lead)
+  const entry = inventory.leads.filter((row) => (leadSession !== null && row.session === leadSession) || (lead.id !== undefined && lead.id !== null && row.id === String(lead.id)))[0]
+  if (entry !== undefined && entry !== null && entry.stale === true) {
+    return Object.assign({}, base, {
+      error: 'no-live-lead',
+      lead: entry.name,
+      leadId: entry.id,
+      leadSession: entry.session,
+      lastActiveAt: entry.lastActiveAt,
+      hint: '该 Lead 的会话已很久未活动（最后活动 ' + String(entry.lastActiveAt) + '）；请在当前会话里重新打开项目以建立活的团队',
+    })
   }
   let members = []
   try {
@@ -652,8 +675,61 @@ export function teamBootstrapStep(team) {
 
 /** Every live Lead in this profile. Dispatch uses the COUNT to decide whether an
  * ownerless (pre-T-97) card may fall back to the single team. */
+/** T-117: a Lead whose session has not been written for this long is STALE. */
+export const LEAD_STALE_MS = Number.isFinite(Number(process.env.GODOT_BRIDGE_LEAD_STALE_MS)) && Number(process.env.GODOT_BRIDGE_LEAD_STALE_MS) > 0
+  ? Number(process.env.GODOT_BRIDGE_LEAD_STALE_MS)
+  : 6 * 60 * 60 * 1000
+
+let leadActivityLookup = null
+function sessionActivityLookup() {
+  if (leadActivityLookup === null) {
+    leadActivityLookup = createSessionLookup({
+      homeDir: typeof process.env.GODOT_BRIDGE_HOME === 'string' && process.env.GODOT_BRIDGE_HOME !== '' ? process.env.GODOT_BRIDGE_HOME : undefined,
+    })
+  }
+  return leadActivityLookup
+}
+
+/** Last activity of one Lead: an explicit row timestamp, else the DSH session mtime. */
+export function leadActivityOf(candidate, now) {
+  const at = Number.isFinite(now) ? now : Date.now()
+  const row = candidate === null || candidate === undefined ? null : candidate
+  const explicit = row === null ? null : row.lastActiveAt !== undefined ? row.lastActiveAt : row.updatedAt !== undefined ? row.updatedAt : row.lastSeenAt
+  let lastActiveAt = null
+  let source = null
+  if (typeof explicit === 'string' && explicit !== '' && Number.isFinite(Date.parse(explicit))) {
+    lastActiveAt = Date.parse(explicit)
+    source = 'agent'
+  } else if (Number.isFinite(explicit)) {
+    lastActiveAt = explicit
+    source = 'agent'
+  } else {
+    const session = agentSessionOf(candidate) || (row !== null && typeof row.id === 'string' ? row.id : null)
+    if (session !== null) {
+      let read = null
+      try {
+        read = sessionActivityLookup().lastActiveOf(session)
+      } catch (error) {
+        read = null
+      }
+      if (read !== null && read.ok === true && Number.isFinite(read.at)) {
+        lastActiveAt = read.at
+        source = 'session'
+      }
+    }
+  }
+  if (lastActiveAt === null) return { lastActiveAt: null, stale: false, staleReason: null, source: null }
+  const stale = at - lastActiveAt > LEAD_STALE_MS
+  return {
+    lastActiveAt: new Date(lastActiveAt).toISOString(),
+    stale: stale,
+    staleReason: stale ? 'last active ' + String(Math.round((at - lastActiveAt) / 3600000)) + 'h ago (limit ' + String(Math.round(LEAD_STALE_MS / 3600000)) + 'h)' : null,
+    source: source,
+  }
+}
+
 export function liveLeads(ctx) {
-  return leadInventory(ctx).leads
+  return leadInventory(ctx).leads.filter((lead) => lead.stale !== true)
 }
 
 /**
@@ -691,14 +767,28 @@ export function leadInventory(ctx) {
     } catch (error) {
       members = 0
     }
+    const activity = leadActivityOf(candidate, Date.now())
     leads.push({
       name: typeof candidate.name === 'string' && candidate.name !== '' ? candidate.name : null,
       id: candidate.id === undefined || candidate.id === null ? null : String(candidate.id),
       session: agentSessionOf(candidate),
       members: members,
+      lastActiveAt: activity.lastActiveAt,
+      stale: activity.stale,
+      staleReason: activity.staleReason,
+      activitySource: activity.source,
     })
   }
-  return { available: true, error: null, scanned: all.length, nonLeads: all.length - leads.length, leads: leads }
+  return {
+    available: true,
+    error: null,
+    scanned: all.length,
+    nonLeads: all.length - leads.length,
+    leads: leads,
+    liveLeads: leads.filter((lead) => lead.stale !== true).length,
+    staleLeads: leads.filter((lead) => lead.stale === true).length,
+    staleAfterMs: LEAD_STALE_MS,
+  }
 }
 
 /** One readable sentence about the inventory, for details and activity rows. */
@@ -706,7 +796,9 @@ export function leadInventoryText(inventory) {
   const leads = inventory === null || inventory === undefined || !Array.isArray(inventory.leads) ? [] : inventory.leads
   const scanned = inventory === null || inventory === undefined ? 0 : inventory.scanned
   if (leads.length === 0) return '宿主内没有发现任何 Lead（共扫描 ' + String(scanned) + ' 个 agent）'
-  const listed = leads.map((lead) => String(lead.name === null ? lead.id : lead.name) + '/' + String(lead.session === null ? lead.id : lead.session)).join(', ')
+  const listed = leads
+    .map((lead) => String(lead.name === null ? lead.id : lead.name) + '/' + String(lead.session === null ? lead.id : lead.session) + (lead.stale === true ? ' [stale: ' + String(lead.lastActiveAt) + ']' : ''))
+    .join(', ')
   return '宿主内发现 ' + String(leads.length) + ' 个 Lead（' + listed + '），共扫描 ' + String(scanned) + ' 个 agent'
 }
 
@@ -802,15 +894,36 @@ export function pickTarget(ctx, options) {
     return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
   }
   const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-  const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
+  const inventory = leadInventory(ctx)
+  // T-117: dispatch never lands on an expired session. The resolved Lead (which
+  // may be the single-team fallback) must itself be live, and a session that
+  // names a stale Lead is refused with the date.
+  const requested = sessionId === null ? null : inventory.leads.filter((row) => row.session === sessionId)[0]
+  const requestedStale = requested !== undefined && requested !== null && requested.stale === true
+  let lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
+  const resolvedEntry =
+    lead === null || lead === undefined
+      ? null
+      : inventory.leads.filter((row) => (agentSessionOf(lead) !== null && row.session === agentSessionOf(lead)) || (lead.id !== undefined && lead.id !== null && row.id === String(lead.id)))[0]
+  if (requestedStale || (resolvedEntry !== undefined && resolvedEntry !== null && resolvedEntry.stale === true)) {
+    const staleEntry = requestedStale ? requested : resolvedEntry
+    return {
+      ok: false,
+      code: 'no-live-lead',
+      message:
+        'session ' + String(sessionId === null ? agentSessionOf(lead) : sessionId) + ' has no LIVE Team Lead' +
+        (staleEntry !== undefined && staleEntry !== null ? ' (lead ' + String(staleEntry.name === null ? staleEntry.id : staleEntry.name) + ' was last active ' + String(staleEntry.lastActiveAt) + ')' : '') +
+        ', so this card cannot be dispatched to it',
+    }
+  }
   if (lead === null) {
     return {
       ok: false,
-      code: sessionId === null ? 'no-lead' : 'no-lead-for-project',
+      code: sessionId === null ? 'no-live-lead' : 'no-lead-for-project',
       message:
         sessionId === null
-          ? 'no live Team root, so there is nobody to hand pooled work to; tasks stay pending'
-          : 'session ' + sessionId + ' has no live Team root, so this card cannot be dispatched to another session’s team',
+          ? 'no LIVE Team Lead, so there is nobody to hand pooled work to; tasks stay pending (' + leadInventoryText(inventory) + ')'
+          : 'session ' + sessionId + ' has no Team root, so this card cannot be dispatched to another session’s team',
     }
   }
   let members = []
@@ -3853,11 +3966,13 @@ export function createDispatcher(ctx, options) {
         })
         if (picked.ok !== true) {
           const reason =
-            picked.code === 'no-lead' || picked.code === 'no-lead-for-project' || picked.code === 'no-team-service' || picked.code === 'roster-unreadable'
-              ? 'no-lead-for-project'
-              : picked.code === 'no-teammates'
-                ? 'no-roster'
-                : null
+            picked.code === 'no-live-lead'
+              ? 'no-live-lead'
+              : picked.code === 'no-lead' || picked.code === 'no-lead-for-project' || picked.code === 'no-team-service' || picked.code === 'roster-unreadable'
+                ? 'no-lead-for-project'
+                : picked.code === 'no-teammates'
+                  ? 'no-roster'
+                  : null
           if (reason !== null && ownerSession !== null) {
             // Only a session-owned card records this reason; legacy/ownerless
             // cards keep the historical "stays pending, no waiting reason".

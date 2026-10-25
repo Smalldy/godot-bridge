@@ -335,8 +335,10 @@ export function createRig(options) {
   })
   // A rig is one session on one project: the resolver's session workspace is
   // this project unless a test clears it to exercise no-project-bound.
-  // Every rig is one session; tests pass ?session=test-session on HTTP calls.
-  state.setSessionRoot('test-session', project)
+  // Every rig is one session; tests pass ?session=<rig lead id> on HTTP calls so
+  // team resolution is session-scoped like the real panel.
+  const rigLead = team !== null && team !== undefined && Array.isArray(team.roster) ? team.roster.filter((member) => member.role === 'lead')[0] : undefined
+  state.setSessionRoot(rigLead === undefined ? 'session-lead' : String(rigLead.id), project)
   // Worktrees are mandatory, so a rig that does not name a git facade gets a
   // working fake one; pass { git: null } (or a broken createFakeGit) to test
   // the refusal path.
@@ -351,7 +353,9 @@ export function createRig(options) {
     worktreeDeadlineMs: opts.worktreeDeadlineMs,
   })
   const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, now: opts.now, roles: opts.roles === undefined ? null : opts.roles })
-  const user = { projectPath: project, by: '@user', role: 'user', agent: null }
+  // T-117: the panel carries its session; a team-gate read without one is a
+  // no-session-context refusal by design, so the rig models the real panel.
+  const user = { projectPath: project, by: '@user', role: 'user', agent: null, sessionId: rigLead === undefined ? 'session-lead' : String(rigLead.id) }
   async function action(name, body) {
     return api.perform(name, body === undefined ? {} : body, user)
   }

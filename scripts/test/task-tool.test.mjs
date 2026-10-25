@@ -206,7 +206,7 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
     },
   }
   registerTaskTool(mergeRig.ctx, { api: mergeRig.api })
-  const toolCall = (args, who) => mergeRig.tool.execute(args, { agent: who })
+  const toolCall = (args, who) => mergeRig.tool.execute(args, { agent: who === undefined ? { id: 'session-lead' } : who })
   const created = await toolCall({ action: 'create', title: 'tool MR' })
   const id = created.task.id
   await mergeRig.action('start')
