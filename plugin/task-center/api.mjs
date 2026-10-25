@@ -347,8 +347,50 @@ export function createApi(ctx, options) {
     if (context === undefined || context === null) return { member: null, lead: null, leads: [], rosters: [], rosterErrors: [] }
     const { ids, names, by } = callerIdentifiers(context)
     if (ids.length === 0 && names.length === 0) return { member: null, lead: null, leads: [], rosters: [], rosterErrors: [] }
-    const { agentTeams } = servicesFor(ctx)
+    const { agents, agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return { member: null, lead: null, leads: [], rosters: [], rosterErrors: [] }
+    // T-116 (review round 2): the AGENT REGISTRY is the first authority. A
+    // subagent is a real agent even when no Lead roster lists it.
+    const registry = { tried: [], found: null, role: null, name: null, error: null }
+    if (agents !== undefined && agents !== null) {
+      const candidates = []
+      for (const id of ids) {
+        registry.tried.push('agents.get(' + id + ')')
+        try {
+          const got = typeof agents.get === 'function' ? agents.get(id) : undefined
+          if (got !== undefined && got !== null && typeof got.then !== 'function') candidates.push(got)
+        } catch (error) {
+          registry.error = String((error && error.message) || error)
+        }
+      }
+      if (candidates.length === 0) {
+        registry.tried.push('agents.list()')
+        try {
+          const listed = typeof agents.list === 'function' ? agents.list() : []
+          for (const candidate of Array.isArray(listed) ? listed : []) {
+            const idMatch = candidate !== null && typeof candidate === 'object' && candidate.id !== undefined && candidate.id !== null && ids.indexOf(String(candidate.id)) >= 0
+            const nameMatch = candidate !== null && typeof candidate === 'object' && typeof candidate.name === 'string' && names.indexOf(candidate.name) >= 0
+            if (idMatch || nameMatch) candidates.push(candidate)
+          }
+        } catch (error) {
+          registry.error = String((error && error.message) || error)
+        }
+      }
+      for (const candidate of candidates) {
+        let membership = null
+        try {
+          membership = agentTeams.tryMembership(candidate)
+        } catch (error) {
+          membership = null
+        }
+        if (membership === undefined || membership === null) continue
+        const name = typeof candidate.name === 'string' && candidate.name !== '' ? candidate.name : typeof membership.name === 'string' ? membership.name : null
+        registry.found = candidate
+        registry.role = typeof membership.role === 'string' ? membership.role : null
+        registry.name = name
+        break
+      }
+    }
     let leads = liveLeads(ctx)
     if (leads.length === 0) {
       const legacy = resolveAnyLead(ctx)
@@ -370,6 +412,27 @@ export function createApi(ctx, options) {
         continue
       }
       rosters.push({ lead: lead, members: members })
+    }
+    // Registry match first: a subagent may be absent from every Lead roster.
+    if (registry.found !== null) {
+      const row = registry.found
+      const rowId = row.id === undefined || row.id === null ? null : String(row.id)
+      const rowName = typeof row.name === 'string' && row.name !== '' ? row.name : registry.name
+      let ownerLead = null
+      for (const entry of rosters) {
+        const listed = entry.members.filter(
+          (member) =>
+            member !== null &&
+            typeof member === 'object' &&
+            ((rowId !== null && member.id !== undefined && member.id !== null && String(member.id) === rowId) || (rowName !== null && member.name === rowName)),
+        )[0]
+        if (listed !== undefined) {
+          ownerLead = entry.lead
+          break
+        }
+      }
+      const member = { id: rowId, name: rowName, role: registry.role }
+      return { member: member, lead: ownerLead, leads: leads, rosters: rosters, rosterErrors: rosterErrors, registry: registry, source: 'registry' }
     }
     // 1) exact member id / session.
     for (const entry of rosters) {
@@ -398,7 +461,7 @@ export function createApi(ctx, options) {
         if (kind !== null && wantedKinds.indexOf(kind) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters, rosterErrors: rosterErrors }
       }
     }
-    return { member: null, lead: null, leads: leads, rosters: rosters, rosterErrors: rosterErrors, by: by }
+    return { member: null, lead: null, leads: leads, rosters: rosters, rosterErrors: rosterErrors, registry: registry, by: by }
   }
 
   function callerMemberOf(context) {
@@ -483,9 +546,17 @@ export function createApi(ctx, options) {
         (delivered.name !== null && delivered.name !== undefined && names.indexOf(String(delivered.name)) >= 0))
     if (deliveredMatch) return null
     if (found.member === null || found.member === undefined) {
+      const registry = found.registry === undefined || found.registry === null ? null : found.registry
+      const registryText =
+        registry === null
+          ? 'registry: 不可用'
+          : 'registry: ' +
+            (registry.found === null ? 'not found' : 'role ' + String(registry.role) + (registry.name === null ? '' : ' name ' + String(registry.name))) +
+            '（已尝试 ' + registry.tried.join(', ') + '）'
       return failure(
         'role-required',
-        '你在 ' + rosterSummary(found.rosters, found.rosterErrors, found.leads) + ' 里没有 ' + kind + ' 角色（当前 roster 如上）；只有该角色的成员、这张卡当前阶段的交付对象或用户能记录此裁决。',
+        '你在 ' + rosterSummary(found.rosters, found.rosterErrors, found.leads) + ' 里没有 ' + kind + ' 角色；' + registryText +
+          '；已尝试 agent 注册表与 ' + String(Array.isArray(found.leads) ? found.leads.length : 0) + ' 个 Lead roster。只有该角色的成员、这张卡当前阶段的交付对象或用户能记录此裁决。',
       )
     }
     const caller = { member: found.member, kind: roleKindOf(found.member.name) === null ? callerRoleKindOf(found.member.name) : roleKindOf(found.member.name) }

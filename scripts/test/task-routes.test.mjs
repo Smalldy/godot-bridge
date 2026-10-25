@@ -6680,9 +6680,10 @@ rig.scheduler.dispose()
       history: [], createdAt: stamp, updatedAt: stamp, attempts: 1, maxAttempts: 3,
     }
   }
-  function rigFor(listMembers) {
+  function rigFor(listMembers, agentRows) {
     const fs = createFakeFs()
     const leadA = { id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }
+    const rows = agentRows === undefined ? [leadA] : agentRows
     const team = {
       tryMembership(candidate) { return candidate.id === leadA.id ? { role: 'lead', name: 'lead-a' } : { role: 'teammate', name: candidate.id } },
       listMembers(lead) { return listMembers(lead) },
@@ -6693,7 +6694,12 @@ rig.scheduler.dispose()
       fs: fs,
       sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
       get(key) {
-        if (key === 'agents') return { list: () => [leadA] }
+        if (key === 'agents') {
+          return {
+            list: () => rows,
+            get: (id) => rows.filter((row) => String(row.id) === String(id))[0],
+          }
+        }
         if (key === 'agentTeams') return team
         return undefined
       },
@@ -6728,6 +6734,38 @@ rig.scheduler.dispose()
     'T-116 an unrelated caller is refused when the roster is empty, and the empty roster is stated',
     outsiderEmpty.ok === false && outsiderEmpty.code === 'role-required' && String(outsiderEmpty.message).indexOf('roster is empty') >= 0 && String(outsiderEmpty.message).indexOf('no readable roster') < 0,
     JSON.stringify(outsiderEmpty),
+  )
+
+  // (a) a subagent found in the AGENT REGISTRY but absent from every roster.
+  const subagentRig = rigFor(
+    () => [{ id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }],
+    [{ id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }, { id: 'session-subagent', name: 'reviewer-1' }],
+  )
+  seedBoard(subagentRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [reviewCard('lead-session-a', null)] }))
+  const subagentCaller = { projectPath: PROJECT, by: '@reviewer-1', role: 'agent', agent: { id: 'session-subagent', name: 'reviewer-1' } }
+  const subagentVerdict = await subagentRig.api.perform('approveReview', { id: 'T-1', reasons: 'subagent reviewed' }, subagentCaller)
+  check(
+    'T-116 a subagent known to the agent registry can record a verdict without appearing in any roster',
+    subagentVerdict.ok === true,
+    JSON.stringify(subagentVerdict),
+  )
+
+  // (b) the agent registry cannot find the caller either: the refusal says both
+  // paths were tried, and what each returned.
+  const nobodyRig = rigFor(
+    () => [{ id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }],
+    [],
+  )
+  seedBoard(nobodyRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [reviewCard('lead-session-a', null)] }))
+  const nobody = await nobodyRig.api.perform('approveReview', { id: 'T-1', reasons: 'no' }, { projectPath: PROJECT, by: '@ghost', role: 'agent', agent: { id: 'session-ghost', name: 'ghost' } })
+  check(
+    'T-116 an unknown caller is refused with BOTH lookup paths in the message',
+    nobody.ok === false && nobody.code === 'role-required' &&
+      String(nobody.message).indexOf('agents.get(session-ghost)') >= 0 &&
+      String(nobody.message).indexOf('agents.list()') >= 0 &&
+      String(nobody.message).indexOf('not found') >= 0 &&
+      String(nobody.message).indexOf('Lead roster') >= 0,
+    JSON.stringify(nobody),
   )
 
   // (c) the roster read THROWS: the refusal names the Lead and the error.
