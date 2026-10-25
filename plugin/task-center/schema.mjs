@@ -600,6 +600,15 @@ const phaseAttempt = (value) => (Number.isFinite(value) ? Math.max(0, Math.floor
  * A review-phase record, or null. A record needs a known status; garbage is
  * dropped (null) rather than made to look like a decision.
  */
+/** The member a stage brief was delivered to: durable name + agent session id. */
+export function normaliseDeliveredTo(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const name = typeof raw.name === 'string' && raw.name !== '' ? raw.name : null
+  const id = typeof raw.id === 'string' && raw.id !== '' ? raw.id : null
+  if (name === null && id === null) return null
+  return { name: name, id: id, at: typeof raw.at === 'string' ? raw.at : null }
+}
+
 export function normaliseReview(raw) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
   if (REVIEW_STATUSES.indexOf(raw.status) < 0) return null
@@ -610,6 +619,9 @@ export function normaliseReview(raw) {
     at: typeof raw.at === 'string' ? raw.at : null,
     reasons: typeof raw.reasons === 'string' ? raw.reasons : null,
     attempt: phaseAttempt(raw.attempt),
+    // T-116: who the host actually handed this review round to. The verdict gate
+    // trusts it even when the role member has since left the Lead's roster.
+    deliveredTo: normaliseDeliveredTo(raw.deliveredTo),
   }
 }
 
@@ -624,6 +636,7 @@ export function normaliseTest(raw) {
     at: typeof raw.at === 'string' ? raw.at : null,
     evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
     attempt: phaseAttempt(raw.attempt),
+    deliveredTo: normaliseDeliveredTo(raw.deliveredTo),
     // The host's own mechanical check of this round (see runHostCheck). Optional:
     // an older board or a task without `verify` has none.
     hostCheck: normaliseHostCheck(raw.hostCheck),

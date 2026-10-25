@@ -344,39 +344,45 @@ export function createApi(ctx, options) {
    * versa, because T-88 renamed slots while member names stayed stable.
    */
   function callerLookup(context) {
-    if (context === undefined || context === null) return { member: null, lead: null, leads: [] }
+    if (context === undefined || context === null) return { member: null, lead: null, leads: [], rosters: [], rosterErrors: [] }
     const { ids, names, by } = callerIdentifiers(context)
-    if (ids.length === 0 && names.length === 0) return { member: null, lead: null, leads: [] }
+    if (ids.length === 0 && names.length === 0) return { member: null, lead: null, leads: [], rosters: [], rosterErrors: [] }
     const { agentTeams } = servicesFor(ctx)
-    if (agentTeams === undefined || agentTeams === null) return { member: null, lead: null, leads: [] }
+    if (agentTeams === undefined || agentTeams === null) return { member: null, lead: null, leads: [], rosters: [], rosterErrors: [] }
     let leads = liveLeads(ctx)
     if (leads.length === 0) {
       const legacy = resolveAnyLead(ctx)
       if (legacy !== null) leads = [legacy]
     }
     const rosters = []
+    // T-116: a roster that cannot be read is a DIAGNOSTIC, never a silent "nobody".
+    const rosterErrors = []
     for (const lead of leads) {
       let members = []
       try {
         members = agentTeams.listMembers(lead)
       } catch (error) {
+        rosterErrors.push({ lead: lead, error: String((error && error.message) || error) })
         continue
       }
-      if (!Array.isArray(members)) continue
+      if (!Array.isArray(members)) {
+        rosterErrors.push({ lead: lead, error: 'listMembers returned a non-array' })
+        continue
+      }
       rosters.push({ lead: lead, members: members })
     }
     // 1) exact member id / session.
     for (const entry of rosters) {
       for (const member of entry.members) {
         if (member === null || typeof member !== 'object' || member.id === undefined || member.id === null) continue
-        if (ids.indexOf(String(member.id)) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters }
+        if (ids.indexOf(String(member.id)) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters, rosterErrors: rosterErrors }
       }
     }
     // 2) exact member name / display label.
     for (const entry of rosters) {
       for (const member of entry.members) {
         if (member === null || typeof member !== 'object' || typeof member.name !== 'string') continue
-        if (names.indexOf(member.name) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters }
+        if (names.indexOf(member.name) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters, rosterErrors: rosterErrors }
       }
     }
     // 3) logical role alias: durable tester-1 <-> project slot tester-p<key>-1.
@@ -389,10 +395,10 @@ export function createApi(ctx, options) {
       for (const member of entry.members) {
         if (member === null || typeof member !== 'object' || typeof member.name !== 'string') continue
         const kind = callerRoleKindOf(member.name)
-        if (kind !== null && wantedKinds.indexOf(kind) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters }
+        if (kind !== null && wantedKinds.indexOf(kind) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters, rosterErrors: rosterErrors }
       }
     }
-    return { member: null, lead: null, leads: leads, rosters: rosters, by: by }
+    return { member: null, lead: null, leads: leads, rosters: rosters, rosterErrors: rosterErrors, by: by }
   }
 
   function callerMemberOf(context) {
@@ -401,18 +407,31 @@ export function createApi(ctx, options) {
   }
 
   /** Human-readable "who a Lead's roster carries", for refusal messages. */
-  function rosterSummary(rosters) {
-    if (!Array.isArray(rosters) || rosters.length === 0) return 'no readable roster'
-    return rosters
-      .map((entry) => {
-        const leadName = entry.lead === null || entry.lead === undefined ? '?' : String(entry.lead.name === undefined ? entry.lead.id : entry.lead.name)
-        const roles = entry.members
-          .filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string')
-          .map((member) => callerRoleKindOf(member.name) || member.name)
-          .filter((value, index, all) => all.indexOf(value) === index)
-        return leadName + ' -> ' + (roles.length === 0 ? '(empty)' : roles.join(', '))
-      })
-      .join('; ')
+  function rosterSummary(rosters, rosterErrors, leads) {
+    const lines = []
+    const readable = Array.isArray(rosters) ? rosters : []
+    const errors = Array.isArray(rosterErrors) ? rosterErrors : []
+    for (const entry of readable) {
+      const lead = entry.lead === null || entry.lead === undefined ? null : entry.lead
+      const leadName = lead === null ? '?' : String(lead.name === undefined || lead.name === null ? lead.id : lead.name)
+      const leadId = lead === null || lead.id === undefined || lead.id === null ? '?' : String(lead.id)
+      const roles = entry.members
+        .filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string')
+        .map((member) => callerRoleKindOf(member.name) || member.name)
+        .filter((value, index, all) => all.indexOf(value) === index)
+      lines.push(leadName + ' (' + leadId + ') -> ' + (roles.length === 0 ? '(roster is empty)' : roles.join(', ')))
+    }
+    for (const entry of errors) {
+      const lead = entry.lead === null || entry.lead === undefined ? null : entry.lead
+      const leadId = lead === null || lead.id === undefined || lead.id === null ? '?' : String(lead.id)
+      const leadName = lead === null || lead.name === undefined || lead.name === null ? leadId : String(lead.name)
+      lines.push(leadName + ' (' + leadId + ') -> roster unavailable: ' + String(entry.error))
+    }
+    if (lines.length === 0) {
+      const count = Array.isArray(leads) ? leads.length : 0
+      return count === 0 ? 'no live Lead is visible to this host' : 'no Lead roster could be read (' + String(count) + ' Lead(s) listed)'
+    }
+    return lines.join('; ')
   }
 
   /** The member NAME written alongside an event: resolved at write time from the
@@ -453,10 +472,20 @@ export function createApi(ctx, options) {
     if (roles === null) return null
     if (context !== undefined && context !== null && context.role === 'user') return null
     const found = callerLookup(context)
+    const { ids, names } = callerIdentifiers(context)
+    // T-116 (b): the member the HOST handed this stage to is authoritative even
+    // when it has since left the Lead's roster (drain/replace).
+    const stageRecord = task === null || task === undefined ? null : kind === 'reviewer' ? task.review : task.test
+    const delivered = stageRecord === null || stageRecord === undefined || stageRecord.deliveredTo === undefined || stageRecord.deliveredTo === null ? null : stageRecord.deliveredTo
+    const deliveredMatch =
+      delivered !== null &&
+      ((delivered.id !== null && delivered.id !== undefined && ids.indexOf(String(delivered.id)) >= 0) ||
+        (delivered.name !== null && delivered.name !== undefined && names.indexOf(String(delivered.name)) >= 0))
+    if (deliveredMatch) return null
     if (found.member === null || found.member === undefined) {
       return failure(
         'role-required',
-        '你在 ' + rosterSummary(found.rosters) + ' 里没有 ' + kind + ' 角色；当前 roster 角色见前。只有该角色的成员或用户能记录此裁决。',
+        '你在 ' + rosterSummary(found.rosters, found.rosterErrors, found.leads) + ' 里没有 ' + kind + ' 角色（当前 roster 如上）；只有该角色的成员、这张卡当前阶段的交付对象或用户能记录此裁决。',
       )
     }
     const caller = { member: found.member, kind: roleKindOf(found.member.name) === null ? callerRoleKindOf(found.member.name) : roleKindOf(found.member.name) }
@@ -929,6 +958,33 @@ export function createApi(ctx, options) {
     const position = state.queued.length + 1
     recordStageSlot(ctx, task.id, kind, null, position)
     return { delivered: false, position: position }
+  }
+
+  /** T-116: remember WHO a stage brief was handed to, on the card itself, so the
+   * verdict gate still recognises that member after a drain/replace removed it
+   * from the Lead's roster. */
+  async function recordDeliveredTo(projectPath, taskId, kind, member) {
+    if (member === null || member === undefined || typeof member !== 'object') return
+    const name = typeof member.name === 'string' && member.name !== '' ? member.name : null
+    const id = member.id === undefined || member.id === null ? null : String(member.id)
+    if (name === null && id === null) return
+    const key = kind === 'reviewer' ? 'review' : 'test'
+    try {
+      await state.apply(
+        projectPath,
+        (board) => {
+          const tasks = board.tasks.map((task) => {
+            if (String(task.id) !== String(taskId)) return task
+            const record = task[key]
+            if (record === null || record === undefined) return task
+            const updated = Object.assign({}, record, { deliveredTo: { name: name, id: id, at: new Date(clock()).toISOString() } })
+            return Object.assign({}, task, { [key]: updated })
+          })
+          return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+        },
+        writePolicyFor(projectPath),
+      )
+    } catch (error) {}
   }
 
   /** Drop a task's stage-queue residue when it leaves a stage (rework, verdict,
@@ -3985,7 +4041,10 @@ export function createApi(ctx, options) {
           emitActivity(context, 'review-start', 'merge request refreshed; review round ' + String(round), id)
           const reviewer = roleSlotNameOf('reviewer', recorded.task.ownerSession)
           const slot = await assignStageSlot(projectPath, recorded.task, 'reviewer')
-          if (slot.delivered === true && reviewer !== null) await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath), recorded.task.ownerSession)
+          if (slot.delivered === true && reviewer !== null) {
+            const sentTo = await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath), recorded.task.ownerSession)
+            await recordDeliveredTo(projectPath, recorded.task.id, 'reviewer', sentTo)
+          }
           return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned, queuePosition: slot.position })
         }
         return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
@@ -4067,7 +4126,10 @@ export function createApi(ctx, options) {
           const reviewer = roleSlotNameOf('reviewer', result.task.ownerSession)
           const slot = await assignStageSlot(projectPath, result.task, 'reviewer')
           result.queuePosition = slot.position
-          if (slot.delivered === true && reviewer !== null) await notifyMember(reviewer, reviewBriefFor(result.task, projectPath), result.task.ownerSession)
+          if (slot.delivered === true && reviewer !== null) {
+          const sentTo = await notifyMember(reviewer, reviewBriefFor(result.task, projectPath), result.task.ownerSession)
+          await recordDeliveredTo(projectPath, result.task.id, 'reviewer', sentTo)
+        }
           if (provisioned !== null) result.provisioned = provisioned
         }
       }
@@ -4244,7 +4306,7 @@ export function createApi(ctx, options) {
           const testSlot = await assignStageSlot(projectPath, result.task, 'tester')
           result.queuePosition = testSlot.position
           if (testSlot.delivered === true && tester !== null) {
-            await notifyMember(
+            const sentTo = await notifyMember(
               tester,
               testerBriefFor(result.task, projectPath, candidate, {
                 godot: await godotInfoFor(projectPath, candidate.path),
@@ -4252,6 +4314,7 @@ export function createApi(ctx, options) {
               }),
               result.task.ownerSession,
             )
+            await recordDeliveredTo(projectPath, result.task.id, 'tester', sentTo)
           }
         }
       }
@@ -4263,7 +4326,10 @@ export function createApi(ctx, options) {
       if (promotedReview.length > 0) {
         const reviewerSlot = roleSlotNameOf('reviewer', result.task.ownerSession)
         if (reviewerSlot !== null) {
-          for (const promoted of promotedReview) await notifyMember(reviewerSlot, reviewBriefFor(promoted, projectPath), promoted.ownerSession)
+          for (const promoted of promotedReview) {
+            const sentTo = await notifyMember(reviewerSlot, reviewBriefFor(promoted, projectPath), promoted.ownerSession)
+            await recordDeliveredTo(projectPath, promoted.id, 'reviewer', sentTo)
+          }
         }
       }
       return ok({ task: result.task, events: result.events, provisioned: result.provisioned, candidate: result.candidate, hostCheck: hostCheck })
@@ -4317,7 +4383,7 @@ export function createApi(ctx, options) {
             const fallbackPath = stored !== null && stored !== undefined && typeof stored === 'string' ? stored : null
             const candidateForBrief = storedCandidate !== null ? storedCandidate : fallbackPath === null ? null : { path: fallbackPath }
             if (candidateForBrief === null || typeof candidateForBrief.path !== 'string' || candidateForBrief.path === '') continue
-            await notifyMember(
+            const sentTo = await notifyMember(
               testerSlot,
               testerBriefFor(promoted, projectPath, candidateForBrief, {
                 godot: await godotInfoFor(projectPath, candidateForBrief.path),
@@ -4325,6 +4391,7 @@ export function createApi(ctx, options) {
               }),
               promoted.ownerSession,
             )
+            await recordDeliveredTo(projectPath, promoted.id, 'tester', sentTo)
           }
         }
       }
