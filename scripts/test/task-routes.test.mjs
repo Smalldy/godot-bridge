@@ -6666,5 +6666,122 @@ rig.scheduler.dispose()
   }
 }
 
+// ── T-116: the member the host DELIVERED the stage to can record the verdict ──
+{
+  function reviewCard(owner, deliveredTo) {
+    const stamp = new Date().toISOString()
+    return {
+      id: 'T-1', title: 'delivered verdict', status: 'reviewing', priority: 0, dependsOn: [], writeFiles: [],
+      spec: 's', acceptance: 'a', evidence: '', ownerSession: owner, base: 'base-sha', target: 'main',
+      branch: 'task/T-1-1', commit: 'head-sha',
+      review: { status: 'pending', by: null, at: stamp, reasons: null, attempt: 1, deliveredTo: deliveredTo },
+      test: null,
+      merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: null, reviewer: null, conflict: null, at: stamp },
+      history: [], createdAt: stamp, updatedAt: stamp, attempts: 1, maxAttempts: 3,
+    }
+  }
+  function rigFor(listMembers, agentRows) {
+    const fs = createFakeFs()
+    const leadA = { id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }
+    const rows = agentRows === undefined ? [leadA] : agentRows
+    const team = {
+      tryMembership(candidate) { return candidate.id === leadA.id ? { role: 'lead', name: 'lead-a' } : { role: 'teammate', name: candidate.id } },
+      listMembers(lead) { return listMembers(lead) },
+      async sendMessage() { return { ok: true } },
+      async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
+    }
+    const ctx = {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+      get(key) {
+        if (key === 'agents') {
+          return {
+            list: () => rows,
+            get: (id) => rows.filter((row) => String(row.id) === String(id))[0],
+          }
+        }
+        if (key === 'agentTeams') return team
+        return undefined
+      },
+    }
+    const state = createState(ctx)
+    const api = createApi(ctx, { state: state, git: createFakeGit(), roles: { ensure: async () => ({ ok: true, created: [], reused: [], replaced: [], waiting: [], refused: [] }), status: () => ({}) }, autoMerge: false })
+    return { fs: fs, api: api }
+  }
+
+  // (b) roster is EMPTY, but the caller is exactly the delivered member.
+  const emptyRoster = rigFor(() => [{ id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }])
+  seedBoard(emptyRoster.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [reviewCard('lead-session-a', { name: 'reviewer-9', id: 'session-reviewer-9', at: new Date().toISOString() })] }))
+  const deliveredCaller = { projectPath: PROJECT, by: '@reviewer-9', role: 'agent', agent: { id: 'session-reviewer-9', name: 'reviewer-9' } }
+  const deliveredVerdict = await emptyRoster.api.perform('approveReview', { id: 'T-1', reasons: 'looks right' }, deliveredCaller)
+  check(
+    'T-116 the delivered reviewer records a verdict even when it is absent from the roster',
+    deliveredVerdict.ok === true,
+    JSON.stringify(deliveredVerdict),
+  )
+  const deliveredDetail = await emptyRoster.api.perform('get', { id: 'T-1' }, { projectPath: PROJECT, by: '@user', role: 'user' })
+  check(
+    'T-116 the delivered-to identity is kept on the review record',
+    deliveredDetail.ok === true && deliveredDetail.task.review.deliveredTo !== null && deliveredDetail.task.review.deliveredTo.name === 'reviewer-9',
+    JSON.stringify(deliveredDetail.task && deliveredDetail.task.review),
+  )
+
+  // (b2) an unrelated caller is still refused when the roster is empty.
+  const emptyRoster2 = rigFor(() => [])
+  seedBoard(emptyRoster2.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [reviewCard('lead-session-a', { name: 'reviewer-9', id: 'session-reviewer-9', at: new Date().toISOString() })] }))
+  const outsiderEmpty = await emptyRoster2.api.perform('approveReview', { id: 'T-1', reasons: 'no' }, { projectPath: PROJECT, by: '@fixer', role: 'agent', agent: { id: 'session-fixer', name: 'fixer' } })
+  check(
+    'T-116 an unrelated caller is refused when the roster is empty, and the empty roster is stated',
+    outsiderEmpty.ok === false && outsiderEmpty.code === 'role-required' && String(outsiderEmpty.message).indexOf('roster is empty') >= 0 && String(outsiderEmpty.message).indexOf('no readable roster') < 0,
+    JSON.stringify(outsiderEmpty),
+  )
+
+  // (a) a subagent found in the AGENT REGISTRY but absent from every roster.
+  const subagentRig = rigFor(
+    () => [{ id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }],
+    [{ id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }, { id: 'session-subagent', name: 'reviewer-1' }],
+  )
+  seedBoard(subagentRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [reviewCard('lead-session-a', null)] }))
+  const subagentCaller = { projectPath: PROJECT, by: '@reviewer-1', role: 'agent', agent: { id: 'session-subagent', name: 'reviewer-1' } }
+  const subagentVerdict = await subagentRig.api.perform('approveReview', { id: 'T-1', reasons: 'subagent reviewed' }, subagentCaller)
+  check(
+    'T-116 a subagent known to the agent registry can record a verdict without appearing in any roster',
+    subagentVerdict.ok === true,
+    JSON.stringify(subagentVerdict),
+  )
+
+  // (b) the agent registry cannot find the caller either: the refusal says both
+  // paths were tried, and what each returned.
+  const nobodyRig = rigFor(
+    () => [{ id: 'lead-session-a', name: 'lead-a', role: 'lead', status: 'running' }],
+    [],
+  )
+  seedBoard(nobodyRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [reviewCard('lead-session-a', null)] }))
+  const nobody = await nobodyRig.api.perform('approveReview', { id: 'T-1', reasons: 'no' }, { projectPath: PROJECT, by: '@ghost', role: 'agent', agent: { id: 'session-ghost', name: 'ghost' } })
+  check(
+    'T-116 an unknown caller is refused with BOTH lookup paths in the message',
+    nobody.ok === false && nobody.code === 'role-required' &&
+      String(nobody.message).indexOf('agents.get(session-ghost)') >= 0 &&
+      String(nobody.message).indexOf('agents.list()') >= 0 &&
+      String(nobody.message).indexOf('not found') >= 0 &&
+      String(nobody.message).indexOf('Lead roster') >= 0,
+    JSON.stringify(nobody),
+  )
+
+  // (c) the roster read THROWS: the refusal names the Lead and the error.
+  const throwing = rigFor(() => { throw new Error('roster backend boom') })
+  seedBoard(throwing.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [reviewCard('lead-session-a', null)] }))
+  const failedRead = await throwing.api.perform('approveReview', { id: 'T-1', reasons: 'no' }, { projectPath: PROJECT, by: '@fixer', role: 'agent', agent: { id: 'session-fixer', name: 'fixer' } })
+  check(
+    'T-116 an unreadable roster reports the lead id and the exception, never a placeholder',
+    failedRead.ok === false && failedRead.code === 'role-required' &&
+      String(failedRead.message).indexOf('lead-session-a') >= 0 &&
+      String(failedRead.message).indexOf('roster unavailable') >= 0 &&
+      String(failedRead.message).indexOf('roster backend boom') >= 0 &&
+      String(failedRead.message).indexOf('no readable roster') < 0,
+    JSON.stringify(failedRead),
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
