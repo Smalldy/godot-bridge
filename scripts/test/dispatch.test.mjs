@@ -15,6 +15,7 @@ import {
   gitFor,
   isRoleName,
   pickTarget,
+  projectTeamState,
   hostCheckEvidence,
   reviewBriefFor,
   reworkBriefFor,
@@ -293,6 +294,7 @@ async function submitAndMerge(rig, id, evidence) {
   const roster = rig.team.roster
   const holderIndex = roster.findIndex((member) => member.name === holder)
   const removedHolder = holderIndex >= 0 ? roster.splice(holderIndex, 1)[0] : undefined
+  roster.push({ id: 'session-spare', name: 'fixer-spare', role: 'teammate', status: 'inactive' })
   await patchTask(rig, A, (task) => {
     task.leaseUntil = new Date(Date.now() - 1000).toISOString()
   })
@@ -444,6 +446,9 @@ async function submitAndMerge(rig, id, evidence) {
   const roster = rig.team.roster
   const holderIndex = roster.findIndex((member) => member.name === holder)
   const removedHolder = holderIndex >= 0 ? roster.splice(holderIndex, 1)[0] : undefined
+  // T-115: a Lead alone is not a qualified team; keep one spare teammate so this
+  // handover scenario still exercises adoption (not the no-team gate).
+  roster.push({ id: 'session-spare', name: 'fixer-spare', role: 'teammate', status: 'inactive' })
   await patchTask(rig, A, (task) => {
     task.commit = 'old-commit-sha'
     task.leaseUntil = new Date(Date.now() - 1000).toISOString()
@@ -655,7 +660,14 @@ async function submitAndMerge(rig, id, evidence) {
 
 // ── T-85: get exposes the interruption axes, and submitting clears the streak ─
 {
-  const team = createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }], spawnedStatus: 'running' })
+  // T-115: a Lead alone is not a qualified team; include one teammate.
+  const team = createTeam({
+    roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
+    ],
+    spawnedStatus: 'running',
+  })
   team.interrupt = async (caller, name) => {
     team.setStatus(name, 'inactive')
     return { previousStatus: 'running' }
@@ -687,7 +699,10 @@ async function submitAndMerge(rig, id, evidence) {
 // The refund must not become an infinite retry loop: a card that keeps getting
 // interrupted and has never submitted is a dispatch loop, and the reason is said.
 {
-  const team = createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }], spawnedStatus: 'running' })
+  const team = createTeam({ roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
+    ], spawnedStatus: 'running' })
   team.interrupt = async (caller, name) => {
     team.setStatus(name, 'inactive')
     return { previousStatus: 'running' }
@@ -729,7 +744,10 @@ async function submitAndMerge(rig, id, evidence) {
 // The one-live-executor rule: after a host restart the old worker is interrupted
 // and recorded as retired, so the card never runs two executors side by side.
 {
-  const team = createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }], spawnedStatus: 'running' })
+  const team = createTeam({ roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
+    ], spawnedStatus: 'running' })
   const interrupted = []
   team.interrupt = async (caller, name) => {
     interrupted.push(name)
@@ -769,7 +787,10 @@ async function submitAndMerge(rig, id, evidence) {
 // When the Team edge cannot stop the old worker, the dispatcher must NOT hand the
 // same card to a second one: the refusal is recorded and the task stays pending.
 {
-  const team = createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }], spawnedStatus: 'running' })
+  const team = createTeam({ roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
+    ], spawnedStatus: 'running' })
   team.interrupt = async () => {
     throw new Error('interrupt refused')
   }
@@ -796,7 +817,11 @@ async function submitAndMerge(rig, id, evidence) {
 // ── a spawned worker can submit under its recorded session identity ─────────
 {
   const rig = createRig({
-    teamOptions: { roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }], spawnedStatus: 'running' },
+    // T-115: the team needs a member to be qualified; keep it busy so dispatch still SPAWNS.
+    teamOptions: { roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-busy', name: 'busy', role: 'teammate', status: 'running' },
+    ], spawnedStatus: 'running' },
   })
   const A = (await createTask(rig, { title: 'spawned work' })).id
   await rig.action('start')
@@ -862,6 +887,8 @@ async function submitAndMerge(rig, id, evidence) {
   // The session creates the Team: a Lead agent exists and leads the roster.
   agentRows.push({ id: 'session-lead' })
   team.roster.push({ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' })
+  // T-115: a Lead alone is not a qualified team; add the first worker.
+  team.roster.push({ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' })
 
   const afterCreate = await rig.action('create', { title: 'card after the team' })
   check('T-110 the same create passes once the Team exists', afterCreate.ok === true && afterCreate.task.title === 'card after the team', JSON.stringify(afterCreate).slice(0, 240))
@@ -896,6 +923,8 @@ async function submitAndMerge(rig, id, evidence) {
   )
   agentRows.push({ id: 'session-lead' })
   team.roster.push({ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' })
+  // T-115: a Lead alone is not a qualified team; add the first worker.
+  team.roster.push({ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' })
   const reopened = await rig.action('openProject', { path: rig.project })
   const teamCheck = reopened.preflight === undefined ? undefined : reopened.preflight.checks.filter((check) => check.id === 'team')[0]
   check(
@@ -1977,7 +2006,16 @@ function roleTask(overrides) {
 {
   // Delivery covers BOTH handover paths: a spawned WorkAgent and a reused idle
   // teammate sent the task by sendMessage.
-  const spawnRig = createRig({ team: createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] }), teamOptions: { spawnedStatus: 'running' } })
+  const spawnRig = createRig({
+    team: createTeam({
+      roster: [
+        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+        // T-115: a qualified team needs a member; keep it busy so dispatch spawns.
+        { id: 'session-busy', name: 'busy', role: 'teammate', status: 'running' },
+      ],
+    }),
+    teamOptions: { spawnedStatus: 'running' },
+  })
   await createTask(spawnRig, { title: 'spawned task' })
   await spawnRig.action('settings', { maxConcurrent: 1, maxWorkAgents: 2 })
   await spawnRig.action('start')
@@ -3656,6 +3694,76 @@ function fakeHostSubprocess(result) {
   check(
     'T-112 global read-only lookups go through resolveAnyLead',
     fsMod.readFileSync(pathMod.join(pluginDir, 'dispatch.mjs'), 'utf8').indexOf('export function resolveAnyLead') >= 0,
+  )
+}
+
+// ── T-115: a Lead alone is not a qualified team ───────────────────────────
+{
+  const lead = { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }
+  const rig = createRig({ team: createTeam({ roster: [lead] }), agents: { list: () => [{ id: 'session-lead' }] } })
+  const leadOnly = projectTeamState(rig.ctx, {})
+  check(
+    'T-115 a Lead-only roster is not a qualified team (no-members)',
+    leadOnly.ok === false && leadOnly.available === true && leadOnly.error === 'no-members',
+    JSON.stringify(leadOnly),
+  )
+  check(
+    'T-115 lead-only reports every missing role',
+    JSON.stringify(leadOnly.missingRoles) === JSON.stringify(['worker', 'reviewer', 'tester']),
+    JSON.stringify(leadOnly.missingRoles),
+  )
+  const refused = await rig.action('create', { title: 'card without a team' })
+  check(
+    'T-115 create is gated again and carries the bootstrap next step',
+    refused.ok === false && refused.code === 'no-team-for-project' && refused.nextStep !== undefined && refused.nextStep.code === 'bootstrap-team',
+    JSON.stringify(refused).slice(0, 300),
+  )
+  const startRefused = await rig.action('start')
+  check(
+    'T-115 start is gated for the same reason',
+    startRefused.ok === false && startRefused.code === 'no-team-for-project',
+    JSON.stringify(startRefused).slice(0, 240),
+  )
+  const boardMissing = await rig.action('board')
+  check(
+    'T-115 board repeats the bootstrap instruction while the team has no members',
+    boardMissing.team !== undefined && boardMissing.team.ok === false && boardMissing.team.error === 'no-members' && boardMissing.nextStep !== undefined && boardMissing.nextStep.code === 'bootstrap-team',
+    JSON.stringify({ team: boardMissing.team, nextStep: boardMissing.nextStep }).slice(0, 300),
+  )
+
+  rig.team.roster.push({ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' })
+  const withWorker = projectTeamState(rig.ctx, {})
+  check(
+    'T-115 Lead + one teammate is a qualified team',
+    withWorker.ok === true && withWorker.error === null && withWorker.members.length === 2,
+    JSON.stringify(withWorker),
+  )
+  check(
+    'T-115 missing roles are still reported for the role manager',
+    JSON.stringify(withWorker.missingRoles) === JSON.stringify(['reviewer', 'tester']),
+    JSON.stringify(withWorker.missingRoles),
+  )
+  const created = await rig.action('create', { title: 'card with a team' })
+  check('T-115 create passes once a teammate exists', created.ok === true, JSON.stringify(created).slice(0, 240))
+  const started = await rig.action('start')
+  check('T-115 start passes once a teammate exists', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started).slice(0, 240))
+  const boardOk = await rig.action('board')
+  check(
+    'T-115 the board reports the qualified team and no next step',
+    boardOk.team !== undefined && boardOk.team.ok === true && boardOk.nextStep === null && JSON.stringify(boardOk.team.missingRoles) === JSON.stringify(['reviewer', 'tester']),
+    JSON.stringify({ team: boardOk.team, nextStep: boardOk.nextStep }).slice(0, 300),
+  )
+  rig.scheduler.dispose()
+}
+{
+  // A profile without team services keeps the old behaviour.
+  const fs = createFakeFs()
+  const ctx = { fs: fs, get() { return undefined } }
+  const none = projectTeamState(ctx, {})
+  check(
+    'T-115 without team services the state stays available:false (no gate)',
+    none.ok === false && none.available === false && none.error === 'no-team-service',
+    JSON.stringify(none),
   )
 }
 
