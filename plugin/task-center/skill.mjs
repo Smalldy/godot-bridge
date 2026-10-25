@@ -60,6 +60,29 @@ function names(list) {
  * @param options.userOnlyActions - the actions only the person at the GUI owns.
  * @returns the markdown body the skill tool hands to the model.
  */
+/** T-125: the status brief is exactly two lines. The blocker rides the task
+ * line as a suffix and is omitted when nothing is blocked. */
+export function renderStatusBrief(input) {
+  const f = input === undefined || input === null ? {} : input
+  const path = typeof f.path === 'string' && f.path !== '' ? f.path : '<path>'
+  const branch = typeof f.branch === 'string' && f.branch !== '' ? f.branch : '<branch>'
+  const head = typeof f.head === 'string' && f.head !== '' ? f.head : '<head>'
+  const count = (value) => (Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0)
+  const parts = [
+    [count(f.pending), '待办'],
+    [count(f.running), '进行'],
+    [count(f.reviewing), '待评审'],
+    [count(f.testing), '待测试'],
+    [count(f.done), '完成'],
+  ]
+    .filter((entry) => entry[0] > 0)
+    .map((entry) => String(entry[0]) + ' ' + entry[1])
+  let task = parts.length === 0 ? '无卡' : parts.join(' · ')
+  const blocked = typeof f.blocked === 'string' && f.blocked.trim() !== '' ? f.blocked.trim() : null
+  if (blocked !== null) task += ' · 卡住：' + blocked
+  return '项目  ' + path + ' · ' + branch + ' @ ' + head + '\n任务  ' + task
+}
+
 export function buildSkillContent(options) {
   const opts = options === undefined || options === null ? {} : options
   const actions = listOf(opts.actions)
@@ -102,15 +125,11 @@ export function buildSkillContent(options) {
     '1. 解析项目根：会话工作区向上找最近的 git 根，且含 `.agents/` 或 `project.godot`；两者指向不同层时**停下来问**，不要凭空建板。',
     '2. `openProject` 指到该路径（幂等，重复执行只刷新）。',
     '3. `board` 后按固定模板输出简报。',
-    '4. **不要**自动 `start`、不要自动建卡、不要改配置。',
+    '4. **不要**自动 `start`、建卡或改配置。',
     '',
     '```',
-    '项目：<path> · 目标：<branch> @ <head>',
-    '身份：你是 Lead（<name>）',
-    '派发：running / paused（paused 说明需要用户在面板批准）',
-    '任务：完成 n / 总 n ｜ 就绪 n · 实现中 n · 评审中 n · 测试中 n · 阻塞 n',
-    '在途：<id> <标题> · <阶段>',
-    '下一步：<一句>',
+    '项目  <path> · <branch> @ <head>',
+    '任务  3 待办 · 2 待评审 · 1 完成[ · 卡住：<原因>]（只列非零，全 0 写“无卡”）',
     '```',
     '',
     '## 何时用 / 不用',

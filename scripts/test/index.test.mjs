@@ -9,7 +9,7 @@ const { apply, recordActivationError, reportLoadFailure } = await import('../../
 const { readFileSync, rmSync } = await import('node:fs')
 const { join } = await import('node:path')
 const { createFakeFs, createStrictCtx, PROJECT } = await import('./support/fixtures.mjs')
-const { SKILL_NAME, buildSkillContent } = await import('../../plugin/task-center/skill.mjs')
+const { SKILL_NAME, buildSkillContent, renderStatusBrief } = await import('../../plugin/task-center/skill.mjs')
 const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
 
 /**
@@ -199,6 +199,48 @@ check(
   {
     const bytes = Buffer.byteLength(generated, 'utf8')
     check('the body stays inside its scannable size budget', bytes >= SKILL_BODY_MIN_BYTES && bytes <= SKILL_BODY_MAX_BYTES, String(bytes) + ' bytes')
+  }
+  {
+    // T-125: exactly two lines - project and tasks; the blocker rides the task
+    // line and is omitted when nothing is blocked.
+    const blockStart = generated.indexOf('项目  ')
+    const block = blockStart < 0 ? '' : generated.slice(blockStart, generated.indexOf('```', blockStart))
+    const lines = block.split('\n').map((line) => line.trim()).filter((line) => line !== '')
+    check('T-125 the brief template is exactly two lines', lines.length === 2 && lines[0].indexOf('项目') === 0 && lines[1].indexOf('任务') === 0, JSON.stringify(lines))
+    check('T-125 the brief has no identity, team, dispatch, in-flight or next-step line', block.indexOf('身份') < 0 && block.indexOf('你是') < 0 && block.indexOf('团队') < 0 && block.indexOf('派发') < 0 && block.indexOf('在途') < 0 && block.indexOf('下一步') < 0, block)
+    check(
+      'T-125 the brief never leaks internal field names',
+      !/maxConcurrent|allowSpawn|maxAttempts|liveExecutors|\bpending\b|waitingReason|ownerSession/.test(block),
+      block,
+    )
+    const clean = renderStatusBrief({ path: 'J:\\workspace\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 3, running: 0, reviewing: 0, testing: 0, done: 0 })
+    const cleanLines = clean.split('\n')
+    check(
+      'T-125 the rendered brief is exactly two lines and has no blocker suffix when nothing is blocked',
+      cleanLines.length === 2 && cleanLines[0] === '项目  J:\\workspace\\component_tool · master @ b6d4e5d' && cleanLines[1] === '任务  3 待办' && clean.indexOf('卡住') < 0,
+      clean,
+    )
+    const blocked = renderStatusBrief({ path: 'J:\\workspace\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 3, running: 0, reviewing: 0, testing: 0, done: 0, blocked: '工作区有 53 个未跟踪文件' })
+    const blockedLines = blocked.split('\n')
+    check(
+      'T-125 the rendered brief folds the blocker into the task line as a suffix',
+      blockedLines.length === 2 && blockedLines[1] === '任务  3 待办 · 卡住：工作区有 53 个未跟踪文件',
+      blocked,
+    )
+    check('T-125 the rendered brief uses Chinese counters only', blocked.indexOf('待办') >= 0 && blocked.indexOf('卡住：') >= 0 && /[0-9]+ (待办|进行|待评审|待测试|完成)/.test(blocked), blocked)
+    const active = renderStatusBrief({ path: 'J:\\ws\\component_tool', branch: 'master', head: 'b6d4e5d', pending: 0, running: 0, reviewing: 3, testing: 1, done: 2 })
+    const activeLines = active.split('\n')
+    check(
+      'T-125 the task line reports review and test counts (active board is not misreported)',
+      activeLines.length === 2 && activeLines[1] === '任务  3 待评审 · 1 待测试 · 2 完成',
+      active,
+    )
+    const ordered = renderStatusBrief({ path: 'p', branch: 'b', head: 'h', reviewing: 2, done: 1 })
+    check('T-125 only non-zero categories appear, in fixed order', ordered.split('\n')[1] === '任务  2 待评审 · 1 完成', ordered)
+    const testingOnly = renderStatusBrief({ path: 'p', branch: 'b', head: 'h', testing: 1 })
+    check('T-125 a testing-only board shows just 待测试', testingOnly.split('\n')[1] === '任务  1 待测试', testingOnly)
+    const empty = renderStatusBrief({ path: 'p', branch: 'b', head: 'h' })
+    check('T-125 an empty board says 无卡', empty.split('\n')[1] === '任务  无卡', empty)
   }
   check(
     'the body names every agent action',
