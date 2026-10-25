@@ -1794,6 +1794,37 @@ export function createApi(ctx, options) {
 
   /** The Team inventory for the snapshot (T-109), plus members with their slot
    * project and whether that project matches the Lead's session (T-118). */
+  /** T-122: every host agent with its session, display-only; never mixed into
+   * the session-scoped member table. */
+  function agentInventoryRows(sessionId) {
+    const { agents, agentTeams } = servicesFor(ctx)
+    if (agents === undefined || agents === null) return []
+    let all = []
+    try {
+      all = agents.list()
+    } catch (error) {
+      return []
+    }
+    return (Array.isArray(all) ? all : []).map((candidate) => {
+      let membership = null
+      try {
+        membership = agentTeams === undefined || agentTeams === null ? null : agentTeams.tryMembership(candidate)
+      } catch (error) {
+        membership = null
+      }
+      const session = candidate !== null && candidate !== undefined && candidate.id !== undefined && candidate.id !== null ? String(candidate.id) : null
+      const remembered = session === null ? null : memberProjectOf(ctx, session)
+      return {
+        id: session,
+        name: candidate !== null && candidate !== undefined && typeof candidate.name === 'string' && candidate.name !== '' ? candidate.name : null,
+        role: membership !== null && membership !== undefined && typeof membership.role === 'string' ? membership.role : null,
+        session: session,
+        project: remembered === null ? null : remembered.key,
+        matchesSession: sessionId !== null && sessionId !== undefined && session === sessionId,
+      }
+    })
+  }
+
   function teamsSnapshot() {
     try {
       const inventory = leadInventory(ctx)
@@ -2492,7 +2523,7 @@ export function createApi(ctx, options) {
     reconcileLocks(board)
     const archive = await archiveInfo(projectPath, now)
     const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
-    const workers = workerPool(ctx, board, { roleConfig: roleRead.config })
+    const workers = workerPool(ctx, board, { roleConfig: roleRead.config, sessionId: typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null })
     let worktrees = null
     if (worktreeCache.project === projectPath && worktreeCache.value !== null && now - worktreeCache.at < 5000) {
       worktrees = worktreeCache.value
@@ -2610,6 +2641,9 @@ export function createApi(ctx, options) {
         members: workers.members,
         kinds: workers.kinds,
         roles: workers.roles,
+        // T-122: the whole-host inventory is a separate field; the member table
+        // above is only this session's team.
+        inventory: agentInventoryRows(typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null),
       },
       worktrees: worktrees,
       activity: activitySnapshot(),

@@ -887,9 +887,9 @@ findButton(noPoolTree, '刷新').props.onClick()
 await flush()
 const noTeamTree = withHooks(panel, { initialView: 'workers' })
 const noTeamText = textOf(noTeamTree)
-check('a pool without a lead explains the empty state', noTeamText.indexOf('没有可用的 Team Lead') >= 0, noTeamText)
+check('a pool without a lead explains the empty state', noTeamText.indexOf('本会话没有团队') >= 0 && noTeamText.indexOf('bootstrapTeam') >= 0, noTeamText)
 check('a known pool error code is explained, not dumped', noTeamText.indexOf('执行者池不可读: 没有活着的 Team Lead (no-lead)') >= 0, noTeamText)
-check('an empty team says it has no WorkAgent', noTeamText.indexOf('Team 里还没有 WorkAgent') >= 0, noTeamText)
+check('an empty team says it has no WorkAgent', noTeamText.indexOf('bootstrapTeam') >= 0 && noTeamText.indexOf('还没有成员') >= 0, noTeamText)
 
 HOST.workers = { lead: null, members: [], busy: 0, idle: 0, provisioning: 0, failed: 0, cap: 0, error: 'agent-team services unavailable' }
 findButton(noTeamTree, '刷新').props.onClick()

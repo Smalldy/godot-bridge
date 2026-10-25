@@ -6982,6 +6982,71 @@ rig.scheduler.dispose()
     )
     rig.scheduler.dispose()
   }
+// ── T-122: the member table is the SESSION'S team, the inventory is global ──
+{
+  const leadA = { id: 'lead-a', name: 'lead-a', role: 'lead', status: 'running' }
+  const leadB = { id: 'lead-b', name: 'lead-b', role: 'lead', status: 'running' }
+  const rosterA = [leadA, { id: 'session-reviewer-a', name: 'reviewer-1', role: 'teammate', status: 'inactive' }]
+  const rosterB = [leadB, { id: 'session-work-b', name: 'work-b', role: 'teammate', status: 'inactive' }]
+  const team = {
+    tryMembership(candidate) {
+      return candidate.id === 'lead-a' || candidate.id === 'lead-b' ? { role: 'lead', name: candidate.name } : { role: 'teammate', name: candidate.name }
+    },
+    listMembers(lead) {
+      return (lead.id === 'lead-a' ? rosterA : lead.id === 'lead-b' ? rosterB : []).map((member) => Object.assign({}, member))
+    },
+    async sendMessage() { return { ok: true } },
+    async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
+  }
+  const rig = createRig({ allowSpawn: false, team: team, agents: { list: () => [leadA, leadB] } })
+  rig.state.setSessionRoot('lead-b', PROJECT)
+  const stamp = new Date().toISOString()
+  function card(id, status, deliveredTo) {
+    return {
+      id: id, title: 'card ' + id, status: status, priority: 0, dependsOn: [], writeFiles: [], spec: 's', acceptance: 'a', evidence: '',
+      ownerSession: 'lead-a', base: 'base-sha', target: 'main', branch: 'task/' + id + '-1', commit: 'head-sha',
+      review: status === 'reviewing' ? { status: 'pending', by: null, at: stamp, reasons: null, attempt: 1, deliveredTo: deliveredTo } : { status: 'approved', by: 'reviewer-1', at: stamp, reasons: null, attempt: 1 },
+      test: status === 'testing' ? { status: 'pending', by: null, at: stamp, evidence: null, attempt: 1, deliveredTo: { name: 'tester-1', id: 'session-tester-a', at: stamp } } : null,
+      merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: null, reviewer: null, conflict: null, at: stamp },
+      history: [], createdAt: stamp, updatedAt: stamp, attempts: 1, maxAttempts: 3,
+    }
+  }
+  seedBoard(rig.fs, PROJECT, JSON.stringify({
+    version: 2, seq: 2, dispatch: { state: 'paused' },
+    tasks: [
+      card('T-1', 'reviewing', { name: 'reviewer-1', id: 'session-reviewer-a', at: stamp }),
+      card('T-2', 'reviewing', { name: 'reviewer-1', id: 'session-reviewer-a', at: stamp }),
+      card('T-3', 'reviewing', { name: 'reviewer-1', id: 'session-reviewer-a', at: stamp }),
+      card('T-4', 'testing', null),
+    ],
+  }))
+  const snapA = await rig.api.snapshot(PROJECT, { sessionId: 'lead-a' })
+  const snapB = await rig.api.snapshot(PROJECT, { sessionId: 'lead-b' })
+  const namesA = snapA.agents.members.map((member) => member.name)
+  const namesB = snapB.agents.members.map((member) => member.name)
+  check(
+    'T-122 each session sees only its own team members',
+    namesA.indexOf('reviewer-1') >= 0 && namesA.indexOf('work-b') < 0 && namesB.indexOf('work-b') >= 0 && namesB.indexOf('reviewer-1') < 0,
+    JSON.stringify({ a: namesA, b: namesB }),
+  )
+  check(
+    'T-122 the global inventory stays separate from the member table',
+    Array.isArray(snapA.agents.inventory) && snapA.agents.inventory.length === 2 && snapA.agents.inventory.filter((row) => row.matchesSession).length === 1,
+    JSON.stringify(snapA.agents.inventory),
+  )
+  const reviewer = snapA.agents.members.filter((member) => member.name === 'reviewer-1')[0]
+  check(
+    'T-122 a member queue counts the cards delivered to that member',
+    reviewer !== undefined && reviewer.queue === 3 && reviewer.queuedTasks.join(',') === 'T-1,T-2,T-3',
+    JSON.stringify(reviewer),
+  )
+  const noTeam = await rig.api.snapshot(PROJECT, { sessionId: 'lead-c' })
+  check(
+    'T-122 a session without a team gets an empty member table and a readable team error',
+    noTeam.agents.members.length === 0 && noTeam.team.ok === false && noTeam.team.error === 'no-lead-for-project',
+    JSON.stringify({ members: noTeam.agents.members.length, team: noTeam.team.error }),
+  )
+  rig.scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

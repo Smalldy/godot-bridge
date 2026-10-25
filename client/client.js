@@ -250,8 +250,9 @@ window.__ModuleLoader__.load({
 				workerStatus: '状态',
 				workerCurrent: '当前任务',
 				workersHint: '执行者是当前 Team 的 WorkAgent：优先复用空闲成员，没有空闲时才新建；上限由派发设置决定（GUI 下默认是并发 + 1）。',
-				workersNoTeam: '没有可用的 Team Lead：任务会保持等待，直到有 Team 会话存在。',
-				workersEmpty: 'Team 里还没有 WorkAgent。',
+				workersNoTeam: '本会话没有团队：调用 task_center { action: "bootstrapTeam" } 建队后再派发。',
+			workerQueued: '排队 {n}',
+				workersEmpty: '本会话的 Team 里还没有成员 → 调用 bootstrapTeam 建最小团队。',
 				workersUnavailable: '宿主没有提供执行者池信息。',
 				workersError: '执行者池不可读',
 				workersErrNoService: '当前 profile 没有 Agent Teams 服务',
@@ -770,8 +771,9 @@ window.__ModuleLoader__.load({
 				workerStatus: 'Status',
 				workerCurrent: 'Current task',
 				workersHint: 'Workers are the WorkAgents of the current Team: idle members are reused first and a new one is spawned only when none is idle; the cap comes from the dispatch settings (concurrency + 1 by default in the GUI).',
-				workersNoTeam: 'No live Team Lead: tasks stay pending until a Team session exists.',
-				workersEmpty: 'The team has no WorkAgent yet.',
+				workersNoTeam: 'This session has no team: call task_center { action: "bootstrapTeam" } before dispatching.',
+			workerQueued: 'queued {n}',
+				workersEmpty: 'This session’s team has no members yet → call bootstrapTeam to create the minimum roster.',
 				workersUnavailable: 'The host did not report a worker pool.',
 				workersError: 'Worker pool unreadable',
 				workersErrNoService: 'this profile has no Agent Teams services',
@@ -2998,7 +3000,10 @@ window.__ModuleLoader__.load({
 								let task = '—'
 								if (current !== null && typeof current.id === 'string' && current.id !== '') {
 									task = typeof current.title === 'string' && current.title !== '' ? current.id + ' · ' + current.title : current.id
-								} else if (status === 'inactive') {
+								}
+								const queued = Number.isFinite(member.queue) && member.queue > 0 ? ' · ' + t('workerQueued').replace('{n}', String(member.queue)) : ''
+								if (queued !== '') task = task === '—' ? queued.replace(/^ · /, '') : task + queued
+								if (current === null && status === 'inactive') {
 									task = t('workersIdle')
 								}
 								return h(
