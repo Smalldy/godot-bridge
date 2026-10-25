@@ -15,6 +15,8 @@ import {
   gitFor,
   isRoleName,
   pickTarget,
+  liveLeads,
+  leadInventory,
   projectTeamState,
   hostCheckEvidence,
   reviewBriefFor,
@@ -860,7 +862,7 @@ async function submitAndMerge(rig, id, evidence) {
   check('T-110 create is refused while the project has no Team', created.ok === false && created.code === 'no-team-for-project', JSON.stringify(created).slice(0, 240))
   check(
     'T-110 and the refusal says which team it looked for',
-    created.team !== undefined && created.team.ok === false && created.team.available === true && created.team.source === 'none' && created.team.error === 'no-lead',
+    created.team !== undefined && created.team.ok === false && created.team.available === true && created.team.source === 'none' && created.team.error === 'no-lead' || created.team.error === 'no-lead-for-project',
     JSON.stringify(created.team),
   )
   check(
@@ -995,7 +997,7 @@ function createWorktreeRig(options) {
     },
   }
   const state = createState(ctx)
-  state.setSessionRoot('test-session', PROJECT)
+  state.setSessionRoot('session-lead', PROJECT)
   const git = opts.git === undefined ? gitFor(ctx) : opts.git
   const scheduler = createDispatcher(ctx, {
     state: state,
@@ -1004,7 +1006,7 @@ function createWorktreeRig(options) {
     git: git,
   })
   const api = createApi(ctx, { state: state, scheduler: scheduler, git: git })
-  const user = { projectPath: PROJECT, by: '@user', role: 'user', agent: null }
+  const user = { projectPath: PROJECT, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' }
   return {
     project: PROJECT,
     fs: fs,
@@ -3701,7 +3703,7 @@ function fakeHostSubprocess(result) {
 {
   const lead = { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }
   const rig = createRig({ team: createTeam({ roster: [lead] }), agents: { list: () => [{ id: 'session-lead' }] } })
-  const leadOnly = projectTeamState(rig.ctx, {})
+  const leadOnly = projectTeamState(rig.ctx, { sessionId: 'session-lead' })
   check(
     'T-115 a Lead-only roster is not a qualified team (no-members)',
     leadOnly.ok === false && leadOnly.available === true && leadOnly.error === 'no-members',
@@ -3732,7 +3734,7 @@ function fakeHostSubprocess(result) {
   )
 
   rig.team.roster.push({ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' })
-  const withWorker = projectTeamState(rig.ctx, {})
+  const withWorker = projectTeamState(rig.ctx, { sessionId: 'session-lead' })
   check(
     'T-115 Lead + one teammate is a qualified team',
     withWorker.ok === true && withWorker.error === null && withWorker.members.length === 2,
@@ -3891,6 +3893,100 @@ function fakeHostSubprocess(result) {
       JSON.stringify({ pruned: pruned, removals: team.removals, roster: team.roster.map((entry) => entry.name) }),
     )
   }
+}
+
+// ── T-117: expired Lead sessions are not a project team ─────────────────────
+{
+  const now = Date.now()
+  const activeLead = { id: 'lead-active', name: 'lead-active', role: 'lead', status: 'running', lastActiveAt: new Date(now - 60 * 60 * 1000).toISOString() }
+  const staleLead = { id: 'lead-stale', name: 'lead-stale', role: 'lead', status: 'inactive', lastActiveAt: new Date(now - 13 * 24 * 60 * 60 * 1000).toISOString() }
+  const rosters = {
+    'lead-active': [activeLead, { id: 'session-fixer-a', name: 'fixer-a', role: 'teammate', status: 'inactive' }],
+    'lead-stale': [staleLead, { id: 'session-fixer-s', name: 'fixer-s', role: 'teammate', status: 'inactive' }],
+  }
+  const everyone = [activeLead, staleLead, rosters['lead-active'][1], rosters['lead-stale'][1]]
+  const team = {
+    tryMembership(candidate) {
+      const member = everyone.filter((entry) => entry.id === candidate.id)[0]
+      return member === undefined ? undefined : { role: member.role, name: member.name }
+    },
+    listMembers(lead) {
+      return (rosters[lead.id] === undefined ? [] : rosters[lead.id]).map((entry) => Object.assign({}, entry))
+    },
+    async sendMessage() { return { ok: true } },
+    async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
+  }
+  function ctxFor(fs) {
+    return {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+      get(key) {
+        if (key === 'agents') return { list: () => everyone.filter((entry) => entry.role === 'lead') }
+        if (key === 'agentTeams') return team
+        return undefined
+      },
+    }
+  }
+  const fs = createFakeFs()
+  const ctx = ctxFor(fs)
+  const noSession = projectTeamState(ctx, {})
+  check(
+    'T-117 without a session the team is not guessed (no-session-context)',
+    noSession.ok === false && noSession.available === true && noSession.error === 'no-session-context' && noSession.leadId === null,
+    JSON.stringify(noSession),
+  )
+  const staleTeam = projectTeamState(ctx, { sessionId: 'lead-stale' })
+  check(
+    'T-117 a stale Lead session is refused as no-live-lead with its last activity',
+    staleTeam.ok === false && staleTeam.error === 'no-live-lead' && typeof staleTeam.lastActiveAt === 'string',
+    JSON.stringify(staleTeam),
+  )
+  const activeTeam = projectTeamState(ctx, { sessionId: 'lead-active' })
+  check(
+    'T-117 a live Lead session still resolves its team',
+    activeTeam.ok === true && activeTeam.leadId === 'lead-active',
+    JSON.stringify(activeTeam),
+  )
+  const inventory = leadInventory(ctx)
+  const activeRow = inventory.leads.filter((row) => row.id === 'lead-active')[0]
+  const staleRow = inventory.leads.filter((row) => row.id === 'lead-stale')[0]
+  check(
+    'T-117 the team inventory exposes lastActiveAt and stale for every Lead',
+    activeRow !== undefined && activeRow.stale === false && typeof activeRow.lastActiveAt === 'string' && staleRow !== undefined && staleRow.stale === true && typeof staleRow.lastActiveAt === 'string',
+    JSON.stringify(inventory.leads),
+  )
+  check(
+    'T-117 liveLeads excludes the stale Lead',
+    liveLeads(ctx).map((lead) => lead.id).join(',') === 'lead-active',
+    JSON.stringify(liveLeads(ctx).map((lead) => lead.id)),
+  )
+  const stalePick = pickTarget(ctx, { sessionId: 'lead-stale' })
+  check(
+    'T-117 dispatch refuses a stale Lead session with no-live-lead',
+    stalePick.ok === false && stalePick.code === 'no-live-lead' && String(stalePick.message).indexOf(String(staleRow.lastActiveAt)) >= 0,
+    JSON.stringify(stalePick),
+  )
+  const activePick = pickTarget(ctx, { sessionId: 'lead-active' })
+  check('T-117 dispatch still picks a live Lead', activePick.ok === true && activePick.lead.id === 'lead-active', JSON.stringify(activePick.ok))
+
+  // A pending card owned by the stale session is not dispatched; the reason is recorded.
+  const nowIso = new Date().toISOString()
+  seedBoard(fs, PROJECT, JSON.stringify({
+    version: 2,
+    seq: 2,
+    dispatch: { state: 'running', allowSpawn: true, maxConcurrent: 2 },
+    tasks: [{ id: 'T-1', title: 'stale owner card', status: 'pending', priority: 0, dependsOn: [], writeFiles: [], spec: 's', acceptance: 'a', evidence: '', ownerSession: 'lead-stale', history: [], createdAt: nowIso, updatedAt: nowIso, attempts: 0, maxAttempts: 3 }],
+  }))
+  const state = createState(ctx)
+  const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: createFakeGit(), sessionId: 'lead-stale' })
+  await scheduler.settle(PROJECT)
+  const card = JSON.parse(fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text).tasks[0]
+  check(
+    'T-117 a card owned by a stale session is not dispatched and records no-live-lead',
+    card.status === 'pending' && card.assignee === null && card.waitingReason === 'no-live-lead',
+    JSON.stringify({ status: card.status, assignee: card.assignee, waiting: card.waitingReason }),
+  )
+  scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

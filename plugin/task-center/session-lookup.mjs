@@ -116,6 +116,13 @@ export function createSessionLookup(options) {
       return false
     }
   }
+  const stat = typeof opts.stat === 'function' ? opts.stat : (path) => {
+    try {
+      return statSync(path)
+    } catch (error) {
+      return null
+    }
+  }
   const ttlMs = Number.isFinite(opts.ttlMs) ? Math.max(0, opts.ttlMs) : SESSION_LOOKUP_TTL_MS
   const now = typeof opts.now === 'function' ? opts.now : Date.now
   const decoded = new Map()
@@ -177,5 +184,36 @@ export function createSessionLookup(options) {
     return result
   }
 
-  return { sessionsDir: sessionsDir, lookup: lookup, decode: decode, workspaceDirs: workspaceDirs, clear: function () { answers.clear(); listing = { at: 0, dirs: null } } }
+  /**
+   * T-117: how long ago this session was last written to. The DSH session file
+   * (or directory) mtime is the activity signal; no timestamp is ever guessed.
+   */
+  function lastActiveOf(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId.trim() === '' || sessionId.indexOf('/') >= 0 || sessionId.indexOf('\\') >= 0) {
+      return { ok: false, code: 'bad-session-id', message: 'a session id is a non-empty name without path separators' }
+    }
+    const id = sessionId.trim()
+    let newest = null
+    let newestPath = null
+    for (const dir of workspaceDirs()) {
+      const root = join(sessionsDir, dir)
+      for (const variant of ['session-' + id, id]) {
+        const path = join(root, variant)
+        const info = stat(path)
+        if (info === null || info === undefined) continue
+        const at = Number.isFinite(info.mtimeMs) ? info.mtimeMs : Date.parse(info.mtime)
+        if (!Number.isFinite(at)) continue
+        if (newest === null || at > newest) {
+          newest = at
+          newestPath = path
+        }
+      }
+    }
+    if (newest === null) {
+      return { ok: false, code: 'no-session', message: 'no DSH session directory holds session "' + id + '" under ' + sessionsDir }
+    }
+    return { ok: true, at: newest, path: newestPath }
+  }
+
+  return { sessionsDir: sessionsDir, lookup: lookup, decode: decode, workspaceDirs: workspaceDirs, lastActiveOf: lastActiveOf, clear: function () { answers.clear(); listing = { at: 0, dirs: null } } }
 }

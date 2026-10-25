@@ -73,7 +73,7 @@ function response() {
   }
 }
 
-const TEST_SESSION = 'test-session'
+const TEST_SESSION = 'session-lead'
 
 async function call(surface, url, options) {
   const res = response()
@@ -5909,7 +5909,7 @@ rig.scheduler.dispose()
     const opts = options === undefined ? {} : options
     const rig = createRig({ allowSpawn: false, sessionLookup: opts.sessionLookup })
     // Clear the rig's own session binding: this is the "fresh host, no pin" case.
-    rig.state.setSessionRoot('test-session', null)
+    rig.state.setSessionRoot(TEST_SESSION, null)
     if (opts.registry !== undefined) rig.state.memory.registry = opts.registry
     return rig
   }
@@ -5923,7 +5923,7 @@ rig.scheduler.dispose()
       await surface.byPath.get(url.split('?')[0]).handler(request(url), res)
       return res.json()
     }
-    const started = await http(STATE_PATH + '?session=test-session')
+    const started = await http(STATE_PATH + '?session=' + TEST_SESSION + '')
     check(
       'T-103 startup activates the recorded last project and names the source',
       started.ok === true && started.projectRoot === PROJECT && started.resolvedFrom === 'last-active',
@@ -5947,7 +5947,7 @@ rig.scheduler.dispose()
       await surface.byPath.get(url.split('?')[0]).handler(request(url), res)
       return res.json()
     }
-    const started = await http(STATE_PATH + '?session=test-session')
+    const started = await http(STATE_PATH + '?session=' + TEST_SESSION + '')
     check(
       'T-103 with no record the panel is told nothing is active (no pick-a-project fallback)',
       started.ok === false && started.code === 'no-project-bound' && rig.state.lastActiveProject() === null,
@@ -6030,7 +6030,7 @@ rig.scheduler.dispose()
     await surface.byPath.get(url.split('?')[0]).handler(request(url), res)
     return res.json()
   }
-  const state = await http(STATE_PATH + '?session=test-session')
+  const state = await http(STATE_PATH + '?session=' + TEST_SESSION + '')
   check(
     'T-109 /state exposes the Team inventory: scanned agents, non-leads, Leads',
     state.ok === true &&
@@ -6252,7 +6252,7 @@ rig.scheduler.dispose()
     await surface.byPath.get(url.split('?')[0]).handler(request(url), res)
     return res.json()
   }
-  const state = await http(STATE_PATH + '?session=test-session')
+  const state = await http(STATE_PATH + '?session=session-lead')
   const members = state.teams !== undefined && Array.isArray(state.teams.members) ? state.teams.members : []
   const ownMember = members.filter((entry) => entry.name === roleSlotName('reviewer', 1, PROJECT))[0]
   const foreignMember = members.filter((entry) => entry.name === roleSlotName('reviewer', 1, foreignProject))[0]
