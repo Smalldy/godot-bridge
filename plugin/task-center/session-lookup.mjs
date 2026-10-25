@@ -193,26 +193,56 @@ export function createSessionLookup(options) {
       return { ok: false, code: 'bad-session-id', message: 'a session id is a non-empty name without path separators' }
     }
     const id = sessionId.trim()
-    let newest = null
-    let newestPath = null
-    for (const dir of workspaceDirs()) {
-      const root = join(sessionsDir, dir)
-      for (const variant of ['session-' + id, id]) {
-        const path = join(root, variant)
-        const info = stat(path)
-        if (info === null || info === undefined) continue
-        const at = Number.isFinite(info.mtimeMs) ? info.mtimeMs : Date.parse(info.mtime)
+    // A session may be stored as a FILE (session.v4.jsonl.zstd) or as a
+    // DIRECTORY holding it. A directory's mtime only moves when entries are
+    // added/removed, so a busy session would look frozen; the real activity is
+    // the newest mtime of the files INSIDE it.
+    const activityOfPath = (path) => {
+      const info = stat(path)
+      if (info === null || info === undefined) return null
+      const ownAt = Number.isFinite(info.mtimeMs) ? info.mtimeMs : Date.parse(info.mtime)
+      const isDirectory = typeof info.isDirectory === 'function' ? info.isDirectory() : false
+      if (!isDirectory) {
+        return Number.isFinite(ownAt) ? { at: ownAt, path: path, source: 'file' } : null
+      }
+      let newest = null
+      let newestPath = null
+      const names = readdir(path)
+      for (const name of Array.isArray(names) ? names : []) {
+        const childPath = join(path, name)
+        const child = stat(childPath)
+        if (child === null || child === undefined) continue
+        if (typeof child.isDirectory === 'function' && child.isDirectory()) continue
+        const at = Number.isFinite(child.mtimeMs) ? child.mtimeMs : Date.parse(child.mtime)
         if (!Number.isFinite(at)) continue
         if (newest === null || at > newest) {
           newest = at
-          newestPath = path
+          newestPath = childPath
+        }
+      }
+      if (newest !== null) return { at: newest, path: newestPath, source: 'file' }
+      if (!Number.isFinite(ownAt)) return null
+      return { at: ownAt, path: path, source: 'dir-fallback' }
+    }
+    let newest = null
+    let newestPath = null
+    let source = null
+    for (const dir of workspaceDirs()) {
+      const root = join(sessionsDir, dir)
+      for (const variant of ['session-' + id, id]) {
+        const activity = activityOfPath(join(root, variant))
+        if (activity === null) continue
+        if (newest === null || activity.at > newest) {
+          newest = activity.at
+          newestPath = activity.path
+          source = activity.source
         }
       }
     }
     if (newest === null) {
       return { ok: false, code: 'no-session', message: 'no DSH session directory holds session "' + id + '" under ' + sessionsDir }
     }
-    return { ok: true, at: newest, path: newestPath }
+    return { ok: true, at: newest, path: newestPath, source: source }
   }
 
   return { sessionsDir: sessionsDir, lookup: lookup, decode: decode, workspaceDirs: workspaceDirs, lastActiveOf: lastActiveOf, clear: function () { answers.clear(); listing = { at: 0, dirs: null } } }

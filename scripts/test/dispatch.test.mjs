@@ -2,6 +2,7 @@
 // reservation, file locks, retry, lease reaping and host restart recovery.
 
 import { join } from 'node:path'
+import { mkdirSync, writeFileSync, utimesSync, rmSync } from 'node:fs'
 import { readRoleConfig, rolesPath, updateBoard } from '../../plugin/task-center/board.mjs'
 import { createState, writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
@@ -3987,6 +3988,106 @@ function fakeHostSubprocess(result) {
     JSON.stringify({ status: card.status, assignee: card.assignee, waiting: card.waitingReason }),
   )
   scheduler.dispose()
+}
+
+// ── T-119: session activity comes from FILES, not the directory mtime ───────
+{
+  const root = join(PROJECT, '.tmp-t119-sessions')
+  const workspaceDir = join(root, '--project--')
+  const oldDir = join(workspaceDir, 'session-session-olddir')
+  const newFileDir = join(workspaceDir, 'session-session-active')
+  const staleDir = join(workspaceDir, 'session-session-stale')
+  const leadFileDir = join(workspaceDir, 'session-session-lead')
+  const now = Date.now()
+  const old = new Date(now - 13 * 24 * 60 * 60 * 1000)
+  const fresh = new Date(now - 5 * 60 * 1000)
+  mkdirSync(oldDir, { recursive: true })
+  mkdirSync(newFileDir, { recursive: true })
+  mkdirSync(staleDir, { recursive: true })
+  mkdirSync(leadFileDir, { recursive: true })
+  // (a) directory mtime is 13 days old, the file inside is fresh.
+  writeFileSync(join(newFileDir, 'session.v4.jsonl.zstd'), 'x')
+  utimesSync(join(newFileDir, 'session.v4.jsonl.zstd'), fresh, fresh)
+  utimesSync(newFileDir, old, old)
+  // (b) both the directory and its file are old.
+  writeFileSync(join(staleDir, 'session.v4.jsonl.zstd'), 'x')
+  utimesSync(join(staleDir, 'session.v4.jsonl.zstd'), old, old)
+  utimesSync(staleDir, old, old)
+  // The default rig Lead's session, active, so create/start are not gated.
+  writeFileSync(join(leadFileDir, 'session.v4.jsonl.zstd'), 'x')
+  utimesSync(join(leadFileDir, 'session.v4.jsonl.zstd'), fresh, fresh)
+  utimesSync(leadFileDir, old, old)
+  const previous = process.env.GODOT_BRIDGE_SESSIONS_DIR
+  process.env.GODOT_BRIDGE_SESSIONS_DIR = root
+  try {
+    const activeLead = { id: 'session-active', name: 'lead-active', role: 'lead', status: 'running' }
+    const staleLead = { id: 'session-stale', name: 'lead-stale', role: 'lead', status: 'inactive' }
+    const roster = [
+      activeLead,
+      { id: 'session-fixer-a', name: 'fixer-a', role: 'teammate', status: 'inactive' },
+    ]
+    const team = {
+      tryMembership(candidate) {
+        return candidate.id === 'session-active' || candidate.id === 'session-stale' ? { role: 'lead', name: candidate.name } : { role: 'teammate', name: candidate.id }
+      },
+      listMembers(lead) {
+        return lead.id === 'session-active' ? roster.map((member) => Object.assign({}, member)) : [{ id: 'session-stale', name: 'lead-stale', role: 'lead', status: 'inactive' }]
+      },
+      async sendMessage() { return { ok: true } },
+      async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
+    }
+    const fs = createFakeFs()
+    const ctx = {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+      get(key) {
+        if (key === 'agents') return { list: () => [activeLead, staleLead] }
+        if (key === 'agentTeams') return team
+        return undefined
+      },
+    }
+    const inventory = leadInventory(ctx)
+    const activeRow = inventory.leads.filter((row) => row.id === 'session-active')[0]
+    const staleRow = inventory.leads.filter((row) => row.id === 'session-stale')[0]
+    check(
+      'T-119 a fresh FILE inside an old session directory is not stale',
+      activeRow !== undefined && activeRow.stale === false && activeRow.activitySource === 'file' &&
+        typeof activeRow.lastActivePath === 'string' && activeRow.lastActivePath.indexOf('session.v4.jsonl.zstd') >= 0,
+      JSON.stringify(activeRow),
+    )
+    check(
+      'T-119 a session whose files are old is stale',
+      staleRow !== undefined && staleRow.stale === true,
+      JSON.stringify(staleRow),
+    )
+    check(
+      'T-119 the Lead name is filled from the roster when the agent row has none',
+      activeRow !== undefined && activeRow.name === 'lead-active',
+      JSON.stringify(activeRow && activeRow.name),
+    )
+    const activeTeam = projectTeamState(ctx, { sessionId: 'session-active' })
+    check(
+      'T-119 projectTeamState resolves an active session whose directory mtime is old',
+      activeTeam.ok === true && activeTeam.leadId === 'session-active',
+      JSON.stringify(activeTeam),
+    )
+    // create/start must not be blocked by no-live-lead for the active session.
+    const rig = createRig({ allowSpawn: false })
+    const created = await rig.action('create', { title: 'after activity fix' })
+    const started = await rig.action('start')
+    check(
+      'T-119 create/start are not refused as no-live-lead for an active session',
+      created.ok === true && started.ok === true && started.dispatch.state === 'running',
+      JSON.stringify({ create: created.ok, start: started.ok, code: created.code, error: created.error }),
+    )
+    rig.scheduler.dispose()
+  } finally {
+    if (previous === undefined) delete process.env.GODOT_BRIDGE_SESSIONS_DIR
+    else process.env.GODOT_BRIDGE_SESSIONS_DIR = previous
+    try {
+      rmSync(root, { recursive: true, force: true })
+    } catch (error) {}
+  }
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

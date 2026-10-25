@@ -681,11 +681,18 @@ export const LEAD_STALE_MS = Number.isFinite(Number(process.env.GODOT_BRIDGE_LEA
   : 6 * 60 * 60 * 1000
 
 let leadActivityLookup = null
+let leadActivityLookupDir = null
 function sessionActivityLookup() {
-  if (leadActivityLookup === null) {
+  // The sessions directory is re-read on every call: tests and alternative DSH
+  // homes point GODOT_BRIDGE_SESSIONS_DIR at a fixture, and a stale lookup must
+  // never keep answering from the previous root.
+  const override = typeof process.env.GODOT_BRIDGE_SESSIONS_DIR === 'string' && process.env.GODOT_BRIDGE_SESSIONS_DIR !== '' ? process.env.GODOT_BRIDGE_SESSIONS_DIR : null
+  if (leadActivityLookup === null || leadActivityLookupDir !== override) {
     leadActivityLookup = createSessionLookup({
       homeDir: typeof process.env.GODOT_BRIDGE_HOME === 'string' && process.env.GODOT_BRIDGE_HOME !== '' ? process.env.GODOT_BRIDGE_HOME : undefined,
+      sessionsDir: override === null ? undefined : override,
     })
+    leadActivityLookupDir = override
   }
   return leadActivityLookup
 }
@@ -697,6 +704,7 @@ export function leadActivityOf(candidate, now) {
   const explicit = row === null ? null : row.lastActiveAt !== undefined ? row.lastActiveAt : row.updatedAt !== undefined ? row.updatedAt : row.lastSeenAt
   let lastActiveAt = null
   let source = null
+  let lastActivePath = null
   if (typeof explicit === 'string' && explicit !== '' && Number.isFinite(Date.parse(explicit))) {
     lastActiveAt = Date.parse(explicit)
     source = 'agent'
@@ -714,17 +722,21 @@ export function leadActivityOf(candidate, now) {
       }
       if (read !== null && read.ok === true && Number.isFinite(read.at)) {
         lastActiveAt = read.at
-        source = 'session'
+        // 'file' when the newest mtime came from a file inside the session dir,
+        // 'dir-fallback' only when the directory itself had to answer.
+        source = read.source === 'dir-fallback' ? 'dir-fallback' : 'file'
+        lastActivePath = typeof read.path === 'string' ? read.path : null
       }
     }
   }
-  if (lastActiveAt === null) return { lastActiveAt: null, stale: false, staleReason: null, source: null }
+  if (lastActiveAt === null) return { lastActiveAt: null, stale: false, staleReason: null, source: null, lastActivePath: null }
   const stale = at - lastActiveAt > LEAD_STALE_MS
   return {
     lastActiveAt: new Date(lastActiveAt).toISOString(),
     stale: stale,
     staleReason: stale ? 'last active ' + String(Math.round((at - lastActiveAt) / 3600000)) + 'h ago (limit ' + String(Math.round(LEAD_STALE_MS / 3600000)) + 'h)' : null,
     source: source,
+    lastActivePath: lastActivePath,
   }
 }
 
@@ -761,15 +773,19 @@ export function leadInventory(ctx) {
     }
     if (membership === undefined || membership === null || membership.role !== 'lead') continue
     let members = 0
+    let rosterLeadName = null
     try {
       const roster = agentTeams.listMembers(candidate)
-      members = Array.isArray(roster) ? roster.length : 0
+      const list = Array.isArray(roster) ? roster : []
+      members = list.length
+      const leadMember = list.filter((member) => member !== null && typeof member === 'object' && member.role === 'lead')[0]
+      rosterLeadName = leadMember !== undefined && leadMember !== null && typeof leadMember.name === 'string' && leadMember.name !== '' ? leadMember.name : null
     } catch (error) {
       members = 0
     }
     const activity = leadActivityOf(candidate, Date.now())
     leads.push({
-      name: typeof candidate.name === 'string' && candidate.name !== '' ? candidate.name : null,
+      name: typeof candidate.name === 'string' && candidate.name !== '' ? candidate.name : rosterLeadName,
       id: candidate.id === undefined || candidate.id === null ? null : String(candidate.id),
       session: agentSessionOf(candidate),
       members: members,
@@ -777,6 +793,7 @@ export function leadInventory(ctx) {
       stale: activity.stale,
       staleReason: activity.staleReason,
       activitySource: activity.source,
+      lastActivePath: activity.lastActivePath,
     })
   }
   return {
