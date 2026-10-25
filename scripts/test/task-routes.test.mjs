@@ -6202,6 +6202,99 @@ rig.scheduler.dispose()
   rig.scheduler.dispose()
 }
 
+
+// ── T-118: teams.members names the slot project; rolesPrune cleans leftovers ─
+{
+  const { createRoleManager, projectSlotKey, roleSlotName } = await import('../../plugin/task-center/dispatch.mjs')
+  const ownKey = projectSlotKey(PROJECT)
+  const foreignProject = join(PROJECT, '..', 'foreign-project')
+  const foreignKey = projectSlotKey(foreignProject)
+  const roster = [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-rB', name: roleSlotName('reviewer', 1, PROJECT), role: 'teammate', status: 'inactive' },
+    { id: 'session-rA', name: roleSlotName('reviewer', 1, foreignProject), role: 'teammate', status: 'inactive' },
+  ]
+  const removals = []
+  const team = {
+    roster: roster,
+    tryMembership(candidate) {
+      const member = roster.filter((entry) => entry.id === candidate.id)[0]
+      return member === undefined ? undefined : { role: member.role, name: member.name }
+    },
+    listMembers() {
+      return roster.map((entry) => Object.assign({}, entry))
+    },
+    async spawnTeammate(caller, request) {
+      const member = { id: 'session-' + request.name, name: request.name, role: 'teammate', status: 'running' }
+      roster.push(member)
+      return { member: member }
+    },
+    async removeMember(caller, name) {
+      removals.push(name)
+      const index = roster.findIndex((entry) => entry.name === name)
+      if (index >= 0) roster.splice(index, 1)
+      return { ok: true }
+    },
+    async interrupt() { return { ok: true } },
+    async sendMessage() { return { ok: true } },
+  }
+  const rig = createRig({
+    allowSpawn: false,
+    team: team,
+    agents: { list: () => [{ id: 'session-lead', name: 'lead' }] },
+  })
+  // The session that owns this team runs in PROJECT: its own slots match, the
+  // foreign project's slot does not.
+  rig.state.setSessionRoot('session-lead', PROJECT)
+  const surface = install(rig)
+  async function http(url) {
+    const res = response()
+    await surface.byPath.get(url.split('?')[0]).handler(request(url), res)
+    return res.json()
+  }
+  const state = await http(STATE_PATH + '?session=test-session')
+  const members = state.teams !== undefined && Array.isArray(state.teams.members) ? state.teams.members : []
+  const ownMember = members.filter((entry) => entry.name === roleSlotName('reviewer', 1, PROJECT))[0]
+  const foreignMember = members.filter((entry) => entry.name === roleSlotName('reviewer', 1, foreignProject))[0]
+  check(
+    'T-118 teams.members reports each role instance’s slot project and whether it matches the session',
+    ownMember !== undefined &&
+      foreignMember !== undefined &&
+      ownMember.project === ownKey &&
+      ownMember.matchesSession === true &&
+      foreignMember.project === foreignKey &&
+      foreignMember.matchesSession === false,
+    JSON.stringify({ own: ownMember, foreign: foreignMember }),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+
+  // rolesPrune over the user route: it drops the foreign slot and keeps ours.
+  const rig2 = createRig({ allowSpawn: false, team: team, agents: { list: () => [{ id: 'session-lead', name: 'lead' }] } })
+  rig2.state.setSessionRoot('session-lead', PROJECT)
+  const manager2 = createRoleManager(rig2.ctx, { state: rig2.state })
+  rig2.api = createApi(rig2.ctx, { state: rig2.state, scheduler: rig2.scheduler, git: rig2.git, roles: manager2 })
+  const surface2 = install(rig2)
+  async function post(body) {
+    const res = response()
+    await surface2.byPath.get(ACTION_PATH).handler(request(ACTION_PATH, { method: 'POST', body: body, headers: { 'content-type': 'application/json' } }), res)
+    return res.json()
+  }
+  const pruned = await post({ action: 'rolesPrune', project: PROJECT })
+  check(
+    'T-118 rolesPrune deletes the foreign role instance and keeps this project’s',
+    pruned.ok === true &&
+      pruned.pruned.some((entry) => entry.name === roleSlotName('reviewer', 1, foreignProject)) &&
+      pruned.kept.indexOf(roleSlotName('reviewer', 1, PROJECT)) >= 0 &&
+      removals.indexOf(roleSlotName('reviewer', 1, foreignProject)) >= 0 &&
+      roster.some((entry) => entry.name === roleSlotName('reviewer', 1, PROJECT)) &&
+      !roster.some((entry) => entry.name === roleSlotName('reviewer', 1, foreignProject)),
+    JSON.stringify({ pruned: pruned, removals: removals }),
+  )
+  surface2.dispose()
+  rig2.scheduler.dispose()
+}
+
 // ── T-97: a card is dispatched only to its own session/project team ──
 {
   const { createFakeGit: makeGit } = await import('./support/fixtures.mjs')

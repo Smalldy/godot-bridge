@@ -3767,5 +3767,131 @@ function fakeHostSubprocess(result) {
   )
 }
 
+
+// ── T-118: role instances never spawn into another project's session team ────
+{
+  const projectA = join(PROJECT, '..', 'project-a')
+  const projectB = join(PROJECT, '..', 'project-b')
+  function teamFor(sessionId, extras) {
+    const roster = [{ id: sessionId, name: 'lead', role: 'lead', status: 'running' }].concat(extras === undefined ? [] : extras)
+    const spawns = []
+    const removals = []
+    return {
+      roster: roster,
+      spawns: spawns,
+      removals: removals,
+      tryMembership(candidate) {
+        const member = roster.filter((entry) => entry.id === candidate.id)[0]
+        return member === undefined ? undefined : { role: member.role, name: member.name }
+      },
+      listMembers() {
+        return roster.map((entry) => Object.assign({}, entry))
+      },
+      async spawnTeammate(caller, request) {
+        spawns.push({ caller: caller.id, name: request.name })
+        const member = { id: 'session-' + request.name, name: request.name, role: 'teammate', status: 'running' }
+        roster.push(member)
+        return { member: member }
+      },
+      async removeMember(caller, name) {
+        removals.push({ caller: caller.id, name: name })
+        const index = roster.findIndex((entry) => entry.name === name)
+        if (index >= 0) roster.splice(index, 1)
+        return { ok: true }
+      },
+      async interrupt() { return { ok: true } },
+      async sendMessage() { return { ok: true } },
+    }
+  }
+  function ctxFor(team, leads) {
+    const fs = createFakeFs()
+    return {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+      get(key) {
+        if (key === 'agents') return { list: () => leads }
+        if (key === 'agentTeams') return team
+        return undefined
+      },
+    }
+  }
+
+  // (a) session workspace = B, slot project = A: refuse, create nothing.
+  {
+    const leads = [{ id: 'session-b', name: 'lead-b', role: 'lead', status: 'running' }]
+    const team = teamFor('session-b')
+    const ctx = ctxFor(team, leads)
+    const state = createState(ctx)
+    state.setSessionRoot('session-b', projectB)
+    const manager = createRoleManager(ctx, { state: state })
+    const refused = await manager.ensure('reviewer', { projectPath: projectA, sessionId: 'session-b' })
+    check(
+      'T-118 a role slot for another project is refused with no-team-for-project',
+      refused.ok === false && refused.code === 'no-team-for-project' && String(refused.message).indexOf(projectA) >= 0 && String(refused.message).indexOf(projectB) >= 0,
+      JSON.stringify(refused),
+    )
+    check(
+      'T-118 the refused provision creates no member and spawns nothing',
+      team.spawns.length === 0 && team.roster.length === 1 && (refused.created === undefined || refused.created.length === 0),
+      JSON.stringify({ spawns: team.spawns, roster: team.roster.map((entry) => entry.name) }),
+    )
+    // Same team, the project it actually runs in: provisioning proceeds.
+    const own = await manager.ensure('reviewer', { projectPath: projectB, sessionId: 'session-b' })
+    check(
+      'T-118 the same session provisions its OWN project’s role slot',
+      own.ok === true && own.created.length === 1 && team.spawns.length === 1 && String(team.spawns[0].name).indexOf(projectSlotKey(projectB)) >= 0,
+      JSON.stringify({ created: own.created, spawns: team.spawns }),
+    )
+    manager.drain(own.created[0].name)
+  }
+
+  // (b) reuse is judged by the slot's project too: A's instance is never B's reviewer.
+  {
+    const leads = [{ id: 'session-b', name: 'lead-b', role: 'lead', status: 'running' }]
+    const foreign = { id: 'session-r', name: roleSlotName('reviewer', 1, projectA), role: 'teammate', status: 'inactive' }
+    const team = teamFor('session-b', [foreign])
+    const ctx = ctxFor(team, leads)
+    const state = createState(ctx)
+    state.setSessionRoot('session-b', projectB)
+    const manager = createRoleManager(ctx, { state: state })
+    const ensured = await manager.ensure('reviewer', { projectPath: projectB, sessionId: 'session-b' })
+    check(
+      'T-118 an instance of another project is never reused as this project’s reviewer',
+      ensured.ok === true &&
+        ensured.reused.indexOf(foreign.name) < 0 &&
+        ensured.refused.some((entry) => entry.name === foreign.name) &&
+        ensured.created.length === 1 &&
+        String(ensured.created[0].name).indexOf(projectSlotKey(projectB)) >= 0,
+      JSON.stringify({ reused: ensured.reused, refused: ensured.refused, created: ensured.created }),
+    )
+  }
+
+  // (c) rolesPrune removes only foreign slot instances.
+  {
+    const leads = [{ id: 'session-b', name: 'lead-b', role: 'lead', status: 'running' }]
+    const foreign = { id: 'session-rA', name: roleSlotName('reviewer', 1, projectA), role: 'teammate', status: 'inactive' }
+    const own = { id: 'session-rB', name: roleSlotName('reviewer', 1, projectB), role: 'teammate', status: 'inactive' }
+    const teammate = { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' }
+    const team = teamFor('session-b', [foreign, own, teammate])
+    const ctx = ctxFor(team, leads)
+    const state = createState(ctx)
+    state.setSessionRoot('session-b', projectB)
+    const manager = createRoleManager(ctx, { state: state })
+    const pruned = await manager.prune({ projectPath: projectB, sessionId: 'session-b' })
+    check(
+      'T-118 rolesPrune removes the foreign slot and keeps this project’s instances',
+      pruned.ok === true &&
+        pruned.pruned.length === 1 &&
+        pruned.pruned[0].name === foreign.name &&
+        pruned.kept.indexOf(own.name) >= 0 &&
+        pruned.kept.indexOf(teammate.name) < 0 &&
+        team.removals.some((entry) => entry.name === foreign.name) &&
+        team.roster.some((entry) => entry.name === own.name) &&
+        !team.roster.some((entry) => entry.name === foreign.name),
+      JSON.stringify({ pruned: pruned, removals: team.removals, roster: team.roster.map((entry) => entry.name) }),
+    )
+  }
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

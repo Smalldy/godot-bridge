@@ -129,7 +129,7 @@ export function buildSkillContent(options) {
     '6. 宿主接管：reviewer 评审 → 候选跑 `verify` → tester 测试 → 通过且 target 未动即自动合并；被打回在同一 worktree 修完再 submit。',
     '   - 漂移自动处理：target 前进但分支 head 未动（仅 base 变化）→ 宿主重建候选后直接合并，evidence 记「仅 base 变化，diff 与已验证提交一致」，不新增评审轮次；内容变了必须重走评审+测试。',
     '   - 构建期冲突不再抛给人工：候选与 target 冲突会标 candidate-stale（附冲突文件清单）并自动重建；再次冲突升级 needs-rebase（保留清单），等待 worker/Lead，不阻塞其他卡。',
-    '   - 已知边界：自动漂移判定只认真实 hex commit base；夹具/手写板里的 base-sha 之类标签保持旧行为。',
+    '   - 已知边界：漂移判定只认真实 hex base；夹具里的 base-sha 标签保持旧行为。',
     '',
     '## 动作矩阵',
     '',
