@@ -226,9 +226,14 @@ async function submitAndMerge(rig, id, evidence) {
   check('the other task stays pending', [A, B].filter((id) => byId(snap, id).status === 'pending').length === 1, JSON.stringify(ids(snap)))
   check('exactly one message was sent', rig.team.calls.filter((call) => call.kind === 'send').length === 1, JSON.stringify(rig.team.calls))
   rig.team.setStatus('fixer', 'inactive')
+  await submitAndMerge(rig, A, 'A done')
   await rig.settle()
   snap = await snapshot(rig)
-  check('the worker is reused once idle again', running(snap).length === 2, JSON.stringify(running(snap)))
+  check(
+    'the worker is reused once its card is done',
+    byId(snap, B).status === 'running' && byId(snap, B).assignee !== null && byId(snap, B).assignee.name === 'fixer' && running(snap).length === 1,
+    JSON.stringify({ running: running(snap), assignee: byId(snap, B).assignee }),
+  )
   rig.scheduler.dispose()
 }
 
@@ -4327,8 +4332,8 @@ function fakeHostSubprocess(result) {
   // pool instance.
   const rosterNames = rig.team.listMembers().map((member) => member.name)
   const desired = snap.agents !== undefined && snap.agents.roles !== null && snap.agents.roles !== undefined ? snap.agents.roles.desired.worker : null
-  const liveWorkers = snap.workers.members.filter((member) => member.name !== 'lead' && member.status === 'running')
-  const taskless = snap.workers.members.filter((member) => /^worker-p/.test(member.name) && member.status === 'running' && member.currentTask === null)
+  const liveWorkers = rig.team.listMembers().filter((member) => /^worker-p/.test(member.name) && member.status === 'running')
+  const taskless = snap.workers.members.filter((member) => /^worker-p/.test(member.name) && member.processStatus === 'running' && member.currentTask === null)
   check(
     'T-127 invariants hold after dispatch: assignee in roster, live <= desired, no running taskless pool instance',
     rosterNames.indexOf(task.assignee.name) >= 0 && (desired === null || liveWorkers.length <= desired) && taskless.length === 0,

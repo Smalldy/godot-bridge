@@ -1003,11 +1003,11 @@ export function pickTarget(ctx, options) {
     if (reserved.has(member.name) || avoid.has(member.name)) return false
     if (member.status === 'provisioning' || member.status === 'failed') return false
     const memberId = member.id === undefined || member.id === null ? null : String(member.id)
-    // A worker is busy only while its PROCESS is running AND the board still
-    // assigns it a running card. An inactive entry whose card is still running
-    // has already ended its turn, so it can take the next card.
+    // A2: availability is judged ONLY by the card. A member that holds a
+    // running card is busy whatever its process state says; a member with no
+    // card is available (provisioning/failed were excluded above).
     const assigned = busyNames.has(member.name) || (memberId !== null && busyIds.has(memberId))
-    if (member.status === 'running' && assigned) return false
+    if (assigned) return false
     if (projectKey === null) return true
     const remembered = memberProjectOf(ctx, member.name)
     // A member created for another project is NOT idle for this one.
