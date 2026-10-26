@@ -4335,9 +4335,19 @@ function fakeHostSubprocess(result) {
   const liveWorkers = rig.team.listMembers().filter((member) => /^worker-p/.test(member.name) && member.status === 'running')
   const taskless = snap.workers.members.filter((member) => /^worker-p/.test(member.name) && member.processStatus === 'running' && member.currentTask === null)
   check(
-    'T-127 invariants hold after dispatch: assignee in roster, live <= desired, no running taskless pool instance',
-    rosterNames.indexOf(task.assignee.name) >= 0 && (desired === null || liveWorkers.length <= desired) && taskless.length === 0,
-    JSON.stringify({ rosterNames: rosterNames, desired: desired, live: liveWorkers.length, taskless: taskless.map((member) => member.name) }),
+    'T-127 invariant (a): a running card assignee is in the roster',
+    rosterNames.indexOf(task.assignee.name) >= 0,
+    JSON.stringify({ assignee: task.assignee.name, rosterNames: rosterNames }),
+  )
+  check(
+    'T-127 invariant (b): live workers <= desired per role (raw roster)',
+    desired === null || liveWorkers.length <= desired,
+    JSON.stringify({ desired: desired, live: liveWorkers.length }),
+  )
+  check(
+    'T-127 invariant (c): no pool member with a running process and no card is treated as busy',
+    taskless.length === 0,
+    JSON.stringify(taskless.map((member) => ({ name: member.name, processStatus: member.processStatus, status: member.status }))),
   )
   rig.scheduler.dispose()
 }
@@ -4360,6 +4370,26 @@ function fakeHostSubprocess(result) {
     'T-127 when every desired instance holds a card the next card waits with 角色已满',
     first.status === 'running' && second.status === 'pending' && second.waitingReason === '角色已满',
     JSON.stringify({ first: first.status, second: { status: second.status, waiting: second.waitingReason } }),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-127 (6c): dispatching a card does not change the live pool count ──────
+{
+  const rig = createRig({ team: createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-pool1', name: 'worker-poolabc-1', role: 'teammate', status: 'running' },
+  ], spawnedStatus: 'running' }) })
+  const A = (await createTask(rig, { title: 'live stays' })).id
+  const liveBefore = rig.team.listMembers().filter((member) => /^worker-p/.test(member.name) && member.status === 'running').length
+  await rig.action('start')
+  await rig.settle()
+  const liveAfter = rig.team.listMembers().filter((member) => /^worker-p/.test(member.name) && member.status === 'running').length
+  const task = byId(await snapshot(rig), A)
+  check(
+    'T-127 (6c) one dispatch leaves the live pool count unchanged and reuses the instance',
+    liveBefore === 1 && liveAfter === liveBefore && task.status === 'running' && task.assignee !== null && task.assignee.name === 'worker-poolabc-1' && rig.team.calls.filter((call) => call.kind === 'spawn').length === 0,
+    JSON.stringify({ liveBefore: liveBefore, liveAfter: liveAfter, assignee: task.assignee, spawns: rig.team.calls.filter((call) => call.kind === 'spawn').length }),
   )
   rig.scheduler.dispose()
 }
