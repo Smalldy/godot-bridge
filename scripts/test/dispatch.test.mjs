@@ -104,6 +104,11 @@ async function submitAndMerge(rig, id, evidence) {
 // after E completes dispatch F.
 {
   const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  // T-127: the pool is the only source of executors, so concurrency is bounded
+  // by the configured worker instances. This chain needs three at once.
+  const poolConfig = defaultRoleConfig()
+  poolConfig.profiles.worker.instances = 3
+  rig.fs.files.set(rolesPath(PROJECT), { text: JSON.stringify(poolConfig), version: 'seed' })
   const A = (await createTask(rig, { title: 'A' })).id
   const B = (await createTask(rig, { title: 'B', dependsOn: [A] })).id
   const C = (await createTask(rig, { title: 'C', dependsOn: [B] })).id
@@ -774,7 +779,10 @@ async function submitAndMerge(rig, id, evidence) {
   await rig.action('start')
   await rig.settle()
   const second = byId(await snapshot(rig), A)
-  check('the re-dispatch interrupts the previous executor', firstWorker !== null && interrupted.indexOf(firstWorker) >= 0, JSON.stringify(interrupted))
+  // T-127: the pool is the only source of executors, so a host restart reuses
+  // the pool instance (after reap refunded the attempt) instead of spawning a
+  // second, per-card agent. The old executor is retired in the ledger.
+  check('the re-dispatch keeps one pool executor and does not spawn a second', firstWorker !== null && second.assignee !== null && second.assignee.name === firstWorker, JSON.stringify({ first: firstWorker, second: second.assignee }))
   check('the re-dispatched card runs again', second.status === 'running' && second.assignee !== null, JSON.stringify(ids(await snapshot(rig))))
   check('only one executor is live after the re-dispatch', second.liveExecutors.length === 1, JSON.stringify(second.executors))
   const live = second.executors.filter((entry) => entry.retiredAt === null).map((entry) => entry.name)
@@ -811,9 +819,11 @@ async function submitAndMerge(rig, id, evidence) {
   await rig.settle()
   const after = byId(await snapshot(rig), A)
   const history = Array.isArray(after.history) ? after.history : []
-  check('an executor that cannot be stopped blocks the second dispatch', after.status === 'pending', JSON.stringify(after.status))
-  check('and the refusal code is already-dispatched', history.some((entry) => String(entry.note).indexOf('already-dispatched') >= 0), JSON.stringify(history.slice(-2)))
-  check('no second executor was added', after.liveExecutors.length === 0 || after.executors.length === 1, JSON.stringify(after.executors))
+  // T-127: with one pool source there is no second agent to refuse; the card
+  // continues on the same pool instance and the ledger still has one executor.
+  check('a refused interrupt does not add a second executor', after.status === 'running' && after.assignee !== null, JSON.stringify(after.status))
+  check('and the ledger still has one live executor', after.liveExecutors.length === 1, JSON.stringify(after.executors))
+  check('no second executor was added', after.liveExecutors.length === 1, JSON.stringify(after.executors))
   rig.scheduler.dispose()
 }
 
@@ -4285,6 +4295,42 @@ function fakeHostSubprocess(result) {
     )
     rig.scheduler.dispose()
   }
+}
+
+// ── T-127: the pool is the only executor source ─────────────────────────────
+{
+  // (d) empty pool -> one pool instance, never a per-card work-<task>-N agent.
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  const A = (await createTask(rig, { title: 'fresh pool' })).id
+  // Empty the pool: the card must make the role manager create a pool instance.
+  rig.team.setStatus('fixer', 'failed')
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const task = byId(snap, A)
+  const spawned = rig.team.calls.filter((call) => call.kind === 'spawn')
+  check(
+    'T-127 an empty pool creates a pool instance (worker-p<key>-N), not a per-card work-<task>-N agent',
+    task.status === 'running' &&
+      task.assignee !== null &&
+      /^worker-p[a-z0-9]+-[0-9]+$/.test(task.assignee.name) &&
+      spawned.length === 1 &&
+      /^worker-p[a-z0-9]+-[0-9]+$/.test(spawned[0].name) &&
+      !/^work-/.test(spawned[0].name),
+    JSON.stringify({ assignee: task.assignee, spawned: spawned.map((call) => call.name) }),
+  )
+  // Invariants: assignee in roster, live workers <= desired, no running+taskless
+  // pool instance.
+  const rosterNames = rig.team.listMembers().map((member) => member.name)
+  const desired = snap.agents !== undefined && snap.agents.roles !== null && snap.agents.roles !== undefined ? snap.agents.roles.desired.worker : null
+  const liveWorkers = snap.workers.members.filter((member) => member.name !== 'lead' && member.status === 'running')
+  const taskless = snap.workers.members.filter((member) => /^worker-p/.test(member.name) && member.status === 'running' && member.currentTask === null)
+  check(
+    'T-127 invariants hold after dispatch: assignee in roster, live <= desired, no running taskless pool instance',
+    rosterNames.indexOf(task.assignee.name) >= 0 && (desired === null || liveWorkers.length <= desired) && taskless.length === 0,
+    JSON.stringify({ rosterNames: rosterNames, desired: desired, live: liveWorkers.length, taskless: taskless.map((member) => member.name) }),
+  )
+  rig.scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

@@ -976,8 +976,15 @@ export function pickTarget(ctx, options) {
     return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
   }
   const reserved = opts.reserved instanceof Set ? opts.reserved : new Set()
+  // T-127: pool workers are named worker-p<key>-N. The old "not a role name"
+  // filter hid them from dispatch, so only reviewer/tester/merger instances are
+  // excluded here; workers ARE the pool dispatch chooses from.
   const teammates = members.filter(
-    (member) => member.role === 'teammate' && member.status !== 'failed' && member.name !== MERGER_NAME && !isRoleName(member.name),
+    (member) =>
+      member.role === 'teammate' &&
+      member.status !== 'failed' &&
+      member.name !== MERGER_NAME &&
+      (!isRoleName(member.name) || roleKindOf(member.name) === 'worker'),
   )
   const projectKey = typeof opts.projectKey === 'string' && opts.projectKey.length > 0 ? opts.projectKey : null
   // T-127: a member is reusable when it has NO current task and is not
@@ -1009,34 +1016,16 @@ export function pickTarget(ctx, options) {
   if (idle.length > 0) {
     return { ok: true, lead: lead, spawn: false, target: { name: idle[0].name, id: idle[0].id, status: idle[0].status }, members: members, compat: legacyCompat }
   }
-  if (opts.spawn !== true) {
-    return {
-      ok: false,
-      code: teammates.length === 0 ? 'no-teammates' : 'no-idle-member',
-      message:
-        teammates.length === 0
-          ? 'the team has no WorkAgent yet, and spawning is disabled for this dispatch'
-          : 'every WorkAgent is busy; the next pass waits for one to go idle',
-      members: members,
-    }
-  }
-  const cap = typeof opts.maxWorkAgents === 'number' ? opts.maxWorkAgents : DEFAULT_MAX_WORK_AGENTS
-  if (teammates.length >= cap) {
-    return {
-      ok: false,
-      code: 'workagent-budget',
-      message: 'already ' + String(teammates.length) + ' WorkAgents, at the cap of ' + String(cap) + '; not spawning another',
-      members: members,
-    }
-  }
-  if (typeof opts.name !== 'string' || opts.name.length === 0) {
-    return { ok: false, code: 'no-name', message: 'a spawned WorkAgent needs a name before the board can record the dispatch' }
-  }
+  // T-127: the pool is the ONLY source of executors. pickTarget never creates
+  // an agent; the scheduler asks the role manager to provision a pool instance
+  // (worker-p<key>-N) and retries. An empty/busy pool is a wait, not a spawn.
   return {
-    ok: true,
-    lead: lead,
-    spawn: true,
-    target: { name: opts.name, id: null, status: 'provisioning' },
+    ok: false,
+    code: teammates.length === 0 ? 'no-teammates' : 'no-idle-member',
+    message:
+      teammates.length === 0
+        ? 'the team has no pool worker yet; the role manager will provision one on the next step'
+        : 'every pool worker is busy; the card waits for one to go idle',
     members: members,
   }
 }
@@ -4048,11 +4037,10 @@ export function createDispatcher(ctx, options) {
           }
         }
         const projectKey = projectSlotKey(project)
-        const picked = pickTarget(ctx, {
+        let picked = pickTarget(ctx, {
           reserved: reserved,
           spawn: dispatch.allowSpawn === true && spawnAllowed,
           maxWorkAgents: dispatch.maxWorkAgents,
-          name: workAgentName(task.id, model.attemptSlot(task)),
           projectKey: projectKey,
           // The LEAD that creates the executor is the one this card BELONGS to
           // (owned card) or the project session that adopted it (ownerless card).
@@ -4060,16 +4048,38 @@ export function createDispatcher(ctx, options) {
           board: current,
           // T-127: a worker left over from a PREVIOUS host must not be reused
           // (its inbox may still hold the old brief); supersede interrupts it.
-          avoid: new Set(
-            task.dispatch !== null && task.dispatch !== undefined && task.dispatch.host !== null && task.dispatch.host !== undefined && task.dispatch.host !== boot
-              ? (Array.isArray(task.executors) ? task.executors : []).map((entry) => entry !== null && entry !== undefined && typeof entry.name === 'string' ? entry.name : null).filter((name) => name !== null)
-              : [],
-          ),
           legacyDispatch: dispatchSession === null,
         })
-        if (picked.ok !== true) {
+        let pickedNow = picked
+        if (pickedNow.ok !== true && (pickedNow.code === 'no-teammates' || pickedNow.code === 'no-idle-member') && dispatch.allowSpawn === true && spawnAllowed) {
+          // The pool has no free instance: provision one through the role
+          // manager (worker-p<key>-N) and retry the same pick. Never spawn a
+          // per-card agent here.
+          let ensured = null
+          try {
+            ensured = await ensureRole(ctx, 'worker', {
+              config: workerConfig === null ? undefined : workerConfig,
+              projectPath: project,
+              task: task,
+              now: state.clock(),
+              sessionId: dispatchSession,
+            })
+          } catch (error) {
+            ensured = { ok: false, code: 'provision-error', message: String((error && error.message) || error) }
+          }
+          pickedNow = pickTarget(ctx, {
+            reserved: reserved,
+            spawn: false,
+            maxWorkAgents: dispatch.maxWorkAgents,
+            projectKey: projectKey,
+            sessionId: dispatchSession,
+            board: current,
+            legacyDispatch: dispatchSession === null,
+          })
+        }
+        if (pickedNow.ok !== true) {
           const reason =
-            picked.code === 'no-live-lead'
+            pickedNow.code === 'no-live-lead'
               ? 'no-live-lead'
               : picked.code === 'no-lead' || picked.code === 'no-lead-for-project' || picked.code === 'no-team-service' || picked.code === 'roster-unreadable'
                 ? 'no-lead-for-project'
@@ -4079,13 +4089,14 @@ export function createDispatcher(ctx, options) {
           if (reason !== null && ownerSession !== null) {
             // Only a session-owned card records this reason; legacy/ownerless
             // cards keep the historical "stays pending, no waiting reason".
-            await markExecutorMissing(project, task.id, reason, picked.message)
-            results.push({ id: task.id, skipped: reason, message: picked.message })
+            await markExecutorMissing(project, task.id, reason, pickedNow.message)
+            results.push({ id: task.id, skipped: reason, message: pickedNow.message })
             break
           }
-          results.push({ id: task.id, skipped: picked.code, message: picked.message })
+          results.push({ id: task.id, skipped: pickedNow.code, message: pickedNow.message })
           break
         }
+        picked = pickedNow
         reserved.add(picked.target.name)
         // Retire whoever held this card before, THEN claim. A re-dispatch after a
         // host restart must not leave the old worker running beside the new one.
@@ -4197,7 +4208,7 @@ export function createDispatcher(ctx, options) {
               {
                 name: picked.target.name,
                 session: picked.target.id,
-                via: picked.spawn === true ? 'spawn' : 'message',
+                via: 'message',
                 host: boot,
                 lead: picked.lead !== undefined && picked.lead !== null && picked.lead.name !== undefined ? String(picked.lead.name) : null,
                 leadSession: agentSessionOf(picked.lead),
@@ -4272,25 +4283,13 @@ export function createDispatcher(ctx, options) {
         try {
           const signal = AbortSignal.timeout(SEND_TIMEOUT_MS)
           const team = ctx.get('agentTeams')
-          if (picked.spawn === true) {
-            delivered = await team.spawnTeammate(picked.lead, {
-              name: picked.target.name,
-              description: claimedTask.title,
-              prompt: [
-                { type: 'text', text: spawnPreamble(picked.target.name, leadName) },
-                { type: 'text', text: brief },
-              ],
-              context: 'fresh',
-              provider: subagentProviderFor(ctx),
-              signal: signal,
-            })
-          } else {
-            delivered = await team.sendMessage(picked.lead, {
-              target: picked.target.name,
-              content: [{ type: 'text', text: brief }],
-              signal: signal,
-            })
-          }
+          // T-127: the only delivery path is a pool instance created by the role
+          // manager; per-card agents are never spawned here.
+          delivered = await team.sendMessage(picked.lead, {
+            target: picked.target.name,
+            content: [{ type: 'text', text: brief }],
+            signal: signal,
+          })
         } catch (error) {
           sendError = String((error && error.message) || error)
         }
@@ -4317,43 +4316,27 @@ export function createDispatcher(ctx, options) {
         // The member now works for THIS project; a later submit from it is only
         // accepted here (a worker handed another project's card cannot slip in).
         rememberMemberProject(ctx, picked.target.name, project)
-        if (picked.spawn === true) {
-          const member = delivered.member === undefined || delivered.member === null ? null : delivered.member
-          const attached = await state.apply(
-            project,
-            (board) =>
-              model.attachWorker(
-                board,
-                task.id,
-                { session: member === null ? null : member.id, name: member === null ? null : member.name },
-                state.clock(),
-              ),
-            writePolicyFor(project),
-          )
-          if (attached.failed === null) current = attached.board
-        } else {
-          const recorded = await state.apply(
-            project,
-            (board) =>
-              model.recordDispatch(
-                board,
-                task.id,
-                {
-                  status: delivered.status === 'queued' ? 'queued' : 'sent',
-                  at: new Date(state.clock()).toISOString(),
-                },
-                state.clock(),
-              ),
-            writePolicyFor(project),
-          )
-          if (recorded.failed === null) current = recorded.board
-        }
+        const recorded = await state.apply(
+          project,
+          (board) =>
+            model.recordDispatch(
+              board,
+              task.id,
+              {
+                status: delivered.status === 'queued' ? 'queued' : 'sent',
+                at: new Date(state.clock()).toISOString(),
+              },
+              state.clock(),
+            ),
+          writePolicyFor(project),
+        )
+        if (recorded.failed === null) current = recorded.board
         slots -= 1
         results.push({
           id: task.id,
           ok: true,
           target: picked.target.name,
-          spawned: picked.spawn === true,
+          spawned: false,
           files: lockPaths,
           worktree: worktree.path,
           worktreeError: worktree.error,
