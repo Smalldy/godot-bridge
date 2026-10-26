@@ -237,6 +237,30 @@ async function submitAndMerge(rig, id, evidence) {
   rig.scheduler.dispose()
 }
 
+// ── T-127 A2: availability is judged by the card, not the process state ─────
+{
+  const rig = createRig({ team: createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-w1', name: 'worker-pabc123-1', role: 'teammate', status: 'inactive' },
+  ] }) })
+  const holding = {
+    tasks: [{ id: 'T-9', status: 'running', assignee: { name: 'worker-pabc123-1', session: 'session-w1' } }],
+  }
+  const busyPick = pickTarget(rig.ctx, { sessionId: 'session-lead', board: holding, spawn: false })
+  check(
+    'T-127 A2 an inactive process that still holds a running card is NOT reusable',
+    busyPick.ok !== true && busyPick.code === 'no-idle-member',
+    JSON.stringify(busyPick),
+  )
+  const freePick = pickTarget(rig.ctx, { sessionId: 'session-lead', board: { tasks: [] }, spawn: false })
+  check(
+    'T-127 A2 the same member with no card is reusable regardless of process state',
+    freePick.ok === true && freePick.target.name === 'worker-pabc123-1',
+    JSON.stringify(freePick),
+  )
+  rig.scheduler.dispose()
+}
+
 // ── file locks serialize overlapping tasks ─────────────────────────────────
 {
   const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
