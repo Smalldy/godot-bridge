@@ -7,6 +7,8 @@ const { registerTaskTool, agentLabel, projectPathOf } = await import('../../plug
 const { SKILL_NAME, buildSkillContent } = await import('../../plugin/task-center/skill.mjs')
 const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
 const { createRig, createTask } = await import('./support/fixtures.mjs')
+const { rememberMemberProject } = await import('../../plugin/task-center/dispatch.mjs')
+const { join } = await import('node:path')
 
 let failures = 0
 function check(label, condition, detail) {
@@ -17,6 +19,8 @@ function check(label, condition, detail) {
 const rig = createRig({ allowSpawn: false })
 // T-120: an agent session resolves its own team through roster membership.
 rig.team.roster.push({ id: 'session-abcdef12', name: 'agent', role: 'teammate', status: 'running' })
+// T-127: the agent is working on another project, not merely a non-idle process.
+rememberMemberProject(rig.ctx, 'agent', join(rig.project, '..', 'other-project'))
 rig.ctx.tools = {
   register(tool) {
     rig.tool = tool

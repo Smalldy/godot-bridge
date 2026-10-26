@@ -6403,7 +6403,7 @@ rig.scheduler.dispose()
   const projectTasks = boardJson(projectRig.fs, PROJECT).tasks
   check(
     'T-97 a worker remembered for another project is not reused',
-    projectTasks[0].status === 'running' && projectTasks[0].assignee.name !== 'fixer-a' && projectTasks[0].assignee.name.indexOf('work-') === 0,
+    projectTasks[0].status === 'running' && projectTasks[0].assignee.name !== 'fixer-a' && /^(work-|worker-p)/.test(projectTasks[0].assignee.name),
     JSON.stringify({ assignee: projectTasks[0].assignee && projectTasks[0].assignee.name }),
   )
   const remembered = memberProjectOf(projectRig.ctx, projectTasks[0].assignee.name)

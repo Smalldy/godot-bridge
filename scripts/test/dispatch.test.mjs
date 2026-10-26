@@ -104,6 +104,11 @@ async function submitAndMerge(rig, id, evidence) {
 // after E completes dispatch F.
 {
   const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  // T-127: the pool is the only source of executors, so concurrency is bounded
+  // by the configured worker instances. This chain needs three at once.
+  const poolConfig = defaultRoleConfig()
+  poolConfig.profiles.worker.instances = 3
+  rig.fs.files.set(rolesPath(PROJECT), { text: JSON.stringify(poolConfig), version: 'seed' })
   const A = (await createTask(rig, { title: 'A' })).id
   const B = (await createTask(rig, { title: 'B', dependsOn: [A] })).id
   const C = (await createTask(rig, { title: 'C', dependsOn: [B] })).id
@@ -221,9 +226,38 @@ async function submitAndMerge(rig, id, evidence) {
   check('the other task stays pending', [A, B].filter((id) => byId(snap, id).status === 'pending').length === 1, JSON.stringify(ids(snap)))
   check('exactly one message was sent', rig.team.calls.filter((call) => call.kind === 'send').length === 1, JSON.stringify(rig.team.calls))
   rig.team.setStatus('fixer', 'inactive')
+  await submitAndMerge(rig, A, 'A done')
   await rig.settle()
   snap = await snapshot(rig)
-  check('the worker is reused once idle again', running(snap).length === 2, JSON.stringify(running(snap)))
+  check(
+    'the worker is reused once its card is done',
+    byId(snap, B).status === 'running' && byId(snap, B).assignee !== null && byId(snap, B).assignee.name === 'fixer' && running(snap).length === 1,
+    JSON.stringify({ running: running(snap), assignee: byId(snap, B).assignee }),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-127 A2: availability is judged by the card, not the process state ─────
+{
+  const rig = createRig({ team: createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-w1', name: 'worker-pabc123-1', role: 'teammate', status: 'inactive' },
+  ] }) })
+  const holding = {
+    tasks: [{ id: 'T-9', status: 'running', assignee: { name: 'worker-pabc123-1', session: 'session-w1' } }],
+  }
+  const busyPick = pickTarget(rig.ctx, { sessionId: 'session-lead', board: holding, spawn: false })
+  check(
+    'T-127 A2 an inactive process that still holds a running card is NOT reusable',
+    busyPick.ok !== true && busyPick.code === 'no-idle-member',
+    JSON.stringify(busyPick),
+  )
+  const freePick = pickTarget(rig.ctx, { sessionId: 'session-lead', board: { tasks: [] }, spawn: false })
+  check(
+    'T-127 A2 the same member with no card is reusable regardless of process state',
+    freePick.ok === true && freePick.target.name === 'worker-pabc123-1',
+    JSON.stringify(freePick),
+  )
   rig.scheduler.dispose()
 }
 
@@ -774,7 +808,10 @@ async function submitAndMerge(rig, id, evidence) {
   await rig.action('start')
   await rig.settle()
   const second = byId(await snapshot(rig), A)
-  check('the re-dispatch interrupts the previous executor', firstWorker !== null && interrupted.indexOf(firstWorker) >= 0, JSON.stringify(interrupted))
+  // T-127: the pool is the only source of executors, so a host restart reuses
+  // the pool instance (after reap refunded the attempt) instead of spawning a
+  // second, per-card agent. The old executor is retired in the ledger.
+  check('the re-dispatch keeps one pool executor and does not spawn a second', firstWorker !== null && second.assignee !== null && second.assignee.name === firstWorker, JSON.stringify({ first: firstWorker, second: second.assignee }))
   check('the re-dispatched card runs again', second.status === 'running' && second.assignee !== null, JSON.stringify(ids(await snapshot(rig))))
   check('only one executor is live after the re-dispatch', second.liveExecutors.length === 1, JSON.stringify(second.executors))
   const live = second.executors.filter((entry) => entry.retiredAt === null).map((entry) => entry.name)
@@ -811,9 +848,11 @@ async function submitAndMerge(rig, id, evidence) {
   await rig.settle()
   const after = byId(await snapshot(rig), A)
   const history = Array.isArray(after.history) ? after.history : []
-  check('an executor that cannot be stopped blocks the second dispatch', after.status === 'pending', JSON.stringify(after.status))
-  check('and the refusal code is already-dispatched', history.some((entry) => String(entry.note).indexOf('already-dispatched') >= 0), JSON.stringify(history.slice(-2)))
-  check('no second executor was added', after.liveExecutors.length === 0 || after.executors.length === 1, JSON.stringify(after.executors))
+  // T-127: with one pool source there is no second agent to refuse; the card
+  // continues on the same pool instance and the ledger still has one executor.
+  check('a refused interrupt does not add a second executor', after.status === 'running' && after.assignee !== null, JSON.stringify(after.status))
+  check('and the ledger still has one live executor', after.liveExecutors.length === 1, JSON.stringify(after.executors))
+  check('no second executor was added', after.liveExecutors.length === 1, JSON.stringify(after.executors))
   rig.scheduler.dispose()
 }
 
@@ -828,6 +867,8 @@ async function submitAndMerge(rig, id, evidence) {
     ], spawnedStatus: 'running' },
   })
   const A = (await createTask(rig, { title: 'spawned work' })).id
+  // The member is working on another project, so the pool must create an instance.
+  rememberMemberProject(rig.ctx, 'busy', PROJECT + '-other')
   await rig.action('start')
   await rig.settle()
   const snap = await snapshot(rig)
@@ -2014,13 +2055,16 @@ function roleTask(overrides) {
     team: createTeam({
       roster: [
         { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
-        // T-115: a qualified team needs a member; keep it busy so dispatch spawns.
+        // T-115/T-127: a qualified team needs a member; it is busy because it
+        // holds a running card, so dispatch has to create a pool instance.
         { id: 'session-busy', name: 'busy', role: 'teammate', status: 'running' },
       ],
     }),
     teamOptions: { spawnedStatus: 'running' },
   })
   await createTask(spawnRig, { title: 'spawned task' })
+  // The member is working on another project, so it is not idle for this one.
+  rememberMemberProject(spawnRig.ctx, 'busy', PROJECT + '-other')
   await spawnRig.action('settings', { maxConcurrent: 1, maxWorkAgents: 2 })
   await spawnRig.action('start')
   await spawnRig.settle()
@@ -4222,6 +4266,156 @@ function fakeHostSubprocess(result) {
       USER_ONLY_ACTIONS.indexOf('bootstrapTeam') < 0,
     TEAM_BOOTSTRAP_INSTRUCTION,
   )
+}
+
+// ── T-127: a running process without a card is idle, and reusable ──────────
+{
+  // (a) a running role instance with no task is reused, not duplicated.
+  {
+    const rig = createRig({ team: createTeam({ roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+    ] }) })
+    const A = (await createTask(rig, { title: 'reuse me' })).id
+    await rig.action('start')
+    await rig.settle()
+    const snap = await snapshot(rig)
+    const task = byId(snap, A)
+    check(
+      'T-127 a running role instance with no card is reused instead of spawning',
+      task.status === 'running' && task.assignee !== null && task.assignee.name === 'fixer' && rig.team.calls.filter((call) => call.kind === 'spawn').length === 0,
+      JSON.stringify({ assignee: task.assignee, calls: rig.team.calls.map((call) => call.kind) }),
+    )
+    rig.scheduler.dispose()
+  }
+  // (b) workerPool status: no card -> idle; with card -> running.
+  {
+    const rig = createRig({ allowSpawn: false, team: createTeam({ roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+    ] }) })
+    const idleSnap = await rig.api.snapshot(PROJECT, { sessionId: 'session-lead' })
+    const idleMember = idleSnap.workers.members.filter((member) => member.name === 'fixer')[0]
+    check(
+      'T-127 a running process with no current task is shown as idle, not running',
+      idleMember !== undefined && idleMember.status === 'idle' && idleMember.processStatus === 'running' && idleMember.currentTask === null && idleSnap.workers.busy === 0 && idleSnap.workers.idle >= 1,
+      JSON.stringify({ member: idleMember, busy: idleSnap.workers.busy, idle: idleSnap.workers.idle }),
+    )
+    const stamp = new Date().toISOString()
+    seedBoard(rig.fs, PROJECT, JSON.stringify({
+      version: 2,
+      seq: 2,
+      dispatch: { state: 'paused' },
+      tasks: [{
+        id: 'T-1', title: 'busy card', status: 'running', priority: 0, dependsOn: [], writeFiles: [], spec: 's', acceptance: 'a', evidence: '',
+        ownerSession: 'session-lead', base: 'base-sha', target: 'main', branch: 'task/T-1-1', commit: 'head-sha',
+        assignee: { name: 'fixer', session: 'session-fixer' }, review: null, test: null,
+        merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: null, reviewer: null, conflict: null, at: stamp },
+        history: [], createdAt: stamp, updatedAt: stamp, attempts: 1, maxAttempts: 3,
+      }],
+    }))
+    const busySnap = await rig.api.snapshot(PROJECT, { sessionId: 'session-lead' })
+    const busyMember = busySnap.workers.members.filter((member) => member.name === 'fixer')[0]
+    check(
+      'T-127 a member with a current task is shown as running with that task',
+      busyMember !== undefined && busyMember.status === 'running' && busyMember.currentTask !== null && busyMember.currentTask.id === 'T-1' && busySnap.workers.busy === 1,
+      JSON.stringify({ member: busyMember, busy: busySnap.workers.busy }),
+    )
+    check(
+      'T-127 the executor pool reports per-role configured/running/idle/with-card numbers',
+      busySnap.workers.roleCounts !== undefined && busySnap.workers.roleCounts.worker !== undefined && busySnap.workers.roleCounts.worker.running === 1 && busySnap.workers.roleCounts.worker.busy === 1,
+      JSON.stringify(busySnap.workers.roleCounts),
+    )
+    rig.scheduler.dispose()
+  }
+}
+
+// ── T-127: the pool is the only executor source ─────────────────────────────
+{
+  // (d) empty pool -> one pool instance, never a per-card work-<task>-N agent.
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  const A = (await createTask(rig, { title: 'fresh pool' })).id
+  // Empty the pool: the card must make the role manager create a pool instance.
+  rig.team.setStatus('fixer', 'failed')
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const task = byId(snap, A)
+  const spawned = rig.team.calls.filter((call) => call.kind === 'spawn')
+  check(
+    'T-127 an empty pool creates a pool instance (worker-p<key>-N), not a per-card work-<task>-N agent',
+    task.status === 'running' &&
+      task.assignee !== null &&
+      /^worker-p[a-z0-9]+-[0-9]+$/.test(task.assignee.name) &&
+      spawned.length === 1 &&
+      /^worker-p[a-z0-9]+-[0-9]+$/.test(spawned[0].name) &&
+      !/^work-/.test(spawned[0].name),
+    JSON.stringify({ assignee: task.assignee, spawned: spawned.map((call) => call.name) }),
+  )
+  // Invariants: assignee in roster, live workers <= desired, no running+taskless
+  // pool instance.
+  const rosterNames = rig.team.listMembers().map((member) => member.name)
+  const desired = snap.agents !== undefined && snap.agents.roles !== null && snap.agents.roles !== undefined ? snap.agents.roles.desired.worker : null
+  const liveWorkers = rig.team.listMembers().filter((member) => /^worker-p/.test(member.name) && member.status === 'running')
+  const taskless = snap.workers.members.filter((member) => /^worker-p/.test(member.name) && member.processStatus === 'running' && member.currentTask === null)
+  check(
+    'T-127 invariant (a): a running card assignee is in the roster',
+    rosterNames.indexOf(task.assignee.name) >= 0,
+    JSON.stringify({ assignee: task.assignee.name, rosterNames: rosterNames }),
+  )
+  check(
+    'T-127 invariant (b): live workers <= desired per role (raw roster)',
+    desired === null || liveWorkers.length <= desired,
+    JSON.stringify({ desired: desired, live: liveWorkers.length }),
+  )
+  check(
+    'T-127 invariant (c): no pool member with a running process and no card is treated as busy',
+    taskless.length === 0,
+    JSON.stringify(taskless.map((member) => ({ name: member.name, processStatus: member.processStatus, status: member.status }))),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-127: a full pool queues the card with 角色已满 ─────────────────────────
+{
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  const poolConfig = defaultRoleConfig()
+  poolConfig.profiles.worker.instances = 1
+  rig.fs.files.set(rolesPath(PROJECT), { text: JSON.stringify(poolConfig), version: 'seed' })
+  rig.team.setStatus('fixer', 'failed')
+  const A = (await createTask(rig, { title: 'first' })).id
+  const B = (await createTask(rig, { title: 'second' })).id
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const first = byId(snap, A)
+  const second = byId(snap, B)
+  check(
+    'T-127 when every desired instance holds a card the next card waits with 角色已满',
+    first.status === 'running' && second.status === 'pending' && second.waitingReason === '角色已满',
+    JSON.stringify({ first: first.status, second: { status: second.status, waiting: second.waitingReason } }),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-127 (6c): dispatching a card does not change the live pool count ──────
+{
+  const rig = createRig({ team: createTeam({ roster: [
+    { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+    { id: 'session-pool1', name: 'worker-poolabc-1', role: 'teammate', status: 'running' },
+  ], spawnedStatus: 'running' }) })
+  const A = (await createTask(rig, { title: 'live stays' })).id
+  const liveBefore = rig.team.listMembers().filter((member) => /^worker-p/.test(member.name) && member.status === 'running').length
+  await rig.action('start')
+  await rig.settle()
+  const liveAfter = rig.team.listMembers().filter((member) => /^worker-p/.test(member.name) && member.status === 'running').length
+  const task = byId(await snapshot(rig), A)
+  check(
+    'T-127 (6c) one dispatch leaves the live pool count unchanged and reuses the instance',
+    liveBefore === 1 && liveAfter === liveBefore && task.status === 'running' && task.assignee !== null && task.assignee.name === 'worker-poolabc-1' && rig.team.calls.filter((call) => call.kind === 'spawn').length === 0,
+    JSON.stringify({ liveBefore: liveBefore, liveAfter: liveAfter, assignee: task.assignee, spawns: rig.team.calls.filter((call) => call.kind === 'spawn').length }),
+  )
+  rig.scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
