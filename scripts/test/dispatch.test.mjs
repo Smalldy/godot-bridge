@@ -834,10 +834,12 @@ async function submitAndMerge(rig, id, evidence) {
     // T-115: the team needs a member to be qualified; keep it busy so dispatch still SPAWNS.
     teamOptions: { roster: [
       { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
-      { id: 'session-busy', name: 'busy', role: 'teammate', status: 'provisioning' },
+      { id: 'session-busy', name: 'busy', role: 'teammate', status: 'running' },
     ], spawnedStatus: 'running' },
   })
   const A = (await createTask(rig, { title: 'spawned work' })).id
+  // The member is working on another project, so the pool must create an instance.
+  rememberMemberProject(rig.ctx, 'busy', PROJECT + '-other')
   await rig.action('start')
   await rig.settle()
   const snap = await snapshot(rig)
@@ -2024,14 +2026,16 @@ function roleTask(overrides) {
     team: createTeam({
       roster: [
         { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
-        // T-115/T-127: a qualified team needs a member; provisioning is not
-        // reusable, so dispatch still spawns a per-card worker.
-        { id: 'session-busy', name: 'busy', role: 'teammate', status: 'provisioning' },
+        // T-115/T-127: a qualified team needs a member; it is busy because it
+        // holds a running card, so dispatch has to create a pool instance.
+        { id: 'session-busy', name: 'busy', role: 'teammate', status: 'running' },
       ],
     }),
     teamOptions: { spawnedStatus: 'running' },
   })
   await createTask(spawnRig, { title: 'spawned task' })
+  // The member is working on another project, so it is not idle for this one.
+  rememberMemberProject(spawnRig.ctx, 'busy', PROJECT + '-other')
   await spawnRig.action('settings', { maxConcurrent: 1, maxWorkAgents: 2 })
   await spawnRig.action('start')
   await spawnRig.settle()
@@ -4329,6 +4333,28 @@ function fakeHostSubprocess(result) {
     'T-127 invariants hold after dispatch: assignee in roster, live <= desired, no running taskless pool instance',
     rosterNames.indexOf(task.assignee.name) >= 0 && (desired === null || liveWorkers.length <= desired) && taskless.length === 0,
     JSON.stringify({ rosterNames: rosterNames, desired: desired, live: liveWorkers.length, taskless: taskless.map((member) => member.name) }),
+  )
+  rig.scheduler.dispose()
+}
+
+// ── T-127: a full pool queues the card with 角色已满 ─────────────────────────
+{
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  const poolConfig = defaultRoleConfig()
+  poolConfig.profiles.worker.instances = 1
+  rig.fs.files.set(rolesPath(PROJECT), { text: JSON.stringify(poolConfig), version: 'seed' })
+  rig.team.setStatus('fixer', 'failed')
+  const A = (await createTask(rig, { title: 'first' })).id
+  const B = (await createTask(rig, { title: 'second' })).id
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const first = byId(snap, A)
+  const second = byId(snap, B)
+  check(
+    'T-127 when every desired instance holds a card the next card waits with 角色已满',
+    first.status === 'running' && second.status === 'pending' && second.waitingReason === '角色已满',
+    JSON.stringify({ first: first.status, second: { status: second.status, waiting: second.waitingReason } }),
   )
   rig.scheduler.dispose()
 }

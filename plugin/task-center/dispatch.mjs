@@ -281,8 +281,8 @@ export function roleSlotName(kind, index, projectRoot) {
   return String(kind) + (key === null ? '' : '-p' + key) + '-' + String(index)
 }
 
-/** Parse a slot name into { kind, project (key|null), index }, or null. Feature
- * workers are work-<task>-<n>, so they never match. */
+/** Parse a slot name into { kind, project (key|null), index }, or null. Pool
+ * workers are worker-p<key>-<n>, so they are matched explicitly. */
 export function roleSlotOf(name) {
   if (typeof name !== 'string') return null
   const match = /^(worker|reviewer|tester)(?:-p([0-9a-f]{6,}))?-(\d+)$/.exec(name)
@@ -1663,13 +1663,6 @@ async function rollbackWorktree(git, projectPath, options) {
   const summary =
     steps.length === 0 ? 'no cleanup command available; leftovers: ' + leftovers : steps.map((entry) => entry.name + '=' + (entry.ok ? 'ok' : 'failed')).join(' ') + '; leftovers: ' + leftovers
   return { ok: leftovers === 'none', steps: steps, leftovers: leftovers, summary: summary }
-}
-
-/** A worker name derived from the task and its attempt; names are immutable in
- * the roster, so a retry after a dead worker needs a new one. */
-export function workAgentName(taskId, attempt) {
-  const slug = String(taskId).toLowerCase().replace(/[^a-z0-9]+/g, '')
-  return 'work-' + (slug === '' ? 'task' : slug) + '-' + String(attempt)
 }
 
 export function spawnPreamble(name, leadName) {
@@ -4052,6 +4045,28 @@ export function createDispatcher(ctx, options) {
         })
         let pickedNow = picked
         if (pickedNow.ok !== true && (pickedNow.code === 'no-teammates' || pickedNow.code === 'no-idle-member') && dispatch.allowSpawn === true && spawnAllowed) {
+          // A3/A4: never create beyond the configured pool. Count the pool
+          // workers and the cards they hold before asking the role manager.
+          const desiredPool = Math.max(1, Number(workerConfig !== null && workerConfig !== undefined && workerConfig.profiles !== undefined && workerConfig.profiles.worker !== undefined ? workerConfig.profiles.worker.instances : 1) || 1)
+          let rosterNow = []
+          try { rosterNow = ctx.get('agentTeams').listMembers() } catch (error) { rosterNow = [] }
+          const poolMembers = rosterNow.filter((member) => typeof member.name === 'string' && /^worker-p/.test(member.name) && member.status !== 'failed')
+          const livePool = poolMembers.filter((member) => member.status === 'running').length
+          const heldNames = new Set()
+          for (const card of current.tasks) {
+            if (card.status === 'running' && card.assignee !== null && card.assignee !== undefined && typeof card.assignee.name === 'string') heldNames.add(card.assignee.name)
+          }
+          const busyPool = poolMembers.filter((member) => heldNames.has(member.name)).length
+          if (livePool >= desiredPool) {
+            if (busyPool >= desiredPool) {
+              await markExecutorMissing(project, task.id, '角色已满', 'every configured worker instance (' + String(desiredPool) + ') already holds a running card')
+              results.push({ id: task.id, skipped: 'role-full', reason: '角色已满' })
+              continue
+            }
+            // Every configured instance exists but none is idle for this card.
+            results.push({ id: task.id, skipped: 'role-overspend', message: 'role-overspend: live ' + String(livePool) + ' >= desired ' + String(desiredPool) + '; refusing to create another worker' })
+            continue
+          }
           // The pool has no free instance: provision one through the role
           // manager (worker-p<key>-N) and retry the same pick. Never spawn a
           // per-card agent here.
