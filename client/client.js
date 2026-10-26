@@ -252,6 +252,12 @@ window.__ModuleLoader__.load({
 				workersHint: '执行者是当前 Team 的 WorkAgent：优先复用空闲成员，没有空闲时才新建；上限由派发设置决定（GUI 下默认是并发 + 1）。',
 				workersNoTeam: '本会话没有团队：调用 task_center { action: "bootstrapTeam" } 建队后再派发。',
 			workerQueued: '排队 {n}',
+			workersIdleNote: '待命（进程在运行，没有分配任务）',
+			workerRole: '角色',
+			workerRoleConfigured: '已配置',
+			workerRoleRunning: '在跑',
+			workerRoleIdle: '待命',
+			workerRoleWithCard: '手上有卡',
 				workersEmpty: '本会话的 Team 里还没有成员 → 调用 bootstrapTeam 建最小团队。',
 				workersUnavailable: '宿主没有提供执行者池信息。',
 				workersError: '执行者池不可读',
@@ -773,6 +779,12 @@ window.__ModuleLoader__.load({
 				workersHint: 'Workers are the WorkAgents of the current Team: idle members are reused first and a new one is spawned only when none is idle; the cap comes from the dispatch settings (concurrency + 1 by default in the GUI).',
 				workersNoTeam: 'This session has no team: call task_center { action: "bootstrapTeam" } before dispatching.',
 			workerQueued: 'queued {n}',
+			workersIdleNote: 'idle (process is running, no task assigned)',
+			workerRole: 'Role',
+			workerRoleConfigured: 'Configured',
+			workerRoleRunning: 'Running',
+			workerRoleIdle: 'Idle',
+			workerRoleWithCard: 'Has card',
 				workersEmpty: 'This session’s team has no members yet → call bootstrapTeam to create the minimum roster.',
 				workersUnavailable: 'The host did not report a worker pool.',
 				workersError: 'Worker pool unreadable',
@@ -2982,6 +2994,36 @@ window.__ModuleLoader__.load({
 					),
 				)
 				const members = Array.isArray(workers.members) ? workers.members : []
+				// T-127: per-role numbers so "running with no card" is unambiguous.
+				const roleCounts = workers.roleCounts !== null && workers.roleCounts !== undefined && typeof workers.roleCounts === 'object' ? workers.roleCounts : null
+				const roleDesired = workers.roles !== null && workers.roles !== undefined && workers.roles.desired !== null && workers.roles.desired !== undefined ? workers.roles.desired : {}
+				if (roleCounts !== null) {
+					const roleRows = ['worker', 'reviewer', 'tester', 'merger']
+						.filter(function (kind) { return roleCounts[kind] !== undefined })
+						.map(function (kind) {
+							const counts = roleCounts[kind]
+							const desired = Number.isFinite(roleDesired[kind]) ? roleDesired[kind] : 0
+							return h(
+								'tr',
+								{ key: 'rolecount-' + kind, 'data-role-count': kind },
+								h('td', { className: 'gbt-mono' }, t(ROLE_KIND_KEYS[kind] === undefined ? 'workerName' : ROLE_KIND_KEYS[kind])),
+								h('td', null, String(desired)),
+								h('td', null, String(counts.running || 0)),
+								h('td', null, String(counts.idle || 0)),
+								h('td', null, String(counts.busy || 0)),
+							)
+						})
+					if (roleRows.length > 0) {
+						blocks.push(
+							h(
+								'table',
+								{ key: 'rolecounts', className: 'gbt-locktable' },
+								h('thead', null, h('tr', null, h('th', null, t('workerRole')), h('th', null, t('workerRoleConfigured')), h('th', null, t('workerRoleRunning')), h('th', null, t('workerRoleIdle')), h('th', null, t('workerRoleWithCard')))),
+								h('tbody', null, roleRows),
+							),
+						)
+					}
+				}
 				if (lead === null) blocks.push(h('div', { key: 'noteam', className: 'gbt-empty' }, t('workersNoTeam')))
 				if (members.length === 0) {
 					blocks.push(h('div', { key: 'empty', className: 'gbt-empty' }, t('workersEmpty')))
@@ -3005,8 +3047,8 @@ window.__ModuleLoader__.load({
 								}
 								const queued = Number.isFinite(member.queue) && member.queue > 0 ? ' · ' + t('workerQueued').replace('{n}', String(member.queue)) : ''
 								if (queued !== '') task = task === '—' ? queued.replace(/^ · /, '') : task + queued
-								if (current === null && status === 'inactive') {
-									task = t('workersIdle')
+								if (current === null && (status === 'idle' || status === 'inactive')) {
+									task = t('workersIdleNote')
 								}
 								return h(
 									'tr',
@@ -3022,7 +3064,7 @@ window.__ModuleLoader__.load({
 				return h('div', null, blocks)
 			}
 
-			const WORKER_STATUS = { running: 'workersBusy', inactive: 'workersIdle', provisioning: 'workersProvisioning', failed: 'workersFailed' }
+			const WORKER_STATUS = { running: 'workersBusy', idle: 'workersIdle', inactive: 'workersIdle', provisioning: 'workersProvisioning', failed: 'workersFailed' }
 			const WORKER_ERROR = { 'no-team-service': 'workersErrNoService', 'no-lead': 'workersErrNoLead', 'roster-unreadable': 'workersErrRoster' }
 
 			/** A worker status label; an unknown status is shown raw rather than guessed. */

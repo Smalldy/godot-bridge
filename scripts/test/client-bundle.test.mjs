@@ -537,7 +537,7 @@ const HOST = {
     lead: 'lead',
     members: [
       { id: 'session-fixer', name: 'fixer', status: 'running', currentTask: { id: 'T-1', title: 'Build damage system' } },
-      { id: 'session-tester', name: 'tester', status: 'inactive', currentTask: null },
+      { id: 'session-tester', name: 'tester', status: 'idle', currentTask: null },
       { id: 'session-builder', name: 'builder', status: 'provisioning', currentTask: null },
       { id: 'session-ghost', name: 'ghost', status: 'failed', currentTask: null },
     ],
@@ -547,6 +547,12 @@ const HOST = {
     failed: 1,
     cap: 4,
     error: null,
+    // T-127: per-role numbers and the running-without-card state.
+    roleCounts: {
+      worker: { running: 1, idle: 0, busy: 1 },
+      reviewer: { running: 0, idle: 1, busy: 0 },
+      tester: { running: 0, idle: 1, busy: 0 },
+    },
   },
   // T-122: the session's own team is the member-table source.
   team: {

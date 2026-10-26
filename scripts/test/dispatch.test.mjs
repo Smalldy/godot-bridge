@@ -824,7 +824,7 @@ async function submitAndMerge(rig, id, evidence) {
     // T-115: the team needs a member to be qualified; keep it busy so dispatch still SPAWNS.
     teamOptions: { roster: [
       { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
-      { id: 'session-busy', name: 'busy', role: 'teammate', status: 'running' },
+      { id: 'session-busy', name: 'busy', role: 'teammate', status: 'provisioning' },
     ], spawnedStatus: 'running' },
   })
   const A = (await createTask(rig, { title: 'spawned work' })).id
@@ -2014,8 +2014,9 @@ function roleTask(overrides) {
     team: createTeam({
       roster: [
         { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
-        // T-115: a qualified team needs a member; keep it busy so dispatch spawns.
-        { id: 'session-busy', name: 'busy', role: 'teammate', status: 'running' },
+        // T-115/T-127: a qualified team needs a member; provisioning is not
+        // reusable, so dispatch still spawns a per-card worker.
+        { id: 'session-busy', name: 'busy', role: 'teammate', status: 'provisioning' },
       ],
     }),
     teamOptions: { spawnedStatus: 'running' },
@@ -4222,6 +4223,68 @@ function fakeHostSubprocess(result) {
       USER_ONLY_ACTIONS.indexOf('bootstrapTeam') < 0,
     TEAM_BOOTSTRAP_INSTRUCTION,
   )
+}
+
+// ── T-127: a running process without a card is idle, and reusable ──────────
+{
+  // (a) a running role instance with no task is reused, not duplicated.
+  {
+    const rig = createRig({ team: createTeam({ roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+    ] }) })
+    const A = (await createTask(rig, { title: 'reuse me' })).id
+    await rig.action('start')
+    await rig.settle()
+    const snap = await snapshot(rig)
+    const task = byId(snap, A)
+    check(
+      'T-127 a running role instance with no card is reused instead of spawning',
+      task.status === 'running' && task.assignee !== null && task.assignee.name === 'fixer' && rig.team.calls.filter((call) => call.kind === 'spawn').length === 0,
+      JSON.stringify({ assignee: task.assignee, calls: rig.team.calls.map((call) => call.kind) }),
+    )
+    rig.scheduler.dispose()
+  }
+  // (b) workerPool status: no card -> idle; with card -> running.
+  {
+    const rig = createRig({ allowSpawn: false, team: createTeam({ roster: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
+    ] }) })
+    const idleSnap = await rig.api.snapshot(PROJECT, { sessionId: 'session-lead' })
+    const idleMember = idleSnap.workers.members.filter((member) => member.name === 'fixer')[0]
+    check(
+      'T-127 a running process with no current task is shown as idle, not running',
+      idleMember !== undefined && idleMember.status === 'idle' && idleMember.processStatus === 'running' && idleMember.currentTask === null && idleSnap.workers.busy === 0 && idleSnap.workers.idle >= 1,
+      JSON.stringify({ member: idleMember, busy: idleSnap.workers.busy, idle: idleSnap.workers.idle }),
+    )
+    const stamp = new Date().toISOString()
+    seedBoard(rig.fs, PROJECT, JSON.stringify({
+      version: 2,
+      seq: 2,
+      dispatch: { state: 'paused' },
+      tasks: [{
+        id: 'T-1', title: 'busy card', status: 'running', priority: 0, dependsOn: [], writeFiles: [], spec: 's', acceptance: 'a', evidence: '',
+        ownerSession: 'session-lead', base: 'base-sha', target: 'main', branch: 'task/T-1-1', commit: 'head-sha',
+        assignee: { name: 'fixer', session: 'session-fixer' }, review: null, test: null,
+        merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: null, reviewer: null, conflict: null, at: stamp },
+        history: [], createdAt: stamp, updatedAt: stamp, attempts: 1, maxAttempts: 3,
+      }],
+    }))
+    const busySnap = await rig.api.snapshot(PROJECT, { sessionId: 'session-lead' })
+    const busyMember = busySnap.workers.members.filter((member) => member.name === 'fixer')[0]
+    check(
+      'T-127 a member with a current task is shown as running with that task',
+      busyMember !== undefined && busyMember.status === 'running' && busyMember.currentTask !== null && busyMember.currentTask.id === 'T-1' && busySnap.workers.busy === 1,
+      JSON.stringify({ member: busyMember, busy: busySnap.workers.busy }),
+    )
+    check(
+      'T-127 the executor pool reports per-role configured/running/idle/with-card numbers',
+      busySnap.workers.roleCounts !== undefined && busySnap.workers.roleCounts.worker !== undefined && busySnap.workers.roleCounts.worker.running === 1 && busySnap.workers.roleCounts.worker.busy === 1,
+      JSON.stringify(busySnap.workers.roleCounts),
+    )
+    rig.scheduler.dispose()
+  }
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

@@ -980,8 +980,27 @@ export function pickTarget(ctx, options) {
     (member) => member.role === 'teammate' && member.status !== 'failed' && member.name !== MERGER_NAME && !isRoleName(member.name),
   )
   const projectKey = typeof opts.projectKey === 'string' && opts.projectKey.length > 0 ? opts.projectKey : null
+  // T-127: a member is reusable when it has NO current task and is not
+  // provisioning/failed. A freshly provisioned role instance is 'running' but
+  // idle; the old 'inactive only' test made dispatch spawn a per-card worker.
+  const boardTasks = opts.board !== null && opts.board !== undefined && Array.isArray(opts.board.tasks) ? opts.board.tasks : []
+  const busyNames = new Set()
+  const busyIds = new Set()
+  for (const task of boardTasks) {
+    if (task === null || task === undefined || task.status !== 'running' || task.assignee === null || task.assignee === undefined) continue
+    if (typeof task.assignee.name === 'string' && task.assignee.name !== '') busyNames.add(task.assignee.name)
+    if (task.assignee.session !== undefined && task.assignee.session !== null && String(task.assignee.session) !== '') busyIds.add(String(task.assignee.session))
+  }
+  const avoid = opts.avoid instanceof Set ? opts.avoid : new Set()
   const idle = teammates.filter((member) => {
-    if (member.status !== 'inactive' || reserved.has(member.name)) return false
+    if (reserved.has(member.name) || avoid.has(member.name)) return false
+    if (member.status === 'provisioning' || member.status === 'failed') return false
+    const memberId = member.id === undefined || member.id === null ? null : String(member.id)
+    // A worker is busy only while its PROCESS is running AND the board still
+    // assigns it a running card. An inactive entry whose card is still running
+    // has already ended its turn, so it can take the next card.
+    const assigned = busyNames.has(member.name) || (memberId !== null && busyIds.has(memberId))
+    if (member.status === 'running' && assigned) return false
     if (projectKey === null) return true
     const remembered = memberProjectOf(ctx, member.name)
     // A member created for another project is NOT idle for this one.
@@ -1055,6 +1074,8 @@ export function workerPool(ctx, board, options) {
     kinds: { lead: 0, worker: 0, reviewer: 0, tester: 0, merger: 0 },
     // The role manager's desired instances (from the project role config).
     roles: null,
+    // T-127: per-role numbers for the executors page.
+    roleCounts: {},
   }
   const { agents, agentTeams } = servicesFor(ctx)
   if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
@@ -1131,6 +1152,11 @@ export function workerPool(ctx, board, options) {
       return sessionMatch || nameMatch
     })[0]
     const name = member.name === undefined || member.name === null ? null : String(member.name)
+    const processStatus = status
+    const hasTask = owned !== undefined
+    // T-127: 'running' is the AGENT PROCESS state, not work state. A process
+    // without a card is idle (待命), never 执行中.
+    const displayStatus = hasTask ? 'running' : processStatus === 'provisioning' || processStatus === 'failed' ? processStatus : 'idle'
     const remembered = name === null ? null : memberProjectOf(ctx, name)
     // T-122: this member's own queue, from the cards of THIS board that were
     // delivered to it; it is not derived from another project's tasks.
@@ -1155,15 +1181,22 @@ export function workerPool(ctx, board, options) {
       projectRoot: remembered === null ? null : remembered.root,
       description: typeof member.description === 'string' && member.description !== '' ? member.description : descriptions[kind],
       session: member.id === undefined || member.id === null ? (member.session === undefined ? null : String(member.session)) : String(member.id),
-      status: status,
-      currentTask: owned === undefined ? null : { id: owned.id, title: owned.title },
+      status: displayStatus,
+      currentTask: hasTask ? { id: owned.id, title: owned.title } : null,
+      processStatus: processStatus,
+      hasTask: hasTask,
     })
     report.kinds[kind] = (report.kinds[kind] === undefined ? 0 : report.kinds[kind]) + 1
     if (report.roles !== null && report.roles.live[kind] !== undefined) report.roles.live[kind] += 1
-    if (status === 'running') report.busy += 1
-    else if (status === 'inactive') report.idle += 1
-    else if (status === 'provisioning') report.provisioning += 1
-    else if (status === 'failed') report.failed += 1
+    if (hasTask) report.busy += 1
+    else if (displayStatus === 'provisioning') report.provisioning += 1
+    else if (displayStatus === 'failed') report.failed += 1
+    else report.idle += 1
+    if (report.roleCounts === undefined) report.roleCounts = {}
+    if (report.roleCounts[kind] === undefined) report.roleCounts[kind] = { running: 0, idle: 0, busy: 0 }
+    report.roleCounts[kind].running += processStatus === 'running' ? 1 : 0
+    if (hasTask) report.roleCounts[kind].busy += 1
+    else report.roleCounts[kind].idle += 1
   }
   if (report.roles !== null) {
     for (const kind of ['worker', 'reviewer', 'tester']) {
@@ -4024,6 +4057,14 @@ export function createDispatcher(ctx, options) {
           // The LEAD that creates the executor is the one this card BELONGS to
           // (owned card) or the project session that adopted it (ownerless card).
           sessionId: dispatchSession,
+          board: current,
+          // T-127: a worker left over from a PREVIOUS host must not be reused
+          // (its inbox may still hold the old brief); supersede interrupts it.
+          avoid: new Set(
+            task.dispatch !== null && task.dispatch !== undefined && task.dispatch.host !== null && task.dispatch.host !== undefined && task.dispatch.host !== boot
+              ? (Array.isArray(task.executors) ? task.executors : []).map((entry) => entry !== null && entry !== undefined && typeof entry.name === 'string' ? entry.name : null).filter((name) => name !== null)
+              : [],
+          ),
           legacyDispatch: dispatchSession === null,
         })
         if (picked.ok !== true) {
