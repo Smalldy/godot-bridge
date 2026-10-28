@@ -6,6 +6,7 @@ register('./stubs/hooks.mjs', import.meta.url)
 const { registerTaskTool, agentLabel, projectPathOf } = await import('../../plugin/task-center/tool.mjs')
 const { SKILL_NAME, buildSkillContent } = await import('../../plugin/task-center/skill.mjs')
 const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
+const { ONBOARD_NEXT_CODES } = await import('../../plugin/task-center/onboard.mjs')
 const { createRig, createTask } = await import('./support/fixtures.mjs')
 const { rememberMemberProject } = await import('../../plugin/task-center/dispatch.mjs')
 const { join } = await import('node:path')
@@ -43,6 +44,7 @@ check('projectPathOf resolves the workspace', projectPathOf(rig.ctx, agent) === 
 
 // the action vocabulary is the API's, not a hand-maintained second list
 const actions = rig.tool.parameters.action.enum
+check('the tool exposes onboard (T-129)', actions.indexOf('onboard') >= 0, actions.join(','))
 check('the tool exposes start and pause', actions.indexOf('start') >= 0 && actions.indexOf('pause') >= 0, actions.join(','))
 check('the tool exposes create and submit', actions.indexOf('create') >= 0 && actions.indexOf('submit') >= 0)
 check(
@@ -65,6 +67,7 @@ check(
     ['provisions a missing role', 'godot_run_headless', '{{TASK_ID}}', 'per-round brief', 'skillsCatalog', 'merger-only'].filter((needle) => description.indexOf(needle) >= 0).join(','),
   )
   check('the tool says dependencies must be merged, not just done', description.indexOf('done and merged') >= 0, description.slice(0, 300))
+  check('the tool routes the FIRST move to onboard (T-129)', description.indexOf('Start with action onboard') >= 0 && description.indexOf('one next step') >= 0, description.slice(0, 320))
   check('the tool description keeps the start-consent routing', description.indexOf('needs-consent') >= 0 && description.indexOf('panel') >= 0, description.slice(-260))
   check('requestChanges carries explicit reasons', rig.tool.parameters.reasons !== undefined, JSON.stringify(rig.tool.parameters.reasons))
   check('the tool no longer describes a host verification gate', description.indexOf('after verification') < 0, description.slice(0, 1400))
@@ -111,9 +114,15 @@ check(
 {
   const content = buildSkillContent({ actions: ACTIONS, agentActions: AGENT_ACTIONS, readActions: READ_ACTIONS, userOnlyActions: USER_ONLY_ACTIONS })
   check(
-    'the skill defines the Lead role and the entry flow',
-    content.indexOf('你是谁：Lead') >= 0 && content.indexOf('进入流程') >= 0 && content.indexOf('停下来问') >= 0,
+    'the skill defines the Lead role and the onboard entrance (T-129)',
+    content.indexOf('你是谁：Lead') >= 0 && content.indexOf('接入（onboard）') >= 0 && content.indexOf('onboard') >= 0 && content.indexOf('停下来问') >= 0,
     content.slice(0, 400),
+  )
+  check('the old 进入流程 entrance is gone from the skill', content.indexOf('进入流程') < 0, content.slice(content.indexOf('接入'), content.indexOf('接入') + 80))
+  check(
+    'the skill table covers every onboarding next code (T-129)',
+    ONBOARD_NEXT_CODES.every((code) => content.indexOf('`' + code + '`') >= 0),
+    ONBOARD_NEXT_CODES.filter((code) => content.indexOf('`' + code + '`') < 0).join(','),
   )
   check('the skill forbids guard exemptions', content.indexOf('不给自己的提交开守卫豁免') >= 0, content.slice(-600))
   check('the skill keeps user-only panel actions hidden from the tool', content.indexOf('工具不暴露') >= 0, content.slice(-600))
@@ -135,6 +144,25 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
   check('the tool reads the board', board.ok === true && board.tasks.length === 1 && board.counts.pending === 1, JSON.stringify(board.counts))
   const bad = await call({ action: 'create', title: 'bad dependency', dependsOn: ['T-99'] })
   check('a refused create is a readable error', bad.error !== undefined && bad.code === 'unknown-dependency', JSON.stringify(bad))
+}
+
+// ── T-129: one-call onboarding through the tool ─────────────────────────────
+{
+  const onboarded = await call({ action: 'onboard' })
+  check(
+    'the tool onboards in one call (brief + one next step)',
+    onboarded.ok === true &&
+      onboarded.onboard !== undefined &&
+      typeof onboarded.onboard.brief === 'string' &&
+      onboarded.onboard.brief.indexOf('下一步') >= 0 &&
+      typeof onboarded.onboard.next.code === 'string',
+    JSON.stringify(onboarded).slice(0, 400),
+  )
+  check(
+    'the tool onboarding answer carries no board tasks or previews',
+    onboarded.tasks === undefined && onboarded.rolePreviews === undefined && onboarded.worktrees === undefined,
+    Object.keys(onboarded).join(','),
+  )
 }
 
 // start / dispatch / submit ownership

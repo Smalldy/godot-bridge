@@ -89,6 +89,21 @@ import {
   writeRoleConfig,
 } from './board.mjs'
 import { mergeEligible, recordCandidate, recordMergeResult, refreshMergeRequest, testCandidateFor } from './merge.mjs'
+import { renderTaskLine } from './skill.mjs'
+import {
+  ONBOARD_VERSION,
+  blockedSuffixOf,
+  checkTextOf,
+  decideOnboardStage,
+  needsUserFor,
+  projectNameOf,
+  renderOnboardBrief,
+  renderProjectLine,
+  resolveOnboardRoot,
+  selectOnboardNext,
+  summariseBoard,
+  teamLabelOf,
+} from './onboard.mjs'
 import { writePolicyFor } from './state.mjs'
 
 /** How long one main-checkout cleanliness read is trusted by the panel payload. */
@@ -144,6 +159,9 @@ export const ACTIONS = [
   'retry',
   'locks',
   'openProject',
+  // T-129: the ONE call that resolves the project, binds it, reads the board,
+  // bootstraps a missing Team and answers a short brief + one next step.
+  'onboard',
 ]
 
 /** Actions that belong to the person at the GUI. The tool binding hides them,
@@ -3736,6 +3754,57 @@ export function createApi(ctx, options) {
     return { team: team, nextStep: teamBootstrapStep(team) }
   }
 
+  /**
+   * Provision the minimum roster inside the caller's OWN session/project.
+   *
+   * Shared by the `bootstrapTeam` action (T-121) and by onboarding's automatic
+   * team step (T-129): one definition of "build a team", so the two can never
+   * disagree about who may create it or what the minimum is. Returns a success
+   * payload or the same readable refusals the action answers with.
+   */
+  async function bootstrapTeamFor(projectPath, sessionId) {
+    if (sessionId === null || sessionId === undefined || sessionId === '') {
+      return failure('no-lead-for-project', 'bootstrapTeam needs the caller session; no session context was provided, so no team can be created for it')
+    }
+    const lead = resolveLead(ctx, { sessionId: sessionId })
+    if (lead === null) {
+      return failure('no-lead-for-project', 'session ' + sessionId + ' has no own Team Lead, so bootstrapTeam cannot create a team here; open the project from the session that owns it')
+    }
+    const owns = await sessionOwnsProject(state, sessionId, projectPath)
+    if (owns !== true) {
+      return failure('project-mismatch', 'session ' + sessionId + ' does not run in project ' + projectPath + ', so bootstrapTeam refuses to create a team for another project')
+    }
+    if (roles === null || typeof roles.ensure !== 'function') {
+      return failure('no-role-manager', 'this profile has no role manager, so the minimum roster cannot be provisioned')
+    }
+    const config = await roleConfigFor(projectPath)
+    // T-129 §14: bootstrap creates the WORKER slot only. Reviewer and tester are
+    // provisioned later by their own stage (review on submit, test on entering
+    // testing), so a project never pays for three agents before a card exists —
+    // and the worker is NOT handed a fake "bootstrap-team" card to chase.
+    const provisioned = []
+    for (const kind of ['worker']) {
+      let ensured = null
+      try {
+        ensured = await ensureRoleBounded(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: null, now: clock(), sessionId: sessionId })
+      } catch (error) {
+        ensured = null
+      }
+      emitRoleProvision(ensured)
+      provisioned.push({ kind: kind, ok: ensured !== null && ensured !== undefined && ensured.ok === true, created: ensured === null || ensured === undefined || !Array.isArray(ensured.created) ? [] : ensured.created.map((entry) => entry.name), reused: ensured === null || ensured === undefined || !Array.isArray(ensured.reused) ? [] : ensured.reused, refused: ensured === null || ensured === undefined || !Array.isArray(ensured.refused) ? [] : ensured.refused })
+    }
+    const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath })
+    return ok({
+      lead: typeof lead.name === 'string' && lead.name !== '' ? lead.name : String(lead.id),
+      session: sessionId,
+      roles: provisioned,
+      // Explicit: the other two slots are NOT missing, they are deferred to their
+      // stage (the phase gate provisions them with the real card's brief).
+      deferred: ['reviewer', 'tester'],
+      team: team,
+    })
+  }
+
   async function resolveIncoming(source, context) {
     const explicit = typeof source.project === 'string' && source.project.trim().length > 0 ? source.project.trim() : ''
     if (explicit !== '') return { ok: true, root: resolve(explicit), resolvedFrom: 'explicit' }
@@ -3768,6 +3837,11 @@ export function createApi(ctx, options) {
     const source = input === undefined || input === null ? {} : input
     if (action === 'openProject') {
       return openProject(source, context)
+    }
+    if (action === 'onboard') {
+      // T-129: onboarding answers BEFORE project resolution — "this session has
+      // no project bound yet" is exactly the state it exists to resolve.
+      return onboardAction(source, context)
     }
     const incoming = await resolveIncoming(source, context)
     if (incoming.ok !== true) return incoming
@@ -3804,36 +3878,12 @@ export function createApi(ctx, options) {
     }
     if (action === 'bootstrapTeam') {
       // T-121: an agent can bootstrap its OWN team instead of asking the user.
+      // T-129: onboarding calls the SAME routine, so a team is only ever built
+      // one way (and a second onboard while the team is ok builds nothing).
       const sessionId = callerSessionId(source, context)
-      if (sessionId === null) {
-        return failure('no-lead-for-project', 'bootstrapTeam needs the caller session; no session context was provided, so no team can be created for it')
-      }
-      const lead = resolveLead(ctx, { sessionId: sessionId })
-      if (lead === null) {
-        return failure('no-lead-for-project', 'session ' + sessionId + ' has no own Team Lead, so bootstrapTeam cannot create a team here; open the project from the session that owns it')
-      }
-      const owns = await sessionOwnsProject(state, sessionId, projectPath)
-      if (owns !== true) {
-        return failure('project-mismatch', 'session ' + sessionId + ' does not run in project ' + projectPath + ', so bootstrapTeam refuses to create a team for another project')
-      }
-      if (roles === null || typeof roles.ensure !== 'function') {
-        return failure('no-role-manager', 'this profile has no role manager, so the minimum roster cannot be provisioned')
-      }
-      const config = await roleConfigFor(projectPath)
-      const synthetic = { id: 'bootstrap-team', title: 'Team bootstrap', status: 'running', dependsOn: [], writeFiles: [], ownerSession: sessionId, spec: '', acceptance: '' }
-      const provisioned = []
-      for (const kind of ['worker', 'reviewer', 'tester']) {
-        let ensured = null
-        try {
-          ensured = await ensureRoleBounded(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: synthetic, now: clock(), sessionId: sessionId })
-        } catch (error) {
-          ensured = null
-        }
-        emitRoleProvision(ensured)
-        provisioned.push({ kind: kind, ok: ensured !== null && ensured !== undefined && ensured.ok === true, created: ensured === null || ensured === undefined || !Array.isArray(ensured.created) ? [] : ensured.created.map((entry) => entry.name), reused: ensured === null || ensured === undefined || !Array.isArray(ensured.reused) ? [] : ensured.reused, refused: ensured === null || ensured === undefined || !Array.isArray(ensured.refused) ? [] : ensured.refused })
-      }
-      const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath })
-      return ok({ bootstrap: true, session: sessionId, lead: typeof lead.name === 'string' && lead.name !== '' ? lead.name : String(lead.id), roles: provisioned, team: team, nextStep: teamBootstrapStep(team) })
+      const boot = await bootstrapTeamFor(projectPath, sessionId)
+      if (boot.ok !== true) return boot
+      return ok({ bootstrap: true, session: boot.session, lead: boot.lead, roles: boot.roles, deferred: boot.deferred, team: boot.team, nextStep: teamBootstrapStep(boot.team) })
     }
     if (action.indexOf('roles') === 0 && USER_ONLY_ACTIONS.indexOf(action) >= 0) {
       const denied = roleAdminRefusal(context)
@@ -5158,6 +5208,399 @@ export function createApi(ctx, options) {
       registry: registryStatus,
       // A flat string for callers that only want "did it persist, and why not".
       registryError: registryStatus !== null && registryStatus.ok !== true ? String(registryStatus.error) : null,
+    })
+  }
+
+  /**
+   * T-129: the ONE-call onboarding.
+   *
+   * Resolves the project root (explicit path, then the session workspace walked
+   * up), checks the git/Godot markers, binds the project through the same
+   * preflight openProject uses, reads the board, bootstraps a missing Team, and
+   * answers a SHORT brief plus ONE machine-readable next step.
+   *
+   * It never creates cards, never starts dispatch, never runs git init and never
+   * writes .agents/tasks.json. It is idempotent: a second call on a healthy board
+   * refreshes the binding and provisions nothing.
+   */
+  async function onboardWorkspaceOf(context, sessionId) {
+    const fromContext =
+      context !== undefined && context !== null && typeof context.projectPath === 'string' && context.projectPath.trim() !== '' ? context.projectPath.trim() : ''
+    if (fromContext !== '') return fromContext
+    if (sessionId !== null && state !== null && typeof state.lookupSessionRoot === 'function') {
+      try {
+        const looked = await state.lookupSessionRoot(sessionId)
+        if (looked !== null && looked !== undefined && looked.ok === true && typeof looked.path === 'string' && looked.path !== '') return looked.path
+      } catch (error) {}
+    }
+    return null
+  }
+
+  /** The public project summary: paths/markers/counts, no board internals. */
+  function onboardProjectSummary(f) {
+    const path = typeof f.root === 'string' && f.root !== '' ? f.root : typeof f.workspace === 'string' && f.workspace !== '' ? f.workspace : null
+    const counts = f.counts === null || f.counts === undefined ? null : f.counts
+    return {
+      path: path,
+      root: typeof f.root === 'string' && f.root !== '' ? projectRefOf(f.root).root : null,
+      name: typeof f.root === 'string' && f.root !== '' ? projectNameOf(f.root) : null,
+      branch: typeof f.branch === 'string' ? f.branch : null,
+      head: typeof f.head === 'string' ? f.head : null,
+      git: f.git === true,
+      godot: f.godot === true,
+      boardExisted: f.boardExisted === true,
+      counts: counts,
+      ready: Number.isFinite(f.readyCount) ? f.readyCount : 0,
+      blocked: Array.isArray(f.blocked) ? f.blocked : [],
+      active: Array.isArray(f.active) ? f.active : [],
+      queue: Number.isFinite(f.readyCount) ? f.readyCount : 0,
+    }
+  }
+
+  /** The public team summary: names only, never full member rows. */
+  function onboardTeamSummary(team, bootstrapped, roles) {
+    const t = team === null || team === undefined ? {} : team
+    return {
+      available: t.available === true,
+      ok: t.ok === true,
+      lead: typeof t.lead === 'string' && t.lead !== '' ? t.lead : null,
+      members: Array.isArray(t.members)
+        ? t.members
+            .map((member) => String(member !== null && member !== undefined && typeof member === 'object' ? member.name : member))
+            .filter((name) => name !== '')
+        : [],
+      missingRoles: Array.isArray(t.missingRoles) ? t.missingRoles.slice() : [],
+      error: t.error === undefined || t.error === null ? null : String(t.error),
+      bootstrapped: bootstrapped === true,
+      roles: Array.isArray(roles) ? roles : null,
+    }
+  }
+
+  /** The public dispatch summary: state plus the request the user must decide. */
+  function onboardDispatchSummary(dispatch) {
+    const d = dispatch === null || dispatch === undefined ? {} : dispatch
+    const raw = d.request === undefined || d.request === null ? null : d.request
+    return {
+      state: typeof d.state === 'string' ? d.state : null,
+      request:
+        raw === null
+          ? null
+          : {
+              id: typeof raw.id === 'string' ? raw.id : null,
+              by: typeof raw.by === 'string' ? raw.by : null,
+              at: typeof raw.at === 'string' ? raw.at : null,
+              note: typeof raw.note === 'string' ? raw.note : null,
+            },
+      since: typeof d.since === 'string' ? d.since : null,
+      maxConcurrent: Number.isFinite(d.maxConcurrent) ? d.maxConcurrent : null,
+    }
+  }
+
+  async function onboardAction(input, context) {
+    const source = input === undefined || input === null ? {} : input
+    // The route injects the panel's resolved project; onboarding deliberately
+    // ignores it and follows its own contract (explicit path, then the session
+    // workspace) so a last-active panel binding cannot hijack the answer.
+    const sessionId = callerSessionId(source, context)
+    const now = clock()
+    const setup = { did: [], failed: [] }
+    const warnings = []
+    const attention = []
+    const explicit = typeof source.path === 'string' && source.path.trim() !== '' ? source.path.trim() : null
+    const workspace = explicit === null ? await onboardWorkspaceOf(context, sessionId) : null
+    const base = state.memory.projectHint === null ? process.cwd() : state.memory.projectHint
+    const resolved = await resolveOnboardRoot(
+      { fs: ctx.fs },
+      {
+        explicit: explicit,
+        workspace: workspace === null ? '' : workspace,
+        cwd: explicit === null ? (workspace === null ? base : workspace) : base,
+      },
+    )
+    if (resolved.kind === 'invalid') return failure('not-a-directory', 'not a directory: ' + String(resolved.path))
+    const facts = {
+      kind: resolved.kind,
+      root: resolved.kind === 'none' ? null : resolved.path,
+      workspace: workspace,
+      checked: resolved.checked,
+      git: resolved.git === true,
+      godot: resolved.godot === true,
+      preflightOk: null,
+      preflightMissing: [],
+      branch: null,
+      head: null,
+      counts: null,
+      readyCount: 0,
+      blocked: [],
+      blockedCount: 0,
+      active: [],
+      activeCount: 0,
+      dispatchState: null,
+      request: null,
+      environment: null,
+      hardDirty: false,
+      boardSize: null,
+      boardWarning: null,
+      boardExisted: false,
+      team: null,
+      teamFailed: false,
+      teamFailureCode: null,
+      teamError: null,
+      missingRoles: [],
+      stage: null,
+    }
+
+    /** The short answer for a project that could not be bound: 3 lines at most. */
+    function shortOnboard(stage, problem, next, projectPath) {
+      const path = projectPath === undefined || projectPath === null ? (typeof facts.root === 'string' && facts.root !== '' ? facts.root : facts.workspace) : projectPath
+      const brief = renderOnboardBrief({
+        stage: stage,
+        projectLine: renderProjectLine({ kind: facts.kind, path: path === undefined || path === null ? '' : String(path), branch: facts.branch, head: facts.head }),
+        problem: problem,
+        next: next,
+      })
+      return ok({
+        onboard: {
+          version: ONBOARD_VERSION,
+          stage: stage,
+          brief: brief,
+          project: onboardProjectSummary(facts),
+          team: onboardTeamSummary(null, false, null),
+          dispatch: onboardDispatchSummary(null),
+          environment: null,
+          setup: setup,
+          attention: attention,
+          needsUser: needsUserFor(next, facts),
+          warnings: warnings,
+          next: next,
+          checkedAt: new Date(now).toISOString(),
+        },
+      })
+    }
+
+    // ── markers and root: no git / not a project / nothing found ─────────────
+    if (facts.kind !== 'root') {
+      const stage = decideOnboardStage(facts)
+      const next = selectOnboardNext(facts)
+      const checked = Array.isArray(facts.checked) ? facts.checked.filter((entry) => typeof entry === 'string' && entry !== '') : []
+      const checkedText = checked.length === 0 ? '会话工作区' : checked.map((entry) => (entry.length > 120 ? entry.slice(0, 120) + '…' : entry)).join('、')
+      const problem =
+        facts.kind === 'gitless'
+          ? '有 project.godot，但还不是 git 仓库；我不会自己跑 git init。'
+          : facts.kind === 'git-only'
+            ? '是 git 仓库，但没有 project.godot 或 .agents/；我不在这里建板。'
+            : facts.kind === 'plain'
+              ? '这个目录既不是 git 仓库，也没有 project.godot 或 .agents/。'
+              : '从 ' + (workspace === null ? '会话工作区' : String(workspace)) + ' 向上找过 ' + checkedText + '，都没有带 project.godot 或 .agents/ 的 git 仓库；我不会猜。'
+      return shortOnboard(stage, problem, next)
+    }
+
+    // ── binding (the safe subset of openProject) ────────────────────────────
+    const root = String(resolved.path)
+    if (git !== null && typeof git.currentBranch === 'function') {
+      try {
+        const branch = await git.currentBranch(root)
+        if (branch !== null && branch !== undefined && branch.ok === true && typeof branch.branch === 'string' && branch.branch !== '') facts.branch = branch.branch
+      } catch (error) {}
+    }
+    if (git !== null && typeof git.head === 'function') {
+      try {
+        const head = await git.head(root)
+        if (head !== null && head !== undefined && head.ok === true && typeof head.hash === 'string' && head.hash !== '') facts.head = head.hash.slice(0, 7)
+      } catch (error) {}
+    }
+    const preflight = await preflightProject(root, { sessionId: sessionId })
+    const openFailed = Array.isArray(preflight.openFailed) ? preflight.openFailed : Array.isArray(preflight.failed) ? preflight.failed : []
+    facts.preflightOk = preflight.openOk === true
+    facts.preflightMissing = openFailed.map((check) => checkTextOf(check))
+    if (facts.preflightOk !== true) {
+      const problem = '项目还不能用：' + (facts.preflightMissing.length === 0 ? '未知原因' : facts.preflightMissing.join('、')) + '。'
+      return shortOnboard('unusable', problem, selectOnboardNext(facts), root)
+    }
+    // Ownership is judged BEFORE the binding below: onboarding adopts the project
+    // for the session, so asking after it would make every session "own" it and
+    // the project-mismatch refusal could never fire (T-129 §4.1).
+    let ownsProject = null
+    if (sessionId !== null) {
+      const prior = typeof state.sessionRootOf === 'function' ? state.sessionRootOf(sessionId) : null
+      const sessionWorkspace = typeof prior === 'string' && prior !== '' ? prior : workspace
+      if (typeof sessionWorkspace === 'string' && sessionWorkspace !== '') {
+        const sessionWalk = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: sessionWorkspace })
+        const sessionProject = sessionWalk.ok === true ? sessionWalk.root : sessionWorkspace
+        ownsProject = projectIdOf(sessionProject) === projectIdOf(root)
+      } else {
+        ownsProject = await sessionOwnsProject(state, sessionId, root)
+      }
+    }
+    remember(root)
+    state.touchProject(root, undefined, { worktreeRoot: preflight.worktreeRoot, preflight: preflight })
+    if (sessionId !== null && state !== null && typeof state.setSessionRoot === 'function') {
+      try {
+        state.setSessionRoot(sessionId, root)
+      } catch (error) {}
+    }
+    if (typeof state.flushRegistry === 'function') await state.flushRegistry()
+    const registry = typeof state.registryStatus === 'function' ? state.registryStatus() : null
+    setup.did.push({
+      step: 'project-bound',
+      ok: true,
+      detail: registry === null || registry === undefined ? 'registry-unavailable' : registry.ok === true ? String(registry.location === null ? 'registry-unavailable' : registry.location) : String(registry.error),
+    })
+    if (registry !== null && registry !== undefined && registry.ok !== true) {
+      warnings.push('项目登记表没写进去：' + String(registry.error === null || registry.error === undefined ? '原因未知' : registry.error) + '；重启后可能找不到这个项目。')
+    }
+
+    // ── Team: reuse when ok, bootstrap ONCE when missing ────────────────────
+    const teamRead = await projectTeamFor(root, sessionId)
+    let team = teamRead.team
+    let bootstrapped = false
+    let bootstrappedRoles = null
+    let teamFailed = false
+    let teamFailureCode = null
+    let teamError = null
+    if (team.available !== true) {
+      warnings.push('本环境没有团队服务（单机模式）：建卡和派发不走团队。')
+    } else if (team.ok === true) {
+      setup.did.push({ step: 'team-ready', ok: true, detail: typeof team.lead === 'string' ? team.lead : '' })
+    } else {
+      const owns = ownsProject
+      if (sessionId === null) {
+        teamFailureCode = 'no-session-context'
+        teamError = '这个请求没有会话身份，无法建团队'
+      } else if (owns !== true) {
+        teamFailureCode = 'project-mismatch'
+        teamError = '这个会话不属于该项目'
+      } else if (roles === null || typeof roles.ensure !== 'function') {
+        teamFailureCode = 'no-role-manager'
+        teamError = '这个环境没有角色管理器'
+      } else {
+        const boot = await bootstrapTeamFor(root, sessionId)
+        if (boot.ok === true) {
+          bootstrapped = true
+          bootstrappedRoles = boot.roles
+          const created = boot.roles.filter((entry) => entry.ok === true).map((entry) => entry.kind)
+          setup.did.push({ step: 'team-bootstrap', ok: true, detail: created.join('、') })
+          const reread = await projectTeamFor(root, sessionId)
+          team = reread.team
+          if (team.ok === true) setup.did.push({ step: 'team-ready', ok: true, detail: typeof team.lead === 'string' ? team.lead : '' })
+        } else {
+          teamFailureCode = typeof boot.code === 'string' ? boot.code : 'bootstrap-failed'
+          teamError = String(boot.message === undefined ? '团队建立失败' : boot.message)
+        }
+      }
+    }
+    if (team.available !== false && team.ok !== true) {
+      teamFailed = true
+      if (teamFailureCode === null) teamFailureCode = typeof team.error === 'string' && team.error !== '' ? team.error : 'no-members'
+      if (teamError === null) teamError = team.error === undefined || team.error === null ? '团队仍然不完整' : String(team.error)
+      setup.failed.push({ step: 'team-bootstrap', code: teamFailureCode, message: teamError })
+    }
+    facts.team = team
+    facts.teamFailed = teamFailed
+    facts.teamFailureCode = teamFailureCode
+    facts.teamError = teamError
+    facts.missingRoles = team !== null && team !== undefined && Array.isArray(team.missingRoles) ? team.missingRoles : []
+
+    // ── board facts (compact) ───────────────────────────────────────────────
+    const read = await state.read(root)
+    if (read.failed !== null) {
+      facts.preflightOk = false
+      facts.preflightMissing = ['看板读不出来：' + String(read.failed.message === undefined ? read.failed.code : read.failed.message)]
+      return shortOnboard('unusable', '看板读不出来：' + String(read.failed.message === undefined ? read.failed.code : read.failed.message), selectOnboardNext(facts), root)
+    }
+    const board = read.board
+    const summary = summariseBoard(board)
+    const dispatch = summary.dispatch
+    const dispatchState = dispatch !== null && dispatch !== undefined && typeof dispatch.state === 'string' ? dispatch.state : null
+    const request = dispatch !== null && dispatch !== undefined && dispatch.request !== undefined && dispatch.request !== null ? dispatch.request : null
+    facts.boardExisted = read.existed === true
+    facts.counts = summary.counts
+    facts.readyCount = summary.ready
+    facts.blocked = summary.blocked
+    facts.blockedCount = summary.counts.blocked
+    facts.active = summary.active
+    facts.activeCount = Number(summary.counts.running) + Number(summary.counts.reviewing) + Number(summary.counts.testing)
+    facts.dispatchState = dispatchState
+    facts.request = request
+    const boardSize = await boardSizeOf(root, board)
+    facts.boardSize = boardSize
+    facts.boardWarning = boardSize.warning === null || boardSize.warning === undefined ? null : String(boardSize.warning)
+    let environment = null
+    if (dispatchState === 'running') {
+      try {
+        const env = await environmentSnapshot(root, now, board)
+        environment = {
+          clean: env.clean === undefined ? null : env.clean,
+          code: env.code === undefined ? null : env.code,
+          message: env.message === undefined ? null : env.message,
+          transient: env.transient === true,
+          dirty: Array.isArray(env.dirty) ? env.dirty : [],
+        }
+      } catch (error) {
+        environment = { clean: null, code: 'environment-unreadable', message: messageOf(error), transient: false, dirty: [] }
+      }
+    }
+    facts.environment = environment
+    facts.hardDirty = environment !== null && environment.clean === false && environment.transient !== true
+
+    // ── attention (what the user should see) ────────────────────────────────
+    for (const task of summary.blocked) {
+      attention.push({ code: 'blocked', level: 'warn', message: task.id + ' 卡住：' + task.reason, taskId: task.id })
+    }
+    if (request !== null) {
+      attention.push({ code: 'approval', level: 'info', message: '有 1 个派发申请等用户批准', requestId: typeof request.id === 'string' ? request.id : null })
+    }
+    if (facts.hardDirty) {
+      attention.push({ code: 'environment', level: 'warn', message: '主检出的环境有问题：' + String(environment.message === null || environment.message === '' ? environment.code : environment.message) })
+    }
+    if (facts.boardWarning !== null) {
+      attention.push({ code: 'board-size', level: 'warn', message: '看板已经用到 ' + String(boardSize.percent) + '%，归档已完成卡能腾出空间', detail: facts.boardWarning })
+    }
+
+    // ── stage, ONE next step, brief ─────────────────────────────────────────
+    const stage = decideOnboardStage(facts)
+    facts.stage = stage
+    const next = selectOnboardNext(facts)
+    const needsUser = needsUserFor(next, facts)
+    const counts = summary.counts
+    const taskLine = renderTaskLine({
+      pending: counts.pending,
+      running: counts.running,
+      reviewing: counts.reviewing,
+      testing: counts.testing,
+      done: counts.done,
+      blocked: blockedSuffixOf(summary.blocked, counts.blocked),
+    })
+    const brief = renderOnboardBrief({
+      stage: stage,
+      projectLine: renderProjectLine({ kind: 'root', path: root, branch: facts.branch, head: facts.head }),
+      taskLine: taskLine,
+      team: { label: teamLabelOf(team) },
+      dispatchState: dispatchState,
+      queue: summary.ready,
+      active: summary.active,
+      activeTotal: summary.activeTotal,
+      needsUser: needsUser,
+      attention: attention,
+      warnings: warnings,
+      next: next,
+    })
+    return ok({
+      onboard: {
+        version: ONBOARD_VERSION,
+        stage: stage,
+        brief: brief,
+        project: onboardProjectSummary(facts),
+        team: onboardTeamSummary(team, bootstrapped, bootstrappedRoles),
+        dispatch: onboardDispatchSummary(dispatch),
+        environment: environment,
+        setup: setup,
+        attention: attention,
+        needsUser: needsUser,
+        warnings: warnings,
+        next: next,
+        checkedAt: new Date(now).toISOString(),
+      },
     })
   }
 

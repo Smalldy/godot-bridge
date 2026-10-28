@@ -44,6 +44,8 @@ export function projectPathOf(ctx, agent) {
 // anything.
 const DESCRIPTION =
   'Project task board with dependency-driven dispatch, file locks and a review/test/merge pipeline; every task runs in its own git worktree. ' +
+  // T-129: onboarding is the FIRST move, so it is named before the manual.
+  'Start with action onboard: one call resolves and binds the project, bootstraps a missing team and returns a short brief plus one next step. ' +
   'Read the skill "' + SKILL_NAME + '" first (skill tool): it carries the workflow, the action matrix, the write-card rules and the refusal codes. ' +
   'Actions: ' + AGENT_ACTIONS.join(', ') + '. ' +
   'start only records a dispatch request until the user approves it in the task center panel (needs-consent is not a failure). ' +

@@ -4215,7 +4215,7 @@ function fakeHostSubprocess(result) {
   }
 }
 
-// ── T-121: an agent can bootstrap its OWN team (roles* stay user-only) ──────
+// ── T-121 / T-129 §14: an agent bootstraps its OWN team, worker slot only ──
 {
   const rig = createRoleRig({})
   const state = createState(rig.ctx)
@@ -4225,16 +4225,53 @@ function fakeHostSubprocess(result) {
   const scheduler = createDispatcher(rig.ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: git })
   const api = createApi(rig.ctx, { state: state, roles: manager, git: git, scheduler: scheduler })
   const agent = { projectPath: PROJECT, by: '@lead', role: 'agent', agent: { id: 'session-lead' } }
+  const spawnNames = () => rig.team.calls.filter((call) => call.kind === 'spawn').map((call) => String(call.name))
   const boot = await api.perform('bootstrapTeam', {}, agent)
   check(
-    'T-121 an agent bootstraps the minimum roster in its own session',
-    boot.ok === true && boot.bootstrap === true && Array.isArray(boot.roles) && boot.roles.length === 3 && boot.roles.every((entry) => entry.ok === true),
+    'T-121 an agent bootstraps the Lead + worker team in its own session',
+    boot.ok === true && boot.bootstrap === true && Array.isArray(boot.roles) && boot.roles.length === 1 && boot.roles[0].kind === 'worker' && boot.roles[0].ok === true,
     JSON.stringify(boot).slice(0, 400),
+  )
+  check(
+    'T-129 §14 bootstrap spawns exactly one worker and nothing else',
+    spawnNames().length === 1 && /^worker-/.test(String(spawnNames()[0])),
+    JSON.stringify(spawnNames()),
+  )
+  check(
+    'T-129 §14 the answer defers reviewer/tester to their stages',
+    Array.isArray(boot.deferred) && boot.deferred.length === 2 && boot.deferred[0] === 'reviewer' && boot.deferred[1] === 'tester',
+    JSON.stringify(boot.deferred),
+  )
+  const rosterAfter = rig.team.roster.map((member) => String(member.name))
+  check(
+    'T-129 §14 reviewer/tester are not in the roster after bootstrap',
+    rosterAfter.every((name) => !/^reviewer-/.test(name) && !/^tester-/.test(name)),
+    rosterAfter.join(','),
+  )
+  const firstSpawn = rig.team.calls[0] === undefined ? null : rig.team.calls[0].text
+  check(
+    'T-129 §14 the bootstrap worker wakes with a standby brief and no fake card id',
+    typeof firstSpawn === 'string' && /stand by/i.test(firstSpawn) && firstSpawn.indexOf('bootstrap-team') < 0 && firstSpawn.indexOf('Task bootstrap-team') < 0,
+    String(firstSpawn).slice(0, 500),
+  )
+  const again = await api.perform('bootstrapTeam', {}, agent)
+  check(
+    'T-129 §14 a second bootstrap spawns nothing',
+    again.ok === true && spawnNames().length === 1,
+    JSON.stringify(spawnNames()),
   )
   const created = await api.perform('create', { title: 'after bootstrap' }, agent)
   check('T-121 create passes after the agent bootstrapped the team', created.ok === true, JSON.stringify(created).slice(0, 240))
   const started = await api.perform('start', {}, { projectPath: PROJECT, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' })
   check('T-121 start passes after the agent bootstrapped the team', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started).slice(0, 240))
+  await scheduler.settle(PROJECT)
+  const boardAfterStart = await api.perform('board', {}, agent)
+  const runningTask = (boardAfterStart.tasks || []).filter((task) => task.status === 'running')[0]
+  check('T-129 §14 the card is dispatched to the bootstrapped worker slot', runningTask !== undefined && runningTask.assignee !== null, JSON.stringify(boardAfterStart.counts))
+  const submitted = await api.perform('submit', { id: runningTask.id, evidence: 'done' }, { projectPath: PROJECT, by: '@worker', role: 'agent', agent: { id: String(runningTask.assignee.session) } })
+  check('T-129 §14 submit still provisions the reviewer for the review stage', submitted.ok === true && submitted.task.status === 'reviewing' && spawnNames().some((name) => /^reviewer-/.test(name)), JSON.stringify({ ok: submitted.ok, spawns: spawnNames() }))
+  const approved = await api.perform('approveReview', { id: runningTask.id }, { projectPath: PROJECT, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' })
+  check('T-129 §14 entering testing still provisions the tester', approved.ok === true && approved.task.status === 'testing' && spawnNames().some((name) => /^tester-/.test(name)), JSON.stringify({ ok: approved.ok, spawns: spawnNames() }))
 
   const noLead = await api.perform('bootstrapTeam', {}, { projectPath: PROJECT, by: '@other', role: 'agent', agent: { id: 'session-other' } })
   check(
@@ -4264,6 +4301,13 @@ function fakeHostSubprocess(result) {
       TEAM_BOOTSTRAP_INSTRUCTION.indexOf('do not ask the user') >= 0 &&
       TEAM_BOOTSTRAP_INSTRUCTION.indexOf('rolesCreate') < 0 &&
       USER_ONLY_ACTIONS.indexOf('bootstrapTeam') < 0,
+    TEAM_BOOTSTRAP_INSTRUCTION,
+  )
+  check(
+    'T-129 §14 the instruction says Lead + worker and defers reviewer/tester to their stages',
+    TEAM_BOOTSTRAP_INSTRUCTION.indexOf('Lead + worker') >= 0 &&
+      TEAM_BOOTSTRAP_INSTRUCTION.indexOf('worker, reviewer, tester') < 0 &&
+      TEAM_BOOTSTRAP_INSTRUCTION.indexOf('provisioned later by their own stage') >= 0,
     TEAM_BOOTSTRAP_INSTRUCTION,
   )
 }
