@@ -11,6 +11,7 @@ const { join } = await import('node:path')
 const { createFakeFs, createStrictCtx, PROJECT } = await import('./support/fixtures.mjs')
 const { SKILL_NAME, buildSkillContent, renderStatusBrief } = await import('../../plugin/task-center/skill.mjs')
 const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
+const { ONBOARD_NEXT_CODES } = await import('../../plugin/task-center/onboard.mjs')
 
 /**
  * The runtime skill body is meant to stay SCANNABLE, so this is a soft size
@@ -254,9 +255,15 @@ check(
     check('the user-only section lists nothing but user actions', tokens.length > 0 && tokens.every((token) => USER_ONLY_ACTIONS.indexOf(token) >= 0), tokens.join(','))
   }
   check(
-    'the body defines the Lead role and the entry flow',
-    ['你是谁：Lead', '进入流程', 'openProject', '拆卡', '不替 reviewer', '不要**自动', '停下来问'].every((needle) => generated.indexOf(needle) >= 0),
-    ['你是谁：Lead', '进入流程', 'openProject', '拆卡', '不替 reviewer', '不要**自动', '停下来问'].filter((needle) => generated.indexOf(needle) < 0).join(','),
+    'the body defines the Lead role and the onboarding entrance (T-129)',
+    ['你是谁：Lead', '接入（onboard）', 'onboard', 'next.code', '把 `onboard.brief` **原样**给用户', '拆卡', '不替 reviewer', '停下来问'].every((needle) => generated.indexOf(needle) >= 0),
+    ['你是谁：Lead', '接入（onboard）', 'onboard', 'next.code', '把 `onboard.brief` **原样**给用户', '拆卡', '不替 reviewer', '停下来问'].filter((needle) => generated.indexOf(needle) < 0).join(','),
+  )
+  check('the old 进入流程 entrance is gone', generated.indexOf('进入流程') < 0, generated.slice(generated.indexOf('接入'), generated.indexOf('接入') + 80))
+  check(
+    'the onboarding table covers every next code (T-129)',
+    ONBOARD_NEXT_CODES.every((code) => generated.indexOf('`' + code + '`') >= 0),
+    ONBOARD_NEXT_CODES.filter((code) => generated.indexOf('`' + code + '`') < 0).join(','),
   )
   check(
     'the body carries the workflow, the slot/merge/target rules and the corrections',

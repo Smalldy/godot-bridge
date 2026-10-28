@@ -9,6 +9,8 @@
 
 ### 新增
 
+- **一条命令接入（`onboard`）**：进入项目只需一个动作——宿主解析项目根（显式 path，否则把会话工作区向上找到最近的 git 项目；worktree 的 `.git` 文件也算仓库根）、检查 git/Godot 标记、用与 `openProject` 相同的就绪门禁绑定看板、读取紧凑的看板事实、缺团队时自动补，最后返回一段简报和一个机器可读的 `next` 步骤。阶段（unusable / choose / setup / attention / active / empty / idle）与 next 码覆盖：还没 `git init` 的新项目、不是项目的目录、有卡住的看板、待批准的派发、硬坏的主检出与暂停的派发器；它不猜路径、不建卡、不跑 `git init`、不开派发，响应 <20 KB。技能正文的接入段、常驻规则与工具描述都改为走它。
+- **建团队只建 worker 槽位**：`bootstrapTeam`（以及 onboard 的团队步骤）只创建 Lead + worker；reviewer/tester 槽位由各自阶段按需创建（提交后的评审、进入测试时的测试），不会再在没有任何卡时先起三个 agent。worker 收到的是 standby 简报（当前无卡：不要找活、不要 submit、不要编辑），不再塞一张假的 `bootstrap-team` 卡 id；返回值带 `deferred: ['reviewer', 'tester']`。
 - **任务中心的运行时技能与常驻硬规则**：激活该行会向宿主技能目录注册 `godot-bridge-task-center`（正文由动作注册表生成：定位、工作流、动作矩阵、写卡规范、拒绝码、Godot 启动规则与面板结构），并注入四条常驻硬规则——`start` 只是需要用户批准的申请、结论只属于对应角色、任务工作绝不提交到 target、绝不手改 `.agents/tasks.json`。`task_center` 工具描述收敛为指向该技能的短路由，不再是一整段两千字节的 API 叙述。宿主没有技能注册表或系统提示服务时两者静默跳过。注册对象带 `source: 'runtime'`：注册表在**加载**技能时才校验它（缺了会先出现在目录里、加载时报错）。
 - **宿主机械验证（`verify`）**：任务可声明 `verify: { command, timeoutMs? }`（shell 字符串，可链式）。评审通过并建好测试候选后，由**宿主机**在候选里通过不受沙箱约束的 subprocess 服务执行它（默认上限 10 分钟），并把结果记录为 `test.hostCheck`——命令、退出码、是否超时、耗时、≤4 KB 的输出尾部与时间戳。退出码 0 进入 TESTING，基线随 tester brief 发出；非 0 或超时则记为宿主侧的失败测试：任务带证据回到 running、候选被丢弃、owner 收到通知，既不产生 tester 轮次也进不了合并队列。畸形声明以 `invalid-verify` 拒绝而不是被丢弃。工具把 `verify` 暴露为对象参数（`null` 清除）；target 移动重建候选时会重跑该检查。
 - **tester 证据分两段**：tester brief 携带宿主基线，并要求证据区分【宿主基线】与【我的探针】——宿主跑的是下限不是上限，tester 可以说明理由复跑同一命令，也可以跑别的套件。

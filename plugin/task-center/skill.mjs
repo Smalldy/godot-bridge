@@ -26,7 +26,7 @@ export const SYSTEM_RULES_NAME = 'godot-bridge:task-center-rules'
 
 export const SYSTEM_RULES_TEXT = [
   'TASK CENTER (godot-bridge) - 5 条硬规则，任何时候都不能忘：',
-  '1) 用任务中心之前先确认这个项目有团队：没有就先在本会话建最小团队（Lead + worker/reviewer/tester）再建卡；`create`/`start` 返回 no-team-for-project 时，响应里的 nextStep.instruction 就是让你照做的，不要建卡、不要借别的项目的团队、也不要叫别的会话来建。',
+  '1) 用任务中心的第一动作用 `onboard`（action: "onboard"）：它解析并绑定项目、缺团队自动补，返回 brief 和一个 next；不要自己用 openProject+board 拼接入。`create`/`start` 返回 no-team-for-project 时照 nextStep.instruction 做（bootstrapTeam），不要建卡、不要借别的项目的团队、也不要叫别的会话来建。',
   '2) task_center 的 start 只是申请派发，返回 needs-consent 不是失败：必须等用户在任务中心面板批准，不要重试、不要自己开派发。',
   '3) 评审/测试结论只能由对应角色的 agent 给出：approveReview/requestChanges 归 reviewer，passTest/failTest 归 tester，mergeRequest/rejectMerge 归 merger 或用户。',
   '4) 任务工作只在该任务自己的 git worktree 里做，绝不直接 commit/push 到 target。',
@@ -60,13 +60,10 @@ function names(list) {
  * @param options.userOnlyActions - the actions only the person at the GUI owns.
  * @returns the markdown body the skill tool hands to the model.
  */
-/** T-125: the status brief is exactly two lines. The blocker rides the task
- * line as a suffix and is omitted when nothing is blocked. */
-export function renderStatusBrief(input) {
+/** T-125: the task line of the brief. ONE counting text, reused by the status
+ * brief and by the onboarding brief (T-129) so the two can never disagree. */
+export function renderTaskLine(input) {
   const f = input === undefined || input === null ? {} : input
-  const path = typeof f.path === 'string' && f.path !== '' ? f.path : '<path>'
-  const branch = typeof f.branch === 'string' && f.branch !== '' ? f.branch : '<branch>'
-  const head = typeof f.head === 'string' && f.head !== '' ? f.head : '<head>'
   const count = (value) => (Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0)
   const parts = [
     [count(f.pending), '待办'],
@@ -80,7 +77,17 @@ export function renderStatusBrief(input) {
   let task = parts.length === 0 ? '无卡' : parts.join(' · ')
   const blocked = typeof f.blocked === 'string' && f.blocked.trim() !== '' ? f.blocked.trim() : null
   if (blocked !== null) task += ' · 卡住：' + blocked
-  return '项目  ' + path + ' · ' + branch + ' @ ' + head + '\n任务  ' + task
+  return '任务  ' + task
+}
+
+/** T-125: the status brief is exactly two lines. The blocker rides the task
+ * line as a suffix and is omitted when nothing is blocked. */
+export function renderStatusBrief(input) {
+  const f = input === undefined || input === null ? {} : input
+  const path = typeof f.path === 'string' && f.path !== '' ? f.path : '<path>'
+  const branch = typeof f.branch === 'string' && f.branch !== '' ? f.branch : '<branch>'
+  const head = typeof f.head === 'string' && f.head !== '' ? f.head : '<head>'
+  return '项目  ' + path + ' · ' + branch + ' @ ' + head + '\n' + renderTaskLine(f)
 }
 
 export function buildSkillContent(options) {
@@ -110,22 +117,41 @@ export function buildSkillContent(options) {
     '',
     '- **你做**：拆卡、写卡、申请派发、追踪进度、triage 异常、把需要人的步骤走对话、结束时给证据。',
     '- **你不做**：不替 worker 写实现、不替 reviewer 下评审结论、不替 tester 下测试结论、不合并。越权会被 `wrong-role` / `merger-only` / `tester-only` / `user-only` 拒绝——那是分权，不是故障。',
-    '- **卡住先查事实**：看板、分支、ref、合并记录，再决定 reopen / retry / 打回；不要用"直接改"绕过。',
+    '- **卡住先查事实**：看板、分支、ref、合并记录，再决定 reopen / retry / 打回。',
     '',
-    '系统里还有 **worker** / **reviewer** / **tester** / **merger** / **用户**（用户专属：批准派发、改设置、管角色、替任何角色下结论）；角色缺失由宿主经活的 Lead 自动 provision。',
+    '还有 **worker** / **reviewer** / **tester** / **merger** / **用户**（用户专属：批派发、改设置、管角色、下结论）；角色缺失由宿主经活的 Lead 自动 provision。',
     '',
     '## 先有团队，再建卡',
     '',
-    '- `board.team.ok` 为假时 `create`/`start` 返回 `no-team-for-project`，按 `nextStep` 先建 Lead + 最小团队再重试；无团队服务时不受限。',
+    '- `onboard` 默认补团队（Lead + worker）；reviewer/tester 到阶段再补。自动建失败按 next 报告，不借别的项目团队。`create`/`start` 仍会因 `no-team-for-project` 拒绝。',
     '',
-    '## 进入流程',
+    '## 接入（onboard）',
     '',
-    '用户敲 `/godot-bridge-task-center` 或开新会话时：',
+    '用户敲 `/godot-bridge-task-center` 或新会话要用任务中心时，先调**一次** `task_center { action: "onboard" }`：宿主自己解析项目根、检查 git/Godot 标记、绑定看板，缺团队就自动补，返回一段 brief 和一个 next。',
     '',
-    '1. 解析项目根：会话工作区向上找最近的 git 根，且含 `.agents/` 或 `project.godot`；两者指向不同层时**停下来问**，不要凭空建板。',
-    '2. `openProject` 指到该路径（幂等，重复执行只刷新）。',
-    '3. `board` 后按固定模板输出简报。',
-    '4. **不要**自动 `start`、建卡或改配置。',
+    '1. 把 `onboard.brief` **原样**给用户：不改写、不加“我是 Lead”。',
+    '2. 按 `onboard.next.code` 只做一件事：',
+    '',
+    '| next.code | 你做什么 |',
+    '|---|---|',
+    '| `choose-project` | 停下来问用户要项目路径，不要猜 |',
+    '| `git-init` | 有 project.godot 但没 git：先问用户，再 `git init` |',
+    '| `not-a-project` | git 仓库但没有 project.godot/.agents：要 path，不建板 |',
+    '| `fix-host` | 按 brief 的缺项修宿主，不建卡 |',
+    '| `open-owning-session` | 让用户从拥有该项目的会话接入，不借别的团队 |',
+    '| `bootstrap-team` | 团队自动建失败：按 brief 报告，不要求用户手工建 |',
+    '| `approve-start` | 请用户去面板 → 队列 批准派发 |',
+    '| `triage-blocked` | 点名卡 id + 原因，请用户在面板看板处理 |',
+    '| `fix-environment` | 主检出环境有问题：请用户决定保留还是清理 |',
+    '| `prune-board` | 看板快满：提示归档已完成卡 |',
+    '| `start-dispatch` | 有单待办但派发暂停：你申请派发，用户批准 |',
+    '| `create-task` | 问用户要做什么；只建卡，不派发 |',
+    '| `none` | 不需要用户动作 |',
+    '',
+    '3. 不要用 `openProject` + `board` 自己拼接入；onboard 幂等，路径与任务没变时不要重复调用。',
+    '4. `choose-project` 必须**停下来问**，不要猜；其余 next 照做，不要自作主张建卡或派发。',
+    '',
+    'brief 的前两行固定为项目与任务（onboard 已生成完整 brief，直接用它）：',
     '',
     '```',
     '项目  <path> · <branch> @ <head>',
@@ -134,21 +160,20 @@ export function buildSkillContent(options) {
     '',
     '## 何时用 / 不用',
     '',
-    '- 用：活能拆成多项、要排期或并行；要独立评审 + 测试的门禁；多会话改同一仓库要文件锁；要留痕（证据、轮次）。',
+    '- 用：要并行/排期、要独立评审 + 测试门禁、多会话改同一仓库要文件锁、要留痕（证据、轮次）。',
     '- 不用：只想看现状就用 `board` / `get` / `locks`。',
-    '- **任何改动都不要直接提交 target**：短活也用一张卡走完；真应急就走独立 hotfix 分支，并在 `scripts/check-target-history.mjs` 里登记例外。',
+    '- **不要直接提交 target**：短活也走卡；应急走 hotfix 分支并在 `scripts/check-target-history.mjs` 登记例外。',
     '',
     '## 最小工作流',
     '',
-    '1. `openProject`（项目不是会话工作区时）。',
-    '2. `create` —— title 必填；写清 spec / acceptance / writeFiles / dependsOn / priority；能机械验证的声明 `verify`。',
-    '3. `start` —— 只是申请：返回 needs-consent + request，等用户批准，不要重试或绕行。',
-    '4. `board` / `get` —— 看阶段、轮次、证据、waitingReason（为什么还没跑）。',
-    '5. `submit` —— 本地验证通过并提交后带 evidence。',
-    '6. 宿主接管：reviewer 评审 → 候选跑 `verify` → tester 测试 → 通过且 target 未动即自动合并；被打回在同一 worktree 修完再 submit。',
-    '   - 漂移自动处理：target 前进但分支 head 未动（仅 base 变化）→ 宿主重建候选后直接合并，evidence 记「仅 base 变化，diff 与已验证提交一致」，不新增评审轮次；内容变了必须重走评审+测试。',
-    '   - 构建期冲突不再抛给人工：候选与 target 冲突会标 candidate-stale（附冲突文件清单）并自动重建；再次冲突升级 needs-rebase（保留清单），等待 worker/Lead，不阻塞其他卡。',
-    '   - 已知边界：漂移判定只认真实 hex base；夹具里的 base-sha 标签保持旧行为。',
+    '1. `create` —— title 必填；写清 spec / acceptance / writeFiles / dependsOn / priority；能机械验证的声明 `verify`。',
+    '2. `start` —— 只是申请：返回 needs-consent + request，等用户批准，不要重试或绕行。',
+    '3. `board` / `get` —— 看阶段、轮次、证据、waitingReason。',
+    '4. `submit` —— 本地验证通过并提交后带 evidence。',
+    '5. 宿主接管：reviewer 评审 → 候选跑 `verify` → tester 测试 → 通过且 target 未动即自动合并；被打回在同一 worktree 修完再 submit。',
+    '   - 漂移：target 前进但分支 head 没动（只换 base）→ 宿主重建候选后直接合并，不新增评审轮次；内容变了要重走评审+测试。',
+    '   - 冲突：候选与 target 冲突标 candidate-stale 并自动重建；再次冲突升级 needs-rebase，等 worker/Lead。',
+    '   - 漂移判定只认真实 hex base。',
     '',
     '## 动作矩阵',
     '',
@@ -167,40 +192,40 @@ export function buildSkillContent(options) {
     '- writeFiles 就是锁：派发前原子加锁，没有手动锁动作；漏写会互踩，多写会白等。',
     '- `verify` 可选：宿主机在候选里执行声明的 shell 命令（可链式），结果记在 test.hostCheck；失败回 running，不占 tester 轮次。',
     '- `dependsOn` = 前序完成且已合并；`priority` 只在 ready 任务间比较；`maxAttempts` 用尽后 blocked。',
-    '- 每张卡可带自己的 `target`：卡可以跑在别的分支上（热修赛道），跨 target 的 `dependsOn` 会被拒绝。',
-    '- 改卡用 `update`（可清 `verify`），不要删了重建。',
+    '- 每张卡可带自己的 `target`（热修赛道）；跨 target 的 `dependsOn` 会被拒绝。',
+    '- 改卡用 `update`，不要删了重建。',
     '',
     '## 派发与中断',
     '',
-    '- **宿主重启不消耗尝试**：宿主重启 / 插件重载把 running 卡收回时，这次 attempt 会**退还**（`attempts` 不变），只累加独立的 `interruptions` 计数并写一条「interrupted by host restart; attempt refunded」的历史 —— 那是基础设施事件，不是执行者失败。只有连续 5 次中断且**始终没有提交**才会 blocked（错误码 `interrupted-too-often`）。',
-    '- **一卡只允许一个活执行者**：重派发（含重试、重开、租约回收）会先中断/退休这张卡此前的执行者；若旧执行者仍活着且停不下来，则拒绝第二次派发（`already-dispatched`）。`get` / `board` 的 `liveExecutors` 是这张卡当前活执行者数量，正常恒为 1（running）或 0（其它状态）。',
-    '- 重派发会优先复用上一次 attempt 那个**干净且没有提交**的 worktree，不再为同一张卡反复新建目录；有提交则继续那个分支。',
+    '- **宿主重启不消耗尝试**：running 卡被收回时 attempt **退还**（`attempts` 不变），只累加独立 `interruptions` 并写历史；连续 5 次中断且始终没提交才 blocked（`interrupted-too-often`）。',
+    '- **一卡只有一个活执行者**：重派发先中断/退休旧执行者；旧执行者停不下来则拒绝第二次派发（`already-dispatched`）。`get` / `board` 的 `liveExecutors` 正常是 1（running）或 0。',
+    '- 重派发优先复用上次那个**干净且没提交**的 worktree；有提交则继续那个分支。',
     '',
     '## 机械验证与测试证据',
     '',
-    '- `verify` 由卡声明；评审通过、候选建好后宿主自己跑。失败或超时 = 宿主记 failTest，任务回 running、候选丢弃。',
+    '- `verify` 由卡声明，评审通过后宿主在候选里跑；失败或超时 = 宿主记 failTest，任务回 running、候选丢弃。',
     '- tester 证据分两段：【宿主基线】与【我的探针】——基线是下限不是上限。',
     '- reviewer 不必重跑测试：declared vs actual 与上次 hostCheck 已附在 brief 里。',
-    '- 面板活动流显示宿主写入的成员名（用户「你」，解析不出的 id 按角色词回落）；测试事件行是结构化摘要「通过/失败 · exit N · Ns」，全文在「查看全文」。',
+    '- 面板活动流显示宿主写入的成员名；测试事件行是摘要「通过/失败 · exit N · Ns」，全文在「查看全文」。',
     '',
     '## 串联规则',
     '',
-    '- **角色槽位串行**：一个 reviewer / tester 槽位一次只处理一张卡，其余带 `queuePosition` 排队；排队的轮次不计入"沉默"判定。',
-    '- **`merged` = ref 真的前进了**：宿主在推进后重读 `refs/heads/<target>`，不等于期望的 merge sha 就返回 `target-not-advanced`，任务停在 testing，绝不标 merged。',
-    '- **target 动了结论失效**：测试后目标前进，候选与结论作废，需要 `refreshMerge` 重开一轮。',
+    '- **角色槽位串行**：一个 reviewer / tester 槽位一次一张卡，其余带 `queuePosition` 排队；排队不计入"沉默"。',
+    '- **`merged` = ref 真的前进了**：宿主重读 `refs/heads/<target>`，不等于期望的 merge sha 就返回 `target-not-advanced`，停在 testing，绝不标 merged。',
+    '- **target 动了结论失效**：测试后目标前进，候选与结论作废，用 `refreshMerge` 重开一轮。',
     '',
     '## 拒绝码（可读失败，不是崩溃）',
     '',
-    '- `unknown-project` / `missing-project` / `missing-path`：尚未绑定项目或路径不对 —— 先 `openProject`。',
-    '- `needs-consent`：start 只记录了申请 —— 等用户批准，不要重试。',
+    '- `unknown-project` / `missing-project` / `missing-path`：项目没绑定或路径不对 —— 先 `openProject`。',
+    '- `needs-consent`：start 只是申请 —— 等用户批准，别重试。',
     '- `role-cannot-implement`：reviewer / tester 不能 submit 实现 —— 交回 worker。',
     '- `wrong-role` / `role-required` / `worker-cannot-self-review` / `worker-cannot-self-test`：结论只属于对应角色 —— 交独立 reviewer / tester。',
-    '- `merger-only` / `user-only`：合并与面板动作不属于你 —— 报告现状即可。',
-    '- `head-drift`：分支越过请求记录的 head —— `refreshMerge` 重新对齐。',
-    '- `test-required` / `review-required` / `not-mergeable-phase`：还到不了合并 —— 按阶段继续走。',
-    '- `target-not-advanced`：合并推进没成功（ref 未动）—— 查 git 报错，不要当已合并。',
-    '- `worktree-*` / `invalid-verify`：worktree 没建好、工作区脏，或 verify 声明不合法。',
-    '- `task-cancelled` / `task-blocked`：卡已取消/阻塞，宿主已中断执行者 —— 立即停止。',
+    '- `merger-only` / `user-only`：合并与面板动作不属于你 —— 报告现状。',
+    '- `head-drift`：分支越过请求的 head —— `refreshMerge` 对齐。',
+    '- `test-required` / `review-required` / `not-mergeable-phase`：还到不了合并 —— 按阶段走。',
+    '- `target-not-advanced`：合并没推进（ref 未动）—— 查 git 报错，别当已合并。',
+    '- `worktree-*` / `invalid-verify`：worktree 没建好或 verify 声明不合法。',
+    '- `task-cancelled` / `task-blocked`：卡已取消/阻塞 —— 立即停止。',
     '- `not-assignee` / `unknown-task`：不是你的卡或 id 不对 —— `board` 核对。',
     '',
     '## 禁区',
@@ -210,15 +235,15 @@ export function buildSkillContent(options) {
     '- 不给自己的提交开守卫豁免、不改检查脚本让结果"变绿"——那是绕过评审。',
     '- 不自己发起派发（批准权在用户）；不杀用户 / 编辑器进程；不手工建删 worktree。',
     '- 不替 reviewer / tester 写结论，不伪造 evidence。',
-    '- 任务离开 running 后宿主会中断执行者；interrupt 在下一个 step 边界生效，是"尽快停"而不是"瞬间停"。',
+    '- 任务离开 running 后宿主会中断执行者（下一个 step 边界生效）。',
     '',
     '## Godot 专属',
     '',
-    '启动游戏只用 `godot_*` 工具（`godot_run_headless` / `godot_run_project`）；绝不能走 pwsh / bash 跑 `godot --headless` —— 沙箱会拦 user:// 日志写入，进程 signal 11 崩掉。`diagnosis:"sandbox-crash"` 是启动通道问题，改用 `godot_*` 重跑。',
+    '只用 `godot_*` 工具（`godot_run_headless` / `godot_run_project`）跑游戏；绝不走 pwsh / bash 跑 `godot --headless`（沙箱拦 user:// 写入，signal 11 崩）。`diagnosis:"sandbox-crash"` 是启动通道问题，改用 godot_* 重跑。',
     '',
     '## 面板',
     '',
-    '任务页 5 个页签：`看板`、`队列`、`执行者`、`状态`、`角色`（内置只读，Fork 副本可改）。只有用户能做：批/拒派发、开关派发、改设置、管角色 profile 与实例、代替 reviewer / tester / merger 下结论 —— agent 写成"请用户操作"。',
+    '任务页 5 个页签：`看板`、`队列`、`执行者`、`状态`、`角色`（内置只读，Fork 可改）。只有用户能：批/拒派发、开关派发、改设置、管角色、代替 reviewer / tester / merger 下结论 —— agent 写成"请用户操作"。',
   ]
 
   return lines.join('\n')

@@ -556,8 +556,9 @@ export function resolveLead(ctx, options) {
  */
 export const TEAM_BOOTSTRAP_INSTRUCTION =
   'This project has no Team yet. Do this NOW by calling task_center { action: "bootstrapTeam" } from this session — do not ask the user, it is your job. ' +
-  'bootstrapTeam creates the minimum roster (worker, reviewer, tester) inside THIS session\'s own team and returns the resulting team state; ' +
-  'it only works for the session that owns this project. Then retry the action you were doing. Never borrow another project team, never create cards before the Team exists.'
+  'bootstrapTeam creates the minimum team (Lead + worker) inside THIS session\'s own team and returns the resulting team state; ' +
+  'it only works for the session that owns this project. The reviewer and tester slots are NOT created here: they are provisioned later by their own stage (review on submit, test on entering testing). ' +
+  'Then retry the action you were doing. Never borrow another project team, never create cards before the Team exists.'
 
 /**
  * The Team this project can dispatch to (T-110).
@@ -1859,7 +1860,14 @@ export function roleBriefSections(kind, task, config, options) {
   const template = profile !== null && profile !== undefined && typeof profile.prompt === 'string' ? profile.prompt : ''
   const templateRendered = renderRoleTemplate(template, roleTemplateValuesFor(kind, task, config, opts))
   const taskData = []
-  if (task !== null && task !== undefined) {
+  if (task === null || task === undefined) {
+    // T-129 §14: a role bootstrapped by bootstrapTeam wakes with NO card. It must
+    // stand by instead of hunting for work (and must never be handed a fake card
+    // id to pretend it has one).
+    taskData.push('Stand by: this role slot is ready and there is no card yet.')
+    taskData.push('')
+    taskData.push('Do NOT look for a card, do NOT call submit, do NOT edit files, and do not create work: the Lead dispatches a card when one exists. Wait for the dispatch message from the Lead.')
+  } else {
     taskData.push('Task ' + String(task.id) + ': ' + String(task.title))
     if (typeof task.spec === 'string' && task.spec !== '') taskData.push('', 'What it involves:', task.spec)
     if (typeof task.acceptance === 'string' && task.acceptance !== '') taskData.push('', 'Acceptance:', task.acceptance)
@@ -1876,7 +1884,16 @@ export function roleBriefSections(kind, task, config, options) {
     }
   }
   const fixed = []
-  if (kind === 'worker') {
+  if (kind === 'worker' && (task === null || task === undefined)) {
+    // A bootstrapped worker has no card: the per-task duties and verdict schema
+    // below would point at a task id that does not exist, so this slot gets the
+    // standby boundary instead.
+    fixed.push(
+      'Duties: stand by. This slot is ready; there is no card for it yet.',
+      '',
+      'Do not look for a card, do not call submit, do not edit files, and do not create work: the Lead sends a dispatch message with a task id when one exists. When the card arrives, its brief carries the worktree, the locked files, the permission boundary and the verdict schema.',
+    )
+  } else if (kind === 'worker') {
     fixed.push(
       'Duties: implement the task in its worktree, run the project tests there, and report with task_center submit.',
       '',

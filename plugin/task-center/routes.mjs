@@ -229,11 +229,13 @@ export function registerTaskRoutes(ctx, options) {
     try {
       const sessionId = sessionFromRequest(req, body)
       const target = await resolveProject(req, body, sessionId)
-      if (action !== 'openProject' && target.failed !== undefined) {
+      // T-129: onboard answers when nothing is bound yet — resolving the
+      // session's project is exactly its job, so the resolver may fail here.
+      if (action !== 'openProject' && action !== 'onboard' && target.failed !== undefined) {
         sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return
       }
-      const project = target.root
+      const project = target.failed !== undefined ? null : target.root
       if (project !== null && project !== undefined) state.noteProject(project)
       // T-124: every action that resolved this session's project records it.
       if (sessionId !== null && typeof project === 'string' && project.length > 0 && (target.resolvedFrom === 'session' || target.resolvedFrom === 'session-lookup')) {
@@ -251,7 +253,9 @@ export function registerTaskRoutes(ctx, options) {
         sessionId: sessionId,
         resolvedFrom: target.resolvedFrom,
       })
-      if (result.ok === true && action !== 'openProject' && project !== null) {
+      // T-129: the onboard answer is deliberately small (brief + next); the panel
+      // must not be handed a whole board snapshot next to it.
+      if (result.ok === true && action !== 'openProject' && action !== 'onboard' && project !== null) {
         if (result.board !== undefined) delete result.board
         try {
           result.snapshot = await api.snapshot(project, { full: false, resolvedFrom: target.resolvedFrom, sessionId: sessionId })
