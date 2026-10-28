@@ -18,6 +18,8 @@
 
 ### 变更
 
+- **所有影响卡片的路径都跟随卡片/会话/项目（不再 any-Lead 猜）**：阶段角色按 `(角色类型, ownerSession)` 分组 provision——两个会话的卡同时处于同一阶段时各得一个评审者；ownerless legacy 卡只有「该项目恰好一个活 Lead」时才被采纳，0 个或多个都会记录并跳过。`memberLiveness`、`interruptMemberNamed`（租约交接、阶段阻塞、评审轮次上限）、评审/测试超时 sweep、角色面板（`rolesList`/`rolesReplace`/`rolesDrain`/`rolesReset`、实例列表、花名册、预览 Lead）都按卡片/面板会话解析团队，所以别的 team 里的同名成员不再被判死、不再被中断、也不会被列出或替换。环境探测带上项目：dispatcher 的读数与按卡的脏状态 streak 都按项目隔离，A 的脏检出不会显示到 B（B 干净也不会洗白 A）。`state.memory.projectHint` 只作为路径/显示兜底，另有静态断言禁止它参与团队/Lead 解析。
+
 - **任务中心快照瘦身：只带摘要、详情按需、支持 `since` 增量**：`GET /state` 只返回面板渲染所需字段（不含 spec / acceptance / evidence / 完整 history），并带 `seq` / `full` / `removed`；新增 `GET /task?id=` 按需取单卡完整详情（详情抽屉与编辑表单打开时才拉取，按 `updatedAt` 缓存），`GET /list?status=&cursor=&limit=&q=` 分页返回摘要且搜索在服务端。`/state?since=<seq>` 返回 `{tasks: [变化的卡], removed: [id], full: false}`；seq 缺失或过新、切换项目、增量日志断层时回退 `full: true`。给 agent 的 `board` 动作保持完整详情不变。本仓库真板（84 卡，81 done）经候选路由实测：明细快照 1,275,964 B → 摘要 183,096 B（远低于 200 KB 目标）——`merge.output` / `merge.tests` / merge 文件数组 / `test.evidence` / `review.reasons` 不再进入摘要，只留状态、轮次、时间戳与 `declaredCount` / `actualCount` / `outputLength` / `testsLength` / `evidenceLength`；完整字符串仍由 `/task?id=` 提供。面板用增量游标轮询，不再每 2.5 秒重发明细。
 
 - **任务中心技能正文补齐 Lead 角色与进入流程，并纠正四处误导**：正文开头新增「你是谁：Lead」（Lead 做什么、系统里的其它角色、明确不做什么），随后是进入流程（解析项目根、`openProject`、读 `board`、固定简报模板、无副作用）；把 `pause` 写清为派发器开关、`tick` 为立即 settle 的排查手段，「一次性小改动直接改」改为「任何改动都不要直接提交 target」（应急走独立 hotfix 分支并在守卫里登记例外），`unknown-project` 补充「尚未绑定或路径不对，先 `openProject`」；另补角色槽位串行（`queuePosition`、排队不计沉默）、`merged` 语义（ref 真的前进了，否则 `target-not-advanced`）、每卡可带 `target`，以及禁止给自己开守卫豁免。合并了面板/角色两节重复的 provision 描述，收紧只读 `skillsCatalog` 措辞；动作清单仍由注册表生成。

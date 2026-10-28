@@ -2894,6 +2894,9 @@ export function probeDispatch(ctx) {
 export function createDispatcher(ctx, options) {
   const opts = options === undefined ? {} : options
   const state = opts.state
+  // T-130 audit: the default project source is "the last project the host drove",
+  // a DRIVING fallback only. Team/lead/liveness resolution always uses the card's
+  // ownerSession (or the project's sessions), never this hint.
   const projectOf = typeof opts.projectPath === 'function' ? opts.projectPath : () => state.memory.projectHint
   const boot = bootId()
   // T-97: cards carry the session that owns them; this dispatcher only hands work
@@ -2971,17 +2974,22 @@ export function createDispatcher(ctx, options) {
   }
 
   /** The transient-failure picture the panel renders (never the board write). */
-  function environmentStatus() {
+  function environmentStatus(projectPath) {
+    // T-130: streaks and the last probe are PER PROJECT. A filtered read (the API
+    // asks for its own project) must never show another project's dirty state.
+    const project = typeof projectPath === 'string' && projectPath !== '' ? projectIdOf(projectPath) : null
     const dirty = []
-    memory.environmentDirty.forEach((entry, id) => {
+    memory.environmentDirty.forEach((entry) => {
+      if (project !== null && entry.project !== project) return
       dirty.push({
-        id: String(id),
+        id: String(entry.taskId),
         retries: entry.count,
         since: new Date(entry.firstAt).toISOString(),
         escalated: entry.escalated === true,
       })
     })
-    const probe = memory.environment === null ? { clean: null, code: null, message: null, checkedAt: null } : memory.environment
+    const untrusted = memory.environment === null || (project !== null && memory.environment.project !== project)
+    const probe = untrusted ? { project: null, clean: null, code: null, message: null, checkedAt: null } : memory.environment
     return Object.assign({}, probe, {
       retrying: dirty.filter((entry) => entry.escalated !== true),
       escalated: dirty.filter((entry) => entry.escalated === true).map((entry) => entry.id),
@@ -2991,7 +2999,7 @@ export function createDispatcher(ctx, options) {
     })
   }
 
-  function status() {
+  function status(projectPath) {
     return {
       boot: boot,
       busy: memory.sweeping,
@@ -2999,7 +3007,9 @@ export function createDispatcher(ctx, options) {
       lastError: memory.lastError,
       lastResults: memory.lastResults,
       ticks: memory.ticks,
-      environment: environmentStatus(),
+      // T-130: the environment reading is scoped to one project when the caller
+      // names it (the API passes its project); diagnostics can still ask for all.
+      environment: environmentStatus(projectPath),
     }
   }
 
@@ -3080,21 +3090,26 @@ export function createDispatcher(ctx, options) {
    * skipped for this pass; the streak decides when it stops being "a merge is
    * running" and becomes "someone must look at this checkout".
    */
-  function noteEnvironmentFailure(taskId, code, message, now) {
-    const previous = memory.environmentDirty.get(taskId)
-    const entry = previous === undefined ? { count: 0, firstAt: now, lastAt: now, code: null, message: null, escalated: false } : previous
+  function noteEnvironmentFailure(projectPath, taskId, code, message, now) {
+    // T-130: the streak key carries the PROJECT, so two projects with the same
+    // card id never share a streak.
+    const project = projectIdOf(projectPath)
+    const key = project + '@' + String(taskId)
+    const previous = memory.environmentDirty.get(key)
+    const entry = previous === undefined ? { project: project, taskId: String(taskId), count: 0, firstAt: now, lastAt: now, code: null, message: null, escalated: false } : previous
     entry.count += 1
     entry.lastAt = now
     entry.code = String(code === undefined || code === null ? '' : code)
     entry.message = String(message === undefined || message === null ? '' : message)
     entry.escalated = entry.count >= ENVIRONMENT_RETRY_LIMIT || now - entry.firstAt >= ENVIRONMENT_RETRY_WINDOW_MS
-    memory.environmentDirty.set(taskId, entry)
+    memory.environmentDirty.set(key, entry)
     return entry
   }
 
   /** The card made it through the window: forget its streak. */
-  function clearEnvironmentFailure(taskId) {
-    if (memory.environmentDirty.size > 0) memory.environmentDirty.delete(taskId)
+  function clearEnvironmentFailure(projectPath, taskId) {
+    if (memory.environmentDirty.size === 0) return
+    memory.environmentDirty.delete(projectIdOf(projectPath) + '@' + String(taskId))
   }
 
   /** Record the pass-level probe: what the panel shows as "is the main tree clean". */
@@ -3106,15 +3121,22 @@ export function createDispatcher(ctx, options) {
       probe = { ok: false, code: 'git-unavailable', message: String((error && error.message) || error) }
     }
     memory.environment = {
+      // T-130: the probe names its project, so the API can refuse a reading that
+      // belongs to a different tree (the old single slot was last-tick-wins).
+      project: projectIdOf(projectPath),
       clean: probe.ok === true,
       code: probe.ok === true ? null : String(probe.code === undefined || probe.code === null ? 'git-unavailable' : probe.code),
       message: probe.ok === true ? null : String(probe.message === undefined || probe.message === null ? '' : probe.message),
       checkedAt: new Date(now).toISOString(),
     }
     if (probe.ok !== true) return { environment: memory.environment, board: null }
-    // The window closed: every streak and every "waiting for the tree" marker is
-    // obsolete, so a recovered project stops asking without a human reopen.
-    memory.environmentDirty.clear()
+    // The window closed for THIS project: its streaks and its "waiting for the
+    // tree" markers are obsolete. Another project's streaks are untouched.
+    const projectKey = projectIdOf(projectPath)
+    for (const key of Array.from(memory.environmentDirty.keys())) {
+      const entry = memory.environmentDirty.get(key)
+      if (entry !== undefined && entry.project === projectKey) memory.environmentDirty.delete(key)
+    }
     const cleared = await clearEnvironmentWaiting(projectPath, null)
     return { environment: memory.environment, board: cleared }
   }
@@ -3202,46 +3224,59 @@ export function createDispatcher(ctx, options) {
     }
   }
 
+  /** The session that owns a card, or null for a legacy ownerless card. */
+  function ownerSessionOf(task) {
+    if (task === null || task === undefined) return null
+    return typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
+  }
+
   /**
-   * Whether the member recorded for a task is still alive. known:false means
-   * this host cannot tell (no Agent Teams edge) and counts as NOT alive, so a
-   * lease still lapses instead of living forever. An existing member that is not
-   * 'failed' counts as alive — including 'inactive', which is how a teammate
-   * between turns looks.
+   * Whether the member recorded for a task is still alive, IN THE CARD'S TEAM.
+   * known:false means this host cannot tell (no Agent Teams edge, or the card's
+   * session has no live Lead) and counts as NOT alive, so a lease still lapses
+   * instead of living forever. An existing member that is not 'failed' counts as
+   * alive — including 'inactive', which is how a teammate between turns looks.
    */
-  function memberLiveness(identity) {
+  function memberLiveness(identity, options) {
+    const opts = options === undefined || options === null ? {} : options
     const who = identity === null || identity === undefined ? {} : identity
     const session = typeof who.session === 'string' && who.session !== '' ? who.session : null
     const name = typeof who.name === 'string' && who.name !== '' ? who.name : null
-    if (session === null && name === null) return { known: false, alive: false, status: null, name: null }
+    // T-130: the roster is the team of the CARD's owner session, never "the first
+    // Lead on the host". Without a session (legacy/ownerless card) the historical
+    // any-Lead scan stays, explicitly marked compat.
+    const teamSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
+    const compat = teamSession === null
+    if (session === null && name === null) return { known: false, alive: false, status: null, name: null, sessionId: teamSession, compat: compat }
     const team = ctx.get('agentTeams')
-    const lead = resolveAnyLead(ctx)
+    const lead = teamSession === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: teamSession })
     if (team === null || team === undefined || typeof team.listMembers !== 'function' || lead === null) {
-      return { known: false, alive: false, status: null, name: name }
+      return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
     }
     let members = []
     try {
       members = team.listMembers(lead)
     } catch (error) {
-      return { known: false, alive: false, status: null, name: name }
+      return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
     }
-    if (!Array.isArray(members)) return { known: false, alive: false, status: null, name: name }
+    if (!Array.isArray(members)) return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
     const match = members.filter(
       (member) =>
         member !== null &&
         typeof member === 'object' &&
         ((session !== null && String(member.id) === session) || (name !== null && String(member.name) === name)),
     )[0]
-    if (match === undefined) return { known: true, alive: false, status: 'gone', name: name }
+    if (match === undefined) return { known: true, alive: false, status: 'gone', name: name, sessionId: teamSession, compat: compat }
     const status = match.status === undefined || match.status === null || match.status === '' ? 'unknown' : String(match.status)
-    return { known: true, alive: status !== 'failed', status: status, name: typeof match.name === 'string' ? match.name : name }
+    return { known: true, alive: status !== 'failed', status: status, name: typeof match.name === 'string' ? match.name : name, sessionId: teamSession, compat: compat }
   }
 
   /** The heartbeat gate: only a holder the Team still lists is renewed, so a dead
    * worker's lease lapses into the handover path instead of living forever. */
   function holderIsAlive(task) {
     if (task === null || task === undefined || task.assignee === null) return false
-    return memberLiveness({ name: task.assignee.name, session: task.assignee.session }).alive === true
+    // The card's owner session names the roster that must contain its holder.
+    return memberLiveness({ name: task.assignee.name, session: task.assignee.session }, { sessionId: ownerSessionOf(task) }).alive === true
   }
 
   /**
@@ -3257,6 +3292,8 @@ export function createDispatcher(ctx, options) {
     return interruptMemberNamed(ctx, {
       name: name,
       key: String(task === null || task === undefined ? '' : task.id) + '@lease-handover@' + name,
+      // The interrupt must land in the CARD's team, not whichever team is first.
+      sessionId: ownerSessionOf(task),
       message:
         'Task ' + String(task === null || task === undefined ? '' : task.id) + ' left your attempt (lease handover); stop working on it now and discard uncommitted changes.',
     })
@@ -3287,7 +3324,7 @@ export function createDispatcher(ctx, options) {
     const retired = []
     const refused = []
     for (const entry of live) {
-      const liveness = memberLiveness({ name: entry.name, session: entry.session })
+      const liveness = memberLiveness({ name: entry.name, session: entry.session }, { sessionId: ownerSessionOf(task) })
       if (liveness.alive !== true) {
         // Already gone: retiring the ledger row is bookkeeping, not an interrupt,
         // and an entry that is retired already needs no second row.
@@ -3297,6 +3334,7 @@ export function createDispatcher(ctx, options) {
       const stopped = await interruptMemberNamed(ctx, {
         name: entry.name,
         key: String(task.id) + '@supersede@' + entry.name,
+        sessionId: ownerSessionOf(task),
         message:
           'Task ' + String(task.id) + ' (' + String(task.title) + ') is being handed to a new executor. Stop working on it now and discard uncommitted changes; do not submit.',
       })
@@ -3397,7 +3435,7 @@ export function createDispatcher(ctx, options) {
     const handover = []
     for (const task of lapsed) {
       const holder = task.assignee === null ? null : { name: task.assignee.name, session: task.assignee.session }
-      const live = memberLiveness(holder)
+      const live = memberLiveness(holder, { sessionId: ownerSessionOf(task) })
       const startedAt = model.attemptStartedAt(task)
       const capped = startedAt !== null && now - startedAt >= TASK_LEASE_EXTENSION_MAX_MS
       if (live.alive === true && capped !== true) {
@@ -3462,12 +3500,22 @@ export function createDispatcher(ctx, options) {
    */
   async function ensureStageRoles(projectPath, board, now) {
     if (roles === null || typeof roles.ensure !== 'function') return []
-    const kinds = []
+    // T-130: group by (role kind, card owner session). This used to be per kind
+    // only and passed NO sessionId, so roles.ensure fell back to resolveAnyLead
+    // and a card could be handed to whatever team happened to be first. Two
+    // sessions with cards in the same stage now each get their own instance.
+    const groups = []
+    const seen = new Set()
     for (const task of board.tasks) {
-      if (task.status === 'reviewing' && kinds.indexOf('reviewer') < 0) kinds.push('reviewer')
-      if (task.status === 'testing' && kinds.indexOf('tester') < 0) kinds.push('tester')
+      const kind = task.status === 'reviewing' ? 'reviewer' : task.status === 'testing' ? 'tester' : null
+      if (kind === null) continue
+      const owner = ownerSessionOf(task)
+      const key = kind + '@' + (owner === null ? 'legacy' : owner)
+      if (seen.has(key)) continue
+      seen.add(key)
+      groups.push({ kind: kind, ownerSession: owner, task: task })
     }
-    if (kinds.length === 0) return []
+    if (groups.length === 0) return []
     let config = null
     try {
       const fs = ctx.fs
@@ -3476,16 +3524,46 @@ export function createDispatcher(ctx, options) {
       config = null
     }
     const results = []
-    for (const kind of kinds) {
-      const task = board.tasks.filter((entry) => (kind === 'reviewer' ? entry.status === 'reviewing' : entry.status === 'testing'))[0]
+    for (const group of groups) {
+      let sessionId = group.ownerSession
+      if (sessionId === null) {
+        // Legacy ownerless card: NEVER "the first Lead". A UNIQUE live Lead that
+        // actually runs in this project may adopt it (the session evidence the
+        // dispatcher itself uses); 0 or >1 is reported and skipped. With no
+        // session identity at all (legacy profile) the explicit single-lead
+        // compatibility of pickTarget is mirrored — exactly ONE live Lead.
+        const owners = await projectSessions(ctx, state, projectPath, selfSessionId)
+        let adopted = owners.length === 1 ? owners[0] : null
+        if (adopted === null && selfSessionId === null) {
+          const leads = liveLeads(ctx)
+          if (leads.length === 1) adopted = { sessionId: agentSessionOf(leads[0]), lead: leads[0] }
+        }
+        if (adopted === null || adopted.sessionId === null || adopted.sessionId === undefined) {
+          const detail =
+            'legacy card ' + String(group.task.id) + ' needs a ' + String(group.kind) +
+            ', but ' + (owners.length === 0 ? 'no live Lead' : String(owners.length) + ' live Lead(s)') +
+            ' own this project; stage role NOT provisioned (no any-Lead guess)'
+          results.push({ ok: false, code: 'legacy-owner-ambiguous', kind: group.kind, taskId: group.task.id, candidates: owners.length })
+          emit('error', 'system', { taskId: group.task.id, detail: detail })
+          continue
+        }
+        sessionId = String(adopted.sessionId)
+      }
       try {
-        const ensured = await roles.ensure(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: task, now: now })
+        const ensured = await roles.ensure(group.kind, {
+          config: config === null ? undefined : config,
+          projectPath: projectPath,
+          task: group.task,
+          now: now,
+          // THE fix: the role belongs to the card owner's team.
+          sessionId: sessionId,
+        })
         results.push(ensured)
         emitRole(ensured)
       } catch (error) {
         const failed = { ok: false, code: 'role-ensure-failed', message: String((error && error.message) || error) }
         results.push(failed)
-        emit('error', 'system', { detail: 'role ' + String(kind) + ' ensure failed: ' + failed.message })
+        emit('error', 'system', { detail: 'role ' + String(group.kind) + ' ensure failed: ' + failed.message })
       }
     }
     return results
@@ -3507,11 +3585,17 @@ export function createDispatcher(ctx, options) {
     }
   }
 
-  /** Live reviewer slot names (reviewer-1, reviewer-2, ...). */
-  function reviewerNames() {
+  /**
+   * Live role-slot names of one kind (reviewer-1, ...), inside ONE team.
+   * T-130: the roster is the CARD OWNER SESSION's team. The any-Lead scan only
+   * remains for a card with no session at all (legacy ownerless), never as
+   * authority for an owned card.
+   */
+  function roleSlotNamesOf(kind, sessionId) {
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return []
-    const lead = resolveAnyLead(ctx)
+    const teamSession = typeof sessionId === 'string' && sessionId !== '' ? sessionId : null
+    const lead = teamSession === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: teamSession })
     if (lead === null) return []
     let roster = []
     try {
@@ -3534,21 +3618,28 @@ export function createDispatcher(ctx, options) {
         (member) =>
           member !== null &&
           typeof member === 'object' &&
-          roleKindOf(member.name) === 'reviewer' &&
+          roleKindOf(member.name) === kind &&
           member.status !== 'failed' &&
           drained.indexOf(String(member.name)) < 0,
       )
       .map((member) => String(member.name))
   }
 
+  function reviewerNames(sessionId) {
+    return roleSlotNamesOf('reviewer', sessionId)
+  }
 
-  /** Live tester slot names (tester-1, tester-2, ...). */
+  function testerNames(sessionId) {
+    return roleSlotNamesOf('tester', sessionId)
+  }
+
   /** Role slot names plus the member ids/sessions that belong to those slots. */
-  function roleIdentities(names) {
+  function roleIdentities(names, sessionId) {
     const out = names.slice()
     if (names.length === 0) return out
     const { agentTeams } = servicesFor(ctx)
-    const lead = resolveAnyLead(ctx)
+    const teamSession = typeof sessionId === 'string' && sessionId !== '' ? sessionId : null
+    const lead = teamSession === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: teamSession })
     if (agentTeams === undefined || agentTeams === null || lead === null) return out
     try {
       const roster = agentTeams.listMembers(lead)
@@ -3561,39 +3652,6 @@ export function createDispatcher(ctx, options) {
       }
     } catch (error) {}
     return out
-  }
-
-  function testerNames() {
-    const { agentTeams } = servicesFor(ctx)
-    if (agentTeams === undefined || agentTeams === null) return []
-    const lead = resolveAnyLead(ctx)
-    if (lead === null) return []
-    let roster = []
-    try {
-      roster = agentTeams.listMembers(lead)
-    } catch (error) {
-      return []
-    }
-    if (!Array.isArray(roster)) return []
-    let drained = []
-    if (roles !== null && typeof roles.status === 'function') {
-      try {
-        const status = roles.status()
-        drained = Array.isArray(status.drained) ? status.drained.map(String) : []
-      } catch (error) {
-        drained = []
-      }
-    }
-    return roster
-      .filter(
-        (member) =>
-          member !== null &&
-          typeof member === 'object' &&
-          roleKindOf(member.name) === 'tester' &&
-          member.status !== 'failed' &&
-          drained.indexOf(String(member.name)) < 0,
-      )
-      .map((member) => String(member.name))
   }
 
   /**
@@ -3616,19 +3674,39 @@ export function createDispatcher(ctx, options) {
     )
     if (pending.length === 0) return { reminded: [], blocked: [], board: null }
     const pendingKeys = new Set(pending.map((task) => String(task.id) + '@' + String(task.review.at)))
-    const lead = resolveAnyLead(ctx)
-    const names = reviewerNames()
+    // T-130: judge each card against ITS OWN team. The roster, the Lead that gets
+    // the notices and the identities the silence clock counts are resolved once
+    // per owner session per pass — never once for the whole host.
+    const scopeCache = new Map()
+    function reviewScopeOf(task) {
+      const sessionId = ownerSessionOf(task)
+      const key = sessionId === null ? 'legacy' : sessionId
+      let scope = scopeCache.get(key)
+      if (scope !== undefined) return scope
+      const names = reviewerNames(sessionId)
+      scope = {
+        sessionId: sessionId,
+        names: names,
+        lead: sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId }),
+        identities: roleIdentities(names, sessionId),
+      }
+      scopeCache.set(key, scope)
+      return scope
+    }
     const reminded = []
     const blocked = []
     let nextBoard = null
     for (const task of pending) {
+      const scope = reviewScopeOf(task)
+      const names = scope.names
+      const lead = scope.lead
       const slot = stageSlotOf(ctx, task.id, 'reviewer')
       // A task waiting for its role slot has no delivery time yet: its silence
       // clock is paused so the watchdog cannot remind/block it out of turn.
       if (slot !== null && slot.position !== null) continue
       const startedAt = slot !== null && Number.isFinite(slot.at) ? slot.at : Date.parse(task.review.at)
       if (!Number.isFinite(startedAt)) continue
-      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, roleIdentities(names)))
+      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, scope.identities))
       const silence = now - lastAt
       const key = String(task.id) + '@' + String(task.review.at)
       if (silence >= reviewTimeoutMs * 2 + phaseGraceMs) {
@@ -3647,7 +3725,7 @@ export function createDispatcher(ctx, options) {
           }
           const freshSlot = stageSlotOf(ctx, fresh.id, 'reviewer')
           const freshStart = freshSlot !== null && Number.isFinite(freshSlot.at) ? freshSlot.at : Date.parse(fresh.review.at)
-          const freshSilence = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, roleIdentities(names)))) / 60000)
+          const freshSilence = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, scope.identities))) / 60000)
           const result = model.blockTask(value, fresh.id, now, 'system', 'review timed out: no reviewer verdict after ' + String(freshSilence) + 'min of silence')
           return result.ok === true ? result.board : value
         })
@@ -3663,6 +3741,8 @@ export function createDispatcher(ctx, options) {
           await interruptMemberNamed(ctx, {
             name: names[0],
             key: String(task.id) + '@blocked@' + names[0],
+            // The timed-out reviewer is in the CARD's team.
+            sessionId: scope.sessionId,
             message:
               'Task ' + String(task.id) + ' is blocked (review timed out with no verdict). Stop working on it now and discard uncommitted changes.',
           })
@@ -3725,17 +3805,36 @@ export function createDispatcher(ctx, options) {
     )
     if (pending.length === 0) return { reminded: [], blocked: [], board: null }
     const pendingKeys = new Set(pending.map((task) => String(task.id) + '@' + String(task.test.at)))
-    const lead = resolveAnyLead(ctx)
-    const names = testerNames()
+    // T-130: same rule as the review sweep — each card is judged against the
+    // tester roster of ITS owner session, resolved once per session per pass.
+    const scopeCache = new Map()
+    function testScopeOf(task) {
+      const sessionId = ownerSessionOf(task)
+      const key = sessionId === null ? 'legacy' : sessionId
+      let scope = scopeCache.get(key)
+      if (scope !== undefined) return scope
+      const names = testerNames(sessionId)
+      scope = {
+        sessionId: sessionId,
+        names: names,
+        lead: sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId }),
+        identities: roleIdentities(names, sessionId),
+      }
+      scopeCache.set(key, scope)
+      return scope
+    }
     const reminded = []
     const blocked = []
     let nextBoard = null
     for (const task of pending) {
+      const scope = testScopeOf(task)
+      const names = scope.names
+      const lead = scope.lead
       const slot = stageSlotOf(ctx, task.id, 'tester')
       if (slot !== null && slot.position !== null) continue
       const startedAt = slot !== null && Number.isFinite(slot.at) ? slot.at : Date.parse(task.test.at)
       if (!Number.isFinite(startedAt)) continue
-      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, roleIdentities(names)))
+      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, scope.identities))
       const silence = now - lastAt
       const key = String(task.id) + '@' + String(task.test.at)
       const candidate =
@@ -3764,7 +3863,7 @@ export function createDispatcher(ctx, options) {
               : 'no candidate recorded'
           const freshSlot = stageSlotOf(ctx, fresh.id, 'tester')
           const freshStart = freshSlot !== null && Number.isFinite(freshSlot.at) ? freshSlot.at : Date.parse(fresh.test.at)
-          const freshMinutes = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, names))) / 60000)
+          const freshMinutes = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, scope.identities))) / 60000)
           blockNote = 'test timeout: no verdict after ' + String(freshMinutes) + 'min of silence (' + tester + '; ' + freshCandidate + ')'
           const result = model.blockTask(value, fresh.id, now, 'system', blockNote + '; blocked for triage')
           return result.ok === true ? result.board : value
@@ -3783,6 +3882,8 @@ export function createDispatcher(ctx, options) {
           await interruptMemberNamed(ctx, {
             name: stalledTester,
             key: String(task.id) + '@blocked@' + stalledTester,
+            // The timed-out tester is in the CARD's team.
+            sessionId: scope.sessionId,
             message:
               'Task ' + String(task.id) + ' is blocked (test timed out with no verdict). Stop working on it now and discard uncommitted changes.',
           })
@@ -4016,7 +4117,7 @@ export function createDispatcher(ctx, options) {
           }
         }
         if (task.dispatch !== null && task.dispatch.status === 'lease-expired' && task.dispatch.error !== TASK_LEASE_CAP_ERROR) {
-          const previous = memberLiveness({ name: task.dispatch.target, session: task.dispatch.targetId })
+          const previous = memberLiveness({ name: task.dispatch.target, session: task.dispatch.targetId }, { sessionId: ownerSessionOf(task) })
           if (previous.alive === true) {
             results.push({ id: task.id, skipped: 'previous-assignee-active', previous: task.dispatch.target })
             continue
@@ -4163,7 +4264,7 @@ export function createDispatcher(ctx, options) {
             // clean" is briefly false while it runs. That is not a broken
             // environment: skip THIS card, keep dispatch running and retry it next
             // pass. Only a sustained streak escalates to a human (T-108).
-            const entry = noteEnvironmentFailure(task.id, worktree.code, worktree.message, state.clock())
+            const entry = noteEnvironmentFailure(project, task.id, worktree.code, worktree.message, state.clock())
             const detail = String(worktree.code) + ': ' + String(worktree.message)
             if (entry.escalated === true) {
               const marked = await markEnvironmentWaiting(project, task.id, detail)
@@ -4199,7 +4300,7 @@ export function createDispatcher(ctx, options) {
         }
         // The window passed for this card: forget its streak and its marker so the
         // claim cannot inherit a stale "waiting for a clean tree".
-        clearEnvironmentFailure(task.id)
+        clearEnvironmentFailure(project, task.id)
         if (task.waitingReason === 'dirty-worktree') {
           const cleared = await clearEnvironmentWaiting(project, task.id)
           if (cleared !== null) current = cleared
@@ -4430,8 +4531,15 @@ export async function interruptMemberNamed(ctx, options) {
   if (name === null) return { ok: false, code: 'no-name' }
   const { agentTeams } = servicesFor(ctx)
   if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service' }
-  const lead = resolveAnyLead(ctx)
-  if (lead === null) return { ok: false, code: 'no-lead' }
+  // T-130: an interrupt names the CARD's owner session. The any-Lead scan only
+  // survives for a legacy card with no session at all — it is never authority.
+  const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
+  const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
+  if (lead === null) {
+    return sessionId === null
+      ? { ok: false, code: 'no-lead' }
+      : { ok: false, code: 'no-lead-for-project', message: 'session ' + sessionId + ' has no live Team Lead, so its member ' + name + ' cannot be interrupted (never another team)' }
+  }
   let members = []
   try {
     members = agentTeams.listMembers(lead)
@@ -4497,6 +4605,7 @@ export async function interruptAssignee(ctx, task, options) {
   return interruptMemberNamed(ctx, {
     name: name,
     key: String(task.id) + '@' + state + '@' + name,
+    sessionId: typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null,
     message:
       'Task ' + String(task.id) + ' (' + String(task.title) + ') is ' + reason +
       '. Stop working on it now and discard uncommitted changes; do not submit.',

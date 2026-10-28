@@ -2,8 +2,8 @@
 // reservation, file locks, retry, lease reaping and host restart recovery.
 
 import { join } from 'node:path'
-import { mkdirSync, writeFileSync, utimesSync, rmSync } from 'node:fs'
-import { readRoleConfig, rolesPath, updateBoard } from '../../plugin/task-center/board.mjs'
+import { mkdirSync, writeFileSync, utimesSync, rmSync, readFileSync } from 'node:fs'
+import { readRoleConfig, rolesPath, updateBoard, projectIdOf } from '../../plugin/task-center/board.mjs'
 import { createState, writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
 import {
@@ -52,7 +52,7 @@ const slot = (kind, index) => roleSlotName(kind, index, PROJECT)
 import { createApi, USER_ONLY_ACTIONS } from '../../plugin/task-center/api.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
-import { createRig, createTask, submitAsUser, sleep, createFakeFs, createTeam, createFakeGit, seedBoard, PROJECT } from './support/fixtures.mjs'
+import { createRig, createTask, submitAsUser, sleep, createFakeFs, createStrictCtx, createTeam, createFakeGit, seedBoard, PROJECT } from './support/fixtures.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -4416,6 +4416,629 @@ function fakeHostSubprocess(result) {
     JSON.stringify({ liveBefore: liveBefore, liveAfter: liveAfter, assignee: task.assignee, spawns: rig.team.calls.filter((call) => call.kind === 'spawn').length }),
   )
   rig.scheduler.dispose()
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// T-130: every card-affecting path follows the CARD's session/project — never
+// "the first Lead". Fixture: an OLD team (session-74be704e — the one that used
+// to receive a current card's brief) and the CURRENT team (session-eb9ba775).
+// ══════════════════════════════════════════════════════════════════════════
+
+const T130_NOW = Date.parse('2026-10-28T12:00:00.000Z')
+const T130_STAMP = new Date(T130_NOW).toISOString()
+const T130_OLD = 'session-74be704e'
+const T130_CUR = 'session-eb9ba775'
+
+function t130Task(overrides) {
+  return Object.assign(
+    {
+      id: 'T-1',
+      title: 'T-130 card',
+      status: 'running',
+      priority: 0,
+      dependsOn: [],
+      writeFiles: [],
+      evidence: '',
+      ownerSession: null,
+      history: [],
+      createdAt: T130_STAMP,
+      updatedAt: T130_STAMP,
+      attempts: 1,
+      maxAttempts: 3,
+      review: null,
+      test: null,
+      merge: null,
+      dispatch: null,
+      leaseUntil: null,
+    },
+    overrides === undefined ? {} : overrides,
+  )
+}
+
+function t130Board(tasks, dispatch) {
+  return { version: 2, seq: 2, updatedAt: T130_STAMP, dispatch: Object.assign({ state: 'paused' }, dispatch === undefined ? {} : dispatch), tasks: tasks }
+}
+
+/**
+ * Two session-scoped teams on one project. The fake Agent Teams supports two
+ * leads, each with its own roster, spawn/send/interrupt/… — the shape the bug
+ * needed to be visible at all.
+ */
+function createTwoTeamRig(options) {
+  const opts = options === undefined ? {} : options
+  const project = PROJECT
+  const fs = createFakeFs()
+  seedBoard(fs, project, JSON.stringify(t130Board(opts.tasks === undefined ? [] : opts.tasks, opts.dispatch)))
+  const oldLead = { id: T130_OLD, name: 'lead', role: 'lead', status: 'running' }
+  const curLead = { id: T130_CUR, name: 'lead', role: 'lead', status: 'running' }
+  const leadIds = opts.leadIds === undefined ? [T130_OLD, T130_CUR] : opts.leadIds
+  const leads = [oldLead, curLead].filter((lead) => leadIds.indexOf(lead.id) >= 0)
+  const rosters = new Map()
+  rosters.set(
+    T130_OLD,
+    (opts.oldRoster === undefined
+      ? [
+          { id: 'session-old-reviewer', name: 'reviewer-1', role: 'teammate', status: 'running' },
+          { id: 'session-old-tester', name: 'tester-1', role: 'teammate', status: 'running' },
+          { id: 'session-old-reviewer-legacy', name: 'reviewer-pb58f7f45e6-1', role: 'teammate', status: 'running' },
+        ]
+      : opts.oldRoster
+    ).map((member) => Object.assign({}, member)),
+  )
+  rosters.set(T130_CUR, (opts.currentRoster === undefined ? [] : opts.currentRoster).map((member) => Object.assign({}, member)))
+  const calls = []
+  const keyOfLead = (lead) => {
+    if (lead === null || lead === undefined) return 'unknown'
+    const id = String(lead.id === undefined ? lead : lead.id)
+    return id === T130_OLD || id === T130_CUR ? id : id
+  }
+  const team = {
+    calls: calls,
+    rosters: rosters,
+    oldLead: oldLead,
+    curLead: curLead,
+    keyOfLead: keyOfLead,
+    memberOf(key, name) {
+      return (rosters.get(key) || []).filter((member) => member.name === name)[0]
+    },
+    listMembers(lead) {
+      return (rosters.get(keyOfLead(lead)) || []).map((member) => Object.assign({}, member))
+    },
+    tryMembership(candidate) {
+      if (candidate === null || candidate === undefined) return null
+      const id = String(candidate.id === undefined ? candidate : candidate.id)
+      if (id === T130_OLD || id === T130_CUR) return { role: 'lead', name: 'lead' }
+      return { role: 'teammate', name: String(candidate.name === undefined ? id : candidate.name) }
+    },
+    async spawnTeammate(lead, request) {
+      const key = keyOfLead(lead)
+      calls.push({ kind: 'spawn', team: key, name: String(request.name), text: request.prompt.map((part) => part.text).join('\n') })
+      const member = { id: 'session-' + String(request.name), name: String(request.name), role: 'teammate', status: 'running' }
+      const roster = rosters.get(key)
+      if (roster !== undefined) roster.push(member)
+      return { member: member }
+    },
+    async sendMessage(lead, request) {
+      calls.push({ kind: 'send', team: keyOfLead(lead), target: String(request.target), text: request.content[0].text })
+      return { status: 'accepted', messageId: 'm-' + String(calls.length) }
+    },
+    async interrupt(lead, name) {
+      const key = keyOfLead(lead)
+      const member = (rosters.get(key) || []).filter((entry) => entry.name === name)[0]
+      calls.push({ kind: 'interrupt', team: key, name: String(name) })
+      if (member === undefined) return { previousStatus: null }
+      const previous = member.status
+      member.status = 'inactive'
+      return { previousStatus: previous }
+    },
+  }
+  const agents = { list: () => leads.slice() }
+  const ctx = createStrictCtx(
+    {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: project }) },
+      get(key) {
+        if (key === 'agents') return agents
+        if (key === 'agentTeams') return team
+        if (key === 'subagents') return { list: () => ['spawn'] }
+        return undefined
+      },
+    },
+    ['fs', 'sandboxPolicy', 'tools', 'webServer'],
+  )
+  const state = createState(ctx, { now: () => T130_NOW, homeDir: join(project, '..', 't130-home'), sessionLookup: null })
+  if (opts.sessionRoots !== false) {
+    state.setSessionRoot(T130_OLD, project)
+    state.setSessionRoot(T130_CUR, project)
+  }
+  const roles = createRoleManager(ctx, { state: state, now: () => T130_NOW })
+  const git = createFakeGit({ project: project, fs: fs })
+  const activity = createActivity({ limit: 200 })
+  const scheduler = createDispatcher(ctx, {
+    state: state,
+    projectPath: () => project,
+    allowSpawn: false,
+    git: git,
+    roles: roles,
+    activity: activity,
+    reviewTimeoutMs: opts.reviewTimeoutMs,
+    testReminderMs: opts.testReminderMs,
+    testTimeoutMs: opts.testTimeoutMs,
+    phaseGraceMs: opts.phaseGraceMs,
+  })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, roles: roles, activity: activity, now: () => T130_NOW })
+  return { project, fs, team, ctx, state, roles, git, scheduler, api, activity, oldLead, curLead, users: { user: { projectPath: project, by: '@user', role: 'user', agent: null, sessionId: T130_CUR } } }
+}
+
+const t130SessionsDir = join(process.cwd(), '.tmp-t130-sessions-' + String(Date.now()))
+const t130PreviousSessionsDir = process.env.GODOT_BRIDGE_SESSIONS_DIR
+try {
+  mkdirSync(t130SessionsDir, { recursive: true })
+  process.env.GODOT_BRIDGE_SESSIONS_DIR = t130SessionsDir
+
+  // ── (1/2) a REVIEWING card of the current session provisions in ITS team ──
+  {
+    const rig = createTwoTeamRig({
+      tasks: [
+        t130Task({
+          id: 'T-2',
+          title: 'current session review',
+          status: 'reviewing',
+          ownerSession: T130_CUR,
+          review: { status: 'pending', by: null, at: T130_STAMP, reasons: null, attempt: 1 },
+        }),
+      ],
+    })
+    const oldBefore = rig.team.listMembers(rig.oldLead).map((member) => member.name).sort().join(',')
+    await rig.scheduler.tick(PROJECT)
+    const curNames = rig.team.listMembers(rig.curLead).map((member) => member.name)
+    const oldNames = rig.team.listMembers(rig.oldLead)
+    check(
+      'T-130 a reviewing card provisions the reviewer in the CARD session team',
+      curNames.some((name) => /^reviewer-p/.test(name)),
+      JSON.stringify(curNames),
+    )
+    check(
+      'T-130 the old team roster is unchanged (no reviewer added)',
+      oldNames.map((member) => member.name).sort().join(',') === oldBefore,
+      JSON.stringify(oldNames.map((member) => member.name)),
+    )
+    check(
+      'T-130 the old team receives no spawn and no review brief for that card',
+      rig.team.calls.every((call) => call.team === T130_CUR),
+      JSON.stringify(rig.team.calls.map((call) => call.kind + '@' + call.team)),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // ── (3) a TESTING card of the current session provisions ITS tester ──
+  {
+    const rig = createTwoTeamRig({
+      tasks: [
+        t130Task({
+          id: 'T-3',
+          title: 'current session test',
+          status: 'testing',
+          ownerSession: T130_CUR,
+          review: { status: 'approved', by: 'reviewer-x', at: T130_STAMP, reasons: null, attempt: 1 },
+          test: { status: 'pending', by: null, at: T130_STAMP, evidence: null, attempt: 1 },
+          merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: null, reviewer: null, conflict: null, at: T130_STAMP },
+        }),
+      ],
+    })
+    await rig.scheduler.tick(PROJECT)
+    const curNames = rig.team.listMembers(rig.curLead).map((member) => member.name)
+    const oldNames = rig.team.listMembers(rig.oldLead).map((member) => member.name)
+    check('T-130 a testing card provisions the tester in the CARD session team', curNames.some((name) => /^tester-p/.test(name)), JSON.stringify(curNames))
+    check('T-130 the old team gains no tester', oldNames.every((name) => !/^tester-p/.test(name)), JSON.stringify(oldNames))
+    check('T-130 the old team receives nothing for the testing card', rig.team.calls.every((call) => call.team === T130_CUR), JSON.stringify(rig.team.calls))
+    rig.scheduler.dispose()
+  }
+
+  // ── (4) two cards, two owner sessions, both reviewing: one reviewer EACH ──
+  {
+    const rig = createTwoTeamRig({
+      oldRoster: [],
+      tasks: [
+        t130Task({
+          id: 'T-4',
+          title: 'old session review',
+          status: 'reviewing',
+          ownerSession: T130_OLD,
+          review: { status: 'pending', by: null, at: T130_STAMP, reasons: null, attempt: 1 },
+        }),
+        t130Task({
+          id: 'T-5',
+          title: 'current session review',
+          status: 'reviewing',
+          ownerSession: T130_CUR,
+          review: { status: 'pending', by: null, at: T130_STAMP, reasons: null, attempt: 1 },
+        }),
+      ],
+    })
+    await rig.scheduler.tick(PROJECT)
+    const oldReviewers = rig.team.listMembers(rig.oldLead).filter((member) => /^reviewer-p/.test(member.name))
+    const curReviewers = rig.team.listMembers(rig.curLead).filter((member) => /^reviewer-p/.test(member.name))
+    const spawns = rig.team.calls.filter((call) => call.kind === 'spawn')
+    check(
+      'T-130 stage roles are grouped by (kind, owner session): both teams get a reviewer',
+      oldReviewers.length === 1 && curReviewers.length === 1 && spawns.length === 2,
+      JSON.stringify({ old: oldReviewers.map((m) => m.name), cur: curReviewers.map((m) => m.name), spawns: spawns.map((s) => s.team + ':' + s.name) }),
+    )
+    check(
+      'T-130 each reviewer was spawned inside its own team',
+      spawns.some((call) => call.team === T130_OLD) && spawns.some((call) => call.team === T130_CUR),
+      JSON.stringify(spawns.map((call) => call.team)),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // ── (5) liveness: a holder alive in ITS team is not declared gone ──
+  {
+    const rig = createTwoTeamRig({
+      currentRoster: [{ id: 'session-worker-cur', name: 'worker-cur', role: 'teammate', status: 'running' }],
+      dispatch: { state: 'running' },
+      tasks: [t130Task({ id: 'T-6', title: 'live holder', status: 'pending', ownerSession: T130_CUR })],
+    })
+    await rig.scheduler.tick(PROJECT)
+    // Give the card a LAPSED lease while its holder is still listed in its team.
+    const claimed = await rig.state.read(PROJECT)
+    const claimedTask = findTask(claimed.board, 'T-6')
+    await rig.state.apply(
+      PROJECT,
+      (board) => {
+        const task = findTask(board, 'T-6')
+        if (task === undefined) return null
+        const tasks = board.tasks.map((entry) => (String(entry.id) === 'T-6' ? Object.assign({}, entry, { leaseUntil: new Date(T130_NOW - 60000).toISOString() }) : entry))
+        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+      },
+      writePolicyFor(PROJECT),
+    )
+    await rig.scheduler.tick(PROJECT)
+    const board = await rig.state.read(PROJECT)
+    const task = findTask(board.board, 'T-6')
+    check(
+      'T-130 memberLiveness judges the card holder inside the CARD session team (no handover)',
+      claimedTask.status === 'running' &&
+        task.status === 'running' &&
+        Number.isFinite(Date.parse(task.leaseUntil)) &&
+        Date.parse(task.leaseUntil) > T130_NOW,
+      JSON.stringify({ claimed: { status: claimedTask.status, assignee: claimedTask.assignee }, now: { status: task.status, leaseUntil: task.leaseUntil } }),
+    )
+    check('T-130 no interrupt was sent for a live holder', rig.team.calls.every((call) => call.kind !== 'interrupt'), JSON.stringify(rig.team.calls))
+    rig.scheduler.dispose()
+  }
+
+  // ── (6) a card leaving running interrupts only ITS team's same-named member ──
+  {
+    const rig = createTwoTeamRig({
+      currentRoster: [{ id: 'session-worker-shared', name: 'worker-shared', role: 'teammate', status: 'running' }],
+      tasks: [
+        t130Task({
+          id: 'T-7',
+          title: 'blocked card',
+          status: 'running',
+          ownerSession: T130_CUR,
+          assignee: { name: 'worker-shared', session: 'session-worker-shared' },
+        }),
+      ],
+    })
+    rig.team.rosters.get(T130_OLD).push({ id: 'session-old-worker-shared', name: 'worker-shared', role: 'teammate', status: 'running' })
+    const blocked = await rig.api.perform('block', { id: 'T-7' }, rig.users.user)
+    const curMember = rig.team.memberOf(T130_CUR, 'worker-shared')
+    const oldMember = rig.team.memberOf(T130_OLD, 'worker-shared')
+    const interrupts = rig.team.calls.filter((call) => call.kind === 'interrupt')
+    check('T-130 the block action succeeds', blocked.ok === true && blocked.task.status === 'blocked', JSON.stringify(blocked).slice(0, 240))
+    check(
+      'T-130 interruptMemberNamed interrupts the CARD team member only',
+      interrupts.length === 1 && interrupts[0].team === T130_CUR && interrupts[0].name === 'worker-shared' && curMember.status !== 'running',
+      JSON.stringify({ interrupts: interrupts, cur: curMember, old: oldMember }),
+    )
+    check('T-130 the old team same-named member is NOT interrupted', oldMember.status === 'running', JSON.stringify(oldMember))
+    rig.scheduler.dispose()
+  }
+
+  // ── (7a) review timeout sweep uses the CARD session's reviewer names ──
+  {
+    const rig = createTwoTeamRig({
+      reviewTimeoutMs: 1,
+      phaseGraceMs: 0,
+      tasks: [
+        t130Task({
+          id: 'T-8',
+          title: 'silent review',
+          status: 'reviewing',
+          ownerSession: T130_CUR,
+          review: { status: 'pending', by: null, at: new Date(T130_NOW - 120000).toISOString(), reasons: null, attempt: 1 },
+        }),
+      ],
+    })
+    await rig.scheduler.tick(PROJECT)
+    const board = await rig.state.read(PROJECT)
+    const task = findTask(board.board, 'T-8')
+    const interrupts = rig.team.calls.filter((call) => call.kind === 'interrupt')
+    const oldReviewer = rig.team.memberOf(T130_OLD, 'reviewer-1')
+    check('T-130 the silent review is blocked for triage', task.status === 'blocked', JSON.stringify({ status: task.status, history: task.history.slice(-1) }))
+    check(
+      'T-130 the timeout interrupt targets the CARD session reviewer, not the old team reviewer-1',
+      interrupts.length === 1 && interrupts[0].team === T130_CUR && /^reviewer-p/.test(interrupts[0].name),
+      JSON.stringify(interrupts),
+    )
+    check('T-130 the old team reviewer-1 is untouched by the current card timeout', oldReviewer.status === 'running', JSON.stringify(oldReviewer))
+    rig.scheduler.dispose()
+  }
+
+  // ── (7b) test timeout sweep uses the CARD session's tester names ──
+  {
+    const rig = createTwoTeamRig({
+      testReminderMs: 1,
+      testTimeoutMs: 1,
+      phaseGraceMs: 0,
+      tasks: [
+        t130Task({
+          id: 'T-9',
+          title: 'silent test',
+          status: 'testing',
+          ownerSession: T130_CUR,
+          review: { status: 'approved', by: 'reviewer-x', at: T130_STAMP, reasons: null, attempt: 1 },
+          test: { status: 'pending', by: null, at: new Date(T130_NOW - 120000).toISOString(), evidence: null, attempt: 1 },
+          merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-sha', mergeCommit: 'candidate-sha', declaredFiles: [], actualFiles: [], tests: null, reviewer: null, conflict: null, at: T130_STAMP },
+        }),
+      ],
+    })
+    await rig.scheduler.tick(PROJECT)
+    const board = await rig.state.read(PROJECT)
+    const task = findTask(board.board, 'T-9')
+    const interrupts = rig.team.calls.filter((call) => call.kind === 'interrupt')
+    const oldTester = rig.team.memberOf(T130_OLD, 'tester-1')
+    check('T-130 the silent test is blocked for triage', task.status === 'blocked', JSON.stringify({ status: task.status, history: task.history.slice(-1) }))
+    check(
+      'T-130 the timeout interrupt targets the CARD session tester, not the old team tester-1',
+      interrupts.length === 1 && interrupts[0].team === T130_CUR && /^tester-p/.test(interrupts[0].name),
+      JSON.stringify(interrupts),
+    )
+    check('T-130 the old team tester-1 is untouched', oldTester.status === 'running', JSON.stringify(oldTester))
+    rig.scheduler.dispose()
+  }
+
+  // ── (8) ownerless legacy cards: unique live Lead only, never "the first" ──
+  {
+    const ownerlessReview = () =>
+      t130Task({
+        id: 'T-10',
+        title: 'ownerless review',
+        status: 'reviewing',
+        ownerSession: null,
+        review: { status: 'pending', by: null, at: T130_STAMP, reasons: null, attempt: 1 },
+      })
+    // (a) exactly ONE live Lead owns the project -> it adopts the card.
+    const single = createTwoTeamRig({ leadIds: [T130_CUR], oldRoster: [], tasks: [ownerlessReview()] })
+    await single.scheduler.tick(PROJECT)
+    check(
+      'T-130 an ownerless card is adopted when exactly ONE live Lead owns the project',
+      single.team.listMembers(single.curLead).some((member) => /^reviewer-p/.test(member.name)),
+      JSON.stringify(single.team.listMembers(single.curLead)),
+    )
+    single.scheduler.dispose()
+    // (b) TWO live Leads own the project -> skipped, with a readable system note.
+    const ambiguous = createTwoTeamRig({ oldRoster: [], tasks: [ownerlessReview()] })
+    await ambiguous.scheduler.tick(PROJECT)
+    const ambiguousSpawns = ambiguous.team.calls.filter((call) => call.kind === 'spawn')
+    const ambiguousEvents = ambiguous.activity.list(50).filter((entry) => String(entry.detail).indexOf('legacy card') >= 0)
+    check(
+      'T-130 an ownerless card with TWO project Leads is skipped, not guessed',
+      ambiguousSpawns.length === 0 && ambiguousEvents.length >= 1 && String(ambiguousEvents[0].detail).indexOf('no any-Lead guess') >= 0,
+      JSON.stringify({ spawns: ambiguousSpawns, events: ambiguousEvents.map((entry) => entry.detail) }),
+    )
+    ambiguous.scheduler.dispose()
+    // (c) NO live Lead -> skipped the same way.
+    const noLead = createTwoTeamRig({ leadIds: [], oldRoster: [], tasks: [ownerlessReview()] })
+    await noLead.scheduler.tick(PROJECT)
+    check(
+      'T-130 an ownerless card with no live Lead is skipped',
+      noLead.team.calls.filter((call) => call.kind === 'spawn').length === 0 &&
+        noLead.activity.list(50).some((entry) => String(entry.detail).indexOf('legacy card') >= 0),
+      JSON.stringify(noLead.activity.list(50).map((entry) => entry.detail)),
+    )
+    noLead.scheduler.dispose()
+    // (d) legacy profile shape: no session identity, exactly one live Lead on the
+    // host -> the explicit single-lead compatibility path (never "the first").
+    const legacyProfile = createTwoTeamRig({ leadIds: [T130_CUR], oldRoster: [], sessionRoots: false, tasks: [ownerlessReview()] })
+    await legacyProfile.scheduler.tick(PROJECT)
+    check(
+      'T-130 the explicit single-lead legacy profile still adopts an ownerless card',
+      legacyProfile.team.listMembers(legacyProfile.curLead).some((member) => /^reviewer-p/.test(member.name)),
+      JSON.stringify(legacyProfile.team.calls),
+    )
+    legacyProfile.scheduler.dispose()
+  }
+
+  // ══ (10) the environment probe is per project ═══════════════════════════
+  {
+    const PROJECT_A = join(PROJECT, '..', 't130-env-a')
+    const PROJECT_B = join(PROJECT, '..', 't130-env-b')
+    const fs = createFakeFs()
+    seedBoard(fs, PROJECT_A, JSON.stringify(t130Board([], { state: 'running' })))
+    seedBoard(fs, PROJECT_B, JSON.stringify(t130Board([], { state: 'running' })))
+    const perRootGit = {
+      calls: [],
+      async isRepo(root) {
+        return { ok: true, repo: true }
+      },
+      async isClean(root) {
+        this.calls.push({ root: root })
+        return { ok: true, clean: root !== PROJECT_A }
+      },
+      async gitPath(root, name) {
+        return { ok: true, path: join(root, '.git', name) }
+      },
+      async checkIgnore(root, paths) {
+        return { ok: true, ignored: paths, notIgnored: [] }
+      },
+      async head() {
+        return { ok: true, hash: 'base-sha' }
+      },
+      async currentBranch() {
+        return { ok: true, branch: 'main' }
+      },
+      async worktreeList() {
+        return { ok: true, worktrees: [] }
+      },
+      async diffNameOnly() {
+        return { ok: true, files: [] }
+      },
+    }
+    const team = createTeam()
+    const ctx = createStrictCtx(
+      {
+        fs: fs,
+        sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT_A }) },
+        get(key) {
+          if (key === 'agents') return { list: () => [{ id: 'session-lead' }] }
+          if (key === 'agentTeams') return team
+          if (key === 'subagents') return { list: () => ['spawn'] }
+          return undefined
+        },
+      },
+      ['fs', 'sandboxPolicy', 'tools', 'webServer'],
+    )
+    const state = createState(ctx, { now: () => T130_NOW, homeDir: join(PROJECT, '..', 't130-home'), sessionLookup: null })
+    state.setSessionRoot('session-lead', PROJECT_A)
+    const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT_A, allowSpawn: false, git: perRootGit, roles: null })
+    const api = createApi(ctx, { state: state, scheduler: scheduler, git: perRootGit, roles: null, now: () => T130_NOW })
+
+    // Order 1: A (dirty) is ticked, then B is read.
+    await scheduler.tick(PROJECT_A)
+    const aProbe = await api.snapshot(PROJECT_A, { full: false })
+    const bAfterA = await api.snapshot(PROJECT_B, { full: false })
+    const envA = aProbe.environment
+    const envBAfterA = bAfterA.environment
+    check(
+      'T-130 after ticking dirty A, B is still clean and carries none of A’s message',
+      envBAfterA !== null && envBAfterA.clean === true && envBAfterA.message === null && envBAfterA.project === projectIdOf(PROJECT_B),
+      JSON.stringify(envBAfterA),
+    )
+    check(
+      'T-130 after ticking dirty A, A reads dirty with its own message',
+      envA !== null && envA.clean === false && String(envA.message).indexOf(PROJECT_A) >= 0 && envA.project === projectIdOf(PROJECT_A),
+      JSON.stringify(envA),
+    )
+    const statusB = scheduler.status(PROJECT_B)
+    check(
+      'T-130 the dispatcher status filters the environment reading by project',
+      statusB.environment.project !== projectIdOf(PROJECT_B) && statusB.environment.clean !== true,
+      JSON.stringify(statusB.environment),
+    )
+    // Order 2 (reverse): B (clean) is ticked last; A must NOT be washed clean.
+    await scheduler.tick(PROJECT_B)
+    const bProbe = await api.snapshot(PROJECT_B, { full: false })
+    const aAfterB = await api.snapshot(PROJECT_A, { full: false })
+    check(
+      'T-130 after ticking clean B, B reads clean',
+      bProbe.environment.clean === true && bProbe.environment.project === projectIdOf(PROJECT_B),
+      JSON.stringify(bProbe.environment),
+    )
+    check(
+      'T-130 after ticking clean B, A is still dirty (never washed by another project)',
+      aAfterB.environment.clean === false && String(aAfterB.environment.message).indexOf(PROJECT_A) >= 0,
+      JSON.stringify(aAfterB.environment),
+    )
+    scheduler.dispose()
+  }
+
+  // ══ static guards: card-affecting paths must name a session ═════════════
+  {
+    const dispatchSource = readFileSync(new URL('../../plugin/task-center/dispatch.mjs', import.meta.url), 'utf8')
+    const apiSource = readFileSync(new URL('../../plugin/task-center/api.mjs', import.meta.url), 'utf8')
+    function callSites(text, callee) {
+      const out = []
+      let from = 0
+      for (;;) {
+        const at = text.indexOf(callee + '(', from)
+        if (at < 0) break
+        from = at + callee.length + 1
+        const before = text.slice(Math.max(0, at - 24), at)
+        if (/function\s+$/.test(before)) continue
+        let depth = 0
+        let end = at + callee.length
+        for (; end < text.length; end += 1) {
+          const char = text[end]
+          if (char === '(') depth += 1
+          else if (char === ')') {
+            depth -= 1
+            if (depth === 0) {
+              end += 1
+              break
+            }
+          }
+        }
+        out.push(text.slice(at, end))
+      }
+      return out
+    }
+    function functionBody(text, signature) {
+      const at = text.indexOf(signature)
+      if (at < 0) return ''
+      const next = text.indexOf('\n  async function ', at + signature.length)
+      const nextPlain = text.indexOf('\n  function ', at + signature.length)
+      const candidates = [next, nextPlain].filter((value) => value >= 0)
+      const end = candidates.length === 0 ? text.length : Math.min.apply(null, candidates)
+      return text.slice(at, end)
+    }
+    const livenessCalls = callSites(dispatchSource, 'memberLiveness')
+    check(
+      'T-130 static: EVERY memberLiveness call site passes the card session',
+      livenessCalls.length === 4 && livenessCalls.every((call) => call.indexOf('sessionId') >= 0),
+      JSON.stringify(livenessCalls.map((call) => call.slice(0, 90))),
+    )
+    const interruptCalls = callSites(dispatchSource, 'interruptMemberNamed')
+    check(
+      'T-130 static: EVERY dispatcher interrupt call site passes the card session',
+      interruptCalls.length === 5 && interruptCalls.every((call) => call.indexOf('sessionId') >= 0),
+      JSON.stringify(interruptCalls.map((call) => call.slice(0, 90))),
+    )
+    const apiInterruptCalls = callSites(apiSource, 'interruptMemberNamed')
+    check(
+      'T-130 static: the API interrupt call also passes the card session',
+      apiInterruptCalls.length === 1 && apiInterruptCalls[0].indexOf('sessionId') >= 0,
+      JSON.stringify(apiInterruptCalls.map((call) => call.slice(0, 120))),
+    )
+    const stageBody = functionBody(dispatchSource, 'async function ensureStageRoles(')
+    check(
+      'T-130 static: ensureStageRoles groups by owner session and calls roles.ensure WITH sessionId',
+      stageBody.indexOf('ownerSessionOf(task)') >= 0 &&
+        stageBody.indexOf('projectSessions(') >= 0 &&
+        stageBody.indexOf('sessionId: sessionId') >= 0 &&
+        stageBody.indexOf('resolveAnyLead(') < 0,
+      stageBody.slice(0, 200),
+    )
+    const livenessBody = functionBody(dispatchSource, 'function memberLiveness(')
+    const interruptBody = functionBody(dispatchSource, 'async function interruptMemberNamed(')
+    check(
+      'T-130 static: memberLiveness/interruptMemberNamed only reach any-Lead in the named legacy branch',
+      livenessBody.indexOf('teamSession === null ? resolveAnyLead(ctx)') >= 0 &&
+        interruptBody.indexOf('sessionId === null ? resolveAnyLead(ctx)') >= 0 &&
+        livenessBody.indexOf('opts.sessionId') >= 0 &&
+        interruptBody.indexOf('opts.sessionId') >= 0,
+      JSON.stringify({ liveness: livenessBody.slice(0, 160), interrupt: interruptBody.slice(0, 160) }),
+    )
+    // projectHint is a path/display base only: it must never feed team/lead
+    // resolution. Scan every read in api.mjs/dispatch.mjs for authority words.
+    const hintLines = (apiSource + '\n' + dispatchSource)
+      .split('\n')
+      .filter((line) => line.indexOf('memory.projectHint') >= 0)
+      .filter((line) => /resolveLead|resolveAnyLead|sessionOwnsProject|projectTeamState|roles\.ensure|listMembers|sessionWorkspaceOf/.test(line))
+    check(
+      'T-130 static: state.memory.projectHint is never used as team/session authority',
+      hintLines.length === 0,
+      JSON.stringify(hintLines),
+    )
+  }
+} finally {
+  if (t130PreviousSessionsDir === undefined) delete process.env.GODOT_BRIDGE_SESSIONS_DIR
+  else process.env.GODOT_BRIDGE_SESSIONS_DIR = t130PreviousSessionsDir
+  rmSync(t130SessionsDir, { recursive: true, force: true })
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
