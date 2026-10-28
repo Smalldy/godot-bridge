@@ -855,9 +855,11 @@ export function createApi(ctx, options) {
   }
 
   /** The Team Lead's name for the previewed brief, or null without a live Team. */
-  function previewLeadName() {
+  function previewLeadName(sessionId) {
     try {
-      const lead = resolveAnyLead(ctx)
+      const scoped = typeof sessionId === 'string' && sessionId !== '' ? sessionId : null
+      // T-130: the preview speaks as the PANEL session's team.
+      const lead = scoped === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: scoped })
       if (lead === null || lead === undefined) return null
       if (typeof lead.name === 'string' && lead.name !== '') return lead.name
       return lead.id === undefined || lead.id === null ? null : String(lead.id)
@@ -899,7 +901,7 @@ export function createApi(ctx, options) {
     const picked = await previewTaskFor(projectPath, input.taskId)
     if (picked.failed !== undefined) return picked.failed
     const task = picked.task
-    const leadName = previewLeadName()
+    const leadName = previewLeadName(typeof input.session === 'string' ? input.session : typeof input.sessionId === 'string' ? input.sessionId : null)
     const briefOptions = { projectPath: projectPath, leadName: leadName }
     const worker = kind === 'worker'
     // One generation path per kind: the exact function the dispatch path calls.
@@ -1452,6 +1454,9 @@ export function createApi(ctx, options) {
       await interruptMemberNamed(ctx, {
         name: reviewer,
         key: String(task.id) + '@blocked@' + reviewer,
+        // T-130: interrupt the reviewer of the CARD's team, never a same-named
+        // member of another session's team.
+        sessionId: typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null,
         message: 'Task ' + String(task.id) + ' is blocked (review round limit). Stop working on it now and discard uncommitted changes.',
       })
     }
@@ -1915,12 +1920,18 @@ export function createApi(ctx, options) {
     }
   }
 
-  /** Live role-slot instances (worker-N/reviewer-N/tester-N) for the role panel. */
-  function roleInstanceList() {
+  /**
+   * Live role-slot instances (worker-N/reviewer-N/tester-N) for the role panel.
+   * T-130: the roster is the PANEL SESSION's team. The any-Lead scan survives only
+   * for a caller without a session (legacy), never as panel authority.
+   */
+  function roleInstanceList(options) {
+    const opts = options === undefined || options === null ? {} : options
+    const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return { available: false, error: 'no-team-service', instances: [], manager: null }
-    const lead = resolveAnyLead(ctx)
-    if (lead === null) return { available: false, error: 'no-lead', instances: [], manager: null }
+    const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
+    if (lead === null) return { available: false, error: sessionId === null ? 'no-lead' : 'no-lead-for-project', sessionId: sessionId, instances: [], manager: null }
     let roster = []
     try {
       roster = agentTeams.listMembers(lead)
@@ -1945,15 +1956,21 @@ export function createApi(ctx, options) {
           description: typeof member.description === 'string' ? member.description : null,
         }
       })
-    return { available: true, error: null, instances: instances, manager: roles === null ? null : roles.status() }
+    return { available: true, error: null, sessionId: sessionId, instances: instances, manager: roles === null ? null : roles.status() }
   }
 
-  /** The live Team roster, or a readable failure. */
-  function roleRoster() {
+  /** The live Team roster of ONE session, or a readable failure (T-130). */
+  function roleRoster(options) {
+    const opts = options === undefined || options === null ? {} : options
+    const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
     const { agentTeams } = servicesFor(ctx)
     if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
-    const lead = resolveAnyLead(ctx)
-    if (lead === null) return { ok: false, code: 'no-lead', message: 'no live Team root' }
+    const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
+    if (lead === null) {
+      return sessionId === null
+        ? { ok: false, code: 'no-lead', message: 'no live Team root' }
+        : { ok: false, code: 'no-lead-for-project', message: 'session ' + sessionId + ' has no live Team Lead; the panel never borrows another session’s roster' }
+    }
     let members = []
     try {
       members = agentTeams.listMembers(lead)
@@ -1964,9 +1981,9 @@ export function createApi(ctx, options) {
     return { ok: true, lead: lead, members: members }
   }
 
-  /** Live instance names of one role kind (failed ones excluded). */
-  function liveRoleNames(kind) {
-    const roster = roleRoster()
+  /** Live instance names of one role kind (failed ones excluded), one session. */
+  function liveRoleNames(kind, options) {
+    const roster = roleRoster(options)
     if (roster.ok !== true) return roster
     const names = roster.members
       .filter((member) => member !== null && typeof member === 'object' && roleKindOf(member.name) === kind && member.status !== 'failed')
@@ -1978,7 +1995,7 @@ export function createApi(ctx, options) {
    * returned only when the caller can replace them (replace skips the drain). */
   function roleMemberNamed(name, options) {
     const opts = options === undefined ? {} : options
-    const roster = roleRoster()
+    const roster = roleRoster({ sessionId: opts.sessionId })
     if (roster.ok !== true) return roster
     const exact = roster.members.filter((entry) => entry !== null && typeof entry === 'object' && String(entry.name) === name)[0]
     // The panel (and a person) name a slot SHORT: reviewer-1. Resolve that to the
@@ -2023,6 +2040,8 @@ export function createApi(ctx, options) {
           ? context.projectPath
           : state.memory.projectHint
     if (typeof candidate !== 'string' || candidate.length === 0) return null
+    // T-130 audit: projectHint is a PATH BASE for turning a relative path into an
+    // absolute one. It is never session ownership and never team resolution.
     return resolve(state.memory.projectHint === null ? process.cwd() : state.memory.projectHint, candidate)
   }
 
@@ -2489,15 +2508,20 @@ export function createApi(ctx, options) {
   const environmentCache = { project: null, at: 0, value: null }
 
   async function environmentSnapshot(projectPath, now, board) {
-    const schedulerStatus = scheduler === null || scheduler === undefined || typeof scheduler.status !== 'function' ? null : scheduler.status()
+    const projectId = projectIdOf(projectPath)
+    // T-130: ask the dispatcher for THIS project's reading. Its probe slot used to
+    // be global (last tick wins), which showed another project's tree in here.
+    const schedulerStatus = scheduler === null || scheduler === undefined || typeof scheduler.status !== 'function' ? null : scheduler.status(projectPath)
     const fromDispatcher = schedulerStatus !== null && schedulerStatus.environment !== undefined && schedulerStatus.environment !== null ? schedulerStatus.environment : null
     const retrying = fromDispatcher === null || !Array.isArray(fromDispatcher.retrying) ? [] : fromDispatcher.retrying
     const escalated = fromDispatcher === null || !Array.isArray(fromDispatcher.escalated) ? [] : fromDispatcher.escalated
-    // The dispatcher probes once per running pass; its reading is the one to show.
-    // The API only probes itself while dispatch runs and no pass has reported yet —
-    // a paused board costs no git call just because a panel is polling.
-    if (fromDispatcher !== null && typeof fromDispatcher.checkedAt === 'string') {
+    // The dispatcher probes once per running pass; its reading is the one to show —
+    // but ONLY when that probe names this project. Streaks (retrying/escalated/
+    // dirty) are already project-filtered by the dispatcher status.
+    const sameProject = fromDispatcher !== null && typeof fromDispatcher.project === 'string' && fromDispatcher.project !== '' && fromDispatcher.project === projectId
+    if (sameProject && typeof fromDispatcher.checkedAt === 'string') {
       return {
+        project: projectId,
         clean: fromDispatcher.clean === true,
         code: fromDispatcher.clean === true || fromDispatcher.code === undefined ? null : fromDispatcher.code,
         message: fromDispatcher.clean === true || fromDispatcher.message === undefined ? null : fromDispatcher.message,
@@ -2510,7 +2534,7 @@ export function createApi(ctx, options) {
     }
     const dispatch = board === undefined || board === null || board.dispatch === undefined || board.dispatch === null ? null : board.dispatch
     if (dispatch === null || dispatch.state !== 'running') {
-      return { clean: null, code: null, message: null, checkedAt: null, transient: false, retrying: [], escalated: [], dirty: [] }
+      return { project: projectId, clean: null, code: null, message: null, checkedAt: null, transient: false, retrying: [], escalated: [], dirty: [] }
     }
     if (environmentCache.project === projectPath && environmentCache.value !== null && now - environmentCache.at < ENVIRONMENT_CACHE_MS) {
       return environmentCache.value
@@ -2522,6 +2546,7 @@ export function createApi(ctx, options) {
       probe = { ok: false, code: 'git-unavailable', message: String((error && error.message) || error) }
     }
     const value = {
+      project: projectId,
       clean: probe.ok === true,
       code: probe.ok === true ? null : String(probe.code === undefined || probe.code === null ? 'git-unavailable' : probe.code),
       message: probe.ok === true ? null : String(probe.message === undefined || probe.message === null ? '' : probe.message),
@@ -2702,7 +2727,9 @@ export function createApi(ctx, options) {
       locks: locks.view(state.memory.locks, board, now).map((lock) =>
         Object.assign({}, lock, { waiters: lockWaiters(board, lock) }),
       ),
-      scheduler: scheduler === null ? null : scheduler.status(),
+      // T-130: the panel's scheduler block (including its environment) is scoped
+      // to the project this snapshot is for.
+      scheduler: scheduler === null ? null : scheduler.status(projectPath),
       // T-108: "is the main tree clean, and when was that checked" — the panel uses
       // it to tell a merge-window blip from a really dirty checkout.
       environment: await environmentSnapshot(projectPath, now, board),
@@ -3813,6 +3840,9 @@ export function createApi(ctx, options) {
       if (denied !== null) return denied
       const read = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
       const current = read.config
+      // T-130: role administration follows the PANEL session. The panel can never
+      // list, drain, replace or reset another session's team.
+      const roleSessionId = callerSessionId(source, context)
       if (action === 'rolesList') {
         return ok({
           source: read.source,
@@ -3820,7 +3850,8 @@ export function createApi(ctx, options) {
           config: current,
           stages: current.stages,
           defaults: defaultRoleConfig(),
-          instances: roleInstanceList(),
+          sessionId: roleSessionId,
+          instances: roleInstanceList({ sessionId: roleSessionId }),
         })
       }
       if (action === 'rolesPreview') {
@@ -3910,7 +3941,7 @@ export function createApi(ctx, options) {
           failed: pruned.failed,
           lead: pruned.lead,
           project: pruned.project,
-          instances: roleInstanceList(),
+          instances: roleInstanceList({ sessionId: roleSessionId }),
         })
       }
       if (action === 'rolesDrain' || action === 'rolesReplace') {
@@ -3921,14 +3952,14 @@ export function createApi(ctx, options) {
         let kind = roleKindOf(requested)
         let targets = []
         if (kind !== null) {
-          const member = roleMemberNamed(requested, { allowFailed: action === 'rolesReplace' })
+          const member = roleMemberNamed(requested, { allowFailed: action === 'rolesReplace', sessionId: roleSessionId })
           if (member.ok !== true) return member
           // A failed instance is already replaced by ensure (failed slot), so a
           // replace skips the drain; a live one is drained with the wait deadline.
           targets = String(member.member.status) === 'failed' && action === 'rolesReplace' ? [] : [String(member.member.name)]
         } else if (action === 'rolesReplace' && ROLE_KINDS.indexOf(requested) >= 0) {
           kind = requested
-          const live = liveRoleNames(kind)
+          const live = liveRoleNames(kind, { sessionId: roleSessionId })
           if (live.ok !== true) return live
           if (live.names.length === 0) return failure('not-live', 'there is no live ' + kind + ' instance to replace')
           targets = live.names
@@ -3943,7 +3974,7 @@ export function createApi(ctx, options) {
         }
         if (action === 'rolesDrain') {
           emitActivity(context, 'role-config', 'drained ' + drained.join(', '), null)
-          return ok({ drained: drained, kind: kind, status: roles.status(), instances: roleInstanceList() })
+          return ok({ drained: drained, kind: kind, status: roles.status(), sessionId: roleSessionId, instances: roleInstanceList({ sessionId: roleSessionId }) })
         }
         // "Drain first, then spawn": the role manager defers a running drained
         // instance until it is idle or its deadline passes, so no ensure pass
@@ -3953,7 +3984,7 @@ export function createApi(ctx, options) {
         let ensured = null
         let waiting = []
         while (true) {
-          ensured = await ensureRoleBounded(kind, { config: current, projectPath: projectPath, task: null, now: clock() })
+          ensured = await ensureRoleBounded(kind, { config: current, projectPath: projectPath, task: null, now: clock(), sessionId: roleSessionId })
           if (ensured.ok !== true) break
           waiting = Array.isArray(ensured.waiting) ? ensured.waiting : []
           if (waiting.length === 0) break
@@ -3977,7 +4008,8 @@ export function createApi(ctx, options) {
           replaced: ensured.replaced,
           waiting: ensured.waiting,
           status: roles.status(),
-          instances: roleInstanceList(),
+          sessionId: roleSessionId,
+          instances: roleInstanceList({ sessionId: roleSessionId }),
         })
       }
       if (action === 'rolesReset') {
@@ -3993,12 +4025,13 @@ export function createApi(ctx, options) {
         const ensured = []
         if (roles !== null && typeof roles.ensure === 'function') {
           for (const kind of ROLE_KINDS) {
-            const result = await ensureRoleBounded(kind, { config: config, projectPath: projectPath, task: null, now: clock() })
+            // T-130: a reset only touches the PANEL session's team.
+            const result = await ensureRoleBounded(kind, { config: config, projectPath: projectPath, task: null, now: clock(), sessionId: roleSessionId })
             emitRoleProvision(result)
             ensured.push({ kind: kind, result: result })
           }
         }
-        return ok({ config: written.config, source: 'default', ensured: ensured, instances: roleInstanceList() })
+        return ok({ config: written.config, source: 'default', sessionId: roleSessionId, ensured: ensured, instances: roleInstanceList({ sessionId: roleSessionId }) })
       }
       return failure('unknown-action', 'unknown role action ' + String(action))
     }
@@ -5078,6 +5111,7 @@ export function createApi(ctx, options) {
   async function openProject(input, context) {
     const path = typeof input.path === 'string' ? input.path.trim() : ''
     if (path === '') return failure('missing-path', 'openProject needs a path')
+    // T-130 audit: the remembered project is only the BASE for a relative path.
     const base = state.memory.projectHint === null ? process.cwd() : state.memory.projectHint
     const absolute = resolve(base, path)
     try {

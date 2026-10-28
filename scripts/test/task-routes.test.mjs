@@ -7132,5 +7132,155 @@ rig.scheduler.dispose()
   rig.scheduler.dispose()
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// T-130 (9): the ROLE PANEL follows the PANEL session. An old team's reviewer/
+// tester slots must never be listed, drained, replaced or reset by a request
+// that speaks as the current session.
+// ══════════════════════════════════════════════════════════════════════════
+{
+  const T130_NOW = Date.parse('2026-10-28T12:00:00.000Z')
+  const T130_STAMP = new Date(T130_NOW).toISOString()
+  const OLD = 'session-74be704e'
+  const CUR = 'session-eb9ba775'
+  const curReviewer = slot('reviewer', 1)
+  const curTester = slot('tester', 1)
+  let clockNow = T130_NOW
+  const fs = createFakeFs()
+  seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [] }))
+  const oldLead = { id: OLD, name: 'lead', role: 'lead', status: 'running' }
+  const curLead = { id: CUR, name: 'lead', role: 'lead', status: 'running' }
+  const rosters = new Map([
+    [
+      OLD,
+      [
+        { id: 'session-old-reviewer', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-old-tester', name: 'tester-1', role: 'teammate', status: 'inactive' },
+        { id: 'session-old-reviewer-legacy', name: 'reviewer-pb58f7f45e6-1', role: 'teammate', status: 'inactive' },
+      ],
+    ],
+    [
+      CUR,
+      [
+        { id: 'session-cur-reviewer', name: curReviewer, role: 'teammate', status: 'inactive' },
+        { id: 'session-cur-tester', name: curTester, role: 'teammate', status: 'inactive' },
+      ],
+    ],
+  ])
+  const calls = []
+  const keyOfLead = (lead) => String(lead === null || lead === undefined ? 'unknown' : lead.id === undefined ? lead : lead.id)
+  const team = {
+    calls: calls,
+    rosters: rosters,
+    listMembers(lead) {
+      return (rosters.get(keyOfLead(lead)) || []).map((member) => Object.assign({}, member))
+    },
+    tryMembership(candidate) {
+      if (candidate === null || candidate === undefined) return null
+      const id = String(candidate.id === undefined ? candidate : candidate.id)
+      if (id === OLD || id === CUR) return { role: 'lead', name: 'lead' }
+      return { role: 'teammate', name: String(candidate.name === undefined ? id : candidate.name) }
+    },
+    async spawnTeammate(lead, request) {
+      const key = keyOfLead(lead)
+      calls.push({ kind: 'spawn', team: key, name: String(request.name) })
+      const member = { id: 'session-' + String(request.name), name: String(request.name), role: 'teammate', status: 'inactive' }
+      rosters.get(key).push(member)
+      return { member: member }
+    },
+    async sendMessage() {
+      return { status: 'accepted' }
+    },
+    async interrupt() {
+      return { previousStatus: 'running' }
+    },
+  }
+  const ctx = createStrictCtx(
+    {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+      get(key) {
+        if (key === 'agents') return { list: () => [oldLead, curLead] }
+        if (key === 'agentTeams') return team
+        if (key === 'subagents') return { list: () => ['spawn'] }
+        return undefined
+      },
+    },
+    ['fs', 'sandboxPolicy', 'tools', 'webServer'],
+  )
+  const state = createState(ctx, { now: () => clockNow, homeDir: join(PROJECT, '..', 't130-home'), sessionLookup: null })
+  state.setSessionRoot(OLD, PROJECT)
+  state.setSessionRoot(CUR, PROJECT)
+  const roles = createRoleManager(ctx, { state: state, now: () => clockNow })
+  const git = createFakeGit({ project: PROJECT, fs: fs })
+  const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: git, roles: roles })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, roles: roles, now: () => clockNow, drainTimeoutMs: 5, drainIntervalMs: 1 })
+  const surface = install({ ctx: ctx, state: state, api: api, scheduler: scheduler })
+  const postAs = (session, body) =>
+    postTo(surface, Object.assign({ session: session }, body))
+
+  // (a) rolesList: only the CURRENT team's slots.
+  const listed = (await postAs(CUR, { action: 'rolesList' })).json()
+  const listedNames = listed.instances.instances.map((instance) => instance.name).sort()
+  check(
+    'T-130 rolesList lists the PANEL session team only',
+    listed.ok === true &&
+      listed.sessionId === CUR &&
+      listedNames.indexOf(curReviewer) >= 0 &&
+      listedNames.indexOf(curTester) >= 0 &&
+      listedNames.indexOf('reviewer-1') < 0 &&
+      listedNames.indexOf('reviewer-pb58f7f45e6-1') < 0 &&
+      listedNames.indexOf('tester-1') < 0,
+    JSON.stringify(listedNames),
+  )
+  const listedOld = (await postAs(OLD, { action: 'rolesList' })).json()
+  const listedOldNames = listedOld.instances.instances.map((instance) => instance.name).sort()
+  check(
+    'T-130 rolesList for the old session still lists the old team (scoping is per session, not global)',
+    listedOld.ok === true && listedOldNames.indexOf('reviewer-1') >= 0 && listedOldNames.indexOf(curReviewer) < 0,
+    JSON.stringify(listedOldNames),
+  )
+
+  // (b) rolesDrain: the short name reviewer-1 resolves inside the PANEL team.
+  const oldBefore = team.rosters.get(OLD).map((member) => member.name + ':' + member.status).sort().join(',')
+  const drained = (await postAs(CUR, { action: 'rolesDrain', name: 'reviewer-1' })).json()
+  check(
+    'T-130 rolesDrain drains the PANEL session reviewer slot, never the old team reviewer-1',
+    drained.ok === true && Array.isArray(drained.drained) && drained.drained.length === 1 && drained.drained[0] === curReviewer,
+    JSON.stringify(drained).slice(0, 300),
+  )
+
+  // (c) rolesReplace: replacement stays in the PANEL team even after the drain.
+  const replaced = (await postAs(CUR, { action: 'rolesReplace', name: 'reviewer' })).json()
+  clockNow = T130_NOW + 60000
+  const replacedAgain = (await postAs(CUR, { action: 'rolesReplace', name: 'reviewer' })).json()
+  const curAfterReplace = team.rosters.get(CUR).map((member) => member.name)
+  check(
+    'T-130 rolesReplace only touches the PANEL session team',
+    replaced.ok === true &&
+      replacedAgain.ok === true &&
+      curAfterReplace.filter((name) => /^reviewer-/.test(name)).length >= 2 &&
+      team.rosters.get(OLD).map((member) => member.name + ':' + member.status).sort().join(',') === oldBefore &&
+      calls.filter((call) => call.team === OLD).length === 0,
+    JSON.stringify({ cur: curAfterReplace, oldBefore: oldBefore, oldCalls: calls.filter((call) => call.team === OLD) }),
+  )
+
+  // (d) rolesReset: ensure passes the PANEL session, so the old team gains nothing.
+  const reset = (await postAs(CUR, { action: 'rolesReset' })).json()
+  const curAfterReset = team.rosters.get(CUR).map((member) => member.name)
+  const oldAfterReset = team.rosters.get(OLD).map((member) => member.name)
+  check(
+    'T-130 rolesReset provisions only the PANEL session team',
+    reset.ok === true &&
+      curAfterReset.some((name) => /^worker-/.test(name)) &&
+      oldAfterReset.length === 3 &&
+      oldAfterReset.every((name) => name === 'reviewer-1' || name === 'tester-1' || name === 'reviewer-pb58f7f45e6-1') &&
+      calls.filter((call) => call.team === OLD).length === 0,
+    JSON.stringify({ cur: curAfterReset, old: oldAfterReset, oldCalls: calls.filter((call) => call.team === OLD) }),
+  )
+  surface.dispose()
+  scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
