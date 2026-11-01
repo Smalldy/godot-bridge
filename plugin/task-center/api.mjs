@@ -123,6 +123,8 @@ export const ACTIONS = [
   'settings',
   'tick',
   'submit',
+  // T-131: the ONE completion action for an investigation card.
+  'report',
   'approveReview',
   'requestChanges',
   'passTest',
@@ -163,6 +165,11 @@ export const ACTIONS = [
   // bootstraps a missing Team and answers a short brief + one next step.
   'onboard',
 ]
+
+/** T-131: review/test/merge belong to dev cards. An investigation has no such
+ * phase, so these actions are refused BEFORE a handler provisions a role or
+ * builds a candidate checkout. */
+export const DEV_ONLY_ACTIONS = ['approveReview', 'requestChanges', 'passTest', 'failTest', 'mergeRequest', 'refreshMerge', 'rejectMerge']
 
 /** Actions that belong to the person at the GUI. The tool binding hides them,
  * and perform() refuses them for an agent even if one is called directly. */
@@ -2252,6 +2259,11 @@ export function createApi(ctx, options) {
       id: detail.id,
       title: detail.title,
       status: detail.status,
+      // T-131: the panel needs the kind to render an investigation and the
+      // headline to show its report without fetching detail; the full report stays
+      // behind /task.
+      kind: detail.kind,
+      reportSummary: detail.reportSummary,
       priority: detail.priority,
       dependsOn: detail.dependsOn,
       dependency: detail.dependency,
@@ -3027,7 +3039,7 @@ export function createApi(ctx, options) {
     const files = canonicalFiles(projectPath, source.writeFiles)
     if (files.ok !== true) return files
     const result = {}
-    for (const key of ['title', 'spec', 'acceptance', 'priority', 'maxAttempts', 'dependsOn', 'note', 'verify', 'target']) {
+    for (const key of ['title', 'spec', 'acceptance', 'priority', 'maxAttempts', 'dependsOn', 'note', 'verify', 'target', 'kind']) {
       if (source[key] !== undefined) result[key] = source[key]
     }
     if (files.files !== undefined) result.writeFiles = files.files
@@ -3070,6 +3082,134 @@ export function createApi(ctx, options) {
     }
     return { ok: true, task: task }
   }
+
+  // ── investigations (T-131) ────────────────────────────────────────────────
+
+  function baseNameOf(path) {
+    const text = String(path === undefined || path === null ? '' : path).replace(/[\\/]+$/, '')
+    const at = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'))
+    return at < 0 ? text : text.slice(at + 1)
+  }
+
+  /** The path of one investigation's full report (the board keeps a bounded copy). */
+  function reportPathFor(projectPath, id) {
+    return join(projectPath, '.agents', 'reports', String(id) + '.md')
+  }
+
+  /**
+   * Hashes committed in the scratch checkout that were NOT the base it was created
+   * from. A detached scratch cannot reach the target, but an accidental commit is
+   * worth recording before the checkout is force-removed.
+   */
+  async function probeCommitsOf(task) {
+    const out = []
+    if (task === null || task === undefined) return out
+    if (typeof task.worktree !== 'string' || task.worktree === '') return out
+    if (typeof task.base !== 'string' || task.base === '') return out
+    if (git === null || git === undefined || typeof git.head !== 'function') return out
+    try {
+      const read = await git.head(task.worktree)
+      if (read !== null && read !== undefined && read.ok === true && typeof read.hash === 'string' && read.hash !== '' && read.hash !== task.base) out.push(read.hash)
+    } catch (error) {
+      // A scratch checkout that is already gone is normal; nothing to record.
+    }
+    return out
+  }
+
+  /**
+   * Force-remove an investigation's scratch checkout and every probe-<id>-*
+   * sibling registered with git. Best effort: a failure is reported as a warning,
+   * never fatal, because the card has already delivered its report.
+   */
+  async function cleanupInvestigation(projectPath, task) {
+    if (task === null || task === undefined || task.kind !== 'investigate') return null
+    const removed = []
+    const failed = []
+    if (git === null || git === undefined || typeof git.worktreeList !== 'function') return { removed: removed, failed: failed }
+    let entries = []
+    try {
+      const listed = await git.worktreeList(projectPath)
+      entries = listed !== null && listed !== undefined && listed.ok === true && Array.isArray(listed.worktrees) ? listed.worktrees : []
+    } catch (error) {
+      entries = []
+    }
+    const prefix = 'probe-' + String(task.id) + '-'
+    const targets = []
+    if (typeof task.worktree === 'string' && task.worktree !== '') targets.push(task.worktree)
+    for (const entry of entries) {
+      if (entry === null || typeof entry !== 'object' || typeof entry.path !== 'string') continue
+      if (targets.indexOf(entry.path) >= 0) continue
+      if (baseNameOf(entry.path).indexOf(prefix) === 0) targets.push(entry.path)
+    }
+    if (typeof git.worktreeRemove !== 'function') return { removed: removed, failed: failed }
+    for (const path of targets) {
+      try {
+        const gone = await git.worktreeRemove(projectPath, path, { force: true })
+        if (gone !== null && gone !== undefined && gone.ok === true) removed.push(path)
+        else failed.push({ path: path, message: gone === undefined || gone === null || gone.message === undefined ? null : String(gone.message) })
+      } catch (error) {
+        failed.push({ path: path, message: String((error && error.message) || error) })
+      }
+    }
+    return { removed: removed, failed: failed }
+  }
+
+  /** Write the FULL report next to the board. The board copy is bounded (64 KB);
+   * the file keeps what the investigator sent. A failure is a warning: the report
+   * itself is already recorded on the board. */
+  async function writeReportFile(projectPath, task, source) {
+    const target = reportPathFor(projectPath, task.id)
+    const lines = []
+    lines.push('# ' + String(task.id) + ' — ' + String(task.title))
+    lines.push('')
+    lines.push('- kind: investigate')
+    lines.push('- status: done')
+    lines.push('- reported: ' + String(source.reportedAt))
+    lines.push('- by: ' + String(source.by) + (source.byName === null || source.byName === undefined ? '' : ' (' + String(source.byName) + ')'))
+    lines.push('- project: ' + String(projectPath))
+    lines.push('- base: ' + (typeof task.base === 'string' ? task.base : '(unknown)') + ' · target: ' + (typeof task.target === 'string' ? task.target : '(default)'))
+    if (typeof task.worktree === 'string' && task.worktree !== '') lines.push('- scratch: ' + task.worktree + ' (removed after this report)')
+    lines.push('')
+    lines.push('## Summary')
+    lines.push('')
+    lines.push(String(source.summary))
+    lines.push('')
+    lines.push('## Body')
+    lines.push('')
+    lines.push(String(source.body === undefined || source.body === null ? '' : source.body))
+    if (Array.isArray(source.evidence) && source.evidence.length > 0) {
+      lines.push('')
+      lines.push('## Evidence')
+      for (const row of source.evidence) {
+        lines.push('')
+        lines.push('### `' + String(row.command) + '` → exit ' + (row.exitCode === null ? 'n/a' : String(row.exitCode)))
+        lines.push('')
+        lines.push('~~~~')
+        lines.push(String(row.outputTail === undefined || row.outputTail === null ? '' : row.outputTail))
+        lines.push('~~~~')
+      }
+    }
+    if (Array.isArray(source.artifacts) && source.artifacts.length > 0) {
+      lines.push('')
+      lines.push('## Artifacts')
+      for (const entry of source.artifacts) lines.push('- ' + String(entry))
+    }
+    if (Array.isArray(source.probeCommits) && source.probeCommits.length > 0) {
+      lines.push('')
+      lines.push('## Warning: commits in the scratch checkout')
+      lines.push('')
+      lines.push('The scratch checkout was detached; these commits were discarded, not merged: ' + source.probeCommits.join(', '))
+    }
+    const text = lines.join('\n') + '\n'
+    try {
+      const resolved = await ctx.fs.resolve(target, { cwd: projectPath })
+      await ctx.fs.writeText(resolved, text, undefined, undefined, writePolicyFor(projectPath))
+      return { ok: true, path: target, warning: null }
+    } catch (error) {
+      return { ok: false, path: target, warning: 'the report is on the board, but writing ' + target + ' failed: ' + messageOf(error) }
+    }
+  }
+
 
   /**
    * Commit a task's worktree and describe its merge request.
@@ -3871,6 +4011,19 @@ export function createApi(ctx, options) {
       recordPhaseActivity(ctx, source.id, activityBy, now, activitySession)
     }
 
+    // T-131: refuse a dev-only phase action on an investigation BEFORE it reaches
+    // a handler that would provision a reviewer or build a test candidate.
+    if (DEV_ONLY_ACTIONS.indexOf(action) >= 0) {
+      const guardId = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
+      if (guardId !== '') {
+        const read = await readBoardOrFail(projectPath)
+        if (read.failed !== undefined) return read.failed
+        const guardTask = model.findTask(read.board, guardId)
+        if (guardTask !== undefined && guardTask.kind === 'investigate') {
+          return failure('not-a-dev-task', guardId + ' is an investigation card; it has no ' + String(action) + ' phase — finish it with task_center { action: "report" }')
+        }
+      }
+    }
     if (action === 'skillsCatalog') {
       const denied = roleAdminRefusal(context, 'The skill catalog belongs to the user; open it from the task center panel.')
       if (denied !== null) return denied
@@ -4466,6 +4619,11 @@ export function createApi(ctx, options) {
       if (read.failed !== undefined) return read.failed
       const checked = taskForContext(read.board, id, context)
       if (checked.ok !== true) return checked
+      // T-131: an investigation never commits; refuse BEFORE prepareMergeRequest
+      // so the detached scratch is not touched at all.
+      if (checked.task.kind === 'investigate') {
+        return failure('investigation-report-only', id + ' is an investigation card: finish it with task_center { action: "report", id, summary, body, evidence? }, not submit')
+      }
       // Only a running task has a worktree worth committing; any other status
       // must reach submitTask's own refusal without touching git.
       const submittedAt = clock()
@@ -4535,6 +4693,61 @@ export function createApi(ctx, options) {
         }
       }
       return result
+    }
+    if (action === 'report') {
+      const id = String(source.id === undefined ? '' : source.id)
+      if (id === '') return failure('missing-id', 'report needs a task id')
+      const wrongProject = wrongProjectRefusal(context, projectPath)
+      if (wrongProject !== null) return wrongProject
+      const read = await readBoardOrFail(projectPath)
+      if (read.failed !== undefined) return read.failed
+      const checked = taskForContext(read.board, id, context)
+      if (checked.ok !== true) return checked
+      const task = checked.task
+      if (task.kind !== 'investigate') {
+        return failure('not-an-investigation', id + ' is a dev card; finish it with submit so it can be reviewed, tested and merged')
+      }
+      if (task.status !== 'running') return failure('not-running', id + ' is ' + task.status + ', not running')
+      // An accidental commit in the detached scratch cannot reach the target, but
+      // it is recorded before the checkout is force-removed.
+      const probeCommits = await probeCommitsOf(task)
+      const reportInput = { summary: source.summary, body: source.body, evidence: source.evidence, artifacts: source.artifacts, probeCommits: probeCommits }
+      const result = await writeTask(
+        projectPath,
+        id,
+        (board) => model.reportTask(board, id, reportInput, clock(), context.by, writeByName(context)),
+        context,
+      )
+      if (result.ok !== true) return result
+      const released = locks.releaseTask(state.memory.locks, id)
+      if (released.ok === true) state.memory.locks = released.locks
+      // The full markdown keeps the UNTRUNCATED body the caller sent; the board
+      // keeps the bounded copy.
+      const written = await writeReportFile(projectPath, task, {
+        summary: result.task.report.summary,
+        body: typeof source.body === 'string' ? source.body : '',
+        evidence: result.task.report.evidence,
+        artifacts: result.task.report.artifacts,
+        probeCommits: result.task.report.probeCommits,
+        reportedAt: result.task.report.createdAt,
+        by: result.task.report.by,
+        byName: result.task.report.byName,
+      })
+      const cleanup = await cleanupInvestigation(projectPath, task)
+      emitActivity(context, 'report', 'received', id)
+      const warnings = []
+      if (written.ok !== true && written.warning !== null) warnings.push(written.warning)
+      if (cleanup !== null && cleanup.failed.length > 0) {
+        warnings.push('some scratch checkouts could not be removed: ' + cleanup.failed.map((entry) => entry.path).join(', '))
+      }
+      return ok({
+        task: result.task,
+        events: result.events,
+        report: result.task === null ? null : result.task.report,
+        reportFile: written.path,
+        cleanup: cleanup,
+        warnings: warnings,
+      })
     }
     if (action === 'approveReview' || action === 'requestChanges') {
       const id = String(source.id === undefined ? '' : source.id)
@@ -4891,13 +5104,16 @@ export function createApi(ctx, options) {
           // Best-effort: a refusal (no Team, idle member) never fails the cancel.
           await interruptAssignee(ctx, priorTask, { reason: 'cancelled' })
         }
+        // T-131: a cancelled investigation's scratch checkout and probes are
+        // disposable — remove them with the card.
+        if (priorTask !== undefined && priorTask !== null) await cleanupInvestigation(projectPath, priorTask)
       }
       return result
     }
     if (action === 'reopen' || action === 'unblock' || action === 'retry') {
       const id = String(source.id === undefined ? '' : source.id)
       if (id === '') return failure('missing-id', action + ' needs a task id')
-      return writeTask(
+      const outcome = await writeTask(
         projectPath,
         id,
         (board) => {
@@ -4907,6 +5123,12 @@ export function createApi(ctx, options) {
         },
         context,
       )
+      // T-131: reopening/retrying an investigation starts over; its old scratch
+      // checkout and probe-<id>-* siblings are discarded with the old report.
+      if (outcome.ok === true && outcome.task !== null && outcome.task !== undefined && outcome.task.kind === 'investigate') {
+        await cleanupInvestigation(projectPath, outcome.task)
+      }
+      return outcome
     }
     if (action === 'block') {
       const id = String(source.id === undefined ? '' : source.id)
@@ -4925,6 +5147,8 @@ export function createApi(ctx, options) {
         if (priorTask !== undefined && priorTask !== null && priorTask.status === 'running') {
           await interruptAssignee(ctx, priorTask, { reason: 'blocked' })
         }
+        // T-131: a blocked investigation's scratch checkout is disposable.
+        if (priorTask !== undefined && priorTask !== null) await cleanupInvestigation(projectPath, priorTask)
       }
       return result
     }

@@ -176,6 +176,11 @@ export function createFakeGit(options) {
   }
   let lastRoot = opts.project === undefined ? null : opts.project
   const fakeStaged = []
+  // T-131: an OPT-IN worktree registry, so cleanup tests can ask "was the
+  // scratch/probe checkout removed?". The historical default stays an empty list
+  // (an empty list means "this facade does not report worktrees").
+  const tracking = opts.trackWorktrees === true || Array.isArray(opts.worktrees)
+  const tracked = Array.isArray(opts.worktrees) ? opts.worktrees.slice() : []
   return {
     calls: calls,
     async raw(root, args) {
@@ -246,9 +251,12 @@ export function createFakeGit(options) {
       record('isClean')
       return { ok: true, clean: opts.clean !== false }
     },
-    async head() {
-      record('head')
-      return { ok: true, hash: opts.base === undefined ? 'base-sha' : opts.base }
+    async head(where) {
+      record('head', where)
+      // T-131: a test can give a scratch checkout its own HEAD (a commit the
+      // investigator made by accident).
+      const byPath = opts.heads !== undefined && opts.heads !== null && typeof where === 'string' ? opts.heads[where] : undefined
+      return { ok: true, hash: byPath === undefined ? (opts.base === undefined ? 'base-sha' : opts.base) : byPath }
     },
     async currentBranch() {
       record('currentBranch')
@@ -259,15 +267,26 @@ export function createFakeGit(options) {
       if (opts.addFails === true) {
         return { ok: false, code: 'worktree-add-failed', message: 'fatal: could not create work tree' }
       }
-      return { ok: true, path: input.path, branch: input.branch, base: input.base }
+      const entry = {
+        path: input.path,
+        branch: input.branch === undefined ? null : input.branch,
+        base: input.base === undefined ? null : input.base,
+        detached: input.detach === true,
+      }
+      if (tracking) tracked.push(entry)
+      return { ok: true, path: entry.path, branch: entry.branch, base: entry.base, detached: entry.detached }
     },
     async worktreeRemove(root, path) {
       record('worktreeRemove', path)
+      if (tracking) {
+        const at = tracked.findIndex((entry) => entry.path === path)
+        if (at >= 0) tracked.splice(at, 1)
+      }
       return { ok: true, path: path }
     },
     async worktreeList() {
       record('worktreeList')
-      return { ok: true, worktrees: [] }
+      return { ok: true, worktrees: tracking ? tracked.slice() : [] }
     },
     async commitAll(cwd, message) {
       record('commitAll', { cwd: cwd, message: message })

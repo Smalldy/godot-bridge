@@ -794,6 +794,9 @@ export function recordMergeResult(board, id, outcome, now, by, byName) {
  */
 export function mergeEligible(task) {
   if (task === null || task === undefined) return false
+  // T-131: an investigation delivers a report, never a branch — there is nothing
+  // to integrate, and its scratch checkout is discarded with the card.
+  if (task.kind === 'investigate') return false
   if (task.status !== 'testing') return false
   if (task.review === null || task.review === undefined || typeof task.review !== 'object') return false
   if (task.review.status !== 'approved') return false

@@ -249,6 +249,15 @@ check(
     AGENT_ACTIONS.filter((action) => generated.indexOf('`' + action + '`') < 0).join(','),
   )
   {
+    const needles = ['调查卡', 'kind: "investigate"', 'investigation-report-only', 'not-a-dev-task']
+    check(
+      'T-131 the body documents investigation cards, report and their refusal codes',
+      needles.every((needle) => generated.indexOf(needle) >= 0),
+      needles.filter((needle) => generated.indexOf(needle) < 0).join(','),
+    )
+    check('T-131 report is part of the writable action matrix', generated.indexOf('`report`') >= 0, generated.slice(0, 120))
+  }
+  {
     const userLine = generated.split('\n').filter((line) => line.indexOf('仅用户') >= 0)[0] || ''
     const tokens = (userLine.match(/`([^`]+)`/g) || []).map((token) => token.slice(1, -1)).filter((token) => token !== 'user-only')
     check('the user-only section lists every user action', USER_ONLY_ACTIONS.every((action) => tokens.indexOf(action) >= 0), tokens.join(','))

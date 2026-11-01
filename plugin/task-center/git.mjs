@@ -281,10 +281,12 @@ export function createGit(options) {
   }
 
   /**
-   * Add a worktree and ALWAYS create its branch: `-b <branch>` from `base`, or
-   * from HEAD when no base is given. It never silently checks out an existing
-   * branch, so a caller that wants a fresh checkout cannot accidentally share
-   * one. Returns the absolute worktree path.
+   * Add a worktree. By default it ALWAYS creates a branch (`-b <branch>` from
+   * `base`, or from HEAD when no base is given); it never silently checks out an
+   * existing branch, so a caller that wants a fresh checkout cannot accidentally
+   * share one. With `detach: true` it adds a DETACHED scratch checkout instead
+   * (T-131 investigations): no branch exists to commit to or to delete later.
+   * Returns the absolute worktree path.
    */
   async function worktreeAdd(root, input) {
     const base = rootOf(root)
@@ -292,22 +294,31 @@ export function createGit(options) {
     const source = input === undefined || input === null ? {} : input
     const target = insideRepo(base.path, source.path)
     if (target.ok !== true) return target
-    const branch = branchName(source.branch, 'the worktree branch')
-    if (branch.ok !== true) return branch
-    const args = ['worktree', 'add', '-b', branch.name, target.path]
+    const detach = source.detach === true
     let from = null
     if (source.base !== undefined && source.base !== null && String(source.base).trim() !== '') {
       const ref = refName(source.base, 'the worktree base')
       if (ref.ok !== true) return ref
       from = ref.name
-      args.push(from)
+    }
+    let branch = null
+    let args
+    if (detach) {
+      args = ['worktree', 'add', '--detach', target.path]
+      if (from !== null) args.push(from)
+    } else {
+      const checked = branchName(source.branch, 'the worktree branch')
+      if (checked.ok !== true) return checked
+      branch = checked.name
+      args = ['worktree', 'add', '-b', branch, target.path]
+      if (from !== null) args.push(from)
     }
     const timeoutMs = Number.isFinite(source.timeoutMs) ? Math.max(1, Math.floor(source.timeoutMs)) : worktreeTimeoutMs
     const result = await exec(args, base.path, { op: 'worktree-add', timeoutMs: timeoutMs })
     if (result.code !== 0) {
       return failed(result, 'worktree-add-failed', 'git worktree add failed (budget ' + String(timeoutMs) + 'ms)')
     }
-    return ok({ path: target.path, branch: branch.name, base: from, timeoutMs: timeoutMs })
+    return ok({ path: target.path, branch: branch, base: from, detached: detach, timeoutMs: timeoutMs })
   }
 
   /** Remove one worktree; `force` also discards local changes in it. */

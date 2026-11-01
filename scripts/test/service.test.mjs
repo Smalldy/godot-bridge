@@ -1,7 +1,8 @@
 // Model tests: dependency graph, readiness, transitions, leases and dispatch
 // settings. No filesystem and no Cordis — service.mjs is pure.
 
-import { emptyBoard } from '../../plugin/task-center/board.mjs'
+import { boardPath, emptyBoard, readBoard } from '../../plugin/task-center/board.mjs'
+import { createFakeFs } from './support/fixtures.mjs'
 import { TASK_HEARTBEAT_MS, TASK_LEASE_EXTENSION_MAX_MS, TASK_LEASE_MS, TASK_LEASE_REMINDER_MS } from '../../plugin/task-center/schema.mjs'
 import { mergeEligible, recordMergeResult } from '../../plugin/task-center/merge.mjs'
 import {
@@ -28,6 +29,7 @@ import {
   attemptStartedAt,
   extendLease,
   reopenTask,
+  reportTask,
   retryTask,
   setDispatch,
   submitTask,
@@ -634,6 +636,98 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   const noAtBoard = JSON.parse(JSON.stringify(board))
   noAtBoard.tasks[0].dispatch = null
   check('a task with no claim time cannot be capped, so a live holder is still renewed', renewRunningLeases(noAtBoard, windowAt, { allow: () => true }).renewed.join(',') === 'T-1')
+}
+
+
+// ── T-131: investigation cards (kind investigate) ───────────────────────────
+{
+  const dev = make(base(), 'Dev work')
+  check('T-131 a card defaults to kind dev', dev.ok === true && dev.task.kind === 'dev' && dev.task.report === null, JSON.stringify(dev.task === undefined ? dev : dev.task.kind))
+  check('T-131 an unknown kind is refused on create', make(base(), 'X', { kind: 'spike' }).code === 'invalid-kind')
+  const made = make(base(), 'Investigate', { kind: 'investigate', spec: 'why is it slow?', acceptance: 'a cause and a measurement' })
+  check('T-131 an investigation is created as such', made.ok === true && made.task.kind === 'investigate' && made.task.status === 'pending' && made.task.report === null)
+  check('T-131 update cannot change the kind', updateTask(made.board, 'T-1', { kind: 'dev' }, at(2), 'me').code === 'kind-immutable')
+  const claimed = claimTask(made.board, 'T-1', { name: 'worker' }, at(5))
+  check('T-131 an investigation can be claimed', claimed.ok === true && claimed.task.status === 'running', JSON.stringify(claimed.ok ? claimed.task.status : claimed.code))
+  check('T-131 submit refuses an investigation', submitTask(claimed.board, 'T-1', { evidence: 'x' }, at(6), 'worker').code === 'investigation-report-only')
+  check('T-131 approveReview refuses an investigation', approveReview(claimed.board, 'T-1', at(7), 'reviewer').code === 'not-a-dev-task')
+  check('T-131 requestChanges refuses an investigation', requestChanges(claimed.board, 'T-1', 'x', at(7), 'reviewer').code === 'not-a-dev-task')
+  check('T-131 passTest refuses an investigation', passTest(claimed.board, 'T-1', at(7), 'tester').code === 'not-a-dev-task')
+  check('T-131 failTest refuses an investigation', failTest(claimed.board, 'T-1', 'x', at(7), 'tester').code === 'not-a-dev-task')
+  check('T-131 report needs a summary', reportTask(claimed.board, 'T-1', {}, at(8), 'worker').code === 'missing-summary')
+  check('T-131 report refuses a summary over 4 KB', reportTask(claimed.board, 'T-1', { summary: 'x'.repeat(5000) }, at(8), 'worker').code === 'invalid-report')
+  check('T-131 a dev card cannot report', reportTask(createTask(base(), { title: 'd' }, T0, 'me').board, 'T-1', { summary: 'x' }, at(1), 'me').code === 'not-an-investigation')
+  const rows = [{ command: 'npm test', exitCode: 1, outputTail: 'z'.repeat(5000) }]
+  for (let index = 0; index < 25; index += 1) rows.push({ command: 'step ' + String(index), exitCode: 0, outputTail: '' })
+  const reported = reportTask(claimed.board, 'T-1', { summary: 'The cache key ignores the branch.', body: 'y'.repeat(70000), evidence: rows, artifacts: ['.worktrees/probe-T-1-a', ''] }, at(9), 'worker', 'worker-p')
+  check('T-131 report completes the card', reported.ok === true && reported.task.status === 'done', JSON.stringify(reported.ok === true ? reported.task.status : reported.code))
+  check('T-131 the board body is capped at 64 KB', Buffer.byteLength(reported.task.report.body, 'utf8') <= 64 * 1024, String(Buffer.byteLength(reported.task.report.body, 'utf8')))
+  check(
+    'T-131 evidence is capped at 20 rows with 4 KB tails',
+    reported.task.report.evidence.length === 20 && Buffer.byteLength(reported.task.report.evidence[0].outputTail, 'utf8') <= 4 * 1024,
+    JSON.stringify({ rows: reported.task.report.evidence.length, tail: reported.task.report.evidence[0].outputTail.length }),
+  )
+  check('T-131 artifacts keep only paths', reported.task.report.artifacts.join(',') === '.worktrees/probe-T-1-a', JSON.stringify(reported.task.report.artifacts))
+  check('T-131 report clears lease/assignee/dispatch', reported.task.leaseUntil === null && reported.task.assignee === null && reported.task.dispatch === null)
+  check('T-131 report creates no merge/review/test record', reported.task.merge === null && reported.task.review === null && reported.task.test === null)
+  check('T-131 the history records the report', String(reported.task.history.slice(-1)[0].note).indexOf('investigation report') >= 0, JSON.stringify(reported.task.history.slice(-1)[0]))
+  const reportedCounts = counts(reported.board)
+  check('T-131 counts report done and zero investigating', reportedCounts.done === 1 && reportedCounts.investigating === 0 && reportedCounts.running === 0, JSON.stringify(reportedCounts))
+  const view = taskSummary(reported.board, findTask(reported.board, 'T-1'), at(10))
+  check(
+    'T-131 the summary carries kind and a report headline',
+    view.kind === 'investigate' && view.reportSummary !== null && view.reportSummary.hasBody === true && view.reportSummary.evidence === 20,
+    JSON.stringify(view.reportSummary),
+  )
+  const full = detail(reported.board, findTask(reported.board, 'T-1'), at(10))
+  check(
+    'T-131 the detail carries the bounded report (the full body lives in the file)',
+    full.report !== null && full.report.summary === 'The cache key ignores the branch.' && Buffer.byteLength(full.report.body, 'utf8') <= 64 * 1024,
+    JSON.stringify(full.report === null ? null : { summary: full.report.summary, body: Buffer.byteLength(full.report.body, 'utf8') }),
+  )
+  const reopened = reopenTask(reported.board, 'T-1', at(11), 'me', 'redo')
+  check('T-131 reopening an investigation clears its report', reopened.ok === true && reopened.task.report === null && reopened.task.status === 'pending')
+  check('T-131 and says the old report was discarded', String(reopened.task.history.slice(-1)[0].note).indexOf('previous report discarded') >= 0)
+
+  // A running investigation is counted separately from dev work.
+  const running = claimTask(made.board, 'T-1', { name: 'worker' }, at(5))
+  check('T-131 counts investigating separately from running', counts(running.board).investigating === 1 && counts(running.board).running === 1, JSON.stringify(counts(running.board)))
+
+  // Dependencies: investigating done is enough; dev work still needs the merge.
+  const dependentOnInvestigation = createTask(reported.board, { title: 'consumer', dependsOn: ['T-1'] }, at(12), 'me')
+  check(
+    'T-131 a done investigation satisfies a dependent',
+    dependencyInfo(dependentOnInvestigation.board, findTask(dependentOnInvestigation.board, 'T-2')).state === 'ready',
+    JSON.stringify(dependencyInfo(dependentOnInvestigation.board, findTask(dependentOnInvestigation.board, 'T-2'))),
+  )
+  const devMade = createTask(base(), { title: 'dev dep' }, T0, 'me')
+  const devClaimed = claimTask(devMade.board, 'T-1', { name: 'worker' }, at(5))
+  const devSubmitted = submitTask(
+    devClaimed.board,
+    'T-1',
+    { evidence: 'x', merge: { status: 'open', base: 'b', target: 'main', head: 'h', declaredFiles: [], actualFiles: [] } },
+    at(6),
+    'worker',
+  )
+  const devApproved = approveReview(devSubmitted.board, 'T-1', at(7), 'reviewer')
+  const devTested = passTest(devApproved.board, 'T-1', at(8), 'tester')
+  const devDependent = createTask(devTested.board, { title: 'blocks on merge', dependsOn: ['T-1'] }, at(9), 'me')
+  check(
+    'T-131 a dev dependency still waits for the merge',
+    dependencyInfo(devDependent.board, findTask(devDependent.board, 'T-2')).state === 'waiting',
+    JSON.stringify(dependencyInfo(devDependent.board, findTask(devDependent.board, 'T-2'))),
+  )
+
+  // Board compatibility: an old card has no kind and means dev; an unknown one is refused.
+  const fakeFs = createFakeFs()
+  const project = 'C:/proj-t131'
+  fakeFs.dirs.add(project)
+  fakeFs.files.set(boardPath(project), { text: JSON.stringify({ version: 2, seq: 3, tasks: [{ id: 'T-1', title: 'old', status: 'pending' }] }), version: 'v1' })
+  const oldRead = await readBoard({ fs: fakeFs }, { projectPath: project, now: T0 })
+  check('T-131 an old board without kind reads as dev', oldRead.ok === true && oldRead.board.tasks[0].kind === 'dev' && oldRead.board.tasks[0].report === null, JSON.stringify(oldRead.ok === true ? oldRead.board.tasks[0] : oldRead.code))
+  fakeFs.files.set(boardPath(project), { text: JSON.stringify({ version: 2, seq: 3, tasks: [{ id: 'T-1', title: 'old', status: 'pending', kind: 'spike' }] }), version: 'v2' })
+  const badRead = await readBoard({ fs: fakeFs }, { projectPath: project, now: T0 })
+  check('T-131 an unknown kind on the board is refused', badRead.ok !== true && badRead.code === 'invalid-kind', JSON.stringify(badRead.code))
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
