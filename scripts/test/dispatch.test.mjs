@@ -24,6 +24,7 @@ import {
   reworkBriefFor,
   runHostCheck,
   testerBriefFor,
+  investigationBriefFor,
   roleBriefFor,
   roleBriefSections,
   roleContextPreview,
@@ -41,6 +42,7 @@ import {
   recordStageSlot,
   stageSlotOf,
   phaseActivityAt,
+  probeWorktree,
   serialiseWorktreeCreate,
   workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
@@ -50,7 +52,7 @@ import { DEFAULT_ROLE_PROMPTS, ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE
 // for, so two projects never share one reviewer instance.
 const slot = (kind, index) => roleSlotName(kind, index, PROJECT)
 import { createApi, USER_ONLY_ACTIONS } from '../../plugin/task-center/api.mjs'
-import { createMerger } from '../../plugin/task-center/merge.mjs'
+import { createMerger, mergeEligible } from '../../plugin/task-center/merge.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createRig, createTask, submitAsUser, sleep, createFakeFs, createStrictCtx, createTeam, createFakeGit, seedBoard, PROJECT } from './support/fixtures.mjs'
 
@@ -5083,6 +5085,247 @@ try {
   if (t130PreviousSessionsDir === undefined) delete process.env.GODOT_BRIDGE_SESSIONS_DIR
   else process.env.GODOT_BRIDGE_SESSIONS_DIR = t130PreviousSessionsDir
   rmSync(t130SessionsDir, { recursive: true, force: true })
+}
+
+
+// ── T-131: an investigation is dispatched as a detached scratch ────────────
+{
+  const heads = {}
+  const git = createFakeGit({ trackWorktrees: true, heads: heads })
+  // A strict fake fs refuses a nested write whose parent directory was never
+  // created, so this rig proves the row's ensureDir is asked for .agents/reports
+  // BEFORE the report file is written (the real fs facade never creates it).
+  const fs = createFakeFs({ strictWriteDirs: true })
+  const ensuredDirs = []
+  const ensureDir = function (dir) {
+    ensuredDirs.push(String(dir))
+    fs.dirs.add(String(dir))
+  }
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' }, git: git, fs: fs, ensureDir: ensureDir })
+  // A real checkout has .git/info already; the strict fs needs it to exist
+  // because start writes .git/info/exclude (that parent is not one of the
+  // directories this API ensures).
+  fs.dirs.add(join(rig.project, '.git', 'info'))
+  const card = await createTask(rig, {
+    title: 'Why does the loader stall on boot?',
+    kind: 'investigate',
+    spec: 'measure the startup loader',
+    acceptance: 'a cause with a measurement',
+    writeFiles: ['plugin/task-center/loader.mjs'],
+  })
+  const other = await createTask(rig, { title: 'Implement the fix', writeFiles: ['plugin/task-center/loader.mjs'] })
+  await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 4 })
+  await rig.action('start')
+  await rig.settle()
+  let snap = await snapshot(rig)
+  check('T-131 the investigation is dispatched', byId(snap, card.id).status === 'running', JSON.stringify(ids(snap)))
+  const adds = git.calls.filter((call) => call.name === 'worktreeAdd')
+  const add = adds.filter((call) => String(call.detail === undefined || call.detail === null ? '' : call.detail.path).indexOf(card.id + '-') >= 0)[0]
+  check(
+    'T-131 its checkout is detached (no task branch)',
+    add !== undefined && add.detail.detach === true && add.detail.branch === undefined,
+    JSON.stringify(add === undefined ? adds : add.detail),
+  )
+  const scratch = byId(snap, card.id).worktree
+  check('T-131 the card records no branch/commit and keeps the scratch path', byId(snap, card.id).branch === null && byId(snap, card.id).commit === null && scratch !== null, JSON.stringify({ branch: byId(snap, card.id).branch, commit: byId(snap, card.id).commit }))
+  check(
+    'T-131 the scratch checkout is never inspected for cleanliness',
+    git.calls.filter((call) => call.name === 'isClean' && call.detail === scratch).length === 0,
+    JSON.stringify(git.calls.filter((call) => call.name === 'isClean').map((call) => call.detail)),
+  )
+  const lockView = (await rig.action('locks')).locks
+  check('T-131 the investigation holds no writeFiles lock', lockView.filter((entry) => entry.taskId === card.id).length === 0, JSON.stringify(lockView))
+  check('T-131 and a dev card declaring the same file still dispatches', byId(snap, other.id).status === 'running', JSON.stringify(ids(snap)))
+  const rosterNames = rig.team.roster.map((member) => member.name)
+  check('T-131 no reviewer or tester is provisioned', rosterNames.every((name) => !/^(reviewer|tester)-/.test(name)), JSON.stringify(rosterNames))
+  const sends = rig.team.calls.filter((call) => call.kind === 'send')
+  const sent = sends.filter((call) => String(call.text).indexOf(card.id) >= 0)[0]
+  check(
+    'T-131 the brief is the host-fixed investigation brief',
+    sent !== undefined && sent.text.indexOf('investigation card') >= 0 && sent.text.indexOf('Do NOT commit') >= 0 && sent.text.indexOf('Do NOT submit') >= 0 && sent.text.indexOf('action: "report"') >= 0,
+    JSON.stringify(sent === undefined ? sends.map((call) => String(call.text).slice(0, 80)) : sent.text.slice(0, 320)),
+  )
+  check('T-131 the brief names the scratch checkout', sent !== undefined && sent.text.indexOf(scratch) >= 0, JSON.stringify(sent === undefined ? null : sent.text.slice(0, 200)))
+  // The investigator may leave a probe checkout and may commit in the scratch.
+  const probePath = join(rig.project, '.worktrees', 'probe-' + card.id + '-a')
+  await git.worktreeAdd(rig.project, { path: probePath, base: 'base-sha', detach: true })
+  heads[scratch] = 'accidental-commit'
+  const reported = await rig.action('report', {
+    id: card.id,
+    summary: 'The loader blocks on the config read.',
+    body: '# Findings\n\nIt waits for the config file before the first frame.',
+    evidence: [{ command: 'node --cpu-prof loader.mjs', exitCode: 0, outputTail: 'total 1200ms' }],
+    artifacts: [probePath],
+  })
+  check('T-131 report completes the investigation', reported.ok === true && reported.task.status === 'done', JSON.stringify(reported.ok === true ? reported.task.status : reported.code))
+  check('T-131 report keeps the evidence rows', reported.report !== null && reported.report.evidence.length === 1 && reported.report.evidence[0].command.indexOf('cpu-prof') >= 0, JSON.stringify(reported.report === null ? null : reported.report.evidence))
+  check('T-131 an accidental commit is recorded as probeCommits', reported.report !== null && reported.report.probeCommits.join(',') === 'accidental-commit', JSON.stringify(reported.report === null ? null : reported.report.probeCommits))
+  check('T-131 report creates no merge/review/test record', reported.task.merge === null && reported.task.review === null && reported.task.test === null)
+  const removed = git.calls.filter((call) => call.name === 'worktreeRemove').map((call) => call.detail)
+  check('T-131 the scratch and the probe checkout are removed', removed.indexOf(scratch) >= 0 && removed.indexOf(probePath) >= 0, JSON.stringify(removed))
+  const postList = await git.worktreeList(rig.project)
+  const investigationLeftovers = postList.worktrees.filter(
+    (entry) => String(entry.path) === String(scratch) || String(entry.path).indexOf('probe-' + card.id + '-') >= 0,
+  )
+  check('T-131 nothing from the investigation stays registered', investigationLeftovers.length === 0, JSON.stringify(postList.worktrees))
+  const reportEntry = rig.fs.files.get(join(rig.project, '.agents', 'reports', card.id + '.md'))
+  check(
+    'T-131 the full report is written next to the board',
+    reportEntry !== undefined && reportEntry.text.indexOf('The loader blocks on the config read.') >= 0 && reportEntry.text.indexOf('cpu-prof') >= 0,
+    JSON.stringify(reportEntry === undefined ? Array.from(rig.fs.files.keys()) : reportEntry.text.slice(0, 200)),
+  )
+  check(
+    'T-131 the reports directory is created before the report file is written',
+    ensuredDirs.some((dir) => String(dir).replace(/\\/g, '/').indexOf('/.agents/reports') >= 0),
+    JSON.stringify(ensuredDirs),
+  )
+  const forged = Object.assign({}, byId(await snapshot(rig), card.id), {
+    status: 'testing',
+    review: { status: 'approved' },
+    test: { status: 'passed' },
+    merge: { status: 'open' },
+  })
+  check('T-131 the merge queue never accepts an investigation', mergeEligible(forged) === false)
+  rig.scheduler.dispose()
+}
+
+// ── T-131: report belongs to the assignee (or the user) ────────────────────
+{
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  const card = await createTask(rig, { title: 'Investigate the flaky test', kind: 'investigate' })
+  await rig.action('settings', { maxConcurrent: 1, maxWorkAgents: 2 })
+  await rig.action('start')
+  await rig.settle()
+  const dispatched = byId(await snapshot(rig), card.id)
+  check('T-131 an executor is assigned to the investigation', dispatched.status === 'running' && dispatched.assignee !== null, JSON.stringify({ status: dispatched.status, assignee: dispatched.assignee }))
+  const stranger = { projectPath: rig.project, by: 'stranger', role: 'agent', agent: { id: 'session-stranger' } }
+  const denied = await rig.api.perform('report', { id: card.id, summary: 'not mine' }, stranger)
+  check('T-131 a stranger cannot report', denied.ok !== true && denied.code === 'not-assignee', JSON.stringify(denied.code))
+  const devOnly = ['approveReview', 'requestChanges', 'passTest', 'failTest', 'mergeRequest', 'refreshMerge', 'rejectMerge']
+  const refusals = []
+  for (const action of devOnly) refusals.push(await rig.action(action, { id: card.id, reasons: 'x', evidence: 'x' }))
+  check(
+    'T-131 every review/test/merge action refuses an investigation before doing any work',
+    refusals.every((result) => result.ok !== true && result.code === 'not-a-dev-task'),
+    JSON.stringify(refusals.map((result) => result.code)),
+  )
+  const assigned =
+    dispatched.assignee === null
+      ? null
+      : { projectPath: rig.project, by: dispatched.assignee.name, role: 'agent', agent: { id: dispatched.assignee.session } }
+  const reported = assigned === null ? { ok: false, code: 'no-executor' } : await rig.api.perform('report', { id: card.id, summary: 'The answer.' }, assigned)
+  check('T-131 the assignee can report', reported.ok === true && reported.task.status === 'done', JSON.stringify(reported.ok === true ? reported.task.status : reported.code))
+  rig.scheduler.dispose()
+}
+
+
+// ── T-131: a re-dispatched investigation leaves no older scratch behind ─────
+{
+  const git = createFakeGit({ trackWorktrees: true })
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' }, git: git })
+  const card = await createTask(rig, { title: 'Handover to a second attempt', kind: 'investigate' })
+  await rig.action('settings', { maxConcurrent: 1, maxWorkAgents: 2 })
+  await rig.action('start')
+  await rig.settle()
+  const first = byId(await snapshot(rig), card.id)
+  const firstPath = String(first.worktree)
+  check('T-131 attempt 1 owns a scratch checkout', first.status === 'running' && firstPath.indexOf(card.id + '-1') >= 0, JSON.stringify({ status: first.status, path: first.worktree }))
+  // A host restart REFUNDS the attempt and records an interruption, so the next
+  // dispatch takes slot 2 while attempt 1's scratch is still registered.
+  await rig.action('pause')
+  await patchTask(rig, card.id, (task) => {
+    task.dispatch = Object.assign({}, task.dispatch, { host: 'a-previous-process' })
+  })
+  await rig.settle()
+  const reaped = byId(await snapshot(rig), card.id)
+  check(
+    'T-131 the host restart refunds the attempt and counts the interruption',
+    reaped.status === 'pending' && reaped.attempts === 0 && reaped.interruptions === 1,
+    JSON.stringify({ status: reaped.status, attempts: reaped.attempts, interruptions: reaped.interruptions }),
+  )
+  await rig.action('start')
+  await rig.settle()
+  const second = byId(await snapshot(rig), card.id)
+  const secondPath = String(second.worktree)
+  check('T-131 the next dispatch takes slot 2', second.status === 'running' && secondPath.indexOf(card.id + '-2') >= 0, JSON.stringify({ status: second.status, path: second.worktree }))
+  const removedBeforeAdd = git.calls.filter((call) => call.name === 'worktreeRemove').map((call) => call.detail)
+  check('T-131 the older scratch is removed before the new attempt adds', removedBeforeAdd.indexOf(firstPath) >= 0, JSON.stringify(removedBeforeAdd))
+  // A leftover from an even older attempt must not survive the report either.
+  const stalePath = join(rig.project, '.worktrees', card.id + '-9')
+  await git.worktreeAdd(rig.project, { path: stalePath, base: 'base-sha', detach: true })
+  const reported = await rig.action('report', { id: card.id, summary: 'The handover finished.' })
+  check('T-131 the handed-over card reports', reported.ok === true && reported.task.status === 'done', JSON.stringify(reported.ok === true ? reported.task.status : reported.code))
+  const removed = git.calls.filter((call) => call.name === 'worktreeRemove').map((call) => call.detail)
+  check(
+    'T-131 cleanup removes the current and every older attempt checkout',
+    removed.indexOf(secondPath) >= 0 && removed.indexOf(stalePath) >= 0,
+    JSON.stringify(removed),
+  )
+  const leftovers = (await git.worktreeList(rig.project)).worktrees.filter((entry) => String(entry.path).indexOf(card.id + '-') >= 0)
+  check('T-131 and none of them stays registered', leftovers.length === 0, JSON.stringify(leftovers))
+  rig.scheduler.dispose()
+}
+
+// ── T-131: an investigation ignores a dirty main checkout ──────────────────
+{
+  const probeGit = createFakeGit({ clean: false })
+  const checked = await probeWorktree(probeGit, PROJECT, { requireClean: false })
+  check('T-131 probeWorktree can skip the clean gate for an investigation', checked.ok === true, JSON.stringify(checked))
+  const strict = await probeWorktree(probeGit, PROJECT)
+  check('T-131 the clean gate still refuses a dirty main tree by default', strict.ok !== true && strict.code === 'dirty-worktree', JSON.stringify(strict))
+
+  const baseGit = createFakeGit({ trackWorktrees: true })
+  const dirtyGit = Object.assign({}, baseGit, { isClean: async () => ({ ok: true, clean: false }) })
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' }, git: dirtyGit })
+  seedBoard(rig.fs, rig.project, JSON.stringify({ version: 2, seq: 1, tasks: [], dispatch: { state: 'running', maxConcurrent: 2, maxWorkAgents: 2 } }))
+  const card = await createTask(rig, { title: 'Dirty main checkout', kind: 'investigate' })
+  await rig.settle()
+  const snap = await snapshot(rig)
+  check('T-131 a dirty main checkout does not block an investigation', byId(snap, card.id).status === 'running', JSON.stringify(ids(snap)))
+  check(
+    'T-131 its scratch is still detached while the main tree is dirty',
+    baseGit.calls.filter((call) => call.name === 'worktreeAdd' && call.detail.detach === true).length === 1,
+    JSON.stringify(baseGit.calls.filter((call) => call.name === 'worktreeAdd').map((call) => call.detail)),
+  )
+  rig.scheduler.dispose()
+}
+
+
+// ── T-131: the lock table never gives an investigation a writeFiles lock ────
+{
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  const file = 'plugin/task-center/loader.mjs'
+  const card = await createTask(rig, { title: 'Solo investigation', kind: 'investigate', writeFiles: [file] })
+  await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 4 })
+  await rig.action('start')
+  await rig.settle()
+  let snap = await snapshot(rig)
+  check('T-131 the solo investigation is running before the lock is judged', byId(snap, card.id).status === 'running', JSON.stringify(ids(snap)))
+  const firstLocks = (await rig.action('locks')).locks
+  check(
+    'T-131 a solo investigation acquires no writeFiles lock',
+    firstLocks.filter((entry) => String(entry.taskId) === card.id).length === 0,
+    JSON.stringify(firstLocks),
+  )
+  // A second pass re-runs restoreLocks for the ALREADY running card. The claim
+  // path cannot run for it, so a lock appearing here can only come from
+  // restoreLocks — the exact defect the old fixture hid behind a dev card.
+  await rig.settle()
+  const secondLocks = (await rig.action('locks')).locks
+  check(
+    'T-131 restoreLocks never gives a running investigation a lock',
+    secondLocks.filter((entry) => String(entry.taskId) === card.id).length === 0,
+    JSON.stringify(secondLocks),
+  )
+  // The same file is still available to a real dev card: the investigation never
+  // reserves it, and the dev card's lock belongs to the dev card.
+  const dev = await createTask(rig, { title: 'Dev needs the same file', writeFiles: [file] })
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('T-131 a dev card dispatches on the same file while the investigation runs', byId(snap, dev.id).status === 'running', JSON.stringify(ids(snap)))
+  const held = (await rig.action('locks')).locks.filter((entry) => entry.path === file)
+  check('T-131 the file lock belongs to the dev card, not the investigation', held.length === 1 && String(held[0].taskId) === dev.id, JSON.stringify(held))
+  rig.scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

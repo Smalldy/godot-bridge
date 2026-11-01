@@ -27,9 +27,12 @@ import {
   MAX_HISTORY,
   ROLE_CONFIG_FILENAME,
   STATUSES,
+  TASK_KINDS,
   defaultRoleConfig,
   normaliseDispatch,
+  normaliseKind,
   normaliseMerge,
+  normaliseReport,
   normaliseReview,
   normaliseRoleConfig,
   normaliseTest,
@@ -517,6 +520,13 @@ function normaliseTask(raw, index, now) {
   if (!/^T-\d+$/.test(id)) {
     return failure('invalid-task', 'task #' + String(index) + ' has no valid id (expected T-<number>, got ' + JSON.stringify(raw.id) + ')')
   }
+  // T-131: a card is either mergeable work ('dev', the historical default) or an
+  // investigation that delivers a report. An UNKNOWN kind is refused rather than
+  // silently treated as dev: the phase machine it implies would be wrong.
+  const kind = normaliseKind(raw.kind)
+  if (kind === null) {
+    return failure('invalid-kind', 'task ' + JSON.stringify(id) + ' has kind ' + JSON.stringify(raw.kind) + '; expected one of ' + TASK_KINDS.join(', '))
+  }
   const status = STATUSES.indexOf(raw.status) >= 0 ? raw.status : raw.status === 'review' ? 'done' : 'pending'
   const dispatch =
     raw.dispatch !== null && typeof raw.dispatch === 'object' && !Array.isArray(raw.dispatch)
@@ -600,6 +610,10 @@ function normaliseTask(raw, index, now) {
       spec: stringOf(raw.spec, ''),
       acceptance: stringOf(raw.acceptance, ''),
       status: status,
+      // Missing on old boards (and therefore 'dev'); never undefined in memory.
+      kind: kind,
+      // Investigation output (T-131). Dev cards never carry one.
+      report: normaliseReport(raw.report),
       priority: Number.isFinite(raw.priority) ? Math.floor(raw.priority) : 0,
       dependsOn: dependsOn,
       writeFiles: writeFiles,

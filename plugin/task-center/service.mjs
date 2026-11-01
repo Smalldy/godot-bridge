@@ -20,12 +20,17 @@
 
 import {
   CLOSED_STATUSES,
+  INVESTIGATE_KIND,
+  REPORT_LIMITS,
   TASK_HEARTBEAT_MS,
   TASK_LEASE_MS,
   TASK_LEASE_EXTENSION_MAX_MS,
   TASK_LEASE_REMINDER_MS,
   normaliseDispatch,
+  normaliseEvidence,
+  normaliseKind,
   normaliseMerge,
+  truncateBytes,
 
   validateVerify,
 } from './schema.mjs'
@@ -186,6 +191,10 @@ export function validateDepends(board, taskId, dependsOn, selfTarget) {
 export function createTask(board, input, now, by) {
   const title = String(input.title === undefined ? '' : input.title).trim()
   if (title === '') return fail('missing-title', 'a task needs a title')
+  // T-131: 'dev' is the default pipeline; 'investigate' delivers a report. An
+  // unknown kind is a typo, not a dev card: refuse it instead of guessing.
+  const kind = normaliseKind(input.kind)
+  if (kind === null) return fail('invalid-kind', 'kind must be dev or investigate; got ' + JSON.stringify(input.kind))
   // A declaration that cannot be normalised is a TYPO, not "no declaration":
   // silently dropping it would hand the work back to the tester with no
   // mechanical baseline at all.
@@ -208,6 +217,8 @@ export function createTask(board, input, now, by) {
     spec: String(input.spec === undefined ? '' : input.spec),
     acceptance: String(input.acceptance === undefined ? '' : input.acceptance),
     status: 'pending',
+    kind: kind,
+    report: null,
     priority: Number.isFinite(input.priority) ? Math.floor(input.priority) : 0,
     dependsOn: checked.dependsOn,
     writeFiles: normaliseList(input.writeFiles),
@@ -267,6 +278,12 @@ export function normaliseTarget(value) {
 export function updateTask(board, id, input, now, by) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  // T-131: the kind decides the whole lifecycle (dev: review/test/merge,
+  // investigate: report). Changing it in place would corrupt a running card, so
+  // it is fixed at creation; a different lifecycle needs a new card.
+  if (input.kind !== undefined) {
+    return fail('kind-immutable', id + ' has kind ' + String(task.kind) + '; a card cannot change kind — create a new card instead')
+  }
   const hostOnly = HOST_ONLY_FIELDS.filter((key) => input[key] !== undefined)
   if (hostOnly.length > 0) {
     return fail('host-only', 'the host writes ' + hostOnly.join(', ') + '; an ordinary update cannot set them')
@@ -422,6 +439,8 @@ export function setDispatch(board, patch, now, by) {
  */
 function dependencySatisfied(dependency) {
   if (dependency.status !== 'done') return false
+  // An investigation delivers a report, not a branch: done is the whole story.
+  if (dependency.kind === INVESTIGATE_KIND) return true
   if (dependency.merge === null || dependency.merge === undefined) return true
   return dependency.merge.status === 'merged'
 }
@@ -810,6 +829,11 @@ export function expireLeases(board, now, maxAttempts, options) {
 export function submitTask(board, id, input, now, by, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  // T-131: an investigation never merges code; its one completion action is a
+  // report. Refusing here keeps submit from committing a scratch checkout at all.
+  if (task.kind === INVESTIGATE_KIND) {
+    return fail('investigation-report-only', id + ' is an investigation card: finish it with task_center { action: "report", id, summary, body, evidence? }, not submit')
+  }
   if (task.status !== 'running') return fail('not-running', id + ' is ' + task.status + ', not running')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
@@ -853,6 +877,7 @@ export function submitTask(board, id, input, now, by, byName) {
 export function approveReview(board, id, now, by, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no review phase (finish it with report)')
   if (task.status !== 'reviewing') return fail('not-reviewing', id + ' is ' + task.status + ', not reviewing')
   if (task.review === null || task.review.status !== 'pending') return fail('no-pending-review', id + ' has no review decision to approve')
   const next = clone(board)
@@ -882,6 +907,7 @@ export function approveReview(board, id, now, by, byName) {
 export function requestChanges(board, id, reasons, now, by, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no review phase (finish it with report)')
   if (task.status !== 'reviewing') return fail('not-reviewing', id + ' is ' + task.status + ', not reviewing')
   if (task.review === null || task.review.status !== 'pending') return fail('no-pending-review', id + ' has no review decision to change')
   const text = String(reasons === undefined || reasons === null ? '' : reasons).trim()
@@ -911,6 +937,7 @@ export function requestChanges(board, id, reasons, now, by, byName) {
 export function passTest(board, id, now, by, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no test phase (finish it with report)')
   if (task.status !== 'testing') return fail('not-testing', id + ' is ' + task.status + ', not testing')
   if (task.test === null || task.test.status !== 'pending') return fail('no-pending-test', id + ' has no test decision to pass')
   const next = clone(board)
@@ -931,6 +958,7 @@ export function passTest(board, id, now, by, byName) {
 export function failTest(board, id, evidence, now, by, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no test phase (finish it with report)')
   if (task.status !== 'testing') return fail('not-testing', id + ' is ' + task.status + ', not testing')
   if (task.test === null || task.test.status !== 'pending') return fail('no-pending-test', id + ' has no test decision to fail')
   const text = String(evidence === undefined || evidence === null ? '' : evidence).trim()
@@ -972,6 +1000,80 @@ export function cancelTask(board, id, now, by, note, byName) {
   return done(next, [{ kind: 'cancelled', id: id, who: by }], { task: target })
 }
 
+/**
+ * An investigation delivers its REPORT. This is the only completion action for
+ * kind='investigate': status -> done, lease/dispatch cleared, locks released by
+ * the caller, and NO merge request is ever created.
+ *
+ * The board stores a bounded copy (summary <= 4 KB, body <= 64 KB, at most 20
+ * evidence rows with <= 4 KB tails); the full text is written to
+ * `.agents/reports/<id>.md` by the API.
+ */
+export function reportTask(board, id, input, now, by, byName) {
+  const task = findTask(board, id)
+  if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.kind !== INVESTIGATE_KIND) {
+    return fail('not-an-investigation', id + ' is a dev card; finish it with submit so it can be reviewed, tested and merged')
+  }
+  if (task.status !== 'running') return fail('not-running', id + ' is ' + task.status + ', not running')
+  const source = input === undefined || input === null ? {} : input
+  const summary = String(source.summary === undefined || source.summary === null ? '' : source.summary).trim()
+  if (summary === '') return fail('missing-summary', 'a report needs a summary')
+  if (Buffer.byteLength(summary, 'utf8') > REPORT_LIMITS.summaryBytes) {
+    return fail('invalid-report', 'report.summary must be at most ' + String(REPORT_LIMITS.summaryBytes) + ' bytes')
+  }
+  const bodyText = typeof source.body === 'string' ? source.body : ''
+  const evidence = normaliseEvidence(source.evidence)
+  const artifacts = []
+  if (Array.isArray(source.artifacts)) {
+    for (const entry of source.artifacts) {
+      if (typeof entry !== 'string') continue
+      const path = entry.trim()
+      if (path === '' || artifacts.indexOf(path) >= 0) continue
+      artifacts.push(path)
+      if (artifacts.length >= REPORT_LIMITS.artifacts) break
+    }
+  }
+  const probeCommits = []
+  if (Array.isArray(source.probeCommits)) {
+    for (const entry of source.probeCommits) {
+      if (typeof entry !== 'string') continue
+      const text = entry.trim()
+      if (text === '' || probeCommits.indexOf(text) >= 0) continue
+      probeCommits.push(text)
+      if (probeCommits.length >= REPORT_LIMITS.evidence) break
+    }
+  }
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  target.report = {
+    summary: summary,
+    body: truncateBytes(bodyText, REPORT_LIMITS.bodyBytes),
+    evidence: evidence,
+    artifacts: artifacts,
+    probeCommits: probeCommits,
+    createdAt: iso(now),
+    by: by === undefined || by === null ? null : String(by),
+    byName: byName === undefined || byName === null || byName === '' ? null : String(byName),
+  }
+  target.status = 'done'
+  target.lastAssignee = target.assignee === null || target.assignee === undefined ? null : Object.assign({}, target.assignee)
+  target.assignee = null
+  target.leaseUntil = null
+  // No merge request, ever: target only served as the scratch base.
+  target.dispatch = null
+  touch(target, now)
+  pushHistory(target, {
+    at: iso(now),
+    by: by,
+    byName: byName === undefined ? null : byName,
+    from: task.status,
+    to: 'done',
+    note: 'investigation report: ' + (summary.length > 120 ? summary.slice(0, 120) + '…' : summary),
+  })
+  return done(next, [{ kind: 'reported', id: id, who: by }], { task: target })
+}
+
 export function reopenTask(board, id, now, by, note, byName) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
@@ -992,8 +1094,20 @@ export function reopenTask(board, id, now, by, note, byName) {
   // A reopened task starts the phase machine from scratch.
   target.review = null
   target.test = null
+  // T-131: an investigation's previous report is history, not current state; the
+  // reopened card must be investigated again before it can be reported.
+  const hadReport = target.report !== null && target.report !== undefined
+  target.report = null
   touch(target, now)
-  pushHistory(target, { at: iso(now), by: by, byName: byName === undefined ? null : byName, from: task.status, to: 'pending', note: note === undefined ? 'reopened' : String(note) })
+  const reopenNote = note === undefined ? 'reopened' : String(note)
+  pushHistory(target, {
+    at: iso(now),
+    by: by,
+    byName: byName === undefined ? null : byName,
+    from: task.status,
+    to: 'pending',
+    note: hadReport ? reopenNote + '; previous report discarded' : reopenNote,
+  })
   return done(next, [{ kind: 'reopened', id: id, who: by }], { task: target })
 }
 
@@ -1146,10 +1260,14 @@ export function counts(board) {
     done: 0,
     blocked: 0,
     cancelled: 0,
+    // T-131: how many of the running cards are investigations (they are also
+    // counted in `running`, so the existing totals stay additive).
+    investigating: 0,
   }
   const ready = new Set(readyTasks(board).map((task) => task.id))
   for (const task of board.tasks) {
     out[task.status] = (out[task.status] || 0) + 1
+    if (task.status === 'running' && task.kind === INVESTIGATE_KIND) out.investigating += 1
     if (ready.has(task.id)) out.ready += 1
   }
   return out
@@ -1158,10 +1276,26 @@ export function counts(board) {
 export function summary(board, task, now) {
   const dependency = dependencyInfo(board, task)
   const at = typeof now === 'number' ? now : Date.now()
+  const report = task.report === undefined ? null : task.report
   return {
     id: task.id,
     title: task.title,
     status: task.status,
+    kind: task.kind === undefined ? 'dev' : task.kind,
+    // The summary poll carries only the report HEADLINE; the body/evidence ride on
+    // /task (detail) and the full markdown lives in .agents/reports/<id>.md.
+    reportSummary:
+      report === null || report === undefined
+        ? null
+        : {
+            summary: report.summary,
+            createdAt: report.createdAt,
+            by: report.by,
+            byName: report.byName,
+            evidence: Array.isArray(report.evidence) ? report.evidence.length : 0,
+            artifacts: Array.isArray(report.artifacts) ? report.artifacts.length : 0,
+            hasBody: typeof report.body === 'string' && report.body !== '',
+          },
     ownerSession: task.ownerSession === undefined ? null : task.ownerSession,
     priority: task.priority,
     dependsOn: task.dependsOn,
@@ -1206,6 +1340,7 @@ export function detail(board, task, now) {
     spec: task.spec,
     acceptance: task.acceptance,
     evidence: task.evidence,
+    report: task.report === undefined ? null : task.report,
     createdBy: task.createdBy,
     history: task.history,
   })

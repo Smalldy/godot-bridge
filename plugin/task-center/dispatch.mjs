@@ -1329,10 +1329,17 @@ function worktreeFallback(code, message) {
  * Can this project host task worktrees right now?
  *
  * The one check behind both the start/approve preflight and claim-time
- * preparation: a git facade, a repository, and a clean working tree. It never
- * throws and answers `{ ok: true }` or `{ ok: false, code, message }`.
+ * preparation: a git facade and a repository, plus — by default — a clean working
+ * tree. `requireClean: false` skips ONLY the clean gate: an investigation reads in
+ * a detached scratch and never merges, so a dirty main checkout is irrelevant to
+ * it (the repository and base checks always apply). It never throws and answers
+ * `{ ok: true }` or `{ ok: false, code, message }`.
  */
-export async function probeWorktree(git, projectPath) {
+export async function probeWorktree(git, projectPath, options) {
+  const opts = options === undefined || options === null ? {} : options
+  // T-131: an investigation reads code in a detached scratch and never merges, so
+  // a dirty MAIN checkout is irrelevant to it; the repository must still be real.
+  const requireClean = opts.requireClean !== false
   if (git === undefined || git === null || typeof git.isRepo !== 'function') {
     return {
       ok: false,
@@ -1346,6 +1353,7 @@ export async function probeWorktree(git, projectPath) {
       return { ok: false, code: 'git-unavailable', message: 'git could not be asked whether ' + projectPath + ' is a repository: ' + String(repo.message) }
     }
     if (repo.repo !== true) return { ok: false, code: 'not-a-git-repository', message: projectPath + ' is not a git repository' }
+    if (requireClean !== true) return { ok: true }
     const clean = await git.isClean(projectPath)
     if (clean.ok !== true) {
       // A failed READ is not proof of a broken environment: the merge pipeline
@@ -1414,8 +1422,74 @@ export { serialiseWorktreeCreate }
  * preparation refused and `path` is then null. It never throws, and a failed
  * add is force-removed so no half worktree is left behind.
  */
+/** The checkout path for one attempt: <root>/<id>-<n>, where <root> defaults to
+ * .worktrees and may be absolute (a shared worktree root). Shared by the task
+ * checkout and the detached investigation scratch of T-131. */
+function checkoutPathFor(projectPath, task, attempt, dispatch) {
+  const settings = dispatch === undefined || dispatch === null ? null : dispatch.worktree
+  const root = String(settings === null || settings === undefined || settings.root === undefined || settings.root === null ? '' : settings.root).trim()
+  const checkoutRoot = root === '' ? '.worktrees' : root
+  return /^([a-zA-Z]:[\\/]|[\\/]{2}|[\\/])/.test(checkoutRoot)
+    ? join(checkoutRoot, String(task.id) + '-' + String(attempt))
+    : join(projectPath, checkoutRoot, String(task.id) + '-' + String(attempt))
+}
+
+/** The last path segment of a worktree path (either separator). */
+function worktreeBaseName(path) {
+  const text = String(path === undefined || path === null ? '' : path).replace(/[\\/]+$/, '')
+  const at = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'))
+  return at < 0 ? text : text.slice(at + 1)
+}
+
+/**
+ * Remove every registered checkout an investigation leaves behind: the current
+ * scratch, its earlier attempts (<id>-1, <id>-2 …) and probe-<id>-* siblings. A
+ * host restart REFUNDS the attempt, so the next slot can follow a still-registered
+ * scratch; nothing from a previous attempt is ever adopted. The ONE removal path:
+ * the dispatcher calls it before adding a new scratch, and the API calls it when
+ * the card leaves running (report/cancel/block/reopen/retry). A listing failure
+ * simply means no stale path is known here; a refused removal is reported, never
+ * fatal (the card is already done).
+ */
+export async function cleanupInvestigationCheckouts(git, projectPath, task) {
+  const removed = []
+  const failed = []
+  if (task === null || task === undefined || task.kind !== 'investigate') return null
+  if (git === null || git === undefined || typeof git.worktreeList !== 'function') return { removed: removed, failed: failed }
+  let entries = []
+  try {
+    const listed = await git.worktreeList(projectPath)
+    entries = listed !== null && listed !== undefined && listed.ok === true && Array.isArray(listed.worktrees) ? listed.worktrees : []
+  } catch (error) {
+    entries = []
+  }
+  const attemptPrefix = String(task.id) + '-'
+  const probePrefix = 'probe-' + String(task.id) + '-'
+  const targets = []
+  if (typeof task.worktree === 'string' && task.worktree !== '') targets.push(task.worktree)
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== 'object' || typeof entry.path !== 'string') continue
+    if (targets.indexOf(entry.path) >= 0) continue
+    const name = worktreeBaseName(entry.path)
+    if (name.indexOf(attemptPrefix) === 0 || name.indexOf(probePrefix) === 0) targets.push(entry.path)
+  }
+  if (typeof git.worktreeRemove !== 'function') return { removed: removed, failed: failed }
+  for (const path of targets) {
+    try {
+      const gone = await git.worktreeRemove(projectPath, path, { force: true })
+      if (gone !== null && gone !== undefined && gone.ok === true) removed.push(path)
+      else failed.push({ path: path, message: gone === undefined || gone === null || gone.message === undefined ? null : String(gone.message) })
+    } catch (error) {
+      failed.push({ path: path, message: String((error && error.message) || error) })
+    }
+  }
+  return { removed: removed, failed: failed }
+}
+
 async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadlineMs) {
-  const probe = await probeWorktree(git, projectPath)
+  // An investigation may run while the main checkout is dirty: it works in a
+  // detached scratch and never merges, so only the repository check applies.
+  const probe = await probeWorktree(git, projectPath, task.kind === 'investigate' ? { requireClean: false } : {})
   if (probe.ok !== true) return worktreeFallback(probe.code, probe.message)
   const headNow = await git.head(projectPath)
   if (headNow.ok !== true) return worktreeFallback('base-unreadable', String(headNow.message))
@@ -1439,6 +1513,78 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadli
     }
     base = resolved
   }
+  // T-131: an investigation gets a DETACHED SCRATCH checkout from the target head.
+  // No branch means a commit cannot survive: whatever the investigator does is
+  // discarded when the card reports (or is cancelled/blocked). Dirty is expected
+  // here, so this path never inspects cleanliness and never adopts an old attempt.
+  if (task.kind === 'investigate') {
+    // The target head is the scratch base. A detached main checkout has no branch
+    // name, and then the checkout HEAD is the only base available (same fallback
+    // the mergeable path uses for a legacy task).
+    let scratchBase = headNow
+    if (typeof targetBranch === 'string' && targetBranch !== '') {
+      const resolved = await git.revParse(projectPath, 'refs/heads/' + targetBranch)
+      if (resolved.ok !== true) {
+        return worktreeFallback('target-unreadable', targetBranch + ' could not be resolved for the scratch checkout (' + String(resolved.message) + ')')
+      }
+      scratchBase = resolved
+    }
+    const scratchPath = checkoutPathFor(projectPath, task, attempt, dispatch)
+    // An earlier attempt may still be registered under <id>-<n> (a host restart
+    // refunds the attempt, so slot 2 can follow attempt 1). An investigation never
+    // adopts old state: clear those checkouts before adding this one.
+    await cleanupInvestigationCheckouts(git, projectPath, task)
+    const startedAt = Date.now()
+    const budget = Number.isFinite(deadlineMs) && deadlineMs > 0 ? Math.floor(deadlineMs) : WORKTREE_CREATE_DEADLINE_MS
+    const attemptAdd = async () => {
+      const added = await serialiseWorktreeCreate(projectPath, () =>
+        withinWorktreeDeadline(() => git.worktreeAdd(projectPath, { path: scratchPath, base: scratchBase.hash, detach: true }), budget),
+      )
+      if (added === WORKTREE_DEADLINE_HIT) {
+        return { ok: false, code: 'worktree-add-timeout', message: 'git worktree add did not finish within ' + String(budget) + 'ms' }
+      }
+      return added
+    }
+    const first = await attemptAdd()
+    if (first.ok === true) {
+      return {
+        base: scratchBase.hash,
+        target: targetBranch,
+        branch: null,
+        path: first.path === undefined || first.path === null ? scratchPath : first.path,
+        keep: true,
+        detached: true,
+        error: null,
+        retried: false,
+        cleanup: null,
+        elapsedMs: Date.now() - startedAt,
+      }
+    }
+    const cleanup = await rollbackWorktree(git, projectPath, { path: scratchPath, branch: null })
+    const second = await attemptAdd()
+    if (second.ok === true) {
+      return {
+        base: scratchBase.hash,
+        target: targetBranch,
+        branch: null,
+        path: second.path === undefined || second.path === null ? scratchPath : second.path,
+        keep: true,
+        detached: true,
+        error: null,
+        retried: true,
+        cleanup: cleanup,
+        elapsedMs: Date.now() - startedAt,
+      }
+    }
+    const lastCleanup = await rollbackWorktree(git, projectPath, { path: scratchPath, branch: null })
+    const cleanupNote = cleanup.summary === lastCleanup.summary ? lastCleanup.summary : cleanup.summary + ' | retry: ' + lastCleanup.summary
+    return worktreeFallback(
+      'worktree-add-failed',
+      'scratch worktree add failed after 2 attempts: ' +
+        String(second.message) +
+        ' (path ' + scratchPath + ', detached, ' + String(Date.now() - startedAt) + 'ms; cleanup: ' + cleanupNote + ')',
+    )
+  }
   // Handover adoption: a previous attempt that left a COMMIT keeps its checkout,
   // so the next attempt continues that work instead of restarting from the
   // target. The branch must still resolve; anything else falls through to a
@@ -1458,13 +1604,10 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadli
     }
   }
   const branch = 'task/' + String(task.id) + '-' + String(attempt)
-  const settings = dispatch === undefined || dispatch === null ? null : dispatch.worktree
-  const root = String(settings === null || settings === undefined || settings.root === undefined || settings.root === null ? '' : settings.root).trim()
   // The checkout directory carries the attempt number: a failed attempt keeps
   // its worktree for inspection, so a retry must not try to re-add the same
   // path. The branch already carries the attempt, so the two stay in step.
-  const checkoutRoot = root === '' ? '.worktrees' : root
-    const path = /^([a-zA-Z]:[\\/]|[\\/]{2}|[\\/])/.test(checkoutRoot) ? join(checkoutRoot, String(task.id) + '-' + String(attempt)) : join(projectPath, checkoutRoot, String(task.id) + '-' + String(attempt))
+  const path = checkoutPathFor(projectPath, task, attempt, dispatch)
   const startedAt = Date.now()
   const budget = Number.isFinite(deadlineMs) && deadlineMs > 0 ? Math.floor(deadlineMs) : WORKTREE_CREATE_DEADLINE_MS
   // Serialised per repository, with its own (wider) budget and a hard deadline:
@@ -1608,7 +1751,9 @@ async function removeWorktree(git, projectPath, path) {
  */
 async function rollbackWorktree(git, projectPath, options) {
   const path = String(options.path)
-  const branch = String(options.branch)
+  // A detached scratch checkout (T-131) has no branch: there is nothing to
+  // delete, and String(null) would become the literal branch name "null".
+  const branch = typeof options.branch === 'string' && options.branch !== '' ? options.branch : null
   const steps = []
   const step = (name, ok, detail) => {
     steps.push({ name: name, ok: ok === true, detail: detail === undefined || detail === null ? null : String(detail) })
@@ -1631,7 +1776,7 @@ async function rollbackWorktree(git, projectPath, options) {
       step('remove', false, (error && error.message) || error)
     }
   }
-  if (typeof git.deleteBranch === 'function') {
+  if (branch !== null && typeof git.deleteBranch === 'function') {
     try {
       const deleted = await git.deleteBranch(projectPath, branch, { force: true })
       step('branch-delete', deleted !== null && deleted !== undefined && deleted.ok === true, deleted === undefined ? null : deleted.message)
@@ -1789,6 +1934,59 @@ export function briefPartsFor(task, projectPath, leadName, roleConfig) {
 export function briefFor(task, projectPath, leadName, roleConfig) {
   return briefPartsFor(task, projectPath, leadName, roleConfig).map((part) => part.text).join('\n\n')
 }
+
+/**
+ * The host-fixed brief for an investigation card (T-131). It is NOT generated
+ * from a role template: the boundaries below are the contract, and a profile
+ * cannot turn an investigation into "commit and submit".
+ */
+export function investigationBriefFor(task, projectPath, worktree) {
+  const info = worktree === undefined || worktree === null ? {} : worktree
+  const scratch =
+    typeof info.path === 'string' && info.path !== ''
+      ? info.path
+      : typeof task.worktree === 'string' && task.worktree !== ''
+        ? task.worktree
+        : '(the host creates .worktrees/' + String(task.id) + '-<attempt> before you start)'
+  const base = typeof info.base === 'string' && info.base !== '' ? info.base : typeof task.base === 'string' && task.base !== '' ? task.base : '(the target head)'
+  const target =
+    typeof info.target === 'string' && info.target !== '' ? info.target : typeof task.target === 'string' && task.target !== '' ? task.target : '(the project default target)'
+  const root = /[\\/]/.test(scratch) ? scratch.replace(/[\\/][^\\/]*$/, '') : '.'
+  const parts = []
+  parts.push('Task center — investigation card ' + String(task.id))
+  parts.push('Title: ' + String(task.title))
+  parts.push('Project: ' + String(projectPath))
+  parts.push('Scratch checkout: ' + scratch + ' (detached at ' + base + ', target ' + target + ')')
+  parts.push('')
+  parts.push('## What this card is')
+  parts.push('- You are investigating, not implementing: the deliverable is a REPORT, not a branch.')
+  parts.push('- Do NOT commit. Do NOT submit. Do NOT ask for a merge. This card has no review, no test and no merge phase.')
+  parts.push('')
+  parts.push('## Where to work')
+  parts.push('- Only inside the scratch checkout above. It is DETACHED: a commit there cannot reach a branch and is discarded at the end.')
+  parts.push('- Running commands, editing code and creating scratch subdirectories inside it is expected; the checkout may be dirty.')
+  parts.push('- If you need a second clean checkout, create it ONLY at ' + root + '/probe-' + String(task.id) + '-* (git worktree add --detach …) and list every such path in the report artifacts.')
+  parts.push('')
+  parts.push('## The question')
+  if (typeof task.spec === 'string' && task.spec.trim() !== '') parts.push(task.spec.trim())
+  if (typeof task.acceptance === 'string' && task.acceptance.trim() !== '') {
+    parts.push('')
+    parts.push('What "answered" means: ' + task.acceptance.trim())
+  }
+  parts.push('')
+  parts.push('## Deliver the report')
+  parts.push('task_center { action: "report", id: "' + String(task.id) + '", summary: "…", body: "…", evidence: [{ command, exitCode, outputTail }], artifacts: ["…"] }')
+  parts.push('- summary: the answer, at most 4 KB. body: the full write-up (the host stores it in .agents/reports/' + String(task.id) + '.md).')
+  parts.push('- evidence: up to 20 rows { command, exitCode, outputTail } — the commands you actually ran.')
+  parts.push('- artifacts: paths you created (probe checkouts, saved outputs).')
+  parts.push(
+    '- When the report lands the host force-removes the scratch checkout and every probe-' +
+      String(task.id) +
+      '-*; anything committed in the scratch is recorded as a probeCommits warning and discarded.',
+  )
+  return parts.join('\n')
+}
+
 
 /**
  * The values a role prompt template's {{VARIABLES}} resolve to for one task. The
@@ -2717,7 +2915,13 @@ export function createRoleManager(ctx, options) {
             description: 'task-center ' + String(kind) + ' role',
             prompt: [
               { type: 'text', text: spawnPreamble(name, leadName) },
-              { type: 'text', text: roleBriefFor(kind, req.task === undefined ? null : req.task, config, { projectPath: req.projectPath, leadName: leadName }) },
+              {
+                type: 'text',
+                text:
+                  req.task !== undefined && req.task !== null && req.task.kind === 'investigate'
+                    ? investigationBriefFor(req.task, req.projectPath, { path: req.task.worktree, base: req.task.base, target: req.task.target })
+                    : roleBriefFor(kind, req.task === undefined ? null : req.task, config, { projectPath: req.projectPath, leadName: leadName }),
+              },
             ],
             context: profile !== null && profile !== undefined && profile.context === 'fork' ? 'fork' : 'fresh',
             provider: subagentProviderFor(ctx),
@@ -3224,6 +3428,10 @@ export function createDispatcher(ctx, options) {
   function restoreLocks(board) {
     for (const task of board.tasks) {
       if (task.status !== 'running' || task.writeFiles.length === 0) continue
+      // T-131: an investigation only READS in a disposable detached scratch; it
+      // never writes the declared files, so it must not hold — or regain after a
+      // reload — a writeFiles lock that would block a real dev card (files-busy).
+      if (task.kind === 'investigate') continue
       if (task.dispatch === null || task.dispatch.host !== boot) continue
       const missing = task.writeFiles.filter((path) => {
         const held = state.memory.locks[path]
@@ -4247,7 +4455,9 @@ export function createDispatcher(ctx, options) {
           continue
         }
         let lockPaths = []
-        if (task.writeFiles.length > 0) {
+        // T-131: an investigation's scratch checkout is private and disposable;
+        // it must not hold another card's writeFiles while it merely reads code.
+        if (task.kind !== 'investigate' && task.writeFiles.length > 0) {
           const acquired = locks.acquire(
             state.memory.locks,
             task.writeFiles,
@@ -4410,7 +4620,12 @@ export function createDispatcher(ctx, options) {
         // ONE brief for both delivery paths: a spawned teammate and a reused
         // teammate handed the task by sendMessage receive the same text, prompt
         // and skills included.
-        const brief = briefFor(claimedTask, project, leadName, workerConfig)
+        // T-131: an investigation brief is host-fixed (report boundaries), not the
+        // implement brief: a role profile cannot turn it into "submit code".
+        const brief =
+          claimedTask !== null && claimedTask.kind === 'investigate'
+            ? investigationBriefFor(claimedTask, project, { path: worktree.path, base: worktree.base, target: worktree.target })
+            : briefFor(claimedTask, project, leadName, workerConfig)
         let delivered = null
         let sendError = null
         try {

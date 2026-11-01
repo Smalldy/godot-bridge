@@ -42,7 +42,15 @@ export function createStrictCtx(base, declared) {
   })
 }
 
-export function createFakeFs() {
+/**
+ * The fake filesystem. By default a write ignores its parent directory (the real
+ * facade does too — it never creates one). With `strictWriteDirs: true` a write
+ * into a directory that was never created FAILS, which is how a test proves the
+ * caller asked ensureDir before writing a nested file (T-131 reports).
+ */
+export function createFakeFs(options) {
+  const opts = options === undefined ? {} : options
+  const strictWriteDirs = opts.strictWriteDirs === true
   const files = new Map()
   const dirs = new Set()
   const hooks = { beforeWrite: null }
@@ -68,6 +76,17 @@ export function createFakeFs() {
     },
     async writeText(target, content, expected) {
       const key = target.targetKey
+      // The real facade does not create parent directories; in strict mode the
+      // fake does not either, so a nested write without ensureDir fails.
+      if (strictWriteDirs) {
+        // Paths come from two builders (node:path on Windows uses "\\", the git
+        // facade composes "/"), so compare separators-normalised directories.
+        const normalizeDir = (value) => String(value).replace(/\\/g, '/').replace(/\/+$/, '')
+        const parent = normalizeDir(key.replace(/[\\/][^\\/]*$/, ''))
+        if (parent !== normalizeDir(key) && parent !== '' && !Array.from(dirs).some((dir) => normalizeDir(dir) === parent)) {
+          throw Object.assign(new Error('ENOENT: no such directory ' + parent), { code: 'ENOENT' })
+        }
+      }
       const entry = files.get(key)
       if (expected !== undefined && expected.kind === 'createIfAbsent' && entry !== undefined) {
         throw Object.assign(new Error('FS_STALE_VERSION: exists'), { code: 'FS_STALE_VERSION' })
@@ -176,6 +195,11 @@ export function createFakeGit(options) {
   }
   let lastRoot = opts.project === undefined ? null : opts.project
   const fakeStaged = []
+  // T-131: an OPT-IN worktree registry, so cleanup tests can ask "was the
+  // scratch/probe checkout removed?". The historical default stays an empty list
+  // (an empty list means "this facade does not report worktrees").
+  const tracking = opts.trackWorktrees === true || Array.isArray(opts.worktrees)
+  const tracked = Array.isArray(opts.worktrees) ? opts.worktrees.slice() : []
   return {
     calls: calls,
     async raw(root, args) {
@@ -246,9 +270,12 @@ export function createFakeGit(options) {
       record('isClean')
       return { ok: true, clean: opts.clean !== false }
     },
-    async head() {
-      record('head')
-      return { ok: true, hash: opts.base === undefined ? 'base-sha' : opts.base }
+    async head(where) {
+      record('head', where)
+      // T-131: a test can give a scratch checkout its own HEAD (a commit the
+      // investigator made by accident).
+      const byPath = opts.heads !== undefined && opts.heads !== null && typeof where === 'string' ? opts.heads[where] : undefined
+      return { ok: true, hash: byPath === undefined ? (opts.base === undefined ? 'base-sha' : opts.base) : byPath }
     },
     async currentBranch() {
       record('currentBranch')
@@ -259,15 +286,26 @@ export function createFakeGit(options) {
       if (opts.addFails === true) {
         return { ok: false, code: 'worktree-add-failed', message: 'fatal: could not create work tree' }
       }
-      return { ok: true, path: input.path, branch: input.branch, base: input.base }
+      const entry = {
+        path: input.path,
+        branch: input.branch === undefined ? null : input.branch,
+        base: input.base === undefined ? null : input.base,
+        detached: input.detach === true,
+      }
+      if (tracking) tracked.push(entry)
+      return { ok: true, path: entry.path, branch: entry.branch, base: entry.base, detached: entry.detached }
     },
     async worktreeRemove(root, path) {
       record('worktreeRemove', path)
+      if (tracking) {
+        const at = tracked.findIndex((entry) => entry.path === path)
+        if (at >= 0) tracked.splice(at, 1)
+      }
       return { ok: true, path: path }
     },
     async worktreeList() {
       record('worktreeList')
-      return { ok: true, worktrees: [] }
+      return { ok: true, worktrees: tracking ? tracked.slice() : [] }
     },
     async commitAll(cwd, message) {
       record('commitAll', { cwd: cwd, message: message })
@@ -301,7 +339,9 @@ export function createFakeGit(options) {
 export function createRig(options) {
   const opts = options === undefined ? {} : options
   const project = opts.project === undefined ? PROJECT : opts.project
-  const fs = createFakeFs()
+  // T-131: a test can supply its own fake fs (e.g. strictWriteDirs) and the
+  // row's directory creator, so a nested write path is provable end to end.
+  const fs = opts.fs === undefined ? createFakeFs(opts.fsOptions) : opts.fs
   fs.dirs.add(project)
   fs.dirs.add(join(project, '.git'))
   fs.dirs.add(join(project, '.agents'))
@@ -332,6 +372,8 @@ export function createRig(options) {
     // Test rigs opt OUT of the real sessions tree unless they pass a fixture.
     sessionLookup: opts.sessionLookup === undefined ? null : opts.sessionLookup,
     isDir: opts.isDir,
+    // T-131: the row's directory creator, injectable so a test can assert it.
+    ensureDir: opts.ensureDir,
   })
   // A rig is one session on one project: the resolver's session workspace is
   // this project unless a test clears it to exercise no-project-bound.
@@ -352,7 +394,15 @@ export function createRig(options) {
     // pass). Production uses the dispatcher default.
     worktreeDeadlineMs: opts.worktreeDeadlineMs,
   })
-  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, now: opts.now, roles: opts.roles === undefined ? null : opts.roles })
+  const api = createApi(ctx, {
+    state: state,
+    scheduler: scheduler,
+    git: git,
+    now: opts.now,
+    roles: opts.roles === undefined ? null : opts.roles,
+    // T-131: report files need the parent directory; the rig mirrors the row.
+    ensureDir: opts.ensureDir,
+  })
   // T-117: the panel carries its session; a team-gate read without one is a
   // no-session-context refusal by design, so the rig models the real panel.
   const user = { projectPath: project, by: '@user', role: 'user', agent: null, sessionId: rigLead === undefined ? 'session-lead' : String(rigLead.id) }

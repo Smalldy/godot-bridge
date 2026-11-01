@@ -48,6 +48,8 @@ const DESCRIPTION =
   'Start with action onboard: one call resolves and binds the project, bootstraps a missing team and returns a short brief plus one next step. ' +
   'Read the skill "' + SKILL_NAME + '" first (skill tool): it carries the workflow, the action matrix, the write-card rules and the refusal codes. ' +
   'Actions: ' + AGENT_ACTIONS.join(', ') + '. ' +
+  // T-131: the second lifecycle, named where the model routes.
+  'A card with kind investigate delivers a report instead of code: finish it with action report (submit/review/test/merge refuse it). ' +
   'start only records a dispatch request until the user approves it in the task center panel (needs-consent is not a failure). ' +
   'Dependencies: B.dependsOn=[A] means A must be done and merged before B runs.'
 
@@ -69,7 +71,42 @@ export function registerTaskTool(ctx, options) {
       title: { type: 'string', description: 'Task title (create, update).' },
       spec: { type: 'string', description: 'What the task involves (create, update).' },
       acceptance: { type: 'string', description: 'How completion is judged (create, update).' },
-      evidence: { type: 'string', description: 'What was done and how it was checked (submit); the failing evidence (failTest).' },
+      // T-131: 'report' needs structured evidence rows while submit/failTest take
+      // a text summary, so the ONE parameter accepts both shapes.
+      evidence: {
+        description:
+          'Submit/failTest: a text summary of what was done and how it was checked. Report: an array of rows { command, exitCode, outputTail } the investigator actually ran.',
+        oneOf: [
+          { type: 'string' },
+          {
+            type: 'array',
+            description: 'Investigation evidence rows (report).',
+            items: {
+              type: 'object',
+              additionalProperties: true,
+              properties: {
+                command: { type: 'string', description: 'The command that was run.' },
+                exitCode: { type: 'number', description: 'Its exit code (omit when it never finished).' },
+                outputTail: { type: 'string', description: 'The tail of its output (at most 4 KB is kept).' },
+              },
+            },
+          },
+        ],
+      },
+      kind: {
+        type: 'string',
+        enum: ['dev', 'investigate'],
+        description:
+          'Card kind (create only; update cannot change it). dev (default) runs work -> review -> test -> merge. investigate delivers a report: no review, test or merge; finish it with report.',
+      },
+      summary: { type: 'string', description: 'Investigation report headline (report); at most 4 KB.' },
+      body: { type: 'string', description: 'Investigation report body (report); the full text is written to .agents/reports/<id>.md, the board keeps at most 64 KB.' },
+      artifacts: {
+        type: 'array',
+        description:
+          'Investigation report artifacts (report): project-relative paths you created or kept, e.g. the probe-<id>-* checkouts. Paths only, never file contents; the host removes those checkouts when the report lands.',
+        items: { type: 'string' },
+      },
       reasons: { type: 'string', description: 'What must change before the review can pass (requestChanges).' },
       note: { type: 'string', description: 'A line for the task history.' },
       dependsOn: {

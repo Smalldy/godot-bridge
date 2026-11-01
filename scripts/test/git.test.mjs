@@ -218,6 +218,26 @@ function recorder(handler) {
   check('worktreeAdd refuses the root itself', isFailure(rootItself, 'outside-root'), JSON.stringify(rootItself))
   const noBranch = await createGit({ run: recorder() }).worktreeAdd(ROOT, { path: '.worktrees/T-1', branch: '   ' })
   check('worktreeAdd refuses an empty branch', isFailure(noBranch, 'invalid-branch'), JSON.stringify(noBranch))
+
+  // T-131: an investigation scratch is DETACHED — no branch is created at all.
+  const detachRun = recorder(() => ({ code: 0, stdout: '', stderr: '' }))
+  const detached = await createGit({ run: detachRun }).worktreeAdd(ROOT, { path: '.worktrees/T-9', base: 'main', detach: true })
+  check(
+    'worktreeAdd detach returns a branchless checkout',
+    isOk(detached) && detached.branch === null && detached.detached === true && detached.path === join(ROOT, '.worktrees', 'T-9'),
+    JSON.stringify(detached),
+  )
+  check(
+    'worktreeAdd detach passes --detach instead of -b',
+    detachRun.calls[0].args.join(' ') === ['worktree', 'add', '--detach', join(ROOT, '.worktrees', 'T-9'), 'main'].join(' '),
+    JSON.stringify(detachRun.calls[0].args),
+  )
+  const detachNoBase = await createGit({ run: recorder(() => ({ code: 0, stdout: '', stderr: '' })) }).worktreeAdd(ROOT, { path: '.worktrees/T-10', detach: true })
+  check('worktreeAdd detach without a base detaches at HEAD', isOk(detachNoBase) && detachNoBase.base === null && detachNoBase.branch === null, JSON.stringify(detachNoBase))
+  const detachRefused = await createGit({ run: recorder(() => ({ code: 128, stdout: '', stderr: 'fatal: already exists' })) }).worktreeAdd(ROOT, { path: '.worktrees/T-11', detach: true })
+  check('worktreeAdd detach reports a refused add', isFailure(detachRefused, 'worktree-add-failed'), JSON.stringify(detachRefused))
+  const detachOutside = await createGit({ run: recorder() }).worktreeAdd(ROOT, { path: '../outside', detach: true })
+  check('worktreeAdd detach still refuses a path outside the root', isFailure(detachOutside, 'outside-root'), JSON.stringify(detachOutside))
 }
 
 // worktreeRemove

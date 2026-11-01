@@ -299,6 +299,127 @@ export function normaliseHostCheck(raw) {
   }
 }
 
+// ── task kinds: dev (mergeable work) vs investigate (a report) ──────────────
+
+/**
+ * Every kind a card can have. 'dev' is the historical pipeline (worktree ->
+ * review -> test -> merge); 'investigate' delivers a REPORT and never enters
+ * review, test or merge. A board written before kinds existed has no field and
+ * means 'dev'.
+ */
+export const TASK_KINDS = ['dev', 'investigate']
+export const DEV_KIND = 'dev'
+export const INVESTIGATE_KIND = 'investigate'
+
+/** A stored/requested kind, or null when the value is not a known kind. */
+export function normaliseKind(value) {
+  if (value === undefined || value === null || value === '') return DEV_KIND
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  return TASK_KINDS.indexOf(text) >= 0 ? text : null
+}
+
+/**
+ * Size limits for an investigation report. The BOARD keeps at most this much of
+ * each field (the full body is written to `.agents/reports/<id>.md`), so one
+ * report cannot blow past the board budget the way a log paste would.
+ */
+export const REPORT_LIMITS = {
+  summaryBytes: 4 * 1024,
+  bodyBytes: 64 * 1024,
+  evidence: 20,
+  outputTailBytes: 4 * 1024,
+  artifacts: 100,
+}
+
+/** Truncate a text to at most `limit` UTF-8 bytes without splitting a code
+ * point, and say so — a silently shortened report would read as complete. */
+export function truncateBytes(value, limit) {
+  const text = typeof value === 'string' ? value : String(value === undefined || value === null ? '' : value)
+  const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0
+  if (cap === 0) return ''
+  if (Buffer.byteLength(text, 'utf8') <= cap) return text
+  const suffix = '\n…(truncated)'
+  const budget = Math.max(0, cap - Buffer.byteLength(suffix, 'utf8'))
+  let used = 0
+  let end = 0
+  for (const char of text) {
+    const size = Buffer.byteLength(char, 'utf8')
+    if (used + size > budget) break
+    used += size
+    end += char.length
+  }
+  return text.slice(0, end) + suffix
+}
+
+/**
+ * One evidence row of an investigation report. Shape-repairing and bounded
+ * because the panel renders it and the board stores it; a hand-written board
+ * must not be able to smuggle a megabyte in through an evidence tail.
+ */
+export function normaliseEvidence(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const command = typeof entry.command === 'string' ? entry.command.trim() : ''
+    const outputTail = typeof entry.outputTail === 'string' ? entry.outputTail : typeof entry.output === 'string' ? entry.output : ''
+    if (command === '' && outputTail === '') continue
+    out.push({
+      command: truncateBytes(command, 2048),
+      exitCode: Number.isFinite(entry.exitCode) ? Math.trunc(entry.exitCode) : null,
+      outputTail: truncateBytes(outputTail, REPORT_LIMITS.outputTailBytes),
+    })
+    if (out.length >= REPORT_LIMITS.evidence) break
+  }
+  return out
+}
+
+/**
+ * The stored report of an investigation card, or null. Missing/invalid fields
+ * degrade to empty values (reading a board never throws); write-time validation
+ * lives in service.reportTask.
+ */
+export function normaliseReport(raw) {
+  if (raw === null || raw === undefined) return null
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null
+  const summary = typeof raw.summary === 'string' ? raw.summary.trim() : ''
+  if (summary === '') return null
+  const artifacts = []
+  if (Array.isArray(raw.artifacts)) {
+    for (const entry of raw.artifacts) {
+      if (typeof entry !== 'string') continue
+      const path = entry.trim()
+      if (path === '' || artifacts.indexOf(path) >= 0) continue
+      artifacts.push(path)
+      if (artifacts.length >= REPORT_LIMITS.artifacts) break
+    }
+  }
+  const probeCommits = []
+  if (Array.isArray(raw.probeCommits)) {
+    for (const entry of raw.probeCommits) {
+      if (typeof entry !== 'string') continue
+      const text = entry.trim()
+      if (text === '' || probeCommits.indexOf(text) >= 0) continue
+      probeCommits.push(text)
+      if (probeCommits.length >= REPORT_LIMITS.evidence) break
+    }
+  }
+  return {
+    summary: truncateBytes(summary, REPORT_LIMITS.summaryBytes),
+    body: truncateBytes(typeof raw.body === 'string' ? raw.body : '', REPORT_LIMITS.bodyBytes),
+    evidence: normaliseEvidence(raw.evidence),
+    artifacts: artifacts,
+    // A commit the investigator accidentally made in the scratch checkout: the
+    // card still delivers a report and the commit is discarded, but the warning
+    // is part of the record.
+    probeCommits: probeCommits,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : null,
+    by: typeof raw.by === 'string' ? raw.by : null,
+    byName: typeof raw.byName === 'string' && raw.byName !== '' ? raw.byName : null,
+  }
+}
+
 /** The project-level role profile file (optional; defaults apply when absent). */
 export const ROLE_CONFIG_FILENAME = 'roles.json'
 export const ROLE_CONFIG_VERSION = 1

@@ -7,7 +7,7 @@ const { registerTaskTool, agentLabel, projectPathOf } = await import('../../plug
 const { SKILL_NAME, buildSkillContent } = await import('../../plugin/task-center/skill.mjs')
 const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
 const { ONBOARD_NEXT_CODES } = await import('../../plugin/task-center/onboard.mjs')
-const { createRig, createTask } = await import('./support/fixtures.mjs')
+const { createRig, createTask, seedBoard } = await import('./support/fixtures.mjs')
 const { rememberMemberProject } = await import('../../plugin/task-center/dispatch.mjs')
 const { join } = await import('node:path')
 
@@ -328,6 +328,102 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   )
   const cleared = await call({ action: 'update', id: created.task.id, verify: null })
   check('update clears the verify declaration through the tool', cleared.ok === true && cleared.task.verify === null, JSON.stringify(cleared))
+}
+
+
+// ── T-131: investigation cards through the tool ────────────────────────────
+{
+  // The fixture starts with the agent remembered on another project; this block
+  // works on the rig's project, so move the memory first (submit/report check it).
+  rememberMemberProject(rig.ctx, 'agent', rig.project)
+  const card = await call({ action: 'create', title: 'Why is the loader slow?', kind: 'investigate' })
+  check('T-131 the tool creates an investigation', card.ok === true && card.task.kind === 'investigate', JSON.stringify(card.ok === true ? card.task.kind : card.code))
+  const plain = await call({ action: 'create', title: 'Plain dev card' })
+  check('T-131 create defaults to dev', plain.ok === true && plain.task.kind === 'dev', JSON.stringify(plain.ok === true ? plain.task.kind : plain.code))
+  const changed = await call({ action: 'update', id: card.task.id, kind: 'dev' })
+  check('T-131 the tool refuses a kind change', changed.ok !== true && changed.code === 'kind-immutable', JSON.stringify(changed.code))
+  const submitted = await call({ action: 'submit', id: card.task.id, evidence: 'x' })
+  check('T-131 the tool routes submit on an investigation to its refusal', submitted.ok !== true && submitted.code === 'investigation-report-only', JSON.stringify(submitted.code))
+  check(
+    'T-131 the tool exposes report and the kind parameter',
+    rig.tool.parameters.report !== undefined || actions.indexOf('report') >= 0,
+    actions.join(','),
+  )
+  const kindParam = rig.tool.parameters.kind
+  check(
+    'T-131 the kind parameter is an enum of dev/investigate',
+    kindParam !== undefined && Array.isArray(kindParam.enum) && kindParam.enum.join(',') === 'dev,investigate',
+    JSON.stringify(kindParam === undefined ? null : kindParam.enum),
+  )
+  check('T-131 report carries summary and body parameters', rig.tool.parameters.summary !== undefined && rig.tool.parameters.body !== undefined)
+  const artifactsParam = rig.tool.parameters.artifacts
+  check(
+    'T-131 report carries an artifacts array of paths',
+    artifactsParam !== undefined && artifactsParam.type === 'array' && artifactsParam.items !== undefined && artifactsParam.items.type === 'string',
+    JSON.stringify(artifactsParam),
+  )
+  const evidenceParam = rig.tool.parameters.evidence
+  check(
+    'T-131 evidence accepts report rows as well as submit text',
+    evidenceParam !== undefined && Array.isArray(evidenceParam.oneOf) && evidenceParam.oneOf.some((branch) => branch.type === 'array') && evidenceParam.oneOf.some((branch) => branch.type === 'string'),
+    JSON.stringify(evidenceParam === undefined ? null : evidenceParam.oneOf.map((branch) => branch.type)),
+  )
+  const description = String(rig.tool.description === undefined ? '' : rig.tool.description)
+  check('T-131 the description names investigations and report', description.indexOf('investigate') >= 0 && description.indexOf('report') >= 0, description.slice(-300))
+}
+
+// ── T-131: a running investigation reports through the tool ────────────────
+{
+  seedBoard(
+    rig.fs,
+    rig.project,
+    JSON.stringify({
+      version: 2,
+      seq: 12,
+      tasks: [
+        {
+          id: 'T-11',
+          title: 'Seeded investigation',
+          status: 'running',
+          kind: 'investigate',
+          attempts: 1,
+          assignee: { name: 'agent', session: 'session-abcdef12' },
+          base: 'base-sha',
+          target: null,
+          worktree: null,
+          history: [{ at: '2026-01-01T00:00:00.000Z', by: 'scheduler', from: 'pending', to: 'running', note: 'dispatched' }],
+        },
+      ],
+    }),
+  )
+  const reported = await call({
+    action: 'report',
+    id: 'T-11',
+    summary: 'The loader waits on the config read.',
+    body: 'Full findings.',
+    evidence: [{ command: 'node loader.mjs', exitCode: 0, outputTail: '1200ms' }],
+    artifacts: ['.worktrees/probe-T-11-a', '.worktrees/probe-T-11-b'],
+  })
+  check('T-131 the tool reports and completes the card', reported.ok === true && reported.task.status === 'done', JSON.stringify(reported.ok === true ? reported.task.status : reported.code))
+  check(
+    'T-131 the report keeps summary, body and evidence',
+    reported.report !== null && reported.report.summary === 'The loader waits on the config read.' && reported.report.body === 'Full findings.' && reported.report.evidence.length === 1,
+    JSON.stringify(reported.report),
+  )
+  check(
+    'T-131 report records the artifacts the investigator listed',
+    reported.report !== null && reported.report.artifacts.join(',') === '.worktrees/probe-T-11-a,.worktrees/probe-T-11-b',
+    JSON.stringify(reported.report === null ? null : reported.report.artifacts),
+  )
+  const get = await call({ action: 'get', id: 'T-11' })
+  check('T-131 get returns the full report', get.ok === true && get.task.report !== null && get.task.report.summary === 'The loader waits on the config read.')
+  const listed = await call({ action: 'list' })
+  const summaryRow = (listed.tasks === undefined ? [] : listed.tasks).filter((task) => task.id === 'T-11')[0]
+  check(
+    'T-131 list carries kind and the report headline',
+    summaryRow !== undefined && summaryRow.kind === 'investigate' && summaryRow.reportSummary !== null && summaryRow.reportSummary.summary === 'The loader waits on the config read.',
+    JSON.stringify(summaryRow),
+  )
 }
 
 if (typeof disposer === 'function') disposer()
