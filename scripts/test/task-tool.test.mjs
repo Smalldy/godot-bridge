@@ -356,6 +356,12 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
     JSON.stringify(kindParam === undefined ? null : kindParam.enum),
   )
   check('T-131 report carries summary and body parameters', rig.tool.parameters.summary !== undefined && rig.tool.parameters.body !== undefined)
+  const artifactsParam = rig.tool.parameters.artifacts
+  check(
+    'T-131 report carries an artifacts array of paths',
+    artifactsParam !== undefined && artifactsParam.type === 'array' && artifactsParam.items !== undefined && artifactsParam.items.type === 'string',
+    JSON.stringify(artifactsParam),
+  )
   const evidenceParam = rig.tool.parameters.evidence
   check(
     'T-131 evidence accepts report rows as well as submit text',
@@ -396,12 +402,18 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
     summary: 'The loader waits on the config read.',
     body: 'Full findings.',
     evidence: [{ command: 'node loader.mjs', exitCode: 0, outputTail: '1200ms' }],
+    artifacts: ['.worktrees/probe-T-11-a', '.worktrees/probe-T-11-b'],
   })
   check('T-131 the tool reports and completes the card', reported.ok === true && reported.task.status === 'done', JSON.stringify(reported.ok === true ? reported.task.status : reported.code))
   check(
     'T-131 the report keeps summary, body and evidence',
     reported.report !== null && reported.report.summary === 'The loader waits on the config read.' && reported.report.body === 'Full findings.' && reported.report.evidence.length === 1,
     JSON.stringify(reported.report),
+  )
+  check(
+    'T-131 report records the artifacts the investigator listed',
+    reported.report !== null && reported.report.artifacts.join(',') === '.worktrees/probe-T-11-a,.worktrees/probe-T-11-b',
+    JSON.stringify(reported.report === null ? null : reported.report.artifacts),
   )
   const get = await call({ action: 'get', id: 'T-11' })
   check('T-131 get returns the full report', get.ok === true && get.task.report !== null && get.task.report.summary === 'The loader waits on the config read.')

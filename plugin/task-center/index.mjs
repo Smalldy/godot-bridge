@@ -160,15 +160,19 @@ export function apply(ctx) {
 
 function applyRow(ctx) {
   let scheduler = null
+  // The fs facade never creates parent directories, so the row supplies the one
+  // creator for every nested write it owns: the project registry and the
+  // investigation reports under .agents/reports.
+  const ensureDir = function (dir) {
+    mkdirSync(dir, { recursive: true })
+  }
   const state = createState(ctx, {
     afterWrite: function (event) {
       return scheduler === null ? undefined : scheduler.kick(event.projectPath)
     },
     // The registry lives outside the workspace (`~/.dsh/godot-bridge`), whose
     // parent directory may not exist yet: create it before the write.
-    ensureDir: function (dir) {
-      mkdirSync(dir, { recursive: true })
-    },
+    ensureDir: ensureDir,
     // A workspace-write policy denies the home path, so the writer falls back to
     // `<project>/.agents/projects.json`; the workspace candidate uses THIS policy.
     sandboxPolicyFor: function (projectRoot) {
@@ -225,6 +229,8 @@ function applyRow(ctx) {
     harness: harness,
     activity: activity,
     autoMerge: true,
+    // T-131: report files live in .agents/reports/<id>.md and need the directory.
+    ensureDir: ensureDir,
   })
 
   // The project registry is what makes restarts seamless: load it once, before

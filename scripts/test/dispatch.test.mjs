@@ -42,6 +42,7 @@ import {
   recordStageSlot,
   stageSlotOf,
   phaseActivityAt,
+  probeWorktree,
   serialiseWorktreeCreate,
   workerPool,
 } from '../../plugin/task-center/dispatch.mjs'
@@ -5091,7 +5092,20 @@ try {
 {
   const heads = {}
   const git = createFakeGit({ trackWorktrees: true, heads: heads })
-  const rig = createRig({ teamOptions: { spawnedStatus: 'running' }, git: git })
+  // A strict fake fs refuses a nested write whose parent directory was never
+  // created, so this rig proves the row's ensureDir is asked for .agents/reports
+  // BEFORE the report file is written (the real fs facade never creates it).
+  const fs = createFakeFs({ strictWriteDirs: true })
+  const ensuredDirs = []
+  const ensureDir = function (dir) {
+    ensuredDirs.push(String(dir))
+    fs.dirs.add(String(dir))
+  }
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' }, git: git, fs: fs, ensureDir: ensureDir })
+  // A real checkout has .git/info already; the strict fs needs it to exist
+  // because start writes .git/info/exclude (that parent is not one of the
+  // directories this API ensures).
+  fs.dirs.add(join(rig.project, '.git', 'info'))
   const card = await createTask(rig, {
     title: 'Why does the loader stall on boot?',
     kind: 'investigate',
@@ -5160,6 +5174,11 @@ try {
     reportEntry !== undefined && reportEntry.text.indexOf('The loader blocks on the config read.') >= 0 && reportEntry.text.indexOf('cpu-prof') >= 0,
     JSON.stringify(reportEntry === undefined ? Array.from(rig.fs.files.keys()) : reportEntry.text.slice(0, 200)),
   )
+  check(
+    'T-131 the reports directory is created before the report file is written',
+    ensuredDirs.some((dir) => String(dir).replace(/\\/g, '/').indexOf('/.agents/reports') >= 0),
+    JSON.stringify(ensuredDirs),
+  )
   const forged = Object.assign({}, byId(await snapshot(rig), card.id), {
     status: 'testing',
     review: { status: 'approved' },
@@ -5196,6 +5215,78 @@ try {
       : { projectPath: rig.project, by: dispatched.assignee.name, role: 'agent', agent: { id: dispatched.assignee.session } }
   const reported = assigned === null ? { ok: false, code: 'no-executor' } : await rig.api.perform('report', { id: card.id, summary: 'The answer.' }, assigned)
   check('T-131 the assignee can report', reported.ok === true && reported.task.status === 'done', JSON.stringify(reported.ok === true ? reported.task.status : reported.code))
+  rig.scheduler.dispose()
+}
+
+
+// ── T-131: a re-dispatched investigation leaves no older scratch behind ─────
+{
+  const git = createFakeGit({ trackWorktrees: true })
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' }, git: git })
+  const card = await createTask(rig, { title: 'Handover to a second attempt', kind: 'investigate' })
+  await rig.action('settings', { maxConcurrent: 1, maxWorkAgents: 2 })
+  await rig.action('start')
+  await rig.settle()
+  const first = byId(await snapshot(rig), card.id)
+  const firstPath = String(first.worktree)
+  check('T-131 attempt 1 owns a scratch checkout', first.status === 'running' && firstPath.indexOf(card.id + '-1') >= 0, JSON.stringify({ status: first.status, path: first.worktree }))
+  // A host restart REFUNDS the attempt and records an interruption, so the next
+  // dispatch takes slot 2 while attempt 1's scratch is still registered.
+  await rig.action('pause')
+  await patchTask(rig, card.id, (task) => {
+    task.dispatch = Object.assign({}, task.dispatch, { host: 'a-previous-process' })
+  })
+  await rig.settle()
+  const reaped = byId(await snapshot(rig), card.id)
+  check(
+    'T-131 the host restart refunds the attempt and counts the interruption',
+    reaped.status === 'pending' && reaped.attempts === 0 && reaped.interruptions === 1,
+    JSON.stringify({ status: reaped.status, attempts: reaped.attempts, interruptions: reaped.interruptions }),
+  )
+  await rig.action('start')
+  await rig.settle()
+  const second = byId(await snapshot(rig), card.id)
+  const secondPath = String(second.worktree)
+  check('T-131 the next dispatch takes slot 2', second.status === 'running' && secondPath.indexOf(card.id + '-2') >= 0, JSON.stringify({ status: second.status, path: second.worktree }))
+  const removedBeforeAdd = git.calls.filter((call) => call.name === 'worktreeRemove').map((call) => call.detail)
+  check('T-131 the older scratch is removed before the new attempt adds', removedBeforeAdd.indexOf(firstPath) >= 0, JSON.stringify(removedBeforeAdd))
+  // A leftover from an even older attempt must not survive the report either.
+  const stalePath = join(rig.project, '.worktrees', card.id + '-9')
+  await git.worktreeAdd(rig.project, { path: stalePath, base: 'base-sha', detach: true })
+  const reported = await rig.action('report', { id: card.id, summary: 'The handover finished.' })
+  check('T-131 the handed-over card reports', reported.ok === true && reported.task.status === 'done', JSON.stringify(reported.ok === true ? reported.task.status : reported.code))
+  const removed = git.calls.filter((call) => call.name === 'worktreeRemove').map((call) => call.detail)
+  check(
+    'T-131 cleanup removes the current and every older attempt checkout',
+    removed.indexOf(secondPath) >= 0 && removed.indexOf(stalePath) >= 0,
+    JSON.stringify(removed),
+  )
+  const leftovers = (await git.worktreeList(rig.project)).worktrees.filter((entry) => String(entry.path).indexOf(card.id + '-') >= 0)
+  check('T-131 and none of them stays registered', leftovers.length === 0, JSON.stringify(leftovers))
+  rig.scheduler.dispose()
+}
+
+// ── T-131: an investigation ignores a dirty main checkout ──────────────────
+{
+  const probeGit = createFakeGit({ clean: false })
+  const checked = await probeWorktree(probeGit, PROJECT, { requireClean: false })
+  check('T-131 probeWorktree can skip the clean gate for an investigation', checked.ok === true, JSON.stringify(checked))
+  const strict = await probeWorktree(probeGit, PROJECT)
+  check('T-131 the clean gate still refuses a dirty main tree by default', strict.ok !== true && strict.code === 'dirty-worktree', JSON.stringify(strict))
+
+  const baseGit = createFakeGit({ trackWorktrees: true })
+  const dirtyGit = Object.assign({}, baseGit, { isClean: async () => ({ ok: true, clean: false }) })
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' }, git: dirtyGit })
+  seedBoard(rig.fs, rig.project, JSON.stringify({ version: 2, seq: 1, tasks: [], dispatch: { state: 'running', maxConcurrent: 2, maxWorkAgents: 2 } }))
+  const card = await createTask(rig, { title: 'Dirty main checkout', kind: 'investigate' })
+  await rig.settle()
+  const snap = await snapshot(rig)
+  check('T-131 a dirty main checkout does not block an investigation', byId(snap, card.id).status === 'running', JSON.stringify(ids(snap)))
+  check(
+    'T-131 its scratch is still detached while the main tree is dirty',
+    baseGit.calls.filter((call) => call.name === 'worktreeAdd' && call.detail.detach === true).length === 1,
+    JSON.stringify(baseGit.calls.filter((call) => call.name === 'worktreeAdd').map((call) => call.detail)),
+  )
   rig.scheduler.dispose()
 }
 

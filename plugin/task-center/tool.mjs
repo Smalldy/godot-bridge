@@ -101,6 +101,12 @@ export function registerTaskTool(ctx, options) {
       },
       summary: { type: 'string', description: 'Investigation report headline (report); at most 4 KB.' },
       body: { type: 'string', description: 'Investigation report body (report); the full text is written to .agents/reports/<id>.md, the board keeps at most 64 KB.' },
+      artifacts: {
+        type: 'array',
+        description:
+          'Investigation report artifacts (report): project-relative paths you created or kept, e.g. the probe-<id>-* checkouts. Paths only, never file contents; the host removes those checkouts when the report lands.',
+        items: { type: 'string' },
+      },
       reasons: { type: 'string', description: 'What must change before the review can pass (requestChanges).' },
       note: { type: 'string', description: 'A line for the task history.' },
       dependsOn: {

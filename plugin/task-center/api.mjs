@@ -297,6 +297,10 @@ export function createApi(ctx, options) {
   const godotPath = typeof opts.godotPath === 'string' && opts.godotPath.length > 0 ? opts.godotPath : null
   const harness = opts.harness === undefined ? null : opts.harness
   const activity = opts.activity === undefined || opts.activity === null ? null : opts.activity
+  // The row's directory creator. The fs facade never creates parent directories
+  // (state.mjs and board.mjs both do it explicitly), so any nested write the API
+  // owns — today the investigation report under .agents/reports — must ask for it.
+  const ensureDir = typeof opts.ensureDir === 'function' ? opts.ensureDir : null
   const drainTimeoutMs = Number.isFinite(opts.drainTimeoutMs) ? Math.max(0, Math.floor(opts.drainTimeoutMs)) : 30 * 1000
   const drainIntervalMs = Number.isFinite(opts.drainIntervalMs) ? Math.max(1, Math.floor(opts.drainIntervalMs)) : 250
   // Host bounds: one async host action (candidate build/merge, queue turn, role
@@ -3133,13 +3137,18 @@ export function createApi(ctx, options) {
     } catch (error) {
       entries = []
     }
-    const prefix = 'probe-' + String(task.id) + '-'
+    // The current scratch, every EARLIER attempt (<id>-1, <id>-2 …) and every
+    // probe-<id>-* sibling: a host restart refunds the attempt, so older scratch
+    // checkouts stay registered and must not outlive the card either.
+    const attemptPrefix = String(task.id) + '-'
+    const probePrefix = 'probe-' + String(task.id) + '-'
     const targets = []
     if (typeof task.worktree === 'string' && task.worktree !== '') targets.push(task.worktree)
     for (const entry of entries) {
       if (entry === null || typeof entry !== 'object' || typeof entry.path !== 'string') continue
       if (targets.indexOf(entry.path) >= 0) continue
-      if (baseNameOf(entry.path).indexOf(prefix) === 0) targets.push(entry.path)
+      const name = baseNameOf(entry.path)
+      if (name.indexOf(attemptPrefix) === 0 || name.indexOf(probePrefix) === 0) targets.push(entry.path)
     }
     if (typeof git.worktreeRemove !== 'function') return { removed: removed, failed: failed }
     for (const path of targets) {
@@ -3159,6 +3168,18 @@ export function createApi(ctx, options) {
    * itself is already recorded on the board. */
   async function writeReportFile(projectPath, task, source) {
     const target = reportPathFor(projectPath, task.id)
+    // The fs facade does NOT create parent directories. A real host passes
+    // ensureDir explicitly (index.mjs), so .agents/reports exists before the first
+    // report; without it a nested write fails and the report would silently stay
+    // board-only. The directory is created eagerly, before the write.
+    const parent = dirname(target)
+    if (ensureDir !== null) {
+      try {
+        await ensureDir(parent)
+      } catch (error) {
+        return { ok: false, path: target, warning: 'the report is on the board, but creating ' + parent + ' failed: ' + messageOf(error) }
+      }
+    }
     const lines = []
     lines.push('# ' + String(task.id) + ' — ' + String(task.title))
     lines.push('')

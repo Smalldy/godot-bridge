@@ -1332,7 +1332,11 @@ function worktreeFallback(code, message) {
  * preparation: a git facade, a repository, and a clean working tree. It never
  * throws and answers `{ ok: true }` or `{ ok: false, code, message }`.
  */
-export async function probeWorktree(git, projectPath) {
+export async function probeWorktree(git, projectPath, options) {
+  const opts = options === undefined || options === null ? {} : options
+  // T-131: an investigation reads code in a detached scratch and never merges, so
+  // a dirty MAIN checkout is irrelevant to it; the repository must still be real.
+  const requireClean = opts.requireClean !== false
   if (git === undefined || git === null || typeof git.isRepo !== 'function') {
     return {
       ok: false,
@@ -1346,6 +1350,7 @@ export async function probeWorktree(git, projectPath) {
       return { ok: false, code: 'git-unavailable', message: 'git could not be asked whether ' + projectPath + ' is a repository: ' + String(repo.message) }
     }
     if (repo.repo !== true) return { ok: false, code: 'not-a-git-repository', message: projectPath + ' is not a git repository' }
+    if (requireClean !== true) return { ok: true }
     const clean = await git.isClean(projectPath)
     if (clean.ok !== true) {
       // A failed READ is not proof of a broken environment: the merge pipeline
@@ -1426,8 +1431,50 @@ function checkoutPathFor(projectPath, task, attempt, dispatch) {
     : join(projectPath, checkoutRoot, String(task.id) + '-' + String(attempt))
 }
 
+/** The last path segment of a worktree path (either separator). */
+function worktreeBaseName(path) {
+  const text = String(path === undefined || path === null ? '' : path).replace(/[\\/]+$/, '')
+  const at = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'))
+  return at < 0 ? text : text.slice(at + 1)
+}
+
+/**
+ * Remove every registered checkout an investigation left behind: its earlier
+ * attempts (<id>-1, <id>-2 …) and probe-<id>-* siblings. A host restart REFUNDS
+ * the attempt, so the next slot can follow a still-registered scratch; nothing
+ * from a previous attempt is ever adopted. Best effort: a listing failure simply
+ * means no stale path is known here.
+ */
+async function removeInvestigationCheckouts(git, projectPath, taskId) {
+  const removed = []
+  if (git === null || git === undefined || typeof git.worktreeList !== 'function' || typeof git.worktreeRemove !== 'function') return removed
+  let entries = []
+  try {
+    const listed = await git.worktreeList(projectPath)
+    entries = listed !== null && listed !== undefined && listed.ok === true && Array.isArray(listed.worktrees) ? listed.worktrees : []
+  } catch (error) {
+    return removed
+  }
+  const attemptPrefix = String(taskId) + '-'
+  const probePrefix = 'probe-' + String(taskId) + '-'
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== 'object' || typeof entry.path !== 'string') continue
+    const name = worktreeBaseName(entry.path)
+    if (name.indexOf(attemptPrefix) !== 0 && name.indexOf(probePrefix) !== 0) continue
+    try {
+      const gone = await git.worktreeRemove(projectPath, entry.path, { force: true })
+      if (gone !== null && gone !== undefined && gone.ok === true) removed.push(entry.path)
+    } catch (error) {
+      // A checkout git already lost is not this pass's problem.
+    }
+  }
+  return removed
+}
+
 async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadlineMs) {
-  const probe = await probeWorktree(git, projectPath)
+  // An investigation may run while the main checkout is dirty: it works in a
+  // detached scratch and never merges, so only the repository check applies.
+  const probe = await probeWorktree(git, projectPath, task.kind === 'investigate' ? { requireClean: false } : {})
   if (probe.ok !== true) return worktreeFallback(probe.code, probe.message)
   const headNow = await git.head(projectPath)
   if (headNow.ok !== true) return worktreeFallback('base-unreadable', String(headNow.message))
@@ -1468,6 +1515,10 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadli
       scratchBase = resolved
     }
     const scratchPath = checkoutPathFor(projectPath, task, attempt, dispatch)
+    // An earlier attempt may still be registered under <id>-<n> (a host restart
+    // refunds the attempt, so slot 2 can follow attempt 1). An investigation never
+    // adopts old state: clear those checkouts before adding this one.
+    await removeInvestigationCheckouts(git, projectPath, task.id)
     const startedAt = Date.now()
     const budget = Number.isFinite(deadlineMs) && deadlineMs > 0 ? Math.floor(deadlineMs) : WORKTREE_CREATE_DEADLINE_MS
     const attemptAdd = async () => {
