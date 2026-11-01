@@ -1329,8 +1329,11 @@ function worktreeFallback(code, message) {
  * Can this project host task worktrees right now?
  *
  * The one check behind both the start/approve preflight and claim-time
- * preparation: a git facade, a repository, and a clean working tree. It never
- * throws and answers `{ ok: true }` or `{ ok: false, code, message }`.
+ * preparation: a git facade and a repository, plus — by default — a clean working
+ * tree. `requireClean: false` skips ONLY the clean gate: an investigation reads in
+ * a detached scratch and never merges, so a dirty main checkout is irrelevant to
+ * it (the repository and base checks always apply). It never throws and answers
+ * `{ ok: true }` or `{ ok: false, code, message }`.
  */
 export async function probeWorktree(git, projectPath, options) {
   const opts = options === undefined || options === null ? {} : options
@@ -1439,36 +1442,48 @@ function worktreeBaseName(path) {
 }
 
 /**
- * Remove every registered checkout an investigation left behind: its earlier
- * attempts (<id>-1, <id>-2 …) and probe-<id>-* siblings. A host restart REFUNDS
- * the attempt, so the next slot can follow a still-registered scratch; nothing
- * from a previous attempt is ever adopted. Best effort: a listing failure simply
- * means no stale path is known here.
+ * Remove every registered checkout an investigation leaves behind: the current
+ * scratch, its earlier attempts (<id>-1, <id>-2 …) and probe-<id>-* siblings. A
+ * host restart REFUNDS the attempt, so the next slot can follow a still-registered
+ * scratch; nothing from a previous attempt is ever adopted. The ONE removal path:
+ * the dispatcher calls it before adding a new scratch, and the API calls it when
+ * the card leaves running (report/cancel/block/reopen/retry). A listing failure
+ * simply means no stale path is known here; a refused removal is reported, never
+ * fatal (the card is already done).
  */
-async function removeInvestigationCheckouts(git, projectPath, taskId) {
+export async function cleanupInvestigationCheckouts(git, projectPath, task) {
   const removed = []
-  if (git === null || git === undefined || typeof git.worktreeList !== 'function' || typeof git.worktreeRemove !== 'function') return removed
+  const failed = []
+  if (task === null || task === undefined || task.kind !== 'investigate') return null
+  if (git === null || git === undefined || typeof git.worktreeList !== 'function') return { removed: removed, failed: failed }
   let entries = []
   try {
     const listed = await git.worktreeList(projectPath)
     entries = listed !== null && listed !== undefined && listed.ok === true && Array.isArray(listed.worktrees) ? listed.worktrees : []
   } catch (error) {
-    return removed
+    entries = []
   }
-  const attemptPrefix = String(taskId) + '-'
-  const probePrefix = 'probe-' + String(taskId) + '-'
+  const attemptPrefix = String(task.id) + '-'
+  const probePrefix = 'probe-' + String(task.id) + '-'
+  const targets = []
+  if (typeof task.worktree === 'string' && task.worktree !== '') targets.push(task.worktree)
   for (const entry of entries) {
     if (entry === null || typeof entry !== 'object' || typeof entry.path !== 'string') continue
+    if (targets.indexOf(entry.path) >= 0) continue
     const name = worktreeBaseName(entry.path)
-    if (name.indexOf(attemptPrefix) !== 0 && name.indexOf(probePrefix) !== 0) continue
+    if (name.indexOf(attemptPrefix) === 0 || name.indexOf(probePrefix) === 0) targets.push(entry.path)
+  }
+  if (typeof git.worktreeRemove !== 'function') return { removed: removed, failed: failed }
+  for (const path of targets) {
     try {
-      const gone = await git.worktreeRemove(projectPath, entry.path, { force: true })
-      if (gone !== null && gone !== undefined && gone.ok === true) removed.push(entry.path)
+      const gone = await git.worktreeRemove(projectPath, path, { force: true })
+      if (gone !== null && gone !== undefined && gone.ok === true) removed.push(path)
+      else failed.push({ path: path, message: gone === undefined || gone === null || gone.message === undefined ? null : String(gone.message) })
     } catch (error) {
-      // A checkout git already lost is not this pass's problem.
+      failed.push({ path: path, message: String((error && error.message) || error) })
     }
   }
-  return removed
+  return { removed: removed, failed: failed }
 }
 
 async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadlineMs) {
@@ -1518,7 +1533,7 @@ async function prepareWorktree(git, projectPath, task, dispatch, attempt, deadli
     // An earlier attempt may still be registered under <id>-<n> (a host restart
     // refunds the attempt, so slot 2 can follow attempt 1). An investigation never
     // adopts old state: clear those checkouts before adding this one.
-    await removeInvestigationCheckouts(git, projectPath, task.id)
+    await cleanupInvestigationCheckouts(git, projectPath, task)
     const startedAt = Date.now()
     const budget = Number.isFinite(deadlineMs) && deadlineMs > 0 ? Math.floor(deadlineMs) : WORKTREE_CREATE_DEADLINE_MS
     const attemptAdd = async () => {
@@ -3413,6 +3428,10 @@ export function createDispatcher(ctx, options) {
   function restoreLocks(board) {
     for (const task of board.tasks) {
       if (task.status !== 'running' || task.writeFiles.length === 0) continue
+      // T-131: an investigation only READS in a disposable detached scratch; it
+      // never writes the declared files, so it must not hold — or regain after a
+      // reload — a writeFiles lock that would block a real dev card (files-busy).
+      if (task.kind === 'investigate') continue
       if (task.dispatch === null || task.dispatch.host !== boot) continue
       const missing = task.writeFiles.filter((path) => {
         const held = state.memory.locks[path]

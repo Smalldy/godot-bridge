@@ -42,6 +42,7 @@ import {
   leadInventory,
   leadInventoryText,
   memberProjectOf,
+  cleanupInvestigationCheckouts,
   probeWorktree,
   projectSlotKey,
   projectTeamState,
@@ -3089,12 +3090,6 @@ export function createApi(ctx, options) {
 
   // ── investigations (T-131) ────────────────────────────────────────────────
 
-  function baseNameOf(path) {
-    const text = String(path === undefined || path === null ? '' : path).replace(/[\\/]+$/, '')
-    const at = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'))
-    return at < 0 ? text : text.slice(at + 1)
-  }
-
   /** The path of one investigation's full report (the board keeps a bounded copy). */
   function reportPathFor(projectPath, id) {
     return join(projectPath, '.agents', 'reports', String(id) + '.md')
@@ -3121,46 +3116,13 @@ export function createApi(ctx, options) {
   }
 
   /**
-   * Force-remove an investigation's scratch checkout and every probe-<id>-*
-   * sibling registered with git. Best effort: a failure is reported as a warning,
-   * never fatal, because the card has already delivered its report.
+   * The one cleanup path (shared with the dispatcher's pre-clean): remove the
+   * card's current scratch, every earlier <id>-<attempt> and every probe-<id>-*.
+   * Best effort: a refusal is a warning, never fatal — the card has already left
+   * running.
    */
   async function cleanupInvestigation(projectPath, task) {
-    if (task === null || task === undefined || task.kind !== 'investigate') return null
-    const removed = []
-    const failed = []
-    if (git === null || git === undefined || typeof git.worktreeList !== 'function') return { removed: removed, failed: failed }
-    let entries = []
-    try {
-      const listed = await git.worktreeList(projectPath)
-      entries = listed !== null && listed !== undefined && listed.ok === true && Array.isArray(listed.worktrees) ? listed.worktrees : []
-    } catch (error) {
-      entries = []
-    }
-    // The current scratch, every EARLIER attempt (<id>-1, <id>-2 …) and every
-    // probe-<id>-* sibling: a host restart refunds the attempt, so older scratch
-    // checkouts stay registered and must not outlive the card either.
-    const attemptPrefix = String(task.id) + '-'
-    const probePrefix = 'probe-' + String(task.id) + '-'
-    const targets = []
-    if (typeof task.worktree === 'string' && task.worktree !== '') targets.push(task.worktree)
-    for (const entry of entries) {
-      if (entry === null || typeof entry !== 'object' || typeof entry.path !== 'string') continue
-      if (targets.indexOf(entry.path) >= 0) continue
-      const name = baseNameOf(entry.path)
-      if (name.indexOf(attemptPrefix) === 0 || name.indexOf(probePrefix) === 0) targets.push(entry.path)
-    }
-    if (typeof git.worktreeRemove !== 'function') return { removed: removed, failed: failed }
-    for (const path of targets) {
-      try {
-        const gone = await git.worktreeRemove(projectPath, path, { force: true })
-        if (gone !== null && gone !== undefined && gone.ok === true) removed.push(path)
-        else failed.push({ path: path, message: gone === undefined || gone === null || gone.message === undefined ? null : String(gone.message) })
-      } catch (error) {
-        failed.push({ path: path, message: String((error && error.message) || error) })
-      }
-    }
-    return { removed: removed, failed: failed }
+    return cleanupInvestigationCheckouts(git, projectPath, task)
   }
 
   /** Write the FULL report next to the board. The board copy is bounded (64 KB);

@@ -5290,5 +5290,43 @@ try {
   rig.scheduler.dispose()
 }
 
+
+// ── T-131: the lock table never gives an investigation a writeFiles lock ────
+{
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  const file = 'plugin/task-center/loader.mjs'
+  const card = await createTask(rig, { title: 'Solo investigation', kind: 'investigate', writeFiles: [file] })
+  await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 4 })
+  await rig.action('start')
+  await rig.settle()
+  let snap = await snapshot(rig)
+  check('T-131 the solo investigation is running before the lock is judged', byId(snap, card.id).status === 'running', JSON.stringify(ids(snap)))
+  const firstLocks = (await rig.action('locks')).locks
+  check(
+    'T-131 a solo investigation acquires no writeFiles lock',
+    firstLocks.filter((entry) => String(entry.taskId) === card.id).length === 0,
+    JSON.stringify(firstLocks),
+  )
+  // A second pass re-runs restoreLocks for the ALREADY running card. The claim
+  // path cannot run for it, so a lock appearing here can only come from
+  // restoreLocks — the exact defect the old fixture hid behind a dev card.
+  await rig.settle()
+  const secondLocks = (await rig.action('locks')).locks
+  check(
+    'T-131 restoreLocks never gives a running investigation a lock',
+    secondLocks.filter((entry) => String(entry.taskId) === card.id).length === 0,
+    JSON.stringify(secondLocks),
+  )
+  // The same file is still available to a real dev card: the investigation never
+  // reserves it, and the dev card's lock belongs to the dev card.
+  const dev = await createTask(rig, { title: 'Dev needs the same file', writeFiles: [file] })
+  await rig.settle()
+  snap = await snapshot(rig)
+  check('T-131 a dev card dispatches on the same file while the investigation runs', byId(snap, dev.id).status === 'running', JSON.stringify(ids(snap)))
+  const held = (await rig.action('locks')).locks.filter((entry) => entry.path === file)
+  check('T-131 the file lock belongs to the dev card, not the investigation', held.length === 1 && String(held[0].taskId) === dev.id, JSON.stringify(held))
+  rig.scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
