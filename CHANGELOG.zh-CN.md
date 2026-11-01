@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### 变更
+
+- **面板配色对齐 DSH 主题（T-133）**：任务中心不再自造主题 token，也不再写死颜色。深色模式下调查筛选条不再是近白横条——容器改为 `transparent`，选中 pill 用 `--dsw-alias-bg-module-platform` + `--dsw-alias-label-primary`，hover 用 `--dsw-alias-interactive-bg-hover`；tabs、chip、pill、计数徽章与选中行改用 module/hover/layer-2 token，替换掉并不存在的 `--dsw-alias-bg-layer-4`；调查 accent 改用品牌蓝 `--dsw-alias-state-business-primary`，删掉写死的青绿；状态色映射到 `--dsw-alias-state-success-primary` / `--dsw-alias-state-warn-label` / `--dsw-alias-state-error-primary`，底统一为中性 module 背景；错误文字改用 `--dsw-alias-state-error-primary`，不再依赖缺失的 `--dsw-alias-label-error`。布局、间距与交互不变。
+
 ### 新增
 
 - **面板、技能与文档里的调查卡（T-132）**：看板给调查卡加**调查**标记和类型筛选（全部 / 开发 / 调查），进行中列显示「调查中 N」；任务详情只渲染 **执行 → 交付** 阶段脊（没有评审/测试/合并阶段，也没有 target/合并进度），并展示已交付的报告——summary、body、证据表（命令 / 退出码 / 输出尾部）与 artifacts，未交付时显示「报告未交付」；运行中的调查卡不再显示提交框。队列与执行者页不会为它出现 reviewer/tester 槽位。运行时技能新增完整的「调查卡（investigate）」章节（什么时候用、`kind: "investigate"`、`report` 动作与体积上限、scratch/probe 规则、不 commit/submit/merge、拒绝码与面板呈现），仍在 6–10 KB 预算内；中英文 README 都补了调查卡生命周期与 `create` + `report` 示例。
