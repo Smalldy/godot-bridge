@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Panel palette follows the DSH theme (T-133)**: the task center no longer invents theme tokens or ships hardcoded colours. In dark mode the kind filter is no longer a near-white band — the container is `transparent`, the selected pill uses `--dsw-alias-bg-module-platform` with `--dsw-alias-label-primary` and the hover uses `--dsw-alias-interactive-bg-hover`; tabs, chips, pills, count badges and selected rows use the module/hover/layer-2 tokens instead of the non-existent `--dsw-alias-bg-layer-4`; the investigation accent uses the brand blue `--dsw-alias-state-business-primary` instead of hardcoded teal; status tones map to `--dsw-alias-state-success-primary` / `--dsw-alias-state-warn-label` / `--dsw-alias-state-error-primary` on neutral module backgrounds, and error text uses `--dsw-alias-state-error-primary` instead of the missing `--dsw-alias-label-error`. Layout, spacing and behaviour are unchanged.
+
 ### Added
 
 - **Investigation cards in the panel, skill and docs (T-132)**: the board marks an investigation with an **Investigate** badge and a kind filter (All / Dev / Investigate) and shows "Investigating N" in the running column; the task detail renders only the **Run → Deliver** spine (no review/test/merge stages, no target/merge progress) plus the delivered report — summary, body, an evidence table (command / exit / output tail) and artifacts, with "Report not delivered" before that — and a running investigation never shows the submit box. The queue and workers views carry no reviewer/tester slots for it. The runtime skill gained a full 「调查卡（investigate）」 chapter (when to use it, `kind: "investigate"`, the `report` action and its size limits, the scratch/probe rules, no commit/submit/merge, the refusal codes and the panel rendering) inside the 6–10 KB budget, and both READMEs document the investigation lifecycle with `create` + `report` examples.

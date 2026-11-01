@@ -4760,5 +4760,95 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   await flush()
 }
 
+
+// ── T-133: the panel palette uses only tokens the DSH theme defines ─────────
+{
+  const cssText = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+  const forbidden = [
+    '--dsw-alias-bg-layout',
+    '--dsw-alias-bg-layer-4',
+    '--dsw-alias-label-error',
+    '--dsw-alias-state-warning-primary',
+    '#f4f5f7',
+    '#0d6b5c',
+    'rgba(20,140,120',
+    'rgba(79,124,255',
+    'rgba(47,179,68',
+    'rgba(245,159,0',
+    'rgba(229,72,77',
+    'rgba(121,80,242',
+    'rgba(62,207,142',
+    '#2f9e44',
+    '#b7791f',
+    '#3b5bdb',
+    '#7048e8',
+    '#8a8f98',
+    '#2fb344',
+    '#3ecf8e',
+    '#e5645c',
+    '#c92a2a',
+    '#b26a00',
+    '#d33',
+  ]
+  check(
+    'T-133 the bundle carries no invented DSH token and no hardcoded theme colour',
+    forbidden.every((needle) => cssText.indexOf(needle) < 0),
+    forbidden.filter((needle) => cssText.indexOf(needle) >= 0).join(','),
+  )
+  const kindRule = /\.gbt-kindfilter\{[^}]*\}/.exec(cssText)
+  check(
+    'T-133 the kind filter is not a light band any more',
+    kindRule !== null && kindRule[0].indexOf('background:transparent') >= 0 && kindRule[0].indexOf('#f4f5f7') < 0,
+    kindRule && kindRule[0],
+  )
+  const activeRule = /\.gbt-kindfilterbtn\[data-active="true"\]\{[^}]*\}/.exec(cssText)
+  check(
+    'T-133 the selected filter pill uses bg-module-platform + label-primary without a bright fallback',
+    activeRule !== null &&
+      activeRule[0].indexOf('var(--dsw-alias-bg-module-platform)') >= 0 &&
+      activeRule[0].indexOf('var(--dsw-alias-label-primary)') >= 0 &&
+      activeRule[0].indexOf('#fff') < 0 &&
+      activeRule[0].indexOf('box-shadow') < 0,
+    activeRule && activeRule[0],
+  )
+  const hoverRule = /\.gbt-kindfilterbtn:hover\{[^}]*\}/.exec(cssText)
+  check(
+    'T-133 the filter hover uses interactive-bg-hover',
+    hoverRule !== null && hoverRule[0].indexOf('var(--dsw-alias-interactive-bg-hover)') >= 0,
+    hoverRule && hoverRule[0],
+  )
+  check(
+    'T-133 tabs use module/hover tokens',
+    /\.gbt-tab\[data-active="true"\]\{[^}]*bg-module-platform/.test(cssText) && /\.gbt-tab:hover\{[^}]*interactive-bg-hover/.test(cssText),
+  )
+  check(
+    'T-133 chips and pills sit on neutral module/layer backgrounds',
+    /\.gbt-chip\{[^}]*var\(--dsw-alias-bg-layer-2\)/.test(cssText) && /\.gbt-pill\{[^}]*var\(--dsw-alias-bg-layer-2\)/.test(cssText),
+  )
+  check(
+    'T-133 the investigation accent is the brand token, not teal',
+    /\.gbt-chip\[data-kind="investigate"\][^}]*state-business-primary/.test(cssText) &&
+      /\.gbt-colnote\{[^}]*state-business-primary/.test(cssText) &&
+      /\.gbt-reportcard\{[^}]*state-business-primary/.test(cssText),
+  )
+  check(
+    'T-133 status chips use the DSH state tokens',
+    /\.gbt-chip\[data-tone="done"\]\{[^}]*state-success-primary/.test(cssText) &&
+      /\.gbt-chip\[data-tone="blocked"\]\{[^}]*state-error-primary/.test(cssText) &&
+      /\.gbt-chip\[data-tone="testing"\]\{[^}]*state-warn-label/.test(cssText) &&
+      /\.gbt-chip\[data-tone="running"\]\{[^}]*state-success-primary/.test(cssText),
+  )
+  check(
+    'T-133 the running dot and the hover border are tokens',
+    /\.gbt-dot\[data-running="true"\]\{[^}]*state-success-primary/.test(cssText) && /\.gbt-card:hover\{[^}]*state-business-primary/.test(cssText),
+  )
+  check(
+    'T-133 the pill status tones are token-mapped',
+    /\.gbt-pill\[data-status="done"\]\{[^}]*state-success-primary/.test(cssText) &&
+      /\.gbt-pill\[data-status="testing"\]\{[^}]*state-warn-label/.test(cssText) &&
+      /\.gbt-pill\[data-status="blocked"\]\{[^}]*state-error-primary/.test(cssText),
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
