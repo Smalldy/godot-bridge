@@ -372,6 +372,24 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   check('T-131 the description names investigations and report', description.indexOf('investigate') >= 0 && description.indexOf('report') >= 0, description.slice(-300))
 }
 
+
+// ── T-132: the tool router and the runtime skill agree on investigations ────
+{
+  const description = String(rig.tool.description === undefined ? '' : rig.tool.description)
+  check(
+    'T-132 the tool description says investigations deliver a report and skip review/test/merge',
+    description.indexOf('kind investigate') >= 0 && description.indexOf('delivers a report') >= 0 && description.indexOf('submit/review/test/merge refuse it') >= 0,
+    description.slice(0, 420),
+  )
+  const content = buildSkillContent({ actions: ACTIONS, agentActions: AGENT_ACTIONS, readActions: READ_ACTIONS, userOnlyActions: USER_ONLY_ACTIONS })
+  check(
+    'T-132 the runtime skill and the tool share the investigation vocabulary',
+    content.indexOf('调查卡（investigate）') >= 0 && content.indexOf('`report`') >= 0 && description.indexOf('report') >= 0,
+    JSON.stringify({ skill: content.indexOf('调查卡（investigate）'), tool: description.indexOf('report') }),
+  )
+  check('T-132 the tool keeps its router budget after the investigation wording', description.length <= 1400, String(description.length))
+}
+
 // ── T-131: a running investigation reports through the tool ────────────────
 {
   seedBoard(

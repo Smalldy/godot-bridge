@@ -59,7 +59,7 @@ Every task runs in its own git worktree — `<project>/.worktrees/<taskId>-<atte
 6. **Exceptions**: a conflict or a moved target marks the request and notifies the owner; the target branch is never touched. `mergeRequest` / `rejectMerge` / `refreshMerge` stay available to the user or the `merger` teammate for manual integration, audit or repair.
 
 - **Board**: `<project>/.agents/tasks.json`. Schema v2; a v1 board migrates on read (old statuses collapse into the current vocabulary, `blockedBy` becomes `dependsOn`, a stale claim is released). Duplicate ids, malformed entries and future versions are refused instead of overwritten. Add the file to the project's `.gitignore` — it is working state, not source.
-- **Action API**: the `task_center` tool and `POST /godot-bridge/task-center/action` share one vocabulary: `create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / approveReview / requestChanges / passTest / failTest / mergeRequest / refreshMerge / rejectMerge / cancel / reopen / block / unblock / retry / locks / openProject / rolesList / rolesPreview / rolesCreate / rolesUpdate / rolesDelete / rolesBind / rolesDrain / rolesReplace / rolesReset / skillsCatalog / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`. `verify` is a task field rather than an action: `create` / `update` take it, and the tool exposes it as an object parameter (`null` clears it).
+- **Action API**: the `task_center` tool and `POST /godot-bridge/task-center/action` share one vocabulary: `create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / report / approveReview / requestChanges / passTest / failTest / mergeRequest / refreshMerge / rejectMerge / cancel / reopen / block / unblock / retry / locks / openProject / rolesList / rolesPreview / rolesCreate / rolesUpdate / rolesDelete / rolesBind / rolesDrain / rolesReplace / rolesReset / skillsCatalog / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`. `verify` is a task field rather than an action: `create` / `update` take it, and the tool exposes it as an object parameter (`null` clears it).
 - **Runtime skill and always-on rules**: activating the row registers the skill `godot-bridge-task-center` with the host skill catalog. Its body is generated from the action registry (governance: what the board is, when to use it, the minimum workflow, the action matrix, write-card rules, refusal codes, the Godot launch rule and the panel layout), so it cannot drift from the API. Four always-on rules ride the system prompt: `start` is only a request that the user approves; review/test verdicts belong to the matching role; task work stays in the task worktree and never commits to the target; never hand-edit `.agents/tasks.json`. The `task_center` tool description is deliberately a short router to that skill. A host without a skill registry or system-prompt service silently skips both and still gets the tool, the routes and the scheduler.
 - **Dependencies**: `B.dependsOn = [A]` means B runs only after A is done **and merged**. Ready tasks are ordered by `priority` descending, then creation time. `A <- B <- C`, `D`, `E <- F` dispatch A, D, E first; A's completion dispatches B, E's completion dispatches F.
 - **Dispatch**: start/pause is a project-level state persisted in the board. The GUI exposes one number, **maximum concurrency**: at most that many tasks run at once; the WorkAgent cap is derived as concurrency + 1, a worker is spawned when none is idle, and a task blocks after 3 consecutive failures (the advanced `settings` action can still override these). Every dispatch claims the task first (a 60-minute lease that any assignee activity renews, plus a fixed host heartbeat), then hands it to Agent Teams — `sendMessage` to an idle member, otherwise `spawnTeammate`.
@@ -82,6 +82,35 @@ Every task runs in its own git worktree — `<project>/.worktrees/<taskId>-<atte
 - **Leaving `running` stops the worker**: when a task is cancelled, blocked, has its start request withdrawn, loses its lease or is blocked by a timeout, the host interrupts the teammate that was working on it through the Agent Teams `interrupt` edge (called as the Lead). `interrupt` takes effect at the **next step boundary** — it stops the worker before it starts another step, so this is "stop as soon as possible", never "cut the tool call in progress". The interrupt is sent only to a member that is still `running` (an idle member and a task without an assignee are skipped), at most once per task/status/member, releases the task's file locks and leaves a readable inbox note ("… is cancelled/blocked; stop and discard uncommitted changes"). The soft half backs it up: while the task stays cancelled or blocked, the worker that held it — recognised through the retained last owner (`lastAssignee`), because `cancel`/`block` clear the live assignee — has its `task_center` calls (`get`, `submit`, verdict actions, …) refused with `task-cancelled` / `task-blocked` and the message "stop working on it now"; other agents and the user can still read or repair the task.
 - **Worktree robustness**: each `git worktree add` has its own 180-second timeout (it does not share the general git/subprocess budget); a timeout or failure rolls back what it may have registered (worktree entry, branch, lock, pruned metadata), retries once, and creation is serialised per repository so two tasks cannot race the same worktree metadata.
 - **Safety**: HTTP writes require `application/json` and a same-origin `Origin`; `?project=` is only a read hint, while switching projects goes through `openProject` (which verifies the directory).
+
+### Investigation cards (`kind: 'investigate'`)
+
+A card is not always a code change. A **dev** card walks the worktree → review → test → merge pipeline above; an **investigation** answers a question and delivers a **report**, with no review, test or merge. Create one with `kind: "investigate"`:
+
+```js
+task_center {
+  action: "create",
+  title: "Why is the loader slow?",
+  kind: "investigate",
+  spec: "Measure the startup loader.",
+  acceptance: "A cause with a measurement.",
+}
+```
+
+Dispatch cuts a **detached scratch** checkout from the target head (no task branch; `writeFiles` is a hint, never a lock), and the host-fixed brief says: investigate only — do not commit, do not submit, do not merge; a second checkout is allowed only at `.worktrees/probe-<id>-*` and every such path belongs in the report artifacts. The card completes with the one action `report`:
+
+```js
+task_center {
+  action: "report",
+  id: "T-42",
+  summary: "The loader blocks on the config read.",
+  body: "# Findings\n\nIt waits for the config file before the first frame.",
+  evidence: [{ command: "node --cpu-prof loader.mjs", exitCode: 0, outputTail: "total 1200ms" }],
+  artifacts: [".worktrees/probe-T-42-a"],
+}
+```
+
+`summary` is the answer (≤4 KB); `body` is the readable write-up (the board keeps ≤64 KB and the full text is written to `.agents/reports/<id>.md`); `evidence` is up to 20 `{ command, exitCode, outputTail }` rows with 4 KB tails; `artifacts` are paths. The report clears the lease, force-removes the scratch and every `probe-<id>-*`, and never creates a merge request — a commit accidentally left in the scratch is recorded as `probeCommits` and discarded. `submit` answers `investigation-report-only`, and the review/test/merge actions answer `not-a-dev-task`. The panel marks the card with an **Investigate** badge and a kind filter, counts it as "Investigating N" in the running column, and its detail renders only the **Run → Deliver** spine plus the report (summary, body, evidence table, artifacts); the queue and workers views never show reviewer/tester slots for it.
 
 ### Known limitations
 

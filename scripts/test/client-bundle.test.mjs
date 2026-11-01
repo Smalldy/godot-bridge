@@ -4565,5 +4565,200 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   await flush()
 }
 
+
+// ── T-132: investigation cards in the board and the detail ──────────────────
+{
+  const nowIso = new Date(now).toISOString()
+  const INV = {
+    id: 'T-9',
+    title: 'Why is the loader slow?',
+    status: 'running',
+    kind: 'investigate',
+    spec: 'Measure the startup loader.',
+    acceptance: 'A cause with a measurement.',
+    priority: 0,
+    dependsOn: [],
+    writeFiles: ['plugin/loader.mjs'],
+    writeFileCount: 1,
+    verify: null,
+    base: 'base-sha',
+    target: null,
+    branch: null,
+    worktree: PROJECT + '\\.worktrees\\T-9-1',
+    commit: null,
+    actualFiles: [],
+    requiredRole: null,
+    merge: null,
+    review: null,
+    test: null,
+    assignee: { name: 'fixer', session: 'session-fixer' },
+    lastAssignee: null,
+    attempts: 1,
+    maxAttempts: 3,
+    interruptions: 0,
+    executors: [],
+    liveExecutors: 1,
+    leaseUntil: new Date(now + 600000).toISOString(),
+    dispatch: { status: 'sent', host: 'boot', error: null, leadSession: 'session-lead' },
+    ownerSession: 'session-lead',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    history: [{ at: nowIso, by: 'scheduler', byName: null, from: 'pending', to: 'running', note: 'dispatched' }],
+    dependency: { state: 'ready', waitingOn: [], brokenOn: [] },
+    queuePosition: 0,
+  }
+  const REPORT = {
+    summary: 'The loader blocks on the config read.',
+    body: '# Findings\n\nIt waits for the config file before the first frame.',
+    evidence: [{ command: 'node --cpu-prof loader.mjs', exitCode: 1, outputTail: 'total 1200ms' }],
+    artifacts: ['.worktrees/probe-T-9-a'],
+    probeCommits: ['abc123def'],
+    createdAt: nowIso,
+    by: '@fixer',
+    byName: 'fixer',
+  }
+  const INV_DONE = Object.assign({}, INV, {
+    id: 'T-10',
+    title: 'Answered without a report',
+    status: 'done',
+    report: null,
+    leaseUntil: null,
+    assignee: null,
+    dispatch: null,
+    updatedAt: nowIso,
+  })
+
+  const savedTasks = HOST.tasks
+  const savedCounts = HOST.counts
+  const savedFetch = globalThis.fetch
+  const investigationCards = function (root) {
+    return findAll(root, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card')
+  }
+  function renderedBoard() {
+    let out = withHooks(panel, { initialView: 'board' })
+    return out
+  }
+
+  HOST.tasks = savedTasks.concat([INV, INV_DONE])
+  HOST.counts = Object.assign({}, savedCounts, { total: savedCounts.total + 2, running: savedCounts.running + 1, done: savedCounts.done + 1, investigating: 1 })
+  globalThis.fetch = async function (url, options) {
+    if (String(url).indexOf('/task?') >= 0) {
+      const match = /[?&]id=([^&]+)/.exec(String(url))
+      const id = match === null ? '' : decodeURIComponent(match[1])
+      if (id === 'T-9') return { json: async () => ({ ok: true, task: Object.assign({}, INV, { report: REPORT }) }) }
+      if (id === 'T-10') return { json: async () => ({ ok: true, task: INV_DONE }) }
+    }
+    return savedFetch(url, options)
+  }
+  let boardTree = renderedBoard()
+  await flush()
+  boardTree = renderedBoard()
+  const invCard = investigationCards(boardTree).filter((card) => textOf(card).indexOf(INV.title) >= 0)[0]
+  check('T-132 an investigation card carries a kind badge', invCard !== undefined && invCard.props['data-kind'] === 'investigate' && textOf(invCard).indexOf('调查') >= 0, invCard && textOf(invCard).slice(0, 160))
+  const runningCol = findAll(boardTree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'running')[0]
+  const runningNote = runningCol === undefined ? undefined : findAll(runningCol, (node) => node.props && node.props['data-col-note'] === 'investigating')[0]
+  check('T-132 the running column counts the investigations', runningNote !== undefined && textOf(runningNote).indexOf('调查中 1') >= 0, runningNote && textOf(runningNote))
+  const filterButtons = findAll(boardTree, (node) => node.type === 'button' && node.props && node.props['data-kind-filter'] !== undefined)
+  check('T-132 the board offers a kind filter', filterButtons.map((node) => node.props['data-kind-filter']).join(',') === 'all,dev,investigate', filterButtons.map((node) => node.props['data-kind-filter']).join(','))
+  const investFilter = filterButtons.filter((node) => node.props['data-kind-filter'] === 'investigate')[0]
+  investFilter.props.onClick()
+  await flush()
+  boardTree = renderedBoard()
+  const filteredCards = investigationCards(boardTree)
+  check(
+    'T-132 the investigation filter narrows the board to investigation cards',
+    filteredCards.length === 2 && filteredCards.every((card) => card.props['data-kind'] === 'investigate'),
+    JSON.stringify(filteredCards.map((card) => textOf(card).slice(0, 40))),
+  )
+  const filteredDoneCol = findAll(boardTree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done')[0]
+  const filteredDoneCount = filteredDoneCol === undefined ? undefined : findAll(filteredDoneCol, (node) => node.props && node.props.className === 'gbt-colcount')[0]
+  check('T-132 the done column count follows the kind filter', filteredDoneCount !== undefined && textOf(filteredDoneCount) === '1', filteredDoneCount && textOf(filteredDoneCount))
+  const filteredDoneFoot = filteredDoneCol === undefined ? undefined : findAll(filteredDoneCol, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'done-all')[0]
+  check('T-132 the done footer labels the filtered count', filteredDoneFoot !== undefined && textOf(filteredDoneFoot).indexOf('查看全部 · 1') >= 0, filteredDoneFoot && textOf(filteredDoneFoot))
+  // The Dev filter hides every investigation: the running note and the done count
+  // must follow it instead of advertising cards the column does not show.
+  const devFilterButton = findAll(boardTree, (node) => node.type === 'button' && node.props && node.props['data-kind-filter'] === 'dev')[0]
+  devFilterButton.props.onClick()
+  await flush()
+  boardTree = renderedBoard()
+  const devRunningCol = findAll(boardTree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'running')[0]
+  const devRunningNote = devRunningCol === undefined ? undefined : findAll(devRunningCol, (node) => node.props && node.props['data-col-note'] === 'investigating')[0]
+  check('T-132 the dev filter does not advertise hidden investigations', devRunningNote === undefined, devRunningNote && textOf(devRunningNote))
+  const devDoneCol = findAll(boardTree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done')[0]
+  const devDoneCount = devDoneCol === undefined ? undefined : findAll(devDoneCol, (node) => node.props && node.props.className === 'gbt-colcount')[0]
+  check('T-132 the dev filter counts only dev done cards', devDoneCount !== undefined && textOf(devDoneCount) === '1', devDoneCount && textOf(devDoneCount))
+  const allFilter = findAll(boardTree, (node) => node.type === 'button' && node.props && node.props['data-kind-filter'] === 'all')[0]
+  allFilter.props.onClick()
+  await flush()
+  boardTree = renderedBoard()
+  check('T-132 the all filter restores every card', investigationCards(boardTree).length === savedTasks.length + 2, String(investigationCards(boardTree).length))
+
+  const statusTree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  const statusRender = withHooks(panel, { initialView: 'status' })
+  const invStatus = findAll(statusRender, (node) => node.props && node.props['data-kv'] === 'investigating')[0]
+  check('T-132 the status page shows the investigating count', invStatus !== undefined && textOf(invStatus).indexOf('调查中') >= 0, invStatus && textOf(invStatus))
+
+  // Detail: only the Run -> Deliver spine, the report, and no submit box.
+  let detailBoard = renderedBoard()
+  await flush()
+  const openCard = investigationCards(detailBoard).filter((card) => textOf(card).indexOf(INV.title) >= 0)[0]
+  openCard.props.onClick()
+  await flush()
+  await flush()
+  const detailTree = withHooks(panel, { initialView: 'board' })
+  const drawer = findAll(detailTree, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
+  const stagesNode = drawer === undefined ? undefined : findAll(drawer, (node) => node.props && node.props['data-detail-kind'] === 'investigate')[0]
+  const stageKeys = stagesNode === undefined ? [] : findAll(stagesNode, (node) => node.props && node.props['data-stage'] !== undefined).map((node) => node.props['data-stage'])
+  check('T-132 the investigation detail spine is Run -> Deliver only', stageKeys.join(',') === 'run,deliver', JSON.stringify(stageKeys))
+  check('T-132 no review/test/merge stage is rendered', stageKeys.indexOf('reviewing') < 0 && stageKeys.indexOf('testing') < 0 && stageKeys.indexOf('done') < 0, JSON.stringify(stageKeys))
+  const reportCard = findAll(drawer, (node) => node.props && node.props['data-detail-report-card'] === 'delivered')[0]
+  check('T-132 the delivered report is rendered', reportCard !== undefined, reportCard === undefined)
+  const reportSummary = findAll(drawer, (node) => node.props && node.props['data-detail-report'] === 'summary')[0]
+  check('T-132 the report summary is shown', reportSummary !== undefined && textOf(reportSummary).indexOf(REPORT.summary) >= 0, reportSummary && textOf(reportSummary))
+  const reportBody = findAll(drawer, (node) => node.props && node.props['data-detail-report'] === 'body')[0]
+  check('T-132 the report body is shown', reportBody !== undefined && textOf(reportBody).indexOf('It waits for the config file') >= 0, reportBody && textOf(reportBody).slice(0, 120))
+  const evidenceRows = findAll(drawer, (node) => node.props && node.props['data-evidence-row'] !== undefined)
+  check(
+    'T-132 the evidence table shows command, exit code and output tail',
+    evidenceRows.length === 1 && textOf(evidenceRows[0]).indexOf('--cpu-prof') >= 0 && textOf(evidenceRows[0]).indexOf('total 1200ms') >= 0,
+    JSON.stringify(evidenceRows.map((row) => textOf(row))),
+  )
+  const evidenceExit = findAll(drawer, (node) => node.props && node.props['data-evidence-exit'] === 'true')[0]
+  check('T-132 the evidence row carries its exit code', evidenceExit !== undefined && textOf(evidenceExit) === '1', evidenceExit && textOf(evidenceExit))
+  const artifacts = findAll(drawer, (node) => node.props && node.props['data-detail-report'] === 'artifacts')[0]
+  check('T-132 the report artifacts are listed', artifacts !== undefined && textOf(artifacts).indexOf('.worktrees/probe-T-9-a') >= 0, artifacts && textOf(artifacts))
+  const probeWarning = findAll(drawer, (node) => node.props && node.props['data-detail-report'] === 'probe-commits')[0]
+  check('T-132 a scratch commit is reported as a warning', probeWarning !== undefined && textOf(probeWarning).indexOf('abc123def') >= 0, probeWarning && textOf(probeWarning))
+  check('T-132 a delivered investigation shows a report event', findAll(drawer, (node) => node.props && node.props['data-detail-event'] === 'report').length === 1)
+  const submitButton = findAll(drawer, (node) => node.type === 'button' && String(textOf(node)).trim() === '提交')[0]
+  check('T-132 a running investigation has no submit box', submitButton === undefined, submitButton && textOf(submitButton))
+  check('T-132 the investigation detail shows no target/merge progress line', findAll(drawer, (node) => node.props && node.props['data-detail-target'] !== undefined).length === 0)
+  const devCard = investigationCards(renderedBoard()).filter((card) => textOf(card).indexOf('Tail output feature') >= 0)[0]
+  devCard.props.onClick()
+  await flush()
+  await flush()
+  const devDetail = withHooks(panel, { initialView: 'board' })
+  const devDrawer = findAll(devDetail, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
+  const devStageKeys = devDrawer === undefined ? [] : findAll(devDrawer, (node) => node.props && node.props['data-stage'] !== undefined).map((node) => node.props['data-stage'])
+  check('T-132 the dev card keeps its five-stage spine', devStageKeys.length === 5, JSON.stringify(devStageKeys))
+
+  // Missing report: a done investigation without one says so.
+  const missingCard = investigationCards(renderedBoard()).filter((card) => textOf(card).indexOf(INV_DONE.title) >= 0)[0]
+  missingCard.props.onClick()
+  await flush()
+  await flush()
+  const missingDetail = withHooks(panel, { initialView: 'board' })
+  const missingDrawer = findAll(missingDetail, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
+  const missingCardNode = findAll(missingDrawer, (node) => node.props && node.props['data-detail-report-card'] === 'missing')[0]
+  check('T-132 an investigation without a report says it is missing', missingCardNode !== undefined && textOf(missingCardNode).indexOf('报告未交付') >= 0, missingCardNode && textOf(missingCardNode).slice(0, 160))
+
+  HOST.tasks = savedTasks
+  HOST.counts = savedCounts
+  globalThis.fetch = savedFetch
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

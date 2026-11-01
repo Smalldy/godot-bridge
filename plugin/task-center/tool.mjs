@@ -48,8 +48,10 @@ const DESCRIPTION =
   'Start with action onboard: one call resolves and binds the project, bootstraps a missing team and returns a short brief plus one next step. ' +
   'Read the skill "' + SKILL_NAME + '" first (skill tool): it carries the workflow, the action matrix, the write-card rules and the refusal codes. ' +
   'Actions: ' + AGENT_ACTIONS.join(', ') + '. ' +
-  // T-131: the second lifecycle, named where the model routes.
-  'A card with kind investigate delivers a report instead of code: finish it with action report (submit/review/test/merge refuse it). ' +
+  // T-131/T-132: the second lifecycle, named where the model routes; the skill
+  // carries the full investigation chapter (when to use it, the report action,
+  // the scratch/probe rules and the panel rendering).
+  'A card with kind investigate delivers a report instead of code (the skill has the full investigation chapter): finish it with action report; submit/review/test/merge refuse it. ' +
   'start only records a dispatch request until the user approves it in the task center panel (needs-consent is not a failure). ' +
   'Dependencies: B.dependsOn=[A] means A must be done and merged before B runs.'
 
