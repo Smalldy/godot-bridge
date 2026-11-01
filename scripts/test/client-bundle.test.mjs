@@ -4670,6 +4670,23 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     filteredCards.length === 2 && filteredCards.every((card) => card.props['data-kind'] === 'investigate'),
     JSON.stringify(filteredCards.map((card) => textOf(card).slice(0, 40))),
   )
+  const filteredDoneCol = findAll(boardTree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done')[0]
+  const filteredDoneCount = filteredDoneCol === undefined ? undefined : findAll(filteredDoneCol, (node) => node.props && node.props.className === 'gbt-colcount')[0]
+  check('T-132 the done column count follows the kind filter', filteredDoneCount !== undefined && textOf(filteredDoneCount) === '1', filteredDoneCount && textOf(filteredDoneCount))
+  const filteredDoneFoot = filteredDoneCol === undefined ? undefined : findAll(filteredDoneCol, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'done-all')[0]
+  check('T-132 the done footer labels the filtered count', filteredDoneFoot !== undefined && textOf(filteredDoneFoot).indexOf('查看全部 · 1') >= 0, filteredDoneFoot && textOf(filteredDoneFoot))
+  // The Dev filter hides every investigation: the running note and the done count
+  // must follow it instead of advertising cards the column does not show.
+  const devFilterButton = findAll(boardTree, (node) => node.type === 'button' && node.props && node.props['data-kind-filter'] === 'dev')[0]
+  devFilterButton.props.onClick()
+  await flush()
+  boardTree = renderedBoard()
+  const devRunningCol = findAll(boardTree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'running')[0]
+  const devRunningNote = devRunningCol === undefined ? undefined : findAll(devRunningCol, (node) => node.props && node.props['data-col-note'] === 'investigating')[0]
+  check('T-132 the dev filter does not advertise hidden investigations', devRunningNote === undefined, devRunningNote && textOf(devRunningNote))
+  const devDoneCol = findAll(boardTree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done')[0]
+  const devDoneCount = devDoneCol === undefined ? undefined : findAll(devDoneCol, (node) => node.props && node.props.className === 'gbt-colcount')[0]
+  check('T-132 the dev filter counts only dev done cards', devDoneCount !== undefined && textOf(devDoneCount) === '1', devDoneCount && textOf(devDoneCount))
   const allFilter = findAll(boardTree, (node) => node.type === 'button' && node.props && node.props['data-kind-filter'] === 'all')[0]
   allFilter.props.onClick()
   await flush()

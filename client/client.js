@@ -243,7 +243,6 @@ window.__ModuleLoader__.load({
 				reportProbeCommits: '警告：scratch 里有提交（已丢弃）',
 				reportFullHint: '完整报告：.agents/reports/{id}.md',
 				reportInvestigateHint: '调查卡由执行者用 report 交付；不会进入评审/测试/合并。',
-				detailKind: '卡片类型',
 			statusBoardSize: '板子 {mb} MB / {limit} MB 上限（{percent}%）· 按当前体积约还能建 {n} 张卡',
 				archiveEmpty: '没有匹配的已归档任务',
 				viewAllDone: '查看全部',
@@ -796,7 +795,6 @@ window.__ModuleLoader__.load({
 				reportProbeCommits: 'Warning: commits in the scratch checkout (discarded)',
 				reportFullHint: 'Full report: .agents/reports/{id}.md',
 				reportInvestigateHint: 'An investigation is delivered with report by its executor; it never enters review/test/merge.',
-				detailKind: 'Card kind',
 			statusBoardSize: 'board {mb} MB of its {limit} MB limit ({percent}%) · about {n} more cards at this size',
 				archiveEmpty: 'No archived task matches',
 				viewAllDone: 'View all',
@@ -2704,16 +2702,15 @@ window.__ModuleLoader__.load({
 					const delta = (rightAt === null ? 0 : rightAt) - (leftAt === null ? 0 : leftAt)
 					return delta !== 0 ? delta : String(right.id).localeCompare(String(left.id))
 				}
-				const ready = tasks.filter(function (task) { return task.status === 'pending' && task.dependency !== undefined && task.dependency.state === 'ready' })
-				const waiting = tasks.filter(function (task) { return task.status === 'pending' && (task.dependency === undefined || task.dependency.state !== 'ready') })
-				const doneTasks = tasks.filter(function (task) { return task.status === 'done' }).slice().sort(recentFirst)
-				// T-132: the kind filter narrows the whole board; the running column also
-				// counts the investigations it contains (调查中 N).
+				// T-132: the kind filter narrows the whole board. The running note counts
+				// the investigations the FILTERED board contains (under the Dev filter it
+				// must not advertise investigations the filter hides), and the done column
+				// count/footer follow the filter instead of the global host total.
 				const kindFilter = boardUiState.kind === 'dev' || boardUiState.kind === 'investigate' ? boardUiState.kind : 'all'
 				const filtered = kindFilter === 'all' ? tasks : tasks.filter(function (task) { return tcKindOf(task) === kindFilter })
-				const investigatingRunning = tasks.filter(function (task) { return tcKindOf(task) === 'investigate' && task.status === 'running' }).length
-				const doneCount = Number.isFinite(counts.done) && kindFilter === 'all' ? counts.done : doneTasks.length
+				const investigatingRunning = filtered.filter(function (task) { return tcKindOf(task) === 'investigate' && task.status === 'running' }).length
 				const visibleDone = filtered.filter(function (task) { return task.status === 'done' }).slice().sort(recentFirst)
+				const doneCount = kindFilter === 'all' && Number.isFinite(counts.done) ? counts.done : visibleDone.length
 				const groups = [
 					{ key: 'ready', label: t('ready'), tasks: filtered.filter(function (task) { return task.status === 'pending' && task.dependency !== undefined && task.dependency.state === 'ready' }) },
 					{ key: 'waiting', label: t('waiting'), tasks: filtered.filter(function (task) { return task.status === 'pending' && (task.dependency === undefined || task.dependency.state !== 'ready') }) },
