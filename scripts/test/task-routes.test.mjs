@@ -7282,5 +7282,74 @@ rig.scheduler.dispose()
   scheduler.dispose()
 }
 
+
+// ── T-132: GET /task and /list carry the investigation kind and its report ──
+{
+  const now = new Date().toISOString()
+  const report = {
+    summary: 'The loader blocks on the config read.',
+    body: '# Findings\n\nIt waits for the config file.',
+    evidence: [{ command: 'node --cpu-prof loader.mjs', exitCode: 1, outputTail: 'total 1200ms' }],
+    artifacts: ['.worktrees/probe-T-1-a'],
+    probeCommits: [],
+    createdAt: now,
+    by: '@fixer',
+    byName: 'fixer',
+  }
+  const investigation = {
+    id: 'T-1',
+    title: 'Why is the loader slow?',
+    status: 'done',
+    kind: 'investigate',
+    spec: 'Measure the loader.',
+    acceptance: 'A cause with a measurement.',
+    priority: 0,
+    dependsOn: [],
+    writeFiles: [],
+    verify: null,
+    base: 'base-sha',
+    target: null,
+    branch: null,
+    worktree: null,
+    commit: null,
+    actualFiles: [],
+    requiredRole: null,
+    merge: null,
+    review: null,
+    test: null,
+    assignee: null,
+    attempts: 1,
+    maxAttempts: 3,
+    report: report,
+    history: [{ at: now, by: 'worker', from: 'running', to: 'done', note: 'investigation report' }],
+  }
+  const dev = Object.assign({}, investigation, { id: 'T-2', title: 'A dev card', kind: 'dev', report: null, status: 'pending' })
+  const rig = createRig({ allowSpawn: false })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [investigation, dev] }))
+  const surface = install(rig)
+  const detailRes = await call(surface, TASK_PATH + '?id=T-1&project=' + encodeURIComponent(PROJECT), {})
+  const detail = detailRes.json()
+  check(
+    'T-132 GET /task returns kind investigate and the full report',
+    detail.ok === true && detail.task.kind === 'investigate' && detail.task.report !== null && detail.task.report.summary === report.summary && detail.task.report.body.indexOf('config file') >= 0 && detail.task.report.evidence.length === 1,
+    detailRes.text.slice(0, 240),
+  )
+  const devDetail = (await call(surface, TASK_PATH + '?id=T-2&project=' + encodeURIComponent(PROJECT), {})).json()
+  check('T-132 GET /task keeps a dev card reportless', devDetail.ok === true && devDetail.task.kind === 'dev' && devDetail.task.report === null)
+  const state = (await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})).json()
+  const row = state.tasks.filter((task) => task.id === 'T-1')[0]
+  check(
+    'T-132 /state carries kind and a bounded reportSummary',
+    state.ok === true && row !== undefined && row.kind === 'investigate' && row.reportSummary !== null && row.reportSummary.summary === report.summary && row.task === undefined && row.report === undefined,
+    JSON.stringify(row === undefined ? null : row.reportSummary),
+  )
+  check('T-132 the /state summary never ships the report body', row !== undefined && row.reportSummary.body === undefined && JSON.stringify(row.reportSummary).indexOf('config file') < 0, JSON.stringify(row && row.reportSummary))
+  const list = (await call(surface, LIST_PATH + '?project=' + encodeURIComponent(PROJECT) + '&limit=10', {})).json()
+  const listRow = list.tasks.filter((task) => task.id === 'T-1')[0]
+  check('T-132 /list carries kind and the report headline', list.ok === true && listRow !== undefined && listRow.kind === 'investigate' && listRow.reportSummary !== null && listRow.reportSummary.summary === report.summary, JSON.stringify(listRow))
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

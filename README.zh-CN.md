@@ -57,7 +57,7 @@ task_center { action: "onboard" }
 6. **异常**：冲突或 target 移动会标记该申请并通知 owner，target 分支保持不变。`mergeRequest` / `rejectMerge` / `refreshMerge` 仍保留给用户或 `merger` 队友，用于手动整合、审计或修复。
 
 - **任务板**：`<项目>/.agents/tasks.json`。schema v2；读到 v1 会自动迁移（旧状态映射到当前词表、`blockedBy` 变成 `dependsOn`、旧 claim 被释放）。重复 id、非法条目、未来版本会被拒绝而不是覆盖。建议把该文件加入项目 `.gitignore`（它是运行态，不是源码）。
-- **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / approveReview / requestChanges / passTest / failTest / mergeRequest / refreshMerge / rejectMerge / cancel / reopen / block / unblock / retry / locks / openProject / rolesList / rolesPreview / rolesCreate / rolesUpdate / rolesDelete / rolesBind / rolesDrain / rolesReplace / rolesReset / skillsCatalog / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`。`verify` 不是动作而是任务字段：`create` / `update` 可带，工具侧暴露为对象参数（`null` 清除）。
+- **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / report / approveReview / requestChanges / passTest / failTest / mergeRequest / refreshMerge / rejectMerge / cancel / reopen / block / unblock / retry / locks / openProject / rolesList / rolesPreview / rolesCreate / rolesUpdate / rolesDelete / rolesBind / rolesDrain / rolesReplace / rolesReset / skillsCatalog / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`。`verify` 不是动作而是任务字段：`create` / `update` 可带，工具侧暴露为对象参数（`null` 清除）。
 - **运行时技能与常驻规则**：激活该行会向宿主技能目录注册 `godot-bridge-task-center`。正文由动作注册表生成（定位、何时用、最小工作流、动作矩阵、写卡规范、拒绝码、Godot 启动规则与面板结构），因此不会与 API 漂移。另有四条常驻硬规则随系统提示注入：`start` 只是需要用户批准的申请；评审/测试结论只属于对应角色；任务工作只在任务 worktree 里、绝不提交到 target；不要手改 `.agents/tasks.json`。`task_center` 工具描述刻意收敛为指向该技能的短路由。宿主没有技能注册表或系统提示服务时两者都静默跳过，工具、路由与调度照常可用。
 - **依赖**：`B.dependsOn = [A]` 表示 A 完成**且已合并**后才派发 B。就绪任务按 `priority` 降序、创建时间升序取。`A <- B <- C`、`D`、`E <- F` 会先派发 A、D、E；A 完成后派发 B，E 完成后派发 F。
 - **派发**：开始/暂停是项目级状态（持久化在板子里）。GUI 只暴露**最大并发**：最多同时跑这么多个任务；执行者上限自动设为并发 + 1，没有空闲执行者时会自动新建，连续失败 3 次后任务阻塞（高级调用仍可用 `settings` 覆盖）。每次派发先 claim（60 分钟租约；assignee 任何活动都会续租，另有固定节奏的宿主心跳）再交给 Agent Teams：优先 `sendMessage` 给空闲成员，否则 `spawnTeammate`。
@@ -80,6 +80,35 @@ task_center { action: "onboard" }
 - **离开 running 就停掉执行者**：任务被取消、阻塞、撤回开始申请、租约丢失或被超时策略阻塞时，宿主会通过 Agent Teams 的 `interrupt` 边（以 Lead 身份调用）中断正在处理它的队友。`interrupt` 在**下一个 step 边界**生效——它让执行者在开始下一步之前停下，所以是「尽快停」，不是「掐断正在执行的工具调用」。只对仍处于 `running` 的成员发送（空闲成员、没有 assignee 的任务跳过），同一任务/状态/成员最多一次；中断后释放该任务的文件锁，并给执行者留一条可读的 inbox 消息（「… 已取消/被阻塞，请停止并丢弃未提交改动」）。软的一半在后面兜底：只要任务还是 cancelled/blocked，持有过它的执行者——通过保留下来的 last owner（`lastAssignee`，因为 cancel/block 会清空 live assignee）识别——自己的 `task_center` 调用（`get`、`submit`、裁决类动作等）都会以 `task-cancelled` / `task-blocked` 被拒绝并提示「立即停止当前工作」；其他 agent 和用户仍可读取或修复该任务。
 - **worktree 健壮性**：每次 `git worktree add` 使用独立的 180 秒超时（不与通用的 git 与子进程预算共用）；超时或失败会回滚它可能登记的一切（worktree 条目、分支、锁、已 prune 的元数据），失败后重试一次，且同一仓库内的创建串行执行，两个任务不会争抢同一份 worktree 元数据。
 - **安全**：HTTP 写动作要求 `application/json` 且校验同源 `Origin`；`?project=` 只是读提示，切换项目走 `openProject`（校验目录存在）。
+
+### 调查卡（`kind: 'investigate'`）
+
+卡不一定都是改代码。**开发卡**走上面的 worktree → 评审 → 测试 → 合并流水线；**调查卡**回答一个问题，交付一份**报告**，没有评审、测试、合并。`create` 时带 `kind: "investigate"`：
+
+```js
+task_center {
+  action: "create",
+  title: "加载器为什么慢？",
+  kind: "investigate",
+  spec: "测量启动加载器的耗时。",
+  acceptance: "给出原因和一组测量。",
+}
+```
+
+派发时从 target head 切一个 **detached scratch** checkout（没有任务分支；`writeFiles` 只是提示，不会加锁），宿主固定 brief 里写明：只调查，不要 commit、不要 submit、不要 merge；需要第二份 checkout 时只允许 `.worktrees/probe-<id>-*`，并且每个路径都要写进报告 artifacts。卡用唯一完成动作 `report` 收尾：
+
+```js
+task_center {
+  action: "report",
+  id: "T-42",
+  summary: "加载器卡在读配置文件。",
+  body: "# 发现\n\n第一帧之前要等配置文件读完。",
+  evidence: [{ command: "node --cpu-prof loader.mjs", exitCode: 0, outputTail: "总计 1200ms" }],
+  artifacts: [".worktrees/probe-T-42-a"],
+}
+```
+
+`summary` 是结论（≤4 KB）；`body` 是给人看的完整报告（板内 ≤64 KB，全文写到 `.agents/reports/<id>.md`）；`evidence` 最多 20 条 `{ command, exitCode, outputTail }`（每条尾部 ≤4 KB）；`artifacts` 只存路径。report 会清租约、强制删除 scratch 与全部 `probe-<id>-*`，并且绝不创建 merge request——scratch 里误留的提交会记成 `probeCommits` 后丢弃。`submit` 返回 `investigation-report-only`，评审/测试/合并动作返回 `not-a-dev-task`。面板会给这种卡加**调查**标记和类型筛选，进行中列显示「调查中 N」；详情只有 **执行 → 交付** 阶段脊并展示报告（summary、body、证据表、artifacts），队列与执行者页不会为它出现 reviewer/tester 槽位。
 
 ### 已知限制
 

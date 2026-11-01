@@ -218,6 +218,32 @@ window.__ModuleLoader__.load({
 				archiveLine: '已归档 {n} 张·{range}',
 				archiveTitle: '已归档任务',
 				archiveOpen: '查看归档',
+				// T-132: investigation cards (kind: investigate) on the board/detail.
+				kindLabel: '类型',
+				kindDev: '开发',
+				kindInvestigate: '调查',
+				kindFilterAll: '全部',
+				kindFilterHint: '按类型过滤看板',
+				kindInvestigateHint: '调查卡：交付报告，不评审/测试/合并',
+				investigatingCount: '调查中 {n}',
+				investigatePending: '待调查',
+				statusInvestigating: '调查中',
+				stageRun: '执行',
+				stageDeliver: '交付',
+				reportTitle: '调查报告',
+				reportDelivered: '已交付',
+				reportMissing: '报告未交付',
+				reportSummary: '摘要',
+				reportBody: '正文',
+				reportEvidence: '证据',
+				reportArtifacts: '产物',
+				reportCommand: '命令',
+				reportExit: '退出码',
+				reportTail: '输出尾部',
+				reportProbeCommits: '警告：scratch 里有提交（已丢弃）',
+				reportFullHint: '完整报告：.agents/reports/{id}.md',
+				reportInvestigateHint: '调查卡由执行者用 report 交付；不会进入评审/测试/合并。',
+				detailKind: '卡片类型',
 			statusBoardSize: '板子 {mb} MB / {limit} MB 上限（{percent}%）· 按当前体积约还能建 {n} 张卡',
 				archiveEmpty: '没有匹配的已归档任务',
 				viewAllDone: '查看全部',
@@ -745,6 +771,32 @@ window.__ModuleLoader__.load({
 				archiveLine: '{n} archived · {range}',
 				archiveTitle: 'Archived tasks',
 				archiveOpen: 'View archived',
+				// T-132: investigation cards (kind: investigate) on the board/detail.
+				kindLabel: 'Kind',
+				kindDev: 'Dev',
+				kindInvestigate: 'Investigate',
+				kindFilterAll: 'All',
+				kindFilterHint: 'Filter the board by card kind',
+				kindInvestigateHint: 'Investigation card: delivers a report; no review/test/merge',
+				investigatingCount: 'Investigating {n}',
+				investigatePending: 'Pending investigation',
+				statusInvestigating: 'Investigating',
+				stageRun: 'Run',
+				stageDeliver: 'Deliver',
+				reportTitle: 'Investigation report',
+				reportDelivered: 'Delivered',
+				reportMissing: 'Report not delivered',
+				reportSummary: 'Summary',
+				reportBody: 'Body',
+				reportEvidence: 'Evidence',
+				reportArtifacts: 'Artifacts',
+				reportCommand: 'Command',
+				reportExit: 'Exit',
+				reportTail: 'Output tail',
+				reportProbeCommits: 'Warning: commits in the scratch checkout (discarded)',
+				reportFullHint: 'Full report: .agents/reports/{id}.md',
+				reportInvestigateHint: 'An investigation is delivered with report by its executor; it never enters review/test/merge.',
+				detailKind: 'Card kind',
 			statusBoardSize: 'board {mb} MB of its {limit} MB limit ({percent}%) · about {n} more cards at this size',
 				archiveEmpty: 'No archived task matches',
 				viewAllDone: 'View all',
@@ -1281,6 +1333,20 @@ window.__ModuleLoader__.load({
 			'.gbt-chip[data-tone="done"]{background:rgba(47,179,68,.13);color:#2f9e44}',
 			'.gbt-chip[data-tone="blocked"]{background:rgba(229,72,77,.13);color:#d33}',
 			'.gbt-chip[data-tone="cancelled"]{background:var(--dsw-alias-bg-layer-4);color:var(--dsw-alias-label-tertiary)}',
+			// T-132: investigation cards (kind: investigate) — filter bar, badge, report.
+			'.gbt-kindfilter{display:inline-flex;gap:6px;align-items:center;margin:0 0 10px;padding:3px;border-radius:999px;background:var(--dsw-alias-bg-layout,#f4f5f7)}',
+			'.gbt-kindfilterbtn{font-size:12px;line-height:1.6;padding:2px 10px;border-radius:999px;border:none;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}',
+			'.gbt-kindfilterbtn[data-active="true"]{background:var(--dsw-alias-bg-overlay,#fff);color:var(--dsw-alias-label-primary);box-shadow:0 1px 2px rgba(0,0,0,.12)}',
+			'.gbt-chip[data-kind="investigate"],.gbt-pill[data-kind="investigate"]{background:rgba(20,140,120,.14);color:#0d6b5c}',
+			'.gbt-colnote{margin-left:6px;font-size:11px;color:#0d6b5c;opacity:.9}',
+			'.gbt-reportcard{border:1px solid rgba(20,140,120,.25)}',
+			'.gbt-reportbody{max-height:320px;overflow:auto;white-space:pre-wrap}',
+			'.gbt-reporttable{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}',
+			'.gbt-reporttable th,.gbt-reporttable td{border-bottom:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.08));padding:4px 6px;text-align:left;vertical-align:top}',
+			'.gbt-reporttable th{font-weight:600;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-reporttail{margin:0;max-height:120px;overflow:auto;white-space:pre-wrap;font-size:11px}',
+			'.gbt-reportartifacts{margin:4px 0 0;padding-left:18px;font-size:12px}',
+
 			'.gbt-empty{padding:26px 12px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:12px;border:0.5px dashed var(--dsw-alias-border-l4);border-radius:10px;margin:6px}',
 			'.gbt-rowlist{display:flex;flex-direction:column;gap:6px}',
 			'.gbt-row{display:grid;grid-template-columns:34px 64px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:9px;background:var(--dsw-alias-bg-layer-3);cursor:pointer}',
@@ -1615,7 +1681,29 @@ window.__ModuleLoader__.load({
 			return typeof status === 'string' && PHASE_LABELS[status] !== undefined ? status : 'waiting'
 		}
 
+		/**
+		 * T-132: a card is either mergeable work ('dev', the historical default) or an
+		 * investigation that delivers a report. A stored/legacy card without the field
+		 * reads as dev, exactly like the server-side normalisation.
+		 */
+		function tcKindOf(task) {
+			return task !== null && task !== undefined && task.kind === 'investigate' ? 'investigate' : 'dev'
+		}
+
+		function tcIsInvestigation(task) {
+			return tcKindOf(task) === 'investigate'
+		}
+
+		/** The phase word an investigation shows: 待调查 / 调查中 / 报告已交付. */
+		function tcInvestigationPhaseLabel(task, t) {
+			if (task.status === 'pending') return t('investigatePending')
+			if (task.status === 'running') return t('statusInvestigating')
+			if (task.status === 'done') return t('reportDelivered')
+			return t(tcStatusKey(task.status))
+		}
+
 		function tcPhaseLabel(task, t) {
+			if (tcIsInvestigation(task)) return tcInvestigationPhaseLabel(task, t)
 			const phase = tcPhaseOf(task)
 			if (phase === 'ready') return t('ready')
 			if (phase === 'waiting') return t('waiting')
@@ -1887,6 +1975,9 @@ window.__ModuleLoader__.load({
 
 		const TC_COLUMNS_KEY = 'godotBridge.taskCenter.columns'
 		const DONE_COLUMN_PREVIEW = 5
+		/** T-132: the board's kind filter ('all' | 'dev' | 'investigate'). Module state
+		 * so switching tabs keeps it; the panel rerenders through onKindFilterChange. */
+		const boardUiState = { kind: 'all' }
 
 		/** Column collapse state, remembered across reloads (done starts collapsed). */
 		function tcReadColumnState() {
@@ -2345,6 +2436,8 @@ window.__ModuleLoader__.load({
 				const task = props.task
 				const t = props.t
 				const now = props.now
+				// T-132: investigations are a distinct card kind on the board.
+				const investigate = tcIsInvestigation(task)
 				const lease = task.status === 'running' ? tcLease(task.leaseUntil, now, t, task) : null
 				const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
 				const files = Array.isArray(task.writeFiles) ? task.writeFiles : null
@@ -2375,6 +2468,9 @@ window.__ModuleLoader__.load({
 				}
 				const children = []
 				const top = [h('span', { key: 'id', className: 'gbt-id' }, task.id)]
+				if (investigate) {
+					top.push(h('span', { key: 'kind', className: 'gbt-chip', 'data-tone': 'investigating', 'data-kind': 'investigate', title: t('kindInvestigateHint') }, '🔍 ' + t('kindInvestigate')))
+				}
 				if (task.priority !== 0) top.push(h('span', { key: 'prio', className: 'gbt-chip', 'data-tone': 'running' }, 'P' + String(task.priority)))
 				if (task.status === 'blocked') top.push(h('span', { key: 'blocked', className: 'gbt-chip', 'data-tone': 'blocked' }, t('statusBlocked')))
 				children.push(h('div', { key: 'top', className: 'gbt-cardtop' }, top))
@@ -2386,7 +2482,9 @@ window.__ModuleLoader__.load({
 					meta.push(h('span', { key: 'role', className: 'gbt-chip', title: t('requiredRole') }, '🧩 ' + task.requiredRole))
 				}
 				if (task.attempts > 0) meta.push(h('span', { key: 'attempts', className: 'gbt-chip', title: t('attempts') }, '↻ ' + String(task.attempts) + '/' + String(task.maxAttempts)))
-				if (review !== null) {
+				// T-132: an investigation has no review/test/merge phase, so those chips
+				// are never rendered for it — not even from a stale hand-written record.
+				if (!investigate && review !== null) {
 					meta.push(
 						h('span', { key: 'review', className: 'gbt-chip', 'data-tone': tcReviewTone(review.status), title: t('reviewStatus') + ' · ' + t('reviewAttempt') + ' ' + String(tcRound(review)) }, '👁 ' + tcReviewLabel(review.status, t) + ' · #' + String(tcRound(review))),
 					)
@@ -2394,7 +2492,7 @@ window.__ModuleLoader__.load({
 						meta.push(h('span', { key: 'reviewer', className: 'gbt-chip', title: t('reviewer') }, '👤 ' + review.by))
 					}
 				}
-				if (test !== null) {
+				if (!investigate && test !== null) {
 					meta.push(
 						h('span', { key: 'test', className: 'gbt-chip', 'data-tone': tcTestTone(test.status), title: t('testStatus') + ' · ' + t('testAttempt') + ' ' + String(tcRound(test)) }, '🧪 ' + tcTestLabel(test.status, t) + ' · #' + String(tcRound(test))),
 					)
@@ -2418,10 +2516,10 @@ window.__ModuleLoader__.load({
 					)
 				}
 				if (fileCount > 0) meta.push(h('span', { key: 'files', className: 'gbt-chip' }, '🔒 ' + String(fileCount)))
-				if (merge !== null) {
+				if (!investigate && merge !== null) {
 					meta.push(h('span', { key: 'merge', className: 'gbt-chip', 'data-tone': tcMergeTone(merge.status), title: t('mergeTitle') }, '⇄ ' + tcMergeLabel(merge.status, t)))
 				}
-				if (typeof task.target === 'string' && task.target !== '') meta.push(h('span', { key: 'target', className: 'gbt-chip', 'data-target-branch': task.target, title: t('targetBranch') }, '🎯 ' + task.target))
+				if (!investigate && typeof task.target === 'string' && task.target !== '') meta.push(h('span', { key: 'target', className: 'gbt-chip', 'data-target-branch': task.target, title: t('targetBranch') }, '🎯 ' + task.target))
 				if (branch !== '') meta.push(h('span', { key: 'branch', className: 'gbt-chip', title: branch }, '⎇ ' + branch))
 				if (commit !== '') meta.push(h('span', { key: 'commit', className: 'gbt-chip', title: commit }, '● ' + commit.slice(0, 10)))
 				if (worktree !== '') meta.push(h('span', { key: 'worktree', className: 'gbt-chip', title: worktree }, '🌿 ' + tcBaseName(worktree)))
@@ -2528,6 +2626,7 @@ window.__ModuleLoader__.load({
 					'article',
 					{
 						className: 'gbt-card',
+						'data-kind': tcKindOf(task),
 						'data-selected': props.selected === true ? 'true' : 'false',
 						role: 'button',
 						tabIndex: 0,
@@ -2566,6 +2665,7 @@ window.__ModuleLoader__.load({
 						h('span', { className: 'gbt-colchev', 'aria-hidden': 'true' }, collapsed ? '▸' : '▾'),
 						h('span', null, group.key === 'done' ? group.label + ' · ' : group.label),
 						h('span', { className: 'gbt-colcount' }, String(count)),
+						props.note === undefined || props.note === null ? null : h('span', { className: 'gbt-colnote', 'data-col-note': 'investigating' }, props.note),
 					),
 					showBody === false
 						? null
@@ -2607,26 +2707,58 @@ window.__ModuleLoader__.load({
 				const ready = tasks.filter(function (task) { return task.status === 'pending' && task.dependency !== undefined && task.dependency.state === 'ready' })
 				const waiting = tasks.filter(function (task) { return task.status === 'pending' && (task.dependency === undefined || task.dependency.state !== 'ready') })
 				const doneTasks = tasks.filter(function (task) { return task.status === 'done' }).slice().sort(recentFirst)
-				const doneCount = Number.isFinite(counts.done) ? counts.done : doneTasks.length
+				// T-132: the kind filter narrows the whole board; the running column also
+				// counts the investigations it contains (调查中 N).
+				const kindFilter = boardUiState.kind === 'dev' || boardUiState.kind === 'investigate' ? boardUiState.kind : 'all'
+				const filtered = kindFilter === 'all' ? tasks : tasks.filter(function (task) { return tcKindOf(task) === kindFilter })
+				const investigatingRunning = tasks.filter(function (task) { return tcKindOf(task) === 'investigate' && task.status === 'running' }).length
+				const doneCount = Number.isFinite(counts.done) && kindFilter === 'all' ? counts.done : doneTasks.length
+				const visibleDone = filtered.filter(function (task) { return task.status === 'done' }).slice().sort(recentFirst)
 				const groups = [
-					{ key: 'ready', label: t('ready'), tasks: ready },
-					{ key: 'waiting', label: t('waiting'), tasks: waiting },
-					{ key: 'running', label: t('runningCol'), tasks: tasks.filter(function (task) { return task.status === 'running' }) },
-					{ key: 'reviewing', label: t('reviewingCol'), tasks: tasks.filter(function (task) { return task.status === 'reviewing' }) },
-					{ key: 'testing', label: t('testingCol'), tasks: tasks.filter(function (task) { return task.status === 'testing' }) },
-					{ key: 'done', label: t('doneCol'), tasks: doneTasks },
+					{ key: 'ready', label: t('ready'), tasks: filtered.filter(function (task) { return task.status === 'pending' && task.dependency !== undefined && task.dependency.state === 'ready' }) },
+					{ key: 'waiting', label: t('waiting'), tasks: filtered.filter(function (task) { return task.status === 'pending' && (task.dependency === undefined || task.dependency.state !== 'ready') }) },
+					{ key: 'running', label: t('runningCol'), tasks: filtered.filter(function (task) { return task.status === 'running' }) },
+					{ key: 'reviewing', label: t('reviewingCol'), tasks: filtered.filter(function (task) { return task.status === 'reviewing' }) },
+					{ key: 'testing', label: t('testingCol'), tasks: filtered.filter(function (task) { return task.status === 'testing' }) },
+					{ key: 'done', label: t('doneCol'), tasks: visibleDone },
 					{
 						key: 'blocked',
 						label: t('blockedCol'),
-						tasks: tasks.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst),
+						tasks: filtered.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst),
 					},
 				]
+				const kindFilterBar = h(
+					'div',
+					{ className: 'gbt-kindfilter', 'data-kind-filter': kindFilter, title: t('kindFilterHint') },
+					[
+						['all', t('kindFilterAll')],
+						['dev', t('kindDev')],
+						['investigate', t('kindInvestigate')],
+					].map(function (entry) {
+						return h(
+							'button',
+							{
+								key: entry[0],
+								type: 'button',
+								className: 'gbt-kindfilterbtn',
+								'data-kind-filter': entry[0],
+								'data-active': kindFilter === entry[0] ? 'true' : 'false',
+								'aria-pressed': kindFilter === entry[0] ? 'true' : 'false',
+								onClick: function () {
+									boardUiState.kind = entry[0]
+									if (typeof props.onKindFilterChange === 'function') props.onKindFilterChange()
+								},
+							},
+							entry[1],
+						)
+					}),
+				)
 				if (tasks.length === 0) return h('div', { className: 'gbt-empty' }, t('emptyBoard'))
 				function toggle(key) {
 					tcWriteColumnCollapsed(key, !tcColumnCollapsed(key))
 					if (props.onColumnToggle !== undefined) props.onColumnToggle()
 				}
-				return h(
+				const board = h(
 					'div',
 					{ className: 'gbt-board' },
 					groups.map(function (group) {
@@ -2672,12 +2804,14 @@ window.__ModuleLoader__.load({
 							t: t,
 							now: props.now,
 							selectedId: props.selectedId,
+							note: group.key === 'running' && investigatingRunning > 0 ? t('investigatingCount').replace('{n}', String(investigatingRunning)) : null,
 						onOpen: props.onOpen,
 						onVerdict: props.onVerdict,
 						onToggle: function () { toggle(group.key) },
 						})
 					}),
 				)
+				return h('div', { className: 'gbt-boardwrap', 'data-board-kind': kindFilter }, kindFilterBar, board)
 			}
 
 			/** Local day bucket for the completed-tasks drawer. */
@@ -4271,7 +4405,7 @@ window.__ModuleLoader__.load({
 					h(
 						'div',
 						{ className: 'gbt-statuscardbody' },
-						h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv', 'data-kv': 'concurrent' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'merge-queue' }, h('b', null, String(queue.length)), h('span', null, t('statusMergeQueue')))),
+						h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv', 'data-kv': 'concurrent' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), Number.isFinite(counts.investigating) && counts.investigating > 0 ? h('span', { className: 'gbt-statuskv', 'data-kv': 'investigating', 'data-kind': 'investigate' }, h('b', null, String(counts.investigating)), h('span', null, t('statusInvestigating'))) : null, h('span', { className: 'gbt-statuskv', 'data-kv': 'merge-queue' }, h('b', null, String(queue.length)), h('span', null, t('statusMergeQueue')))),
 						h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
 						h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
 						panelSessionLine,
@@ -4564,6 +4698,11 @@ window.__ModuleLoader__.load({
 				const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
 				const actualFiles = Array.isArray(task.actualFiles) ? task.actualFiles : []
 				const held = snapshot.locks.filter(function (lock) { return lock.taskId === task.id }).map(function (lock) { return lock.path })
+				// T-132: an investigation is delivered as a REPORT. It has no review,
+				// test or merge phase, and its scratch checkout is discarded on report.
+				const investigate = tcIsInvestigation(task)
+				const report =
+					investigate && task.report !== null && task.report !== undefined && typeof task.report === 'object' && !Array.isArray(task.report) ? task.report : null
 				// The detail is wide content: lay it out by the CONTAINER width, which the
 				// panel approximates from the window when no explicit probe is passed.
 				const viewport = typeof props.detailWidth === 'number' ? props.detailWidth : typeof window !== 'undefined' && Number.isFinite(window.innerWidth) && window.innerWidth > 0 ? window.innerWidth : 1440
@@ -4677,7 +4816,7 @@ window.__ModuleLoader__.load({
 					if (hit === undefined) return null
 					return typeof hit.note === 'string' && hit.note !== '' ? hit.note : t(tcStatusKey(hit.to))
 				})()
-				const stages = h(
+				const devStages = h(
 					'div',
 					{ className: 'gbt-detailstages', 'data-detail': 'stages', 'data-detail-stages': layout === 'single' ? 'wrap' : 'row' },
 					stageOrder.map(function (statusKey, index) {
@@ -4693,12 +4832,33 @@ window.__ModuleLoader__.load({
 					}),
 					interrupted ? h('div', { className: 'gbt-detailinterrupt', 'data-detail-interrupt': task.status }, t('interruptedAt') + ' ' + t(task.status === 'blocked' ? 'statusBlocked' : 'statusCancelled') + (interruptedReason === null ? '' : ' · ' + interruptedReason)) : null,
 				)
+				// T-132: the investigation spine is exactly 执行 → 交付. Review, test and
+				// merge do not exist for it, so they are not rendered as empty stages.
+				const runState = interrupted ? 'interrupted' : task.status === 'pending' ? 'todo' : task.status === 'running' ? 'active' : 'done'
+				const deliverAt = report !== null && typeof report.createdAt === 'string' ? report.createdAt : historyAt('done')
+				const investigationStages = h(
+					'div',
+					{ className: 'gbt-detailstages', 'data-detail': 'stages', 'data-detail-kind': 'investigate', 'data-detail-stages': layout === 'single' ? 'wrap' : 'row' },
+					[
+						{ key: 'run', label: t('stageRun'), state: runState, at: historyAt('running') },
+						{ key: 'deliver', label: t('stageDeliver'), state: task.status === 'done' ? 'done' : 'todo', at: deliverAt },
+					].map(function (stage) {
+						return h(
+							'div',
+							{ key: stage.key, className: 'gbt-detailstage', 'data-stage': stage.key, 'data-state': stage.state, 'data-at': stage.at === null ? '' : String(stage.at) },
+							h('span', { className: 'gbt-detailstagebar' }),
+							h('span', { className: 'gbt-detailstagelabel' }, h('b', null, stage.label), stage.at === null ? null : h('span', { className: 'gbt-detailstagetime' }, new Date(stage.at).toTimeString().slice(0, 5))),
+						)
+					}),
+					interrupted ? h('div', { className: 'gbt-detailinterrupt', 'data-detail-interrupt': task.status }, t('interruptedAt') + ' ' + t(task.status === 'blocked' ? 'statusBlocked' : 'statusCancelled') + (interruptedReason === null ? '' : ' · ' + interruptedReason)) : null,
+				)
+				const stages = investigate ? investigationStages : devStages
 
 				// ── "where is it now": one row per phase conclusion ──
 				const events = []
 				const submissions = history.filter(function (entry) { return entry.to === 'reviewing' })
 				const sha = typeof task.commit === 'string' && task.commit !== '' ? task.commit.slice(0, 7) : null
-				submissions.forEach(function (entry, index) {
+				if (investigate !== true) submissions.forEach(function (entry, index) {
 					events.push(
 						h(
 							'div',
@@ -4711,7 +4871,7 @@ window.__ModuleLoader__.load({
 						),
 					)
 				})
-				if (review !== null) {
+				if (investigate !== true && review !== null) {
 					const reasons = typeof review.reasons === 'string' ? review.reasons : ''
 					events.push(
 						h(
@@ -4740,7 +4900,7 @@ window.__ModuleLoader__.load({
 						}
 					}
 				}
-				if (test !== null) {
+				if (investigate !== true && test !== null) {
 					const full = typeof test.evidence === 'string' ? test.evidence : ''
 					const firstRaw = full === '' ? '' : full.split('\n')[0]
 					const summaryLine = testSummaryText(test, review, t)
@@ -4763,7 +4923,7 @@ window.__ModuleLoader__.load({
 						),
 					)
 				}
-				if (merge !== null) {
+				if (investigate !== true && merge !== null) {
 					const mergeSha = typeof merge.mergeCommit === 'string' && merge.mergeCommit !== '' ? merge.mergeCommit : typeof merge.commit === 'string' && merge.commit !== '' ? merge.commit : null
 					const commit = mergeSha === null ? sha : mergeSha.slice(0, 7)
 					events.push(
@@ -4790,6 +4950,18 @@ window.__ModuleLoader__.load({
 						),
 					)
 				}
+				// T-132: an investigation's only phase conclusion is the report itself.
+				if (investigate === true) {
+					events.unshift(
+						h(
+							'div',
+							{ key: 'report', className: 'gbt-detailevent', 'data-detail-event': 'report', 'data-report-status': report === null ? 'missing' : 'delivered' },
+							h('span', { className: 'gbt-detailpill', 'data-tone': report === null ? 'wait' : 'ok' }, report === null ? t('reportMissing') : t('reportDelivered')),
+							h('b', null, t('stageDeliver')),
+							h('span', { className: 'gbt-detailwho' }, report === null ? '—' : actorName(report.by, report.byName, 'actorRoleWorker') + (typeof report.createdAt === 'string' ? ' · ' + new Date(report.createdAt).toTimeString().slice(0, 5) : '')),
+						),
+					)
+				}
 				if (events.length === 0) events.push(h('p', { key: 'empty', className: 'gbt-footnote' }, t('detailNoEvents')))
 				const eventsBody = h('div', { className: 'gbt-detailevents', 'data-detail': 'events' }, events)
 
@@ -4802,11 +4974,17 @@ window.__ModuleLoader__.load({
 					if (minutes < 60) return String(minutes) + ' ' + t('detailMinutes')
 					return String(Math.floor(minutes / 60)) + ' ' + t('detailHours') + ' ' + String(minutes % 60) + ' ' + t('detailMinutes')
 				})()
+				// T-132: an investigation shows delivery status, never review/test rounds.
+				const roundsLine = investigate
+					? report === null
+						? t('reportMissing')
+						: t('reportDelivered') + (typeof report.createdAt === 'string' ? ' · ' + new Date(report.createdAt).toTimeString().slice(0, 5) : '')
+					: t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit') + ' · ' + t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit')
 				const compactSummary = h(
 					'div',
 					{ className: 'gbt-detailsummary gbt-detailsummary-one', 'data-detail': 'summary', 'data-detail-summary': 'one-line' },
 					h('span', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
-					h('span', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit') + ' · ' + t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit')),
+					h('span', { className: 'gbt-detailstatline' }, roundsLine),
 				)
 				const specToggle = h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'detail-spec', onClick: function () { detailUiState.spec = !specOpen; setSpecOpen(!specOpen) } }, specOpen ? t('collapse') : t('detailSpecExpand'))
 				const specBody = specOpen
@@ -4819,13 +4997,22 @@ window.__ModuleLoader__.load({
 							h('p', { className: 'gbt-prose' }, task.acceptance === '' ? t('noSpec') : task.acceptance),
 						)
 					: h('p', { className: 'gbt-footnote', 'data-detail-spec': 'collapsed' }, t('detailSpecHint'))
-				const summaryFacts = h(
-					'div',
-					null,
-					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailDeclaredFiles')), h('b', null, String(files.length)), h('span', null, t('detailActualFiles')), h('b', null, actualFiles.length === 0 ? '—' : String(actualFiles.length))),
-					h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailHostCheck')), h('b', { 'data-detail-hostcheck': 'true' }, task.verify === null || task.verify === undefined ? t('detailHostCheckUndeclared') : test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? (test.hostCheck.exitCode === 0 && test.hostCheck.timedOut !== true ? t('statusResultPassed') : t('detailHostCheckFailed')) : t('detailHostCheckIncomplete'))),
-					h('div', { className: 'gbt-detailstatline' }, t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
-				)
+				const summaryFacts = investigate
+					? h(
+							'div',
+							{ 'data-detail-facts': 'investigate' },
+							h('div', { className: 'gbt-detailkv' }, h('span', null, t('kindLabel')), h('b', { 'data-detail-kind': 'investigate' }, t('kindInvestigate'))),
+							h('div', { className: 'gbt-detailkv' }, h('span', null, t('reportTitle')), h('b', { 'data-detail-report-fact': report === null ? 'missing' : 'delivered' }, report === null ? t('reportMissing') : t('reportDelivered'))),
+							report === null ? null : h('div', { className: 'gbt-detailkv' }, h('span', null, t('reportEvidence')), h('b', null, String(Array.isArray(report.evidence) ? report.evidence.length : 0))),
+							h('div', { className: 'gbt-detailstatline' }, t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+						)
+					: h(
+							'div',
+							null,
+							h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailDeclaredFiles')), h('b', null, String(files.length)), h('span', null, t('detailActualFiles')), h('b', null, actualFiles.length === 0 ? '—' : String(actualFiles.length))),
+							h('div', { className: 'gbt-detailkv' }, h('span', null, t('detailHostCheck')), h('b', { 'data-detail-hostcheck': 'true' }, task.verify === null || task.verify === undefined ? t('detailHostCheckUndeclared') : test !== null && typeof test.hostCheck === 'object' && test.hostCheck !== null ? (test.hostCheck.exitCode === 0 && test.hostCheck.timedOut !== true ? t('statusResultPassed') : t('detailHostCheckFailed')) : t('detailHostCheckIncomplete'))),
+							h('div', { className: 'gbt-detailstatline' }, t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+						)
 				const fmtSpan = function (ms) {
 					if (!Number.isFinite(ms) || ms < 0) return '—'
 					const minutes = Math.round(ms / 60000)
@@ -4855,9 +5042,12 @@ window.__ModuleLoader__.load({
 					'div',
 					{ className: 'gbt-detailsummary', 'data-detail': 'summary', 'data-detail-summary': 'full' },
 					h('div', { className: 'gbt-detailstat' }, h('b', null, elapsedText), h('span', null, t('detailElapsed'))),
-					h('div', { className: 'gbt-detailstatline' }, t('stageReview') + ' ' + String(reviewRounds) + ' ' + t('roundUnit'), ' · ', t('stageTest') + ' ' + String(testRounds) + ' ' + t('roundUnit'), ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
-					metricsNode,
-					h('div', { className: 'gbt-detailstatline', 'data-detail-target': 'true' }, t('targetBranch') + ': ' + (typeof task.target === 'string' && task.target !== '' ? task.target : t('targetDefaultLabel')) + (typeof task.base === 'string' && task.base !== '' ? ' · ' + String(task.base).slice(0, 10) + ' → ' + (typeof task.target === 'string' && task.target !== '' ? task.target : t('targetDefaultLabel')) : '')),
+					h('div', { className: 'gbt-detailstatline' }, roundsLine, ' · ', t('attempts') + ' ' + String(task.attempts) + '/' + String(task.maxAttempts)),
+					investigate ? null : metricsNode,
+					// T-132: a done investigation has no target/merge progress to show.
+					investigate
+						? null
+						: h('div', { className: 'gbt-detailstatline', 'data-detail-target': 'true' }, t('targetBranch') + ': ' + (typeof task.target === 'string' && task.target !== '' ? task.target : t('targetDefaultLabel')) + (typeof task.base === 'string' && task.base !== '' ? ' · ' + String(task.base).slice(0, 10) + ' → ' + (typeof task.target === 'string' && task.target !== '' ? task.target : t('targetDefaultLabel')) : '')),
 					summaryFacts,
 					specToggle,
 					specBody,
@@ -4872,6 +5062,70 @@ window.__ModuleLoader__.load({
 					specBody,
 				)
 
+				// T-132: the delivered report is the investigation's product. Nothing here
+				// touches review/test/merge vocabulary, and a missing report says so.
+				const reportBlock =
+					investigate === false
+						? null
+						: h(
+								'section',
+								{ className: 'gbt-detailcard gbt-reportcard', 'data-detail-card': 'report', 'data-detail-report-card': report === null ? 'missing' : 'delivered', 'data-report-id': task.id },
+								h(
+									'div',
+									{ className: 'gbt-detailcardhead' },
+									t('reportTitle'),
+									h('span', { className: 'gbt-pill', 'data-report-status': report === null ? 'missing' : 'delivered', 'data-kind': 'investigate' }, report === null ? t('reportMissing') : t('reportDelivered')),
+									h('span', { className: 'gbt-footnote', 'data-report-file': t('reportFullHint').replace('{id}', task.id) }, t('reportFullHint').replace('{id}', task.id)),
+								),
+								report === null
+									? h('p', { className: 'gbt-footnote', 'data-detail-report': 'missing' }, t('reportInvestigateHint'))
+									: h(
+											'div',
+											null,
+											h('div', { className: 'gbt-subhead' }, t('reportSummary')),
+											h('p', { className: 'gbt-prose', 'data-detail-report': 'summary' }, String(report.summary)),
+											typeof report.body !== 'string' || report.body === ''
+												? null
+												: h('div', null, h('div', { className: 'gbt-subhead' }, t('reportBody')), h('pre', { className: 'gbt-detailpreview gbt-reportbody', 'data-detail-report': 'body' }, String(report.body))),
+											Array.isArray(report.evidence) && report.evidence.length > 0
+												? h(
+														'div',
+														null,
+														h('div', { className: 'gbt-subhead' }, t('reportEvidence')),
+														h(
+															'table',
+															{ className: 'gbt-reporttable', 'data-detail-report': 'evidence' },
+															h('thead', null, h('tr', null, h('th', null, t('reportCommand')), h('th', null, t('reportExit')), h('th', null, t('reportTail')))),
+															h(
+																'tbody',
+																null,
+																report.evidence.map(function (row, index) {
+																	return h(
+																		'tr',
+																		{ key: String(index), 'data-evidence-row': String(index) },
+																		h('td', { className: 'gbt-mono', 'data-evidence-command': 'true' }, String(row.command === undefined || row.command === null ? '' : row.command)),
+																		h('td', { 'data-evidence-exit': 'true' }, row.exitCode === undefined || row.exitCode === null ? '—' : String(row.exitCode)),
+																		h('td', null, h('pre', { className: 'gbt-reporttail' }, String(row.outputTail === undefined || row.outputTail === null ? '' : row.outputTail))),
+																	)
+																}),
+															),
+														),
+													)
+												: null,
+											Array.isArray(report.artifacts) && report.artifacts.length > 0
+												? h(
+														'div',
+														null,
+														h('div', { className: 'gbt-subhead' }, t('reportArtifacts')),
+														h('ul', { className: 'gbt-reportartifacts', 'data-detail-report': 'artifacts' }, report.artifacts.map(function (path) { return h('li', { key: path, className: 'gbt-mono' }, String(path)) })),
+													)
+												: null,
+											Array.isArray(report.probeCommits) && report.probeCommits.length > 0
+												? h('p', { className: 'gbt-footnote', 'data-detail-report': 'probe-commits' }, t('reportProbeCommits') + ' ' + report.probeCommits.join(', '))
+												: null,
+										),
+							)
+
 				const blocks = []
 				blocks.push(
 					h(
@@ -4884,10 +5138,13 @@ window.__ModuleLoader__.load({
 				if (deleteError === 'referenced') blocks.push(h('p', { key: 'forcehint', className: 'gbt-footnote' }, t('forceHint')))
 				if (deleteError === 'failed') blocks.push(h('p', { key: 'deletefail', className: 'gbt-footnote' }, t('error')))
 				blocks.push(stages)
+				if (reportBlock !== null) blocks.push(reportBlock)
 				const eventsCard = h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody)
 				blocks.push(h('div', { className: 'gbt-detailbody', 'data-detail-body': layout, 'data-detail-layout': layout }, layout === 'single' ? compactSummary : null, eventsCard, layout === 'single' ? summaryDetails : summary))
 
-				if (task.status === 'running') {
+				// An investigation never submits code: its completion action is report, so
+				// the submit box must not invite a refused action.
+				if (task.status === 'running' && investigate !== true) {
 					blocks.push(
 						h(
 							'section',
@@ -4970,7 +5227,7 @@ window.__ModuleLoader__.load({
 						h(
 							'div',
 							{ className: 'gbt-detailhead' },
-							h('div', { className: 'gbt-cardmeta' }, h('span', { className: 'gbt-id' }, task.id), h('span', { className: 'gbt-pill', 'data-status': task.status }, t(tcStatusKey(task.status))), Number.isFinite(task.queuePosition) && task.queuePosition > 0 ? h('span', { className: 'gbt-pill', 'data-queue': String(task.queuePosition) }, t('queuedChip').replace('{n}', String(task.queuePosition))) : null, waitingChip(task, t, 'waiting')),
+							h('div', { className: 'gbt-cardmeta' }, h('span', { className: 'gbt-id' }, task.id), h('span', { className: 'gbt-pill', 'data-status': task.status }, t(tcStatusKey(task.status))), investigate ? h('span', { className: 'gbt-pill', 'data-kind': 'investigate', title: t('kindInvestigateHint') }, t('kindInvestigate')) : null, Number.isFinite(task.queuePosition) && task.queuePosition > 0 ? h('span', { className: 'gbt-pill', 'data-queue': String(task.queuePosition) }, t('queuedChip').replace('{n}', String(task.queuePosition))) : null, waitingChip(task, t, 'waiting')),
 							h('h2', { className: 'gbt-drawertitle' }, task.title),
 							h('div', { className: 'gbt-detailmeta' }, h('span', null, t('assignee') + ' ' + (task.assignee === null || task.assignee === undefined ? '—' : task.assignee.name)), h('span', { className: 'gbt-detailspan' }, new Date(task.createdAt).toTimeString().slice(0, 5) + ' → ' + (finishedAt === null ? t('detailNow') : new Date(finishedAt).toTimeString().slice(0, 5)) + ' · ' + elapsedText)),
 						),
@@ -5577,6 +5834,7 @@ window.__ModuleLoader__.load({
 											},
 											onOpenDoneAll: function () { doneAllReset(); setDoneAllArchived(false); setDoneAllOpen(true) },
 											onColumnToggle: function () { setColumnTick(function (count) { return count + 1 }) },
+											onKindFilterChange: function () { setColumnTick(function (count) { return count + 1 }) },
 										})
 						: view === 'queue'
 							? h(QueueView, { snapshot: snapshot, t: t, onOpen: openTask })
@@ -5607,6 +5865,8 @@ window.__ModuleLoader__.load({
 						onVerdict: function (action, id, payload) {
 							void store.send(action, Object.assign({ id: id }, payload === undefined ? {} : payload))
 						},
+						// T-132: the kind filter is module state; this forces a rerender.
+						onKindFilterChange: function () { setColumnTick(function (count) { return count + 1 }) },
 					})
 
 				const tabsView = h(

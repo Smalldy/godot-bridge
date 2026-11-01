@@ -256,6 +256,13 @@ check(
       needles.filter((needle) => generated.indexOf(needle) < 0).join(','),
     )
     check('T-131 report is part of the writable action matrix', generated.indexOf('`report`') >= 0, generated.slice(0, 120))
+    // T-132: the minimal note became a full chapter with its own lifecycle rules.
+    const chapter = ['调查卡（investigate）', 'kind: "investigate"', '`report`', 'investigation-report-only', 'not-a-dev-task', 'probe-<id>-*', '不 commit', '不 submit', '不 merge']
+    check(
+      'T-132 the skill has a full investigation chapter',
+      chapter.every((needle) => generated.indexOf(needle) >= 0),
+      chapter.filter((needle) => generated.indexOf(needle) < 0).join(','),
+    )
   }
   {
     const userLine = generated.split('\n').filter((line) => line.indexOf('仅用户') >= 0)[0] || ''
