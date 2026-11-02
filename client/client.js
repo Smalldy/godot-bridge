@@ -1294,7 +1294,14 @@ window.__ModuleLoader__.load({
 			'.gbt-tab:hover{background:var(--dsw-alias-interactive-bg-hover)}',
 			'.gbt-tab[data-active="true"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-primary);font-weight:600}',
 			'.gbt-view{flex:1;min-height:0;overflow:auto;padding:12px 18px 18px}',
-			'.gbt-board{display:flex;gap:12px;align-items:stretch;min-height:100%}',
+			// T-135: the board is its own bounded horizontal scrollport, so a narrow
+			// panel keeps a visible scrollbar at the bottom of the board instead of a
+			// native bar parked under the tallest column. The kind filter stays above
+			// the scrollport and is never scrolled away.
+			'.gbt-boardwrap{display:flex;flex-direction:column;height:100%;min-height:0}',
+			'.gbt-board{display:flex;gap:12px;align-items:stretch;flex:1 1 auto;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l3,var(--dsw-alias-border-l4)) transparent}',
+			'.gbt-board::-webkit-scrollbar{height:8px;width:8px}',
+			'.gbt-board::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l3,var(--dsw-alias-border-l4));border-radius:4px}',
 			'.gbt-col{flex:1 1 0;min-width:172px;max-width:330px;background:var(--dsw-alias-bg-layer-3);border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;display:flex;flex-direction:column;max-height:100%;min-height:120px}',
 			'.gbt-colhead{display:flex;align-items:center;gap:7px;padding:9px 11px;border-bottom:0.5px solid var(--dsw-alias-border-l4);font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary);letter-spacing:.04em;text-transform:uppercase}',
 			'.gbt-colhead[data-collapsible="true"]{cursor:pointer;user-select:none}' +
@@ -1313,7 +1320,7 @@ window.__ModuleLoader__.load({
 				'.gbt-skel{height:34px;border-radius:7px;background:linear-gradient(90deg,var(--dsw-alias-bg-layer-3),var(--dsw-alias-bg-module-platform),var(--dsw-alias-bg-layer-3));background-size:200% 100%;animation:gbt-skel 1.2s linear infinite}' +
 				'@keyframes gbt-skel{0%{background-position:200% 0}100%{background-position:-200% 0}}' +
 				'.gbt-colcount{margin-left:auto;font-weight:500;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:0 7px;font-size:10px}',
-			'.gbt-cards{display:flex;flex-direction:column;gap:8px;padding:9px;overflow:auto;min-height:40px}',
+			'.gbt-cards{display:flex;flex-direction:column;gap:8px;padding:9px;overflow:auto;flex:1 1 auto;min-height:0}',
 			'.gbt-card{border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;padding:9px 10px;background:var(--dsw-alias-bg-layer-2);cursor:pointer;display:flex;flex-direction:column;gap:6px;transition:border-color .12s ease,box-shadow .12s ease}',
 			'.gbt-card:hover{border-color:var(--dsw-alias-state-business-primary)}',
 			'.gbt-card[data-selected="true"]{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 1px var(--dsw-alias-state-business-primary)}',
@@ -1691,6 +1698,20 @@ window.__ModuleLoader__.load({
 
 		function tcIsInvestigation(task) {
 			return tcKindOf(task) === 'investigate'
+		}
+
+		/**
+		 * T-135: the first column that actually has cards, or null when every column
+		 * is empty. The board scrolls there on data/filter changes so a done-only
+		 * board does not open on a screenful of empty columns.
+		 */
+		function tcFirstNonEmptyColumn(groups) {
+			if (!Array.isArray(groups)) return null
+			for (let index = 0; index < groups.length; index += 1) {
+				const group = groups[index]
+				if (group !== null && group !== undefined && Array.isArray(group.tasks) && group.tasks.length > 0) return group.key
+			}
+			return null
 		}
 
 		/** The phase word an investigation shows: 待调查 / 调查中 / 报告已交付. */
@@ -2691,6 +2712,9 @@ window.__ModuleLoader__.load({
 			}
 
 			function Board(props) {
+				// T-135: the board is its own horizontal scrollport; this ref lets the
+				// effect below park it on the first column that actually has cards.
+				const boardRef = React.useRef(null)
 				const t = props.t
 				const tasks = props.snapshot.tasks
 				const counts = props.snapshot.counts === undefined || props.snapshot.counts === null ? {} : props.snapshot.counts
@@ -2725,6 +2749,28 @@ window.__ModuleLoader__.load({
 						tasks: filtered.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst),
 					},
 				]
+				// T-135: where the scrollport should sit. Computing it during render keeps
+				// the attribute testable; the effect applies it only when the target is
+				// not already fully visible, so manual panning is never fought.
+				const scrollTarget = tcFirstNonEmptyColumn(groups)
+				React.useEffect(function () {
+					const board = boardRef.current
+					if (board === null || board === undefined) return
+					if (typeof board.scrollLeft !== 'number') return
+					if (scrollTarget === null) {
+						board.scrollLeft = 0
+						return
+					}
+					if (typeof board.querySelector !== 'function') return
+					const target = board.querySelector('[data-group="' + scrollTarget + '"]')
+					if (target === null) return
+					const scrollLeft = board.scrollLeft
+					const clientWidth = typeof board.clientWidth === 'number' ? board.clientWidth : 0
+					const left = typeof target.offsetLeft === 'number' ? target.offsetLeft : 0
+					const width = typeof target.offsetWidth === 'number' ? target.offsetWidth : 0
+					if (left >= scrollLeft && left + width <= scrollLeft + clientWidth) return
+					board.scrollLeft = Math.max(0, left - 12)
+				}, [tasks.length, boardUiState.kind, scrollTarget])
 				const kindFilterBar = h(
 					'div',
 					{ className: 'gbt-kindfilter', 'data-kind-filter': kindFilter, title: t('kindFilterHint') },
@@ -2758,7 +2804,7 @@ window.__ModuleLoader__.load({
 				}
 				const board = h(
 					'div',
-					{ className: 'gbt-board' },
+					{ className: 'gbt-board', ref: boardRef, 'data-scroll-target': scrollTarget === null ? '' : scrollTarget },
 					groups.map(function (group) {
 						const collapsed = tcColumnCollapsed(group.key)
 						// The done column folds to the newest five cards, not to nothing:
