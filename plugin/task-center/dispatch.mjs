@@ -1049,6 +1049,13 @@ export function workerPool(ctx, board, options) {
   const opts = options === undefined || options === null ? {} : options
   const current = board === undefined || board === null ? {} : board
   const dispatch = current.dispatch === undefined || current.dispatch === null ? {} : current.dispatch
+  // T-138: team size is a DISPATCH setting, not a role field. `cap` stays the
+  // hard worker ceiling (maxWorkAgents); the effective pool target is also
+  // bounded by how many cards may run at once (maxConcurrent), so a panel can
+  // show "concurrency 3 · ceiling 4" without consulting any role profile.
+  const maxConcurrent = Number.isFinite(dispatch.maxConcurrent) ? Math.max(1, Math.floor(dispatch.maxConcurrent)) : 3
+  const maxWorkAgents = Number.isFinite(dispatch.maxWorkAgents) ? Math.max(1, Math.floor(dispatch.maxWorkAgents)) : DEFAULT_MAX_WORK_AGENTS
+  const effectiveWorkerCap = Math.max(1, Math.min(maxConcurrent, maxWorkAgents))
   const report = {
     lead: null,
     leadInfo: null,
@@ -1057,12 +1064,18 @@ export function workerPool(ctx, board, options) {
     idle: 0,
     provisioning: 0,
     failed: 0,
-    cap: Number.isFinite(dispatch.maxWorkAgents) ? dispatch.maxWorkAgents : DEFAULT_MAX_WORK_AGENTS,
+    cap: maxWorkAgents,
+    maxConcurrent: maxConcurrent,
+    // The worker pool target: min(maxConcurrent, maxWorkAgents). Both names are
+    // exposed while the panel migrates (T-137); they are always the same number.
+    workerCap: effectiveWorkerCap,
+    effectiveWorkerCap: effectiveWorkerCap,
     error: null,
     // Counts per agent kind; 'lead' is reported separately from the members so
     // System work is never dressed up as an agent.
     kinds: { lead: 0, worker: 0, reviewer: 0, tester: 0, merger: 0 },
-    // The role manager's desired instances (from the project role config).
+    // Desired per-kind counts for the executors page: the worker target is the
+    // dispatch cap; stage roles are always one (T-138 removed profile.instances).
     roles: null,
     // T-127: per-role numbers for the executors page.
     roleCounts: {},
@@ -1101,12 +1114,14 @@ export function workerPool(ctx, board, options) {
   }
   const roleConfig = opts.roleConfig === undefined || opts.roleConfig === null ? null : opts.roleConfig
   if (roleConfig !== null && typeof roleConfig === 'object' && roleConfig.profiles !== null && typeof roleConfig.profiles === 'object') {
-    const desired = { worker: 0, reviewer: 0, tester: 0 }
+    // T-138: desired no longer comes from a profile's (removed) `instances`.
+    // The worker target is the dispatch-derived cap; a reviewer/tester stage
+    // runs exactly one instance.
+    const desired = { worker: effectiveWorkerCap, reviewer: 1, tester: 1 }
     const live = { worker: 0, reviewer: 0, tester: 0 }
     const bound = { worker: null, reviewer: null, tester: null }
     for (const kind of ['worker', 'reviewer', 'tester']) {
       const profile = profileForKind(roleConfig, kind)
-      desired[kind] = profile !== null && profile !== undefined && Number.isFinite(profile.instances) ? Math.floor(profile.instances) : 0
       bound[kind] = profile !== null && profile !== undefined && typeof profile.name === 'string' ? profile.name : null
     }
     report.roles = {
@@ -2688,10 +2703,11 @@ export function testFailureBriefFor(task, projectPath) {
 /**
  * The host-side role registry and provisioner.
  *
- * ensure(kind, { config, task, projectPath, now }) makes the configured number of
- * instances of a role exist in the live Team: it reuses live slots, forgets and
- * replaces failed/timed-out/drained ones, and spawns the missing fixed-named
- * slots through the Lead's spawnTeammate. No model decision is involved.
+ * ensure(kind, { config, task, projectPath, now, count }) makes `count` instances
+ * of a role exist in the live Team: it reuses live slots, forgets and replaces
+ * failed/timed-out/drained ones, and spawns the missing fixed-named slots
+ * through the Lead's spawnTeammate. No model decision is involved, and the
+ * size is the CALLER'S (T-138): a role profile never carries it.
  *
  * All state is per manager (one per plugin row), so a plugin reload does not
  * mistake another process's fake/failed roster for its own bookkeeping.
@@ -2801,7 +2817,10 @@ export function createRoleManager(ctx, options) {
     if (ROLE_KINDS.indexOf(kind) < 0) return { ok: false, code: 'invalid-role', message: 'unknown role kind ' + String(kind) }
     const config = req.config === undefined || req.config === null ? defaultRoleConfig() : req.config
     const profile = profileForKind(config, kind)
-    const desired = profile !== null && profile !== undefined && Number.isFinite(profile.instances) ? Math.floor(profile.instances) : 1
+    // T-138: the CALLER owns the size. The dispatcher grows the worker pool
+    // (`count = live + 1`), a stage role asks for exactly one, and bootstrap
+    // asks for one; a profile carries no team-size opinion any more.
+    const desired = Number.isFinite(req.count) && req.count >= 1 ? Math.floor(req.count) : 1
     const { agents, agentTeams } = servicesFor(ctx)
     if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
       return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
@@ -3782,6 +3801,8 @@ export function createDispatcher(ctx, options) {
           now: now,
           // THE fix: the role belongs to the card owner's team.
           sessionId: sessionId,
+          // T-138: a stage (review/test) is served by exactly ONE instance.
+          count: 1,
         })
         results.push(ensured)
         emitRole(ensured)
@@ -4371,9 +4392,13 @@ export function createDispatcher(ctx, options) {
         })
         let pickedNow = picked
         if (pickedNow.ok !== true && (pickedNow.code === 'no-teammates' || pickedNow.code === 'no-idle-member') && dispatch.allowSpawn === true && spawnAllowed) {
-          // A3/A4: never create beyond the configured pool. Count the pool
-          // workers and the cards they hold before asking the role manager.
-          const desiredPool = Math.max(1, Number(workerConfig !== null && workerConfig !== undefined && workerConfig.profiles !== undefined && workerConfig.profiles.worker !== undefined ? workerConfig.profiles.worker.instances : 1) || 1)
+          // T-138: the worker pool target comes from the DISPATCH settings, not
+          // from a role profile: workerCap = min(maxConcurrent, maxWorkAgents).
+          // Count the pool workers and the cards they hold before growing it.
+          const workerCap = Math.max(1, Math.min(
+            Number.isFinite(dispatch.maxConcurrent) ? Math.floor(dispatch.maxConcurrent) : 3,
+            Number.isFinite(dispatch.maxWorkAgents) ? Math.floor(dispatch.maxWorkAgents) : DEFAULT_MAX_WORK_AGENTS,
+          ))
           let rosterNow = []
           try { rosterNow = ctx.get('agentTeams').listMembers() } catch (error) { rosterNow = [] }
           const poolMembers = rosterNow.filter((member) => typeof member.name === 'string' && /^worker-p/.test(member.name) && member.status !== 'failed')
@@ -4383,19 +4408,19 @@ export function createDispatcher(ctx, options) {
             if (card.status === 'running' && card.assignee !== null && card.assignee !== undefined && typeof card.assignee.name === 'string') heldNames.add(card.assignee.name)
           }
           const busyPool = poolMembers.filter((member) => heldNames.has(member.name)).length
-          if (livePool >= desiredPool) {
-            if (busyPool >= desiredPool) {
-              await markExecutorMissing(project, task.id, '角色已满', 'every configured worker instance (' + String(desiredPool) + ') already holds a running card')
+          if (livePool >= workerCap) {
+            if (busyPool >= workerCap) {
+              await markExecutorMissing(project, task.id, '角色已满', 'every worker slot is busy (cap ' + String(workerCap) + ', live ' + String(livePool) + ', busy ' + String(busyPool) + ')')
               results.push({ id: task.id, skipped: 'role-full', reason: '角色已满' })
               continue
             }
-            // Every configured instance exists but none is idle for this card.
-            results.push({ id: task.id, skipped: 'role-overspend', message: 'role-overspend: live ' + String(livePool) + ' >= desired ' + String(desiredPool) + '; refusing to create another worker' })
+            // The cap is reached and none of the live workers is idle for this card.
+            results.push({ id: task.id, skipped: 'role-cap', message: 'worker cap reached (cap ' + String(workerCap) + ', live ' + String(livePool) + ', busy ' + String(busyPool) + '); refusing to create another worker' })
             continue
           }
-          // The pool has no free instance: provision one through the role
-          // manager (worker-p<key>-N) and retry the same pick. Never spawn a
-          // per-card agent here.
+          // Below the cap: grow the pool by exactly ONE slot through the role
+          // manager (worker-p<key>-N), then retry the same pick. Never spawn a
+          // per-card agent here, and never jump past live+1.
           let ensured = null
           try {
             ensured = await ensureRole(ctx, 'worker', {
@@ -4404,6 +4429,7 @@ export function createDispatcher(ctx, options) {
               task: task,
               now: state.clock(),
               sessionId: dispatchSession,
+              count: livePool + 1,
             })
           } catch (error) {
             ensured = { ok: false, code: 'provision-error', message: String((error && error.message) || error) }

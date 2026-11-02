@@ -92,8 +92,6 @@ export const ROLE_KINDS = ['worker', 'reviewer', 'tester']
 export const WORKFLOW_STAGES = ['implement', 'review', 'test']
 export const STAGE_ROLE = { implement: 'worker', review: 'reviewer', test: 'tester' }
 export const ROLE_STAGE = { worker: 'implement', reviewer: 'review', tester: 'test' }
-export const ROLE_DEFAULT_INSTANCES = { worker: 1, reviewer: 1, tester: 1 }
-export const ROLE_INSTANCES_LIMITS = { min: 1, max: 8 }
 /** How a provisioned role instance starts: a fresh context (default) or a fork
  * of the Lead's context. */
 export const ROLE_CONTEXTS = ['fresh', 'fork']
@@ -422,7 +420,9 @@ export function normaliseReport(raw) {
 
 /** The project-level role profile file (optional; defaults apply when absent). */
 export const ROLE_CONFIG_FILENAME = 'roles.json'
-export const ROLE_CONFIG_VERSION = 1
+// T-138: v2 removes the per-profile `instances` field. Team size/concurrency now
+// lives in the dispatch settings (maxConcurrent / maxWorkAgents), never in a role.
+export const ROLE_CONFIG_VERSION = 2
 
 function roleStringList(value) {
   if (!Array.isArray(value)) return []
@@ -438,17 +438,29 @@ function roleStringList(value) {
   return out
 }
 
+/**
+ * T-138: fields a pre-v2 role profile may still carry but that no longer belong
+ * to a role definition. Team size moved to the dispatch settings; the reader
+ * drops them and reports the migration instead of honouring them.
+ */
+const LEGACY_ROLE_FIELDS = ['instances', 'concurrency']
+
+/** Which deprecated team-size fields a raw profile still carries ([] when clean). */
+export function legacyRoleFields(raw) {
+  const source = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  return LEGACY_ROLE_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(source, field))
+}
+
 /** One normalised role profile. A profile names one of the fixed role kinds;
  * its stage is that kind's stage, and it may carry a context, permissions and a
- * custom prompt. Malformed members fall back instead of throwing. */
+ * custom prompt. Malformed members fall back instead of throwing.
+ *
+ * T-138: a role describes BEHAVIOUR only. `instances`/`concurrency` from an old
+ * file are deliberately ignored here (see legacyRoleFields), never normalised
+ * into the profile and never consulted by dispatch. */
 export function normaliseRoleProfile(raw, kind, name) {
   const source = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
   const stage = ROLE_STAGE[kind]
-  const fallback = ROLE_DEFAULT_INSTANCES[kind] === undefined ? 1 : ROLE_DEFAULT_INSTANCES[kind]
-  const requestedInstances = source.instances !== undefined ? source.instances : source.concurrency
-  const instances = Number.isFinite(requestedInstances)
-    ? Math.min(ROLE_INSTANCES_LIMITS.max, Math.max(ROLE_INSTANCES_LIMITS.min, Math.floor(requestedInstances)))
-    : fallback
   const context = ROLE_CONTEXTS.indexOf(source.context) >= 0 ? source.context : 'fresh'
   const permissions = roleStringList(source.permissions).filter((entry) => ROLE_PERMISSIONS.indexOf(entry) >= 0)
   const prompt = typeof source.prompt === 'string' ? source.prompt.trim().slice(0, ROLE_PROMPT_MAX) : ''
@@ -456,7 +468,6 @@ export function normaliseRoleProfile(raw, kind, name) {
     name: typeof name === 'string' && name !== '' ? name : kind,
     role: kind,
     stage: stage,
-    instances: instances,
     skills: roleStringList(source.skills),
     context: context,
     permissions: permissions,
@@ -500,8 +511,10 @@ export function profileForKind(config, kind) {
 /**
  * Validate one role profile submitted through the API. Unlike the forgiving
  * normaliser, this REFUSES bad input: a name, a known kind, the kind's stage,
- * bounded instances, string skills, a known context, allowed permissions and a
- * bounded prompt (whose {{VARIABLES}} must exist in ROLE_TEMPLATE_VARIABLES).
+ * string skills, a known context, allowed permissions and a bounded prompt
+ * (whose {{VARIABLES}} must exist in ROLE_TEMPLATE_VARIABLES).
+ * T-138: `instances`/`concurrency` are accepted-but-ignored for old clients;
+ * team size lives in the dispatch settings, so they are never validated here.
  * Returns { ok, profile } or { ok: false, code, message }.
  */
 export function validateRoleProfile(name, raw) {
@@ -517,12 +530,6 @@ export function validateRoleProfile(name, raw) {
   }
   if (raw.stage !== undefined && raw.stage !== ROLE_STAGE[kind]) {
     return { ok: false, code: 'invalid-role-stage', message: 'a ' + kind + ' profile owns the ' + ROLE_STAGE[kind] + ' stage' }
-  }
-  const requestedInstances = raw.instances !== undefined ? raw.instances : raw.concurrency
-  if (requestedInstances !== undefined) {
-    if (!Number.isInteger(requestedInstances) || requestedInstances < ROLE_INSTANCES_LIMITS.min || requestedInstances > ROLE_INSTANCES_LIMITS.max) {
-      return { ok: false, code: 'invalid-role-instances', message: 'instances must be an integer between ' + String(ROLE_INSTANCES_LIMITS.min) + ' and ' + String(ROLE_INSTANCES_LIMITS.max) }
-    }
   }
   if (raw.skills !== undefined) {
     if (!Array.isArray(raw.skills) || raw.skills.some((entry) => typeof entry !== 'string')) {
