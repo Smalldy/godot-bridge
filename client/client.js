@@ -1834,6 +1834,21 @@ window.__ModuleLoader__.load({
 			return parts.length === 0 ? String(path) : parts[parts.length - 1]
 		}
 
+		/** A session id's useful part: after the "session-" prefix, else the first 8 chars. */
+		function tcSessionShort(value) {
+			if (typeof value !== 'string' || value === '') return null
+			return value.indexOf('session-') === 0 ? value.slice(8, 16) : value.slice(0, 8)
+		}
+
+		/** A Team Lead name as DISPLAY text: a raw session id never appears verbatim. */
+		function tcLeadText(lead, t) {
+			const value = lead === null || lead === undefined ? '' : String(lead)
+			if (value === '') return '—'
+			if (value.indexOf('session-') !== 0) return value
+			const short = tcSessionShort(value)
+			return t('workersLeadSelf') + (short === null || short === '' ? '' : ' · ' + short)
+		}
+
 		/** One labelled tail-only output block inside the drawer. */
 		function outputBlock(key, label, text, t) {
 			const tail = tcTail(text, 1200)
@@ -3223,14 +3238,9 @@ window.__ModuleLoader__.load({
 				// "并发 3 · 上限 4" instead of collapsing both chips into the minimum.
 				const cap = Number.isFinite(workers.cap) ? workers.cap : Number.isFinite(workers.workerCap) ? workers.workerCap : null
 				const shortPath = function (value) { return typeof value === 'string' && value !== '' ? tcBaseName(value) : null }
-				// A session id's useful part is after the "session-" prefix; a bare prefix is not a short id.
-				const shortId = function (value) {
-					if (typeof value !== 'string' || value === '') return null
-					return value.indexOf('session-') === 0 ? value.slice(8, 16) : value.slice(0, 8)
-				}
-				const sessionShort = shortId(session)
-				const leadDisplay = lead === null ? '—' : /^session-/.test(lead) ? t('workersLeadSelf') : lead
-				const leadShort = lead !== null && /^session-/.test(lead) ? shortId(lead) : null
+				const sessionShort = tcSessionShort(session)
+				const leadDisplay = tcLeadText(lead, t)
+				const leadShort = lead !== null && /^session-/.test(lead) ? tcSessionShort(lead) : null
 				const copyValue = session === null ? leadSession : session
 				const identity = h('div', { key: 'identity', className: 'gbt-workeridentity', 'data-worker-identity': 'true' },
 					h('span', { key: 'project', className: 'gbt-workerid' }, h('span', { className: 'gbt-workeridlabel' }, t('workersProjectLabel')), h('b', { title: panelProject === null ? '' : panelProject }, panelProject === null ? '—' : shortPath(panelProject))),
@@ -5739,11 +5749,16 @@ window.__ModuleLoader__.load({
 											className: 'gbt-projectteam',
 											'data-project-team': projectTeam.ok === true ? 'ok' : projectTeam.available === false ? 'unavailable' : 'missing',
 											'data-team-lead': projectTeam.lead === null || projectTeam.lead === undefined ? '' : String(projectTeam.lead),
-											title: snapshot.nextStep === null || snapshot.nextStep === undefined ? '' : String(snapshot.nextStep.instruction),
+											title: (function () {
+												const parts = []
+												if (projectTeam.lead !== null && projectTeam.lead !== undefined && /^session-/.test(String(projectTeam.lead))) parts.push(String(projectTeam.lead))
+												if (snapshot.nextStep !== null && snapshot.nextStep !== undefined) parts.push(String(snapshot.nextStep.instruction))
+												return parts.join(' · ')
+											})(),
 										},
 										t('projectTeam') + '：' +
 											(projectTeam.ok === true
-												? t('projectTeamOk').replace('{lead}', String(projectTeam.lead === null || projectTeam.lead === undefined ? '—' : projectTeam.lead)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0)) +
+												? t('projectTeamOk').replace('{lead}', tcLeadText(projectTeam.lead, t)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0)) +
 													(Array.isArray(projectTeam.missingRoles) && projectTeam.missingRoles.length > 0
 														? ' · ' + t('projectTeamMissingRoles').replace('{roles}', projectTeam.missingRoles.join(', '))
 														: '')

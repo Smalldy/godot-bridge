@@ -535,8 +535,8 @@ const HOST = {
   tasks: TASKS,
   workers: {
     lead: 'lead',
-    leadInfo: { id: 'session-eb9ba775-c7e9', name: 'lead', kind: 'lead', session: 'session-eb9ba775-c7e9' },
-    session: 'session-eb9ba775-c7e9',
+    leadInfo: { id: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c', name: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c', kind: 'lead', session: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c' },
+    session: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c',
     project: PROJECT,
     projectMatch: true,
     workerCap: 3,
@@ -564,8 +564,10 @@ const HOST = {
   team: {
     ok: true,
     available: true,
-    lead: 'lead',
-    leadId: 'session-lead',
+    // A real host names the lead agent after its session, so the header must
+    // never print this value verbatim (H7 / T-137).
+    lead: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c',
+    leadId: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c',
     members: [
       { id: 'session-fixer', name: 'fixer', role: 'teammate', kind: 'worker', description: 'feature worker', session: 'session-fixer', status: 'running', currentTask: { id: 'T-1', title: 'Build damage system' } },
       { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', kind: 'reviewer', description: 'review role', session: 'session-reviewer-1', status: 'inactive', currentTask: null },
@@ -957,8 +959,18 @@ await flush()
   check(
     'T-137 the raw session id is never a direct text node (title/copy only)',
     text.indexOf('session-eb9ba775-c7e9') < 0 &&
-      findAll(tree, (node) => node.type === 'button' && node.props['data-action'] === 'copy-session' && node.props['data-session'] === 'session-eb9ba775-c7e9').length === 1,
+      findAll(tree, (node) => node.type === 'button' && node.props['data-action'] === 'copy-session' && node.props['data-session'] === 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c').length === 1,
     JSON.stringify({ hasFull: text.indexOf('session-eb9ba775-c7e9') >= 0 }),
+  )
+  const teamLine = findAll(tree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
+  check(
+    'T-137 the global project-team header hides the raw session id too (H7)',
+    teamLine !== undefined &&
+      textOf(teamLine).indexOf('本会话 Lead') >= 0 &&
+      textOf(teamLine).indexOf('eb9ba775') >= 0 &&
+      textOf(teamLine).indexOf('session-eb9ba775') < 0 &&
+      String(teamLine.props.title).indexOf('session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c') >= 0,
+    teamLine && textOf(teamLine) + ' | title=' + String(teamLine.props.title),
   )
   const chips = findAll(tree, (node) => node.props && node.props['data-worker-chip'] !== undefined)
   const chipText = (key) => textOf(chips.filter((chip) => chip.props['data-worker-chip'] === key)[0])
@@ -1020,7 +1032,7 @@ await flush()
   )
   // A session-named lead renders as 本会话 Lead instead of the raw id.
   const savedLead = HOST.workers.lead
-  HOST.workers.lead = 'session-eb9ba775-c7e9'
+  HOST.workers.lead = 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c'
   let namedTree = withHooks(panel, { initialView: 'workers' })
   await flush()
   namedTree = withHooks(panel, { initialView: 'workers' })
