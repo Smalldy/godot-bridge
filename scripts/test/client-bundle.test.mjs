@@ -5127,6 +5127,20 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     buttons !== null && /flex:1 1 0/.test(buttons) && /min-width:0/.test(buttons) && /height:30px/.test(buttons) && /padding:0 10px/.test(buttons),
     buttons,
   )
+  // The rule helper cannot tell the base selector from ".gbt-workeridentity .gbt-btn",
+  // so anchor the base rule to a rule boundary instead.
+  const baseButtonMatch = /(?:^|\})\s*\.gbt-btn\{[^}]*\}/.exec(cssText)
+  const baseButton = baseButtonMatch === null ? null : baseButtonMatch[0]
+  check(
+    'T-141 the base button centers its label (justify-content:center)',
+    baseButton !== null && /display:inline-flex/.test(baseButton) && /align-items:center/.test(baseButton) && /justify-content:center/.test(baseButton) && /gap:5px/.test(baseButton),
+    baseButton,
+  )
+  check(
+    'T-141 the equal-width verdict buttons also center their text',
+    buttons !== null && /text-align:center/.test(buttons),
+    buttons,
+  )
   const form = rule('\\.gbt-cardverdictform')
   check('T-140 the reason form stacks its label, textarea and buttons', form !== null && /display:flex/.test(form) && /flex-direction:column/.test(form) && /gap:6px/.test(form), form)
   const label = rule('\\.gbt-cardverdictform label')
