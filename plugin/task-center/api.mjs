@@ -2619,6 +2619,31 @@ export function createApi(ctx, options) {
     const archive = await archiveInfo(projectPath, now)
     const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
     const workers = workerPool(ctx, board, { roleConfig: roleRead.config, sessionId: typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null })
+    // T-139: make the executor team's project EXPLICIT. The member table is still
+    // the request session's Team (T-122/T-130). This only says which project that
+    // team lives in, and whether it is the project this snapshot is for — so the
+    // panel can stop presenting another project's Team as if it were this one.
+    const workersTeamSession =
+      workers.leadInfo !== null && workers.leadInfo !== undefined && typeof workers.leadInfo.session === 'string' && workers.leadInfo.session !== ''
+        ? workers.leadInfo.session
+        : typeof workers.session === 'string' && workers.session !== ''
+          ? workers.session
+          : null
+    let workersTeamProject = null
+    if (workersTeamSession !== null) {
+      try {
+        const teamRoot = await requesterRootOf(workersTeamSession)
+        workersTeamProject = typeof teamRoot.root === 'string' && teamRoot.root !== '' ? teamRoot.root : null
+      } catch (error) {
+        workersTeamProject = null
+      }
+    }
+    const workersTeamProjectMatch = workersTeamProject === null ? null : projectIdOf(workersTeamProject) === projectIdOf(projectPath)
+    const workersView = Object.assign({}, workers, { project: workersTeamProject, projectMatch: workersTeamProjectMatch })
+    const snapshotTeamView =
+      snapshotTeam.team === null || snapshotTeam.team === undefined
+        ? snapshotTeam.team
+        : Object.assign({}, snapshotTeam.team, { project: workersTeamProject, projectMatch: workersTeamProjectMatch })
     let worktrees = null
     if (worktreeCache.project === projectPath && worktreeCache.value !== null && now - worktreeCache.at < 5000) {
       worktrees = worktreeCache.value
@@ -2723,7 +2748,7 @@ export function createApi(ctx, options) {
       dispatch: board.dispatch,
       roles: roleRead.config,
       rolePreviews: rolePreviewsFor(projectPath, roleRead.config),
-      workers: workers,
+      workers: workersView,
       // T-109: what the Team service ACTUALLY exposes — every Lead it can see,
       // with its session and roster size, plus how many agents were scanned. This
       // is what answers "how many Leading teams does the plugin see?", which a
@@ -2773,7 +2798,7 @@ export function createApi(ctx, options) {
       environment: await environmentSnapshot(projectPath, now, board),
       // T-110: the project's Team (ok/lead/source/members) and, while it does not
       // exist, the one instruction the calling session must act on.
-      team: snapshotTeam.team,
+      team: snapshotTeamView,
       nextStep: snapshotTeam.nextStep,
       serverTime: new Date(now).toISOString(),
     })

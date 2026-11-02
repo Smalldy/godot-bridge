@@ -2859,6 +2859,11 @@ function fakeHostSubprocess(result) {
       report.roles.missing.tester === 0,
     JSON.stringify({ cap: report.cap, workerCap: report.workerCap, effective: report.effectiveWorkerCap, roles: report.roles }),
   )
+  check(
+    'T-139 workerPool stays a pure session read: project/projectMatch are added by the snapshot',
+    report.project === undefined && report.projectMatch === undefined,
+    JSON.stringify({ project: report.project, projectMatch: report.projectMatch }),
+  )
   const noTeam = workerPool({ get: () => undefined }, board)
   check('without a Team the pool degrades readably', noTeam.error === 'no-team-service' && noTeam.members.length === 0 && noTeam.kinds.lead === 0, JSON.stringify(noTeam))
 }
