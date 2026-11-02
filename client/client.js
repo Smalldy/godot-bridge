@@ -272,9 +272,20 @@ window.__ModuleLoader__.load({
 				workersProvisioning: '启动中',
 				workersFailed: '失败',
 				workerName: '名称',
+				workerMember: '成员',
 				workerStatus: '状态',
 				workerCurrent: '当前任务',
-				workersHint: '执行者是当前 Team 的 WorkAgent：优先复用空闲成员，没有空闲时才新建；上限由派发设置决定（GUI 下默认是并发 + 1）。',
+				workersHint: '执行者是当前 Team 的 WorkAgent：优先复用空闲成员，没有空闲时才新建；池上限由派发设置决定（并发与上限取较小值）。',
+				workersProjectLabel: '面板项目',
+				workersTeamLabel: '会话 Team',
+				workersSessionLabel: '会话',
+				workersLeadSelf: '本会话 Lead',
+				workersCapConcurrent: '并发',
+				workersRoleRunning: '执行中',
+				workersRoleBusy: '有卡',
+				workersRoleQueue: '队列',
+				workersMismatch: '这些执行者属于会话 Team（项目 {team}），不是面板项目 {panel}；执行者仍取自请求会话的 Team，这里不会按项目切换。',
+				roleScaleNote: '团队规模由派发设置（并发 / 上限）决定；角色只定义行为。',
 				workersNoTeam: '本会话没有团队：调用 task_center { action: "bootstrapTeam" } 建队后再派发。',
 			workerQueued: '排队 {n}',
 			workersIdleNote: '待命（进程在运行，没有分配任务）',
@@ -621,7 +632,6 @@ window.__ModuleLoader__.load({
 				roleSkills: '技能',
 				roleContext: '上下文',
 				rolePermissions: '权限',
-				roleInstancesCount: '实例数',
 				roleProfilePrompt: 'Profile prompt（可修改）',
 				rolePromptEmpty: '（空 —— 内置角色的上下文由宿主 brief 补齐）',
 				roleSource: '来源',
@@ -639,7 +649,6 @@ window.__ModuleLoader__.load({
 				roleErrProfile: '角色配置不合法',
 				roleErrKind: '角色种类不合法',
 				roleErrStage: '阶段不合法',
-				roleErrInstances: '实例数必须是 1–8 的整数',
 				roleErrSkills: '技能必须是列表',
 				roleErrContext: '上下文必须是 fresh 或 fork',
 				roleErrPermissions: '权限不合法',
@@ -824,9 +833,20 @@ window.__ModuleLoader__.load({
 				workersProvisioning: 'Starting',
 				workersFailed: 'Failed',
 				workerName: 'Name',
+				workerMember: 'Member',
 				workerStatus: 'Status',
 				workerCurrent: 'Current task',
-				workersHint: 'Workers are the WorkAgents of the current Team: idle members are reused first and a new one is spawned only when none is idle; the cap comes from the dispatch settings (concurrency + 1 by default in the GUI).',
+				workersHint: 'Workers are the WorkAgents of the current Team: idle members are reused first and a new one is spawned only when none is idle; the pool cap comes from the dispatch settings (the smaller of concurrency and cap).',
+				workersProjectLabel: 'Panel project',
+				workersTeamLabel: 'Session team',
+				workersSessionLabel: 'Session',
+				workersLeadSelf: 'This session’s lead',
+				workersCapConcurrent: 'Concurrency',
+				workersRoleRunning: 'Running',
+				workersRoleBusy: 'Has card',
+				workersRoleQueue: 'Queue',
+				workersMismatch: 'These workers belong to the request session’s team (project {team}), not the panel project {panel}; the session team is shown as-is, not switched by project.',
+				roleScaleNote: 'Team size comes from the dispatch settings (concurrency / cap); a role only defines behaviour.',
 				workersNoTeam: 'This session has no team: call task_center { action: "bootstrapTeam" } before dispatching.',
 			workerQueued: 'queued {n}',
 			workersIdleNote: 'idle (process is running, no task assigned)',
@@ -1173,7 +1193,6 @@ window.__ModuleLoader__.load({
 				roleSkills: 'Skills',
 				roleContext: 'Context',
 				rolePermissions: 'Permissions',
-				roleInstancesCount: 'Instances',
 				roleProfilePrompt: 'Profile prompt (editable)',
 				rolePromptEmpty: '(empty — the host brief fills the context for built-in roles)',
 				roleSource: 'Source',
@@ -1191,7 +1210,6 @@ window.__ModuleLoader__.load({
 				roleErrProfile: 'invalid role profile',
 				roleErrKind: 'invalid role kind',
 				roleErrStage: 'invalid stage',
-				roleErrInstances: 'instances must be an integer from 1 to 8',
 				roleErrSkills: 'skills must be a list',
 				roleErrContext: 'context must be fresh or fork',
 				roleErrPermissions: 'invalid permissions',
@@ -1276,6 +1294,29 @@ window.__ModuleLoader__.load({
 			'.gbt-count{display:flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-count b{font-weight:600;color:var(--dsw-alias-label-primary)}',
 			'.gbt-workermeta{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}',
+			// T-137: the executors page is three explicit layers — team head, role cards,
+			// member table. Tokens only (T-133); the table scrolls inside its wrapper so
+			// a narrow panel never gets a horizontal page overflow.
+			'.gbt-workersview{display:flex;flex-direction:column;gap:12px}',
+			'.gbt-workerhead{display:flex;flex-direction:column;gap:9px;padding:12px 13px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;background:var(--dsw-alias-bg-layer-2)}',
+			'.gbt-workerheadtop{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
+			'.gbt-workertitle{margin:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+			'.gbt-workerchips{display:flex;gap:6px;flex-wrap:wrap}',
+			'.gbt-workeridentity{display:flex;align-items:center;gap:7px 14px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-workerid{display:inline-flex;align-items:center;gap:5px;min-width:0}',
+			'.gbt-workerid b{font-weight:500;color:var(--dsw-alias-label-secondary);min-width:0;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+			'.gbt-workeridentity .gbt-btn{height:22px;padding:2px 8px;font-size:10px}',
+			'.gbt-rolecards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}',
+			'.gbt-workercard{display:flex;flex-direction:column;gap:6px;padding:10px 11px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;background:var(--dsw-alias-bg-layer-2);min-width:0}',
+			'.gbt-workercardhead{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0}',
+			'.gbt-workercardname{font-size:12px;font-weight:500;color:var(--dsw-alias-label-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+			'.gbt-workercard .gbt-pill{max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+			'.gbt-workercardline{display:flex;gap:4px 10px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-workercardline b{font-weight:600;color:var(--dsw-alias-label-primary)}',
+			'.gbt-workertable{min-width:560px}',
+			'.gbt-workername{display:block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+			'.gbt-workertask{display:block;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+			'.gbt-workertable th:first-child,.gbt-workertable td:first-child{width:1%;white-space:nowrap}',
 			'.gbt-controls{display:flex;gap:8px;margin-left:auto;align-items:center;flex-wrap:wrap}',
 			'.gbt-btn{appearance:none;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);height:30px;padding:0 12px;border-radius:8px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}',
 			'.gbt-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
@@ -1791,6 +1832,21 @@ window.__ModuleLoader__.load({
 		function tcBaseName(path) {
 			const parts = String(path === undefined || path === null ? '' : path).split(/[\\/]/).filter(function (part) { return part !== '' })
 			return parts.length === 0 ? String(path) : parts[parts.length - 1]
+		}
+
+		/** A session id's useful part: after the "session-" prefix, else the first 8 chars. */
+		function tcSessionShort(value) {
+			if (typeof value !== 'string' || value === '') return null
+			return value.indexOf('session-') === 0 ? value.slice(8, 16) : value.slice(0, 8)
+		}
+
+		/** A Team Lead name as DISPLAY text: a raw session id never appears verbatim. */
+		function tcLeadText(lead, t) {
+			const value = lead === null || lead === undefined ? '' : String(lead)
+			if (value === '') return '—'
+			if (value.indexOf('session-') !== 0) return value
+			const short = tcSessionShort(value)
+			return t('workersLeadSelf') + (short === null || short === '' ? '' : ' · ' + short)
 		}
 
 		/** One labelled tail-only output block inside the drawer. */
@@ -3153,107 +3209,141 @@ window.__ModuleLoader__.load({
 				const t = props.t
 				const snapshot = props.snapshot
 				const workers = snapshot.workers
+				const [copied, setCopied] = React.useState(null)
+				const shell = function (child) { return h('div', { className: 'gbt-workersview' }, child) }
 				const blocks = []
-				blocks.push(h('p', { key: 'hint', className: 'gbt-footnote' }, t('workersHint')))
+				const hint = h('p', { key: 'hint', className: 'gbt-footnote', 'data-worker-hint': 'true' }, t('workersHint'))
 				if (snapshot.source === 'error') {
-					blocks.push(h('div', { key: 'offline', className: 'gbt-empty' }, t('workersUnavailable')))
-					return h('div', null, blocks)
+					return shell([hint, h('div', { key: 'offline', className: 'gbt-empty' }, t('workersUnavailable'))])
 				}
 				if (workers === null || workers === undefined) {
-					blocks.push(h('div', { key: 'unavailable', className: 'gbt-empty' }, t('workersUnavailable')))
-					return h('div', null, blocks)
+					return shell([hint, h('div', { key: 'unavailable', className: 'gbt-empty' }, t('workersUnavailable'))])
 				}
 				if (typeof workers.error === 'string' && workers.error !== '') {
 					const errorKey = WORKER_ERROR[workers.error]
 					const explanation = errorKey === undefined ? workers.error : t(errorKey) + ' (' + workers.error + ')'
 					blocks.push(h('div', { key: 'error', className: 'gbt-banner', style: { margin: '0 0 12px' } }, h('span', null, t('workersError') + ': ' + explanation)))
 				}
-				const lead = typeof workers.lead === 'string' && workers.lead.length > 0 ? workers.lead : null
-				const countText = function (value) {
-					return Number.isFinite(value) ? String(value) : '—'
-				}
-				blocks.push(
-					h(
-						'div',
-						{ key: 'meta', className: 'gbt-workermeta' },
-						h('span', { key: 'lead', className: 'gbt-count' }, t('workersLead'), h('b', null, lead === null ? '—' : lead)),
-						h('span', { key: 'cap', className: 'gbt-count' }, t('workersCap'), h('b', null, countText(workers.cap))),
-						h('span', { key: 'busy', className: 'gbt-count' }, t('workersBusy'), h('b', null, countText(workers.busy))),
-						h('span', { key: 'idle', className: 'gbt-count' }, t('workersIdle'), h('b', null, countText(workers.idle))),
-						h('span', { key: 'provisioning', className: 'gbt-count' }, t('workersProvisioning'), h('b', null, countText(workers.provisioning))),
-						h('span', { key: 'failed', className: 'gbt-count' }, t('workersFailed'), h('b', null, countText(workers.failed))),
-					),
-				)
+				const countText = function (value) { return Number.isFinite(value) ? String(value) : '—' }
 				const members = Array.isArray(workers.members) ? workers.members : []
-				// T-127: per-role numbers so "running with no card" is unambiguous.
+				const lead = typeof workers.lead === 'string' && workers.lead.length > 0 ? workers.lead : null
+				const leadSession = lead !== null && /^session-/.test(lead) ? lead : workers.leadInfo !== null && workers.leadInfo !== undefined && typeof workers.leadInfo.session === 'string' ? workers.leadInfo.session : null
+				const session = typeof workers.session === 'string' && workers.session !== '' ? workers.session : leadSession
+				const teamProject = typeof workers.project === 'string' && workers.project !== '' ? workers.project : null
+				const panelProject = typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : null
+				const dispatch = snapshot.dispatch !== null && snapshot.dispatch !== undefined ? snapshot.dispatch : {}
+				const concurrent = Number.isFinite(dispatch.maxConcurrent) ? dispatch.maxConcurrent : null
+				// 上限 is the hard pool ceiling (maxWorkAgents). workerCap is just a
+				// fallback for hosts that predate it, so the head can read
+				// "并发 3 · 上限 4" instead of collapsing both chips into the minimum.
+				const cap = Number.isFinite(workers.cap) ? workers.cap : Number.isFinite(workers.workerCap) ? workers.workerCap : null
+				const shortPath = function (value) { return typeof value === 'string' && value !== '' ? tcBaseName(value) : null }
+				const sessionShort = tcSessionShort(session)
+				const leadDisplay = tcLeadText(lead, t)
+				const leadIsSession = lead !== null && /^session-/.test(lead)
+				const copyValue = session === null ? leadSession : session
+				const identity = h('div', { key: 'identity', className: 'gbt-workeridentity', 'data-worker-identity': 'true' },
+					h('span', { key: 'project', className: 'gbt-workerid' }, h('span', { className: 'gbt-workeridlabel' }, t('workersProjectLabel')), h('b', { title: panelProject === null ? '' : panelProject }, panelProject === null ? '—' : shortPath(panelProject))),
+					h('span', { key: 'team', className: 'gbt-workerid', 'data-worker-team-project': teamProject === null ? '' : teamProject }, h('span', { className: 'gbt-workeridlabel' }, t('workersTeamLabel')), h('span', { title: teamProject === null ? '' : teamProject }, teamProject === null ? '—' : '项目 ' + shortPath(teamProject))),
+					h('span', { key: 'lead', className: 'gbt-workerid', 'data-worker-lead': lead === null ? '' : lead }, h('span', { className: 'gbt-workeridlabel' }, t('workersLead')), ' ', h('b', { title: leadIsSession ? lead : undefined }, leadDisplay)),
+					h('span', { key: 'session', className: 'gbt-workerid', 'data-worker-session': session === null ? '' : session }, h('span', { className: 'gbt-workeridlabel' }, t('workersSessionLabel')), ' ', h('span', { className: 'gbt-mono', title: session === null ? '' : session }, sessionShort === null ? '—' : sessionShort)),
+					copyValue === null
+						? null
+						: h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'copy-session', 'data-session': copyValue, onClick: function () { void copyToClipboard(copyValue).then(function (ok) { setCopied(ok === true ? copyValue : 'failed') }) } }, copied === copyValue ? t('sessionCopied') : t('copySession')),
+					copied === 'failed' ? h('span', { key: 'copy-failed', className: 'gbt-footnote' }, ' ' + t('copyFailed')) : null,
+				)
+				const chips = h('div', { key: 'chips', className: 'gbt-workerchips', 'data-worker-chips': 'true' },
+					[	['concurrent', t('workersCapConcurrent'), countText(concurrent)],
+						['cap', t('workersCap'), countText(cap)],
+						['busy', t('workersBusy'), countText(workers.busy)],
+						['idle', t('workersIdle'), countText(workers.idle)],
+						['provisioning', t('workersProvisioning'), countText(workers.provisioning)],
+						['failed', t('workersFailed'), countText(workers.failed)],
+					].map(function (entry) {
+						return h('span', { key: entry[0], className: 'gbt-count', 'data-worker-chip': entry[0] }, h('span', { className: 'gbt-workerchip-label' }, entry[1]), h('b', null, entry[2]))
+					}))
+				const headParts = [
+					h('div', { key: 'title', className: 'gbt-workerheadtop' }, h('h3', { className: 'gbt-workertitle' }, t('workersTab'))),
+					chips,
+					identity,
+				]
+				if (workers.projectMatch === false && teamProject !== null && panelProject !== null) {
+					headParts.push(h('div', { key: 'mismatch', className: 'gbt-banner', 'data-tone': 'warn', 'data-worker-mismatch': 'true', 'data-team-project': teamProject, 'data-panel-project': panelProject }, t('workersMismatch').replace('{team}', shortPath(teamProject)).replace('{panel}', shortPath(panelProject))))
+				}
+				blocks.push(h('div', { key: 'head', className: 'gbt-workerhead', 'data-worker-head': 'true' }, headParts))
+				// Role overview: three (or four on a merge team) compact cards with LIVE numbers only.
 				const roleCounts = workers.roleCounts !== null && workers.roleCounts !== undefined && typeof workers.roleCounts === 'object' ? workers.roleCounts : null
-				const roleDesired = workers.roles !== null && workers.roles !== undefined && workers.roles.desired !== null && workers.roles.desired !== undefined ? workers.roles.desired : {}
-				if (roleCounts !== null) {
-					const roleRows = ['worker', 'reviewer', 'tester', 'merger']
-						.filter(function (kind) { return roleCounts[kind] !== undefined })
-						.map(function (kind) {
-							const counts = roleCounts[kind]
-							const desired = Number.isFinite(roleDesired[kind]) ? roleDesired[kind] : 0
-							return h(
-								'tr',
-								{ key: 'rolecount-' + kind, 'data-role-count': kind },
-								h('td', { className: 'gbt-mono' }, t(ROLE_KIND_KEYS[kind] === undefined ? 'workerName' : ROLE_KIND_KEYS[kind])),
-								h('td', null, String(desired)),
-								h('td', null, String(counts.running || 0)),
-								h('td', null, String(counts.idle || 0)),
-								h('td', null, String(counts.busy || 0)),
-							)
-						})
-					if (roleRows.length > 0) {
-						blocks.push(
-							h(
-								'table',
-								{ key: 'rolecounts', className: 'gbt-locktable' },
-								h('thead', null, h('tr', null, h('th', null, t('workerRole')), h('th', null, t('workerRoleConfigured')), h('th', null, t('workerRoleRunning')), h('th', null, t('workerRoleIdle')), h('th', null, t('workerRoleWithCard')))),
-								h('tbody', null, roleRows),
-							),
-						)
-					}
+				const kindOrder = ['worker', 'reviewer', 'tester', 'merger']
+				const kindOfMember = function (member) { return typeof member.kind === 'string' && member.kind !== '' ? member.kind : 'worker' }
+				const membersOf = function (kind) { return members.filter(function (member) { return kindOfMember(member) === kind }) }
+				const queueOf = function (kind) { return membersOf(kind).reduce(function (sum, member) { return sum + (Number.isFinite(member.queue) ? member.queue : 0) }, 0) }
+				const fallbackCounts = function (kind) {
+					const own = membersOf(kind)
+					const busy = own.filter(function (member) { return member.currentTask !== null && member.currentTask !== undefined }).length
+					const failed = own.filter(function (member) { return member.status === 'failed' }).length
+					const provisioning = own.filter(function (member) { return member.status === 'provisioning' }).length
+					const running = own.filter(function (member) { return member.status === 'running' }).length
+					return { running: running, idle: Math.max(0, own.length - busy - failed - provisioning), busy: busy }
+				}
+				const cardKinds = kindOrder.filter(function (kind) {
+					return kind === 'worker' || kind === 'reviewer' || kind === 'tester' || membersOf(kind).length > 0 || (roleCounts !== null && roleCounts[kind] !== undefined)
+				})
+				if (cardKinds.length > 0) {
+					blocks.push(h('div', { key: 'roles', className: 'gbt-rolecards', 'data-worker-roles': 'true' },
+						cardKinds.map(function (kind) {
+							const counts = roleCounts !== null && roleCounts[kind] !== undefined ? roleCounts[kind] : fallbackCounts(kind)
+							const bound = workers.roles !== null && workers.roles !== undefined && workers.roles.bound !== null && workers.roles.bound !== undefined && typeof workers.roles.bound[kind] === 'string' ? workers.roles.bound[kind] : null
+							return h('div', { key: 'role-card-' + kind, className: 'gbt-workercard', 'data-role-card': kind },
+								h('div', { className: 'gbt-workercardhead' },
+									h('span', { className: 'gbt-workercardname' }, roleKindLabel(kind, t)),
+									h('span', { className: 'gbt-pill', 'data-role-badge': kind, title: bound === null ? t('roleUseDefault') : bound }, bound === null ? t('roleUseDefault') : bound)),
+								h('div', { className: 'gbt-workercardline' },
+									h('span', { 'data-role-metric': 'running' }, t('workersRoleRunning') + ' ' + String(counts.running || 0)),
+									h('span', { 'data-role-metric': 'idle' }, t('workersRoleIdle') + ' ' + String(counts.idle || 0)),
+									h('span', { 'data-role-metric': 'busy' }, t('workersRoleWithCard') + ' ' + String(counts.busy || 0)),
+									h('span', { 'data-role-metric': 'queue' }, t('workersRoleQueue') + ' ' + String(queueOf(kind)))))
+						})))
 				}
 				if (lead === null) blocks.push(h('div', { key: 'noteam', className: 'gbt-empty' }, t('workersNoTeam')))
 				if (members.length === 0) {
 					blocks.push(h('div', { key: 'empty', className: 'gbt-empty' }, t('workersEmpty')))
-					return h('div', null, blocks)
+					return shell(blocks)
 				}
-				blocks.push(
-					h(
-						'table',
-						{ key: 'table', className: 'gbt-locktable' },
-						h('thead', null, h('tr', null, h('th', null, t('workerName')), h('th', null, t('workerStatus')), h('th', null, t('workerCurrent')))),
-						h(
-							'tbody',
-							null,
-							members.map(function (member, index) {
-								const name = typeof member.name === 'string' && member.name !== '' ? member.name : typeof member.id === 'string' && member.id !== '' ? member.id : '—'
-								const status = typeof member.status === 'string' ? member.status : null
-								const current = member.currentTask !== null && member.currentTask !== undefined ? member.currentTask : null
-								let task = '—'
-								if (current !== null && typeof current.id === 'string' && current.id !== '') {
-									task = typeof current.title === 'string' && current.title !== '' ? current.id + ' · ' + current.title : current.id
-								}
-								const queued = Number.isFinite(member.queue) && member.queue > 0 ? ' · ' + t('workerQueued').replace('{n}', String(member.queue)) : ''
-								if (queued !== '') task = task === '—' ? queued.replace(/^ · /, '') : task + queued
-								if (current === null && (status === 'idle' || status === 'inactive')) {
-									task = t('workersIdleNote')
-								}
-								return h(
-									'tr',
-									{ key: member.id === undefined || member.id === null ? String(index) : String(member.id), 'data-worker': name, 'data-status': status === null ? '' : status },
-									h('td', { className: 'gbt-mono', 'data-col': 'worker-name' }, name),
-									h('td', { 'data-col': 'worker-status' }, h('span', { className: 'gbt-pill', 'data-status': status === null ? '' : status }, status === null ? '—' : workerStatusLabel(status, t))),
-									h('td', { 'data-col': 'worker-task' }, task),
-								)
-							}),
-						),
-					),
-				)
-				return h('div', null, blocks)
+				const rankOf = function (kind) { const rank = kindOrder.indexOf(kind); return rank === -1 ? kindOrder.length : rank }
+				const sorted = members.slice().sort(function (left, right) {
+					const leftKind = kindOfMember(left)
+					const rightKind = kindOfMember(right)
+					if (rankOf(leftKind) !== rankOf(rightKind)) return rankOf(leftKind) - rankOf(rightKind)
+					const leftName = typeof left.name === 'string' ? left.name : ''
+					const rightName = typeof right.name === 'string' ? right.name : ''
+					return leftName < rightName ? -1 : leftName > rightName ? 1 : 0
+				})
+				const rows = sorted.map(function (member, index) {
+					const kind = kindOfMember(member)
+					const name = typeof member.name === 'string' && member.name !== '' ? member.name : typeof member.id === 'string' && member.id !== '' ? member.id : '—'
+					const status = typeof member.status === 'string' ? member.status : null
+					const current = member.currentTask !== null && member.currentTask !== undefined ? member.currentTask : null
+					let task = '—'
+					if (current !== null && typeof current.id === 'string' && current.id !== '') {
+						task = typeof current.title === 'string' && current.title !== '' ? current.id + ' · ' + current.title : current.id
+					} else if (status === 'idle' || status === 'inactive') {
+						task = t('workerRoleIdle')
+					}
+					const queue = Number.isFinite(member.queue) ? member.queue : 0
+					return h('tr', { key: member.id === undefined || member.id === null ? String(index) : String(member.id), 'data-worker': name, 'data-status': status === null ? '' : status, 'data-kind': kind, 'data-col-row': 'member' },
+						h('td', { 'data-col': 'worker-kind' }, h('span', { className: 'gbt-pill', 'data-role-badge': kind }, roleKindLabel(kind, t))),
+						h('td', { className: 'gbt-mono', 'data-col': 'worker-name' }, h('span', { className: 'gbt-workername', title: name }, name)),
+						h('td', { 'data-col': 'worker-status' }, h('span', { className: 'gbt-pill', 'data-status': status === null ? '' : status }, status === null ? '—' : workerStatusLabel(status, t))),
+						h('td', { 'data-col': 'worker-task', title: current === null ? undefined : typeof current.title === 'string' && current.title !== '' ? current.id + ' · ' + current.title : String(current.id) }, h('span', { className: 'gbt-workertask' }, task)),
+						h('td', { className: 'gbt-mono', 'data-col': 'worker-queue' }, queue > 0 ? String(queue) : '—'))
+				})
+				blocks.push(h('div', { key: 'tablewrap', className: 'gbt-tablewrap' },
+					h('table', { className: 'gbt-locktable gbt-workertable', 'data-worker-table': 'true' },
+						h('thead', null, h('tr', null, h('th', null, t('workerRole')), h('th', null, t('workerMember')), h('th', null, t('workerStatus')), h('th', null, t('workerCurrent')), h('th', null, t('workersRoleQueue')))),
+						h('tbody', null, rows))))
+				return shell(blocks)
 			}
+
 
 			const WORKER_STATUS = { running: 'workersBusy', idle: 'workersIdle', inactive: 'workersIdle', provisioning: 'workersProvisioning', failed: 'workersFailed' }
 			const WORKER_ERROR = { 'no-team-service': 'workersErrNoService', 'no-lead': 'workersErrNoLead', 'roster-unreadable': 'workersErrRoster' }
@@ -3275,7 +3365,6 @@ window.__ModuleLoader__.load({
 				'invalid-role-profile': 'roleErrProfile',
 				'invalid-role-kind': 'roleErrKind',
 				'invalid-role-stage': 'roleErrStage',
-				'invalid-role-instances': 'roleErrInstances',
 				'invalid-role-skills': 'roleErrSkills',
 				'invalid-role-context': 'roleErrContext',
 				'invalid-role-permissions': 'roleErrPermissions',
@@ -3407,7 +3496,6 @@ window.__ModuleLoader__.load({
 				const t = props.t
 				const nameRef = React.useRef(null)
 				const roleRef = React.useRef(null)
-				const instancesRef = React.useRef(null)
 				const skillsRef = React.useRef(null)
 				const contextRef = React.useRef(null)
 				const permissionsRef = React.useRef(null)
@@ -3424,7 +3512,6 @@ window.__ModuleLoader__.load({
 					}
 					props.onCreate(name, {
 						role: valueOf(roleRef, 'reviewer'),
-						instances: Number(valueOf(instancesRef, '1')),
 						skills: tcSplitList(valueOf(skillsRef, '')),
 						context: valueOf(contextRef, 'fresh'),
 						permissions: tcSplitList(valueOf(permissionsRef, 'read-only')),
@@ -3436,7 +3523,6 @@ window.__ModuleLoader__.load({
 					{ className: 'gbt-formgrid', 'data-form': 'role-create' },
 					h('label', null, t('roleName'), h('input', { ref: nameRef, className: 'gbt-input', 'data-field': 'name', defaultValue: '', spellCheck: false })),
 					h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: 'reviewer', 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
-					h('label', null, t('roleInstancesCount'), h('input', { ref: instancesRef, className: 'gbt-input', 'data-field': 'instances', type: 'number', min: 1, max: 8, defaultValue: '1' })),
 					h('label', null, t('roleSkills'), h('input', { ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: '', spellCheck: false })),
 					h('label', null, t('roleContext'), h('select', { ref: contextRef, defaultValue: 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')])),
 					h('label', null, t('rolePermissions'), h('input', { ref: permissionsRef, className: 'gbt-input', 'data-field': 'permissions', defaultValue: 'read-only', spellCheck: false })),
@@ -3552,7 +3638,6 @@ window.__ModuleLoader__.load({
 				return {
 					role: profile.role,
 					stage: profile.stage,
-					instances: profile.instances,
 					skills: (Array.isArray(profile.skills) ? profile.skills : []).slice(),
 					context: profile.context || 'fresh',
 					permissions: (Array.isArray(profile.permissions) ? profile.permissions : []).slice(),
@@ -3616,7 +3701,6 @@ window.__ModuleLoader__.load({
 				const instances = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
 				const templateRef = React.useRef(null)
 				const skillsRef = React.useRef(null)
-				const instancesRef = React.useRef(null)
 				// Real React reuses a host node across renders, so an uncontrolled control
 				// only takes a new defaultValue when it REMOUNTS. The key carries the editor
 				// identity AND whether the identity is still a draft: switching kind,
@@ -3679,12 +3763,6 @@ window.__ModuleLoader__.load({
 					const node = skillsRef.current
 					if (node !== null && node !== undefined && typeof node.value === 'string') return tcSplitList(node.value)
 					return target !== null && Array.isArray(target.skills) ? target.skills.slice() : []
-				}
-				function currentInstances() {
-					const node = instancesRef.current
-					const raw = node !== null && node !== undefined && node.value !== '' ? Number(node.value) : NaN
-					if (Number.isInteger(raw) && raw >= 1 && raw <= 8) return raw
-					return target !== null && Number.isInteger(target.instances) ? target.instances : 1
 				}
 				/** Discard a drop draft; nothing was ever written to the host. */
 				function discardDraft() {
@@ -3801,7 +3879,7 @@ window.__ModuleLoader__.load({
 					// Fork copies the source profile as-is; a retry after a refused create
 					// must keep whatever the user typed into the editor.
 					const body = fromEditor === true
-						? Object.assign({}, submitted.profile, { prompt: currentTemplate(), skills: currentSkills(), instances: currentInstances() })
+						? Object.assign({}, submitted.profile, { prompt: currentTemplate(), skills: currentSkills() })
 						: Object.assign({}, submitted.profile)
 					const outcome = await send('rolesCreate', { name: name, profile: body })
 					if (outcome.ok !== true || roleEditorState.draft !== submitted) return
@@ -3839,11 +3917,10 @@ window.__ModuleLoader__.load({
 					}
 					// Saving the profile that is currently in use applies it in the SAME click.
 					const isCurrent = selectedName === boundName
-					const instancesField = currentInstances()
-					const outcome = await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills, instances: instancesField } })
+					const outcome = await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills } })
 					if (outcome.ok !== true) return
 					// Keep the saved values visible until the host snapshot catches up.
-					roleEditorState.saved = { name: selectedName, profile: Object.assign({}, target === null ? {} : target, { prompt: template, skills: skills, instances: instancesField }) }
+					roleEditorState.saved = { name: selectedName, profile: Object.assign({}, target === null ? {} : target, { prompt: template, skills: skills }) }
 					bump()
 					if (isCurrent) await send('rolesReplace', { name: kind })
 				}
@@ -4022,8 +4099,6 @@ window.__ModuleLoader__.load({
 				const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
 					h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
 					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
-				const instancesRow = h('label', { className: 'gbt-editorfield', 'data-section': 'role-editor-instances-field' }, t('roleInstancesCount'),
-					h('input', { key: 'instances:' + controlKey, ref: instancesRef, type: 'number', min: 1, max: 8, step: 1, className: 'gbt-input', 'data-field': 'instances', defaultValue: String(target !== null && Number.isInteger(target.instances) ? target.instances : 1), disabled: builtin || !editablePrompt }))
 				/** The blank-create form reports in the same banner as every other action. */
 				async function createBlank(name, fields) {
 					const outcome = await send('rolesCreate', { name: name, profile: fields })
@@ -4046,7 +4121,7 @@ window.__ModuleLoader__.load({
 					h('div', { className: 'gbt-rolecard', 'data-role-card': 'raw' },
 						h('div', { className: 'gbt-rolecardhead', 'data-role-card-title': 'true' }, t('rolePreviewRawTitle')),
 						editablePrompt ? rawColumn() : builtinDefaultColumn(),
-						h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow, instancesRow)),
+						h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow)),
 					blankCreate)
 				const rightPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'injected' }, h('div', { className: 'gbt-rolecard', 'data-role-card': 'injected' }, injectedColumn()))
 				const runningNames = instances.filter(function (entry) { return entry.kind === kind }).map(function (entry) { return entry.name })
@@ -4144,7 +4219,9 @@ window.__ModuleLoader__.load({
 					h(
 						'section',
 						{ className: 'gbt-rolesview-card', 'data-card': 'editor' },
-						h('div', { className: 'gbt-rhead' }, h('h3', { className: 'gbt-rtitle' }, t('roleEditor'))),
+						h('div', { className: 'gbt-rhead' },
+							h('h3', { className: 'gbt-rtitle' }, t('roleEditor')),
+							h('div', { className: 'gbt-footnote', 'data-role-scale-note': 'true' }, t('roleScaleNote'))),
 						h('div', { className: 'gbt-rbody' }, h(RolesEditor, {
 							t: t,
 							snapshot: snapshot,
@@ -5672,11 +5749,16 @@ window.__ModuleLoader__.load({
 											className: 'gbt-projectteam',
 											'data-project-team': projectTeam.ok === true ? 'ok' : projectTeam.available === false ? 'unavailable' : 'missing',
 											'data-team-lead': projectTeam.lead === null || projectTeam.lead === undefined ? '' : String(projectTeam.lead),
-											title: snapshot.nextStep === null || snapshot.nextStep === undefined ? '' : String(snapshot.nextStep.instruction),
+											title: (function () {
+												const parts = []
+												if (projectTeam.lead !== null && projectTeam.lead !== undefined && /^session-/.test(String(projectTeam.lead))) parts.push(String(projectTeam.lead))
+												if (snapshot.nextStep !== null && snapshot.nextStep !== undefined) parts.push(String(snapshot.nextStep.instruction))
+												return parts.join(' · ')
+											})(),
 										},
 										t('projectTeam') + '：' +
 											(projectTeam.ok === true
-												? t('projectTeamOk').replace('{lead}', String(projectTeam.lead === null || projectTeam.lead === undefined ? '—' : projectTeam.lead)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0)) +
+												? t('projectTeamOk').replace('{lead}', tcLeadText(projectTeam.lead, t)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0)) +
 													(Array.isArray(projectTeam.missingRoles) && projectTeam.missingRoles.length > 0
 														? ' · ' + t('projectTeamMissingRoles').replace('{roles}', projectTeam.missingRoles.join(', '))
 														: '')

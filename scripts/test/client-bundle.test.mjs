@@ -535,14 +535,20 @@ const HOST = {
   tasks: TASKS,
   workers: {
     lead: 'lead',
+    leadInfo: { id: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c', name: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c', kind: 'lead', session: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c' },
+    session: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c',
+    project: PROJECT,
+    projectMatch: true,
+    workerCap: 3,
     members: [
-      { id: 'session-fixer', name: 'fixer', status: 'running', currentTask: { id: 'T-1', title: 'Build damage system' } },
-      { id: 'session-tester', name: 'tester', status: 'idle', currentTask: null },
-      { id: 'session-builder', name: 'builder', status: 'provisioning', currentTask: null },
-      { id: 'session-ghost', name: 'ghost', status: 'failed', currentTask: null },
+      { id: 'session-fixer', name: 'fixer', kind: 'worker', status: 'running', queue: 1, currentTask: { id: 'T-1', title: 'Build damage system' } },
+      { id: 'session-tester', name: 'tester', kind: 'tester', status: 'idle', queue: 0, currentTask: null },
+      { id: 'session-builder', name: 'builder', kind: 'worker', status: 'provisioning', queue: 0, currentTask: null },
+      { id: 'session-ghost', name: 'ghost', kind: 'worker', status: 'failed', queue: 0, currentTask: null },
+      { id: 'session-reviewer-1', name: 'reviewer-1', kind: 'reviewer', status: 'idle', queue: 2, currentTask: null },
     ],
     busy: 1,
-    idle: 1,
+    idle: 2,
     provisioning: 1,
     failed: 1,
     cap: 4,
@@ -558,8 +564,10 @@ const HOST = {
   team: {
     ok: true,
     available: true,
-    lead: 'lead',
-    leadId: 'session-lead',
+    // A real host names the lead agent after its session, so the header must
+    // never print this value verbatim (H7 / T-137).
+    lead: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c',
+    leadId: 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c',
     members: [
       { id: 'session-fixer', name: 'fixer', role: 'teammate', kind: 'worker', description: 'feature worker', session: 'session-fixer', status: 'running', currentTask: { id: 'T-1', title: 'Build damage system' } },
       { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', kind: 'reviewer', description: 'review role', session: 'session-reviewer-1', status: 'inactive', currentTask: null },
@@ -621,10 +629,10 @@ const HOST = {
     defaultProfile: 'worker',
     stages: { implement: 'worker', review: 'godot-reviewer', test: 'tester' },
     profiles: {
-      worker: { name: 'worker', role: 'worker', stage: 'implement', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: WORKER_DEFAULT_PROMPT },
-      reviewer: { name: 'reviewer', role: 'reviewer', stage: 'review', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: REVIEWER_DEFAULT_PROMPT },
-      tester: { name: 'tester', role: 'tester', stage: 'test', instances: 1, skills: [], context: 'fresh', permissions: [], prompt: TESTER_DEFAULT_PROMPT },
-      'godot-reviewer': { name: 'godot-reviewer', role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check Godot idioms.' },
+      worker: { name: 'worker', role: 'worker', stage: 'implement', skills: [], context: 'fresh', permissions: [], prompt: WORKER_DEFAULT_PROMPT },
+      reviewer: { name: 'reviewer', role: 'reviewer', stage: 'review', skills: [], context: 'fresh', permissions: [], prompt: REVIEWER_DEFAULT_PROMPT },
+      tester: { name: 'tester', role: 'tester', stage: 'test', skills: [], context: 'fresh', permissions: [], prompt: TESTER_DEFAULT_PROMPT },
+      'godot-reviewer': { name: 'godot-reviewer', role: 'reviewer', stage: 'review', skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Check Godot idioms.' },
     },
   },
   locks: [
@@ -880,7 +888,7 @@ check(
   workersText,
 )
 const workerRows = findAll(workersTree, (node) => node.type === 'tr' && node.props && node.props['data-worker'] !== undefined)
-check('the workers view renders one row per member', workerRows.length === 4, String(workerRows.length))
+check('the workers view renders one row per member', workerRows.length === 5, String(workerRows.length))
 const fixerRow = workerRows.filter((row) => row.props['data-worker'] === 'fixer')[0]
 const testerRow = workerRows.filter((row) => row.props['data-worker'] === 'tester')[0]
 const builderRow = workerRows.filter((row) => row.props['data-worker'] === 'builder')[0]
@@ -929,6 +937,164 @@ HOST.workers = savedWorkers
 findButton(poolErrorTree, '刷新').props.onClick()
 await flush()
 
+
+// ── T-137: the executors page is three explicit layers ────────────────────
+{
+  let tree = withHooks(panel, { initialView: 'workers' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'workers' })
+  const text = textOf(tree)
+  const head = findAll(tree, (node) => node.props && node.props['data-worker-head'] === 'true')[0]
+  const identity = findAll(tree, (node) => node.props && node.props['data-worker-identity'] === 'true')[0]
+  check(
+    'T-137 the head shows project, session team and a short session id',
+    head !== undefined &&
+      identity !== undefined &&
+      text.indexOf('面板项目') >= 0 &&
+      text.indexOf('会话 Team') >= 0 &&
+      text.indexOf('Team Lead') >= 0 &&
+      text.indexOf('eb9ba775') >= 0,
+    text.slice(0, 300),
+  )
+  check(
+    'T-137 the raw session id is never a direct text node (title/copy only)',
+    text.indexOf('session-eb9ba775-c7e9') < 0 &&
+      findAll(tree, (node) => node.type === 'button' && node.props['data-action'] === 'copy-session' && node.props['data-session'] === 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c').length === 1,
+    JSON.stringify({ hasFull: text.indexOf('session-eb9ba775-c7e9') >= 0 }),
+  )
+  const teamLine = findAll(tree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
+  check(
+    'T-137 the global project-team header hides the raw session id too (H7), exactly once',
+    teamLine !== undefined &&
+      textOf(teamLine) === '该项目团队：本会话 Lead · eb9ba775 · 3 名成员' &&
+      (textOf(teamLine).match(/eb9ba775/g) || []).length === 1 &&
+      textOf(teamLine).indexOf('session-eb9ba775') < 0 &&
+      String(teamLine.props.title).indexOf('session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c') >= 0,
+    teamLine && textOf(teamLine) + ' | title=' + String(teamLine.props.title),
+  )
+  const defaultLeadCell = findAll(tree, (node) => node.props && node.props['data-worker-lead'] === 'lead')[0]
+  check(
+    'T-137 a non-session lead keeps its plain name in the identity row',
+    defaultLeadCell !== undefined && /^Team Lead\s*lead$/.test(textOf(defaultLeadCell)),
+    defaultLeadCell && textOf(defaultLeadCell),
+  )
+  const chips = findAll(tree, (node) => node.props && node.props['data-worker-chip'] !== undefined)
+  const chipText = (key) => textOf(chips.filter((chip) => chip.props['data-worker-chip'] === key)[0])
+  check(
+    'T-137 the head chips carry REAL values: 并发 from dispatch.maxConcurrent, 上限 from workers.cap (not the derived workerCap)',
+    chips.map((chip) => chip.props['data-worker-chip']).join(',') === 'concurrent,cap,busy,idle,provisioning,failed' &&
+      HOST.dispatch.maxConcurrent === 3 &&
+      HOST.workers.workerCap === 3 &&
+      HOST.workers.cap === 4 &&
+      chipText('concurrent') === '并发3' &&
+      chipText('cap') === '上限4' &&
+      chipText('busy') === '执行中1' &&
+      chipText('idle') === '空闲2' &&
+      chipText('provisioning') === '启动中1' &&
+      chipText('failed') === '失败1',
+    JSON.stringify(chips.map((chip) => [chip.props['data-worker-chip'], textOf(chip)])),
+  )
+  const cards = findAll(tree, (node) => node.props && node.props['data-role-card'] !== undefined)
+  check(
+    'T-137 the role overview is three compact cards with live numbers only',
+    cards.map((card) => card.props['data-role-card']).join(',') === 'worker,reviewer,tester' &&
+      cards.every((card) => findAll(card, (node) => node.props && node.props['data-role-metric'] !== undefined).length === 4) &&
+      cards.map((card) => textOf(card)).join(' ').indexOf('配置') < 0,
+    JSON.stringify(cards.map((card) => textOf(card))),
+  )
+  check('T-137 role cards no longer say “已配置” or “实例” (size is a dispatch setting)', text.indexOf('已配置') < 0 && text.indexOf('实例') < 0, text.slice(0, 300))
+  const table = findAll(tree, (node) => node.props && node.props['data-worker-table'] === 'true')[0]
+  const header = findAll(table, (node) => node.type === 'th').map((cell) => textOf(cell))
+  check('T-137 the member table is role / member / status / current task / queue', header.join(',') === '角色,成员,状态,当前任务,队列', JSON.stringify(header))
+  const rows = findAll(table, (node) => node.type === 'tr' && node.props && node.props['data-worker'] !== undefined)
+  check('T-137 members are grouped by role order (worker, reviewer, tester)', rows.map((row) => row.props['data-kind']).join(',') === 'worker,worker,worker,reviewer,tester', JSON.stringify(rows.map((row) => row.props['data-kind'])))
+  const rowOf = (name) => rows.filter((row) => row.props['data-worker'] === name)[0]
+  const fixer = rowOf('fixer')
+  const tester = rowOf('tester')
+  const reviewer = rowOf('reviewer-1')
+  check(
+    'T-137 a member row carries its role badge, name, status, card and queue',
+    fixer !== undefined &&
+      textOf(fixer).indexOf('实现') >= 0 &&
+      textOf(fixer).indexOf('T-1 · Build damage system') >= 0 &&
+      textOf(fixer).indexOf('执行中') >= 0 &&
+      textOf(findAll(fixer, (node) => node.props && node.props['data-col'] === 'worker-queue')[0]) === '1',
+    fixer && textOf(fixer),
+  )
+  check(
+    'T-137 reviewer and tester badges follow member.kind',
+    reviewer !== undefined && tester !== undefined && textOf(reviewer).indexOf('评审') >= 0 && textOf(tester).indexOf('测试') >= 0,
+    JSON.stringify([reviewer && textOf(reviewer), tester && textOf(tester)]),
+  )
+  check(
+    'T-137 an idle member says 待命 once, not the long process sentence',
+    tester !== undefined && textOf(tester).indexOf('待命') >= 0 && text.indexOf('待命（进程在运行，没有分配任务）') < 0,
+    tester && textOf(tester),
+  )
+  check(
+    'T-137 the queue column shows the count or an em dash',
+    textOf(findAll(reviewer, (node) => node.props && node.props['data-col'] === 'worker-queue')[0]) === '2' &&
+      textOf(findAll(tester, (node) => node.props && node.props['data-col'] === 'worker-queue')[0]) === '—',
+  )
+  // A session-named lead renders as 本会话 Lead instead of the raw id.
+  const savedLead = HOST.workers.lead
+  HOST.workers.lead = 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c'
+  let namedTree = withHooks(panel, { initialView: 'workers' })
+  await flush()
+  namedTree = withHooks(panel, { initialView: 'workers' })
+  const namedLeadCell = findAll(namedTree, (node) => node.props && node.props['data-worker-lead'] === 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c')[0]
+  const namedLeadBold = namedLeadCell === undefined ? undefined : findAll(namedLeadCell, (node) => node.type === 'b')[0]
+  check(
+    'T-137 a session-named lead renders exactly once: Team Lead 本会话 Lead · eb9ba775',
+    namedLeadCell !== undefined &&
+      /^Team Lead\s*本会话 Lead · eb9ba775$/.test(textOf(namedLeadCell)) &&
+      (textOf(namedLeadCell).match(/eb9ba775/g) || []).length === 1 &&
+      namedLeadBold !== undefined &&
+      String(namedLeadBold.props.title) === 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c',
+    namedLeadCell && textOf(namedLeadCell) + ' | title=' + String(namedLeadBold && namedLeadBold.props.title),
+  )
+  const namedTeamLine = findAll(namedTree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
+  check(
+    'T-137 the global project-team header formats the session lead exactly once too',
+    namedTeamLine !== undefined &&
+      textOf(namedTeamLine) === '该项目团队：本会话 Lead · eb9ba775 · 3 名成员' &&
+      (textOf(namedTeamLine).match(/eb9ba775/g) || []).length === 1,
+    namedTeamLine && textOf(namedTeamLine),
+  )
+  HOST.workers.lead = savedLead
+  // Project mismatch is explicit, never silent.
+  const savedProject = HOST.workers.project
+  HOST.workers.project = PROJECT + '\\beta-project'
+  HOST.workers.projectMatch = false
+  let mismatchTree = withHooks(panel, { initialView: 'workers' })
+  await flush()
+  mismatchTree = withHooks(panel, { initialView: 'workers' })
+  const mismatch = findAll(mismatchTree, (node) => node.props && node.props['data-worker-mismatch'] === 'true')[0]
+  check(
+    'T-137 a session team from another project shows a mismatch warning',
+    mismatch !== undefined && mismatch.props['data-tone'] === 'warn' && textOf(mismatch).indexOf('不是面板项目') >= 0 && textOf(mismatch).indexOf('beta-project') >= 0,
+    mismatch && textOf(mismatch),
+  )
+  HOST.workers.project = savedProject
+  HOST.workers.projectMatch = true
+  await flush()
+  const css = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+  check(
+    'T-137 the layout is responsive and token-only',
+    css.indexOf('.gbt-rolecards') >= 0 && css.indexOf('repeat(auto-fit,minmax(') >= 0 && css.indexOf('.gbt-tablewrap') >= 0 && css.indexOf('overflow-x:auto') >= 0 && css.indexOf('.gbt-workertable{min-width:560px}') >= 0 && css.indexOf('.gbt-workercard{') >= 0,
+    css.slice(0, 160),
+  )
+  const workerRules = ['.gbt-workerhead', '.gbt-rolecards', '.gbt-workercard', '.gbt-workertable', '.gbt-workername'].map(function (selector) {
+    const match = new RegExp(selector.replace(/\./g, '\\.') + '\\{[^}]*\\}').exec(css)
+    return match === null ? null : match[0]
+  })
+  check(
+    'T-137 the new executors styles use only T-133 tokens (no hardcoded colour)',
+    workerRules.every(function (body) { return body !== null && body.indexOf('#') < 0 && body.indexOf('rgba(') < 0 }),
+    JSON.stringify(workerRules),
+  )
+  withHooks(panel, { initialView: 'workers' })
+}
 // ── Status view: one summary line, three cards, a full-width activity card ─
 {
   const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
@@ -1487,7 +1653,7 @@ await flush()
     )
     const mergeTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
     const savedMergeHistory = mergeTask.history
-    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 10000).toISOString(), by: '@cccccccc', byName: null, note: 'merged as fedcba0987654321' }]
+    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(now - 60000).toISOString(), by: '@cccccccc', byName: null, note: 'merged as fedcba0987654321' }]
     let mergeTree = withHooks(panel, { initialView: 'status' })
     await flush()
     mergeTree = withHooks(panel, { initialView: 'status' })
@@ -1498,7 +1664,7 @@ await flush()
       mergeRow && textOf(mergeRow),
     )
     mergeTask.history = savedMergeHistory
-    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 9000).toISOString(), by: '@b7cc6c31', byName: '@b7cc6c31', note: 'merged as fedcba0987654321' }]
+    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(now - 59000).toISOString(), by: '@b7cc6c31', byName: '@b7cc6c31', note: 'merged as fedcba0987654321' }]
     let legacyMergeTree = withHooks(panel, { initialView: 'status' })
     await flush()
     legacyMergeTree = withHooks(panel, { initialView: 'status' })
@@ -1509,7 +1675,7 @@ await flush()
       legacyMergeRow && textOf(legacyMergeRow),
     )
     mergeTask.history = savedMergeHistory
-    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 8000).toISOString(), by: '@', byName: '@', note: 'merged as fedcba0987654321' }]
+    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(now - 58000).toISOString(), by: '@', byName: '@', note: 'merged as fedcba0987654321' }]
     let degenerateTree = withHooks(panel, { initialView: 'status' })
     await flush()
     degenerateTree = withHooks(panel, { initialView: 'status' })
@@ -1627,7 +1793,7 @@ await flush()
     const scanFooter = findAll(dispatchCard, (node) => node.props && node.props['data-status-scan'] === 'true')[0]
     check(
       'the footer keeps only the last scan and no merge-queue count',
-      scanFooter !== undefined && textOf(scanFooter).indexOf('上次扫描') >= 0 && textOf(scanFooter).indexOf('合并队列') < 0 && textOf(scanFooter).indexOf('2') < 0,
+      scanFooter !== undefined && textOf(scanFooter).indexOf('上次扫描') >= 0 && textOf(scanFooter).indexOf('合并队列') < 0 && findAll(scanFooter, (node) => node.props && node.props['data-kv'] !== undefined).length === 0,
       scanFooter && textOf(scanFooter),
     )
     locale = 'en'
@@ -1679,7 +1845,7 @@ await flush()
   else Object.defineProperty(globalThis, 'navigator', savedNavigator)
 }
 
-// ── Roles tab: ONE editor card, identity binding, in-card instances ────────
+// ── Roles tab: ONE editor card, identity binding, no team size (T-138/T-137) ─
 {
   let rolesTree = withHooks(panel, { initialView: 'roles' })
   await flush()
@@ -1800,17 +1966,24 @@ await flush()
       findAll(editor, (node) => node.props && node.props.className === 'gbt-seg').length === 0,
   )
   check(
-    'the left card holds the prompt, skills and instance count together',
+    'the left card holds the prompt and skills together, with no instance count',
     (function () {
       const card = findAll(editor, (node) => node.props && node.props['data-role-card'] === 'raw')[0]
       return (
         card !== undefined &&
         findAll(card, (node) => node.props && node.props['data-role-prompt'] === 'raw').length === 1 &&
         findAll(card, (node) => node.type === 'input' && node.props['data-field'] === 'skills').length === 1 &&
-        findAll(card, (node) => node.type === 'input' && node.props['data-field'] === 'instances').length === 1 &&
+        findAll(card, (node) => node.type === 'input' && node.props['data-field'] === 'instances').length === 0 &&
+        findAll(card, (node) => node.props && node.props['data-section'] === 'role-editor-instances-field').length === 0 &&
         findAll(card, (node) => node.props && node.props['data-role-card-title'] === 'true').length === 1
       )
     })(),
+  )
+  check(
+    'T-137 the roles page explains that team size comes from the dispatch settings',
+    findAll(rolesTree, (node) => node.props && node.props['data-role-scale-note'] === 'true').length === 1 &&
+      textOf(findAll(rolesTree, (node) => node.props && node.props['data-role-scale-note'] === 'true')[0]).indexOf('派发设置') >= 0,
+    textOf(rolesTree).slice(0, 200),
   )
   check(
     'the injected sections are labelled once, in the semantic order',
@@ -1916,18 +2089,18 @@ await flush()
   check('a built-in profile offers no delete', findAll(identity, (node) => node.props && node.props['data-action'] === 'rolesDelete').length === 0)
   HOST.roles = Object.assign({}, HOST.roles, { stages: Object.assign({}, HOST.roles.stages, { review: 'godot-reviewer' }) })
 
-  // The kind's instances live in a compact block inside the same card.
+  // T-137: the role editor no longer carries a team size at all — size is a
+  // dispatch setting, and a role only defines behaviour.
   rolesTree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(rolesTree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   const instanceRows = findAll(editor, (node) => node.type === 'tr' && node.props && node.props['data-role-instance'] !== undefined)
   check('the instance table is gone', instanceRows.length === 0 && findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-instances').length === 0)
   check('no drain/replace-per-instance buttons remain', findAll(editor, (node) => node.props && (node.props['data-action'] === 'rolesDrain' || node.props['data-action'] === 'rolesReplace')).length === 0)
-  const instancesField = findAll(editor, (node) => node.type === 'input' && node.props['data-field'] === 'instances')[0]
-  const instancesPane = findAll(editor, (node) => node.props && node.props['data-roles-pane'] === 'raw')[0]
   check(
-    'the instance count is a plain 1–8 field inside the left card',
-    instancesField !== undefined && instancesField.props.type === 'number' && instancesField.props.min === 1 && instancesField.props.max === 8 && findAll(instancesPane, (node) => node === instancesField).length === 1,
-    instancesField === undefined ? 'missing' : JSON.stringify(instancesField.props),
+    'T-137 the editor has no instance-count input and no hidden instances field',
+    findAll(editor, (node) => node.type === 'input' && node.props['data-field'] === 'instances').length === 0 &&
+      findAll(editor, (node) => node.props && node.props['data-section'] === 'role-editor-instances-field').length === 0 &&
+      findAll(editor, (node) => node.type === 'input' && node.props['data-field'] === 'number').length === 0,
   )
   const runningRow = findAll(editor, (node) => node.props && node.props['data-role-running'] === 'true')[0]
   check(
@@ -1938,7 +2111,7 @@ await flush()
 
   // Server-side validation errors are readable in the panel, and a COMPLETED
   // poll (the refresh button calls store.load) does not wipe them.
-  postReply = { ok: false, code: 'invalid-role-instances', message: 'instances must be an integer from 1 to 8' }
+  postReply = { ok: false, code: 'invalid-role-skills', message: 'skills must be a list' }
   const errorTree0 = withHooks(panel, { initialView: 'roles' })
   const blankCreate = findAll(errorTree0, (node) => node.props && node.props['data-section'] === 'role-create-blank')[0]
   check('the blank-create form is the editor\'s secondary entry', blankCreate !== undefined && findAll(blankCreate, (node) => node.props && node.props['data-form'] === 'role-create').length === 1)
@@ -1946,11 +2119,11 @@ await flush()
   findAll(errorForm, (node) => node.props && node.props['data-field'] === 'name')[0].props.ref.current = { value: 'bad-reviewer' }
   findAll(errorForm, (node) => node.props && node.props['data-action'] === 'rolesCreate')[0].props.onClick()
   await flush()
-  check('the refused action is recorded in the store', captured.getSnapshot().actionError !== null && captured.getSnapshot().actionError.code === 'invalid-role-instances', JSON.stringify(captured.getSnapshot().actionError))
+  check('the refused action is recorded in the store', captured.getSnapshot().actionError !== null && captured.getSnapshot().actionError.code === 'invalid-role-skills', JSON.stringify(captured.getSnapshot().actionError))
   const errorTree = withHooks(panel, { initialView: 'roles' })
   check(
     'a create refusal is recorded without a page-top banner',
-    captured.getSnapshot().actionError !== null && captured.getSnapshot().actionError.code === 'invalid-role-instances' && findAll(errorTree, (node) => node.props && node.props['data-role-result'] === 'ok').length === 0,
+    captured.getSnapshot().actionError !== null && captured.getSnapshot().actionError.code === 'invalid-role-skills' && findAll(errorTree, (node) => node.props && node.props['data-role-result'] === 'ok').length === 0,
   )
   postReply = null
 }
@@ -1984,7 +2157,7 @@ await flush()
   const form = findAll(rolesTree, (node) => node.props && node.props['data-form'] === 'role-create')[0]
   check('the blank-create form uses the responsive grid class', form !== undefined && form.props.className === 'gbt-formgrid', form && form.props.className)
   const formLabels = findAll(form, (node) => node.type === 'label')
-  check('the blank-create form has a multi-field grid', formLabels.length === 7, String(formLabels.length))
+  check('the blank-create form has a multi-field grid (no instance field)', formLabels.length === 6 && formLabels.every((label) => findAll(label, (node) => node.props && node.props['data-field'] === 'instances').length === 0), String(formLabels.length))
   const promptLabel = formLabels.filter((label) => label.props.className === 'gbt-formwide')[0]
   check('the prompt field spans the full grid row', promptLabel !== undefined && findAll(promptLabel, (node) => node.type === 'textarea' && node.props['data-field'] === 'prompt').length === 1)
   const formActions = findAll(form, (node) => node.props && node.props.className === 'gbt-formactions')[0]
@@ -2201,10 +2374,11 @@ await flush()
   await flush()
   const savePosts = posts.slice(saveBefore)
   check(
-    'saving the current copy updates it and replaces the running instances in one action',
+    'T-137 saving the current copy updates it (behaviour only) and replaces the instance in one action',
     savePosts.length === 2 &&
       savePosts[0].action === 'rolesUpdate' &&
       savePosts[0].name === 'godot-reviewer' &&
+      savePosts[0].profile.instances === undefined &&
       savePosts[1].action === 'rolesReplace' &&
       savePosts[1].name === 'reviewer',
     JSON.stringify(savePosts),
@@ -2270,12 +2444,12 @@ await flush()
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
   const draftName = identity.props['data-profile']
-  postReply = { ok: false, code: 'invalid-role-instances', message: 'instances must be an integer from 1 to 8' }
+  postReply = { ok: false, code: 'invalid-role-skills', message: 'skills must be a list' }
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
   await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  check('a refused create keeps the draft and reports the host error', findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0].props['data-draft'] === 'true' && textOf(editor).indexOf('实例数必须是 1–8 的整数') >= 0)
+  check('a refused create keeps the draft and reports the host error', findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0].props['data-draft'] === 'true' && textOf(editor).indexOf('技能必须是列表') >= 0)
 
   postReply = null
   const retryBefore = posts.length
@@ -3372,7 +3546,7 @@ await flush()
   rtree = reuse.render(panel2, { initialView: 'roles' })
   area = fieldOf(rtree, 'template')
   area.props.ref.current.value = 'draft body kept'
-  postReply = { ok: false, code: 'invalid-role-instances', message: 'instances must be an integer from 1 to 8' }
+  postReply = { ok: false, code: 'invalid-role-prompt', message: 'invalid prompt' }
   clickAction(rtree, 'role-editor-save')
   await flush()
   rtree = reuse.render(panel2, { initialView: 'roles' })
@@ -3383,7 +3557,7 @@ await flush()
     failedIdentity.props['data-draft'] === 'false' && valueOf(area) === 'draft body kept' && dirtyOf(area) === true,
     JSON.stringify({ identity: failedIdentity.props, value: valueOf(area), dirty: dirtyOf(area) }),
   )
-  check('a failed save is readable in the editor', textOf(editorOf(rtree)).indexOf('实例数必须是 1–8 的整数') >= 0, textOf(editorOf(rtree)).slice(0, 240))
+  check('a failed save is readable in the editor', textOf(editorOf(rtree)).indexOf('指令过长或不合法') >= 0, textOf(editorOf(rtree)).slice(0, 240))
   postReply = null
 
 
