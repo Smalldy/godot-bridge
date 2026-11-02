@@ -1321,13 +1321,23 @@ window.__ModuleLoader__.load({
 				'@keyframes gbt-skel{0%{background-position:200% 0}100%{background-position:-200% 0}}' +
 				'.gbt-colcount{margin-left:auto;font-weight:500;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:0 7px;font-size:10px}',
 			'.gbt-cards{display:flex;flex-direction:column;gap:8px;padding:9px;overflow:auto;flex:1 1 auto;min-height:0}',
-			'.gbt-card{border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;padding:9px 10px;background:var(--dsw-alias-bg-layer-2);cursor:pointer;display:flex;flex-direction:column;gap:6px;transition:border-color .12s ease,box-shadow .12s ease}',
+			'.gbt-card{border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;padding:10px 11px;background:var(--dsw-alias-bg-layer-2);cursor:pointer;display:flex;flex-direction:column;gap:7px;transition:border-color .12s ease,box-shadow .12s ease}',
 			'.gbt-card:hover{border-color:var(--dsw-alias-state-business-primary)}',
 			'.gbt-card[data-selected="true"]{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 1px var(--dsw-alias-state-business-primary)}',
 			'.gbt-cardtop{display:flex;align-items:center;gap:6px;flex-wrap:wrap}',
 			'.gbt-id{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 			'.gbt-cardtitle{font-size:12px;font-weight:500;line-height:1.45;color:var(--dsw-alias-label-primary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}',
 			'.gbt-cardmeta{display:flex;gap:5px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+			// T-140: the verdict area belongs to the card. A separator and real spacing
+			// keep it from looking like two bare buttons glued under the meta row.
+			'.gbt-cardverdict{display:flex;flex-direction:column;gap:8px;margin-top:2px;padding-top:10px;border-top:0.5px solid var(--dsw-alias-border-l4)}',
+			'.gbt-cardverdicthead{font-size:11px;line-height:1.4;font-weight:500;color:var(--dsw-alias-label-tertiary);letter-spacing:.02em}',
+			'.gbt-cardverdictactions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}',
+			// Equal halves: two verdicts read as one control row, never overflow a narrow card.
+			'.gbt-cardverdict .gbt-btn{flex:1 1 0;min-width:0;height:30px;padding:0 10px}',
+			'.gbt-cardverdictform{display:flex;flex-direction:column;gap:6px;margin-top:2px}',
+			'.gbt-cardverdictform label{font-size:11px;color:var(--dsw-alias-label-secondary);margin:0}',
+			'.gbt-cardverdictform textarea{width:100%;min-height:64px;padding:7px 9px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;resize:vertical;box-sizing:border-box}',
 			'.gbt-chip{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:10px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 			'.gbt-chip[data-tone="ready"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-success-primary)}',
 			'.gbt-chip[data-tone="waiting"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-warn-label)}',
@@ -2568,6 +2578,9 @@ window.__ModuleLoader__.load({
 									{
 										type: 'button',
 										className: 'gbt-btn',
+										// T-140: the positive verdict is the card's primary action;
+										// the blocking one stays a danger outline.
+										'data-variant': 'primary',
 										'data-verdict-action': passing,
 										onClick: function (clickEvent) {
 											if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation()

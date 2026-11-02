@@ -4915,5 +4915,104 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   renderBoard()
 }
 
+
+// ── T-140: the card verdict area reads as part of the card ─────────────────
+{
+  const cssText = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+  const rule = (selector) => {
+    const match = new RegExp(selector + '\\{[^}]*\\}').exec(cssText)
+    return match === null ? null : match[0]
+  }
+  const verdict = rule('\\.gbt-cardverdict')
+  check(
+    'T-140 the verdict area is separated from the card body',
+    verdict !== null &&
+      /display:flex/.test(verdict) &&
+      /flex-direction:column/.test(verdict) &&
+      /gap:8px/.test(verdict) &&
+      /margin-top:2px/.test(verdict) &&
+      /padding-top:10px/.test(verdict) &&
+      /border-top:0\.5px solid var\(--dsw-alias-border-l4\)/.test(verdict),
+    verdict,
+  )
+  const head = rule('\\.gbt-cardverdicthead')
+  check(
+    'T-140 the verdict heading is a quiet 11px label',
+    head !== null && /font-size:11px/.test(head) && /line-height:1\.4/.test(head) && /font-weight:500/.test(head) && /var\(--dsw-alias-label-tertiary\)/.test(head) && /letter-spacing:\.02em/.test(head),
+    head,
+  )
+  const actions = rule('\\.gbt-cardverdictactions')
+  check(
+    'T-140 the verdict buttons share one row with an 8px gap',
+    actions !== null && /display:flex/.test(actions) && /align-items:center/.test(actions) && /gap:8px/.test(actions) && /flex-wrap:wrap/.test(actions),
+    actions,
+  )
+  const buttons = rule('\\.gbt-cardverdict \\.gbt-btn')
+  check(
+    'T-140 the two verdict buttons are equal halves at 30px',
+    buttons !== null && /flex:1 1 0/.test(buttons) && /min-width:0/.test(buttons) && /height:30px/.test(buttons) && /padding:0 10px/.test(buttons),
+    buttons,
+  )
+  const form = rule('\\.gbt-cardverdictform')
+  check('T-140 the reason form stacks its label, textarea and buttons', form !== null && /display:flex/.test(form) && /flex-direction:column/.test(form) && /gap:6px/.test(form), form)
+  const label = rule('\\.gbt-cardverdictform label')
+  check('T-140 the reason label is a small secondary label', label !== null && /font-size:11px/.test(label) && /var\(--dsw-alias-label-secondary\)/.test(label) && /margin:0/.test(label), label)
+  const textarea = rule('\\.gbt-cardverdictform textarea')
+  check(
+    'T-140 the reason textarea is a full-width token-styled field',
+    textarea !== null &&
+      /width:100%/.test(textarea) &&
+      /min-height:64px/.test(textarea) &&
+      /padding:7px 9px/.test(textarea) &&
+      /border:0\.5px solid var\(--dsw-alias-border-l4\)/.test(textarea) &&
+      /border-radius:8px/.test(textarea) &&
+      /background:var\(--dsw-alias-bg-layer-3\)/.test(textarea) &&
+      /color:var\(--dsw-alias-label-primary\)/.test(textarea) &&
+      /font:inherit/.test(textarea) &&
+      /font-size:12px/.test(textarea) &&
+      /resize:vertical/.test(textarea),
+    textarea,
+  )
+  const card = rule('\\.gbt-card')
+  check('T-140 the card itself gets the extra 10/11 padding and 7px rhythm', card !== null && /padding:10px 11px/.test(card) && /gap:7px/.test(card), card)
+  const newRules = [verdict, head, actions, buttons, form, label, textarea].filter((body) => body !== null).join('\n')
+  check('T-140 the new rules use only DSH tokens, no hardcoded colour', newRules.indexOf('#') < 0 && newRules.indexOf('rgba(') < 0, newRules.slice(0, 200))
+
+  const savedReview = HOST.tasks.filter((entry) => entry.id === 'T-1')[0].status
+  const savedTest = HOST.tasks.filter((entry) => entry.id === 'T-2')[0].status
+  HOST.tasks.filter((entry) => entry.id === 'T-1')[0].status = 'reviewing'
+  HOST.tasks.filter((entry) => entry.id === 'T-2')[0].status = 'testing'
+  let tree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  tree = withHooks(panel, { initialView: 'board' })
+  const bars = findAll(tree, (node) => node.props && node.props['data-verdict-phase'] !== undefined)
+  const reviewBar = bars.filter((bar) => bar.props['data-verdict-phase'] === 'review')[0]
+  const testBar = bars.filter((bar) => bar.props['data-verdict-phase'] === 'test')[0]
+  const variantOf = (bar, action) => {
+    const button = findAll(bar, (node) => node.props && node.props['data-verdict-action'] === action)[0]
+    return button === undefined ? undefined : button.props['data-variant']
+  }
+  check(
+    'T-140 passing is the primary action, blocking stays a danger outline',
+    variantOf(reviewBar, 'approveReview') === 'primary' &&
+      variantOf(reviewBar, 'requestChanges') === 'danger' &&
+      variantOf(testBar, 'passTest') === 'primary' &&
+      variantOf(testBar, 'failTest') === 'danger',
+    JSON.stringify({ review: [variantOf(reviewBar, 'approveReview'), variantOf(reviewBar, 'requestChanges')], test: [variantOf(testBar, 'passTest'), variantOf(testBar, 'failTest')] }),
+  )
+  const reviewActions = findAll(reviewBar, (node) => node.props && node.props.className === 'gbt-cardverdictactions')[0]
+  const reviewButtons = reviewActions === undefined ? [] : findAll(reviewActions, (node) => node.type === 'button')
+  check(
+    'T-140 both verdict buttons sit in one actions row as plain gbt-btn',
+    reviewButtons.length === 2 && reviewButtons.every((button) => button.props.className === 'gbt-btn'),
+    JSON.stringify(reviewButtons.map((button) => button.props['data-verdict-action'])),
+  )
+  check('T-140 the verdict area keeps its head, actions and phase marker', reviewBar !== undefined && findAll(reviewBar, (node) => node.props && node.props.className === 'gbt-cardverdicthead').length === 1)
+  HOST.tasks.filter((entry) => entry.id === 'T-1')[0].status = savedReview
+  HOST.tasks.filter((entry) => entry.id === 'T-2')[0].status = savedTest
+  await flush()
+  withHooks(panel, { initialView: 'board' })
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
