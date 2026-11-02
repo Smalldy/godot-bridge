@@ -272,6 +272,7 @@ window.__ModuleLoader__.load({
 				workersProvisioning: '启动中',
 				workersFailed: '失败',
 				workerName: '名称',
+				workerMember: '成员',
 				workerStatus: '状态',
 				workerCurrent: '当前任务',
 				workersHint: '执行者是当前 Team 的 WorkAgent：优先复用空闲成员，没有空闲时才新建；池上限由派发设置决定（并发与上限取较小值）。',
@@ -631,7 +632,6 @@ window.__ModuleLoader__.load({
 				roleSkills: '技能',
 				roleContext: '上下文',
 				rolePermissions: '权限',
-				roleInstancesCount: '实例数',
 				roleProfilePrompt: 'Profile prompt（可修改）',
 				rolePromptEmpty: '（空 —— 内置角色的上下文由宿主 brief 补齐）',
 				roleSource: '来源',
@@ -649,7 +649,6 @@ window.__ModuleLoader__.load({
 				roleErrProfile: '角色配置不合法',
 				roleErrKind: '角色种类不合法',
 				roleErrStage: '阶段不合法',
-				roleErrInstances: '实例数必须是 1–8 的整数',
 				roleErrSkills: '技能必须是列表',
 				roleErrContext: '上下文必须是 fresh 或 fork',
 				roleErrPermissions: '权限不合法',
@@ -834,6 +833,7 @@ window.__ModuleLoader__.load({
 				workersProvisioning: 'Starting',
 				workersFailed: 'Failed',
 				workerName: 'Name',
+				workerMember: 'Member',
 				workerStatus: 'Status',
 				workerCurrent: 'Current task',
 				workersHint: 'Workers are the WorkAgents of the current Team: idle members are reused first and a new one is spawned only when none is idle; the pool cap comes from the dispatch settings (the smaller of concurrency and cap).',
@@ -1193,7 +1193,6 @@ window.__ModuleLoader__.load({
 				roleSkills: 'Skills',
 				roleContext: 'Context',
 				rolePermissions: 'Permissions',
-				roleInstancesCount: 'Instances',
 				roleProfilePrompt: 'Profile prompt (editable)',
 				rolePromptEmpty: '(empty — the host brief fills the context for built-in roles)',
 				roleSource: 'Source',
@@ -1211,7 +1210,6 @@ window.__ModuleLoader__.load({
 				roleErrProfile: 'invalid role profile',
 				roleErrKind: 'invalid role kind',
 				roleErrStage: 'invalid stage',
-				roleErrInstances: 'instances must be an integer from 1 to 8',
 				roleErrSkills: 'skills must be a list',
 				roleErrContext: 'context must be fresh or fork',
 				roleErrPermissions: 'invalid permissions',
@@ -3220,7 +3218,10 @@ window.__ModuleLoader__.load({
 				const panelProject = typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : null
 				const dispatch = snapshot.dispatch !== null && snapshot.dispatch !== undefined ? snapshot.dispatch : {}
 				const concurrent = Number.isFinite(dispatch.maxConcurrent) ? dispatch.maxConcurrent : null
-				const cap = Number.isFinite(workers.workerCap) ? workers.workerCap : Number.isFinite(workers.cap) ? workers.cap : null
+				// 上限 is the hard pool ceiling (maxWorkAgents). workerCap is just a
+				// fallback for hosts that predate it, so the head can read
+				// "并发 3 · 上限 4" instead of collapsing both chips into the minimum.
+				const cap = Number.isFinite(workers.cap) ? workers.cap : Number.isFinite(workers.workerCap) ? workers.workerCap : null
 				const shortPath = function (value) { return typeof value === 'string' && value !== '' ? tcBaseName(value) : null }
 				// A session id's useful part is after the "session-" prefix; a bare prefix is not a short id.
 				const shortId = function (value) {
@@ -3328,7 +3329,7 @@ window.__ModuleLoader__.load({
 				})
 				blocks.push(h('div', { key: 'tablewrap', className: 'gbt-tablewrap' },
 					h('table', { className: 'gbt-locktable gbt-workertable', 'data-worker-table': 'true' },
-						h('thead', null, h('tr', null, h('th', null, t('workerRole')), h('th', null, t('workerName')), h('th', null, t('workerStatus')), h('th', null, t('workerCurrent')), h('th', null, t('workersRoleQueue')))),
+						h('thead', null, h('tr', null, h('th', null, t('workerRole')), h('th', null, t('workerMember')), h('th', null, t('workerStatus')), h('th', null, t('workerCurrent')), h('th', null, t('workersRoleQueue')))),
 						h('tbody', null, rows))))
 				return shell(blocks)
 			}
@@ -3354,7 +3355,6 @@ window.__ModuleLoader__.load({
 				'invalid-role-profile': 'roleErrProfile',
 				'invalid-role-kind': 'roleErrKind',
 				'invalid-role-stage': 'roleErrStage',
-				'invalid-role-instances': 'roleErrInstances',
 				'invalid-role-skills': 'roleErrSkills',
 				'invalid-role-context': 'roleErrContext',
 				'invalid-role-permissions': 'roleErrPermissions',

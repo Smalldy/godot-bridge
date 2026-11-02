@@ -961,10 +961,19 @@ await flush()
     JSON.stringify({ hasFull: text.indexOf('session-eb9ba775-c7e9') >= 0 }),
   )
   const chips = findAll(tree, (node) => node.props && node.props['data-worker-chip'] !== undefined)
+  const chipText = (key) => textOf(chips.filter((chip) => chip.props['data-worker-chip'] === key)[0])
   check(
-    'T-137 the head carries dispatch size and live counters as chips',
+    'T-137 the head chips carry REAL values: 并发 from dispatch.maxConcurrent, 上限 from workers.cap (not the derived workerCap)',
     chips.map((chip) => chip.props['data-worker-chip']).join(',') === 'concurrent,cap,busy,idle,provisioning,failed' &&
-      ['并发', '上限', '执行中', '空闲', '启动中', '失败'].every((label) => text.indexOf(label) >= 0),
+      HOST.dispatch.maxConcurrent === 3 &&
+      HOST.workers.workerCap === 3 &&
+      HOST.workers.cap === 4 &&
+      chipText('concurrent') === '并发3' &&
+      chipText('cap') === '上限4' &&
+      chipText('busy') === '执行中1' &&
+      chipText('idle') === '空闲2' &&
+      chipText('provisioning') === '启动中1' &&
+      chipText('failed') === '失败1',
     JSON.stringify(chips.map((chip) => [chip.props['data-worker-chip'], textOf(chip)])),
   )
   const cards = findAll(tree, (node) => node.props && node.props['data-role-card'] !== undefined)
@@ -978,7 +987,7 @@ await flush()
   check('T-137 role cards no longer say “已配置” or “实例” (size is a dispatch setting)', text.indexOf('已配置') < 0 && text.indexOf('实例') < 0, text.slice(0, 300))
   const table = findAll(tree, (node) => node.props && node.props['data-worker-table'] === 'true')[0]
   const header = findAll(table, (node) => node.type === 'th').map((cell) => textOf(cell))
-  check('T-137 the member table is role / member / status / current task / queue', header.join(',') === '角色,名称,状态,当前任务,队列', JSON.stringify(header))
+  check('T-137 the member table is role / member / status / current task / queue', header.join(',') === '角色,成员,状态,当前任务,队列', JSON.stringify(header))
   const rows = findAll(table, (node) => node.type === 'tr' && node.props && node.props['data-worker'] !== undefined)
   check('T-137 members are grouped by role order (worker, reviewer, tester)', rows.map((row) => row.props['data-kind']).join(',') === 'worker,worker,worker,reviewer,tester', JSON.stringify(rows.map((row) => row.props['data-kind'])))
   const rowOf = (name) => rows.filter((row) => row.props['data-worker'] === name)[0]
@@ -1608,7 +1617,7 @@ await flush()
     )
     const mergeTask = HOST.tasks.filter((entry) => entry.id === 'T-3')[0]
     const savedMergeHistory = mergeTask.history
-    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 10000).toISOString(), by: '@cccccccc', byName: null, note: 'merged as fedcba0987654321' }]
+    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(now - 60000).toISOString(), by: '@cccccccc', byName: null, note: 'merged as fedcba0987654321' }]
     let mergeTree = withHooks(panel, { initialView: 'status' })
     await flush()
     mergeTree = withHooks(panel, { initialView: 'status' })
@@ -1619,7 +1628,7 @@ await flush()
       mergeRow && textOf(mergeRow),
     )
     mergeTask.history = savedMergeHistory
-    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 9000).toISOString(), by: '@b7cc6c31', byName: '@b7cc6c31', note: 'merged as fedcba0987654321' }]
+    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(now - 59000).toISOString(), by: '@b7cc6c31', byName: '@b7cc6c31', note: 'merged as fedcba0987654321' }]
     let legacyMergeTree = withHooks(panel, { initialView: 'status' })
     await flush()
     legacyMergeTree = withHooks(panel, { initialView: 'status' })
@@ -1630,7 +1639,7 @@ await flush()
       legacyMergeRow && textOf(legacyMergeRow),
     )
     mergeTask.history = savedMergeHistory
-    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(Date.now() - 8000).toISOString(), by: '@', byName: '@', note: 'merged as fedcba0987654321' }]
+    mergeTask.history = [{ from: 'testing', to: 'done', at: new Date(now - 58000).toISOString(), by: '@', byName: '@', note: 'merged as fedcba0987654321' }]
     let degenerateTree = withHooks(panel, { initialView: 'status' })
     await flush()
     degenerateTree = withHooks(panel, { initialView: 'status' })
@@ -1748,7 +1757,7 @@ await flush()
     const scanFooter = findAll(dispatchCard, (node) => node.props && node.props['data-status-scan'] === 'true')[0]
     check(
       'the footer keeps only the last scan and no merge-queue count',
-      scanFooter !== undefined && textOf(scanFooter).indexOf('上次扫描') >= 0 && textOf(scanFooter).indexOf('合并队列') < 0 && textOf(scanFooter).indexOf('2') < 0,
+      scanFooter !== undefined && textOf(scanFooter).indexOf('上次扫描') >= 0 && textOf(scanFooter).indexOf('合并队列') < 0 && findAll(scanFooter, (node) => node.props && node.props['data-kv'] !== undefined).length === 0,
       scanFooter && textOf(scanFooter),
     )
     locale = 'en'
