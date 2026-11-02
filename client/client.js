@@ -1318,7 +1318,7 @@ window.__ModuleLoader__.load({
 			'.gbt-workertask{display:block;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 			'.gbt-workertable th:first-child,.gbt-workertable td:first-child{width:1%;white-space:nowrap}',
 			'.gbt-controls{display:flex;gap:8px;margin-left:auto;align-items:center;flex-wrap:wrap}',
-			'.gbt-btn{appearance:none;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);height:30px;padding:0 12px;border-radius:8px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}',
+			'.gbt-btn{appearance:none;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);height:30px;padding:0 12px;border-radius:8px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;gap:5px}',
 			'.gbt-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
 			'.gbt-btn:disabled{opacity:.45;cursor:default}',
 			'.gbt-btn[data-variant="primary"]{background:var(--dsw-alias-state-business-primary);border-color:transparent;color:#fff}',
@@ -1375,7 +1375,7 @@ window.__ModuleLoader__.load({
 			'.gbt-cardverdicthead{font-size:11px;line-height:1.4;font-weight:500;color:var(--dsw-alias-label-tertiary);letter-spacing:.02em}',
 			'.gbt-cardverdictactions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}',
 			// Equal halves: two verdicts read as one control row, never overflow a narrow card.
-			'.gbt-cardverdict .gbt-btn{flex:1 1 0;min-width:0;height:30px;padding:0 10px}',
+			'.gbt-cardverdict .gbt-btn{flex:1 1 0;min-width:0;height:30px;padding:0 10px;text-align:center}',
 			'.gbt-cardverdictform{display:flex;flex-direction:column;gap:6px;margin-top:2px}',
 			'.gbt-cardverdictform label{font-size:11px;color:var(--dsw-alias-label-secondary);margin:0}',
 			'.gbt-cardverdictform textarea{width:100%;min-height:64px;padding:7px 9px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;resize:vertical;box-sizing:border-box}',
