@@ -7380,5 +7380,132 @@ rig.scheduler.dispose()
   rig.scheduler.dispose()
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// T-139: /state makes the executor team's project explicit (T-136 fix A).
+// The member table stays the REQUEST session's Team (T-122/T-130); the new
+// fields only say which project that Team lives in and whether it matches the
+// project this snapshot is for.
+// ══════════════════════════════════════════════════════════════════════════
+{
+  const T139_NOW = Date.parse('2026-11-02T12:00:00.000Z')
+  const ALPHA = PROJECT + '-alpha'
+  const BETA = PROJECT + '-beta'
+  const SA = 'session-alpha'
+  const SB = 'session-beta'
+  const SX = 'session-unknown'
+  const fs = createFakeFs()
+  seedBoard(fs, ALPHA, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [] }))
+  seedBoard(fs, BETA, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [] }))
+  const leadA = { id: SA, name: 'lead-alpha', role: 'lead', status: 'running' }
+  const leadB = { id: SB, name: 'lead-beta', role: 'lead', status: 'running' }
+  const rosterA = [
+    { id: SA, name: 'lead-alpha', role: 'lead', status: 'running' },
+    { id: 'session-alpha-worker', name: roleSlotName('worker', 1, ALPHA), role: 'teammate', status: 'inactive' },
+  ]
+  const rosterB = [
+    { id: SB, name: 'lead-beta', role: 'lead', status: 'running' },
+    { id: 'session-beta-worker', name: roleSlotName('worker', 1, BETA), role: 'teammate', status: 'inactive' },
+  ]
+  const rosters = new Map([[SA, rosterA], [SB, rosterB]])
+  const keyOfLead = (lead) => String(lead === null || lead === undefined ? 'unknown' : lead.id === undefined ? lead : lead.id)
+  const team = {
+    listMembers(lead) { return (rosters.get(keyOfLead(lead)) || []).map((member) => Object.assign({}, member)) },
+    tryMembership(candidate) {
+      if (candidate === null || candidate === undefined) return null
+      const id = String(candidate.id === undefined ? candidate : candidate.id)
+      if (id === SA || id === SB) return { role: 'lead', name: String(candidate.name === undefined ? id : candidate.name) }
+      return { role: 'teammate', name: String(candidate.name === undefined ? id : candidate.name) }
+    },
+    async spawnTeammate() { return { member: { id: 'session-spawned', name: 'spawned', role: 'teammate', status: 'inactive' } } },
+    async sendMessage() { return { status: 'accepted' } },
+    async interrupt() { return { previousStatus: 'running' } },
+  }
+  const ctx = createStrictCtx(
+    {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: ALPHA }) },
+      get(key) {
+        if (key === 'agents') return { list: () => [leadA, leadB] }
+        if (key === 'agentTeams') return team
+        if (key === 'subagents') return { list: () => ['spawn'] }
+        return undefined
+      },
+    },
+    ['fs', 'sandboxPolicy', 'tools', 'webServer'],
+  )
+  const state = createState(ctx, { now: () => T139_NOW, homeDir: join(PROJECT, '..', 't139-home'), sessionLookup: null })
+  state.setSessionRoot(SA, ALPHA)
+  state.setSessionRoot(SB, BETA)
+  const roles = createRoleManager(ctx, { state: state, now: () => T139_NOW })
+  const git = createFakeGit({ project: ALPHA, fs: fs })
+  const scheduler = createDispatcher(ctx, { state: state, projectPath: () => ALPHA, allowSpawn: false, git: git, roles: roles })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, roles: roles, now: () => T139_NOW })
+  const surface = install({ ctx: ctx, state: state, api: api, scheduler: scheduler })
+  const stateOf = async (project, session) => (await call(surface, STATE_PATH + '?project=' + encodeURIComponent(project) + '&session=' + encodeURIComponent(session), {})).json()
+
+  const ab = await stateOf(ALPHA, SB)
+  check(
+    'T-139 project A + session B: the executor team is B and projectMatch is false',
+    ab.ok === true &&
+      ab.project === ALPHA &&
+      ab.sessionProject === BETA &&
+      ab.workers.lead === 'lead-beta' &&
+      ab.workers.session === SB &&
+      ab.workers.project === BETA &&
+      ab.workers.projectMatch === false &&
+      ab.team.session === SB &&
+      ab.team.project === BETA &&
+      ab.team.projectMatch === false,
+    JSON.stringify({ project: ab.project, sessionProject: ab.sessionProject, workers: ab.workers && { lead: ab.workers.lead, session: ab.workers.session, project: ab.workers.project, match: ab.workers.projectMatch }, team: ab.team && { session: ab.team.session, project: ab.team.project, match: ab.team.projectMatch } }),
+  )
+  check(
+    'T-139 the member table is still the SESSION team (T-122), not project A',
+    ab.workers.members.map((member) => member.name).join(',') === rosterB.filter((member) => member.role === 'teammate').map((member) => member.name).join(','),
+    JSON.stringify(ab.workers.members.map((member) => member.name)),
+  )
+
+  const aa = await stateOf(ALPHA, SA)
+  check(
+    'T-139 project A + session A: both match',
+    aa.ok === true &&
+      aa.workers.lead === 'lead-alpha' &&
+      aa.workers.project === ALPHA &&
+      aa.workers.projectMatch === true &&
+      aa.team.project === ALPHA &&
+      aa.team.projectMatch === true,
+    JSON.stringify({ workers: aa.workers && { lead: aa.workers.lead, project: aa.workers.project, match: aa.workers.projectMatch }, team: aa.team && { project: aa.team.project, match: aa.team.projectMatch } }),
+  )
+  const bb = await stateOf(BETA, SB)
+  check('T-139 project B + session B: both match', bb.ok === true && bb.workers.project === BETA && bb.workers.projectMatch === true && bb.team.projectMatch === true, JSON.stringify({ workers: bb.workers && { project: bb.workers.project, match: bb.workers.projectMatch } }))
+  // A -> B -> A must not leave a stale Team identity behind.
+  const abAgain = await stateOf(ALPHA, SB)
+  check(
+    'T-139 A -> B -> A keeps the same session-scoped team, only the match flag follows the project',
+    abAgain.ok === true &&
+      abAgain.workers.lead === ab.workers.lead &&
+      abAgain.workers.project === BETA &&
+      abAgain.workers.projectMatch === false &&
+      abAgain.team.project === BETA &&
+      abAgain.team.projectMatch === false &&
+      abAgain.workers.members.map((member) => member.name).join(',') === ab.workers.members.map((member) => member.name).join(','),
+    JSON.stringify({ lead: abAgain.workers && abAgain.workers.lead, project: abAgain.workers && abAgain.workers.project, match: abAgain.workers && abAgain.workers.projectMatch }),
+  )
+
+  const unknown = await stateOf(ALPHA, SX)
+  check(
+    'T-139 an unknown session reports null project/projectMatch without throwing',
+    unknown.ok === true &&
+      unknown.workers.error === 'no-lead-for-project' &&
+      unknown.workers.project === null &&
+      unknown.workers.projectMatch === null &&
+      unknown.team.project === null &&
+      unknown.team.projectMatch === null,
+    JSON.stringify({ ok: unknown.ok, workers: unknown.workers && { error: unknown.workers.error, project: unknown.workers.project, match: unknown.workers.projectMatch }, team: unknown.team && { project: unknown.team.project, match: unknown.team.projectMatch } }),
+  )
+  surface.dispose()
+  scheduler.dispose()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
