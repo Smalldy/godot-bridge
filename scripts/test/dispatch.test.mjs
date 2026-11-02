@@ -106,11 +106,9 @@ async function submitAndMerge(rig, id, evidence) {
 // after E completes dispatch F.
 {
   const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
-  // T-127: the pool is the only source of executors, so concurrency is bounded
-  // by the configured worker instances. This chain needs three at once.
-  const poolConfig = defaultRoleConfig()
-  poolConfig.profiles.worker.instances = 3
-  rig.fs.files.set(rolesPath(PROJECT), { text: JSON.stringify(poolConfig), version: 'seed' })
+  // T-127/T-138: the pool is the only source of executors, and its size is the
+  // dispatch cap (min(maxConcurrent, maxWorkAgents)), grown one slot at a time.
+  // This chain needs three at once.
   const A = (await createTask(rig, { title: 'A' })).id
   const B = (await createTask(rig, { title: 'B', dependsOn: [A] })).id
   const C = (await createTask(rig, { title: 'C', dependsOn: [B] })).id
@@ -1780,7 +1778,11 @@ function roleTask(overrides) {
     config.profiles.worker !== undefined && config.profiles.reviewer !== undefined && config.profiles.tester !== undefined,
     Object.keys(config.profiles).join(','),
   )
-  check('each default role has one instance', config.profiles.worker.instances === 1 && config.profiles.reviewer.instances === 1 && config.profiles.tester.instances === 1)
+  check(
+    'T-138 the default profiles describe BEHAVIOUR only (no instances field)',
+    ['worker', 'reviewer', 'tester'].every((kind) => config.profiles[kind].instances === undefined),
+    JSON.stringify(config.profiles.worker),
+  )
   check(
     'stages bind implement to worker, review to reviewer, test to tester',
     config.stages.implement === 'worker' && config.stages.review === 'reviewer' && config.stages.test === 'tester',
@@ -1789,12 +1791,12 @@ function roleTask(overrides) {
   check('the default profile is worker', config.defaultProfile === 'worker', config.defaultProfile)
   const partial = normaliseRoleConfig({ defaultProfile: 'tester', profiles: { reviewer: { instances: 3, skills: ['dsh-plugin-workflow', 'dsh-plugin-workflow', ''] } } })
   check(
-    'a partial config repairs around the defaults',
-    partial.profiles.worker.instances === 1 && partial.profiles.reviewer.instances === 3 && partial.profiles.tester.stage === 'test',
+    'T-138 a partial config repairs around the defaults and drops the legacy size field',
+    partial.profiles.worker.instances === undefined && partial.profiles.reviewer.instances === undefined && partial.profiles.reviewer.skills.join(',') === 'dsh-plugin-workflow' && partial.profiles.tester.stage === 'test',
     JSON.stringify(partial.profiles),
   )
   check('skill lists are deduplicated and trimmed', partial.profiles.reviewer.skills.join(',') === 'dsh-plugin-workflow', JSON.stringify(partial.profiles.reviewer.skills))
-  check('instances are clamped to the limit', normaliseRoleConfig({ profiles: { worker: { instances: 99 } } }).profiles.worker.instances === 8)
+  check('T-138 a legacy instances value is ignored, never clamped into the profile', normaliseRoleConfig({ profiles: { worker: { instances: 99 } } }).profiles.worker.instances === undefined)
   check('the default profile accepts a known role only', partial.defaultProfile === 'tester' && normaliseRoleConfig({ defaultProfile: 'nobody' }).defaultProfile === 'worker')
 }
 
@@ -2250,13 +2252,16 @@ function roleTask(overrides) {
   const spawnFailed = await createRoleRig({ spawnThrows: true }).manager.ensure('reviewer', { config: config })
   check('a refused spawn is reported, not thrown', spawnFailed.ok === false && spawnFailed.code === 'spawn-failed', JSON.stringify(spawnFailed))
   const two = createRoleRig()
-  const config2 = normaliseRoleConfig({ profiles: { reviewer: { instances: 2, skills: ['skill-a'] } } })
-  const doubled = await two.manager.ensure('reviewer', { config: config2, projectPath: PROJECT, task: roleTask(), now: 1000 })
+  const config2 = normaliseRoleConfig({ profiles: { reviewer: { skills: ['skill-a'] } } })
+  // T-138: the CALLER asks for the size (count); the profile only supplies behaviour.
+  const doubled = await two.manager.ensure('reviewer', { config: config2, projectPath: PROJECT, task: roleTask(), now: 1000, count: 2 })
   check(
-    'configured instances are filled with fixed slot names',
-    doubled.ok === true && doubled.created.map((entry) => entry.name).join(',') === slot('reviewer', 1) + ',' + slot('reviewer', 2),
+    'T-138 an explicit count is filled with fixed slot names',
+    doubled.ok === true && doubled.desired === 2 && doubled.created.map((entry) => entry.name).join(',') === slot('reviewer', 1) + ',' + slot('reviewer', 2),
     JSON.stringify(doubled.created),
   )
+  const one = await createRoleRig().manager.ensure('reviewer', { config: config2, projectPath: PROJECT, task: roleTask(), now: 1000 })
+  check('T-138 the default count is one', one.ok === true && one.desired === 1 && one.created.length === 1, JSON.stringify(one))
   check(
     'each spawned brief carries the configured skill',
     two.team.calls.filter((call) => call.kind === 'spawn').every((call) => call.text.indexOf('skill-a') >= 0),
@@ -2272,9 +2277,14 @@ function roleTask(overrides) {
   )
   const read = await readRoleConfig({ fs: rig.fs }, { projectPath: PROJECT })
   check(
-    'roles.json is read from the project',
-    read.source === 'file' && read.config.profiles.reviewer.instances === 2 && read.config.profiles.reviewer.stage === 'review' && read.config.profiles.reviewer.skills.join(',') === 'dsh-plugin-workflow',
-    JSON.stringify(read.config),
+    'T-138 roles.json is read from the project with the legacy size dropped',
+    read.source === 'file' &&
+      read.config.profiles.reviewer.instances === undefined &&
+      read.config.profiles.reviewer.stage === 'review' &&
+      read.config.profiles.reviewer.skills.join(',') === 'dsh-plugin-workflow' &&
+      read.config.deprecated !== undefined &&
+      read.config.deprecated.instances === 'ignored',
+    JSON.stringify(read.config.deprecated),
   )
   check('and its default profile is honoured', read.config.defaultProfile === 'tester', read.config.defaultProfile)
   const absent = createRoleRig()
@@ -2815,7 +2825,7 @@ function fakeHostSubprocess(result) {
     tasks: [{ id: 'T-1', title: 'Feature', status: 'running', assignee: { name: 'fixer', session: 'session-fixer' } }],
     dispatch: { maxWorkAgents: 4 },
   }
-  const report = workerPool(rig.ctx, board, { roleConfig: normaliseRoleConfig({ profiles: { reviewer: { instances: 2 } } }) })
+  const report = workerPool(rig.ctx, board, { roleConfig: normaliseRoleConfig({}) })
   const byName = {}
   for (const member of report.members) byName[member.name] = member
   check(
@@ -2835,14 +2845,19 @@ function fakeHostSubprocess(result) {
   check('kinds are counted', report.kinds.lead === 1 && report.kinds.worker === 1 && report.kinds.reviewer === 1 && report.kinds.tester === 1 && report.kinds.merger === 1, JSON.stringify(report.kinds))
   check('the lead is a separate lead entry, not a teammate', report.leadInfo !== null && report.leadInfo.kind === 'lead' && report.members.filter((member) => member.kind === 'lead').length === 0, JSON.stringify(report.leadInfo))
   check(
-    'the role config reports desired/live/missing',
-    report.roles !== null &&
-      report.roles.desired.reviewer === 2 &&
-      report.roles.live.reviewer === 1 &&
-      report.roles.missing.reviewer === 1 &&
+    'T-138 desired comes from the dispatch caps, not a profile',
+    report.cap === 4 &&
+      report.workerCap === 3 &&
+      report.effectiveWorkerCap === 3 &&
+      report.maxConcurrent === 3 &&
+      report.roles !== null &&
+      report.roles.desired.worker === 3 &&
+      report.roles.desired.reviewer === 1 &&
       report.roles.desired.tester === 1 &&
+      report.roles.live.reviewer === 1 &&
+      report.roles.missing.reviewer === 0 &&
       report.roles.missing.tester === 0,
-    JSON.stringify(report.roles),
+    JSON.stringify({ cap: report.cap, workerCap: report.workerCap, effective: report.effectiveWorkerCap, roles: report.roles }),
   )
   const noTeam = workerPool({ get: () => undefined }, board)
   check('without a Team the pool degrades readably', noTeam.error === 'no-team-service' && noTeam.members.length === 0 && noTeam.kinds.lead === 0, JSON.stringify(noTeam))
@@ -2963,7 +2978,7 @@ function fakeHostSubprocess(result) {
 {
   const config = normaliseRoleConfig({
     profiles: {
-      'godot-reviewer': { role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Pay attention to Godot idioms.' },
+      'godot-reviewer': { role: 'reviewer', stage: 'review', skills: ['dsh-plugin-workflow'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'Pay attention to Godot idioms.' },
     },
     stages: { review: 'godot-reviewer' },
   })
@@ -2989,7 +3004,7 @@ function fakeHostSubprocess(result) {
       ],
     }),
   })
-  const config = normaliseRoleConfig({ profiles: { 'godot-reviewer': { role: 'reviewer', instances: 1 } }, stages: { review: 'godot-reviewer' } })
+  const config = normaliseRoleConfig({ profiles: { 'godot-reviewer': { role: 'reviewer' } }, stages: { review: 'godot-reviewer' } })
   const first = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1000 })
   check('a bound custom profile provisions its instances', first.ok === true && first.created.length === 0 && first.reused.join(',') === 'reviewer-1', JSON.stringify(first))
   const drained = rig.manager.drain('reviewer-1')
@@ -3014,14 +3029,16 @@ function fakeHostSubprocess(result) {
       ],
     }),
   })
-  const config = normaliseRoleConfig({ profiles: { 'godot-reviewer': { role: 'reviewer', instances: 2 } }, stages: { review: 'godot-reviewer' } })
-  const ensured = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1000 })
-  check('a custom instances count is honoured', ensured.ok === true && ensured.reused.length === 2, JSON.stringify(ensured))
+  const config = normaliseRoleConfig({ profiles: { 'godot-reviewer': { role: 'reviewer' } }, stages: { review: 'godot-reviewer' } })
+  // T-138: two slots exist because the CALLER asks for two (count), not because
+  // the profile says so. Review itself is provisioned with count 1 by the stage.
+  const ensured = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 1000, count: 2 })
+  check('T-138 an explicit count reuses the live slots of the kind', ensured.ok === true && ensured.reused.length === 2, JSON.stringify(ensured))
   const drained = await rig.manager.drainKind('reviewer')
   check('drainKind drains every instance of the kind', drained.ok === true && drained.drained.length === 2, JSON.stringify(drained))
-  const replaced = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 2000 })
+  const replaced = await rig.manager.ensure('reviewer', { config: config, projectPath: PROJECT, task: roleTask(), now: 2000, count: 2 })
   check(
-    'every drained slot is replaced',
+    'every drained slot is replaced at the requested count',
     replaced.ok === true && replaced.created.length === 2 && replaced.created.map((entry) => entry.name).join(',') === slot('reviewer', 1) + ',' + slot('reviewer', 2),
     JSON.stringify(replaced),
   )
@@ -3123,9 +3140,8 @@ function fakeHostSubprocess(result) {
       ],
     }),
   })
-  const config = defaultRoleConfig()
-  config.profiles.reviewer.instances = 2
-  rig.fs.files.set(rolesPath(PROJECT), { text: JSON.stringify(config), version: 'seed' })
+  // T-138: review is served by exactly ONE instance per session/team even when
+  // the roster happens to hold a second reviewer slot; the extra round queues.
   const A = (await createTask(rig, { title: 'parallel A' })).id
   const B = (await createTask(rig, { title: 'parallel B' })).id
   await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 4 })
@@ -3135,7 +3151,12 @@ function fakeHostSubprocess(result) {
   await submitAsUser(rig, B, 'B ready')
   const snap = await snapshot(rig)
   const delivered = rig.team.calls.filter((call) => call.target === 'reviewer-1').length
-  check('with two reviewer instances both review rounds are delivered', delivered === 2 && byId(snap, A).queuePosition === null && byId(snap, B).queuePosition === null, JSON.stringify({ delivered: delivered, queue: [byId(snap, A).queuePosition, byId(snap, B).queuePosition] }))
+  const queued = [A, B].filter((id) => byId(snap, id).queuePosition !== null)
+  check(
+    'T-138 review is served by exactly one instance, the second round queues',
+    delivered === 1 && queued.length === 1 && byId(snap, queued[0]).queuePosition === 1,
+    JSON.stringify({ delivered: delivered, queue: [byId(snap, A).queuePosition, byId(snap, B).queuePosition] }),
+  )
   rig.scheduler.dispose()
 }
 {
@@ -4376,6 +4397,104 @@ function fakeHostSubprocess(result) {
   }
 }
 
+
+// ── T-138: the dispatch cap sizes the worker pool ──────────────────────────
+{
+  // cap = min(maxConcurrent=4, maxWorkAgents=3) = 3. Empty pool, four ready
+  // cards: the pool grows one slot per card (never a per-card work-* agent),
+  // three cards run, the fourth waits with 角色已满.
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  rig.team.setStatus('fixer', 'failed')
+  const four = []
+  for (let index = 0; index < 4; index += 1) four.push((await createTask(rig, { title: 'cap ' + String(index) })).id)
+  await rig.action('settings', { maxConcurrent: 4, maxWorkAgents: 3 })
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  const spawned = rig.team.calls.filter((call) => call.kind === 'spawn').map((call) => call.name)
+  check(
+    'T-138 the worker pool grows one slot at a time up to the dispatch cap',
+    running(snap).length === 3 &&
+      spawned.length === 3 &&
+      spawned.every((name) => /^worker-p[a-z0-9]+-[0-9]+$/.test(name)) &&
+      new Set(spawned).size === 3 &&
+      snap.workers.workerCap === 3 &&
+      snap.workers.effectiveWorkerCap === 3 &&
+      snap.workers.cap === 3 &&
+      snap.workers.maxConcurrent === 4,
+    JSON.stringify({ running: running(snap), spawned: spawned, caps: { cap: snap.workers.cap, workerCap: snap.workers.workerCap, maxConcurrent: snap.workers.maxConcurrent } }),
+  )
+  const pastCap = snap.tasks.filter((task) => task.status === 'pending')[0]
+  check(
+    'T-138 the card past the cap waits with 角色已满',
+    pastCap !== undefined && pastCap.waitingReason === '角色已满',
+    JSON.stringify(snap.tasks.map((task) => task.id + ':' + task.status + ':' + String(task.waitingReason))),
+  )
+
+  // allowSpawn=false never grows the pool: both cards wait for a roster that
+  // will not be created.
+  const quiet = createRig({ allowSpawn: false, teamOptions: { spawnedStatus: 'running' } })
+  quiet.team.setStatus('fixer', 'failed')
+  const q1 = (await createTask(quiet, { title: 'no spawn 1' })).id
+  const q2 = (await createTask(quiet, { title: 'no spawn 2' })).id
+  await quiet.action('settings', { maxConcurrent: 3, maxWorkAgents: 3 })
+  await quiet.action('start')
+  await quiet.settle()
+  const quietSnap = await snapshot(quiet)
+  check(
+    'T-138 allowSpawn=false never provisions a worker',
+    quiet.team.calls.filter((call) => call.kind === 'spawn').length === 0 && byId(quietSnap, q1).status === 'pending' && byId(quietSnap, q2).status === 'pending',
+    JSON.stringify({ spawns: quiet.team.calls.filter((call) => call.kind === 'spawn').length, ids: ids(quietSnap) }),
+  )
+  quiet.scheduler.dispose()
+
+  // maxConcurrent=1 clamps the effective cap even with a larger maxWorkAgents.
+  const single = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  const s1 = (await createTask(single, { title: 'single 1' })).id
+  const s2 = (await createTask(single, { title: 'single 2' })).id
+  await single.action('settings', { maxConcurrent: 1, maxWorkAgents: 8 })
+  await single.action('start')
+  await single.settle()
+  const singleSnap = await snapshot(single)
+  check(
+    'T-138 maxConcurrent=1 keeps the pool (and execution) at one',
+    running(singleSnap).length === 1 &&
+      singleSnap.workers.workerCap === 1 &&
+      singleSnap.workers.cap === 8 &&
+      byId(singleSnap, s1).status === 'running' &&
+      byId(singleSnap, s2).status === 'pending',
+    JSON.stringify({ running: running(singleSnap), workerCap: singleSnap.workers.workerCap, cap: singleSnap.workers.cap }),
+  )
+  single.scheduler.dispose()
+  rig.scheduler.dispose()
+}
+
+{
+  // A v1 roles.json asking for 8 workers must NOT widen the pool: the dispatch
+  // cap (2) wins, proving the legacy field is never consulted.
+  const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
+  rig.team.setStatus('fixer', 'failed')
+  const config = defaultRoleConfig()
+  config.profiles.worker.instances = 8
+  rig.fs.files.set(rolesPath(PROJECT), { text: JSON.stringify(config), version: 'seed' })
+  const a1 = (await createTask(rig, { title: 'legacy 1' })).id
+  const a2 = (await createTask(rig, { title: 'legacy 2' })).id
+  const a3 = (await createTask(rig, { title: 'legacy 3' })).id
+  await rig.action('settings', { maxConcurrent: 3, maxWorkAgents: 2 })
+  await rig.action('start')
+  await rig.settle()
+  const snap = await snapshot(rig)
+  check(
+    'T-138 a legacy profile instances count never sizes the pool',
+    running(snap).length === 2 &&
+      rig.team.calls.filter((call) => call.kind === 'spawn').length === 2 &&
+      snap.roles.profiles.worker.instances === undefined &&
+      snap.roles.deprecated !== undefined,
+    JSON.stringify({ running: running(snap), spawns: rig.team.calls.filter((call) => call.kind === 'spawn').length, deprecated: snap.roles.deprecated }),
+  )
+  check('T-138 the third card waits once the pool is at its cap', byId(snap, a3).status === 'pending' && byId(snap, a1).status === 'running' && byId(snap, a2).status === 'running', JSON.stringify(ids(snap)))
+  rig.scheduler.dispose()
+}
 // ── T-127: the pool is the only executor source ─────────────────────────────
 {
   // (d) empty pool -> one pool instance, never a per-card work-<task>-N agent.
@@ -4425,12 +4544,12 @@ function fakeHostSubprocess(result) {
 // ── T-127: a full pool queues the card with 角色已满 ─────────────────────────
 {
   const rig = createRig({ teamOptions: { spawnedStatus: 'running' } })
-  const poolConfig = defaultRoleConfig()
-  poolConfig.profiles.worker.instances = 1
-  rig.fs.files.set(rolesPath(PROJECT), { text: JSON.stringify(poolConfig), version: 'seed' })
+  // T-138: one worker slot because the dispatch cap says so
+  // (min(maxConcurrent=2, maxWorkAgents=1) = 1), not because a profile does.
   rig.team.setStatus('fixer', 'failed')
   const A = (await createTask(rig, { title: 'first' })).id
   const B = (await createTask(rig, { title: 'second' })).id
+  await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 1 })
   await rig.action('start')
   await rig.settle()
   const snap = await snapshot(rig)

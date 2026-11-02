@@ -34,6 +34,7 @@ import {
   normaliseMerge,
   normaliseReport,
   normaliseReview,
+  legacyRoleFields,
   normaliseRoleConfig,
   normaliseTest,
   normaliseVerify,
@@ -382,6 +383,17 @@ export function rolesPath(projectPath) {
   return join(projectPath, BOARD_DIRECTORY, ROLE_CONFIG_FILENAME)
 }
 
+/** Every legacy team-size field found across a raw roles.json (T-138). */
+function legacyRoleFieldsAcross(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return []
+  const profiles = raw.profiles !== null && typeof raw.profiles === 'object' && !Array.isArray(raw.profiles) ? raw.profiles : {}
+  const found = new Set()
+  for (const name of Object.keys(profiles)) {
+    for (const field of legacyRoleFields(profiles[name])) found.add(field)
+  }
+  return Array.from(found)
+}
+
 /**
  * Read and normalise `<project>/.agents/roles.json`.
  *
@@ -407,7 +419,21 @@ export async function readRoleConfig(io, options) {
     } catch (error) {
       return { ok: true, config: fallback, source: 'default', error: 'roles.json is not valid JSON, so the default role profiles apply: ' + describe(error) }
     }
-    return { ok: true, config: normaliseRoleConfig(parsed), source: 'file', error: null }
+    const config = normaliseRoleConfig(parsed)
+    // T-138: a pre-v2 file still carries `instances`/`concurrency` on its
+    // profiles. Reads stay compatible (the file loads, every other field is
+    // honoured) but the field is DROPPED and reported as deprecated: team size
+    // now comes from the dispatch settings, never from a role definition. A
+    // later save writes the clean v2 shape back, so the marker disappears.
+    const legacy = legacyRoleFieldsAcross(parsed)
+    if (legacy.length > 0) {
+      config.deprecated = {
+        instances: 'ignored',
+        movedTo: 'dispatch.maxConcurrent / dispatch.maxWorkAgents',
+        fields: legacy,
+      }
+    }
+    return { ok: true, config: config, source: 'file', error: null }
   } catch (error) {
     return { ok: true, config: fallback, source: 'default', error: describe(error) }
   }

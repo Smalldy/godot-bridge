@@ -2345,21 +2345,26 @@ function testStageTask(overrides) {
   seedRunningTask(rig, runningWorktreeTask({ spec: 'Config task' }))
   const submitted = await rig.action('submit', { id: 'T-1', evidence: 'x' })
   check(
-    'the project role config fills two reviewer instances',
-    submitted.provisioned !== undefined && submitted.provisioned.created.map((entry) => entry.name).join(',') === slot('reviewer', 1) + ',' + slot('reviewer', 2),
+    'T-138 a stage provisions exactly ONE reviewer, even when the legacy file asked for two',
+    submitted.provisioned !== undefined && submitted.provisioned.created.map((entry) => entry.name).join(',') === slot('reviewer', 1),
     JSON.stringify(submitted.provisioned && submitted.provisioned.created),
   )
   const reviewerCalls = team.calls.filter((call) => call.kind === 'spawn' && call.name.indexOf('reviewer-') === 0)
   check(
-    'the configured skill is referenced in every reviewer brief',
-    reviewerCalls.length === 2 && reviewerCalls.every((call) => call.text.indexOf('dsh-plugin-workflow') >= 0),
+    'the configured skill is referenced in the reviewer brief',
+    reviewerCalls.length === 1 && reviewerCalls[0].text.indexOf('dsh-plugin-workflow') >= 0,
     JSON.stringify(reviewerCalls.map((call) => call.name)),
   )
   const snapshot = await rig.api.snapshot(PROJECT)
   check(
-    'the snapshot exposes the project role config',
-    snapshot.roles !== undefined && snapshot.roles.profiles.reviewer.instances === 2 && snapshot.roles.profiles.reviewer.stage === 'review' && snapshot.roles.stages.review === 'reviewer',
-    JSON.stringify(snapshot.roles),
+    'T-138 the snapshot exposes the project role config without instances, with the migration note',
+    snapshot.roles !== undefined &&
+      snapshot.roles.profiles.reviewer.instances === undefined &&
+      snapshot.roles.profiles.reviewer.stage === 'review' &&
+      snapshot.roles.stages.review === 'reviewer' &&
+      snapshot.roles.deprecated !== undefined &&
+      snapshot.roles.deprecated.instances === 'ignored',
+    JSON.stringify(snapshot.roles.deprecated),
   )
   rig.scheduler.dispose()
 }
@@ -2482,7 +2487,7 @@ function testStageTask(overrides) {
   const snapshot = await plain.api.snapshot(PROJECT)
   check(
     'a project without roles.json exposes the default profiles',
-    snapshot.roles !== undefined && snapshot.roles.defaultProfile === 'worker' && snapshot.roles.stages.implement === 'worker' && snapshot.roles.profiles.tester.instances === 1,
+    snapshot.roles !== undefined && snapshot.roles.defaultProfile === 'worker' && snapshot.roles.stages.implement === 'worker' && snapshot.roles.profiles.tester.instances === undefined && snapshot.roles.deprecated === undefined,
     JSON.stringify(snapshot.roles),
   )
   plain.scheduler.dispose()
@@ -4327,13 +4332,13 @@ async function withDeadline(promise, ms) {
   )
   check('agent kinds are counted', agents.kinds.lead === 1 && agents.kinds.worker === 1 && agents.kinds.reviewer === 1 && agents.kinds.tester === 1 && agents.kinds.merger === 0, JSON.stringify(agents.kinds))
   check(
-    'the role config reports desired/live/missing instances',
+    'T-138 desired comes from the dispatch caps (worker) and fixed stage size (review/test)',
     agents.roles !== null &&
-      agents.roles.desired.worker === 1 &&
+      agents.roles.desired.worker === Math.max(1, Math.min(snapshot.dispatch.maxConcurrent, snapshot.dispatch.maxWorkAgents)) &&
       agents.roles.desired.reviewer === 1 &&
       agents.roles.live.reviewer === 1 &&
       agents.roles.missing.reviewer === 0,
-    JSON.stringify(agents.roles),
+    JSON.stringify({ desired: agents.roles.desired, dispatch: { maxConcurrent: snapshot.dispatch.maxConcurrent, maxWorkAgents: snapshot.dispatch.maxWorkAgents } }),
   )
   check('no System pseudo-agent is listed among the members', members.every((member) => member.kind !== 'system'), JSON.stringify(members.map((member) => member.kind)))
 }
@@ -4527,18 +4532,31 @@ async function withDeadline(promise, ms) {
     JSON.stringify(sandboxSeen),
   )
   check(
-    'the user can create a custom profile',
+    'T-138 the user can create a custom profile and the legacy size field is ignored',
     created.ok === true &&
-      created.config.profiles['godot-reviewer'].instances === 2 &&
+      created.config.profiles['godot-reviewer'].instances === undefined &&
       created.config.profiles['godot-reviewer'].context === 'fork' &&
-      created.config.profiles['godot-reviewer'].permissions.join(',') === 'read-only,review',
-    JSON.stringify(created.ok ? created.profile : created),
+      created.config.profiles['godot-reviewer'].permissions.join(',') === 'read-only,review' &&
+      created.deprecated !== undefined &&
+      created.deprecated.instances === 'ignored',
+    JSON.stringify(created.ok ? { profile: created.profile, deprecated: created.deprecated } : created),
   )
   const before = rig.fs.files.get(rolesPath(PROJECT)).text
   check('creating persists roles.json', JSON.parse(before).profiles['godot-reviewer'].prompt === 'Check idioms.', before.slice(0, 300))
-  const invalid = await rig.api.perform('rolesCreate', { name: 'bad-reviewer', profile: { role: 'reviewer', instances: 99 } }, user)
-  check('an invalid profile is refused', invalid.ok === false && invalid.code === 'invalid-role-instances', JSON.stringify(invalid))
-  check('a refused profile is not persisted', rig.fs.files.get(rolesPath(PROJECT)).text === before)
+  const legacyIgnored = await rig.api.perform('rolesCreate', { name: 'legacy-reviewer', profile: { role: 'reviewer', instances: 99 } }, user)
+  check(
+    'T-138 a legacy instances value is accepted-but-ignored, never a refusal',
+    legacyIgnored.ok === true && legacyIgnored.profile.instances === undefined && legacyIgnored.deprecated !== undefined,
+    JSON.stringify(legacyIgnored.ok ? legacyIgnored.deprecated : legacyIgnored),
+  )
+  check(
+    'T-138 the ignored field is not persisted',
+    JSON.parse(rig.fs.files.get(rolesPath(PROJECT)).text).profiles['legacy-reviewer'].instances === undefined,
+    rig.fs.files.get(rolesPath(PROJECT)).text.slice(0, 300),
+  )
+  const invalid = await rig.api.perform('rolesCreate', { name: 'bad-reviewer', profile: { role: 'reviewer', skills: 'nope' } }, user)
+  check('an invalid profile is refused', invalid.ok === false && invalid.code === 'invalid-role-skills', JSON.stringify(invalid))
+  check('a refused profile is not persisted', JSON.parse(rig.fs.files.get(rolesPath(PROJECT)).text).profiles['bad-reviewer'] === undefined)
   const duplicate = await rig.api.perform('rolesCreate', { name: 'godot-reviewer', profile: { role: 'reviewer' } }, user)
   check('creating an existing profile is refused', duplicate.ok === false && duplicate.code === 'role-exists', JSON.stringify(duplicate))
   const immutable = await rig.api.perform('rolesUpdate', { name: 'reviewer', profile: { prompt: 'hacked' } }, user)
@@ -4552,21 +4570,32 @@ async function withDeadline(promise, ms) {
 
   const updated = await rig.api.perform('rolesUpdate', { name: 'godot-reviewer', profile: { prompt: 'Updated prompt.' } }, user)
   check(
-    'updating a profile keeps its other fields',
+    'T-138 updating a profile keeps its other fields and never resurrects instances',
     updated.ok === true &&
       updated.config.profiles['godot-reviewer'].prompt === 'Updated prompt.' &&
-      updated.config.profiles['godot-reviewer'].instances === 2 &&
+      updated.config.profiles['godot-reviewer'].instances === undefined &&
       updated.config.profiles['godot-reviewer'].role === 'reviewer',
     JSON.stringify(updated.ok ? updated.config.profiles['godot-reviewer'] : updated),
+  )
+  const legacyUpdate = await rig.api.perform('rolesUpdate', { name: 'godot-reviewer', profile: { instances: 7 } }, user)
+  check(
+    'T-138 a legacy instances value on update is ignored, never stored',
+    legacyUpdate.ok === true &&
+      legacyUpdate.profile.instances === undefined &&
+      legacyUpdate.config.profiles['godot-reviewer'].instances === undefined &&
+      legacyUpdate.deprecated !== undefined &&
+      legacyUpdate.deprecated.instances === 'ignored' &&
+      legacyUpdate.config.profiles['godot-reviewer'].prompt === 'Updated prompt.',
+    JSON.stringify(legacyUpdate.ok ? { profile: legacyUpdate.profile, deprecated: legacyUpdate.deprecated } : legacyUpdate),
   )
   const bound = await rig.api.perform('rolesBind', { stage: 'review', profile: 'godot-reviewer' }, user)
   check('the user can bind a stage to a profile', bound.ok === true && bound.config.stages.review === 'godot-reviewer', JSON.stringify(bound.ok ? bound.bound : bound))
   const boundSnapshot = await rig.action('board')
   check(
-    'the snapshot desired instances follow the bound profile',
-    boundSnapshot.agents.roles.desired.reviewer === 2 &&
+    'T-138 the stage stays at one instance; the bound profile is still reported',
+    boundSnapshot.agents.roles.desired.reviewer === 1 &&
       boundSnapshot.agents.roles.bound.reviewer === 'godot-reviewer' &&
-      boundSnapshot.agents.roles.missing.reviewer === Math.max(0, 2 - boundSnapshot.agents.roles.live.reviewer),
+      boundSnapshot.agents.roles.missing.reviewer === Math.max(0, 1 - boundSnapshot.agents.roles.live.reviewer),
     JSON.stringify(boundSnapshot.agents.roles),
   )
   const badBind = await rig.api.perform('rolesBind', { stage: 'test', profile: 'godot-reviewer' }, user)
@@ -4630,7 +4659,7 @@ async function withDeadline(promise, ms) {
       reset.config.stages.review === 'godot-reviewer' &&
       reset.config.profiles['godot-reviewer'] !== undefined &&
       reset.config.profiles['godot-reviewer'].prompt === 'Updated prompt.' &&
-      reset.config.profiles.worker.instances === defaults.profiles.worker.instances &&
+      reset.config.profiles.worker.instances === undefined &&
       reset.config.profiles.reviewer.prompt === DEFAULT_ROLE_PROMPTS.reviewer &&
       reset.config.profiles.tester.prompt === DEFAULT_ROLE_PROMPTS.tester,
     JSON.stringify({ stages: reset.ok ? reset.config.stages : reset, profiles: reset.ok ? Object.keys(reset.config.profiles) : reset }),

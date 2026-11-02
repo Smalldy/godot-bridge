@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { boardSizeReport, readBoard, readProjectRegistry, updateBoard, writeProjectRegistry, workspaceRegistryPath, emptyBoard, boardPath, MAX_BOARD_BYTES, MAX_HISTORY, readRoleConfig, writeRoleConfig, rolesPath } from '../../plugin/task-center/board.mjs'
 import {
   DEFAULT_ROLE_PROMPTS,
+  ROLE_KINDS,
   ROLE_TEMPLATE_VARIABLES,
   ROLE_TEMPLATE_VARIABLE_NAMES,
   defaultRoleConfig,
@@ -530,7 +531,7 @@ const MERGE = {
       DEFAULT_ROLE_PROMPTS.tester.length > 0 &&
       missing.config.profiles.worker.prompt === DEFAULT_ROLE_PROMPTS.worker &&
       DEFAULT_ROLE_PROMPTS.worker.length > 0 &&
-      missing.config.profiles.reviewer.instances === 1,
+      !('instances' in missing.config.profiles.reviewer),
     JSON.stringify({ reviewer: missing.config.profiles.reviewer.prompt.length, tester: missing.config.profiles.tester.prompt.length, worker: missing.config.profiles.worker.prompt.length }),
   )
   check(
@@ -575,7 +576,7 @@ const MERGE = {
   check(
     'a custom profile is kept and bound to its stage',
     custom.profiles['godot-reviewer'].role === 'reviewer' &&
-      custom.profiles['godot-reviewer'].instances === 2 &&
+      custom.profiles['godot-reviewer'].instances === undefined &&
       custom.profiles['godot-reviewer'].context === 'fork' &&
       custom.profiles['godot-reviewer'].permissions.join(',') === 'read-only,review' &&
       custom.profiles['godot-reviewer'].prompt === 'Check Godot idioms.' &&
@@ -584,7 +585,7 @@ const MERGE = {
       custom.stages.test === 'tester',
     JSON.stringify({ stages: custom.stages, profile: custom.profiles['godot-reviewer'] }),
   )
-  check('the defaults survive alongside the custom profile', custom.profiles.worker.instances === 2 && custom.profiles.tester.role === 'tester', JSON.stringify(custom.profiles))
+  check('the defaults survive alongside the custom profile', custom.profiles.worker.skills.join(',') === 'base' && custom.profiles.tester.role === 'tester', JSON.stringify(custom.profiles))
   check('the default profile may name a custom profile', custom.defaultProfile === 'godot-reviewer', custom.defaultProfile)
 
   const garbage = normaliseRoleConfig({ profiles: { 'Bad Name': { role: 'reviewer' }, 'godot-x': { role: 'nope' }, 'godot-y': 'nope' } })
@@ -601,15 +602,13 @@ const MERGE = {
 
 {
   const valid = validateRoleProfile('godot-reviewer', { role: 'reviewer', instances: 2, skills: ['x'], context: 'fork', permissions: ['read-only', 'review'], prompt: 'p' })
-  check('a valid profile passes strict validation', valid.ok === true && valid.profile.instances === 2 && valid.profile.stage === 'review', JSON.stringify(valid))
+  check('a valid profile passes strict validation', valid.ok === true && valid.profile.stage === 'review' && valid.profile.instances === undefined, JSON.stringify(valid))
   const alias = validateRoleProfile('godot-reviewer', { kind: 'reviewer', concurrency: 3 })
-  check('kind and concurrency are accepted aliases', alias.ok === true && alias.profile.role === 'reviewer' && alias.profile.instances === 3, JSON.stringify(alias))
+  check('kind and the legacy concurrency field are accepted, size is ignored', alias.ok === true && alias.profile.role === 'reviewer' && alias.profile.instances === undefined, JSON.stringify(alias))
   const bads = [
     ['Bad Name', { role: 'reviewer' }, 'invalid-role-name'],
     ['ok', {}, 'invalid-role-kind'],
     ['ok', { role: 'reviewer', stage: 'test' }, 'invalid-role-stage'],
-    ['ok', { role: 'reviewer', instances: 0 }, 'invalid-role-instances'],
-    ['ok', { role: 'reviewer', instances: 99 }, 'invalid-role-instances'],
     ['ok', { role: 'reviewer', skills: 'nope' }, 'invalid-role-skills'],
     ['ok', { role: 'reviewer', context: 'warm' }, 'invalid-role-context'],
     ['ok', { role: 'reviewer', permissions: ['admin', 'nope'] }, 'invalid-role-permissions'],
@@ -643,11 +642,80 @@ const MERGE = {
   check('a role config is persisted to .agents/roles.json', written.ok === true && written.config.stages.review === 'godot-reviewer', JSON.stringify(written))
   check('the role config write forwards the project sandbox policy', policySeen !== null && policySeen !== undefined && policySeen.workspaceRoot === PROJECT, JSON.stringify(policySeen))
   const text = fs.files.get(rolesPath(PROJECT))
-  check('the file is JSON with the custom profile', text !== undefined && JSON.parse(text.text).profiles['godot-reviewer'].instances === 2, text === undefined ? 'missing' : text.text.slice(0, 200))
+  check('the file is JSON with the custom profile and no team size', text !== undefined && JSON.parse(text.text).profiles['godot-reviewer'].instances === undefined, text === undefined ? 'missing' : text.text.slice(0, 200))
   const loaded = await readRoleConfig({ fs }, { projectPath: PROJECT })
   check('the persisted config reads back with its stage binding', loaded.source === 'file' && loaded.config.stages.review === 'godot-reviewer' && loaded.config.profiles['godot-reviewer'].prompt === 'p', JSON.stringify(loaded))
 }
 
+
+// ── T-138: team size left the role definition ──────────────────────────────
+{
+  // The version is the file contract: v2 profile bodies carry no `instances`.
+  check('role config version is 2', defaultRoleConfig().version === 2, String(defaultRoleConfig().version))
+  check(
+    'no built-in profile carries an instances field',
+    ROLE_KINDS.every((kind) => !Object.prototype.hasOwnProperty.call(defaultRoleConfig().profiles[kind], 'instances')),
+    JSON.stringify(Object.keys(defaultRoleConfig().profiles.worker)),
+  )
+
+  // A v1 file: readable, the other fields honoured, the team-size field DROPPED.
+  const fs = createFakeFs()
+  fs.files.set(
+    rolesPath(PROJECT),
+    {
+      text: JSON.stringify({
+        version: 1,
+        defaultProfile: 'worker',
+        profiles: {
+          worker: { instances: 4, skills: ['alpha'] },
+          reviewer: { instances: 2 },
+          tester: { concurrency: 3 },
+          'godot-reviewer': { role: 'reviewer', stage: 'review', instances: 2, skills: ['dsh-plugin-workflow'], prompt: 'Check Godot idioms.' },
+        },
+        stages: { review: 'godot-reviewer' },
+      }),
+      version: 'seed',
+    },
+  )
+  const legacy = await readRoleConfig({ fs }, { projectPath: PROJECT })
+  check(
+    'T-138 a v1 roles.json still loads with its non-size fields',
+    legacy.source === 'file' &&
+      legacy.config.version === 2 &&
+      legacy.config.profiles.worker.skills.join(',') === 'alpha' &&
+      legacy.config.profiles['godot-reviewer'].prompt === 'Check Godot idioms.' &&
+      legacy.config.stages.review === 'godot-reviewer',
+    JSON.stringify({ version: legacy.config.version, skills: legacy.config.profiles.worker.skills, stages: legacy.config.stages }),
+  )
+  check(
+    'T-138 the legacy instances field is dropped from every profile',
+    ROLE_KINDS.concat(['godot-reviewer']).every((name) => legacy.config.profiles[name].instances === undefined),
+    JSON.stringify(Object.keys(legacy.config.profiles).map((name) => Object.keys(legacy.config.profiles[name]))),
+  )
+  check(
+    'T-138 the read reports the deprecated field and where it moved',
+    legacy.config.deprecated !== undefined &&
+      legacy.config.deprecated.instances === 'ignored' &&
+      legacy.config.deprecated.movedTo.indexOf('dispatch.') === 0 &&
+      legacy.config.deprecated.fields.indexOf('instances') >= 0 &&
+      legacy.config.deprecated.fields.indexOf('concurrency') >= 0,
+    JSON.stringify(legacy.config.deprecated),
+  )
+  // Saving writes the clean v2 shape back: the marker is a READ-side migration note.
+  const rewritten = await writeRoleConfig({ fs }, { projectPath: PROJECT, config: legacy.config })
+  check('T-138 a save persists a clean v2 file without instances or the marker', rewritten.ok === true && rewritten.config.deprecated === undefined, JSON.stringify(rewritten.config.deprecated))
+  const persisted = JSON.parse(fs.files.get(rolesPath(PROJECT)).text)
+  check(
+    'T-138 the persisted file has no instances anywhere',
+    persisted.version === 2 &&
+      ROLE_KINDS.every((kind) => persisted.profiles[kind].instances === undefined) &&
+      persisted.profiles['godot-reviewer'].instances === undefined &&
+      persisted.deprecated === undefined,
+    JSON.stringify(persisted).slice(0, 300),
+  )
+  const clean = await readRoleConfig({ fs }, { projectPath: PROJECT })
+  check('T-138 a clean v2 file reports no deprecation', clean.config.deprecated === undefined, JSON.stringify(clean.config.deprecated))
+}
 // ── role prompt templates: variable catalog, refusal, round trip ──────────
 {
   check(

@@ -20,6 +20,7 @@ import {
   TASK_LEASE_MS,
   WORKFLOW_STAGES,
   defaultRoleConfig,
+  legacyRoleFields,
   normaliseRoleConfig,
   normaliseVerify,
   VERIFY_DEFAULT_TIMEOUT_MS,
@@ -1016,13 +1017,15 @@ export function createApi(ctx, options) {
     }
   }
 
-  /** How many instances a stage role has (queue capacity). */
+  /**
+   * How many instances a stage role has (queue capacity).
+   *
+   * T-138: review and test are served by exactly ONE instance per session/team.
+   * Team size is a dispatch setting now — a role profile carries no `instances`,
+   * so a reviewer/tester queue slot can never be widened through roles.json.
+   */
   async function stageCapacity(kind, projectPath) {
-    const config = await roleConfigFor(projectPath)
-    const profiles = config === null || config === undefined ? null : config.profiles
-    const profile = profiles === null || profiles === undefined ? null : profiles[kind]
-    const instances = profile === null || profile === undefined ? null : profile.instances
-    return Number.isFinite(instances) ? Math.max(1, Math.floor(instances)) : 1
+    return 1
   }
 
   function stageStatusOf(kind) {
@@ -3909,7 +3912,9 @@ export function createApi(ctx, options) {
     for (const kind of ['worker']) {
       let ensured = null
       try {
-        ensured = await ensureRoleBounded(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: null, now: clock(), sessionId: sessionId })
+        // T-138: bootstrap provisions exactly ONE worker. The rest of the pool
+        // is grown by the dispatcher as ready cards arrive, up to the dispatch cap.
+        ensured = await ensureRoleBounded(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: null, now: clock(), sessionId: sessionId, count: 1 })
       } catch (error) {
         ensured = null
       }
@@ -4060,11 +4065,12 @@ export function createApi(ctx, options) {
             return failure('builtin-profile-immutable', 'the built-in ' + name + ' profile cannot be edited; fork a copy instead')
           }
           const existing = current.profiles[name]
+          // T-138: `instances`/`concurrency` are NOT profile fields any more; a
+          // legacy client sending them is ignored (reported to the caller below).
           merged = Object.assign(
             {
               role: existing.role,
               stage: existing.stage,
-              instances: existing.instances,
               skills: existing.skills,
               context: existing.context,
               permissions: existing.permissions,
@@ -4081,7 +4087,12 @@ export function createApi(ctx, options) {
         const written = await persistRoles(projectPath, config)
         if (written.ok !== true) return written
         emitActivity(context, 'role-config', action + ' ' + name, null)
-        return ok({ config: written.config, profile: written.config.profiles[name], source: 'file' })
+        const payload = { config: written.config, profile: written.config.profiles[name], source: 'file' }
+        // T-138: tell an old client where the field went instead of storing it.
+        if (legacyRoleFields(profileInput).length > 0) {
+          payload.deprecated = { instances: 'ignored', movedTo: 'dispatch.maxConcurrent / dispatch.maxWorkAgents' }
+        }
+        return ok(payload)
       }
       if (action === 'rolesDelete') {
         const name = String(source.name === undefined ? '' : source.name)
@@ -4182,6 +4193,19 @@ export function createApi(ctx, options) {
         // Timed out when the wait consumed the full budget before the old instance
         // went idle; the replacement was then spawned by the manager anyway.
         const waited = { waitedMs: waitedMs, timedOut: waitedMs >= drainTimeoutMs, waiting: waiting }
+        // T-138: the wait budget can expire a hair before the drained instance's
+        // own deadline, which would return "drained but not replaced". One final
+        // pass applies the timeout replacement deterministically (and the test
+        // for a stuck instance then cannot lose that race).
+        if (waited.timedOut === true && waiting.length > 0) {
+          try {
+            const finalPass = await ensureRoleBounded(kind, { config: current, projectPath: projectPath, task: null, now: clock(), sessionId: roleSessionId })
+            if (finalPass !== null && finalPass !== undefined) {
+              ensured = finalPass
+              waiting = Array.isArray(finalPass.waiting) ? finalPass.waiting : []
+            }
+          } catch (error) {}
+        }
         emitRoleProvision(ensured)
         if (ensured === null || ensured.ok !== true) return Object.assign({}, ensured, { drained: drained, waited: waited })
         emitActivity(context, 'role-config', 'replaced ' + kind + ' instance(s)' + (waited.timedOut === true ? ' (wait timed out)' : ''), null)
@@ -4212,7 +4236,9 @@ export function createApi(ctx, options) {
         if (roles !== null && typeof roles.ensure === 'function') {
           for (const kind of ROLE_KINDS) {
             // T-130: a reset only touches the PANEL session's team.
-            const result = await ensureRoleBounded(kind, { config: config, projectPath: projectPath, task: null, now: clock(), sessionId: roleSessionId })
+            // T-138: each built-in role starts at one instance; worker growth is
+            // the dispatcher's job (count = live + 1, bounded by the dispatch cap).
+            const result = await ensureRoleBounded(kind, { config: config, projectPath: projectPath, task: null, now: clock(), sessionId: roleSessionId, count: 1 })
             emitRoleProvision(result)
             ensured.push({ kind: kind, result: result })
           }
