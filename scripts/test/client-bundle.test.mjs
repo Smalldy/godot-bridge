@@ -964,13 +964,19 @@ await flush()
   )
   const teamLine = findAll(tree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
   check(
-    'T-137 the global project-team header hides the raw session id too (H7)',
+    'T-137 the global project-team header hides the raw session id too (H7), exactly once',
     teamLine !== undefined &&
-      textOf(teamLine).indexOf('本会话 Lead') >= 0 &&
-      textOf(teamLine).indexOf('eb9ba775') >= 0 &&
+      textOf(teamLine) === '该项目团队：本会话 Lead · eb9ba775 · 3 名成员' &&
+      (textOf(teamLine).match(/eb9ba775/g) || []).length === 1 &&
       textOf(teamLine).indexOf('session-eb9ba775') < 0 &&
       String(teamLine.props.title).indexOf('session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c') >= 0,
     teamLine && textOf(teamLine) + ' | title=' + String(teamLine.props.title),
+  )
+  const defaultLeadCell = findAll(tree, (node) => node.props && node.props['data-worker-lead'] === 'lead')[0]
+  check(
+    'T-137 a non-session lead keeps its plain name in the identity row',
+    defaultLeadCell !== undefined && /^Team Lead\s*lead$/.test(textOf(defaultLeadCell)),
+    defaultLeadCell && textOf(defaultLeadCell),
   )
   const chips = findAll(tree, (node) => node.props && node.props['data-worker-chip'] !== undefined)
   const chipText = (key) => textOf(chips.filter((chip) => chip.props['data-worker-chip'] === key)[0])
@@ -1036,7 +1042,25 @@ await flush()
   let namedTree = withHooks(panel, { initialView: 'workers' })
   await flush()
   namedTree = withHooks(panel, { initialView: 'workers' })
-  check('T-137 a session-named lead renders as 本会话 Lead with a short id', textOf(namedTree).indexOf('本会话 Lead') >= 0 && textOf(namedTree).indexOf('eb9ba775') >= 0, textOf(namedTree).slice(0, 200))
+  const namedLeadCell = findAll(namedTree, (node) => node.props && node.props['data-worker-lead'] === 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c')[0]
+  const namedLeadBold = namedLeadCell === undefined ? undefined : findAll(namedLeadCell, (node) => node.type === 'b')[0]
+  check(
+    'T-137 a session-named lead renders exactly once: Team Lead 本会话 Lead · eb9ba775',
+    namedLeadCell !== undefined &&
+      /^Team Lead\s*本会话 Lead · eb9ba775$/.test(textOf(namedLeadCell)) &&
+      (textOf(namedLeadCell).match(/eb9ba775/g) || []).length === 1 &&
+      namedLeadBold !== undefined &&
+      String(namedLeadBold.props.title) === 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c',
+    namedLeadCell && textOf(namedLeadCell) + ' | title=' + String(namedLeadBold && namedLeadBold.props.title),
+  )
+  const namedTeamLine = findAll(namedTree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
+  check(
+    'T-137 the global project-team header formats the session lead exactly once too',
+    namedTeamLine !== undefined &&
+      textOf(namedTeamLine) === '该项目团队：本会话 Lead · eb9ba775 · 3 名成员' &&
+      (textOf(namedTeamLine).match(/eb9ba775/g) || []).length === 1,
+    namedTeamLine && textOf(namedTeamLine),
+  )
   HOST.workers.lead = savedLead
   // Project mismatch is explicit, never silent.
   const savedProject = HOST.workers.project

@@ -3240,13 +3240,13 @@ window.__ModuleLoader__.load({
 				const shortPath = function (value) { return typeof value === 'string' && value !== '' ? tcBaseName(value) : null }
 				const sessionShort = tcSessionShort(session)
 				const leadDisplay = tcLeadText(lead, t)
-				const leadShort = lead !== null && /^session-/.test(lead) ? tcSessionShort(lead) : null
+				const leadIsSession = lead !== null && /^session-/.test(lead)
 				const copyValue = session === null ? leadSession : session
 				const identity = h('div', { key: 'identity', className: 'gbt-workeridentity', 'data-worker-identity': 'true' },
 					h('span', { key: 'project', className: 'gbt-workerid' }, h('span', { className: 'gbt-workeridlabel' }, t('workersProjectLabel')), h('b', { title: panelProject === null ? '' : panelProject }, panelProject === null ? '—' : shortPath(panelProject))),
 					h('span', { key: 'team', className: 'gbt-workerid', 'data-worker-team-project': teamProject === null ? '' : teamProject }, h('span', { className: 'gbt-workeridlabel' }, t('workersTeamLabel')), h('span', { title: teamProject === null ? '' : teamProject }, teamProject === null ? '—' : '项目 ' + shortPath(teamProject))),
-					h('span', { key: 'lead', className: 'gbt-workerid', 'data-worker-lead': lead === null ? '' : lead }, h('span', { className: 'gbt-workeridlabel' }, t('workersLead')), h('b', null, leadDisplay), leadShort === null ? null : h('span', { className: 'gbt-mono', title: lead }, leadShort)),
-					h('span', { key: 'session', className: 'gbt-workerid', 'data-worker-session': session === null ? '' : session }, h('span', { className: 'gbt-workeridlabel' }, t('workersSessionLabel')), h('span', { className: 'gbt-mono', title: session === null ? '' : session }, sessionShort === null ? '—' : sessionShort)),
+					h('span', { key: 'lead', className: 'gbt-workerid', 'data-worker-lead': lead === null ? '' : lead }, h('span', { className: 'gbt-workeridlabel' }, t('workersLead')), ' ', h('b', { title: leadIsSession ? lead : undefined }, leadDisplay)),
+					h('span', { key: 'session', className: 'gbt-workerid', 'data-worker-session': session === null ? '' : session }, h('span', { className: 'gbt-workeridlabel' }, t('workersSessionLabel')), ' ', h('span', { className: 'gbt-mono', title: session === null ? '' : session }, sessionShort === null ? '—' : sessionShort)),
 					copyValue === null
 						? null
 						: h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'copy-session', 'data-session': copyValue, onClick: function () { void copyToClipboard(copyValue).then(function (ok) { setCopied(ok === true ? copyValue : 'failed') }) } }, copied === copyValue ? t('sessionCopied') : t('copySession')),
