@@ -4850,5 +4850,70 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   )
 }
 
+
+// ── T-135: the board is its own bounded horizontal scrollport ──────────────
+{
+  const cssText = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+  const wrapRule = /\.gbt-boardwrap\{[^}]*\}/.exec(cssText)
+  check(
+    'T-135 the board wrap is a bounded flex column',
+    wrapRule !== null && /display:flex/.test(wrapRule[0]) && /flex-direction:column/.test(wrapRule[0]) && /height:100%/.test(wrapRule[0]) && /min-height:0/.test(wrapRule[0]),
+    wrapRule && wrapRule[0],
+  )
+  const boardRule = /\.gbt-board\{[^}]*\}/.exec(cssText)
+  check(
+    'T-135 the board scrolls its own overflow',
+    boardRule !== null && /flex:1 1 auto/.test(boardRule[0]) && /min-height:0/.test(boardRule[0]) && /overflow:auto/.test(boardRule[0]) && boardRule[0].indexOf('min-height:100%') < 0,
+    boardRule && boardRule[0],
+  )
+  const cardsRule = /\.gbt-cards\{[^}]*\}/.exec(cssText)
+  check(
+    'T-135 the card list can shrink and scroll inside its column',
+    cardsRule !== null && /flex:1 1 auto/.test(cardsRule[0]) && /min-height:0/.test(cardsRule[0]) && /overflow:auto/.test(cardsRule[0]),
+    cardsRule && cardsRule[0],
+  )
+  check('T-135 the board advertises a thin scrollbar', /\.gbt-board\{[^}]*scrollbar-width:thin/.test(cssText))
+
+  const savedTasks = HOST.tasks
+  const savedCounts = HOST.counts
+  function renderBoard() {
+    return withHooks(panel, { initialView: 'board' })
+  }
+  function scrollTargetOf(tree) {
+    const boardNode = findAll(tree, (node) => node.props && node.props.className === 'gbt-board')[0]
+    return boardNode === undefined ? undefined : boardNode.props['data-scroll-target']
+  }
+  function kindFilterInsideBoard(tree) {
+    const boardNode = findAll(tree, (node) => node.props && node.props.className === 'gbt-board')[0]
+    return boardNode === undefined ? -1 : findAll(boardNode, (node) => node.props && node.props.className === 'gbt-kindfilter').length
+  }
+
+  let tree = renderBoard()
+  await flush()
+  tree = renderBoard()
+  check('T-135 a mixed board points at the first non-empty column', scrollTargetOf(tree) === 'ready', String(scrollTargetOf(tree)))
+  check('T-135 the kind filter stays outside the board scrollport', kindFilterInsideBoard(tree) === 0)
+
+  HOST.tasks = savedTasks.map(function (task) {
+    return Object.assign({}, task, { status: 'done', dependency: { state: 'ready', waitingOn: [], brokenOn: [] } })
+  })
+  HOST.counts = Object.assign({}, savedCounts, { total: savedTasks.length, pending: 0, ready: 0, waiting: 0, running: 0, reviewing: 0, testing: 0, done: savedTasks.length, blocked: 0, cancelled: 0 })
+  await flush()
+  tree = renderBoard()
+  check('T-135 an all-done board points at the done column', scrollTargetOf(tree) === 'done', String(scrollTargetOf(tree)))
+
+  HOST.tasks = [Object.assign({}, savedTasks[0], { id: 'T-99', status: 'archived', dependency: { state: 'ready', waitingOn: [], brokenOn: [] } })]
+  HOST.counts = Object.assign({}, savedCounts, { total: 1 })
+  await flush()
+  tree = renderBoard()
+  check('T-135 a board with no visible card has an empty scroll target', scrollTargetOf(tree) === '', JSON.stringify(scrollTargetOf(tree)))
+  check('T-135 the seven columns survive the empty per-column case', findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length === 7)
+
+  HOST.tasks = savedTasks
+  HOST.counts = savedCounts
+  await flush()
+  renderBoard()
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

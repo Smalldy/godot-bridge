@@ -9,6 +9,7 @@
 
 ### 变更
 
+- **窄面板下的看板滚动（T-135）**：看板现在是自己的有界横向滚动容器——`.gbt-boardwrap` 变成 `height:100%`/`min-height:0` 的 flex 列，`.gbt-board` 自己承担溢出滚动（`flex:1 1 auto;min-height:0;overflow:auto`，细滚动条使用主题 token），`.gbt-cards` 可收缩（`flex:1 1 auto;min-height:0`），列内纵向滚动真正生效。kind filter 留在滚动容器上方，不会被横向滚走。新增 `useEffect`（配纯函数 `tcFirstNonEmptyColumn`）：任务数量或 kind filter 变化后把看板停到第一个有卡的列（目标已完整可见则不动，全空回到最左），所以全 done 的板子会直接打开在 131 张卡的『完成』列，而不是一屏空列。
 - **面板配色对齐 DSH 主题（T-133）**：任务中心不再自造主题 token，也不再写死颜色。深色模式下调查筛选条不再是近白横条——容器改为 `transparent`，选中 pill 用 `--dsw-alias-bg-module-platform` + `--dsw-alias-label-primary`，hover 用 `--dsw-alias-interactive-bg-hover`；tabs、chip、pill、计数徽章与选中行改用 module/hover/layer-2 token，替换掉并不存在的 `--dsw-alias-bg-layer-4`；调查 accent 改用品牌蓝 `--dsw-alias-state-business-primary`，删掉写死的青绿；状态色映射到 `--dsw-alias-state-success-primary` / `--dsw-alias-state-warn-label` / `--dsw-alias-state-error-primary`，底统一为中性 module 背景；错误文字改用 `--dsw-alias-state-error-primary`，不再依赖缺失的 `--dsw-alias-label-error`。布局、间距与交互不变。
 
 ### 新增
