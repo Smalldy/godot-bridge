@@ -1912,8 +1912,15 @@ function roleTask(overrides) {
     bare.indexOf('Profile instructions:') >= 0 && bare.indexOf(DEFAULT_ROLE_PROMPTS.reviewer) >= 0 && bare.indexOf('Task center role: reviewer') >= 0,
     bare.slice(0, 300),
   )
-  const order = ['Task center role: reviewer', 'Profile instructions:', 'Task T-1:', 'Permission boundary (hard):', 'Rules:', 'Skills:'].map((needle) => bare.indexOf(needle))
-  check('the brief keeps header → prompt → task data → fixed → rules → skills order', order.every((index, position) => index >= 0 && (position === 0 || index > order[position - 1])), JSON.stringify(order))
+  const order = ['Task center role: reviewer', 'Profile instructions:', 'Task T-1:', 'Permission boundary (hard):', 'Rules:'].map((needle) => bare.indexOf(needle))
+  check(
+    'the brief keeps header → prompt → task data → fixed → rules order',
+    order.every((index, position) => index >= 0 && (position === 0 || index > order[position - 1])) &&
+      bare.indexOf('Skills:') < 0 &&
+      bare.indexOf('godot-bridge-task-center') < 0 &&
+      bare.indexOf('Use the skill tool to load the skills listed below') < 0,
+    JSON.stringify(order),
+  )
   const sections = roleBriefSections('reviewer', task, config, { projectPath: PROJECT, leadName: 'lead' })
   check(
     'the split sections give the panel fixed parts and the raw template',
@@ -1925,7 +1932,8 @@ function roleTask(overrides) {
       sections.fixed.indexOf('READ-ONLY') >= 0 &&
       sections.rules.indexOf('Rules:') >= 0 &&
       sections.rules.indexOf('task_center is your only interface to the board.') >= 0 &&
-      sections.skills.indexOf('Skills:') >= 0,
+      sections.rules.indexOf('Use the skill tool') < 0 &&
+      sections.skills === '',
     JSON.stringify({ template: sections.template, header: sections.header, fixed: sections.fixed.slice(0, 80) }),
   )
   const preview = roleContextPreview(config, 'reviewer', { projectPath: PROJECT, profileName: 'reviewer' })
@@ -1941,11 +1949,11 @@ function roleTask(overrides) {
   )
   check(
     'the preview separates fixed, template and task blocks',
-    preview.blocks.map((entry) => entry.type).join(',') === 'fixed,fixed,template,task,fixed,fixed,fixed' &&
+    preview.blocks.map((entry) => entry.type).join(',') === 'fixed,fixed,template,task,fixed,fixed' &&
       preview.blocks.filter((entry) => entry.editable === true).length === 1 &&
       byKey.template.editable === true &&
       byKey.rules !== undefined &&
-      byKey.skills !== undefined,
+      byKey.skills === undefined,
     JSON.stringify(preview.blocks.map((entry) => [entry.key, entry.type, entry.editable])),
   )
   check('the template block keeps the literal {{VAR}} injection points', byKey.template.text === templated, byKey.template.text)
@@ -1956,22 +1964,38 @@ function roleTask(overrides) {
     JSON.stringify({ header: byKey.header.text, duties: byKey.duties.text.slice(0, 120) }),
   )
   check('the rendered brief and the entry share one generation path', preview.entries[0].text.indexOf('Handle T-? "Example task (placeholder)".') >= 0, preview.entries[0].text.slice(0, 400))
-  const skilled = roleBriefFor('reviewer', task, normaliseRoleConfig({ profiles: { reviewer: { skills: ['skill-a'] } } }), {})
+  const skilled = roleBriefFor('reviewer', task, normaliseRoleConfig({ profiles: { reviewer: { skills: ['skill-a', ' skill-a '] } } }), {})
   check(
-    'T-148 the brief separates Rules from Skills; Skills lists real names only',
+    'T-149 reviewer Skills lists only the profile project skill (de-duplicated) and never the Lead guide',
     skilled.indexOf('Rules:') >= 0 &&
       skilled.indexOf('- task_center is your only interface to the board.') > skilled.indexOf('Rules:') &&
-      skilled.indexOf('- task_center is your only interface to the board.') < skilled.indexOf('Skills:') &&
-      skilled.indexOf('Skills:\n- godot-bridge-task-center\n- skill-a') >= 0 &&
-      skilled.indexOf('Load these project skills') < 0 &&
-      skilled.indexOf('Load any project-specific skills') < 0,
+      skilled.indexOf('Skills:\n- skill-a') >= 0 &&
+      skilled.split('- skill-a').length === 2 &&
+      skilled.indexOf('godot-bridge-task-center') < 0 &&
+      skilled.indexOf('Use the skill tool to load the skills listed below') >= 0,
     skilled.slice(-260),
   )
   const unskilled = roleBriefFor('reviewer', task, normaliseRoleConfig({}), {})
   check(
-    'T-148 without profile skills the Skills block still lists only the host runtime skill',
-    unskilled.indexOf('Skills:\n- godot-bridge-task-center') >= 0 && unskilled.indexOf('Load any project-specific skills') < 0,
+    'T-149 without profile skills there is no Skills block, no host skill and no load-instruction bullet',
+    unskilled.indexOf('Skills:') < 0 &&
+      unskilled.indexOf('godot-bridge-task-center') < 0 &&
+      unskilled.indexOf('Use the skill tool to load the skills listed below') < 0,
     unskilled.slice(-200),
+  )
+  const lead = roleBriefFor('lead', task, { profiles: { lead: { skills: ['lead-skill', 'lead-skill'] } } }, {})
+  check(
+    'T-149 the Lead Skills lists the host runtime skill plus the Lead project skills, de-duplicated',
+    lead.indexOf('Skills:\n- godot-bridge-task-center\n- lead-skill') >= 0 &&
+      lead.split('- lead-skill').length === 2 &&
+      lead.indexOf('Use the skill tool to load the skills listed below') >= 0,
+    lead.slice(-200),
+  )
+  const bareLead = roleBriefFor('lead', task, null, {})
+  check(
+    'T-149 a Lead without project skills still lists the host runtime skill',
+    bareLead.indexOf('Skills:\n- godot-bridge-task-center') >= 0,
+    bareLead.slice(-160),
   )
 }
 
@@ -1988,10 +2012,11 @@ function roleTask(overrides) {
     brief.slice(0, 700),
   )
   check(
-    'T-148 a worker brief separates Rules and Skills; Skills has the real names',
+    'T-149 a worker brief lists only the profile project skills, never the Lead guide',
     brief.indexOf('Rules:') >= 0 &&
       brief.indexOf('- task_center is your only interface to the board.') > brief.indexOf('Rules:') &&
-      brief.indexOf('Skills:\n- godot-bridge-task-center\n- dsh-plugin-workflow') >= 0 &&
+      brief.indexOf('Skills:\n- dsh-plugin-workflow') >= 0 &&
+      brief.indexOf('godot-bridge-task-center') < 0 &&
       brief.indexOf('Load these project skills') < 0,
     brief.slice(-400),
   )
@@ -2094,8 +2119,11 @@ function roleTask(overrides) {
   await spawnRig.settle()
   const spawnCall = spawnRig.team.calls.filter((call) => call.kind === 'spawn')[0]
   check(
-    'a spawned implementer receives the worker default prompt and the skills section',
-    spawnCall !== undefined && spawnCall.text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0 && spawnCall.text.indexOf('Skills:') >= 0,
+    'a spawned implementer receives the worker default prompt and Rules, never the Lead skill',
+    spawnCall !== undefined &&
+      spawnCall.text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0 &&
+      spawnCall.text.indexOf('Rules:') >= 0 &&
+      spawnCall.text.indexOf('godot-bridge-task-center') < 0,
     spawnCall === undefined ? 'no spawn call: ' + JSON.stringify(spawnRig.team.calls) : spawnCall.text.slice(0, 300),
   )
   spawnRig.scheduler.dispose()
@@ -2107,8 +2135,11 @@ function roleTask(overrides) {
   await reuseRig.settle()
   const sendCall = reuseRig.team.calls.filter((call) => call.kind === 'send').pop()
   check(
-    'a reused teammate receives the same worker prompt and skills, not just a spawn preamble',
-    sendCall !== undefined && sendCall.text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0 && sendCall.text.indexOf('Skills:') >= 0,
+    'a reused teammate receives the same worker prompt and Rules, not just a spawn preamble',
+    sendCall !== undefined &&
+      sendCall.text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0 &&
+      sendCall.text.indexOf('Rules:') >= 0 &&
+      sendCall.text.indexOf('godot-bridge-task-center') < 0,
     sendCall === undefined ? 'no send call: ' + JSON.stringify(reuseRig.team.calls) : sendCall.text.slice(0, 300),
   )
   reuseRig.scheduler.dispose()

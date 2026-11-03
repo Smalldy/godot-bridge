@@ -954,10 +954,13 @@ export function createApi(ctx, options) {
     }
     const requestedKind = typeof input.kind === 'string' && input.kind !== '' ? input.kind : null
     const kind = requestedKind !== null ? requestedKind : named !== null && typeof named.role === 'string' ? named.role : 'worker'
-    if (ROLE_KINDS.indexOf(kind) < 0) {
-      return failure('invalid-role-kind', 'a role kind must be one of ' + ROLE_KINDS.join(', ') + ' (got ' + String(kind) + ')')
+    // T-149: the Lead is not a provisioned role kind, but its Skills boundary
+    // (the host runtime skill) must be previewable from the same builder.
+    const previewKinds = ROLE_KINDS.concat(['lead'])
+    if (previewKinds.indexOf(kind) < 0) {
+      return failure('invalid-role-kind', 'a role kind must be one of ' + previewKinds.join(', ') + ' (got ' + String(kind) + ')')
     }
-    const stage = named !== null && typeof named.stage === 'string' ? named.stage : ROLE_STAGE[kind]
+    const stage = named !== null && typeof named.stage === 'string' ? named.stage : kind === 'lead' ? 'lead' : ROLE_STAGE[kind]
     // Bind the named profile to its own stage in a scoped copy: the builders
     // resolve a profile through the stage binding, and the preview must show
     // THIS profile's text even when another one owns the stage.
@@ -985,7 +988,7 @@ export function createApi(ctx, options) {
     return ok({
       kind: kind,
       stage: stage,
-      profile: named !== null ? String(profileName) : bound !== null && typeof bound.name === 'string' ? bound.name : String(kind),
+      profile: named !== null ? String(profileName) : bound !== null && bound !== undefined && typeof bound.name === 'string' ? bound.name : String(kind),
       task: { id: task.id, title: task.title, real: picked.real === true, sample: picked.real !== true },
       text: text,
       tokens: tokens,
