@@ -3912,11 +3912,9 @@ async function withDeadline(promise, ms) {
       worker.entries[0].text.indexOf('Profile instructions:') >= 0 &&
       worker.entries[0].text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0 &&
       worker.entries[0].text.indexOf('Rules:') >= 0 &&
-      worker.entries[0].text.indexOf('Skills:') >= 0 &&
-      worker.entries[0].text.indexOf('Rules:') < worker.entries[0].text.indexOf('Skills:') &&
       worker.entries[0].text.indexOf('- task_center is your only interface to the board.') > worker.entries[0].text.indexOf('Rules:') &&
-      worker.entries[0].text.indexOf('- task_center is your only interface to the board.') < worker.entries[0].text.indexOf('Skills:') &&
-      worker.entries[0].text.indexOf('Skills:\n- godot-bridge-task-center') >= 0 &&
+      worker.entries[0].text.indexOf('Skills:') < 0 &&
+      worker.entries[0].text.indexOf('godot-bridge-task-center') < 0 &&
       worker.entries[0].text.indexOf('Permission boundary (hard)') >= 0 &&
       worker.entries[0].text.indexOf('Verdict schema (your report):') >= 0 &&
       worker.entries[0].text.indexOf('<example spec: what this task involves>') >= 0,
@@ -3961,8 +3959,8 @@ async function withDeadline(promise, ms) {
   const blockKeys = worker.blocks.map((entry) => entry.key)
   check(
     'a preview splits the brief into fixed, template and task blocks',
-    blockKeys.join(',') === 'header,meta,template,task,duties,rules,skills' &&
-      worker.blocks.map((entry) => entry.type).join(',') === 'fixed,fixed,template,task,fixed,fixed,fixed' &&
+    blockKeys.join(',') === 'header,meta,template,task,duties,rules' &&
+      worker.blocks.map((entry) => entry.type).join(',') === 'fixed,fixed,template,task,fixed,fixed' &&
       worker.blocks.filter((entry) => entry.editable === true).map((entry) => entry.key).join(',') === 'template',
     JSON.stringify(worker.blocks.map((entry) => [entry.key, entry.type, entry.editable])),
   )
@@ -4063,7 +4061,7 @@ async function withDeadline(promise, ms) {
     Array.isArray(worker.sections) &&
       worker.sections.length >= 5 &&
       worker.sections.map((section) => section.text).join('\n\n') === worker.text &&
-      worker.sections.map((section) => section.group).join(',') === 'role,template,task,task,task,task,task,fixed,rules,skills' &&
+      worker.sections.map((section) => section.group).join(',') === 'role,template,task,task,task,task,task,fixed,rules' &&
       worker.sections.filter((section) => section.text.indexOf('Task T-1:') >= 0).every((section) => section.group === 'task') &&
       worker.sections.some((section) => section.group === 'role' && section.text.indexOf('Task T-1:') < 0),
     JSON.stringify(worker.sections.map((section) => [section.key, section.group])),
@@ -4075,14 +4073,23 @@ async function withDeadline(promise, ms) {
     workerTemplate && workerTemplate.text.slice(0, 200),
   )
   check(
-    'T-148 the worker preview separates Rules (board interface) from Skills (real skill names)',
+    'T-149 the worker preview keeps Rules (board interface) and lists no Lead skill',
     worker.text.indexOf('Rules:') >= 0 &&
       worker.text.indexOf('- task_center is your only interface to the board.') > worker.text.indexOf('Rules:') &&
-      worker.text.indexOf('- task_center is your only interface to the board.') < worker.text.indexOf('Skills:') &&
-      worker.text.indexOf('Skills:\n- godot-bridge-task-center') >= 0 &&
-      worker.text.indexOf('Load these project skills') < 0 &&
-      worker.text.indexOf('Load any project-specific skills') < 0,
+      worker.text.indexOf('Skills:') < 0 &&
+      worker.text.indexOf('godot-bridge-task-center') < 0 &&
+      worker.text.indexOf('Use the skill tool to load the skills listed below') < 0,
     worker.text.slice(-300),
+  )
+  const leadPreview = await rig.api.perform('rolesPreview', { kind: 'lead' }, rig.user)
+  check(
+    'T-149 the Lead preview lists the host runtime skill',
+    leadPreview.ok === true &&
+      leadPreview.kind === 'lead' &&
+      leadPreview.text.indexOf('Skills:\n- godot-bridge-task-center') >= 0 &&
+      leadPreview.text.indexOf('Rules:') >= 0 &&
+      leadPreview.sections.some((section) => section.group === 'skills'),
+    leadPreview.ok === true ? leadPreview.text.slice(-240) : JSON.stringify(leadPreview),
   )
   check(
     'the variable list carries the real value for this task',
@@ -4101,7 +4108,7 @@ async function withDeadline(promise, ms) {
   )
   check(
     'the reviewer section labels separate task data from host copy',
-    reviewer.sections.map((section) => section.group).join(',') === 'role,role,template,task,fixed,rules,skills',
+    reviewer.sections.map((section) => section.group).join(',') === 'role,role,template,task,fixed,rules',
     JSON.stringify(reviewer.sections.map((section) => section.group)),
   )
   const reviewerTemplate = reviewer.sections.filter((section) => section.group === 'template')[0]
@@ -4120,7 +4127,7 @@ async function withDeadline(promise, ms) {
 
   check(
     'the built-in tester preview exposes the full contiguous group order',
-    tester.ok === true && tester.sections.map((section) => section.group).join(',') === 'role,role,template,task,fixed,rules,skills',
+    tester.ok === true && tester.sections.map((section) => section.group).join(',') === 'role,role,template,task,fixed,rules',
     tester.ok === true ? tester.sections.map((section) => section.group).join(',') : JSON.stringify(tester),
   )
 

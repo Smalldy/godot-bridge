@@ -1844,27 +1844,32 @@ export function spawnPreamble(name, leadName) {
  * These are constraints/instructions, NOT skills: they must not be presented as
  * skill names in the panel (T-148).
  */
-function roleRulesSection() {
-  return [
-    'Rules:',
-    '- task_center is your only interface to the board.',
-    '- Use the skill tool to load the skills listed below before acting.',
-  ].join('\n')
+function roleRulesSection(hasSkills) {
+  const lines = ['Rules:', '- task_center is your only interface to the board.']
+  // T-149: the load instruction only makes sense when a Skills block follows it.
+  if (hasSkills === true) lines.push('- Use the skill tool to load the skills listed below before acting.')
+  return lines.join('\n')
 }
 
 /**
- * The SKILLS injection: real skill names only, one per line. The host runtime
- * skill is always present (it is registered by this plugin); the profile's
- * project skills follow, de-duplicated. A profile without skills still gets the
- * host skill — never a fake "load any skills" instruction bullet.
+ * The SKILLS injection: real skill names only, one per line. T-149: the host
+ * runtime skill is the LEAD's guide (its body starts with 「你是谁：Lead」), so only
+ * the lead kind lists it. Worker/reviewer/tester list their profile's project
+ * skills only; with none, the whole Skills block is empty (no fake bullet).
+ *
+ * Listing a skill is NOT loading it: the body arrives only when the agent calls
+ * the skill tool, and only if the host catalog exposes it. Selecting a skill in
+ * a profile is a prompt recommendation, NOT an authorization ("勾选 ≠ 授权"):
+ * the hard boundaries are host catalog/tool availability and the task_center
+ * action role gate — never this skills list.
  */
-function roleSkillsSection(profile) {
+function roleSkillsSection(profile, kind) {
   const names = []
   const add = function (name) {
     const value = typeof name === 'string' ? name.trim() : ''
     if (value !== '' && names.indexOf(value) < 0) names.push(value)
   }
-  add(SKILL_NAME)
+  if (kind === 'lead') add(SKILL_NAME)
   const listed = profile !== null && profile !== undefined && Array.isArray(profile.skills) ? profile.skills : []
   listed.forEach(add)
   if (names.length === 0) return ''
@@ -1961,10 +1966,11 @@ export function briefPartsFor(task, projectPath, leadName, roleConfig) {
     ].join('\n'),
   })
   if (config !== null) {
-    // T-148: rules and skills are separate parts, rules first. Skills contains
-    // real skill names only (host runtime skill + profile project skills).
-    parts.push({ key: 'rules', group: 'rules', text: roleRulesSection() })
-    const skills = roleSkillsSection(profile)
+    // T-148/T-149: rules and skills are separate parts, rules first. A worker
+    // brief lists only the profile's project skills; the lead guide stays with
+    // the Lead. Skills is omitted entirely when empty.
+    const skills = roleSkillsSection(profile, 'worker')
+    parts.push({ key: 'rules', group: 'rules', text: roleRulesSection(skills !== '') })
     if (skills !== '') parts.push({ key: 'skills', group: 'skills', text: skills })
   }
   return parts
@@ -2038,8 +2044,8 @@ export function investigationBriefFor(task, projectPath, worktree) {
  */
 export function roleTemplateValuesFor(kind, task, config, options) {
   const opts = options === undefined || options === null ? {} : options
-  const profile = config !== null && config !== undefined ? profileForKind(config, kind) : null
-  const stage = profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
+  const profile = config !== null && config !== undefined ? (kind === 'lead' ? null : profileForKind(config, kind)) : null
+  const stage = profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : kind === 'lead' ? 'lead' : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
   const source = task === null || task === undefined ? null : task
   const text = (value) => (typeof value === 'string' ? value : '')
   return {
@@ -2080,8 +2086,18 @@ function gitInfoFor(task) {
  */
 export function roleBriefSections(kind, task, config, options) {
   const opts = options === undefined || options === null ? {} : options
-  const profile = config !== null && config !== undefined ? profileForKind(config, kind) : null
-  const stage = profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
+  // T-149: 'lead' is not a provisioned role profile (ROLE_KINDS is worker/
+  // reviewer/tester), but the same section builder can describe the Lead: no
+  // editable profile, stage 'lead', and the host runtime skill in Skills.
+  const profile =
+    config !== null && config !== undefined
+      ? kind === 'lead'
+        ? config.profiles !== null && config.profiles !== undefined && config.profiles.lead !== undefined
+          ? config.profiles.lead
+          : null
+        : profileForKind(config, kind)
+      : null
+  const stage = profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : kind === 'lead' ? 'lead' : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
   const header = []
   header.push('Task center role: ' + String(kind))
   header.push('Stage: ' + stage + ' (this role owns the ' + stage + ' stage; role profiles replace manual Lead spawns).')
@@ -2183,8 +2199,8 @@ export function roleBriefSections(kind, task, config, options) {
     templateRendered: templateRendered,
     taskData: taskData.join('\n'),
     fixed: fixed.join('\n'),
-    rules: roleRulesSection(),
-    skills: roleSkillsSection(profile),
+    rules: roleRulesSection(roleSkillsSection(profile, kind) !== ''),
+    skills: roleSkillsSection(profile, kind),
   }
 }
 
@@ -2307,11 +2323,16 @@ export function roleContextPreview(config, kind, options) {
     typeof opts.profileName === 'string' && config !== null && config !== undefined && config.profiles !== null && config.profiles !== undefined && config.profiles[opts.profileName] !== undefined
       ? config.profiles[opts.profileName]
       : null
-  let profile = config !== null && config !== undefined ? profileForKind(config, kind) : null
+  let profile =
+    config !== null && config !== undefined
+      ? kind === 'lead'
+        ? (config.profiles !== null && config.profiles !== undefined && config.profiles.lead !== undefined ? config.profiles.lead : null)
+        : profileForKind(config, kind)
+      : null
   let scoped = config
   if (named !== null) {
     profile = named
-    const stage = typeof profile.stage === 'string' ? profile.stage : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
+    const stage = typeof profile.stage === 'string' ? profile.stage : kind === 'lead' ? 'lead' : ROLE_STAGE[kind] === undefined ? 'implement' : ROLE_STAGE[kind]
     scoped = Object.assign({}, config, { stages: Object.assign({}, config.stages, { [stage]: opts.profileName }) })
   }
   const placeholder = {
@@ -2360,8 +2381,9 @@ export function roleContextPreview(config, kind, options) {
     { key: 'task', type: 'task', title: 'Task data (host: spec, acceptance, worktree)', text: sections.taskData, editable: false },
     { key: 'duties', type: 'fixed', title: 'Fixed duties / permission boundary / verdict (host)', text: sections.fixed, editable: false },
     { key: 'rules', type: 'fixed', title: 'Fixed rules (host: board interface, skill loading)', text: sections.rules, editable: false },
-    { key: 'skills', type: 'fixed', title: 'Fixed skills injection (host: real skill names)', text: sections.skills, editable: false },
   ]
+  // T-149: no profile skills means no Skills block at all (no empty section).
+  if (sections.skills !== '') blocks.push({ key: 'skills', type: 'fixed', title: 'Fixed skills injection (host: real skill names)', text: sections.skills, editable: false })
   return {
     name: named !== null ? String(opts.profileName) : profile !== null && profile !== undefined && typeof profile.name === 'string' ? profile.name : String(kind),
     kind: String(kind),
