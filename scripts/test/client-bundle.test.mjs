@@ -601,14 +601,23 @@ const HOST = {
   worktrees: {
     available: true,
     error: null,
-    total: 4,
+    total: 13,
     active: 2,
-    counts: { main: 1, task: 1, verify: 0, test: 1, merge: 0, other: 1 },
+    counts: { main: 1, task: 11, verify: 0, test: 1, merge: 0, other: 0 },
     worktrees: [
-      { path: PROJECT, branch: 'feat/task-center-v2', head: 'abcdef1234', type: 'main', taskId: null, active: false },
-      { path: PROJECT + '\\.worktrees\\T-1', branch: 'task/T-1-1', head: '1234567890', type: 'task', taskId: 'T-1', active: true },
-      { path: PROJECT + '\\.worktrees\\test-T-4', branch: 'test/T-4', head: 'aaaabbbbcc', type: 'test', taskId: 'T-4', active: true },
-      { path: PROJECT + '\\.worktrees\\scratch', branch: 'scratch', head: 'ffff000011', type: 'other', taskId: null, active: false },
+      { path: PROJECT, branch: 'feat/task-center-v2', head: 'abcdef1234', type: 'main', taskId: null, active: true, dirty: false, merged: true, safe: false, reason: 'active', target: null },
+      { path: PROJECT + '\\.worktrees\\T-200-1', branch: 'task/T-200-1', head: 'aaaabbbbcc', type: 'task', taskId: 'T-200', active: true, dirty: false, merged: true, safe: false, reason: 'active', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\T-46-1', branch: 'task/T-46-1', head: '1111222233', type: 'task', taskId: 'T-46', active: false, dirty: false, merged: true, safe: true, reason: 'safe', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\T-46-2', branch: 'task/T-46-2', head: '1111222244', type: 'task', taskId: 'T-46', active: false, dirty: false, merged: true, safe: true, reason: 'safe', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\T-47-1', branch: 'task/T-47-1', head: '1111222255', type: 'task', taskId: 'T-47', active: false, dirty: false, merged: true, safe: true, reason: 'safe', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\T-47-2', branch: 'task/T-47-2', head: '1111222266', type: 'task', taskId: 'T-47', active: false, dirty: false, merged: true, safe: true, reason: 'safe', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\T-83-3', branch: 'task/T-83-3', head: '1111222277', type: 'task', taskId: 'T-83', active: false, dirty: false, merged: true, safe: true, reason: 'safe', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\T-126-1', branch: 'task/T-126-1', head: '2222333311', type: 'task', taskId: 'T-126', active: false, dirty: false, merged: false, safe: false, reason: 'unmerged', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\T-128-1', branch: 'task/T-128-1', head: '2222333322', type: 'task', taskId: 'T-128', active: false, dirty: false, merged: false, safe: false, reason: 'unmerged', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\T-55-2', branch: 'task/T-55-2', head: '2222333333', type: 'task', taskId: 'T-55', active: false, dirty: false, merged: false, safe: false, reason: 'unmerged', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\T-83-1', branch: 'task/T-83-1', head: '2222333344', type: 'task', taskId: 'T-83', active: false, dirty: false, merged: false, safe: false, reason: 'unmerged', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\test-T-126', branch: 'test/T-126', head: '2222333355', type: 'test', taskId: 'T-126', active: false, dirty: false, merged: false, safe: false, reason: 'unmerged', target: 'feat/task-center-v2' },
+      { path: PROJECT + '\\.worktrees\\T-55-1', branch: 'task/T-55-1', head: '2222333366', type: 'task', taskId: 'T-55', active: false, dirty: true, merged: true, safe: false, reason: 'dirty', target: 'feat/task-center-v2' },
     ],
   },
   activity: {
@@ -662,6 +671,30 @@ let loads = 0
 let postGate = null
 let postReply = null
 const posts = []
+/** T-143: the host answer for worktreesCleanup, derived from the live fixture. */
+function worktreesCleanupReply(body) {
+  const list = HOST.worktrees !== null && HOST.worktrees !== undefined && Array.isArray(HOST.worktrees.worktrees) ? HOST.worktrees.worktrees : []
+  const requested = Array.isArray(body.paths) && body.paths.length > 0 ? body.paths : null
+  const entries = list.filter((entry) => requested === null || requested.indexOf(entry.path) >= 0)
+  const force = body.force === true
+  const candidates = entries.map((entry) => ({
+    path: entry.path,
+    type: entry.type,
+    taskId: entry.taskId,
+    branch: entry.branch,
+    target: entry.target === undefined ? null : entry.target,
+    dirty: entry.dirty,
+    merged: entry.merged,
+    safe: entry.safe,
+    reason: entry.reason,
+    wouldRemove: entry.safe === true || (force && (entry.reason === 'dirty' || entry.reason === 'unmerged')),
+    why: entry.reason,
+  }))
+  const kept = candidates.filter((candidate) => candidate.wouldRemove !== true && candidate.type !== 'main').map((candidate) => ({ path: candidate.path, reason: candidate.why }))
+  if (body.dryRun !== false) return { ok: true, dryRun: true, force: force, candidates: candidates, removed: [], kept: kept, failed: [] }
+  const removed = candidates.filter((candidate) => candidate.wouldRemove === true).map((candidate) => ({ path: candidate.path, branch: candidate.branch, taskId: candidate.taskId, branchDeleted: candidate.merged === true, force: force && candidate.why !== 'safe' }))
+  return { ok: true, dryRun: false, force: force, candidates: candidates, removed: removed, kept: kept, failed: [] }
+}
 globalThis.fetch = async function (url, options) {
   if (options !== undefined && options.method === 'POST') {
     const body = JSON.parse(options.body)
@@ -675,6 +708,7 @@ globalThis.fetch = async function (url, options) {
       return { json: async () => reply }
     }
     if (body.action === 'rolesPreview') return { json: async () => rolePreviewReply(body) }
+    if (body.action === 'worktreesCleanup') return { json: async () => worktreesCleanupReply(body) }
     return { json: async () => ({ ok: true, snapshot: HOST }) }
   }
   loads += 1
@@ -1154,18 +1188,7 @@ await flush()
     dispatchCard && textOf(dispatchCard),
   )
   const worktreesCard = statusCards.filter((card) => card.props['data-status-card'] === 'worktrees')[0]
-  const activeWtRows = findAll(worktreesCard, (node) => node.props && node.props['data-worktree-row'] !== undefined)
-  check(
-    'the worktrees card lists the main checkout and the active task worktrees only',
-    activeWtRows.length === 3 && activeWtRows[0].props['data-worktree-row'] === 'main' && textOf(worktreesCard).indexOf('T-1') >= 0 && textOf(worktreesCard).indexOf('T-4') >= 0,
-    JSON.stringify(activeWtRows.map((row) => row.props['data-worktree-row'])),
-  )
-  const staleFold = findAll(worktreesCard, (node) => node.props && node.props['data-status-stale'] !== undefined)[0]
-  check(
-    'stale worktrees are folded into one counted line with no cleanup button',
-    staleFold !== undefined && staleFold.props['data-status-stale'] === '1' && textOf(staleFold).indexOf('1 个陈旧工作树') >= 0 && textOf(staleFold).indexOf('清理能力尚未提供') >= 0 && findAll(staleFold, (node) => node.type === 'button').length === 0,
-    staleFold && textOf(staleFold),
-  )
+  check('the worktrees card renders on the status page', worktreesCard !== undefined)
   const agentsCard = statusCards.filter((card) => card.props['data-status-card'] === 'agents')[0]
   const agentRows = findAll(agentsCard, (node) => node.props && node.props['data-status-agent'] !== undefined)
   check('the agents card lists the lead and every teammate once', agentRows.length === 4, String(agentRows.length))
@@ -1317,7 +1340,182 @@ await flush()
   HOST.lastSweep = savedSweep
 
 
-  // ── T-113: the user records review/test verdicts from the card ─────────────
+  
+// ── T-143: worktree card — summary, rows, preflight and safe cleanup ───────
+{
+  const renderStatus = async function () {
+    withHooks(panel, { initialView: 'status' })
+    await flush()
+    await flush()
+    const tree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    return tree
+  }
+  let tree = await renderStatus()
+  let card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
+  const cardText = textOf(card)
+  check(
+    'T-143 the header sums the worktrees: total · active · cleanable · needs review',
+    cardText.indexOf('13 个工作树') >= 0 && cardText.indexOf('2 活跃') >= 0 && cardText.indexOf('5 可清理') >= 0 && cardText.indexOf('6 需确认') >= 0,
+    cardText.slice(0, 240),
+  )
+  check('T-143 the old cleanup-unavailable line is gone', cardText.indexOf('清理能力尚未提供') < 0, cardText)
+  const mainRow = findAll(card, (node) => node.props && node.props['data-worktree-row'] === 'main')[0]
+  const activeRow = findAll(card, (node) => node.props && node.props['data-worktree-row'] === 'active')[0]
+  check(
+    'T-143 the main and active rows are visible with no cleanup action',
+    mainRow !== undefined && activeRow !== undefined && findAll(mainRow, (node) => node.type === 'button').length === 0 && findAll(activeRow, (node) => node.type === 'button').length === 0,
+    JSON.stringify({ main: mainRow && textOf(mainRow), active: activeRow && textOf(activeRow) }),
+  )
+  const staleRows = findAll(card, (node) => node.props && node.props['data-worktree-stale'] !== undefined)
+  check(
+    'T-143 all 11 stale worktrees are listed (never truncated)',
+    staleRows.length === 11 && staleRows.map((row) => String(row.props['data-path']).split(/[\\/]/).pop()).sort().join(',') === 'T-126-1,T-128-1,T-46-1,T-46-2,T-47-1,T-47-2,T-55-1,T-55-2,T-83-1,T-83-3,test-T-126',
+    String(staleRows.length),
+  )
+  const staleRowOf = function (needle) { return findAll(card, (node) => node.props && typeof node.props['data-path'] === 'string' && node.props['data-path'].indexOf(needle) >= 0)[0] }
+  const badgesOf = function (row) { return { state: findAll(row, (node) => node.props && node.props['data-wt-state'] !== undefined)[0], merge: findAll(row, (node) => node.props && node.props['data-wt-merge'] !== undefined)[0] } }
+  const safeBadges = badgesOf(staleRowOf('T-46-1'))
+  const unmergedBadges = badgesOf(staleRowOf('T-126-1'))
+  const dirtyBadges = badgesOf(staleRowOf('T-55-1'))
+  check(
+    'T-143 each row carries clean/dirty and merged/unmerged badges with a token-mapped tone',
+    safeBadges.state !== undefined &&
+      safeBadges.state.props['data-wt-state'] === 'clean' &&
+      safeBadges.merge.props['data-wt-merge'] === 'merged' &&
+      safeBadges.state.props.className.indexOf('gbt-chip') >= 0 &&
+      safeBadges.merge.props.className.indexOf('gbt-chip') >= 0 &&
+      safeBadges.state.props['data-tone'] === 'ready' &&
+      safeBadges.merge.props['data-tone'] === 'ready' &&
+      unmergedBadges.state.props['data-wt-state'] === 'clean' &&
+      unmergedBadges.merge.props['data-wt-merge'] === 'unmerged' &&
+      unmergedBadges.merge.props['data-tone'] === 'waiting' &&
+      dirtyBadges.state.props['data-wt-state'] === 'dirty' &&
+      dirtyBadges.state.props['data-tone'] === 'blocked' &&
+      dirtyBadges.merge.props['data-wt-merge'] === 'merged',
+    JSON.stringify({
+      safe: [safeBadges.state && safeBadges.state.props.className, safeBadges.state && safeBadges.state.props['data-tone'], safeBadges.merge && safeBadges.merge.props['data-tone']],
+      unmerged: unmergedBadges.merge && unmergedBadges.merge.props['data-tone'],
+      dirty: dirtyBadges.state && dirtyBadges.state.props['data-tone'],
+    }),
+  )
+  const cssText = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+  const toneRuleOf = function (tone) { const match = new RegExp('\\.gbt-chip\\[data-tone="' + tone + '"\\]\\{[^}]*\\}').exec(cssText); return match === null ? null : match[0] }
+  const readyRule = toneRuleOf('ready')
+  const waitingRule = toneRuleOf('waiting')
+  const blockedRule = toneRuleOf('blocked')
+  check(
+    'T-143 the gbt-chip tones used by the badges map to T-133 state tokens',
+    readyRule !== null && /--dsw-alias-state-success-primary/.test(readyRule) &&
+      waitingRule !== null && /--dsw-alias-state-warn-label/.test(waitingRule) &&
+      blockedRule !== null && /--dsw-alias-state-error-primary/.test(blockedRule),
+    JSON.stringify([readyRule, waitingRule, blockedRule]),
+  )
+  // An unverifiable candidate keeps its row but must never print the raw code.
+  const reasonEntry = HOST.worktrees.worktrees.filter((entry) => String(entry.path).indexOf('T-126-1') >= 0)[0]
+  const savedReason = reasonEntry.reason
+  reasonEntry.reason = 'unverified'
+  tree = await renderStatus()
+  card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
+  const unverifiedText = textOf(staleRowOf('T-126-1'))
+  check(
+    'T-143 an unverified candidate shows a localized label, never the raw reason code',
+    unverifiedText.indexOf('未确认') >= 0 && unverifiedText.indexOf('unverified') < 0,
+    unverifiedText,
+  )
+  reasonEntry.reason = savedReason
+  tree = await renderStatus()
+  card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
+  check(
+    'T-143 task labels come from the path/branch, including the type',
+    findAll(card, (node) => node.props && node.props['data-worktree-stale'] === 'T-126').length >= 2 &&
+      findAll(staleRowOf('test-T-126'), (node) => node.props && node.props['data-wt-type'] === 'test').length === 1 &&
+      findAll(staleRowOf('T-46-1'), (node) => node.props && node.props['data-wt-type'] === 'task').length === 1,
+    JSON.stringify(findAll(card, (node) => node.props && node.props['data-worktree-stale'] !== undefined).map((row) => row.props['data-worktree-stale'])),
+  )
+  check(
+    'T-143 safe rows offer 清理 and dirty/unmerged rows offer 强制清理',
+    findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup').length === 5 &&
+      findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-force-cleanup').length === 6 &&
+      findAll(card, (node) => node.type === 'input' && node.props && node.props['data-worktree-select'] !== undefined).length === 5,
+    JSON.stringify({ clean: findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup').length, force: findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-force-cleanup').length }),
+  )
+  const preflightBlock = findAll(card, (node) => node.props && node.props['data-wt-preflight'] === 'true')[0]
+  const preflightRows = findAll(card, (node) => node.props && node.props['data-wt-preview-path'] !== undefined)
+  check(
+    'T-143 the automatic preflight previews exactly the five safe paths',
+    preflightBlock !== undefined && preflightRows.length === 5 && preflightRows.every((row) => String(row.props['data-wt-preview-path']).indexOf('T-46') >= 0 || String(row.props['data-wt-preview-path']).indexOf('T-47') >= 0 || String(row.props['data-wt-preview-path']).indexOf('T-83-3') >= 0),
+    JSON.stringify(preflightRows.map((row) => row.props['data-wt-preview-path'])),
+  )
+  const preflightButton = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-preflight')[0]
+  const batchButton = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup-safe')[0]
+  check(
+    'T-143 the batch controls show the preflight and the selected safe count',
+    preflightButton !== undefined && batchButton !== undefined && textOf(batchButton).indexOf('清理 5 个可安全清理') >= 0,
+    JSON.stringify({ preflight: preflightButton && textOf(preflightButton), batch: batchButton && textOf(batchButton) }),
+  )
+  // One safe row: execute only that path, then reload (no optimistic row removal).
+  const firstRow = staleRowOf('T-46-1')
+  const cleanButton = findAll(firstRow, (node) => node.props && node.props['data-action'] === 'worktree-cleanup')[0]
+  const loadsBefore = loads
+  const cleanBefore = posts.length
+  cleanButton.props.onClick()
+  await flush()
+  await flush()
+  const cleanPost = posts.slice(cleanBefore).filter((post) => post.action === 'worktreesCleanup')[0]
+  check(
+    'T-143 one-row cleanup sends dryRun:false with only that path (no force)',
+    cleanPost !== undefined && cleanPost.dryRun === false && cleanPost.force === undefined && Array.isArray(cleanPost.paths) && cleanPost.paths.length === 1 && cleanPost.paths[0].indexOf('T-46-1') >= 0,
+    JSON.stringify(cleanPost),
+  )
+  check('T-143 a successful cleanup reloads the snapshot instead of deleting rows locally', loads > loadsBefore, String(loadsBefore) + ' -> ' + String(loads))
+  tree = await renderStatus()
+  card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
+  const resultBlock = findAll(card, (node) => node.props && node.props['data-wt-result'] !== undefined)[0]
+  check(
+    'T-143 the result feedback shows removed/kept/failed and the rows stay until the fresh snapshot',
+    resultBlock !== undefined && textOf(resultBlock).indexOf('清理结果') >= 0 && findAll(card, (node) => node.props && node.props['data-worktree-stale'] !== undefined).length === 11,
+    resultBlock && textOf(resultBlock),
+  )
+  // Force: first click only arms a confirmation, the second one sends force:true.
+  const forceRow = staleRowOf('T-126-1')
+  const forceButton = findAll(forceRow, (node) => node.props && node.props['data-action'] === 'worktree-force-cleanup')[0]
+  const forceBefore = posts.length
+  forceButton.props.onClick()
+  await flush()
+  tree = await renderStatus()
+  card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
+  const confirmButton = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-force-cleanup-confirm')[0]
+  check(
+    'T-143 force cleanup needs a second confirmation before sending anything',
+    confirmButton !== undefined && posts.length === forceBefore,
+    JSON.stringify({ confirm: confirmButton !== undefined, posts: posts.length - forceBefore }),
+  )
+  confirmButton.props.onClick()
+  await flush()
+  await flush()
+  const forcePost = posts.slice(forceBefore).filter((post) => post.action === 'worktreesCleanup' && post.force === true)[0]
+  check(
+    'T-143 the confirmed force request carries force:true and only that path',
+    forcePost !== undefined && forcePost.dryRun === false && forcePost.force === true && Array.isArray(forcePost.paths) && forcePost.paths.length === 1 && forcePost.paths[0].indexOf('T-126-1') >= 0,
+    JSON.stringify(forcePost),
+  )
+  // Batch: the primary button sends the selected safe paths.
+  tree = await renderStatus()
+  card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
+  const batch = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup-safe')[0]
+  const batchBefore = posts.length
+  batch.props.onClick()
+  await flush()
+  await flush()
+  const batchPost = posts.slice(batchBefore).filter((post) => post.action === 'worktreesCleanup' && post.dryRun === false && Array.isArray(post.paths) && post.paths.length === 5)[0]
+  check(
+    'T-143 batch cleanup sends dryRun:false with the five selected safe paths',
+    batchPost !== undefined && batchPost.force === undefined && batchPost.paths.length === 5,
+    JSON.stringify(batchPost),
+  )
+}
+// ── T-113: the user records review/test verdicts from the card ─────────────
   {
     const reviewCard = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
     const testCard = HOST.tasks.filter((entry) => entry.id === 'T-2')[0]
