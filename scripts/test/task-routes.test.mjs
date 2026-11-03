@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH } from '../../plugin/task-center/routes.mjs'
+import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH } from '../../plugin/task-center/routes.mjs'
 import { boardJson, createFakeFs, createFakeGit, createRig, createStrictCtx, createTeam, PROJECT, seedBoard, sleep } from './support/fixtures.mjs'
 import { createGit } from '../../plugin/task-center/git.mjs'
 import { createSessionLookup, decodeSessionDirName } from '../../plugin/task-center/session-lookup.mjs'
@@ -90,7 +90,7 @@ const postTo = (target, body) =>
 
 const rig = createRig({ allowSpawn: false })
 const surface = install(rig)
-check('registers state, action, task, list and diagnostics', surface.specs.length === 5, String(surface.specs.length))
+check('registers state, action, task, list, worktrees and diagnostics', surface.specs.length === 6, String(surface.specs.length))
 
 // no project yet
 {
@@ -485,6 +485,9 @@ function createSubmitRig(options) {
     drainIntervalMs: opts.drainIntervalMs,
     actionTimeoutMs: opts.actionTimeoutMs,
     notifyTimeoutMs: opts.notifyTimeoutMs,
+    worktreeListTtlMs: opts.worktreeListTtlMs,
+    worktreeProbeTtlMs: opts.worktreeProbeTtlMs,
+    worktreeActiveProbeTtlMs: opts.worktreeActiveProbeTtlMs,
   })
   const user = { projectPath: PROJECT, by: '@user', role: 'user', agent: null }
   async function action(name, body) {
@@ -7520,13 +7523,15 @@ rig.scheduler.dispose()
     baseTask('T-200', 'running', wtPath('T-200-1')),
   ]
   function cleanupGit(worktrees) {
-    const state = { removed: [], deleted: [], pruned: 0, dirtyCalls: [], mergedCalls: [] }
+    const state = { removed: [], deleted: [], pruned: 0, dirtyCalls: [], mergedCalls: [], listCalls: 0 }
     const gone = new Set()
     const raw = worktrees.slice()
     const find = (path) => raw.filter((entry) => entry.path === path)[0]
     const facade = {
       state: state,
+      entries: raw,
       async worktreeList() {
+        state.listCalls += 1
         return { ok: true, worktrees: raw.filter((entry) => gone.has(entry.path) !== true).map((entry) => ({ path: entry.path, branch: entry.branch === undefined ? null : entry.branch, head: entry.head === undefined ? 'head-' + String(entry.path).split(/[\\/]/).pop() : entry.head })) }
       },
       async worktreeDirty(root, path) {
@@ -7580,55 +7585,167 @@ rig.scheduler.dispose()
     { path: wtPath('T-200-1'), branch: 'task/T-200-1', dirty: false, merged: true },
   ]
 
-  // The /state inventory classifies every stale checkout.
+  // T-146: /state returns the inventory only; dirty/merged are probed on demand.
   {
     const ctx = cleanupRig(standard)
-    const res = await call(ctx.surface, ctx.stateUrl, {})
-    const payload = res.json()
-    const inventory = payload.worktrees
+    const statePayload = (await call(ctx.surface, ctx.stateUrl, {})).json()
+    const inventory = statePayload.worktrees
     const byName = {}
     for (const entry of inventory.worktrees) byName[String(entry.path).split(/[\\/]/).pop()] = entry
-    const safeNames = inventory.worktrees.filter((entry) => entry.reason === 'safe').map((entry) => String(entry.path).split(/[\\/]/).pop()).sort()
-    const unmergedNames = inventory.worktrees.filter((entry) => entry.reason === 'unmerged').map((entry) => String(entry.path).split(/[\\/]/).pop()).sort()
     check(
       'T-142 the worktree inventory still carries its compatible top-level fields',
-      payload.ok === true && inventory.available === true && inventory.total === standard.length && inventory.counts.main === 1 && inventory.counts.task === 11 && inventory.counts.test === 1,
+      statePayload.ok === true && inventory.available === true && inventory.total === standard.length && inventory.counts.main === 1 && inventory.counts.task === 11 && inventory.counts.test === 1,
       JSON.stringify({ total: inventory.total, counts: inventory.counts }),
     )
     check(
-      'T-142 clean+merged checkouts are classified safe (5 of the 11 stale)',
-      safeNames.join(',') === 'T-46-1,T-46-2,T-47-1,T-47-2,T-83-3' && inventory.worktrees.filter((entry) => entry.safe === true).length === 5,
+      'T-146 /state runs exactly one worktree list and zero status/merge-base probes',
+      ctx.git.state.listCalls === 1 && ctx.git.state.dirtyCalls.length === 0 && ctx.git.state.mergedCalls.length === 0,
+      JSON.stringify({ listCalls: ctx.git.state.listCalls, dirty: ctx.git.state.dirtyCalls.length, merged: ctx.git.state.mergedCalls.length }),
+    )
+    check(
+      'T-146 every /state entry is marked unprobed and carries no dirty/merged answer',
+      inventory.worktrees.filter((entry) => entry.type !== 'main').every((entry) => entry.probed === false && entry.dirty === null && entry.merged === null && entry.safe === false && entry.reason === 'unprobed' && entry.probedAt === null),
+      JSON.stringify(inventory.worktrees.filter((entry) => entry.type !== 'main').slice(0, 2)),
+    )
+    check(
+      'T-146 the main checkout stays active/known without a probe',
+      byName[String(PROJECT).split(/[\\/]/).pop()].type === 'main' && byName[String(PROJECT).split(/[\\/]/).pop()].reason === 'active' && byName[String(PROJECT).split(/[\\/]/).pop()].probed === true && byName[String(PROJECT).split(/[\\/]/).pop()].safe === false,
+      JSON.stringify(byName[String(PROJECT).split(/[\\/]/).pop()]),
+    )
+    const probeUrl = WORKTREES_PATH + '?project=' + encodeURIComponent(PROJECT)
+    const probed = (await call(ctx.surface, probeUrl, {})).json()
+    const probedByName = {}
+    for (const entry of probed.worktrees) probedByName[String(entry.path).split(/[\\/]/).pop()] = entry
+    const safeNames = probed.worktrees.filter((entry) => entry.reason === 'safe').map((entry) => String(entry.path).split(/[\\/]/).pop()).sort()
+    const unmergedNames = probed.worktrees.filter((entry) => entry.reason === 'unmerged').map((entry) => String(entry.path).split(/[\\/]/).pop()).sort()
+    check(
+      'T-146 the probe endpoint classifies clean+merged checkouts safe (5 of the 11 stale)',
+      probed.ok === true && safeNames.join(',') === 'T-46-1,T-46-2,T-47-1,T-47-2,T-83-3' && probed.worktrees.filter((entry) => entry.safe === true).length === 5,
       JSON.stringify(safeNames),
     )
     check(
-      'T-142 clean+unmerged checkouts are classified unmerged (5)',
-      unmergedNames.join(',') === 'T-126-1,T-128-1,T-55-2,T-83-1,test-T-126' && inventory.worktrees.filter((entry) => entry.reason === 'unmerged').length === 5,
+      'T-146 the probe endpoint classifies clean+unmerged checkouts unmerged (5)',
+      unmergedNames.join(',') === 'T-126-1,T-128-1,T-55-2,T-83-1,test-T-126' && probed.worktrees.filter((entry) => entry.reason === 'unmerged').length === 5,
       JSON.stringify(unmergedNames),
     )
     check(
-      'T-142 a dirty checkout is dirty, not safe',
-      byName['T-55-1'].dirty === true && byName['T-55-1'].merged === true && byName['T-55-1'].safe === false && byName['T-55-1'].reason === 'dirty',
-      JSON.stringify(byName['T-55-1']),
+      'T-146 a dirty checkout is dirty, not safe',
+      probedByName['T-55-1'].dirty === true && probedByName['T-55-1'].merged === true && probedByName['T-55-1'].safe === false && probedByName['T-55-1'].reason === 'dirty',
+      JSON.stringify(probedByName['T-55-1']),
     )
     check(
-      'T-142 an active (running card) checkout stays active and unsafe',
-      byName['T-200-1'].active === true && byName['T-200-1'].safe === false && byName['T-200-1'].reason === 'active',
-      JSON.stringify(byName['T-200-1']),
+      'T-146 an active (running card) checkout stays active and unsafe',
+      probedByName['T-200-1'].active === true && probedByName['T-200-1'].safe === false && probedByName['T-200-1'].reason === 'active',
+      JSON.stringify(probedByName['T-200-1']),
     )
     check(
-      'T-142 the main checkout is active and never safe',
-      byName[String(PROJECT).split(/[\\/]/).pop()].type === 'main' && byName[String(PROJECT).split(/[\\/]/).pop()].reason === 'active' && byName[String(PROJECT).split(/[\\/]/).pop()].safe === false,
-      JSON.stringify(byName[String(PROJECT).split(/[\\/]/).pop()]),
+      'T-146 a task id is derived from path/branch when the card is gone',
+      probedByName['T-126-1'].taskId === 'T-126' && probedByName['T-128-1'].taskId === 'T-128' && probedByName['test-T-126'].taskId === 'T-126' && probedByName['test-T-126'].type === 'test',
+      JSON.stringify({ t126: probedByName['T-126-1'].taskId, t128: probedByName['T-128-1'].taskId, test: probedByName['test-T-126'] }),
     )
     check(
-      'T-142 a task id is derived from path/branch when the card is gone',
-      byName['T-126-1'].taskId === 'T-126' && byName['T-128-1'].taskId === 'T-128' && byName['test-T-126'].taskId === 'T-126' && byName['test-T-126'].type === 'test',
-      JSON.stringify({ t126: byName['T-126-1'].taskId, t128: byName['T-128-1'].taskId, test: byName['test-T-126'] }),
+      'T-146 the probe endpoint runs one status + merge-base per non-main checkout',
+      ctx.git.state.dirtyCalls.length === 12 && ctx.git.state.mergedCalls.length === 12 && ctx.git.state.listCalls === 1,
+      JSON.stringify({ dirty: ctx.git.state.dirtyCalls.length, merged: ctx.git.state.mergedCalls.length, list: ctx.git.state.listCalls }),
+    )
+    const dirtyBefore = ctx.git.state.dirtyCalls.length
+    const mergedBefore = ctx.git.state.mergedCalls.length
+    const cachedProbe = (await call(ctx.surface, probeUrl, {})).json()
+    check(
+      'T-146 a second probe within the TTL is served from cache (no git probes)',
+      cachedProbe.ok === true && ctx.git.state.dirtyCalls.length === dirtyBefore && ctx.git.state.mergedCalls.length === mergedBefore && cachedProbe.worktrees.filter((entry) => entry.probed === true).length === 13,
+      JSON.stringify({ dirty: ctx.git.state.dirtyCalls.length, merged: ctx.git.state.mergedCalls.length }),
+    )
+    check('T-146 the probe endpoint never attaches a snapshot', cachedProbe.snapshot === undefined && cachedProbe.tasks === undefined, JSON.stringify({ snapshot: cachedProbe.snapshot !== undefined, tasks: cachedProbe.tasks !== undefined }))
+    const cleanupPreview = (await postTo(ctx.surface, { action: 'worktreesCleanup' })).json()
+    check(
+      'T-146 a cleanup preview reuses the fresh probe cache (no second probe round)',
+      cleanupPreview.ok === true && cleanupPreview.dryRun === true && ctx.git.state.dirtyCalls.length === dirtyBefore && ctx.git.state.mergedCalls.length === mergedBefore,
+      JSON.stringify({ dirty: ctx.git.state.dirtyCalls.length, merged: ctx.git.state.mergedCalls.length }),
     )
     ctx.surface.dispose()
     ctx.rig.scheduler.dispose()
   }
 
+  // Only the requested paths are probed.
+  {
+    const ctx = cleanupRig(standard)
+    const url = WORKTREES_PATH + '?project=' + encodeURIComponent(PROJECT) + '&path=' + encodeURIComponent(wtPath('T-46-1'))
+    const probed = (await call(ctx.surface, url, {})).json()
+    const byName = {}
+    for (const entry of probed.worktrees) byName[String(entry.path).split(/[\\/]/).pop()] = entry
+    check(
+      'T-146 with ?path= only that checkout is probed',
+      probed.ok === true && ctx.git.state.dirtyCalls.length === 1 && ctx.git.state.mergedCalls.length === 1 && String(ctx.git.state.dirtyCalls[0]).indexOf('T-46-1') >= 0 && byName['T-46-1'].probed === true && byName['T-46-2'].probed === false,
+      JSON.stringify({ dirty: ctx.git.state.dirtyCalls, probed: byName['T-46-1'].probed, other: byName['T-46-2'].probed }),
+    )
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+  }
+
+  // TTL expiry re-probes; the active checkout uses the shorter TTL.
+  {
+    const git = cleanupGit(standard)
+    const rig = createSubmitRig({ git: git, worktreeListTtlMs: 100000, worktreeProbeTtlMs: 10, worktreeActiveProbeTtlMs: 10 })
+    seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: cleanupTasks }))
+    await rig.api.worktrees(PROJECT, {})
+    const firstDirty = git.state.dirtyCalls.length
+    await sleep(20)
+    await rig.api.worktrees(PROJECT, {})
+    check(
+      'T-146 the probe cache expires after its TTL',
+      firstDirty === 12 && git.state.dirtyCalls.length === 24,
+      JSON.stringify({ first: firstDirty, second: git.state.dirtyCalls.length }),
+    )
+    rig.scheduler.dispose()
+  }
+  {
+    const git = cleanupGit(standard)
+    const rig = createSubmitRig({ git: git, worktreeListTtlMs: 100000, worktreeProbeTtlMs: 100000, worktreeActiveProbeTtlMs: 5 })
+    seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: cleanupTasks }))
+    await rig.api.worktrees(PROJECT, {})
+    await sleep(15)
+    await rig.api.worktrees(PROJECT, {})
+    check(
+      'T-146 the active checkout uses the shorter probe TTL (only it re-probes)',
+      git.state.dirtyCalls.length === 13 && String(git.state.dirtyCalls[12]).indexOf('T-200-1') >= 0,
+      JSON.stringify(git.state.dirtyCalls.slice(-3)),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // Concurrent requests share one probe round (single-flight per project).
+  {
+    const git = cleanupGit(standard)
+    const rig = createSubmitRig({ git: git })
+    seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: cleanupTasks }))
+    const [left, right] = await Promise.all([rig.api.worktrees(PROJECT, {}), rig.api.worktrees(PROJECT, {})])
+    check(
+      'T-146 concurrent probes share one round (12 status + 12 merge-base, not 24+24)',
+      left.ok === true && right.ok === true && git.state.dirtyCalls.length === 12 && git.state.mergedCalls.length === 12 && git.state.listCalls === 1,
+      JSON.stringify({ dirty: git.state.dirtyCalls.length, merged: git.state.mergedCalls.length, list: git.state.listCalls }),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // Execute re-probes before removing: a checkout that became dirty after the cache
+  // was primed is kept, never removed from a stale safe answer.
+  {
+    const ctx = cleanupRig(standard)
+    await ctx.rig.api.worktrees(PROJECT, {})
+    const entry = ctx.git.entries.filter((candidate) => String(candidate.path).indexOf('T-46-1') >= 0)[0]
+    const savedDirty = entry.dirty === true
+    entry.dirty = true
+    const execute = (await postTo(ctx.surface, { action: 'worktreesCleanup', dryRun: false })).json()
+    entry.dirty = savedDirty
+    check(
+      'T-146 execute force-revalidates instead of trusting the probe cache',
+      execute.ok === true && execute.removed.every((removed) => String(removed.path).indexOf('T-46-1') < 0) && execute.kept.some((kept) => String(kept.path).indexOf('T-46-1') >= 0 && kept.reason === 'dirty'),
+      JSON.stringify({ removed: execute.removed.length, kept: execute.kept.filter((kept) => String(kept.path).indexOf('T-46-1') >= 0) }),
+    )
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+  }
   // Default cleanup is a dry run: nothing is touched.
   {
     const ctx = cleanupRig(standard)

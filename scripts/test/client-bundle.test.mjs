@@ -671,6 +671,35 @@ let loads = 0
 let postGate = null
 let postReply = null
 const posts = []
+// T-146: /state is inventory-only; the status card lazy-probes via GET /worktrees.
+let worktreeProbeCalls = 0
+let worktreeProbePaths = []
+let probeGate = null
+function inventoryState() {
+  const inventory = Object.assign({}, HOST.worktrees)
+  inventory.worktrees = (HOST.worktrees.worktrees || []).map((entry) =>
+    entry.type === 'main'
+      ? Object.assign({}, entry, { probed: true, dirty: false, merged: true, safe: false, reason: 'active', probedAt: null })
+      : Object.assign({}, entry, { probed: false, dirty: null, merged: null, safe: false, reason: 'unprobed', probedAt: null }),
+  )
+  return Object.assign({}, HOST, { worktrees: inventory })
+}
+function worktreeProbeReply(url) {
+  worktreeProbeCalls += 1
+  const parsed = new URL(url, 'http://localhost')
+  const paths = parsed.searchParams.getAll('path')
+  worktreeProbePaths.push(paths)
+  const probedAt = new Date().toISOString()
+  const list = HOST.worktrees.worktrees || []
+  const worktrees = list.map((entry) => {
+    if (entry.type === 'main') return Object.assign({}, entry, { probed: true, probedAt: null })
+    const wanted = paths.length === 0 || paths.indexOf(entry.path) >= 0
+    return wanted
+      ? Object.assign({}, entry, { probed: true, probedAt: probedAt })
+      : Object.assign({}, entry, { probed: false, dirty: null, merged: null, safe: false, reason: 'unprobed', probedAt: null })
+  })
+  return { ok: true, project: PROJECT, probedAt: probedAt, requested: paths.length === 0 ? null : paths, worktrees: worktrees }
+}
 /** T-143: the host answer for worktreesCleanup, derived from the live fixture. */
 function worktreesCleanupReply(body) {
   const list = HOST.worktrees !== null && HOST.worktrees !== undefined && Array.isArray(HOST.worktrees.worktrees) ? HOST.worktrees.worktrees : []
@@ -709,10 +738,14 @@ globalThis.fetch = async function (url, options) {
     }
     if (body.action === 'rolesPreview') return { json: async () => rolePreviewReply(body) }
     if (body.action === 'worktreesCleanup') return { json: async () => worktreesCleanupReply(body) }
-    return { json: async () => ({ ok: true, snapshot: HOST }) }
+    return { json: async () => ({ ok: true, snapshot: inventoryState() }) }
+  }
+  if (String(url).indexOf('/worktrees') >= 0) {
+    if (probeGate !== null) await probeGate
+    return { json: async () => worktreeProbeReply(String(url)) }
   }
   loads += 1
-  return { json: async () => HOST }
+  return { json: async () => inventoryState() }
 }
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -1343,6 +1376,7 @@ await flush()
   
 // ── T-143: worktree card — summary, rows, preflight and safe cleanup ───────
 {
+  const cleanupPostsBefore = posts.filter((post) => post.action === 'worktreesCleanup').length
   const renderStatus = async function () {
     withHooks(panel, { initialView: 'status' })
     await flush()
@@ -1368,6 +1402,11 @@ await flush()
     JSON.stringify({ main: mainRow && textOf(mainRow), active: activeRow && textOf(activeRow) }),
   )
   const staleRows = findAll(card, (node) => node.props && node.props['data-worktree-stale'] !== undefined)
+  check(
+    'T-146 the card lazy-probes instead of running an automatic cleanup dry run',
+    staleRows.every((row) => row.props['data-wt-probed'] === 'true') && posts.filter((post) => post.action === 'worktreesCleanup').length === cleanupPostsBefore,
+    JSON.stringify({ probed: staleRows.map((row) => row.props['data-wt-probed']), posts: posts.filter((post) => post.action === 'worktreesCleanup').length }),
+  )
   check(
     'T-143 all 11 stale worktrees are listed (never truncated)',
     staleRows.length === 11 && staleRows.map((row) => String(row.props['data-path']).split(/[\\/]/).pop()).sort().join(',') === 'T-126-1,T-128-1,T-46-1,T-46-2,T-47-1,T-47-2,T-55-1,T-55-2,T-83-1,T-83-3,test-T-126',
@@ -1411,10 +1450,55 @@ await flush()
       blockedRule !== null && /--dsw-alias-state-error-primary/.test(blockedRule),
     JSON.stringify([readyRule, waitingRule, blockedRule]),
   )
-  // An unverifiable candidate keeps its row but must never print the raw code.
   const reasonEntry = HOST.worktrees.worktrees.filter((entry) => String(entry.path).indexOf('T-126-1') >= 0)[0]
   const savedReason = reasonEntry.reason
+  check(
+    'T-143 task labels come from the path/branch, including the type',
+    findAll(card, (node) => node.props && node.props['data-worktree-stale'] === 'T-126').length >= 2 &&
+      findAll(staleRowOf('test-T-126'), (node) => node.props && node.props['data-wt-type'] === 'test').length === 1 &&
+      findAll(staleRowOf('T-46-1'), (node) => node.props && node.props['data-wt-type'] === 'task').length === 1,
+    JSON.stringify(findAll(card, (node) => node.props && node.props['data-worktree-stale'] !== undefined).map((row) => row.props['data-worktree-stale'])),
+  )
+  const initialPreflightButton = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-preflight')[0]
+  check(
+    'T-146 no cleanup preview or cleanup buttons exist before the explicit preflight',
+    initialPreflightButton !== undefined &&
+      findAll(card, (node) => node.props && node.props['data-wt-preflight'] === 'true').length === 0 &&
+      findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup').length === 0 &&
+      findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-force-cleanup').length === 0,
+    JSON.stringify({ preflight: initialPreflightButton !== undefined, preview: findAll(card, (node) => node.props && node.props['data-wt-preflight'] === 'true').length }),
+  )
+  initialPreflightButton.props.onClick()
+  await flush()
+  await flush()
+  tree = await renderStatus()
+  card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
+  const preflightBlock = findAll(card, (node) => node.props && node.props['data-wt-preflight'] === 'true')[0]
+  const preflightRows = findAll(card, (node) => node.props && node.props['data-wt-preview-path'] !== undefined)
+  check(
+    'T-143 the explicit preflight previews exactly the five safe paths',
+    preflightBlock !== undefined && preflightRows.length === 5 && preflightRows.every((row) => String(row.props['data-wt-preview-path']).indexOf('T-46') >= 0 || String(row.props['data-wt-preview-path']).indexOf('T-47') >= 0 || String(row.props['data-wt-preview-path']).indexOf('T-83-3') >= 0),
+    JSON.stringify(preflightRows.map((row) => row.props['data-wt-preview-path'])),
+  )
+  const preflightButton = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-preflight')[0]
+  const batchButton = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup-safe')[0]
+  check(
+    'T-143 safe rows offer 清理 and dirty/unmerged rows offer 强制清理',
+    findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup').length === 5 &&
+      findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-force-cleanup').length === 6 &&
+      findAll(card, (node) => node.type === 'input' && node.props && node.props['data-worktree-select'] !== undefined).length === 5,
+    JSON.stringify({ clean: findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup').length, force: findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-force-cleanup').length }),
+  )
+  check(
+    'T-143 the batch controls show the preflight and the selected safe count',
+    preflightButton !== undefined && batchButton !== undefined && textOf(batchButton).indexOf('清理 5 个可安全清理') >= 0,
+    JSON.stringify({ preflight: preflightButton && textOf(preflightButton), batch: batchButton && textOf(batchButton) }),
+  )
+  // An unverifiable candidate keeps its row but must never print the raw code.
   reasonEntry.reason = 'unverified'
+  preflightButton.props.onClick()
+  await flush()
+  await flush()
   tree = await renderStatus()
   card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
   const unverifiedText = textOf(staleRowOf('T-126-1'))
@@ -1424,36 +1508,12 @@ await flush()
     unverifiedText,
   )
   reasonEntry.reason = savedReason
+  const restorePreflight = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-preflight')[0]
+  restorePreflight.props.onClick()
+  await flush()
+  await flush()
   tree = await renderStatus()
   card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
-  check(
-    'T-143 task labels come from the path/branch, including the type',
-    findAll(card, (node) => node.props && node.props['data-worktree-stale'] === 'T-126').length >= 2 &&
-      findAll(staleRowOf('test-T-126'), (node) => node.props && node.props['data-wt-type'] === 'test').length === 1 &&
-      findAll(staleRowOf('T-46-1'), (node) => node.props && node.props['data-wt-type'] === 'task').length === 1,
-    JSON.stringify(findAll(card, (node) => node.props && node.props['data-worktree-stale'] !== undefined).map((row) => row.props['data-worktree-stale'])),
-  )
-  check(
-    'T-143 safe rows offer 清理 and dirty/unmerged rows offer 强制清理',
-    findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup').length === 5 &&
-      findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-force-cleanup').length === 6 &&
-      findAll(card, (node) => node.type === 'input' && node.props && node.props['data-worktree-select'] !== undefined).length === 5,
-    JSON.stringify({ clean: findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup').length, force: findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-force-cleanup').length }),
-  )
-  const preflightBlock = findAll(card, (node) => node.props && node.props['data-wt-preflight'] === 'true')[0]
-  const preflightRows = findAll(card, (node) => node.props && node.props['data-wt-preview-path'] !== undefined)
-  check(
-    'T-143 the automatic preflight previews exactly the five safe paths',
-    preflightBlock !== undefined && preflightRows.length === 5 && preflightRows.every((row) => String(row.props['data-wt-preview-path']).indexOf('T-46') >= 0 || String(row.props['data-wt-preview-path']).indexOf('T-47') >= 0 || String(row.props['data-wt-preview-path']).indexOf('T-83-3') >= 0),
-    JSON.stringify(preflightRows.map((row) => row.props['data-wt-preview-path'])),
-  )
-  const preflightButton = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-preflight')[0]
-  const batchButton = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup-safe')[0]
-  check(
-    'T-143 the batch controls show the preflight and the selected safe count',
-    preflightButton !== undefined && batchButton !== undefined && textOf(batchButton).indexOf('清理 5 个可安全清理') >= 0,
-    JSON.stringify({ preflight: preflightButton && textOf(preflightButton), batch: batchButton && textOf(batchButton) }),
-  )
   // One safe row: execute only that path, then reload (no optimistic row removal).
   const firstRow = staleRowOf('T-46-1')
   const cleanButton = findAll(firstRow, (node) => node.props && node.props['data-action'] === 'worktree-cleanup')[0]
@@ -1477,6 +1537,13 @@ await flush()
     resultBlock !== undefined && textOf(resultBlock).indexOf('清理结果') >= 0 && findAll(card, (node) => node.props && node.props['data-worktree-stale'] !== undefined).length === 11,
     resultBlock && textOf(resultBlock),
   )
+  // The explicit preflight is consumed by the cleanup; run it again for the next row.
+  const rePreflight = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-preflight')[0]
+  rePreflight.props.onClick()
+  await flush()
+  await flush()
+  tree = await renderStatus()
+  card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
   // Force: first click only arms a confirmation, the second one sends force:true.
   const forceRow = staleRowOf('T-126-1')
   const forceButton = findAll(forceRow, (node) => node.props && node.props['data-action'] === 'worktree-force-cleanup')[0]
@@ -1501,6 +1568,10 @@ await flush()
     JSON.stringify(forcePost),
   )
   // Batch: the primary button sends the selected safe paths.
+  const batchPreflight = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-preflight')[0]
+  batchPreflight.props.onClick()
+  await flush()
+  await flush()
   tree = await renderStatus()
   card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
   const batch = findAll(card, (node) => node.props && node.props['data-action'] === 'worktree-cleanup-safe')[0]
@@ -1514,6 +1585,62 @@ await flush()
     batchPost !== undefined && batchPost.force === undefined && batchPost.paths.length === 5,
     JSON.stringify(batchPost),
   )
+  // T-146: a fresh inventory signature renders pending rows, then lazy-probes;
+  // no cleanup dry run is ever sent automatically.
+  let stableCalls = -1
+  for (let settle = 0; settle < 12; settle += 1) {
+    await flush()
+    if (worktreeProbeCalls === stableCalls) break
+    stableCalls = worktreeProbeCalls
+  }
+  const savedWorktreesList = HOST.worktrees.worktrees
+  HOST.worktrees = Object.assign({}, HOST.worktrees, {
+    worktrees: savedWorktreesList.concat([
+      { path: PROJECT + '\\.worktrees\\T-999-1', branch: 'task/T-999-1', head: 'ffff000011', type: 'task', taskId: 'T-999', active: false, dirty: false, merged: false, safe: false, reason: 'unmerged', target: 'feat/task-center-v2' },
+    ]),
+  })
+  let releaseProbe = null
+  probeGate = new Promise(function (resolve) { releaseProbe = resolve })
+  const probeCallsBefore = worktreeProbeCalls
+  const cleanupPostsBeforeProbe = posts.filter((post) => post.action === 'worktreesCleanup').length
+  const refreshForNewInventory = findAll(tree, (node) => node.props && node.props['data-action'] === 'status-refresh')[0]
+  const loadsBeforeRefresh = loads
+  refreshForNewInventory.props.onClick()
+  await flush()
+  await flush()
+  await flush()
+  await flush()
+  let pendingTree = withHooks(panel, { initialView: 'status' })
+  const pendingCard = findAll(pendingTree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
+  const pendingRow = findAll(pendingCard, (node) => node.props && typeof node.props['data-path'] === 'string' && node.props['data-path'].indexOf('T-999-1') >= 0)[0]
+  check(
+    'T-146 a fresh inventory renders pending rows and never auto-runs the cleanup preflight',
+    pendingRow !== undefined && pendingRow.props['data-wt-probed'] === 'false' && textOf(pendingCard).indexOf('探测中') >= 0 && posts.filter((post) => post.action === 'worktreesCleanup').length === cleanupPostsBeforeProbe,
+    pendingRow && textOf(pendingRow),
+  )
+  releaseProbe()
+  probeGate = null
+  await flush()
+  await flush()
+  pendingTree = withHooks(panel, { initialView: 'status' })
+  const probedCard = findAll(pendingTree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
+  const probedRow = findAll(probedCard, (node) => node.props && typeof node.props['data-path'] === 'string' && node.props['data-path'].indexOf('T-999-1') >= 0)[0]
+  const probedPaths = worktreeProbePaths[worktreeProbePaths.length - 1]
+  check(
+    'T-146 the lazy probe fills dirty/merged and asks only the stale paths',
+    worktreeProbeCalls === probeCallsBefore + 1 && probedRow !== undefined && probedRow.props['data-wt-probed'] === 'true' && probedPaths.length === 12 && probedPaths.some((path) => path.indexOf('T-999-1') >= 0),
+    JSON.stringify({ calls: worktreeProbeCalls - probeCallsBefore, paths: probedPaths.length, probed: probedRow && probedRow.props['data-wt-probed'] }),
+  )
+  HOST.worktrees = Object.assign({}, HOST.worktrees, { worktrees: savedWorktreesList })
+  let restoredTree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  const refreshAfterProbe = findAll(restoredTree, (node) => node.props && node.props['data-action'] === 'status-refresh')[0]
+  refreshAfterProbe.props.onClick()
+  await flush()
+  await flush()
+  withHooks(panel, { initialView: 'status' })
+  await flush()
+  await flush()
 }
 // ── T-113: the user records review/test verdicts from the card ─────────────
   {

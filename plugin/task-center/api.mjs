@@ -340,9 +340,21 @@ export function createApi(ctx, options) {
   // task that is already done; one in-process claim per task makes merging idempotent.
   const mergingCandidates = new Set()
   const BOUNDED_TIMEOUT = Symbol('bounded-timeout')
-  // The status panel polls every few seconds; worktree inventory is read-only and
-  // can be reused briefly instead of starting a git process on every poll.
-  let worktreeCache = { at: -Infinity, project: null, value: null }
+  // T-146: worktree inventory (git worktree list) and the expensive dirty/merged
+  // probes are cached separately. /state only needs the inventory; dirty/merged
+  // are loaded on demand from GET /worktrees. Every cache timestamp is taken
+  // AFTER the work finishes, so a slow snapshot can never invalidate its own
+  // result before the next poll reads it.
+  // 30 s: the list only changes when a checkout is created/removed (cleanup and
+  // merge invalidate it explicitly), so the panel's 2.5 s poll is cache-only.
+  const worktreeListTtlMs = Number.isFinite(opts.worktreeListTtlMs) ? Math.max(1, Math.floor(opts.worktreeListTtlMs)) : 30 * 1000
+  const worktreeProbeTtlMs = Number.isFinite(opts.worktreeProbeTtlMs) ? Math.max(1, Math.floor(opts.worktreeProbeTtlMs)) : 45 * 1000
+  const worktreeActiveProbeTtlMs = Number.isFinite(opts.worktreeActiveProbeTtlMs) ? Math.max(1, Math.floor(opts.worktreeActiveProbeTtlMs)) : 12 * 1000
+  const worktreeFailureTtlMs = 5 * 1000
+  let worktreeListCache = { at: -Infinity, project: null, value: null }
+  let worktreeListFlight = { project: null, promise: null }
+  const worktreeProbeCache = new Map()
+  const worktreeProbeFlights = new Map()
 
   /** Merge actions are one-at-a-time: the queue serialises the whole read+git+write. */
   function serialised(work, key) {
@@ -1637,29 +1649,69 @@ export function createApi(ctx, options) {
   /**
    * The git worktree inventory for the status panel, classified as
    * main/task/verify/test/merge/other with branch/head and whether a task is
-   * currently occupying it. Degrades readably without a git facade.
+   * currently occupying it. T-146: this is INVENTORY ONLY — it never runs
+   * status/merge-base. Cached probe results ride along when fresh (probed:true),
+   * otherwise the entry is probed:false and the client lazy-loads GET /worktrees.
    */
+  function worktreeProbeKey(projectPath, path, head, target) {
+    return normalizePath(projectPath) + '|' + normalizePath(path) + '|' + String(head === undefined || head === null ? '' : head) + '|' + String(target === undefined || target === null ? '' : target)
+  }
+  function cachedWorktreeProbe(projectPath, entry, target, now) {
+    const cached = worktreeProbeCache.get(worktreeProbeKey(projectPath, entry.path, entry.head, target))
+    if (cached === undefined) return null
+    const ttl = cached.failed === true ? worktreeFailureTtlMs : entry.active === true ? worktreeActiveProbeTtlMs : worktreeProbeTtlMs
+    return now - cached.at > ttl ? null : cached
+  }
+  function rememberWorktreeProbe(projectPath, entry, target, probe) {
+    const key = worktreeProbeKey(projectPath, entry.path, entry.head, target)
+    worktreeProbeCache.set(key, Object.assign({ at: Date.now() }, probe))
+    if (worktreeProbeCache.size > 256) {
+      const oldest = Array.from(worktreeProbeCache.entries()).sort((left, right) => left[1].at - right[1].at).slice(0, 64)
+      for (const pair of oldest) worktreeProbeCache.delete(pair[0])
+    }
+  }
+  function invalidateWorktreeCaches(projectPath) {
+    const normalized = normalizePath(projectPath)
+    if (worktreeListCache.project === normalized) worktreeListCache = { at: -Infinity, project: null, value: null }
+    for (const key of Array.from(worktreeProbeCache.keys())) {
+      if (key.indexOf(normalized + '|') === 0) worktreeProbeCache.delete(key)
+    }
+  }
+  /** Raw `git worktree list` output, cached briefly and single-flighted. */
+  async function worktreeListEntries(projectPath) {
+    if (git === null || typeof git.worktreeList !== 'function') return { ok: false, error: 'no-git-service' }
+    const normalized = normalizePath(projectPath)
+    const now = Date.now()
+    if (worktreeListCache.project === normalized && worktreeListCache.value !== null && now - worktreeListCache.at <= worktreeListTtlMs) return { ok: true, entries: worktreeListCache.value }
+    if (worktreeListFlight.project === normalized && worktreeListFlight.promise !== null) return worktreeListFlight.promise
+    const promise = (async function () {
+      let result = null
+      try {
+        result = await git.worktreeList(projectPath)
+      } catch (error) {
+        return { ok: false, error: 'git-failed' }
+      }
+      if (result === null || result === undefined || result.ok !== true) return { ok: false, error: result !== null && result !== undefined && typeof result.code === 'string' ? result.code : 'worktree-list-failed' }
+      const entries = Array.isArray(result.worktrees) ? result.worktrees : []
+      worktreeListCache = { at: Date.now(), project: normalized, value: entries }
+      return { ok: true, entries: entries }
+    })()
+    worktreeListFlight = { project: normalized, promise: promise }
+    try { return await promise } finally { if (worktreeListFlight.promise === promise) worktreeListFlight = { project: null, promise: null } }
+  }
   async function worktreeSnapshot(projectPath, board) {
-    if (git === null || typeof git.worktreeList !== 'function') return emptyWorktrees('no-git-service')
-    let result = null
-    try {
-      result = await git.worktreeList(projectPath)
-    } catch (error) {
-      return emptyWorktrees('git-failed')
-    }
-    if (result === null || result === undefined || result.ok !== true) {
-      return emptyWorktrees(result !== null && result !== undefined && typeof result.code === 'string' ? result.code : 'worktree-list-failed')
-    }
-    const entries = Array.isArray(result.worktrees) ? result.worktrees : []
+    const listed = await worktreeListEntries(projectPath)
+    if (listed.ok !== true) return emptyWorktrees(listed.error === undefined ? null : listed.error)
+    const entries = listed.entries
     const main = normalizePath(projectPath)
     const byPath = new Map()
     for (const task of board.tasks) {
       if (typeof task.worktree === 'string' && task.worktree !== '') byPath.set(normalizePath(task.worktree), task)
     }
+    const targetBranch = projectTargetOf(board)
     const worktrees = entries.map((entry) => {
       const raw = typeof entry.path === 'string' ? entry.path : ''
       const normalized = normalizePath(raw)
-      // Keep the basename's original case: task ids are case-sensitive.
       const base = String(raw).replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || ''
       const lowerBase = base.toLowerCase()
       const byWorktree = byPath.get(normalized)
@@ -1671,52 +1723,32 @@ export function createApi(ctx, options) {
       else if (lowerBase.startsWith('verify-')) type = 'verify'
       else if (lowerBase.startsWith('test-')) type = 'test'
       else if (/^T-\d+(-\d+)?$/.test(base)) type = 'task'
-      return {
+      const active = type === 'main' ? true : worktreeTaskActive(task)
+      const taskId = task === undefined ? null : task.id
+      const owner = taskId === null || taskId === undefined ? undefined : board.tasks.filter((candidate) => String(candidate.id) === String(taskId))[0]
+      const target = owner !== undefined && typeof owner.target === 'string' && owner.target.trim() !== '' ? owner.target.trim() : targetBranch
+      const worktree = {
         path: raw,
         type: type,
         branch: typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : null,
         head: typeof entry.head === 'string' && entry.head !== '' ? entry.head : null,
-        taskId: task === undefined ? null : task.id,
-        active: type === 'main' ? true : worktreeTaskActive(task),
+        taskId: taskId,
+        active: active,
+        target: type === 'main' ? null : target,
       }
+      if (type === 'main') {
+        Object.assign(worktree, { probed: true, dirty: false, merged: true, safe: false, reason: 'active', probedAt: null })
+        return worktree
+      }
+      if (worktree.taskId === null || worktree.taskId === undefined) worktree.taskId = taskIdFromNames(base, worktree.branch)
+      const cached = cachedWorktreeProbe(projectPath, worktree, target, Date.now())
+      if (cached === null) {
+        Object.assign(worktree, { probed: false, dirty: null, merged: null, safe: false, reason: 'unprobed', probedAt: null })
+        return worktree
+      }
+      Object.assign(worktree, { probed: true, dirty: cached.dirty, merged: cached.merged, safe: cached.safe, reason: cached.reason, probedAt: new Date(cached.at).toISOString() })
+      return worktree
     })
-    // T-142: classify every non-main checkout for safe cleanup. Probing is
-    // per worktree and degrades to null ("unverified") when the git facade or
-    // the command cannot answer; only a PROVEN clean+merged tree is safe.
-    const targetBranch = projectTargetOf(board)
-    for (const worktree of worktrees) {
-      if (worktree.type === 'main') {
-        Object.assign(worktree, { target: null, dirty: false, merged: true, safe: false, reason: 'active' })
-        continue
-      }
-      if (worktree.taskId === null || worktree.taskId === undefined) {
-        const base = String(worktree.path).replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || ''
-        worktree.taskId = taskIdFromNames(base, worktree.branch)
-      }
-      const owner = worktree.taskId === null || worktree.taskId === undefined ? undefined : board.tasks.filter((entry) => String(entry.id) === String(worktree.taskId))[0]
-      const target = owner !== undefined && typeof owner.target === 'string' && owner.target.trim() !== '' ? owner.target.trim() : targetBranch
-      let dirty = null
-      let merged = null
-      if (typeof git.worktreeDirty === 'function') {
-        try {
-          const probe = await git.worktreeDirty(projectPath, worktree.path)
-          if (probe !== null && probe !== undefined && probe.ok === true && typeof probe.dirty === 'boolean') dirty = probe.dirty
-        } catch (error) {
-          dirty = null
-        }
-      }
-      if (target !== null && typeof git.worktreeMerged === 'function') {
-        try {
-          const probe = await git.worktreeMerged(projectPath, worktree.path, target)
-          if (probe !== null && probe !== undefined && probe.ok === true && typeof probe.merged === 'boolean') merged = probe.merged
-        } catch (error) {
-          merged = null
-        }
-      }
-      const safe = worktree.active !== true && dirty === false && merged === true
-      const reason = worktree.active === true ? 'active' : dirty === true ? 'dirty' : merged === false ? 'unmerged' : safe ? 'safe' : 'unverified'
-      Object.assign(worktree, { target: target, dirty: dirty, merged: merged, safe: safe, reason: reason })
-    }
     const counts = { main: 0, task: 0, verify: 0, test: 0, merge: 0, other: 0 }
     let active = 0
     for (const worktree of worktrees) {
@@ -1724,6 +1756,63 @@ export function createApi(ctx, options) {
       if (worktree.active === true) active += 1
     }
     return { available: true, error: null, total: worktrees.length, active: active, counts: counts, worktrees: worktrees }
+  }
+  async function probeOneWorktree(projectPath, worktree) {
+    let dirty = null
+    let merged = null
+    let failed = false
+    if (typeof git.worktreeDirty === 'function') {
+      try {
+      const probe = await git.worktreeDirty(projectPath, worktree.path)
+      if (probe !== null && probe !== undefined && probe.ok === true && typeof probe.dirty === 'boolean') dirty = probe.dirty
+      else failed = true
+      } catch (error) { failed = true }
+    } else failed = true
+    if (worktree.target !== null && typeof git.worktreeMerged === 'function') {
+      try {
+      const probe = await git.worktreeMerged(projectPath, worktree.path, worktree.target)
+      if (probe !== null && probe !== undefined && probe.ok === true && typeof probe.merged === 'boolean') merged = probe.merged
+      else failed = true
+      } catch (error) { failed = true }
+    } else if (worktree.target !== null) failed = true
+    const safe = worktree.active !== true && dirty === false && merged === true
+    const reason = worktree.active === true ? 'active' : dirty === true ? 'dirty' : merged === false ? 'unmerged' : safe ? 'safe' : 'unverified'
+    rememberWorktreeProbe(projectPath, worktree, worktree.target, { dirty: dirty, merged: merged, safe: safe, reason: reason, failed: failed })
+    return { probed: true, dirty: dirty, merged: merged, safe: safe, reason: reason, probedAt: new Date().toISOString() }
+  }
+  async function worktreesWithProbes(projectPath, board, input) {
+    const source = input === undefined || input === null ? {} : input
+    const inventory = await worktreeSnapshot(projectPath, board)
+    if (inventory.available !== true) return { ok: false, code: inventory.error === null ? 'worktree-list-failed' : inventory.error, message: 'the worktree inventory is unavailable' }
+    const requestedRaw = Array.isArray(source.paths) ? source.paths.filter((entry) => typeof entry === 'string' && entry !== '') : null
+    const requested = requestedRaw === null ? null : new Set(requestedRaw.map((entry) => normalizePath(entry)))
+    const force = source.force === true
+    const targets = inventory.worktrees.filter((worktree) => worktree.type !== 'main' && (requested === null || requested.has(normalizePath(worktree.path))))
+    const projectKey = normalizePath(projectPath)
+    const running = worktreeProbeFlights.get(projectKey)
+    if (running !== undefined) { try { await running } catch (error) {} }
+    const now = Date.now()
+    const needed = targets.filter((worktree) => force === true || cachedWorktreeProbe(projectPath, worktree, worktree.target, now) === null)
+    if (needed.length > 0) {
+      const promise = (async function () {
+        for (const worktree of needed) await probeOneWorktree(projectPath, worktree)
+      })()
+      worktreeProbeFlights.set(projectKey, promise)
+      try { await promise } finally { if (worktreeProbeFlights.get(projectKey) === promise) worktreeProbeFlights.delete(projectKey) }
+    }
+    const nowAfter = Date.now()
+    const worktrees = inventory.worktrees.map((worktree) => {
+      if (worktree.type === 'main') return worktree
+      const cached = cachedWorktreeProbe(projectPath, worktree, worktree.target, nowAfter)
+      if (cached === null) return Object.assign({}, worktree, { probed: false, dirty: null, merged: null, safe: false, reason: 'unprobed', probedAt: null })
+      return Object.assign({}, worktree, { probed: true, dirty: cached.dirty, merged: cached.merged, safe: cached.safe, reason: cached.reason, probedAt: new Date(cached.at).toISOString() })
+    })
+    return { ok: true, project: projectPath, probedAt: new Date(nowAfter).toISOString(), requested: requested === null ? null : Array.from(requested), worktrees: worktrees }
+  }
+  async function worktreesProbe(projectPath, input) {
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    return worktreesWithProbes(projectPath, read.board, input)
   }
 
   /**
@@ -1741,6 +1830,14 @@ export function createApi(ctx, options) {
     const requested = requestedRaw === null ? null : new Set(requestedRaw.map((entry) => normalizePath(entry)))
     const inventory = await worktreeSnapshot(projectPath, board)
     if (inventory.available !== true) return failure(inventory.error === null ? 'worktree-list-failed' : inventory.error, 'the worktree inventory is unavailable')
+    const cleanupTargets = inventory.worktrees.filter((worktree) => worktree.type !== 'main' && (requested === null || requested.has(normalizePath(worktree.path))))
+    let probedByPath = null
+    if (cleanupTargets.length > 0) {
+      const probed = await worktreesWithProbes(projectPath, board, { paths: cleanupTargets.map((worktree) => worktree.path), force: dryRun !== true })
+      if (probed.ok !== true) return failure(probed.code, probed.message)
+      probedByPath = new Map()
+      for (const entry of probed.worktrees) probedByPath.set(normalizePath(entry.path), entry)
+    }
     const root = normalizePath(projectPath)
     const rootPrefix = root + '/'
     const candidates = []
@@ -1748,9 +1845,10 @@ export function createApi(ctx, options) {
     const kept = []
     const failed = []
     const removable = []
-    for (const worktree of inventory.worktrees) {
-      const normalized = normalizePath(worktree.path)
+    for (const inventoryWorktree of inventory.worktrees) {
+      const normalized = normalizePath(inventoryWorktree.path)
       if (requested !== null && requested.has(normalized) !== true) continue
+      const worktree = probedByPath !== null && probedByPath.has(normalized) ? probedByPath.get(normalized) : inventoryWorktree
       const candidate = {
         path: worktree.path,
         type: worktree.type,
@@ -1849,6 +1947,7 @@ export function createApi(ctx, options) {
         } catch (error) {}
       }
     }
+    if (dryRun !== true) invalidateWorktreeCaches(projectPath)
     return ok({ dryRun: dryRun, force: force, candidates: candidates, removed: removed, kept: kept, failed: failed })
   }
   /**
@@ -2830,13 +2929,7 @@ export function createApi(ctx, options) {
       snapshotTeam.team === null || snapshotTeam.team === undefined
         ? snapshotTeam.team
         : Object.assign({}, snapshotTeam.team, { project: workersTeamProject, projectMatch: workersTeamProjectMatch })
-    let worktrees = null
-    if (worktreeCache.project === projectPath && worktreeCache.value !== null && now - worktreeCache.at < 5000) {
-      worktrees = worktreeCache.value
-    } else {
-      worktrees = await worktreeSnapshot(projectPath, board)
-      worktreeCache = { at: now, project: projectPath, value: worktrees }
-    }
+    const worktrees = await worktreeSnapshot(projectPath, board)
     const isoOf = (slot) => (slot === null || slot.at === null ? null : new Date(slot.at).toISOString())
     const buildTask = (task) => {
       const view = summaryOnly
@@ -4186,7 +4279,11 @@ export function createApi(ctx, options) {
     if (incoming.ok !== true) return incoming
     const projectPath = incoming.root
     const actionContext = Object.assign({}, context, { resolvedFrom: incoming.resolvedFrom })
-    return performResolved(action, source, actionContext, projectPath)
+    const result = await performResolved(action, source, actionContext, projectPath)
+    // T-146: a merge can change merged/clean state without moving the worktree
+    // HEAD, so the probe cache must be dropped for this project.
+    if (result !== null && result !== undefined && result.ok === true && ['mergeRequest', 'refreshMerge', 'passTest'].indexOf(action) >= 0) invalidateWorktreeCaches(projectPath)
+    return result
   }
 
   async function performResolved(action, source, context, projectPath) {
@@ -6057,5 +6154,5 @@ export function createApi(ctx, options) {
     })
   }
 
-  return { perform: perform, snapshot: snapshot, taskDetail: taskDetail, taskList: taskList, autoMergePending: autoMergePending, actions: ACTIONS, readActions: READ_ACTIONS }
+  return { perform: perform, snapshot: snapshot, worktrees: worktreesProbe, taskDetail: taskDetail, taskList: taskList, autoMergePending: autoMergePending, actions: ACTIONS, readActions: READ_ACTIONS }
 }
