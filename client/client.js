@@ -136,6 +136,7 @@ window.__ModuleLoader__.load({
 
 		const TC_NS = 'godotBridgeTaskCenter'
 		const TC_STATE_URL = '/godot-bridge/task-center/state'
+const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 		const TC_TASK_URL = '/godot-bridge/task-center/task'
 		const TC_LIST_URL = '/godot-bridge/task-center/list'
 		const TC_ACTION_URL = '/godot-bridge/task-center/action'
@@ -518,6 +519,9 @@ window.__ModuleLoader__.load({
 				statusWtNoStale: '没有陈旧工作树',
 				statusWtLoading: '正在读取工作树…',
 				statusWtPreflightFirst: '请先预检',
+				statusWtUnprobed: '未探测',
+				statusWtProbing: '探测中…',
+				statusWtProbeFailed: '探测失败',
 				statusWtReasonUnverified: '未确认',
 				statusWtReasonOutsideRoot: '越界',
 				statusWtReasonUnknown: '需人工处理',
@@ -1121,6 +1125,9 @@ window.__ModuleLoader__.load({
 				statusWtNoStale: 'No stale worktrees',
 				statusWtLoading: 'Reading worktrees…',
 				statusWtPreflightFirst: 'Run a preflight first',
+				statusWtUnprobed: 'not probed',
+				statusWtProbing: 'probing…',
+				statusWtProbeFailed: 'probe failed',
 				statusWtReasonUnverified: 'unconfirmed',
 				statusWtReasonOutsideRoot: 'outside root',
 				statusWtReasonUnknown: 'needs manual review',
@@ -2613,6 +2620,29 @@ window.__ModuleLoader__.load({
 				return result
 			}
 
+			/**
+			 * T-146: lazy dirty/merged probe. /state only carries the worktree
+			 * inventory; the status card asks this endpoint for the checkouts it
+			 * actually shows (one request, no snapshot attached).
+			 */
+			async function loadWorktrees(paths) {
+				const params = []
+				const pinned = tcPinnedProject()
+				if (pinned !== null) params.push('project=' + encodeURIComponent(pinned))
+				if (Array.isArray(paths)) {
+					paths.forEach(function (path) {
+						if (typeof path === 'string' && path !== '') params.push('path=' + encodeURIComponent(path))
+					})
+				}
+				const url = tcWithSession(TC_WORKTREES_URL + (params.length === 0 ? '' : '?' + params.join('&')))
+				try {
+					const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
+					return payload === null || payload === undefined ? { ok: false } : payload
+				} catch (error) {
+					return { ok: false, error: String((error && error.message) || error) }
+				}
+			}
+
 			function startPolling(ms) {
 				if (timer !== null) return
 				timer = setInterval(function () {
@@ -2637,6 +2667,7 @@ window.__ModuleLoader__.load({
 				},
 				load: load,
 				send: send,
+				loadWorktrees: loadWorktrees,
 				switchProject: switchProject,
 				listTasks: listTasks,
 				loadDetail: loadDetail,
@@ -4428,7 +4459,7 @@ window.__ModuleLoader__.load({
 			const statusUiState = { showAll: false, session: null, copied: null }
 
 			/** T-143: worktree cleanup survives a view switch / poll (module store). */
-			const worktreeCleanupUi = { signature: null, preflight: null, pending: false, executing: false, result: null, forceConfirm: null, selected: {} }
+			const worktreeCleanupUi = { probe: null, probeState: 'idle', probedSignature: null, preflight: null, pending: false, executing: false, result: null, forceConfirm: null, selected: {} }
 
 			/** Status page, direction A: one summary line, three narrow cards, a full-width activity card. */
 			function StatusView(props) {
@@ -4778,7 +4809,7 @@ window.__ModuleLoader__.load({
 				const cleanupUi = worktreeCleanupUi
 				const wtBump = function () { setCleanupTick(function (count) { return count + 1 }) }
 				const worktreeSignature = wtList.map(function (entry) {
-					return String(entry.path) + ':' + (entry.active === true ? 'a' : '-') + ':' + String(entry.reason === undefined || entry.reason === null ? '' : entry.reason) + ':' + String(entry.dirty) + ':' + String(entry.merged)
+					return String(entry.path) + ':' + (entry.active === true ? 'a' : '-')
 				}).join('|')
 				const wtApplyPreflight = function (outcome) {
 					const payload = outcome !== null && outcome !== undefined && outcome.ok === true && outcome.payload !== null && outcome.payload !== undefined ? outcome.payload : null
@@ -4802,14 +4833,26 @@ window.__ModuleLoader__.load({
 					wtBump()
 					void store.send('worktreesCleanup', { dryRun: true }, { quiet: true }).then(wtApplyPreflight)
 				}
+				// T-146: /state only carries the inventory. Probe the stale checkouts
+				// lazily (never an automatic cleanup dry run) when the card is shown.
 				React.useEffect(function () {
 					if (worktreeSignature === '') return
-					if (worktreeCleanupUi.pending === true) return
-					if (worktreeCleanupUi.signature === worktreeSignature) return
-					worktreeCleanupUi.signature = worktreeSignature
-					worktreeCleanupUi.pending = true
+					if (worktreeCleanupUi.probeState === 'loading') return
+					if (worktreeCleanupUi.probedSignature === worktreeSignature) return
+					worktreeCleanupUi.probedSignature = worktreeSignature
+					worktreeCleanupUi.probeState = 'loading'
 					wtBump()
-					void store.send('worktreesCleanup', { dryRun: true }, { quiet: true }).then(wtApplyPreflight)
+					const paths = staleWts.map(function (entry) { return entry.path })
+					void store.loadWorktrees(paths).then(function (payload) {
+						if (payload !== null && payload !== undefined && payload.ok === true) {
+							worktreeCleanupUi.probe = payload
+							worktreeCleanupUi.probeState = 'ready'
+						} else {
+							worktreeCleanupUi.probe = null
+							worktreeCleanupUi.probeState = 'error'
+						}
+						wtBump()
+					})
 				}, [worktreeSignature])
 				const wtExecute = function (paths, force) {
 					if (cleanupUi.executing === true || Array.isArray(paths) === false || paths.length === 0) return
@@ -4826,7 +4869,9 @@ window.__ModuleLoader__.load({
 							cleanupUi.result = payload
 							cleanupUi.preflight = null
 							cleanupUi.selected = {}
-							cleanupUi.signature = null
+							cleanupUi.probe = null
+							cleanupUi.probeState = 'idle'
+							cleanupUi.probedSignature = null
 							void store.load()
 						} else {
 							cleanupUi.result = { ok: false, code: payload !== null && typeof payload.code === 'string' ? payload.code : 'worktrees-cleanup-failed' }
@@ -4837,9 +4882,13 @@ window.__ModuleLoader__.load({
 				const preflightCandidates = cleanupUi.preflight !== null && Array.isArray(cleanupUi.preflight.candidates) ? cleanupUi.preflight.candidates : []
 				const candidateByPath = {}
 				preflightCandidates.forEach(function (candidate) { if (typeof candidate.path === 'string') candidateByPath[candidate.path] = candidate })
-				const eligibleSafe = staleWts.filter(function (entry) { const candidate = candidateByPath[entry.path]; return candidate !== undefined ? candidate.why === 'safe' : entry.safe === true })
-				const safeCount = cleanupUi.preflight !== null ? eligibleSafe.length : staleWts.filter(function (entry) { return entry.safe === true }).length
-				const confirmCount = Math.max(0, staleWts.length - safeCount)
+				const probeEntries = cleanupUi.probe !== null && Array.isArray(cleanupUi.probe.worktrees) ? cleanupUi.probe.worktrees : []
+				const probeByPath = {}
+				probeEntries.forEach(function (entry) { if (entry !== null && typeof entry === 'object' && typeof entry.path === 'string') probeByPath[entry.path] = entry })
+				const wtEffective = function (entry) { const probed = probeByPath[entry.path]; return probed === undefined ? entry : Object.assign({}, entry, probed) }
+				const effectiveStale = staleWts.map(wtEffective)
+				const safeCount = effectiveStale.filter(function (entry) { return entry.probed === true && entry.safe === true }).length
+				const confirmCount = effectiveStale.filter(function (entry) { return entry.probed === true && entry.safe !== true }).length
 				const activeCount = worktrees !== null && worktrees !== undefined && Number.isFinite(worktrees.active) ? worktrees.active : activeWts.length + (mainWt === undefined ? 0 : 1)
 				const totalCount = worktrees !== null && worktrees !== undefined && Number.isFinite(worktrees.total) ? worktrees.total : wtList.length
 				const selectedSafePaths = staleWts.filter(function (entry) {
@@ -4855,6 +4904,11 @@ window.__ModuleLoader__.load({
 					return map[code] === undefined ? t('statusWtReasonUnknown') : t(map[code])
 				}
 				const wtBadges = function (entry) {
+					// T-146: dirty/merged arrive from the lazy probe, not /state.
+					if (entry.probed !== true) {
+						return h('span', { className: 'gbt-wtbadges', 'data-wt-probed': 'false' },
+							h('span', { className: 'gbt-chip', 'data-tone': 'waiting' }, t(cleanupUi.probeState === 'loading' ? 'statusWtProbing' : cleanupUi.probeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed')))
+					}
 					const dirty = entry.dirty === true
 					const merged = entry.merged === true
 					// T-143: gbt-chip carries the token-mapped data-tone colours
@@ -4875,6 +4929,7 @@ window.__ModuleLoader__.load({
 				const mainRow = mainWt === undefined ? null : wtRowBase('wt-main', mainWt, 'main', t('statusWtActiveState'))
 				const activeRows = activeWts.map(function (entry) { return wtRowBase('wt-active-' + String(entry.path), entry, 'active', t('statusWtActiveState')) })
 				const staleRows = staleWts.map(function (entry) {
+					const effective = wtEffective(entry)
 					const candidate = candidateByPath[entry.path]
 					const safeEligible = candidate !== undefined && candidate.why === 'safe'
 					const forceEligible = candidate !== undefined && (candidate.why === 'dirty' || candidate.why === 'unmerged')
@@ -4892,16 +4947,14 @@ window.__ModuleLoader__.load({
 							: h('span', { className: 'gbt-wtactions' },
 								h('button', { key: 'force', type: 'button', className: 'gbt-btn', 'data-variant': 'danger', 'data-action': 'worktree-force-cleanup', 'data-path': entry.path, disabled: cleanupBusy, onClick: function () { cleanupUi.forceConfirm = entry.path; wtBump() } }, t('statusWtForceCleanup')))
 					} else {
-						actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate === undefined ? t('statusWtPreflightFirst') : wtReasonLabel(String(entry.reason === undefined || entry.reason === null ? '' : entry.reason))))
+						actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate !== undefined ? wtReasonLabel(String(candidate.why)) : effective.probed !== true ? t(cleanupUi.probeState === 'loading' ? 'statusWtProbing' : cleanupUi.probeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed') : t('statusWtPreflightFirst')))
 					}
-					const dirty = entry.dirty === true
-					const merged = entry.merged === true
-					return h('div', { key: 'wt-stale-' + actionId, className: 'gbt-wtrow', 'data-worktree-stale': wtLabelOf(entry), 'data-path': entry.path, 'data-reason': String(entry.reason === undefined || entry.reason === null ? '' : entry.reason) },
+					return h('div', { key: 'wt-stale-' + actionId, className: 'gbt-wtrow', 'data-worktree-stale': wtLabelOf(entry), 'data-path': entry.path, 'data-reason': String(effective.reason === undefined || effective.reason === null ? '' : effective.reason), 'data-wt-probed': effective.probed === true ? 'true' : 'false' },
 						h('span', { className: 'gbt-wtlabel' }, h('b', null, wtLabelOf(entry)), h('span', { className: 'gbt-pill', 'data-wt-type': String(entry.type) }, wtTypeLabel(entry.type))),
 						h('span', { className: 'gbt-wtpath gbt-mono', title: String(entry.path) }, wtBaseOf(entry.path)),
 						h('span', { className: 'gbt-wtbranch gbt-mono', title: typeof entry.branch === 'string' ? entry.branch : '' }, typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : '—'),
-						h('span', { className: 'gbt-wtsha gbt-mono' }, typeof entry.head === 'string' && entry.head !== '' ? entry.head.slice(0, 7) : '—'),
-						wtBadges(entry),
+						h('span', { className: 'gbt-wtsha gbt-mono' }, typeof effective.head === 'string' && effective.head !== '' ? effective.head.slice(0, 7) : '—'),
+						wtBadges(effective),
 						actions)
 				})
 				const preflightBlock = cleanupUi.preflight === null ? null : h('div', { className: 'gbt-wtpreview', 'data-wt-preflight': 'true' },

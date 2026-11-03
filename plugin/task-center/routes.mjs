@@ -24,6 +24,8 @@ export const DIAGNOSTICS_PATH = ROUTE_PREFIX + '/diagnostics'
 export const TASK_PATH = ROUTE_PREFIX + '/task'
 /** Paged/summarized list with server-side status filter and search. */
 export const LIST_PATH = ROUTE_PREFIX + '/list'
+/** T-146: lazy dirty/merged probe for worktrees (never returns a snapshot). */
+export const WORKTREES_PATH = ROUTE_PREFIX + '/worktrees'
 
 const MAX_BODY_BYTES = 256 * 1024
 
@@ -326,6 +328,35 @@ export function registerTaskRoutes(ctx, options) {
     }
   }
 
+  async function handleWorktrees(req, res) {
+    try {
+      const target = await resolveProject(req, null, sessionFromRequest(req, null))
+      if (target.failed !== undefined) {
+        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
+        return
+      }
+      const project = target.root
+      state.noteProject(project)
+      const url = queryOf(req)
+      const paths = []
+      if (url !== null) {
+        for (const value of url.searchParams.getAll('path')) {
+          if (typeof value === 'string' && value !== '') paths.push(value)
+        }
+        for (const value of url.searchParams.getAll('paths')) {
+          for (const part of String(value).split(',')) {
+            if (part.trim() !== '') paths.push(part.trim())
+          }
+        }
+      }
+      // T-146: only the requested checkouts are probed; without paths the call
+      // probes every non-main checkout (explicit, not on the /state path).
+      sendJson(res, 200, await api.worktrees(project, { paths: paths.length === 0 ? null : paths }))
+    } catch (error) {
+      sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
+    }
+  }
+
   function handleDiagnostics(req, res) {
     try {
       sendJson(res, 200, {
@@ -343,6 +374,7 @@ export function registerTaskRoutes(ctx, options) {
     ctx.webServer.register({ kind: 'exact', path: ACTION_PATH, handler: handleAction }),
     ctx.webServer.register({ kind: 'exact', path: TASK_PATH, handler: handleTask }),
     ctx.webServer.register({ kind: 'exact', path: LIST_PATH, handler: handleList }),
+    ctx.webServer.register({ kind: 'exact', path: WORKTREES_PATH, handler: handleWorktrees }),
     ctx.webServer.register({ kind: 'exact', path: DIAGNOSTICS_PATH, handler: handleDiagnostics }),
   ]
   return function dispose() {

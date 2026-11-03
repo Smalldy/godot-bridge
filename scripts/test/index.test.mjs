@@ -131,10 +131,10 @@ check(
   })(),
 )
 check('the tool is registered', tools.length === 1 && tools[0].name === 'task_center', String(tools.length))
-check('five routes are registered', routes.length === 5, routes.map((route) => route.path).join(','))
+check('six routes are registered', routes.length === 6, routes.map((route) => route.path).join(','))
 check(
-  'the routes include state, action, task, list and diagnostics',
-  ['/state', '/action', '/task', '/list', '/diagnostics'].every((path) => routes.some((route) => route.path === '/godot-bridge/task-center' + path)),
+  'the routes include state, action, task, list, worktrees and diagnostics',
+  ['/state', '/action', '/task', '/list', '/worktrees', '/diagnostics'].every((path) => routes.some((route) => route.path === '/godot-bridge/task-center' + path)),
   routes.map((route) => route.path).join(','),
 )
 check('an agent status listener is installed', listeners.some((entry) => entry.event === 'agent/status'))
@@ -461,7 +461,7 @@ check('teardown disposes the skill registration', skillDisposals.length === 1 &&
     secondError = error
   }
   check('the row activates with a subprocess service present', secondError === null, secondError && secondError.stack)
-  check('the tool and routes still wire up', secondTools.length === 1 && secondRoutes.length === 5, String(secondTools.length) + '/' + String(secondRoutes.length))
+  check('the tool and routes still wire up', secondTools.length === 1 && secondRoutes.length === 6, String(secondTools.length) + '/' + String(secondRoutes.length))
   check('activation spawns no git process', spawned.length === 0, JSON.stringify(spawned))
 }
 
@@ -503,7 +503,7 @@ check('teardown disposes the skill registration', skillDisposals.length === 1 &&
     thirdError = error
   }
   check('a host without the skills/systemPrompt services still activates', thirdError === null, thirdError && thirdError.stack)
-  check('the tool and routes still wire up without the guide services', thirdTools.length === 1 && thirdRoutes.length === 5, String(thirdTools.length) + '/' + String(thirdRoutes.length))
+  check('the tool and routes still wire up without the guide services', thirdTools.length === 1 && thirdRoutes.length === 6, String(thirdTools.length) + '/' + String(thirdRoutes.length))
   check(
     'both optional services are requested through inject',
     requested.indexOf('skills') >= 0 && requested.indexOf('systemPrompt') >= 0,
