@@ -1379,12 +1379,53 @@ await flush()
   const unmergedBadges = badgesOf(staleRowOf('T-126-1'))
   const dirtyBadges = badgesOf(staleRowOf('T-55-1'))
   check(
-    'T-143 each row carries clean/dirty and merged/unmerged badges',
-    safeBadges.state !== undefined && safeBadges.state.props['data-wt-state'] === 'clean' && safeBadges.merge.props['data-wt-merge'] === 'merged' &&
-      unmergedBadges.state.props['data-wt-state'] === 'clean' && unmergedBadges.merge.props['data-wt-merge'] === 'unmerged' &&
-      dirtyBadges.state.props['data-wt-state'] === 'dirty' && dirtyBadges.merge.props['data-wt-merge'] === 'merged',
-    JSON.stringify({ safe: [safeBadges.state && safeBadges.state.props['data-wt-state'], safeBadges.merge && safeBadges.merge.props['data-wt-merge']], dirty: [dirtyBadges.state && dirtyBadges.state.props['data-wt-state'], dirtyBadges.merge && dirtyBadges.merge.props['data-wt-merge']] }),
+    'T-143 each row carries clean/dirty and merged/unmerged badges with a token-mapped tone',
+    safeBadges.state !== undefined &&
+      safeBadges.state.props['data-wt-state'] === 'clean' &&
+      safeBadges.merge.props['data-wt-merge'] === 'merged' &&
+      safeBadges.state.props.className.indexOf('gbt-chip') >= 0 &&
+      safeBadges.merge.props.className.indexOf('gbt-chip') >= 0 &&
+      safeBadges.state.props['data-tone'] === 'ready' &&
+      safeBadges.merge.props['data-tone'] === 'ready' &&
+      unmergedBadges.state.props['data-wt-state'] === 'clean' &&
+      unmergedBadges.merge.props['data-wt-merge'] === 'unmerged' &&
+      unmergedBadges.merge.props['data-tone'] === 'waiting' &&
+      dirtyBadges.state.props['data-wt-state'] === 'dirty' &&
+      dirtyBadges.state.props['data-tone'] === 'blocked' &&
+      dirtyBadges.merge.props['data-wt-merge'] === 'merged',
+    JSON.stringify({
+      safe: [safeBadges.state && safeBadges.state.props.className, safeBadges.state && safeBadges.state.props['data-tone'], safeBadges.merge && safeBadges.merge.props['data-tone']],
+      unmerged: unmergedBadges.merge && unmergedBadges.merge.props['data-tone'],
+      dirty: dirtyBadges.state && dirtyBadges.state.props['data-tone'],
+    }),
   )
+  const cssText = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+  const toneRuleOf = function (tone) { const match = new RegExp('\\.gbt-chip\\[data-tone="' + tone + '"\\]\\{[^}]*\\}').exec(cssText); return match === null ? null : match[0] }
+  const readyRule = toneRuleOf('ready')
+  const waitingRule = toneRuleOf('waiting')
+  const blockedRule = toneRuleOf('blocked')
+  check(
+    'T-143 the gbt-chip tones used by the badges map to T-133 state tokens',
+    readyRule !== null && /--dsw-alias-state-success-primary/.test(readyRule) &&
+      waitingRule !== null && /--dsw-alias-state-warn-label/.test(waitingRule) &&
+      blockedRule !== null && /--dsw-alias-state-error-primary/.test(blockedRule),
+    JSON.stringify([readyRule, waitingRule, blockedRule]),
+  )
+  // An unverifiable candidate keeps its row but must never print the raw code.
+  const reasonEntry = HOST.worktrees.worktrees.filter((entry) => String(entry.path).indexOf('T-126-1') >= 0)[0]
+  const savedReason = reasonEntry.reason
+  reasonEntry.reason = 'unverified'
+  tree = await renderStatus()
+  card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
+  const unverifiedText = textOf(staleRowOf('T-126-1'))
+  check(
+    'T-143 an unverified candidate shows a localized label, never the raw reason code',
+    unverifiedText.indexOf('未确认') >= 0 && unverifiedText.indexOf('unverified') < 0,
+    unverifiedText,
+  )
+  reasonEntry.reason = savedReason
+  tree = await renderStatus()
+  card = findAll(tree, (node) => node.props && node.props['data-status-card'] === 'worktrees')[0]
   check(
     'T-143 task labels come from the path/branch, including the type',
     findAll(card, (node) => node.props && node.props['data-worktree-stale'] === 'T-126').length >= 2 &&

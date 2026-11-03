@@ -506,6 +506,9 @@ window.__ModuleLoader__.load({
 				statusWtNoStale: '没有陈旧工作树',
 				statusWtLoading: '正在读取工作树…',
 				statusWtPreflightFirst: '请先预检',
+				statusWtReasonUnverified: '未确认',
+				statusWtReasonOutsideRoot: '越界',
+				statusWtReasonUnknown: '需人工处理',
 				statusStaleWorktrees: '陈旧工作树',
 				statusIdle: '空闲',
 				statusAgentUnit: '人',
@@ -1094,6 +1097,9 @@ window.__ModuleLoader__.load({
 				statusWtNoStale: 'No stale worktrees',
 				statusWtLoading: 'Reading worktrees…',
 				statusWtPreflightFirst: 'Run a preflight first',
+				statusWtReasonUnverified: 'unconfirmed',
+				statusWtReasonOutsideRoot: 'outside root',
+				statusWtReasonUnknown: 'needs manual review',
 				statusStaleWorktrees: 'Stale worktrees',
 				statusIdle: 'idle',
 				statusAgentUnit: 'agents',
@@ -4729,12 +4735,19 @@ window.__ModuleLoader__.load({
 				const cleanupBusy = cleanupUi.pending === true || cleanupUi.executing === true
 				const previewRemovable = preflightCandidates.filter(function (candidate) { return candidate.wouldRemove === true })
 				const cleanupResult = cleanupUi.result
+				const wtReasonLabel = function (code) {
+					const map = { unverified: 'statusWtReasonUnverified', 'outside-root': 'statusWtReasonOutsideRoot' }
+					return map[code] === undefined ? t('statusWtReasonUnknown') : t(map[code])
+				}
 				const wtBadges = function (entry) {
 					const dirty = entry.dirty === true
 					const merged = entry.merged === true
+					// T-143: gbt-chip carries the token-mapped data-tone colours
+					// (ready -> success, waiting -> warn, blocked -> error); gbt-pill
+					// only maps data-status, so state badges must not use it.
 					return h('span', { className: 'gbt-wtbadges' },
-						h('span', { className: 'gbt-pill', 'data-wt-state': entry.dirty === true ? 'dirty' : entry.dirty === false ? 'clean' : 'unknown', 'data-tone': dirty ? 'blocked' : 'ready' }, entry.dirty === false || entry.dirty === true ? t(dirty ? 'statusWtDirty' : 'statusWtClean') : '—'),
-						h('span', { className: 'gbt-pill', 'data-wt-merge': entry.merged === true ? 'merged' : entry.merged === false ? 'unmerged' : 'unknown', 'data-tone': merged ? 'ready' : 'waiting' }, entry.merged === false || entry.merged === true ? t(merged ? 'statusWtMerged' : 'statusWtUnmerged') : '—'))
+						h('span', { className: 'gbt-chip', 'data-wt-state': entry.dirty === true ? 'dirty' : entry.dirty === false ? 'clean' : 'unknown', 'data-tone': dirty ? 'blocked' : 'ready' }, entry.dirty === false || entry.dirty === true ? t(dirty ? 'statusWtDirty' : 'statusWtClean') : '—'),
+						h('span', { className: 'gbt-chip', 'data-wt-merge': entry.merged === true ? 'merged' : entry.merged === false ? 'unmerged' : 'unknown', 'data-tone': merged ? 'ready' : 'waiting' }, entry.merged === false || entry.merged === true ? t(merged ? 'statusWtMerged' : 'statusWtUnmerged') : '—'))
 				}
 				const wtRowBase = function (key, entry, rowMarker, stateText) {
 					return h('div', { key: key, className: 'gbt-wtrow', 'data-worktree-row': rowMarker, 'data-wt-task': String(entry.taskId === undefined || entry.taskId === null ? '' : entry.taskId) },
@@ -4742,7 +4755,7 @@ window.__ModuleLoader__.load({
 						h('span', { className: 'gbt-wtpath gbt-mono', title: String(entry.path) }, wtBaseOf(entry.path)),
 						h('span', { className: 'gbt-wtbranch gbt-mono', title: typeof entry.branch === 'string' ? entry.branch : '' }, typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : '—'),
 						h('span', { className: 'gbt-wtsha gbt-mono' }, typeof entry.head === 'string' && entry.head !== '' ? entry.head.slice(0, 7) : '—'),
-						stateText === undefined ? wtBadges(entry) : h('span', { className: 'gbt-pill', 'data-wt-active': 'true', 'data-tone': 'running' }, stateText))
+						stateText === undefined ? wtBadges(entry) : h('span', { className: 'gbt-chip', 'data-wt-active': 'true', 'data-tone': 'running' }, stateText))
 				}
 				const mainRow = mainWt === undefined ? null : wtRowBase('wt-main', mainWt, 'main', t('statusWtActiveState'))
 				const activeRows = activeWts.map(function (entry) { return wtRowBase('wt-active-' + String(entry.path), entry, 'active', t('statusWtActiveState')) })
@@ -4764,7 +4777,7 @@ window.__ModuleLoader__.load({
 							: h('span', { className: 'gbt-wtactions' },
 								h('button', { key: 'force', type: 'button', className: 'gbt-btn', 'data-variant': 'danger', 'data-action': 'worktree-force-cleanup', 'data-path': entry.path, disabled: cleanupBusy, onClick: function () { cleanupUi.forceConfirm = entry.path; wtBump() } }, t('statusWtForceCleanup')))
 					} else {
-						actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate === undefined ? t('statusWtPreflightFirst') : String(entry.reason === undefined || entry.reason === null ? '' : entry.reason)))
+						actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate === undefined ? t('statusWtPreflightFirst') : wtReasonLabel(String(entry.reason === undefined || entry.reason === null ? '' : entry.reason))))
 					}
 					const dirty = entry.dirty === true
 					const merged = entry.merged === true
