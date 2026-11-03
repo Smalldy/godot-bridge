@@ -4981,7 +4981,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   }
   const REPORT = {
     summary: 'The loader blocks on the config read.',
-    body: '# Findings\n\nIt waits for the config file before the first frame.',
+    body: '# Findings\n\nIt waits for the config file before the first frame.\n\n## Cause\n\nThe loader blocks on the config read.\n\n- config read\n- first frame\n\n### Repro\n\n```\nnode --cpu-prof loader.mjs\n```',
     evidence: [{ command: 'node --cpu-prof loader.mjs', exitCode: 1, outputTail: 'total 1200ms' }],
     artifacts: ['.worktrees/probe-T-9-a'],
     probeCommits: ['abc123def'],
@@ -5106,6 +5106,52 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   const submitButton = findAll(drawer, (node) => node.type === 'button' && String(textOf(node)).trim() === '提交')[0]
   check('T-132 a running investigation has no submit box', submitButton === undefined, submitButton && textOf(submitButton))
   check('T-132 the investigation detail shows no target/merge progress line', findAll(drawer, (node) => node.props && node.props['data-detail-target'] !== undefined).length === 0)
+  // T-144: investigation detail is a casebook; the report body is fully expanded.
+  const casebookNode = findAll(drawer, (node) => node.props && node.props['data-detail'] === 'casebook')[0]
+  const caseIndexNode = findAll(drawer, (node) => node.props && node.props['data-detail-index'] === 'casebook')[0]
+  const caseFactsNode = findAll(drawer, (node) => node.props && node.props['data-detail-index'] === 'facts')[0]
+  check(
+    'T-144 the investigation detail is a casebook: index aside + report paper',
+    casebookNode !== undefined && caseIndexNode !== undefined && caseFactsNode !== undefined && textOf(caseIndexNode).indexOf('案件索引') >= 0 && textOf(caseIndexNode).indexOf('执行者') >= 0 && textOf(caseIndexNode).indexOf('基线') >= 0 && textOf(caseIndexNode).indexOf('目标') >= 0 && textOf(caseIndexNode).indexOf('时间线') >= 0 && textOf(caseIndexNode).indexOf('T-9') >= 0,
+    caseIndexNode && textOf(caseIndexNode).slice(0, 300),
+  )
+  const bodyHeadings = findAll(reportBody, (node) => node.props && node.props['data-report-block'] === 'heading')
+  const bodyParagraphs = findAll(reportBody, (node) => node.props && node.props['data-report-block'] === 'paragraph')
+  const bodyLists = findAll(reportBody, (node) => node.props && node.props['data-report-block'] === 'list')
+  const bodyCodes = findAll(reportBody, (node) => node.props && node.props['data-report-block'] === 'code')
+  check(
+    'T-144 the report body renders headings, paragraphs, a list and a code block',
+    bodyHeadings.length === 3 && bodyHeadings[0].type === 'h3' && textOf(bodyHeadings[0]) === 'Findings' && bodyHeadings[1].type === 'h3' && textOf(bodyHeadings[1]) === 'Cause' && bodyHeadings[2].type === 'h4' && textOf(bodyHeadings[2]) === 'Repro' &&
+      bodyParagraphs.some((node) => textOf(node).indexOf('It waits for the config file') >= 0) && bodyParagraphs.some((node) => textOf(node).indexOf('The loader blocks') >= 0) &&
+      bodyLists.length === 1 && findAll(bodyLists[0], (node) => node.type === 'li').length === 2 &&
+      bodyCodes.length === 1 && textOf(bodyCodes[0]).indexOf('node --cpu-prof loader.mjs') >= 0,
+    JSON.stringify({ headings: bodyHeadings.map((node) => node.type + ':' + textOf(node)), paragraphs: bodyParagraphs.length, lists: bodyLists.length, codes: bodyCodes.length }),
+  )
+  const reportCss = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+  const reportBodyRule = /\.gbt-reportbody\{[^}]*\}/.exec(reportCss)
+  check(
+    'T-144 the body is fully expanded (no 320px window, no EXCERPT)',
+    reportBodyRule !== null && reportBodyRule[0].indexOf('max-height') < 0 && reportBodyRule[0].indexOf('overflow') < 0 && textOf(drawer).indexOf('EXCERPT') < 0 && bodyCodes.length === 1,
+    reportBodyRule && reportBodyRule[0],
+  )
+  const reportPaperNode = findAll(drawer, (node) => node.props && node.props['data-detail-report-card'] === 'delivered')[0]
+  const reportFileNode = findAll(reportPaperNode, (node) => node.props && node.props['data-report-file'] === 'paper')[0]
+  check(
+    'T-144 the report file line closes the paper after the appendix',
+    reportFileNode !== undefined && textOf(reportFileNode).indexOf('.agents/reports/T-9.md') >= 0,
+    reportFileNode && textOf(reportFileNode),
+  )
+  const reportOrder = findAll(drawer, (node) => node.props && (node.props['data-detail-report'] === 'body' || node.props['data-detail-report'] === 'evidence' || node.props['data-detail-report'] === 'artifacts'))
+  check(
+    'T-144 the evidence appendix and artifacts follow the full body',
+    reportOrder.length === 3 && reportOrder[0].props['data-detail-report'] === 'body' && reportOrder[1].props['data-detail-report'] === 'evidence' && reportOrder[2].props['data-detail-report'] === 'artifacts',
+    JSON.stringify(reportOrder.map((node) => node.props['data-detail-report'])),
+  )
+  check(
+    'T-144 narrow panels collapse the index to a top strip with no horizontal overflow',
+    reportCss.indexOf('@media (max-width:900px){.gbt-casebook{grid-template-columns:1fr}') >= 0 && /\.gbt-casepaper\{[^}]*min-width:0/.test(reportCss) && /\.gbt-reportcode\{[^}]*max-width:100%[^}]*overflow-x:auto/.test(reportCss) && /\.gbt-casefacts dd\{[^}]*overflow-wrap:anywhere/.test(reportCss),
+    JSON.stringify({ media: reportCss.indexOf('@media (max-width:900px){.gbt-casebook{grid-template-columns:1fr}'), paper: /\.gbt-casepaper\{[^}]*min-width:0/.test(reportCss), code: /\.gbt-reportcode\{[^}]*overflow-x:auto/.test(reportCss) }),
+  )
   const devCard = investigationCards(renderedBoard()).filter((card) => textOf(card).indexOf('Tail output feature') >= 0)[0]
   devCard.props.onClick()
   await flush()
@@ -5114,6 +5160,12 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   const devDrawer = findAll(devDetail, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
   const devStageKeys = devDrawer === undefined ? [] : findAll(devDrawer, (node) => node.props && node.props['data-stage'] !== undefined).map((node) => node.props['data-stage'])
   check('T-132 the dev card keeps its five-stage spine', devStageKeys.length === 5, JSON.stringify(devStageKeys))
+  const devBody = findAll(devDrawer, (node) => node.props && node.props['data-detail-body'] !== undefined)[0]
+  check(
+    'T-144 the dev detail keeps its own body layout and never becomes a casebook',
+    devBody !== undefined && devBody.props['data-detail-layout'] !== 'casebook' && findAll(devDrawer, (node) => node.props && node.props['data-detail'] === 'casebook').length === 0,
+    JSON.stringify(devBody && devBody.props['data-detail-layout']),
+  )
 
   // Missing report: a done investigation without one says so.
   const missingCard = investigationCards(renderedBoard()).filter((card) => textOf(card).indexOf(INV_DONE.title) >= 0)[0]
@@ -5124,6 +5176,26 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   const missingDrawer = findAll(missingDetail, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
   const missingCardNode = findAll(missingDrawer, (node) => node.props && node.props['data-detail-report-card'] === 'missing')[0]
   check('T-132 an investigation without a report says it is missing', missingCardNode !== undefined && textOf(missingCardNode).indexOf('报告未交付') >= 0, missingCardNode && textOf(missingCardNode).slice(0, 160))
+
+  // T-144: an unparseable body falls back to a <pre> that keeps every line.
+  const savedMissingReport = INV_DONE.report
+  const savedMissingUpdatedAt = INV_DONE.updatedAt
+  INV_DONE.report = { summary: 'Fallback', body: '```\nunterminated code\nstill here', createdAt: nowIso }
+  INV_DONE.updatedAt = new Date(Date.now() + 1000).toISOString()
+  const fallbackCard = investigationCards(renderedBoard()).filter((card) => textOf(card).indexOf(INV_DONE.title) >= 0)[0]
+  fallbackCard.props.onClick()
+  await flush()
+  await flush()
+  const fallbackTree = withHooks(panel, { initialView: 'board' })
+  const fallbackDrawer = findAll(fallbackTree, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
+  const fallbackBody = findAll(fallbackDrawer, (node) => node.props && node.props['data-report-block'] === 'fallback')[0]
+  check(
+    'T-144 a parse failure falls back to a pre that keeps the whole body',
+    fallbackBody !== undefined && textOf(fallbackBody).indexOf('unterminated code') >= 0 && textOf(fallbackBody).indexOf('still here') >= 0,
+    fallbackBody && textOf(fallbackBody),
+  )
+  INV_DONE.report = savedMissingReport
+  INV_DONE.updatedAt = savedMissingUpdatedAt
 
   HOST.tasks = savedTasks
   HOST.counts = savedCounts
