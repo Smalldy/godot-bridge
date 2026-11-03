@@ -242,6 +242,18 @@ window.__ModuleLoader__.load({
 				reportTail: '输出尾部',
 				reportProbeCommits: '警告：scratch 里有提交（已丢弃）',
 				reportFullHint: '完整报告：.agents/reports/{id}.md',
+				casebookTitle: '案卷',
+				casebookIndex: '案件索引',
+				casebookStatus: '状态',
+				casebookKind: '类型',
+				casebookProject: '项目',
+				casebookExecutor: '执行者',
+				casebookBase: '基线',
+				casebookTarget: '目标',
+				casebookElapsed: '用时',
+				casebookDelivered: '交付时间',
+				casebookTimeline: '时间线',
+				casebookReportFile: '报告文件',
 				reportInvestigateHint: '调查卡由执行者用 report 交付；不会进入评审/测试/合并。',
 			statusBoardSize: '板子 {mb} MB / {limit} MB 上限（{percent}%）· 按当前体积约还能建 {n} 张卡',
 				archiveEmpty: '没有匹配的已归档任务',
@@ -833,6 +845,18 @@ window.__ModuleLoader__.load({
 				reportTail: 'Output tail',
 				reportProbeCommits: 'Warning: commits in the scratch checkout (discarded)',
 				reportFullHint: 'Full report: .agents/reports/{id}.md',
+				casebookTitle: 'Casebook',
+				casebookIndex: 'Case index',
+				casebookStatus: 'Status',
+				casebookKind: 'Kind',
+				casebookProject: 'Project',
+				casebookExecutor: 'Executor',
+				casebookBase: 'Base',
+				casebookTarget: 'Target',
+				casebookElapsed: 'Elapsed',
+				casebookDelivered: 'Delivered',
+				casebookTimeline: 'Timeline',
+				casebookReportFile: 'Report file',
 				reportInvestigateHint: 'An investigation is delivered with report by its executor; it never enters review/test/merge.',
 			statusBoardSize: 'board {mb} MB of its {limit} MB limit ({percent}%) · about {n} more cards at this size',
 				archiveEmpty: 'No archived task matches',
@@ -1457,12 +1481,32 @@ window.__ModuleLoader__.load({
 			'.gbt-chip[data-kind="investigate"],.gbt-pill[data-kind="investigate"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-business-primary)}',
 			'.gbt-colnote{margin-left:6px;font-size:11px;color:var(--dsw-alias-state-business-primary);opacity:.9}',
 			'.gbt-reportcard{border:1px solid var(--dsw-alias-state-business-primary)}',
-			'.gbt-reportbody{max-height:320px;overflow:auto;white-space:pre-wrap}',
+			// T-144: the report body is a paper that expands with the page; the <pre>
+			// window (max-height 320px / EXCERPT) is gone. Only the fallback keeps pre.
+			'.gbt-reportbody{white-space:pre-wrap}',
 			'.gbt-reporttable{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}',
 			'.gbt-reporttable th,.gbt-reporttable td{border-bottom:1px solid var(--dsw-alias-border-l3,var(--dsw-alias-border-l4));padding:4px 6px;text-align:left;vertical-align:top}',
 			'.gbt-reporttable th{font-weight:600;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-reporttail{margin:0;max-height:120px;overflow:auto;white-space:pre-wrap;font-size:11px}',
 			'.gbt-reportartifacts{margin:4px 0 0;padding-left:18px;font-size:12px}',
+			// T-144: casebook (investigation detail) — index aside + report paper.
+			'.gbt-casebook{display:grid;grid-template-columns:minmax(240px,280px) minmax(0,1fr);gap:14px;align-items:start;min-width:0}',
+			'.gbt-caseindex{display:flex;flex-direction:column;gap:10px;min-width:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
+			'.gbt-caseindexhead{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;color:var(--dsw-alias-label-primary)}',
+			'.gbt-casefacts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:3px 8px;margin:0;font-size:11px}',
+			'.gbt-casefacts dt{color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-casefacts dd{margin:0;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}',
+			'.gbt-caseindex .gbt-detailevents{padding:0}',
+			'.gbt-casefile{font-size:11px;color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere}',
+			'.gbt-casepaper{display:flex;flex-direction:column;gap:8px;min-width:0;padding:12px 14px;border:1px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
+			'.gbt-reportheading{margin:10px 0 4px;font-family:Georgia,"Times New Roman",serif;font-weight:600;color:var(--dsw-alias-label-primary)}',
+			'h3.gbt-reportheading{font-size:16px}',
+			'h4.gbt-reportheading{font-size:14px}',
+			'.gbt-reportpara{margin:0 0 8px;white-space:pre-wrap;line-height:1.65;font-size:12.5px;color:var(--dsw-alias-label-primary)}',
+			'.gbt-reportlist{margin:0 0 8px;padding-left:20px;font-size:12.5px;line-height:1.6;color:var(--dsw-alias-label-primary)}',
+			'.gbt-reportcode{max-width:100%;margin:0 0 8px;padding:8px 10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);overflow-x:auto;white-space:pre;font-size:11.5px;color:var(--dsw-alias-label-primary)}',
+			'.gbt-reportcode code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+			'@media (max-width:900px){.gbt-casebook{grid-template-columns:1fr}.gbt-caseindex{flex-direction:row;flex-wrap:wrap;align-items:flex-start}.gbt-caseindex .gbt-casefacts{flex:1 1 220px}.gbt-caseindex .gbt-detailevents{flex:1 1 260px}}',
 
 			'.gbt-empty{padding:26px 12px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:12px;border:0.5px dashed var(--dsw-alias-border-l4);border-radius:10px;margin:6px}',
 			'.gbt-rowlist{display:flex;flex-direction:column;gap:6px}',
@@ -1841,6 +1885,77 @@ window.__ModuleLoader__.load({
 			return null
 		}
 
+		/**
+		 * T-144: render a report body as light, SAFE Markdown. No dependency and no
+		 * innerHTML: every node carries plain text. Headings (#/## -> h3, ### -> h4),
+		 * `- ` lists, fenced code blocks and blank-line paragraphs are understood;
+		 * unrecognised lines stay paragraph text (nothing is dropped). A parser error
+		 * falls back to a <pre> that keeps the whole body.
+		 */
+		function tcReportBlocks(text) {
+			try {
+				const lines = String(text === undefined || text === null ? '' : text).replace(/\r\n/g, '\n').split('\n')
+				const nodes = []
+				let index = 0
+				let paragraph = []
+				const flushParagraph = function () {
+					if (paragraph.length === 0) return
+					nodes.push(h('p', { key: 'p-' + String(nodes.length), className: 'gbt-reportpara', 'data-report-block': 'paragraph' }, paragraph.join('\n')))
+					paragraph = []
+				}
+				while (index < lines.length) {
+					const line = lines[index]
+					if (/^```/.test(line)) {
+						flushParagraph()
+						const code = []
+						index += 1
+						let terminated = false
+						while (index < lines.length) {
+							if (/^```/.test(lines[index])) {
+								terminated = true
+								break
+							}
+							code.push(lines[index])
+							index += 1
+						}
+						// An unterminated fence is a parse failure: the outer catch keeps the
+						// whole body in a <pre> instead of guessing where the code ends.
+						if (terminated !== true) throw new Error('unterminated code fence')
+						index += 1
+						nodes.push(h('pre', { key: 'code-' + String(nodes.length), className: 'gbt-reportcode', 'data-report-block': 'code' }, h('code', null, code.join('\n'))))
+						continue
+					}
+					const heading = /^(#{1,3})\s+(.*)$/.exec(line)
+					if (heading !== null) {
+						flushParagraph()
+						nodes.push(h(heading[1].length <= 2 ? 'h3' : 'h4', { key: 'h-' + String(nodes.length), className: 'gbt-reportheading', 'data-report-block': 'heading', 'data-report-level': String(heading[1].length) }, heading[2]))
+						index += 1
+						continue
+					}
+					if (/^\s*[-*]\s+/.test(line)) {
+						flushParagraph()
+						const items = []
+						while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
+							items.push(lines[index].replace(/^\s*[-*]\s+/, ''))
+							index += 1
+						}
+						nodes.push(h('ul', { key: 'ul-' + String(nodes.length), className: 'gbt-reportlist', 'data-report-block': 'list' }, items.map(function (item, at) { return h('li', { key: String(at), className: 'gbt-reportlistitem' }, item) })))
+						continue
+					}
+					if (line.trim() === '') {
+						flushParagraph()
+						index += 1
+						continue
+					}
+					paragraph.push(line)
+					index += 1
+				}
+				flushParagraph()
+				return nodes.length === 0 ? [h('p', { key: 'empty', className: 'gbt-footnote', 'data-report-block': 'empty' }, '—')] : nodes
+			} catch (error) {
+				return [h('pre', { key: 'fallback', className: 'gbt-reportbody', 'data-report-block': 'fallback' }, String(text === undefined || text === null ? '' : text))]
+			}
+		}
 		/** The phase word an investigation shows: 待调查 / 调查中 / 报告已交付. */
 		function tcInvestigationPhaseLabel(task, t) {
 			if (task.status === 'pending') return t('investigatePending')
@@ -5403,69 +5518,112 @@ window.__ModuleLoader__.load({
 					specBody,
 				)
 
-				// T-132: the delivered report is the investigation's product. Nothing here
-				// touches review/test/merge vocabulary, and a missing report says so.
-				const reportBlock =
-					investigate === false
-						? null
+				// T-144: the delivered report is the investigation's product; the casebook renders
+				// it in full (safe Markdown) with the evidence appendix after the body.
+				const reportFileLine = t('reportFullHint').replace('{id}', task.id)
+				const reportInner =
+					report === null
+						? h('p', { className: 'gbt-footnote', 'data-detail-report': 'missing' }, t('reportInvestigateHint'))
 						: h(
-								'section',
-								{ className: 'gbt-detailcard gbt-reportcard', 'data-detail-card': 'report', 'data-detail-report-card': report === null ? 'missing' : 'delivered', 'data-report-id': task.id },
-								h(
+							'div',
+							{ className: 'gbt-reportcontent' },
+							h('div', { className: 'gbt-subhead' }, t('reportSummary')),
+							h('p', { className: 'gbt-prose', 'data-detail-report': 'summary' }, String(report.summary)),
+							typeof report.body !== 'string' || report.body === ''
+								? null
+								: h(
 									'div',
-									{ className: 'gbt-detailcardhead' },
-									t('reportTitle'),
-									h('span', { className: 'gbt-pill', 'data-report-status': report === null ? 'missing' : 'delivered', 'data-kind': 'investigate' }, report === null ? t('reportMissing') : t('reportDelivered')),
-									h('span', { className: 'gbt-footnote', 'data-report-file': t('reportFullHint').replace('{id}', task.id) }, t('reportFullHint').replace('{id}', task.id)),
+									null,
+									h('div', { className: 'gbt-subhead' }, t('reportBody')),
+									h('div', { className: 'gbt-reportbody', 'data-detail-report': 'body', 'data-report-format': 'markdown' }, tcReportBlocks(String(report.body))),
 								),
-								report === null
-									? h('p', { className: 'gbt-footnote', 'data-detail-report': 'missing' }, t('reportInvestigateHint'))
-									: h(
-											'div',
+							Array.isArray(report.evidence) && report.evidence.length > 0
+								? h(
+									'div',
+									null,
+									h('div', { className: 'gbt-subhead' }, t('reportEvidence')),
+									h(
+										'table',
+										{ className: 'gbt-reporttable', 'data-detail-report': 'evidence' },
+										h('thead', null, h('tr', null, h('th', null, t('reportCommand')), h('th', null, t('reportExit')), h('th', null, t('reportTail')))),
+										h(
+											'tbody',
 											null,
-											h('div', { className: 'gbt-subhead' }, t('reportSummary')),
-											h('p', { className: 'gbt-prose', 'data-detail-report': 'summary' }, String(report.summary)),
-											typeof report.body !== 'string' || report.body === ''
-												? null
-												: h('div', null, h('div', { className: 'gbt-subhead' }, t('reportBody')), h('pre', { className: 'gbt-detailpreview gbt-reportbody', 'data-detail-report': 'body' }, String(report.body))),
-											Array.isArray(report.evidence) && report.evidence.length > 0
-												? h(
-														'div',
-														null,
-														h('div', { className: 'gbt-subhead' }, t('reportEvidence')),
-														h(
-															'table',
-															{ className: 'gbt-reporttable', 'data-detail-report': 'evidence' },
-															h('thead', null, h('tr', null, h('th', null, t('reportCommand')), h('th', null, t('reportExit')), h('th', null, t('reportTail')))),
-															h(
-																'tbody',
-																null,
-																report.evidence.map(function (row, index) {
-																	return h(
-																		'tr',
-																		{ key: String(index), 'data-evidence-row': String(index) },
-																		h('td', { className: 'gbt-mono', 'data-evidence-command': 'true' }, String(row.command === undefined || row.command === null ? '' : row.command)),
-																		h('td', { 'data-evidence-exit': 'true' }, row.exitCode === undefined || row.exitCode === null ? '—' : String(row.exitCode)),
-																		h('td', null, h('pre', { className: 'gbt-reporttail' }, String(row.outputTail === undefined || row.outputTail === null ? '' : row.outputTail))),
-																	)
-																}),
-															),
-														),
-													)
-												: null,
-											Array.isArray(report.artifacts) && report.artifacts.length > 0
-												? h(
-														'div',
-														null,
-														h('div', { className: 'gbt-subhead' }, t('reportArtifacts')),
-														h('ul', { className: 'gbt-reportartifacts', 'data-detail-report': 'artifacts' }, report.artifacts.map(function (path) { return h('li', { key: path, className: 'gbt-mono' }, String(path)) })),
-													)
-												: null,
-											Array.isArray(report.probeCommits) && report.probeCommits.length > 0
-												? h('p', { className: 'gbt-footnote', 'data-detail-report': 'probe-commits' }, t('reportProbeCommits') + ' ' + report.probeCommits.join(', '))
-												: null,
+											report.evidence.map(function (row, index) {
+												return h(
+													'tr',
+													{ key: String(index), 'data-evidence-row': String(index) },
+													h('td', { className: 'gbt-mono', 'data-evidence-command': 'true' }, String(row.command === undefined || row.command === null ? '' : row.command)),
+													h('td', { 'data-evidence-exit': 'true' }, row.exitCode === undefined || row.exitCode === null ? '—' : String(row.exitCode)),
+													h('td', null, h('pre', { className: 'gbt-reporttail' }, String(row.outputTail === undefined || row.outputTail === null ? '' : row.outputTail))),
+												)
+											}),
 										),
-							)
+									),
+								)
+							: null,
+							Array.isArray(report.artifacts) && report.artifacts.length > 0
+								? h(
+									'div',
+									null,
+									h('div', { className: 'gbt-subhead' }, t('reportArtifacts')),
+									h('ul', { className: 'gbt-reportartifacts', 'data-detail-report': 'artifacts' }, report.artifacts.map(function (path) { return h('li', { key: path, className: 'gbt-mono' }, String(path)) })),
+								)
+							: null,
+							Array.isArray(report.probeCommits) && report.probeCommits.length > 0
+								? h('p', { className: 'gbt-footnote', 'data-detail-report': 'probe-commits' }, t('reportProbeCommits') + ' ' + report.probeCommits.join(', '))
+								: null,
+							h('div', { className: 'gbt-casefile', 'data-report-file': 'paper' }, reportFileLine),
+						)
+				const reportPaper = h(
+					'article',
+					{ className: 'gbt-casepaper gbt-reportcard', 'data-detail-card': 'report', 'data-detail-report-card': report === null ? 'missing' : 'delivered', 'data-report-id': task.id },
+					h(
+						'div',
+						{ className: 'gbt-detailcardhead' },
+						t('reportTitle'),
+						h('span', { className: 'gbt-pill', 'data-report-status': report === null ? 'missing' : 'delivered', 'data-kind': 'investigate' }, report === null ? t('reportMissing') : t('reportDelivered')),
+					),
+					reportInner,
+				)
+				const caseFacts = h(
+					'dl',
+					{ className: 'gbt-casefacts', 'data-detail-index': 'facts' },
+					h('dt', null, t('casebookStatus')),
+					h('dd', null, h('span', { className: 'gbt-pill', 'data-status': task.status }, tcPhaseLabel(task, t))),
+					h('dt', null, t('casebookKind')),
+					h('dd', null, t('kindInvestigate')),
+					h('dt', null, t('casebookProject')),
+					h('dd', { className: 'gbt-mono' }, typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : '—'),
+					h('dt', null, t('casebookExecutor')),
+					h('dd', null, task.assignee !== null && task.assignee !== undefined ? actorName(task.assignee.name) : '—'),
+					h('dt', null, t('casebookBase')),
+					h('dd', { className: 'gbt-mono' }, typeof task.base === 'string' && task.base !== '' ? String(task.base).slice(0, 10) : '—'),
+					h('dt', null, t('casebookTarget')),
+					h('dd', { className: 'gbt-mono' }, typeof task.target === 'string' && task.target !== '' ? task.target : t('targetDefaultLabel')),
+					h('dt', null, t('casebookElapsed')),
+					h('dd', null, elapsedText),
+					h('dt', null, t('casebookDelivered')),
+					h('dd', null, deliverAt === null ? '—' : String(deliverAt).replace('T', ' ').slice(0, 16)),
+					h('dt', null, t('casebookReportFile')),
+					h('dd', { className: 'gbt-casefile', 'data-report-file': 'index' }, reportFileLine),
+				)
+				const caseIndex = h(
+					'aside',
+					{ className: 'gbt-caseindex', 'data-detail-index': 'casebook' },
+					h(
+						'div',
+						{ className: 'gbt-caseindexhead' },
+						h('span', { className: 'gbt-id gbt-mono' }, task.id),
+						h('span', { className: 'gbt-pill', 'data-status': task.status }, tcPhaseLabel(task, t)),
+						h('span', { className: 'gbt-pill', 'data-kind': 'investigate' }, t('kindInvestigate')),
+					),
+					h('div', { className: 'gbt-subhead' }, t('casebookIndex')),
+					caseFacts,
+					h('div', { className: 'gbt-subhead' }, t('casebookTimeline')),
+					eventsBody,
+				)
+				const casebook = h('div', { key: 'casebook', className: 'gbt-casebook', 'data-detail': 'casebook', 'data-detail-layout': 'casebook' }, caseIndex, reportPaper)
 
 				const blocks = []
 				blocks.push(
@@ -5479,9 +5637,13 @@ window.__ModuleLoader__.load({
 				if (deleteError === 'referenced') blocks.push(h('p', { key: 'forcehint', className: 'gbt-footnote' }, t('forceHint')))
 				if (deleteError === 'failed') blocks.push(h('p', { key: 'deletefail', className: 'gbt-footnote' }, t('error')))
 				blocks.push(stages)
-				if (reportBlock !== null) blocks.push(reportBlock)
-				const eventsCard = h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody)
-				blocks.push(h('div', { className: 'gbt-detailbody', 'data-detail-body': layout, 'data-detail-layout': layout }, layout === 'single' ? compactSummary : null, eventsCard, layout === 'single' ? summaryDetails : summary))
+				if (investigate) {
+					// T-144: investigations render as a casebook: index aside + full report paper.
+					blocks.push(casebook)
+				} else {
+					const eventsCard = h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody)
+					blocks.push(h('div', { className: 'gbt-detailbody', 'data-detail-body': layout, 'data-detail-layout': layout }, layout === 'single' ? compactSummary : null, eventsCard, layout === 'single' ? summaryDetails : summary))
+				}
 
 				// An investigation never submits code: its completion action is report, so
 				// the submit box must not invite a refused action.
