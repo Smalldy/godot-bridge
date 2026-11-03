@@ -478,8 +478,35 @@ window.__ModuleLoader__.load({
 				statusWtTask: '任务',
 				statusWtActiveState: '活跃',
 				statusWtIdle: '空闲',
-				statusStaleWorktrees: '个陈旧工作树',
-				statusCleanupUnavailable: '清理能力尚未提供',
+				statusWtSafe: '可清理',
+				statusWtConfirm: '需确认',
+				statusWtClean: '干净',
+				statusWtDirty: '有改动',
+				statusWtMerged: '已合并',
+				statusWtUnmerged: '未合并',
+				statusWtVerify: '验证',
+				statusWtMerge: '合并',
+				statusWtTest: '测试',
+				statusWtOther: '其他',
+				statusWtPreflight: '预检',
+				statusWtPreflighting: '预检中…',
+				statusWtCleanup: '清理',
+				statusWtForceCleanup: '强制清理',
+				statusWtConfirmForce: '确认强制清理',
+				statusWtCancel: '取消',
+				statusWtCleanupSafe: '清理 {n} 个可安全清理',
+				statusWtPreviewTitle: '预检结果',
+				statusWtPreviewNone: '没有可安全清理的工作树',
+				statusWtPreviewKept: '保留 {n} 项',
+				statusWtResult: '清理结果',
+				statusWtRemoved: '已移除',
+				statusWtKept: '保留',
+				statusWtFailed: '失败',
+				statusWtCleanupFailed: '清理失败',
+				statusWtNoStale: '没有陈旧工作树',
+				statusWtLoading: '正在读取工作树…',
+				statusWtPreflightFirst: '请先预检',
+				statusStaleWorktrees: '陈旧工作树',
 				statusIdle: '空闲',
 				statusAgentUnit: '人',
 				statusSession: '会话',
@@ -1039,8 +1066,35 @@ window.__ModuleLoader__.load({
 				statusWtTask: 'task',
 				statusWtActiveState: 'active',
 				statusWtIdle: 'idle',
-				statusStaleWorktrees: 'stale worktrees',
-				statusCleanupUnavailable: 'cleanup is not available yet',
+				statusWtSafe: 'cleanable',
+				statusWtConfirm: 'needs review',
+				statusWtClean: 'clean',
+				statusWtDirty: 'dirty',
+				statusWtMerged: 'merged',
+				statusWtUnmerged: 'unmerged',
+				statusWtVerify: 'verify',
+				statusWtMerge: 'merge',
+				statusWtTest: 'test',
+				statusWtOther: 'other',
+				statusWtPreflight: 'Preflight',
+				statusWtPreflighting: 'Checking…',
+				statusWtCleanup: 'Clean up',
+				statusWtForceCleanup: 'Force clean',
+				statusWtConfirmForce: 'Confirm force clean',
+				statusWtCancel: 'Cancel',
+				statusWtCleanupSafe: 'Clean {n} safe worktrees',
+				statusWtPreviewTitle: 'Preflight',
+				statusWtPreviewNone: 'Nothing can be removed safely',
+				statusWtPreviewKept: '{n} kept',
+				statusWtResult: 'Result',
+				statusWtRemoved: 'removed',
+				statusWtKept: 'kept',
+				statusWtFailed: 'failed',
+				statusWtCleanupFailed: 'Cleanup failed',
+				statusWtNoStale: 'No stale worktrees',
+				statusWtLoading: 'Reading worktrees…',
+				statusWtPreflightFirst: 'Run a preflight first',
+				statusStaleWorktrees: 'Stale worktrees',
 				statusIdle: 'idle',
 				statusAgentUnit: 'agents',
 				statusSession: 'session',
@@ -1563,6 +1617,22 @@ window.__ModuleLoader__.load({
 '.gbt-statusevkind{width:52px;flex:none;font-size:11px;color:var(--t2,var(--dsw-alias-label-secondary))}',
 '.gbt-statusevtext{color:var(--t1,var(--dsw-alias-label-primary));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 '.gbt-linkbtn{border:0;background:none;color:var(--dsw-alias-state-business-primary);cursor:pointer;font:inherit;padding:0}',
+			// T-143: worktree list + cleanup panel. Tokens only; the list scrolls, the page does not.
+			'.gbt-wtview{display:flex;flex-direction:column;gap:6px;min-width:0}',
+			'.gbt-wtbatch{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px}',
+			'.gbt-wtsectionhead{margin-top:4px;padding-top:6px;border-top:0.5px solid var(--dsw-alias-border-l4);font-size:11px;font-weight:500;color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-wtlines{display:flex;flex-direction:column;min-width:0;max-height:260px;overflow:auto}',
+			'.gbt-wtrow{display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap;min-width:0;padding:5px 2px;border-bottom:0.5px solid var(--dsw-alias-border-l4);font-size:11.5px}',
+			'.gbt-wtlabel{display:inline-flex;align-items:center;gap:5px;min-width:0;color:var(--dsw-alias-label-primary)}',
+			'.gbt-wtlabel b{font-weight:600;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+			'.gbt-wtpath,.gbt-wtbranch{max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-wtsha{flex:none;color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-wtbadges{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}',
+			'.gbt-wtactions{display:inline-flex;align-items:center;gap:5px;flex:none;margin-left:auto}',
+			'.gbt-wtactions .gbt-btn{height:24px;padding:0 8px;font-size:11px}',
+			'.gbt-wtpreview,.gbt-wtresult{margin-top:6px;padding:6px 8px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-2);font-size:11.5px;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-wtpreviewrow{padding:1px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+			'.gbt-wtresult[data-wt-result="error"]{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}',
 '@media (max-width:900px){.gbt-statusgrid{grid-template-columns:1fr}}',
 '.gbt-roleseg{display:inline-flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:7px;background:var(--dsw-alias-bg-layer-2)}',
 '.gbt-rolesegitem{appearance:none;height:26px;padding:0 14px;border:none;border-radius:5px;background:transparent;color:var(--t2,var(--dsw-alias-label-secondary));font:inherit;font-size:12px;font-weight:400;line-height:26px;cursor:pointer;text-decoration:none}',
@@ -4236,6 +4306,9 @@ window.__ModuleLoader__.load({
 			/** Status page UI state that must survive a re-mount (view switch, polling). */
 			const statusUiState = { showAll: false, session: null, copied: null }
 
+			/** T-143: worktree cleanup survives a view switch / poll (module store). */
+			const worktreeCleanupUi = { signature: null, preflight: null, pending: false, executing: false, result: null, forceConfirm: null, selected: {} }
+
 			/** Status page, direction A: one summary line, three narrow cards, a full-width activity card. */
 			function StatusView(props) {
 				const t = props.t
@@ -4247,6 +4320,8 @@ window.__ModuleLoader__.load({
 				const [showAllActivity, setShowAllActivity] = React.useState(statusUiState.showAll === true)
 				const [openSession, setOpenSession] = React.useState(statusUiState.session)
 				const [copied, setCopied] = React.useState(statusUiState.copied)
+				// T-143: bump to re-render the worktree cleanup panel (state lives in the module store).
+				const [, setCleanupTick] = React.useState(0)
 				const dispatch = snapshot.dispatch === undefined || snapshot.dispatch === null ? { state: 'paused' } : snapshot.dispatch
 				const active = dispatch.state === 'running'
 				const counts = snapshot.counts === undefined || snapshot.counts === null ? {} : snapshot.counts
@@ -4566,48 +4641,167 @@ window.__ModuleLoader__.load({
 							: null,
 					),
 				)
-				const wtList = worktrees !== null && worktrees !== undefined && worktrees.available === true && Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
+								const wtList = worktrees !== null && worktrees !== undefined && worktrees.available === true && Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
 				const mainWt = wtList.filter(function (entry) { return entry.type === 'main' })[0]
 				const activeWts = wtList.filter(function (entry) { return entry !== mainWt && entry.active === true })
 				const staleWts = wtList.filter(function (entry) { return entry !== mainWt && entry.active !== true })
-				const dispatchCardRow = h(
-					'div',
-					{ className: 'gbt-statusrow', 'data-worktree-row': 'main' },
-					h('span', { className: 'gbt-statuswho gbt-mono' }, mainWt === undefined ? '—' : String(mainWt.path).split(/[\\/]/).filter(Boolean).slice(-1)[0] || String(mainWt.path)),
-					h('span', { className: 'gbt-statusrole' }, t('statusWtMain')),
-					h('span', { className: 'gbt-statustask gbt-mono' }, mainWt === undefined ? '—' : String(mainWt.branch || '—') + ' · ' + String(mainWt.head || '—').slice(0, 7)),
-					h('span', { className: 'gbt-statustime' }, t('statusWtActiveState')),
-				)
-				const worktreesCard = h(
-					'section',
-					{ className: 'gbt-statuscard', 'data-status-card': 'worktrees' },
-					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardWorktrees'), h('span', { className: 'gbt-statusmeta' }, String(wtList.length) + ' ' + t('statusWtTotal') + ' · ' + String(activeWts.length + (mainWt === undefined ? 0 : 1)) + ' ' + t('statusWtActive'))),
-					h(
-						'div',
-						{ className: 'gbt-statuscardbody' },
+				const wtBaseOf = function (path) {
+					const parts = String(path === undefined || path === null ? '' : path).split(/[\\/]/).filter(function (part) { return part !== '' })
+					return parts.length === 0 ? String(path) : parts[parts.length - 1]
+				}
+				const wtTypeLabel = function (type) {
+					const key = type === 'main' ? 'statusWtMain' : type === 'verify' ? 'statusWtVerify' : type === 'merge' ? 'statusWtMerge' : type === 'test' ? 'statusWtTest' : type === 'task' ? 'statusWtTask' : 'statusWtOther'
+					return t(key)
+				}
+				const wtLabelOf = function (entry) { return typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId : wtBaseOf(entry.path) }
+				const cleanupUi = worktreeCleanupUi
+				const wtBump = function () { setCleanupTick(function (count) { return count + 1 }) }
+				const worktreeSignature = wtList.map(function (entry) {
+					return String(entry.path) + ':' + (entry.active === true ? 'a' : '-') + ':' + String(entry.reason === undefined || entry.reason === null ? '' : entry.reason) + ':' + String(entry.dirty) + ':' + String(entry.merged)
+				}).join('|')
+				const wtApplyPreflight = function (outcome) {
+					const payload = outcome !== null && outcome !== undefined && outcome.ok === true && outcome.payload !== null && outcome.payload !== undefined ? outcome.payload : null
+					cleanupUi.pending = false
+					if (payload !== null && payload.ok === true) {
+						cleanupUi.preflight = payload
+						const selected = {}
+						const candidates = Array.isArray(payload.candidates) ? payload.candidates : []
+						candidates.forEach(function (candidate) { if (candidate.wouldRemove === true) selected[candidate.path] = true })
+						cleanupUi.selected = selected
+					} else {
+						cleanupUi.preflight = null
+						cleanupUi.result = { ok: false, code: payload !== null && typeof payload.code === 'string' ? payload.code : 'worktrees-cleanup-failed' }
+					}
+					wtBump()
+				}
+				const wtRunPreflight = function () {
+					if (cleanupUi.pending === true) return
+					cleanupUi.pending = true
+					cleanupUi.result = null
+					wtBump()
+					void store.send('worktreesCleanup', { dryRun: true }, { quiet: true }).then(wtApplyPreflight)
+				}
+				React.useEffect(function () {
+					if (worktreeSignature === '') return
+					if (worktreeCleanupUi.pending === true) return
+					if (worktreeCleanupUi.signature === worktreeSignature) return
+					worktreeCleanupUi.signature = worktreeSignature
+					worktreeCleanupUi.pending = true
+					wtBump()
+					void store.send('worktreesCleanup', { dryRun: true }, { quiet: true }).then(wtApplyPreflight)
+				}, [worktreeSignature])
+				const wtExecute = function (paths, force) {
+					if (cleanupUi.executing === true || Array.isArray(paths) === false || paths.length === 0) return
+					const body = { dryRun: false, paths: paths }
+					if (force === true) body.force = true
+					cleanupUi.executing = true
+					cleanupUi.result = null
+					cleanupUi.forceConfirm = null
+					wtBump()
+					void store.send('worktreesCleanup', body, { quiet: true }).then(function (outcome) {
+						cleanupUi.executing = false
+						const payload = outcome !== null && outcome !== undefined && outcome.ok === true && outcome.payload !== null && outcome.payload !== undefined ? outcome.payload : null
+						if (payload !== null && payload.ok === true) {
+							cleanupUi.result = payload
+							cleanupUi.preflight = null
+							cleanupUi.selected = {}
+							cleanupUi.signature = null
+							void store.load()
+						} else {
+							cleanupUi.result = { ok: false, code: payload !== null && typeof payload.code === 'string' ? payload.code : 'worktrees-cleanup-failed' }
+						}
+						wtBump()
+					})
+				}
+				const preflightCandidates = cleanupUi.preflight !== null && Array.isArray(cleanupUi.preflight.candidates) ? cleanupUi.preflight.candidates : []
+				const candidateByPath = {}
+				preflightCandidates.forEach(function (candidate) { if (typeof candidate.path === 'string') candidateByPath[candidate.path] = candidate })
+				const eligibleSafe = staleWts.filter(function (entry) { const candidate = candidateByPath[entry.path]; return candidate !== undefined ? candidate.why === 'safe' : entry.safe === true })
+				const safeCount = cleanupUi.preflight !== null ? eligibleSafe.length : staleWts.filter(function (entry) { return entry.safe === true }).length
+				const confirmCount = Math.max(0, staleWts.length - safeCount)
+				const activeCount = worktrees !== null && worktrees !== undefined && Number.isFinite(worktrees.active) ? worktrees.active : activeWts.length + (mainWt === undefined ? 0 : 1)
+				const totalCount = worktrees !== null && worktrees !== undefined && Number.isFinite(worktrees.total) ? worktrees.total : wtList.length
+				const selectedSafePaths = staleWts.filter(function (entry) {
+					if (cleanupUi.selected[entry.path] !== true) return false
+					const candidate = candidateByPath[entry.path]
+					return candidate !== undefined ? candidate.why === 'safe' : entry.safe === true
+				}).map(function (entry) { return entry.path })
+				const cleanupBusy = cleanupUi.pending === true || cleanupUi.executing === true
+				const previewRemovable = preflightCandidates.filter(function (candidate) { return candidate.wouldRemove === true })
+				const cleanupResult = cleanupUi.result
+				const wtBadges = function (entry) {
+					const dirty = entry.dirty === true
+					const merged = entry.merged === true
+					return h('span', { className: 'gbt-wtbadges' },
+						h('span', { className: 'gbt-pill', 'data-wt-state': entry.dirty === true ? 'dirty' : entry.dirty === false ? 'clean' : 'unknown', 'data-tone': dirty ? 'blocked' : 'ready' }, entry.dirty === false || entry.dirty === true ? t(dirty ? 'statusWtDirty' : 'statusWtClean') : '—'),
+						h('span', { className: 'gbt-pill', 'data-wt-merge': entry.merged === true ? 'merged' : entry.merged === false ? 'unmerged' : 'unknown', 'data-tone': merged ? 'ready' : 'waiting' }, entry.merged === false || entry.merged === true ? t(merged ? 'statusWtMerged' : 'statusWtUnmerged') : '—'))
+				}
+				const wtRowBase = function (key, entry, rowMarker, stateText) {
+					return h('div', { key: key, className: 'gbt-wtrow', 'data-worktree-row': rowMarker, 'data-wt-task': String(entry.taskId === undefined || entry.taskId === null ? '' : entry.taskId) },
+						h('span', { className: 'gbt-wtlabel' }, h('b', null, wtLabelOf(entry)), h('span', { className: 'gbt-pill', 'data-wt-type': String(entry.type) }, wtTypeLabel(entry.type))),
+						h('span', { className: 'gbt-wtpath gbt-mono', title: String(entry.path) }, wtBaseOf(entry.path)),
+						h('span', { className: 'gbt-wtbranch gbt-mono', title: typeof entry.branch === 'string' ? entry.branch : '' }, typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : '—'),
+						h('span', { className: 'gbt-wtsha gbt-mono' }, typeof entry.head === 'string' && entry.head !== '' ? entry.head.slice(0, 7) : '—'),
+						stateText === undefined ? wtBadges(entry) : h('span', { className: 'gbt-pill', 'data-wt-active': 'true', 'data-tone': 'running' }, stateText))
+				}
+				const mainRow = mainWt === undefined ? null : wtRowBase('wt-main', mainWt, 'main', t('statusWtActiveState'))
+				const activeRows = activeWts.map(function (entry) { return wtRowBase('wt-active-' + String(entry.path), entry, 'active', t('statusWtActiveState')) })
+				const staleRows = staleWts.map(function (entry) {
+					const candidate = candidateByPath[entry.path]
+					const safeEligible = candidate !== undefined && candidate.why === 'safe'
+					const forceEligible = candidate !== undefined && (candidate.why === 'dirty' || candidate.why === 'unmerged')
+					const actionId = wtLabelOf(entry) + '@' + String(entry.path)
+					let actions = null
+					if (safeEligible) {
+						actions = h('span', { className: 'gbt-wtactions' },
+							h('input', { key: 'select', type: 'checkbox', 'data-worktree-select': entry.path, checked: cleanupUi.selected[entry.path] === true, disabled: cleanupBusy, onChange: function () { cleanupUi.selected[entry.path] = cleanupUi.selected[entry.path] !== true; wtBump() } }),
+							h('button', { key: 'clean', type: 'button', className: 'gbt-btn', 'data-action': 'worktree-cleanup', 'data-path': entry.path, disabled: cleanupBusy, onClick: function () { wtExecute([entry.path], false) } }, t('statusWtCleanup')))
+					} else if (forceEligible) {
+						actions = cleanupUi.forceConfirm === entry.path
+							? h('span', { className: 'gbt-wtactions' },
+								h('button', { key: 'confirm', type: 'button', className: 'gbt-btn', 'data-variant': 'danger', 'data-action': 'worktree-force-cleanup-confirm', 'data-path': entry.path, disabled: cleanupBusy, onClick: function () { wtExecute([entry.path], true) } }, t('statusWtConfirmForce')),
+								h('button', { key: 'cancel', type: 'button', className: 'gbt-btn', 'data-action': 'worktree-force-cleanup-cancel', 'data-path': entry.path, onClick: function () { cleanupUi.forceConfirm = null; wtBump() } }, t('statusWtCancel')))
+							: h('span', { className: 'gbt-wtactions' },
+								h('button', { key: 'force', type: 'button', className: 'gbt-btn', 'data-variant': 'danger', 'data-action': 'worktree-force-cleanup', 'data-path': entry.path, disabled: cleanupBusy, onClick: function () { cleanupUi.forceConfirm = entry.path; wtBump() } }, t('statusWtForceCleanup')))
+					} else {
+						actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate === undefined ? t('statusWtPreflightFirst') : String(entry.reason === undefined || entry.reason === null ? '' : entry.reason)))
+					}
+					const dirty = entry.dirty === true
+					const merged = entry.merged === true
+					return h('div', { key: 'wt-stale-' + actionId, className: 'gbt-wtrow', 'data-worktree-stale': wtLabelOf(entry), 'data-path': entry.path, 'data-reason': String(entry.reason === undefined || entry.reason === null ? '' : entry.reason) },
+						h('span', { className: 'gbt-wtlabel' }, h('b', null, wtLabelOf(entry)), h('span', { className: 'gbt-pill', 'data-wt-type': String(entry.type) }, wtTypeLabel(entry.type))),
+						h('span', { className: 'gbt-wtpath gbt-mono', title: String(entry.path) }, wtBaseOf(entry.path)),
+						h('span', { className: 'gbt-wtbranch gbt-mono', title: typeof entry.branch === 'string' ? entry.branch : '' }, typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : '—'),
+						h('span', { className: 'gbt-wtsha gbt-mono' }, typeof entry.head === 'string' && entry.head !== '' ? entry.head.slice(0, 7) : '—'),
+						wtBadges(entry),
+						actions)
+				})
+				const preflightBlock = cleanupUi.preflight === null ? null : h('div', { className: 'gbt-wtpreview', 'data-wt-preflight': 'true' },
+					h('div', { className: 'gbt-statusnote' }, t('statusWtPreviewTitle') + ' · ' + t('statusWtPreviewKept').replace('{n}', String(Array.isArray(cleanupUi.preflight.kept) ? cleanupUi.preflight.kept.length : 0))),
+					previewRemovable.length === 0 ? h('div', { className: 'gbt-statusnote' }, t('statusWtPreviewNone')) : null,
+					previewRemovable.map(function (candidate) { return h('div', { key: 'preview-' + String(candidate.path), className: 'gbt-wtpreviewrow gbt-mono', 'data-wt-preview-path': candidate.path }, wtBaseOf(candidate.path) + ' · ' + String(candidate.why)) }))
+				const resultBlock = cleanupResult === null ? null : h('div', { className: 'gbt-wtresult', 'data-wt-result': cleanupResult.ok === true ? 'ok' : 'error' },
+					cleanupResult.ok === true
+						? h('div', null, t('statusWtResult') + '：' + t('statusWtRemoved') + ' ' + String(Array.isArray(cleanupResult.removed) ? cleanupResult.removed.length : 0) + ' · ' + t('statusWtKept') + ' ' + String(Array.isArray(cleanupResult.kept) ? cleanupResult.kept.length : 0) + ' · ' + t('statusWtFailed') + ' ' + String(Array.isArray(cleanupResult.failed) ? cleanupResult.failed.length : 0))
+						: h('div', null, t('statusWtCleanupFailed') + '：' + String(cleanupResult.code === undefined || cleanupResult.code === null ? '' : cleanupResult.code)),
+					cleanupResult.ok === true && Array.isArray(cleanupResult.failed)
+						? cleanupResult.failed.map(function (entry) { return h('div', { key: 'failed-' + String(entry.path), className: 'gbt-wtpreviewrow gbt-mono' }, wtBaseOf(entry.path) + ' · ' + String(entry.code === undefined ? '' : entry.code)) })
+						: null)
+				const worktreesCard = h('section', { className: 'gbt-statuscard', 'data-status-card': 'worktrees' },
+					h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardWorktrees'), h('span', { className: 'gbt-statusmeta', 'data-wt-summary': 'true' }, String(totalCount) + ' ' + t('statusWtTotal') + ' · ' + String(activeCount) + ' ' + t('statusWtActive') + ' · ' + String(safeCount) + ' ' + t('statusWtSafe') + ' · ' + String(confirmCount) + ' ' + t('statusWtConfirm'))),
+					h('div', { className: 'gbt-statuscardbody' },
 						worktrees === null || worktrees === undefined || worktrees.available !== true
-							? h('div', { className: 'gbt-statusnote' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : t('statusWorktreesUnavailable'))
-							: h('div', null, dispatchCardRow, activeWts.map(function (entry) {
-									const path = String(entry.path)
-									return h(
-										'div',
-										{ key: 'wt-' + path, className: 'gbt-statusrow', 'data-worktree-row': String(entry.taskId === undefined || entry.taskId === null ? path : entry.taskId) },
-										h('span', { className: 'gbt-statuswho gbt-mono' }, typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId : path.split(/[\\/]/).filter(Boolean).slice(-1)[0]),
-										h('span', { className: 'gbt-statusrole' }, t('statusWtTask')),
-										h('span', { className: 'gbt-statustask gbt-mono' }, String(entry.branch || '—') + ' · ' + String(entry.head || '—').slice(0, 7)),
-										h('span', { className: 'gbt-statustime' }, t('statusWtActiveState')),
-									)
-								})),
-						staleWts.length === 0
-							? null
-							: h(
-									'div',
-									{ className: 'gbt-statusfold', 'data-status-stale': String(staleWts.length) },
-									h('span', null, String(staleWts.length) + ' ' + t('statusStaleWorktrees') + '（' + staleWts.slice(0, 6).map(function (entry) { return typeof entry.taskId === 'string' && entry.taskId !== '' ? entry.taskId : '—' }).join(' · ') + '）'),
-									h('span', { className: 'gbt-statusnote' }, t('statusCleanupUnavailable')),
-								),
-					),
-				)
+							? h('div', { className: 'gbt-statusnote' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : snapshot.source === 'loading' ? t('statusWtLoading') : t('statusWorktreesUnavailable'))
+							: h('div', { className: 'gbt-wtview' },
+								h('div', { className: 'gbt-wtbatch' },
+									h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'worktree-preflight', disabled: cleanupUi.pending === true, onClick: wtRunPreflight }, cleanupUi.pending === true ? t('statusWtPreflighting') : t('statusWtPreflight')),
+									h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'worktree-cleanup-safe', disabled: cleanupBusy || selectedSafePaths.length === 0, onClick: function () { wtExecute(selectedSafePaths, false) } }, t('statusWtCleanupSafe').replace('{n}', String(selectedSafePaths.length)))),
+								mainRow,
+								activeRows,
+								h('div', { className: 'gbt-wtsectionhead' }, t('statusStaleWorktrees') + ' · ' + String(staleWts.length)),
+								staleWts.length === 0 ? h('div', { className: 'gbt-statusnote' }, t('statusWtNoStale')) : h('div', { className: 'gbt-wtlines', 'data-wt-lines': 'true' }, staleRows),
+								preflightBlock,
+								resultBlock)))
 				const reviewerQueue = tasks.filter(function (task) { return task.status === 'reviewing' && tcStageQueued(task) }).length
 				const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && tcStageQueued(task) }).length
 				const lead = agents !== null && agents !== undefined ? agents.lead : null
