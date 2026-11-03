@@ -1513,6 +1513,13 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-reportlist{margin:0 0 8px;padding-left:20px;font-size:12.5px;line-height:1.6;color:var(--dsw-alias-label-primary)}',
 			'.gbt-reportcode{max-width:100%;margin:0 0 8px;padding:8px 10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);overflow-x:auto;white-space:pre;font-size:11.5px;color:var(--dsw-alias-label-primary)}',
 			'.gbt-reportcode code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+			// T-147: pipe tables, inline code, quotes and ordered lists in a report.
+			'.gbt-reporttablescroll{max-width:100%;overflow-x:auto;margin:0 0 8px}',
+			'.gbt-reportmdtable{width:100%;margin:0;border-collapse:collapse;font-size:12px}',
+			'.gbt-reportmdtable th,.gbt-reportmdtable td{border-bottom:0.5px solid var(--dsw-alias-border-l4);padding:4px 8px;vertical-align:top}',
+			'.gbt-reportmdtable th{font-weight:600;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}',
+			'.gbt-reportinline{padding:0 3px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:0.95em}',
+			'.gbt-reportquote{margin:0 0 8px;padding:2px 10px;border-left:2px solid var(--dsw-alias-border-l4);color:var(--dsw-alias-label-secondary);font-size:12.5px;line-height:1.6}',
 			'@media (max-width:900px){.gbt-casebook{grid-template-columns:1fr}.gbt-caseindex{flex-direction:row;flex-wrap:wrap;align-items:flex-start}.gbt-caseindex .gbt-casefacts{flex:1 1 220px}.gbt-caseindex .gbt-detailevents{flex:1 1 260px}}',
 
 			'.gbt-empty{padding:26px 12px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:12px;border:0.5px dashed var(--dsw-alias-border-l4);border-radius:10px;margin:6px}',
@@ -1893,12 +1900,95 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 		}
 
 		/**
-		 * T-144: render a report body as light, SAFE Markdown. No dependency and no
-		 * innerHTML: every node carries plain text. Headings (#/## -> h3, ### -> h4),
-		 * `- ` lists, fenced code blocks and blank-line paragraphs are understood;
-		 * unrecognised lines stay paragraph text (nothing is dropped). A parser error
-		 * falls back to a <pre> that keeps the whole body.
+		 * T-144/T-147: render a report body as light, SAFE Markdown. No dependency and
+		 * no innerHTML: every node carries plain text. Headings (#/## -> h3, ### -> h4),
+		 * `- ` and `1. ` lists, `>` quotes, pipe tables (with :---/---: alignment),
+		 * ``` / ~~~ fences and inline **bold** / *italic* / `code` are understood.
+		 * Unrecognised lines stay paragraph text (nothing is dropped). Only an
+		 * unterminated fence falls the whole body back to a <pre>.
 		 */
+		function tcReportInline(value) {
+			const text = String(value === undefined || value === null ? '' : value)
+			const nodes = []
+			let buffer = ''
+			let index = 0
+			const flush = function () {
+				if (buffer === '') return
+				nodes.push(buffer)
+				buffer = ''
+			}
+			while (index < text.length) {
+				const char = text.charAt(index)
+				if (char === '`') {
+					const end = text.indexOf('`', index + 1)
+					if (end > index + 1) {
+						flush()
+						nodes.push(h('code', { key: 'inline-code-' + String(nodes.length), className: 'gbt-reportinline' }, text.slice(index + 1, end)))
+						index = end + 1
+						continue
+					}
+				}
+				if (char === '*' && text.charAt(index + 1) === '*') {
+					const end = text.indexOf('**', index + 2)
+					if (end > index + 2) {
+						flush()
+						nodes.push(h('strong', { key: 'bold-' + String(nodes.length) }, tcReportInlineChild(text.slice(index + 2, end))))
+						index = end + 2
+						continue
+					}
+				}
+				if (char === '*') {
+					const end = text.indexOf('*', index + 1)
+					if (end > index + 1 && text.charAt(end + 1) !== '*') {
+						flush()
+						nodes.push(h('em', { key: 'em-' + String(nodes.length) }, tcReportInlineChild(text.slice(index + 1, end))))
+						index = end + 1
+						continue
+					}
+				}
+				if (char === '_') {
+					const end = text.indexOf('_', index + 1)
+					if (end > index + 1 && /[A-Za-z0-9]/.test(index === 0 ? '' : text.charAt(index - 1)) === false && /[A-Za-z0-9]/.test(text.charAt(end + 1)) === false) {
+						flush()
+						nodes.push(h('em', { key: 'em-' + String(nodes.length) }, tcReportInlineChild(text.slice(index + 1, end))))
+						index = end + 1
+						continue
+					}
+				}
+				buffer += char
+				index += 1
+			}
+			flush()
+			return nodes
+		}
+		function tcReportInlineChild(value) {
+			const nodes = tcReportInline(value)
+			if (nodes.length === 0) return ''
+			return nodes.length === 1 && typeof nodes[0] === 'string' ? nodes[0] : nodes
+		}
+		function tcReportTableCells(line) {
+			let value = String(line).trim()
+			if (value.charAt(0) === '|') value = value.slice(1)
+			if (value.charAt(value.length - 1) === '|') value = value.slice(0, -1)
+			return value.split('|').map(function (cell) { return cell.trim() })
+		}
+		function tcReportTableSeparator(line) {
+			const cells = tcReportTableCells(line)
+			if (cells.length === 0) return null
+			const alignments = []
+			for (const cell of cells) {
+				if (/^:?-{3,}:?$/.test(cell) === false) return null
+				const left = cell.charAt(0) === ':'
+				const right = cell.charAt(cell.length - 1) === ':'
+				alignments.push(left && right ? 'center' : left ? 'left' : right ? 'right' : null)
+			}
+			return alignments
+		}
+		function tcReportFence(line) {
+			const match = /^(`{3,}|~{3,})(.*)$/.exec(String(line))
+			if (match === null) return null
+			return { marker: match[1], char: match[1].charAt(0), length: match[1].length }
+		}
 		function tcReportBlocks(text) {
 			try {
 				const lines = String(text === undefined || text === null ? '' : text).replace(/\r\n/g, '\n').split('\n')
@@ -1907,25 +1997,30 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				let paragraph = []
 				const flushParagraph = function () {
 					if (paragraph.length === 0) return
-					nodes.push(h('p', { key: 'p-' + String(nodes.length), className: 'gbt-reportpara', 'data-report-block': 'paragraph' }, paragraph.join('\n')))
+					nodes.push(h('p', { key: 'p-' + String(nodes.length), className: 'gbt-reportpara', 'data-report-block': 'paragraph' }, tcReportInlineChild(paragraph.join('\n'))))
 					paragraph = []
 				}
 				while (index < lines.length) {
 					const line = lines[index]
-					if (/^```/.test(line)) {
+					const fence = tcReportFence(line)
+					if (fence !== null) {
 						flushParagraph()
 						const code = []
 						index += 1
 						let terminated = false
 						while (index < lines.length) {
-							if (/^```/.test(lines[index])) {
-								terminated = true
-								break
+							const close = String(lines[index]).trim()
+							let sameChar = close.length >= fence.length
+							if (sameChar) {
+								for (let at = 0; at < close.length; at += 1) {
+									if (close.charAt(at) !== fence.char) { sameChar = false; break }
+								}
 							}
+							if (sameChar) { terminated = true; break }
 							code.push(lines[index])
 							index += 1
 						}
-						// An unterminated fence is a parse failure: the outer catch keeps the
+						// Only an unterminated fence is a parse failure: the outer catch keeps the
 						// whole body in a <pre> instead of guessing where the code ends.
 						if (terminated !== true) throw new Error('unterminated code fence')
 						index += 1
@@ -1935,9 +2030,29 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 					const heading = /^(#{1,3})\s+(.*)$/.exec(line)
 					if (heading !== null) {
 						flushParagraph()
-						nodes.push(h(heading[1].length <= 2 ? 'h3' : 'h4', { key: 'h-' + String(nodes.length), className: 'gbt-reportheading', 'data-report-block': 'heading', 'data-report-level': String(heading[1].length) }, heading[2]))
+						nodes.push(h(heading[1].length <= 2 ? 'h3' : 'h4', { key: 'h-' + String(nodes.length), className: 'gbt-reportheading', 'data-report-block': 'heading', 'data-report-level': String(heading[1].length) }, tcReportInlineChild(heading[2])))
 						index += 1
 						continue
+					}
+					if (line.indexOf('|') >= 0 && index + 1 < lines.length) {
+						const alignments = tcReportTableSeparator(lines[index + 1])
+						const header = tcReportTableCells(line)
+						if (alignments !== null && header.length > 0 && alignments.length === header.length) {
+							flushParagraph()
+							const rows = []
+							index += 2
+							while (index < lines.length && String(lines[index]).indexOf('|') >= 0 && String(lines[index]).trim() !== '') {
+								rows.push(tcReportTableCells(lines[index]))
+								index += 1
+							}
+							const columnStyle = function (at) { return alignments[at] === null ? undefined : { textAlign: alignments[at] } }
+							nodes.push(h('div', { key: 'table-' + String(nodes.length), className: 'gbt-reporttablescroll', 'data-report-block': 'table' },
+								h('table', { className: 'gbt-reporttable gbt-reportmdtable' },
+									h('thead', null, h('tr', null, header.map(function (cell, at) { return h('th', { key: 'h' + String(at), style: columnStyle(at) }, tcReportInlineChild(cell)) }))),
+									h('tbody', null, rows.map(function (row, rowIndex) { return h('tr', { key: 'r' + String(rowIndex) }, header.map(function (cell, at) { return h('td', { key: 'c' + String(at), style: columnStyle(at) }, tcReportInlineChild(row[at] === undefined ? '' : row[at])) })) })),
+								)));
+							continue
+						}
 					}
 					if (/^\s*[-*]\s+/.test(line)) {
 						flushParagraph()
@@ -1946,7 +2061,27 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 							items.push(lines[index].replace(/^\s*[-*]\s+/, ''))
 							index += 1
 						}
-						nodes.push(h('ul', { key: 'ul-' + String(nodes.length), className: 'gbt-reportlist', 'data-report-block': 'list' }, items.map(function (item, at) { return h('li', { key: String(at), className: 'gbt-reportlistitem' }, item) })))
+						nodes.push(h('ul', { key: 'ul-' + String(nodes.length), className: 'gbt-reportlist', 'data-report-block': 'list' }, items.map(function (item, at) { return h('li', { key: String(at), className: 'gbt-reportlistitem' }, tcReportInlineChild(item)) })))
+						continue
+					}
+					if (/^\s*\d+[.)]\s+/.test(line)) {
+						flushParagraph()
+						const items = []
+						while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
+							items.push(lines[index].replace(/^\s*\d+[.)]\s+/, ''))
+							index += 1
+						}
+						nodes.push(h('ol', { key: 'ol-' + String(nodes.length), className: 'gbt-reportlist', 'data-report-block': 'ordered-list' }, items.map(function (item, at) { return h('li', { key: String(at), className: 'gbt-reportlistitem' }, tcReportInlineChild(item)) })))
+						continue
+					}
+					if (/^\s*>\s?/.test(line)) {
+						flushParagraph()
+						const quoted = []
+						while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+							quoted.push(lines[index].replace(/^\s*>\s?/, ''))
+							index += 1
+						}
+						nodes.push(h('blockquote', { key: 'quote-' + String(nodes.length), className: 'gbt-reportquote', 'data-report-block': 'quote' }, tcReportInlineChild(quoted.join('\n'))))
 						continue
 					}
 					if (line.trim() === '') {
@@ -1963,7 +2098,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				return [h('pre', { key: 'fallback', className: 'gbt-reportbody', 'data-report-block': 'fallback' }, String(text === undefined || text === null ? '' : text))]
 			}
 		}
-		/** The phase word an investigation shows: 待调查 / 调查中 / 报告已交付. */
+				/** The phase word an investigation shows: 待调查 / 调查中 / 报告已交付. */
 		function tcInvestigationPhaseLabel(task, t) {
 			if (task.status === 'pending') return t('investigatePending')
 			if (task.status === 'running') return t('statusInvestigating')

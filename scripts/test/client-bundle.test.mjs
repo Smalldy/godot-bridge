@@ -769,6 +769,14 @@ function textOf(node) {
   })
   return text
 }
+/** Text of every primitive descendant (textOf only reads direct string children). */
+function deepText(node) {
+  if (node === null || node === undefined) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(deepText).join('')
+  if (typeof node !== 'object') return ''
+  return deepText(node.props && node.props.children)
+}
 function findButton(root, label) {
   return findAll(root, (node) => node.type === 'button' && typeof node.props.children !== 'object' && String(textOf(node)).indexOf(label) >= 0)[0]
 }
@@ -5108,7 +5116,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   }
   const REPORT = {
     summary: 'The loader blocks on the config read.',
-    body: '# Findings\n\nIt waits for the config file before the first frame.\n\n## Cause\n\nThe loader blocks on the config read.\n\n- config read\n- first frame\n\n### Repro\n\n```\nnode --cpu-prof loader.mjs\n```',
+    body: '# Findings\n\nIt waits for the config file before the first frame.\n\n**Root cause**: `config.read()` blocks.\n\n## Cause\n\n> The loader blocks on the config read.\n\nThe loader blocks on the config read.\n\n- config read\n- first frame\n\n### Repro\n\n~~~~\nnode --cpu-prof loader.mjs\n~~~~\n\n```\nnpm run verify\n```\n\n| Probe | Result | Note |\n| --- | :---: | ---: |\n| loader | **1200ms** | `total 1200ms` |\n| config | *cached* | ok |\n\n1. reproduce\n2. inspect\n',
     evidence: [{ command: 'node --cpu-prof loader.mjs', exitCode: 1, outputTail: 'total 1200ms' }],
     artifacts: ['.worktrees/probe-T-9-a'],
     probeCommits: ['abc123def'],
@@ -5251,14 +5259,42 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     bodyHeadings.length === 3 && bodyHeadings[0].type === 'h3' && textOf(bodyHeadings[0]) === 'Findings' && bodyHeadings[1].type === 'h3' && textOf(bodyHeadings[1]) === 'Cause' && bodyHeadings[2].type === 'h4' && textOf(bodyHeadings[2]) === 'Repro' &&
       bodyParagraphs.some((node) => textOf(node).indexOf('It waits for the config file') >= 0) && bodyParagraphs.some((node) => textOf(node).indexOf('The loader blocks') >= 0) &&
       bodyLists.length === 1 && findAll(bodyLists[0], (node) => node.type === 'li').length === 2 &&
-      bodyCodes.length === 1 && textOf(bodyCodes[0]).indexOf('node --cpu-prof loader.mjs') >= 0,
+      bodyCodes.length === 2 && textOf(bodyCodes[0]).indexOf('node --cpu-prof loader.mjs') >= 0 && textOf(bodyCodes[1]).indexOf('npm run verify') >= 0,
     JSON.stringify({ headings: bodyHeadings.map((node) => node.type + ':' + textOf(node)), paragraphs: bodyParagraphs.length, lists: bodyLists.length, codes: bodyCodes.length }),
+  )
+  const bodyTables = findAll(reportBody, (node) => node.props && node.props['data-report-block'] === 'table')
+  const bodyOrdered = findAll(reportBody, (node) => node.props && node.props['data-report-block'] === 'ordered-list')
+  const bodyQuotes = findAll(reportBody, (node) => node.props && node.props['data-report-block'] === 'quote')
+  const bodyStrong = findAll(reportBody, (node) => node.type === 'strong')
+  const bodyInlineCode = findAll(reportBody, (node) => node.type === 'code')
+  const bodyEm = findAll(reportBody, (node) => node.type === 'em')
+  const bodyHeaderCells = bodyTables.length === 1 ? findAll(bodyTables[0], (node) => node.type === 'th') : []
+  const bodyTableCells = bodyTables.length === 1 ? findAll(bodyTables[0], (node) => node.type === 'td') : []
+  const reportVisibleText = deepText(reportBody)
+  check(
+    'T-147 pipe tables, ordered lists and quotes render as structure, not raw Markdown',
+    bodyTables.length === 1 && bodyHeaderCells.length === 3 && bodyTableCells.length === 6 &&
+      bodyOrdered.length === 1 && findAll(bodyOrdered[0], (node) => node.type === 'li').length === 2 &&
+      bodyQuotes.length === 1 && textOf(bodyQuotes[0]).indexOf('The loader blocks on the config read.') >= 0,
+    JSON.stringify({ tables: bodyTables.length, headers: bodyHeaderCells.length, cells: bodyTableCells.length, ordered: bodyOrdered.length, quotes: bodyQuotes.length }),
+  )
+  check(
+    'T-147 table alignment and inline bold/italic/code are rendered as safe nodes',
+    bodyHeaderCells[1] !== undefined && bodyHeaderCells[1].props.style !== undefined && bodyHeaderCells[1].props.style.textAlign === 'center' &&
+      bodyHeaderCells[2] !== undefined && bodyHeaderCells[2].props.style !== undefined && bodyHeaderCells[2].props.style.textAlign === 'right' &&
+      bodyStrong.length >= 2 && bodyStrong.some((node) => textOf(node) === '1200ms') && bodyEm.length >= 1 && bodyInlineCode.length >= 2,
+    JSON.stringify({ align: bodyHeaderCells.map((cell) => cell.props.style && cell.props.style.textAlign), strong: bodyStrong.map((node) => textOf(node)), em: bodyEm.map((node) => textOf(node)), inline: bodyInlineCode.length }),
+  )
+  check(
+    'T-147 no raw fence, table separator, bold marker or backtick leaks into the visible text',
+    reportVisibleText.indexOf('~~~~') < 0 && reportVisibleText.indexOf('| ---') < 0 && reportVisibleText.indexOf('**') < 0 && reportVisibleText.indexOf('`') < 0,
+    reportVisibleText.slice(0, 240),
   )
   const reportCss = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
   const reportBodyRule = /\.gbt-reportbody\{[^}]*\}/.exec(reportCss)
   check(
     'T-144 the body is fully expanded (no 320px window, no EXCERPT)',
-    reportBodyRule !== null && reportBodyRule[0].indexOf('max-height') < 0 && reportBodyRule[0].indexOf('overflow') < 0 && textOf(drawer).indexOf('EXCERPT') < 0 && bodyCodes.length === 1,
+    reportBodyRule !== null && reportBodyRule[0].indexOf('max-height') < 0 && reportBodyRule[0].indexOf('overflow') < 0 && textOf(drawer).indexOf('EXCERPT') < 0 && bodyCodes.length === 2,
     reportBodyRule && reportBodyRule[0],
   )
   const reportPaperNode = findAll(drawer, (node) => node.props && node.props['data-detail-report-card'] === 'delivered')[0]
@@ -5320,6 +5356,21 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     'T-144 a parse failure falls back to a pre that keeps the whole body',
     fallbackBody !== undefined && textOf(fallbackBody).indexOf('unterminated code') >= 0 && textOf(fallbackBody).indexOf('still here') >= 0,
     fallbackBody && textOf(fallbackBody),
+  )
+  // T-147: only an unterminated fence falls back. A malformed table stays text.
+  INV_DONE.report = { summary: 'Table', body: '| a | b |\n| nope |\n\nstill here', createdAt: nowIso }
+  INV_DONE.updatedAt = new Date(Date.now() + 2000).toISOString()
+  const invalidCard = investigationCards(renderedBoard()).filter((card) => textOf(card).indexOf(INV_DONE.title) >= 0)[0]
+  invalidCard.props.onClick()
+  await flush()
+  await flush()
+  const invalidTree = withHooks(panel, { initialView: 'board' })
+  const invalidDrawer = findAll(invalidTree, (node) => node.props && node.props['data-detail-overlay'] === 'true')[0]
+  const invalidBody = findAll(invalidDrawer, (node) => node.props && node.props['data-detail-report'] === 'body')[0]
+  check(
+    'T-147 a malformed table stays a paragraph instead of falling the whole body back',
+    invalidBody !== undefined && findAll(invalidBody, (node) => node.props && node.props['data-report-block'] === 'fallback').length === 0 && deepText(invalidBody).indexOf('| a | b |') >= 0 && deepText(invalidBody).indexOf('still here') >= 0,
+    invalidBody && deepText(invalidBody),
   )
   INV_DONE.report = savedMissingReport
   INV_DONE.updatedAt = savedMissingUpdatedAt
