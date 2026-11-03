@@ -162,6 +162,8 @@ export const ACTIONS = [
   'unblock',
   'retry',
   'locks',
+  // T-142: preview/execute removal of stale worktrees (user-only; the panel drives it).
+  'worktreesCleanup',
   'openProject',
   // T-129: the ONE call that resolves the project, binds it, reads the board,
   // bootstraps a missing Team and answers a short brief + one next step.
@@ -190,6 +192,8 @@ export const USER_ONLY_ACTIONS = [
   'rolesPrune',
   'rolesReset',
   'skillsCatalog',
+  // T-142: pruning checkouts is a user decision, never an agent action.
+  'worktreesCleanup',
 ]
 
 /** The tool's vocabulary: everything except the user-owned actions. */
@@ -234,6 +238,26 @@ function taskByWorktreeSuffix(base, board) {
     if (task !== undefined) return task
   }
   return undefined
+}
+
+/**
+ * T-142: the task id encoded in the DIRECTORY or BRANCH name, independent of
+ * whether the card is still on the board (a stale worktree outlives its card).
+ */
+function taskIdFromNames(base, branch) {
+  const fromBase = /T-\d+/.exec(String(base === undefined || base === null ? '' : base))
+  if (fromBase !== null) return fromBase[0]
+  const fromBranch = /T-\d+/.exec(String(branch === undefined || branch === null ? '' : branch))
+  return fromBranch === null ? null : fromBranch[0]
+}
+
+/** The integration branch every card in this board targets (shared in practice). */
+function projectTargetOf(board) {
+  const tasks = Array.isArray(board.tasks) ? board.tasks : []
+  for (const task of tasks) {
+    if (typeof task.target === 'string' && task.target.trim() !== '') return task.target.trim()
+  }
+  return null
 }
 
 /** True when a task currently occupies its worktree. */
@@ -1656,6 +1680,43 @@ export function createApi(ctx, options) {
         active: type === 'main' ? true : worktreeTaskActive(task),
       }
     })
+    // T-142: classify every non-main checkout for safe cleanup. Probing is
+    // per worktree and degrades to null ("unverified") when the git facade or
+    // the command cannot answer; only a PROVEN clean+merged tree is safe.
+    const targetBranch = projectTargetOf(board)
+    for (const worktree of worktrees) {
+      if (worktree.type === 'main') {
+        Object.assign(worktree, { target: null, dirty: false, merged: true, safe: false, reason: 'active' })
+        continue
+      }
+      if (worktree.taskId === null || worktree.taskId === undefined) {
+        const base = String(worktree.path).replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || ''
+        worktree.taskId = taskIdFromNames(base, worktree.branch)
+      }
+      const owner = worktree.taskId === null || worktree.taskId === undefined ? undefined : board.tasks.filter((entry) => String(entry.id) === String(worktree.taskId))[0]
+      const target = owner !== undefined && typeof owner.target === 'string' && owner.target.trim() !== '' ? owner.target.trim() : targetBranch
+      let dirty = null
+      let merged = null
+      if (typeof git.worktreeDirty === 'function') {
+        try {
+          const probe = await git.worktreeDirty(projectPath, worktree.path)
+          if (probe !== null && probe !== undefined && probe.ok === true && typeof probe.dirty === 'boolean') dirty = probe.dirty
+        } catch (error) {
+          dirty = null
+        }
+      }
+      if (target !== null && typeof git.worktreeMerged === 'function') {
+        try {
+          const probe = await git.worktreeMerged(projectPath, worktree.path, target)
+          if (probe !== null && probe !== undefined && probe.ok === true && typeof probe.merged === 'boolean') merged = probe.merged
+        } catch (error) {
+          merged = null
+        }
+      }
+      const safe = worktree.active !== true && dirty === false && merged === true
+      const reason = worktree.active === true ? 'active' : dirty === true ? 'dirty' : merged === false ? 'unmerged' : safe ? 'safe' : 'unverified'
+      Object.assign(worktree, { target: target, dirty: dirty, merged: merged, safe: safe, reason: reason })
+    }
     const counts = { main: 0, task: 0, verify: 0, test: 0, merge: 0, other: 0 }
     let active = 0
     for (const worktree of worktrees) {
@@ -1665,6 +1726,131 @@ export function createApi(ctx, options) {
     return { available: true, error: null, total: worktrees.length, active: active, counts: counts, worktrees: worktrees }
   }
 
+  /**
+   * T-142: preview or execute the removal of stale worktrees. Only NON-main,
+   * NON-active checkouts under the project root are candidates; a dirty or
+   * unmerged checkout needs an explicit `force: true`, and an unmerged branch is
+   * always kept (only the checkout goes). Defaults to a dry run, is idempotent,
+   * and reports candidates/removed/kept/failed so the panel can preview.
+   */
+  async function worktreesCleanup(projectPath, board, input) {
+    const source = input === undefined || input === null ? {} : input
+    const dryRun = source.dryRun !== false
+    const force = source.force === true
+    const requestedRaw = Array.isArray(source.paths) ? source.paths.filter((entry) => typeof entry === 'string' && entry !== '') : null
+    const requested = requestedRaw === null ? null : new Set(requestedRaw.map((entry) => normalizePath(entry)))
+    const inventory = await worktreeSnapshot(projectPath, board)
+    if (inventory.available !== true) return failure(inventory.error === null ? 'worktree-list-failed' : inventory.error, 'the worktree inventory is unavailable')
+    const root = normalizePath(projectPath)
+    const rootPrefix = root + '/'
+    const candidates = []
+    const removed = []
+    const kept = []
+    const failed = []
+    const removable = []
+    for (const worktree of inventory.worktrees) {
+      const normalized = normalizePath(worktree.path)
+      if (requested !== null && requested.has(normalized) !== true) continue
+      const candidate = {
+        path: worktree.path,
+        type: worktree.type,
+        taskId: worktree.taskId,
+        branch: worktree.branch,
+        target: worktree.target,
+        dirty: worktree.dirty,
+        merged: worktree.merged,
+        safe: worktree.safe,
+        reason: worktree.reason,
+        wouldRemove: false,
+        why: null,
+      }
+      candidates.push(candidate)
+      if (worktree.type === 'main') {
+        candidate.why = 'main'
+        kept.push({ path: worktree.path, reason: 'main' })
+        continue
+      }
+      if (normalized !== root && normalized.indexOf(rootPrefix) !== 0) {
+        candidate.why = 'outside-root'
+        failed.push({ path: worktree.path, code: 'outside-root', message: 'the worktree is not under the project root' })
+        continue
+      }
+      if (worktree.active === true) {
+        candidate.why = 'active'
+        kept.push({ path: worktree.path, reason: 'active' })
+        continue
+      }
+      if (worktree.safe === true) {
+        candidate.wouldRemove = true
+        candidate.why = 'safe'
+        removable.push({ worktree: worktree, force: false })
+        continue
+      }
+      if (worktree.dirty === true || worktree.merged === false) {
+        const why = worktree.dirty === true ? 'dirty' : 'unmerged'
+        if (force !== true) {
+          candidate.why = why
+          kept.push({ path: worktree.path, reason: why })
+          continue
+        }
+        candidate.wouldRemove = true
+        candidate.why = why + ':forced'
+        // A dirty checkout needs --force on the remove itself; an unmerged but
+        // clean checkout does not (its branch is kept either way).
+        removable.push({ worktree: worktree, force: worktree.dirty === true })
+        continue
+      }
+      candidate.why = 'unverified'
+      kept.push({ path: worktree.path, reason: 'unverified' })
+    }
+    if (requestedRaw !== null) {
+      for (const raw of requestedRaw) {
+        const known = inventory.worktrees.some((worktree) => normalizePath(worktree.path) === normalizePath(raw))
+        if (known !== true) kept.push({ path: raw, reason: 'not-a-worktree' })
+      }
+    }
+    if (dryRun !== true) {
+      for (const entry of removable) {
+        const worktree = entry.worktree
+        if (typeof git.worktreeRemove !== 'function') {
+          failed.push({ path: worktree.path, code: 'no-git-service', message: 'the git facade cannot remove worktrees' })
+          continue
+        }
+        let outcome = null
+        try {
+          outcome = await git.worktreeRemove(projectPath, worktree.path, { force: entry.force })
+        } catch (error) {
+          outcome = { ok: false, code: 'worktree-remove-failed', message: String((error && error.message) || error) }
+        }
+        if (outcome === null || outcome === undefined || outcome.ok !== true) {
+          failed.push({
+            path: worktree.path,
+            code: outcome !== null && outcome !== undefined && typeof outcome.code === 'string' ? outcome.code : 'worktree-remove-failed',
+            message: outcome !== null && outcome !== undefined && typeof outcome.message === 'string' ? outcome.message : 'git worktree remove failed',
+          })
+          continue
+        }
+        // A merged branch is dead weight after its checkout is gone; an unmerged
+        // branch is the only remaining copy of that work and is never deleted.
+        let branchDeleted = false
+        if (worktree.merged === true && typeof worktree.branch === 'string' && worktree.branch !== '' && typeof git.deleteBranch === 'function') {
+          try {
+            const branch = await git.deleteBranch(projectPath, worktree.branch)
+            branchDeleted = branch !== null && branch !== undefined && branch.ok === true
+          } catch (error) {
+            branchDeleted = false
+          }
+        }
+        removed.push({ path: worktree.path, branch: worktree.branch, taskId: worktree.taskId, branchDeleted: branchDeleted, force: entry.force })
+      }
+      if (typeof git.worktreePrune === 'function') {
+        try {
+          await git.worktreePrune(projectPath)
+        } catch (error) {}
+      }
+    }
+    return ok({ dryRun: dryRun, force: force, candidates: candidates, removed: removed, kept: kept, failed: failed })
+  }
   /**
    * T-111: what ONE board transition MEANS. The note is load-bearing: the
    * scheduler writes same-status rows twice per round (testing -> testing for the
@@ -4041,6 +4227,15 @@ export function createApi(ctx, options) {
       const denied = roleAdminRefusal(context, 'The skill catalog belongs to the user; open it from the task center panel.')
       if (denied !== null) return denied
       return skillsCatalog(projectPath)
+    }
+    if (action === 'worktreesCleanup') {
+      // T-142: removing stale checkouts is a user decision. The tool does not
+      // expose this action; a direct agent call is refused here as well.
+      const denied = roleAdminRefusal(context, 'Worktree cleanup belongs to the user; run it from the task center panel.')
+      if (denied !== null) return denied
+      const read = await readBoardOrFail(projectPath)
+      if (read.failed !== undefined) return read.failed
+      return worktreesCleanup(projectPath, read.board, source)
     }
     if (action === 'bootstrapTeam') {
       // T-121: an agent can bootstrap its OWN team instead of asking the user.

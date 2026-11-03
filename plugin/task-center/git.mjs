@@ -262,6 +262,35 @@ export function createGit(options) {
     return ok({ hash: hash })
   }
 
+  /** Is this worktree's checkout dirty (staged, unstaged or untracked files)? */
+  async function worktreeDirty(root, path) {
+    const base = rootOf(root)
+    if (base.ok !== true) return base
+    const target = insideRepo(base.path, path)
+    if (target.ok !== true) return target
+    const result = await exec(['status', '--porcelain'], target.path)
+    if (result.code !== 0) return failed(result, 'worktree-status-failed', 'git status failed in the worktree')
+    return ok({ path: target.path, dirty: result.stdout.trim() !== '' })
+  }
+
+  /**
+   * Does this worktree's HEAD already contain `target`? Exit code 0 means the
+   * work is in the target branch (safe to prune); exit 1 means "not merged yet"
+   * and is an answer, not an error.
+   */
+  async function worktreeMerged(root, path, target) {
+    const base = rootOf(root)
+    if (base.ok !== true) return base
+    const worktree = insideRepo(base.path, path)
+    if (worktree.ok !== true) return worktree
+    const ref = refName(target)
+    if (ref.ok !== true) return ref
+    const result = await exec(['merge-base', '--is-ancestor', 'HEAD', ref.name], worktree.path)
+    if (result.code === 0) return ok({ path: worktree.path, merged: true })
+    if (result.code === 1) return ok({ path: worktree.path, merged: false })
+    return failed(result, 'worktree-merge-check-failed', 'git merge-base --is-ancestor failed in the worktree')
+  }
+
   /**
    * Does `descendant` already contain `ancestor`? `git merge-base --is-ancestor`
    * answers with its exit code (0 = yes, 1 = no), which is NOT an error: a
@@ -582,6 +611,8 @@ export function createGit(options) {
     worktreeList: worktreeList,
     worktreeUnlock: worktreeUnlock,
     worktreePrune: worktreePrune,
+    worktreeDirty: worktreeDirty,
+    worktreeMerged: worktreeMerged,
     commitAll: commitAll,
     diffNameOnly: diffNameOnly,
     mergeNoFf: mergeNoFf,
