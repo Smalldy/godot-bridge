@@ -48,6 +48,9 @@ function recorder(handler) {
     'worktreeList',
     'worktreeUnlock',
     'worktreePrune',
+    // T-142: the per-worktree cleanup probes.
+    'worktreeDirty',
+    'worktreeMerged',
     'commitAll',
     'diffNameOnly',
     'mergeNoFf',
@@ -284,6 +287,43 @@ function recorder(handler) {
   )
   const failedList = await createGit({ run: recorder(() => ({ code: 1, stdout: '', stderr: 'fatal' })) }).worktreeList(ROOT)
   check('worktreeList reports a failed listing', isFailure(failedList, 'worktree-list-failed'), JSON.stringify(failedList))
+}
+
+// worktreeDirty / worktreeMerged — the cleanup probes (T-142)
+{
+  const cleanRun = recorder(() => ({ code: 0, stdout: '', stderr: '' }))
+  const clean = await createGit({ run: cleanRun }).worktreeDirty(ROOT, INSIDE)
+  check(
+    'worktreeDirty reports a clean checkout',
+    isOk(clean) && clean.dirty === false && clean.path === INSIDE,
+    JSON.stringify(clean),
+  )
+  check(
+    'worktreeDirty runs git status INSIDE the worktree',
+    cleanRun.calls.length === 1 && cleanRun.calls[0].args.join(' ') === 'status --porcelain' && cleanRun.calls[0].cwd === INSIDE,
+    JSON.stringify(cleanRun.calls[0]),
+  )
+  const dirty = await createGit({ run: recorder(() => ({ code: 0, stdout: ' M scripts/a.gd\n?? notes.txt\n', stderr: '' })) }).worktreeDirty(ROOT, INSIDE)
+  check('worktreeDirty reports a dirty checkout', isOk(dirty) && dirty.dirty === true, JSON.stringify(dirty))
+  const statusFailed = await createGit({ run: recorder(() => ({ code: 128, stdout: '', stderr: 'fatal' })) }).worktreeDirty(ROOT, INSIDE)
+  check('worktreeDirty reports a failed status', isFailure(statusFailed, 'worktree-status-failed'), JSON.stringify(statusFailed))
+  const escaping = await createGit({ run: recorder() }).worktreeDirty(ROOT, '../elsewhere')
+  check('worktreeDirty refuses a path outside the root', isFailure(escaping, 'outside-root'), JSON.stringify(escaping))
+
+  const mergedRun = recorder(() => ({ code: 0, stdout: '', stderr: '' }))
+  const merged = await createGit({ run: mergedRun }).worktreeMerged(ROOT, INSIDE, 'feat/task-center-v2')
+  check('worktreeMerged reports an already-merged HEAD', isOk(merged) && merged.merged === true, JSON.stringify(merged))
+  check(
+    'worktreeMerged asks merge-base --is-ancestor HEAD <target> in the worktree',
+    mergedRun.calls.length === 1 && mergedRun.calls[0].args.join(' ') === 'merge-base --is-ancestor HEAD feat/task-center-v2' && mergedRun.calls[0].cwd === INSIDE,
+    JSON.stringify(mergedRun.calls[0]),
+  )
+  const unmerged = await createGit({ run: recorder(() => ({ code: 1, stdout: '', stderr: '' })) }).worktreeMerged(ROOT, INSIDE, 'feat/task-center-v2')
+  check('exit 1 is "not merged yet", not an error', isOk(unmerged) && unmerged.merged === false, JSON.stringify(unmerged))
+  const mergeFailed = await createGit({ run: recorder(() => ({ code: 128, stdout: '', stderr: 'fatal' })) }).worktreeMerged(ROOT, INSIDE, 'feat/task-center-v2')
+  check('worktreeMerged reports a failed probe', isFailure(mergeFailed, 'worktree-merge-check-failed'), JSON.stringify(mergeFailed))
+  const badTarget = await createGit({ run: recorder() }).worktreeMerged(ROOT, INSIDE, '')
+  check('worktreeMerged refuses an empty target ref', isFailure(badTarget, 'invalid-ref'), JSON.stringify(badTarget))
 }
 
 // commitAll

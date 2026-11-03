@@ -7507,5 +7507,283 @@ rig.scheduler.dispose()
   scheduler.dispose()
 }
 
+
+// ── T-142: worktree inventory classification + safe cleanup API ───────────
+{
+  const wtPath = (name) => join(PROJECT, '.worktrees', name)
+  const BOARD_TARGET = 'feat/task-center-v2'
+  const baseTask = (id, status, worktree) => runningWorktreeTask({ id: id, status: status, target: BOARD_TARGET, branch: 'task/' + id + '-1', worktree: worktree })
+  const cleanupTasks = [
+    baseTask('T-46', 'done', wtPath('T-46-1')),
+    baseTask('T-47', 'done', wtPath('T-47-1')),
+    baseTask('T-83', 'done', wtPath('T-83-3')),
+    baseTask('T-200', 'running', wtPath('T-200-1')),
+  ]
+  function cleanupGit(worktrees) {
+    const state = { removed: [], deleted: [], pruned: 0, dirtyCalls: [], mergedCalls: [] }
+    const gone = new Set()
+    const raw = worktrees.slice()
+    const find = (path) => raw.filter((entry) => entry.path === path)[0]
+    const facade = {
+      state: state,
+      async worktreeList() {
+        return { ok: true, worktrees: raw.filter((entry) => gone.has(entry.path) !== true).map((entry) => ({ path: entry.path, branch: entry.branch === undefined ? null : entry.branch, head: entry.head === undefined ? 'head-' + String(entry.path).split(/[\\/]/).pop() : entry.head })) }
+      },
+      async worktreeDirty(root, path) {
+        state.dirtyCalls.push(path)
+        const entry = find(path)
+        if (entry !== undefined && entry.dirtyProbeFails === true) return { ok: false, code: 'worktree-status-failed', message: 'git status failed' }
+        return { ok: true, path: path, dirty: entry !== undefined && entry.dirty === true }
+      },
+      async worktreeMerged(root, path, target) {
+        state.mergedCalls.push({ path: path, target: target })
+        const entry = find(path)
+        if (entry !== undefined && entry.mergedProbeFails === true) return { ok: false, code: 'worktree-merge-check-failed', message: 'merge-base failed' }
+        return { ok: true, path: path, merged: entry !== undefined && entry.merged === true }
+      },
+      async worktreeRemove(root, path, options) {
+        state.removed.push({ path: path, force: options !== undefined && options !== null && options.force === true })
+        gone.add(path)
+        return { ok: true, path: path }
+      },
+      async deleteBranch(root, name) {
+        state.deleted.push(name)
+        return { ok: true, branch: name }
+      },
+      async worktreePrune() {
+        state.pruned += 1
+        return { ok: true, pruned: [] }
+      },
+    }
+    return facade
+  }
+  function cleanupRig(entries) {
+    const git = cleanupGit(entries)
+    const rig = createSubmitRig({ git: git })
+    seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: cleanupTasks }))
+    const surface = install(rig)
+    return { rig: rig, git: git, surface: surface, stateUrl: STATE_PATH + '?project=' + encodeURIComponent(PROJECT) }
+  }
+  const standard = [
+    { path: PROJECT, branch: BOARD_TARGET, head: 'main-head' },
+    { path: wtPath('T-46-1'), branch: 'task/T-46-1', dirty: false, merged: true },
+    { path: wtPath('T-46-2'), branch: 'task/T-46-2', dirty: false, merged: true },
+    { path: wtPath('T-47-1'), branch: 'task/T-47-1', dirty: false, merged: true },
+    { path: wtPath('T-47-2'), branch: 'task/T-47-2', dirty: false, merged: true },
+    { path: wtPath('T-83-3'), branch: 'task/T-83-3', dirty: false, merged: true },
+    { path: wtPath('T-126-1'), branch: 'task/T-126-1', dirty: false, merged: false },
+    { path: wtPath('T-128-1'), branch: 'task/T-128-1', dirty: false, merged: false },
+    { path: wtPath('T-55-2'), branch: 'task/T-55-2', dirty: false, merged: false },
+    { path: wtPath('T-83-1'), branch: 'task/T-83-1', dirty: false, merged: false },
+    { path: wtPath('test-T-126'), branch: 'test/T-126', dirty: false, merged: false },
+    { path: wtPath('T-55-1'), branch: 'task/T-55-1', dirty: true, merged: true },
+    { path: wtPath('T-200-1'), branch: 'task/T-200-1', dirty: false, merged: true },
+  ]
+
+  // The /state inventory classifies every stale checkout.
+  {
+    const ctx = cleanupRig(standard)
+    const res = await call(ctx.surface, ctx.stateUrl, {})
+    const payload = res.json()
+    const inventory = payload.worktrees
+    const byName = {}
+    for (const entry of inventory.worktrees) byName[String(entry.path).split(/[\\/]/).pop()] = entry
+    const safeNames = inventory.worktrees.filter((entry) => entry.reason === 'safe').map((entry) => String(entry.path).split(/[\\/]/).pop()).sort()
+    const unmergedNames = inventory.worktrees.filter((entry) => entry.reason === 'unmerged').map((entry) => String(entry.path).split(/[\\/]/).pop()).sort()
+    check(
+      'T-142 the worktree inventory still carries its compatible top-level fields',
+      payload.ok === true && inventory.available === true && inventory.total === standard.length && inventory.counts.main === 1 && inventory.counts.task === 11 && inventory.counts.test === 1,
+      JSON.stringify({ total: inventory.total, counts: inventory.counts }),
+    )
+    check(
+      'T-142 clean+merged checkouts are classified safe (5 of the 11 stale)',
+      safeNames.join(',') === 'T-46-1,T-46-2,T-47-1,T-47-2,T-83-3' && inventory.worktrees.filter((entry) => entry.safe === true).length === 5,
+      JSON.stringify(safeNames),
+    )
+    check(
+      'T-142 clean+unmerged checkouts are classified unmerged (5)',
+      unmergedNames.join(',') === 'T-126-1,T-128-1,T-55-2,T-83-1,test-T-126' && inventory.worktrees.filter((entry) => entry.reason === 'unmerged').length === 5,
+      JSON.stringify(unmergedNames),
+    )
+    check(
+      'T-142 a dirty checkout is dirty, not safe',
+      byName['T-55-1'].dirty === true && byName['T-55-1'].merged === true && byName['T-55-1'].safe === false && byName['T-55-1'].reason === 'dirty',
+      JSON.stringify(byName['T-55-1']),
+    )
+    check(
+      'T-142 an active (running card) checkout stays active and unsafe',
+      byName['T-200-1'].active === true && byName['T-200-1'].safe === false && byName['T-200-1'].reason === 'active',
+      JSON.stringify(byName['T-200-1']),
+    )
+    check(
+      'T-142 the main checkout is active and never safe',
+      byName[String(PROJECT).split(/[\\/]/).pop()].type === 'main' && byName[String(PROJECT).split(/[\\/]/).pop()].reason === 'active' && byName[String(PROJECT).split(/[\\/]/).pop()].safe === false,
+      JSON.stringify(byName[String(PROJECT).split(/[\\/]/).pop()]),
+    )
+    check(
+      'T-142 a task id is derived from path/branch when the card is gone',
+      byName['T-126-1'].taskId === 'T-126' && byName['T-128-1'].taskId === 'T-128' && byName['test-T-126'].taskId === 'T-126' && byName['test-T-126'].type === 'test',
+      JSON.stringify({ t126: byName['T-126-1'].taskId, t128: byName['T-128-1'].taskId, test: byName['test-T-126'] }),
+    )
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+  }
+
+  // Default cleanup is a dry run: nothing is touched.
+  {
+    const ctx = cleanupRig(standard)
+    const res = await postTo(ctx.surface, { action: 'worktreesCleanup' })
+    const payload = res.json()
+    const wouldRemove = payload.candidates.filter((entry) => entry.wouldRemove === true).map((entry) => String(entry.path).split(/[\\/]/).pop()).sort()
+    check(
+      'T-142 worktreesCleanup defaults to a dry run',
+      payload.ok === true && payload.dryRun === true && payload.removed.length === 0 && ctx.git.state.removed.length === 0 && ctx.git.state.pruned === 0,
+      JSON.stringify({ dryRun: payload.dryRun, removed: payload.removed.length, calls: ctx.git.state.removed.length }),
+    )
+    check(
+      'T-142 the dry run previews exactly the five safe candidates',
+      wouldRemove.join(',') === 'T-46-1,T-46-2,T-47-1,T-47-2,T-83-3' && payload.candidates.length === standard.length,
+      JSON.stringify({ wouldRemove: wouldRemove, candidates: payload.candidates.length }),
+    )
+    check(
+      'T-142 the dry run keeps main, active, dirty and unmerged with a reason',
+      payload.kept.some((entry) => entry.reason === 'main') &&
+        payload.kept.some((entry) => entry.reason === 'active') &&
+        payload.kept.some((entry) => entry.reason === 'dirty') &&
+        payload.kept.filter((entry) => entry.reason === 'unmerged').length === 5,
+      JSON.stringify(payload.kept.map((entry) => entry.reason)),
+    )
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+  }
+
+  // Execute without force removes only CLEAN+MERGED checkouts, and only their branches.
+  {
+    const ctx = cleanupRig(standard)
+    const res = await postTo(ctx.surface, { action: 'worktreesCleanup', dryRun: false })
+    const payload = res.json()
+    const removedNames = payload.removed.map((entry) => String(entry.path).split(/[\\/]/).pop()).sort()
+    check(
+      'T-142 execute removes exactly the five safe checkouts',
+      payload.ok === true && payload.dryRun === false && removedNames.join(',') === 'T-46-1,T-46-2,T-47-1,T-47-2,T-83-3' && payload.failed.length === 0,
+      JSON.stringify({ removed: removedNames, failed: payload.failed }),
+    )
+    check(
+      'T-142 only merged branches are deleted',
+      ctx.git.state.deleted.join(',') === 'task/T-46-1,task/T-46-2,task/T-47-1,task/T-47-2,task/T-83-3' && payload.removed.every((entry) => entry.branchDeleted === true),
+      JSON.stringify(ctx.git.state.deleted),
+    )
+    check(
+      'T-142 unmerged and dirty checkouts are kept without force',
+      payload.kept.filter((entry) => entry.reason === 'unmerged').length === 5 && payload.kept.some((entry) => entry.reason === 'dirty') && payload.kept.some((entry) => entry.reason === 'active') && payload.kept.some((entry) => entry.reason === 'main'),
+      JSON.stringify(payload.kept),
+    )
+    check('T-142 the removal prunes stale admin entries once', ctx.git.state.pruned === 1, String(ctx.git.state.pruned))
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+  }
+
+  // force removes dirty/unmerged checkouts but never deletes unmerged branches.
+  {
+    const ctx = cleanupRig(standard)
+    const res = await postTo(ctx.surface, { action: 'worktreesCleanup', dryRun: false, force: true })
+    const payload = res.json()
+    const removedNames = payload.removed.map((entry) => String(entry.path).split(/[\\/]/).pop()).sort()
+    check(
+      'T-142 force removes dirty and unmerged checkouts too (11 safe-or-forced)',
+      payload.ok === true && payload.force === true && removedNames.length === 11 && payload.kept.filter((entry) => entry.reason === 'main' || entry.reason === 'active').length === 2,
+      JSON.stringify({ removed: removedNames, kept: payload.kept.map((entry) => entry.reason) }),
+    )
+    check(
+      'T-142 force never deletes an unmerged branch (only the 6 merged ones)',
+      ctx.git.state.deleted.join(',') === 'task/T-46-1,task/T-46-2,task/T-47-1,task/T-47-2,task/T-83-3,task/T-55-1' &&
+        ctx.git.state.deleted.indexOf('task/T-126-1') < 0 &&
+        ctx.git.state.deleted.indexOf('task/T-55-2') < 0,
+      JSON.stringify(ctx.git.state.deleted),
+    )
+    const dirtyRemoval = ctx.git.state.removed.filter((entry) => String(entry.path).indexOf('T-55-1') >= 0)[0]
+    const unmergedRemoval = ctx.git.state.removed.filter((entry) => String(entry.path).indexOf('T-126-1') >= 0)[0]
+    check(
+      'T-142 a dirty checkout is removed with --force; an unmerged clean one without',
+      dirtyRemoval !== undefined && dirtyRemoval.force === true && unmergedRemoval !== undefined && unmergedRemoval.force === false,
+      JSON.stringify({ dirty: dirtyRemoval, unmerged: unmergedRemoval }),
+    )
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+  }
+
+  // Explicit paths are scoped and the action is idempotent.
+  {
+    const ctx = cleanupRig(standard)
+    const first = (await postTo(ctx.surface, { action: 'worktreesCleanup', dryRun: false, paths: [wtPath('T-46-1')] })).json()
+    check(
+      'T-142 paths limit cleanup to the requested checkout',
+      first.ok === true && first.removed.length === 1 && String(first.removed[0].path).indexOf('T-46-1') >= 0 && ctx.git.state.deleted.join(',') === 'task/T-46-1',
+      JSON.stringify(first.removed),
+    )
+    const second = (await postTo(ctx.surface, { action: 'worktreesCleanup', dryRun: false, paths: [wtPath('T-46-1')] })).json()
+    check(
+      'T-142 cleanup is idempotent for an already-removed path',
+      second.ok === true && second.removed.length === 0 && second.kept.some((entry) => entry.reason === 'not-a-worktree') && ctx.git.state.pruned === 2,
+      JSON.stringify({ removed: second.removed.length, kept: second.kept, pruned: ctx.git.state.pruned }),
+    )
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+  }
+
+  // Main, active/running and out-of-root checkouts are refused.
+  {
+    const entries = standard.concat([{ path: join(PROJECT, '..', 'elsewhere', 'T-9'), branch: 'task/T-9-1', dirty: false, merged: true }])
+    const ctx = cleanupRig(entries)
+    const res = await postTo(ctx.surface, { action: 'worktreesCleanup', dryRun: false, force: true })
+    const payload = res.json()
+    check(
+      'T-142 the main checkout is kept, never removed',
+      payload.removed.every((entry) => String(entry.path) !== PROJECT) && payload.kept.some((entry) => String(entry.path) === PROJECT && entry.reason === 'main'),
+      JSON.stringify(payload.kept.filter((entry) => String(entry.path) === PROJECT)),
+    )
+    check(
+      'T-142 the active/running checkout is kept, never removed',
+      payload.removed.every((entry) => String(entry.path).indexOf('T-200-1') < 0) && payload.kept.some((entry) => String(entry.path).indexOf('T-200-1') >= 0 && entry.reason === 'active'),
+      JSON.stringify(payload.kept.filter((entry) => String(entry.path).indexOf('T-200-1') >= 0)),
+    )
+    check(
+      'T-142 a worktree outside the project root is refused',
+      payload.failed.some((entry) => entry.code === 'outside-root' && String(entry.path).indexOf('elsewhere') >= 0) && payload.removed.every((entry) => String(entry.path).indexOf('elsewhere') < 0),
+      JSON.stringify(payload.failed),
+    )
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+  }
+
+  // An unverifiable checkout is never removed, even with force.
+  {
+    const entries = standard.map((entry) => (String(entry.path).indexOf('T-46-1') >= 0 ? Object.assign({}, entry, { dirtyProbeFails: true, mergedProbeFails: true }) : entry))
+    const ctx = cleanupRig(entries)
+    const res = await postTo(ctx.surface, { action: 'worktreesCleanup', dryRun: false, force: true })
+    const payload = res.json()
+    check(
+      'T-142 an unverified checkout is kept with reason unverified, even under force',
+      payload.kept.some((entry) => String(entry.path).indexOf('T-46-1') >= 0 && entry.reason === 'unverified') && payload.removed.every((entry) => String(entry.path).indexOf('T-46-1') < 0),
+      JSON.stringify(payload.kept.filter((entry) => String(entry.path).indexOf('T-46-1') >= 0)),
+    )
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+  }
+
+  // The action is user-only: an agent call is refused before any removal.
+  {
+    const ctx = cleanupRig(standard)
+    const denied = await ctx.rig.api.perform('worktreesCleanup', { dryRun: false, force: true, project: PROJECT }, { role: 'agent' })
+    check(
+      'T-142 worktreesCleanup is user-only',
+      denied.ok === false && denied.code === 'user-only' && ctx.git.state.removed.length === 0,
+      JSON.stringify(denied),
+    )
+    ctx.surface.dispose()
+    ctx.rig.scheduler.dispose()
+  }
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
