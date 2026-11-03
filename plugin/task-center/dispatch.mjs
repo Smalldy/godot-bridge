@@ -55,6 +55,7 @@ import {
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { DEFAULT_WORKTREE_TIMEOUT_MS, createGit } from './git.mjs'
+import { SKILL_NAME } from './skill.mjs'
 
 export const DEFAULT_MAX_WORK_AGENTS = 4
 export const DEFAULT_MAX_ATTEMPTS = 3
@@ -1839,15 +1840,35 @@ export function spawnPreamble(name, leadName) {
 }
 
 /**
- * The skills injection, shared by the role brief and the per-task worker brief so
- * a profile's skill list is worded identically on both paths.
+ * The host-fixed RULES, shared by the role brief and the per-task worker brief.
+ * These are constraints/instructions, NOT skills: they must not be presented as
+ * skill names in the panel (T-148).
+ */
+function roleRulesSection() {
+  return [
+    'Rules:',
+    '- task_center is your only interface to the board.',
+    '- Use the skill tool to load the skills listed below before acting.',
+  ].join('\n')
+}
+
+/**
+ * The SKILLS injection: real skill names only, one per line. The host runtime
+ * skill is always present (it is registered by this plugin); the profile's
+ * project skills follow, de-duplicated. A profile without skills still gets the
+ * host skill — never a fake "load any skills" instruction bullet.
  */
 function roleSkillsSection(profile) {
-  const lines = ['Skills:', '- task_center is your only interface to the board.']
+  const names = []
+  const add = function (name) {
+    const value = typeof name === 'string' ? name.trim() : ''
+    if (value !== '' && names.indexOf(value) < 0) names.push(value)
+  }
+  add(SKILL_NAME)
   const listed = profile !== null && profile !== undefined && Array.isArray(profile.skills) ? profile.skills : []
-  if (listed.length > 0) lines.push('- Load these project skills with the skill tool before acting: ' + listed.join(', '))
-  else lines.push('- Load any project-specific skills with the skill tool before acting.')
-  return lines.join('\n')
+  listed.forEach(add)
+  if (names.length === 0) return ''
+  return ['Skills:'].concat(names.map(function (name) { return '- ' + name })).join('\n')
 }
 
 /**
@@ -1939,7 +1960,13 @@ export function briefPartsFor(task, projectPath, leadName, roleConfig) {
       'Do NOT dispatch anything yourself. You are the assignee, not the scheduler.',
     ].join('\n'),
   })
-  if (config !== null) parts.push({ key: 'skills', group: 'skills', text: roleSkillsSection(profile) })
+  if (config !== null) {
+    // T-148: rules and skills are separate parts, rules first. Skills contains
+    // real skill names only (host runtime skill + profile project skills).
+    parts.push({ key: 'rules', group: 'rules', text: roleRulesSection() })
+    const skills = roleSkillsSection(profile)
+    if (skills !== '') parts.push({ key: 'skills', group: 'skills', text: skills })
+  }
   return parts
 }
 
@@ -2156,6 +2183,7 @@ export function roleBriefSections(kind, task, config, options) {
     templateRendered: templateRendered,
     taskData: taskData.join('\n'),
     fixed: fixed.join('\n'),
+    rules: roleRulesSection(),
     skills: roleSkillsSection(profile),
   }
 }
@@ -2203,7 +2231,8 @@ export function roleBriefPartsFor(kind, task, config, options) {
   if (sections.template !== '') parts.push({ key: 'template', group: 'template', text: 'Profile instructions:\n' + sections.templateRendered })
   if (sections.taskData !== '') parts.push({ key: 'task', group: 'task', text: sections.taskData })
   parts.push({ key: 'duties', group: 'fixed', text: sections.fixed })
-  parts.push({ key: 'skills', group: 'skills', text: sections.skills })
+  parts.push({ key: 'rules', group: 'rules', text: sections.rules })
+  if (sections.skills !== '') parts.push({ key: 'skills', group: 'skills', text: sections.skills })
   return parts
 }
 
@@ -2330,7 +2359,8 @@ export function roleContextPreview(config, kind, options) {
     { key: 'template', type: 'template', title: 'Editable template (profile.prompt)', text: sections.template, editable: true },
     { key: 'task', type: 'task', title: 'Task data (host: spec, acceptance, worktree)', text: sections.taskData, editable: false },
     { key: 'duties', type: 'fixed', title: 'Fixed duties / permission boundary / verdict (host)', text: sections.fixed, editable: false },
-    { key: 'skills', type: 'fixed', title: 'Fixed skills injection (host)', text: sections.skills, editable: false },
+    { key: 'rules', type: 'fixed', title: 'Fixed rules (host: board interface, skill loading)', text: sections.rules, editable: false },
+    { key: 'skills', type: 'fixed', title: 'Fixed skills injection (host: real skill names)', text: sections.skills, editable: false },
   ]
   return {
     name: named !== null ? String(opts.profileName) : profile !== null && profile !== undefined && typeof profile.name === 'string' ? profile.name : String(kind),

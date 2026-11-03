@@ -477,7 +477,8 @@ function rolePreviewReply(body) {
     { key: 'template', group: 'template', text: 'Profile instructions:\n' + (typeof body.profile === 'string' && body.profile !== '' ? body.profile : kind) },
     { key: 'task', group: 'task', text: 'Task ' + task.id + ': ' + task.title },
     { key: 'fixed', group: 'fixed', text: 'Duties: permission boundary.\nVerdict schema: task_center submit.' },
-    { key: 'skills', group: 'skills', text: 'Load these skills before starting.' },
+    { key: 'rules', group: 'rules', text: 'Rules:\n- task_center is your only interface to the board.\n- Use the skill tool to load the skills listed below before acting.' },
+    { key: 'skills', group: 'skills', text: 'Skills:\n- godot-bridge-task-center\n- dsh-plugin-workflow' },
   ]
   return {
     ok: true,
@@ -2320,7 +2321,7 @@ await flush()
   )
   check(
     'the injected sections are labelled once, in the semantic order',
-    findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,内置默认提示词,任务数据,权限边界与结论,技能',
+    findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,内置默认提示词,任务数据,权限边界与结论,规则,技能',
     findAll(editor, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(','),
   )
   check(
@@ -2568,9 +2569,31 @@ await flush()
   const sectionNodes = findAll(injectedCol, (node) => node.type === 'div' && node.props && node.props['data-role-section-group'] !== undefined)
   check(
     'the right column separates task data from host copy with readable labels',
-    sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'role,role,role,template,task,fixed,skills' &&
-      findAll(injectedCol, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,内置默认提示词,任务数据,权限边界与结论,技能',
+    sectionNodes.map((node) => node.props['data-role-section-group']).join(',') === 'role,role,role,template,task,fixed,rules,skills' &&
+      findAll(injectedCol, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,内置默认提示词,任务数据,权限边界与结论,规则,技能',
     sectionNodes.map((node) => textOf(node)).join(' | '),
+  )
+  const sectionOfGroup = function (group) {
+    return findAll(injectedCol, (node) => node.props && node.props['data-role-section-group'] === group)[0]
+  }
+  const sectionLabelOf = function (section) {
+    const node = section === undefined ? undefined : findAll(section, (child) => child.props && child.props['data-role-section-label'] !== undefined)[0]
+    return node === undefined ? '' : textOf(node)
+  }
+  const sectionSourceOf = function (section) {
+    const node = section === undefined ? undefined : findAll(section, (child) => child.props && child.props['data-role-section-source'] !== undefined)[0]
+    return node === undefined ? '' : textOf(node)
+  }
+  const rulesSection = sectionOfGroup('rules')
+  const skillsSection = sectionOfGroup('skills')
+  check(
+    'T-148 the preview shows 规则 and 技能 as separate groups with the right sources',
+    rulesSection !== undefined && skillsSection !== undefined &&
+      sectionLabelOf(rulesSection) === '规则' && sectionSourceOf(rulesSection) === '宿主固定' &&
+      sectionLabelOf(skillsSection) === '技能' && sectionSourceOf(skillsSection) === '宿主注入' &&
+      textOf(rulesSection).indexOf('Rules:') >= 0 && textOf(rulesSection).indexOf('task_center is your only interface to the board.') >= 0 &&
+      textOf(skillsSection).indexOf('godot-bridge-task-center') >= 0 && textOf(skillsSection).indexOf('task_center is your only interface to the board.') < 0,
+    JSON.stringify({ rules: rulesSection && textOf(rulesSection), skills: skillsSection && textOf(skillsSection), labels: [sectionLabelOf(rulesSection), sectionLabelOf(skillsSection)], sources: [sectionSourceOf(rulesSection), sectionSourceOf(skillsSection)] }),
   )
   check('the sample label is not shown for a real task', textOf(injectedCol).indexOf('示例任务（非真实') < 0)
   check('the task selector offers every host task by id and title', findAll(injectedCol, (node) => node.type === 'option').length === TASKS.length + 1)
@@ -2906,13 +2929,13 @@ await flush()
   check(
     'the right column shows the injected reply with a section for the user’s own text',
     reviewerText !== undefined &&
-      reviewerSections.map((node) => node.props['data-role-section-group']).join(',') === 'role,role,role,template,task,fixed,skills' &&
+      reviewerSections.map((node) => node.props['data-role-section-group']).join(',') === 'role,role,role,template,task,fixed,rules,skills' &&
       textOf(reviewerText).indexOf('Profile instructions:\ngodot-reviewer') >= 0,
     reviewerSections.map((node) => node.props['data-role-section-group']).join(','),
   )
   check(
     'the section labels use user language, not implementation names',
-    findAll(injectedCol, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,你的提示词,任务数据,权限边界与结论,技能',
+    findAll(injectedCol, (node) => node.props && node.props['data-role-section-label'] !== undefined).map((node) => textOf(node)).join(',') === '角色与阶段,你的提示词,任务数据,权限边界与结论,规则,技能',
     reviewerSections.map((node) => textOf(node)).join(' | '),
   )
 

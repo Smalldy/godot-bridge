@@ -676,6 +676,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleCreate: '创建',
 				rolePrompt: '指令',
 				roleSkills: '技能',
+				roleRules: '规则',
 				roleContext: '上下文',
 				rolePermissions: '权限',
 				roleProfilePrompt: 'Profile prompt（可修改）',
@@ -1282,6 +1283,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleCreate: 'Create',
 				rolePrompt: 'Prompt',
 				roleSkills: 'Skills',
+				roleRules: 'Rules',
 				roleContext: 'Context',
 				rolePermissions: 'Permissions',
 				roleProfilePrompt: 'Profile prompt (editable)',
@@ -4352,6 +4354,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 					if (group === 'template') return builtin ? t('rolePreviewGroupBuiltin') : t('roleAnchorPrompt')
 					if (group === 'task') return t('rolePreviewGroupTask')
 					if (group === 'skills') return t('roleSkills')
+					if (group === 'rules') return t('roleRules')
 					if (group === 'fixed') return t('roleAnchorBoundary')
 					return t('roleSectionRole')
 				}
@@ -4360,6 +4363,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 					if (group === 'role') return t('roleSourceHostFixed')
 					if (group === 'task') return t('roleSourceAuto')
 					if (group === 'skills') return t('roleSourceHostInjected')
+					if (group === 'rules') return t('roleSourceHostFixed')
 					if (group === 'fixed') return t('roleSourceUnoverridable')
 					return builtin ? t('roleSourceHostFixed') : t('roleSourceAuto')
 				}
