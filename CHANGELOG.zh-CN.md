@@ -9,6 +9,7 @@
 
 ### 变更
 
+- **项目/团队头一致性（T-150）**：header 现在使用 `team.project`/`projectMatch`。当前会话 Team 属于另一个项目时明确显示不一致，并提供「切换项目」（打开项目对话框并预填 Team 所属项目）与「打开所属会话」（复制所属会话 id），不再把「请在该会话中建队」当主提示。同项目只有 Lead，或完全没有 team 数据时，提供「建队」按钮（调用 `bootstrapTeam` 后刷新），并提示 Team 属于会话、不跨会话。团队服务不可用时保持原有说明且不放假按钮；team.project 为空/projectMatch 未知时降级为原提示，不误报。
 - **非 Godot / 无标记仓库的接入指导（T-151）**：`not-a-project` 不再要求「Godot 项目路径」。git 仓库没有标记时，会说明空 `.agents/` 就够（不要求 Godot）、`.agents/` 与 `.worktrees/` 会写入 `.git/info/exclude`，并只在用户同意时提议建空看板，或换一个项目路径。运行时 skill 也写明同样的标记边界（git + `.agents/` 或 `project.godot`）、显式 `project` 备选，以及不要盲跑 `npm run verify`（如 `verify:blender` 缺 Blender 会失败）：先看 package scripts，用 typecheck/test，首次接入在宿主侧实测。
 - **角色技能边界：host skill 只给 Lead（T-149）**：`godot-bridge-task-center` 是 Lead 的接入/拆卡指南，只出现在 Lead 的 Skills 里；worker/reviewer/tester 只列 `profile.skills`，没有项目技能时整个 Skills 段消失（不再出现假 bullet，Rules 的加载指令也只在有 Skills 时出现）。Lead 没有项目技能时仍列 host skill。**列名 ≠ 注入，勾选 ≠ 授权**：skill 正文只有在 agent 调用 skill 工具且 host catalog 可见时才到达；真正的硬边界是 host catalog/工具可用性 + task_center 动作角色门禁，不存在 skill allowlist。worker role brief 与 Lead preview 仍由同一套 section 生成，preview 分开标注规则（host-fixed）与技能（host-injected）。
 - **角色提示词语义：Rules 与 Skills 分开（T-148）**：host-fixed 注入拆成 `Rules:`（board 接口 + 加载下方技能的指令）与 `Skills:`（只列真实 skill 名：宿主运行时 skill `godot-bridge-task-center` + profile 里的项目 skill，去重）。profile 没有 skills 时只列宿主 skill，不再出现假的“load any”bullet。role brief 与 per-task worker brief 共用同一套 sections/parts（rules 在 skills 前），面板 preview 分别标为「规则 / 宿主固定」与「技能 / 宿主注入」。无角色配置的 legacy brief 与技能选择器/目录不变。
