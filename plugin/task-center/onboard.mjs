@@ -292,11 +292,9 @@ function detailFor(code, f) {
     case 'git-init':
       return shorten(root, 120) + ' 里有 project.godot，但还不是 git 仓库；我不会自己跑 git init。确认要初始化吗？命令：git init'
     case 'not-a-project':
-      return (
-        shorten(root, 120) +
-        (f.git === true ? ' 是 git 仓库，但没有 project.godot 或 .agents/，我不在这里建板。' : ' 既不是 git 仓库，也没有 project.godot 或 .agents/。') +
-        '请给我一个 Godot 项目路径。'
-      )
+      return f.git === true
+        ? shorten(root, 120) + ' 是 git 仓库，但还没有看板标记 .agents/。任务中心不要求 Godot：空 .agents/ 就够；需要我建一个空看板吗？（.agents/、.worktrees/ 会写入 .git/info/exclude）也可以给我另一个项目路径。'
+        : shorten(root, 120) + ' 既不是 git 仓库，也没有 .agents/ 或 project.godot；先 git init（需要你确认）或给我一个项目路径。'
     case 'fix-host': {
       const missing = listOf(f.preflightMissing)
       return '宿主环境还差 ' + String(missing.length) + ' 项：' + (missing.length === 0 ? '未知缺项' : missing.join('、')) + '；修好后再接入，我不会建卡。'

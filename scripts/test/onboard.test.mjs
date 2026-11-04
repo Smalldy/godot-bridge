@@ -16,12 +16,14 @@ import {
   createTeam,
 } from './support/fixtures.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
-import { createApi, ACTIONS, AGENT_ACTIONS } from '../../plugin/task-center/api.mjs'
+import { createApi, ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from '../../plugin/task-center/api.mjs'
+import { buildSkillContent } from '../../plugin/task-center/skill.mjs'
 import { createRoleManager } from '../../plugin/task-center/dispatch.mjs'
 import { boardPath, projectIdOf } from '../../plugin/task-center/board.mjs'
 import {
   ONBOARD_NEXT_CODES,
   decideOnboardStage,
+  nextStepOf,
   resolveOnboardRoot,
   selectOnboardNext,
 } from '../../plugin/task-center/onboard.mjs'
@@ -388,6 +390,35 @@ function spawnCalls(team) {
       selectOnboardNext({ kind: 'root', preflightOk: true, counts: { pending: 1 }, dispatchState: 'paused' }).code === 'start-dispatch' &&
       selectOnboardNext({ kind: 'root', preflightOk: true, counts: { total: 0 } }).code === 'create-task' &&
       selectOnboardNext({ kind: 'root', preflightOk: true, counts: { total: 1, running: 1 }, stage: 'active' }).code === 'none',
+  )
+  // T-151: a git repo without markers is NOT "give me a Godot project path".
+  const gitOnly = nextStepOf('not-a-project', { root: PROJECT, git: true })
+  const gitless = nextStepOf('not-a-project', { root: PROJECT, git: false })
+  check(
+    'T-151 not-a-project explains that an empty .agents is enough and never demands a Godot path',
+    gitOnly.detail.indexOf('.agents') >= 0 &&
+      gitOnly.detail.indexOf('不要求 Godot') >= 0 &&
+      gitOnly.detail.indexOf('空 .agents') >= 0 &&
+      gitOnly.detail.indexOf('.git/info/exclude') >= 0 &&
+      gitOnly.detail.indexOf('另一个项目路径') >= 0 &&
+      gitOnly.detail.indexOf('Godot 项目路径') < 0 &&
+      gitless.detail.indexOf('git init') >= 0 &&
+      gitless.detail.indexOf('Godot 项目路径') < 0,
+    JSON.stringify({ gitOnly: gitOnly.detail, gitless: gitless.detail }),
+  )
+
+  // T-151: the runtime skill teaches the same non-Godot / no-.agents boundary.
+  const skillText = buildSkillContent({ actions: ACTIONS, agentActions: AGENT_ACTIONS, readActions: READ_ACTIONS, userOnlyActions: USER_ONLY_ACTIONS })
+  check(
+    'T-151 the skill explains non-Godot onboarding, exclude, explicit project and verify caution',
+    skillText.indexOf('非 Godot / 无 `.agents`') >= 0 &&
+      skillText.indexOf('空 `.agents/` 就够') >= 0 &&
+      skillText.indexOf('.git/info/exclude') >= 0 &&
+      skillText.indexOf('显式 `project` 参数') >= 0 &&
+      skillText.indexOf('npm run verify') >= 0 &&
+      skillText.indexOf('verify:blender') >= 0 &&
+      skillText.indexOf('Godot 项目路径') < 0,
+    skillText.slice(skillText.indexOf('非 Godot'), skillText.indexOf('非 Godot') + 420),
   )
 }
 
