@@ -387,10 +387,20 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeam: '该项目团队',
 				projectTeamOk: '{lead} · {n} 名成员',
 				projectTeamMissing: '无 → 请在该会话中初始化',
-			projectTeamNoMembers: '只有 Lead，缺 {roles} → 请在该会话中建队',
+			projectTeamNoMembers: '只有 Lead，缺 {roles}',
 			projectTeamStale: '团队会话已过期（最后活动 {at}）→ 请在该项目的当前会话里打开任务中心',
 			projectTeamMissingRoles: '缺 {roles}（角色管理器会在需要时自动创建）',
 				projectTeamUnavailable: '本 profile 没有团队服务（看板仍可用）',
+				projectTeamCurrent: '当前会话 Team',
+				projectTeamMismatch: '当前会话 Team 属于项目 {team}，不是面板项目 {panel}',
+				projectTeamSwitch: '切换项目',
+				projectTeamOpenSession: '打开所属会话',
+				projectTeamBuild: '建队',
+				projectTeamBuilding: '建队中…',
+				projectTeamScopeHint: 'Team 属于会话，不跨会话；如果团队在别的会话，请切换项目/会话。',
+				projectTeamSessionCopied: '已复制会话 id',
+				projectTeamCopyFailed: '复制失败',
+				projectTeamMissingTeam: '本会话还没有团队',
 				projectTeamNext: '下一步（先建团队再建卡）：',
 				waitConcurrency: '并发已满',
 				waitCandidateStale: '候选过期，自动重建中',
@@ -994,10 +1004,20 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeam: 'Project team',
 				projectTeamOk: '{lead} · {n} members',
 				projectTeamMissing: 'none → initialize it in this session',
-			projectTeamNoMembers: 'Lead only, missing {roles} → bootstrap the team in this session',
+			projectTeamNoMembers: 'Lead only, missing {roles}',
 			projectTeamStale: 'The team session is stale (last active {at}) → open the task center from the project\'s current session',
 			projectTeamMissingRoles: 'missing {roles} (the role manager creates them on demand)',
 				projectTeamUnavailable: 'no team services in this profile (the board still works)',
+				projectTeamCurrent: 'This session\'s team',
+				projectTeamMismatch: 'This session\'s team belongs to project {team}, not the panel project {panel}',
+				projectTeamSwitch: 'Switch project',
+				projectTeamOpenSession: 'Open owning session',
+				projectTeamBuild: 'Create team',
+				projectTeamBuilding: 'Creating team…',
+				projectTeamScopeHint: 'A team belongs to a session and does not span sessions; if the team lives in another session, switch project or session.',
+				projectTeamSessionCopied: 'Session id copied',
+				projectTeamCopyFailed: 'Copy failed',
+				projectTeamMissingTeam: 'This session has no team yet',
 				projectTeamNext: 'Next step (create the team before cards):',
 				waitConcurrency: 'concurrency full',
 				waitCandidateStale: 'candidate stale, rebuilding',
@@ -1383,6 +1403,11 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-projectteam[data-project-team="ok"]{color:var(--dsw-alias-label-secondary)}',
 			'.gbt-projectteam[data-project-team="missing"]{color:var(--dsw-alias-state-warn-label)}',
 			'.gbt-projectteam[data-project-team="unavailable"]{color:var(--dsw-alias-label-tertiary);opacity:.75}',
+			// T-150: an actionable project/team-consistency line under the header.
+			'.gbt-projectsync{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:3px 0 0;max-width:520px;font-size:10.5px;line-height:1.5;color:var(--dsw-alias-state-warn-label)}',
+			'.gbt-projectsync[data-tone="warn"] .gbt-projectsynccopy{color:var(--dsw-alias-state-warn-label)}',
+			'.gbt-projectsync .gbt-actions{gap:6px;flex-wrap:wrap}',
+			'.gbt-projectsync .gbt-btn{padding:1px 8px;font-size:10.5px;line-height:1.5}',
 			'.gbt-counts{display:flex;gap:6px;flex-wrap:wrap}',
 			'.gbt-count{display:flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-count b{font-weight:600;color:var(--dsw-alias-label-primary)}',
@@ -6212,9 +6237,29 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				// Rendering tests may open the project dialog; the production slot passes no props.
 				const initialProjectOpen = props !== undefined && props !== null && props.initialProjectOpen === true
 				const [projectOpen, setProjectOpen] = React.useState(initialProjectOpen)
+				// T-150: copy confirmation for the owning session id in the header.
+				const [teamSessionCopied, setTeamSessionCopied] = React.useState(null)
 				function openProjectDialog() {
 					projectFormState.value = null
 					setProjectOpen(true)
+				}
+				/** T-150: open the existing project dialog prefilled with the team's project. */
+				function switchToTeamProject(path) {
+					if (typeof path !== 'string' || path === '') return
+					projectFormState.value = path
+					setProjectOpen(true)
+				}
+				/** T-150: create the minimum roster for THIS session, then refresh. */
+				function bootstrapTeamFromHeader() {
+					void store.send('bootstrapTeam').then(function (result) {
+						if (result !== null && result !== undefined && result.ok === true) void store.load()
+					})
+				}
+				function copyTeamSession(value) {
+					if (typeof value !== 'string' || value === '') return
+					void copyToClipboard(value).then(function (ok) {
+						setTeamSessionCopied(ok === true ? value : 'failed')
+					})
 				}
 				/** Switch to the session project: pin + openProject on the Host (T-90). */
 				function switchToProject(path) {
@@ -6268,6 +6313,72 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				// T-110: the project's Team (and the session's next step while it is
 				// missing) is read by the header line and the status card.
 				const projectTeam = snapshot.team === null || snapshot.team === undefined ? null : snapshot.team
+				// T-150: the Team is the request session's team, not automatically this
+				// project's. Use the explicit project/projectMatch fields so another
+				// project's Team is never presented as this one, and give each state an
+				// action instead of a dead-end sentence.
+				const headerTeamProject = projectTeam !== null && typeof projectTeam.project === 'string' && projectTeam.project !== '' ? projectTeam.project : null
+				const headerPanelProject = typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : null
+				const headerTeamSession = projectTeam === null ? null : typeof projectTeam.session === 'string' && projectTeam.session !== '' ? projectTeam.session : typeof projectTeam.leadSession === 'string' && projectTeam.leadSession !== '' ? projectTeam.leadSession : null
+				const headerTeamMismatch = projectTeam !== null && projectTeam.projectMatch === false && headerTeamProject !== null && headerPanelProject !== null
+				const headerTeamAvailable = projectTeam !== null && projectTeam.available === false
+				const headerTeamMissingRoles = projectTeam !== null && Array.isArray(projectTeam.missingRoles) ? projectTeam.missingRoles : []
+				const headerTeamBuildable =
+					projectTeam === null
+						? headerPanelProject !== null
+						: projectTeam.available !== false && projectTeam.projectMatch === true && (projectTeam.error === 'no-members' || headerTeamMissingRoles.length > 0)
+				const headerTeamBuilding = isBusy('bootstrapTeam')
+				const headerTeamBuildButton = function () {
+					return h('button', {
+						type: 'button',
+						className: 'gbt-btn',
+						'data-variant': 'primary',
+						'data-action': 'bootstrap-team',
+						'data-busy': headerTeamBuilding ? 'true' : 'false',
+						disabled: headerTeamBuilding || busy !== null || snapshot.project === null || snapshot.source === 'error',
+						onClick: bootstrapTeamFromHeader,
+					}, headerTeamBuilding ? h('span', null, h('span', { className: 'gbt-spinner' }), t('projectTeamBuilding')) : t('projectTeamBuild'))
+				}
+				const projectTeamNotice = headerTeamMismatch
+					? h('div', {
+							className: 'gbt-projectsync',
+							'data-project-mismatch': 'true',
+							'data-team-project': headerTeamProject,
+							'data-panel-project': headerPanelProject,
+							'data-tone': 'warn',
+						},
+							h('span', { className: 'gbt-projectsynccopy' }, t('projectTeamMismatch').replace('{team}', headerTeamProject).replace('{panel}', headerPanelProject)),
+							h('div', { className: 'gbt-actions' },
+								h('button', {
+									type: 'button',
+									className: 'gbt-btn',
+									'data-action': 'switch-team-project',
+									'data-team-project': headerTeamProject,
+									onClick: function () { switchToTeamProject(headerTeamProject) },
+								}, t('projectTeamSwitch')),
+								headerTeamSession === null
+									? null
+									: h('button', {
+											type: 'button',
+											className: 'gbt-btn',
+											'data-action': 'copy-team-session',
+											'data-session': headerTeamSession,
+											title: headerTeamSession,
+											onClick: function () { copyTeamSession(headerTeamSession) },
+										}, teamSessionCopied === headerTeamSession ? t('projectTeamSessionCopied') : teamSessionCopied === 'failed' ? t('projectTeamCopyFailed') : t('projectTeamOpenSession')),
+							),
+						)
+					: headerTeamAvailable
+						? null
+						: projectTeam === null
+							? h('div', { className: 'gbt-projectsync', 'data-team-missing': 'true', 'data-tone': 'warn' },
+									h('span', { className: 'gbt-projectsynccopy' }, t('projectTeamMissingTeam')),
+									h('div', { className: 'gbt-actions' }, headerTeamBuildButton()))
+							: headerTeamBuildable
+								? h('div', { className: 'gbt-projectsync', 'data-team-build': 'true', 'data-tone': 'warn' },
+										h('span', { className: 'gbt-projectsynccopy', 'data-team-scope-hint': 'true' }, t('projectTeamScopeHint')),
+										h('div', { className: 'gbt-actions' }, headerTeamBuildButton()))
+								: null
 
 				const tabs = [
 					{ key: 'board', label: t('boardTab') },
@@ -6317,7 +6428,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 												return parts.join(' · ')
 											})(),
 										},
-										t('projectTeam') + '：' +
+										t(headerTeamMismatch ? 'projectTeamCurrent' : 'projectTeam') + '：' +
 											(projectTeam.ok === true
 												? t('projectTeamOk').replace('{lead}', tcLeadText(projectTeam.lead, t)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0)) +
 													(Array.isArray(projectTeam.missingRoles) && projectTeam.missingRoles.length > 0
@@ -6329,6 +6440,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 														? t('projectTeamNoMembers').replace('{roles}', Array.isArray(projectTeam.missingRoles) ? projectTeam.missingRoles.join(', ') : '')
 														: t('projectTeamMissing')),
 									),
+							projectTeamNotice,
 						),
 					),
 					h(

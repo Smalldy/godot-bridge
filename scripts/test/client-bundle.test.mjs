@@ -5101,6 +5101,172 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
 }
 
 
+// ── T-150: project/team header consistency with real actions ────────────────
+{
+  const savedFetch = globalThis.fetch
+  const savedTeam = HOST.team
+  const savedNextStep = HOST.nextStep
+  globalThis.fetch = async function (url, options) {
+    if (options !== undefined && options.method === 'POST') {
+      posts.push(JSON.parse(options.body))
+      return { json: async () => ({ ok: true, snapshot: inventoryState() }) }
+    }
+    loads += 1
+    return { json: async () => HOST }
+  }
+  HOST.nextStep = null
+  const headerTree = async function () {
+    withHooks(panel, { initialView: 'board' })
+    await flush()
+    await flush()
+    return withHooks(panel, { initialView: 'board' })
+  }
+  const actionButton = function (tree, action) {
+    return findAll(tree, (node) => node.type === 'button' && node.props && node.props['data-action'] === action)[0]
+  }
+
+  // The session's Team belongs to another project: name the mismatch and offer
+  // switching, never the "create it in this session" dead end.
+  const otherProject = PROJECT + '\\other-project'
+  HOST.team = {
+    ok: true,
+    available: true,
+    source: 'session',
+    sessionScoped: true,
+    session: 'session-other-team',
+    lead: 'lead',
+    leadId: 'session-lead',
+    leadSession: 'session-lead',
+    project: otherProject,
+    projectMatch: false,
+    members: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }],
+    missingRoles: ['worker', 'reviewer', 'tester'],
+    error: null,
+  }
+  let tree = await headerTree()
+  const mismatch = findAll(tree, (node) => node.props && node.props['data-project-mismatch'] === 'true')[0]
+  const switchButton = actionButton(tree, 'switch-team-project')
+  const sessionButton = actionButton(tree, 'copy-team-session')
+  check(
+    'T-150 another project\'s Team is named as a mismatch, with switch/copy actions',
+    mismatch !== undefined &&
+      mismatch.props['data-team-project'] === otherProject &&
+      mismatch.props['data-panel-project'] === PROJECT &&
+      deepText(mismatch).indexOf('属于项目 ' + otherProject) >= 0 &&
+      deepText(mismatch).indexOf('不是面板项目 ' + PROJECT) >= 0 &&
+      switchButton !== undefined && switchButton.props['data-team-project'] === otherProject &&
+      sessionButton !== undefined && sessionButton.props['data-session'] === 'session-other-team' &&
+      actionButton(tree, 'bootstrap-team') === undefined &&
+      deepText(tree).indexOf('请在该会话中建队') < 0,
+    JSON.stringify({ mismatch: mismatch && deepText(mismatch), switch: switchButton && switchButton.props, session: sessionButton && sessionButton.props }),
+  )
+
+  // Same project, only the Lead: an actionable build button, plus the scope note.
+  HOST.team = {
+    ok: true,
+    available: true,
+    source: 'session',
+    sessionScoped: true,
+    session: 'session-own-team',
+    lead: 'lead',
+    leadId: 'session-lead',
+    leadSession: 'session-lead',
+    project: PROJECT,
+    projectMatch: true,
+    members: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }],
+    missingRoles: ['worker', 'reviewer', 'tester'],
+    error: 'no-members',
+  }
+  tree = await headerTree()
+  const buildBanner = findAll(tree, (node) => node.props && node.props['data-team-build'] === 'true')[0]
+  const buildButton = actionButton(tree, 'bootstrap-team')
+  check(
+    'T-150 a same-project team with only the Lead offers a working build action',
+    buildBanner !== undefined &&
+      buildButton !== undefined && buildButton.type === 'button' &&
+      deepText(buildBanner).indexOf('Worker') < 0 &&
+      deepText(buildBanner).indexOf('Team 属于会话') >= 0 &&
+      deepText(tree).indexOf('请在该会话中建队') < 0,
+    JSON.stringify({ banner: buildBanner && deepText(buildBanner), button: buildButton && textOf(buildButton) }),
+  )
+  const postsBefore = posts.length
+  const loadsBefore = loads
+  buildButton.props.onClick()
+  await flush()
+  await flush()
+  check(
+    'T-150 the build button calls bootstrapTeam and refreshes the board',
+    posts.slice(postsBefore).some((body) => body.action === 'bootstrapTeam') && loads > loadsBefore,
+    JSON.stringify({ posts: posts.slice(postsBefore), loadsBefore: loadsBefore, loads: loads }),
+  )
+
+  // No team data at all: still actionable.
+  HOST.team = null
+  tree = await headerTree()
+  const missingBanner = findAll(tree, (node) => node.props && node.props['data-team-missing'] === 'true')[0]
+  check(
+    'T-150 a missing Team also offers the build action',
+    missingBanner !== undefined && actionButton(tree, 'bootstrap-team') !== undefined && deepText(missingBanner).indexOf('本会话还没有团队') >= 0,
+    missingBanner && deepText(missingBanner),
+  )
+
+  // Unknown/empty team project: degrade to the original line, no false alarm.
+  HOST.team = {
+    ok: true,
+    available: true,
+    source: 'session',
+    sessionScoped: true,
+    session: 'session-own-team',
+    lead: 'lead',
+    leadId: 'session-lead',
+    leadSession: 'session-lead',
+    project: null,
+    projectMatch: null,
+    members: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }],
+    missingRoles: ['worker', 'reviewer', 'tester'],
+    error: 'no-members',
+  }
+  tree = await headerTree()
+  const degradedLine = findAll(tree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
+  check(
+    'T-150 an unknown team project degrades to the original team line without a false mismatch',
+    degradedLine !== undefined &&
+      findAll(tree, (node) => node.props && node.props['data-project-mismatch'] === 'true').length === 0 &&
+      findAll(tree, (node) => node.props && node.props['data-team-build'] === 'true').length === 0 &&
+      deepText(tree).indexOf('请在该会话中建队') < 0 &&
+      actionButton(tree, 'bootstrap-team') === undefined,
+    degradedLine && textOf(degradedLine),
+  )
+
+  // No team service: readable, and no fake button.
+  HOST.team = {
+    ok: false,
+    available: false,
+    source: 'none',
+    sessionScoped: true,
+    session: 'session-own-team',
+    project: PROJECT,
+    projectMatch: true,
+    lead: null,
+    members: [],
+    missingRoles: [],
+    error: 'no-team-service',
+  }
+  tree = await headerTree()
+  check(
+    'T-150 an unavailable team service shows the note and no fake build action',
+    deepText(tree).indexOf('本 profile 没有团队服务') >= 0 && actionButton(tree, 'bootstrap-team') === undefined,
+    textOf(tree).slice(0, 240),
+  )
+
+  HOST.team = savedTeam
+  HOST.nextStep = savedNextStep
+  globalThis.fetch = savedFetch
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+}
+
+
 // ── T-132: investigation cards in the board and the detail ──────────────────
 {
   const nowIso = new Date(now).toISOString()
