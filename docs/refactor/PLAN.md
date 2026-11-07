@@ -1,0 +1,84 @@
+# Task Center 重构执行计划
+
+> 本文件是重构期间的**唯一协调源**。重构不依赖任务中心；任务中心 149/149 done，已冻结。
+> 架构依据：[docs/architecture-review.md](../architecture-review.md)。
+> 基线：代码 b486562；备份分支 backup/task-center-v2-pre-refactor-2026-11-07；标签 pre-refactor-2026-11-07；bundle .git/backups/pre-refactor-2026-11-07.bundle。
+> 工作树：.worktrees/refactor-arch（分支 refactor/task-center-architecture）；主工作树 feat/task-center-v2 保持稳定，运行中的宿主继续加载旧代码。
+
+## 0. 约束
+
+- 不使用 task_center 建卡、派发、评审或合并；不依赖任务中心可用。
+- 不直接改主工作树；所有重构提交在 refactor worktree。
+- 每步行为保持；先加测试/诊断，再移动代码。
+- 每个提交必须能单独回滚；合并前 npm run verify 全绿 + 独立 review。
+- 不 push；备份/远端操作单独确认。
+
+## 1. 阶段
+
+### A. 诊断与运行手册（先做）
+
+范围：
+- 新增 diagnostics 收集器：项目/会话、team 就绪、git 工作区、stale .git/index.lock、merge 队列、worktree/cache、action snapshot 开关。
+- 结构化事件：git 命令 start/end/exit/duration；merge unit id/state；team/session 生命周期。
+- runbook：stale index.lock、merge 队列卡住、team 缺失/懒初始化、host 重启、worktree 残留。
+- 两个事故复盘：stale lock、team 懒初始化。
+
+验收：
+- 合成 stale index.lock / merge 失败时，diagnostics 能报出明确 code 和证据。
+- 面板/HTTP 能读到健康状态；不改变现有动作语义。
+- runbook 可照着排查；复盘有根因、检测缺口、guard。
+
+### B. 工程护栏
+
+范围：
+- 语法检查（node --check，覆盖 plugin/client/scripts）；测试 runner 加 timeout/失败隔离。
+- lint/format/typecheck 的引入策略（先 JSDoc + tsc 或 ESLint/Prettier，不一次全量改造）。
+- CI 骨架：至少语法 + 现有 verify；完整测试 CI 依赖 DSH runtime 的解析方案，先 spike。
+- 覆盖率：c8 或等价；先报告，不设阻断阈值。
+
+验收：
+- npm run check:syntax 可用并进入 verify。
+- 故意写坏语法能被拦住；测试超时能失败并清理。
+- CI 在本仓库可复现；不能复现的部分写清限制。
+
+### C. 运行时正确性（P0）
+
+- LeaseRegistry/项目 leader lease 落盘：pid/bootId/heartbeat/TTL；reap 只回收自己或明确过期者；锁随 lease 持久化。
+- WorkspaceManager/Reconciler：worktree list × 卡片 × 目录对账；stale index.lock 回收；主 checkout merge intent 启动恢复；只处理已登记/无 running/超宽限的 worktree。
+- MergeQueue 状态机/幂等：candidate→approved→merging→merged/failed/stale；幂等键 (id,base,head)；intent/outcome 落盘；启动 reconcile；失败 code 进 diagnostics。
+
+验收：两个 DSH 进程不互抢；stale lock 自愈；merge 失败可解释；重启后可恢复。
+
+### D. 后端 kernel
+
+- Result/codes、caller、gates、pipeline、actions/registry；41 个 if 变表驱动；保持动作名/拒绝码/顺序。
+- 先加 dispatch-port；再拆 actions 按域；board 四分；唯一项目解析；唯一写缝。
+- 每步加特征测试，行为不变。
+
+### E. 前端源码拆分
+
+- client/src + build.mjs，仍产出唯一 client/client.js。
+- selectors（teamStatus/boardGroups/worktreeStatus/detailTask）；资源化 store；删 9 个模块 store；真实 React 状态测试。
+- watch 模式避免 DX 退化。
+
+### F. 测试/CI/e2e/仓库
+
+- node:test + support/factories；套件按域拆；真实 git 崩溃/锁/队列/重启 e2e；覆盖率门禁。
+- Godot .gd --check-only；godot_command 枚举从 .gd 生成 + golden。
+- .investigate 归档/清理；.local 移出；.git/info/exclude 迁 .gitignore；版本/CHANGELOG 门禁；tag 发布。
+
+## 2. 每步流程
+
+1. 在 refactor worktree 建小提交；先写失败测试/诊断，再改实现。
+2. 本地 npm run verify（后续加 check:syntax/coverage）。
+3. 独立 subagent review：范围、证据、回滚、测试。
+4. 通过后合回 feat/task-center-v2；主工作树跑一次 smoke/doctor。
+5. 坏了：git checkout pre-refactor-2026-11-07 或 backup 分支；不 force-push。
+
+## 3. 第一轮
+
+A + B 并行（文件不重叠）：
+- A: docs/runbook + diagnostics 收集器 + 结构化事件。
+- B: scripts/check-syntax.mjs + package.json + scripts/test/run.mjs timeout + CI 语法骨架。
+
+完成 A/B 后再开 C。
