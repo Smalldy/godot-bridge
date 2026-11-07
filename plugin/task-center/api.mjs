@@ -32,6 +32,7 @@ import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from './actions/registry.mjs'
 import { createReadActions } from './actions/read.mjs'
+import { createHarnessActions } from './actions/harness.mjs'
 import {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
@@ -265,6 +266,7 @@ export function createApi(ctx, options) {
     ok: ok,
     failure: failure,
   })
+  const harnessActions = createHarnessActions({ harnessRefusal: harnessRefusal, harness: harness, ok: ok, failure: failure })
   // A task can be merged by both the tester's passTest and the host sweep. The
   // second caller must not take the stale branch and rebuild a candidate for a
   // task that is already done; one in-process claim per task makes merging idempotent.
@@ -5285,36 +5287,8 @@ export function createApi(ctx, options) {
       }
       return ok({ task: result.task, events: result.events })
     }
-    if (
-      action === 'harnessStart' ||
-      action === 'harnessStop' ||
-      action === 'harnessRestart' ||
-      action === 'harnessStatus' ||
-      action === 'harnessSmoke'
-    ) {
-      const denied = harnessRefusal(context)
-      if (denied !== null) return denied
-      if (harness === null || typeof harness.start !== 'function') {
-        return failure('harness-unavailable', 'the isolated DSH harness is not available in this profile')
-      }
-      if (action === 'harnessStatus') {
-          const harnessStatus = harness.status()
-          // Flat mirrors so a caller can hand the URL straight to a shot tool
-          // without digging into the nested record.
-          return ok({
-            harness: harnessStatus,
-            logs: harness.logs(),
-            port: harnessStatus.port === undefined ? null : harnessStatus.port,
-            token: harnessStatus.token === undefined ? null : harnessStatus.token,
-            url: harnessStatus.url === undefined ? null : harnessStatus.url,
-            cookie: harnessStatus.cookie === true,
-          })
-        }
-      if (action === 'harnessStop') return harness.stop()
-      if (action === 'harnessStart') return harness.start(projectPath)
-      if (action === 'harnessRestart') return harness.restart(projectPath)
-      return harness.smoke(projectPath)
-    }
+    const harnessHandler = harnessActions[action]
+    if (harnessHandler !== undefined) return harnessHandler(source, context, projectPath)
     if (action === 'cancel') {
       const id = String(source.id === undefined ? '' : source.id)
       if (id === '') return failure('missing-id', 'cancel needs a task id')

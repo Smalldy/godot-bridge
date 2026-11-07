@@ -29,6 +29,7 @@
 - C 阶段完成，带边界：process-check 用 Node execFile（宿主沙箱禁止则 unknown → manual-check）；没有真实 DSH host 重启/双 dispatcher e2e。
 - D 第一步（2026-11-07）：actions/registry.mjs 成为唯一动作元数据表；ACTIONS/DEV_ONLY/USER_ONLY/READ/AGENT 全部派生，保持原顺序；api.mjs 只 re-export。28/28 verify。
 - D 第二步（2026-11-07）：actions/read.mjs 抽出 board/list/get/locks；performResolved 改为 readActions 表路由；语义不变。29/29 verify。
+- D 第三步（2026-11-07）：actions/harness.mjs 抽出 harnessStart/Stop/Restart/Status/Smoke；权限/不可用/status 平铺字段保持不变。30/30 verify。
 - 下一阶段：D 剩余（lifecycle/roles/verdicts/merge/onboard handlers、gates/pipeline、caller、dispatch-port）。
 
 ## 1. 阶段
