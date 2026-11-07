@@ -77,7 +77,9 @@
 - 后续第十七步（2026-11-08）：新增 scripts/test/godot-contract.test.mjs，校验 godot_command/godot_operations 枚举与 .gd match 分支一致；修复 get_instance_info 漏枚举。54/54 verify。
 - 后续第十八步（2026-11-08）：新增 view-test-coverage.test.mjs（每个 view 模块必须有 require 它的独立测试）和 release-gate.test.mjs（package version 与两份 CHANGELOG 一致）。56/56 verify。
 - 后续第十九步（2026-11-08）：新增可复现的 Godot 引擎 e2e harness：scripts/test/setup-godot-e2e.mjs + scripts/test/godot_e2e.gd + fixture project；通过 godot_run_headless 实跑，GODOT_E2E PASS eval result=2（Godot 4.7.1）。新增 godot-e2e-harness.test.mjs 结构校验。57/57 verify。
-- 下一阶段：真实 DSH host 重启 / 双 dispatcher e2e 仍为已知缺口；行覆盖率仍为结构门禁。
+- 后续第二十步（2026-11-08）：新增 scripts/coverage.mjs：以 NODE_V8_COVERAGE 重跑全部 suite，映射回源文件行覆盖率，支持 GBT_COVERAGE_MIN 门禁；CI 设 90。当前 99.8%（26181/26239）。57/57 verify。
+- 下一阶段：真实 DSH host 重启 / 双 dispatcher e2e 仍为已知缺口；branch coverage 未测量。
+
 
 
 
