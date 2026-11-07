@@ -26,6 +26,7 @@ import { createSessionLookup } from './session-lookup.mjs'
 import { createState } from './state.mjs'
 import { bootId, createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
 import { createMerger } from './merge.mjs'
+import { createMergeJournal } from './merge-journal.mjs'
 import { createLeaseRegistry } from './lease-registry.mjs'
 import { createDoctor } from './doctor.mjs'
 import { createWorkspaceReconciler } from './workspace.mjs'
@@ -228,7 +229,10 @@ function applyRow(ctx) {
   })
   // The merge queue only integrates a candidate the independent tester already
   // accepted; the host no longer runs a third full verify of its own.
-  const merger = createMerger({ git: git })
+  const journalFor = function (project) {
+    return createMergeJournal({ file: join(project, '.agents', 'merge-journal.json') })
+  }
+  const merger = createMerger({ git: git, journalFor: journalFor })
   // Read-only workspace doctor for /diagnostics: stale index.lock, merge state,
   // worktrees, and the merge queue's in-memory last unit. It never repairs.
   const doctor = createDoctor({ git: git, merger: merger })

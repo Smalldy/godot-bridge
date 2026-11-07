@@ -225,6 +225,7 @@ export function createMerger(options) {
   const opts = options === undefined ? {} : options
   const git = opts.git === undefined ? null : opts.git
   const verify = typeof opts.verify === 'function' ? opts.verify : null
+  const journalFor = typeof opts.journalFor === 'function' ? opts.journalFor : null
   const verifyCommand = typeof opts.verifyCommand === 'string' && opts.verifyCommand.trim() !== '' ? opts.verifyCommand : DEFAULT_VERIFY_COMMAND
   const clock = typeof opts.now === 'function' ? opts.now : Date.now
   // One hung queue unit must not hold the merge queue forever: bound each unit
@@ -446,7 +447,59 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
    * `{ ok: true, status: 'merged'|'conflict'|'failed', mergeCommit, conflict, output }`.
    * It never writes the board and never touches the main checkout on a failure.
    */
+  /**
+   * Journal wrapper: record the intent before git work and the outcome after it.
+   * Journal failures never block a merge; the board remains the source of truth.
+   */
   async function mergeRequest(task, projectPath, request) {
+    const req = request === undefined || request === null ? {} : request
+    let journal = null
+    let intent = null
+    if (journalFor !== null) {
+      try {
+        journal = journalFor(projectPath)
+      } catch (error) {
+        journal = null
+      }
+      if (journal !== null && typeof journal.begin === 'function') {
+        const base = req.base === undefined ? task.merge === undefined || task.merge === null ? task.base : task.merge.base : req.base
+        const head = req.head === undefined ? task.merge === undefined || task.merge === null ? task.commit : task.merge.head : req.head
+        if (base !== undefined && base !== null && base !== '' && head !== undefined && head !== null && head !== '') {
+          try {
+            const begun = await journal.begin({ id: task.id, target: task.target, base: base, head: head, candidate: task.branch })
+            if (begun !== null && begun !== undefined && begun.ok === true) intent = begun.intent
+          } catch (error) {
+            intent = null
+          }
+        }
+      }
+    }
+    let outcome
+    try {
+      outcome = await mergeRequestInner(task, projectPath, req)
+    } catch (error) {
+      if (journal !== null && intent !== null && typeof journal.finish === 'function') {
+        try {
+          await journal.finish(intent.key, { status: 'failed', mergeCommit: null, code: 'threw', message: String((error && error.message) || error) })
+        } catch (ignored) {}
+      }
+      throw error
+    }
+    if (journal !== null && intent !== null && typeof journal.finish === 'function') {
+      const status = outcome !== null && outcome !== undefined && typeof outcome.status === 'string' ? outcome.status : 'failed'
+      try {
+        await journal.finish(intent.key, {
+          status: status,
+          mergeCommit: outcome !== null && outcome !== undefined && outcome.mergeCommit !== undefined ? outcome.mergeCommit : null,
+          code: outcome !== null && outcome !== undefined && outcome.code !== undefined ? outcome.code : null,
+          message: outcome !== null && outcome !== undefined && outcome.message !== undefined ? outcome.message : null,
+        })
+      } catch (ignored) {}
+    }
+    return outcome
+  }
+
+  async function mergeRequestInner(task, projectPath, request) {
     const req = request === undefined || request === null ? {} : request
     if (git === null) return failure('no-git-service', 'the merge queue needs the git service, and this profile has none; merging is unavailable')
     if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', task.id + ' has no candidate branch to merge')

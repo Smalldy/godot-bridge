@@ -21,8 +21,9 @@
 - C 首步（2026-11-07）：workspace.mjs 提供只读 plan + 保守 apply：只在锁超龄、无 merge/rebase、注入的 processChecker 明确返回 false 时把 index.lock 改名隔离，绝不删除；未知进程状态一律 manual-check。diagnostics 暴露 workspace plan。18/18 verify。
 - C 第二步（2026-11-07）：lease-registry.mjs 提供跨进程项目 leader lease（owner/bootId/pid/heartbeat/TTL；文件锁 + 原子替换；held/renewed/released/expired）。19/19 verify。
 - C 第三步（2026-11-07）：lease-gate.mjs 接入 dispatcher：tick 前 claim，非 leader 返回 not-leader 且不读/不 reap/不 claim；status 暴露 leader；dispose releaseAll；index 按项目注入 .agents/leader-leases.json。20/20 verify。尚未做双进程 e2e。
-- C 第四步（2026-11-07）：merge-journal.mjs 提供持久 merge intent/outcome + planReconcile（merged/abandoned/stale）；21/21 verify。尚未接入 merge.mjs/启动 reconcile。
-- C 剩余：host processChecker、merge journal 接入 merge.mjs + 启动 reconcile、auto 调用点。
+- C 第四步（2026-11-07）：merge-journal.mjs 提供持久 merge intent/outcome + planReconcile（merged/abandoned/stale）；21/21 verify。
+- C 第五步（2026-11-07）：journal 接入 merge.mjs 的 mergeRequest：git 前 begin，返回后 finish；journal 失败不阻断 merge；index 按项目注入 .agents/merge-journal.json。22/22 verify。启动 reconcile/board 回写仍未接。
+- C 剩余：启动 reconcile/board 回写、host processChecker、auto 调用点。
 
 ## 1. 阶段
 
