@@ -39,7 +39,8 @@
 - D 第十步（2026-11-07）：actions/report.mjs 抽出 investigation report；writeTask/report file/cleanup/warnings 语义不变。34/34 verify。
 - D 第十一步（2026-11-07）：actions/submit.mjs 抽出 submit；prepareMergeRequest、reviewer provisioning、review round limit、reviewer delivery、lock release 语义不变。34/34 verify。
 - D 第十二步（2026-11-07）：actions/test-verdicts.mjs 抽出 passTest/failTest；candidate merge/discard、tester delivery、timeout、stage cleanup 语义不变。34/34 verify。
-- 下一阶段：D 剩余（approveReview/requestChanges、onboard、gates/pipeline、caller、端口收窄）。
+- D 第十三步（2026-11-07）：actions/review-verdicts.mjs 抽出 approveReview/requestChanges；candidate build/conflict/rebuild、host check、tester delivery、stage promotion 语义不变。34/34 verify。
+- 下一阶段：D 剩余（onboard、gates/pipeline、caller、端口收窄）。
 
 ## 1. 阶段
 
