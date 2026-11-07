@@ -36,7 +36,8 @@
 - D 第七步（2026-11-07）：actions/roles.mjs 抽出 10 个 roles 动作；roleAdminRefusal、panel session 作用域、persist/ensure/drain 语义不变。33/33 verify。
 - D 第八步（2026-11-07）：actions/merge.mjs 抽出 mergeRequest/rejectMerge；队列/notify/phase/open-merge 语义不变。refreshMerge 仍在 api.mjs。34/34 verify。
 - D 第九步（2026-11-07）：refreshMerge 也迁入 actions/merge.mjs；branch/diff/reviewer 编排、base 重定位、fresh review round 语义不变。34/34 verify。
-- 下一阶段：D 剩余（verdicts/onboard handlers、gates/pipeline、caller、端口收窄）。
+- D 第十步（2026-11-07）：actions/report.mjs 抽出 investigation report；writeTask/report file/cleanup/warnings 语义不变。34/34 verify。
+- 下一阶段：D 剩余（submit/verdicts/onboard handlers、gates/pipeline、caller、端口收窄）。
 
 ## 1. 阶段
 
