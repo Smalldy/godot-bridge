@@ -63,6 +63,7 @@ client/
     views/column.cjs      Column (h + TaskCard injected; Node-testable)
     views/board.cjs       Board (React + components + board UI state injected)
     views/done-all-drawer.cjs  DoneAllDrawer (React + doneAllState + tcDayKey injected)
+    views/queue.cjs       QueueRow/QueueView (h injected)
     30-views-core.part    hooks, TaskCard, Column, Board, DoneAllDrawer
     31-views-queue.part   queue/workers/pagination
     32-views-roles.part   roles editor/team
