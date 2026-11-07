@@ -75,6 +75,7 @@ client/
     views/settings-form.cjs  SettingsForm (React + Modal + store injected)
     views/project-form.cjs   ProjectForm (React + Modal + draft state + store + tcErrorMessage injected)
     views/glyph.cjs       Glyph (h injected)
+    views/task-center.cjs TaskCenter (React + all views/forms + hooks/state + project helpers injected)
     30-views-core.part    hooks, TaskCard, Column, Board, DoneAllDrawer
     31-views-queue.part   queue/workers/pagination
     32-views-roles.part   roles editor/team
