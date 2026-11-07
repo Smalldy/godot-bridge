@@ -32,7 +32,8 @@
 - D 第三步（2026-11-07）：actions/harness.mjs 抽出 harnessStart/Stop/Restart/Status/Smoke；权限/不可用/status 平铺字段保持不变。30/30 verify。
 - D 第四步（2026-11-07）：dispatch-port.mjs 成为 API 到 dispatcher 的唯一命名端口；api.mjs 不再直接 import dispatch.mjs。31/31 verify。端口目前是 re-export，下一步才收窄接口。
 - D 第五步（2026-11-07）：actions/control.mjs 抽出 pause/settings/tick；settings 的 maxConcurrent 派生、user-only、no-change、scheduler kick 保持不变。32/32 verify。
-- 下一阶段：D 剩余（lifecycle/roles/verdicts/merge/onboard handlers、gates/pipeline、caller、端口收窄）。
+- D 第六步（2026-11-07）：actions/lifecycle.mjs 抽出 cancel/reopen/unblock/retry/block；锁释放、interrupt、investigation cleanup 语义不变。33/33 verify。
+- 下一阶段：D 剩余（roles/verdicts/merge/onboard handlers、gates/pipeline、caller、端口收窄）。
 
 ## 1. 阶段
 
