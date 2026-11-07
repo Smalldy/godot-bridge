@@ -56,7 +56,8 @@
 - E 第三步（2026-11-07）：store 迁到 client/src/store.cjs（createTaskStore(t, deps)），build 生成绑定 TC_*/tc* 依赖的 wrapper；新增 client-store.test.mjs。36/36 verify。
 - E 第四步（2026-11-07）：30-views.part 按域拆成 30-core/31-queue/32-roles/33-status/34-detail/35-forms/36-shell；拼接顺序固定，bundle 行为不变。36/36 verify。
 - E 阶段完成（caveat：views 是分域片段，还不是可独立测试的 React 模块）。
-- 下一阶段：F tests/repo（测试金字塔、e2e、Godot contract、CI、repo/docs）。
+- F 第一步（2026-11-07）：CI 从 syntax-only 改为 `npm run verify`（contract + syntax + client build + 36 suites）；新增 docs/refactor/TESTING.md 记录测试金字塔与已知缺口。36/36 verify。
+- 下一阶段：F 剩余（Godot e2e/contract、repo/docs）。
 
 ## 1. 阶段
 

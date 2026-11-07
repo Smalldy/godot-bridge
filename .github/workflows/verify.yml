@@ -5,12 +5,15 @@ on:
   pull_request:
 
 jobs:
-  syntax:
+  verify:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Syntax check
-        run: npm run check:syntax
+      - name: Verify (contract, syntax, client build, all suites)
+        run: npm run verify
