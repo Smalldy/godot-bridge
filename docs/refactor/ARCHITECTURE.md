@@ -93,11 +93,17 @@ Rules:
   build inlines them into the classic-script factory.
 - `.part` files are fragments, not standalone JS; `check:syntax` only sees the
   generated `client.js`.
-- Views are split by domain but still concatenated; per-view React tests are a
-  known gap (see `docs/refactor/TESTING.md`).
+- Views are real CJS modules under `views/`, injected by the build and covered
+  by per-view Node tests; the `.part` fragments hold hooks, shared helpers,
+  state stores and module markers.
 
 ## Tests and CI
 
 `npm run verify` = contract check + syntax check + client build + every
-`scripts/test/*.test.mjs` suite. CI runs the same command on windows-latest.
-The pyramid and known gaps are in `docs/refactor/TESTING.md`.
+`scripts/test/*.test.mjs` suite. CI runs the same command on windows-latest,
+then `npm run coverage` with `GBT_COVERAGE_MIN=90`. `godot-contract` keeps
+the `godot_command` / `godot_operations` enums aligned with their `.gd`
+match blocks; `view-test-coverage` requires a test for every view module;
+`release-gate` keeps the package version and both changelogs in agreement;
+`godot_e2e.gd` is the engine-level harness. The pyramid and known gaps are in
+`docs/refactor/TESTING.md`.

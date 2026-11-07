@@ -17,3 +17,7 @@ jobs:
           node-version: '22'
       - name: Verify (contract, syntax, client build, all suites)
         run: npm run verify
+      - name: Coverage gate
+        env:
+          GBT_COVERAGE_MIN: '90'
+        run: npm run coverage
