@@ -42,6 +42,7 @@
 - D 第十三步（2026-11-07）：actions/review-verdicts.mjs 抽出 approveReview/requestChanges；candidate build/conflict/rebuild、host check、tester delivery、stage promotion 语义不变。34/34 verify。
 - D 第十四步（2026-11-07）：actions/project.mjs 抽出 openProject/resolveIncoming；路径解析、preflight、registry flush、session binding、resolvedFrom 语义不变。34/34 verify。
 - D 第十五步（2026-11-07）：actions/onboard.mjs 抽出 onboard；项目解析/绑定、Team 复用或 bootstrap、board facts、brief/next 语义不变。34/34 verify。
+- D 第十六步（2026-11-07）：actions/task-admin.mjs 抽出 create/update/delete/start/approveStart/rejectStart/cancelStartRequest；Team gate、ownerSession、preflight、dispatch consent、interrupt 语义不变。34/34 verify。
 - 下一阶段：D 剩余（gates/pipeline、caller、端口收窄）。
 
 ## 1. 阶段
