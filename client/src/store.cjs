@@ -1,4 +1,18 @@
-		function createTaskStore(t) {
+		function createTaskStore(t, deps) {
+			const {
+				TC_STATE_URL,
+				TC_WORKTREES_URL,
+				TC_TASK_URL,
+				TC_LIST_URL,
+				TC_ACTION_URL,
+				tcSnapshot,
+				tcPinnedProject,
+				tcMergeSnapshot,
+				tcErrorMessage,
+				tcWithSession,
+				tcSessionId,
+				tcPinProject,
+			} = deps
 			// The first paint shows the pinned project when there is one; with an empty
 			// pin it shows nothing yet and the first /state answers with the project the
 			// session resolves to (no path to type, T-90).
@@ -265,3 +279,4 @@
 			}
 		}
 
+		module.exports = { createTaskStore }

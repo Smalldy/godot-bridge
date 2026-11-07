@@ -2618,7 +2618,25 @@ function tcHostSessionId() {
 		 * action. It keeps no board state of its own, so a failed request cannot
 		 * fabricate work.
 		 */
-		function createTaskStore(t) {
+
+const createTaskStore = (function () {
+	const module = { exports: {} }
+	;(function (module, exports) {
+		function createTaskStore(t, deps) {
+			const {
+				TC_STATE_URL,
+				TC_WORKTREES_URL,
+				TC_TASK_URL,
+				TC_LIST_URL,
+				TC_ACTION_URL,
+				tcSnapshot,
+				tcPinnedProject,
+				tcMergeSnapshot,
+				tcErrorMessage,
+				tcWithSession,
+				tcSessionId,
+				tcPinProject,
+			} = deps
 			// The first paint shows the pinned project when there is one; with an empty
 			// pin it shows nothing yet and the first /state answers with the project the
 			// session resolves to (no path to type, T-90).
@@ -2885,6 +2903,27 @@ function tcHostSessionId() {
 			}
 		}
 
+		module.exports = { createTaskStore }
+
+	})(module, module.exports)
+	const factory = module.exports.createTaskStore
+	return function (t) {
+		return factory(t, {
+			TC_STATE_URL: TC_STATE_URL,
+			TC_WORKTREES_URL: TC_WORKTREES_URL,
+			TC_TASK_URL: TC_TASK_URL,
+			TC_LIST_URL: TC_LIST_URL,
+			TC_ACTION_URL: TC_ACTION_URL,
+			tcSnapshot: tcSnapshot,
+			tcPinnedProject: tcPinnedProject,
+			tcMergeSnapshot: tcMergeSnapshot,
+			tcErrorMessage: tcErrorMessage,
+			tcWithSession: tcWithSession,
+			tcSessionId: tcSessionId,
+			tcPinProject: tcPinProject,
+		})
+	}
+})()
 
 		function createTaskCenterViews(ctx, store) {
 			/** Locale subscription; the panel re-renders when the language flips. */

@@ -53,7 +53,8 @@
 - D 阶段完成（caveat：端口对象是显式 seam，但尚未按能力分组）。
 - E 第一步（2026-11-07）：client 源码拆成 client/src/*.part（head/selectors/store/views/tail），scripts/build-client.mjs 无依赖拼接为 client/client.js；verify 先构建。34/34 verify（client-bundle 仍全绿）。
 - E 第二步（2026-11-07）：纯 selectors 迁到 client/src/selectors.cjs（35 个函数，可被 Node require），build 生成 IIFE 包装注入 bundle；session/column 状态留在 15-client-state.part。新增 client-selectors.test.mjs。35/35 verify。
-- 下一阶段：E 剩余（store 模块化、views 再拆）。
+- E 第三步（2026-11-07）：store 迁到 client/src/store.cjs（createTaskStore(t, deps)），build 生成绑定 TC_*/tc* 依赖的 wrapper；新增 client-store.test.mjs。36/36 verify。
+- 下一阶段：E 剩余（views 再拆）。
 
 ## 1. 阶段
 

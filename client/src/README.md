@@ -11,7 +11,7 @@ Order:
 | `00-head.part` | loader wrapper, constants, locales, CSS, settings form |
 | `selectors.cjs` | pure task/board selectors and label helpers (testable CJS module) |
 | `15-client-state.part` | session/project/column state helpers that use head constants |
-| `20-store.part` | `createTaskStore` (Host-backed state, fetch, polling) |
+| `store.cjs` | `createTaskStore` (Host-backed state, fetch, polling; testable CJS module) |
 | `30-views.part` | React views (board, detail, team, worktrees, status) |
 | `40-tail.part` | apply wiring and the module factory return |
 
