@@ -30,7 +30,8 @@
 - D 第一步（2026-11-07）：actions/registry.mjs 成为唯一动作元数据表；ACTIONS/DEV_ONLY/USER_ONLY/READ/AGENT 全部派生，保持原顺序；api.mjs 只 re-export。28/28 verify。
 - D 第二步（2026-11-07）：actions/read.mjs 抽出 board/list/get/locks；performResolved 改为 readActions 表路由；语义不变。29/29 verify。
 - D 第三步（2026-11-07）：actions/harness.mjs 抽出 harnessStart/Stop/Restart/Status/Smoke；权限/不可用/status 平铺字段保持不变。30/30 verify。
-- 下一阶段：D 剩余（lifecycle/roles/verdicts/merge/onboard handlers、gates/pipeline、caller、dispatch-port）。
+- D 第四步（2026-11-07）：dispatch-port.mjs 成为 API 到 dispatcher 的唯一命名端口；api.mjs 不再直接 import dispatch.mjs。31/31 verify。端口目前是 re-export，下一步才收窄接口。
+- 下一阶段：D 剩余（control/lifecycle/roles/verdicts/merge/onboard handlers、gates/pipeline、caller、端口收窄）。
 
 ## 1. 阶段
 

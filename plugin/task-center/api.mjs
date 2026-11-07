@@ -74,7 +74,7 @@ import {
   testFailureBriefFor,
   testerBriefFor,
   workerPool,
-} from './dispatch.mjs'
+} from './dispatch-port.mjs'
 import {
   archiveIndexPath,
   archivePath,
