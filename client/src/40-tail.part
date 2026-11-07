@@ -1,0 +1,236 @@
+		}
+
+
+		function formFor(scope) {
+			return function GodotEnginePathForm(props) {
+				const { t } = props
+				const [busy, setBusy] = React.useState(false)
+				const [dirty, setDirty] = React.useState(false)
+				const [outcome, setOutcome] = React.useState(null)
+				const [seenRevision, setSeenRevision] = React.useState(undefined)
+				const input = React.useRef(null)
+				// A save's own answer must survive the revision bump it causes: the host
+				// folds the new value in (moving `revision`) before this component reads
+				// the accepted flag back.
+				const keepOutcome = React.useRef(false)
+				// The scope is a plain observable: bind it once per scope so the
+				// subscription survives re-renders instead of resubscribing each time.
+				const subscribe = React.useMemo(() => (listener) => scope.subscribe(listener), [scope])
+				const read = React.useMemo(() => () => scope.getSnapshot(), [scope])
+				const state = React.useSyncExternalStore(subscribe, read, read)
+				const revision = state === undefined || state === null ? undefined : state.revision
+				// A host revision means the document moved under us: the staged draft is
+				// stale, so the next render starts from the stored value again.
+				if (seenRevision !== revision) {
+					setSeenRevision(revision)
+					setDirty(false)
+					if (keepOutcome.current) keepOutcome.current = false
+					else setOutcome(null)
+				}
+
+				if (state === undefined || state === null || state.status === 'unavailable') {
+					return h('p', { className: 'godot-bridge-notice', role: 'status' }, t('unavailable'))
+				}
+				// The settings document has not arrived yet; showing "unavailable" here
+				// would be a lie, and the card fills in on its own.
+				if (state.status !== 'ready') return null
+
+				const projected =
+					state.value === undefined || state.value === null ? undefined : state.value[FIELD]
+				const value = textOf(projected)
+				const overridden =
+					state.user !== undefined && state.user !== null && Object.hasOwn(state.user, FIELD)
+				const writable = state.writable === true
+				const fieldId = 'godot-bridge-engine-path'
+
+				/**
+				 * Queue one field write and report whether the host accepted it.
+				 * @param write - the scope call that performs the write.
+				 */
+				async function commit(write) {
+					setBusy(true)
+					setOutcome(null)
+					let accepted = false
+					try {
+						accepted = (await write()) === true
+					} catch (_rejected) {
+						accepted = false
+					}
+					if (accepted) keepOutcome.current = true
+					setBusy(false)
+					setOutcome(accepted ? 'saved' : 'failed')
+				}
+
+				/** Store what the input holds; an empty draft clears the profile override. */
+				function save() {
+					const node = input.current
+					const next = node === null || node === undefined ? '' : node.value
+					if (next === '') return commit(() => scope.unset(FIELD))
+					return commit(() => scope.set(FIELD, next))
+				}
+
+				return h(
+					'div',
+					null,
+					writable
+						? null
+						: h('p', { className: 'godot-bridge-notice', role: 'status' }, t('readOnly')),
+					h(
+						'div',
+						{ className: 'godot-bridge-field' },
+						h(
+							'div',
+							{ className: 'godot-bridge-head' },
+							h('label', { className: 'godot-bridge-label', htmlFor: fieldId }, t('label')),
+							overridden
+								? h('span', { className: 'godot-bridge-badge' }, t('overridden'))
+								: null,
+						),
+						h('input', {
+							id: fieldId,
+							className: 'godot-bridge-input',
+							key: 'revision-' + String(state.revision),
+							ref: input,
+							type: 'text',
+							defaultValue: value,
+							disabled: !writable || busy,
+							spellCheck: false,
+							autoComplete: 'off',
+							onInput: () => {
+								setDirty(true)
+								setOutcome(null)
+							},
+						}),
+						h('p', { className: 'godot-bridge-hint' }, t('hint')),
+					),
+					h(
+						'div',
+						{ className: 'godot-bridge-footer' },
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'godot-bridge-save',
+								disabled: !writable || busy || !dirty,
+								onClick: save,
+							},
+							busy ? t('saving') : t('save'),
+						),
+						overridden
+							? h(
+									'button',
+									{
+										type: 'button',
+										className: 'godot-bridge-reset',
+										disabled: !writable || busy,
+										onClick: () => commit(() => scope.unset(FIELD)),
+									},
+									t('reset'),
+								)
+							: null,
+						outcome === null
+							? null
+							: h(
+									'p',
+									{
+										className: 'godot-bridge-message',
+										'data-failed': outcome === 'failed' ? 'true' : 'false',
+										role: 'status',
+									},
+									outcome === 'saved' ? t('saved') : t('failed'),
+								),
+					),
+				)
+			}
+		}
+
+		return {
+			/** Cordis services this browser half needs; slots is mandatory here. */
+			inject: ['slots', 'locale'],
+			apply(ctx) {
+				// T-99: the session resolver asks this context for the Host's own
+				// services (uiWorkspace / uiSession) at request time.
+				tcHostContext = ctx
+				ctx.effect(
+					() => ctx.locale.register(LOCALE_NS, { zh, en }),
+					'godot-bridge: dictionaries',
+				)
+				ctx.effect(() => {
+					const style = document.createElement('style')
+					style.setAttribute('data-plugin', 'godot-bridge')
+					style.textContent = CSS
+					document.head.appendChild(style)
+					return () => {
+						style.remove()
+					}
+				}, 'godot-bridge: form styles')
+				ctx.inject(['configForms'], (forms) => {
+					const scope = forms.configForms.get(ENTRY_NS)
+					ctx.slots.inject('plugins.bundle.config', () =>
+						ctx.slots.register(
+							{ name: 'plugins.bundle.config', key: 'godot-bridge', locale: LOCALE_NS },
+							formFor(scope),
+						),
+					)
+				})
+
+				ctx.effect(
+					() => ctx.locale.register(TC_NS, TC_DICT),
+					'godot-bridge: task center dictionaries',
+				)
+				ctx.effect(() => {
+					const style = document.createElement('style')
+					style.setAttribute('data-plugin', 'godot-bridge')
+					style.setAttribute('data-plugin-css', 'godot-bridge/task-center.css')
+					style.textContent = TC_CSS
+					document.head.appendChild(style)
+					return () => {
+						style.remove()
+					}
+				}, 'godot-bridge: task center styles')
+				ctx.effect(() => {
+					const store = createTaskStore(ctx.locale.bind(TC_NS))
+					const views = createTaskCenterViews(ctx, store)
+					// T-99: when the Host switches the session it shows, follow it at once
+					// instead of waiting for the next poll. A shell without the service
+					// simply never fires this; the poll still picks the session up.
+					ctx.inject(['uiWorkspace'], (scoped) => {
+						const workspace = scoped === null || scoped === undefined ? null : scoped.uiWorkspace
+						const selection = workspace === null || workspace === undefined ? null : workspace.selection
+						if (selection === null || selection === undefined || typeof selection.subscribe !== 'function') return
+						let seen = tcSessionIdInfo().id
+						ctx.effect(
+							() =>
+								selection.subscribe(() => {
+									const next = tcSessionIdInfo().id
+									if (next === seen) return
+									seen = next
+									void store.load()
+								}),
+							'godot-bridge: follow the host session',
+						)
+					})
+					const dropGlyph = ctx.slots.inject('sidebar.panellist', () =>
+						ctx.slots.register(
+							{
+								name: 'sidebar.panellist',
+								id: 'task-center',
+								order: 30,
+								label: () => ctx.locale.bind(TC_NS)('nav'),
+								locale: TC_NS,
+							},
+							views.Glyph,
+						),
+					)
+					const dropPanel = ctx.slots.inject('main', () =>
+						ctx.slots.register({ name: 'main', key: 'task-center', locale: TC_NS }, views.TaskCenter),
+					)
+					return () => {
+						dropGlyph()
+						dropPanel()
+					}
+				}, 'godot-bridge: task center panel')
+			},
+		}
+	},
+})

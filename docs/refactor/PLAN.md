@@ -51,7 +51,8 @@
 - D 第二十二步（2026-11-07）：kernel/caller-lookup.mjs 抽出 callerLookup/callerMemberOf/callerRole/ownerOf/assigneeMatches；T-114 的源码断言同时读取 caller-lookup.mjs。34/34 verify。
 - D 第二十三步（2026-11-07）：dispatch-port.mjs 改为单一 `dispatchPort` 对象；api.mjs 只 import 一个符号并解构 40 个字段。字段仍平铺，按 brief/lead/roster/workspace 分组留作后续。34/34 verify。
 - D 阶段完成（caveat：端口对象是显式 seam，但尚未按能力分组）。
-- 下一阶段：E client（源码拆分/构建/选择器/resource store）。
+- E 第一步（2026-11-07）：client 源码拆成 client/src/*.part（head/selectors/store/views/tail），scripts/build-client.mjs 无依赖拼接为 client/client.js；verify 先构建。34/34 verify（client-bundle 仍全绿）。
+- 下一阶段：E 剩余（selectors/store 变成可测试模块、views 再拆）。
 
 ## 1. 阶段
 

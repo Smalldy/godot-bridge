@@ -33,7 +33,8 @@
     "check:syntax": "node scripts/check-syntax.mjs",
     "hooks:install": "node scripts/setup-hooks.mjs",
     "test": "node scripts/test/run.mjs",
-    "verify": "npm run check && npm run check:syntax && npm test"
+    "verify": "npm run check && npm run check:syntax && npm run build:client && npm test",
+    "build:client": "node scripts/build-client.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": ">=0.1.6-0",

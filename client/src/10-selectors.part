@@ -1,0 +1,773 @@
+		function tcTime(value) {
+			if (typeof value !== 'string') return null
+			const at = Date.parse(value)
+			return Number.isFinite(at) ? at : null
+		}
+
+		function tcAgo(value, now) {
+			const at = typeof value === 'number' ? value : tcTime(value)
+			if (at === null) return '—'
+			const seconds = Math.max(0, Math.round((now - at) / 1000))
+			if (seconds < 60) return String(seconds) + 's'
+			const minutes = Math.round(seconds / 60)
+			if (minutes < 60) return String(minutes) + 'm'
+			const hours = Math.round(minutes / 60)
+			if (hours < 24) return String(hours) + 'h'
+			return String(Math.round(hours / 24)) + 'd'
+		}
+
+		/**
+		 * The lease chip. It prefers the host's own leaseRemaining/leaseExpired/
+		 * leaseReminder (the host is the authority on liveness) and falls back to
+		 * the raw leaseUntil for callers that only have the timestamp.
+		 */
+		function tcLease(value, now, t, task) {
+			const record = task === undefined || task === null ? null : task
+			const at = tcTime(value)
+			const remaining = record !== null && Number.isFinite(record.leaseRemaining) ? record.leaseRemaining : at === null ? null : at - now
+			if (remaining === null) return null
+			if (remaining <= 0 || (record !== null && record.leaseExpired === true)) return { text: t('leaseExpired'), warn: true, expired: true }
+			const minutes = Math.max(0, Math.ceil(remaining / 60000))
+			const text = minutes < 60 ? String(minutes) + 'm' : String(Math.round(minutes / 60)) + 'h'
+			const remind = record !== null && record.leaseReminder === true
+			return { text: t('leaseLeft') + ' ' + text, warn: remind === true || minutes <= 3, remind: remind }
+		}
+
+		function tcStatusKey(status) {
+			return 'status' + status.charAt(0).toUpperCase() + status.slice(1)
+		}
+
+		/** Merge/review/test vocabulary shared by the card and the detail drawer. */
+		const MERGE_LABELS = { open: 'mergeOpen', merged: 'mergeMerged', conflict: 'mergeConflict', failed: 'mergeFailed', rejected: 'mergeRejected' }
+		const MERGE_TONES = { open: 'running', merged: 'done', conflict: 'broken', failed: 'blocked', rejected: 'cancelled' }
+		const REVIEW_LABELS = { pending: 'reviewPending', approved: 'reviewApproved', 'changes-requested': 'reviewChanges' }
+		const REVIEW_TONES = { pending: 'waiting', approved: 'done', 'changes-requested': 'broken' }
+		const TEST_LABELS = { pending: 'testPending', passed: 'testPassed', failed: 'testFailed' }
+		const TEST_TONES = { pending: 'waiting', passed: 'done', failed: 'broken' }
+		const PHASE_LABELS = {
+			running: 'runningCol',
+			reviewing: 'reviewingCol',
+			testing: 'testingCol',
+			done: 'doneCol',
+			blocked: 'statusBlocked',
+			cancelled: 'statusCancelled',
+		}
+		const PHASE_TONES = { running: 'running', reviewing: 'reviewing', testing: 'testing', done: 'done', blocked: 'blocked', cancelled: 'cancelled' }
+
+		function tcMergeOf(task) {
+			const merge = task === null || task === undefined ? null : task.merge
+			return merge !== null && merge !== undefined && typeof merge === 'object' && !Array.isArray(merge) ? merge : null
+		}
+
+		function tcReviewOf(task) {
+			const review = task === null || task === undefined ? null : task.review
+			return review !== null && review !== undefined && typeof review === 'object' && !Array.isArray(review) ? review : null
+		}
+
+		function tcTestOf(task) {
+			const test = task === null || task === undefined ? null : task.test
+			return test !== null && test !== undefined && typeof test === 'object' && !Array.isArray(test) ? test : null
+		}
+
+		/**
+		 * True only while the card is still WAITING for its current stage's slot. A
+		 * delivered round (review.deliveredAt / test.deliveredAt set) is already being
+		 * worked on, so the queued chip must be gone even if a stale queuePosition
+		 * survives from the server.
+		 */
+		function tcStageQueued(task) {
+			if (task === null || task === undefined) return false
+			if (!Number.isFinite(task.queuePosition) || task.queuePosition <= 0) return false
+			const review = tcReviewOf(task)
+			const test = tcTestOf(task)
+			if (task.status === 'reviewing') return !(review !== null && typeof review.deliveredAt === 'string' && review.deliveredAt !== '')
+			if (task.status === 'testing') return !(test !== null && typeof test.deliveredAt === 'string' && test.deliveredAt !== '')
+			return false
+		}
+
+		/**
+		 * The current phase as the board shows it. A pending task is either READY
+		 * or WAITING; that split is derived from the Host's dependency report, not
+		 * guessed from the dependency list.
+		 */
+		function tcPhaseOf(task) {
+			const status = task === null || task === undefined ? 'pending' : task.status
+			if (status === 'pending') {
+				const dependency = task.dependency
+				return dependency !== undefined && dependency !== null && dependency.state === 'ready' ? 'ready' : 'waiting'
+			}
+			return typeof status === 'string' && PHASE_LABELS[status] !== undefined ? status : 'waiting'
+		}
+
+		/**
+		 * T-132: a card is either mergeable work ('dev', the historical default) or an
+		 * investigation that delivers a report. A stored/legacy card without the field
+		 * reads as dev, exactly like the server-side normalisation.
+		 */
+		function tcKindOf(task) {
+			return task !== null && task !== undefined && task.kind === 'investigate' ? 'investigate' : 'dev'
+		}
+
+		function tcIsInvestigation(task) {
+			return tcKindOf(task) === 'investigate'
+		}
+
+		/**
+		 * T-135: the first column that actually has cards, or null when every column
+		 * is empty. The board scrolls there on data/filter changes so a done-only
+		 * board does not open on a screenful of empty columns.
+		 */
+		function tcFirstNonEmptyColumn(groups) {
+			if (!Array.isArray(groups)) return null
+			for (let index = 0; index < groups.length; index += 1) {
+				const group = groups[index]
+				if (group !== null && group !== undefined && Array.isArray(group.tasks) && group.tasks.length > 0) return group.key
+			}
+			return null
+		}
+
+		/**
+		 * T-144/T-147: render a report body as light, SAFE Markdown. No dependency and
+		 * no innerHTML: every node carries plain text. Headings (#/## -> h3, ### -> h4),
+		 * `- ` and `1. ` lists, `>` quotes, pipe tables (with :---/---: alignment),
+		 * ``` / ~~~ fences and inline **bold** / *italic* / `code` are understood.
+		 * Unrecognised lines stay paragraph text (nothing is dropped). Only an
+		 * unterminated fence falls the whole body back to a <pre>.
+		 */
+		function tcReportInline(value) {
+			const text = String(value === undefined || value === null ? '' : value)
+			const nodes = []
+			let buffer = ''
+			let index = 0
+			const flush = function () {
+				if (buffer === '') return
+				nodes.push(buffer)
+				buffer = ''
+			}
+			while (index < text.length) {
+				const char = text.charAt(index)
+				if (char === '`') {
+					const end = text.indexOf('`', index + 1)
+					if (end > index + 1) {
+						flush()
+						nodes.push(h('code', { key: 'inline-code-' + String(nodes.length), className: 'gbt-reportinline' }, text.slice(index + 1, end)))
+						index = end + 1
+						continue
+					}
+				}
+				if (char === '*' && text.charAt(index + 1) === '*') {
+					const end = text.indexOf('**', index + 2)
+					if (end > index + 2) {
+						flush()
+						nodes.push(h('strong', { key: 'bold-' + String(nodes.length) }, tcReportInlineChild(text.slice(index + 2, end))))
+						index = end + 2
+						continue
+					}
+				}
+				if (char === '*') {
+					const end = text.indexOf('*', index + 1)
+					if (end > index + 1 && text.charAt(end + 1) !== '*') {
+						flush()
+						nodes.push(h('em', { key: 'em-' + String(nodes.length) }, tcReportInlineChild(text.slice(index + 1, end))))
+						index = end + 1
+						continue
+					}
+				}
+				if (char === '_') {
+					const end = text.indexOf('_', index + 1)
+					if (end > index + 1 && /[A-Za-z0-9]/.test(index === 0 ? '' : text.charAt(index - 1)) === false && /[A-Za-z0-9]/.test(text.charAt(end + 1)) === false) {
+						flush()
+						nodes.push(h('em', { key: 'em-' + String(nodes.length) }, tcReportInlineChild(text.slice(index + 1, end))))
+						index = end + 1
+						continue
+					}
+				}
+				buffer += char
+				index += 1
+			}
+			flush()
+			return nodes
+		}
+		function tcReportInlineChild(value) {
+			const nodes = tcReportInline(value)
+			if (nodes.length === 0) return ''
+			return nodes.length === 1 && typeof nodes[0] === 'string' ? nodes[0] : nodes
+		}
+		function tcReportTableCells(line) {
+			let value = String(line).trim()
+			if (value.charAt(0) === '|') value = value.slice(1)
+			if (value.charAt(value.length - 1) === '|') value = value.slice(0, -1)
+			return value.split('|').map(function (cell) { return cell.trim() })
+		}
+		function tcReportTableSeparator(line) {
+			const cells = tcReportTableCells(line)
+			if (cells.length === 0) return null
+			const alignments = []
+			for (const cell of cells) {
+				if (/^:?-{3,}:?$/.test(cell) === false) return null
+				const left = cell.charAt(0) === ':'
+				const right = cell.charAt(cell.length - 1) === ':'
+				alignments.push(left && right ? 'center' : left ? 'left' : right ? 'right' : null)
+			}
+			return alignments
+		}
+		function tcReportFence(line) {
+			const match = /^(`{3,}|~{3,})(.*)$/.exec(String(line))
+			if (match === null) return null
+			return { marker: match[1], char: match[1].charAt(0), length: match[1].length }
+		}
+		function tcReportBlocks(text) {
+			try {
+				const lines = String(text === undefined || text === null ? '' : text).replace(/\r\n/g, '\n').split('\n')
+				const nodes = []
+				let index = 0
+				let paragraph = []
+				const flushParagraph = function () {
+					if (paragraph.length === 0) return
+					nodes.push(h('p', { key: 'p-' + String(nodes.length), className: 'gbt-reportpara', 'data-report-block': 'paragraph' }, tcReportInlineChild(paragraph.join('\n'))))
+					paragraph = []
+				}
+				while (index < lines.length) {
+					const line = lines[index]
+					const fence = tcReportFence(line)
+					if (fence !== null) {
+						flushParagraph()
+						const code = []
+						index += 1
+						let terminated = false
+						while (index < lines.length) {
+							const close = String(lines[index]).trim()
+							let sameChar = close.length >= fence.length
+							if (sameChar) {
+								for (let at = 0; at < close.length; at += 1) {
+									if (close.charAt(at) !== fence.char) { sameChar = false; break }
+								}
+							}
+							if (sameChar) { terminated = true; break }
+							code.push(lines[index])
+							index += 1
+						}
+						// Only an unterminated fence is a parse failure: the outer catch keeps the
+						// whole body in a <pre> instead of guessing where the code ends.
+						if (terminated !== true) throw new Error('unterminated code fence')
+						index += 1
+						nodes.push(h('pre', { key: 'code-' + String(nodes.length), className: 'gbt-reportcode', 'data-report-block': 'code' }, h('code', null, code.join('\n'))))
+						continue
+					}
+					const heading = /^(#{1,3})\s+(.*)$/.exec(line)
+					if (heading !== null) {
+						flushParagraph()
+						nodes.push(h(heading[1].length <= 2 ? 'h3' : 'h4', { key: 'h-' + String(nodes.length), className: 'gbt-reportheading', 'data-report-block': 'heading', 'data-report-level': String(heading[1].length) }, tcReportInlineChild(heading[2])))
+						index += 1
+						continue
+					}
+					if (line.indexOf('|') >= 0 && index + 1 < lines.length) {
+						const alignments = tcReportTableSeparator(lines[index + 1])
+						const header = tcReportTableCells(line)
+						if (alignments !== null && header.length > 0 && alignments.length === header.length) {
+							flushParagraph()
+							const rows = []
+							index += 2
+							while (index < lines.length && String(lines[index]).indexOf('|') >= 0 && String(lines[index]).trim() !== '') {
+								rows.push(tcReportTableCells(lines[index]))
+								index += 1
+							}
+							const columnStyle = function (at) { return alignments[at] === null ? undefined : { textAlign: alignments[at] } }
+							nodes.push(h('div', { key: 'table-' + String(nodes.length), className: 'gbt-reporttablescroll', 'data-report-block': 'table' },
+								h('table', { className: 'gbt-reporttable gbt-reportmdtable' },
+									h('thead', null, h('tr', null, header.map(function (cell, at) { return h('th', { key: 'h' + String(at), style: columnStyle(at) }, tcReportInlineChild(cell)) }))),
+									h('tbody', null, rows.map(function (row, rowIndex) { return h('tr', { key: 'r' + String(rowIndex) }, header.map(function (cell, at) { return h('td', { key: 'c' + String(at), style: columnStyle(at) }, tcReportInlineChild(row[at] === undefined ? '' : row[at])) })) })),
+								)));
+							continue
+						}
+					}
+					if (/^\s*[-*]\s+/.test(line)) {
+						flushParagraph()
+						const items = []
+						while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
+							items.push(lines[index].replace(/^\s*[-*]\s+/, ''))
+							index += 1
+						}
+						nodes.push(h('ul', { key: 'ul-' + String(nodes.length), className: 'gbt-reportlist', 'data-report-block': 'list' }, items.map(function (item, at) { return h('li', { key: String(at), className: 'gbt-reportlistitem' }, tcReportInlineChild(item)) })))
+						continue
+					}
+					if (/^\s*\d+[.)]\s+/.test(line)) {
+						flushParagraph()
+						const items = []
+						while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
+							items.push(lines[index].replace(/^\s*\d+[.)]\s+/, ''))
+							index += 1
+						}
+						nodes.push(h('ol', { key: 'ol-' + String(nodes.length), className: 'gbt-reportlist', 'data-report-block': 'ordered-list' }, items.map(function (item, at) { return h('li', { key: String(at), className: 'gbt-reportlistitem' }, tcReportInlineChild(item)) })))
+						continue
+					}
+					if (/^\s*>\s?/.test(line)) {
+						flushParagraph()
+						const quoted = []
+						while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+							quoted.push(lines[index].replace(/^\s*>\s?/, ''))
+							index += 1
+						}
+						nodes.push(h('blockquote', { key: 'quote-' + String(nodes.length), className: 'gbt-reportquote', 'data-report-block': 'quote' }, tcReportInlineChild(quoted.join('\n'))))
+						continue
+					}
+					if (line.trim() === '') {
+						flushParagraph()
+						index += 1
+						continue
+					}
+					paragraph.push(line)
+					index += 1
+				}
+				flushParagraph()
+				return nodes.length === 0 ? [h('p', { key: 'empty', className: 'gbt-footnote', 'data-report-block': 'empty' }, '—')] : nodes
+			} catch (error) {
+				return [h('pre', { key: 'fallback', className: 'gbt-reportbody', 'data-report-block': 'fallback' }, String(text === undefined || text === null ? '' : text))]
+			}
+		}
+				/** The phase word an investigation shows: 待调查 / 调查中 / 报告已交付. */
+		function tcInvestigationPhaseLabel(task, t) {
+			if (task.status === 'pending') return t('investigatePending')
+			if (task.status === 'running') return t('statusInvestigating')
+			if (task.status === 'done') return t('reportDelivered')
+			return t(tcStatusKey(task.status))
+		}
+
+		function tcPhaseLabel(task, t) {
+			if (tcIsInvestigation(task)) return tcInvestigationPhaseLabel(task, t)
+			const phase = tcPhaseOf(task)
+			if (phase === 'ready') return t('ready')
+			if (phase === 'waiting') return t('waiting')
+			return t(PHASE_LABELS[phase])
+		}
+
+		function tcPhaseTone(task) {
+			const phase = tcPhaseOf(task)
+			if (phase === 'ready') return 'ready'
+			if (phase === 'waiting') return 'waiting'
+			return PHASE_TONES[phase] || 'waiting'
+		}
+
+		function tcMergeLabel(status, t) {
+			const key = MERGE_LABELS[status]
+			return key === undefined ? String(status === undefined || status === null ? '—' : status) : t(key)
+		}
+
+		function tcMergeTone(status) {
+			return MERGE_TONES[status] || 'waiting'
+		}
+
+		function tcReviewLabel(status, t) {
+			const key = REVIEW_LABELS[status]
+			return key === undefined ? String(status === undefined || status === null ? '—' : status) : t(key)
+		}
+
+		function tcReviewTone(status) {
+			return REVIEW_TONES[status] || 'waiting'
+		}
+
+		function tcTestLabel(status, t) {
+			const key = TEST_LABELS[status]
+			return key === undefined ? String(status === undefined || status === null ? '—' : status) : t(key)
+		}
+
+		function tcTestTone(status) {
+			return TEST_TONES[status] || 'waiting'
+		}
+
+		/** The round counter on a phase record; a missing count reads as round 0. */
+		function tcRound(record) {
+			const value = record === null || record === undefined ? 0 : record.attempt
+			return Number.isFinite(value) ? Math.floor(value) : 0
+		}
+
+		/** The last max CHARACTERS (not UTF-16 units), so a surrogate pair survives. */
+		function tcTail(text, max) {
+			const value = String(text === undefined || text === null ? '' : text)
+			const characters = Array.from(value)
+			if (characters.length <= max) return { text: value, truncated: false }
+			return { text: characters.slice(characters.length - max).join(''), truncated: true }
+		}
+
+		function tcBaseName(path) {
+			const parts = String(path === undefined || path === null ? '' : path).split(/[\\/]/).filter(function (part) { return part !== '' })
+			return parts.length === 0 ? String(path) : parts[parts.length - 1]
+		}
+
+		/** A session id's useful part: after the "session-" prefix, else the first 8 chars. */
+		function tcSessionShort(value) {
+			if (typeof value !== 'string' || value === '') return null
+			return value.indexOf('session-') === 0 ? value.slice(8, 16) : value.slice(0, 8)
+		}
+
+		/** A Team Lead name as DISPLAY text: a raw session id never appears verbatim. */
+		function tcLeadText(lead, t) {
+			const value = lead === null || lead === undefined ? '' : String(lead)
+			if (value === '') return '—'
+			if (value.indexOf('session-') !== 0) return value
+			const short = tcSessionShort(value)
+			return t('workersLeadSelf') + (short === null || short === '' ? '' : ' · ' + short)
+		}
+
+		/** One labelled tail-only output block inside the drawer. */
+		function outputBlock(key, label, text, t) {
+			const tail = tcTail(text, 1200)
+			return h(
+				'div',
+				{ key: key, className: 'gbt-outputblock' },
+				h('div', { className: 'gbt-subhead' }, label),
+				text === ''
+					? h('p', { className: 'gbt-footnote' }, t('noOutput'))
+					: h('pre', { className: 'gbt-output' }, (tail.truncated ? '… ' + t('outputTailHint') + '\n' : '') + tail.text),
+			)
+		}
+
+		function tcParseList(text) {
+			return String(text === undefined || text === null ? '' : text)
+				.split(/[\s,]+/)
+				.map(function (part) { return part.trim() })
+				.filter(function (part) { return part.length > 0 })
+		}
+
+		function tcParseFiles(text) {
+			return String(text === undefined || text === null ? '' : text)
+				.split(/[\n,]+/)
+				.map(function (part) { return part.trim() })
+				.filter(function (part) { return part.length > 0 })
+		}
+
+		/**
+		 * The client Context captured in apply(), so the session resolver can ask the
+		 * DSH shell which session it is showing (T-99). Null in a build that never
+		 * called apply (tests that only exercise a helper).
+		 */
+		let tcHostContext = null
+
+		/**
+		 * The REAL session id the Host UI is showing, or null when it does not say.
+		 *
+		 * DSH's browser shell keeps the shown session in two places, both owned by the
+		 * Host: `uiWorkspace.selection` (a persisted snapshot store, localStorage key
+		 * `dsh.sessions.current`, written whenever the main session is swapped) and
+		 * `uiSession.current` (the main-view binding). They carry the SAME id the tool
+		 * path receives as `agent.id`, which is what makes the panel share the session
+		 * binding without any URL parameter.
+		 *
+		 * This is deliberately a read, never a guess: a missing service, an empty
+		 * selection or a closed session returns null, and the caller falls back to the
+		 * per-window id — never to "the most recently active session" or a global slot.
+		 */
+		function tcHostSessionId() {
+			const read = function (value) {
+				return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
+			}
+			const service = function (name) {
+				try {
+					return tcHostContext !== null && tcHostContext !== undefined && typeof tcHostContext.get === 'function' ? tcHostContext.get(name) : null
+				} catch (error) {
+					return null
+				}
+			}
+			try {
+				const workspace = service('uiWorkspace')
+				if (workspace !== null && workspace !== undefined) {
+					const selection = workspace.selection
+					if (selection !== null && selection !== undefined && typeof selection.getSnapshot === 'function') {
+						const saved = selection.getSnapshot()
+						const chosen = read(saved === null || saved === undefined ? null : saved.sessionId)
+						if (chosen !== null) return chosen
+					}
+					// The live retained reference covers the moment before the persisted
+					// selection is written (and a shell that keeps the store empty).
+					const retained = read(workspace.mainReference === null || workspace.mainReference === undefined ? null : workspace.mainReference.sessionId)
+					if (retained !== null) return retained
+				}
+			} catch (error) {
+				/* a shell that throws on inspection tells us nothing: fall through */
+			}
+			try {
+				const session = service('uiSession')
+				// Two shapes of the same binding: the underlying source and the
+				// renderer-facing adapter (what a session-scoped slot would receive).
+				const sources = []
+				if (session !== null && session !== undefined) {
+					sources.push(session.current)
+					if (session.adapter !== null && session.adapter !== undefined) sources.push(session.adapter.current)
+				}
+				for (const current of sources) {
+					if (current === null || current === undefined) continue
+					const value = typeof current.getSnapshot === 'function' ? current.getSnapshot() : current.value
+					if (value === null || value === undefined) continue
+					const key = read(value.key)
+					if (key !== null) return key
+					const id = read(value.sessionId)
+					if (id !== null) return id
+				}
+			} catch (error) {
+				/* same: no identity from this source */
+			}
+			return null
+		}
+
+		/**
+		 * The session id this panel acts as, plus where it came from (T-99):
+		 *
+		 *   'url'    an explicit ?session= on the page URL (Host or tool override);
+		 *   'host'   the DSH shell's own current session — the id the tool path gets
+		 *            as agent.id, so the panel follows the session with no parameter;
+		 *   'window' a per-window id minted here, kept in sessionStorage so two windows
+		 *            are two sessions (the T-96 fallback when the Host says nothing).
+		 */
+		let tcFallbackSessionId = null
+
+		function tcSessionIdInfo() {
+			let fromUrl = null
+			try {
+				fromUrl =
+					typeof window.location === 'object' && window.location !== null && typeof window.location.search === 'string'
+						? new URLSearchParams(window.location.search).get('session')
+						: null
+			} catch (error) {
+				fromUrl = null
+			}
+			if (typeof fromUrl === 'string' && fromUrl.length > 0) return { id: fromUrl, source: 'url' }
+			const hosted = tcHostSessionId()
+			if (hosted !== null) return { id: hosted, source: 'host' }
+			return { id: tcWindowSessionId(), source: 'window' }
+		}
+
+		function tcSessionId() {
+			return tcSessionIdInfo().id
+		}
+
+		/** The per-window fallback identity (T-96): minted once, kept in sessionStorage. */
+		function tcWindowSessionId() {
+			try {
+				const store =
+					typeof window.sessionStorage === 'object' && window.sessionStorage !== null && typeof window.sessionStorage.getItem === 'function'
+						? window.sessionStorage
+						: window.localStorage
+				// The self-minted id must not collide with a Host id either.
+
+				let id = store.getItem(TC_SESSION_KEY)
+				if (typeof id !== 'string' || id.length === 0) {
+					id = 'web-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+					store.setItem(TC_SESSION_KEY, id)
+				}
+				return id
+			} catch (error) {
+				// Storage is unavailable: mint a page-level id instead of one shared
+				// constant, which would make every window the same session again.
+				if (tcFallbackSessionId === null) {
+					tcFallbackSessionId = 'web-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+				}
+				return tcFallbackSessionId
+			}
+		}
+
+		function tcWithSession(url) {
+			return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'session=' + encodeURIComponent(tcSessionId())
+		}
+
+		/**
+		 * The project the human PINNED in this browser (T-90). Empty means "follow
+		 * the host": the panel sends no project at all and the server resolves the
+		 * session workspace, so a fresh browser never asks for a path. Only an
+		 * explicit switch writes this key — the panel no longer records whatever the
+		 * Host happened to answer, which is what turned the session's project into a
+		 * stale manual pin.
+		 */
+		function tcPinnedProject() {
+			try {
+				const value = window.localStorage.getItem(TC_PROJECT_KEY)
+				if (typeof value !== 'string' || value.length === 0) return null
+				if (value.indexOf(TC_PROJECT_PREFIX) === 0) {
+					const pinned = value.slice(TC_PROJECT_PREFIX.length)
+					return pinned.length > 0 ? pinned : null
+				}
+				// Legacy auto-recorded value (pre-T-90): not a user choice. Migrate it
+				// away once so it can never be misread as a manual pin again.
+				try {
+					if (typeof window.localStorage.removeItem === 'function') window.localStorage.removeItem(TC_PROJECT_KEY)
+					else window.localStorage.setItem(TC_PROJECT_KEY, '')
+					window.localStorage.setItem(TC_PROJECT_MIGRATED_KEY, '1')
+				} catch (error) {
+					/* storage can be disabled; the value is simply ignored */
+				}
+				return null
+			} catch (error) {
+				return null
+			}
+		}
+
+		/** Pin a project for this browser (write = bind: the caller also sends openProject). */
+		function tcPinProject(project) {
+			try {
+				if (typeof project === 'string' && project.length > 0) window.localStorage.setItem(TC_PROJECT_KEY, TC_PROJECT_PREFIX + project)
+			} catch (error) {
+				/* storage can be disabled; pinning is a convenience */
+			}
+		}
+
+		/** Same project, however the two sides spell the path (mirrors projectIdOf). */
+		function tcSameProject(left, right) {
+			if (typeof left !== 'string' || typeof right !== 'string' || left === '' || right === '') return false
+			const normalise = function (value) {
+				const text = String(value).replace(/\\/g, '/').replace(/\/+$/, '')
+				return /^[A-Za-z]:\//.test(text) ? text.toLowerCase() : text
+			}
+			return normalise(left) === normalise(right)
+		}
+
+		const TC_COLUMNS_KEY = 'godotBridge.taskCenter.columns'
+		const DONE_COLUMN_PREVIEW = 5
+		/** T-132: the board's kind filter ('all' | 'dev' | 'investigate'). Module state
+		 * so switching tabs keeps it; the panel rerenders through onKindFilterChange. */
+		const boardUiState = { kind: 'all' }
+
+		/** Column collapse state, remembered across reloads (done starts collapsed). */
+		function tcReadColumnState() {
+			try {
+				const raw = window.localStorage.getItem(TC_COLUMNS_KEY)
+				const parsed = raw === null ? null : JSON.parse(raw)
+				return parsed !== null && typeof parsed === 'object' ? parsed : {}
+			} catch (error) {
+				return {}
+			}
+		}
+
+		function tcColumnCollapsed(key) {
+			const state = tcReadColumnState()
+			if (typeof state[key] === 'boolean') return state[key]
+			return key === 'done'
+		}
+
+		function tcWriteColumnCollapsed(key, collapsed) {
+			try {
+				const state = tcReadColumnState()
+				state[key] = collapsed === true
+				window.localStorage.setItem(TC_COLUMNS_KEY, JSON.stringify(state))
+			} catch (error) {
+				/* storage can be disabled; collapsing is a convenience */
+			}
+		}
+
+		/** One shape for the view, whatever the Host answered. */
+		function tcSnapshot(payload, source, message, actionResult) {
+			const tasks = Array.isArray(payload.tasks) ? payload.tasks : []
+			return {
+				ok: payload.ok !== false,
+				source: source,
+				message: message === undefined ? '' : message,
+				project: typeof payload.project === 'string' ? payload.project : null,
+				projectRoot: typeof payload.projectRoot === 'string' ? payload.projectRoot : typeof payload.project === 'string' ? payload.project : null,
+				// Where the Host got this project: 'session' (walked up from the session
+				// workspace), 'panel' (this browser pinned it) or 'registry'. The panel
+				// shows it beside the title so "which project is this" is answerable.
+				resolvedFrom: typeof payload.resolvedFrom === 'string' ? payload.resolvedFrom : null,
+				// What the SESSION resolves to, independent of the panel's pin. The
+				// mismatch bar compares it with `project`.
+				sessionProject: typeof payload.sessionProject === 'string' ? payload.sessionProject : null,
+				// The Host's own note when its registry last drove another project; the
+				// source badge shows it as a tooltip instead of a second banner.
+				projectWarning: typeof payload.projectWarning === 'string' ? payload.projectWarning : null,
+				// T-108: main-checkout cleanliness, when it was read and which cards
+				// are waiting on it — the panel separates a merge-window blip from a
+				// really dirty checkout with this.
+				environment: payload.environment === undefined || payload.environment === null ? null : payload.environment,
+				// T-110: the project's Team and, when it does not exist, the one
+				// instruction the session must act on.
+				team: payload.team === undefined || payload.team === null ? null : payload.team,
+				// T-122: host-wide team inventory (diagnostics); the member table uses team.members.
+				teams: payload.teams === undefined || payload.teams === null ? null : payload.teams,
+				nextStep: payload.nextStep === undefined || payload.nextStep === null ? null : payload.nextStep,
+				// How full the board file is: { bytes, limit, percent, level, cards,
+				// bytesPerCard, headroomCards, warning }. The status page warns at 50%
+				// and 75% of the cap, before the file stops loading at all.
+				boardSize: payload.boardSize !== undefined && payload.boardSize !== null && typeof payload.boardSize === 'object' ? payload.boardSize : null,
+				dispatch: payload.dispatch !== undefined && payload.dispatch !== null ? payload.dispatch : { state: 'paused' },
+				counts: payload.counts !== undefined && payload.counts !== null ? payload.counts : {},
+				queue: Array.isArray(payload.queue) ? payload.queue : [],
+				tasks: tasks,
+				locks: Array.isArray(payload.locks) ? payload.locks : [],
+				workers: payload.workers === undefined || payload.workers === null ? null : payload.workers,
+				agents: payload.agents === undefined || payload.agents === null ? null : payload.agents,
+				worktrees: payload.worktrees === undefined || payload.worktrees === null ? null : payload.worktrees,
+				activity: payload.activity === undefined || payload.activity === null ? null : payload.activity,
+				// T-111: the status timeline the Host derives from the board (task
+				// history + merge records); no memory ring, survives restarts.
+				activityEvents: payload.activityEvents === undefined || payload.activityEvents === null ? null : payload.activityEvents,
+				// The merge sweep is telemetry now, never an activity event.
+				lastSweep: payload.lastSweep === undefined || payload.lastSweep === null ? null : payload.lastSweep,
+				roles: payload.roles === undefined || payload.roles === null ? null : payload.roles,
+				scheduler: payload.scheduler === undefined ? null : payload.scheduler,
+				actionResult: actionResult === undefined || actionResult === null ? null : actionResult,
+				actionError: payload.actionError === undefined || payload.actionError === null ? null : payload.actionError,
+				version: payload.version,
+				seq: Number.isFinite(payload.seq) ? payload.seq : null,
+				archivedCount: Number.isFinite(payload.archivedCount) ? payload.archivedCount : 0,
+				archiveRange: payload.archiveRange === undefined ? null : payload.archiveRange,
+				full: payload.full !== false,
+				details: {},
+				updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : null,
+				serverTime: payload.serverTime,
+			}
+		}
+
+		/**
+		 * Apply a state answer to the previous snapshot. `full:false` is a delta
+		 * (changed summaries + removed ids) and is merged; `full:true` replaces
+		 * the board (the client clears and rebuilds, as the protocol requires).
+		 */
+		function tcMergeSnapshot(previous, payload) {
+			if (payload.full === false && previous !== null && previous !== undefined && previous.seq !== null && Array.isArray(previous.tasks)) {
+				const byId = new Map(previous.tasks.map(function (task) { return [task.id, task] }))
+				const details = Object.assign({}, previous.details)
+				for (const task of (Array.isArray(payload.tasks) ? payload.tasks : [])) {
+					const before = byId.get(task.id)
+					if (before !== undefined && before.updatedAt !== task.updatedAt) delete details[task.id]
+					byId.set(task.id, Object.assign({}, before === undefined ? {} : before, task))
+				}
+				for (const id of (Array.isArray(payload.removed) ? payload.removed : [])) {
+					byId.delete(id)
+					delete details[id]
+				}
+				return Object.assign({}, previous, payload, {
+					tasks: Array.from(byId.values()),
+					details: details,
+					seq: Number.isFinite(payload.seq) ? payload.seq : previous.seq,
+					full: false,
+				})
+			}
+			const next = tcSnapshot(payload, 'host', '')
+			next.details = {}
+			return next
+		}
+
+		/**
+		 * Localized text for a Host failure. The Host sends a stable code (+ optional
+		 * params); the panel renders the code from TC_DICT. An unknown code falls back
+		 * to the Host's own message so an older/newer Host still says something real.
+		 */
+		function tcErrorMessage(payload, t) {
+			if (payload === null || payload === undefined || typeof payload !== 'object') return t('error')
+			const code = typeof payload.code === 'string' ? payload.code.trim() : ''
+			const params = payload.params !== null && typeof payload.params === 'object' ? payload.params : {}
+			if (code !== '') {
+				const key = 'err_' + code.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()
+				const localized = t(key)
+				if (typeof localized === 'string' && localized !== key) {
+					return localized.replace(/\{([A-Za-z0-9_]+)\}/g, function (match, name) {
+						return params[name] === undefined || params[name] === null ? match : String(params[name])
+					})
+				}
+			}
+			if (typeof payload.message === 'string' && payload.message !== '') return payload.message
+			return t('error')
+		}
+
+		/**
+		 * The Host binding. It owns two things only: fetch the snapshot, send an
+		 * action. It keeps no board state of its own, so a failed request cannot
+		 * fabricate work.
+		 */
