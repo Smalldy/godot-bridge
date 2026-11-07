@@ -23,6 +23,7 @@ Order:
 | `views/roles-view.cjs` | RolesView (React + h + RolesEditor injected; Node-testable) |
 | `views/roles-editor.cjs` | RolesEditor (React + role cards/forms/helpers/state injected; Node-testable) |
 | `views/status-view.cjs` | StatusView (React + status/worktree state + labels/helpers injected; Node-testable) |
+| `views/detail-view.cjs` | DetailView (React + detail state + actor/merge helpers + selectors injected; Node-testable) |
 | `30-views-core.part` | hooks, Column, Board, DoneAllDrawer |
 | `31-views-queue.part` | queue, workers, pagination |
 | `32-views-roles.part` | roles editor and team views |

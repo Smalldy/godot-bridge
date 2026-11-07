@@ -261,6 +261,37 @@ const statusViewWrapper =
   '\t\t\t\t\tcopyToClipboard: copyToClipboard,\n' +
   '\t\t\t\t})\n' +
   '\t\t\t})()\n'
+const detailView = read('views/detail-view.cjs')
+const detailViewWrapper =
+  '\t\t\tconst DetailView = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  detailView +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createDetailView\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\tdetailUiState: detailUiState,\n' +
+  '\t\t\t\t\tactorDisplay: actorDisplay,\n' +
+  '\t\t\t\t\tmergeActorOf: mergeActorOf,\n' +
+  '\t\t\t\t\ttestSummaryText: testSummaryText,\n' +
+  '\t\t\t\t\ttoneForDependency: toneForDependency,\n' +
+  '\t\t\t\t\twaitingChip: waitingChip,\n' +
+  '\t\t\t\t\ttcAgo: tcAgo,\n' +
+  '\t\t\t\t\ttcIsInvestigation: tcIsInvestigation,\n' +
+  '\t\t\t\t\ttcMergeLabel: tcMergeLabel,\n' +
+  '\t\t\t\t\ttcMergeOf: tcMergeOf,\n' +
+  '\t\t\t\t\ttcPhaseLabel: tcPhaseLabel,\n' +
+  '\t\t\t\t\ttcReportBlocks: tcReportBlocks,\n' +
+  '\t\t\t\t\ttcReviewLabel: tcReviewLabel,\n' +
+  '\t\t\t\t\ttcReviewOf: tcReviewOf,\n' +
+  '\t\t\t\t\ttcRound: tcRound,\n' +
+  '\t\t\t\t\ttcStatusKey: tcStatusKey,\n' +
+  '\t\t\t\t\ttcTestLabel: tcTestLabel,\n' +
+  '\t\t\t\t\ttcTestOf: tcTestOf,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
 const viewsCore = read('30-views-core.part')
   .replace(/\t+\/\* TASK_CARD_MODULE \*\//, taskCardWrapper)
   .replace(/\t+\/\* COLUMN_MODULE \*\//, columnWrapper)
@@ -274,6 +305,7 @@ const bundle =
   VIEW_PARTS.map((name) => {
     if (name === '30-views-core.part') return viewsCore
     if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_EDITOR_MODULE \*\//, rolesEditorWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper).replace(/\t+\/\* STATUS_VIEW_MODULE \*\//, statusViewWrapper)
+    if (name === '34-views-detail.part') return read(name).replace(/\t+\/\* DETAIL_VIEW_MODULE \*\//, detailViewWrapper)
     return read(name)
   }).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper).replace(/\t+\/\* WORKERS_VIEW_MODULE \*\//, workersWrapper) +
   read('40-tail.part')

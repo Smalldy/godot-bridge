@@ -69,7 +69,8 @@
 - 后续第九步（2026-11-08）：RolesView 迁到 views/roles-view.cjs；新增 client-roles-view.test.mjs。45/45 verify。
 - 后续第十步（2026-11-08）：RolesEditor 迁到 views/roles-editor.cjs；新增 client-roles-editor.test.mjs。46/46 verify。
 - 后续第十一步（2026-11-08）：StatusView 迁到 views/status-view.cjs；新增 client-status-view.test.mjs。47/47 verify。
-- 下一阶段：detail/forms/shell；Godot e2e/contract 作为已知缺口。
+- 后续第十二步（2026-11-08）：DetailView 迁到 views/detail-view.cjs；新增 client-detail-view.test.mjs。48/48 verify。
+- 下一阶段：forms/shell；Godot e2e/contract 作为已知缺口。
 
 ## 1. 阶段
 
