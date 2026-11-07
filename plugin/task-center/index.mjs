@@ -21,11 +21,12 @@
 
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createSessionLookup } from './session-lookup.mjs'
 import { createState } from './state.mjs'
-import { createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
+import { bootId, createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
 import { createMerger } from './merge.mjs'
+import { createLeaseRegistry } from './lease-registry.mjs'
 import { createDoctor } from './doctor.mjs'
 import { createWorkspaceReconciler } from './workspace.mjs'
 import { createHarness } from './harness.mjs'
@@ -203,6 +204,17 @@ function applyRow(ctx) {
   // The in-memory activity ring the status snapshot shows. One ring is shared by
   // the dispatcher and the API; it is pure memory and never writes the board.
   const activity = createActivity({})
+  // One durable leader lease per project, shared by every DSH process that
+  // opens the same project. The dispatcher claims before a tick and releases on
+  // dispose; a crash leaves the TTL to expire.
+  const leaseOwner = bootId()
+  const leaseFor = function (project) {
+    return createLeaseRegistry({
+      file: join(project, '.agents', 'leader-leases.json'),
+      bootId: leaseOwner,
+      pid: process.pid,
+    })
+  }
   scheduler = createDispatcher(ctx, {
     state: state,
     projectPath: function () {
@@ -212,6 +224,7 @@ function applyRow(ctx) {
     git: git,
     roles: roles,
     activity: activity,
+    leases: leaseFor,
   })
   // The merge queue only integrates a candidate the independent tester already
   // accepted; the host no longer runs a third full verify of its own.

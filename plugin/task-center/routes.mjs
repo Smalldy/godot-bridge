@@ -377,7 +377,7 @@ export function registerTaskRoutes(ctx, options) {
         ok: true,
         project: project,
         dispatch: probeDispatch(ctx),
-        scheduler: scheduler === null ? null : scheduler.status(),
+        scheduler: scheduler === null ? null : scheduler.status(project === null ? undefined : project),
         merge: merger === null || typeof merger.status !== 'function' ? null : merger.status(),
         doctor: health,
         workspace: workspacePlan,
