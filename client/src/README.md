@@ -12,7 +12,13 @@ Order:
 | `selectors.cjs` | pure task/board selectors and label helpers (testable CJS module) |
 | `15-client-state.part` | session/project/column state helpers that use head constants |
 | `store.cjs` | `createTaskStore` (Host-backed state, fetch, polling; testable CJS module) |
-| `30-views.part` | React views (board, detail, team, worktrees, status) |
+| `30-views-core.part` | hooks, TaskCard, Column, Board, DoneAllDrawer |
+| `31-views-queue.part` | queue, workers, pagination |
+| `32-views-roles.part` | roles editor and team views |
+| `33-views-status.part` | status view and activity helpers |
+| `34-views-detail.part` | detail drawer and history helpers |
+| `35-views-forms.part` | task/settings/project forms |
+| `36-views-shell.part` | TaskCenter shell and Glyph |
 | `40-tail.part` | apply wiring and the module factory return |
 
 They are not standalone JS: a part may open or close a function body owned by

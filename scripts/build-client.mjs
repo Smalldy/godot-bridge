@@ -12,7 +12,16 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC = join(ROOT, 'client', 'src')
 const OUT = join(ROOT, 'client', 'client.js')
-const REQUIRED = ['00-head.part', '15-client-state.part', '30-views.part', '40-tail.part']
+const VIEW_PARTS = [
+  '30-views-core.part',
+  '31-views-queue.part',
+  '32-views-roles.part',
+  '33-views-status.part',
+  '34-views-detail.part',
+  '35-views-forms.part',
+  '36-views-shell.part',
+]
+const REQUIRED = ['00-head.part', '15-client-state.part'].concat(VIEW_PARTS).concat(['40-tail.part'])
 
 const present = readdirSync(SRC).filter((name) => name.endsWith('.part')).sort()
 const missing = REQUIRED.filter((name) => present.indexOf(name) < 0)
@@ -80,7 +89,7 @@ const bundle =
   selectorWrapper +
   read('15-client-state.part') +
   storeWrapper +
-  read('30-views.part') +
+  VIEW_PARTS.map((name) => read(name)).join('') +
   read('40-tail.part')
 
 const check = process.argv.indexOf('--check') >= 0

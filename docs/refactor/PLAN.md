@@ -54,7 +54,9 @@
 - E 第一步（2026-11-07）：client 源码拆成 client/src/*.part（head/selectors/store/views/tail），scripts/build-client.mjs 无依赖拼接为 client/client.js；verify 先构建。34/34 verify（client-bundle 仍全绿）。
 - E 第二步（2026-11-07）：纯 selectors 迁到 client/src/selectors.cjs（35 个函数，可被 Node require），build 生成 IIFE 包装注入 bundle；session/column 状态留在 15-client-state.part。新增 client-selectors.test.mjs。35/35 verify。
 - E 第三步（2026-11-07）：store 迁到 client/src/store.cjs（createTaskStore(t, deps)），build 生成绑定 TC_*/tc* 依赖的 wrapper；新增 client-store.test.mjs。36/36 verify。
-- 下一阶段：E 剩余（views 再拆）。
+- E 第四步（2026-11-07）：30-views.part 按域拆成 30-core/31-queue/32-roles/33-status/34-detail/35-forms/36-shell；拼接顺序固定，bundle 行为不变。36/36 verify。
+- E 阶段完成（caveat：views 是分域片段，还不是可独立测试的 React 模块）。
+- 下一阶段：F tests/repo（测试金字塔、e2e、Godot contract、CI、repo/docs）。
 
 ## 1. 阶段
 
