@@ -36,6 +36,8 @@ release-notes.md
 # Project leader leases: machine-local cross-process coordination, never source.
 .agents/leader-leases.json
 .agents/leader-leases.json.*
+.agents/merge-journal.json
+.agents/merge-journal.json.*
 
 # Test scratch: redirected TEMP for the task-center suites (node compile cache +
 # fixtures). Machine-local working state, never committed.
