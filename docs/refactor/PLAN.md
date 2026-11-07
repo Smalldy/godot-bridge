@@ -71,7 +71,8 @@
 - 后续第十一步（2026-11-08）：StatusView 迁到 views/status-view.cjs；新增 client-status-view.test.mjs。47/47 verify。
 - 后续第十二步（2026-11-08）：DetailView 迁到 views/detail-view.cjs；新增 client-detail-view.test.mjs。48/48 verify。
 - 后续第十三步（2026-11-08）：TaskForm 迁到 views/task-form.cjs；新增 client-task-form.test.mjs。49/49 verify。
-- 下一阶段：SettingsForm/ProjectForm/TaskCenter/shell；Godot e2e/contract 作为已知缺口。
+- 后续第十四步（2026-11-08）：SettingsForm/ProjectForm 迁到 views/settings-form.cjs、views/project-form.cjs；新增对应 per-view 测试。51/51 verify。
+- 下一阶段：TaskCenter/shell；Godot e2e/contract 作为已知缺口。
 
 ## 1. 阶段
 
