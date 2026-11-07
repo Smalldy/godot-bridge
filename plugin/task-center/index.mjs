@@ -31,6 +31,7 @@ import { createMergeReconciler } from './merge-reconcile.mjs'
 import { createLeaseRegistry } from './lease-registry.mjs'
 import { createDoctor } from './doctor.mjs'
 import { createWorkspaceReconciler } from './workspace.mjs'
+import { createGitProcessChecker } from './process-check.mjs'
 import { createHarness } from './harness.mjs'
 import { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS, createApi } from './api.mjs'
 import { registerTaskTool } from './tool.mjs'
@@ -237,13 +238,14 @@ function applyRow(ctx) {
   })
   // The merge queue only integrates a candidate the independent tester already
   // accepted; the host no longer runs a third full verify of its own.
-  const merger = createMerger({ git: git, journalFor: journalFor })
+  // Read-only reconciliation plan for the workspace (stale index.lock, merge
+  // state). The process checker is injected; an unknown answer means manual-check,
+  // never an automatic rename.
+  const workspace = createWorkspaceReconciler({ git: git, processChecker: createGitProcessChecker() })
+  const merger = createMerger({ git: git, journalFor: journalFor, workspace: workspace })
   // Read-only workspace doctor for /diagnostics: stale index.lock, merge state,
   // worktrees, and the merge queue's in-memory last unit. It never repairs.
   const doctor = createDoctor({ git: git, merger: merger })
-  // Read-only reconciliation plan for the workspace (stale index.lock, merge
-  // state). Applying a plan is a separate, explicit operation.
-  const workspace = createWorkspaceReconciler({ git: git })
   // The isolated DSH test instance the tester drives (harness.mjs): a throwaway
   // DSH_HOME/profile, its own free port and its own project copy. Constructing
   // it starts nothing; only a harnessStart action does.

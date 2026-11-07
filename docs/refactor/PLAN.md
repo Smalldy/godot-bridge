@@ -24,7 +24,8 @@
 - C 第四步（2026-11-07）：merge-journal.mjs 提供持久 merge intent/outcome + planReconcile（merged/abandoned/stale）；21/21 verify。
 - C 第五步（2026-11-07）：journal 接入 merge.mjs 的 mergeRequest：git 前 begin，返回后 finish；journal 失败不阻断 merge；index 按项目注入 .agents/merge-journal.json。22/22 verify。
 - C 第六步（2026-11-07）：merge-reconcile.mjs 在每个 leader tick 前运行：读 pending intent、解析 target head、isAncestor；mark-merged 先写 board（recordMergeResult）再 finish journal；abandoned/stale 只关 journal；board 写失败保留 pending 重试。23/23 verify。
-- C 剩余：host processChecker、auto 调用点/双进程 e2e。
+- C 第七步（2026-11-07）：process-check.mjs（Windows tasklist / POSIX ps，注入 runner；失败=unknown）接入 workspace；mergeRequest 在 clean/target 探测前跑 workspace preflight：stale lock 可 rename 恢复，fresh/held/merge 状态返回 workspace-blocked，不再静默失败。25/25 verify。
+- C 剩余：双进程/真实重启 e2e；process-check 目前用 Node execFile，若宿主沙箱禁止则 unknown → manual-check（不会误删）。
 
 ## 1. 阶段
 

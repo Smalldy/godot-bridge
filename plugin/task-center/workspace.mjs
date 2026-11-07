@@ -111,13 +111,15 @@ export function createWorkspaceReconciler(options) {
     }
     result.lock = fileState(located.path, fs, now())
     result.lock.suspectedStale = result.lock.exists === true && result.lock.ageMs !== null && result.lock.ageMs >= staleLockMs
-    result.merge = await mergeState(project)
-    result.process = await processState()
 
     if (result.lock.exists !== true) {
       result.action = 'none'
       return result
     }
+    // Only inspect merge/process state when there is a lock to judge: a normal
+    // merge preflight with no lock must not spawn a tasklist/ps probe.
+    result.merge = await mergeState(project)
+    result.process = await processState()
     if (result.merge.inProgress === true) {
       result.action = 'blocked'
       result.reasons.push('a merge/rebase is in progress; do not touch the lock')

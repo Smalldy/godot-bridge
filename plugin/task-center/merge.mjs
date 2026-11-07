@@ -226,6 +226,7 @@ export function createMerger(options) {
   const git = opts.git === undefined ? null : opts.git
   const verify = typeof opts.verify === 'function' ? opts.verify : null
   const journalFor = typeof opts.journalFor === 'function' ? opts.journalFor : null
+  const workspace = opts.workspace === undefined ? null : opts.workspace
   const verifyCommand = typeof opts.verifyCommand === 'string' && opts.verifyCommand.trim() !== '' ? opts.verifyCommand : DEFAULT_VERIFY_COMMAND
   const clock = typeof opts.now === 'function' ? opts.now : Date.now
   // One hung queue unit must not hold the merge queue forever: bound each unit
@@ -504,6 +505,28 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     if (git === null) return failure('no-git-service', 'the merge queue needs the git service, and this profile has none; merging is unavailable')
     if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', task.id + ' has no candidate branch to merge')
     if (typeof task.target !== 'string' || task.target.length === 0) return failure('missing-target', task.id + ' has no target branch to merge into')
+    // Recover a stale index.lock before the clean/target probes: otherwise every
+    // merge unit fails with an unreadable status and the sweep only skips.
+    if (workspace !== null && typeof workspace.plan === 'function') {
+      let plan
+      try {
+        plan = await workspace.plan(projectPath)
+      } catch (error) {
+        return failure('workspace-check-failed', 'could not inspect the merge workspace: ' + String((error && error.message) || error))
+      }
+      if (plan === null || plan === undefined || plan.ok !== true) {
+        return failure('workspace-check-failed', 'the merge workspace check returned no usable plan')
+      }
+      if (plan.action === 'remove-stale-index-lock') {
+        const applied = await workspace.apply(plan)
+        if (applied === null || applied === undefined || applied.ok !== true) {
+          return failure('workspace-recovery-failed', 'the stale index.lock could not be isolated: ' + String(applied === null || applied === undefined ? 'no result' : applied.message || applied.code || 'unknown'))
+        }
+      } else if (plan.action !== 'none') {
+        const reasons = Array.isArray(plan.reasons) ? plan.reasons.join('; ') : ''
+        return failure('workspace-blocked', 'the merge cannot start: ' + String(plan.action) + (reasons === '' ? '' : ' — ' + reasons))
+      }
+    }
     // The merge advances the TASK target ref, not whatever the main checkout has
     // checked out, so a hotfix (main) and a feature (feat/x) can merge in parallel.
     const clean = await cleanOf(projectPath)
