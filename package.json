@@ -30,9 +30,10 @@
   "scripts": {
     "check": "node scripts/check-plugin-contract.mjs && node scripts/check-target-history.mjs",
     "check:target": "node scripts/check-target-history.mjs",
+    "check:syntax": "node scripts/check-syntax.mjs",
     "hooks:install": "node scripts/setup-hooks.mjs",
     "test": "node scripts/test/run.mjs",
-    "verify": "npm run check && npm test"
+    "verify": "npm run check && npm run check:syntax && npm test"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": ">=0.1.6-0",

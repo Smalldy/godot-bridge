@@ -26,17 +26,19 @@ if (suites.length === 0) {
   process.exit(1)
 }
 
+const timeoutMs = Number(process.env.GBT_TEST_TIMEOUT_MS || 180000)
 const results = []
 for (const suite of suites) {
   console.log('\n' + '─'.repeat(72) + '\n' + suite + '\n' + '─'.repeat(72))
   const started = Date.now()
-  const run = spawnSync(process.execPath, [directory + suite], { stdio: 'inherit' })
-  results.push({ suite: suite, ok: run.status === 0, ms: Date.now() - started })
+  const run = spawnSync(process.execPath, [directory + suite], { stdio: 'inherit', timeout: timeoutMs })
+  const timedOut = (run.error !== undefined && run.error.code === 'ETIMEDOUT') || (run.status === null && run.signal !== null)
+  results.push({ suite: suite, ok: run.status === 0, ms: Date.now() - started, timedOut: timedOut })
 }
 
 console.log('\n' + '─'.repeat(72))
 for (const result of results) {
-  console.log(`${result.ok ? 'PASS' : 'FAIL'}  ${result.suite}  (${result.ms}ms)`)
+  console.log(`${result.ok ? 'PASS' : 'FAIL'}  ${result.suite}  (${result.ms}ms${result.timedOut ? ', timeout' : ''})`)
 }
 const failed = results.filter((result) => !result.ok)
 console.log(`${results.length - failed.length}/${results.length} suites passed`)
