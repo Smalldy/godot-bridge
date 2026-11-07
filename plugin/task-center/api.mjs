@@ -31,6 +31,7 @@ import {
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from './actions/registry.mjs'
+import { createReadActions } from './actions/read.mjs'
 import {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
@@ -249,6 +250,21 @@ export function createApi(ctx, options) {
   const notifyTimeoutMs = Number.isFinite(opts.notifyTimeoutMs) ? Math.max(1, Math.floor(opts.notifyTimeoutMs)) : 15 * 1000
   const sleep = typeof opts.sleep === 'function' ? opts.sleep : (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
+  // Read-side handlers live in actions/read.mjs; this factory receives the API
+  // helpers so board/list/get/locks keep their exact semantics.
+  const readActions = createReadActions({
+    snapshot: snapshot,
+    readBoardOrFail: readBoardOrFail,
+    state: state,
+    locks: locks,
+    model: model,
+    archivedTask: archivedTask,
+    detailOf: detailOf,
+    candidateOf: candidateOf,
+    callerSessionId: callerSessionId,
+    ok: ok,
+    failure: failure,
+  })
   // A task can be merged by both the tester's passTest and the host sweep. The
   // second caller must not take the stale branch and rebuild a candidate for a
   // task that is already done; one in-process claim per task makes merging idempotent.
@@ -4481,36 +4497,8 @@ export function createApi(ctx, options) {
       }
       return failure('unknown-action', 'unknown role action ' + String(action))
     }
-    if (action === 'board') return snapshot(projectPath, { sessionId: callerSessionId(source, context) })
-    if (action === 'locks') {
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      state.sweepLocks()
-      return ok({ locks: locks.view(state.memory.locks, read.board, now) })
-    }
-    if (action === 'list') {
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      const status = typeof source.status === 'string' ? source.status : null
-      const tasks = read.board.tasks
-        .filter((task) => status === null || task.status === status)
-        .map((task) => model.summary(read.board, task, now))
-      return ok({ tasks: tasks, counts: model.counts(read.board) })
-    }
-    if (action === 'get') {
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      const task = model.findTask(read.board, String(source.id === undefined ? '' : source.id))
-      if (task === undefined) {
-        const archived = await archivedTask(projectPath, String(source.id === undefined ? '' : source.id), now)
-        if (archived !== null) return ok({ task: archived, locks: [] })
-        return failure('unknown-task', 'no task with id ' + String(source.id))
-      }
-      return ok({
-        task: Object.assign(detailOf(read.board, task, now), { candidate: candidateOf(projectPath, read.board, task) }),
-        locks: locks.view(state.memory.locks, read.board, now).filter((lock) => lock.taskId === task.id),
-      })
-    }
+    const readHandler = readActions[action]
+    if (readHandler !== undefined) return readHandler(source, context, projectPath, now)
     if (action === 'create') {
       // T-110: no cards before the project has a Team. The refusal carries the
       // instruction, so the calling session can bootstrap it and retry.
