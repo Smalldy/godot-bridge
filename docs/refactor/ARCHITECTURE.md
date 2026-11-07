@@ -68,6 +68,7 @@ client/
     views/agent-row.cjs   AgentRow (React + role label + clipboard injected)
     views/role-create-form.cjs  RoleCreateForm (React + tcSplitList + role label injected)
     views/roles-view.cjs  RolesView (React + RolesEditor injected)
+    views/roles-editor.cjs  RolesEditor (React + role cards/forms/helpers/state injected)
     30-views-core.part    hooks, TaskCard, Column, Board, DoneAllDrawer
     31-views-queue.part   queue/workers/pagination
     32-views-roles.part   roles editor/team

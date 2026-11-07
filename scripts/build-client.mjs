@@ -208,6 +208,35 @@ const rolesViewWrapper =
   '\t\t\t\tconst factory = module.exports.createRolesView\n' +
   '\t\t\t\treturn factory({ React: React, h: h, RolesEditor: RolesEditor })\n' +
   '\t\t\t})()\n'
+const rolesEditor = read('views/roles-editor.cjs')
+const rolesEditorWrapper =
+  '\t\t\tconst RolesEditor = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  rolesEditor +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createRolesEditor\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\troleResultBanner: roleResultBanner,\n' +
+  '\t\t\t\t\ttableWrap: tableWrap,\n' +
+  '\t\t\t\t\troleBoundProfile: roleBoundProfile,\n' +
+  '\t\t\t\t\troleSelectableProfiles: roleSelectableProfiles,\n' +
+  '\t\t\t\t\troleProfileCopy: roleProfileCopy,\n' +
+  '\t\t\t\t\tAgentRow: AgentRow,\n' +
+  '\t\t\t\t\tRoleCreateForm: RoleCreateForm,\n' +
+  '\t\t\t\t\troleErrorText: roleErrorText,\n' +
+  '\t\t\t\t\tworkerStatusLabel: workerStatusLabel,\n' +
+  '\t\t\t\t\troleKindLabel: roleKindLabel,\n' +
+  '\t\t\t\t\tactorLabel: actorLabel,\n' +
+  '\t\t\t\t\ttcSplitList: tcSplitList,\n' +
+  '\t\t\t\t\troleEditorState: roleEditorState,\n' +
+  '\t\t\t\t\tROLE_EDITOR_KINDS: ROLE_EDITOR_KINDS,\n' +
+  '\t\t\t\t\tROLE_EDITOR_STAGES: ROLE_EDITOR_STAGES,\n' +
+  '\t\t\t\t\tcopyToClipboard: copyToClipboard,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
 const viewsCore = read('30-views-core.part')
   .replace(/\t+\/\* TASK_CARD_MODULE \*\//, taskCardWrapper)
   .replace(/\t+\/\* COLUMN_MODULE \*\//, columnWrapper)
@@ -220,7 +249,7 @@ const bundle =
   storeWrapper +
   VIEW_PARTS.map((name) => {
     if (name === '30-views-core.part') return viewsCore
-    if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper)
+    if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_EDITOR_MODULE \*\//, rolesEditorWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper)
     return read(name)
   }).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper).replace(/\t+\/\* WORKERS_VIEW_MODULE \*\//, workersWrapper) +
   read('40-tail.part')

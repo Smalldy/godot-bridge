@@ -1,0 +1,571 @@
+/**
+ * Roles editor view module.
+ *
+ * Extracted from the roles fragment; React, h, the shared role cards/forms,
+ * label helpers and the editor state are injected by the build.
+ */
+function createRolesEditor(deps) {
+	const React = deps.React
+	const h = deps.h
+	const roleResultBanner = deps.roleResultBanner
+	const tableWrap = deps.tableWrap
+	const roleBoundProfile = deps.roleBoundProfile
+	const roleSelectableProfiles = deps.roleSelectableProfiles
+	const roleProfileCopy = deps.roleProfileCopy
+	const AgentRow = deps.AgentRow
+	const RoleCreateForm = deps.RoleCreateForm
+	const roleErrorText = deps.roleErrorText
+	const workerStatusLabel = deps.workerStatusLabel
+	const roleKindLabel = deps.roleKindLabel
+	const actorLabel = deps.actorLabel
+	const tcSplitList = deps.tcSplitList
+	const roleEditorState = deps.roleEditorState
+	const ROLE_EDITOR_KINDS = deps.ROLE_EDITOR_KINDS
+	const ROLE_EDITOR_STAGES = deps.ROLE_EDITOR_STAGES
+	const copyToClipboard = deps.copyToClipboard
+
+	function RolesEditor(props) {
+		const t = props.t
+		const snapshot = props.snapshot
+		const store = props.store
+		const bump = props.bump
+		const config = snapshot.roles
+		const kind = roleEditorState.kind
+		const stage = ROLE_EDITOR_STAGES[kind]
+		const profiles = config !== null && config !== undefined && config.profiles !== null && config.profiles !== undefined && typeof config.profiles === 'object' ? config.profiles : {}
+		const bound = roleBoundProfile(config, kind)
+		const boundName = bound !== null && typeof bound.name === 'string' ? bound.name : null
+		const draft = roleEditorState.draft
+		const draftProfile = draft === null ? null : draft.profile
+		const saved = roleEditorState.saved
+		const options = roleSelectableProfiles(config, kind)
+		// The selected name is honoured even before the host snapshot carries the
+		// profile: a just-saved Fork must be targetable by Apply immediately,
+		// without waiting for the next poll.
+		const selectedName = draft !== null ? draft.name : roleEditorState.selected !== null ? roleEditorState.selected : boundName
+		const target =
+			draftProfile !== null
+		? draftProfile
+		: selectedName !== null && profiles[selectedName] !== undefined
+			? profiles[selectedName]
+			: saved !== null && saved.name === selectedName
+				? saved.profile
+				: null
+		const builtin = selectedName === 'worker' || selectedName === 'reviewer' || selectedName === 'tester'
+		// The "current use" selector: the stage's built-in default plus every
+		// custom copy owning this stage. No bind/apply vocabulary is exposed.
+		const useOptions = [kind].concat(options.filter(function (name) { return name !== kind }))
+		if (selectedName !== null && useOptions.indexOf(String(selectedName)) < 0) useOptions.push(String(selectedName))
+		// Only a profile the user owns (a saved copy or a fork draft) has a prompt
+		// that can be edited here. Everything else is a clear empty state, never a
+		// blank half-panel.
+		const editablePrompt = !builtin && selectedName !== null && target !== null
+		// The preview targets the SAVED profile: a fork draft does not exist on the
+		// host yet, so its SOURCE profile is what the host would really inject.
+		const previewProfileName = draft !== null ? draft.source : selectedName
+		const preview = roleEditorState.preview !== null && roleEditorState.preview.kind === kind ? roleEditorState.preview : null
+		const previewTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : []
+		const templateText = target !== null && typeof target.prompt === 'string' ? target.prompt : ''
+		const skillsText = target !== null && Array.isArray(target.skills) ? target.skills.join(', ') : ''
+		const catalog = Array.isArray(roleEditorState.skills) ? roleEditorState.skills : []
+		const instances = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
+		const templateRef = React.useRef(null)
+		const skillsRef = React.useRef(null)
+		// Real React reuses a host node across renders, so an uncontrolled control
+		// only takes a new defaultValue when it REMOUNTS. The key carries the editor
+		// identity AND whether the identity is still a draft: switching kind,
+		// forking and a successful save all remount the controls on the right
+		// profile instead of silently keeping the previous profile's text (which
+		// would then be saved onto the wrong profile).
+		const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved') + ':' + String(roleEditorState.pickVersion || 0)
+		// What the selector shows as "in use": the draft's source while a draft is
+		// open, otherwise the edited profile (falling back to the bound one).
+		const useValue = draft !== null ? String(draft.source) : selectedName !== null ? String(selectedName) : String(kind)
+
+		/**
+		 * The identity a preview belongs to: kind + the saved profile + the chosen
+		 * task. Changing any of them re-asks the host, so the right column can
+		 * never show the injected text of a different identity.
+		 */
+		function previewKeyOf() {
+			return kind + '|' + String(previewProfileName === null ? '' : previewProfileName) + '|' + String(roleEditorState.previewTaskId === undefined ? '' : roleEditorState.previewTaskId)
+		}
+		/** Ask the host for the injected text once per identity; a stale answer is dropped. */
+		function ensurePreview() {
+			if (roleEditorState.previewPending === true) return
+			const key = previewKeyOf()
+			if (roleEditorState.previewKey === key) return
+			roleEditorState.previewKey = key
+			roleEditorState.previewPending = true
+			roleEditorState.previewError = null
+			const body = { kind: kind }
+			if (previewProfileName !== null) body.profile = String(previewProfileName)
+			if (typeof roleEditorState.previewTaskId === 'string' && roleEditorState.previewTaskId !== '') body.taskId = roleEditorState.previewTaskId
+			// Quiet: the preview is automatic, so its answer must never become the
+			// panel's "your last action" result banner.
+			Promise.resolve(store.send('rolesPreview', body, { quiet: true })).then(function (outcome) {
+		const ok = outcome !== null && outcome !== undefined && outcome.ok === true
+		const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined ? outcome.payload : null
+		roleEditorState.previewPending = false
+		if (roleEditorState.previewKey !== key) {
+			bump()
+			return
+		}
+		if (ok === true && payload !== null && typeof payload.text === 'string') {
+			roleEditorState.preview = payload
+			roleEditorState.previewError = null
+		} else {
+			roleEditorState.preview = null
+			roleEditorState.previewError = payload !== null && typeof payload === 'object' ? payload : { code: 'preview-unavailable' }
+		}
+		bump()
+			})
+		}
+		React.useEffect(function () {
+			ensurePreview()
+		})
+
+		function currentTemplate() {
+			const node = templateRef.current
+			return node !== null && node !== undefined && typeof node.value === 'string' ? node.value : templateText
+		}
+		function currentSkills() {
+			const node = skillsRef.current
+			if (node !== null && node !== undefined && typeof node.value === 'string') return tcSplitList(node.value)
+			return target !== null && Array.isArray(target.skills) ? target.skills.slice() : []
+		}
+		/** Discard a drop draft; nothing was ever written to the host. */
+		function discardDraft() {
+			roleEditorState.draft = null
+			roleEditorState.saved = null
+			roleEditorState.applySkipped = false
+			roleEditorState.notice = null
+			roleEditorState.pickVersion += 1
+			bump()
+		}
+		/** Fork is a DRAFT now: the user names it, then Save creates + applies it. */
+		function fork() {
+			if (target === null || selectedName === null) return
+			let candidate = String(selectedName) + '-fork'
+			let index = 2
+			while (profiles[candidate] !== undefined || roleEditorState.used.has(candidate)) {
+		candidate = String(selectedName) + '-fork-' + String(index)
+		index += 1
+			}
+			roleEditorState.used.add(candidate)
+			roleEditorState.draft = { source: String(selectedName), name: candidate, profile: roleProfileCopy(target) }
+			roleEditorState.saved = null
+			roleEditorState.applySkipped = false
+			roleEditorState.notice = null
+			bump()
+		}
+		// The editor reports its own outcome: a client-side refusal has no store
+		// event, and the banner must survive the panel's re-render.
+		function report(action, ok, payload) {
+			roleEditorState.notice = { action: action, ok: ok, payload: payload }
+			bump()
+		}
+		async function send(action, body) {
+			const outcome = await store.send(action, body)
+			const ok = outcome !== null && outcome !== undefined && outcome.ok === true
+			const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined && outcome.payload !== null ? outcome.payload : null
+			report(action, ok, payload)
+			return { ok: ok, payload: payload }
+		}
+		/** Switch kind: an open draft blocks the switch (never a silent discard). */
+		function switchKind(next) {
+			if (draft !== null) {
+		report('role-editor-kind', false, { code: 'role-unsaved' })
+		return
+			}
+			roleEditorState.kind = next
+			roleEditorState.draft = null
+			roleEditorState.selected = null
+			roleEditorState.saved = null
+			roleEditorState.applySkipped = false
+			roleEditorState.notice = null
+			roleEditorState.preview = null
+			roleEditorState.previewKey = null
+			roleEditorState.previewPending = false
+			roleEditorState.previewError = null
+			bump()
+		}
+		/**
+		 * ONE switch of "current use": bind the stage to the profile, then replace
+		 * the running instances of this kind. With nothing live, only the binding
+		 * changes and the panel says it takes effect on the next dispatch.
+		 */
+		async function applyProfile(name) {
+			roleEditorState.applySkipped = false
+			const boundResult = await send('rolesBind', { stage: stage, profile: name })
+			if (boundResult.ok !== true) {
+		roleEditorState.pickVersion += 1
+		bump()
+		return false
+			}
+			roleEditorState.selected = name
+			// Keep the optimistic copy of a just-created profile so the editor can
+			// target it before the next host poll carries it.
+			if (roleEditorState.saved !== null && roleEditorState.saved.name !== name) roleEditorState.saved = null
+			const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
+			if (live.length === 0) {
+		roleEditorState.applySkipped = true
+		bump()
+		return true
+			}
+			await send('rolesReplace', { name: kind })
+			bump()
+			return true
+		}
+		/**
+		 * The "current use" picker: one pick is one action. An open draft blocks the
+		 * switch with a readable notice (never a silent discard) and the selector
+		 * remounts on the real value.
+		 */
+		async function chooseUse(name) {
+			if (typeof name !== 'string' || name === '') return
+			roleEditorState.notice = null
+			if (draft !== null) {
+		report('rolesBind', false, { code: 'role-unsaved' })
+		roleEditorState.pickVersion += 1
+		bump()
+		return
+			}
+			if (name === boundName) {
+		roleEditorState.selected = name
+		roleEditorState.saved = null
+		bump()
+		return
+			}
+			await applyProfile(name)
+		}
+		/**
+		 * Create the draft profile, then bind + replace it: Fork must take effect
+		 * without a second click. A refused create keeps the draft for a retry.
+		 */
+		async function commitDraft(name, fromEditor) {
+			const submitted = roleEditorState.draft
+			if (submitted === null || submitted.name !== name) return
+			// Fork copies the source profile as-is; a retry after a refused create
+			// must keep whatever the user typed into the editor.
+			const body = fromEditor === true
+		? Object.assign({}, submitted.profile, { prompt: currentTemplate(), skills: currentSkills() })
+		: Object.assign({}, submitted.profile)
+			const outcome = await send('rolesCreate', { name: name, profile: body })
+			if (outcome.ok !== true || roleEditorState.draft !== submitted) return
+			roleEditorState.draft = null
+			roleEditorState.selected = name
+			roleEditorState.saved = { name: name, profile: Object.assign({}, body, { name: name }) }
+			bump()
+			await applyProfile(name)
+		}
+		async function save() {
+			// A stale banner must never be read as this attempt's outcome; report() replaces it.
+			roleEditorState.notice = null
+			const template = currentTemplate()
+			const skills = currentSkills()
+			if (draft !== null) {
+		// The draft name is validated here (kebab-case + uniqueness) exactly
+		// like the host would: the same refusal codes are shown.
+		const proposed = String(draft.name)
+		if (!/^[a-z][a-z0-9-]{0,40}$/.test(proposed)) {
+			report('rolesCreate', false, { code: 'invalid-role-name' })
+			return
+		}
+		if (profiles[proposed] !== undefined) {
+			report('rolesCreate', false, { code: 'role-exists' })
+			return
+		}
+		await commitDraft(proposed, true)
+		return
+			}
+			if (selectedName === null) return
+			if (builtin) {
+		// The built-in profiles are host defaults; fork a copy to change them.
+		report('rolesUpdate', false, { code: 'builtin-profile-readonly' })
+		return
+			}
+			// Saving the profile that is currently in use applies it in the SAME click.
+			const isCurrent = selectedName === boundName
+			const outcome = await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills } })
+			if (outcome.ok !== true) return
+			// Keep the saved values visible until the host snapshot catches up.
+			roleEditorState.saved = { name: selectedName, profile: Object.assign({}, target === null ? {} : target, { prompt: template, skills: skills }) }
+			bump()
+			if (isCurrent) await send('rolesReplace', { name: kind })
+		}
+		/** Delete this copy; if it was in use, the built-in default takes over at once. */
+		async function remove() {
+			roleEditorState.notice = null
+			if (selectedName === null || builtin) return
+			const name = selectedName
+			const wasBound = name === boundName
+			const outcome = await send('rolesDelete', { name: name })
+			if (outcome.ok !== true) return
+			roleEditorState.selected = null
+			roleEditorState.saved = null
+			roleEditorState.applySkipped = false
+			roleEditorState.pickVersion += 1
+			bump()
+			if (wasBound) await applyProfile(kind)
+		}
+		async function openSkills() {
+			roleEditorState.skillsOpen = true
+			roleEditorState.skillsError = null
+			roleEditorState.skillsSelected = new Set(currentSkills())
+			bump()
+			const outcome = await store.send('skillsCatalog', {})
+			const ok = outcome !== null && outcome !== undefined && outcome.ok === true
+			const payload = outcome !== null && outcome !== undefined && outcome.payload !== undefined ? outcome.payload : null
+			if (ok === true) {
+		roleEditorState.skills = payload !== null && payload !== undefined && Array.isArray(payload.skills) ? payload.skills : []
+		roleEditorState.skillsError = null
+			} else {
+		roleEditorState.skills = null
+		roleEditorState.skillsError = payload === null || payload === undefined ? { code: 'skills-unavailable' } : payload
+			}
+			bump()
+		}
+		function toggleSkill(name) {
+			if (roleEditorState.skillsSelected.has(name)) roleEditorState.skillsSelected.delete(name)
+			else roleEditorState.skillsSelected.add(name)
+			bump()
+		}
+		function saveSkills() {
+			const names = Array.from(roleEditorState.skillsSelected)
+			const node = skillsRef.current
+			if (node !== null && node !== undefined) node.value = names.join(', ')
+			if (draft !== null) draft.profile.skills = names.slice()
+			roleEditorState.skillsOpen = false
+			bump()
+		}
+		/** One line: every variable the template may use, with its value for this task. */
+		function tokenLine() {
+			const tokens = preview !== null && Array.isArray(preview.tokens) ? preview.tokens : []
+			if (tokens.length === 0) return t('rolePreviewMissing')
+			return tokens.map(function (token) {
+		const raw = token.value === undefined || token.value === null ? '' : String(token.value)
+		return '{{' + String(token.name) + '}} → ' + (raw === '' ? t('rolePreviewEmptyValue') : raw)
+			}).join(' · ')
+		}
+		/** Choose the task the injected preview is generated for ('' means auto). */
+		function choosePreviewTask(id) {
+			const next = typeof id === 'string' ? id : ''
+			if (roleEditorState.previewTaskId === next) return
+			roleEditorState.previewTaskId = next
+			roleEditorState.preview = null
+			roleEditorState.previewKey = null
+			roleEditorState.previewPending = false
+			roleEditorState.previewError = null
+			bump()
+		}
+		/** A section's user-language label: own text, task data or host copy. */
+		function sectionGroupLabel(group) {
+			if (group === 'role') return t('roleSectionRole')
+			if (group === 'template') return builtin ? t('rolePreviewGroupBuiltin') : t('roleAnchorPrompt')
+			if (group === 'task') return t('rolePreviewGroupTask')
+			if (group === 'skills') return t('roleSkills')
+			if (group === 'rules') return t('roleRules')
+			if (group === 'fixed') return t('roleAnchorBoundary')
+			return t('roleSectionRole')
+		}
+		/** The right-hand source note of a section (host-fixed / auto-filled / …). */
+		function sectionSourceLabel(group) {
+			if (group === 'role') return t('roleSourceHostFixed')
+			if (group === 'task') return t('roleSourceAuto')
+			if (group === 'skills') return t('roleSourceHostInjected')
+			if (group === 'rules') return t('roleSourceHostFixed')
+			if (group === 'fixed') return t('roleSourceUnoverridable')
+			return builtin ? t('roleSourceHostFixed') : t('roleSourceAuto')
+		}
+		/** Left column: the profile prompt as written, with its literal {{TOKEN}}s. */
+		function rawColumn() {
+			return h('div', { className: 'gbt-rolecardbody', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'false', 'data-role-raw-reason': '' },
+		h('textarea', { key: 'template-field:' + controlKey, ref: templateRef, className: 'gbt-input gbt-editorarea', 'data-field': 'template', rows: 10, defaultValue: templateText, placeholder: t('rolePromptEmpty'), spellCheck: false }),
+		h('p', { className: 'gbt-footnote', 'data-role-tokens': 'true' }, tokenLine()))
+		}
+		/**
+		 * Left column for a built-in role: its READABLE default prompt, shown
+		 * read-only and with literal {{TOKEN}}s (no substitution), plus the note
+		 * that it cannot be edited in place and the existing Fork action that
+		 * copies it into an editable draft.
+		 */
+		function builtinDefaultColumn() {
+			const defaultPrompt = target !== null && typeof target.prompt === 'string' ? target.prompt : ''
+			return h('div', { className: 'gbt-rolecardbody', 'data-role-prompt': 'raw', 'data-role-raw-readonly': 'true', 'data-role-raw-reason': 'builtin', 'data-role-empty-state': 'builtin', 'data-role-default-prompt': defaultPrompt === '' ? 'false' : 'true' },
+		defaultPrompt === ''
+			? h('div', { className: 'gbt-promptempty', 'data-role-raw-empty': 'builtin' }, h('p', { className: 'gbt-footnote' }, t('rolePreviewBuiltinReadonly')))
+			: h('pre', { className: 'gbt-promptpre gbt-builtinprompt', 'data-role-default-prompt-text': 'true' }, defaultPrompt),
+		h('div', { className: 'gbt-promptactions' },
+			h('span', { className: 'gbt-footnote', 'data-role-builtin-note': 'true' }, t('roleEmptyBuiltinTitle'))))
+		}
+		/** Right column: the exact text the host injects, section by section. */
+		function injectedColumn() {
+			const previewTask = preview !== null && preview.task !== undefined && preview.task !== null ? preview.task : null
+			const sample = previewTask !== null && previewTask.sample === true
+			const taskValue = typeof roleEditorState.previewTaskId === 'string' ? roleEditorState.previewTaskId : ''
+			const sections = preview !== null && Array.isArray(preview.sections) ? preview.sections : []
+			return h('div', { className: 'gbt-rolecardbody', 'data-role-prompt': 'injected' },
+		h('div', { className: 'gbt-prompthead' },
+			h('div', { className: 'gbt-subhead' }, t('rolePreviewInjectedTitle')),
+			h('div', { className: 'gbt-prompttaskrow', 'data-role-taskrow': 'true' },
+				h('label', { className: 'gbt-editor-select' }, t('rolePreviewTaskPick'),
+			h('select', { key: 'preview-task:' + controlKey, className: 'gbt-input', 'data-field': 'preview-task', 'data-task-id': taskValue, defaultValue: taskValue, onChange: function (event) { choosePreviewTask(event !== null && event !== undefined && event.target !== undefined ? event.target.value : '') } },
+				h('option', { key: 'auto', value: '' }, t('rolePreviewTaskAuto')),
+				previewTasks.map(function (task) {
+					return h('option', { key: String(task.id), value: String(task.id) }, String(task.id) + ' · ' + String(task.title))
+				}))),
+				previewTask === null
+			? null
+			: h('span', { className: 'gbt-pill', 'data-role-task-source': sample ? 'sample' : 'real', 'data-task-id': String(previewTask.id) }, sample ? t('rolePreviewSampleTask') : String(previewTask.id) + ' · ' + String(previewTask.title)))),
+		preview === null
+			? h('div', { className: 'gbt-footnote', 'data-role-preview-state': roleEditorState.previewPending === true ? 'loading' : 'unavailable' },
+			roleEditorState.previewError !== null && roleEditorState.previewError !== undefined && typeof roleEditorState.previewError.code === 'string'
+				? t('rolePreviewFailed') + ' (' + roleEditorState.previewError.code + ')'
+				: roleEditorState.previewPending === true
+					? t('rolePreviewLoading')
+					: t('rolePreviewMissing'))
+			: h('div', { className: 'gbt-prompttext', 'data-role-preview-text': 'true' }, (function () {
+			let lastGroup = null
+			return sections.map(function (section, index) {
+				const key = String(section.key === undefined || section.key === null ? index : section.key)
+				const group = String(section.group === undefined || section.group === null ? 'fixed' : section.group)
+				const firstOfGroup = group !== lastGroup
+				lastGroup = group
+				return h('div', { key: key + ':' + String(index), className: 'gbt-promptsection', 'data-role-section': key, 'data-role-section-group': group },
+					firstOfGroup
+				? h('div', { className: 'gbt-secthead', 'data-role-section-head': 'true' },
+						h('span', { className: 'gbt-sectlabel', 'data-role-section-label': group }, sectionGroupLabel(group)),
+						h('span', { className: 'gbt-sectsource', 'data-role-section-source': group }, sectionSourceLabel(group)))
+				: null,
+					h('pre', { className: 'gbt-promptpre' }, typeof section.text === 'string' ? section.text : ''))
+			})
+				})()))
+		}
+		// 02 对照式: one toolbar (tabs + current use), a 45/55 pair of panes sharing
+		// four section anchors, then a fixed bottom action bar. No instance table,
+		// no refresh button, no repeated guidance sentence.
+		const toolbar = h('div', { className: 'gbt-rolesheader', 'data-roles-header': 'true' },
+			h('div', { className: 'gbt-roleseg', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-role-tabs': 'true', 'data-section': 'role-editor-kinds' }, ROLE_EDITOR_KINDS.map(function (entry) {
+		return h('button', { key: entry, type: 'button', className: 'gbt-rolesegitem', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-roles-tab': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
+			})),
+			h('div', { className: 'gbt-rolesheader-right' },
+		h('span', { className: 'gbt-pill' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')),
+		h('label', { className: 'gbt-editor-select' }, t('roleCurrentUse'),
+			h('select', {
+				key: 'current-use:' + controlKey,
+				className: 'gbt-input',
+				'data-role-use-select': 'true',
+				'data-field': 'current-use',
+				'data-stage': stage,
+				'data-bound': boundName === null ? '' : String(boundName),
+				defaultValue: useValue,
+				onChange: function (event) {
+			void chooseUse(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : '')
+				},
+			},
+				useOptions.length === 0
+			? h('option', { key: 'none', value: '' }, t('roleEditorNoProfile'))
+			: useOptions.map(function (name) { return h('option', { key: name, value: name }, name === kind ? t('roleUseDefault') : name) })))))
+		const identityRow = h('div', { className: 'gbt-editor-identity', 'data-editor-identity': 'true', 'data-kind': kind, 'data-profile': selectedName === null ? '' : String(selectedName), 'data-bound': boundName === null ? '' : String(boundName), 'data-draft': draft === null ? 'false' : 'true' })
+		const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
+			h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
+			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
+		/** The blank-create form reports in the same banner as every other action. */
+		async function createBlank(name, fields) {
+			const outcome = await send('rolesCreate', { name: name, profile: fields })
+			if (outcome.ok !== true) return
+			roleEditorState.selected = name
+			roleEditorState.saved = { name: name, profile: Object.assign({ name: name }, fields) }
+			bump()
+			await applyProfile(name)
+		}
+		function createBlankInvalid(code) {
+			report('rolesCreate', false, { code: code, message: '' })
+		}
+		const blankCreate = h(
+			'details',
+			{ key: 'blank-create', className: 'gbt-createblank', 'data-section': 'role-create-blank' },
+			h('summary', null, t('roleEditorCreateBlank')),
+			h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }),
+		)
+		const leftPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'raw' },
+			h('div', { className: 'gbt-rolecard', 'data-role-card': 'raw' },
+		h('div', { className: 'gbt-rolecardhead', 'data-role-card-title': 'true' }, t('rolePreviewRawTitle')),
+		editablePrompt ? rawColumn() : builtinDefaultColumn(),
+		h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow)),
+			blankCreate)
+		const rightPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'injected' }, h('div', { className: 'gbt-rolecard', 'data-role-card': 'injected' }, injectedColumn()))
+		const runningNames = instances.filter(function (entry) { return entry.kind === kind }).map(function (entry) { return entry.name })
+		const runningRow = h('div', { className: 'gbt-footnote', 'data-role-running': 'true' },
+			t('roleRunningNow') + ': ' + (runningNames.length === 0 ? t('roleNoneRunning') : runningNames.join(', ')) + ' · ' + (boundName === kind ? t('roleFromDefault') : t('roleFromCopy')))
+		const draftNameRow = draft === null ? null : h('label', { className: 'gbt-editorfield', 'data-section': 'role-draft-name' }, t('roleDraftName'),
+			h('input', { key: 'draft-name:' + controlKey, className: 'gbt-input', 'data-field': 'draft-name', defaultValue: draft.name, spellCheck: false, onChange: function (event) {
+		const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : ''
+		if (roleEditorState.draft !== null) roleEditorState.draft.name = next
+			} }))
+		const modal = roleEditorState.skillsOpen === true
+			? h('div', { className: 'gbt-overlay', 'data-modal': 'role-skills' },
+			h('div', { className: 'gbt-modal' },
+				h('div', { className: 'gbt-modalhead' },
+			h('h2', null, t('roleEditorSkillsTitle') + (selectedName === null ? '' : ' · ' + String(selectedName))),
+			h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'role-skills-close', onClick: function () { roleEditorState.skillsOpen = false; bump() } }, '×')),
+				roleEditorState.skillsError !== null
+			? h('div', { className: 'gbt-banner', 'data-tone': 'error', 'data-skills-unavailable': String(roleEditorState.skillsError.code === undefined || roleEditorState.skillsError.code === null ? 'skills-unavailable' : roleEditorState.skillsError.code) }, t('roleEditorSkillsUnavailable') + (typeof roleEditorState.skillsError.message === 'string' && roleEditorState.skillsError.message !== '' ? ' — ' + roleEditorState.skillsError.message : ''))
+			: null,
+				roleEditorState.skillsError === null && catalog.length === 0 ? h('div', { className: 'gbt-empty' }, t('roleEditorSkillsEmpty')) : null,
+				catalog.map(function (skill) {
+			const name = String(skill.name)
+			return h('label', { key: name, className: 'gbt-check gbt-skillrow', 'data-skill-row': name },
+				h('input', { type: 'checkbox', 'data-skill': name, checked: roleEditorState.skillsSelected.has(name), onChange: function () { toggleSkill(name) } }),
+				h('span', { className: 'gbt-mono' }, name),
+				h('span', { className: 'gbt-footnote' }, ' ' + String(skill.description === undefined || skill.description === null ? '' : skill.description)),
+				skill.invocation !== null && skill.invocation !== undefined && skill.invocation.modelInvocable === false
+					? h('span', { className: 'gbt-pill', 'data-skill-user-only': name }, t('roleEditorSkillUserOnly'))
+					: null)
+				}),
+				h('div', { className: 'gbt-formactions' }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-skills-save', onClick: saveSkills }, t('roleEditorSkillsSave')))))
+			: null
+		const saveButton = h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-editor-save', onClick: function () { void save() } }, t('roleSave'))
+		const discardButton = h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-discard', onClick: discardDraft }, t('roleDiscard'))
+		const forkButton = builtin
+			? h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-fork', 'data-role-empty-fork': 'true', onClick: fork }, t('roleEmptyCopy'))
+			: null
+		const deleteButton = draft === null && editablePrompt && selectedName !== null && profiles[selectedName] !== undefined
+			? h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'rolesDelete', 'data-role-delete-copy': 'true', onClick: function () { void remove() } }, t('roleDeleteThis'))
+			: null
+		const actionBar = h('div', { className: 'gbt-rolesactions', 'data-roles-actions': 'true' },
+			h('div', { className: 'gbt-rolesactions-left' },
+		draft !== null ? discardButton : null,
+		draft !== null || (editablePrompt && selectedName !== null) ? saveButton : null,
+		draftNameRow),
+			h('div', { className: 'gbt-rolesactions-right' }, forkButton, deleteButton))
+		const stateHint = draft !== null
+			? h('div', { className: 'gbt-footnote', 'data-role-draft-hint': 'true' }, t('roleDraftHint'))
+			: roleEditorState.applySkipped === true
+		? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleUsePendingNextDispatch'))
+		: null
+		return h('div', { className: 'gbt-roleeditor', 'data-editor': 'true', 'data-kind': kind, 'data-draft': draft === null ? 'false' : 'true' },
+			toolbar,
+			identityRow,
+			h('div', { className: 'gbt-rolescroll', 'data-roles-scroll': 'true' },
+		h('div', { className: 'gbt-rolespanes', 'data-roles-panes': 'true', 'data-role-layout': 'split' }, leftPane, rightPane),
+		runningRow),
+			roleEditorState.notice === null ? null : roleResultBanner(roleEditorState.notice, t),
+			stateHint,
+			actionBar,
+			modal)
+	}
+
+	/**
+	 * The Roles tab: ONE card, the context editor. Reloading the profiles is an
+	 * explicit action in the card header, and the batch actions (replace kind /
+	 * reset defaults) live next to the primary editor actions. The old
+	 * stand-alone stages/profiles/previews/create cards are gone — this editor
+	 * replaced them.
+	 */
+
+	return RolesEditor
+}
+
+module.exports = { createRolesEditor }
