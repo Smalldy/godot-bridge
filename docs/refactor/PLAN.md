@@ -27,7 +27,8 @@
 - C 第七步（2026-11-07）：process-check.mjs（Windows tasklist / POSIX ps，注入 runner；失败=unknown）接入 workspace；mergeRequest 在 clean/target 探测前跑 workspace preflight：stale lock 可 rename 恢复，fresh/held/merge 状态返回 workspace-blocked，不再静默失败。25/25 verify。
 - C 第八步（2026-11-07）：真实双 node 进程抢同一 lease（恰好一个赢）；新 journal 实例读取旧文件并 reconcile board（重启语义）。27/27 verify。
 - C 阶段完成，带边界：process-check 用 Node execFile（宿主沙箱禁止则 unknown → manual-check）；没有真实 DSH host 重启/双 dispatcher e2e。
-- 下一阶段：D（kernel 拆分）。
+- D 第一步（2026-11-07）：actions/registry.mjs 成为唯一动作元数据表；ACTIONS/DEV_ONLY/USER_ONLY/READ/AGENT 全部派生，保持原顺序；api.mjs 只 re-export。28/28 verify。handler/pipeline/gates 仍在 api.mjs。
+- 下一阶段：D 剩余（handlers/pipeline/gates/caller/dispatch-port）。
 
 ## 1. 阶段
 

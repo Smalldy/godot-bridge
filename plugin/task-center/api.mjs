@@ -30,6 +30,7 @@ import {
 } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
+import { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from './actions/registry.mjs'
 import {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
@@ -111,96 +112,9 @@ import { writePolicyFor } from './state.mjs'
 /** How long one main-checkout cleanliness read is trusted by the panel payload. */
 const ENVIRONMENT_CACHE_MS = 4000
 
-/** Every action this API exposes. The tool enum and the route allowlist are
- * generated from this list, so they cannot disagree. */
-export const ACTIONS = [
-  'board',
-  'list',
-  'get',
-  'create',
-  'update',
-  'delete',
-  'start',
-  'pause',
-  'settings',
-  'tick',
-  'submit',
-  // T-131: the ONE completion action for an investigation card.
-  'report',
-  'approveReview',
-  'requestChanges',
-  'passTest',
-  'failTest',
-  'mergeRequest',
-  'refreshMerge',
-  'rejectMerge',
-  'harnessStart',
-  'harnessStop',
-  'harnessRestart',
-  'harnessStatus',
-  'harnessSmoke',
-  'rolesList',
-  'rolesPreview',
-  'rolesCreate',
-  'rolesUpdate',
-  'rolesDelete',
-  'rolesBind',
-  'rolesDrain',
-  'rolesReplace',
-  'rolesPrune',
-  'rolesReset',
-  'skillsCatalog',
-  // T-121: the ONE team-building action an agent may call; it only ever touches
-  // the caller's own session/project (rolesCreate/rolesBind stay user-only).
-  'bootstrapTeam',
-  'approveStart',
-  'rejectStart',
-  'cancelStartRequest',
-  'cancel',
-  'reopen',
-  'block',
-  'unblock',
-  'retry',
-  'locks',
-  // T-142: preview/execute removal of stale worktrees (user-only; the panel drives it).
-  'worktreesCleanup',
-  'openProject',
-  // T-129: the ONE call that resolves the project, binds it, reads the board,
-  // bootstraps a missing Team and answers a short brief + one next step.
-  'onboard',
-]
-
-/** T-131: review/test/merge belong to dev cards. An investigation has no such
- * phase, so these actions are refused BEFORE a handler provisions a role or
- * builds a candidate checkout. */
-export const DEV_ONLY_ACTIONS = ['approveReview', 'requestChanges', 'passTest', 'failTest', 'mergeRequest', 'refreshMerge', 'rejectMerge']
-
-/** Actions that belong to the person at the GUI. The tool binding hides them,
- * and perform() refuses them for an agent even if one is called directly. */
-export const USER_ONLY_ACTIONS = [
-  'approveStart',
-  'rejectStart',
-  'settings',
-  'rolesList',
-  'rolesPreview',
-  'rolesCreate',
-  'rolesUpdate',
-  'rolesDelete',
-  'rolesBind',
-  'rolesDrain',
-  'rolesReplace',
-  'rolesPrune',
-  'rolesReset',
-  'skillsCatalog',
-  // T-142: pruning checkouts is a user decision, never an agent action.
-  'worktreesCleanup',
-]
-
-/** The tool's vocabulary: everything except the user-owned actions. */
-export const AGENT_ACTIONS = ACTIONS.filter((action) => USER_ONLY_ACTIONS.indexOf(action) < 0)
-
-/** Read-only actions; the tool may run them concurrently. */
-export const READ_ACTIONS = ['board', 'list', 'get', 'locks', 'harnessStatus', 'skillsCatalog']
+/** Action metadata is defined once in actions/registry.mjs. Re-export the
+ * derived names so the tool, skill and route keep their existing imports. */
+export { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS }
 
 const STATUS_RANK = { pending: 0, running: 1, reviewing: 2, testing: 3, blocked: 4, done: 5, cancelled: 6 }
 
