@@ -84,12 +84,46 @@ const storeWrapper =
   '\t}\n' +
   '})()\n'
 
+const taskCard = read('views/task-card.cjs')
+const taskCardWrapper =
+  '\t\t\tconst TaskCard = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  taskCard +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createTaskCard\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\ttcBaseName: tcBaseName,\n' +
+  '\t\t\t\t\ttcIsInvestigation: tcIsInvestigation,\n' +
+  '\t\t\t\t\ttcKindOf: tcKindOf,\n' +
+  '\t\t\t\t\ttcLease: tcLease,\n' +
+  '\t\t\t\t\ttcMergeLabel: tcMergeLabel,\n' +
+  '\t\t\t\t\ttcMergeOf: tcMergeOf,\n' +
+  '\t\t\t\t\ttcMergeTone: tcMergeTone,\n' +
+  '\t\t\t\t\ttcPhaseLabel: tcPhaseLabel,\n' +
+  '\t\t\t\t\ttcPhaseTone: tcPhaseTone,\n' +
+  '\t\t\t\t\ttcReviewLabel: tcReviewLabel,\n' +
+  '\t\t\t\t\ttcReviewOf: tcReviewOf,\n' +
+  '\t\t\t\t\ttcReviewTone: tcReviewTone,\n' +
+  '\t\t\t\t\ttcRound: tcRound,\n' +
+  '\t\t\t\t\ttcStageQueued: tcStageQueued,\n' +
+  '\t\t\t\t\ttcTestLabel: tcTestLabel,\n' +
+  '\t\t\t\t\ttcTestOf: tcTestOf,\n' +
+  '\t\t\t\t\ttcTestTone: tcTestTone,\n' +
+  '\t\t\t\t\ttoneForDependency: toneForDependency,\n' +
+  '\t\t\t\t\twaitingChip: waitingChip,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const viewsCore = read('30-views-core.part').replace(/\t+\/\* TASK_CARD_MODULE \*\//, taskCardWrapper)
+
 const bundle =
   read('00-head.part') +
   selectorWrapper +
   read('15-client-state.part') +
   storeWrapper +
-  VIEW_PARTS.map((name) => read(name)).join('') +
+  VIEW_PARTS.map((name) => (name === '30-views-core.part' ? viewsCore : read(name))).join('') +
   read('40-tail.part')
 
 const check = process.argv.indexOf('--check') >= 0

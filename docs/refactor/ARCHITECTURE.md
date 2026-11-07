@@ -59,6 +59,7 @@ client/
     selectors.cjs         pure selectors (35 functions; Node-testable)
     15-client-state.part  session/project/column state helpers
     store.cjs             createTaskStore(t, deps) (Node-testable)
+    views/task-card.cjs   TaskCard (React + selectors injected; Node-testable)
     30-views-core.part    hooks, TaskCard, Column, Board, DoneAllDrawer
     31-views-queue.part   queue/workers/pagination
     32-views-roles.part   roles editor/team
