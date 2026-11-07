@@ -212,5 +212,6 @@
 
 			/** T-143: worktree cleanup survives a view switch / poll (module store). */
 			const worktreeCleanupUi = { probe: null, probeState: 'idle', probedSignature: null, preflight: null, pending: false, executing: false, result: null, forceConfirm: null, selected: {} }
+			/* STATUS_VIEW_MODULE */
 
 			/** Status page, direction A: one summary line, three narrow cards, a full-width activity card. */

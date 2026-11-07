@@ -22,6 +22,7 @@ Order:
 | `views/role-create-form.cjs` | RoleCreateForm (React + h + tcSplitList + role label injected; Node-testable) |
 | `views/roles-view.cjs` | RolesView (React + h + RolesEditor injected; Node-testable) |
 | `views/roles-editor.cjs` | RolesEditor (React + role cards/forms/helpers/state injected; Node-testable) |
+| `views/status-view.cjs` | StatusView (React + status/worktree state + labels/helpers injected; Node-testable) |
 | `30-views-core.part` | hooks, Column, Board, DoneAllDrawer |
 | `31-views-queue.part` | queue, workers, pagination |
 | `32-views-roles.part` | roles editor and team views |
