@@ -6715,12 +6715,13 @@ rig.scheduler.dispose()
   // The gate moved to kernel/verdict-gate.mjs; the caller lookup still lives in
   // api.mjs, so the assertion reads both files.
   const verdictSource = readFileSync(new URL('../../plugin/task-center/kernel/verdict-gate.mjs', import.meta.url), 'utf8')
+  const lookupSource = readFileSync(new URL('../../plugin/task-center/kernel/caller-lookup.mjs', import.meta.url), 'utf8')
   const verdictStart = verdictSource.indexOf('function verdictRefusal(')
   const verdictEnd = verdictStart < 0 ? -1 : verdictSource.indexOf('return { verdictRefusal', verdictStart)
   const verdictBody = verdictStart < 0 || verdictEnd < 0 ? '' : verdictSource.slice(verdictStart, verdictEnd)
   check(
     'T-114 both verdict paths resolve the caller session (verdictRefusal -> callerLookup, which walks every Lead)',
-    verdictBody.indexOf('callerLookup(context)') >= 0 && apiSource.indexOf('liveLeads(ctx)') >= 0,
+    verdictBody.indexOf('callerLookup(context)') >= 0 && lookupSource.indexOf('liveLeads(ctx)') >= 0,
     JSON.stringify({ hasCallerLookup: verdictBody.indexOf('callerLookup(context)') >= 0 }),
   )
 
