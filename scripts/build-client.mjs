@@ -148,6 +148,16 @@ const boardWrapper =
   '\t\t\t\t\tboardUiState: boardUiState,\n' +
   '\t\t\t\t})\n' +
   '\t\t\t})()\n'
+const doneAll = read('views/done-all-drawer.cjs')
+const doneAllWrapper =
+  '\t\t\tconst DoneAllDrawer = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  doneAll +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createDoneAllDrawer\n' +
+  '\t\t\t\treturn factory({ React: React, h: h, doneAllState: doneAllState, tcDayKey: tcDayKey })\n' +
+  '\t\t\t})()\n'
 const viewsCore = read('30-views-core.part')
   .replace(/\t+\/\* TASK_CARD_MODULE \*\//, taskCardWrapper)
   .replace(/\t+\/\* COLUMN_MODULE \*\//, columnWrapper)
@@ -158,7 +168,7 @@ const bundle =
   selectorWrapper +
   read('15-client-state.part') +
   storeWrapper +
-  VIEW_PARTS.map((name) => (name === '30-views-core.part' ? viewsCore : read(name))).join('') +
+  VIEW_PARTS.map((name) => (name === '30-views-core.part' ? viewsCore : read(name))).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper) +
   read('40-tail.part')
 
 const check = process.argv.indexOf('--check') >= 0

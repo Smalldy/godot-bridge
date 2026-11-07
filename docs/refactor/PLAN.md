@@ -61,7 +61,8 @@
 - 后续第一步（2026-11-08）：dispatchPort 按 brief/lead/roster/workspace/task/dispatch 分组；api 解构分组，平铺字段成为测试失败。36/36 verify。
 - 后续第二步（2026-11-08）：TaskCard 迁到 client/src/views/task-card.cjs，build 注入 React/h/selectors/board helpers；新增 client-task-card.test.mjs。37/37 verify。
 - 后续第三步（2026-11-08）：Column/Board 迁到 views/column.cjs、views/board.cjs；新增 client-column/client-board.test.mjs。39/39 verify。
-- 下一阶段：DoneAllDrawer、queue/roles/status/detail/forms/shell；Godot e2e/contract 作为已知缺口。
+- 后续第四步（2026-11-08）：DoneAllDrawer 迁到 views/done-all-drawer.cjs；新增 client-done-all.test.mjs。40/40 verify。
+- 下一阶段：queue/roles/status/detail/forms/shell；Godot e2e/contract 作为已知缺口。
 
 ## 1. 阶段
 

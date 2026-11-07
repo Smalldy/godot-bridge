@@ -84,17 +84,3 @@
 			 * and summary-only - a click opens the detail drawer, which fetches one
 			 * card, instead of pulling 50 details up front.
 			 */
-			function DoneAllDrawer(props) {
-				const t = props.t
-				const list = props.store
-				const archived = props.archived === true
-				const [, setVersion] = React.useState(0)
-				const bump = function () { setVersion(function (value) { return value + 1 }) }
-				const items = doneAllState.items
-				const next = doneAllState.next
-				const query = doneAllState.query
-				const loading = doneAllState.loading
-				const error = doneAllState.error
-				const failedMore = doneAllState.failedMore
-				const now = Date.now()
-

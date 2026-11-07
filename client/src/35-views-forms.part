@@ -231,6 +231,7 @@
 			// fetches that resolve between renders are visible to the next one; a
 			// state counter still drives the real React re-render.
 			const doneAllState = { items: [], next: null, loading: true, error: false, failedMore: false, query: '', loadedQuery: null, token: 0, busy: false }
+			/* DONE_ALL_MODULE */
 			function doneAllReset() {
 				doneAllState.items = []
 				doneAllState.next = null
