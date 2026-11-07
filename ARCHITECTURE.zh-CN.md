@@ -54,7 +54,7 @@ godot-bridge 走 harness 的**原始 `subprocess` 服务**——shell 执行器�
 
 一个 bundle 对应插件页上的一张卡片，一个「行」对应一个组件——所以任务中心是本插件的一个组件，而不是要另外安装的独立包。浏览器半侧无法同样拆分（一个包只解析一个 `./client` bundle），所以 `client/client.js` 同时承载引擎路径表单和任务中心面板。
 
-一份动作注册表（`api.mjs`）是 `task_center` 工具与 `POST /godot-bridge/task-center/action` 共用的唯一词表；工具与面板是同一份状态（`state.mjs`）和同一套模型（`service.mjs`）的两个绑定，因此不会各自长出两套规则。
+动作词表在 `actions/registry.mjs`；handler 在 `actions/` 与 `kernel/`，由 `api.mjs` 组合。工具与面板是同一份状态（`state.mjs`）和同一套模型（`service.mjs`）的两个绑定，因此不会各自长出两套规则。模块图见 [docs/refactor/ARCHITECTURE.md](docs/refactor/ARCHITECTURE.md)。
 
 ### 任务板
 

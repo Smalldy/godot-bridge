@@ -21,11 +21,17 @@
 
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createSessionLookup } from './session-lookup.mjs'
 import { createState } from './state.mjs'
-import { createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
+import { bootId, createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
 import { createMerger } from './merge.mjs'
+import { createMergeJournal } from './merge-journal.mjs'
+import { createMergeReconciler } from './merge-reconcile.mjs'
+import { createLeaseRegistry } from './lease-registry.mjs'
+import { createDoctor } from './doctor.mjs'
+import { createWorkspaceReconciler } from './workspace.mjs'
+import { createGitProcessChecker } from './process-check.mjs'
 import { createHarness } from './harness.mjs'
 import { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS, createApi } from './api.mjs'
 import { registerTaskTool } from './tool.mjs'
@@ -201,6 +207,21 @@ function applyRow(ctx) {
   // The in-memory activity ring the status snapshot shows. One ring is shared by
   // the dispatcher and the API; it is pure memory and never writes the board.
   const activity = createActivity({})
+  // One durable leader lease per project, shared by every DSH process that
+  // opens the same project. The dispatcher claims before a tick and releases on
+  // dispose; a crash leaves the TTL to expire.
+  const leaseOwner = bootId()
+  const leaseFor = function (project) {
+    return createLeaseRegistry({
+      file: join(project, '.agents', 'leader-leases.json'),
+      bootId: leaseOwner,
+      pid: process.pid,
+    })
+  }
+  const journalFor = function (project) {
+    return createMergeJournal({ file: join(project, '.agents', 'merge-journal.json') })
+  }
+  const mergeReconciler = createMergeReconciler({ journalFor: journalFor, git: git, state: state })
   scheduler = createDispatcher(ctx, {
     state: state,
     projectPath: function () {
@@ -210,10 +231,21 @@ function applyRow(ctx) {
     git: git,
     roles: roles,
     activity: activity,
+    leases: leaseFor,
+    reconcile: function (project) {
+      return mergeReconciler.reconcileProject(project)
+    },
   })
   // The merge queue only integrates a candidate the independent tester already
   // accepted; the host no longer runs a third full verify of its own.
-  const merger = createMerger({ git: git })
+  // Read-only reconciliation plan for the workspace (stale index.lock, merge
+  // state). The process checker is injected; an unknown answer means manual-check,
+  // never an automatic rename.
+  const workspace = createWorkspaceReconciler({ git: git, processChecker: createGitProcessChecker() })
+  const merger = createMerger({ git: git, journalFor: journalFor, workspace: workspace })
+  // Read-only workspace doctor for /diagnostics: stale index.lock, merge state,
+  // worktrees, and the merge queue's in-memory last unit. It never repairs.
+  const doctor = createDoctor({ git: git, merger: merger })
   // The isolated DSH test instance the tester drives (harness.mjs): a throwaway
   // DSH_HOME/profile, its own free port and its own project copy. Constructing
   // it starts nothing; only a harnessStart action does.
@@ -316,7 +348,7 @@ function applyRow(ctx) {
   // The GUI's routes. Same API, same state, human role.
   ctx.effect(function () {
     try {
-      return registerTaskRoutes(ctx, { state: state, api: api, scheduler: scheduler })
+      return registerTaskRoutes(ctx, { state: state, api: api, scheduler: scheduler, merger: merger, doctor: doctor, workspace: workspace })
     } catch (error) {
       try {
         ctx.logger.warn('[godot-bridge] task center routes skipped: ' + String((error && error.message) || error))

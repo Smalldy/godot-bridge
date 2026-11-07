@@ -30,7 +30,28 @@ import {
 } from './schema.mjs'
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
-import {
+import { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from './actions/registry.mjs'
+import { createReadActions } from './actions/read.mjs'
+import { createHarnessActions } from './actions/harness.mjs'
+import { createControlActions } from './actions/control.mjs'
+import { createLifecycleActions } from './actions/lifecycle.mjs'
+import { createRoleActions } from './actions/roles.mjs'
+import { createMergeActions } from './actions/merge.mjs'
+import { createReportAction } from './actions/report.mjs'
+import { createSubmitAction } from './actions/submit.mjs'
+import { createTestVerdictActions } from './actions/test-verdicts.mjs'
+import { createReviewVerdictActions } from './actions/review-verdicts.mjs'
+import { createProjectActions } from './actions/project.mjs'
+import { createOnboardAction } from './actions/onboard.mjs'
+import { createTaskAdminActions } from './actions/task-admin.mjs'
+import { createProjectAdminActions } from './actions/project-admin.mjs'
+import { createActionPreflight } from './kernel/action-preflight.mjs'
+import { createGates } from './kernel/gates.mjs'
+import { createVerdictGate } from './kernel/verdict-gate.mjs'
+import { createCallerHelpers } from './kernel/caller-helpers.mjs'
+import { createCallerLookup } from './kernel/caller-lookup.mjs'
+import { dispatchPort } from './dispatch-port.mjs'
+const {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
   ROLE_SAMPLE_TASK,
@@ -71,7 +92,7 @@ import {
   testFailureBriefFor,
   testerBriefFor,
   workerPool,
-} from './dispatch.mjs'
+} = dispatchPort
 import {
   archiveIndexPath,
   archivePath,
@@ -111,96 +132,9 @@ import { writePolicyFor } from './state.mjs'
 /** How long one main-checkout cleanliness read is trusted by the panel payload. */
 const ENVIRONMENT_CACHE_MS = 4000
 
-/** Every action this API exposes. The tool enum and the route allowlist are
- * generated from this list, so they cannot disagree. */
-export const ACTIONS = [
-  'board',
-  'list',
-  'get',
-  'create',
-  'update',
-  'delete',
-  'start',
-  'pause',
-  'settings',
-  'tick',
-  'submit',
-  // T-131: the ONE completion action for an investigation card.
-  'report',
-  'approveReview',
-  'requestChanges',
-  'passTest',
-  'failTest',
-  'mergeRequest',
-  'refreshMerge',
-  'rejectMerge',
-  'harnessStart',
-  'harnessStop',
-  'harnessRestart',
-  'harnessStatus',
-  'harnessSmoke',
-  'rolesList',
-  'rolesPreview',
-  'rolesCreate',
-  'rolesUpdate',
-  'rolesDelete',
-  'rolesBind',
-  'rolesDrain',
-  'rolesReplace',
-  'rolesPrune',
-  'rolesReset',
-  'skillsCatalog',
-  // T-121: the ONE team-building action an agent may call; it only ever touches
-  // the caller's own session/project (rolesCreate/rolesBind stay user-only).
-  'bootstrapTeam',
-  'approveStart',
-  'rejectStart',
-  'cancelStartRequest',
-  'cancel',
-  'reopen',
-  'block',
-  'unblock',
-  'retry',
-  'locks',
-  // T-142: preview/execute removal of stale worktrees (user-only; the panel drives it).
-  'worktreesCleanup',
-  'openProject',
-  // T-129: the ONE call that resolves the project, binds it, reads the board,
-  // bootstraps a missing Team and answers a short brief + one next step.
-  'onboard',
-]
-
-/** T-131: review/test/merge belong to dev cards. An investigation has no such
- * phase, so these actions are refused BEFORE a handler provisions a role or
- * builds a candidate checkout. */
-export const DEV_ONLY_ACTIONS = ['approveReview', 'requestChanges', 'passTest', 'failTest', 'mergeRequest', 'refreshMerge', 'rejectMerge']
-
-/** Actions that belong to the person at the GUI. The tool binding hides them,
- * and perform() refuses them for an agent even if one is called directly. */
-export const USER_ONLY_ACTIONS = [
-  'approveStart',
-  'rejectStart',
-  'settings',
-  'rolesList',
-  'rolesPreview',
-  'rolesCreate',
-  'rolesUpdate',
-  'rolesDelete',
-  'rolesBind',
-  'rolesDrain',
-  'rolesReplace',
-  'rolesPrune',
-  'rolesReset',
-  'skillsCatalog',
-  // T-142: pruning checkouts is a user decision, never an agent action.
-  'worktreesCleanup',
-]
-
-/** The tool's vocabulary: everything except the user-owned actions. */
-export const AGENT_ACTIONS = ACTIONS.filter((action) => USER_ONLY_ACTIONS.indexOf(action) < 0)
-
-/** Read-only actions; the tool may run them concurrently. */
-export const READ_ACTIONS = ['board', 'list', 'get', 'locks', 'harnessStatus', 'skillsCatalog']
+/** Action metadata is defined once in actions/registry.mjs. Re-export the
+ * derived names so the tool, skill and route keep their existing imports. */
+export { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS }
 
 const STATUS_RANK = { pending: 0, running: 1, reviewing: 2, testing: 3, blocked: 4, done: 5, cancelled: 6 }
 
@@ -335,6 +269,361 @@ export function createApi(ctx, options) {
   const notifyTimeoutMs = Number.isFinite(opts.notifyTimeoutMs) ? Math.max(1, Math.floor(opts.notifyTimeoutMs)) : 15 * 1000
   const sleep = typeof opts.sleep === 'function' ? opts.sleep : (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
+  // Read-side handlers live in actions/read.mjs; this factory receives the API
+  // helpers so board/list/get/locks keep their exact semantics.
+  const readActions = createReadActions({
+    snapshot: snapshot,
+    readBoardOrFail: readBoardOrFail,
+    state: state,
+    locks: locks,
+    model: model,
+    archivedTask: archivedTask,
+    detailOf: detailOf,
+    candidateOf: candidateOf,
+    callerSessionId: callerSessionId,
+    ok: ok,
+    failure: failure,
+  })
+  const callerHelpers = createCallerHelpers({ roleKindOf: roleKindOf })
+  const callerIdentifiers = callerHelpers.callerIdentifiers
+  const callerRoleKindOf = callerHelpers.callerRoleKindOf
+  const rosterSummary = callerHelpers.rosterSummary
+  const isAssignee = callerHelpers.isAssignee
+  const callerLookupState = createCallerLookup({
+    callerIdentifiers: callerIdentifiers,
+    callerRoleKindOf: callerRoleKindOf,
+    servicesFor: servicesFor,
+    ctx: ctx,
+    liveLeads: liveLeads,
+    resolveAnyLead: resolveAnyLead,
+    roleKindOf: roleKindOf,
+  })
+  const callerLookup = callerLookupState.callerLookup
+  const callerMemberOf = callerLookupState.callerMemberOf
+  const callerRole = callerLookupState.callerRole
+  const ownerOf = callerLookupState.ownerOf
+  const assigneeMatches = callerLookupState.assigneeMatches
+  const gates = createGates({
+    callerMemberOf: callerMemberOf,
+    callerRole: callerRole,
+    roles: roles,
+    MERGER_NAME: MERGER_NAME,
+    memberProjectOf: memberProjectOf,
+    roleSlotOf: roleSlotOf,
+    projectSlotKey: projectSlotKey,
+    projectIdOf: projectIdOf,
+    ctx: ctx,
+    failure: failure,
+  })
+  const roleAdminRefusal = gates.roleAdminRefusal
+  const mergeRefusal = gates.mergeRefusal
+  const harnessRefusal = gates.harnessRefusal
+  const wrongProjectRefusal = gates.wrongProjectRefusal
+  const verdictGate = createVerdictGate({
+    roles: roles,
+    callerLookup: callerLookup,
+    callerIdentifiers: callerIdentifiers,
+    roleKindOf: roleKindOf,
+    callerRoleKindOf: callerRoleKindOf,
+    agentSessionOf: agentSessionOf,
+    isAssignee: isAssignee,
+    rosterSummary: rosterSummary,
+    failure: failure,
+  })
+  const verdictRefusal = verdictGate.verdictRefusal
+  const harnessActions = createHarnessActions({ harnessRefusal: harnessRefusal, harness: harness, ok: ok, failure: failure })
+  const controlActions = createControlActions({
+    mutate: mutate,
+    model: model,
+    clock: clock,
+    scheduler: scheduler,
+    maybeArchive: maybeArchive,
+    ok: ok,
+    failure: failure,
+  })
+  const lifecycleActions = createLifecycleActions({
+    readBoardOrFail: readBoardOrFail,
+    model: model,
+    writeTask: writeTask,
+    clock: clock,
+    writeByName: writeByName,
+    state: state,
+    ctx: ctx,
+    interruptAssignee: interruptAssignee,
+    cleanupInvestigation: cleanupInvestigation,
+    failure: failure,
+  })
+  const mergeActions = createMergeActions({
+    mergeRefusal: mergeRefusal,
+    mergeQueueKey: mergeQueueKey,
+    serialised: serialised,
+    mergeOne: mergeOne,
+    notifyMergeOutcome: notifyMergeOutcome,
+    readBoardOrFail: readBoardOrFail,
+    model: model,
+    writeTask: writeTask,
+    recordMergeResult: recordMergeResult,
+    clock: clock,
+    writeByName: writeByName,
+    emitActivity: emitActivity,
+    refreshMergeRequest: refreshMergeRequest,
+    ownerOf: ownerOf,
+    assigneeMatches: assigneeMatches,
+    callerMemberOf: callerMemberOf,
+    MERGER_NAME: MERGER_NAME,
+    readTargetHead: readTargetHead,
+    readBranchHead: readBranchHead,
+    git: git,
+    messageOf: messageOf,
+    provisionRole: provisionRole,
+    provisionFailedHard: provisionFailedHard,
+    provisionReasonOf: provisionReasonOf,
+    markWaiting: markWaiting,
+    clearWaiting: clearWaiting,
+    roleSlotNameOf: roleSlotNameOf,
+    assignStageSlot: assignStageSlot,
+    notifyMember: notifyMember,
+    reviewBriefFor: reviewBriefFor,
+    recordDeliveredTo: recordDeliveredTo,
+    ok: ok,
+    failure: failure,
+  })
+  const submitActions = createSubmitAction({
+    wrongProjectRefusal: wrongProjectRefusal,
+    roles: roles,
+    callerRole: callerRole,
+    readBoardOrFail: readBoardOrFail,
+    taskForContext: taskForContext,
+    model: model,
+    clock: clock,
+    prepareMergeRequest: prepareMergeRequest,
+    REVIEW_MAX_ROUNDS: REVIEW_MAX_ROUNDS,
+    provisionRole: provisionRole,
+    provisionFailedHard: provisionFailedHard,
+    provisionReasonOf: provisionReasonOf,
+    markWaiting: markWaiting,
+    writeTask: writeTask,
+    writeByName: writeByName,
+    clearWaiting: clearWaiting,
+    recordStageSlot: recordStageSlot,
+    ctx: ctx,
+    locks: locks,
+    state: state,
+    notifyMergerOpened: notifyMergerOpened,
+    enforceReviewRoundLimit: enforceReviewRoundLimit,
+    releaseTaskLocks: releaseTaskLocks,
+    emitActivity: emitActivity,
+    roleSlotNameOf: roleSlotNameOf,
+    assignStageSlot: assignStageSlot,
+    notifyMember: notifyMember,
+    reviewBriefFor: reviewBriefFor,
+    recordDeliveredTo: recordDeliveredTo,
+    ok: ok,
+    failure: failure,
+  })
+  const testVerdictActions = createTestVerdictActions({
+    verdictRefusal: verdictRefusal,
+    readBoardOrFail: readBoardOrFail,
+    model: model,
+    writeTask: writeTask,
+    clock: clock,
+    writeByName: writeByName,
+    promoteStageSlots: promoteStageSlots,
+    roleSlotNameOf: roleSlotNameOf,
+    state: state,
+    testerBriefFor: testerBriefFor,
+    godotInfoFor: godotInfoFor,
+    notifyMember: notifyMember,
+    recordDeliveredTo: recordDeliveredTo,
+    emitActivity: emitActivity,
+    recordStageSlot: recordStageSlot,
+    ctx: ctx,
+    candidateWorkflow: candidateWorkflow,
+    normaliseVerify: normaliseVerify,
+    VERIFY_DEFAULT_TIMEOUT_MS: VERIFY_DEFAULT_TIMEOUT_MS,
+    boundedAwait: boundedAwait,
+    mergeTestedCandidate: mergeTestedCandidate,
+    actionTimeoutMs: actionTimeoutMs,
+    actionTimeoutFailure: actionTimeoutFailure,
+    merger: merger,
+    worktreeRootOf: worktreeRootOf,
+    serialised: serialised,
+    testFailureBriefFor: testFailureBriefFor,
+    ok: ok,
+    failure: failure,
+  })
+  const reviewVerdictActions = createReviewVerdictActions({
+    verdictRefusal: verdictRefusal,
+    readBoardOrFail: readBoardOrFail,
+    model: model,
+    writeTask: writeTask,
+    clock: clock,
+    writeByName: writeByName,
+    candidateWorkflow: candidateWorkflow,
+    boundedAwait: boundedAwait,
+    serialised: serialised,
+    merger: merger,
+    worktreeRootOf: worktreeRootOf,
+    actionTimeoutMs: actionTimeoutMs,
+    actionTimeoutFailure: actionTimeoutFailure,
+    branchBehind: branchBehind,
+    rebaseDetail: rebaseDetail,
+    markWaiting: markWaiting,
+    setRebuildAttempts: setRebuildAttempts,
+    normaliseVerify: normaliseVerify,
+    runHostCheck: runHostCheck,
+    ctx: ctx,
+    hostCheckEvidence: hostCheckEvidence,
+    recordCandidate: recordCandidate,
+    emitActivity: emitActivity,
+    clearStageSlots: clearStageSlots,
+    notifyMember: notifyMember,
+    reworkBriefFor: reworkBriefFor,
+    provisionRole: provisionRole,
+    provisionFailedHard: provisionFailedHard,
+    provisionReasonOf: provisionReasonOf,
+    state: state,
+    roleSlotNameOf: roleSlotNameOf,
+    assignStageSlot: assignStageSlot,
+    testerBriefFor: testerBriefFor,
+    godotInfoFor: godotInfoFor,
+    recordDeliveredTo: recordDeliveredTo,
+    promoteStageSlots: promoteStageSlots,
+    reviewBriefFor: reviewBriefFor,
+    ok: ok,
+    failure: failure,
+  })
+  const projectActions = createProjectActions({
+    state: state,
+    fs: ctx.fs,
+    sessionIdOf: sessionIdOf,
+    preflightProject: preflightProject,
+    projectTeamFor: projectTeamFor,
+    remember: remember,
+    snapshot: snapshot,
+    resolveProjectRoot: resolveProjectRoot,
+    messageOf: messageOf,
+    failure: failure,
+  })
+  const onboardActions = createOnboardAction({
+    callerSessionId: callerSessionId,
+    clock: clock,
+    onboardWorkspaceOf: onboardWorkspaceOf,
+    state: state,
+    resolveOnboardRoot: resolveOnboardRoot,
+    ctx: ctx,
+    renderOnboardBrief: renderOnboardBrief,
+    renderProjectLine: renderProjectLine,
+    ONBOARD_VERSION: ONBOARD_VERSION,
+    onboardProjectSummary: onboardProjectSummary,
+    onboardTeamSummary: onboardTeamSummary,
+    onboardDispatchSummary: onboardDispatchSummary,
+    needsUserFor: needsUserFor,
+    decideOnboardStage: decideOnboardStage,
+    selectOnboardNext: selectOnboardNext,
+    preflightProject: preflightProject,
+    checkTextOf: checkTextOf,
+    resolveProjectRoot: resolveProjectRoot,
+    projectIdOf: projectIdOf,
+    sessionOwnsProject: sessionOwnsProject,
+    remember: remember,
+    git: git,
+    roles: roles,
+    bootstrapTeamFor: bootstrapTeamFor,
+    projectTeamFor: projectTeamFor,
+    summariseBoard: summariseBoard,
+    boardSizeOf: boardSizeOf,
+    environmentSnapshot: environmentSnapshot,
+    messageOf: messageOf,
+    renderTaskLine: renderTaskLine,
+    blockedSuffixOf: blockedSuffixOf,
+    teamLabelOf: teamLabelOf,
+    ok: ok,
+    failure: failure,
+  })
+  const actionPreflight = createActionPreflight({
+    ownerOf: ownerOf,
+    heartbeat: heartbeat,
+    stoppedTaskRefusal: stoppedTaskRefusal,
+    recordPhaseActivity: recordPhaseActivity,
+    ctx: ctx,
+    DEV_ONLY_ACTIONS: DEV_ONLY_ACTIONS,
+    readBoardOrFail: readBoardOrFail,
+    model: model,
+    failure: failure,
+  })
+  const projectAdminActions = createProjectAdminActions({
+    roleAdminRefusal: roleAdminRefusal,
+    skillsCatalog: skillsCatalog,
+    readBoardOrFail: readBoardOrFail,
+    worktreesCleanup: worktreesCleanup,
+    callerSessionId: callerSessionId,
+    bootstrapTeamFor: bootstrapTeamFor,
+    teamBootstrapStep: teamBootstrapStep,
+    ok: ok,
+  })
+  const taskAdminActions = createTaskAdminActions({
+    projectTeamFor: projectTeamFor,
+    callerSessionId: callerSessionId,
+    taskInput: taskInput,
+    checkTarget: checkTarget,
+    sessionIdOf: sessionIdOf,
+    mutate: mutate,
+    model: model,
+    clock: clock,
+    detailOf: detailOf,
+    writeTask: writeTask,
+    locks: locks,
+    state: state,
+    preflightRefusal: preflightRefusal,
+    readBoardOrFail: readBoardOrFail,
+    worktreeRefusal: worktreeRefusal,
+    scheduler: scheduler,
+    interruptAssignee: interruptAssignee,
+    ctx: ctx,
+    ok: ok,
+    failure: failure,
+  })
+  const reportActions = createReportAction({
+    wrongProjectRefusal: wrongProjectRefusal,
+    readBoardOrFail: readBoardOrFail,
+    taskForContext: taskForContext,
+    probeCommitsOf: probeCommitsOf,
+    writeTask: writeTask,
+    model: model,
+    clock: clock,
+    writeByName: writeByName,
+    locks: locks,
+    state: state,
+    writeReportFile: writeReportFile,
+    cleanupInvestigation: cleanupInvestigation,
+    emitActivity: emitActivity,
+    ok: ok,
+    failure: failure,
+  })
+  const roleActions = createRoleActions({
+    roleAdminRefusal: roleAdminRefusal,
+    readRoleConfig: readRoleConfig,
+    fs: ctx.fs,
+    callerSessionId: callerSessionId,
+    roleInstanceList: roleInstanceList,
+    rolePreviewFor: rolePreviewFor,
+    persistRoles: persistRoles,
+    emitActivity: emitActivity,
+    roles: roles,
+    sessionIdOf: sessionIdOf,
+    roleKindOf: roleKindOf,
+    roleMemberNamed: roleMemberNamed,
+    liveRoleNames: liveRoleNames,
+    ensureRoleBounded: ensureRoleBounded,
+    emitRoleProvision: emitRoleProvision,
+    clock: clock,
+    sleep: sleep,
+    drainTimeoutMs: drainTimeoutMs,
+    drainIntervalMs: drainIntervalMs,
+    ok: ok,
+    failure: failure,
+  })
   // A task can be merged by both the tester's passTest and the host sweep. The
   // second caller must not take the stale branch and rebuild a candidate for a
   // task that is already done; one in-process claim per task makes merging idempotent.
@@ -381,198 +670,14 @@ export function createApi(ctx, options) {
    * an older caller that only sends a name still resolves.
    */
   /** The identifiers a call carries for its caller: agent session/id and display label. */
-  function callerIdentifiers(context) {
-    const agent = context !== undefined && context !== null && context.agent !== undefined && context.agent !== null ? context.agent : null
-    const by = context !== undefined && context !== null && typeof context.by === 'string' && context.by.length > 0 ? context.by : null
-    const ids = []
-    const names = []
-    if (agent !== null) {
-      if (agent.id !== undefined && agent.id !== null && String(agent.id) !== '') ids.push(String(agent.id))
-      if (agent.session !== undefined && agent.session !== null && String(agent.session) !== '') ids.push(String(agent.session))
-      if (agent.name !== undefined && agent.name !== null && String(agent.name) !== '') names.push(String(agent.name))
-    }
-    if (by !== null) {
-      names.push(by)
-      if (by.charAt(0) === '@') names.push(by.slice(1))
-    }
-    return { ids: ids, names: names, by: by }
-  }
-
-  /** The logical role of an identifier: legacy tester-1, project slot tester-p<key>-1, or @label. */
-  function callerRoleKindOf(value) {
-    if (typeof value !== 'string' || value === '') return null
-    const trimmed = value.charAt(0) === '@' ? value.slice(1) : value
-    const kind = roleKindOf(trimmed)
-    if (kind !== null) return kind
-    // A durable member name may be plain 'tester-1' while the project slot is
-    // tester-p<key>-1; strip the session prefix to compare logically.
-    const short = trimmed.replace(/^session-/, '')
-    return roleKindOf(short)
-  }
-
-  /**
+/** The logical role of an identifier: legacy tester-1, project slot tester-p<key>-1, or @label. */
+/**
    * The Team member this call comes from, resolved inside the CALLER'S OWN Team.
    * Never "the first Lead": every live Lead's roster is searched, so a host with
    * several sessions matches the right one. A project slot (tester-p<key>-1) is
    * accepted as the logical role of a durable member named tester-1 and vice
    * versa, because T-88 renamed slots while member names stayed stable.
    */
-  function callerLookup(context) {
-    if (context === undefined || context === null) return { member: null, lead: null, leads: [], rosters: [], rosterErrors: [] }
-    const { ids, names, by } = callerIdentifiers(context)
-    if (ids.length === 0 && names.length === 0) return { member: null, lead: null, leads: [], rosters: [], rosterErrors: [] }
-    const { agents, agentTeams } = servicesFor(ctx)
-    if (agentTeams === undefined || agentTeams === null) return { member: null, lead: null, leads: [], rosters: [], rosterErrors: [] }
-    // T-116 (review round 2): the AGENT REGISTRY is the first authority. A
-    // subagent is a real agent even when no Lead roster lists it.
-    const registry = { tried: [], found: null, role: null, name: null, error: null }
-    if (agents !== undefined && agents !== null) {
-      const candidates = []
-      for (const id of ids) {
-        registry.tried.push('agents.get(' + id + ')')
-        try {
-          const got = typeof agents.get === 'function' ? agents.get(id) : undefined
-          if (got !== undefined && got !== null && typeof got.then !== 'function') candidates.push(got)
-        } catch (error) {
-          registry.error = String((error && error.message) || error)
-        }
-      }
-      if (candidates.length === 0) {
-        registry.tried.push('agents.list()')
-        try {
-          const listed = typeof agents.list === 'function' ? agents.list() : []
-          for (const candidate of Array.isArray(listed) ? listed : []) {
-            const idMatch = candidate !== null && typeof candidate === 'object' && candidate.id !== undefined && candidate.id !== null && ids.indexOf(String(candidate.id)) >= 0
-            const nameMatch = candidate !== null && typeof candidate === 'object' && typeof candidate.name === 'string' && names.indexOf(candidate.name) >= 0
-            if (idMatch || nameMatch) candidates.push(candidate)
-          }
-        } catch (error) {
-          registry.error = String((error && error.message) || error)
-        }
-      }
-      for (const candidate of candidates) {
-        let membership = null
-        try {
-          membership = agentTeams.tryMembership(candidate)
-        } catch (error) {
-          membership = null
-        }
-        if (membership === undefined || membership === null) continue
-        const name = typeof candidate.name === 'string' && candidate.name !== '' ? candidate.name : typeof membership.name === 'string' ? membership.name : null
-        registry.found = candidate
-        registry.role = typeof membership.role === 'string' ? membership.role : null
-        registry.name = name
-        break
-      }
-    }
-    let leads = liveLeads(ctx)
-    if (leads.length === 0) {
-      const legacy = resolveAnyLead(ctx)
-      if (legacy !== null) leads = [legacy]
-    }
-    const rosters = []
-    // T-116: a roster that cannot be read is a DIAGNOSTIC, never a silent "nobody".
-    const rosterErrors = []
-    for (const lead of leads) {
-      let members = []
-      try {
-        members = agentTeams.listMembers(lead)
-      } catch (error) {
-        rosterErrors.push({ lead: lead, error: String((error && error.message) || error) })
-        continue
-      }
-      if (!Array.isArray(members)) {
-        rosterErrors.push({ lead: lead, error: 'listMembers returned a non-array' })
-        continue
-      }
-      rosters.push({ lead: lead, members: members })
-    }
-    // Registry match first: a subagent may be absent from every Lead roster.
-    if (registry.found !== null) {
-      const row = registry.found
-      const rowId = row.id === undefined || row.id === null ? null : String(row.id)
-      const rowName = typeof row.name === 'string' && row.name !== '' ? row.name : registry.name
-      let ownerLead = null
-      for (const entry of rosters) {
-        const listed = entry.members.filter(
-          (member) =>
-            member !== null &&
-            typeof member === 'object' &&
-            ((rowId !== null && member.id !== undefined && member.id !== null && String(member.id) === rowId) || (rowName !== null && member.name === rowName)),
-        )[0]
-        if (listed !== undefined) {
-          ownerLead = entry.lead
-          break
-        }
-      }
-      const member = { id: rowId, name: rowName, role: registry.role }
-      return { member: member, lead: ownerLead, leads: leads, rosters: rosters, rosterErrors: rosterErrors, registry: registry, source: 'registry' }
-    }
-    // 1) exact member id / session.
-    for (const entry of rosters) {
-      for (const member of entry.members) {
-        if (member === null || typeof member !== 'object' || member.id === undefined || member.id === null) continue
-        if (ids.indexOf(String(member.id)) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters, rosterErrors: rosterErrors }
-      }
-    }
-    // 2) exact member name / display label.
-    for (const entry of rosters) {
-      for (const member of entry.members) {
-        if (member === null || typeof member !== 'object' || typeof member.name !== 'string') continue
-        if (names.indexOf(member.name) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters, rosterErrors: rosterErrors }
-      }
-    }
-    // 3) logical role alias: durable tester-1 <-> project slot tester-p<key>-1.
-    const wantedKinds = []
-    for (const value of names.concat(ids)) {
-      const kind = callerRoleKindOf(value)
-      if (kind !== null && wantedKinds.indexOf(kind) < 0) wantedKinds.push(kind)
-    }
-    for (const entry of rosters) {
-      for (const member of entry.members) {
-        if (member === null || typeof member !== 'object' || typeof member.name !== 'string') continue
-        const kind = callerRoleKindOf(member.name)
-        if (kind !== null && wantedKinds.indexOf(kind) >= 0) return { member: member, lead: entry.lead, leads: leads, rosters: rosters, rosterErrors: rosterErrors }
-      }
-    }
-    return { member: null, lead: null, leads: leads, rosters: rosters, rosterErrors: rosterErrors, registry: registry, by: by }
-  }
-
-  function callerMemberOf(context) {
-    const found = callerLookup(context)
-    return found.member === undefined ? null : found.member
-  }
-
-  /** Human-readable "who a Lead's roster carries", for refusal messages. */
-  function rosterSummary(rosters, rosterErrors, leads) {
-    const lines = []
-    const readable = Array.isArray(rosters) ? rosters : []
-    const errors = Array.isArray(rosterErrors) ? rosterErrors : []
-    for (const entry of readable) {
-      const lead = entry.lead === null || entry.lead === undefined ? null : entry.lead
-      const leadName = lead === null ? '?' : String(lead.name === undefined || lead.name === null ? lead.id : lead.name)
-      const leadId = lead === null || lead.id === undefined || lead.id === null ? '?' : String(lead.id)
-      const roles = entry.members
-        .filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string')
-        .map((member) => callerRoleKindOf(member.name) || member.name)
-        .filter((value, index, all) => all.indexOf(value) === index)
-      lines.push(leadName + ' (' + leadId + ') -> ' + (roles.length === 0 ? '(roster is empty)' : roles.join(', ')))
-    }
-    for (const entry of errors) {
-      const lead = entry.lead === null || entry.lead === undefined ? null : entry.lead
-      const leadId = lead === null || lead.id === undefined || lead.id === null ? '?' : String(lead.id)
-      const leadName = lead === null || lead.name === undefined || lead.name === null ? leadId : String(lead.name)
-      lines.push(leadName + ' (' + leadId + ') -> roster unavailable: ' + String(entry.error))
-    }
-    if (lines.length === 0) {
-      const count = Array.isArray(leads) ? leads.length : 0
-      return count === 0 ? 'no live Lead is visible to this host' : 'no Lead roster could be read (' + String(count) + ' Lead(s) listed)'
-    }
-    return lines.join('; ')
-  }
-
-  /** The member NAME written alongside an event: resolved at write time from the
-   * caller's Team membership, so the panel never has to reverse an @label. */
   function writeByName(context) {
     if (context === undefined || context === null) return null
     const by = typeof context.by === 'string' ? context.by : ''
@@ -586,80 +691,6 @@ export function createApi(ctx, options) {
   }
 
   /** The caller's Team membership and role kind, when the registry is active. */
-  function callerRole(context) {
-    const member = callerMemberOf(context)
-    if (member === null) return null
-    return { member: member, kind: roleKindOf(member.name) }
-  }
-
-  function isAssignee(task, member) {
-    if (task === null || task === undefined || task.assignee === null || task.assignee === undefined || member === null) return false
-    const sessionMatch = member.id !== undefined && member.id !== null && task.assignee.session !== null && task.assignee.session !== undefined && String(member.id) === String(task.assignee.session)
-    const nameMatch = member.name !== undefined && member.name !== null && task.assignee.name === member.name
-    return sessionMatch || nameMatch
-  }
-
-  /**
-   * A review/test verdict belongs to the corresponding role (or the user).
-   * This is the role gate: a worker cannot approve its own work, a reviewer
-   * cannot pass tests, and a tester cannot review. Only active when the role
-   * registry is wired in (the production row always does).
-   */
-  function verdictRefusal(context, task, kind) {
-    if (roles === null) return null
-    if (context !== undefined && context !== null && context.role === 'user') return null
-    const found = callerLookup(context)
-    const { ids, names } = callerIdentifiers(context)
-    // T-116 (b): the member the HOST handed this stage to is authoritative even
-    // when it has since left the Lead's roster (drain/replace).
-    const stageRecord = task === null || task === undefined ? null : kind === 'reviewer' ? task.review : task.test
-    const delivered = stageRecord === null || stageRecord === undefined || stageRecord.deliveredTo === undefined || stageRecord.deliveredTo === null ? null : stageRecord.deliveredTo
-    const deliveredMatch =
-      delivered !== null &&
-      ((delivered.id !== null && delivered.id !== undefined && ids.indexOf(String(delivered.id)) >= 0) ||
-        (delivered.name !== null && delivered.name !== undefined && names.indexOf(String(delivered.name)) >= 0))
-    if (deliveredMatch) return null
-    if (found.member === null || found.member === undefined) {
-      const registry = found.registry === undefined || found.registry === null ? null : found.registry
-      const registryText =
-        registry === null
-          ? 'registry: 不可用'
-          : 'registry: ' +
-            (registry.found === null ? 'not found' : 'role ' + String(registry.role) + (registry.name === null ? '' : ' name ' + String(registry.name))) +
-            '（已尝试 ' + registry.tried.join(', ') + '）'
-      return failure(
-        'role-required',
-        '你在 ' + rosterSummary(found.rosters, found.rosterErrors, found.leads) + ' 里没有 ' + kind + ' 角色；' + registryText +
-          '；已尝试 agent 注册表与 ' + String(Array.isArray(found.leads) ? found.leads.length : 0) + ' 个 Lead roster。只有该角色的成员、这张卡当前阶段的交付对象或用户能记录此裁决。',
-      )
-    }
-    const caller = { member: found.member, kind: roleKindOf(found.member.name) === null ? callerRoleKindOf(found.member.name) : roleKindOf(found.member.name) }
-    // T-112: a verdict belongs to the team of the session that OWNS the card.
-    // A tester from another Lead's roster must not decide this card.
-    const cardSession = task !== null && task !== undefined && typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
-    const leadSession = found.lead === null || found.lead === undefined ? null : agentSessionOf(found.lead)
-    // Only a KNOWN Lead session can own a card: worker/tool sessions are not
-    // teams, so a worker's own session id never blocks its reviewer/tester.
-    const ownerLead = cardSession === null ? null : (found.leads || []).filter((lead) => agentSessionOf(lead) === cardSession)[0]
-    if (caller !== null && caller.kind !== null && ownerLead !== undefined && ownerLead !== null && leadSession !== null && cardSession !== leadSession) {
-      return failure(
-        'wrong-session',
-        '这张卡属于会话 ' + cardSession + '，而你的裁决来自 Lead ' + String(found.lead.name === undefined ? found.lead.id : found.lead.name) + ' 的会话 ' + leadSession + '；跨会话裁决已被拒绝，请在卡片所属会话里裁决。',
-      )
-    }
-    if (isAssignee(task, caller.member)) {
-      return failure(
-        kind === 'reviewer' ? 'worker-cannot-self-review' : 'worker-cannot-self-test',
-        'The assignee cannot record its own ' + (kind === 'reviewer' ? 'review' : 'test') + ' verdict; an independent ' + kind + ' must.',
-      )
-    }
-    if (caller.kind !== kind) {
-      return failure('wrong-role', 'Only a ' + kind + ' role member or the user can record this verdict; ' + String(caller.member.name === undefined || caller.member.name === null ? 'this agent' : caller.member.name) + ' is not one.')
-    }
-    return null
-  }
-
-  /** The dispatch worktree root of one board. */
   function worktreeRootOf(board) {
     const settings = board === undefined || board === null || board.dispatch === undefined || board.dispatch === null ? null : board.dispatch.worktree
     return settings !== null && settings !== undefined && typeof settings.root === 'string' && settings.root.length > 0 ? settings.root : '.worktrees'
@@ -1214,37 +1245,11 @@ export function createApi(ctx, options) {
    * "merger" — a fixed role the Lead spawns, not a permission switch. Every
    * other agent is refused before the queue is touched.
    */
-  function mergeRefusal(context) {
-    if (context !== undefined && context !== null && context.role === 'user') return null
-    const member = callerMemberOf(context)
-    if (member !== null && member.name === MERGER_NAME) return null
-    return failure(
-      'merger-only',
-      'Only the user or the Team member named "' +
-        MERGER_NAME +
-        '" can merge or reject merge requests; everyone else reports done and lets the merger integrate.',
-    )
-  }
-
-  /**
+/**
    * The isolated DSH harness belongs to the tester (or the user). No other agent
    * can start, stop or probe it; without a role registry only the user may.
    */
-  function harnessRefusal(context) {
-    if (context !== undefined && context !== null && context.role === 'user') return null
-    if (roles === null) {
-      return failure('tester-only', 'The isolated DSH harness is driven by the tester role (or the user); this profile has no role registry.')
-    }
-    const caller = callerRole(context)
-    if (caller === null) return failure('role-required', 'Only a tester role member or the user can drive the isolated DSH harness.')
-    if (caller.kind !== 'tester') {
-      const name = caller.member.name === undefined || caller.member.name === null ? 'this agent' : String(caller.member.name)
-      return failure('tester-only', 'Only a tester role member or the user can drive the isolated DSH harness; ' + name + ' is not one.')
-    }
-    return null
-  }
-
-  /**
+/**
    * The task branch's CURRENT head, independent of what the merge request
    * recorded. The task worktree is authoritative when it still exists (that is
    * where the agent committed); otherwise the branch is resolved in the main
@@ -1613,23 +1618,7 @@ export function createApi(ctx, options) {
    * (a restart, a hand-spawned teammate) is not refused: there is nothing to
    * compare, and the project-scoped slot names still keep projects apart.
    */
-  function wrongProjectRefusal(context, projectPath) {
-    const member = callerMemberOf(context)
-    if (member === null) return null
-    const known = memberProjectOf(ctx, member.name)
-    const slot = roleSlotOf(member.name)
-    const callerKey = known !== null ? known.key : slot === null ? null : slot.project
-    if (callerKey === null || callerKey === undefined || callerKey === '') return null
-    if (callerKey === projectSlotKey(projectPath)) return null
-    return failure(
-      'wrong-project',
-      'you were dispatched for another project (' + (known !== null ? known.root : 'slot ' + String(callerKey)) + '); this card belongs to ' + projectPath +
-        '. Do not submit another project\'s card; a worker is only accepted by the board it was dispatched for.',
-      { project: projectIdOf(projectPath), dispatchedFor: known === null ? callerKey : known.root },
-    )
-  }
-
-  /** Role provisioning with a bound: a hung ensure must not hold the action. */
+/** Role provisioning with a bound: a hung ensure must not hold the action. */
   async function ensureRoleBounded(kind, request) {
     const startedAt = Date.now()
     const bounded = await boundedAwait(() => roles.ensure(kind, request), actionTimeoutMs)
@@ -2338,11 +2327,6 @@ export function createApi(ctx, options) {
       return { ok: false, code: 'not-live', message: name + ' has failed; the host auto-provisioning will replace it (or replace the role kind)' }
     }
     return { ok: true, member: member }
-  }
-
-  function roleAdminRefusal(context, message) {
-    if (context !== undefined && context !== null && context.role === 'user') return null
-    return failure('user-only', message === undefined ? 'Role profiles belong to the user; manage them from the task center panel.' : message)
   }
 
   async function persistRoles(projectPath, config) {
@@ -3211,26 +3195,7 @@ export function createApi(ctx, options) {
     }
   }
 
-  function ownerOf(context) {
-    if (context === undefined || context === null) return null
-    if (context.role === 'user') return null
-    // The unified heartbeat path calls this for EVERY action, so an explicit
-    // "no agent" (null) must read as "no owner" instead of throwing.
-    const agent = context.agent === undefined || context.agent === null ? null : context.agent
-    return { session: agent === null || agent.id === undefined || agent.id === null ? null : agent.id, name: context.by }
-  }
-
-  function assigneeMatches(task, owner) {
-    if (owner === null) return true
-    if (task.assignee === null) return true
-    if (owner.session !== null && owner.session !== undefined && task.assignee.session === owner.session) return true
-    if (owner.name !== null && owner.name !== undefined && task.assignee.name === owner.name) return true
-    // A claim with no session cannot be verified; refusing would strand the
-    // task on an identity the tool layer cannot see.
-    return task.assignee.session === null || task.assignee.session === undefined
-  }
-
-  /** Actions that address one task: the stopped-task guard reads the board for
+/** Actions that address one task: the stopped-task guard reads the board for
    * them only, so board/list/openProject stay free of a second read. */
   const STOPPED_GUARD_ACTIONS = [
     'get',
@@ -4240,45 +4205,17 @@ export function createApi(ctx, options) {
     })
   }
 
-  async function resolveIncoming(source, context) {
-    const explicit = typeof source.project === 'string' && source.project.trim().length > 0 ? source.project.trim() : ''
-    if (explicit !== '') return { ok: true, root: resolve(explicit), resolvedFrom: 'explicit' }
-    // T-102: the session's DSH directory names its workspace, so a tool call made
-    // before openProject still lands on the right project. Unknown id => skip.
-    if (state !== null && typeof state.lookupSessionRoot === 'function') {
-      const lookedId = sessionIdOf(context)
-      if (lookedId !== null) {
-        const looked = await state.lookupSessionRoot(lookedId)
-        if (looked.ok === true) {
-          const viaLookup = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: looked.path })
-          if (viaLookup.ok === true) return { ok: true, root: viaLookup.root, resolvedFrom: 'session-lookup' }
-        }
-      }
-    }
-    const sessionRoot = context === undefined || context === null ? null : typeof context.sessionRoot === 'string' ? context.sessionRoot : typeof context.projectPath === 'string' ? context.projectPath : null
-    if (sessionRoot === null) {
-      return failure('no-project-bound', 'No project is bound to this session. Pass project, or open a project from the panel.')
-    }
-    if (state !== null && typeof state.setSessionRoot === 'function') {
-      const sessionId = sessionIdOf(context)
-      if (sessionId !== null) state.setSessionRoot(sessionId, sessionRoot)
-    }
-    const resolved = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: sessionRoot })
-    if (resolved.ok !== true) return resolved
-    return { ok: true, root: resolved.root, resolvedFrom: resolved.resolvedFrom }
-  }
-
   async function perform(action, input, context) {
     const source = input === undefined || input === null ? {} : input
     if (action === 'openProject') {
-      return openProject(source, context)
+      return projectActions.openProject(source, context)
     }
     if (action === 'onboard') {
       // T-129: onboarding answers BEFORE project resolution — "this session has
       // no project bound yet" is exactly the state it exists to resolve.
-      return onboardAction(source, context)
+      return onboardActions.onboard(source, context)
     }
-    const incoming = await resolveIncoming(source, context)
+    const incoming = await projectActions.resolveIncoming(source, context)
     if (incoming.ok !== true) return incoming
     const projectPath = incoming.root
     const actionContext = Object.assign({}, context, { resolvedFrom: incoming.resolvedFrom })
@@ -4297,1190 +4234,35 @@ export function createApi(ctx, options) {
     // call. Routing it through one place is what keeps 'lock' and 'unlock' (which
     // never write the board and used to bypass mutate()) from silently drifting
     // into expiry, and it stops an action from renewing twice.
-    const owner = ownerOf(context)
-    if (owner !== null) await heartbeat(projectPath, owner)
-    const stopped = await stoppedTaskRefusal(projectPath, action, source, context, owner)
-    if (stopped !== null) return stopped
-    // Any task-scoped call by a role renews that round's silence clock. The
-    // watchdog measures silence from this, so a tester that keeps calling
-    // get/passTest is never mistaken for a stuck one.
-    if (typeof source.id === 'string' && source.id !== '') {
-      const activityBy = typeof owner === 'string' ? owner : owner !== null && owner !== undefined && typeof owner.name === 'string' ? owner.name : null
-      const activitySession = owner !== null && owner !== undefined && typeof owner === 'object' && typeof owner.session === 'string' ? owner.session : null
-      recordPhaseActivity(ctx, source.id, activityBy, now, activitySession)
-    }
+    const preflightRefusal = await actionPreflight.run(action, source, context, projectPath, now)
+    if (preflightRefusal !== null) return preflightRefusal
+    const projectAdminHandler = projectAdminActions[action]
+    if (projectAdminHandler !== undefined) return projectAdminHandler(source, context, projectPath)
+    const roleHandler = roleActions[action]
+    if (roleHandler !== undefined) return roleHandler(source, context, projectPath)
 
-    // T-131: refuse a dev-only phase action on an investigation BEFORE it reaches
-    // a handler that would provision a reviewer or build a test candidate.
-    if (DEV_ONLY_ACTIONS.indexOf(action) >= 0) {
-      const guardId = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
-      if (guardId !== '') {
-        const read = await readBoardOrFail(projectPath)
-        if (read.failed !== undefined) return read.failed
-        const guardTask = model.findTask(read.board, guardId)
-        if (guardTask !== undefined && guardTask.kind === 'investigate') {
-          return failure('not-a-dev-task', guardId + ' is an investigation card; it has no ' + String(action) + ' phase — finish it with task_center { action: "report" }')
-        }
-      }
-    }
-    if (action === 'skillsCatalog') {
-      const denied = roleAdminRefusal(context, 'The skill catalog belongs to the user; open it from the task center panel.')
-      if (denied !== null) return denied
-      return skillsCatalog(projectPath)
-    }
-    if (action === 'worktreesCleanup') {
-      // T-142: removing stale checkouts is a user decision. The tool does not
-      // expose this action; a direct agent call is refused here as well.
-      const denied = roleAdminRefusal(context, 'Worktree cleanup belongs to the user; run it from the task center panel.')
-      if (denied !== null) return denied
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      return worktreesCleanup(projectPath, read.board, source)
-    }
-    if (action === 'bootstrapTeam') {
-      // T-121: an agent can bootstrap its OWN team instead of asking the user.
-      // T-129: onboarding calls the SAME routine, so a team is only ever built
-      // one way (and a second onboard while the team is ok builds nothing).
-      const sessionId = callerSessionId(source, context)
-      const boot = await bootstrapTeamFor(projectPath, sessionId)
-      if (boot.ok !== true) return boot
-      return ok({ bootstrap: true, session: boot.session, lead: boot.lead, roles: boot.roles, deferred: boot.deferred, team: boot.team, nextStep: teamBootstrapStep(boot.team) })
-    }
-    if (action.indexOf('roles') === 0 && USER_ONLY_ACTIONS.indexOf(action) >= 0) {
-      const denied = roleAdminRefusal(context)
-      if (denied !== null) return denied
-      const read = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
-      const current = read.config
-      // T-130: role administration follows the PANEL session. The panel can never
-      // list, drain, replace or reset another session's team.
-      const roleSessionId = callerSessionId(source, context)
-      if (action === 'rolesList') {
-        return ok({
-          source: read.source,
-          error: read.error,
-          config: current,
-          stages: current.stages,
-          defaults: defaultRoleConfig(),
-          sessionId: roleSessionId,
-          instances: roleInstanceList({ sessionId: roleSessionId }),
-        })
-      }
-      if (action === 'rolesPreview') {
-        return rolePreviewFor(projectPath, current, source)
-      }
-      if (action === 'rolesCreate' || action === 'rolesUpdate') {
-        const name = String(source.name === undefined ? '' : source.name)
-        const profileInput = source.profile !== undefined && source.profile !== null && typeof source.profile === 'object' && !Array.isArray(source.profile) ? source.profile : {}
-        let merged = null
-        if (action === 'rolesCreate') {
-          if (name === '') return failure('missing-name', 'rolesCreate needs a profile name')
-          if (current.profiles[name] !== undefined) return failure('role-exists', name + ' already exists; use rolesUpdate to edit it')
-          merged = Object.assign({}, profileInput)
-          if (merged.role === undefined && merged.kind === undefined && ROLE_KINDS.indexOf(name) >= 0) merged.role = name
-        } else {
-          if (current.profiles[name] === undefined) return failure('unknown-role-profile', 'no role profile named ' + name)
-          // The three built-in profiles are host defaults, not editable documents:
-          // the UI forks a copy, and the API enforces the same rule for every caller.
-          if (ROLE_KINDS.indexOf(name) >= 0) {
-            return failure('builtin-profile-immutable', 'the built-in ' + name + ' profile cannot be edited; fork a copy instead')
-          }
-          const existing = current.profiles[name]
-          // T-138: `instances`/`concurrency` are NOT profile fields any more; a
-          // legacy client sending them is ignored (reported to the caller below).
-          merged = Object.assign(
-            {
-              role: existing.role,
-              stage: existing.stage,
-              skills: existing.skills,
-              context: existing.context,
-              permissions: existing.permissions,
-              prompt: existing.prompt,
-            },
-            profileInput,
-          )
-        }
-        const validated = validateRoleProfile(name, merged)
-        if (validated.ok !== true) return validated
-        const config = normaliseRoleConfig(
-          Object.assign({}, current, { profiles: Object.assign({}, current.profiles, { [name]: validated.profile }) }),
-        )
-        const written = await persistRoles(projectPath, config)
-        if (written.ok !== true) return written
-        emitActivity(context, 'role-config', action + ' ' + name, null)
-        const payload = { config: written.config, profile: written.config.profiles[name], source: 'file' }
-        // T-138: tell an old client where the field went instead of storing it.
-        if (legacyRoleFields(profileInput).length > 0) {
-          payload.deprecated = { instances: 'ignored', movedTo: 'dispatch.maxConcurrent / dispatch.maxWorkAgents' }
-        }
-        return ok(payload)
-      }
-      if (action === 'rolesDelete') {
-        const name = String(source.name === undefined ? '' : source.name)
-        if (current.profiles[name] === undefined) return failure('unknown-role-profile', 'no role profile named ' + name)
-        if (ROLE_KINDS.indexOf(name) >= 0) {
-          return failure('default-profile', 'the built-in ' + name + ' profile cannot be deleted; update it or reset the defaults')
-        }
-        const profiles = Object.assign({}, current.profiles)
-        delete profiles[name]
-        const stages = Object.assign({}, current.stages)
-        for (const stage of WORKFLOW_STAGES) {
-          if (stages[stage] === name) stages[stage] = { implement: 'worker', review: 'reviewer', test: 'tester' }[stage]
-        }
-        const config = normaliseRoleConfig(Object.assign({}, current, { profiles: profiles, stages: stages }))
-        const written = await persistRoles(projectPath, config)
-        if (written.ok !== true) return written
-        emitActivity(context, 'role-config', 'deleted profile ' + name, null)
-        return ok({ config: written.config, deleted: name, source: 'file' })
-      }
-      if (action === 'rolesBind') {
-        const stage = String(source.stage === undefined ? '' : source.stage)
-        const name = String(source.profile !== undefined ? source.profile : source.name === undefined ? '' : source.name)
-        const validated = validateRoleBinding(current, stage, name)
-        if (validated.ok !== true) return validated
-        const config = normaliseRoleConfig(Object.assign({}, current, { stages: Object.assign({}, current.stages, { [stage]: name }) }))
-        const written = await persistRoles(projectPath, config)
-        if (written.ok !== true) return written
-        emitActivity(context, 'role-config', 'bound ' + stage + ' to ' + name, null)
-        return ok({ config: written.config, bound: { stage: stage, profile: name }, source: 'file' })
-      }
-      if (action === 'rolesPrune') {
-        // T-118: drop role instances whose slot belongs to ANOTHER project. They
-        // only exist because an older build spawned them into the wrong team.
-        if (roles === null || typeof roles.prune !== 'function') {
-          return failure('roles-unavailable', 'the role manager is not available in this profile')
-        }
-        const pruned = await roles.prune({ projectPath: projectPath, sessionId: sessionIdOf(context) })
-        if (pruned.ok !== true) return failure(pruned.code === undefined ? 'roles-prune-failed' : pruned.code, pruned.message === undefined ? 'could not prune role instances' : pruned.message)
-        emitActivity(context, 'role-prune', 'pruned ' + String(pruned.pruned.length) + ' foreign role instance(s) in ' + String(pruned.lead), null)
-        return ok({
-          pruned: pruned.pruned,
-          kept: pruned.kept,
-          failed: pruned.failed,
-          lead: pruned.lead,
-          project: pruned.project,
-          instances: roleInstanceList({ sessionId: roleSessionId }),
-        })
-      }
-      if (action === 'rolesDrain' || action === 'rolesReplace') {
-        if (roles === null || typeof roles.drain !== 'function') {
-          return failure('roles-unavailable', 'the role manager is not available in this profile')
-        }
-        const requested = String(source.name === undefined ? '' : source.name)
-        let kind = roleKindOf(requested)
-        let targets = []
-        if (kind !== null) {
-          const member = roleMemberNamed(requested, { allowFailed: action === 'rolesReplace', sessionId: roleSessionId })
-          if (member.ok !== true) return member
-          // A failed instance is already replaced by ensure (failed slot), so a
-          // replace skips the drain; a live one is drained with the wait deadline.
-          targets = String(member.member.status) === 'failed' && action === 'rolesReplace' ? [] : [String(member.member.name)]
-        } else if (action === 'rolesReplace' && ROLE_KINDS.indexOf(requested) >= 0) {
-          kind = requested
-          const live = liveRoleNames(kind, { sessionId: roleSessionId })
-          if (live.ok !== true) return live
-          if (live.names.length === 0) return failure('not-live', 'there is no live ' + kind + ' instance to replace')
-          targets = live.names
-        } else {
-          return failure('invalid-role-instance', 'name a role instance (worker-1/reviewer-2/tester-3) or, for replace, a role kind')
-        }
-        const drained = []
-        for (const name of targets) {
-          const result = roles.drain(name, { timeoutMs: action === 'rolesReplace' ? drainTimeoutMs : undefined, now: clock() })
-          if (result.ok !== true) return result
-          drained.push(name)
-        }
-        if (action === 'rolesDrain') {
-          emitActivity(context, 'role-config', 'drained ' + drained.join(', '), null)
-          return ok({ drained: drained, kind: kind, status: roles.status(), sessionId: roleSessionId, instances: roleInstanceList({ sessionId: roleSessionId }) })
-        }
-        // "Drain first, then spawn": the role manager defers a running drained
-        // instance until it is idle or its deadline passes, so no ensure pass
-        // (including the scheduler tick) spawns a replacement early. We poll the
-        // manager's ensure until it no longer reports a deferred instance.
-        const startedAt = Date.now()
-        let ensured = null
-        let waiting = []
-        while (true) {
-          ensured = await ensureRoleBounded(kind, { config: current, projectPath: projectPath, task: null, now: clock(), sessionId: roleSessionId })
-          if (ensured.ok !== true) break
-          waiting = Array.isArray(ensured.waiting) ? ensured.waiting : []
-          if (waiting.length === 0) break
-          const elapsed = Date.now() - startedAt
-          if (elapsed >= drainTimeoutMs) break
-          await sleep(Math.min(drainIntervalMs, Math.max(1, drainTimeoutMs - elapsed)))
-        }
-        const waitedMs = Date.now() - startedAt
-        // Timed out when the wait consumed the full budget before the old instance
-        // went idle; the replacement was then spawned by the manager anyway.
-        const waited = { waitedMs: waitedMs, timedOut: waitedMs >= drainTimeoutMs, waiting: waiting }
-        // T-138: the wait budget can expire a hair before the drained instance's
-        // own deadline, which would return "drained but not replaced". One final
-        // pass applies the timeout replacement deterministically (and the test
-        // for a stuck instance then cannot lose that race).
-        if (waited.timedOut === true && waiting.length > 0) {
-          try {
-            const finalPass = await ensureRoleBounded(kind, { config: current, projectPath: projectPath, task: null, now: clock(), sessionId: roleSessionId })
-            if (finalPass !== null && finalPass !== undefined) {
-              ensured = finalPass
-              waiting = Array.isArray(finalPass.waiting) ? finalPass.waiting : []
-            }
-          } catch (error) {}
-        }
-        emitRoleProvision(ensured)
-        if (ensured === null || ensured.ok !== true) return Object.assign({}, ensured, { drained: drained, waited: waited })
-        emitActivity(context, 'role-config', 'replaced ' + kind + ' instance(s)' + (waited.timedOut === true ? ' (wait timed out)' : ''), null)
-        return ok({
-          kind: kind,
-          drained: drained,
-          waited: waited,
-          created: ensured.created,
-          reused: ensured.reused,
-          replaced: ensured.replaced,
-          waiting: ensured.waiting,
-          status: roles.status(),
-          sessionId: roleSessionId,
-          instances: roleInstanceList({ sessionId: roleSessionId }),
-        })
-      }
-      if (action === 'rolesReset') {
-        // A reset restores the three BUILT-IN profiles only. Custom copies are
-        // the user's work, so they survive; stage bindings to them stay as they
-        // are, and bindings to a built-in stay on that built-in.
-        const defaults = defaultRoleConfig()
-        const profiles = Object.assign({}, current.profiles, defaults.profiles)
-        const config = normaliseRoleConfig(Object.assign({}, current, { profiles: profiles }))
-        const written = await persistRoles(projectPath, config)
-        if (written.ok !== true) return written
-        emitActivity(context, 'role-config', 'reset the built-in role profiles to the defaults', null)
-        const ensured = []
-        if (roles !== null && typeof roles.ensure === 'function') {
-          for (const kind of ROLE_KINDS) {
-            // T-130: a reset only touches the PANEL session's team.
-            // T-138: each built-in role starts at one instance; worker growth is
-            // the dispatcher's job (count = live + 1, bounded by the dispatch cap).
-            const result = await ensureRoleBounded(kind, { config: config, projectPath: projectPath, task: null, now: clock(), sessionId: roleSessionId, count: 1 })
-            emitRoleProvision(result)
-            ensured.push({ kind: kind, result: result })
-          }
-        }
-        return ok({ config: written.config, source: 'default', sessionId: roleSessionId, ensured: ensured, instances: roleInstanceList({ sessionId: roleSessionId }) })
-      }
-      return failure('unknown-action', 'unknown role action ' + String(action))
-    }
-    if (action === 'board') return snapshot(projectPath, { sessionId: callerSessionId(source, context) })
-    if (action === 'locks') {
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      state.sweepLocks()
-      return ok({ locks: locks.view(state.memory.locks, read.board, now) })
-    }
-    if (action === 'list') {
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      const status = typeof source.status === 'string' ? source.status : null
-      const tasks = read.board.tasks
-        .filter((task) => status === null || task.status === status)
-        .map((task) => model.summary(read.board, task, now))
-      return ok({ tasks: tasks, counts: model.counts(read.board) })
-    }
-    if (action === 'get') {
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      const task = model.findTask(read.board, String(source.id === undefined ? '' : source.id))
-      if (task === undefined) {
-        const archived = await archivedTask(projectPath, String(source.id === undefined ? '' : source.id), now)
-        if (archived !== null) return ok({ task: archived, locks: [] })
-        return failure('unknown-task', 'no task with id ' + String(source.id))
-      }
-      return ok({
-        task: Object.assign(detailOf(read.board, task, now), { candidate: candidateOf(projectPath, read.board, task) }),
-        locks: locks.view(state.memory.locks, read.board, now).filter((lock) => lock.taskId === task.id),
-      })
-    }
-    if (action === 'create') {
-      // T-110: no cards before the project has a Team. The refusal carries the
-      // instruction, so the calling session can bootstrap it and retry.
-      const gate = await projectTeamFor(projectPath, callerSessionId(source, context))
-      if (gate.team.available === true && gate.team.ok !== true) {
-        return failure(
-          'no-team-for-project',
-          'This project has no Team (' + String(gate.team.error) + '), so a card cannot be created yet.',
-          { team: gate.team, nextStep: gate.nextStep },
-        )
-      }
-      const built = taskInput(projectPath, source)
-      if (built.ok !== true) return built
-      if (built.input.target !== undefined) {
-        const checkedTarget = await checkTarget(projectPath, built.input.target)
-        if (checkedTarget.ok !== true) return checkedTarget
-        built.input.target = checkedTarget.target
-      }
-      const owner = sessionIdOf(context)
-      const result = await mutate(
-        projectPath,
-        (board) => {
-          const createdBoard = model.createTask(board, built.input, clock(), context.by)
-          if (createdBoard.ok !== true || owner === null) return createdBoard
-          // T-97: remember WHICH session created the card in the same write, so
-          // dispatch only offers it to that session's team.
-          const createdId = createdBoard.events.length === 0 ? null : createdBoard.events[0].id
-          if (createdId === null) return createdBoard
-          const tasks = createdBoard.board.tasks.map((entry) => (String(entry.id) === String(createdId) ? Object.assign({}, entry, { ownerSession: owner }) : entry))
-          return { ok: true, board: Object.assign({}, createdBoard.board, { tasks: tasks }), events: createdBoard.events }
-        },
-        context,
-      )
-      if (result.ok !== true) return result
-      const created = result.events.length === 0 ? null : result.events[0].id
-      const task = created === null ? null : model.findTask(result.board, created)
-      return ok({ task: task === null ? null : detailOf(result.board, task, clock()), events: result.events })
-    }
-    if (action === 'update') {
-      const id = String(source.id === undefined ? '' : source.id)
-      if (id === '') return failure('missing-id', 'update needs a task id')
-      const built = taskInput(projectPath, source)
-      if (built.ok !== true) return built
-      if (built.input.target !== undefined) {
-        const checkedTarget = await checkTarget(projectPath, built.input.target)
-        if (checkedTarget.ok !== true) return checkedTarget
-        built.input.target = checkedTarget.target
-      }
-      return writeTask(
-        projectPath,
-        id,
-        (board) => model.updateTask(board, id, built.input, clock(), context.by),
-        context,
-      )
-    }
-    if (action === 'delete') {
-      const id = String(source.id === undefined ? '' : source.id)
-      if (id === '') return failure('missing-id', 'delete needs a task id')
-      const result = await mutate(
-        projectPath,
-        (board) => model.deleteTask(board, id, clock(), context.by, { force: source.force === true }),
-        context,
-      )
-      if (result.ok !== true) return result
-      const released = locks.releaseTask(state.memory.locks, id)
-      if (released.ok === true) state.memory.locks = released.locks
-      return ok({ deleted: id, events: result.events })
-    }
-    if (action === 'start') {
-      {
-        const gate = await preflightRefusal(projectPath, { sessionId: callerSessionId(source, context) })
-        if (gate !== null) return gate
-      }
-      if (context !== undefined && context !== null && context.role === 'agent') {
-        const read = await readBoardOrFail(projectPath)
-        if (read.failed !== undefined) return read.failed
-        if (read.board.dispatch.state === 'running') {
-          return ok({ dispatch: read.board.dispatch, alreadyRunning: true })
-        }
-        if (read.board.dispatch.request !== null) {
-          return failure(
-            'needs-consent',
-            'A start request is already pending. Ask the user to approve it in the task center panel; do not retry.',
-            { request: read.board.dispatch.request },
-          )
-        }
-        const unavailable = await worktreeRefusal(projectPath)
-        if (unavailable !== null) return unavailable
-        const requested = await mutate(
-          projectPath,
-          (board) => model.requestDispatch(board, { by: context.by, note: source.note }, clock(), context.by),
-          context,
-        )
-        if (requested.ok !== true) return requested
-        return failure(
-          'needs-consent',
-          'Dispatch was requested, not started. Ask the user to approve it in the task center panel; do not retry.',
-          { request: requested.board.dispatch.request },
-        )
-      }
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      if (read.board.dispatch.state !== 'running') {
-        const unavailable = await worktreeRefusal(projectPath)
-        if (unavailable !== null) return unavailable
-      }
-      const result = await mutate(
-        projectPath,
-        (board) => model.approveDispatch(board, clock(), context.by),
-        context,
-      )
-      if (result.ok !== true) return result
-      if (scheduler !== null) await scheduler.settle(projectPath)
-      return ok({ dispatch: result.board.dispatch, events: result.events })
-    }
-    if (action === 'pause') {
-      const result = await mutate(
-        projectPath,
-        (board) => model.setDispatch(board, { state: 'paused' }, clock(), context.by),
-        context,
-      )
-      if (result.ok !== true) return result
-      return ok({ dispatch: result.board.dispatch, events: result.events })
-    }
-    if (action === 'approveStart' || action === 'rejectStart') {
-      if (context === undefined || context === null || context.role !== 'user') {
-        return failure('user-only', 'Starting dispatch is the user\'s decision; ask them to approve it in the task center panel.')
-      }
-      if (action === 'approveStart') {
-        {
-          const gate = await preflightRefusal(projectPath, { sessionId: callerSessionId(source, context) })
-          if (gate !== null) return gate
-        }
-        const read = await readBoardOrFail(projectPath)
-        if (read.failed !== undefined) return read.failed
-        if (read.board.dispatch.state !== 'running') {
-          const unavailable = await worktreeRefusal(projectPath)
-          if (unavailable !== null) return unavailable
-        }
-      }
-      const result = await mutate(
-        projectPath,
-        (board) =>
-          action === 'approveStart'
-            ? model.approveDispatch(board, clock(), context.by)
-            : model.clearDispatchRequest(board, clock(), context.by),
-        context,
-      )
-      if (result.ok !== true) return result
-      if (action === 'approveStart' && scheduler !== null) await scheduler.settle(projectPath)
-      return ok({ dispatch: result.board.dispatch, events: result.events })
-    }
-    if (action === 'cancelStartRequest') {
-      const result = await mutate(
-        projectPath,
-        (board) => model.clearDispatchRequest(board, clock(), context.by),
-        context,
-      )
-      if (result.ok !== true) return result
-      // A request normally exists while dispatch is paused, but if anything had
-      // already been dispatched, withdrawing the request stops it too.
-      for (const task of result.board.tasks) {
-        if (task.status !== 'running' || task.assignee === null || task.assignee === undefined) continue
-        await interruptAssignee(ctx, task, { reason: 'the dispatch start request was withdrawn' })
-      }
-      return ok({ dispatch: result.board.dispatch, events: result.events })
-    }
-    if (action === 'settings') {
-      if (context === undefined || context === null || context.role !== 'user') {
-        return failure('user-only', 'Dispatch settings belong to the user; ask them to change it in the task center panel.')
-      }
-      const patch = {}
-      for (const key of ['maxConcurrent', 'allowSpawn', 'maxWorkAgents', 'maxAttempts', 'defaultTarget']) {
-        if (source[key] !== undefined) patch[key] = source[key]
-      }
-      // The GUI exposes a single number: maximum concurrency. The worker cap
-      // and spawning policy are derived so a user does not have to reason about
-      // two capacity knobs. An explicit advanced value still wins.
-      if (source.maxConcurrent !== undefined) {
-        const concurrency = Number(source.maxConcurrent)
-        if (Number.isFinite(concurrency)) patch.maxConcurrent = Math.floor(concurrency)
-        if (source.maxWorkAgents === undefined && Number.isFinite(concurrency)) {
-          patch.maxWorkAgents = Math.min(12, Math.max(1, Math.floor(concurrency) + 1))
-        }
-        if (source.allowSpawn === undefined) patch.allowSpawn = true
-        if (source.maxAttempts === undefined) patch.maxAttempts = 3
-      }
-      if (Object.keys(patch).length === 0) return failure('no-change', 'no dispatch setting was supplied')
-      const result = await mutate(
-        projectPath,
-        (board) => model.setDispatch(board, patch, clock(), context.by),
-        context,
-      )
-      if (result.ok !== true) return result
-      if (scheduler !== null) void scheduler.kick(projectPath)
-      return ok({ dispatch: result.board.dispatch, events: result.events })
-    }
-    if (action === 'tick') {
-      if (scheduler === null) return failure('no-scheduler', 'the dispatcher is not available in this profile')
-      const archiveResult = await maybeArchive(projectPath)
-      return ok({ tick: await scheduler.settle(projectPath), archive: archiveResult })
-    }
-    if (action === 'mergeRequest') {
-      const denied = mergeRefusal(context)
-      if (denied !== null) return denied
-      const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
-      if (id === '') return failure('missing-id', 'mergeRequest needs a task id')
-      // The whole pipeline (re-read, integrate, verify, record) runs inside the
-      // queue so a second request sees the first one's result, never its state.
-      const queueKey = await mergeQueueKey(projectPath, id)
-      const result = await serialised((token) => mergeOne(projectPath, id, context.by, context, undefined, token), queueKey)
-      // Notifications happen after the queue releases, and never change the answer.
-      if (result.ok === true && result.task !== null && result.task !== undefined) {
-        await notifyMergeOutcome(projectPath, result.task)
-      }
-      return result
-    }
-    if (action === 'rejectMerge') {
-      const denied = mergeRefusal(context)
-      if (denied !== null) return denied
-      const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
-      if (id === '') return failure('missing-id', 'rejectMerge needs a task id')
-      return serialised(async function () {
-        const read = await readBoardOrFail(projectPath)
-        if (read.failed !== undefined) return read.failed
-        const task = model.findTask(read.board, id)
-        if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
-        if (task.status === 'pending' || task.status === 'running' || task.status === 'blocked' || task.status === 'cancelled') {
-          return failure('not-mergeable-phase', id + ' is ' + task.status + '; only a submitted task has a merge request')
-        }
-        const merge = task.merge
-        if (merge === null || merge === undefined || typeof merge !== 'object' || merge.status !== 'open') {
-          return failure('no-open-merge', id + ' has no open merge request to reject')
-        }
-        const recorded = await writeTask(
-          projectPath,
-          id,
-          (board) => recordMergeResult(board, id, { status: 'rejected' }, clock(), context.by, writeByName(context)),
-          context,
-        )
-        if (recorded.ok !== true) return recorded
-        emitActivity(context, 'merge', 'rejected', id)
-        return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
-      })
-    }
-    if (action === 'refreshMerge') {
-      const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
-      if (id === '') return failure('missing-id', 'refreshMerge needs a task id')
-      // Reads the branch head and the base diff, then rewrites the request in
-      // one board write. It never commits, merges or pushes.
-      return serialised(async function () {
-        const read = await readBoardOrFail(projectPath)
-        if (read.failed !== undefined) return read.failed
-        const task = model.findTask(read.board, id)
-        if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
-        if (task.status === 'pending' || task.status === 'running' || task.status === 'blocked' || task.status === 'cancelled') {
-          return failure('not-mergeable-phase', id + ' is ' + task.status + '; only a submitted task has a merge request to refresh')
-        }
-        const merge = task.merge
-        if (merge === null || merge === undefined || typeof merge !== 'object' || Array.isArray(merge)) {
-          return failure('no-merge-request', id + ' has no merge request to refresh')
-        }
-        const owner = ownerOf(context)
-        const asUser = context !== undefined && context !== null && context.role === 'user'
-        const asOwner = owner !== null && task.assignee !== null && task.assignee !== undefined && assigneeMatches(task, owner)
-        const member = asUser || asOwner ? null : callerMemberOf(context)
-        if (!asUser && !asOwner && (member === null || member.name !== MERGER_NAME)) {
-          return failure(
-            'not-assignee',
-            id +
-              ' belongs to ' +
-              (task.assignee === null || task.assignee === undefined ? 'nobody' : String(task.assignee.name)) +
-              '; only its owner, the user or the merger may refresh its merge request',
-          )
-        }
-        if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', id + ' has no branch to read')
-        // Re-base on the target's CURRENT head, not the commit recorded at
-        // submit: when the target advanced (or the branch merged it in while
-        // resolving a conflict), diffing from the old base would report
-        // upstream files as this task's work. A task with no target branch keeps
-        // its recorded base (legacy behaviour).
-        let base = typeof merge.base === 'string' && merge.base.length > 0 ? merge.base : null
-        if (typeof task.target === 'string' && task.target.length > 0) {
-          const targetHead = await readTargetHead(projectPath, task.target)
-          if (targetHead.ok !== true) return targetHead
-          base = targetHead.head
-        } else if (base === null) {
-          return failure('missing-base', id + ' has no base commit and no target branch to resolve one from')
-        }
-        const current = await readBranchHead(projectPath, task)
-        if (current.ok !== true) return current
-        let diff
-        try {
-          diff = await git.diffNameOnly(projectPath, base, current.head)
-        } catch (error) {
-          return failure('diff-failed', 'could not list the files ' + id + ' changed: ' + messageOf(error))
-        }
-        if (diff === null || diff === undefined || diff.ok !== true) {
-          const code = diff !== null && diff !== undefined && diff.code !== undefined && diff.code !== null ? String(diff.code) : 'diff-failed'
-          const detail = diff === null || diff === undefined ? 'git returned no result' : String(diff.message)
-          return failure(code, 'could not list the files ' + id + ' changed: ' + detail)
-        }
-        // A new head/base starts a fresh review round: the previous decisions
-        // were taken on a different tree, so refreshMergeRequest resets the
-        // phases and the queue waits for review + tests again. Ensure the
-        // reviewer before the write so the scheduler's stage pass cannot race.
-        const provisioned = await provisionRole('reviewer', projectPath, task)
-        if (provisionFailedHard(provisioned)) {
-          const reason = provisionReasonOf(provisioned)
-          await markWaiting(projectPath, id, reason, provisioned.message, context)
-          return failure('reviewer-unavailable', 'no reviewer could be provisioned for ' + id + ' (' + reason + '); the merge request was not refreshed')
-        }
-        const recorded = await writeTask(
-          projectPath,
-          id,
-          (board) => refreshMergeRequest(board, id, base, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by, writeByName(context)),
-          context,
-        )
-        if (recorded.ok !== true) return recorded
-        await clearWaiting(projectPath, id, context)
-        // A refreshed head starts a fresh review round: ensure the reviewer and
-        // send it the new brief, exactly like a submit would.
-        if (recorded.task !== null && recorded.task !== undefined && recorded.task.status === 'reviewing') {
-          const round = recorded.task.review === null || recorded.task.review === undefined ? 1 : recorded.task.review.attempt
-          emitActivity(context, 'review-start', 'merge request refreshed; review round ' + String(round), id)
-          const reviewer = roleSlotNameOf('reviewer', recorded.task.ownerSession)
-          const slot = await assignStageSlot(projectPath, recorded.task, 'reviewer')
-          if (slot.delivered === true && reviewer !== null) {
-            const sentTo = await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath), recorded.task.ownerSession, projectPath)
-            await recordDeliveredTo(projectPath, recorded.task.id, 'reviewer', sentTo)
-          }
-          return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned, queuePosition: slot.position })
-        }
-        return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
-      })
-    }
-    if (action === 'submit') {
-      const id = String(source.id === undefined ? '' : source.id)
-      if (id === '') return failure('missing-id', 'submit needs a task id')
-      const wrongProject = wrongProjectRefusal(context, projectPath)
-      if (wrongProject !== null) return wrongProject
-      if (roles !== null) {
-        const caller = callerRole(context)
-        if (caller !== null && (caller.kind === 'reviewer' || caller.kind === 'tester')) {
-          return failure('role-cannot-implement', 'A ' + caller.kind + ' role cannot submit implementation work; only the task\'s worker may submit.')
-        }
-      }
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      const checked = taskForContext(read.board, id, context)
-      if (checked.ok !== true) return checked
-      // T-131: an investigation never commits; refuse BEFORE prepareMergeRequest
-      // so the detached scratch is not touched at all.
-      if (checked.task.kind === 'investigate') {
-        return failure('investigation-report-only', id + ' is an investigation card: finish it with task_center { action: "report", id, summary, body, evidence? }, not submit')
-      }
-      // Only a running task has a worktree worth committing; any other status
-      // must reach submitTask's own refusal without touching git.
-      const submittedAt = clock()
-      const prepared = checked.task.status === 'running' ? await prepareMergeRequest(checked.task, source, submittedAt) : { ok: true, mr: null }
-      if (prepared.ok !== true) return prepared
-      // Ensure the reviewer BEFORE the stage write: the write kicks the scheduler,
-      // whose stage-role pass would otherwise race this provisioning and report
-      // "reused" to a caller that expects "created".
-      const willReview = checked.task.status === 'running'
-      const nextReviewAttempt =
-        checked.task.review === null || checked.task.review === undefined ? 1 : checked.task.review.attempt + 1
-      let provisioned = null
-      if (willReview && nextReviewAttempt <= REVIEW_MAX_ROUNDS) {
-        provisioned = await provisionRole('reviewer', projectPath, checked.task)
-      }
-      const input = { evidence: source.evidence, note: source.note }
-      if (prepared.mr !== null) {
-        input.commit = prepared.mr.commit
-        input.actualFiles = prepared.mr.actualFiles
-        input.merge = prepared.mr.merge
-      }
-      if (willReview && provisionFailedHard(provisioned)) {
-        // No reviewer: do NOT advance into an empty phase. The card stays running
-        // with a waiting reason; the next host tick retries provisioning.
-        const reason = provisionReasonOf(provisioned)
-        await markWaiting(projectPath, id, reason, provisioned.message, context)
-        return failure('reviewer-unavailable', 'no reviewer could be provisioned for ' + id + ' (' + reason + '); the task stays running and will be retried by the host')
-      }
-      const result = await writeTask(
-        projectPath,
-        id,
-        (board) => model.submitTask(board, id, input, clock(), context.by, writeByName(context)),
-        context,
-      )
-      if (result.ok === true && prepared.mr !== null && prepared.mr !== undefined && prepared.mr.commitScope !== undefined) {
-        // T-101: tell the worker exactly what was skipped and what stayed out.
-        result.commitScope = prepared.mr.commitScope
-      }
-      if (result.ok === true) await clearWaiting(projectPath, id, context)
-      if (result.ok === true && result.task !== null && result.task.status !== 'running') {
-        // A stale test slot from an earlier round must not describe this one.
-        recordStageSlot(ctx, id, 'tester', null, null)
-        const released = locks.releaseTask(state.memory.locks, id)
-        if (released.ok === true) state.memory.locks = released.locks
-      }
-      // The request is now in review: a task that exhausted its review rounds is
-      // blocked for triage, otherwise the host provisions the reviewer and hands
-      // it this round's brief. Notifications never change the answer.
-      if (result.ok === true && result.task !== null && result.task !== undefined) {
-        await notifyMergerOpened(projectPath, result.task)
-        if (result.task.status === 'reviewing') {
-          const overLimit = await enforceReviewRoundLimit(projectPath, result.task)
-          if (overLimit !== null && overLimit.ok === true) {
-            releaseTaskLocks(id)
-            return overLimit
-          }
-          const round = result.task.review === null || result.task.review === undefined ? 1 : result.task.review.attempt
-          emitActivity(context, 'review-start', 'submitted for review round ' + String(round), id)
-          const reviewer = roleSlotNameOf('reviewer', result.task.ownerSession)
-          const slot = await assignStageSlot(projectPath, result.task, 'reviewer')
-          result.queuePosition = slot.position
-          if (slot.delivered === true && reviewer !== null) {
-          const sentTo = await notifyMember(reviewer, reviewBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
-          await recordDeliveredTo(projectPath, result.task.id, 'reviewer', sentTo)
-        }
-          if (provisioned !== null) result.provisioned = provisioned
-        }
-      }
-      return result
-    }
-    if (action === 'report') {
-      const id = String(source.id === undefined ? '' : source.id)
-      if (id === '') return failure('missing-id', 'report needs a task id')
-      const wrongProject = wrongProjectRefusal(context, projectPath)
-      if (wrongProject !== null) return wrongProject
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      const checked = taskForContext(read.board, id, context)
-      if (checked.ok !== true) return checked
-      const task = checked.task
-      if (task.kind !== 'investigate') {
-        return failure('not-an-investigation', id + ' is a dev card; finish it with submit so it can be reviewed, tested and merged')
-      }
-      if (task.status !== 'running') return failure('not-running', id + ' is ' + task.status + ', not running')
-      // An accidental commit in the detached scratch cannot reach the target, but
-      // it is recorded before the checkout is force-removed.
-      const probeCommits = await probeCommitsOf(task)
-      const reportInput = { summary: source.summary, body: source.body, evidence: source.evidence, artifacts: source.artifacts, probeCommits: probeCommits }
-      const result = await writeTask(
-        projectPath,
-        id,
-        (board) => model.reportTask(board, id, reportInput, clock(), context.by, writeByName(context)),
-        context,
-      )
-      if (result.ok !== true) return result
-      const released = locks.releaseTask(state.memory.locks, id)
-      if (released.ok === true) state.memory.locks = released.locks
-      // The full markdown keeps the UNTRUNCATED body the caller sent; the board
-      // keeps the bounded copy.
-      const written = await writeReportFile(projectPath, task, {
-        summary: result.task.report.summary,
-        body: typeof source.body === 'string' ? source.body : '',
-        evidence: result.task.report.evidence,
-        artifacts: result.task.report.artifacts,
-        probeCommits: result.task.report.probeCommits,
-        reportedAt: result.task.report.createdAt,
-        by: result.task.report.by,
-        byName: result.task.report.byName,
-      })
-      const cleanup = await cleanupInvestigation(projectPath, task)
-      emitActivity(context, 'report', 'received', id)
-      const warnings = []
-      if (written.ok !== true && written.warning !== null) warnings.push(written.warning)
-      if (cleanup !== null && cleanup.failed.length > 0) {
-        warnings.push('some scratch checkouts could not be removed: ' + cleanup.failed.map((entry) => entry.path).join(', '))
-      }
-      return ok({
-        task: result.task,
-        events: result.events,
-        report: result.task === null ? null : result.task.report,
-        reportFile: written.path,
-        cleanup: cleanup,
-        warnings: warnings,
-      })
-    }
-    if (action === 'approveReview' || action === 'requestChanges') {
-      const id = String(source.id === undefined ? '' : source.id)
-      if (id === '') return failure('missing-id', action + ' needs a task id')
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      const reviewTask = model.findTask(read.board, id)
-      if (reviewTask === undefined) return failure('unknown-task', 'no task with id ' + id)
-      const reviewRefused = verdictRefusal(context, reviewTask, 'reviewer')
-      if (reviewRefused !== null) return reviewRefused
-      // Build the independent test candidate BEFORE the phase moves: a conflict
-      // is a readable refusal and the task stays in review for a changes request.
-      let candidate = null
-      if (action === 'approveReview' && candidateWorkflow) {
-        const candidateStarted = Date.now()
-        const boundedCandidate = await boundedAwait(
-          () => serialised(() => merger.createCandidate(reviewTask, projectPath, { worktreeRoot: worktreeRootOf(read.board) })),
-          actionTimeoutMs,
-        )
-        if (boundedCandidate.timedOut === true) {
-          // No board write happened, so the task stays in review and the action
-          // can simply be retried (the orphan candidate, if any, is discardable).
-          return actionTimeoutFailure('approveReview createCandidate', id, candidateStarted)
-        }
-        candidate = boundedCandidate.value
-        if (candidate === null || candidate === undefined || candidate.ok !== true) {
-          if (candidate !== null && candidate !== undefined && candidate.code === 'candidate-conflict') {
-            // A behind branch can never rebuild cleanly: say "rebase" on the FIRST
-            // conflict. Otherwise downgrade to candidate-stale with the conflicted
-            // files and let the sweep rebuild (counting the attempt on the card).
-            const files = typeof candidate.conflict === 'string' && candidate.conflict !== '' ? candidate.conflict : String(candidate.message)
-            const ancestry = await branchBehind(projectPath, reviewTask)
-            if (ancestry.behind === true) {
-              const detail = rebaseDetail(reviewTask, ancestry, files)
-              await markWaiting(projectPath, id, 'needs-rebase', detail, context)
-              return failure('needs-rebase', detail)
-            }
-            const prior = reviewTask.merge !== null && reviewTask.merge !== undefined && Number.isFinite(reviewTask.merge.rebuildAttempts) ? reviewTask.merge.rebuildAttempts : 0
-            await setRebuildAttempts(projectPath, id, Math.min(10, prior + 1), context)
-            await markWaiting(projectPath, id, 'candidate-stale', files, context)
-            return failure('candidate-stale', 'the test candidate conflicts with the target (' + files + '); the card is marked candidate-stale and will be rebuilt automatically')
-          }
-          return failure(
-            candidate === null || candidate === undefined || candidate.code === undefined ? 'candidate-failed' : String(candidate.code),
-            candidate === null || candidate === undefined || candidate.message === undefined ? 'could not build the test candidate' : String(candidate.message),
-            candidate !== null && candidate !== undefined && candidate.conflict ? { conflict: candidate.conflict } : undefined,
-          )
-        }
-      }
-      // The declared mechanical verification is a HOST action: it runs in the
-      // candidate the review just built, BEFORE any tester exists. A command
-      // that exits non-zero is not a judgement call, so it must not consume a
-      // tester round (or its watchdog).
-      let hostCheck = null
-      let hostCheckFailed = false
-      const declaredVerify = normaliseVerify(reviewTask.verify)
-      if (action === 'approveReview' && declaredVerify !== null) {
-        if (candidate === null) {
-          emitActivity(null, 'host-check', 'skipped: no test candidate in this profile', id, 'host')
-        } else {
-          const checked = await runHostCheck(ctx, { verify: declaredVerify, cwd: candidate.path, now: () => clock() })
-          if (checked.ok !== true) {
-            // The declaration cannot be honoured: refuse readably instead of
-            // pretending it passed. Nothing is written, so the review stays open.
-            return failure(checked.code, checked.message)
-          }
-          hostCheck = checked.check
-          hostCheckFailed = hostCheck.timedOut === true || hostCheck.exitCode !== 0
-        }
-      }
-      const result = await writeTask(
-        projectPath,
-        id,
-        (board) => {
-          const transitioned =
-            action === 'approveReview'
-              ? model.approveReview(board, id, clock(), context.by, writeByName(context))
-              : model.requestChanges(board, id, source.reasons, clock(), context.by, writeByName(context))
-          if (transitioned.ok !== true) return transitioned
-          let next = transitioned
-          if (hostCheckFailed) {
-            // The host records a FAILED test itself (by = host): the task goes
-            // straight back to running with the command, the exit code and the
-            // output tail, and no tester round is opened.
-            const failed = model.failTest(transitioned.board, id, hostCheckEvidence(hostCheck), clock(), 'host', 'host')
-            if (failed.ok !== true) return failed
-            next = failed
-          } else if (candidate !== null) {
-            const recorded = recordCandidate(transitioned.board, id, candidate, clock(), { by: context.by })
-            if (recorded.ok !== true) return recorded
-            next = recorded
-          }
-          if (hostCheck !== null) {
-            const checkedTask = model.findTask(next.board, id)
-            if (checkedTask !== null && checkedTask !== undefined && checkedTask.test !== null && checkedTask.test !== undefined) {
-              checkedTask.test.hostCheck = hostCheck
-            }
-          }
-          return next
-        },
-        context,
-      )
-      if (result.ok !== true) return result
-      if (action === 'requestChanges') {
-        emitActivity(context, 'review-end', 'changes requested: ' + String(source.reasons || '').slice(0, 200), id)
-      }
-      if (action === 'approveReview' && hostCheckFailed) {
-        emitActivity(context, 'review-end', 'approved', id)
-        emitActivity(
-          null,
-          'host-check',
-          'mechanical verification failed (' + String(hostCheck.timedOut === true ? 'timed out' : 'exit ' + String(hostCheck.exitCode)) + '); back to running',
-          id,
-          'host',
-        )
-        // The candidate proved nothing: drop it so the next approval rebuilds
-        // from the (possibly moved) target head. A failure here is not fatal.
-        if (candidate !== null && candidateWorkflow) {
-          const discardStarted = Date.now()
-          await boundedAwait(
-            () => serialised(() => merger.discardCandidate(result.task, projectPath, { worktreeRoot: worktreeRootOf(read.board) })),
-            actionTimeoutMs,
-          )
-          if (Date.now() - discardStarted > actionTimeoutMs) actionTimeoutFailure('approveReview discard candidate', id, discardStarted)
-        }
-        // The worker owns the fix and may be idle, so it is told directly (the
-        // board carries the same evidence).
-        const ownerName =
-          result.task !== null &&
-          result.task !== undefined &&
-          result.task.assignee !== null &&
-          result.task.assignee !== undefined &&
-          typeof result.task.assignee.name === 'string' &&
-          result.task.assignee.name !== ''
-            ? result.task.assignee.name
-            : null
-        if (ownerName !== null) {
-          await notifyMember(
-            ownerName,
-            'Host mechanical verification FAILED for ' + id + ' (' + String(result.task.title) + ').\n\n' + hostCheckEvidence(hostCheck),
-            result.task.ownerSession,
-            projectPath,
-          )
-        }
-        return ok({ task: result.task, events: result.events, hostCheck: hostCheck })
-      }
-      if (action === 'requestChanges' && result.task !== null && result.task !== undefined && result.task.status === 'running') {
-        clearStageSlots(id)
-        // Tell the worker what to fix and that it continues in its own worktree.
-        const owner =
-          result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
-            ? null
-            : result.task.assignee.name
-        if (owner !== null) await notifyMember(owner, reworkBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
-      }
-      if (action === 'approveReview' && result.task !== null && result.task !== undefined && result.task.status === 'testing') {
-        emitActivity(context, 'review-end', 'approved', id)
-        emitActivity(null, 'test-start', 'test candidate stage started', id, 'host')
-        if (candidate !== null) emitActivity(null, 'worktree-create', 'test candidate ' + String(candidate.path), id, 'host')
-        const provisioned = await provisionRole('tester', projectPath, result.task)
-        if (provisioned !== null) result.provisioned = provisioned
-        if (provisionFailedHard(provisioned)) {
-          const reason = provisionReasonOf(provisioned)
-          await markWaiting(projectPath, id, reason, provisioned.message, context)
-          return failure('tester-unavailable', 'no tester could be provisioned for ' + id + ' (' + reason + '); the task waits in testing with that reason and will be retried by the host')
-        }
-        if (candidate !== null) {
-          result.candidate = candidate
-          if (state.memory.testCandidates === undefined || state.memory.testCandidates === null) state.memory.testCandidates = {}
-          state.memory.testCandidates[result.task.id] = { candidate: candidate, hostCheck: hostCheck }
-          const tester = roleSlotNameOf('tester', result.task.ownerSession)
-          const testSlot = await assignStageSlot(projectPath, result.task, 'tester')
-          result.queuePosition = testSlot.position
-          if (testSlot.delivered === true && tester !== null) {
-            const sentTo = await notifyMember(
-              tester,
-              testerBriefFor(result.task, projectPath, candidate, {
-                godot: await godotInfoFor(projectPath, candidate.path),
-                hostCheck: hostCheck,
-              }),
-              result.task.ownerSession,
-              projectPath,
-            )
-            await recordDeliveredTo(projectPath, result.task.id, 'tester', sentTo)
-          }
-        }
-      }
-      // The delivery timestamp is KEPT on the stage slot so the snapshot can still
-      // report the finished round's duration; the verdict already means the task no
-      // longer occupies capacity (stageQueueState only counts pending rounds).
-      // The verdict frees this reviewer slot: hand it to the next queued round.
-      const promotedReview = await promoteStageSlots(projectPath, 'reviewer')
-      if (promotedReview.length > 0) {
-        const reviewerSlot = roleSlotNameOf('reviewer', result.task.ownerSession)
-        if (reviewerSlot !== null) {
-          for (const promoted of promotedReview) {
-            const sentTo = await notifyMember(reviewerSlot, reviewBriefFor(promoted, projectPath), promoted.ownerSession, projectPath)
-            await recordDeliveredTo(projectPath, promoted.id, 'reviewer', sentTo)
-          }
-        }
-      }
-      return ok({ task: result.task, events: result.events, provisioned: result.provisioned, candidate: result.candidate, hostCheck: hostCheck })
-    }
-    if (action === 'passTest' || action === 'failTest') {
-      const id = String(source.id === undefined ? '' : source.id)
-      if (id === '') return failure('missing-id', action + ' needs a task id')
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      const testTask = model.findTask(read.board, id)
-      if (testTask === undefined) return failure('unknown-task', 'no task with id ' + id)
-      const testRefused = verdictRefusal(context, testTask, 'tester')
-      if (testRefused !== null) return testRefused
-      const result = await writeTask(
-        projectPath,
-        id,
-        (board) => {
-          const decided =
-            action === 'passTest'
-              ? model.passTest(board, id, clock(), context.by, writeByName(context))
-              : model.failTest(board, id, source.evidence, clock(), context.by, writeByName(context))
-          if (decided.ok !== true) return decided
-          if (action === 'passTest' && source.evidence !== undefined && source.evidence !== null) {
-            const text = String(source.evidence).trim()
-            const task = model.findTask(decided.board, id)
-            if (task !== null && task !== undefined && task.test !== null && task.test !== undefined && text !== '') {
-              task.test.evidence = text
-            }
-          }
-          return decided
-        },
-        context,
-      )
-      if (result.ok !== true) return result
-      const hasCandidate =
-        result.task !== null &&
-        result.task !== undefined &&
-        result.task.merge !== null &&
-        result.task.merge !== undefined &&
-        typeof result.task.merge.mergeCommit === 'string' &&
-        result.task.merge.mergeCommit.length > 0
-      // Keep the tester delivery timestamp for the finished round's duration.
-      const promotedTest = await promoteStageSlots(projectPath, 'tester')
-      if (promotedTest.length > 0) {
-        const testerSlot = roleSlotNameOf('tester', result.task.ownerSession)
-        if (testerSlot !== null) {
-          for (const promoted of promotedTest) {
-            const stored = state.memory.testCandidates === undefined || state.memory.testCandidates === null ? null : state.memory.testCandidates[promoted.id]
-            const storedCandidate = stored !== null && stored !== undefined && stored.candidate !== undefined ? stored.candidate : null
-            const storedHostCheck = stored !== null && stored !== undefined && stored.hostCheck !== undefined ? stored.hostCheck : null
-            const fallbackPath = stored !== null && stored !== undefined && typeof stored === 'string' ? stored : null
-            const candidateForBrief = storedCandidate !== null ? storedCandidate : fallbackPath === null ? null : { path: fallbackPath }
-            if (candidateForBrief === null || typeof candidateForBrief.path !== 'string' || candidateForBrief.path === '') continue
-            const sentTo = await notifyMember(
-              testerSlot,
-              testerBriefFor(promoted, projectPath, candidateForBrief, {
-                godot: await godotInfoFor(projectPath, candidateForBrief.path),
-                hostCheck: storedHostCheck,
-              }),
-              promoted.ownerSession,
-              projectPath,
-            )
-            await recordDeliveredTo(projectPath, promoted.id, 'tester', sentTo)
-          }
-        }
-      }
-      if (action === 'passTest') emitActivity(context, 'test-end', 'passed', id)
-      if (action === 'failTest') emitActivity(context, 'test-end', 'failed', id)
-      // failTest returns the card to running and passTest ends the stage: the
-      // test queue record is spent either way and must not leak to the next round.
-      if (action === 'failTest' || action === 'passTest') recordStageSlot(ctx, id, 'tester', null, null)
-      if (action === 'passTest' && candidateWorkflow && hasCandidate) {
-        // The tester accepted the candidate: the host merges that exact tree now
-        // (no separate verify). A moved target comes back as a retest. The merge
-        // itself is bounded: a stuck queue must not hold this action forever.
-        const mergeStarted = Date.now()
-        const passVerify = normaliseVerify(result.task === null || result.task === undefined ? null : result.task.verify)
-        const passVerifyBudget = passVerify !== null && Number.isFinite(passVerify.timeoutMs) ? passVerify.timeoutMs : VERIFY_DEFAULT_TIMEOUT_MS
-        const boundedMerge = await boundedAwait(
-          () => mergeTestedCandidate(projectPath, id, context.by, context),
-          actionTimeoutMs + passVerifyBudget + 60 * 1000,
-        )
-        if (boundedMerge.timedOut === true) {
-          const timedOutFailure = actionTimeoutFailure('passTest merge candidate', id, mergeStarted)
-          return ok({ task: result.task, events: result.events, mergeError: timedOutFailure })
-        }
-        const merged = boundedMerge.value
-        if (merged.ok === true) return merged
-        // The pass is recorded; a transient merge failure is retried by the sweep.
-        return ok({ task: result.task, events: result.events, mergeError: merged })
-      }
-      if (action === 'failTest' && candidateWorkflow && hasCandidate) {
-        const discardStarted = Date.now()
-        const boundedDiscard = await boundedAwait(
-          () => serialised(() => merger.discardCandidate(result.task, projectPath, { worktreeRoot: worktreeRootOf(read.board) })),
-          actionTimeoutMs,
-        )
-        if (boundedDiscard.timedOut === true) actionTimeoutFailure('failTest discard candidate', id, discardStarted)
-        emitActivity(null, 'worktree-remove', 'test candidate discarded after a failed test', id, 'host')
-        const owner =
-          result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
-            ? null
-            : result.task.assignee.name
-        if (owner !== null) await notifyMember(owner, testFailureBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
-      }
-      return ok({ task: result.task, events: result.events })
-    }
-    if (
-      action === 'harnessStart' ||
-      action === 'harnessStop' ||
-      action === 'harnessRestart' ||
-      action === 'harnessStatus' ||
-      action === 'harnessSmoke'
-    ) {
-      const denied = harnessRefusal(context)
-      if (denied !== null) return denied
-      if (harness === null || typeof harness.start !== 'function') {
-        return failure('harness-unavailable', 'the isolated DSH harness is not available in this profile')
-      }
-      if (action === 'harnessStatus') {
-          const harnessStatus = harness.status()
-          // Flat mirrors so a caller can hand the URL straight to a shot tool
-          // without digging into the nested record.
-          return ok({
-            harness: harnessStatus,
-            logs: harness.logs(),
-            port: harnessStatus.port === undefined ? null : harnessStatus.port,
-            token: harnessStatus.token === undefined ? null : harnessStatus.token,
-            url: harnessStatus.url === undefined ? null : harnessStatus.url,
-            cookie: harnessStatus.cookie === true,
-          })
-        }
-      if (action === 'harnessStop') return harness.stop()
-      if (action === 'harnessStart') return harness.start(projectPath)
-      if (action === 'harnessRestart') return harness.restart(projectPath)
-      return harness.smoke(projectPath)
-    }
-    if (action === 'cancel') {
-      const id = String(source.id === undefined ? '' : source.id)
-      if (id === '') return failure('missing-id', 'cancel needs a task id')
-      // The pre-transition record still names the worker and its state: that is
-      // what the interrupt needs after the board has moved on.
-      const before = await readBoardOrFail(projectPath)
-      const priorTask = before.failed === undefined ? model.findTask(before.board, id) : undefined
-      const result = await writeTask(
-        projectPath,
-        id,
-        (board) => model.cancelTask(board, id, clock(), context.by, source.note, writeByName(context)),
-        context,
-      )
-      if (result.ok === true) {
-        const released = locks.releaseTask(state.memory.locks, id)
-        if (released.ok === true) state.memory.locks = released.locks
-        if (priorTask !== undefined && priorTask !== null && priorTask.status === 'running') {
-          // Best-effort: a refusal (no Team, idle member) never fails the cancel.
-          await interruptAssignee(ctx, priorTask, { reason: 'cancelled' })
-        }
-        // T-131: a cancelled investigation's scratch checkout and probes are
-        // disposable — remove them with the card.
-        if (priorTask !== undefined && priorTask !== null) await cleanupInvestigation(projectPath, priorTask)
-      }
-      return result
-    }
-    if (action === 'reopen' || action === 'unblock' || action === 'retry') {
-      const id = String(source.id === undefined ? '' : source.id)
-      if (id === '') return failure('missing-id', action + ' needs a task id')
-      const outcome = await writeTask(
-        projectPath,
-        id,
-        (board) => {
-          if (action === 'reopen') return model.reopenTask(board, id, clock(), context.by, source.note, writeByName(context))
-          if (action === 'unblock') return model.unblockTask(board, id, clock(), context.by, source.note, writeByName(context))
-          return model.retryTask(board, id, clock(), context.by, source.note, writeByName(context))
-        },
-        context,
-      )
-      // T-131: reopening/retrying an investigation starts over; its old scratch
-      // checkout and probe-<id>-* siblings are discarded with the old report.
-      if (outcome.ok === true && outcome.task !== null && outcome.task !== undefined && outcome.task.kind === 'investigate') {
-        await cleanupInvestigation(projectPath, outcome.task)
-      }
-      return outcome
-    }
-    if (action === 'block') {
-      const id = String(source.id === undefined ? '' : source.id)
-      if (id === '') return failure('missing-id', 'block needs a task id')
-      const before = await readBoardOrFail(projectPath)
-      const priorTask = before.failed === undefined ? model.findTask(before.board, id) : undefined
-      const result = await writeTask(
-        projectPath,
-        id,
-        (board) => model.blockTask(board, id, clock(), context.by, source.note, writeByName(context)),
-        context,
-      )
-      if (result.ok === true) {
-        const released = locks.releaseTask(state.memory.locks, id)
-        if (released.ok === true) state.memory.locks = released.locks
-        if (priorTask !== undefined && priorTask !== null && priorTask.status === 'running') {
-          await interruptAssignee(ctx, priorTask, { reason: 'blocked' })
-        }
-        // T-131: a blocked investigation's scratch checkout is disposable.
-        if (priorTask !== undefined && priorTask !== null) await cleanupInvestigation(projectPath, priorTask)
-      }
-      return result
-    }
+    const readHandler = readActions[action]
+    if (readHandler !== undefined) return readHandler(source, context, projectPath, now)
+    const taskAdminHandler = taskAdminActions[action]
+    if (taskAdminHandler !== undefined) return taskAdminHandler(source, context, projectPath)
+    const controlHandler = controlActions[action]
+    if (controlHandler !== undefined) return controlHandler(source, context, projectPath)
+    const mergeHandler = mergeActions[action]
+    if (mergeHandler !== undefined) return mergeHandler(source, context, projectPath)
+
+    const submitHandler = submitActions[action]
+    if (submitHandler !== undefined) return submitHandler(source, context, projectPath)
+    const reportHandler = reportActions[action]
+    if (reportHandler !== undefined) return reportHandler(source, context, projectPath)
+    const reviewVerdictHandler = reviewVerdictActions[action]
+    if (reviewVerdictHandler !== undefined) return reviewVerdictHandler(source, context, projectPath)
+    const testVerdictHandler = testVerdictActions[action]
+    if (testVerdictHandler !== undefined) return testVerdictHandler(source, context, projectPath)
+    const harnessHandler = harnessActions[action]
+    if (harnessHandler !== undefined) return harnessHandler(source, context, projectPath)
+    const lifecycleHandler = lifecycleActions[action]
+    if (lifecycleHandler !== undefined) return lifecycleHandler(source, context, projectPath)
+
     return failure('unknown-action', 'unknown action ' + String(action))
   }
 
@@ -5711,60 +4493,7 @@ export function createApi(ctx, options) {
     return refused
   }
 
-  async function openProject(input, context) {
-    const path = typeof input.path === 'string' ? input.path.trim() : ''
-    if (path === '') return failure('missing-path', 'openProject needs a path')
-    // T-130 audit: the remembered project is only the BASE for a relative path.
-    const base = state.memory.projectHint === null ? process.cwd() : state.memory.projectHint
-    const absolute = resolve(base, path)
-    try {
-      const target = await ctx.fs.resolve(absolute, { cwd: base })
-      const info = await ctx.fs.stat(target)
-      if (info === undefined || (info.type !== undefined && info.type !== 'directory')) {
-        return failure('not-a-directory', 'not a directory: ' + path)
-      }
-    } catch (error) {
-      return failure('invalid-project', messageOf(error))
-    }
-    const sessionId = sessionIdOf(context)
-    const preflight = await preflightProject(absolute, { worktreeRoot: input.worktreeRoot, sessionId: sessionId })
-    // A missing Team is reported in `preflight` (and blocks start), but it never
-    // closes the project: the panel must open it to show how to initialize.
-    const openFailed = Array.isArray(preflight.openFailed) ? preflight.openFailed : preflight.failed
-    if (openFailed.length > 0) {
-      const first = openFailed[0]
-      const code = first === undefined ? 'not-ready' : first.id === 'repository' ? 'not-a-repository' : first.id === 'exclude' ? 'cannot-exclude' : 'not-ready'
-      const refused = failure(code, 'project is not ready: ' + openFailed.map((check) => check.label + (check.detail === null ? '' : ' (' + check.detail + ')')).join('; '))
-      refused.preflight = preflight
-      const teamMissing = preflight.failed.filter((check) => check.id === 'team').length > 0
-      if (teamMissing) {
-        const teamRead = await projectTeamFor(absolute, sessionId)
-        refused.team = teamRead.team
-        refused.nextStep = teamRead.nextStep
-      }
-      return refused
-    }
-    remember(absolute)
-    state.touchProject(absolute, undefined, { worktreeRoot: preflight.worktreeRoot, preflight: preflight })
-    // Bind the opened project to the session that asked (tool call); the HTTP
-    // route binds its own session after this answer.
-    if (state !== null && typeof state.setSessionRoot === 'function') {
-      const sessionId = sessionIdOf(context)
-      if (sessionId !== null) state.setSessionRoot(sessionId, absolute)
-    }
-    // The registry write is asynchronous by design; openProject is a user action,
-    // so wait for it and report where it landed — or why it did not persist.
-    if (typeof state.flushRegistry === 'function') await state.flushRegistry()
-    const registryStatus = typeof state.registryStatus === 'function' ? state.registryStatus() : null
-    return Object.assign({}, await snapshot(absolute, { worktreeRoot: preflight.worktreeRoot, sessionId: sessionId }), {
-      preflight: preflight,
-      registry: registryStatus,
-      // A flat string for callers that only want "did it persist, and why not".
-      registryError: registryStatus !== null && registryStatus.ok !== true ? String(registryStatus.error) : null,
-    })
-  }
-
-  /**
+/**
    * T-129: the ONE-call onboarding.
    *
    * Resolves the project root (explicit path, then the session workspace walked
@@ -5849,313 +4578,6 @@ export function createApi(ctx, options) {
     }
   }
 
-  async function onboardAction(input, context) {
-    const source = input === undefined || input === null ? {} : input
-    // The route injects the panel's resolved project; onboarding deliberately
-    // ignores it and follows its own contract (explicit path, then the session
-    // workspace) so a last-active panel binding cannot hijack the answer.
-    const sessionId = callerSessionId(source, context)
-    const now = clock()
-    const setup = { did: [], failed: [] }
-    const warnings = []
-    const attention = []
-    const explicit = typeof source.path === 'string' && source.path.trim() !== '' ? source.path.trim() : null
-    const workspace = explicit === null ? await onboardWorkspaceOf(context, sessionId) : null
-    const base = state.memory.projectHint === null ? process.cwd() : state.memory.projectHint
-    const resolved = await resolveOnboardRoot(
-      { fs: ctx.fs },
-      {
-        explicit: explicit,
-        workspace: workspace === null ? '' : workspace,
-        cwd: explicit === null ? (workspace === null ? base : workspace) : base,
-      },
-    )
-    if (resolved.kind === 'invalid') return failure('not-a-directory', 'not a directory: ' + String(resolved.path))
-    const facts = {
-      kind: resolved.kind,
-      root: resolved.kind === 'none' ? null : resolved.path,
-      workspace: workspace,
-      checked: resolved.checked,
-      git: resolved.git === true,
-      godot: resolved.godot === true,
-      preflightOk: null,
-      preflightMissing: [],
-      branch: null,
-      head: null,
-      counts: null,
-      readyCount: 0,
-      blocked: [],
-      blockedCount: 0,
-      active: [],
-      activeCount: 0,
-      dispatchState: null,
-      request: null,
-      environment: null,
-      hardDirty: false,
-      boardSize: null,
-      boardWarning: null,
-      boardExisted: false,
-      team: null,
-      teamFailed: false,
-      teamFailureCode: null,
-      teamError: null,
-      missingRoles: [],
-      stage: null,
-    }
-
-    /** The short answer for a project that could not be bound: 3 lines at most. */
-    function shortOnboard(stage, problem, next, projectPath) {
-      const path = projectPath === undefined || projectPath === null ? (typeof facts.root === 'string' && facts.root !== '' ? facts.root : facts.workspace) : projectPath
-      const brief = renderOnboardBrief({
-        stage: stage,
-        projectLine: renderProjectLine({ kind: facts.kind, path: path === undefined || path === null ? '' : String(path), branch: facts.branch, head: facts.head }),
-        problem: problem,
-        next: next,
-      })
-      return ok({
-        onboard: {
-          version: ONBOARD_VERSION,
-          stage: stage,
-          brief: brief,
-          project: onboardProjectSummary(facts),
-          team: onboardTeamSummary(null, false, null),
-          dispatch: onboardDispatchSummary(null),
-          environment: null,
-          setup: setup,
-          attention: attention,
-          needsUser: needsUserFor(next, facts),
-          warnings: warnings,
-          next: next,
-          checkedAt: new Date(now).toISOString(),
-        },
-      })
-    }
-
-    // ── markers and root: no git / not a project / nothing found ─────────────
-    if (facts.kind !== 'root') {
-      const stage = decideOnboardStage(facts)
-      const next = selectOnboardNext(facts)
-      const checked = Array.isArray(facts.checked) ? facts.checked.filter((entry) => typeof entry === 'string' && entry !== '') : []
-      const checkedText = checked.length === 0 ? '会话工作区' : checked.map((entry) => (entry.length > 120 ? entry.slice(0, 120) + '…' : entry)).join('、')
-      const problem =
-        facts.kind === 'gitless'
-          ? '有 project.godot，但还不是 git 仓库；我不会自己跑 git init。'
-          : facts.kind === 'git-only'
-            ? '是 git 仓库，但没有 project.godot 或 .agents/；我不在这里建板。'
-            : facts.kind === 'plain'
-              ? '这个目录既不是 git 仓库，也没有 project.godot 或 .agents/。'
-              : '从 ' + (workspace === null ? '会话工作区' : String(workspace)) + ' 向上找过 ' + checkedText + '，都没有带 project.godot 或 .agents/ 的 git 仓库；我不会猜。'
-      return shortOnboard(stage, problem, next)
-    }
-
-    // ── binding (the safe subset of openProject) ────────────────────────────
-    const root = String(resolved.path)
-    if (git !== null && typeof git.currentBranch === 'function') {
-      try {
-        const branch = await git.currentBranch(root)
-        if (branch !== null && branch !== undefined && branch.ok === true && typeof branch.branch === 'string' && branch.branch !== '') facts.branch = branch.branch
-      } catch (error) {}
-    }
-    if (git !== null && typeof git.head === 'function') {
-      try {
-        const head = await git.head(root)
-        if (head !== null && head !== undefined && head.ok === true && typeof head.hash === 'string' && head.hash !== '') facts.head = head.hash.slice(0, 7)
-      } catch (error) {}
-    }
-    const preflight = await preflightProject(root, { sessionId: sessionId })
-    const openFailed = Array.isArray(preflight.openFailed) ? preflight.openFailed : Array.isArray(preflight.failed) ? preflight.failed : []
-    facts.preflightOk = preflight.openOk === true
-    facts.preflightMissing = openFailed.map((check) => checkTextOf(check))
-    if (facts.preflightOk !== true) {
-      const problem = '项目还不能用：' + (facts.preflightMissing.length === 0 ? '未知原因' : facts.preflightMissing.join('、')) + '。'
-      return shortOnboard('unusable', problem, selectOnboardNext(facts), root)
-    }
-    // Ownership is judged BEFORE the binding below: onboarding adopts the project
-    // for the session, so asking after it would make every session "own" it and
-    // the project-mismatch refusal could never fire (T-129 §4.1).
-    let ownsProject = null
-    if (sessionId !== null) {
-      const prior = typeof state.sessionRootOf === 'function' ? state.sessionRootOf(sessionId) : null
-      const sessionWorkspace = typeof prior === 'string' && prior !== '' ? prior : workspace
-      if (typeof sessionWorkspace === 'string' && sessionWorkspace !== '') {
-        const sessionWalk = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: sessionWorkspace })
-        const sessionProject = sessionWalk.ok === true ? sessionWalk.root : sessionWorkspace
-        ownsProject = projectIdOf(sessionProject) === projectIdOf(root)
-      } else {
-        ownsProject = await sessionOwnsProject(state, sessionId, root)
-      }
-    }
-    remember(root)
-    state.touchProject(root, undefined, { worktreeRoot: preflight.worktreeRoot, preflight: preflight })
-    if (sessionId !== null && state !== null && typeof state.setSessionRoot === 'function') {
-      try {
-        state.setSessionRoot(sessionId, root)
-      } catch (error) {}
-    }
-    if (typeof state.flushRegistry === 'function') await state.flushRegistry()
-    const registry = typeof state.registryStatus === 'function' ? state.registryStatus() : null
-    setup.did.push({
-      step: 'project-bound',
-      ok: true,
-      detail: registry === null || registry === undefined ? 'registry-unavailable' : registry.ok === true ? String(registry.location === null ? 'registry-unavailable' : registry.location) : String(registry.error),
-    })
-    if (registry !== null && registry !== undefined && registry.ok !== true) {
-      warnings.push('项目登记表没写进去：' + String(registry.error === null || registry.error === undefined ? '原因未知' : registry.error) + '；重启后可能找不到这个项目。')
-    }
-
-    // ── Team: reuse when ok, bootstrap ONCE when missing ────────────────────
-    const teamRead = await projectTeamFor(root, sessionId)
-    let team = teamRead.team
-    let bootstrapped = false
-    let bootstrappedRoles = null
-    let teamFailed = false
-    let teamFailureCode = null
-    let teamError = null
-    if (team.available !== true) {
-      warnings.push('本环境没有团队服务（单机模式）：建卡和派发不走团队。')
-    } else if (team.ok === true) {
-      setup.did.push({ step: 'team-ready', ok: true, detail: typeof team.lead === 'string' ? team.lead : '' })
-    } else {
-      const owns = ownsProject
-      if (sessionId === null) {
-        teamFailureCode = 'no-session-context'
-        teamError = '这个请求没有会话身份，无法建团队'
-      } else if (owns !== true) {
-        teamFailureCode = 'project-mismatch'
-        teamError = '这个会话不属于该项目'
-      } else if (roles === null || typeof roles.ensure !== 'function') {
-        teamFailureCode = 'no-role-manager'
-        teamError = '这个环境没有角色管理器'
-      } else {
-        const boot = await bootstrapTeamFor(root, sessionId)
-        if (boot.ok === true) {
-          bootstrapped = true
-          bootstrappedRoles = boot.roles
-          const created = boot.roles.filter((entry) => entry.ok === true).map((entry) => entry.kind)
-          setup.did.push({ step: 'team-bootstrap', ok: true, detail: created.join('、') })
-          const reread = await projectTeamFor(root, sessionId)
-          team = reread.team
-          if (team.ok === true) setup.did.push({ step: 'team-ready', ok: true, detail: typeof team.lead === 'string' ? team.lead : '' })
-        } else {
-          teamFailureCode = typeof boot.code === 'string' ? boot.code : 'bootstrap-failed'
-          teamError = String(boot.message === undefined ? '团队建立失败' : boot.message)
-        }
-      }
-    }
-    if (team.available !== false && team.ok !== true) {
-      teamFailed = true
-      if (teamFailureCode === null) teamFailureCode = typeof team.error === 'string' && team.error !== '' ? team.error : 'no-members'
-      if (teamError === null) teamError = team.error === undefined || team.error === null ? '团队仍然不完整' : String(team.error)
-      setup.failed.push({ step: 'team-bootstrap', code: teamFailureCode, message: teamError })
-    }
-    facts.team = team
-    facts.teamFailed = teamFailed
-    facts.teamFailureCode = teamFailureCode
-    facts.teamError = teamError
-    facts.missingRoles = team !== null && team !== undefined && Array.isArray(team.missingRoles) ? team.missingRoles : []
-
-    // ── board facts (compact) ───────────────────────────────────────────────
-    const read = await state.read(root)
-    if (read.failed !== null) {
-      facts.preflightOk = false
-      facts.preflightMissing = ['看板读不出来：' + String(read.failed.message === undefined ? read.failed.code : read.failed.message)]
-      return shortOnboard('unusable', '看板读不出来：' + String(read.failed.message === undefined ? read.failed.code : read.failed.message), selectOnboardNext(facts), root)
-    }
-    const board = read.board
-    const summary = summariseBoard(board)
-    const dispatch = summary.dispatch
-    const dispatchState = dispatch !== null && dispatch !== undefined && typeof dispatch.state === 'string' ? dispatch.state : null
-    const request = dispatch !== null && dispatch !== undefined && dispatch.request !== undefined && dispatch.request !== null ? dispatch.request : null
-    facts.boardExisted = read.existed === true
-    facts.counts = summary.counts
-    facts.readyCount = summary.ready
-    facts.blocked = summary.blocked
-    facts.blockedCount = summary.counts.blocked
-    facts.active = summary.active
-    facts.activeCount = Number(summary.counts.running) + Number(summary.counts.reviewing) + Number(summary.counts.testing)
-    facts.dispatchState = dispatchState
-    facts.request = request
-    const boardSize = await boardSizeOf(root, board)
-    facts.boardSize = boardSize
-    facts.boardWarning = boardSize.warning === null || boardSize.warning === undefined ? null : String(boardSize.warning)
-    let environment = null
-    if (dispatchState === 'running') {
-      try {
-        const env = await environmentSnapshot(root, now, board)
-        environment = {
-          clean: env.clean === undefined ? null : env.clean,
-          code: env.code === undefined ? null : env.code,
-          message: env.message === undefined ? null : env.message,
-          transient: env.transient === true,
-          dirty: Array.isArray(env.dirty) ? env.dirty : [],
-        }
-      } catch (error) {
-        environment = { clean: null, code: 'environment-unreadable', message: messageOf(error), transient: false, dirty: [] }
-      }
-    }
-    facts.environment = environment
-    facts.hardDirty = environment !== null && environment.clean === false && environment.transient !== true
-
-    // ── attention (what the user should see) ────────────────────────────────
-    for (const task of summary.blocked) {
-      attention.push({ code: 'blocked', level: 'warn', message: task.id + ' 卡住：' + task.reason, taskId: task.id })
-    }
-    if (request !== null) {
-      attention.push({ code: 'approval', level: 'info', message: '有 1 个派发申请等用户批准', requestId: typeof request.id === 'string' ? request.id : null })
-    }
-    if (facts.hardDirty) {
-      attention.push({ code: 'environment', level: 'warn', message: '主检出的环境有问题：' + String(environment.message === null || environment.message === '' ? environment.code : environment.message) })
-    }
-    if (facts.boardWarning !== null) {
-      attention.push({ code: 'board-size', level: 'warn', message: '看板已经用到 ' + String(boardSize.percent) + '%，归档已完成卡能腾出空间', detail: facts.boardWarning })
-    }
-
-    // ── stage, ONE next step, brief ─────────────────────────────────────────
-    const stage = decideOnboardStage(facts)
-    facts.stage = stage
-    const next = selectOnboardNext(facts)
-    const needsUser = needsUserFor(next, facts)
-    const counts = summary.counts
-    const taskLine = renderTaskLine({
-      pending: counts.pending,
-      running: counts.running,
-      reviewing: counts.reviewing,
-      testing: counts.testing,
-      done: counts.done,
-      blocked: blockedSuffixOf(summary.blocked, counts.blocked),
-    })
-    const brief = renderOnboardBrief({
-      stage: stage,
-      projectLine: renderProjectLine({ kind: 'root', path: root, branch: facts.branch, head: facts.head }),
-      taskLine: taskLine,
-      team: { label: teamLabelOf(team) },
-      dispatchState: dispatchState,
-      queue: summary.ready,
-      active: summary.active,
-      activeTotal: summary.activeTotal,
-      needsUser: needsUser,
-      attention: attention,
-      warnings: warnings,
-      next: next,
-    })
-    return ok({
-      onboard: {
-        version: ONBOARD_VERSION,
-        stage: stage,
-        brief: brief,
-        project: onboardProjectSummary(facts),
-        team: onboardTeamSummary(team, bootstrapped, bootstrappedRoles),
-        dispatch: onboardDispatchSummary(dispatch),
-        environment: environment,
-        setup: setup,
-        attention: attention,
-        needsUser: needsUser,
-        warnings: warnings,
-        next: next,
-        checkedAt: new Date(now).toISOString(),
-      },
-    })
-  }
 
   return { perform: perform, snapshot: snapshot, worktrees: worktreesProbe, taskDetail: taskDetail, taskList: taskList, autoMergePending: autoMergePending, actions: ACTIONS, readActions: READ_ACTIONS }
 }

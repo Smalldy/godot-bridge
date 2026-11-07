@@ -225,6 +225,8 @@ export function createMerger(options) {
   const opts = options === undefined ? {} : options
   const git = opts.git === undefined ? null : opts.git
   const verify = typeof opts.verify === 'function' ? opts.verify : null
+  const journalFor = typeof opts.journalFor === 'function' ? opts.journalFor : null
+  const workspace = opts.workspace === undefined ? null : opts.workspace
   const verifyCommand = typeof opts.verifyCommand === 'string' && opts.verifyCommand.trim() !== '' ? opts.verifyCommand : DEFAULT_VERIFY_COMMAND
   const clock = typeof opts.now === 'function' ? opts.now : Date.now
   // One hung queue unit must not hold the merge queue forever: bound each unit
@@ -236,6 +238,10 @@ export function createMerger(options) {
   // Per key: one chain per target branch, so a hotfix and a feature line merge in
   // parallel while two requests into the SAME target stay strictly ordered.
   const chains = new Map()
+  // In-memory queue facts for /diagnostics. This is not a second source of
+  // truth: the board still records the outcome; this only makes a stuck or
+  // abandoned unit visible before the next sweep.
+  const queueState = { active: 0, queued: 0, last: null }
 
 
   /**
@@ -254,6 +260,9 @@ export function createMerger(options) {
     // queue turn so the next unit runs; the chain is never reset, so units that
     // were already queued keep their order.
     function guardUnit() {
+      queueState.queued = Math.max(0, queueState.queued - 1)
+      queueState.active += 1
+      const startedAt = clock()
       let timer = null
       const timeout = new Promise(function (resolveTimeout) {
         timer = setTimeout(function () {
@@ -276,9 +285,21 @@ export function createMerger(options) {
           if (timer !== null) clearTimeout(timer)
           return failure('queue-failed', messageOf(error))
         },
-      )
+      ).then(function (result) {
+        queueState.active = Math.max(0, queueState.active - 1)
+        queueState.last = {
+          at: new Date(clock()).toISOString(),
+          key: queueKey,
+          ok: result !== null && result !== undefined && result.ok === true,
+          code: result !== null && result !== undefined && result.code !== undefined ? result.code : null,
+          message: result !== null && result !== undefined && result.message !== undefined ? result.message : null,
+          ms: clock() - startedAt,
+        }
+        return result
+      })
     }
     const queueKey = typeof key === 'string' && key !== '' ? key : '_global'
+    queueState.queued += 1
     const chain = chains.get(queueKey) === undefined ? Promise.resolve() : chains.get(queueKey)
     const run = chain.then(guardUnit, guardUnit)
     chains.set(
@@ -427,11 +448,85 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
    * `{ ok: true, status: 'merged'|'conflict'|'failed', mergeCommit, conflict, output }`.
    * It never writes the board and never touches the main checkout on a failure.
    */
+  /**
+   * Journal wrapper: record the intent before git work and the outcome after it.
+   * Journal failures never block a merge; the board remains the source of truth.
+   */
   async function mergeRequest(task, projectPath, request) {
+    const req = request === undefined || request === null ? {} : request
+    let journal = null
+    let intent = null
+    if (journalFor !== null) {
+      try {
+        journal = journalFor(projectPath)
+      } catch (error) {
+        journal = null
+      }
+      if (journal !== null && typeof journal.begin === 'function') {
+        const base = req.base === undefined ? task.merge === undefined || task.merge === null ? task.base : task.merge.base : req.base
+        const head = req.head === undefined ? task.merge === undefined || task.merge === null ? task.commit : task.merge.head : req.head
+        if (base !== undefined && base !== null && base !== '' && head !== undefined && head !== null && head !== '') {
+          try {
+            const begun = await journal.begin({ id: task.id, target: task.target, base: base, head: head, candidate: task.branch })
+            if (begun !== null && begun !== undefined && begun.ok === true) intent = begun.intent
+          } catch (error) {
+            intent = null
+          }
+        }
+      }
+    }
+    let outcome
+    try {
+      outcome = await mergeRequestInner(task, projectPath, req)
+    } catch (error) {
+      if (journal !== null && intent !== null && typeof journal.finish === 'function') {
+        try {
+          await journal.finish(intent.key, { status: 'failed', mergeCommit: null, code: 'threw', message: String((error && error.message) || error) })
+        } catch (ignored) {}
+      }
+      throw error
+    }
+    if (journal !== null && intent !== null && typeof journal.finish === 'function') {
+      const status = outcome !== null && outcome !== undefined && typeof outcome.status === 'string' ? outcome.status : 'failed'
+      try {
+        await journal.finish(intent.key, {
+          status: status,
+          mergeCommit: outcome !== null && outcome !== undefined && outcome.mergeCommit !== undefined ? outcome.mergeCommit : null,
+          code: outcome !== null && outcome !== undefined && outcome.code !== undefined ? outcome.code : null,
+          message: outcome !== null && outcome !== undefined && outcome.message !== undefined ? outcome.message : null,
+        })
+      } catch (ignored) {}
+    }
+    return outcome
+  }
+
+  async function mergeRequestInner(task, projectPath, request) {
     const req = request === undefined || request === null ? {} : request
     if (git === null) return failure('no-git-service', 'the merge queue needs the git service, and this profile has none; merging is unavailable')
     if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', task.id + ' has no candidate branch to merge')
     if (typeof task.target !== 'string' || task.target.length === 0) return failure('missing-target', task.id + ' has no target branch to merge into')
+    // Recover a stale index.lock before the clean/target probes: otherwise every
+    // merge unit fails with an unreadable status and the sweep only skips.
+    if (workspace !== null && typeof workspace.plan === 'function') {
+      let plan
+      try {
+        plan = await workspace.plan(projectPath)
+      } catch (error) {
+        return failure('workspace-check-failed', 'could not inspect the merge workspace: ' + String((error && error.message) || error))
+      }
+      if (plan === null || plan === undefined || plan.ok !== true) {
+        return failure('workspace-check-failed', 'the merge workspace check returned no usable plan')
+      }
+      if (plan.action === 'remove-stale-index-lock') {
+        const applied = await workspace.apply(plan)
+        if (applied === null || applied === undefined || applied.ok !== true) {
+          return failure('workspace-recovery-failed', 'the stale index.lock could not be isolated: ' + String(applied === null || applied === undefined ? 'no result' : applied.message || applied.code || 'unknown'))
+        }
+      } else if (plan.action !== 'none') {
+        const reasons = Array.isArray(plan.reasons) ? plan.reasons.join('; ') : ''
+        return failure('workspace-blocked', 'the merge cannot start: ' + String(plan.action) + (reasons === '' ? '' : ' — ' + reasons))
+      }
+    }
     // The merge advances the TASK target ref, not whatever the main checkout has
     // checked out, so a hotfix (main) and a feature (feat/x) can merge in parallel.
     const clean = await cleanOf(projectPath)
@@ -675,12 +770,22 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     return { ok: true }
   }
 
+  function status() {
+    return {
+      active: queueState.active,
+      queued: queueState.queued,
+      chains: chains.size,
+      last: queueState.last === null ? null : Object.assign({}, queueState.last),
+    }
+  }
+
   return {
     enqueue: enqueue,
     mergeRequest: mergeRequest,
     createCandidate: createCandidate,
     mergeCandidate: mergeCandidate,
     discardCandidate: discardCandidate,
+    status: status,
     verifyCommand: verifyCommand,
     now: clock,
   }

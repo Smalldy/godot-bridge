@@ -55,6 +55,7 @@ import {
 import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { DEFAULT_WORKTREE_TIMEOUT_MS, createGit } from './git.mjs'
+import { createLeaseGate } from './lease-gate.mjs'
 import { SKILL_NAME } from './skill.mjs'
 
 export const DEFAULT_MAX_WORK_AGENTS = 4
@@ -3191,6 +3192,12 @@ export function createDispatcher(ctx, options) {
   // ownerSession (or the project's sessions), never this hint.
   const projectOf = typeof opts.projectPath === 'function' ? opts.projectPath : () => state.memory.projectHint
   const boot = bootId()
+  // Cross-process leader gate. No lease configured (direct tests/users) keeps the
+  // old single-host behaviour; the production row injects a per-project registry.
+  const leaseGate = createLeaseGate({ leases: opts.leases === undefined ? null : opts.leases, owner: boot })
+  // Startup/periodic merge-journal reconciliation. Injected so direct dispatcher
+  // users/tests do not need a journal; the production row wires it before a tick.
+  const reconcile = typeof opts.reconcile === 'function' ? opts.reconcile : null
   // T-97: cards carry the session that owns them; this dispatcher only hands work
   // to its own session's team. Without an identity it refuses to borrow.
   const selfSessionId = typeof opts.sessionId === 'string' && opts.sessionId.length > 0 ? opts.sessionId : sessionIdOfContext(ctx)
@@ -3302,6 +3309,7 @@ export function createDispatcher(ctx, options) {
       // T-130: the environment reading is scoped to one project when the caller
       // names it (the API passes its project); diagnostics can still ask for all.
       environment: environmentStatus(projectPath),
+      leader: leaseGate.status(typeof projectPath === 'string' && projectPath !== '' ? projectPath : null),
     }
   }
 
@@ -4270,6 +4278,28 @@ export function createDispatcher(ctx, options) {
     const results = []
     let paused = false
     try {
+      // One project has one leader. A refused claim means another live host owns
+      // this project; do not read/reap/claim its cards from here.
+      const leadership = await leaseGate.claim(project)
+      if (leadership.leader !== true) {
+        memory.lastError = String(leadership.message || 'another host holds the project lease')
+        return {
+          ok: true,
+          skipped: 'not-leader',
+          code: leadership.code === undefined ? 'not-leader' : leadership.code,
+          message: memory.lastError,
+        }
+      }
+      if (reconcile !== null) {
+        try {
+          const reconciled = await reconcile(project)
+          if (reconciled !== null && reconciled !== undefined && reconciled.ok === false) {
+            memory.lastError = 'merge reconcile failed: ' + String(reconciled.message || reconciled.code || 'unknown')
+          }
+        } catch (error) {
+          memory.lastError = 'merge reconcile failed: ' + String((error && error.message) || error)
+        }
+      }
       state.sweepLocks()
       const read = await state.read(project)
       if (read.failed !== null) {
@@ -4809,6 +4839,7 @@ export function createDispatcher(ctx, options) {
       clearTimeout(memory.timer)
       memory.timer = null
     }
+    void leaseGate.releaseAll()
   }
 
   return { kick: kick, tick: tick, settle: settle, status: status, dispose: dispose, memory: memory, boot: boot }

@@ -1,0 +1,314 @@
+function tcHostSessionId() {
+			const read = function (value) {
+				return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
+			}
+			const service = function (name) {
+				try {
+					return tcHostContext !== null && tcHostContext !== undefined && typeof tcHostContext.get === 'function' ? tcHostContext.get(name) : null
+				} catch (error) {
+					return null
+				}
+			}
+			try {
+				const workspace = service('uiWorkspace')
+				if (workspace !== null && workspace !== undefined) {
+					const selection = workspace.selection
+					if (selection !== null && selection !== undefined && typeof selection.getSnapshot === 'function') {
+						const saved = selection.getSnapshot()
+						const chosen = read(saved === null || saved === undefined ? null : saved.sessionId)
+						if (chosen !== null) return chosen
+					}
+					// The live retained reference covers the moment before the persisted
+					// selection is written (and a shell that keeps the store empty).
+					const retained = read(workspace.mainReference === null || workspace.mainReference === undefined ? null : workspace.mainReference.sessionId)
+					if (retained !== null) return retained
+				}
+			} catch (error) {
+				/* a shell that throws on inspection tells us nothing: fall through */
+			}
+			try {
+				const session = service('uiSession')
+				// Two shapes of the same binding: the underlying source and the
+				// renderer-facing adapter (what a session-scoped slot would receive).
+				const sources = []
+				if (session !== null && session !== undefined) {
+					sources.push(session.current)
+					if (session.adapter !== null && session.adapter !== undefined) sources.push(session.adapter.current)
+				}
+				for (const current of sources) {
+					if (current === null || current === undefined) continue
+					const value = typeof current.getSnapshot === 'function' ? current.getSnapshot() : current.value
+					if (value === null || value === undefined) continue
+					const key = read(value.key)
+					if (key !== null) return key
+					const id = read(value.sessionId)
+					if (id !== null) return id
+				}
+			} catch (error) {
+				/* same: no identity from this source */
+			}
+			return null
+		}
+
+		/**
+		 * The session id this panel acts as, plus where it came from (T-99):
+		 *
+		 *   'url'    an explicit ?session= on the page URL (Host or tool override);
+		 *   'host'   the DSH shell's own current session — the id the tool path gets
+		 *            as agent.id, so the panel follows the session with no parameter;
+		 *   'window' a per-window id minted here, kept in sessionStorage so two windows
+		 *            are two sessions (the T-96 fallback when the Host says nothing).
+		 */
+		let tcFallbackSessionId = null
+
+		function tcSessionIdInfo() {
+			let fromUrl = null
+			try {
+				fromUrl =
+					typeof window.location === 'object' && window.location !== null && typeof window.location.search === 'string'
+						? new URLSearchParams(window.location.search).get('session')
+						: null
+			} catch (error) {
+				fromUrl = null
+			}
+			if (typeof fromUrl === 'string' && fromUrl.length > 0) return { id: fromUrl, source: 'url' }
+			const hosted = tcHostSessionId()
+			if (hosted !== null) return { id: hosted, source: 'host' }
+			return { id: tcWindowSessionId(), source: 'window' }
+		}
+
+		function tcSessionId() {
+			return tcSessionIdInfo().id
+		}
+
+		/** The per-window fallback identity (T-96): minted once, kept in sessionStorage. */
+		function tcWindowSessionId() {
+			try {
+				const store =
+					typeof window.sessionStorage === 'object' && window.sessionStorage !== null && typeof window.sessionStorage.getItem === 'function'
+						? window.sessionStorage
+						: window.localStorage
+				// The self-minted id must not collide with a Host id either.
+
+				let id = store.getItem(TC_SESSION_KEY)
+				if (typeof id !== 'string' || id.length === 0) {
+					id = 'web-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+					store.setItem(TC_SESSION_KEY, id)
+				}
+				return id
+			} catch (error) {
+				// Storage is unavailable: mint a page-level id instead of one shared
+				// constant, which would make every window the same session again.
+				if (tcFallbackSessionId === null) {
+					tcFallbackSessionId = 'web-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+				}
+				return tcFallbackSessionId
+			}
+		}
+
+		function tcWithSession(url) {
+			return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'session=' + encodeURIComponent(tcSessionId())
+		}
+
+		/**
+		 * The project the human PINNED in this browser (T-90). Empty means "follow
+		 * the host": the panel sends no project at all and the server resolves the
+		 * session workspace, so a fresh browser never asks for a path. Only an
+		 * explicit switch writes this key — the panel no longer records whatever the
+		 * Host happened to answer, which is what turned the session's project into a
+		 * stale manual pin.
+		 */
+		function tcPinnedProject() {
+			try {
+				const value = window.localStorage.getItem(TC_PROJECT_KEY)
+				if (typeof value !== 'string' || value.length === 0) return null
+				if (value.indexOf(TC_PROJECT_PREFIX) === 0) {
+					const pinned = value.slice(TC_PROJECT_PREFIX.length)
+					return pinned.length > 0 ? pinned : null
+				}
+				// Legacy auto-recorded value (pre-T-90): not a user choice. Migrate it
+				// away once so it can never be misread as a manual pin again.
+				try {
+					if (typeof window.localStorage.removeItem === 'function') window.localStorage.removeItem(TC_PROJECT_KEY)
+					else window.localStorage.setItem(TC_PROJECT_KEY, '')
+					window.localStorage.setItem(TC_PROJECT_MIGRATED_KEY, '1')
+				} catch (error) {
+					/* storage can be disabled; the value is simply ignored */
+				}
+				return null
+			} catch (error) {
+				return null
+			}
+		}
+
+		/** Pin a project for this browser (write = bind: the caller also sends openProject). */
+		function tcPinProject(project) {
+			try {
+				if (typeof project === 'string' && project.length > 0) window.localStorage.setItem(TC_PROJECT_KEY, TC_PROJECT_PREFIX + project)
+			} catch (error) {
+				/* storage can be disabled; pinning is a convenience */
+			}
+		}
+
+		/** Same project, however the two sides spell the path (mirrors projectIdOf). */
+		function tcSameProject(left, right) {
+			if (typeof left !== 'string' || typeof right !== 'string' || left === '' || right === '') return false
+			const normalise = function (value) {
+				const text = String(value).replace(/\\/g, '/').replace(/\/+$/, '')
+				return /^[A-Za-z]:\//.test(text) ? text.toLowerCase() : text
+			}
+			return normalise(left) === normalise(right)
+		}
+
+		const TC_COLUMNS_KEY = 'godotBridge.taskCenter.columns'
+		const DONE_COLUMN_PREVIEW = 5
+		/** T-132: the board's kind filter ('all' | 'dev' | 'investigate'). Module state
+		 * so switching tabs keeps it; the panel rerenders through onKindFilterChange. */
+		const boardUiState = { kind: 'all' }
+
+		/** Column collapse state, remembered across reloads (done starts collapsed). */
+		function tcReadColumnState() {
+			try {
+				const raw = window.localStorage.getItem(TC_COLUMNS_KEY)
+				const parsed = raw === null ? null : JSON.parse(raw)
+				return parsed !== null && typeof parsed === 'object' ? parsed : {}
+			} catch (error) {
+				return {}
+			}
+		}
+
+		function tcColumnCollapsed(key) {
+			const state = tcReadColumnState()
+			if (typeof state[key] === 'boolean') return state[key]
+			return key === 'done'
+		}
+
+		function tcWriteColumnCollapsed(key, collapsed) {
+			try {
+				const state = tcReadColumnState()
+				state[key] = collapsed === true
+				window.localStorage.setItem(TC_COLUMNS_KEY, JSON.stringify(state))
+			} catch (error) {
+				/* storage can be disabled; collapsing is a convenience */
+			}
+		}
+
+		/** One shape for the view, whatever the Host answered. */
+		function tcSnapshot(payload, source, message, actionResult) {
+			const tasks = Array.isArray(payload.tasks) ? payload.tasks : []
+			return {
+				ok: payload.ok !== false,
+				source: source,
+				message: message === undefined ? '' : message,
+				project: typeof payload.project === 'string' ? payload.project : null,
+				projectRoot: typeof payload.projectRoot === 'string' ? payload.projectRoot : typeof payload.project === 'string' ? payload.project : null,
+				// Where the Host got this project: 'session' (walked up from the session
+				// workspace), 'panel' (this browser pinned it) or 'registry'. The panel
+				// shows it beside the title so "which project is this" is answerable.
+				resolvedFrom: typeof payload.resolvedFrom === 'string' ? payload.resolvedFrom : null,
+				// What the SESSION resolves to, independent of the panel's pin. The
+				// mismatch bar compares it with `project`.
+				sessionProject: typeof payload.sessionProject === 'string' ? payload.sessionProject : null,
+				// The Host's own note when its registry last drove another project; the
+				// source badge shows it as a tooltip instead of a second banner.
+				projectWarning: typeof payload.projectWarning === 'string' ? payload.projectWarning : null,
+				// T-108: main-checkout cleanliness, when it was read and which cards
+				// are waiting on it — the panel separates a merge-window blip from a
+				// really dirty checkout with this.
+				environment: payload.environment === undefined || payload.environment === null ? null : payload.environment,
+				// T-110: the project's Team and, when it does not exist, the one
+				// instruction the session must act on.
+				team: payload.team === undefined || payload.team === null ? null : payload.team,
+				// T-122: host-wide team inventory (diagnostics); the member table uses team.members.
+				teams: payload.teams === undefined || payload.teams === null ? null : payload.teams,
+				nextStep: payload.nextStep === undefined || payload.nextStep === null ? null : payload.nextStep,
+				// How full the board file is: { bytes, limit, percent, level, cards,
+				// bytesPerCard, headroomCards, warning }. The status page warns at 50%
+				// and 75% of the cap, before the file stops loading at all.
+				boardSize: payload.boardSize !== undefined && payload.boardSize !== null && typeof payload.boardSize === 'object' ? payload.boardSize : null,
+				dispatch: payload.dispatch !== undefined && payload.dispatch !== null ? payload.dispatch : { state: 'paused' },
+				counts: payload.counts !== undefined && payload.counts !== null ? payload.counts : {},
+				queue: Array.isArray(payload.queue) ? payload.queue : [],
+				tasks: tasks,
+				locks: Array.isArray(payload.locks) ? payload.locks : [],
+				workers: payload.workers === undefined || payload.workers === null ? null : payload.workers,
+				agents: payload.agents === undefined || payload.agents === null ? null : payload.agents,
+				worktrees: payload.worktrees === undefined || payload.worktrees === null ? null : payload.worktrees,
+				activity: payload.activity === undefined || payload.activity === null ? null : payload.activity,
+				// T-111: the status timeline the Host derives from the board (task
+				// history + merge records); no memory ring, survives restarts.
+				activityEvents: payload.activityEvents === undefined || payload.activityEvents === null ? null : payload.activityEvents,
+				// The merge sweep is telemetry now, never an activity event.
+				lastSweep: payload.lastSweep === undefined || payload.lastSweep === null ? null : payload.lastSweep,
+				roles: payload.roles === undefined || payload.roles === null ? null : payload.roles,
+				scheduler: payload.scheduler === undefined ? null : payload.scheduler,
+				actionResult: actionResult === undefined || actionResult === null ? null : actionResult,
+				actionError: payload.actionError === undefined || payload.actionError === null ? null : payload.actionError,
+				version: payload.version,
+				seq: Number.isFinite(payload.seq) ? payload.seq : null,
+				archivedCount: Number.isFinite(payload.archivedCount) ? payload.archivedCount : 0,
+				archiveRange: payload.archiveRange === undefined ? null : payload.archiveRange,
+				full: payload.full !== false,
+				details: {},
+				updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : null,
+				serverTime: payload.serverTime,
+			}
+		}
+
+		/**
+		 * Apply a state answer to the previous snapshot. `full:false` is a delta
+		 * (changed summaries + removed ids) and is merged; `full:true` replaces
+		 * the board (the client clears and rebuilds, as the protocol requires).
+		 */
+		function tcMergeSnapshot(previous, payload) {
+			if (payload.full === false && previous !== null && previous !== undefined && previous.seq !== null && Array.isArray(previous.tasks)) {
+				const byId = new Map(previous.tasks.map(function (task) { return [task.id, task] }))
+				const details = Object.assign({}, previous.details)
+				for (const task of (Array.isArray(payload.tasks) ? payload.tasks : [])) {
+					const before = byId.get(task.id)
+					if (before !== undefined && before.updatedAt !== task.updatedAt) delete details[task.id]
+					byId.set(task.id, Object.assign({}, before === undefined ? {} : before, task))
+				}
+				for (const id of (Array.isArray(payload.removed) ? payload.removed : [])) {
+					byId.delete(id)
+					delete details[id]
+				}
+				return Object.assign({}, previous, payload, {
+					tasks: Array.from(byId.values()),
+					details: details,
+					seq: Number.isFinite(payload.seq) ? payload.seq : previous.seq,
+					full: false,
+				})
+			}
+			const next = tcSnapshot(payload, 'host', '')
+			next.details = {}
+			return next
+		}
+
+		/**
+		 * Localized text for a Host failure. The Host sends a stable code (+ optional
+		 * params); the panel renders the code from TC_DICT. An unknown code falls back
+		 * to the Host's own message so an older/newer Host still says something real.
+		 */
+		function tcErrorMessage(payload, t) {
+			if (payload === null || payload === undefined || typeof payload !== 'object') return t('error')
+			const code = typeof payload.code === 'string' ? payload.code.trim() : ''
+			const params = payload.params !== null && typeof payload.params === 'object' ? payload.params : {}
+			if (code !== '') {
+				const key = 'err_' + code.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()
+				const localized = t(key)
+				if (typeof localized === 'string' && localized !== key) {
+					return localized.replace(/\{([A-Za-z0-9_]+)\}/g, function (match, name) {
+						return params[name] === undefined || params[name] === null ? match : String(params[name])
+					})
+				}
+			}
+			if (typeof payload.message === 'string' && payload.message !== '') return payload.message
+			return t('error')
+		}
+
+		/**
+		 * The Host binding. It owns two things only: fetch the snapshot, send an
+		 * action. It keeps no board state of its own, so a failed request cannot
+		 * fabricate work.
+		 */
