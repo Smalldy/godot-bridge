@@ -13,7 +13,7 @@ suites.
 | integration | several modules against a real board/worktree/queue | `task-routes`, `task-tool`, `dispatch`, `merge-actions`, `merge-reconcile`, `onboard`, `harness` |
 | process | two dispatchers / restart / crash windows | `lease-dual-process`, `merge-restart`, `merge-journal-integration` |
 | bundle | the browser half still registers, renders Host data and follows the session | `client-bundle` |
-| contract | repository and target-history rules, syntax, Godot command enums | `check-plugin-contract`, `check-target-history`, `check:syntax`, `godot-contract` |
+| contract | repository and target-history rules, syntax, Godot command enums, structural coverage, release metadata | `check-plugin-contract`, `check-target-history`, `check:syntax`, `godot-contract`, `view-test-coverage`, `release-gate` |
 
 ## Known gaps
 
