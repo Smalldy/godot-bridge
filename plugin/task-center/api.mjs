@@ -46,6 +46,7 @@ import { createOnboardAction } from './actions/onboard.mjs'
 import { createTaskAdminActions } from './actions/task-admin.mjs'
 import { createProjectAdminActions } from './actions/project-admin.mjs'
 import { createActionPreflight } from './kernel/action-preflight.mjs'
+import { createGates } from './kernel/gates.mjs'
 import {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
@@ -279,6 +280,22 @@ export function createApi(ctx, options) {
     ok: ok,
     failure: failure,
   })
+  const gates = createGates({
+    callerMemberOf: callerMemberOf,
+    callerRole: callerRole,
+    roles: roles,
+    MERGER_NAME: MERGER_NAME,
+    memberProjectOf: memberProjectOf,
+    roleSlotOf: roleSlotOf,
+    projectSlotKey: projectSlotKey,
+    projectIdOf: projectIdOf,
+    ctx: ctx,
+    failure: failure,
+  })
+  const roleAdminRefusal = gates.roleAdminRefusal
+  const mergeRefusal = gates.mergeRefusal
+  const harnessRefusal = gates.harnessRefusal
+  const wrongProjectRefusal = gates.wrongProjectRefusal
   const harnessActions = createHarnessActions({ harnessRefusal: harnessRefusal, harness: harness, ok: ok, failure: failure })
   const controlActions = createControlActions({
     mutate: mutate,
@@ -1451,37 +1468,11 @@ export function createApi(ctx, options) {
    * "merger" — a fixed role the Lead spawns, not a permission switch. Every
    * other agent is refused before the queue is touched.
    */
-  function mergeRefusal(context) {
-    if (context !== undefined && context !== null && context.role === 'user') return null
-    const member = callerMemberOf(context)
-    if (member !== null && member.name === MERGER_NAME) return null
-    return failure(
-      'merger-only',
-      'Only the user or the Team member named "' +
-        MERGER_NAME +
-        '" can merge or reject merge requests; everyone else reports done and lets the merger integrate.',
-    )
-  }
-
-  /**
+/**
    * The isolated DSH harness belongs to the tester (or the user). No other agent
    * can start, stop or probe it; without a role registry only the user may.
    */
-  function harnessRefusal(context) {
-    if (context !== undefined && context !== null && context.role === 'user') return null
-    if (roles === null) {
-      return failure('tester-only', 'The isolated DSH harness is driven by the tester role (or the user); this profile has no role registry.')
-    }
-    const caller = callerRole(context)
-    if (caller === null) return failure('role-required', 'Only a tester role member or the user can drive the isolated DSH harness.')
-    if (caller.kind !== 'tester') {
-      const name = caller.member.name === undefined || caller.member.name === null ? 'this agent' : String(caller.member.name)
-      return failure('tester-only', 'Only a tester role member or the user can drive the isolated DSH harness; ' + name + ' is not one.')
-    }
-    return null
-  }
-
-  /**
+/**
    * The task branch's CURRENT head, independent of what the merge request
    * recorded. The task worktree is authoritative when it still exists (that is
    * where the agent committed); otherwise the branch is resolved in the main
@@ -1850,23 +1841,7 @@ export function createApi(ctx, options) {
    * (a restart, a hand-spawned teammate) is not refused: there is nothing to
    * compare, and the project-scoped slot names still keep projects apart.
    */
-  function wrongProjectRefusal(context, projectPath) {
-    const member = callerMemberOf(context)
-    if (member === null) return null
-    const known = memberProjectOf(ctx, member.name)
-    const slot = roleSlotOf(member.name)
-    const callerKey = known !== null ? known.key : slot === null ? null : slot.project
-    if (callerKey === null || callerKey === undefined || callerKey === '') return null
-    if (callerKey === projectSlotKey(projectPath)) return null
-    return failure(
-      'wrong-project',
-      'you were dispatched for another project (' + (known !== null ? known.root : 'slot ' + String(callerKey)) + '); this card belongs to ' + projectPath +
-        '. Do not submit another project\'s card; a worker is only accepted by the board it was dispatched for.',
-      { project: projectIdOf(projectPath), dispatchedFor: known === null ? callerKey : known.root },
-    )
-  }
-
-  /** Role provisioning with a bound: a hung ensure must not hold the action. */
+/** Role provisioning with a bound: a hung ensure must not hold the action. */
   async function ensureRoleBounded(kind, request) {
     const startedAt = Date.now()
     const bounded = await boundedAwait(() => roles.ensure(kind, request), actionTimeoutMs)
@@ -2575,11 +2550,6 @@ export function createApi(ctx, options) {
       return { ok: false, code: 'not-live', message: name + ' has failed; the host auto-provisioning will replace it (or replace the role kind)' }
     }
     return { ok: true, member: member }
-  }
-
-  function roleAdminRefusal(context, message) {
-    if (context !== undefined && context !== null && context.role === 'user') return null
-    return failure('user-only', message === undefined ? 'Role profiles belong to the user; manage them from the task center panel.' : message)
   }
 
   async function persistRoles(projectPath, config) {
