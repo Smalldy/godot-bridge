@@ -1338,7 +1338,7 @@ export function apply(ctx, config) {
     'screenshot', 'click', 'key_press', 'eval', 'wait', 'mouse_move',
     'get_ui_elements', 'get_scene_tree', 'get_property', 'set_property',
     'call_method', 'get_node_info', 'instantiate_scene', 'remove_node',
-    'change_scene', 'pause', 'get_performance', 'connect_signal',
+    'change_scene', 'pause', 'get_performance', 'get_instance_info', 'connect_signal',
     'disconnect_signal', 'emit_signal', 'play_animation', 'tween_property',
     'get_nodes_in_group', 'find_nodes_by_class', 'reparent_node', 'key_hold',
     'key_release', 'scroll', 'mouse_drag', 'gamepad', 'get_camera',
