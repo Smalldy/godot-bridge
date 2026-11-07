@@ -36,6 +36,7 @@ import { createHarnessActions } from './actions/harness.mjs'
 import { createControlActions } from './actions/control.mjs'
 import { createLifecycleActions } from './actions/lifecycle.mjs'
 import { createRoleActions } from './actions/roles.mjs'
+import { createMergeActions } from './actions/merge.mjs'
 import {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
@@ -289,6 +290,22 @@ export function createApi(ctx, options) {
     ctx: ctx,
     interruptAssignee: interruptAssignee,
     cleanupInvestigation: cleanupInvestigation,
+    failure: failure,
+  })
+  const mergeActions = createMergeActions({
+    mergeRefusal: mergeRefusal,
+    mergeQueueKey: mergeQueueKey,
+    serialised: serialised,
+    mergeOne: mergeOne,
+    notifyMergeOutcome: notifyMergeOutcome,
+    readBoardOrFail: readBoardOrFail,
+    model: model,
+    writeTask: writeTask,
+    recordMergeResult: recordMergeResult,
+    clock: clock,
+    writeByName: writeByName,
+    emitActivity: emitActivity,
+    ok: ok,
     failure: failure,
   })
   const roleActions = createRoleActions({
@@ -4491,49 +4508,8 @@ export function createApi(ctx, options) {
       return ok({ dispatch: result.board.dispatch, events: result.events })
     }
 
-    if (action === 'mergeRequest') {
-      const denied = mergeRefusal(context)
-      if (denied !== null) return denied
-      const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
-      if (id === '') return failure('missing-id', 'mergeRequest needs a task id')
-      // The whole pipeline (re-read, integrate, verify, record) runs inside the
-      // queue so a second request sees the first one's result, never its state.
-      const queueKey = await mergeQueueKey(projectPath, id)
-      const result = await serialised((token) => mergeOne(projectPath, id, context.by, context, undefined, token), queueKey)
-      // Notifications happen after the queue releases, and never change the answer.
-      if (result.ok === true && result.task !== null && result.task !== undefined) {
-        await notifyMergeOutcome(projectPath, result.task)
-      }
-      return result
-    }
-    if (action === 'rejectMerge') {
-      const denied = mergeRefusal(context)
-      if (denied !== null) return denied
-      const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
-      if (id === '') return failure('missing-id', 'rejectMerge needs a task id')
-      return serialised(async function () {
-        const read = await readBoardOrFail(projectPath)
-        if (read.failed !== undefined) return read.failed
-        const task = model.findTask(read.board, id)
-        if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
-        if (task.status === 'pending' || task.status === 'running' || task.status === 'blocked' || task.status === 'cancelled') {
-          return failure('not-mergeable-phase', id + ' is ' + task.status + '; only a submitted task has a merge request')
-        }
-        const merge = task.merge
-        if (merge === null || merge === undefined || typeof merge !== 'object' || merge.status !== 'open') {
-          return failure('no-open-merge', id + ' has no open merge request to reject')
-        }
-        const recorded = await writeTask(
-          projectPath,
-          id,
-          (board) => recordMergeResult(board, id, { status: 'rejected' }, clock(), context.by, writeByName(context)),
-          context,
-        )
-        if (recorded.ok !== true) return recorded
-        emitActivity(context, 'merge', 'rejected', id)
-        return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
-      })
-    }
+    const mergeHandler = mergeActions[action]
+    if (mergeHandler !== undefined) return mergeHandler(source, context, projectPath)
     if (action === 'refreshMerge') {
       const id = String(source.id !== undefined ? source.id : source.taskId === undefined ? '' : source.taskId)
       if (id === '') return failure('missing-id', 'refreshMerge needs a task id')

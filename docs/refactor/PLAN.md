@@ -34,7 +34,8 @@
 - D 第五步（2026-11-07）：actions/control.mjs 抽出 pause/settings/tick；settings 的 maxConcurrent 派生、user-only、no-change、scheduler kick 保持不变。32/32 verify。
 - D 第六步（2026-11-07）：actions/lifecycle.mjs 抽出 cancel/reopen/unblock/retry/block；锁释放、interrupt、investigation cleanup 语义不变。33/33 verify。
 - D 第七步（2026-11-07）：actions/roles.mjs 抽出 10 个 roles 动作；roleAdminRefusal、panel session 作用域、persist/ensure/drain 语义不变。33/33 verify。
-- 下一阶段：D 剩余（verdicts/merge/onboard handlers、gates/pipeline、caller、端口收窄）。
+- D 第八步（2026-11-07）：actions/merge.mjs 抽出 mergeRequest/rejectMerge；队列/notify/phase/open-merge 语义不变。refreshMerge 仍在 api.mjs。34/34 verify。
+- 下一阶段：D 剩余（refreshMerge/verdicts/onboard handlers、gates/pipeline、caller、端口收窄）。
 
 ## 1. 阶段
 
