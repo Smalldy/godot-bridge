@@ -40,8 +40,9 @@ Dependency rules:
 
 - `api.mjs` may import `dispatch-port.mjs`, actions and kernel; actions receive
   their helpers through a deps object, so they do not import `api.mjs`.
-- `dispatch-port.mjs` is a single object today (40 flat fields); grouping into
-  brief/lead/roster/workspace capabilities is the next step.
+- `dispatch-port.mjs` is one object grouped by capability: `brief`, `lead`,
+  `roster`, `workspace`, `task`, `dispatch`. The API destructures the groups it
+  uses; a flat field on the port is a test failure.
 - `kernel/` contains gates/preflight/caller resolution; it has no React and no
   HTTP route.
 - The domain modules (`board`, `service`, `schema`, `merge`, `merge-journal`,
