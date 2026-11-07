@@ -65,6 +65,7 @@ client/
     views/done-all-drawer.cjs  DoneAllDrawer (React + doneAllState + tcDayKey injected)
     views/queue.cjs       QueueRow/QueueView (h injected)
     views/workers.cjs     WorkersView (React + label helpers injected)
+    views/agent-row.cjs   AgentRow (React + role label + clipboard injected)
     30-views-core.part    hooks, TaskCard, Column, Board, DoneAllDrawer
     31-views-queue.part   queue/workers/pagination
     32-views-roles.part   roles editor/team

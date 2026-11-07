@@ -18,6 +18,7 @@ Order:
 | `views/done-all-drawer.cjs` | DoneAllDrawer (React + doneAllState + tcDayKey injected; Node-testable) |
 | `views/queue.cjs` | QueueRow/QueueView (h injected; Node-testable) |
 | `views/workers.cjs` | WorkersView (React + h + label helpers injected; Node-testable) |
+| `views/agent-row.cjs` | AgentRow (React + h + role label + clipboard injected; Node-testable) |
 | `30-views-core.part` | hooks, Column, Board, DoneAllDrawer |
 | `31-views-queue.part` | queue, workers, pagination |
 | `32-views-roles.part` | roles editor and team views |
