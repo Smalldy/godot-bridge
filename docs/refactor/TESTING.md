@@ -9,11 +9,11 @@ suites.
 
 | level | what it proves | examples |
 | --- | --- | --- |
-| unit | one module's contract in isolation | `board`, `locks`, `git`, `lease-registry`, `merge-journal`, `action-registry`, `client-selectors`, `client-store` |
+| unit | one module's contract in isolation | `board`, `locks`, `git`, `lease-registry`, `merge-journal`, `action-registry`, `client-selectors`, `client-store`, every `client-*.test.mjs` view test |
 | integration | several modules against a real board/worktree/queue | `task-routes`, `task-tool`, `dispatch`, `merge-actions`, `merge-reconcile`, `onboard`, `harness` |
 | process | two dispatchers / restart / crash windows | `lease-dual-process`, `merge-restart`, `merge-journal-integration` |
 | bundle | the browser half still registers, renders Host data and follows the session | `client-bundle` |
-| contract | repository and target-history rules, syntax | `check-plugin-contract`, `check-target-history`, `check:syntax` |
+| contract | repository and target-history rules, syntax, Godot command enums | `check-plugin-contract`, `check-target-history`, `check:syntax`, `godot-contract` |
 
 ## Known gaps
 

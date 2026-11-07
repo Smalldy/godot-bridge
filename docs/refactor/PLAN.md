@@ -74,7 +74,9 @@
 - 后续第十四步（2026-11-08）：SettingsForm/ProjectForm 迁到 views/settings-form.cjs、views/project-form.cjs；新增对应 per-view 测试。51/51 verify。
 - 后续第十五步（2026-11-08）：Glyph 迁到 views/glyph.cjs；新增 client-glyph.test.mjs。52/52 verify。
 - 后续第十六步（2026-11-08）：TaskCenter shell 迁到 views/task-center.cjs；新增 client-task-center.test.mjs。53/53 verify。所有视图均已成为可独立测试的模块。
-- 下一阶段：Godot e2e/contract 作为已知缺口；followup → target 合并。
+- 后续第十七步（2026-11-08）：新增 scripts/test/godot-contract.test.mjs，校验 godot_command/godot_operations 枚举与 .gd match 分支一致；修复 get_instance_info 漏枚举。54/54 verify。
+- 下一阶段：真实 Godot 引擎 e2e 仍作为已知缺口；contract 已静态覆盖。
+
 
 
 ## 1. 阶段
