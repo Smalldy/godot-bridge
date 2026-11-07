@@ -46,7 +46,8 @@
 - D 第十七步（2026-11-07）：actions/project-admin.mjs 抽出 skillsCatalog/worktreesCleanup/bootstrapTeam；user-only gate、worktree cleanup、team bootstrap 语义不变。34/34 verify。
 - D 第十八步（2026-11-07）：kernel/action-preflight.mjs 抽出 lease heartbeat、stopped-card refusal、phase activity、dev-only guard；performResolved 现在只剩 remember/now + 一次 preflight + handler 表。34/34 verify。
 - D 第十九步（2026-11-07）：kernel/gates.mjs 抽出 roleAdminRefusal/mergeRefusal/harnessRefusal/wrongProjectRefusal；verdictRefusal（roster/registry 回退）仍留在 api.mjs。34/34 verify。
-- 下一阶段：D 剩余（verdictRefusal/caller、端口收窄）。
+- D 第二十步（2026-11-07）：kernel/verdict-gate.mjs 抽出 verdictRefusal；T-114 的源码断言改为读取 kernel/verdict-gate.mjs + api.mjs 的 callerLookup。34/34 verify。
+- 下一阶段：D 剩余（caller 解析、端口收窄）。
 
 ## 1. 阶段
 
