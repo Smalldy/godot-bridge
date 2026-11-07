@@ -25,7 +25,9 @@
 - C 第五步（2026-11-07）：journal 接入 merge.mjs 的 mergeRequest：git 前 begin，返回后 finish；journal 失败不阻断 merge；index 按项目注入 .agents/merge-journal.json。22/22 verify。
 - C 第六步（2026-11-07）：merge-reconcile.mjs 在每个 leader tick 前运行：读 pending intent、解析 target head、isAncestor；mark-merged 先写 board（recordMergeResult）再 finish journal；abandoned/stale 只关 journal；board 写失败保留 pending 重试。23/23 verify。
 - C 第七步（2026-11-07）：process-check.mjs（Windows tasklist / POSIX ps，注入 runner；失败=unknown）接入 workspace；mergeRequest 在 clean/target 探测前跑 workspace preflight：stale lock 可 rename 恢复，fresh/held/merge 状态返回 workspace-blocked，不再静默失败。25/25 verify。
-- C 剩余：双进程/真实重启 e2e；process-check 目前用 Node execFile，若宿主沙箱禁止则 unknown → manual-check（不会误删）。
+- C 第八步（2026-11-07）：真实双 node 进程抢同一 lease（恰好一个赢）；新 journal 实例读取旧文件并 reconcile board（重启语义）。27/27 verify。
+- C 阶段完成，带边界：process-check 用 Node execFile（宿主沙箱禁止则 unknown → manual-check）；没有真实 DSH host 重启/双 dispatcher e2e。
+- 下一阶段：D（kernel 拆分）。
 
 ## 1. 阶段
 
