@@ -27,6 +27,7 @@ import { createState } from './state.mjs'
 import { createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
 import { createMerger } from './merge.mjs'
 import { createDoctor } from './doctor.mjs'
+import { createWorkspaceReconciler } from './workspace.mjs'
 import { createHarness } from './harness.mjs'
 import { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS, createApi } from './api.mjs'
 import { registerTaskTool } from './tool.mjs'
@@ -218,6 +219,9 @@ function applyRow(ctx) {
   // Read-only workspace doctor for /diagnostics: stale index.lock, merge state,
   // worktrees, and the merge queue's in-memory last unit. It never repairs.
   const doctor = createDoctor({ git: git, merger: merger })
+  // Read-only reconciliation plan for the workspace (stale index.lock, merge
+  // state). Applying a plan is a separate, explicit operation.
+  const workspace = createWorkspaceReconciler({ git: git })
   // The isolated DSH test instance the tester drives (harness.mjs): a throwaway
   // DSH_HOME/profile, its own free port and its own project copy. Constructing
   // it starts nothing; only a harnessStart action does.
@@ -320,7 +324,7 @@ function applyRow(ctx) {
   // The GUI's routes. Same API, same state, human role.
   ctx.effect(function () {
     try {
-      return registerTaskRoutes(ctx, { state: state, api: api, scheduler: scheduler, merger: merger, doctor: doctor })
+      return registerTaskRoutes(ctx, { state: state, api: api, scheduler: scheduler, merger: merger, doctor: doctor, workspace: workspace })
     } catch (error) {
       try {
         ctx.logger.warn('[godot-bridge] task center routes skipped: ' + String((error && error.message) || error))

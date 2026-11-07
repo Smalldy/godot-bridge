@@ -24,8 +24,9 @@ const doctor = {
 }
 const merger = { status: () => ({ active: 0, queued: 0, chains: 0, last: null }) }
 const scheduler = { status: () => ({ running: false }) }
+const workspace = { plan: async () => ({ ok: true, action: 'none', reasons: [] }) }
 
-registerTaskRoutes(ctx, { state: state, api: {}, scheduler: scheduler, merger: merger, doctor: doctor })
+registerTaskRoutes(ctx, { state: state, api: {}, scheduler: scheduler, merger: merger, doctor: doctor, workspace: workspace })
 
 const handler = handlers.get(DIAGNOSTICS_PATH)
 assert.equal(typeof handler, 'function', 'the diagnostics route is registered')
@@ -48,5 +49,6 @@ assert.equal(payload.project, '/repo')
 assert.equal(payload.doctor.status, 'ok')
 assert.equal(payload.merge.active, 0)
 assert.equal(payload.scheduler.running, false)
+assert.equal(payload.workspace.action, 'none')
 
 console.log('PASS  diagnostics route resolves the project and returns doctor + merge + scheduler')
