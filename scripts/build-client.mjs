@@ -116,7 +116,42 @@ const taskCardWrapper =
   '\t\t\t\t\twaitingChip: waitingChip,\n' +
   '\t\t\t\t})\n' +
   '\t\t\t})()\n'
-const viewsCore = read('30-views-core.part').replace(/\t+\/\* TASK_CARD_MODULE \*\//, taskCardWrapper)
+const column = read('views/column.cjs')
+const columnWrapper =
+  '\t\t\tconst Column = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  column +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createColumn\n' +
+  '\t\t\t\treturn factory({ h: h, TaskCard: TaskCard })\n' +
+  '\t\t\t})()\n'
+const board = read('views/board.cjs')
+const boardWrapper =
+  '\t\t\tconst Board = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  board +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createBoard\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\tTaskCard: TaskCard,\n' +
+  '\t\t\t\t\tColumn: Column,\n' +
+  '\t\t\t\t\ttcTime: tcTime,\n' +
+  '\t\t\t\t\ttcKindOf: tcKindOf,\n' +
+  '\t\t\t\t\ttcFirstNonEmptyColumn: tcFirstNonEmptyColumn,\n' +
+  '\t\t\t\t\ttcColumnCollapsed: tcColumnCollapsed,\n' +
+  '\t\t\t\t\ttcWriteColumnCollapsed: tcWriteColumnCollapsed,\n' +
+  '\t\t\t\t\tDONE_COLUMN_PREVIEW: DONE_COLUMN_PREVIEW,\n' +
+  '\t\t\t\t\tboardUiState: boardUiState,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const viewsCore = read('30-views-core.part')
+  .replace(/\t+\/\* TASK_CARD_MODULE \*\//, taskCardWrapper)
+  .replace(/\t+\/\* COLUMN_MODULE \*\//, columnWrapper)
+  .replace(/\t+\/\* BOARD_MODULE \*\//, boardWrapper)
 
 const bundle =
   read('00-head.part') +
