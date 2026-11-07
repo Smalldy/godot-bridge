@@ -3195,6 +3195,9 @@ export function createDispatcher(ctx, options) {
   // Cross-process leader gate. No lease configured (direct tests/users) keeps the
   // old single-host behaviour; the production row injects a per-project registry.
   const leaseGate = createLeaseGate({ leases: opts.leases === undefined ? null : opts.leases, owner: boot })
+  // Startup/periodic merge-journal reconciliation. Injected so direct dispatcher
+  // users/tests do not need a journal; the production row wires it before a tick.
+  const reconcile = typeof opts.reconcile === 'function' ? opts.reconcile : null
   // T-97: cards carry the session that owns them; this dispatcher only hands work
   // to its own session's team. Without an identity it refuses to borrow.
   const selfSessionId = typeof opts.sessionId === 'string' && opts.sessionId.length > 0 ? opts.sessionId : sessionIdOfContext(ctx)
@@ -4285,6 +4288,16 @@ export function createDispatcher(ctx, options) {
           skipped: 'not-leader',
           code: leadership.code === undefined ? 'not-leader' : leadership.code,
           message: memory.lastError,
+        }
+      }
+      if (reconcile !== null) {
+        try {
+          const reconciled = await reconcile(project)
+          if (reconciled !== null && reconciled !== undefined && reconciled.ok === false) {
+            memory.lastError = 'merge reconcile failed: ' + String(reconciled.message || reconciled.code || 'unknown')
+          }
+        } catch (error) {
+          memory.lastError = 'merge reconcile failed: ' + String((error && error.message) || error)
         }
       }
       state.sweepLocks()

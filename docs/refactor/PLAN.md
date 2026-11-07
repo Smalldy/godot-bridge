@@ -22,8 +22,9 @@
 - C 第二步（2026-11-07）：lease-registry.mjs 提供跨进程项目 leader lease（owner/bootId/pid/heartbeat/TTL；文件锁 + 原子替换；held/renewed/released/expired）。19/19 verify。
 - C 第三步（2026-11-07）：lease-gate.mjs 接入 dispatcher：tick 前 claim，非 leader 返回 not-leader 且不读/不 reap/不 claim；status 暴露 leader；dispose releaseAll；index 按项目注入 .agents/leader-leases.json。20/20 verify。尚未做双进程 e2e。
 - C 第四步（2026-11-07）：merge-journal.mjs 提供持久 merge intent/outcome + planReconcile（merged/abandoned/stale）；21/21 verify。
-- C 第五步（2026-11-07）：journal 接入 merge.mjs 的 mergeRequest：git 前 begin，返回后 finish；journal 失败不阻断 merge；index 按项目注入 .agents/merge-journal.json。22/22 verify。启动 reconcile/board 回写仍未接。
-- C 剩余：启动 reconcile/board 回写、host processChecker、auto 调用点。
+- C 第五步（2026-11-07）：journal 接入 merge.mjs 的 mergeRequest：git 前 begin，返回后 finish；journal 失败不阻断 merge；index 按项目注入 .agents/merge-journal.json。22/22 verify。
+- C 第六步（2026-11-07）：merge-reconcile.mjs 在每个 leader tick 前运行：读 pending intent、解析 target head、isAncestor；mark-merged 先写 board（recordMergeResult）再 finish journal；abandoned/stale 只关 journal；board 写失败保留 pending 重试。23/23 verify。
+- C 剩余：host processChecker、auto 调用点/双进程 e2e。
 
 ## 1. 阶段
 
