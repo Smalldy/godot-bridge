@@ -342,6 +342,16 @@ const projectFormWrapper =
   '\t\t\t\t\ttcErrorMessage: tcErrorMessage,\n' +
   '\t\t\t\t})\n' +
   '\t\t\t})()\n'
+const glyph = read('views/glyph.cjs')
+const glyphWrapper =
+  '\t\t\tconst Glyph = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  glyph +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createGlyph\n' +
+  '\t\t\t\treturn factory({ h: h })\n' +
+  '\t\t\t})()\n'
 const viewsCore = read('30-views-core.part')
   .replace(/\t+\/\* TASK_CARD_MODULE \*\//, taskCardWrapper)
   .replace(/\t+\/\* COLUMN_MODULE \*\//, columnWrapper)
@@ -357,6 +367,7 @@ const bundle =
     if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_EDITOR_MODULE \*\//, rolesEditorWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper).replace(/\t+\/\* STATUS_VIEW_MODULE \*\//, statusViewWrapper)
     if (name === '34-views-detail.part') return read(name).replace(/\t+\/\* DETAIL_VIEW_MODULE \*\//, detailViewWrapper)
     if (name === '35-views-forms.part') return read(name).replace(/\t+\/\* TASK_FORM_MODULE \*\//, taskFormWrapper).replace(/\t+\/\* SETTINGS_FORM_MODULE \*\//, settingsFormWrapper).replace(/\t+\/\* PROJECT_FORM_MODULE \*\//, projectFormWrapper)
+    if (name === '36-views-shell.part') return read(name).replace(/\t+\/\* GLYPH_MODULE \*\//, glyphWrapper)
     return read(name)
   }).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper).replace(/\t+\/\* WORKERS_VIEW_MODULE \*\//, workersWrapper) +
   read('40-tail.part')

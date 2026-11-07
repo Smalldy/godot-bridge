@@ -27,6 +27,7 @@ Order:
 | `views/task-form.cjs` | TaskForm (React + Modal + list/error helpers + store injected; Node-testable) |
 | `views/settings-form.cjs` | SettingsForm (React + Modal + store injected; Node-testable) |
 | `views/project-form.cjs` | ProjectForm (React + Modal + draft state + store + tcErrorMessage injected; Node-testable) |
+| `views/glyph.cjs` | Glyph (h injected; Node-testable) |
 | `30-views-core.part` | hooks, Column, Board, DoneAllDrawer |
 | `31-views-queue.part` | queue, workers, pagination |
 | `32-views-roles.part` | roles editor and team views |
