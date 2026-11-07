@@ -66,7 +66,8 @@
 - 后续第六步（2026-11-08）：WorkersView 迁到 views/workers.cjs；新增 client-workers.test.mjs。42/42 verify。
 - 后续第七步（2026-11-08）：AgentRow 迁到 views/agent-row.cjs；新增 client-agent-row.test.mjs。43/43 verify。
 - 后续第八步（2026-11-08）：RoleCreateForm 迁到 views/role-create-form.cjs；新增 client-role-create-form.test.mjs。44/44 verify。
-- 下一阶段：roles editor/status/detail/forms/shell；Godot e2e/contract 作为已知缺口。
+- 后续第九步（2026-11-08）：RolesView 迁到 views/roles-view.cjs；新增 client-roles-view.test.mjs。45/45 verify。
+- 下一阶段：RolesEditor/status/detail/forms/shell；Godot e2e/contract 作为已知缺口。
 
 ## 1. 阶段
 

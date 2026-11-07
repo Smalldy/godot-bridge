@@ -198,6 +198,16 @@ const roleCreateFormWrapper =
   '\t\t\t\tconst factory = module.exports.createRoleCreateForm\n' +
   '\t\t\t\treturn factory({ React: React, h: h, tcSplitList: tcSplitList, roleKindLabel: roleKindLabel })\n' +
   '\t\t\t})()\n'
+const rolesView = read('views/roles-view.cjs')
+const rolesViewWrapper =
+  '\t\t\tconst RolesView = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  rolesView +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createRolesView\n' +
+  '\t\t\t\treturn factory({ React: React, h: h, RolesEditor: RolesEditor })\n' +
+  '\t\t\t})()\n'
 const viewsCore = read('30-views-core.part')
   .replace(/\t+\/\* TASK_CARD_MODULE \*\//, taskCardWrapper)
   .replace(/\t+\/\* COLUMN_MODULE \*\//, columnWrapper)
@@ -210,7 +220,7 @@ const bundle =
   storeWrapper +
   VIEW_PARTS.map((name) => {
     if (name === '30-views-core.part') return viewsCore
-    if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper)
+    if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper)
     return read(name)
   }).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper).replace(/\t+\/\* WORKERS_VIEW_MODULE \*\//, workersWrapper) +
   read('40-tail.part')
