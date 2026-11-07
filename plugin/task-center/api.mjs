@@ -33,6 +33,7 @@ import * as locks from './locks.mjs'
 import { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from './actions/registry.mjs'
 import { createReadActions } from './actions/read.mjs'
 import { createHarnessActions } from './actions/harness.mjs'
+import { createControlActions } from './actions/control.mjs'
 import {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
@@ -267,6 +268,15 @@ export function createApi(ctx, options) {
     failure: failure,
   })
   const harnessActions = createHarnessActions({ harnessRefusal: harnessRefusal, harness: harness, ok: ok, failure: failure })
+  const controlActions = createControlActions({
+    mutate: mutate,
+    model: model,
+    clock: clock,
+    scheduler: scheduler,
+    maybeArchive: maybeArchive,
+    ok: ok,
+    failure: failure,
+  })
   // A task can be merged by both the tester's passTest and the host sweep. The
   // second caller must not take the stale branch and rebuild a candidate for a
   // task that is already done; one in-process claim per task makes merging idempotent.
@@ -4616,15 +4626,8 @@ export function createApi(ctx, options) {
       if (scheduler !== null) await scheduler.settle(projectPath)
       return ok({ dispatch: result.board.dispatch, events: result.events })
     }
-    if (action === 'pause') {
-      const result = await mutate(
-        projectPath,
-        (board) => model.setDispatch(board, { state: 'paused' }, clock(), context.by),
-        context,
-      )
-      if (result.ok !== true) return result
-      return ok({ dispatch: result.board.dispatch, events: result.events })
-    }
+    const controlHandler = controlActions[action]
+    if (controlHandler !== undefined) return controlHandler(source, context, projectPath)
     if (action === 'approveStart' || action === 'rejectStart') {
       if (context === undefined || context === null || context.role !== 'user') {
         return failure('user-only', 'Starting dispatch is the user\'s decision; ask them to approve it in the task center panel.')
@@ -4668,41 +4671,7 @@ export function createApi(ctx, options) {
       }
       return ok({ dispatch: result.board.dispatch, events: result.events })
     }
-    if (action === 'settings') {
-      if (context === undefined || context === null || context.role !== 'user') {
-        return failure('user-only', 'Dispatch settings belong to the user; ask them to change it in the task center panel.')
-      }
-      const patch = {}
-      for (const key of ['maxConcurrent', 'allowSpawn', 'maxWorkAgents', 'maxAttempts', 'defaultTarget']) {
-        if (source[key] !== undefined) patch[key] = source[key]
-      }
-      // The GUI exposes a single number: maximum concurrency. The worker cap
-      // and spawning policy are derived so a user does not have to reason about
-      // two capacity knobs. An explicit advanced value still wins.
-      if (source.maxConcurrent !== undefined) {
-        const concurrency = Number(source.maxConcurrent)
-        if (Number.isFinite(concurrency)) patch.maxConcurrent = Math.floor(concurrency)
-        if (source.maxWorkAgents === undefined && Number.isFinite(concurrency)) {
-          patch.maxWorkAgents = Math.min(12, Math.max(1, Math.floor(concurrency) + 1))
-        }
-        if (source.allowSpawn === undefined) patch.allowSpawn = true
-        if (source.maxAttempts === undefined) patch.maxAttempts = 3
-      }
-      if (Object.keys(patch).length === 0) return failure('no-change', 'no dispatch setting was supplied')
-      const result = await mutate(
-        projectPath,
-        (board) => model.setDispatch(board, patch, clock(), context.by),
-        context,
-      )
-      if (result.ok !== true) return result
-      if (scheduler !== null) void scheduler.kick(projectPath)
-      return ok({ dispatch: result.board.dispatch, events: result.events })
-    }
-    if (action === 'tick') {
-      if (scheduler === null) return failure('no-scheduler', 'the dispatcher is not available in this profile')
-      const archiveResult = await maybeArchive(projectPath)
-      return ok({ tick: await scheduler.settle(projectPath), archive: archiveResult })
-    }
+
     if (action === 'mergeRequest') {
       const denied = mergeRefusal(context)
       if (denied !== null) return denied
