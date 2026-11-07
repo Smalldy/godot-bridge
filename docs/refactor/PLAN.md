@@ -3,12 +3,13 @@
 > 本文件是重构期间的**唯一协调源**。重构不依赖任务中心；任务中心 149/149 done，已冻结。
 > 架构依据：[docs/architecture-review.md](../architecture-review.md)。
 > 基线：代码 b486562；备份分支 backup/task-center-v2-pre-refactor-2026-11-07；标签 pre-refactor-2026-11-07；bundle .git/backups/pre-refactor-2026-11-07.bundle。
-> 工作树：.worktrees/refactor-arch（分支 refactor/task-center-architecture）；主工作树 feat/task-center-v2 保持稳定，运行中的宿主继续加载旧代码。
+> 工作树：.worktrees/refactor-arch（分支 merge/task-center-refactor）；主工作树 feat/task-center-v2 保持稳定，运行中的宿主继续加载旧代码。
 
 ## 0. 约束
 
 - 不使用 task_center 建卡、派发、评审或合并；不依赖任务中心可用。
 - 不直接改主工作树；所有重构提交在 refactor worktree。
+- 分支名刻意用 merge/：scripts/check-target-history.mjs 只把 task/test/merge 分支的合并视为可追溯；本次是项目级重构、不建 task center 卡，记录在本 PLAN。合并时必须 --no-ff，subject 为 Merge branch 'merge/task-center-refactor'，否则 guard 会判 untraceable。
 - 每步行为保持；先加测试/诊断，再移动代码。
 - 每个提交必须能单独回滚；合并前 npm run verify 全绿 + 独立 review。
 - 不 push；备份/远端操作单独确认。
