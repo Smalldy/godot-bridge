@@ -19,7 +19,8 @@
 - 2026-11-07：基线 b486562；备份 branch/tag/bundle；隔离 worktree；B 首步（syntax guard、suite timeout、CI syntax job、17/17 verify）；A 首步（doctor 检查 index.lock/MERGE_HEAD/worktree/merge queue last、/diagnostics 接入、runbook、两份复盘）。
 - A 剩余：team/session 的 loading/selector（E 的前端部分）、cache/action snapshot 检查。
 - C 首步（2026-11-07）：workspace.mjs 提供只读 plan + 保守 apply：只在锁超龄、无 merge/rebase、注入的 processChecker 明确返回 false 时把 index.lock 改名隔离，绝不删除；未知进程状态一律 manual-check。diagnostics 暴露 workspace plan。18/18 verify。
-- C 剩余：LeaseRegistry/项目 leader lease、host processChecker、merge queue intent/outcome 落盘与启动 reconcile、auto 调用点。
+- C 第二步（2026-11-07）：lease-registry.mjs 提供跨进程项目 leader lease（owner/bootId/pid/heartbeat/TTL；文件锁 + 原子替换；held/renewed/released/expired）。19/19 verify。尚未接入 dispatcher。
+- C 剩余：host processChecker、merge queue intent/outcome 落盘与启动 reconcile、dispatcher 接入 lease、auto 调用点。
 
 ## 1. 阶段
 
