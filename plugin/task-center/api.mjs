@@ -44,6 +44,7 @@ import { createReviewVerdictActions } from './actions/review-verdicts.mjs'
 import { createProjectActions } from './actions/project.mjs'
 import { createOnboardAction } from './actions/onboard.mjs'
 import { createTaskAdminActions } from './actions/task-admin.mjs'
+import { createProjectAdminActions } from './actions/project-admin.mjs'
 import {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
@@ -486,6 +487,16 @@ export function createApi(ctx, options) {
     teamLabelOf: teamLabelOf,
     ok: ok,
     failure: failure,
+  })
+  const projectAdminActions = createProjectAdminActions({
+    roleAdminRefusal: roleAdminRefusal,
+    skillsCatalog: skillsCatalog,
+    readBoardOrFail: readBoardOrFail,
+    worktreesCleanup: worktreesCleanup,
+    callerSessionId: callerSessionId,
+    bootstrapTeamFor: bootstrapTeamFor,
+    teamBootstrapStep: teamBootstrapStep,
+    ok: ok,
   })
   const taskAdminActions = createTaskAdminActions({
     projectTeamFor: projectTeamFor,
@@ -4509,29 +4520,8 @@ export function createApi(ctx, options) {
         }
       }
     }
-    if (action === 'skillsCatalog') {
-      const denied = roleAdminRefusal(context, 'The skill catalog belongs to the user; open it from the task center panel.')
-      if (denied !== null) return denied
-      return skillsCatalog(projectPath)
-    }
-    if (action === 'worktreesCleanup') {
-      // T-142: removing stale checkouts is a user decision. The tool does not
-      // expose this action; a direct agent call is refused here as well.
-      const denied = roleAdminRefusal(context, 'Worktree cleanup belongs to the user; run it from the task center panel.')
-      if (denied !== null) return denied
-      const read = await readBoardOrFail(projectPath)
-      if (read.failed !== undefined) return read.failed
-      return worktreesCleanup(projectPath, read.board, source)
-    }
-    if (action === 'bootstrapTeam') {
-      // T-121: an agent can bootstrap its OWN team instead of asking the user.
-      // T-129: onboarding calls the SAME routine, so a team is only ever built
-      // one way (and a second onboard while the team is ok builds nothing).
-      const sessionId = callerSessionId(source, context)
-      const boot = await bootstrapTeamFor(projectPath, sessionId)
-      if (boot.ok !== true) return boot
-      return ok({ bootstrap: true, session: boot.session, lead: boot.lead, roles: boot.roles, deferred: boot.deferred, team: boot.team, nextStep: teamBootstrapStep(boot.team) })
-    }
+    const projectAdminHandler = projectAdminActions[action]
+    if (projectAdminHandler !== undefined) return projectAdminHandler(source, context, projectPath)
     const roleHandler = roleActions[action]
     if (roleHandler !== undefined) return roleHandler(source, context, projectPath)
 
