@@ -49,7 +49,9 @@
 - D 第二十步（2026-11-07）：kernel/verdict-gate.mjs 抽出 verdictRefusal；T-114 的源码断言改为读取 kernel/verdict-gate.mjs + api.mjs 的 callerLookup。34/34 verify。
 - D 第二十一步（2026-11-07）：kernel/caller-helpers.mjs 抽出 callerIdentifiers/callerRoleKindOf/rosterSummary/isAssignee；callerLookup/callerMemberOf/ownerOf 仍在 api.mjs。34/34 verify。
 - D 第二十二步（2026-11-07）：kernel/caller-lookup.mjs 抽出 callerLookup/callerMemberOf/callerRole/ownerOf/assigneeMatches；T-114 的源码断言同时读取 caller-lookup.mjs。34/34 verify。
-- 下一阶段：D 剩余（dispatch-port 收窄）。
+- D 第二十三步（2026-11-07）：dispatch-port.mjs 改为单一 `dispatchPort` 对象；api.mjs 只 import 一个符号并解构 40 个字段。字段仍平铺，按 brief/lead/roster/workspace 分组留作后续。34/34 verify。
+- D 阶段完成（caveat：端口对象是显式 seam，但尚未按能力分组）。
+- 下一阶段：E client（源码拆分/构建/选择器/resource store）。
 
 ## 1. 阶段
 

@@ -50,7 +50,8 @@ import { createGates } from './kernel/gates.mjs'
 import { createVerdictGate } from './kernel/verdict-gate.mjs'
 import { createCallerHelpers } from './kernel/caller-helpers.mjs'
 import { createCallerLookup } from './kernel/caller-lookup.mjs'
-import {
+import { dispatchPort } from './dispatch-port.mjs'
+const {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
   ROLE_SAMPLE_TASK,
@@ -91,7 +92,7 @@ import {
   testFailureBriefFor,
   testerBriefFor,
   workerPool,
-} from './dispatch-port.mjs'
+} = dispatchPort
 import {
   archiveIndexPath,
   archivePath,

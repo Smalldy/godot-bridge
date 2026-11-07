@@ -1,52 +1,52 @@
 /**
  * The API's dependency seam into the dispatcher.
  *
- * Before this module, api.mjs imported ~40 symbols directly from dispatch.mjs,
- * which made the surface layer depend on the scheduler/role/brief internals and
- * dragged the whole dispatcher into API tests. This port names the capability
- * the API is allowed to use. It is a re-export today; the next step is to replace
- * the individual functions with a narrow interface (brief/lead/roster/workspace)
- * behind the same names.
+ * One explicit object is the only thing the surface layer receives. The fields
+ * are still flat today (the dispatcher is large); grouping them into
+ * brief/lead/roster/workspace capabilities is the next step, not a reason to
+ * let api.mjs import dispatch.mjs directly.
  */
-export {
-  MERGER_NAME,
-  REVIEW_MAX_ROUNDS,
-  ROLE_SAMPLE_TASK,
-  briefFor,
-  briefPartsFor,
-  hostCheckEvidence,
-  interruptAssignee,
-  interruptMemberNamed,
-  isTransientEnvironmentCode,
-  leadInventory,
-  leadInventoryText,
-  memberProjectOf,
-  cleanupInvestigationCheckouts,
-  probeWorktree,
-  projectSlotKey,
-  projectTeamState,
-  roleShortName,
-  roleSlotOf,
-  resolveLead,
-  liveLeads,
-  resolveAnyLead,
-  agentSessionOf,
-  reviewBriefFor,
-  reworkBriefFor,
-  roleBriefFor,
-  roleBriefPartsFor,
-  roleContextPreview,
-  roleKindOf,
-  roleTemplateValuesFor,
-  runHostCheck,
-  teamBootstrapStep,
-  sessionOwnsProject,
-  sessionWorkspaceOf,
-  recordPhaseActivity,
-  recordStageSlot,
-  stageSlotOf,
-  servicesFor,
-  testFailureBriefFor,
-  testerBriefFor,
-  workerPool,
-} from './dispatch.mjs'
+import * as dispatch from './dispatch.mjs'
+
+export const dispatchPort = {
+  MERGER_NAME: dispatch.MERGER_NAME,
+  REVIEW_MAX_ROUNDS: dispatch.REVIEW_MAX_ROUNDS,
+  ROLE_SAMPLE_TASK: dispatch.ROLE_SAMPLE_TASK,
+  briefFor: dispatch.briefFor,
+  briefPartsFor: dispatch.briefPartsFor,
+  hostCheckEvidence: dispatch.hostCheckEvidence,
+  interruptAssignee: dispatch.interruptAssignee,
+  interruptMemberNamed: dispatch.interruptMemberNamed,
+  isTransientEnvironmentCode: dispatch.isTransientEnvironmentCode,
+  leadInventory: dispatch.leadInventory,
+  leadInventoryText: dispatch.leadInventoryText,
+  memberProjectOf: dispatch.memberProjectOf,
+  cleanupInvestigationCheckouts: dispatch.cleanupInvestigationCheckouts,
+  probeWorktree: dispatch.probeWorktree,
+  projectSlotKey: dispatch.projectSlotKey,
+  projectTeamState: dispatch.projectTeamState,
+  roleShortName: dispatch.roleShortName,
+  roleSlotOf: dispatch.roleSlotOf,
+  resolveLead: dispatch.resolveLead,
+  liveLeads: dispatch.liveLeads,
+  resolveAnyLead: dispatch.resolveAnyLead,
+  agentSessionOf: dispatch.agentSessionOf,
+  reviewBriefFor: dispatch.reviewBriefFor,
+  reworkBriefFor: dispatch.reworkBriefFor,
+  roleBriefFor: dispatch.roleBriefFor,
+  roleBriefPartsFor: dispatch.roleBriefPartsFor,
+  roleContextPreview: dispatch.roleContextPreview,
+  roleKindOf: dispatch.roleKindOf,
+  roleTemplateValuesFor: dispatch.roleTemplateValuesFor,
+  runHostCheck: dispatch.runHostCheck,
+  teamBootstrapStep: dispatch.teamBootstrapStep,
+  sessionOwnsProject: dispatch.sessionOwnsProject,
+  sessionWorkspaceOf: dispatch.sessionWorkspaceOf,
+  recordPhaseActivity: dispatch.recordPhaseActivity,
+  recordStageSlot: dispatch.recordStageSlot,
+  stageSlotOf: dispatch.stageSlotOf,
+  servicesFor: dispatch.servicesFor,
+  testFailureBriefFor: dispatch.testFailureBriefFor,
+  testerBriefFor: dispatch.testerBriefFor,
+  workerPool: dispatch.workerPool,
+}
