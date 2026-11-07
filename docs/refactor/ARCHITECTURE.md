@@ -40,8 +40,9 @@ Dependency rules:
 
 - `api.mjs` may import `dispatch-port.mjs`, actions and kernel; actions receive
   their helpers through a deps object, so they do not import `api.mjs`.
-- `dispatch-port.mjs` is a single object today (40 flat fields); grouping into
-  brief/lead/roster/workspace capabilities is the next step.
+- `dispatch-port.mjs` is one object grouped by capability: `brief`, `lead`,
+  `roster`, `workspace`, `task`, `dispatch`. The API destructures the groups it
+  uses; a flat field on the port is a test failure.
 - `kernel/` contains gates/preflight/caller resolution; it has no React and no
   HTTP route.
 - The domain modules (`board`, `service`, `schema`, `merge`, `merge-journal`,
@@ -58,6 +59,23 @@ client/
     selectors.cjs         pure selectors (35 functions; Node-testable)
     15-client-state.part  session/project/column state helpers
     store.cjs             createTaskStore(t, deps) (Node-testable)
+    views/task-card.cjs   TaskCard (React + selectors injected; Node-testable)
+    views/column.cjs      Column (h + TaskCard injected; Node-testable)
+    views/board.cjs       Board (React + components + board UI state injected)
+    views/done-all-drawer.cjs  DoneAllDrawer (React + doneAllState + tcDayKey injected)
+    views/queue.cjs       QueueRow/QueueView (h injected)
+    views/workers.cjs     WorkersView (React + label helpers injected)
+    views/agent-row.cjs   AgentRow (React + role label + clipboard injected)
+    views/role-create-form.cjs  RoleCreateForm (React + tcSplitList + role label injected)
+    views/roles-view.cjs  RolesView (React + RolesEditor injected)
+    views/roles-editor.cjs  RolesEditor (React + role cards/forms/helpers/state injected)
+    views/status-view.cjs  StatusView (React + status/worktree state + labels/helpers injected)
+    views/detail-view.cjs  DetailView (React + detail state + actor/merge helpers + selectors injected)
+    views/task-form.cjs    TaskForm (React + Modal + list/error helpers + store injected)
+    views/settings-form.cjs  SettingsForm (React + Modal + store injected)
+    views/project-form.cjs   ProjectForm (React + Modal + draft state + store + tcErrorMessage injected)
+    views/glyph.cjs       Glyph (h injected)
+    views/task-center.cjs TaskCenter (React + all views/forms + hooks/state + project helpers injected)
     30-views-core.part    hooks, TaskCard, Column, Board, DoneAllDrawer
     31-views-queue.part   queue/workers/pagination
     32-views-roles.part   roles editor/team

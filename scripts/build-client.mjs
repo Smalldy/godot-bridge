@@ -84,12 +84,328 @@ const storeWrapper =
   '\t}\n' +
   '})()\n'
 
+const taskCard = read('views/task-card.cjs')
+const taskCardWrapper =
+  '\t\t\tconst TaskCard = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  taskCard +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createTaskCard\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\ttcBaseName: tcBaseName,\n' +
+  '\t\t\t\t\ttcIsInvestigation: tcIsInvestigation,\n' +
+  '\t\t\t\t\ttcKindOf: tcKindOf,\n' +
+  '\t\t\t\t\ttcLease: tcLease,\n' +
+  '\t\t\t\t\ttcMergeLabel: tcMergeLabel,\n' +
+  '\t\t\t\t\ttcMergeOf: tcMergeOf,\n' +
+  '\t\t\t\t\ttcMergeTone: tcMergeTone,\n' +
+  '\t\t\t\t\ttcPhaseLabel: tcPhaseLabel,\n' +
+  '\t\t\t\t\ttcPhaseTone: tcPhaseTone,\n' +
+  '\t\t\t\t\ttcReviewLabel: tcReviewLabel,\n' +
+  '\t\t\t\t\ttcReviewOf: tcReviewOf,\n' +
+  '\t\t\t\t\ttcReviewTone: tcReviewTone,\n' +
+  '\t\t\t\t\ttcRound: tcRound,\n' +
+  '\t\t\t\t\ttcStageQueued: tcStageQueued,\n' +
+  '\t\t\t\t\ttcTestLabel: tcTestLabel,\n' +
+  '\t\t\t\t\ttcTestOf: tcTestOf,\n' +
+  '\t\t\t\t\ttcTestTone: tcTestTone,\n' +
+  '\t\t\t\t\ttoneForDependency: toneForDependency,\n' +
+  '\t\t\t\t\twaitingChip: waitingChip,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const column = read('views/column.cjs')
+const columnWrapper =
+  '\t\t\tconst Column = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  column +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createColumn\n' +
+  '\t\t\t\treturn factory({ h: h, TaskCard: TaskCard })\n' +
+  '\t\t\t})()\n'
+const board = read('views/board.cjs')
+const boardWrapper =
+  '\t\t\tconst Board = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  board +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createBoard\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\tTaskCard: TaskCard,\n' +
+  '\t\t\t\t\tColumn: Column,\n' +
+  '\t\t\t\t\ttcTime: tcTime,\n' +
+  '\t\t\t\t\ttcKindOf: tcKindOf,\n' +
+  '\t\t\t\t\ttcFirstNonEmptyColumn: tcFirstNonEmptyColumn,\n' +
+  '\t\t\t\t\ttcColumnCollapsed: tcColumnCollapsed,\n' +
+  '\t\t\t\t\ttcWriteColumnCollapsed: tcWriteColumnCollapsed,\n' +
+  '\t\t\t\t\tDONE_COLUMN_PREVIEW: DONE_COLUMN_PREVIEW,\n' +
+  '\t\t\t\t\tboardUiState: boardUiState,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const doneAll = read('views/done-all-drawer.cjs')
+const doneAllWrapper =
+  '\t\t\tconst DoneAllDrawer = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  doneAll +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createDoneAllDrawer\n' +
+  '\t\t\t\treturn factory({ React: React, h: h, doneAllState: doneAllState, tcDayKey: tcDayKey })\n' +
+  '\t\t\t})()\n'
+const queue = read('views/queue.cjs')
+const queueWrapper =
+  '\t\t\tconst { QueueRow, QueueView } = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  queue +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createQueueViews\n' +
+  '\t\t\t\treturn factory({ h: h })\n' +
+  '\t\t\t})()\n'
+const workers = read('views/workers.cjs')
+const workersWrapper =
+  '\t\t\tconst WorkersView = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  workers +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createWorkersView\n' +
+  '\t\t\t\treturn factory({ React: React, h: h, tcBaseName: tcBaseName, tcSessionShort: tcSessionShort, tcLeadText: tcLeadText, copyToClipboard: copyToClipboard, roleKindLabel: roleKindLabel, workerStatusLabel: workerStatusLabel })\n' +
+  '\t\t\t})()\n'
+const agentRow = read('views/agent-row.cjs')
+const agentRowWrapper =
+  '\t\t\tconst AgentRow = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  agentRow +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createAgentRow\n' +
+  '\t\t\t\treturn factory({ React: React, h: h, roleKindLabel: roleKindLabel, copyToClipboard: copyToClipboard })\n' +
+  '\t\t\t})()\n'
+const roleCreateForm = read('views/role-create-form.cjs')
+const roleCreateFormWrapper =
+  '\t\t\tconst RoleCreateForm = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  roleCreateForm +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createRoleCreateForm\n' +
+  '\t\t\t\treturn factory({ React: React, h: h, tcSplitList: tcSplitList, roleKindLabel: roleKindLabel })\n' +
+  '\t\t\t})()\n'
+const rolesView = read('views/roles-view.cjs')
+const rolesViewWrapper =
+  '\t\t\tconst RolesView = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  rolesView +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createRolesView\n' +
+  '\t\t\t\treturn factory({ React: React, h: h, RolesEditor: RolesEditor })\n' +
+  '\t\t\t})()\n'
+const rolesEditor = read('views/roles-editor.cjs')
+const rolesEditorWrapper =
+  '\t\t\tconst RolesEditor = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  rolesEditor +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createRolesEditor\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\troleResultBanner: roleResultBanner,\n' +
+  '\t\t\t\t\ttableWrap: tableWrap,\n' +
+  '\t\t\t\t\troleBoundProfile: roleBoundProfile,\n' +
+  '\t\t\t\t\troleSelectableProfiles: roleSelectableProfiles,\n' +
+  '\t\t\t\t\troleProfileCopy: roleProfileCopy,\n' +
+  '\t\t\t\t\tAgentRow: AgentRow,\n' +
+  '\t\t\t\t\tRoleCreateForm: RoleCreateForm,\n' +
+  '\t\t\t\t\troleErrorText: roleErrorText,\n' +
+  '\t\t\t\t\tworkerStatusLabel: workerStatusLabel,\n' +
+  '\t\t\t\t\troleKindLabel: roleKindLabel,\n' +
+  '\t\t\t\t\tactorLabel: actorLabel,\n' +
+  '\t\t\t\t\ttcSplitList: tcSplitList,\n' +
+  '\t\t\t\t\troleEditorState: roleEditorState,\n' +
+  '\t\t\t\t\tROLE_EDITOR_KINDS: ROLE_EDITOR_KINDS,\n' +
+  '\t\t\t\t\tROLE_EDITOR_STAGES: ROLE_EDITOR_STAGES,\n' +
+  '\t\t\t\t\tcopyToClipboard: copyToClipboard,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const statusView = read('views/status-view.cjs')
+const statusViewWrapper =
+  '\t\t\tconst StatusView = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  statusView +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createStatusView\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\tstatusUiState: statusUiState,\n' +
+  '\t\t\t\t\tworktreeCleanupUi: worktreeCleanupUi,\n' +
+  '\t\t\t\t\tactorDisplay: actorDisplay,\n' +
+  '\t\t\t\t\tmergeActorOf: mergeActorOf,\n' +
+  '\t\t\t\t\troleKindLabel: roleKindLabel,\n' +
+  '\t\t\t\t\ttestSummaryText: testSummaryText,\n' +
+  '\t\t\t\t\ttcAgo: tcAgo,\n' +
+  '\t\t\t\t\ttcMergeOf: tcMergeOf,\n' +
+  '\t\t\t\t\ttcSessionIdInfo: tcSessionIdInfo,\n' +
+  '\t\t\t\t\ttcStageQueued: tcStageQueued,\n' +
+  '\t\t\t\t\tcopyToClipboard: copyToClipboard,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const detailView = read('views/detail-view.cjs')
+const detailViewWrapper =
+  '\t\t\tconst DetailView = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  detailView +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createDetailView\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\tdetailUiState: detailUiState,\n' +
+  '\t\t\t\t\tactorDisplay: actorDisplay,\n' +
+  '\t\t\t\t\tmergeActorOf: mergeActorOf,\n' +
+  '\t\t\t\t\ttestSummaryText: testSummaryText,\n' +
+  '\t\t\t\t\ttoneForDependency: toneForDependency,\n' +
+  '\t\t\t\t\twaitingChip: waitingChip,\n' +
+  '\t\t\t\t\ttcAgo: tcAgo,\n' +
+  '\t\t\t\t\ttcIsInvestigation: tcIsInvestigation,\n' +
+  '\t\t\t\t\ttcMergeLabel: tcMergeLabel,\n' +
+  '\t\t\t\t\ttcMergeOf: tcMergeOf,\n' +
+  '\t\t\t\t\ttcPhaseLabel: tcPhaseLabel,\n' +
+  '\t\t\t\t\ttcReportBlocks: tcReportBlocks,\n' +
+  '\t\t\t\t\ttcReviewLabel: tcReviewLabel,\n' +
+  '\t\t\t\t\ttcReviewOf: tcReviewOf,\n' +
+  '\t\t\t\t\ttcRound: tcRound,\n' +
+  '\t\t\t\t\ttcStatusKey: tcStatusKey,\n' +
+  '\t\t\t\t\ttcTestLabel: tcTestLabel,\n' +
+  '\t\t\t\t\ttcTestOf: tcTestOf,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const taskForm = read('views/task-form.cjs')
+const taskFormWrapper =
+  '\t\t\tconst TaskForm = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  taskForm +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createTaskForm\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\tModal: Modal,\n' +
+  '\t\t\t\t\ttcParseList: tcParseList,\n' +
+  '\t\t\t\t\ttcParseFiles: tcParseFiles,\n' +
+  '\t\t\t\t\ttcErrorMessage: tcErrorMessage,\n' +
+  '\t\t\t\t\tstore: store,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const settingsForm = read('views/settings-form.cjs')
+const settingsFormWrapper =
+  '\t\t\tconst SettingsForm = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  settingsForm +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createSettingsForm\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\tModal: Modal,\n' +
+  '\t\t\t\t\tstore: store,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const projectForm = read('views/project-form.cjs')
+const projectFormWrapper =
+  '\t\t\tconst ProjectForm = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  projectForm +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createProjectForm\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\tModal: Modal,\n' +
+  '\t\t\t\t\tprojectFormState: projectFormState,\n' +
+  '\t\t\t\t\tstore: store,\n' +
+  '\t\t\t\t\ttcErrorMessage: tcErrorMessage,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const glyph = read('views/glyph.cjs')
+const glyphWrapper =
+  '\t\t\tconst Glyph = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  glyph +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createGlyph\n' +
+  '\t\t\t\treturn factory({ h: h })\n' +
+  '\t\t\t})()\n'
+const taskCenter = read('views/task-center.cjs')
+const taskCenterWrapper =
+  '\t\t\tconst TaskCenter = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  taskCenter +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createTaskCenter\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\tBoard: Board,\n' +
+  '\t\t\t\t\tQueueView: QueueView,\n' +
+  '\t\t\t\t\tWorkersView: WorkersView,\n' +
+  '\t\t\t\t\tStatusView: StatusView,\n' +
+  '\t\t\t\t\tRolesView: RolesView,\n' +
+  '\t\t\t\t\tDetailView: DetailView,\n' +
+  '\t\t\t\t\tDoneAllDrawer: DoneAllDrawer,\n' +
+  '\t\t\t\t\tTaskForm: TaskForm,\n' +
+  '\t\t\t\t\tSettingsForm: SettingsForm,\n' +
+  '\t\t\t\t\tProjectForm: ProjectForm,\n' +
+  '\t\t\t\t\tuseTranslate: useTranslate,\n' +
+  '\t\t\t\t\tuseSnapshot: useSnapshot,\n' +
+  '\t\t\t\t\tuseNow: useNow,\n' +
+  '\t\t\t\t\tpanelState: panelState,\n' +
+  '\t\t\t\t\tprojectFormState: projectFormState,\n' +
+  '\t\t\t\t\tdoneAllReset: doneAllReset,\n' +
+  '\t\t\t\t\tprojectMismatchOf: projectMismatchOf,\n' +
+  '\t\t\t\t\tprojectSourceKey: projectSourceKey,\n' +
+  '\t\t\t\t\tprojectSourceLabel: projectSourceLabel,\n' +
+  '\t\t\t\t\ttcAgo: tcAgo,\n' +
+  '\t\t\t\t\ttcLeadText: tcLeadText,\n' +
+  '\t\t\t\t\tcopyToClipboard: copyToClipboard,\n' +
+  '\t\t\t\t\tstore: store,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
+const viewsCore = read('30-views-core.part')
+  .replace(/\t+\/\* TASK_CARD_MODULE \*\//, taskCardWrapper)
+  .replace(/\t+\/\* COLUMN_MODULE \*\//, columnWrapper)
+  .replace(/\t+\/\* BOARD_MODULE \*\//, boardWrapper)
+
 const bundle =
   read('00-head.part') +
   selectorWrapper +
   read('15-client-state.part') +
   storeWrapper +
-  VIEW_PARTS.map((name) => read(name)).join('') +
+  VIEW_PARTS.map((name) => {
+    if (name === '30-views-core.part') return viewsCore
+    if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_EDITOR_MODULE \*\//, rolesEditorWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper).replace(/\t+\/\* STATUS_VIEW_MODULE \*\//, statusViewWrapper)
+    if (name === '34-views-detail.part') return read(name).replace(/\t+\/\* DETAIL_VIEW_MODULE \*\//, detailViewWrapper)
+    if (name === '35-views-forms.part') return read(name).replace(/\t+\/\* TASK_FORM_MODULE \*\//, taskFormWrapper).replace(/\t+\/\* SETTINGS_FORM_MODULE \*\//, settingsFormWrapper).replace(/\t+\/\* PROJECT_FORM_MODULE \*\//, projectFormWrapper)
+    if (name === '36-views-shell.part') return read(name).replace(/\t+\/\* GLYPH_MODULE \*\//, glyphWrapper).replace(/\t+\/\* TASK_CENTER_MODULE \*\//, taskCenterWrapper)
+    return read(name)
+  }).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper).replace(/\t+\/\* WORKERS_VIEW_MODULE \*\//, workersWrapper) +
   read('40-tail.part')
 
 const check = process.argv.indexOf('--check') >= 0

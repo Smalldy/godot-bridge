@@ -58,7 +58,24 @@
 - E 阶段完成（caveat：views 是分域片段，还不是可独立测试的 React 模块）。
 - F 第一步（2026-11-07）：CI 从 syntax-only 改为 `npm run verify`（contract + syntax + client build + 36 suites）；新增 docs/refactor/TESTING.md 记录测试金字塔与已知缺口。36/36 verify。
 - F 第二步（2026-11-07）：新增 docs/refactor/ARCHITECTURE.md 记录 host/browser 模块图与依赖规则；ARCHITECTURE.md / ARCHITECTURE.zh-CN.md 的 task-center 段落改为指向新模块。36/36 verify。
-- 下一阶段：F 剩余（Godot e2e/contract 作为已知缺口，repo/docs 收尾）。
+- 后续第一步（2026-11-08）：dispatchPort 按 brief/lead/roster/workspace/task/dispatch 分组；api 解构分组，平铺字段成为测试失败。36/36 verify。
+- 后续第二步（2026-11-08）：TaskCard 迁到 client/src/views/task-card.cjs，build 注入 React/h/selectors/board helpers；新增 client-task-card.test.mjs。37/37 verify。
+- 后续第三步（2026-11-08）：Column/Board 迁到 views/column.cjs、views/board.cjs；新增 client-column/client-board.test.mjs。39/39 verify。
+- 后续第四步（2026-11-08）：DoneAllDrawer 迁到 views/done-all-drawer.cjs；新增 client-done-all.test.mjs。40/40 verify。
+- 后续第五步（2026-11-08）：QueueRow/QueueView 迁到 views/queue.cjs；新增 client-queue.test.mjs。41/41 verify。
+- 后续第六步（2026-11-08）：WorkersView 迁到 views/workers.cjs；新增 client-workers.test.mjs。42/42 verify。
+- 后续第七步（2026-11-08）：AgentRow 迁到 views/agent-row.cjs；新增 client-agent-row.test.mjs。43/43 verify。
+- 后续第八步（2026-11-08）：RoleCreateForm 迁到 views/role-create-form.cjs；新增 client-role-create-form.test.mjs。44/44 verify。
+- 后续第九步（2026-11-08）：RolesView 迁到 views/roles-view.cjs；新增 client-roles-view.test.mjs。45/45 verify。
+- 后续第十步（2026-11-08）：RolesEditor 迁到 views/roles-editor.cjs；新增 client-roles-editor.test.mjs。46/46 verify。
+- 后续第十一步（2026-11-08）：StatusView 迁到 views/status-view.cjs；新增 client-status-view.test.mjs。47/47 verify。
+- 后续第十二步（2026-11-08）：DetailView 迁到 views/detail-view.cjs；新增 client-detail-view.test.mjs。48/48 verify。
+- 后续第十三步（2026-11-08）：TaskForm 迁到 views/task-form.cjs；新增 client-task-form.test.mjs。49/49 verify。
+- 后续第十四步（2026-11-08）：SettingsForm/ProjectForm 迁到 views/settings-form.cjs、views/project-form.cjs；新增对应 per-view 测试。51/51 verify。
+- 后续第十五步（2026-11-08）：Glyph 迁到 views/glyph.cjs；新增 client-glyph.test.mjs。52/52 verify。
+- 后续第十六步（2026-11-08）：TaskCenter shell 迁到 views/task-center.cjs；新增 client-task-center.test.mjs。53/53 verify。所有视图均已成为可独立测试的模块。
+- 下一阶段：Godot e2e/contract 作为已知缺口；followup → target 合并。
+
 
 ## 1. 阶段
 

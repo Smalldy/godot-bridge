@@ -12,7 +12,24 @@ Order:
 | `selectors.cjs` | pure task/board selectors and label helpers (testable CJS module) |
 | `15-client-state.part` | session/project/column state helpers that use head constants |
 | `store.cjs` | `createTaskStore` (Host-backed state, fetch, polling; testable CJS module) |
-| `30-views-core.part` | hooks, TaskCard, Column, Board, DoneAllDrawer |
+| `views/task-card.cjs` | TaskCard (React + selectors injected; Node-testable) |
+| `views/column.cjs` | Column (h + TaskCard injected; Node-testable) |
+| `views/board.cjs` | Board (React + components + board UI state injected; Node-testable) |
+| `views/done-all-drawer.cjs` | DoneAllDrawer (React + doneAllState + tcDayKey injected; Node-testable) |
+| `views/queue.cjs` | QueueRow/QueueView (h injected; Node-testable) |
+| `views/workers.cjs` | WorkersView (React + h + label helpers injected; Node-testable) |
+| `views/agent-row.cjs` | AgentRow (React + h + role label + clipboard injected; Node-testable) |
+| `views/role-create-form.cjs` | RoleCreateForm (React + h + tcSplitList + role label injected; Node-testable) |
+| `views/roles-view.cjs` | RolesView (React + h + RolesEditor injected; Node-testable) |
+| `views/roles-editor.cjs` | RolesEditor (React + role cards/forms/helpers/state injected; Node-testable) |
+| `views/status-view.cjs` | StatusView (React + status/worktree state + labels/helpers injected; Node-testable) |
+| `views/detail-view.cjs` | DetailView (React + detail state + actor/merge helpers + selectors injected; Node-testable) |
+| `views/task-form.cjs` | TaskForm (React + Modal + list/error helpers + store injected; Node-testable) |
+| `views/settings-form.cjs` | SettingsForm (React + Modal + store injected; Node-testable) |
+| `views/project-form.cjs` | ProjectForm (React + Modal + draft state + store + tcErrorMessage injected; Node-testable) |
+| `views/glyph.cjs` | Glyph (h injected; Node-testable) |
+| `views/task-center.cjs` | TaskCenter (React + all views/forms + hooks/state + project helpers injected; Node-testable) |
+| `30-views-core.part` | hooks, Column, Board, DoneAllDrawer |
 | `31-views-queue.part` | queue, workers, pagination |
 | `32-views-roles.part` | roles editor and team views |
 | `33-views-status.part` | status view and activity helpers |
