@@ -71,6 +71,7 @@ client/
     views/roles-editor.cjs  RolesEditor (React + role cards/forms/helpers/state injected)
     views/status-view.cjs  StatusView (React + status/worktree state + labels/helpers injected)
     views/detail-view.cjs  DetailView (React + detail state + actor/merge helpers + selectors injected)
+    views/task-form.cjs    TaskForm (React + Modal + list/error helpers + store injected)
     30-views-core.part    hooks, TaskCard, Column, Board, DoneAllDrawer
     31-views-queue.part   queue/workers/pagination
     32-views-roles.part   roles editor/team
