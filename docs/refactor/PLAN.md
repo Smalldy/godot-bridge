@@ -63,6 +63,7 @@
 - 后续第三步（2026-11-08）：Column/Board 迁到 views/column.cjs、views/board.cjs；新增 client-column/client-board.test.mjs。39/39 verify。
 - 后续第四步（2026-11-08）：DoneAllDrawer 迁到 views/done-all-drawer.cjs；新增 client-done-all.test.mjs。40/40 verify。
 - 后续第五步（2026-11-08）：QueueRow/QueueView 迁到 views/queue.cjs；新增 client-queue.test.mjs。41/41 verify。
+- 后续第六步（2026-11-08）：WorkersView 迁到 views/workers.cjs；新增 client-workers.test.mjs。42/42 verify。
 - 下一阶段：roles/status/detail/forms/shell；Godot e2e/contract 作为已知缺口。
 
 ## 1. 阶段

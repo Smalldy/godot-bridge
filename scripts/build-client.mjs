@@ -168,6 +168,16 @@ const queueWrapper =
   '\t\t\t\tconst factory = module.exports.createQueueViews\n' +
   '\t\t\t\treturn factory({ h: h })\n' +
   '\t\t\t})()\n'
+const workers = read('views/workers.cjs')
+const workersWrapper =
+  '\t\t\tconst WorkersView = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  workers +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createWorkersView\n' +
+  '\t\t\t\treturn factory({ React: React, h: h, tcBaseName: tcBaseName, tcSessionShort: tcSessionShort, tcLeadText: tcLeadText, copyToClipboard: copyToClipboard, roleKindLabel: roleKindLabel, workerStatusLabel: workerStatusLabel })\n' +
+  '\t\t\t})()\n'
 const viewsCore = read('30-views-core.part')
   .replace(/\t+\/\* TASK_CARD_MODULE \*\//, taskCardWrapper)
   .replace(/\t+\/\* COLUMN_MODULE \*\//, columnWrapper)
@@ -178,7 +188,7 @@ const bundle =
   selectorWrapper +
   read('15-client-state.part') +
   storeWrapper +
-  VIEW_PARTS.map((name) => (name === '30-views-core.part' ? viewsCore : read(name))).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper) +
+  VIEW_PARTS.map((name) => (name === '30-views-core.part' ? viewsCore : read(name))).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper).replace(/\t+\/\* WORKERS_VIEW_MODULE \*\//, workersWrapper) +
   read('40-tail.part')
 
 const check = process.argv.indexOf('--check') >= 0
