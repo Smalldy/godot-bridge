@@ -14,6 +14,12 @@
 - 每个提交必须能单独回滚；合并前 npm run verify 全绿 + 独立 review。
 - 不 push；备份/远端操作单独确认。
 
+## 4. 进度
+
+- 2026-11-07：基线 b486562；备份 branch/tag/bundle；隔离 worktree；B 首步（syntax guard、suite timeout、CI syntax job、17/17 verify）；A 首步（doctor 检查 index.lock/MERGE_HEAD/worktree/merge queue last、/diagnostics 接入、runbook、两份复盘）。
+- A 剩余：team/session 的 loading/selector（E 的前端部分）、cache/action snapshot 检查；C 的 LeaseRegistry/WorkspaceManager/MergeQueue 状态机尚未开始。
+- 当前目标：先完成 A 的剩余诊断项，再进 C；不把“doctor 能报”当成“已经自愈”。
+
 ## 1. 阶段
 
 ### A. 诊断与运行手册（先做）

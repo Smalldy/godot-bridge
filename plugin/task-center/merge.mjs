@@ -236,6 +236,10 @@ export function createMerger(options) {
   // Per key: one chain per target branch, so a hotfix and a feature line merge in
   // parallel while two requests into the SAME target stay strictly ordered.
   const chains = new Map()
+  // In-memory queue facts for /diagnostics. This is not a second source of
+  // truth: the board still records the outcome; this only makes a stuck or
+  // abandoned unit visible before the next sweep.
+  const queueState = { active: 0, queued: 0, last: null }
 
 
   /**
@@ -254,6 +258,9 @@ export function createMerger(options) {
     // queue turn so the next unit runs; the chain is never reset, so units that
     // were already queued keep their order.
     function guardUnit() {
+      queueState.queued = Math.max(0, queueState.queued - 1)
+      queueState.active += 1
+      const startedAt = clock()
       let timer = null
       const timeout = new Promise(function (resolveTimeout) {
         timer = setTimeout(function () {
@@ -276,9 +283,21 @@ export function createMerger(options) {
           if (timer !== null) clearTimeout(timer)
           return failure('queue-failed', messageOf(error))
         },
-      )
+      ).then(function (result) {
+        queueState.active = Math.max(0, queueState.active - 1)
+        queueState.last = {
+          at: new Date(clock()).toISOString(),
+          key: queueKey,
+          ok: result !== null && result !== undefined && result.ok === true,
+          code: result !== null && result !== undefined && result.code !== undefined ? result.code : null,
+          message: result !== null && result !== undefined && result.message !== undefined ? result.message : null,
+          ms: clock() - startedAt,
+        }
+        return result
+      })
     }
     const queueKey = typeof key === 'string' && key !== '' ? key : '_global'
+    queueState.queued += 1
     const chain = chains.get(queueKey) === undefined ? Promise.resolve() : chains.get(queueKey)
     const run = chain.then(guardUnit, guardUnit)
     chains.set(
@@ -675,12 +694,22 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
     return { ok: true }
   }
 
+  function status() {
+    return {
+      active: queueState.active,
+      queued: queueState.queued,
+      chains: chains.size,
+      last: queueState.last === null ? null : Object.assign({}, queueState.last),
+    }
+  }
+
   return {
     enqueue: enqueue,
     mergeRequest: mergeRequest,
     createCandidate: createCandidate,
     mergeCandidate: mergeCandidate,
     discardCandidate: discardCandidate,
+    status: status,
     verifyCommand: verifyCommand,
     now: clock,
   }

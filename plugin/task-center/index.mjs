@@ -26,6 +26,7 @@ import { createSessionLookup } from './session-lookup.mjs'
 import { createState } from './state.mjs'
 import { createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
 import { createMerger } from './merge.mjs'
+import { createDoctor } from './doctor.mjs'
 import { createHarness } from './harness.mjs'
 import { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS, createApi } from './api.mjs'
 import { registerTaskTool } from './tool.mjs'
@@ -214,6 +215,9 @@ function applyRow(ctx) {
   // The merge queue only integrates a candidate the independent tester already
   // accepted; the host no longer runs a third full verify of its own.
   const merger = createMerger({ git: git })
+  // Read-only workspace doctor for /diagnostics: stale index.lock, merge state,
+  // worktrees, and the merge queue's in-memory last unit. It never repairs.
+  const doctor = createDoctor({ git: git, merger: merger })
   // The isolated DSH test instance the tester drives (harness.mjs): a throwaway
   // DSH_HOME/profile, its own free port and its own project copy. Constructing
   // it starts nothing; only a harnessStart action does.
@@ -316,7 +320,7 @@ function applyRow(ctx) {
   // The GUI's routes. Same API, same state, human role.
   ctx.effect(function () {
     try {
-      return registerTaskRoutes(ctx, { state: state, api: api, scheduler: scheduler })
+      return registerTaskRoutes(ctx, { state: state, api: api, scheduler: scheduler, merger: merger, doctor: doctor })
     } catch (error) {
       try {
         ctx.logger.warn('[godot-bridge] task center routes skipped: ' + String((error && error.message) || error))

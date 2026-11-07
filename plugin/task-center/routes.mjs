@@ -102,6 +102,8 @@ export function registerTaskRoutes(ctx, options) {
   const state = opts.state
   const api = opts.api
   const scheduler = opts.scheduler === undefined ? null : opts.scheduler
+  const merger = opts.merger === undefined ? null : opts.merger
+  const doctor = opts.doctor === undefined ? null : opts.doctor
 
   /**
    * One resolver for the panel and the tool. An explicit ?project= is adopted
@@ -357,12 +359,24 @@ export function registerTaskRoutes(ctx, options) {
     }
   }
 
-  function handleDiagnostics(req, res) {
+  async function handleDiagnostics(req, res) {
     try {
+      const sessionId = sessionFromRequest(req, null)
+      const target = await resolveProject(req, null, sessionId)
+      let project = null
+      let health = null
+      if (target.failed === undefined) {
+        project = target.root
+        state.noteProject(project)
+        if (doctor !== null && typeof doctor.inspect === 'function') health = await doctor.inspect(project)
+      }
       sendJson(res, 200, {
         ok: true,
+        project: project,
         dispatch: probeDispatch(ctx),
         scheduler: scheduler === null ? null : scheduler.status(),
+        merge: merger === null || typeof merger.status !== 'function' ? null : merger.status(),
+        doctor: health,
       })
     } catch (error) {
       sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
