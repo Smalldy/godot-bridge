@@ -44,7 +44,8 @@
 - D 第十五步（2026-11-07）：actions/onboard.mjs 抽出 onboard；项目解析/绑定、Team 复用或 bootstrap、board facts、brief/next 语义不变。34/34 verify。
 - D 第十六步（2026-11-07）：actions/task-admin.mjs 抽出 create/update/delete/start/approveStart/rejectStart/cancelStartRequest；Team gate、ownerSession、preflight、dispatch consent、interrupt 语义不变。34/34 verify。
 - D 第十七步（2026-11-07）：actions/project-admin.mjs 抽出 skillsCatalog/worktreesCleanup/bootstrapTeam；user-only gate、worktree cleanup、team bootstrap 语义不变。34/34 verify。
-- 下一阶段：D 剩余（gates/pipeline、caller、端口收窄）。
+- D 第十八步（2026-11-07）：kernel/action-preflight.mjs 抽出 lease heartbeat、stopped-card refusal、phase activity、dev-only guard；performResolved 现在只剩 remember/now + 一次 preflight + handler 表。34/34 verify。
+- 下一阶段：D 剩余（gates/caller、端口收窄）。
 
 ## 1. 阶段
 
