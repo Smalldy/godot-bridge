@@ -54,7 +54,7 @@ The same package mounts a second Loader row through `cordis.patch.yml`:
 
 A bundle is one Plugins-page card and a row is one component, so the task center is a component of this plugin, not a separate package to install. The browser half cannot be split the same way — a package resolves exactly one `./client` bundle — so `client/client.js` carries both the engine-path form and the task-center panel.
 
-One action registry (`api.mjs`) is the single vocabulary behind the `task_center` tool and `POST /godot-bridge/task-center/action`; the tool and the panel are two bindings of the same state (`state.mjs`) and the same model (`service.mjs`), so they cannot drift into two rule sets.
+The action vocabulary lives in `actions/registry.mjs`; handlers are in `actions/` and `kernel/`, composed by `api.mjs`. The tool and the panel are two bindings of the same state (`state.mjs`) and the same model (`service.mjs`), so they cannot drift into two rule sets. The module map is in [docs/refactor/ARCHITECTURE.md](docs/refactor/ARCHITECTURE.md).
 
 ### Board
 

@@ -57,7 +57,8 @@
 - E 第四步（2026-11-07）：30-views.part 按域拆成 30-core/31-queue/32-roles/33-status/34-detail/35-forms/36-shell；拼接顺序固定，bundle 行为不变。36/36 verify。
 - E 阶段完成（caveat：views 是分域片段，还不是可独立测试的 React 模块）。
 - F 第一步（2026-11-07）：CI 从 syntax-only 改为 `npm run verify`（contract + syntax + client build + 36 suites）；新增 docs/refactor/TESTING.md 记录测试金字塔与已知缺口。36/36 verify。
-- 下一阶段：F 剩余（Godot e2e/contract、repo/docs）。
+- F 第二步（2026-11-07）：新增 docs/refactor/ARCHITECTURE.md 记录 host/browser 模块图与依赖规则；ARCHITECTURE.md / ARCHITECTURE.zh-CN.md 的 task-center 段落改为指向新模块。36/36 verify。
+- 下一阶段：F 剩余（Godot e2e/contract 作为已知缺口，repo/docs 收尾）。
 
 ## 1. 阶段
 
