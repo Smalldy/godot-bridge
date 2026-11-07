@@ -52,7 +52,8 @@
 - D 第二十三步（2026-11-07）：dispatch-port.mjs 改为单一 `dispatchPort` 对象；api.mjs 只 import 一个符号并解构 40 个字段。字段仍平铺，按 brief/lead/roster/workspace 分组留作后续。34/34 verify。
 - D 阶段完成（caveat：端口对象是显式 seam，但尚未按能力分组）。
 - E 第一步（2026-11-07）：client 源码拆成 client/src/*.part（head/selectors/store/views/tail），scripts/build-client.mjs 无依赖拼接为 client/client.js；verify 先构建。34/34 verify（client-bundle 仍全绿）。
-- 下一阶段：E 剩余（selectors/store 变成可测试模块、views 再拆）。
+- E 第二步（2026-11-07）：纯 selectors 迁到 client/src/selectors.cjs（35 个函数，可被 Node require），build 生成 IIFE 包装注入 bundle；session/column 状态留在 15-client-state.part。新增 client-selectors.test.mjs。35/35 verify。
+- 下一阶段：E 剩余（store 模块化、views 再拆）。
 
 ## 1. 阶段
 

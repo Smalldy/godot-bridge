@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(fileURLToPath(new URL('../', import.meta.url)))
 const SOURCE_DIRS = ['plugin', 'client', 'scripts']
-const EXTENSIONS = new Set(['.mjs', '.js'])
+const EXTENSIONS = new Set(['.mjs', '.js', '.cjs'])
 
 function collect(directory, files) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
