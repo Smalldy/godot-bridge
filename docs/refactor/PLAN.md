@@ -75,7 +75,9 @@
 - 后续第十五步（2026-11-08）：Glyph 迁到 views/glyph.cjs；新增 client-glyph.test.mjs。52/52 verify。
 - 后续第十六步（2026-11-08）：TaskCenter shell 迁到 views/task-center.cjs；新增 client-task-center.test.mjs。53/53 verify。所有视图均已成为可独立测试的模块。
 - 后续第十七步（2026-11-08）：新增 scripts/test/godot-contract.test.mjs，校验 godot_command/godot_operations 枚举与 .gd match 分支一致；修复 get_instance_info 漏枚举。54/54 verify。
-- 下一阶段：真实 Godot 引擎 e2e 仍作为已知缺口；contract 已静态覆盖。
+- 后续第十八步（2026-11-08）：新增 view-test-coverage.test.mjs（每个 view 模块必须有 require 它的独立测试）和 release-gate.test.mjs（package version 与两份 CHANGELOG 一致）。56/56 verify。
+- 下一阶段：真实 Godot 引擎 e2e 仍作为已知缺口；contract/structural coverage/release gate 已覆盖。
+
 
 
 
