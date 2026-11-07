@@ -48,6 +48,7 @@ import { createProjectAdminActions } from './actions/project-admin.mjs'
 import { createActionPreflight } from './kernel/action-preflight.mjs'
 import { createGates } from './kernel/gates.mjs'
 import { createVerdictGate } from './kernel/verdict-gate.mjs'
+import { createCallerHelpers } from './kernel/caller-helpers.mjs'
 import {
   MERGER_NAME,
   REVIEW_MAX_ROUNDS,
@@ -297,6 +298,11 @@ export function createApi(ctx, options) {
   const mergeRefusal = gates.mergeRefusal
   const harnessRefusal = gates.harnessRefusal
   const wrongProjectRefusal = gates.wrongProjectRefusal
+  const callerHelpers = createCallerHelpers({ roleKindOf: roleKindOf })
+  const callerIdentifiers = callerHelpers.callerIdentifiers
+  const callerRoleKindOf = callerHelpers.callerRoleKindOf
+  const rosterSummary = callerHelpers.rosterSummary
+  const isAssignee = callerHelpers.isAssignee
   const verdictGate = createVerdictGate({
     roles: roles,
     callerLookup: callerLookup,
@@ -648,36 +654,8 @@ export function createApi(ctx, options) {
    * an older caller that only sends a name still resolves.
    */
   /** The identifiers a call carries for its caller: agent session/id and display label. */
-  function callerIdentifiers(context) {
-    const agent = context !== undefined && context !== null && context.agent !== undefined && context.agent !== null ? context.agent : null
-    const by = context !== undefined && context !== null && typeof context.by === 'string' && context.by.length > 0 ? context.by : null
-    const ids = []
-    const names = []
-    if (agent !== null) {
-      if (agent.id !== undefined && agent.id !== null && String(agent.id) !== '') ids.push(String(agent.id))
-      if (agent.session !== undefined && agent.session !== null && String(agent.session) !== '') ids.push(String(agent.session))
-      if (agent.name !== undefined && agent.name !== null && String(agent.name) !== '') names.push(String(agent.name))
-    }
-    if (by !== null) {
-      names.push(by)
-      if (by.charAt(0) === '@') names.push(by.slice(1))
-    }
-    return { ids: ids, names: names, by: by }
-  }
-
-  /** The logical role of an identifier: legacy tester-1, project slot tester-p<key>-1, or @label. */
-  function callerRoleKindOf(value) {
-    if (typeof value !== 'string' || value === '') return null
-    const trimmed = value.charAt(0) === '@' ? value.slice(1) : value
-    const kind = roleKindOf(trimmed)
-    if (kind !== null) return kind
-    // A durable member name may be plain 'tester-1' while the project slot is
-    // tester-p<key>-1; strip the session prefix to compare logically.
-    const short = trimmed.replace(/^session-/, '')
-    return roleKindOf(short)
-  }
-
-  /**
+/** The logical role of an identifier: legacy tester-1, project slot tester-p<key>-1, or @label. */
+/**
    * The Team member this call comes from, resolved inside the CALLER'S OWN Team.
    * Never "the first Lead": every live Lead's roster is searched, so a host with
    * several sessions matches the right one. A project slot (tester-p<key>-1) is
@@ -811,34 +789,7 @@ export function createApi(ctx, options) {
   }
 
   /** Human-readable "who a Lead's roster carries", for refusal messages. */
-  function rosterSummary(rosters, rosterErrors, leads) {
-    const lines = []
-    const readable = Array.isArray(rosters) ? rosters : []
-    const errors = Array.isArray(rosterErrors) ? rosterErrors : []
-    for (const entry of readable) {
-      const lead = entry.lead === null || entry.lead === undefined ? null : entry.lead
-      const leadName = lead === null ? '?' : String(lead.name === undefined || lead.name === null ? lead.id : lead.name)
-      const leadId = lead === null || lead.id === undefined || lead.id === null ? '?' : String(lead.id)
-      const roles = entry.members
-        .filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string')
-        .map((member) => callerRoleKindOf(member.name) || member.name)
-        .filter((value, index, all) => all.indexOf(value) === index)
-      lines.push(leadName + ' (' + leadId + ') -> ' + (roles.length === 0 ? '(roster is empty)' : roles.join(', ')))
-    }
-    for (const entry of errors) {
-      const lead = entry.lead === null || entry.lead === undefined ? null : entry.lead
-      const leadId = lead === null || lead.id === undefined || lead.id === null ? '?' : String(lead.id)
-      const leadName = lead === null || lead.name === undefined || lead.name === null ? leadId : String(lead.name)
-      lines.push(leadName + ' (' + leadId + ') -> roster unavailable: ' + String(entry.error))
-    }
-    if (lines.length === 0) {
-      const count = Array.isArray(leads) ? leads.length : 0
-      return count === 0 ? 'no live Lead is visible to this host' : 'no Lead roster could be read (' + String(count) + ' Lead(s) listed)'
-    }
-    return lines.join('; ')
-  }
-
-  /** The member NAME written alongside an event: resolved at write time from the
+/** The member NAME written alongside an event: resolved at write time from the
    * caller's Team membership, so the panel never has to reverse an @label. */
   function writeByName(context) {
     if (context === undefined || context === null) return null
@@ -859,14 +810,7 @@ export function createApi(ctx, options) {
     return { member: member, kind: roleKindOf(member.name) }
   }
 
-  function isAssignee(task, member) {
-    if (task === null || task === undefined || task.assignee === null || task.assignee === undefined || member === null) return false
-    const sessionMatch = member.id !== undefined && member.id !== null && task.assignee.session !== null && task.assignee.session !== undefined && String(member.id) === String(task.assignee.session)
-    const nameMatch = member.name !== undefined && member.name !== null && task.assignee.name === member.name
-    return sessionMatch || nameMatch
-  }
-
-  /**
+/**
    * A review/test verdict belongs to the corresponding role (or the user).
    * This is the role gate: a worker cannot approve its own work, a reviewer
    * cannot pass tests, and a tester cannot review. Only active when the role
