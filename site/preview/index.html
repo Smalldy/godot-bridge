@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>godot-bridge · DSH preview</title>
+<style>
+:root{
+  --bg:#151517;--sidebar:#1b1b1c;--layer1:#232324;--layer2:#2c2c2e;--layer3:#353536;
+  --text:#f9fafb;--secondary:#cfd3d6;--tertiary:#adb2b8;--caption:#81858c;
+  --border:rgba(255,255,255,.12);--border-soft:rgba(255,255,255,.06);
+  --blue:#7aaaff;--green:#22c55e;--amber:#f59e0b;--red:#f25a5a;--purple:#b7a6ff;
+  --radius-sm:8px;--radius-md:12px;--radius-lg:16px;--radius-panel:18px;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:"SF Mono","JetBrains Mono",Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+.app{display:flex;height:100vh;min-height:0;overflow:hidden}
+/* DSH sidebar — geometry and tokens follow ui-sidebar/SidebarRoot.module.css */
+.sidebar{width:264px;flex:none;display:flex;flex-direction:column;padding:6px 12px;background:var(--sidebar);border-right:1px solid var(--border-soft);font-size:14px;overflow:hidden}
+.logoRow{height:60px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:8px 0 8px 4px;margin-bottom:4px}
+.brand{display:flex;align-items:center;gap:8px;font-size:18px;font-weight:600;line-height:24px;letter-spacing:.04em;color:var(--text)}
+.whale{width:24px;height:24px;flex:none;color:var(--text)}
+.newSession{height:38px;flex:none;display:flex;align-items:center;justify-content:center;gap:6px;margin:0 2px 12px;border:0.5px solid var(--border);border-radius:var(--radius-md);background:#43454a;color:var(--text);font-size:14px;font-weight:500}
+.newSession:hover{background:#4b4d52}
+.panelList{flex:none;display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
+.panelRow{height:36px;display:flex;align-items:center;gap:8px;margin:0 2px;padding:7px 8px;border-radius:var(--radius-md);color:var(--text);font-size:14px;line-height:22px;text-align:left}
+.panelRow:hover{background:rgba(255,255,255,.06)}
+.panelRow.active{background:rgba(255,255,255,.08)}
+.panelRow .ico{width:16px;height:16px;flex:none;display:inline-flex;align-items:center;justify-content:center;color:var(--secondary)}
+.panelRow.active .ico{color:var(--text)}
+.region{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;margin:0 -12px 0 -4px;padding-left:4px}
+.sectionHead{height:36px;flex:none;display:flex;align-items:center;gap:4px;padding:0 4px;margin:2px 0 4px;color:var(--tertiary);font-size:12px;line-height:20px}
+.sectionHead .grow{flex:1}
+.sectionHead .hico{width:24px;height:24px;display:grid;place-items:center;border-radius:6px;color:var(--tertiary)}
+.sectionHead .hico:hover{background:rgba(255,255,255,.06);color:var(--text)}
+.rows{overflow:auto;min-height:0;padding-right:12px}
+.projectRow{height:34px;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:var(--radius-md);color:var(--text);font-size:14px}
+.projectRow:hover{background:rgba(255,255,255,.06)}
+.projectRow.active{background:rgba(255,255,255,.06)}
+.projectRow.active .folderIcon{color:var(--blue)}
+.folderIcon{width:16px;height:16px;color:var(--tertiary);flex:none}
+.statusDot{width:10px;height:10px;border-radius:50%;border:1.4px solid #6f7277;display:inline-block;flex:none;margin:0 3px}
+.statusDot.running{border-color:var(--blue);box-shadow:0 0 0 2px rgba(122,170,255,.12)}
+.projectRow .folder{width:16px;height:16px;color:var(--tertiary);flex:none}
+.projectRow .count{margin-left:auto;color:var(--caption);font-size:11px;white-space:nowrap;flex:none}
+.sessionRow{height:32px;display:flex;align-items:center;gap:4px;padding:0 8px;border-radius:var(--radius-md);color:var(--text);font-size:14px}
+.sessionRow:hover{background:rgba(255,255,255,.06)}
+.sessionRow.selected{background:rgba(255,255,255,.08)}
+.sessionRow .dot{width:16px;height:20px;display:grid;place-items:center;color:var(--tertiary);flex:none}
+.sessionRow .title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sideFoot{flex:none;margin-top:auto;border-top:1px solid var(--border-soft);padding:10px 4px 4px;display:flex;align-items:center;gap:9px}
+.avatar{width:28px;height:28px;border-radius:50%;background:#3b3d42;display:grid;place-items:center;font-size:11px;color:#e8eaed;flex:none}
+.sideFoot b{display:block;font-size:13px;font-weight:500;color:var(--text)}
+.sideFoot span{display:block;font-size:11px;color:var(--caption)}
+/* main */
+.main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg);overflow:hidden}
+.plugin{flex:1;display:flex;flex-direction:column;min-height:0;background:var(--bg)}
+.ptop{height:64px;flex:none;display:flex;align-items:center;gap:12px;padding:10px 20px;border-bottom:1px solid var(--border-soft);background:var(--bg)}
+.pmark{width:30px;height:30px;border-radius:9px;background:#f9fafb;color:#151517;display:grid;place-items:center;font-weight:800;font-size:11px;flex:none}
+.ptitle{min-width:0;flex:1}
+.ptitle h1{font-size:15px;font-weight:600;margin:0;line-height:22px}
+.psub{display:flex;align-items:center;gap:7px;margin-top:2px;color:var(--caption);font-size:11px;font-family:var(--mono)}
+.badge{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;border:1px solid var(--border);color:var(--tertiary);font-size:11px;white-space:nowrap}
+.badge.ok{color:#8ce0aa;border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.08)}
+.pactions{display:flex;gap:6px;margin-left:auto}
+.btn{display:inline-flex;align-items:center;justify-content:center;height:30px;padding:0 10px;border:0.5px solid var(--border);border-radius:8px;background:transparent;color:var(--secondary);font-size:12px}
+.btn.primary{background:#f9fafb;border-color:#f9fafb;color:#151517;font-weight:600}
+.ptabs{height:42px;flex:none;display:flex;align-items:center;gap:2px;padding:0 18px;border-bottom:1px solid var(--border-soft);background:var(--bg)}
+.ptab{height:42px;padding:0 11px;color:var(--tertiary);font-size:13px;border-bottom:2px solid transparent}
+.ptab.active{color:var(--text);border-bottom-color:#f9fafb}
+.pcounts{margin-left:auto;display:flex;gap:6px}
+.count{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:999px;background:var(--layer1);color:var(--tertiary);font-size:11px}
+.count b{color:var(--text);font-weight:600}
+/* board */
+.board{flex:1;min-height:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;padding:12px;overflow:auto;background:var(--bg)}
+.col{min-width:0;display:flex;flex-direction:column;min-height:0;background:var(--sidebar);border:1px solid var(--border-soft);border-radius:10px}
+.colHead{height:34px;flex:none;display:flex;align-items:center;gap:6px;padding:0 9px;border-bottom:1px solid var(--border-soft);color:var(--tertiary);font-size:11px}
+.colHead b{margin-left:auto;color:var(--secondary);font-weight:500;font-size:11px}
+.dot{width:7px;height:7px;border-radius:50%;flex:none}
+.cards{display:flex;flex-direction:column;gap:7px;padding:7px;overflow:auto;min-height:0}
+.card{background:var(--layer1);border:1px solid var(--border-soft);border-radius:9px;padding:9px}
+.card:hover{border-color:var(--border);background:#26262a}
+.cardTop{display:flex;align-items:center;gap:5px;margin-bottom:5px}
+.cid{font-family:var(--mono);font-size:10px;color:var(--tertiary)}
+.cpri{margin-left:auto;font-size:9px;color:var(--amber)}
+.ckind{font-size:9px;color:var(--purple);border:1px solid rgba(183,166,255,.3);border-radius:4px;padding:0 4px}
+.card h3{font-size:12px;line-height:1.4;font-weight:500;margin:0 0 6px;color:var(--text)}
+.chips{display:flex;flex-wrap:wrap;gap:4px}
+.chip{display:inline-flex;align-items:center;height:17px;padding:0 5px;border-radius:4px;background:var(--layer2);border:1px solid var(--border-soft);color:var(--tertiary);font-size:9px;white-space:nowrap}
+.chip.green{color:#8ce0aa;background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.22)}
+.chip.amber{color:#f3c675;background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.22)}
+.chip.red{color:#ff9d9d;background:rgba(242,90,90,.08);border-color:rgba(242,90,90,.22)}
+.chip.purple{color:#d0bdff;background:rgba(183,166,255,.08);border-color:rgba(183,166,255,.22)}
+.cardMeta{display:flex;align-items:center;gap:5px;margin-top:7px;color:var(--caption);font-size:9.5px}
+.cardMeta .avatar{width:15px;height:15px;font-size:7px;background:#3b3d42}
+.cardMeta .right{margin-left:auto;font-family:var(--mono)}
+/* detail */
+.overlay{position:absolute;inset:0;z-index:5;display:flex;justify-content:center;align-items:flex-start;padding:22px;background:rgba(0,0,0,.55);overflow:auto}
+.detail{width:1120px;max-width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:0 24px 70px rgba(0,0,0,.6);overflow:hidden}
+.dHead{display:flex;align-items:flex-start;gap:12px;padding:15px 18px;border-bottom:1px solid var(--border-soft);background:var(--layer1)}
+.dHead h2{font-size:16px;font-weight:600;margin:0;line-height:1.35}
+.dSub{display:flex;align-items:center;gap:7px;margin-top:4px;color:var(--tertiary);font-size:11px}
+.dClose{margin-left:auto;color:var(--tertiary);font-size:14px}
+.spine{display:flex;padding:12px 18px;border-bottom:1px solid var(--border-soft);background:var(--bg)}
+.step{flex:1;font-size:10px;color:var(--caption);padding-right:8px}
+.step:before{content:"";display:block;height:2px;background:var(--layer2);border-radius:2px;margin-bottom:6px}
+.step.done:before{background:var(--green)}.step.active:before{background:var(--blue)}.step.active{color:var(--text)}
+.step b{display:block;font-size:10.5px;font-weight:500;color:inherit}.step span{font-size:9px;color:var(--caption)}
+.dBody{display:grid;grid-template-columns:minmax(0,1fr) 300px;max-height:620px;overflow:auto}
+.dMain{padding:15px 18px;border-right:1px solid var(--border-soft)}
+.dAside{padding:15px;background:var(--sidebar)}
+.sect{margin-bottom:15px}.sect h4{margin:0 0 6px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tertiary);font-weight:500}
+.sect p{margin:0;color:var(--secondary);font-size:12px;line-height:1.65}
+.box{background:var(--layer1);border:1px solid var(--border-soft);border-radius:8px;padding:9px;color:var(--secondary);font-size:11.5px;line-height:1.6;white-space:pre-wrap}
+.evidence{background:var(--sidebar);border:1px solid var(--border-soft);border-radius:8px;padding:9px;color:var(--tertiary);font-family:var(--mono);font-size:10px;line-height:1.55;white-space:pre-wrap}
+.actions{display:flex;gap:8px;margin-top:12px}.actions .btn{flex:1;height:32px}
+.field{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px dashed var(--border-soft);font-size:10.5px;color:var(--tertiary)}
+.field b{color:var(--secondary);font-weight:500;text-align:right}
+/* report */
+.casebook{flex:1;min-height:0;display:grid;grid-template-columns:240px minmax(0,1fr);background:var(--bg);overflow:hidden}
+.caseIndex{padding:13px;background:var(--sidebar);border-right:1px solid var(--border-soft);overflow:auto}
+.caseIndex h3{margin:0 0 9px;color:var(--tertiary);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+.idx{display:block;padding:6px 8px;margin-bottom:2px;border-radius:6px;color:var(--tertiary);font-size:11px;border-left:2px solid transparent}
+.idx.active{background:var(--layer1);color:var(--text);border-left-color:var(--purple)}
+.caseMeta{margin-top:14px;color:var(--caption);font-size:10px;line-height:1.8}.caseMeta b{color:var(--purple);font-weight:500}
+.paper{margin:14px 20px;padding:22px 26px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:12px;overflow:auto;height:calc(100% - 28px)}
+.kicker{color:var(--purple);font-size:9px;letter-spacing:.12em;text-transform:uppercase}
+.paper h2{font-size:20px;font-weight:600;margin:7px 0 5px;line-height:1.3}
+.paper .meta{color:var(--caption);font-family:var(--mono);font-size:10px;margin-bottom:15px}
+.paper h3{font-size:12px;font-weight:600;margin:16px 0 6px;color:var(--text);border-bottom:1px solid var(--border-soft);padding-bottom:5px}
+.paper p{color:var(--secondary);font-size:12px;line-height:1.7;margin:0 0 8px}
+.paper ul{margin:0 0 9px;padding-left:17px;color:var(--secondary);font-size:12px;line-height:1.7}
+.paper code{font-family:var(--mono);font-size:10px;background:var(--sidebar);border:1px solid var(--border-soft);border-radius:4px;padding:1px 4px;color:#9fe4e8}
+.paper pre{background:var(--sidebar);border:1px solid var(--border-soft);border-radius:8px;padding:9px 11px;color:var(--secondary);font-family:var(--mono);font-size:10px;line-height:1.6;overflow:auto}
+table{border-collapse:collapse;width:100%;font-size:10px;margin:6px 0 12px}
+th,td{border:1px solid var(--border-soft);padding:5px 7px;text-align:left;vertical-align:top}
+th{background:var(--sidebar);color:var(--tertiary);font-weight:500}td{color:var(--secondary)}
+.artifacts{display:flex;flex-wrap:wrap;gap:5px}.artifact{font-family:var(--mono);font-size:9px;color:var(--tertiary);background:var(--sidebar);border:1px solid var(--border-soft);border-radius:4px;padding:2px 6px}
+/* roles */
+.roles{flex:1;min-height:0;display:grid;grid-template-columns:250px minmax(0,1fr);overflow:hidden;background:var(--bg)}
+.roleList{padding:12px;background:var(--sidebar);border-right:1px solid var(--border-soft);overflow:auto}
+.roleList h3{margin:0 0 9px;color:var(--tertiary);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+.roleRow{display:flex;align-items:center;gap:8px;padding:8px;border-radius:8px;color:var(--tertiary);font-size:12px;margin-bottom:2px}
+.roleRow.active{background:var(--layer1);color:var(--text)}
+.roleRow .rkind{margin-left:auto;font-size:9px;color:var(--caption)}
+.roleEdit{display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.roleHead{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border-soft);background:var(--layer1)}
+.roleHead h2{margin:0;font-size:15px;font-weight:600}.roleHead .sub{margin-top:2px;color:var(--tertiary);font-size:11px}
+.roleBody{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px 18px;overflow:auto;min-height:0}
+.rcol{display:flex;flex-direction:column;gap:8px;min-width:0}.rcol h3{margin:0;color:var(--tertiary);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:500}
+.fieldrow{display:flex;flex-wrap:wrap;gap:6px}.pill{display:inline-flex;height:22px;align-items:center;padding:0 8px;border:1px solid var(--border);border-radius:999px;color:var(--tertiary);font-size:10px}
+.pill.blue{color:#a9c8ff;border-color:rgba(122,170,255,.3);background:rgba(122,170,255,.08)}
+.prompt{background:var(--sidebar);border:1px solid var(--border-soft);border-radius:8px;padding:10px;color:var(--secondary);font-family:var(--mono);font-size:10.5px;line-height:1.65;white-space:pre-wrap;min-height:250px}
+.preview{background:var(--layer1);border:1px solid var(--border);border-radius:8px;padding:11px;color:var(--secondary);font-size:11px;line-height:1.65;min-height:250px}
+.preview h5{margin:0 0 6px;color:var(--text);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:500}
+.injected{border-left:2px solid var(--purple);padding-left:9px;margin:8px 0;color:#d3c4f5}
+/* status */
+.status{flex:1;min-height:0;overflow:auto;padding:14px 18px;background:var(--bg)}
+.summary{display:flex;align-items:center;gap:12px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:11px;color:var(--secondary)}
+.summary b{color:var(--text);font-weight:600}.summary .grow{flex:1}.mono{font-family:var(--mono);font-size:10px;color:var(--tertiary)}
+.cards3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:10px}
+.scard{background:var(--layer1);border:1px solid var(--border-soft);border-radius:10px;padding:11px 12px;min-height:150px}
+.scard h3{margin:0 0 8px;color:var(--tertiary);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:500;display:flex;align-items:center;gap:6px}
+.big{font-size:18px;font-weight:600;color:var(--text);margin:2px 0 7px}.big span{font-size:10px;font-weight:400;color:var(--tertiary);margin-left:5px}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px dashed var(--border-soft);font-size:10.5px;color:var(--tertiary)}.kv b{color:var(--secondary);font-weight:500}
+.activity{background:var(--layer1);border:1px solid var(--border-soft);border-radius:10px;padding:11px 12px}
+.activity h3{margin:0 0 5px;color:var(--tertiary);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:500}
+.arow{display:grid;grid-template-columns:64px 82px minmax(0,1fr) 80px;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border-soft);font-size:10.5px;color:var(--secondary)}
+.arow .time{font-family:var(--mono);color:var(--caption);font-size:9.5px}.arow .who{color:var(--text)}.arow .tag{justify-self:end;color:var(--tertiary);border:1px solid var(--border-soft);border-radius:4px;padding:0 5px;font-size:9px}
+/* workers/queue */
+.tablewrap{flex:1;min-height:0;overflow:auto;padding:14px 18px;background:var(--bg)}
+.wtable{width:100%;border-collapse:separate;border-spacing:0 4px}
+.wtable th{text-align:left;padding:4px 8px;color:var(--tertiary);font-size:9px;letter-spacing:.08em;text-transform:uppercase;font-weight:500}
+.wtable td{padding:8px;background:var(--layer1);border-top:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);color:var(--secondary);font-size:11px}
+.wtable tr td:first-child{border-left:1px solid var(--border-soft);border-radius:7px 0 0 7px}.wtable tr td:last-child{border-right:1px solid var(--border-soft);border-radius:0 7px 7px 0}
+.wtable .mono{color:var(--tertiary);font-size:10px}
+.pillstatus{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:999px;border:1px solid var(--border-soft);color:var(--tertiary);font-size:9px}
+.pillstatus.running{color:#9fe4e8;border-color:rgba(57,197,207,.3);background:rgba(57,197,207,.08)}
+.pillstatus.done{color:#8ce0aa;border-color:rgba(34,197,94,.3);background:rgba(34,197,94,.08)}
+.qlist{display:flex;flex-direction:column;gap:6px}
+.qrow{display:flex;align-items:center;gap:10px;padding:9px 11px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:9px}
+.qrow .order{width:20px;color:var(--caption);font-family:var(--mono);font-size:10px}.qrow .qid{width:52px;color:var(--tertiary);font-family:var(--mono);font-size:10px}
+.qrow .qtitle{flex:1;color:var(--text);font-size:11.5px}.qrow .qmeta{display:flex;gap:5px}
+/* done drawer */
+.drawer{position:absolute;inset:0;z-index:6;display:flex;justify-content:flex-end;background:rgba(0,0,0,.5)}
+.donebox{width:500px;height:100%;background:var(--sidebar);border-left:1px solid var(--border);display:flex;flex-direction:column}
+.doneHead{display:flex;align-items:center;gap:8px;padding:13px 16px;border-bottom:1px solid var(--border-soft)}.doneHead h2{margin:0;font-size:14px;font-weight:600}
+.doneSearch{display:flex;gap:8px;padding:12px 16px}.doneSearch input{flex:1;height:30px;padding:0 9px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:7px;color:var(--text);font:inherit;font-size:11px;outline:none}
+.doneBody{overflow:auto;padding:0 16px 16px}.day{margin:11px 0 5px;color:var(--caption);font-size:9px;letter-spacing:.08em;text-transform:uppercase}
+.drow{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border-soft)}.drow .did{width:42px;color:var(--tertiary);font-family:var(--mono);font-size:9px}.drow .dtitle{flex:1;color:var(--secondary);font-size:11px}
+/* DSH chat */
+.chat{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
+.chatHead{min-height:76px;flex:none;padding:10px 28px 0 20px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;justify-content:flex-start}
+.chatTitleRow{height:30px;display:flex;align-items:center;gap:8px;min-width:0}
+.chatTitle{font-size:14px;font-weight:500;line-height:20px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:520px}
+.chatBadges{display:flex;align-items:center;gap:5px;margin-left:4px}
+.chatTabs{height:36px;display:flex;align-items:flex-end;gap:2px}
+.chatTab{height:34px;padding:0 10px;color:var(--tertiary);font-size:13px;border-bottom:2px solid transparent}
+.chatTab.active{color:var(--text);border-bottom-color:#f9fafb}
+.chatBody{flex:1;min-height:0;overflow:auto;padding:16px 28px 4px}
+.thread{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.msg{font-size:14px;line-height:24px;color:var(--secondary)}
+.msg .who{display:flex;align-items:center;gap:6px;margin-bottom:5px;color:var(--tertiary);font-size:11px}
+.msg .who .avatar{width:20px;height:20px;font-size:8px}
+.msg.user{align-self:flex-end;max-width:78%}
+.msg.user .bubble{padding:9px 12px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:12px;color:var(--text)}
+.msg.assistant .bubble{padding:0}
+.msg .bubble p{margin:0 0 8px}.msg .bubble p:last-child{margin:0}
+.msg code{font-family:var(--mono);font-size:12px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:4px;padding:1px 4px;color:#9fe4e8}
+.tool{background:var(--sidebar);border:1px solid var(--border-soft);border-left:2px solid var(--blue);border-radius:8px;padding:8px 10px;margin:8px 0;font-family:var(--mono);font-size:10.5px;line-height:1.6;color:var(--tertiary)}
+.tool b{color:var(--secondary);font-weight:500}
+.composerWrap{flex:none;padding:0 28px 10px;background:var(--bg)}
+.composer{max-width:860px;margin:0 auto;background:var(--layer1);border:0.5px solid var(--border);border-radius:var(--radius-panel);padding:12px 14px;min-height:100px;display:flex;flex-direction:column;box-shadow:0 6px 20px rgba(0,0,0,.2)}
+.composer .ph{color:var(--caption);font-size:14px;line-height:24px;flex:1}
+.composer .row{display:flex;align-items:center;gap:6px;margin-top:8px;color:var(--tertiary);font-size:11px}
+.composer .row .grow{flex:1}
+.composer .send{width:28px;height:28px;border-radius:50%;background:#f9fafb;color:#151517;display:grid;place-items:center;font-size:13px}
+/* GodotBridge task center — classes mirror client/src/00-head.part TC_CSS */
+.gbt-root{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--layer2);color:var(--text);font-size:13px;line-height:1.5}
+.gbt-header{display:flex;align-items:center;gap:16px;padding:14px 18px;border-bottom:0.5px solid var(--border-strong);background:var(--layer3);flex-wrap:wrap}
+.gbt-brand{display:flex;align-items:center;gap:10px;min-width:0}
+.gbt-mark{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:var(--blue);color:#fff;font-weight:600;font-size:15px;flex:none}
+.gbt-title{margin:0;font-size:15px;font-weight:600;letter-spacing:.01em}
+.gbt-titleline{display:flex;align-items:center;gap:7px;min-width:0}
+.gbt-projectsource{flex:none;font-size:10px;line-height:1.6;padding:0 6px;border-radius:999px;text-transform:none;letter-spacing:0;background:var(--layer2);color:var(--secondary);border:0.5px solid var(--border-strong);cursor:default}
+.gbt-projectsource[data-project-source="session"]{color:var(--blue);border-color:var(--blue)}
+.gbt-project{margin:0;font-size:11px;color:var(--tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px;font-family:var(--mono)}
+.gbt-projectteam{margin:1px 0 0;font-size:10px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px;color:var(--tertiary)}
+.gbt-projectteam[data-project-team="ok"]{color:var(--secondary)}
+.gbt-counts{display:flex;gap:6px;flex-wrap:wrap}
+.gbt-count{display:flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;background:var(--layer2);font-size:11px;color:var(--secondary)}
+.gbt-count b{font-weight:600;color:var(--text)}
+.gbt-controls{display:flex;gap:8px;margin-left:auto;align-items:center;flex-wrap:wrap}
+.gbt-btn{appearance:none;border:0.5px solid var(--border-strong);background:var(--layer3);color:var(--text);height:30px;padding:0 12px;border-radius:8px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;gap:5px}
+.gbt-btn:hover{background:rgba(255,255,255,.08)}
+.gbt-btn[data-variant="primary"]{background:var(--blue);border-color:transparent;color:#fff}
+.gbt-statusline{display:flex;align-items:center;gap:10px;padding:7px 18px;border-bottom:0.5px solid var(--border-strong);background:var(--layer2);font-size:11px;color:var(--tertiary);flex-wrap:wrap}
+.gbt-dot{width:7px;height:7px;border-radius:50%;background:var(--tertiary);display:inline-block;flex:none}
+.gbt-dot[data-running="true"]{background:var(--green);box-shadow:0 0 0 3px var(--layer2)}
+.gbt-main{display:flex;min-height:0;flex:1}
+.gbt-content{display:flex;flex-direction:column;min-width:0;flex:1;min-height:0}
+.gbt-tabs{display:flex;gap:4px;padding:10px 18px 0;flex-wrap:wrap}
+.gbt-tab{appearance:none;border:none;background:transparent;color:var(--secondary);font:inherit;font-size:12px;padding:6px 11px;border-radius:8px;cursor:pointer}
+.gbt-tab:hover{background:rgba(255,255,255,.06)}
+.gbt-tab[data-active="true"]{background:var(--layer3);color:var(--text);font-weight:600}
+.gbt-view{flex:1;min-height:0;overflow:auto;padding:12px 18px 18px}
+.gbt-boardwrap{display:flex;flex-direction:column;height:100%;min-height:0}
+.gbt-kindfilter{display:inline-flex;gap:6px;align-items:center;margin:0 0 10px;padding:3px;border-radius:999px;background:transparent}
+.gbt-kindfilterbtn{font-size:12px;line-height:1.6;padding:2px 10px;border-radius:999px;border:none;background:transparent;color:var(--secondary);cursor:pointer}
+.gbt-kindfilterbtn:hover{background:rgba(255,255,255,.06)}
+.gbt-kindfilterbtn[data-active="true"]{background:var(--layer3);color:var(--text)}
+.gbt-board{display:flex;gap:12px;align-items:stretch;flex:1 1 auto;min-height:0;overflow:auto}
+.gbt-col{flex:1 1 0;min-width:172px;max-width:330px;background:var(--layer3);border:0.5px solid var(--border-strong);border-radius:12px;display:flex;flex-direction:column;max-height:100%;min-height:120px}
+.gbt-colhead{display:flex;align-items:center;gap:7px;padding:9px 11px;border-bottom:0.5px solid var(--border-strong);font-size:11px;font-weight:600;color:var(--secondary);letter-spacing:.04em;text-transform:uppercase}
+.gbt-colchev{font-size:10px;opacity:.75;width:9px}
+.gbt-colcount{margin-left:auto;color:var(--tertiary);font-weight:500}
+.gbt-colnote{margin-left:auto;font-size:9px;color:var(--amber);font-weight:400}
+.gbt-cards{display:flex;flex-direction:column;gap:8px;padding:9px;overflow:auto;flex:1 1 auto;min-height:0}
+.gbt-card{border:0.5px solid var(--border-strong);border-radius:10px;padding:10px 11px;background:var(--layer2);cursor:pointer;display:flex;flex-direction:column;gap:7px;transition:border-color .12s}
+.gbt-card:hover{border-color:var(--blue)}
+.gbt-card[data-selected="true"]{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue)}
+.gbt-cardtop{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.gbt-id{font-family:var(--mono);font-size:11px;color:var(--tertiary)}
+.gbt-cardtitle{font-size:12px;font-weight:500;line-height:1.45;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.gbt-cardmeta{display:flex;gap:5px;flex-wrap:wrap;font-size:11px;color:var(--tertiary)}
+.gbt-chip{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;background:var(--layer2);color:var(--secondary);font-size:10px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gbt-chip[data-tone="ready"]{background:var(--layer3);color:var(--green)}
+.gbt-chip[data-tone="waiting"]{background:var(--layer3);color:var(--amber)}
+.gbt-chip[data-tone="running"]{background:var(--layer3);color:var(--green)}
+.gbt-chip[data-tone="reviewing"]{background:var(--layer3);color:var(--amber)}
+.gbt-chip[data-tone="testing"]{background:var(--layer3);color:var(--amber)}
+.gbt-chip[data-tone="done"]{background:var(--layer3);color:var(--green)}
+.gbt-chip[data-tone="blocked"]{background:var(--layer3);color:var(--red)}
+.gbt-chip[data-tone="investigating"]{background:var(--layer3);color:var(--purple)}
+.gbt-empty{padding:12px 9px;color:var(--tertiary);font-size:11px;text-align:center}
+/* toolbar */
+#toolbar{position:fixed;right:12px;bottom:12px;z-index:50;display:flex;gap:3px;align-items:center;background:rgba(21,21,23,.92);border:1px solid var(--border);border-radius:10px;padding:5px 7px;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+#toolbar b{font-size:9px;color:var(--caption);margin-right:3px;letter-spacing:.1em}
+#toolbar a{color:var(--tertiary);text-decoration:none;font-size:10px;padding:4px 6px;border-radius:5px}
+#toolbar a:hover{background:var(--layer2);color:var(--text)}
+body.chrome0 #toolbar{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="logoRow">
+      <div class="brand"><svg class="whale" viewBox="0 0 23.16 17.04" fill="none" aria-hidden="true"><path d="M22.9168 1.43018C22.6713 1.31018 22.5658 1.53918 22.4223 1.65519C22.3733 1.69269 22.3318 1.74169 22.2903 1.78669C21.9317 2.1697 21.5127 2.42121 20.9657 2.39121C20.1657 2.34621 19.4827 2.59771 18.8787 3.20973C18.7502 2.45521 18.3236 2.0047 17.6746 1.71569C17.3351 1.56568 16.9916 1.41518 16.7536 1.08867C16.5876 0.856163 16.5421 0.597155 16.4591 0.341647C16.4061 0.187643 16.3536 0.0301382 16.1761 0.00363739C15.9836 -0.0263635 15.9081 0.135141 15.8326 0.270145C15.5306 0.822162 15.4136 1.43018 15.4251 2.0462C15.4516 3.43174 16.0366 4.53527 17.1991 5.3203C17.3311 5.4103 17.3651 5.5003 17.3236 5.63181C17.2441 5.90231 17.1501 6.16482 17.0671 6.43533C17.0141 6.60784 16.9351 6.64584 16.7501 6.57033C16.1121 6.30383 15.5611 5.90931 15.074 5.4328C14.2475 4.63328 13.5 3.75075 12.568 3.05973C12.349 2.89822 12.13 2.74822 11.9034 2.60522C10.9524 1.68169 12.028 0.923165 12.277 0.833162C12.5375 0.739159 12.3675 0.41615 11.5259 0.42015C10.6844 0.42365 9.91439 0.705658 8.93286 1.08117C8.78935 1.13767 8.63835 1.17867 8.48384 1.21267C7.59332 1.04367 6.66829 1.00617 5.70226 1.11517C3.88321 1.31768 2.43016 2.1777 1.36213 3.64575C0.0790928 5.4103 -0.222916 7.41536 0.146595 9.50642C0.535106 11.7105 1.66014 13.535 3.38869 14.9616C5.18125 16.4406 7.24581 17.1657 9.60138 17.0266C11.0319 16.9441 12.6245 16.7526 14.421 15.2321C14.874 15.4576 15.3496 15.5476 16.1381 15.6151C16.7456 15.6716 17.3306 15.5851 17.7836 15.4911C18.4931 15.3411 18.4441 14.6841 18.1876 14.5636C16.1081 13.595 16.5646 13.9891 16.1496 13.67C17.2061 12.42 18.8202 10.1979 19.3182 7.17235C19.3672 6.83834 19.4297 6.36783 19.4222 6.09732C19.4182 5.93231 19.4562 5.86831 19.6447 5.84931C20.1657 5.78931 20.6712 5.64681 21.1357 5.3913C22.4833 4.65528 23.0268 3.44624 23.1548 1.9972C23.1738 1.77569 23.1508 1.54668 22.9168 1.43018ZM11.1749 14.4736C9.15936 12.889 8.18184 12.3675 7.77832 12.39C7.40081 12.4125 7.46881 12.8445 7.55182 13.126C7.63882 13.404 7.75182 13.5955 7.91033 13.8396C8.01983 14.0011 8.09533 14.2411 7.80083 14.4216C7.15181 14.8231 6.02327 14.2866 5.97027 14.2601C4.65673 13.4865 3.5587 12.4655 2.78467 11.069C2.03715 9.72493 1.60314 8.28289 1.53164 6.74384C1.51264 6.37233 1.62214 6.24082 1.99215 6.17332C2.47916 6.08332 2.98118 6.06432 3.46769 6.13582C5.52476 6.43633 7.27581 7.35586 8.74385 8.8129C9.58188 9.64243 10.2159 10.634 10.8689 11.6025C11.5634 12.631 12.3105 13.611 13.262 14.4146C13.598 14.6961 13.866 14.9101 14.1225 15.0681C13.349 15.1546 12.058 15.1731 11.1749 14.4746L11.1749 14.4736ZM12.141 8.25988C12.141 8.09488 12.273 7.96338 12.439 7.96338C12.4765 7.96338 12.5105 7.97088 12.541 7.98188C12.5825 7.99688 12.6205 8.01938 12.6505 8.05338C12.7035 8.10588 12.7335 8.18088 12.7335 8.25988C12.7335 8.42489 12.6015 8.55639 12.4355 8.55639C12.2695 8.55639 12.141 8.42489 12.141 8.25988ZM15.1415 9.79893C14.949 9.87793 14.7565 9.94544 14.5715 9.95294C14.2845 9.96794 13.9715 9.85143 13.8015 9.70893C13.5375 9.48742 13.3485 9.36342 13.2695 8.97691C13.2355 8.8119 13.2545 8.55639 13.2845 8.40989C13.3525 8.09438 13.277 7.89187 13.0545 7.70787C12.8735 7.55786 12.643 7.51636 12.39 7.51636C12.2955 7.51636 12.209 7.47486 12.1445 7.44136C12.039 7.38886 11.9519 7.25735 12.035 7.09585C12.0615 7.04335 12.19 6.91584 12.22 6.89334C12.5635 6.69784 12.9595 6.76184 13.326 6.90834C13.6655 7.04735 13.9225 7.30236 14.292 7.66287C14.6695 8.09838 14.7375 8.21838 14.9525 8.54539C15.1225 8.8009 15.277 9.06341 15.3831 9.36392C15.4471 9.55142 15.3641 9.70493 15.1415 9.79893Z" fill="currentColor"/></svg><span>deepseek harness</span></div>
+    </div>
+    <button class="newSession"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.37091 11.2501C1.58745 9.89288 1.32067 8.29835 1.61969 6.76006C1.91872 5.22177 2.76342 3.8433 3.99826 2.87846C5.2331 1.91362 6.77494 1.42737 8.33988 1.50925C9.90482 1.59113 11.3875 2.23562 12.5149 3.32406C13.6425 4.41269 14.3387 5.87206 14.4754 7.4334C14.612 8.99474 14.18 10.5529 13.2587 11.8209C12.3375 13.0888 10.9891 13.9813 9.46194 14.3337C8.18691 14.628 6.85895 14.5294 5.64989 14.0605C5.1712 13.8748 4.76962 13.4932 4.26534 13.3967C3.67413 13.2835 2.95257 13.5598 2.03794 14.3337" stroke="currentColor"/><path d="M8 5V11" stroke="currentColor"/><path d="M5 8H11" stroke="currentColor"/></svg><span>新会话</span></button>
+    <div class="panelList">
+      <button class="panelRow" data-panel="plugins"><span class="ico">▣</span>插件</button>
+      <button class="panelRow" data-panel="market"><span class="ico">◈</span>插件市场</button>
+      <button class="panelRow" data-panel="automation"><span class="ico">◷</span>自动化任务</button>
+      <button class="panelRow" data-panel="task-center"><span class="ico"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2" width="13" height="12" rx="2.4" stroke="currentColor" stroke-width="1.3"/><path d="M5.6 4.6v6.8M10.4 4.6v6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></span>GodotBridge任务中心</button>
+      <button class="panelRow" data-panel="more"><span class="ico">⋯</span>更多</button>
+    </div>
+    <div class="region">
+      <div class="sectionHead"><span>工作区</span><span class="grow"></span><button class="hico">⌕</button><button class="hico">＋</button></div>
+      <div class="rows">
+        <div class="projectRow"><svg class="folderIcon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.50439 3.11059C1.50439 2.55831 1.95211 2.1106 2.50439 2.1106H5.43389C5.67773 2.1106 5.91318 2.19969 6.09593 2.36113L7.71649 3.79265C7.89924 3.95409 8.1347 4.04319 8.3785 4.04319H13.4958C14.0481 4.04319 14.4958 4.4909 14.4958 5.04319V12.8894C14.4958 13.4417 14.0481 13.8894 13.4958 13.8894H2.50439C1.95211 13.8894 1.50439 13.4417 1.50439 12.8894V4.04319V3.11059Z" stroke="currentColor"/><path d="M3.63501 7.66614H12.3647" stroke="currentColor"/></svg><span>godot_buildings_maker</span><span class="count">3 个会话</span></div>
+        <div class="projectRow"><svg class="folderIcon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.50439 3.11059C1.50439 2.55831 1.95211 2.1106 2.50439 2.1106H5.43389C5.67773 2.1106 5.91318 2.19969 6.09593 2.36113L7.71649 3.79265C7.89924 3.95409 8.1347 4.04319 8.3785 4.04319H13.4958C14.0481 4.04319 14.4958 4.4909 14.4958 5.04319V12.8894C14.4958 13.4417 14.0481 13.8894 13.4958 13.8894H2.50439C1.95211 13.8894 1.50439 13.4417 1.50439 12.8894V4.04319V3.11059Z" stroke="currentColor"/><path d="M3.63501 7.66614H12.3647" stroke="currentColor"/></svg><span>打块块</span><span class="count">12 个会话</span></div>
+        <div class="projectRow"><svg class="folderIcon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.50439 3.11059C1.50439 2.55831 1.95211 2.1106 2.50439 2.1106H5.43389C5.67773 2.1106 5.91318 2.19969 6.09593 2.36113L7.71649 3.79265C7.89924 3.95409 8.1347 4.04319 8.3785 4.04319H13.4958C14.0481 4.04319 14.4958 4.4909 14.4958 5.04319V12.8894C14.4958 13.4417 14.0481 13.8894 13.4958 13.8894H2.50439C1.95211 13.8894 1.50439 13.4417 1.50439 12.8894V4.04319V3.11059Z" stroke="currentColor"/><path d="M3.63501 7.66614H12.3647" stroke="currentColor"/></svg><span>component_tool</span><span class="count">14 个会话</span></div>
+        <div class="projectRow"><svg class="folderIcon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.50439 3.11059C1.50439 2.55831 1.95211 2.1106 2.50439 2.1106H5.43389C5.67773 2.1106 5.91318 2.19969 6.09593 2.36113L7.71649 3.79265C7.89924 3.95409 8.1347 4.04319 8.3785 4.04319H13.4958C14.0481 4.04319 14.4958 4.4909 14.4958 5.04319V12.8894C14.4958 13.4417 14.0481 13.8894 13.4958 13.8894H2.50439C1.95211 13.8894 1.50439 13.4417 1.50439 12.8894V4.04319V3.11059Z" stroke="currentColor"/><path d="M3.63501 7.66614H12.3647" stroke="currentColor"/></svg><span>deepseek-harness</span><span class="count">1 个会话</span></div>
+        <div class="projectRow" data-project="godot-bridge"><svg class="folderIcon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M12.3994 13.5986H2.04956C1.49728 13.5986 1.04956 13.1509 1.04956 12.5986V3.40137C1.04956 2.84908 1.49728 2.40137 2.04956 2.40137H4.76632C5.01016 2.40137 5.24561 2.49046 5.42836 2.6519L6.94088 3.98799C7.12364 4.14943 7.35908 4.23852 7.60293 4.23852H12.3994C12.9517 4.23852 13.3994 4.68624 13.3994 5.23852V7.16991" stroke="currentColor"/><path d="M2.55911 7.93683C2.67584 7.49906 3.07229 7.19446 3.52536 7.19446H13.6491C14.3061 7.19446 14.7846 7.81725 14.6153 8.45209L13.4411 12.856C13.3244 13.2938 12.9279 13.5984 12.4748 13.5984H2.35113C1.69411 13.5984 1.21562 12.9756 1.38489 12.3407L2.55911 7.93683Z" stroke="currentColor"/></svg><span>godot-bridge</span><span class="count">2 个会话</span></div>
+        <div class="sectionHead" style="margin-top:10px"><span>未分组</span><span class="grow"></span><button class="hico">⌕</button></div>
+        <div class="sessionRow selected"><span class="statusDot running"></span><span class="title">GodotBridge任务中心初始化重构</span></div>
+        <div class="sessionRow"><span class="statusDot"></span><span class="title">了解任务中心实现</span></div>
+        <div class="sessionRow"><span class="statusDot"></span><span class="title">修复 Windows 更新错误 0x800...</span></div>
+        <div class="sessionRow"><span class="statusDot"></span><span class="title">创建渲染模式预设并修复错误</span></div>
+        <div class="sessionRow"><span class="statusDot"></span><span class="title">修复渲染模式预设错误</span></div>
+      </div>
+    </div>
+    <div class="sideFoot"><div class="avatar">S</div><div><b>Spring of Spirit</b><span>本地工作区</span></div></div>
+  </aside>
+  <main class="main" id="main"></main>
+</div>
+<div id="toolbar"><b>SCREENS</b><a href="?screen=dsh&chrome=0">dsh</a><a href="?screen=board&chrome=0">board</a><a href="?screen=detail&chrome=0">detail</a><a href="?screen=report&chrome=0">report</a><a href="?screen=roles&chrome=0">roles</a><a href="?screen=status&chrome=0">status</a><a href="?screen=workers&chrome=0">workers</a><a href="?screen=queue&chrome=0">queue</a><a href="?screen=done&chrome=0">done</a></div>
+
+<template id="tpl-board">
+<div class="gbt-root" data-panel="task-center" data-panel-root="task-center">
+  <header class="gbt-header">
+    <div class="gbt-brand"><div class="gbt-mark">▦</div><div>
+      <div class="gbt-titleline"><h1 class="gbt-title">任务中心</h1><span class="gbt-projectsource" data-project-source="session">会话项目</span></div>
+      <p class="gbt-project" title="J:\mm13dremake_workspace\godot-bridge">J:\mm13dremake_workspace\godot-bridge</p>
+      <p class="gbt-projectteam" data-project-team="ok">团队：lead · 5 名成员</p>
+    </div></div>
+    <div class="gbt-counts"><span class="gbt-count">就绪 <b>2</b></span><span class="gbt-count">等待 <b>2</b></span><span class="gbt-count">执行中 <b>1</b></span><span class="gbt-count">评审中 <b>1</b></span><span class="gbt-count">测试中 <b>1</b></span><span class="gbt-count">已完成 <b>3</b></span><span class="gbt-count">已阻塞 <b>0</b></span></div>
+    <div class="gbt-controls"><button class="gbt-btn">⏸ 暂停</button><button class="gbt-btn">+ 新任务</button><button class="gbt-btn">↻ 刷新</button><button class="gbt-btn">⌂ 项目</button><button class="gbt-btn">⚙ 设置</button></div>
+  </header>
+  <div class="gbt-statusline"><span class="gbt-dot" data-running="true"></span><span>运行中</span><span>· 10 个任务</span><span>· 最大并发 3</span><span>· 队列 2</span><span>· tick 1.8s 前</span><span style="margin-left:auto">每个任务在独立 worktree 中运行</span></div>
+  <div class="gbt-main"><div class="gbt-content">
+    <div class="gbt-tabs"><button class="gbt-tab" data-active="true">看板</button><button class="gbt-tab">队列</button><button class="gbt-tab">执行者</button><button class="gbt-tab">状态</button><button class="gbt-tab">角色</button></div>
+    <div class="gbt-view"><div class="gbt-boardwrap" data-board-kind="all">
+      <div class="gbt-kindfilter" data-kind-filter="all"><button class="gbt-kindfilterbtn" data-active="true">全部</button><button class="gbt-kindfilterbtn">开发</button><button class="gbt-kindfilterbtn">调查</button></div>
+      <div class="gbt-board">
+        <section class="gbt-col" data-group="ready"><div class="gbt-colhead" data-collapsible="true"><span class="gbt-colchev">▾</span><span>就绪</span><span class="gbt-colcount">2</span></div><div class="gbt-cards">
+          <article class="gbt-card"><div class="gbt-cardtop"><span class="gbt-id">T-101</span><span class="gbt-chip" data-tone="running">P1</span></div><div class="gbt-cardtitle">添加二段跳 / 蹬墙跳</div><div class="gbt-cardmeta"><span class="gbt-chip" data-tone="ready">▸ 就绪</span><span class="gbt-chip">🔒 2</span><span class="gbt-chip">无依赖</span></div></article>
+          <article class="gbt-card"><div class="gbt-cardtop"><span class="gbt-id">T-104</span><span class="gbt-chip" data-tone="running">P2</span></div><div class="gbt-cardtitle">打磨受击闪白</div><div class="gbt-cardmeta"><span class="gbt-chip" data-tone="ready">▸ 就绪</span><span class="gbt-chip">🔒 3</span></div></article>
+        </div></section>
+        <section class="gbt-col" data-group="waiting"><div class="gbt-colhead" data-collapsible="true"><span class="gbt-colchev">▾</span><span>等待</span><span class="gbt-colcount">2</span></div><div class="gbt-cards">
+          <article class="gbt-card"><div class="gbt-cardtop"><span class="gbt-id">T-106</span><span class="gbt-chip" data-tone="running">P1</span></div><div class="gbt-cardtitle">存档迁移</div><div class="gbt-cardmeta"><span class="gbt-chip" data-tone="waiting">▸ 等待</span><span class="gbt-chip">⏳ 等待 T-101</span><span class="gbt-chip">🔒 1</span></div></article>
+          <article class="gbt-card"><div class="gbt-cardtop"><span class="gbt-id">T-110</span><span class="gbt-chip" data-tone="blocked">已阻塞</span></div><div class="gbt-cardtitle">网络大厅</div><div class="gbt-cardmeta"><span class="gbt-chip" data-tone="blocked">⇄ 需要 rebase</span><span class="gbt-chip">🔒 2</span></div></article>
+        </div></section>
+        <section class="gbt-col" data-group="running"><div class="gbt-colhead" data-collapsible="true"><span class="gbt-colchev">▾</span><span>执行中</span><span class="gbt-colcount">1</span></div><div class="gbt-cards">
+          <article class="gbt-card"><div class="gbt-cardtop"><span class="gbt-id">T-103</span><span class="gbt-chip" data-tone="running">P0</span></div><div class="gbt-cardtitle">重构存档系统</div><div class="gbt-cardmeta"><span class="gbt-chip" data-tone="running">▸ 实现</span><span class="gbt-chip" data-tone="running">worker-1</span><span class="gbt-chip" data-tone="reviewing">👁 评审中 · #2</span><span class="gbt-chip">🔒 4</span><span class="gbt-chip" data-tone="waiting">⏱ 42m</span></div></article>
+        </div></section>
+        <section class="gbt-col" data-group="reviewing"><div class="gbt-colhead" data-collapsible="true"><span class="gbt-colchev">▾</span><span>评审中</span><span class="gbt-colcount">1</span></div><div class="gbt-cards">
+          <article class="gbt-card"><div class="gbt-cardtop"><span class="gbt-id">T-105</span><span class="gbt-chip" data-tone="running">P1</span></div><div class="gbt-cardtitle">冲刺镜头抖动</div><div class="gbt-cardmeta"><span class="gbt-chip" data-tone="reviewing">▸ 评审</span><span class="gbt-chip" data-tone="running">reviewer-1</span><span class="gbt-chip" data-tone="reviewing">👁 待评审 · #2</span><span class="gbt-chip">🔒 3</span></div></article>
+        </div></section>
+        <section class="gbt-col" data-group="testing"><div class="gbt-colhead" data-collapsible="true"><span class="gbt-colchev">▾</span><span>测试中</span><span class="gbt-colcount">1</span></div><div class="gbt-cards">
+          <article class="gbt-card"><div class="gbt-cardtop"><span class="gbt-id">T-107</span><span class="gbt-chip" data-tone="running">P2</span></div><div class="gbt-cardtitle">按键重映射界面</div><div class="gbt-cardmeta"><span class="gbt-chip" data-tone="testing">▸ 测试</span><span class="gbt-chip" data-tone="running">tester-1</span><span class="gbt-chip" data-tone="testing">🧪 测试中 · #1</span><span class="gbt-chip">🔒 2</span></div></article>
+        </div></section>
+        <section class="gbt-col" data-group="done"><div class="gbt-colhead" data-collapsible="true"><span class="gbt-colchev">▾</span><span>已完成 · </span><span class="gbt-colcount">3</span></div><div class="gbt-cards">
+          <article class="gbt-card"><div class="gbt-cardtop"><span class="gbt-id">T-102</span><span class="gbt-chip" data-tone="investigating">🔍 调查</span></div><div class="gbt-cardtitle">Boss 二阶段崩溃</div><div class="gbt-cardmeta"><span class="gbt-chip" data-tone="done">▸ 已完成</span><span class="gbt-chip">📄 报告</span></div></article>
+          <article class="gbt-card"><div class="gbt-cardtop"><span class="gbt-id">T-108</span></div><div class="gbt-cardtitle">修复 UI 缩放</div><div class="gbt-cardmeta"><span class="gbt-chip" data-tone="done">▸ 合并</span><span class="gbt-chip">⇄ 已合并</span></div></article>
+          <article class="gbt-card"><div class="gbt-cardtop"><span class="gbt-id">T-109</span></div><div class="gbt-cardtitle">添加暂停菜单</div><div class="gbt-cardmeta"><span class="gbt-chip" data-tone="done">▸ 合并</span><span class="gbt-chip">⇄ 已合并</span></div></article>
+        </div><div class="gbt-colfoot"><button class="gbt-btn" style="height:24px;padding:0 8px;font-size:11px">查看全部已完成 · 3</button></div></section>
+        <section class="gbt-col" data-group="blocked"><div class="gbt-colhead" data-collapsible="true"><span class="gbt-colchev">▾</span><span>已阻塞</span><span class="gbt-colcount">0</span></div><div class="gbt-cards"><div class="gbt-empty">暂无任务</div></div></section>
+      </div>
+    </div></div>
+  </div></div>
+</div>
+</template>
+
+<template id="tpl-detail">
+<div class="plugin">
+  <div class="ptop"><div class="pmark">GB</div><div class="ptitle"><h1>任务中心</h1><div class="psub">~/projects/starfall <span class="badge ok">工作区干净</span><span class="badge">session</span></div></div><div class="pactions"><button class="btn">暂停</button><button class="btn primary">开始派发</button><button class="btn">＋ 新任务</button></div></div>
+  <div class="ptabs"><button class="ptab active">看板</button><button class="ptab">队列</button><button class="ptab">执行者</button><button class="ptab">状态</button><button class="ptab">角色</button><div class="pcounts"><span class="count">执行中 <b>1</b></span><span class="count">评审 <b>1</b></span></div></div>
+  <div class="overlay"><div class="detail">
+    <div class="dHead"><div><h2>重构存档系统</h2><div class="dSub"><span class="cid">T-103</span><span class="chip">执行中</span><span>worker-1</span><span>P0</span><span>租约 42m</span></div></div><button class="dClose">✕</button></div>
+    <div class="spine"><div class="step done"><b>派发</b><span>08:12</span></div><div class="step done"><b>实现</b><span>08:14</span></div><div class="step active"><b>评审</b><span>第 2 轮</span></div><div class="step"><b>测试</b><span>—</span></div><div class="step"><b>合并</b><span>—</span></div></div>
+    <div class="dBody"><div class="dMain"><div class="sect"><h4>规格</h4><div class="box">把存档格式迁移到带版本的信封。保持对 v1 存档的向后兼容，读取时迁移，绝不写入半成品文件。新格式必须能承受中断写入。</div></div><div class="sect"><h4>验收标准</h4><div class="box">- v1 存档可加载并只迁移一次
+- 中断写入保留旧存档
+- 42 个字段完整往返
+- 任务 worktree 内 npm run verify 通过</div></div><div class="sect"><h4>最新证据</h4><div class="evidence">$ npm run verify
+ALL CHECKS PASSED
+42 suites · 0 failed · 12.4s
+
+commit 7f3a9c2 · task/T-103-2
+base 2f8c1a0 · 4 files changed</div></div><div class="actions"><button class="btn primary">通过评审</button><button class="btn">要求修改</button></div></div><aside class="dAside"><div class="sect"><h4>当前状态</h4><p>评审第 2 轮 · 等待 reviewer-1。Host 基线已绿；评审者正在检查迁移边界。</p></div><div class="sect"><h4>详情</h4><div class="field"><span>状态</span><b>执行中</b></div><div class="field"><span>尝试</span><b>2 / 3</b></div><div class="field"><span>写入文件</span><b>4</b></div><div class="field"><span>依赖</span><b>无</b></div><div class="field"><span>Worktree</span><b>.worktrees/T-103-2</b></div><div class="field"><span>分支</span><b>task/T-103-2</b></div><div class="field"><span>租约</span><b>剩余 42m</b></div></div><div class="sect"><h4>关键事件</h4><div class="field"><span>08:42</span><b>评审第 2 轮</b></div><div class="field"><span>08:36</span><b>提交</b></div><div class="field"><span>08:14</span><b>认领</b></div></div></aside></div>
+  </div></div>
+</div>
+</template>
+
+<template id="tpl-report">
+<div class="plugin">
+  <div class="ptop"><div class="pmark">GB</div><div class="ptitle"><h1>任务中心</h1><div class="psub">~/projects/starfall <span class="badge ok">工作区干净</span><span class="badge">session</span></div></div><div class="pactions"><button class="btn">暂停</button><button class="btn primary">开始派发</button><button class="btn">＋ 新任务</button></div></div>
+  <div class="ptabs"><button class="ptab active">看板</button><button class="ptab">队列</button><button class="ptab">执行者</button><button class="ptab">状态</button><button class="ptab">角色</button></div>
+  <div class="casebook"><aside class="caseIndex"><h3>调查档案 · T-102</h3><span class="idx active">报告</span><span class="idx">证据</span><span class="idx">产物</span><span class="idx">历史</span><div class="caseMeta">类型<br><b>调查</b><br><br>状态<br><b style="color:#8ce0aa">完成 · 报告已交付</b></div></aside><article class="paper"><div class="kicker">调查报告 · T-102</div><h2>Boss 二阶段切换时崩溃</h2><div class="meta">交付于 2026-11-08 08:42 · worker-1 · 7 条证据 · 2 个产物</div><h3>摘要</h3><p>崩溃是阶段切换中的 use-after-free：阶段控制器对旧 hitbox 排入了延迟的 <code>queue_free()</code>，而动画播放器仍持有它的信号。只有切换与最后一击落在同一帧时才能复现。</p><h3>执行过的命令</h3><pre>$ godot --headless --path .investigate/boss-repro --quit-after 600
+SCRIPT ERROR: Invalid access to object 'Hitbox' (freed)
+  at: _on_phase_changed (boss.gd:184)
+
+$ node scripts/test/repro.mjs --frames 58,59,60
+frame 59: freed hitbox signal -> CRASH</pre><h3>证据</h3><table><thead><tr><th>命令</th><th>退出码</th><th>输出尾部</th></tr></thead><tbody><tr><td><code>godot --headless ...</code></td><td>1</td><td>Invalid access to object 'Hitbox' (freed)</td></tr><tr><td><code>node repro.mjs --frames 59</code></td><td>0</td><td>reproduced 1/1</td></tr><tr><td><code>node repro.mjs --frames 60</code></td><td>0</td><td>reproduced 0/1</td></tr></tbody></table><h3>结论</h3><ul><li>释放 hitbox 前先断开阶段信号。</li><li>用 <code>is_instance_valid()</code> 保护切换。</li><li>把第 59 帧加入 boss 回归场景。</li></ul><h3>产物</h3><div class="artifacts"><span class="artifact">.investigate/boss-repro/</span><span class="artifact">reports/T-102.log</span><span class="artifact">patches/hitbox-signal.patch</span></div></article></div>
+</div>
+</template>
+
+<template id="tpl-roles">
+<div class="plugin">
+  <div class="ptop"><div class="pmark">GB</div><div class="ptitle"><h1>任务中心</h1><div class="psub">~/projects/starfall <span class="badge ok">工作区干净</span><span class="badge">session</span></div></div><div class="pactions"><button class="btn">暂停</button><button class="btn primary">开始派发</button><button class="btn">＋ 新任务</button></div></div>
+  <div class="ptabs"><button class="ptab">看板</button><button class="ptab">队列</button><button class="ptab">执行者</button><button class="ptab">状态</button><button class="ptab active">角色</button></div>
+  <div class="roles"><aside class="roleList"><h3>角色配置</h3><div class="roleRow active"><span class="dot" style="background:var(--green)"></span>worker<span class="rkind">内置</span></div><div class="roleRow"><span class="dot" style="background:var(--purple)"></span>reviewer<span class="rkind">内置</span></div><div class="roleRow"><span class="dot" style="background:var(--amber)"></span>tester<span class="rkind">内置</span></div><div class="roleRow"><span class="dot" style="background:#39c5cf"></span>lead<span class="rkind">团队</span></div><div style="margin-top:14px"><h3>操作</h3><span class="pill blue">Fork 配置</span> <span class="pill">重置</span></div></aside><section class="roleEdit"><div class="roleHead"><div><h2>worker · 默认</h2><div class="sub">阶段：实现 · 2 个实例 · fresh 上下文 · 读写</div></div><div style="margin-left:auto;display:flex;gap:6px"><span class="pill">Fork</span><span class="pill blue">保存</span></div></div><div class="roleBody"><div class="rcol"><h3>原始提示词模板</h3><div class="fieldrow"><span class="pill">类型 worker</span><span class="pill">阶段 实现</span><span class="pill">1–8 实例</span></div><div class="prompt">你是 {{ROLE}}，负责 {{TASK_ID}}。
+
+项目：{{PROJECT}}
+Lead：{{LEAD}}
+
+任务
+{{TASK_TITLE}}
+
+规格
+{{SPEC}}
+
+完成定义
+{{COMPLETIONS_DEF}}
+
+Git
+{{GIT_INFO}}
+
+规则
+只在你的任务 worktree 中工作。在那里运行项目测试。不要提交到目标分支。提交时附上摘要和证据。</div><h3>技能</h3><div class="fieldrow"><span class="pill">godot-bridge-task-center</span><span class="pill">gdscript</span><span class="pill">testing</span></div></div><div class="rcol"><h3>Host 实际注入预览</h3><div class="preview"><h5>规则</h5><div class="injected">任务板接口：用 task_center 查询状态、提交、报告和裁决。开始前加载下面的技能。不要手动编辑 .agents/tasks.json。</div><h5>技能</h5><div class="injected">godot-bridge-task-center · gdscript · testing</div><h5>任务</h5><p><b>T-103 · 重构存档系统</b></p><p>把存档格式迁移到带版本的信封。保持对 v1 存档的向后兼容，读取时迁移，绝不写入半成品文件。</p><h5>Git</h5><p><code>worktree .worktrees/T-103-2</code><br><code>branch task/T-103-2</code><br><code>target main</code></p></div></div></div></section></div>
+</div>
+</template>
+
+<template id="tpl-status">
+<div class="plugin">
+  <div class="ptop"><div class="pmark">GB</div><div class="ptitle"><h1>任务中心</h1><div class="psub">~/projects/starfall <span class="badge ok">工作区干净</span><span class="badge">session</span></div></div><div class="pactions"><button class="btn">暂停</button><button class="btn primary">开始派发</button><button class="btn">＋ 新任务</button></div></div>
+  <div class="ptabs"><button class="ptab">看板</button><button class="ptab">队列</button><button class="ptab">执行者</button><button class="ptab active">状态</button><button class="ptab">角色</button></div>
+  <div class="status"><div class="summary"><span>● <b>调度运行中</b> · 1 个任务执行中 · 下次合并 5s</span><span class="grow"></span><span class="mono">session-eb9ba775 · host</span><span class="badge ok">干净</span></div><div class="cards3"><div class="scard"><h3><span class="dot" style="background:var(--green)"></span>调度</h3><div class="big">3<span>最大并发</span></div><div class="kv"><span>Leader 租约</span><b>持有 · 4m</b></div><div class="kv"><span>就绪</span><b>4</b></div><div class="kv"><span>已阻塞</span><b>1</b></div><div class="kv"><span>上次 tick</span><b>1.8s 前</b></div></div><div class="scard"><h3><span class="dot" style="background:#39c5cf"></span>Worktrees</h3><div class="big">6<span>checkout</span></div><div class="kv"><span>活跃</span><b>3</b></div><div class="kv"><span>陈旧</span><b>2</b></div><div class="kv"><span>可安全清理</span><b>1</b></div><div class="kv"><span>主工作树</span><b style="color:#8ce0aa">干净</b></div></div><div class="scard"><h3><span class="dot" style="background:var(--purple)"></span>执行者</h3><div class="big">5<span>团队成员</span></div><div class="kv"><span>Lead</span><b>lead</b></div><div class="kv"><span>Workers</span><b>2 · 1 忙</b></div><div class="kv"><span>Reviewer</span><b>reviewer-1</b></div><div class="kv"><span>Tester</span><b>tester-1</b></div></div></div><div class="activity"><h3>活动</h3><div class="arow"><span class="time">08:42</span><span class="who">worker-1</span><span>提交 T-103 进入评审 · 第 2 轮</span><span class="tag">提交</span></div><div class="arow"><span class="time">08:36</span><span class="who">reviewer-1</span><span>通过 T-105 进入测试</span><span class="tag">评审</span></div><div class="arow"><span class="time">08:31</span><span class="who">tester-1</span><span>通过 T-107 · 42 suites · 12.4s</span><span class="tag">测试</span></div><div class="arow"><span class="time">08:24</span><span class="who">host</span><span>合并队列将 T-108 落到 main</span><span class="tag">合并</span></div></div></div>
+</div>
+</template>
+
+<template id="tpl-workers">
+<div class="plugin"><div class="ptop"><div class="pmark">GB</div><div class="ptitle"><h1>任务中心</h1><div class="psub">~/projects/starfall <span class="badge ok">工作区干净</span><span class="badge">session</span></div></div><div class="pactions"><button class="btn">暂停</button><button class="btn primary">开始派发</button><button class="btn">＋ 新任务</button></div></div><div class="ptabs"><button class="ptab">看板</button><button class="ptab">队列</button><button class="ptab active">执行者</button><button class="ptab">状态</button><button class="ptab">角色</button></div><div class="tablewrap"><table class="wtable"><thead><tr><th>成员</th><th>角色</th><th>状态</th><th>当前任务</th><th>队列</th></tr></thead><tbody><tr><td class="mono">lead</td><td>lead</td><td><span class="pillstatus running">运行中</span></td><td>—</td><td>0</td></tr><tr><td class="mono">worker-1</td><td>worker</td><td><span class="pillstatus running">运行中</span></td><td>T-103 · 重构存档系统</td><td>0</td></tr><tr><td class="mono">worker-2</td><td>worker</td><td><span class="pillstatus">空闲</span></td><td>—</td><td>1</td></tr><tr><td class="mono">reviewer-1</td><td>reviewer</td><td><span class="pillstatus running">运行中</span></td><td>T-105 · 评审第 2 轮</td><td>0</td></tr><tr><td class="mono">tester-1</td><td>tester</td><td><span class="pillstatus">空闲</span></td><td>—</td><td>1</td></tr></tbody></table></div></div>
+</template>
+
+<template id="tpl-queue">
+<div class="plugin"><div class="ptop"><div class="pmark">GB</div><div class="ptitle"><h1>任务中心</h1><div class="psub">~/projects/starfall <span class="badge ok">工作区干净</span><span class="badge">session</span></div></div><div class="pactions"><button class="btn">暂停</button><button class="btn primary">开始派发</button><button class="btn">＋ 新任务</button></div></div><div class="ptabs"><button class="ptab">看板</button><button class="ptab active">队列</button><button class="ptab">执行者</button><button class="ptab">状态</button><button class="ptab">角色</button></div><div class="tablewrap"><div style="margin:0 0 8px;color:var(--tertiary);font-size:10px;letter-spacing:.08em;text-transform:uppercase">队列 · 4 个就绪 / 等待</div><div class="qlist"><div class="qrow"><span class="order">1</span><span class="qid">T-101</span><span class="qtitle">添加二段跳 / 蹬墙跳</span><span class="qmeta"><span class="chip green">就绪</span><span class="chip">2 个文件</span></span></div><div class="qrow"><span class="order">2</span><span class="qid">T-104</span><span class="qtitle">打磨受击闪白</span><span class="qmeta"><span class="chip green">就绪</span><span class="chip">3 个文件</span></span></div><div class="qrow"><span class="order">3</span><span class="qid">T-106</span><span class="qtitle">存档迁移</span><span class="qmeta"><span class="chip amber">等待 T-101</span><span class="chip">1 个文件</span></span></div><div class="qrow"><span class="order">4</span><span class="qid">T-110</span><span class="qtitle">网络大厅</span><span class="qmeta"><span class="chip red">需要 rebase</span><span class="chip">2 个文件</span></span></div></div></div></div>
+</template>
+
+<template id="tpl-done">
+<div class="plugin"><div class="ptop"><div class="pmark">GB</div><div class="ptitle"><h1>任务中心</h1><div class="psub">~/projects/starfall <span class="badge ok">工作区干净</span><span class="badge">session</span></div></div><div class="pactions"><button class="btn">暂停</button><button class="btn primary">开始派发</button><button class="btn">＋ 新任务</button></div></div><div class="ptabs"><button class="ptab active">看板</button><button class="ptab">队列</button><button class="ptab">执行者</button><button class="ptab">状态</button><button class="ptab">角色</button></div><div class="drawer"><div class="donebox"><div class="doneHead"><h2>已完成任务</h2><span class="badge">128 条</span><span style="margin-left:auto;color:var(--tertiary)">✕</span></div><div class="doneSearch"><input placeholder="搜索已完成任务…" value=""><button class="btn">搜索</button></div><div class="doneBody"><div class="day">今天</div><div class="drow"><span class="did">T-108</span><span class="dtitle">修复 UI 缩放</span><span class="chip green">已合并</span></div><div class="drow"><span class="did">T-102</span><span class="dtitle">Boss 二阶段崩溃</span><span class="chip purple">报告</span></div><div class="day">昨天</div><div class="drow"><span class="did">T-109</span><span class="dtitle">添加暂停菜单</span><span class="chip green">已合并</span></div><div class="drow"><span class="did">T-099</span><span class="dtitle">手柄图标</span><span class="chip green">已合并</span></div></div></div></div></div>
+</template>
+
+<template id="tpl-dsh">
+<div class="chat">
+  <header class="chatHead"><div class="chatTitleRow"><div class="chatTitle">GodotBridge 任务中心初始化重构</div><div class="chatBadges"><span class="badge">8 个智能体团队</span><span class="badge">PIC 模式</span><span class="badge">7 个子智能体</span><span class="badge">2 个后台任务运行中</span></div></div><div class="chatTabs"><button class="chatTab active">对话</button><button class="chatTab">轨迹</button><button class="chatTab">⋯</button></div></header>
+  <div class="chatBody"><div class="thread">
+    <div class="msg user"><div class="who"><span class="avatar">S</span>Spring of Spirit</div><div class="bubble"><p>把 GodotBridge 任务中心初始化重构一下，顺便看看二阶段崩溃。</p></div></div>
+    <div class="msg assistant"><div class="who"><span class="avatar">L</span>lead</div><div class="bubble"><p>已通过 <code>task_center onboard</code> 绑定 <code>~/projects/starfall</code>。两块工作可以并行：T-103 继续重构存档系统，T-102 作为调查卡查 Boss 二阶段崩溃。</p><div class="tool"><b>task_center</b> · onboard<br>{ "project": "~/projects/starfall", "team": "ready", "next": "start T-103" }</div><div class="tool"><b>godot_run_project</b> · ok<br>game_ready: true · port 9090 · Godot 4.7.1</div><p>现在看板上有 1 个执行中、1 个评审中、1 个测试中；我会先让 T-103 完成评审，再处理测试队列。</p></div></div>
+    <div class="msg user"><div class="who"><span class="avatar">S</span>Spring of Spirit</div><div class="bubble"><p>打开任务中心，我看下看板。</p></div></div>
+    <div class="msg assistant"><div class="who"><span class="avatar">L</span>lead</div><div class="bubble"><p>已打开 <code>GodotBridge任务中心</code>，项目 <code>starfall</code>，工作区干净。右侧面板会显示 7 列看板。</p></div></div>
+  </div></div>
+  <div class="composerWrap"><div class="composer"><div class="ph">发消息或创建任务, / 调用指令, @ 文件或对话</div><div class="row"><span>＋</span><span>@</span><span>工作区内修改</span><span class="grow"></span><span>DeepSeek V4.1 Flash Max</span><span class="send">↑</span></div></div></div>
+</div>
+</template>
+
+<script>
+const params = new URLSearchParams(location.search);
+const screen = params.get('screen') || 'board';
+if (params.get('chrome') === '0') document.body.classList.add('chrome0');
+const tpl = document.getElementById('tpl-' + screen) || document.getElementById('tpl-board');
+document.getElementById('main').appendChild(tpl.content.cloneNode(true));
+const taskMode = screen !== 'dsh';
+document.querySelectorAll('.panelRow').forEach(function (row) {
+  if (row.getAttribute('data-panel') === 'task-center') row.classList.toggle('active', taskMode);
+});
+const taskProject = document.querySelector('[data-project="godot-bridge"]');
+if (taskProject) taskProject.classList.toggle('active', taskMode);
+document.querySelectorAll('.sessionRow').forEach(function (row) {
+  if (taskMode) row.classList.remove('selected');
+});
+if (!taskMode) {
+  const first = document.querySelector('.sessionRow');
+  if (first) first.classList.add('selected');
+}
+</script>
+</body>
+</html>
