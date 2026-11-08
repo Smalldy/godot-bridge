@@ -165,6 +165,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectSourceRegistry: '注册表',
 				projectSourceHint: '这个项目路径是从哪里来的',
 				projectMismatch: '面板：{panel} · 当前会话：{session}',
+				projectNotReady: '当前会话项目无法作为任务中心打开：需要 Git 工作树 · {project}',
 			ownerMismatch: '卡片的所属会话 {owner} 与派发 Lead 的会话 {lead} 不一致',
 				projectSwitch: '切换到会话项目',
 				useCurrentProject: '使用当前项目',
@@ -782,6 +783,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectSourceRegistry: 'Registry',
 				projectSourceHint: 'Where this project path came from',
 				projectMismatch: 'Panel: {panel} · Session: {session}',
+				projectNotReady: 'The session project cannot be opened: a Git working tree is required · {project}',
 			ownerMismatch: 'The card\'s owner session {owner} differs from the dispatching Lead session {lead}',
 				projectSwitch: 'Switch to the session project',
 				useCurrentProject: 'Use current project',
@@ -7039,6 +7041,9 @@ function createTaskCenter(deps) {
 		// T-110: the project's Team (and the session's next step while it is
 		// missing) is read by the header line and the status card.
 		const projectTeam = snapshot.team === null || snapshot.team === undefined ? null : snapshot.team
+		// One project-context decision for the whole header: a panel/session split
+		// outranks a Team/project split, so the user is never offered two switches.
+		const mismatchProject = projectMismatchOf(snapshot)
 		// T-150: the Team is the request session's team, not automatically this
 		// project's. Use the explicit project/projectMatch fields so another
 		// project's Team is never presented as this one, and give each state an
@@ -7065,7 +7070,9 @@ function createTaskCenter(deps) {
 		onClick: bootstrapTeamFromHeader,
 			}, headerTeamBuilding ? h('span', null, h('span', { className: 'gbt-spinner' }), t('projectTeamBuilding')) : t('projectTeamBuild'))
 		}
-		const projectTeamNotice = headerTeamMismatch
+		const projectTeamNotice = headerTeamMismatch && mismatchProject !== null
+			? null
+			: headerTeamMismatch
 			? h('div', {
 			className: 'gbt-projectsync',
 			'data-project-mismatch': 'true',
@@ -7219,8 +7226,8 @@ function createTaskCenter(deps) {
 
 		// The actionable split: the panel is pinned to A while the session resolves
 		// B. One click pins B AND opens it on the Host, so the GUI and the
-		// scheduler agree again (T-90).
-		const mismatchProject = projectMismatchOf(snapshot)
+		// scheduler agree again (T-90). This is the only switch shown when the
+		// session itself is the mismatching project.
 		const projectMismatchBar =
 			mismatchProject === null
 		? null
@@ -7304,12 +7311,17 @@ function createTaskCenter(deps) {
 			h('div', { className: 'gbt-progressbar' }),
 		)
 
+		const bannerMessage = snapshot.message
+		const bannerProject = mismatchProject === null ? (typeof snapshot.sessionProject === 'string' ? snapshot.sessionProject : '') : mismatchProject
+		const bannerText = bannerMessage.indexOf('project is not ready:') === 0
+			? t('projectNotReady').replace('{project}', bannerProject)
+			: bannerMessage
 		const banner =
 			snapshot.source === 'error'
-		? h('div', { className: 'gbt-banner' }, h('span', null, snapshot.message === '' ? t('offline') : snapshot.message))
-		: snapshot.message === ''
+		? h('div', { className: 'gbt-banner', title: bannerMessage }, h('span', null, bannerMessage === '' ? t('offline') : bannerText))
+		: bannerMessage === ''
 			? null
-			: h('div', { className: 'gbt-banner', 'data-tone': 'info' }, snapshot.message)
+			: h('div', { className: 'gbt-banner', 'data-tone': 'info', title: bannerMessage }, bannerText)
 
 		const startRequest = dispatch.request === null || dispatch.request === undefined ? null : dispatch.request
 		const requestBanner =

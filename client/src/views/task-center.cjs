@@ -142,6 +142,9 @@ function createTaskCenter(deps) {
 		// T-110: the project's Team (and the session's next step while it is
 		// missing) is read by the header line and the status card.
 		const projectTeam = snapshot.team === null || snapshot.team === undefined ? null : snapshot.team
+		// One project-context decision for the whole header: a panel/session split
+		// outranks a Team/project split, so the user is never offered two switches.
+		const mismatchProject = projectMismatchOf(snapshot)
 		// T-150: the Team is the request session's team, not automatically this
 		// project's. Use the explicit project/projectMatch fields so another
 		// project's Team is never presented as this one, and give each state an
@@ -168,7 +171,9 @@ function createTaskCenter(deps) {
 		onClick: bootstrapTeamFromHeader,
 			}, headerTeamBuilding ? h('span', null, h('span', { className: 'gbt-spinner' }), t('projectTeamBuilding')) : t('projectTeamBuild'))
 		}
-		const projectTeamNotice = headerTeamMismatch
+		const projectTeamNotice = headerTeamMismatch && mismatchProject !== null
+			? null
+			: headerTeamMismatch
 			? h('div', {
 			className: 'gbt-projectsync',
 			'data-project-mismatch': 'true',
@@ -322,8 +327,8 @@ function createTaskCenter(deps) {
 
 		// The actionable split: the panel is pinned to A while the session resolves
 		// B. One click pins B AND opens it on the Host, so the GUI and the
-		// scheduler agree again (T-90).
-		const mismatchProject = projectMismatchOf(snapshot)
+		// scheduler agree again (T-90). This is the only switch shown when the
+		// session itself is the mismatching project.
 		const projectMismatchBar =
 			mismatchProject === null
 		? null
@@ -407,12 +412,17 @@ function createTaskCenter(deps) {
 			h('div', { className: 'gbt-progressbar' }),
 		)
 
+		const bannerMessage = snapshot.message
+		const bannerProject = mismatchProject === null ? (typeof snapshot.sessionProject === 'string' ? snapshot.sessionProject : '') : mismatchProject
+		const bannerText = bannerMessage.indexOf('project is not ready:') === 0
+			? t('projectNotReady').replace('{project}', bannerProject)
+			: bannerMessage
 		const banner =
 			snapshot.source === 'error'
-		? h('div', { className: 'gbt-banner' }, h('span', null, snapshot.message === '' ? t('offline') : snapshot.message))
-		: snapshot.message === ''
+		? h('div', { className: 'gbt-banner', title: bannerMessage }, h('span', null, bannerMessage === '' ? t('offline') : bannerText))
+		: bannerMessage === ''
 			? null
-			: h('div', { className: 'gbt-banner', 'data-tone': 'info' }, snapshot.message)
+			: h('div', { className: 'gbt-banner', 'data-tone': 'info', title: bannerMessage }, bannerText)
 
 		const startRequest = dispatch.request === null || dispatch.request === undefined ? null : dispatch.request
 		const requestBanner =
