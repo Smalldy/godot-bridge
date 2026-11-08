@@ -212,6 +212,19 @@ th{background:var(--sidebar);color:var(--tertiary);font-weight:500}td{color:var(
 .msg code{font-family:var(--mono);font-size:12px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:4px;padding:1px 4px;color:#9fe4e8}
 .tool{background:var(--sidebar);border:1px solid var(--border-soft);border-left:2px solid var(--blue);border-radius:8px;padding:8px 10px;margin:8px 0;font-family:var(--mono);font-size:10.5px;line-height:1.6;color:var(--tertiary)}
 .tool b{color:var(--secondary);font-weight:500}
+.align{margin:8px 0 0;padding:8px 10px;border:1px solid var(--border-soft);border-left:2px solid var(--blue);background:var(--sidebar);border-radius:8px}
+.align b{display:block;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tertiary);font-weight:500;margin-bottom:4px}
+.align ol{margin:0;padding-left:16px;color:var(--secondary);font-size:11.5px;line-height:1.65}
+.align li{margin:2px 0}
+.created{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:8px 0 7px}
+.created-card{display:flex;flex-direction:column;gap:3px;min-width:0;padding:8px 9px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:8px}
+.created-card .cid{font-family:var(--mono);font-size:9px;color:var(--tertiary)}
+.created-card .ckind{align-self:flex-start;font-size:8.5px;line-height:1.5;padding:0 5px;border-radius:4px;border:1px solid var(--border-soft);color:var(--tertiary)}
+.created-card .ckind.inv{color:#d0bdff;border-color:rgba(183,166,255,.25);background:rgba(183,166,255,.07)}
+.created-card .ckind.dev{color:#9fe4e8;border-color:rgba(57,197,207,.25);background:rgba(57,197,207,.07)}
+.created-card b{font-size:11px;font-weight:500;line-height:1.4;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.created-card .cmeta{font-size:9px;color:var(--tertiary)}
+
 .composerWrap{flex:none;padding:0 28px 10px;background:var(--bg)}
 .composer{max-width:860px;margin:0 auto;background:var(--layer1);border:0.5px solid var(--border);border-radius:var(--radius-panel);padding:12px 14px;min-height:100px;display:flex;flex-direction:column;box-shadow:0 6px 20px rgba(0,0,0,.2)}
 .composer .ph{color:var(--caption);font-size:14px;line-height:24px;flex:1}
@@ -447,12 +460,12 @@ Git
 
 <template id="tpl-dsh">
 <div class="chat">
-  <header class="chatHead"><div class="chatTitleRow"><div class="chatTitle">GodotBridge 任务中心初始化重构</div><div class="chatBadges"><span class="badge">8 个智能体团队</span><span class="badge">PIC 模式</span><span class="badge">7 个子智能体</span><span class="badge">2 个后台任务运行中</span></div></div><div class="chatTabs"><button class="chatTab active">对话</button><button class="chatTab">轨迹</button><button class="chatTab">⋯</button></div></header>
+  <header class="chatHead"><div class="chatTitleRow"><div class="chatTitle">Boss 二阶段崩溃 + 存档重构</div><div class="chatBadges"><span class="badge">需求对齐</span><span class="badge">2 张卡已建</span><span class="badge">5 人团队</span><span class="badge">PIC 模式</span></div></div><div class="chatTabs"><button class="chatTab active">对话</button><button class="chatTab">轨迹</button><button class="chatTab">⋯</button></div></header>
   <div class="chatBody"><div class="thread">
-    <div class="msg user"><div class="who"><span class="avatar">G</span>Godot 开发者</div><div class="bubble"><p>把 GodotBridge 任务中心初始化重构一下，顺便看看二阶段崩溃。</p></div></div>
-    <div class="msg assistant"><div class="who"><span class="avatar">L</span>lead</div><div class="bubble"><p>已通过 <code>task_center onboard</code> 绑定 <code>~/projects/starfall</code>。两块工作可以并行：T-103 继续重构存档系统，T-102 作为调查卡查 Boss 二阶段崩溃。</p><div class="tool"><b>task_center</b> · onboard<br>{ "project": "~/projects/starfall", "team": "ready", "next": "start T-103" }</div><div class="tool"><b>godot_run_project</b> · ok<br>game_ready: true · port 9090 · Godot 4.7.1</div><p>现在看板上有 1 个执行中、1 个评审中、1 个测试中；我会先让 T-103 完成评审，再处理测试队列。</p></div></div>
-    <div class="msg user"><div class="who"><span class="avatar">G</span>Godot 开发者</div><div class="bubble"><p>打开任务中心，我看下看板。</p></div></div>
-    <div class="msg assistant"><div class="who"><span class="avatar">L</span>lead</div><div class="bubble"><p>已打开 <code>GodotBridge任务中心</code>，项目 <code>starfall</code>，工作区干净。右侧面板会显示 7 列看板。</p></div></div>
+    <div class="msg user"><div class="who"><span class="avatar">G</span>Godot 开发者</div><div class="bubble"><p>Boss 二阶段切换会崩；存档系统也想重构，兼容 v1。先别改，先跟我对一下范围和验收。</p></div></div>
+    <div class="msg assistant"><div class="who"><span class="avatar">L</span>lead</div><div class="bubble"><p>好，先对齐 3 件事，确认后再建卡。</p><div class="align"><b>需要你确认</b><ol><li>崩溃只修二阶段 hitbox 的 use-after-free，还是重做阶段控制器？</li><li>存档：v1 兼容 + 中断写入不损坏旧档，这两条都算验收？</li><li>拆成 T-102 调查卡 + T-103 开发卡，还是先只建修复卡？</li></ol></div></div></div>
+    <div class="msg user"><div class="who"><span class="avatar">G</span>Godot 开发者</div><div class="bubble"><p>只修 hitbox，不动控制器；v1 兼容和中断写入都要过；拆两张卡，调查先跑。</p></div></div>
+    <div class="msg assistant"><div class="who"><span class="avatar">L</span>lead</div><div class="bubble"><p>范围锁定。建两张卡：</p><div class="tool"><b>task_center</b> · create<br>kind=investigate · T-102 · Boss 二阶段崩溃<br>kind=dev · T-103 · 存档系统 v2</div><div class="created"><div class="created-card"><span class="cid">T-102</span><span class="ckind inv">调查</span><b>Boss 二阶段崩溃</b><span class="cmeta">就绪 · 先跑根因</span></div><div class="created-card"><span class="cid">T-103</span><span class="ckind dev">开发</span><b>存档系统 v2</b><span class="cmeta">等待 · 依赖 T-101</span></div></div><p>已进看板。T-102 等你批准派发，T-103 等 T-101 合并后自动接上。</p></div></div>
   </div></div>
   <div class="composerWrap"><div class="composer"><div class="ph">发消息或创建任务, / 调用指令, @ 文件或对话</div><div class="row"><span>＋</span><span>@</span><span>工作区内修改</span><span class="grow"></span><span>DeepSeek V4.1 Flash Max</span><span class="send">↑</span></div></div></div>
 </div>
