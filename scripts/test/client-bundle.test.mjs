@@ -5161,7 +5161,8 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     JSON.stringify({ mismatch: mismatch && deepText(mismatch), switch: switchButton && switchButton.props, session: sessionButton && sessionButton.props }),
   )
 
-  // Same project, only the Lead: an actionable build button, plus the scope note.
+  // Same project, only the Lead: the Agent creates the rest on demand; the panel
+  // must not offer a user-facing build button.
   HOST.team = {
     ok: true,
     available: true,
@@ -5179,34 +5180,29 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   }
   tree = await headerTree()
   const buildBanner = findAll(tree, (node) => node.props && node.props['data-team-build'] === 'true')[0]
-  const buildButton = actionButton(tree, 'bootstrap-team')
+  const buildWait = findAll(tree, (node) => node.props && node.props['data-team-waiting'] === 'true')[0]
   check(
-    'T-150 a same-project team with only the Lead offers a working build action',
+    'T-150 a same-project team with only the Lead waits for the Agent, with no user build action',
     buildBanner !== undefined &&
-      buildButton !== undefined && buildButton.type === 'button' &&
-      deepText(buildBanner).indexOf('Worker') < 0 &&
+      actionButton(tree, 'bootstrap-team') === undefined &&
+      buildWait !== undefined &&
+      deepText(buildBanner).indexOf('Agent') >= 0 &&
       deepText(buildBanner).indexOf('Team 属于会话') >= 0 &&
       deepText(tree).indexOf('请在该会话中建队') < 0,
-    JSON.stringify({ banner: buildBanner && deepText(buildBanner), button: buildButton && textOf(buildButton) }),
-  )
-  const postsBefore = posts.length
-  const loadsBefore = loads
-  buildButton.props.onClick()
-  await flush()
-  await flush()
-  check(
-    'T-150 the build button calls bootstrapTeam and refreshes the board',
-    posts.slice(postsBefore).some((body) => body.action === 'bootstrapTeam') && loads > loadsBefore,
-    JSON.stringify({ posts: posts.slice(postsBefore), loadsBefore: loadsBefore, loads: loads }),
+    JSON.stringify({ banner: buildBanner && deepText(buildBanner), wait: buildWait && deepText(buildWait) }),
   )
 
-  // No team data at all: still actionable.
+  // No team data at all: still a wait state, not a manual build action.
   HOST.team = null
   tree = await headerTree()
   const missingBanner = findAll(tree, (node) => node.props && node.props['data-team-missing'] === 'true')[0]
+  const missingWait = findAll(tree, (node) => node.props && node.props['data-team-waiting'] === 'true')[0]
   check(
-    'T-150 a missing Team also offers the build action',
-    missingBanner !== undefined && actionButton(tree, 'bootstrap-team') !== undefined && deepText(missingBanner).indexOf('本会话还没有团队') >= 0,
+    'T-150 a missing Team shows the Agent wait copy and no user build action',
+    missingBanner !== undefined &&
+      actionButton(tree, 'bootstrap-team') === undefined &&
+      missingWait !== undefined &&
+      deepText(missingBanner).indexOf('等待 Agent 建立团队') >= 0,
     missingBanner && deepText(missingBanner),
   )
 
