@@ -98,6 +98,12 @@ export function createTaskAdminActions(deps) {
   }
 
   async function start(source, context, projectPath) {
+    const requestedTaskId = source === undefined || source === null || source.taskId === undefined || source.taskId === null
+      ? ''
+      : String(source.taskId).trim()
+    if (requestedTaskId !== '') {
+      return failure('start-is-dispatch-only', 'start toggles the dispatch scheduler; it does not start a single card. Remove taskId and let the scheduler pick ready cards.')
+    }
     {
       const gate = await preflightRefusal(projectPath, { sessionId: callerSessionId(source, context) })
       if (gate !== null) return gate
