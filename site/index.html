@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>godot-bridge · 让 Agent 直接进入 Godot</title>
-<meta name="description" content="DeepSeek Harness 原生 Godot 4.x 插件：17 个 godot_* 工具、100+ 游戏命令，以及带依赖派发、独立 worktree、评审/测试/合并流水线的项目任务中心。">
+<title>godot-bridge · 从操作游戏到交付任务</title>
+<meta name="description" content="DeepSeek Harness 原生 Godot 4.x 插件：Bridge 直接驱动运行中的游戏；Task Center 把实现、评审、测试、合并跑成可审计流水线。">
 <meta name="theme-color" content="#151517">
-<meta property="og:title" content="godot-bridge · 让 Agent 直接进入 Godot">
-<meta property="og:description" content="DSH 原生 Godot 插件 + 项目任务中心。无 MCP、无 Python 服务、无编辑器插件。">
+<meta property="og:title" content="godot-bridge · 从操作游戏到交付任务">
+<meta property="og:description" content="一个 DSH 插件，接进 Godot 的整条工作流：直接操作游戏，也交付任务。">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="godot-bridge">
 <meta name="twitter:card" content="summary_large_image">
@@ -43,17 +43,18 @@
   <div class="wrap hero-grid">
     <div class="hero-copy">
       <div class="eyebrow"><span class="pulse"></span> DeepSeek Harness Plugin · Godot 4.x</div>
-      <h1>让 Agent 直接<br><span class="grad">进入 Godot 游戏</span></h1>
-      <p class="lede">17 个原生 <code>godot_*</code> 工具 + 项目任务中心。复用游戏里已经在跑的 <code>McpInteractionServer</code>，不引入 MCP、Python 服务或编辑器插件。</p>
+      <h1>从操作游戏，<br><span class="grad">到交付任务</span></h1>
+      <p class="lede">Bridge 直接驱动运行中的 Godot 游戏；Task Center 把实现、评审、测试、合并跑成可审计的流水线。17 个原生 <code>godot_*</code> 工具 + 项目任务中心，一个 DSH 插件，两边都原生。</p>
       <div class="hero-actions">
         <a class="btn primary" href="#install">开始安装 <span class="arrow">→</span></a>
-        <a class="btn" href="#task-center">看看任务中心</a>
+        <a class="btn" href="#workflow">看看怎么工作</a>
       </div>
       <div class="hero-meta">
         <span>MIT</span><span>DSH 0.2+</span><span>Godot 4.x</span><span>Windows / macOS / Linux</span>
       </div>
     </div>
     <div class="hero-visual">
+      <div class="visual-label"><b>TASK CENTER</b><span>交付流水线 · 演示数据</span></div>
       <div class="window">
         <div class="window-bar">
           <span class="lights"><i></i><i></i><i></i></span>
@@ -63,13 +64,18 @@
         <img src="assets/task-center.png" alt="DSH 侧栏与 GodotBridge 任务中心看板" width="1600" height="1000">
         <a class="zoom" href="assets/task-center.png" target="_blank" rel="noreferrer">查看原图 ↗</a>
       </div>
-      <div class="float-card">
-        <span class="float-icon">▦</span>
-        <div><b>7 列看板</b><span>独立 worktree · 评审 / 测试 / 合并</span></div>
-      </div>
-      <div class="float-card second">
-        <span class="float-icon blue">⌁</span>
-        <div><b>100+ 游戏命令</b><span>场景树、UI、输入、截图、eval</span></div>
+      <div class="bridge-console">
+        <div class="bc-head"><span class="bc-tag">BRIDGE</span><span class="bc-live"><i></i>connected · 127.0.0.1:9090</span></div>
+        <div class="bc-body">
+          <div class="bc-lines">
+            <div class="bc-line"><code>godot_run_project</code><span>game_ready: true</span></div>
+            <div class="bc-line"><code>godot_command</code><span>get_scene_tree</span></div>
+            <div class="bc-line"><code>godot_command</code><span>eval · paused</span></div>
+            <div class="bc-line"><code>godot_screenshot</code><span>1600 × 900</span></div>
+          </div>
+          <div class="bc-tree"><b>Main</b><br>├─ Player<br>├─ Camera2D<br>└─ HUD</div>
+        </div>
+        <div class="bc-foot"><span>直接操作运行中的游戏</span><span>eval ✓</span></div>
       </div>
     </div>
   </div>
