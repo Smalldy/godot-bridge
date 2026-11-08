@@ -1,0 +1,4 @@
+# Keep generated and client source files LF so build:client --check is exact on Windows.
+client/client.js text eol=lf
+client/src/**/*.part text eol=lf
+client/src/**/*.cjs text eol=lf
