@@ -64,6 +64,8 @@ assert.equal(out.type, 'div')
 assert.equal(out.props.className, 'gbt-root')
 assert.equal(out.props['data-panel'], 'task-center')
 assert.ok(JSON.stringify(out).includes('gbt-tabs'))
+assert.ok(JSON.stringify(out).includes('data-team-waiting'))
+assert.ok(!JSON.stringify(out).includes('bootstrap-team'))
 console.log('PASS  TaskCenter is an independently testable view module')
 
 // A panel/session split outranks a Team/project split: the header must offer

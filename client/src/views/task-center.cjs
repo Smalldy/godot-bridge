@@ -78,12 +78,6 @@ function createTaskCenter(deps) {
 			projectFormState.value = path
 			setProjectOpen(true)
 		}
-		/** T-150: create the minimum roster for THIS session, then refresh. */
-		function bootstrapTeamFromHeader() {
-			void store.send('bootstrapTeam').then(function (result) {
-		if (result !== null && result !== undefined && result.ok === true) void store.load()
-			})
-		}
 		function copyTeamSession(value) {
 			if (typeof value !== 'string' || value === '') return
 			void copyToClipboard(value).then(function (ok) {
@@ -159,18 +153,9 @@ function createTaskCenter(deps) {
 			projectTeam === null
 		? headerPanelProject !== null
 		: projectTeam.available !== false && projectTeam.projectMatch === true && (projectTeam.error === 'no-members' || headerTeamMissingRoles.length > 0)
-		const headerTeamBuilding = isBusy('bootstrapTeam')
-		const headerTeamBuildButton = function () {
-			return h('button', {
-		type: 'button',
-		className: 'gbt-btn',
-		'data-variant': 'primary',
-		'data-action': 'bootstrap-team',
-		'data-busy': headerTeamBuilding ? 'true' : 'false',
-		disabled: headerTeamBuilding || busy !== null || snapshot.project === null || snapshot.source === 'error',
-		onClick: bootstrapTeamFromHeader,
-			}, headerTeamBuilding ? h('span', null, h('span', { className: 'gbt-spinner' }), t('projectTeamBuilding')) : t('projectTeamBuild'))
-		}
+		// Team creation is an Agent action (bootstrapTeam is agent-scoped). The panel
+		// shows a quiet wait state instead of offering the user a manual button.
+		const teamWaitChip = h('span', { className: 'gbt-teamwait', 'data-team-waiting': 'true' }, t('projectTeamWaiting'))
 		const projectTeamNotice = headerTeamMismatch && mismatchProject !== null
 			? null
 			: headerTeamMismatch
@@ -207,11 +192,11 @@ function createTaskCenter(deps) {
 		: projectTeam === null
 			? h('div', { className: 'gbt-projectsync', 'data-team-missing': 'true', 'data-tone': 'warn' },
 			h('span', { className: 'gbt-projectsynccopy' }, t('projectTeamMissingTeam')),
-			h('div', { className: 'gbt-actions' }, headerTeamBuildButton()))
+			h('div', { className: 'gbt-actions' }, teamWaitChip))
 			: headerTeamBuildable
 				? h('div', { className: 'gbt-projectsync', 'data-team-build': 'true', 'data-tone': 'warn' },
 				h('span', { className: 'gbt-projectsynccopy', 'data-team-scope-hint': 'true' }, t('projectTeamScopeHint')),
-				h('div', { className: 'gbt-actions' }, headerTeamBuildButton()))
+				h('div', { className: 'gbt-actions' }, teamWaitChip))
 				: null
 
 		const tabs = [

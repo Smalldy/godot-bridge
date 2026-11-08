@@ -388,9 +388,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeam: '该项目团队',
 				projectTeamOk: '{lead} · {n} 名成员',
 				projectTeamMissing: '无 → 请在该会话中初始化',
-			projectTeamNoMembers: '只有 Lead，缺 {roles}',
+			projectTeamNoMembers: '只有 Lead，缺 {roles} · Agent 会在需要时自动创建',
 			projectTeamStale: '团队会话已过期（最后活动 {at}）→ 请在该项目的当前会话里打开任务中心',
-			projectTeamMissingRoles: '缺 {roles}（角色管理器会在需要时自动创建）',
+			projectTeamMissingRoles: '缺 {roles} · 不是故障，Agent 会在需要时自动创建',
 				projectTeamUnavailable: '本 profile 没有团队服务（看板仍可用）',
 				projectTeamCurrent: '当前会话 Team',
 				projectTeamMismatch: '当前会话 Team 属于项目 {team}，不是面板项目 {panel}',
@@ -398,10 +398,11 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeamOpenSession: '打开所属会话',
 				projectTeamBuild: '建队',
 				projectTeamBuilding: '建队中…',
-				projectTeamScopeHint: 'Team 属于会话，不跨会话；如果团队在别的会话，请切换项目/会话。',
+				projectTeamScopeHint: 'Team 属于会话，不跨会话；Agent 会在需要时自动建队，无需手动操作。',
 				projectTeamSessionCopied: '已复制会话 id',
 				projectTeamCopyFailed: '复制失败',
-				projectTeamMissingTeam: '本会话还没有团队',
+				projectTeamMissingTeam: '等待 Agent 建立团队（不是故障）',
+				projectTeamWaiting: '等待 Agent 建队',
 				projectTeamNext: '下一步（先建团队再建卡）：',
 				waitConcurrency: '并发已满',
 				waitCandidateStale: '候选过期，自动重建中',
@@ -1006,9 +1007,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeam: 'Project team',
 				projectTeamOk: '{lead} · {n} members',
 				projectTeamMissing: 'none → initialize it in this session',
-			projectTeamNoMembers: 'Lead only, missing {roles}',
+			projectTeamNoMembers: 'Lead only, missing {roles} · the Agent creates them when needed',
 			projectTeamStale: 'The team session is stale (last active {at}) → open the task center from the project\'s current session',
-			projectTeamMissingRoles: 'missing {roles} (the role manager creates them on demand)',
+			projectTeamMissingRoles: 'missing {roles} · not a failure; the Agent creates them when needed',
 				projectTeamUnavailable: 'no team services in this profile (the board still works)',
 				projectTeamCurrent: 'This session\'s team',
 				projectTeamMismatch: 'This session\'s team belongs to project {team}, not the panel project {panel}',
@@ -1016,10 +1017,11 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeamOpenSession: 'Open owning session',
 				projectTeamBuild: 'Create team',
 				projectTeamBuilding: 'Creating team…',
-				projectTeamScopeHint: 'A team belongs to a session and does not span sessions; if the team lives in another session, switch project or session.',
+				projectTeamScopeHint: 'A team belongs to a session; the Agent creates it when needed — no manual action required.',
 				projectTeamSessionCopied: 'Session id copied',
 				projectTeamCopyFailed: 'Copy failed',
-				projectTeamMissingTeam: 'This session has no team yet',
+				projectTeamMissingTeam: 'Waiting for the Agent to create the team (this is not a failure)',
+				projectTeamWaiting: 'Waiting for the Agent to create the team',
 				projectTeamNext: 'Next step (create the team before cards):',
 				waitConcurrency: 'concurrency full',
 				waitCandidateStale: 'candidate stale, rebuilding',
@@ -1410,6 +1412,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-projectsync[data-tone="warn"] .gbt-projectsynccopy{color:var(--dsw-alias-state-warn-label)}',
 			'.gbt-projectsync .gbt-actions{gap:6px;flex-wrap:wrap}',
 			'.gbt-projectsync .gbt-btn{padding:1px 8px;font-size:10.5px;line-height:1.5}',
+			'.gbt-teamwait{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;line-height:1.5;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+			'.gbt-teamwait:before{content:"";width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-state-business-primary);opacity:.65}',
 			'.gbt-counts{display:flex;gap:6px;flex-wrap:wrap}',
 			'.gbt-count{display:flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-count b{font-weight:600;color:var(--dsw-alias-label-primary)}',
@@ -6977,12 +6981,6 @@ function createTaskCenter(deps) {
 			projectFormState.value = path
 			setProjectOpen(true)
 		}
-		/** T-150: create the minimum roster for THIS session, then refresh. */
-		function bootstrapTeamFromHeader() {
-			void store.send('bootstrapTeam').then(function (result) {
-		if (result !== null && result !== undefined && result.ok === true) void store.load()
-			})
-		}
 		function copyTeamSession(value) {
 			if (typeof value !== 'string' || value === '') return
 			void copyToClipboard(value).then(function (ok) {
@@ -7058,18 +7056,9 @@ function createTaskCenter(deps) {
 			projectTeam === null
 		? headerPanelProject !== null
 		: projectTeam.available !== false && projectTeam.projectMatch === true && (projectTeam.error === 'no-members' || headerTeamMissingRoles.length > 0)
-		const headerTeamBuilding = isBusy('bootstrapTeam')
-		const headerTeamBuildButton = function () {
-			return h('button', {
-		type: 'button',
-		className: 'gbt-btn',
-		'data-variant': 'primary',
-		'data-action': 'bootstrap-team',
-		'data-busy': headerTeamBuilding ? 'true' : 'false',
-		disabled: headerTeamBuilding || busy !== null || snapshot.project === null || snapshot.source === 'error',
-		onClick: bootstrapTeamFromHeader,
-			}, headerTeamBuilding ? h('span', null, h('span', { className: 'gbt-spinner' }), t('projectTeamBuilding')) : t('projectTeamBuild'))
-		}
+		// Team creation is an Agent action (bootstrapTeam is agent-scoped). The panel
+		// shows a quiet wait state instead of offering the user a manual button.
+		const teamWaitChip = h('span', { className: 'gbt-teamwait', 'data-team-waiting': 'true' }, t('projectTeamWaiting'))
 		const projectTeamNotice = headerTeamMismatch && mismatchProject !== null
 			? null
 			: headerTeamMismatch
@@ -7106,11 +7095,11 @@ function createTaskCenter(deps) {
 		: projectTeam === null
 			? h('div', { className: 'gbt-projectsync', 'data-team-missing': 'true', 'data-tone': 'warn' },
 			h('span', { className: 'gbt-projectsynccopy' }, t('projectTeamMissingTeam')),
-			h('div', { className: 'gbt-actions' }, headerTeamBuildButton()))
+			h('div', { className: 'gbt-actions' }, teamWaitChip))
 			: headerTeamBuildable
 				? h('div', { className: 'gbt-projectsync', 'data-team-build': 'true', 'data-tone': 'warn' },
 				h('span', { className: 'gbt-projectsynccopy', 'data-team-scope-hint': 'true' }, t('projectTeamScopeHint')),
-				h('div', { className: 'gbt-actions' }, headerTeamBuildButton()))
+				h('div', { className: 'gbt-actions' }, teamWaitChip))
 				: null
 
 		const tabs = [
