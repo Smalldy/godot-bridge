@@ -1917,7 +1917,7 @@ function roleTask(overrides) {
     'the brief keeps header → prompt → task data → fixed → rules order',
     order.every((index, position) => index >= 0 && (position === 0 || index > order[position - 1])) &&
       bare.indexOf('Skills:') < 0 &&
-      bare.indexOf('godot-bridge-task-center') < 0 &&
+      bare.indexOf('godot-bridge-task-center-init') < 0 &&
       bare.indexOf('Use the skill tool to load the skills listed below') < 0,
     JSON.stringify(order),
   )
@@ -1971,7 +1971,7 @@ function roleTask(overrides) {
       skilled.indexOf('- task_center is your only interface to the board.') > skilled.indexOf('Rules:') &&
       skilled.indexOf('Skills:\n- skill-a') >= 0 &&
       skilled.split('- skill-a').length === 2 &&
-      skilled.indexOf('godot-bridge-task-center') < 0 &&
+      skilled.indexOf('godot-bridge-task-center-init') < 0 &&
       skilled.indexOf('Use the skill tool to load the skills listed below') >= 0,
     skilled.slice(-260),
   )
@@ -1979,14 +1979,14 @@ function roleTask(overrides) {
   check(
     'T-149 without profile skills there is no Skills block, no host skill and no load-instruction bullet',
     unskilled.indexOf('Skills:') < 0 &&
-      unskilled.indexOf('godot-bridge-task-center') < 0 &&
+      unskilled.indexOf('godot-bridge-task-center-init') < 0 &&
       unskilled.indexOf('Use the skill tool to load the skills listed below') < 0,
     unskilled.slice(-200),
   )
   const lead = roleBriefFor('lead', task, { profiles: { lead: { skills: ['lead-skill', 'lead-skill'] } } }, {})
   check(
     'T-149 the Lead Skills lists the host runtime skill plus the Lead project skills, de-duplicated',
-    lead.indexOf('Skills:\n- godot-bridge-task-center\n- lead-skill') >= 0 &&
+    lead.indexOf('Skills:\n- godot-bridge-task-center-init\n- lead-skill') >= 0 &&
       lead.split('- lead-skill').length === 2 &&
       lead.indexOf('Use the skill tool to load the skills listed below') >= 0,
     lead.slice(-200),
@@ -1994,7 +1994,7 @@ function roleTask(overrides) {
   const bareLead = roleBriefFor('lead', task, null, {})
   check(
     'T-149 a Lead without project skills still lists the host runtime skill',
-    bareLead.indexOf('Skills:\n- godot-bridge-task-center') >= 0,
+    bareLead.indexOf('Skills:\n- godot-bridge-task-center-init') >= 0,
     bareLead.slice(-160),
   )
 }
@@ -2016,7 +2016,7 @@ function roleTask(overrides) {
     brief.indexOf('Rules:') >= 0 &&
       brief.indexOf('- task_center is your only interface to the board.') > brief.indexOf('Rules:') &&
       brief.indexOf('Skills:\n- dsh-plugin-workflow') >= 0 &&
-      brief.indexOf('godot-bridge-task-center') < 0 &&
+      brief.indexOf('godot-bridge-task-center-init') < 0 &&
       brief.indexOf('Load these project skills') < 0,
     brief.slice(-400),
   )
@@ -2123,7 +2123,7 @@ function roleTask(overrides) {
     spawnCall !== undefined &&
       spawnCall.text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0 &&
       spawnCall.text.indexOf('Rules:') >= 0 &&
-      spawnCall.text.indexOf('godot-bridge-task-center') < 0,
+      spawnCall.text.indexOf('godot-bridge-task-center-init') < 0,
     spawnCall === undefined ? 'no spawn call: ' + JSON.stringify(spawnRig.team.calls) : spawnCall.text.slice(0, 300),
   )
   spawnRig.scheduler.dispose()
@@ -2139,7 +2139,7 @@ function roleTask(overrides) {
     sendCall !== undefined &&
       sendCall.text.indexOf(DEFAULT_ROLE_PROMPTS.worker) >= 0 &&
       sendCall.text.indexOf('Rules:') >= 0 &&
-      sendCall.text.indexOf('godot-bridge-task-center') < 0,
+      sendCall.text.indexOf('godot-bridge-task-center-init') < 0,
     sendCall === undefined ? 'no send call: ' + JSON.stringify(reuseRig.team.calls) : sendCall.text.slice(0, 300),
   )
   reuseRig.scheduler.dispose()

@@ -9,7 +9,7 @@ const { apply, recordActivationError, reportLoadFailure } = await import('../../
 const { readFileSync, rmSync } = await import('node:fs')
 const { join } = await import('node:path')
 const { createFakeFs, createStrictCtx, PROJECT } = await import('./support/fixtures.mjs')
-const { SKILL_NAME, buildSkillContent, renderStatusBrief } = await import('../../plugin/task-center/skill.mjs')
+const { SKILL_NAME, SKILL_RESOURCE_DIR, buildInitContent, buildSkillContent, renderStatusBrief } = await import('../../plugin/task-center/skill.mjs')
 const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
 const { ONBOARD_NEXT_CODES } = await import('../../plugin/task-center/onboard.mjs')
 
@@ -19,9 +19,6 @@ const { ONBOARD_NEXT_CODES } = await import('../../plugin/task-center/onboard.mj
  * body is injected into the model context on every use) without turning a
  * useful sentence into a failure, and the lower bound rejects an empty shell.
  */
-const SKILL_BODY_MIN_BYTES = 6000
-const SKILL_BODY_MAX_BYTES = 10000
-
 let failures = 0
 function check(label, condition, detail) {
   if (!condition) failures++
@@ -155,6 +152,12 @@ check(
 
 // ── the runtime skill: registered from the live action registry ─────────────
 {
+  const initGenerated = buildInitContent({
+    actions: ACTIONS,
+    agentActions: AGENT_ACTIONS,
+    readActions: READ_ACTIONS,
+    userOnlyActions: USER_ONLY_ACTIONS,
+  })
   const generated = buildSkillContent({
     actions: ACTIONS,
     agentActions: AGENT_ACTIONS,
@@ -163,10 +166,10 @@ check(
   })
   const registered = skillRegistrations[0] === undefined ? {} : skillRegistrations[0]
   check('the row registers exactly one runtime skill', skillRegistrations.length === 1, String(skillRegistrations.length))
-  check('the skill is named ' + SKILL_NAME, registered.name === SKILL_NAME && SKILL_NAME === 'godot-bridge-task-center', String(registered.name))
+  check('the skill is named ' + SKILL_NAME, registered.name === SKILL_NAME && SKILL_NAME === 'godot-bridge-task-center-init', String(registered.name))
   check('the skill carries a routing description', typeof registered.description === 'string' && registered.description.length > 10, String(registered.description))
   check('the skill carries a whenToUse hint', typeof registered.whenToUse === 'string' && registered.whenToUse.length > 10, String(registered.whenToUse))
-  check('the skill body is not empty', typeof registered.content === 'string' && registered.content.length > 2000, String(registered.content === undefined ? 'undefined' : registered.content.length))
+  check('the skill body is not empty', typeof registered.content === 'string' && registered.content.length > 1000, String(registered.content === undefined ? 'undefined' : registered.content.length))
   check(
     'the skill is invocable by the model and by the user',
     registered.invocation !== undefined && registered.invocation !== null && registered.invocation.modelInvocable === true && registered.invocation.userInvocable === true,
@@ -196,10 +199,11 @@ check(
       registered.invocation.userInvocable === true,
     JSON.stringify({ name: registered.name, source: registered.source, contentLength: registered.content === undefined ? 0 : registered.content.length }),
   )
-  check('the registered body is the generated body, not a hand-written copy', registered.content === generated)
+  check('the registered body is the generated init body, not the full manual', registered.content === initGenerated)
+  check('the init skill exposes its resources as a directory', registered.resourceBase !== undefined && registered.resourceBase !== null && registered.resourceBase.kind === 'directory' && registered.resourceBase.path === SKILL_RESOURCE_DIR, JSON.stringify(registered.resourceBase))
   {
-    const bytes = Buffer.byteLength(generated, 'utf8')
-    check('the body stays inside its scannable size budget', bytes >= SKILL_BODY_MIN_BYTES && bytes <= SKILL_BODY_MAX_BYTES, String(bytes) + ' bytes')
+    const bytes = Buffer.byteLength(initGenerated, 'utf8')
+    check('the init body stays inside its scannable size budget', bytes >= 1000 && bytes <= 5000, String(bytes) + ' bytes')
   }
   {
     // T-125: exactly two lines - project and tasks; the blocker rides the task

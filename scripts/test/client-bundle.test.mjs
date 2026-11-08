@@ -2592,12 +2592,12 @@ await flush()
       sectionLabelOf(rulesSection) === '规则' && sectionSourceOf(rulesSection) === '宿主固定' &&
       sectionLabelOf(skillsSection) === '技能' && sectionSourceOf(skillsSection) === '宿主注入' &&
       textOf(rulesSection).indexOf('Rules:') >= 0 && textOf(rulesSection).indexOf('task_center is your only interface to the board.') >= 0 &&
-      textOf(skillsSection).indexOf('dsh-plugin-workflow') >= 0 && textOf(skillsSection).indexOf('godot-bridge-task-center') < 0 && textOf(skillsSection).indexOf('task_center is your only interface to the board.') < 0,
+      textOf(skillsSection).indexOf('dsh-plugin-workflow') >= 0 && textOf(skillsSection).indexOf('godot-bridge-task-center-init') < 0 && textOf(skillsSection).indexOf('task_center is your only interface to the board.') < 0,
     JSON.stringify({ rules: rulesSection && textOf(rulesSection), skills: skillsSection && textOf(skillsSection), labels: [sectionLabelOf(rulesSection), sectionLabelOf(skillsSection)], sources: [sectionSourceOf(rulesSection), sectionSourceOf(skillsSection)] }),
   )
   check(
     'T-149 the worker preview lists project skills only, never the Lead guide',
-    textOf(injectedCol).indexOf('dsh-plugin-workflow') >= 0 && textOf(injectedCol).indexOf('godot-bridge-task-center') < 0,
+    textOf(injectedCol).indexOf('dsh-plugin-workflow') >= 0 && textOf(injectedCol).indexOf('godot-bridge-task-center-init') < 0,
     textOf(injectedCol).slice(0, 300),
   )
   check('the sample label is not shown for a real task', textOf(injectedCol).indexOf('示例任务（非真实') < 0)

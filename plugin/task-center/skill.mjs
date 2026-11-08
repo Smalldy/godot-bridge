@@ -1,27 +1,35 @@
 /**
- * The task center's runtime skill — the model-facing "what this board is, when
- * to use it, how to use it" guide. The plugin registers it with the host skill
- * catalog, so a session loads it on demand instead of every task_center tool
- * call carrying kilobytes of narrative prose.
+ * The task center's runtime skill — the model-facing entry point.
  *
- * The body is generated from the action registry (api.mjs) it is handed: no
- * action list is copied by hand here. A new action lands in the writable list
- * automatically, a removed one disappears. That is the point of this module —
- * the guide and the API cannot drift apart.
+ * Only this entry is registered in the host skill catalog. The detailed
+ * chapters live next to it as resource files under ./skills/ and are read on
+ * demand; they are not skills, so they never pollute an unrelated session's
+ * catalog. The action matrix in reference.md is generated from the live action
+ * registry, so the guide cannot drift from the API.
  */
 
-/** The skill's identity in the host catalog (and the name the tool points at). */
-export const SKILL_NAME = 'godot-bridge-task-center'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
+
+/** The single skill the host catalog advertises. */
+export const SKILL_NAME = 'godot-bridge-task-center-init'
 
 /** One sentence, for routing: the catalog shows this before the body is read. */
 export const SKILL_DESCRIPTION =
-  '任务中心使用指南：项目任务板、依赖派发、文件锁与评审/测试/合并流水线的工作流、动作矩阵、写卡规范与拒绝码。'
+  '任务中心入口：项目任务板、依赖派发、文件锁与评审/测试/合并流水线；先读本技能，再按需读取细节资源。'
 
 /** When a session should load this skill. */
 export const SKILL_WHEN_TO_USE =
   '要给工作排期或并行、需要独立评审与测试门禁、或多个工作者同时改同一仓库时；第一次调用 task_center 之前读它。'
 
-/** The always-on hard rules: four of them, and nothing else. */
+/** The directory exposed as resourceBase; the detailed chapters are plain Markdown. */
+export const SKILL_RESOURCE_DIR = fileURLToPath(new URL('./skills/', import.meta.url))
+
+/** The resources a model may read after loading the init skill. */
+export const SKILL_RESOURCE_FILES = ['cards.md', 'run.md', 'gates.md', 'reference.md']
+
+/** The always-on hard rules: five of them, and nothing else. */
 export const SYSTEM_RULES_NAME = 'godot-bridge:task-center-rules'
 
 export const SYSTEM_RULES_TEXT = [
@@ -35,7 +43,7 @@ export const SYSTEM_RULES_TEXT = [
 ].join(' ')
 
 // Role gates, not an action list: every name is filtered against the registry
-// passed to buildSkillContent, so an action removed from api.mjs cannot linger.
+// passed to buildReferenceContent, so an action removed from api.mjs cannot linger.
 const REVIEW_ACTIONS = ['approveReview', 'requestChanges']
 const TEST_ACTIONS = ['passTest', 'failTest']
 const HARNESS_ACTIONS = ['harnessStart', 'harnessStop', 'harnessRestart', 'harnessStatus', 'harnessSmoke']
@@ -48,18 +56,9 @@ function listOf(value) {
 
 /** Action names as inline code, so a test can find them without guessing. */
 function names(list) {
-  return list.map((name) => '\`' + name + '\`').join('、')
+  return list.map((name) => '`' + name + '`').join('、')
 }
 
-/**
- * Build the skill body from the live action registry.
- *
- * @param options.actions - every action the API exposes (api.mjs ACTIONS).
- * @param options.agentActions - what the tool exposes (ACTIONS minus USER_ONLY).
- * @param options.readActions - the concurrency-safe reads.
- * @param options.userOnlyActions - the actions only the person at the GUI owns.
- * @returns the markdown body the skill tool hands to the model.
- */
 /** T-125: the task line of the brief. ONE counting text, reused by the status
  * brief and by the onboarding brief (T-129) so the two can never disagree. */
 export function renderTaskLine(input) {
@@ -90,24 +89,22 @@ export function renderStatusBrief(input) {
   return '项目  ' + path + ' · ' + branch + ' @ ' + head + '\n' + renderTaskLine(f)
 }
 
-export function buildSkillContent(options) {
+/**
+ * The small, always-loaded entry point. It explains who the Lead is, the first
+ * move (onboard), the next-code table, the minimal workflow, and where the
+ * detailed chapters live. Everything else is deliberately out of this body.
+ */
+export function buildInitContent(options) {
   const opts = options === undefined || options === null ? {} : options
   const actions = listOf(opts.actions)
-  const agentActions = listOf(opts.agentActions)
   const readActions = listOf(opts.readActions)
   const userOnlyActions = listOf(opts.userOnlyActions)
-  const known = (wanted) => actions.filter((action) => wanted.indexOf(action) >= 0)
-
-  const userOnly = known(userOnlyActions)
+  const agentActions = listOf(opts.agentActions)
   const readOnly = readActions.filter((action) => userOnlyActions.indexOf(action) < 0)
   const writable = agentActions.filter((action) => readActions.indexOf(action) < 0)
-  const review = known(REVIEW_ACTIONS)
-  const tester = known(TEST_ACTIONS).concat(known(HARNESS_ACTIONS))
-  const merger = known(MERGE_ACTIONS)
-  const owner = known(OWNER_ACTIONS)
 
-  const lines = [
-    '# 任务中心（godot-bridge）',
+  return [
+    '# 任务中心入口（godot-bridge）',
     '',
     '动作只通过 `task_center` 工具发起（面板同一套 API）。',
     '',
@@ -156,31 +153,52 @@ export function buildSkillContent(options) {
     '任务  3 待办 · 2 待评审 · 1 完成[ · 卡住：<原因>]（只列非零，全 0 写“无卡”）',
     '```',
     '',
-    '## 何时用 / 不用',
-    '',
-    '- 用：并行/排期、独立评审 + 测试门禁、多会话锁、留痕；只看现状用 `board`/`get`/`locks`。短活也走卡，hotfix 在 `scripts/check-target-history.mjs` 登记例外。',
-    '',
-    '## 非 Godot / 无 `.agents`',
-    '',
-    '- 项目根 = git 根 + 标记（`.agents/` 看板 **或** `project.godot` Godot）；**空 `.agents/` 就够，不要求 Godot**。`.agents/`、`.worktrees/` 会写入 `.git/info/exclude`。',
-    '- 显式 `project` 参数可绕过标记，但面板/onboard 不认，不推荐。',
-    '- `verify` 别盲写 `npm run verify`（如 `verify:blender` 缺 Blender 会失败）：先看 package scripts，用 typecheck/test，首次接入在宿主侧实测。',
-    '',
     '## 最小工作流',
     '',
     '1. `create` —— title 必填；写清 spec/acceptance/writeFiles/dependsOn/priority，能机械验证的声明 `verify`。',
     '2. `start` —— 只是申请：needs-consent + request，等用户批准，不要重试或绕行。',
-    '3. `board`/`get` —— 看阶段、轮次、证据、waitingReason。4. `submit` —— 本地验证通过并提交后带 evidence。',
+    '3. `board`/`get` —— 看阶段、轮次、证据、waitingReason。',
+    '4. `submit` —— 本地验证通过并提交后带 evidence。',
     '5. 宿主接管：reviewer 评审 → 候选跑 `verify` → tester 测试 → 通过且 target 未动即自动合并；打回在同一 worktree 修完再 submit。',
-    '   - 漂移：只换 base（head 未动）→ 重建候选直接合并，不新增轮次；内容变了重走评审+测试。',
-    '   - 冲突：候选与 target 冲突自动重建；再次冲突升级 needs-rebase，等 worker/Lead。只认真实 hex base。',
     '',
-    '## 调查卡（investigate）',
+    '## 细节资源',
     '',
-    '- 什么时候用：只要答案/定位/对比，不交付可合并代码（要改产品开 dev 卡），`create` 带 `kind: "investigate"`；生命周期 待办→进行→完成，**无评审/测试/合并**，`submit` 拒 `investigation-report-only`、评审/测试/合并拒 `not-a-dev-task`。',
-    '- 执行：派发到 detached scratch（无分支）；可跑命令、改代码，但**不 commit、不 submit、不 merge**；需要第二份 checkout 只用 `probe-<id>-*`，宿主会清掉。',
-    '- 交付：`task_center { action: "report", id, summary, body, evidence? }`。summary 是结论（≤4 KB）；body 是完整报告（≤64 KB，全文 `.agents/reports/<id>.md`）；evidence 是 `{ command, exitCode, outputTail }` 数组（≤20 条）；artifacts 列探测 checkout 的路径。',
-    '- 写法：结论以证据为准（命令、exit code、输出尾部、复现步骤）；没有 `report` 不算完成；面板有「调查」筛选。',
+    '这些文件在 resourceBase 目录下。需要时用 read 读取，不要一次全读：',
+    '',
+    '- `cards.md` —— 写卡、acceptance、writeFiles、dependsOn、verify、调查卡。',
+    '- `run.md` —— 团队、start/consent、调度器、worktree、中断、状态。',
+    '- `gates.md` —— 评审、测试、合并、候选、hostCheck、漂移、打回。',
+    '- `reference.md` —— 完整动作矩阵、拒绝码、面板、Godot、禁区。',
+    '',
+    '当前可写动作：' + names(writable) + '。',
+    '只读动作：' + names(readOnly) + '。',
+    '',
+    '完整动作矩阵、角色分组和拒绝码在 `reference.md`；需要时再读。',
+  ].join('\n')
+}
+
+/**
+ * The generated reference chapter. It is a resource file, not a skill; the
+ * action matrix is derived from the live registry so it cannot drift.
+ */
+export function buildReferenceContent(options) {
+  const opts = options === undefined || options === null ? {} : options
+  const actions = listOf(opts.actions)
+  const agentActions = listOf(opts.agentActions)
+  const readActions = listOf(opts.readActions)
+  const userOnlyActions = listOf(opts.userOnlyActions)
+  const known = (wanted) => actions.filter((action) => wanted.indexOf(action) >= 0)
+
+  const userOnly = known(userOnlyActions)
+  const readOnly = readActions.filter((action) => userOnlyActions.indexOf(action) < 0)
+  const writable = agentActions.filter((action) => readActions.indexOf(action) < 0)
+  const review = known(REVIEW_ACTIONS)
+  const tester = known(TEST_ACTIONS).concat(known(HARNESS_ACTIONS))
+  const merger = known(MERGE_ACTIONS)
+  const owner = known(OWNER_ACTIONS)
+
+  return [
+    '# 任务中心参考',
     '',
     '## 动作矩阵',
     '',
@@ -191,27 +209,6 @@ export function buildSkillContent(options) {
     '- 归属：`submit`、`refreshMerge` 仅 assignee / 用户 / merger。',
     '- 仅评审：' + (review.length === 0 ? '（无）' : names(review)) + '；仅测试：' + (tester.length === 0 ? '（无）' : names(tester)) + '；仅合并：' + (merger.length === 0 ? '（无）' : names(merger)) + '。',
     '- 仅用户（工具不暴露，agent 调用报 `user-only`）：' + names(userOnly) + '。',
-    '',
-    '## 写卡规范',
-    '',
-    '- spec 自包含（目标/背景代码/要求/测试方法/验收），acceptance 可判定；writeFiles 就是锁：派发前原子加锁，漏写会互踩。',
-    '- `verify` 可选：宿主在候选里跑声明的 shell，结果记 test.hostCheck；失败回 running，不占 tester 轮次。',
-    '- `dependsOn` 前序完成且已合并；`priority` 只在 ready 间比较；`maxAttempts` 用尽 blocked；每卡可带 `target`（跨 target 依赖会被拒）；改卡用 `update`。',
-    '',
-    '## 派发与中断',
-    '',
-    '- **重启不消耗尝试**：收回 running 卡时 attempt **退还**，只累加 `interruptions`；连续 5 次中断且没提交才 blocked（`interrupted-too-often`）。',
-    '- **一卡一个活执行者**：重派发先中断旧执行者，停不下来就拒（`already-dispatched`），`liveExecutors` 正常 0/1；优先复用上次干净未提交的 worktree。',
-    '',
-    '## 机械验证与测试证据',
-    '',
-    '- `verify` 由卡声明，评审通过后宿主在候选里跑；失败/超时 = 宿主记 failTest，回 running。',
-    '- tester 证据分【宿主基线】【我的探针】——基线是下限；reviewer 不必重跑（declared vs actual 与 hostCheck 已在 brief 里）。',
-    '',
-    '## 串联规则',
-    '',
-    '- **槽位串行**：一个 reviewer / tester 槽位串行处理，其余 `queuePosition` 排队；`merged` = ref 真的前进了（`target-not-advanced` 停在 testing）。',
-    '- **target 动了结论失效**：用 `refreshMerge` 重开一轮。',
     '',
     '## 拒绝码（可读失败，不是崩溃）',
     '',
@@ -229,7 +226,7 @@ export function buildSkillContent(options) {
     '',
     '- 不手改 `.agents/tasks.json`（破坏并发保护与事件记录）。',
     '- 不直接 commit / push 到 target：只在任务 worktree 里提交自己的分支。',
-    '- 不给自己的提交开守卫豁免、不改检查脚本让结果"变绿"——那是绕过评审。',
+    '- 不给自己的提交开守卫豁免、不改检查脚本让结果“变绿”——那是绕过评审。',
     '- 不自己发起派发（批准权在用户）；不杀用户 / 编辑器进程；不手工建删 worktree。',
     '- 不替 reviewer/tester 写结论、不伪造 evidence；任务离开 running 后宿主会中断执行者。',
     '',
@@ -240,7 +237,29 @@ export function buildSkillContent(options) {
     '## 面板',
     '',
     '任务页 5 页签：`看板`、`队列`、`执行者`、`状态`、`角色`。只有用户能：批/拒派发、开关派发、改设置、管角色、代替 reviewer/tester/merger 下结论——agent 写成“请用户操作”。',
-  ]
+    '',
+    '## 角色分组',
+    '',
+    '评审 ' + names(review) + '；测试 ' + names(tester) + '；合并 ' + names(merger) + '；归属 ' + names(owner) + '。',
+  ].join('\n')
+}
 
-  return lines.join('\n')
+/** Read one of the resource files (tests and the full guide use this). */
+export function readSkillResource(name) {
+  return readFileSync(join(SKILL_RESOURCE_DIR, name), 'utf8').trim()
+}
+
+/**
+ * The full guide: init + all resource chapters. Production registers only
+ * buildInitContent(); this combined form is for tests, docs and debugging.
+ */
+export function buildSkillContent(options) {
+  const opts = options === undefined || options === null ? {} : options
+  return [
+    buildInitContent(opts),
+    readSkillResource('cards.md'),
+    readSkillResource('run.md'),
+    readSkillResource('gates.md'),
+    buildReferenceContent(opts),
+  ].join('\n\n---\n\n')
 }
