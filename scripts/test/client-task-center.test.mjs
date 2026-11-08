@@ -8,7 +8,7 @@ function h(type, props, ...children) {
   return { type, props: Object.assign({}, props, children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }) }
 }
 const view = (name) => (props) => ({ type: name, props: props })
-const TaskCenter = createTaskCenter({
+const deps = {
   React: { useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}], useEffect: () => {} },
   h: h,
   Board: view('board'),
@@ -57,10 +57,29 @@ const TaskCenter = createTaskCenter({
   tcLeadText: () => 'lead',
   copyToClipboard: async () => true,
   store: { send: async () => ({ ok: true }), startPolling: () => {}, stopPolling: () => {}, switchProject: async () => ({ ok: true }), loadDetail: async () => ({ ok: true }) },
-})
+}
+const TaskCenter = createTaskCenter(deps)
 const out = TaskCenter({})
 assert.equal(out.type, 'div')
 assert.equal(out.props.className, 'gbt-root')
 assert.equal(out.props['data-panel'], 'task-center')
 assert.ok(JSON.stringify(out).includes('gbt-tabs'))
 console.log('PASS  TaskCenter is an independently testable view module')
+
+// A panel/session split outranks a Team/project split: the header must offer
+// exactly one switch (the session one), not the Team switch as well.
+const mismatchSnapshot = Object.assign({}, deps.useSnapshot(), {
+  project: '/repo',
+  projectRoot: '/repo',
+  sessionProject: '/session',
+  team: { project: '/session', projectMatch: false, ok: true, lead: 'lead', members: [], session: 's-1' },
+})
+const mismatchView = createTaskCenter(Object.assign({}, deps, {
+  useSnapshot: () => mismatchSnapshot,
+  projectMismatchOf: () => '/session',
+}))
+const mismatchOut = mismatchView({})
+const mismatchJson = JSON.stringify(mismatchOut)
+assert.ok(mismatchJson.includes('switch-to-session-project'))
+assert.ok(!mismatchJson.includes('switch-team-project'))
+console.log('PASS  one project switch wins when session and Team both mismatch')
