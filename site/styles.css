@@ -56,7 +56,6 @@ h1{font-size:clamp(46px,5.8vw,76px);line-height:1.05;letter-spacing:-.045em;font
 .window-bar{height:36px;display:flex;align-items:center;gap:10px;padding:0 12px;background:var(--layer3);border-bottom:1px solid var(--border);color:var(--tertiary);font-size:10px}
 .lights{display:inline-flex;gap:5px}.lights i{width:8px;height:8px;border-radius:50%;background:#5a5c60;display:block}.lights i:first-child{background:#ff6b6b}.lights i:nth-child(2){background:#f5c451}.lights i:nth-child(3){background:#5fd38a}
 .window-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.window-tag{margin-left:auto;border:1px solid var(--border);border-radius:999px;padding:1px 7px;font-size:9px;color:var(--caption)}
 .window img{width:100%;max-width:100%;height:auto}
 .float-card{position:absolute;left:-22px;bottom:32px;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border-strong);border-radius:11px;background:rgba(35,35,36,.92);backdrop-filter:blur(12px);box-shadow:0 16px 40px rgba(0,0,0,.4)}
 .float-card.second{left:auto;right:-18px;top:78px;bottom:auto}
