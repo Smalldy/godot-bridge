@@ -266,14 +266,47 @@ branch task/T-103-2</code></pre>
     <div class="section-head">
       <div>
         <div class="kicker">Capability Map</div>
-        <h2>一张图看完所有能力</h2>
+        <h2>三块能力，一眼看完</h2>
       </div>
-      <p>Bridge 工具、游戏命令、headless 操作、任务中心流水线，全部收在一张能力地图里。</p>
+      <p>Bridge 操作游戏，Task Center 交付任务，中间是同一套 DSH 工具和流水线。</p>
     </div>
-    <a class="cap-link" href="assets/capabilities.png" target="_blank" rel="noreferrer">
-      <img class="cap-img" src="assets/capabilities.png" alt="godot-bridge 能力地图" loading="lazy">
-      <span class="cap-open">打开原图 <span class="arrow">↗</span></span>
-    </a>
+    <div class="capmap">
+      <div class="caprow">
+        <div class="caplabel"><span class="capnum">01</span><b>Bridge</b><small>操作游戏</small></div>
+        <div class="capbody">
+          <div class="capflow">
+            <div class="capnode"><b>Godot 4.x</b><span>运行中的游戏</span></div>
+            <span class="caparrow">⇄</span>
+            <div class="capnode"><b>TCP 9090</b><span>newline JSON</span></div>
+            <span class="caparrow">⇄</span>
+            <div class="capnode"><b>DSH Agent</b><span>17 个 godot_* 工具</span></div>
+          </div>
+          <div class="capchips"><span>run_project</span><span>command</span><span>screenshot</span><span>headless_op</span></div>
+        </div>
+      </div>
+      <div class="caprow">
+        <div class="caplabel"><span class="capnum">02</span><b>Toolbox</b><small>工具箱</small></div>
+        <div class="capbody capstats">
+          <div><b>17</b><span>godot_* 工具</span></div>
+          <div><b>100+</b><span>游戏命令</span></div>
+          <div><b>16</b><span>headless 操作</span></div>
+          <div><b>0</b><span>MCP / Python</span></div>
+        </div>
+      </div>
+      <div class="caprow">
+        <div class="caplabel"><span class="capnum">03</span><b>Task Center</b><small>交付任务</small></div>
+        <div class="capbody">
+          <div class="cappipe">
+            <span><b>需求对齐</b><small>范围 / 验收</small></span><i>→</i>
+            <span><b>建卡</b><small>调查 / 开发</small></span><i>→</i>
+            <span><b>派发</b><small>独立 worktree</small></span><i>→</i>
+            <span><b>评审</b><small>独立角色</small></span><i>→</i>
+            <span><b>测试</b><small>Host + tester</small></span><i>→</i>
+            <span><b>合并</b><small>串行队列</small></span>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </section>
 

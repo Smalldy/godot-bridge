@@ -134,10 +134,30 @@ h2{font-size:clamp(30px,3.4vw,44px);line-height:1.12;letter-spacing:-.035em;marg
 .steps h3{font-size:16px;margin:0 0 7px}
 .steps p{color:var(--tertiary);font-size:12.5px;line-height:1.65;margin:0 0 14px}
 .steps pre{margin:0;padding:10px;border:1px solid var(--border);border-radius:7px;background:var(--bg2);overflow:auto;font-size:10px;line-height:1.65;color:var(--secondary)}
-.cap-link{display:block;position:relative;border:1px solid var(--border-strong);border-radius:14px;overflow:hidden;background:var(--layer1);max-height:520px}
-.cap-link:after{content:"";position:absolute;inset:auto 0 0;height:180px;background:linear-gradient(to top,var(--bg),transparent);pointer-events:none}
-.cap-img{width:100%;height:520px;object-fit:cover;object-position:top center;opacity:.92}
-.cap-open{position:absolute;right:18px;bottom:18px;z-index:2;border:1px solid var(--border-strong);border-radius:999px;background:rgba(21,21,23,.8);padding:7px 12px;font-size:11px;color:var(--secondary);backdrop-filter:blur(10px)}
+.capmap{border:1px solid var(--border-strong);border-radius:14px;overflow:hidden;background:var(--bg2)}
+.caprow{display:grid;grid-template-columns:190px minmax(0,1fr);gap:24px;padding:24px;border-bottom:1px solid var(--border)}
+.caprow:last-child{border-bottom:0}
+.caplabel{display:flex;flex-direction:column;gap:4px}
+.capnum{font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--blue)}
+.caplabel b{font-size:17px;letter-spacing:-.01em}
+.caplabel small{color:var(--tertiary);font-size:11px}
+.capbody{min-width:0;display:flex;flex-direction:column;justify-content:center}
+.capflow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.capnode{flex:1 1 130px;min-width:120px;border:1px solid var(--border);border-radius:9px;background:var(--layer1);padding:11px 12px}
+.capnode b{display:block;font-size:12px;font-weight:600}
+.capnode span{display:block;color:var(--tertiary);font-size:10px;margin-top:3px}
+.caparrow{flex:none;color:var(--blue);font-size:14px;opacity:.8}
+.capchips{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}
+.capchips span{font-family:var(--mono);font-size:9px;color:var(--tertiary);border:1px solid var(--border);border-radius:4px;padding:1px 6px;background:rgba(255,255,255,.02)}
+.capstats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.capstats div{border:1px solid var(--border);border-radius:9px;background:var(--layer1);padding:11px 12px}
+.capstats b{display:block;font-size:22px;letter-spacing:-.03em}
+.capstats span{display:block;color:var(--tertiary);font-size:10px;margin-top:2px}
+.cappipe{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap}
+.cappipe span{flex:1 1 92px;min-width:86px;border:1px solid var(--border);border-radius:8px;background:var(--layer1);padding:8px 9px}
+.cappipe b{display:block;font-size:11px}
+.cappipe small{display:block;color:var(--tertiary);font-size:9.5px;margin-top:2px}
+.cappipe i{font-style:normal;color:var(--caption);font-size:12px;align-self:center}
 .install{padding-bottom:90px}
 .install-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:52px;align-items:start}
 .install-lede{color:var(--tertiary);font-size:14px;max-width:560px;margin:0 0 22px}
@@ -167,6 +187,8 @@ h2{font-size:clamp(30px,3.4vw,44px);line-height:1.12;letter-spacing:-.035em;marg
 .reveal{opacity:0;transform:translateY(14px);transition:opacity .6s ease,transform .6s ease}
 .reveal.in{opacity:1;transform:none}
 @media (max-width:980px){
+  .caprow{grid-template-columns:1fr;gap:10px}
+  .capstats{grid-template-columns:repeat(2,1fr)}
   .hero-grid{grid-template-columns:1fr;gap:38px;min-height:0}
   .hero-visual{max-width:760px}
   .float-card{left:12px}.float-card.second{right:8px}
@@ -204,7 +226,11 @@ h2{font-size:clamp(30px,3.4vw,44px);line-height:1.12;letter-spacing:-.035em;marg
   .feature-grid{gap:8px}
   .feature{padding:17px}
   .flow{gap:8px}
-  .cap-img{height:320px}
+  .caprow{padding:18px}
+  .capflow{flex-direction:column;align-items:stretch}
+  .caparrow{transform:rotate(90deg);align-self:center}
+  .cappipe{flex-direction:column}
+  .cappipe i{transform:rotate(90deg);align-self:center}
   .install-code{align-items:stretch;flex-direction:column}
   .install-code code{white-space:normal;word-break:break-all}
   .copy{align-self:flex-end}
