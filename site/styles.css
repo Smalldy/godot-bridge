@@ -58,8 +58,6 @@ h1{font-size:clamp(46px,5.8vw,76px);line-height:1.05;letter-spacing:-.045em;font
 .window-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .window-tag{margin-left:auto;border:1px solid var(--border);border-radius:999px;padding:1px 7px;font-size:9px;color:var(--caption)}
 .window img{width:100%;max-width:100%;height:auto}
-.zoom{position:absolute;right:10px;bottom:10px;z-index:2;border:1px solid var(--border-strong);border-radius:999px;background:rgba(21,21,23,.8);color:var(--secondary);padding:5px 10px;font-size:10px;backdrop-filter:blur(10px)}
-.zoom:hover{color:var(--text);border-color:rgba(255,255,255,.35)}
 .float-card{position:absolute;left:-22px;bottom:32px;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border-strong);border-radius:11px;background:rgba(35,35,36,.92);backdrop-filter:blur(12px);box-shadow:0 16px 40px rgba(0,0,0,.4)}
 .float-card.second{left:auto;right:-18px;top:78px;bottom:auto}
 .float-icon{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;background:rgba(122,170,255,.14);color:var(--blue);font-size:14px;flex:none}
@@ -103,6 +101,7 @@ h2{font-size:clamp(30px,3.4vw,44px);line-height:1.12;letter-spacing:-.035em;marg
 .checks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
 .checks li{position:relative;padding-left:22px;color:var(--secondary);font-size:13px;line-height:1.65}
 .checks li:before{content:"✓";position:absolute;left:0;top:0;color:var(--green);font-size:11px;font-weight:700}
+.install-note{margin:14px 0 0;color:var(--caption);font-size:12px;line-height:1.6}
 .text-link{display:inline-flex;align-items:center;gap:6px;margin-top:22px;color:var(--blue);font-size:13px;border-bottom:1px solid rgba(122,170,255,.28);padding-bottom:2px}
 .text-link:hover{border-color:var(--blue)}
 .code-card{border:1px solid var(--border-strong);border-radius:13px;background:var(--bg2);overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35)}
