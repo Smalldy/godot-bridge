@@ -163,6 +163,18 @@ h2{font-size:clamp(30px,3.4vw,44px);line-height:1.12;letter-spacing:-.035em;marg
 .install-lede{color:var(--tertiary);font-size:14px;max-width:560px;margin:0 0 22px}
 .install-code{display:flex;align-items:center;gap:10px;border:1px solid var(--border-strong);border-radius:11px;background:var(--bg2);padding:12px 12px 12px 15px;margin:22px 0}
 .install-code code{flex:1;min-width:0;overflow:auto;white-space:nowrap;font-size:11.5px;color:#cfe0ff}
+.install-methods{display:flex;flex-direction:column;gap:10px;margin:22px 0 20px}
+.install-method{border:1px solid var(--border);border-radius:12px;background:rgba(35,35,36,.28);padding:16px 17px}
+.install-method[data-method="desktop"]{border-color:rgba(122,170,255,.22);background:linear-gradient(180deg,rgba(122,170,255,.055),rgba(35,35,36,.24))}
+.method-head{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+.method-badge{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:5px;border:1px solid rgba(122,170,255,.28);background:rgba(122,170,255,.1);color:#a9c8ff;font-size:10px;letter-spacing:.04em;white-space:nowrap}
+.method-title{font-size:13px;font-weight:600;color:var(--text)}
+.method-copy{margin:0 0 12px;color:var(--tertiary);font-size:12.5px;line-height:1.65}
+.method-copy code{font-size:.88em;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);border-radius:5px;padding:1px 5px;color:#dbe7ff}
+.method-market{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px dashed var(--border-strong);border-radius:9px;background:var(--bg2);padding:10px 12px;color:var(--secondary);font-size:11.5px}
+.method-market i{font-style:normal;color:var(--caption);font-size:11px}
+.method-market code{font-size:11.5px;color:#cfe0ff;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);border-radius:5px;padding:1px 5px}
+.install-method .install-code{margin:0}
 .copy{flex:none;height:28px;padding:0 10px;border-radius:7px;border:1px solid var(--border);background:var(--layer2);color:var(--secondary);font-size:11px;cursor:pointer}
 .copy:hover{background:var(--layer3);color:var(--text)}
 .install-side{display:flex;flex-direction:column;gap:10px}

@@ -315,10 +315,29 @@ branch task/T-103-2</code></pre>
     <div>
       <div class="kicker">Install</div>
       <h2>装进 DSH，重启，开始用</h2>
-      <p class="install-lede">godot-bridge 是标准 DSH bundle 模块。安装后 profile 会多出 <code>tool-godot-bridge</code> 行和任务中心组件行。</p>
-      <div class="install-code">
-        <code id="installCmd">dsh plugin --profile web add github:Smalldy/godot-bridge</code>
-        <button class="copy" id="copyBtn" aria-label="复制安装命令">复制</button>
+      <p class="install-lede">godot-bridge 是标准 DSH bundle 模块。按你使用的 DSH 版本选择安装方式，装完重启。</p>
+      <div class="install-methods">
+        <div class="install-method" data-method="desktop">
+          <div class="method-head">
+            <span class="method-badge">桌面版</span>
+            <span class="method-title">插件市场安装</span>
+          </div>
+          <p class="method-copy">打开 DSH 插件市场，搜索 <code>godot-bridge</code>，点击安装。不需要命令行。</p>
+          <div class="method-market">
+            <span>插件市场</span><i>→</i><span>搜索</span><code>godot-bridge</code><i>→</i><span>安装</span>
+          </div>
+        </div>
+        <div class="install-method" data-method="web">
+          <div class="method-head">
+            <span class="method-badge">网页版 / CLI</span>
+            <span class="method-title">命令行安装</span>
+          </div>
+          <p class="method-copy">在终端把 bundle 加进 profile，然后重启 DSH。profile 名按你的实际环境替换。</p>
+          <div class="install-code">
+            <code id="installCmd">dsh plugin --profile web add github:Smalldy/godot-bridge</code>
+            <button class="copy" id="copyBtn" aria-label="复制安装命令">复制</button>
+          </div>
+        </div>
       </div>
       <ul class="checks">
         <li>DSH 0.2+，Node 22.19+ / 24+</li>
@@ -351,7 +370,7 @@ branch task/T-103-2</code></pre>
     <p>让 Agent 在独立 worktree 里写、让 reviewer 看、让 tester 验，最后只合并通过的东西。</p>
     <div class="hero-actions">
       <a class="btn primary" href="https://github.com/Smalldy/godot-bridge" target="_blank" rel="noreferrer">打开 GitHub <span class="arrow">↗</span></a>
-      <a class="btn" href="#install">安装命令</a>
+      <a class="btn" href="#install">安装方式</a>
     </div>
   </div>
 </section>
