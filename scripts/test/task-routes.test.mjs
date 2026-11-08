@@ -3916,7 +3916,7 @@ async function withDeadline(promise, ms) {
       worker.entries[0].text.indexOf('Rules:') >= 0 &&
       worker.entries[0].text.indexOf('- task_center is your only interface to the board.') > worker.entries[0].text.indexOf('Rules:') &&
       worker.entries[0].text.indexOf('Skills:') < 0 &&
-      worker.entries[0].text.indexOf('godot-bridge-task-center') < 0 &&
+      worker.entries[0].text.indexOf('godot-bridge-task-center-init') < 0 &&
       worker.entries[0].text.indexOf('Permission boundary (hard)') >= 0 &&
       worker.entries[0].text.indexOf('Verdict schema (your report):') >= 0 &&
       worker.entries[0].text.indexOf('<example spec: what this task involves>') >= 0,
@@ -4079,7 +4079,7 @@ async function withDeadline(promise, ms) {
     worker.text.indexOf('Rules:') >= 0 &&
       worker.text.indexOf('- task_center is your only interface to the board.') > worker.text.indexOf('Rules:') &&
       worker.text.indexOf('Skills:') < 0 &&
-      worker.text.indexOf('godot-bridge-task-center') < 0 &&
+      worker.text.indexOf('godot-bridge-task-center-init') < 0 &&
       worker.text.indexOf('Use the skill tool to load the skills listed below') < 0,
     worker.text.slice(-300),
   )
@@ -4088,7 +4088,7 @@ async function withDeadline(promise, ms) {
     'T-149 the Lead preview lists the host runtime skill',
     leadPreview.ok === true &&
       leadPreview.kind === 'lead' &&
-      leadPreview.text.indexOf('Skills:\n- godot-bridge-task-center') >= 0 &&
+      leadPreview.text.indexOf('Skills:\n- godot-bridge-task-center-init') >= 0 &&
       leadPreview.text.indexOf('Rules:') >= 0 &&
       leadPreview.sections.some((section) => section.group === 'skills'),
     leadPreview.ok === true ? leadPreview.text.slice(-240) : JSON.stringify(leadPreview),

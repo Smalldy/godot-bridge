@@ -37,7 +37,7 @@
 
 面板的“当前项目”按**会话**绑定：`/state`、`/task`、`/list` 和所有 action 都携带 `?session=<id>`，宿主只读取该会话的绑定（`state.sessionRootOf(id)` 是唯一读取入口，不存在进程全局的项目槽位）。没有会话标识的请求处于未绑定态，绝不会借用其他会话的项目。
 
-同一个包还会挂载第二个组件行 `godot-bridge/task-center`：项目级任务板 + 阶段驱动的派发器（含独立评审与测试）+ 文件锁 + 角色系统，以及中栏 GUI 面板（左侧栏「任务」）。插件激活时还会注册运行时技能 `godot-bridge-task-center`，并注入四条常驻硬规则（见下文）。
+同一个包还会挂载第二个组件行 `godot-bridge/task-center`：项目级任务板 + 阶段驱动的派发器（含独立评审与测试）+ 文件锁 + 角色系统，以及中栏 GUI 面板（左侧栏「任务」）。插件激活时还会注册运行时技能 `godot-bridge-task-center-init`，并注入四条常驻硬规则（见下文）。
 
 进入只需**一次调用**：`task_center { action: "onboard" }` 会解析项目根（显式 path，否则把会话工作区向上找到项目）、检查 git/Godot 标记、绑定看板、缺团队时自动补，最后返回一段简报和一个 `next` 步骤。新项目（只有 `project.godot`、还没 `git init`）和老项目（已有看板、卡住或待批准）都能自适应；找不到项目就请你给路径，绝不猜，也不会建卡或开启派发。模型把简报原样给你，只做 `next` 那一件事：
 
@@ -58,7 +58,7 @@ task_center { action: "onboard" }
 
 - **任务板**：`<项目>/.agents/tasks.json`。schema v2；读到 v1 会自动迁移（旧状态映射到当前词表、`blockedBy` 变成 `dependsOn`、旧 claim 被释放）。重复 id、非法条目、未来版本会被拒绝而不是覆盖。建议把该文件加入项目 `.gitignore`（它是运行态，不是源码）。
 - **动作 API**：`task_center` 工具与 `POST /godot-bridge/task-center/action` 共用同一套动作：`create / update / delete / list / get / board / start / pause / approveStart / rejectStart / cancelStartRequest / settings / tick / submit / report / approveReview / requestChanges / passTest / failTest / mergeRequest / refreshMerge / rejectMerge / cancel / reopen / block / unblock / retry / locks / openProject / rolesList / rolesPreview / rolesCreate / rolesUpdate / rolesDelete / rolesBind / rolesDrain / rolesReplace / rolesReset / skillsCatalog / harnessStart / harnessStatus / harnessSmoke / harnessRestart / harnessStop`。`verify` 不是动作而是任务字段：`create` / `update` 可带，工具侧暴露为对象参数（`null` 清除）。
-- **运行时技能与常驻规则**：激活该行会向宿主技能目录注册 `godot-bridge-task-center`。正文由动作注册表生成（定位、何时用、最小工作流、动作矩阵、写卡规范、拒绝码、Godot 启动规则与面板结构），因此不会与 API 漂移。另有四条常驻硬规则随系统提示注入：`start` 只是需要用户批准的申请；评审/测试结论只属于对应角色；任务工作只在任务 worktree 里、绝不提交到 target；不要手改 `.agents/tasks.json`。`task_center` 工具描述刻意收敛为指向该技能的短路由。宿主没有技能注册表或系统提示服务时两者都静默跳过，工具、路由与调度照常可用。
+- **运行时技能与常驻规则**：激活该行会向宿主技能目录注册 `godot-bridge-task-center-init`。正文只是入口/路由（Lead 边界、`onboard`、next 表、最小工作流）。细节章节是 `plugin/task-center/skills/` 下的普通资源文件（`cards.md`、`run.md`、`gates.md`、`reference.md`），通过 `resourceBase` 按需读取；它们不是技能，所以技能目录里只有 init。`reference.md` 由 `npm run build:skills` 从动作注册表生成，不会与 API 漂移。另有五条常驻硬规则随系统提示注入：第一动作是 `onboard`；`start` 只是需要用户批准的申请；评审/测试结论只属于对应角色；任务工作只在任务 worktree 里、绝不提交到 target；不要手改 `.agents/tasks.json`。`task_center` 工具描述刻意收敛为指向该技能的短路由。宿主没有技能注册表或系统提示服务时两者都静默跳过，工具、路由与调度照常可用。
 - **依赖**：`B.dependsOn = [A]` 表示 A 完成**且已合并**后才派发 B。就绪任务按 `priority` 降序、创建时间升序取。`A <- B <- C`、`D`、`E <- F` 会先派发 A、D、E；A 完成后派发 B，E 完成后派发 F。
 - **派发**：开始/暂停是项目级状态（持久化在板子里）。GUI 只暴露**最大并发**：最多同时跑这么多个任务；执行者上限自动设为并发 + 1，没有空闲执行者时会自动新建，连续失败 3 次后任务阻塞（高级调用仍可用 `settings` 覆盖）。每次派发先 claim（60 分钟租约；assignee 任何活动都会续租，另有固定节奏的宿主心跳）再交给 Agent Teams：优先 `sendMessage` 给空闲成员，否则 `spawnTeammate`。
 - **租约与 liveness**：运行中的任务持有 **60 分钟租约**。assignee 的任意一次 `task_center` 调用都会**无条件续租**，且每轮调度都有宿主心跳按固定 5 分钟节奏续租，因此长时间工具运行不会丢 claim。失效租约按 **liveness** 判定而非只看时钟：holder 仍活着就保住任务（单次尝试 4 小时硬上限），只有 session 消失/failed 才在中断后交接。同一任务绝不会有两条活跃 agent；交接时若上一尝试留有 commit，则 adopt 其 worktree 与分支。看板暴露 `leaseRemaining`/`leaseReminder`，并记录 `lease-extended`/`lease-handover`/`attempt-adopt` 事件。

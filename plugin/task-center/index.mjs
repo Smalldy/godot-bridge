@@ -42,7 +42,8 @@ import {
   SKILL_WHEN_TO_USE,
   SYSTEM_RULES_NAME,
   SYSTEM_RULES_TEXT,
-  buildSkillContent,
+  buildInitContent,
+  SKILL_RESOURCE_DIR,
 } from './skill.mjs'
 
 export const inject = ['fs', 'sandboxPolicy', 'tools', 'webServer']
@@ -376,7 +377,8 @@ function applyRow(ctx) {
       // itself only checks name/description/invocation, but loading the skill
       // fails with 'loaded skill "<name>" source must be a string' without it.
       source: 'runtime',
-      content: buildSkillContent({
+      resourceBase: { kind: 'directory', path: SKILL_RESOURCE_DIR },
+      content: buildInitContent({
         actions: ACTIONS,
         agentActions: AGENT_ACTIONS,
         readActions: READ_ACTIONS,
