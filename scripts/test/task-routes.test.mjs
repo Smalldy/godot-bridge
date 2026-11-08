@@ -127,6 +127,8 @@ check('registers state, action, task, list, worktrees and diagnostics', surface.
   check('the route starts dispatch', payload.ok === true && payload.dispatch.state === 'running', res.text)
   res = await post({ action: 'pause' })
   check('the route pauses dispatch', res.json().dispatch.state === 'paused', res.text)
+  res = await post({ action: 'start', taskId: id })
+  check('start refuses a task id instead of silently ignoring it', res.json().ok === false && res.json().code === 'start-is-dispatch-only', res.text)
   res = await post({ action: 'get', id: id })
   check('the route reads one task', res.json().ok === true && res.json().task.id === id, res.text)
   res = await post({ action: 'board' })

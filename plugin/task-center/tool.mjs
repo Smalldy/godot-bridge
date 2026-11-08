@@ -52,7 +52,7 @@ const DESCRIPTION =
   // carries the full investigation chapter (when to use it, the report action,
   // the scratch/probe rules and the panel rendering).
   'A card with kind investigate delivers a report instead of code (the skill has the full investigation chapter): finish it with action report; submit/review/test/merge refuse it. ' +
-  'start only records a dispatch request until the user approves it in the task center panel (needs-consent is not a failure). ' +
+  'start only records a dispatch request for the scheduler until the user approves it in the task center panel (needs-consent is not a failure; it is dispatch-wide and does not take a taskId). ' +
   'Dependencies: B.dependsOn=[A] means A must be done and merged before B runs.'
 
 export function registerTaskTool(ctx, options) {

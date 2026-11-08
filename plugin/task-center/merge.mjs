@@ -716,7 +716,20 @@ async function discardIntegration(projectPath, integrationPath, mergeBranch) {
       await discardCandidateAt(projectPath, candidate)
       return failure('candidate-unreadable', 'could not read the head of the test candidate for ' + task.id)
     }
-    return { ok: true, path: candidate.path, branch: candidate.branch, base: targetHead, head: candidateHead }
+    // The candidate is built from the target's CURRENT head, which may be newer
+    // than the base recorded at submit. Recompute the changed-file list here so
+    // recordCandidate() can refresh the board instead of leaving a stale
+    // declared-vs-actual comparison for the reviewer.
+    let actualFiles = null
+    if (git !== null && typeof git.diffNameOnly === 'function') {
+      const diff = await callGit('diffNameOnly', [candidate.path, targetHead, candidateHead])
+      if (diff === null || diff === undefined || diff.ok !== true) {
+        await discardCandidateAt(projectPath, candidate)
+        return failure('candidate-diff-failed', 'could not list the files changed in the test candidate for ' + task.id + ': ' + messageOf(diff))
+      }
+      actualFiles = Array.isArray(diff.files) ? diff.files : []
+    }
+    return { ok: true, path: candidate.path, branch: candidate.branch, base: targetHead, head: candidateHead, actualFiles: actualFiles }
   }
 
   /**
@@ -809,6 +822,7 @@ export function recordCandidate(board, id, candidate, now, options) {
     return failure('invalid-candidate', id + ' needs a base and a head for its test candidate')
   }
   const at = new Date(now).toISOString()
+  const candidateFiles = Array.isArray(candidate.actualFiles) ? candidate.actualFiles.slice() : null
   task.base = candidate.base
   task.merge = Object.assign({}, task.merge, {
     status: 'open',
@@ -818,6 +832,10 @@ export function recordCandidate(board, id, candidate, now, options) {
     output: null,
     at: at,
   })
+  if (candidateFiles !== null) {
+    task.actualFiles = candidateFiles.slice()
+    task.merge.actualFiles = candidateFiles.slice()
+  }
   if (opts.retest === true) {
     const previous = task.test === null || task.test === undefined ? null : task.test
     task.test = {
