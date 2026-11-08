@@ -69,6 +69,9 @@ h1{font-size:clamp(46px,5.8vw,76px);line-height:1.05;letter-spacing:-.045em;font
 .visual-label{display:flex;align-items:baseline;gap:8px;margin:0 0 8px;color:var(--caption);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase}
 .visual-label b{color:var(--secondary);font-weight:600;letter-spacing:.16em}
 .visual-label span{color:var(--caption);letter-spacing:.02em;text-transform:none}
+.bridge-label{margin:12px 0 6px}
+.bridge-figure{margin-top:10px;padding:8px 10px 6px;border:1px solid var(--border-strong);border-radius:12px;background:var(--bg2);box-shadow:0 16px 40px rgba(0,0,0,.28)}
+.bridge-diagram{display:block;width:100%;height:auto}
 .bridge-console{margin-top:10px;border:1px solid var(--border-strong);border-radius:12px;background:var(--bg2);overflow:hidden;box-shadow:0 16px 40px rgba(0,0,0,.28)}
 .bc-head{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid var(--border);background:var(--layer1)}
 .bc-tag{color:var(--blue);font-size:9px;font-weight:600;letter-spacing:.14em}

@@ -314,7 +314,7 @@ body.chrome0 #toolbar{display:none}
         <div class="sessionRow"><span class="statusDot"></span><span class="title">修复渲染模式预设错误</span></div>
       </div>
     </div>
-    <div class="sideFoot"><div class="avatar">S</div><div><b>Spring of Spirit</b><span>本地工作区</span></div></div>
+    <div class="sideFoot"><div class="avatar">G</div><div><b>Godot 开发者</b><span>本地工作区</span></div></div>
   </aside>
   <main class="main" id="main"></main>
 </div>
@@ -449,9 +449,9 @@ Git
 <div class="chat">
   <header class="chatHead"><div class="chatTitleRow"><div class="chatTitle">GodotBridge 任务中心初始化重构</div><div class="chatBadges"><span class="badge">8 个智能体团队</span><span class="badge">PIC 模式</span><span class="badge">7 个子智能体</span><span class="badge">2 个后台任务运行中</span></div></div><div class="chatTabs"><button class="chatTab active">对话</button><button class="chatTab">轨迹</button><button class="chatTab">⋯</button></div></header>
   <div class="chatBody"><div class="thread">
-    <div class="msg user"><div class="who"><span class="avatar">S</span>Spring of Spirit</div><div class="bubble"><p>把 GodotBridge 任务中心初始化重构一下，顺便看看二阶段崩溃。</p></div></div>
+    <div class="msg user"><div class="who"><span class="avatar">G</span>Godot 开发者</div><div class="bubble"><p>把 GodotBridge 任务中心初始化重构一下，顺便看看二阶段崩溃。</p></div></div>
     <div class="msg assistant"><div class="who"><span class="avatar">L</span>lead</div><div class="bubble"><p>已通过 <code>task_center onboard</code> 绑定 <code>~/projects/starfall</code>。两块工作可以并行：T-103 继续重构存档系统，T-102 作为调查卡查 Boss 二阶段崩溃。</p><div class="tool"><b>task_center</b> · onboard<br>{ "project": "~/projects/starfall", "team": "ready", "next": "start T-103" }</div><div class="tool"><b>godot_run_project</b> · ok<br>game_ready: true · port 9090 · Godot 4.7.1</div><p>现在看板上有 1 个执行中、1 个评审中、1 个测试中；我会先让 T-103 完成评审，再处理测试队列。</p></div></div>
-    <div class="msg user"><div class="who"><span class="avatar">S</span>Spring of Spirit</div><div class="bubble"><p>打开任务中心，我看下看板。</p></div></div>
+    <div class="msg user"><div class="who"><span class="avatar">G</span>Godot 开发者</div><div class="bubble"><p>打开任务中心，我看下看板。</p></div></div>
     <div class="msg assistant"><div class="who"><span class="avatar">L</span>lead</div><div class="bubble"><p>已打开 <code>GodotBridge任务中心</code>，项目 <code>starfall</code>，工作区干净。右侧面板会显示 7 列看板。</p></div></div>
   </div></div>
   <div class="composerWrap"><div class="composer"><div class="ph">发消息或创建任务, / 调用指令, @ 文件或对话</div><div class="row"><span>＋</span><span>@</span><span>工作区内修改</span><span class="grow"></span><span>DeepSeek V4.1 Flash Max</span><span class="send">↑</span></div></div></div>
@@ -476,6 +476,15 @@ document.querySelectorAll('.sessionRow').forEach(function (row) {
 if (!taskMode) {
   const first = document.querySelector('.sessionRow');
   if (first) first.classList.add('selected');
+}
+if (params.get('simple') === '1') {
+  document.querySelectorAll('.projectRow:not([data-project="godot-bridge"])').forEach(function (row) { row.remove(); });
+  document.querySelectorAll('.sessionRow').forEach(function (row) { row.remove(); });
+  document.querySelectorAll('.sectionHead').forEach(function (head) { if (head.textContent.indexOf('未分组') >= 0) head.remove(); });
+  const count = document.querySelector('[data-project="godot-bridge"] .count');
+  if (count) count.textContent = '1 个会话';
+  const foot = document.querySelector('.sideFoot');
+  if (foot) foot.innerHTML = '<div class="avatar">G</div><div><b>Godot 开发者</b><span>本地工作区</span></div>';
 }
 </script>
 </body>

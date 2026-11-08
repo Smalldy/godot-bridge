@@ -44,7 +44,7 @@
     <div class="hero-copy">
       <div class="eyebrow"><span class="pulse"></span> DeepSeek Harness Plugin · Godot 4.x</div>
       <h1>从操作游戏，<br><span class="grad">到交付任务</span></h1>
-      <p class="lede">Bridge 直接驱动运行中的 Godot 游戏；Task Center 把实现、评审、测试、合并跑成可审计的流水线。17 个原生 <code>godot_*</code> 工具 + 项目任务中心，一个 DSH 插件，两边都原生。</p>
+      <p class="lede">Bridge 直接驱动运行中的 Godot 游戏；Task Center 把实现、评审、测试、合并跑成可审计的流水线。17 个原生 <code>godot_*</code> 工具 + 项目任务中心，一个插件就能实现。</p>
       <div class="hero-actions">
         <a class="btn primary" href="#install">开始安装 <span class="arrow">→</span></a>
         <a class="btn" href="#workflow">看看怎么工作</a>
@@ -64,18 +64,38 @@
         <img src="assets/task-center.png" alt="DSH 侧栏与 GodotBridge 任务中心看板" width="1600" height="1000">
         <a class="zoom" href="assets/task-center.png" target="_blank" rel="noreferrer">查看原图 ↗</a>
       </div>
-      <div class="bridge-console">
-        <div class="bc-head"><span class="bc-tag">BRIDGE</span><span class="bc-live"><i></i>connected · 127.0.0.1:9090</span></div>
-        <div class="bc-body">
-          <div class="bc-lines">
-            <div class="bc-line"><code>godot_run_project</code><span>game_ready: true</span></div>
-            <div class="bc-line"><code>godot_command</code><span>get_scene_tree</span></div>
-            <div class="bc-line"><code>godot_command</code><span>eval · paused</span></div>
-            <div class="bc-line"><code>godot_screenshot</code><span>1600 × 900</span></div>
-          </div>
-          <div class="bc-tree"><b>Main</b><br>├─ Player<br>├─ Camera2D<br>└─ HUD</div>
-        </div>
-        <div class="bc-foot"><span>直接操作运行中的游戏</span><span>eval ✓</span></div>
+      <div class="visual-label bridge-label"><b>BRIDGE</b><span>直接操作运行中的游戏</span></div>
+      <div class="bridge-figure">
+        <svg class="bridge-diagram" viewBox="0 0 560 190" role="img" aria-label="DSH Agent 通过 TCP 9090 操作运行中的 Godot 游戏">
+          <defs>
+            <linearGradient id="gameSky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2b3f63"/><stop offset="1" stop-color="#182337"/></linearGradient>
+            <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#7aaaff"/></marker>
+            <marker id="arrowStart" viewBox="0 0 8 8" refX="1" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M8 0L0 4L8 8Z" fill="#7aaaff"/></marker>
+          </defs>
+          <rect x="10" y="22" width="176" height="132" rx="13" fill="#232324" stroke="#3a3d42"/>
+          <rect x="23" y="34" width="150" height="76" rx="7" fill="url(#gameSky)" stroke="#3a4a63"/>
+          <circle cx="68" cy="64" r="7" fill="#f9fafb"/>
+          <rect x="38" y="82" width="58" height="6" rx="3" fill="#7aaaff" opacity=".45"/>
+          <rect x="108" y="72" width="48" height="6" rx="3" fill="#7aaaff" opacity=".28"/>
+          <rect x="38" y="94" width="30" height="5" rx="2.5" fill="#b7a6ff" opacity=".35"/>
+          <text x="23" y="128" fill="#f9fafb" font-family="system-ui,sans-serif" font-size="12" font-weight="600">Godot 4.x</text>
+          <text x="23" y="144" fill="#81858c" font-family="ui-monospace,monospace" font-size="8.5">McpInteractionServer</text>
+          <path d="M186 90H246" stroke="#7aaaff" stroke-width="1.3" stroke-dasharray="4 4" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+          <rect x="246" y="69" width="128" height="42" rx="21" fill="#2c2c2e" stroke="#3a3d42"/>
+          <circle cx="264" cy="90" r="3.5" fill="#22c55e"/>
+          <text x="276" y="94" fill="#cfd3d6" font-family="ui-monospace,monospace" font-size="9">TCP 9090 · JSON</text>
+          <path d="M374 90H434" stroke="#7aaaff" stroke-width="1.3" stroke-dasharray="4 4" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+          <rect x="434" y="22" width="116" height="132" rx="13" fill="#232324" stroke="#3a3d42"/>
+          <rect x="447" y="34" width="90" height="30" rx="8" fill="#353536" stroke="#45484d"/>
+          <text x="459" y="53" fill="#f9fafb" font-family="system-ui,sans-serif" font-size="11" font-weight="600">DSH Agent</text>
+          <text x="447" y="82" fill="#81858c" font-family="system-ui,sans-serif" font-size="8.5">17 个 godot_* 工具</text>
+          <g font-family="ui-monospace,monospace" font-size="8" fill="#cfd3d6">
+            <rect x="447" y="94" width="38" height="18" rx="5" fill="#353536"/><text x="453" y="106">run</text>
+            <rect x="490" y="94" width="47" height="18" rx="5" fill="#353536"/><text x="496" y="106">cmd</text>
+            <rect x="447" y="118" width="45" height="18" rx="5" fill="#353536"/><text x="453" y="130">shot</text>
+            <rect x="497" y="118" width="40" height="18" rx="5" fill="#353536"/><text x="503" y="130">eval</text>
+          </g>
+        </svg>
       </div>
     </div>
   </div>

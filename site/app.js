@@ -34,7 +34,7 @@
     });
   }
 
-  const reveal = document.querySelectorAll('.section, .cta, .stat-strip');
+  const reveal = document.querySelectorAll('.section, .cta');
   if ('IntersectionObserver' in window) {
     const io = new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
