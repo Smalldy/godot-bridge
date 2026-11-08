@@ -201,30 +201,22 @@ th{background:var(--sidebar);color:var(--tertiary);font-weight:500}td{color:var(
 .chatTab{height:34px;padding:0 10px;color:var(--tertiary);font-size:13px;border-bottom:2px solid transparent}
 .chatTab.active{color:var(--text);border-bottom-color:#f9fafb}
 .chatBody{flex:1;min-height:0;overflow:auto;padding:16px 28px 4px}
-.thread{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
-.msg{font-size:14px;line-height:24px;color:var(--secondary)}
-.msg .who{display:flex;align-items:center;gap:6px;margin-bottom:5px;color:var(--tertiary);font-size:11px}
-.msg .who .avatar{width:20px;height:20px;font-size:8px}
-.msg.user{align-self:flex-end;max-width:78%}
-.msg.user .bubble{padding:9px 12px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:12px;color:var(--text)}
-.msg.assistant .bubble{padding:0}
-.msg .bubble p{margin:0 0 8px}.msg .bubble p:last-child{margin:0}
+.thread{max-width:748px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.msg{min-width:0;font-size:14px;line-height:24px;color:var(--text)}
+.msg.user{align-self:flex-end;max-width:min(70%,620px)}
+.msg.user .bubble{padding:10px 16px;background:var(--layer2);border-radius:20px;color:var(--text);white-space:pre-wrap}
+.msg.assistant{align-self:stretch}
+.msg.assistant .bubble{color:var(--text)}
+.msg .bubble p{margin:0 0 10px}.msg .bubble p:last-child{margin:0}
+.msg .bubble ol,.msg .bubble ul{margin:6px 0 0;padding-left:20px;color:var(--secondary)}
+.msg .bubble li{margin:3px 0}
 .msg code{font-family:var(--mono);font-size:12px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:4px;padding:1px 4px;color:#9fe4e8}
-.tool{background:var(--sidebar);border:1px solid var(--border-soft);border-left:2px solid var(--blue);border-radius:8px;padding:8px 10px;margin:8px 0;font-family:var(--mono);font-size:10.5px;line-height:1.6;color:var(--tertiary)}
-.tool b{color:var(--secondary);font-weight:500}
-.align{margin:8px 0 0;padding:8px 10px;border:1px solid var(--border-soft);border-left:2px solid var(--blue);background:var(--sidebar);border-radius:8px}
-.align b{display:block;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tertiary);font-weight:500;margin-bottom:4px}
-.align ol{margin:0;padding-left:16px;color:var(--secondary);font-size:11.5px;line-height:1.65}
-.align li{margin:2px 0}
-.created{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:8px 0 7px}
-.created-card{display:flex;flex-direction:column;gap:3px;min-width:0;padding:8px 9px;background:var(--layer1);border:1px solid var(--border-soft);border-radius:8px}
-.created-card .cid{font-family:var(--mono);font-size:9px;color:var(--tertiary)}
-.created-card .ckind{align-self:flex-start;font-size:8.5px;line-height:1.5;padding:0 5px;border-radius:4px;border:1px solid var(--border-soft);color:var(--tertiary)}
-.created-card .ckind.inv{color:#d0bdff;border-color:rgba(183,166,255,.25);background:rgba(183,166,255,.07)}
-.created-card .ckind.dev{color:#9fe4e8;border-color:rgba(57,197,207,.25);background:rgba(57,197,207,.07)}
-.created-card b{font-size:11px;font-weight:500;line-height:1.4;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.created-card .cmeta{font-size:9px;color:var(--tertiary)}
-
+.cmdrow{display:flex;align-items:center;gap:6px;min-height:28px;padding:2px 6px;margin:2px 0;border-radius:6px;color:var(--tertiary);font-size:12px}
+.cmdrow:hover{background:rgba(255,255,255,.04)}
+.cmdicon{width:16px;height:16px;flex:none;display:grid;place-items:center;color:var(--caption);font-size:11px}
+.cmdname{color:var(--secondary);white-space:nowrap}
+.cmdsep{color:var(--caption)}
+.cmdsum{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tertiary)}
 .composerWrap{flex:none;padding:0 28px 10px;background:var(--bg)}
 .composer{max-width:860px;margin:0 auto;background:var(--layer1);border:0.5px solid var(--border);border-radius:var(--radius-panel);padding:12px 14px;min-height:100px;display:flex;flex-direction:column;box-shadow:0 6px 20px rgba(0,0,0,.2)}
 .composer .ph{color:var(--caption);font-size:14px;line-height:24px;flex:1}
@@ -460,12 +452,12 @@ Git
 
 <template id="tpl-dsh">
 <div class="chat">
-  <header class="chatHead"><div class="chatTitleRow"><div class="chatTitle">Boss 二阶段崩溃 + 存档重构</div><div class="chatBadges"><span class="badge">需求对齐</span><span class="badge">2 张卡已建</span><span class="badge">5 人团队</span><span class="badge">PIC 模式</span></div></div><div class="chatTabs"><button class="chatTab active">对话</button><button class="chatTab">轨迹</button><button class="chatTab">⋯</button></div></header>
+  <header class="chatHead"><div class="chatTitleRow"><div class="chatTitle">Boss 二阶段崩溃 + 存档重构</div><div class="chatBadges"><span class="badge">5 个智能体团队</span><span class="badge">PIC 模式</span><span class="badge">2 个后台任务运行中</span></div></div><div class="chatTabs"><button class="chatTab active">对话</button><button class="chatTab">轨迹</button><button class="chatTab">⋯</button></div></header>
   <div class="chatBody"><div class="thread">
-    <div class="msg user"><div class="who"><span class="avatar">G</span>Godot 开发者</div><div class="bubble"><p>Boss 二阶段切换会崩；存档系统也想重构，兼容 v1。先别改，先跟我对一下范围和验收。</p></div></div>
-    <div class="msg assistant"><div class="who"><span class="avatar">L</span>lead</div><div class="bubble"><p>好，先对齐 3 件事，确认后再建卡。</p><div class="align"><b>需要你确认</b><ol><li>崩溃只修二阶段 hitbox 的 use-after-free，还是重做阶段控制器？</li><li>存档：v1 兼容 + 中断写入不损坏旧档，这两条都算验收？</li><li>拆成 T-102 调查卡 + T-103 开发卡，还是先只建修复卡？</li></ol></div></div></div>
-    <div class="msg user"><div class="who"><span class="avatar">G</span>Godot 开发者</div><div class="bubble"><p>只修 hitbox，不动控制器；v1 兼容和中断写入都要过；拆两张卡，调查先跑。</p></div></div>
-    <div class="msg assistant"><div class="who"><span class="avatar">L</span>lead</div><div class="bubble"><p>范围锁定。建两张卡：</p><div class="tool"><b>task_center</b> · create<br>kind=investigate · T-102 · Boss 二阶段崩溃<br>kind=dev · T-103 · 存档系统 v2</div><div class="created"><div class="created-card"><span class="cid">T-102</span><span class="ckind inv">调查</span><b>Boss 二阶段崩溃</b><span class="cmeta">就绪 · 先跑根因</span></div><div class="created-card"><span class="cid">T-103</span><span class="ckind dev">开发</span><b>存档系统 v2</b><span class="cmeta">等待 · 依赖 T-101</span></div></div><p>已进看板。T-102 等你批准派发，T-103 等 T-101 合并后自动接上。</p></div></div>
+    <div class="msg user"><div class="bubble"><p>Boss 二阶段切换会崩；存档系统也想重构，兼容 v1。先别改，先跟我对一下范围和验收。</p></div></div>
+    <div class="msg assistant"><div class="bubble"><p>先对齐三件事，确认后我再建卡：</p><ol><li>崩溃只修二阶段 hitbox 的 use-after-free，还是重做阶段控制器？</li><li>存档的 v1 兼容和中断写入，是否都算验收？</li><li>拆成一张调查卡和一张开发卡，还是先只建修复卡？</li></ol></div></div>
+    <div class="msg user"><div class="bubble"><p>只修 hitbox，不动控制器；v1 兼容和中断写入都要过；拆两张卡，调查先跑。</p></div></div>
+    <div class="msg assistant"><div class="bubble"><p>范围锁定。创建两张卡：</p><div class="cmdrow"><span class="cmdicon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 4L7 8L3 12" stroke="currentColor"/><path d="M9 12H13" stroke="currentColor"/></svg></span><span class="cmdname">task_center</span><span class="cmdsep">·</span><span class="cmdsum">create · T-102 · Boss 二阶段崩溃 · investigate</span></div><div class="cmdrow"><span class="cmdicon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 4L7 8L3 12" stroke="currentColor"/><path d="M9 12H13" stroke="currentColor"/></svg></span><span class="cmdname">task_center</span><span class="cmdsep">·</span><span class="cmdsum">create · T-103 · 存档系统 v2 · dev</span></div><p>两张卡已进入看板：T-102 是调查卡，先跑根因；T-103 是开发卡，等 T-101 合并后派发。T-102 需要你批准后才会开始。</p></div></div>
   </div></div>
   <div class="composerWrap"><div class="composer"><div class="ph">发消息或创建任务, / 调用指令, @ 文件或对话</div><div class="row"><span>＋</span><span>@</span><span>工作区内修改</span><span class="grow"></span><span>DeepSeek V4.1 Flash Max</span><span class="send">↑</span></div></div></div>
 </div>
