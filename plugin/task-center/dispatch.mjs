@@ -765,6 +765,22 @@ export function leadActivityOf(candidate, now) {
   }
 }
 
+/**
+ * T-153: last activity of ANY session (not only a Lead), from the DSH sessions
+ * directory. Returns an epoch-ms number or null when this host cannot see the
+ * session. The STALENESS THRESHOLD is deliberately NOT decided here: LEAD_STALE_MS
+ * (6h) is about a Team Lead, a session handoff is decided on minutes (see
+ * handoff.mjs SESSION_STALE_MS). One source, two very different questions.
+ */
+export function sessionLastActiveAt(sessionId) {
+  if (typeof sessionId !== 'string' || sessionId === '') return null
+  try {
+    const read = sessionActivityLookup().lastActiveOf(sessionId)
+    if (read !== null && read !== undefined && read.ok === true && Number.isFinite(read.at)) return read.at
+  } catch (error) {}
+  return null
+}
+
 export function liveLeads(ctx) {
   return leadInventory(ctx).leads.filter((lead) => lead.stale !== true)
 }
@@ -3176,6 +3192,50 @@ export function probeDispatch(ctx) {
 }
 
 /**
+ * Whether the member recorded for a task is still alive, IN THE CARD'S TEAM.
+ * known:false means this host cannot tell (no Agent Teams edge, or the card's
+ * session has no live Lead) and counts as NOT alive, so a lease still lapses
+ * instead of living forever. An existing member that is not 'failed' counts as
+ * alive — including 'inactive', which is how a teammate between turns looks.
+ *
+ * T-153: exported so the handoff inventory judges "is the old executor alive?"
+ * with the SAME rule the dispatcher uses before handing a card to a second agent.
+ */
+export function livenessOfMember(ctx, identity, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const who = identity === null || identity === undefined ? {} : identity
+  const session = typeof who.session === 'string' && who.session !== '' ? who.session : null
+  const name = typeof who.name === 'string' && who.name !== '' ? who.name : null
+  // T-130: the roster is the team of the CARD's owner session, never "the first
+  // Lead on the host". Without a session (legacy/ownerless card) the historical
+  // any-Lead scan stays, explicitly marked compat.
+  const teamSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
+  const compat = teamSession === null
+  if (session === null && name === null) return { known: false, alive: false, status: null, name: null, sessionId: teamSession, compat: compat }
+  const team = ctx.get('agentTeams')
+  const lead = teamSession === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: teamSession })
+  if (team === null || team === undefined || typeof team.listMembers !== 'function' || lead === null) {
+    return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
+  }
+  let members = []
+  try {
+    members = team.listMembers(lead)
+  } catch (error) {
+    return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
+  }
+  if (!Array.isArray(members)) return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
+  const match = members.filter(
+    (member) =>
+      member !== null &&
+      typeof member === 'object' &&
+      ((session !== null && String(member.id) === session) || (name !== null && String(member.name) === name)),
+  )[0]
+  if (match === undefined) return { known: true, alive: false, status: 'gone', name: name, sessionId: teamSession, compat: compat }
+  const status = match.status === undefined || match.status === null || match.status === '' ? 'unknown' : String(match.status)
+  return { known: true, alive: status !== 'failed', status: status, name: typeof match.name === 'string' ? match.name : name, sessionId: teamSession, compat: compat }
+}
+
+/**
  * The scheduler. One per row; one pass at a time.
  *
  * A pass:
@@ -3534,45 +3594,11 @@ export function createDispatcher(ctx, options) {
     return typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
   }
 
-  /**
-   * Whether the member recorded for a task is still alive, IN THE CARD'S TEAM.
-   * known:false means this host cannot tell (no Agent Teams edge, or the card's
-   * session has no live Lead) and counts as NOT alive, so a lease still lapses
-   * instead of living forever. An existing member that is not 'failed' counts as
-   * alive — including 'inactive', which is how a teammate between turns looks.
-   */
+  /** Whether the member recorded for a task is still alive, IN THE CARD'S TEAM.
+   * The implementation is livenessOfMember (module scope) so handoff/session
+   * surfaces can ask the same question without a second copy of the rule. */
   function memberLiveness(identity, options) {
-    const opts = options === undefined || options === null ? {} : options
-    const who = identity === null || identity === undefined ? {} : identity
-    const session = typeof who.session === 'string' && who.session !== '' ? who.session : null
-    const name = typeof who.name === 'string' && who.name !== '' ? who.name : null
-    // T-130: the roster is the team of the CARD's owner session, never "the first
-    // Lead on the host". Without a session (legacy/ownerless card) the historical
-    // any-Lead scan stays, explicitly marked compat.
-    const teamSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-    const compat = teamSession === null
-    if (session === null && name === null) return { known: false, alive: false, status: null, name: null, sessionId: teamSession, compat: compat }
-    const team = ctx.get('agentTeams')
-    const lead = teamSession === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: teamSession })
-    if (team === null || team === undefined || typeof team.listMembers !== 'function' || lead === null) {
-      return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
-    }
-    let members = []
-    try {
-      members = team.listMembers(lead)
-    } catch (error) {
-      return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
-    }
-    if (!Array.isArray(members)) return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
-    const match = members.filter(
-      (member) =>
-        member !== null &&
-        typeof member === 'object' &&
-        ((session !== null && String(member.id) === session) || (name !== null && String(member.name) === name)),
-    )[0]
-    if (match === undefined) return { known: true, alive: false, status: 'gone', name: name, sessionId: teamSession, compat: compat }
-    const status = match.status === undefined || match.status === null || match.status === '' ? 'unknown' : String(match.status)
-    return { known: true, alive: status !== 'failed', status: status, name: typeof match.name === 'string' ? match.name : name, sessionId: teamSession, compat: compat }
+    return livenessOfMember(ctx, identity, options)
   }
 
   /** The heartbeat gate: only a holder the Team still lists is renewed, so a dead

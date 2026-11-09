@@ -22,9 +22,13 @@
 import { basename, dirname, join, resolve } from 'node:path'
 import { resolveProjectRoot } from './board.mjs'
 import * as model from './service.mjs'
+// T-153: the handoff inventory decides the next step; the pure module owns the
+// rule so /state, create/start and onboard cannot drift apart.
+import { handoffNextCode } from './handoff.mjs'
 
-/** The onboarding contract version. Bump only when the answer changes shape. */
-export const ONBOARD_VERSION = 1
+/** The onboarding contract version. Bump only when the answer changes shape.
+ * v2 (T-153): adds the handoff stage/codes and the handoff block. */
+export const ONBOARD_VERSION = 2
 
 /**
  * Every next.code `onboard` can answer, in PRIORITY order (the first matching
@@ -36,6 +40,11 @@ export const ONBOARD_NEXT_CODES = [
   'not-a-project',
   'fix-host',
   'open-owning-session',
+  // T-153: another session still owns in-progress cards. The user picks ONE of
+  // these before this session may create anything (resume > takeover > read-only).
+  'resume-owning-session',
+  'takeover-active-tasks',
+  'join-project-read-only',
   'bootstrap-team',
   'approve-start',
   'triage-blocked',
@@ -53,6 +62,9 @@ const NEXT_LABELS = {
   'not-a-project': '换项目',
   'fix-host': '修宿主',
   'open-owning-session': '换会话',
+  'resume-owning-session': '回原会话',
+  'takeover-active-tasks': '接管进行中',
+  'join-project-read-only': '只读加入',
   'bootstrap-team': '建团队',
   'approve-start': '批派发',
   'triage-blocked': '处理卡住',
@@ -257,7 +269,11 @@ export function blockedReasonOf(task) {
 
 /**
  * The onboarding stage, strictly in the contract order:
- * unusable, choose, setup, attention, active, empty, idle.
+ * unusable, choose, handoff, setup, attention, active, empty, idle.
+ *
+ * T-153: 'handoff' outranks setup/attention. While another session's in-progress
+ * cards are unresolved, the new session must NOT bootstrap a team or start work:
+ * the user first chooses resume / read-only / takeover.
  *
  * @param facts - every field is optional so the function is unit-testable.
  */
@@ -266,6 +282,8 @@ export function decideOnboardStage(facts) {
   if (f.kind === 'none') return 'choose'
   if (f.kind !== 'root') return 'unusable'
   if (f.preflightOk !== true) return 'unusable'
+  const handoff = handoffFactsOf(f)
+  if (handoff.required === true && (handoff.decision === null || handoff.decision === undefined)) return 'handoff'
   if (f.teamFailed === true) return 'setup'
   const counts = f.counts === undefined || f.counts === null ? {} : f.counts
   const activeCount = Number.isFinite(f.activeCount)
@@ -279,6 +297,21 @@ export function decideOnboardStage(facts) {
   if (Number(readyCount) > 0 && f.dispatchState === 'running') return 'active'
   if (Number(counts.total) === 0) return 'empty'
   return 'idle'
+}
+
+/** The handoff block of the facts with every field present (never null). */
+export function handoffFactsOf(f) {
+  const source = f !== null && f !== undefined && f.handoff !== null && typeof f.handoff === 'object' ? f.handoff : {}
+  const eligibility = source.eligibility !== null && typeof source.eligibility === 'object' ? source.eligibility : {}
+  const takeover = eligibility.takeover !== null && typeof eligibility.takeover === 'object' ? eligibility.takeover : {}
+  return {
+    required: source.required === true,
+    reason: source.reason === undefined ? null : source.reason,
+    decision: source.decision === undefined ? null : source.decision,
+    sessions: listOf(source.sessions),
+    cards: listOf(source.cards),
+    eligibility: { takeover: { ok: takeover.ok === true, blockedBy: listOf(takeover.blockedBy) } },
+  }
 }
 
 function detailFor(code, f) {
@@ -301,6 +334,23 @@ function detailFor(code, f) {
     }
     case 'open-owning-session':
       return '这个会话不属于 ' + shorten(root, 120) + '；请从拥有它的会话里接入，或给我一个属于本会话的项目路径。团队不会借用别的项目。'
+    case 'resume-owning-session': {
+      const handoff = handoffFactsOf(f)
+      const live = handoff.sessions.filter((session) => session.status === 'live' && session.cards !== undefined && Number(session.cards.active) > 0)
+      const listed = live.length === 0 ? '' : live.map((session) => session.sessionId + '（' + String(session.cards.active) + ' 张进行中）').join('、')
+      return '进行中的卡属于' + (listed === '' ? '另一个会话' : '仍在活动的会话 ' + listed) + '；请回到那个会话继续，或明确告诉我只读加入 / 接管这些卡（旧执行者还活着时不能抢锁）。'
+    }
+    case 'takeover-active-tasks': {
+      const handoff = handoffFactsOf(f)
+      const ids = listOf(handoff.cards).map((card) => card.id).filter((id) => stringOf(id) !== '')
+      return '旧会话已静默且旧执行者已停止：' + (ids.length === 0 ? '进行中的卡' : ids.join('、')) + ' 可以接管。这是不可逆的归属变更，需要你确认：我只会释放过期租约/锁、复用原工作副本、并给接管会话重新排队评审/测试，attempts 不变。'
+    }
+    case 'join-project-read-only': {
+      const handoff = handoffFactsOf(f)
+      const blocked = handoff.eligibility.takeover.blockedBy
+      const why = blocked.length === 0 ? '旧会话或旧执行者不能确认已停止' : '有执行者仍存活（' + blocked.slice(0, 2).map((entry) => entry.taskId + ' ' + String(entry.reason)).join('、') + '）'
+      return '我没法安全接管：' + why + '。可以只读加入（看板可读、不能派发旧卡），或在旧会话里继续；接管需要先显式中断旧执行者。'
+    }
     case 'bootstrap-team': {
       const why = stringOf(f.teamError) === '' ? '团队仍然没有就绪' : f.teamError
       const missing = listOf(f.missingRoles)
@@ -361,6 +411,13 @@ export function selectOnboardNext(facts) {
   if (f.kind === 'gitless') return nextStepOf('git-init', f)
   if (f.kind !== 'root') return nextStepOf('not-a-project', f)
   if (f.preflightOk !== true) return nextStepOf('fix-host', f)
+  // T-153: an unresolved handoff outranks Team bootstrap. The user decides first.
+  // The RAW handoff is used (not the display projection) so liveness-based
+  // eligibility — resume vs takeover vs read-only — is exactly the host's.
+  {
+    const code = handoffNextCode(f.handoff !== null && typeof f.handoff === 'object' ? f.handoff : null)
+    if (code !== null) return nextStepOf(code, f)
+  }
   if (f.teamFailureCode === 'project-mismatch' || f.teamFailureCode === 'no-session-context' || f.teamFailureCode === 'no-session') {
     return nextStepOf('open-owning-session', f)
   }
@@ -409,6 +466,17 @@ export function renderOnboardBrief(input) {
   }
   if (stringOf(f.taskLine) === '') lines.push(TASK_LINE_PREFIX + '无卡')
   else lines.push(f.taskLine)
+  // T-153: another session still owns in-flight cards. Name them BEFORE the team
+  // line, because the user must choose (resume / read-only / takeover) before this
+  // session may bootstrap a team or create a card.
+  const handoff = f.handoff === null || f.handoff === undefined ? null : handoffFactsOf(f)
+  if (handoff !== null && handoff.required === true) {
+    const statusText = { live: '在线', stale: '已静默', unknown: '未知' }
+    const owning = handoff.sessions.filter((session) => session !== null && session.cards !== undefined && Number(session.cards.active) > 0)
+    const shown = (owning.length === 0 ? handoff.sessions : owning).slice(0, 3).map((session) => (statusText[session.status] === undefined ? String(session.status) : statusText[session.status]) + ' ' + shorten(session.sessionId, 24))
+    const ids = handoff.cards.map((card) => stringOf(card.id)).filter((id) => id !== '').slice(0, 4)
+    lines.push('交接  ' + (shown.length === 0 ? '（无参与会话）' : shown.join('、')) + (ids.length === 0 ? '' : ' · 进行中 ' + ids.join('、')))
+  }
   // Team + dispatch + queue on one line, so "is there a team" and "is dispatch
   // running" are answerable without a second read.
   if (f.team !== null && f.team !== undefined) {
@@ -490,6 +558,9 @@ export function needsUserFor(next, facts) {
   if (code === 'choose-project') add('给我一个项目路径', 'session')
   else if (code === 'git-init') add('确认是否要在这个目录跑 git init', 'session')
   else if (code === 'open-owning-session') add('从拥有该项目的会话里接入，或给我一个属于本会话的项目路径', 'session')
+  else if (code === 'resume-owning-session') add('回到进行中卡片所属的会话继续；或明确告诉我只读加入 / 接管这些卡', 'session')
+  else if (code === 'takeover-active-tasks') add('确认接管这些进行中的卡（旧会话已静默、旧执行者已停止）', 'session')
+  else if (code === 'join-project-read-only') add('选择只读加入，或回到旧会话继续', 'session')
   else if (code === 'fix-host') add('修好宿主缺项（见上）', 'host')
   else if (code === 'approve-start') add('在面板 → 队列 批准或拒绝派发申请', 'panel')
   else if (code === 'triage-blocked') add('在面板的看板里处理卡住的卡', 'panel')

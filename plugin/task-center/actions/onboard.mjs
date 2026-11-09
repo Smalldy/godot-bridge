@@ -38,6 +38,10 @@ export function createOnboardAction(deps) {
   const renderTaskLine = deps.renderTaskLine
   const blockedSuffixOf = deps.blockedSuffixOf
   const teamLabelOf = deps.teamLabelOf
+  // T-153: the handoff inventory and the two user decisions it offers.
+  const handoffFor = deps.handoffFor
+  const performTakeover = deps.performTakeover
+  const recordJoin = deps.recordJoin
   const ok = deps.ok
   const failure = deps.failure
 
@@ -92,6 +96,10 @@ export function createOnboardAction(deps) {
       teamFailureCode: null,
       teamError: null,
       missingRoles: [],
+      // T-153: other sessions' in-progress cards (see handoff.mjs) and whether
+      // this session still has to decide about them.
+      handoff: null,
+      handoffBlocked: false,
       stage: null,
     }
 
@@ -118,6 +126,8 @@ export function createOnboardAction(deps) {
           needsUser: needsUserFor(next, facts),
           warnings: warnings,
           next: next,
+          handoff: facts.handoff === undefined ? null : facts.handoff,
+          takeover: null,
           checkedAt: new Date(now).toISOString(),
         },
       })
@@ -197,7 +207,44 @@ export function createOnboardAction(deps) {
       warnings.push('项目登记表没写进去：' + String(registry.error === null || registry.error === undefined ? '原因未知' : registry.error) + '；重启后可能找不到这个项目。')
     }
 
-    // ── Team: reuse when ok, bootstrap ONCE when missing ────────────────────
+    // ── board + handoff inventory BEFORE any Team bootstrap (T-153) ─────────
+    // The board is project state; a new session must see who still owns
+    // in-flight cards BEFORE the host could bootstrap a second team.
+    const read = await state.read(root)
+    if (read.failed !== null) {
+      facts.preflightOk = false
+      facts.preflightMissing = ['看板读不出来：' + String(read.failed.message === undefined ? read.failed.code : read.failed.message)]
+      return shortOnboard('unusable', '看板读不出来：' + String(read.failed.message === undefined ? read.failed.code : read.failed.message), selectOnboardNext(facts), root)
+    }
+    let board = read.board
+    let handoff = handoffFor(root, board, sessionId)
+    let takeoverResult = null
+    const decisionInput = source.handoff !== undefined && source.handoff !== null && typeof source.handoff === 'object' ? source.handoff : null
+    if (decisionInput !== null) {
+      const decision = typeof decisionInput.decision === 'string' ? decisionInput.decision : ''
+      if (decision === 'takeover') {
+        const outcome = await performTakeover(root, sessionId, decisionInput, context)
+        if (outcome.ok !== true) return outcome
+        board = outcome.board
+        takeoverResult = outcome.takeover
+        setup.did.push({ step: 'handoff-takeover', ok: true, detail: outcome.takeover.taskIds.join('、') })
+        handoff = handoffFor(root, board, sessionId)
+      } else if (decision === 'join-read-only') {
+        const outcome = await recordJoin(root, sessionId, decisionInput, context)
+        if (outcome.ok !== true) return outcome
+        board = outcome.board
+        setup.did.push({ step: 'handoff-join', ok: true, detail: '只读加入' })
+        handoff = handoffFor(root, board, sessionId)
+      } else {
+        return failure('bad-handoff-decision', 'handoff.decision must be "takeover" or "join-read-only"')
+      }
+    }
+    const handoffBlocked = handoff.required === true && (handoff.decision === null || handoff.decision === undefined)
+    facts.handoff = handoff
+    facts.handoffBlocked = handoffBlocked
+
+    // ── Team: reuse when ok, bootstrap ONCE when missing — but NEVER while
+    //    another session's in-progress cards are unresolved (T-153) ─────────
     const teamRead = await projectTeamFor(root, sessionId)
     let team = teamRead.team
     let bootstrapped = false
@@ -205,7 +252,12 @@ export function createOnboardAction(deps) {
     let teamFailed = false
     let teamFailureCode = null
     let teamError = null
-    if (team.available !== true) {
+    if (handoffBlocked) {
+      // No second team: the handoff decision comes first. The session's own team
+      // state is still reported, and nothing is created.
+      setup.did.push({ step: 'handoff-pending', ok: true, detail: String(handoff.reason === null || handoff.reason === undefined ? 'handoff' : handoff.reason) })
+      if (team.available !== true) warnings.push('本环境没有团队服务（单机模式）：建卡和派发不走团队。')
+    } else if (team.available !== true) {
       warnings.push('本环境没有团队服务（单机模式）：建卡和派发不走团队。')
     } else if (team.ok === true) {
       setup.did.push({ step: 'team-ready', ok: true, detail: typeof team.lead === 'string' ? team.lead : '' })
@@ -236,7 +288,9 @@ export function createOnboardAction(deps) {
         }
       }
     }
-    if (team.available !== false && team.ok !== true) {
+    if (handoffBlocked !== true && team.available !== false && team.ok !== true) {
+      // An unresolved handoff is not a Team failure: the session simply may not
+      // build a second team yet (T-153), so the stage stays 'handoff'.
       teamFailed = true
       if (teamFailureCode === null) teamFailureCode = typeof team.error === 'string' && team.error !== '' ? team.error : 'no-members'
       if (teamError === null) teamError = team.error === undefined || team.error === null ? '团队仍然不完整' : String(team.error)
@@ -249,13 +303,6 @@ export function createOnboardAction(deps) {
     facts.missingRoles = team !== null && team !== undefined && Array.isArray(team.missingRoles) ? team.missingRoles : []
 
     // ── board facts (compact) ───────────────────────────────────────────────
-    const read = await state.read(root)
-    if (read.failed !== null) {
-      facts.preflightOk = false
-      facts.preflightMissing = ['看板读不出来：' + String(read.failed.message === undefined ? read.failed.code : read.failed.message)]
-      return shortOnboard('unusable', '看板读不出来：' + String(read.failed.message === undefined ? read.failed.code : read.failed.message), selectOnboardNext(facts), root)
-    }
-    const board = read.board
     const summary = summariseBoard(board)
     const dispatch = summary.dispatch
     const dispatchState = dispatch !== null && dispatch !== undefined && typeof dispatch.state === 'string' ? dispatch.state : null
@@ -331,6 +378,7 @@ export function createOnboardAction(deps) {
       attention: attention,
       warnings: warnings,
       next: next,
+      handoff: handoff,
     })
     return ok({
       onboard: {
@@ -346,6 +394,11 @@ export function createOnboardAction(deps) {
         needsUser: needsUser,
         warnings: warnings,
         next: next,
+        // T-153: the structured handoff block (required/reason/sessions/cards/
+        // eligibility/decision) and, when a takeover ran in this call, its audit
+        // summary. A caller decides from handoff + next, never from the brief text.
+        handoff: handoff,
+        takeover: takeoverResult,
         checkedAt: new Date(now).toISOString(),
       },
     })

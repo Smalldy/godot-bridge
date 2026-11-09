@@ -45,7 +45,10 @@ import {
   probeWorktree,
   serialiseWorktreeCreate,
   workerPool,
+  LEAD_STALE_MS,
 } from '../../plugin/task-center/dispatch.mjs'
+// T-153: the handoff window is its own threshold, deliberately not LEAD_STALE_MS.
+import { SESSION_STALE_MS, sessionLivenessFrom, staleMsOf } from '../../plugin/task-center/handoff.mjs'
 import { DEFAULT_ROLE_PROMPTS, ROLE_PROVISION_TIMEOUT_MS, ROLE_TEMPLATE_VARIABLE_NAMES, TASK_HEARTBEAT_MS, TASK_LEASE_MS, VERIFY_TAIL_BYTES, defaultRoleConfig, normaliseRoleConfig } from '../../plugin/task-center/schema.mjs'
 
 // Project-scoped slot names: a role slot carries the project it was provisioned
@@ -5168,6 +5171,81 @@ try {
     scheduler.dispose()
   }
 
+  // ══ T-153: handoff liveness window + a requeued card keeps its checkout ═══
+  {
+    // (a) the session window is its own threshold, not the 6h Lead window.
+    const now = Date.parse('2026-11-01T12:00:00.000Z')
+    const staleMs = staleMsOf(15 * 60 * 1000)
+    check(
+      'T-153 liveness: evidence inside the handoff window is live',
+      sessionLivenessFrom({ lastSeenAt: new Date(now - 60 * 1000).toISOString(), now: now, staleMs: staleMs }) === 'live' &&
+        sessionLivenessFrom({ lastActiveAt: now - 60 * 1000, now: now, staleMs: staleMs }) === 'live',
+      JSON.stringify({ lastSeen: new Date(now - 60 * 1000).toISOString() }),
+    )
+    check(
+      'T-153 liveness: older evidence is stale while the Lead window is still 6h',
+      sessionLivenessFrom({ lastSeenAt: new Date(now - 30 * 60 * 1000).toISOString(), now: now, staleMs: staleMs }) === 'stale' &&
+        now - (now - 30 * 60 * 1000) < LEAD_STALE_MS && staleMs < LEAD_STALE_MS,
+      JSON.stringify({ staleMs: staleMs, leadMs: LEAD_STALE_MS }),
+    )
+    check(
+      'T-153 liveness: the window is configurable and independent of the Lead window',
+      staleMsOf(60 * 1000) === 60 * 1000 && staleMsOf(undefined) === staleMs && staleMs === SESSION_STALE_MS && staleMs !== LEAD_STALE_MS,
+      JSON.stringify({ window: staleMs, lead: LEAD_STALE_MS }),
+    )
+    check(
+      'T-153 liveness: no evidence at all is unknown (never guessed live)',
+      sessionLivenessFrom({ lastSeenAt: null, lastActiveAt: null, leaseAt: null, now: now, staleMs: staleMs }) === 'unknown',
+      JSON.stringify(sessionLivenessFrom({ now: now, staleMs: staleMs })),
+    )
+
+    // (b) a takeover requeues a running card; the next dispatch ADOPTS the same
+    // checkout instead of adding a second one, and does not charge the handoff.
+    const takeoverRig = createRig({ allowSpawn: false, git: createFakeGit({ trackWorktrees: true }) })
+    const card = await createTask(takeoverRig, { title: 'takeover me', writeFiles: [] })
+    await takeoverRig.action('settings', { maxConcurrent: 1 })
+    await takeoverRig.action('start')
+    await takeoverRig.settle()
+    const claimed = (await snapshot(takeoverRig)).tasks.filter((task) => task.id === card.id)[0]
+    check('T-153 setup: the card is running in its first checkout', claimed.status === 'running' && claimed.worktree !== null && claimed.attempts === 1, JSON.stringify({ status: claimed.status, worktree: claimed.worktree, attempts: claimed.attempts }))
+    // Pause dispatch so the requeued state is observable before the host picks
+    // it up again (the takeover itself must not charge the handoff attempt).
+    await takeoverRig.action('pause')
+    // Hand the card to an abandoned session and make that session stale.
+    const stale = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+    const projectKey = projectIdOf(PROJECT)
+    takeoverRig.state.memory.registry = {
+      version: 1,
+      lastActiveProjectId: projectKey,
+      projects: [{ id: projectKey, root: PROJECT, lastSeenAt: stale, lastSessionId: 'session-old', worktreeRoot: null, preflight: null, sessions: [{ sessionId: 'session-old', firstSeenAt: stale, lastSeenAt: stale }] }],
+    }
+    takeoverRig.state.memory.registryLoaded = true
+    await patchTask(takeoverRig, card.id, (task) => {
+      task.ownerSession = 'session-old'
+      task.leaseUntil = stale
+    })
+    const takeover = await takeoverRig.api.perform('onboard', { handoff: { decision: 'takeover', confirm: true, reason: 'abandoned session' } }, { projectPath: PROJECT, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' })
+    const afterTakeover = (await snapshot(takeoverRig)).tasks.filter((task) => task.id === card.id)[0]
+    check(
+      'T-153 takeover requeues the card and keeps its checkout without charging an attempt',
+      takeover.ok === true && afterTakeover.status === 'pending' && afterTakeover.ownerSession === 'session-lead' && afterTakeover.worktree === claimed.worktree && afterTakeover.branch === claimed.branch && afterTakeover.attempts === 1,
+      JSON.stringify({ ok: takeover.ok, code: takeover.code, status: afterTakeover.status, owner: afterTakeover.ownerSession, worktree: afterTakeover.worktree, attempts: afterTakeover.attempts }),
+    )
+    const addsBefore = takeoverRig.git.calls.filter((call) => call.name === 'worktreeAdd').length
+    await takeoverRig.action('start')
+    await takeoverRig.settle()
+    const redispatch = (await snapshot(takeoverRig)).tasks.filter((task) => task.id === card.id)[0]
+    const addsAfter = takeoverRig.git.calls.filter((call) => call.name === 'worktreeAdd').length
+    check(
+      'T-153 the next dispatch ADOPTS the kept checkout instead of adding a second one',
+      redispatch.status === 'running' && redispatch.assignee !== null && redispatch.attempts === 2 && addsAfter === addsBefore && redispatch.dispatch !== null && redispatch.dispatch.via === 'adopt',
+      JSON.stringify({ status: redispatch.status, attempts: redispatch.attempts, addsBefore: addsBefore, addsAfter: addsAfter, via: redispatch.dispatch && redispatch.dispatch.via }),
+    )
+    const adoptionRow = (redispatch.history || []).filter((row) => String(row.note).indexOf('adopting') >= 0)[0]
+    check('T-153 the dispatch history says it adopted the handoff checkout', adoptionRow !== undefined, JSON.stringify({ history: (redispatch.history || []).slice(-2), via: redispatch.dispatch && redispatch.dispatch.via }))
+    takeoverRig.scheduler.dispose()
+  }
+
   // ══ static guards: card-affecting paths must name a session ═════════════
   {
     const dispatchSource = readFileSync(new URL('../../plugin/task-center/dispatch.mjs', import.meta.url), 'utf8')
@@ -5221,8 +5299,8 @@ try {
     )
     const apiInterruptCalls = callSites(apiSource, 'interruptMemberNamed')
     check(
-      'T-130 static: the API interrupt call also passes the card session',
-      apiInterruptCalls.length === 1 && apiInterruptCalls[0].indexOf('sessionId') >= 0,
+      'T-130 static: every API interrupt call passes the card session (T-153 adds the handoff interrupt)',
+      apiInterruptCalls.length === 2 && apiInterruptCalls.every((call) => call.indexOf('sessionId') >= 0),
       JSON.stringify(apiInterruptCalls.map((call) => call.slice(0, 120))),
     )
     const stageBody = functionBody(dispatchSource, 'async function ensureStageRoles(')
@@ -5234,7 +5312,9 @@ try {
         stageBody.indexOf('resolveAnyLead(') < 0,
       stageBody.slice(0, 200),
     )
-    const livenessBody = functionBody(dispatchSource, 'function memberLiveness(')
+    // T-153: the rule moved to module scope (livenessOfMember) so the handoff
+    // inventory judges "old executor alive?" with the same code the dispatcher uses.
+    const livenessBody = functionBody(dispatchSource, 'export function livenessOfMember(')
     const interruptBody = functionBody(dispatchSource, 'async function interruptMemberNamed(')
     check(
       'T-130 static: memberLiveness/interruptMemberNamed only reach any-Lead in the named legacy branch',

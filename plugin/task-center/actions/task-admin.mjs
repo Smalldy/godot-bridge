@@ -18,6 +18,9 @@ export function createTaskAdminActions(deps) {
   const locks = deps.locks
   const state = deps.state
   const preflightRefusal = deps.preflightRefusal
+  // T-153: the SAME session/handoff gate the snapshot exposes, so create/start
+  // cannot answer "bootstrap-team" to a session that does not own this board.
+  const sessionGate = deps.sessionGate
   const readBoardOrFail = deps.readBoardOrFail
   const worktreeRefusal = deps.worktreeRefusal
   const scheduler = deps.scheduler
@@ -26,7 +29,24 @@ export function createTaskAdminActions(deps) {
   const ok = deps.ok
   const failure = deps.failure
 
+  /** T-153: the refusal that carries the handoff block + the session next step. */
+  function handoffRefusal(session, action) {
+    const handoff = session === null || session === undefined ? null : session.handoff
+    const cards = handoff !== null && handoff !== undefined && Array.isArray(handoff.cards) ? handoff.cards : []
+    const ids = cards.map((card) => String(card.id))
+    return failure(
+      'handoff-required',
+      action + ' refused: ' + String(ids.length) + ' in-progress card(s) (' + ids.join(', ') + ') belong to another session and the handoff is not decided yet. Ask the user to resume that session, join read-only, or take the cards over.',
+      { handoff: handoff, nextStep: session === null || session === undefined ? null : session.nextStep },
+    )
+  }
+
   async function create(source, context, projectPath) {
+    // T-153: an unresolved handoff blocks new cards and answers with the SAME
+    // session next step /state shows (never 'bootstrap-team' from a foreign
+    // session). The decision is recorded by onboard({ handoff }).
+    const session = typeof sessionGate === 'function' ? await sessionGate(projectPath, callerSessionId(source, context)) : null
+    if (session !== null && session !== undefined && session.blocked === true) return handoffRefusal(session, 'create')
     // T-110: no cards before the project has a Team. The refusal carries the
     // instruction, so the calling session can bootstrap it and retry.
     const gate = await projectTeamFor(projectPath, callerSessionId(source, context))
@@ -34,7 +54,7 @@ export function createTaskAdminActions(deps) {
       return failure(
         'no-team-for-project',
         'This project has no Team (' + String(gate.team.error) + '), so a card cannot be created yet.',
-        { team: gate.team, nextStep: gate.nextStep },
+        { team: gate.team, nextStep: session !== null && session !== undefined && session.nextStep !== undefined && session.nextStep !== null ? session.nextStep : gate.nextStep },
       )
     }
     const built = taskInput(projectPath, source)
@@ -104,8 +124,15 @@ export function createTaskAdminActions(deps) {
     if (requestedTaskId !== '') {
       return failure('start-is-dispatch-only', 'start toggles the dispatch scheduler; it does not start a single card. Remove taskId and let the scheduler pick ready cards.')
     }
+    const sessionId = callerSessionId(source, context)
+    // T-153: no dispatch pass while another session's in-progress cards are
+    // unresolved for THIS session. Same gate as create, same next step as /state.
+    const session = typeof sessionGate === 'function' ? await sessionGate(projectPath, sessionId) : null
+    if (session !== null && session !== undefined && session.blocked === true) return handoffRefusal(session, 'start')
     {
-      const gate = await preflightRefusal(projectPath, { sessionId: callerSessionId(source, context) })
+      // T-152 §8: the team-missing refusal answers with the session-aware next
+      // step, so a foreign session is never told to bootstrap this project team.
+      const gate = await preflightRefusal(projectPath, { sessionId: sessionId, nextStep: session !== null && session !== undefined ? session.nextStep : undefined })
       if (gate !== null) return gate
     }
     if (context !== undefined && context !== null && context.role === 'agent') {
