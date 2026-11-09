@@ -5383,15 +5383,30 @@ rig.scheduler.dispose()
     both.some((entry) => entry.root === PROJECT) && both.some((entry) => entry.root === OTHER),
     JSON.stringify(both.map((entry) => entry.root)),
   )
-  // Visibility: an explicit snapshot says where the project came from, and warns
-  // when the host last drove a different project.
+  // Visibility: an explicit snapshot says where the project came from, and (T-152)
+  // warns only when the PANEL SESSION resolves to a different project than the
+  // board it is reading — never because the host recently drove something else.
   restarted.touchProject(PROJECT)
-  rig.state.touchProject(PROJECT)
-  const snap = await rig.api.snapshot(OTHER, { full: false, resolvedFrom: 'panel' })
+  rig.state.touchProject(OTHER, 'session-other')
+  const snap = await rig.api.snapshot(OTHER, { full: false, resolvedFrom: 'panel', sessionId: 'session-lead' })
   check(
-    'the snapshot exposes the project ref, resolution source and a registry warning',
-    snap.ok === true && snap.projectId === projectIdOf(OTHER) && snap.resolvedFrom === 'panel' && typeof snap.projectWarning === 'string' && snap.registryConsistent === false,
-    JSON.stringify({ id: snap.projectId, from: snap.resolvedFrom, warning: snap.projectWarning }),
+    'the snapshot exposes the project ref, resolution source and a session/board mismatch warning',
+    snap.ok === true &&
+      snap.projectId === projectIdOf(OTHER) &&
+      snap.resolvedFrom === 'panel' &&
+      typeof snap.projectWarning === 'string' &&
+      snap.registryConsistent === false &&
+      snap.scope.boardProject.id === projectIdOf(OTHER) &&
+      snap.scope.currentSessionProject === PROJECT,
+    JSON.stringify({ id: snap.projectId, from: snap.resolvedFrom, warning: snap.projectWarning, scope: snap.scope && { board: snap.scope.boardProject, session: snap.scope.currentSessionProject } }),
+  )
+  // T-152 §5: a host that last drove ANOTHER project (here through a different
+  // session) is not a warning when the panel session and the board agree.
+  const aligned = await rig.api.snapshot(PROJECT, { full: false, resolvedFrom: 'session', sessionId: 'session-lead' })
+  check(
+    'T-152 projectWarning does not fire because the host drove another project last',
+    aligned.ok === true && aligned.registryConsistent === true && aligned.projectWarning === null && aligned.scope.boardProject.root === PROJECT && aligned.scope.currentSessionProject === PROJECT,
+    JSON.stringify({ consistent: aligned.registryConsistent, warning: aligned.projectWarning, lastActive: rig.state.memory.registry.lastActiveProjectId }),
   )
   // The resolver has no cwd/hint fallback: with no explicit and no session
   // workspace it refuses, even though the registry knows projects.
@@ -7408,21 +7423,49 @@ rig.scheduler.dispose()
 
 
 // ══════════════════════════════════════════════════════════════════════════
-// T-139: /state makes the executor team's project explicit (T-136 fix A).
-// The member table stays the REQUEST session's Team (T-122/T-130); the new
-// fields only say which project that Team lives in and whether it matches the
-// project this snapshot is for.
+// T-139 / T-152: the BOARD belongs to the PROJECT, a Team belongs to a SESSION.
+//
+// /state now exposes the scopes explicitly — scope.boardProject / panelSession /
+// projectSessions / sessionSummaries / currentSessionProject — so the project's
+// board and the current session's team can never be read as one thing. There is
+// no primary/selected session: EVERY session that participated is kept, and each
+// one keeps its own team and its own ownerSession card count.
 // ══════════════════════════════════════════════════════════════════════════
 {
   const T139_NOW = Date.parse('2026-11-02T12:00:00.000Z')
+  const T139_STAMP = new Date(T139_NOW).toISOString()
   const ALPHA = PROJECT + '-alpha'
   const BETA = PROJECT + '-beta'
+  const GAMMA = PROJECT + '-gamma'
+  const DELTA = PROJECT + '-delta'
   const SA = 'session-alpha'
   const SB = 'session-beta'
   const SX = 'session-unknown'
   const fs = createFakeFs()
-  seedBoard(fs, ALPHA, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [] }))
-  seedBoard(fs, BETA, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [] }))
+  const ownedTask = (id, owner, status) => ({
+    id: id,
+    title: 'Card ' + id,
+    status: status === undefined ? 'pending' : status,
+    priority: 0,
+    dependsOn: [],
+    writeFiles: [],
+    evidence: '',
+    ownerSession: owner,
+    history: [],
+    createdAt: T139_STAMP,
+    updatedAt: T139_STAMP,
+    attempts: 0,
+    maxAttempts: 3,
+  })
+  // Project A is SHARED: two sessions own one card each. That is what makes
+  // "board from A, team per session" provable in one snapshot.
+  seedBoard(fs, ALPHA, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [ownedTask('T-1', SA), ownedTask('T-2', SB, 'done')] }))
+  // Project B carries a card whose owner never touched the registry: the
+  // participation set must union it in, never hide it behind the new session.
+  seedBoard(fs, BETA, JSON.stringify({ version: 2, seq: 2, dispatch: { state: 'paused' }, tasks: [ownedTask('T-5', 'session-beta-legacy', 'done')] }))
+  // A LEGACY board: no registry record, only tasks[].ownerSession.
+  seedBoard(fs, GAMMA, JSON.stringify({ version: 2, seq: 4, dispatch: { state: 'paused' }, tasks: [ownedTask('T-7', 'session-gamma-one'), ownedTask('T-8', 'session-gamma-two'), ownedTask('T-9', 'session-gamma-one', 'done')] }))
+  seedBoard(fs, DELTA, JSON.stringify({ version: 2, seq: 1, dispatch: { state: 'paused' }, tasks: [] }))
   const leadA = { id: SA, name: 'lead-alpha', role: 'lead', status: 'running' }
   const leadB = { id: SB, name: 'lead-beta', role: 'lead', status: 'running' }
   const rosterA = [
@@ -7463,6 +7506,12 @@ rig.scheduler.dispose()
   const state = createState(ctx, { now: () => T139_NOW, homeDir: join(PROJECT, '..', 't139-home'), sessionLookup: null })
   state.setSessionRoot(SA, ALPHA)
   state.setSessionRoot(SB, BETA)
+  // T-152: project A has TWO participating sessions; neither is primary. Seed the
+  // registry directly so the FIRST panel read already sees the full set — the
+  // openProject/onboard/route assertions below prove those paths record too.
+  state.touchProject(ALPHA, SA)
+  state.touchProject(ALPHA, SB)
+  await state.flushRegistry()
   const roles = createRoleManager(ctx, { state: state, now: () => T139_NOW })
   const git = createFakeGit({ project: ALPHA, fs: fs })
   const scheduler = createDispatcher(ctx, { state: state, projectPath: () => ALPHA, allowSpawn: false, git: git, roles: roles })
@@ -7470,64 +7519,236 @@ rig.scheduler.dispose()
   const surface = install({ ctx: ctx, state: state, api: api, scheduler: scheduler })
   const stateOf = async (project, session) => (await call(surface, STATE_PATH + '?project=' + encodeURIComponent(project) + '&session=' + encodeURIComponent(session), {})).json()
 
+  const NO_PRIMARY = ['primarySession', 'selectedSession', 'primary', 'selected']
+
   const ab = await stateOf(ALPHA, SB)
+  const abScope = ab.scope === undefined || ab.scope === null ? {} : ab.scope
+  const abSessions = (abScope.projectSessions || []).map((row) => row.sessionId).sort()
+  const abSummaries = abScope.sessionSummaries || []
+  const sumA = abSummaries.filter((row) => row.sessionId === SA)[0]
+  const sumB = abSummaries.filter((row) => row.sessionId === SB)[0]
   check(
-    'T-139 project A + session B: the executor team is B and projectMatch is false',
+    'T-152 project A + panel B: board/counts/dispatch come from A, the scope names both sessions',
     ab.ok === true &&
       ab.project === ALPHA &&
-      ab.sessionProject === BETA &&
-      ab.workers.lead === 'lead-beta' &&
-      ab.workers.session === SB &&
-      ab.workers.project === BETA &&
-      ab.workers.projectMatch === false &&
-      ab.team.session === SB &&
-      ab.team.project === BETA &&
-      ab.team.projectMatch === false,
-    JSON.stringify({ project: ab.project, sessionProject: ab.sessionProject, workers: ab.workers && { lead: ab.workers.lead, session: ab.workers.session, project: ab.workers.project, match: ab.workers.projectMatch }, team: ab.team && { session: ab.team.session, project: ab.team.project, match: ab.team.projectMatch } }),
+      ab.projectId === projectIdOf(ALPHA) &&
+      ab.tasks.map((task) => task.id).join(',') === 'T-1,T-2' &&
+      ab.counts.total === 2 &&
+      ab.dispatch.state === 'paused' &&
+      abScope.boardProject !== undefined &&
+      abScope.boardProject.id === projectIdOf(ALPHA) &&
+      abScope.boardProject.root === ALPHA &&
+      abScope.panelSession === SB &&
+      abSessions.join(',') === [SA, SB].sort().join(',') &&
+      abScope.currentSessionProject === BETA,
+    JSON.stringify({ project: ab.project, scope: { board: abScope.boardProject, panel: abScope.panelSession, sessions: abSessions, current: abScope.currentSessionProject } }),
   )
   check(
-    'T-139 the member table is still the SESSION team (T-122), not project A',
-    ab.workers.members.map((member) => member.name).join(',') === rosterB.filter((member) => member.role === 'teammate').map((member) => member.name).join(','),
-    JSON.stringify(ab.workers.members.map((member) => member.name)),
+    'T-152 sessionSummaries keeps A and B apart: own team, own ownerSession card count',
+    sumA !== undefined &&
+      sumB !== undefined &&
+      sumA.team.lead === 'lead-alpha' &&
+      sumB.team.lead === 'lead-beta' &&
+      sumA.team.leadSession === SA &&
+      sumB.team.leadSession === SB &&
+      sumA.cards.owned === 1 &&
+      sumB.cards.owned === 1 &&
+      sumA.status === 'live' &&
+      sumB.status === 'live' &&
+      typeof sumA.lastSeenAt === 'string' &&
+      typeof sumB.lastSeenAt === 'string',
+    JSON.stringify({ sumA: sumA && { lead: sumA.team && sumA.team.lead, cards: sumA.cards, status: sumA.status }, sumB: sumB && { lead: sumB.team && sumB.team.lead, cards: sumB.cards, status: sumB.status } }),
+  )
+  check(
+    'T-152 no participating session is primary/selected',
+    NO_PRIMARY.every((key) => !(key in abScope)) &&
+      (abScope.projectSessions || []).every((row) => NO_PRIMARY.every((key) => !(key in row))) &&
+      abSummaries.every((row) => NO_PRIMARY.every((key) => !(key in row))),
+    JSON.stringify(abScope.projectSessions),
+  )
+  check(
+    'T-152 the legacy team/workers blocks are the PANEL SESSION team, annotated as such',
+    ab.team !== null &&
+      ab.team !== undefined &&
+      ab.team.leadSession === SB &&
+      ab.team.scope === 'panel-session' &&
+      ab.team.participatesInBoardProject === true &&
+      ab.workers.lead === 'lead-beta' &&
+      ab.workers.scope === 'panel-session' &&
+      ab.workers.participatesInBoardProject === true &&
+      ab.workers.members.map((member) => member.name).join(',') === rosterB.filter((member) => member.role === 'teammate').map((member) => member.name).join(','),
+    JSON.stringify({ team: ab.team && { lead: ab.team.leadSession, scope: ab.team.scope, participates: ab.team.participatesInBoardProject }, workers: ab.workers && { lead: ab.workers.lead, scope: ab.workers.scope } }),
+  )
+  check(
+    'T-152 tasks[].ownerSession stays readable for the card-ownership UI',
+    ab.tasks.map((task) => task.ownerSession).sort().join(',') === [SA, SB].sort().join(','),
+    JSON.stringify(ab.tasks.map((task) => ({ id: task.id, owner: task.ownerSession }))),
+  )
+  check(
+    'T-152 the nextStep of panel B on board A is its own handoff, not A\'s team bootstrap',
+    ab.nextStep !== null && ab.nextStep !== undefined && ab.nextStep.code === 'handoff' && ab.nextStep.reason === 'session-project-mismatch' && ab.nextStep.panelSession === SB && ab.nextStep.code !== 'bootstrap-team',
+    JSON.stringify(ab.nextStep),
   )
 
   const aa = await stateOf(ALPHA, SA)
+  const aaScope = aa.scope === undefined || aa.scope === null ? {} : aa.scope
   check(
-    'T-139 project A + session A: both match',
+    'T-152 panel A and panel B read the SAME board after B',
     aa.ok === true &&
-      aa.workers.lead === 'lead-alpha' &&
-      aa.workers.project === ALPHA &&
-      aa.workers.projectMatch === true &&
-      aa.team.project === ALPHA &&
-      aa.team.projectMatch === true,
-    JSON.stringify({ workers: aa.workers && { lead: aa.workers.lead, project: aa.workers.project, match: aa.workers.projectMatch }, team: aa.team && { project: aa.team.project, match: aa.team.projectMatch } }),
+      aa.projectId === ab.projectId &&
+      aa.version === ab.version &&
+      aa.seq === ab.seq &&
+      aa.counts.total === ab.counts.total &&
+      aa.tasks.map((task) => task.id).join(',') === ab.tasks.map((task) => task.id).join(','),
+    JSON.stringify({ a: { id: aa.projectId, version: aa.version, seq: aa.seq, counts: aa.counts }, b: { id: ab.projectId, version: ab.version, seq: ab.seq, counts: ab.counts } }),
   )
+  check(
+    'T-152 the session team follows the reader, never the board (A -> B does not mix)',
+    aa.workers.lead === 'lead-alpha' &&
+      aa.team.leadSession === SA &&
+      aa.team.participatesInBoardProject === true &&
+      ab.workers.lead === 'lead-beta' &&
+      ab.team.leadSession === SB &&
+      aaScope.currentSessionProject === ALPHA &&
+      abScope.currentSessionProject === BETA &&
+      (aaScope.projectSessions || []).map((row) => row.sessionId).sort().join(',') === abSessions.join(','),
+    JSON.stringify({ aa: { lead: aa.workers.lead, team: aa.team.leadSession, current: aaScope.currentSessionProject }, ab: { lead: ab.workers.lead, team: ab.team.leadSession, current: abScope.currentSessionProject } }),
+  )
+  check(
+    'T-152 sessionSummaries is the same per-session view for both readers',
+    JSON.stringify((aaScope.sessionSummaries || []).map((row) => [row.sessionId, row.team.lead, row.cards.owned]).sort()) ===
+      JSON.stringify(abSummaries.map((row) => [row.sessionId, row.team.lead, row.cards.owned]).sort()),
+    JSON.stringify({ a: aaScope.sessionSummaries, b: abSummaries }),
+  )
+
   const bb = await stateOf(BETA, SB)
-  check('T-139 project B + session B: both match', bb.ok === true && bb.workers.project === BETA && bb.workers.projectMatch === true && bb.team.projectMatch === true, JSON.stringify({ workers: bb.workers && { project: bb.workers.project, match: bb.workers.projectMatch } }))
+  check(
+    'T-152 project B + session B: the board is B and the session team is B',
+    bb.ok === true &&
+      bb.scope.boardProject.id === projectIdOf(BETA) &&
+      bb.scope.currentSessionProject === BETA &&
+      bb.workers.lead === 'lead-beta' &&
+      bb.workers.projectMatch === true &&
+      bb.team.projectMatch === true,
+    JSON.stringify({ scope: bb.scope && { board: bb.scope.boardProject, current: bb.scope.currentSessionProject }, workers: bb.workers && bb.workers.projectMatch }),
+  )
+  check(
+    'T-152 a pre-T-152 card owner is unioned into the registry set, never hidden',
+    bb.scope.projectSessionsSource === 'registry+board-owners' &&
+      bb.scope.projectSessions.map((row) => row.sessionId).sort().join(',') === ['session-beta-legacy', SB].sort().join(',') &&
+      bb.scope.sessionSummaries.some((row) => row.sessionId === 'session-beta-legacy' && row.cards.owned === 1),
+    JSON.stringify({ source: bb.scope.projectSessionsSource, sessions: bb.scope.projectSessions, summaries: bb.scope.sessionSummaries.map((row) => [row.sessionId, row.cards.owned]) }),
+  )
   // A -> B -> A must not leave a stale Team identity behind.
   const abAgain = await stateOf(ALPHA, SB)
   check(
-    'T-139 A -> B -> A keeps the same session-scoped team, only the match flag follows the project',
+    'T-152 A -> B -> A keeps the same session team and both project sessions',
     abAgain.ok === true &&
       abAgain.workers.lead === ab.workers.lead &&
+      abAgain.team.leadSession === SB &&
       abAgain.workers.project === BETA &&
       abAgain.workers.projectMatch === false &&
-      abAgain.team.project === BETA &&
-      abAgain.team.projectMatch === false &&
-      abAgain.workers.members.map((member) => member.name).join(',') === ab.workers.members.map((member) => member.name).join(','),
-    JSON.stringify({ lead: abAgain.workers && abAgain.workers.lead, project: abAgain.workers && abAgain.workers.project, match: abAgain.workers && abAgain.workers.projectMatch }),
+      (abAgain.scope.projectSessions || []).map((row) => row.sessionId).sort().join(',') === [SA, SB].sort().join(','),
+    JSON.stringify({ lead: abAgain.workers && abAgain.workers.lead, sessions: abAgain.scope && abAgain.scope.projectSessions }),
   )
 
+  // ── T-152: the registry persists the session SET (no primary/selected) ────
+  const registryRead = await readProjectRegistry({ fs: fs }, { homeDir: join(PROJECT, '..', 't139-home') })
+  const alphaEntry = registryRead.registry.projects.filter((entry) => entry.id === projectIdOf(ALPHA))[0]
+  check(
+    'T-152 the registry persists the project session SET with timestamps and no primary/selected',
+    alphaEntry !== undefined &&
+      Array.isArray(alphaEntry.sessions) &&
+      alphaEntry.sessions.map((row) => row.sessionId).sort().join(',') === [SA, SB].sort().join(',') &&
+      alphaEntry.sessions.every((row) => typeof row.firstSeenAt === 'string' && typeof row.lastSeenAt === 'string') &&
+      NO_PRIMARY.every((key) => !(key in alphaEntry)),
+    JSON.stringify(alphaEntry && alphaEntry.sessions),
+  )
+
+  // ── T-152: a legacy board derives participants from tasks[].ownerSession ──
+  const gammaBoard = (await state.read(GAMMA)).board
+  const gammaSessions = state.projectSessionsFor(GAMMA, gammaBoard)
+  check(
+    'T-152 a board without sessions derives participants from tasks[].ownerSession, all kept',
+    gammaSessions.source === 'board-owners' && gammaSessions.sessions.map((row) => row.sessionId).join(',') === 'session-gamma-one,session-gamma-two',
+    JSON.stringify(gammaSessions),
+  )
+  const gammaSnap = await api.snapshot(GAMMA, { full: false, sessionId: SB })
+  check(
+    'T-152 a session that did not participate gets a handoff, never bootstrap-team',
+    gammaSnap.ok === true &&
+      gammaSnap.scope.panelSessionParticipates === false &&
+      gammaSnap.scope.projectSessions.map((row) => row.sessionId).join(',') === 'session-gamma-one,session-gamma-two' &&
+      gammaSnap.nextStep !== null &&
+      gammaSnap.nextStep.code === 'handoff' &&
+      gammaSnap.nextStep.reason === 'session-not-participating' &&
+      gammaSnap.nextStep.scope === 'panel-session' &&
+      gammaSnap.nextStep.boardProject === GAMMA &&
+      gammaSnap.nextStep.code !== 'bootstrap-team',
+    JSON.stringify({ scope: gammaSnap.scope && { participates: gammaSnap.scope.panelSessionParticipates, sessions: gammaSnap.scope.projectSessions }, nextStep: gammaSnap.nextStep }),
+  )
+  check(
+    'T-152 the non-participating panel session team is never labelled as the project team',
+    gammaSnap.team !== null &&
+      gammaSnap.team !== undefined &&
+      gammaSnap.team.participatesInBoardProject === false &&
+      gammaSnap.team.scope === 'panel-session' &&
+      gammaSnap.workers.scope === 'panel-session' &&
+      gammaSnap.scope.sessionSummaries.every((row) => row.sessionId !== SB),
+    JSON.stringify({ team: gammaSnap.team && { scope: gammaSnap.team.scope, participates: gammaSnap.team.participatesInBoardProject }, summaries: gammaSnap.scope.sessionSummaries.map((row) => row.sessionId) }),
+  )
+
+  // ── T-152: no sessions / no panel session -> empty team, handoff ──────────
+  const deltaSnap = await api.snapshot(DELTA, { full: false })
+  check(
+    'T-152 no sessions and no panel session: empty team, empty summaries, handoff nextStep',
+    deltaSnap.ok === true &&
+      deltaSnap.scope.panelSession === null &&
+      deltaSnap.scope.projectSessions.length === 0 &&
+      deltaSnap.scope.sessionSummaries.length === 0 &&
+      deltaSnap.scope.projectSessionsSource === 'none' &&
+      deltaSnap.team.members.length === 0 &&
+      deltaSnap.team.ok === false &&
+      deltaSnap.team.error === 'no-session-context' &&
+      // With no session identity even the legacy single-team view is labelled as
+      // such, never as this project's team.
+      deltaSnap.workers.scope === 'legacy-single-team' &&
+      deltaSnap.workers.participatesInBoardProject === null &&
+      deltaSnap.nextStep !== null &&
+      deltaSnap.nextStep.code === 'handoff' &&
+      deltaSnap.nextStep.reason === 'no-session-context',
+    JSON.stringify({ scope: deltaSnap.scope, team: deltaSnap.team, nextStep: deltaSnap.nextStep, workers: { lead: deltaSnap.workers.lead, members: deltaSnap.workers.members.length } }),
+  )
+
+  // ── T-152: openProject / onboard / routes pass the CALLER session ─────────
+  const opened = await api.perform('openProject', { path: ALPHA }, { projectPath: ALPHA, by: '@user', role: 'user', agent: { id: 'session-open-new' } })
+  const onboarded = await api.perform('onboard', { path: ALPHA }, { projectPath: ALPHA, by: '@lead', role: 'agent', agent: { id: 'session-onboard-new' } })
+  const routeSnap = await stateOf(ALPHA, 'session-route-new')
+  const sessionsNow = state.projectSessionsFor(ALPHA).sessions.map((row) => row.sessionId)
+  check(
+    'T-152 openProject / onboard / routes record the caller session on the project',
+    opened.ok === true &&
+      onboarded.ok === true &&
+      routeSnap.ok === true &&
+      sessionsNow.indexOf('session-open-new') >= 0 &&
+      sessionsNow.indexOf('session-onboard-new') >= 0 &&
+      sessionsNow.indexOf('session-route-new') >= 0 &&
+      sessionsNow.indexOf(SA) >= 0 &&
+      sessionsNow.indexOf(SB) >= 0,
+    JSON.stringify({ opened: opened.ok, onboarded: onboarded.ok, onboard: onboarded.onboard !== undefined, sessions: sessionsNow }),
+  )
   const unknown = await stateOf(ALPHA, SX)
   check(
-    'T-139 an unknown session reports null project/projectMatch without throwing',
+    'T-152 an unknown session has no team of its own and is not told to bootstrap this project',
     unknown.ok === true &&
       unknown.workers.error === 'no-lead-for-project' &&
       unknown.workers.project === null &&
-      unknown.workers.projectMatch === null &&
       unknown.team.project === null &&
-      unknown.team.projectMatch === null,
-    JSON.stringify({ ok: unknown.ok, workers: unknown.workers && { error: unknown.workers.error, project: unknown.workers.project, match: unknown.workers.projectMatch }, team: unknown.team && { project: unknown.team.project, match: unknown.team.projectMatch } }),
+      unknown.workers.members.length === 0 &&
+      unknown.nextStep !== null &&
+      unknown.nextStep.code === 'handoff' &&
+      unknown.nextStep.reason === 'session-workspace-unknown',
+    JSON.stringify({ workers: unknown.workers && { error: unknown.workers.error, project: unknown.workers.project }, team: unknown.team && unknown.team.project, nextStep: unknown.nextStep }),
   )
   surface.dispose()
   scheduler.dispose()
