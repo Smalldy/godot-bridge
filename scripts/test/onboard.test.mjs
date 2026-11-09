@@ -9,12 +9,15 @@
 import { join } from 'node:path'
 import {
   PROJECT,
+  boardJson,
   boardText,
   createFakeFs,
   createFakeGit,
   createStrictCtx,
   createTeam,
 } from './support/fixtures.mjs'
+import { acquire as acquireLocks, emptyLocks } from '../../plugin/task-center/locks.mjs'
+import { sessionLivenessFrom, staleMsOf } from '../../plugin/task-center/handoff.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
 import { createApi, ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from '../../plugin/task-center/api.mjs'
 import { buildSkillContent } from '../../plugin/task-center/skill.mjs'
@@ -111,7 +114,8 @@ function onboardRig(options) {
   }
   fs.dirs.add(join(project, '..', 'fake-home'))
   const team = opts.team === undefined ? createTeam() : opts.team
-  const agents = { list: () => [{ id: 'session-lead' }] }
+  // T-153: a handoff test needs a second session in the host's agent list.
+  const agents = opts.agents === undefined ? { list: () => [{ id: 'session-lead' }] } : opts.agents
   const ctx = createStrictCtx(
     {
       fs,
@@ -163,7 +167,7 @@ function spawnCalls(team) {
   const result = await rig.onboard()
   const o = result.onboard
   check('1 onboard is in the action registry (agent-callable)', ACTIONS.indexOf('onboard') >= 0 && AGENT_ACTIONS.indexOf('onboard') >= 0, ACTIONS.join(','))
-  check('1 the call succeeds and answers the onboarding envelope', result.ok === true && o !== undefined && o.version === 1, JSON.stringify(result).slice(0, 300))
+  check('1 the call succeeds and answers the onboarding envelope', result.ok === true && o !== undefined && o.version === 2, JSON.stringify(result).slice(0, 300))
   check('1 an empty board is the empty stage', o.stage === 'empty', o.stage)
   check('1 the next step is create-task', o.next.code === 'create-task' && o.next.label.length >= 2 && o.next.detail.length > 10, JSON.stringify(o.next))
   check('1 the brief carries the T-125 task line for an empty board', o.brief.indexOf('任务  无卡') >= 0, o.brief)
@@ -365,9 +369,268 @@ function spawnCalls(team) {
   check('11 every documented onboard field is present', ['version', 'stage', 'brief', 'project', 'team', 'dispatch', 'environment', 'setup', 'attention', 'needsUser', 'warnings', 'next', 'checkedAt'].every((key) => key in result.onboard), Object.keys(result.onboard).join(','))
 }
 
+// ── T-153: session lifecycle + in-progress task handoff ───────────────────
+{
+  const OLD = 'session-old'
+  const NEW = 'session-lead'
+  const NOW_MS = Date.parse(STAMP)
+  const OLD_LIVE = new Date(NOW_MS).toISOString()
+  const OLD_STALE = new Date(NOW_MS - 30 * 60 * 1000).toISOString()
+
+  /** A multi-session host: each Lead keeps its own roster (T-106 style). */
+  function twoSessionTeam() {
+    const calls = []
+    const rosters = new Map([
+      [NEW, [{ id: NEW, name: 'lead', role: 'lead', status: 'running' }]],
+      [OLD, [{ id: OLD, name: 'lead-old', role: 'lead', status: 'running' }, { id: 'session-old-worker', name: 'old-worker', role: 'teammate', status: 'running' }]],
+    ])
+    function keyOf(caller) {
+      if (caller === null || caller === undefined) return 'unknown'
+      if (typeof caller === 'string') return caller
+      return String(caller.id)
+    }
+    return {
+      calls,
+      tryMembership(candidate) {
+        if (candidate === null || candidate === undefined) return null
+        const id = String(candidate.id === undefined ? candidate : candidate.id)
+        return { role: rosters.has(id) ? 'lead' : 'teammate', name: String(candidate.name === undefined ? id : candidate.name) }
+      },
+      listMembers(lead) {
+        const roster = rosters.get(keyOf(lead))
+        return (roster === undefined ? [] : roster).map((member) => Object.assign({}, member))
+      },
+      async spawnTeammate(caller, request) {
+        const key = keyOf(caller)
+        const name = String(request === undefined || request === null || request.name === undefined ? 'spawned' : request.name)
+        calls.push({ kind: 'spawn', caller: key, name: name })
+        const member = { id: 'session-' + name, name: name, role: 'teammate', status: 'running' }
+        const roster = rosters.get(key) || []
+        roster.push(member)
+        rosters.set(key, roster)
+        return { member: member }
+      },
+      async sendMessage(caller, request) {
+        calls.push({ kind: 'send', caller: keyOf(caller), target: request === undefined || request === null ? null : request.target })
+        const target = request === undefined || request === null ? null : String(request.target)
+        for (const roster of rosters.values()) {
+          const member = roster.filter((entry) => entry.name === target)[0]
+          if (member !== undefined) member.status = 'running'
+        }
+        return { status: 'accepted' }
+      },
+      async interrupt() {
+        calls.push({ kind: 'interrupt' })
+        return { previousStatus: 'running' }
+      },
+    }
+  }
+
+  const bothAgents = { list: () => [{ id: NEW, name: 'lead' }, { id: OLD, name: 'lead-old' }] }
+
+  /** Seed the project registry with ONE session's last-seen timestamp. */
+  function markSession(rig, sessionId, isoAt) {
+    const id = projectIdOf(rig.project)
+    rig.state.memory.registry = {
+      version: 1,
+      lastActiveProjectId: id,
+      projects: [
+        { id: id, root: rig.project, lastSeenAt: isoAt, lastSessionId: sessionId, worktreeRoot: null, preflight: null, sessions: [{ sessionId: sessionId, firstSeenAt: isoAt, lastSeenAt: isoAt }] },
+      ],
+    }
+    rig.state.memory.registryLoaded = true
+  }
+
+  function leadOnlyTeam() {
+    return createTeam({ roster: [{ id: NEW, name: 'lead', role: 'lead', status: 'running' }] })
+  }
+
+  function runningCard(overrides) {
+    return taskOf(Object.assign({
+      id: 'T-6',
+      title: 'In-flight card',
+      status: 'running',
+      ownerSession: OLD,
+      attempts: 2,
+      writeFiles: ['scripts/live.gd'],
+      assignee: { name: 'old-worker', session: 'session-old-worker' },
+      // The attempt lapsed long ago: no lease evidence inside the handoff window,
+      // which is what makes the owning session stale rather than live.
+      leaseUntil: new Date(NOW_MS - 30 * 60 * 1000).toISOString(),
+      worktree: 'C:/ws/.worktrees/T-6-2',
+      branch: 'task/T-6-2',
+      base: 'base-sha',
+      commit: 'head-6',
+      actualFiles: ['scripts/live.gd'],
+    }, overrides === undefined ? {} : overrides))
+  }
+
+  // 1) LIVE owner + running card: handoff, no second team, create refused.
+  {
+    const rig = onboardRig({ board: boardOf({ tasks: [runningCard()] }), team: leadOnlyTeam(), roles: 'auto' })
+    markSession(rig, OLD, OLD_LIVE)
+    const o = (await rig.onboard()).onboard
+    check('T-153 a live owning session puts onboarding in the handoff stage', o.stage === 'handoff' && o.next.code === 'resume-owning-session' && o.handoff.required === true && o.handoff.reason === 'foreign-active-tasks', JSON.stringify({ stage: o.stage, next: o.next && o.next.code, handoff: o.handoff && { required: o.handoff.required, reason: o.handoff.reason } }))
+    const row = (o.handoff.sessions || []).filter((entry) => entry.sessionId === OLD)[0]
+    check('T-153 handoff payload names sessions, liveness, cards and eligibility', row !== undefined && row.status === 'live' && row.cards.active === 1 && o.handoff.cards.length === 1 && o.handoff.cards[0].id === 'T-6' && o.handoff.cards[0].ownerSession === OLD && Array.isArray(o.handoff.cards[0].liveExecutors) && o.handoff.cards[0].lease.until !== null && o.handoff.eligibility.takeover.ok === false && o.handoff.eligibility.resume.ok === true, JSON.stringify({ row: row, cards: o.handoff.cards }))
+    check('T-153 a live owner is never taken over and no second team is built', spawnCalls(rig.team).length === 0 && o.team.ok !== true, JSON.stringify({ spawns: spawnCalls(rig.team).length, team: o.team }))
+    const created = await rig.api.perform('create', { title: 'new work' }, rig.context)
+    check('T-153 create is refused with the handoff next step (never bootstrap-team)', created.ok === false && created.code === 'handoff-required' && created.nextStep !== null && created.nextStep.code === 'resume-owning-session' && created.nextStep.code !== 'bootstrap-team' && Array.isArray(created.handoff.cards) && created.handoff.cards[0].id === 'T-6', JSON.stringify({ code: created.code, next: created.nextStep && created.nextStep.code }))
+    const started = await rig.api.perform('start', {}, rig.context)
+    check('T-153 start is refused with the same handoff next step', started.ok === false && started.code === 'handoff-required' && started.nextStep !== null && started.nextStep.code === 'resume-owning-session', JSON.stringify({ code: started.code, next: started.nextStep && started.nextStep.code }))
+    const unchanged = boardJson(rig.fs, rig.project).tasks[0]
+    check('T-153 nothing is auto-reowned while the decision is open', unchanged.ownerSession === OLD && unchanged.status === 'running', JSON.stringify({ owner: unchanged.ownerSession, status: unchanged.status }))
+  }
+
+  // 2) STALE owner + DEAD executor: user-confirmed takeover of a running card.
+  {
+    const rig = onboardRig({ board: boardOf({ tasks: [runningCard()] }), roles: 'auto' })
+    markSession(rig, OLD, OLD_STALE)
+    const seededLock = acquireLocks(emptyLocks(), ['scripts/live.gd'], { taskId: 'T-6' }, NOW_MS, 60 * 60 * 1000)
+    rig.state.memory.locks = seededLock.locks
+    const first = (await rig.onboard()).onboard
+    check('T-153 a stale owning session with a dead executor offers takeover', first.stage === 'handoff' && first.next.code === 'takeover-active-tasks' && first.handoff.eligibility.takeover.ok === true && first.handoff.sessions.filter((entry) => entry.sessionId === OLD)[0].status === 'stale', JSON.stringify({ next: first.next && first.next.code, eligibility: first.handoff && first.handoff.eligibility })
+    )
+    const unconfirmed = await rig.api.perform('onboard', { handoff: { decision: 'takeover', taskIds: ['T-6'] } }, rig.context)
+    check('T-153 takeover needs an explicit user confirmation', unconfirmed.ok === false && unconfirmed.code === 'handoff-confirmation-required', JSON.stringify({ code: unconfirmed.code }))
+    const taken = await rig.api.perform('onboard', { handoff: { decision: 'takeover', taskIds: ['T-6'], confirm: true, reason: 'old session gone' } }, rig.context)
+    const board = boardJson(rig.fs, rig.project)
+    const after = board.tasks.filter((task) => task.id === 'T-6')[0]
+    check('T-153 takeover re-owns the running card, releases the stale claim and keeps attempts/worktree/commit', taken.ok === true && after.ownerSession === NEW && after.status === 'pending' && after.assignee === null && after.leaseUntil === null && after.attempts === 2 && after.worktree === 'C:/ws/.worktrees/T-6-2' && after.branch === 'task/T-6-2' && after.commit === 'head-6', JSON.stringify({ owner: after.ownerSession, status: after.status, attempts: after.attempts, worktree: after.worktree, commit: after.commit }))
+    const held = Object.values(rig.state.memory.locks).filter((lock) => String(lock.taskId) === 'T-6')
+    check('T-153 takeover releases the stale write locks', held.length === 0, JSON.stringify(rig.state.memory.locks))
+    check('T-153 the takeover reports exactly the lock paths it released', taken.onboard.takeover !== null && taken.onboard.takeover.releasedLocks.indexOf('scripts/live.gd') >= 0, JSON.stringify(taken.onboard.takeover && taken.onboard.takeover.releasedLocks))
+    const audit = (after.history || []).filter((row) => row.fromSession === OLD && row.toSession === NEW)[0]
+    check('T-153 takeover writes an audit row (sessions, reason, executor/lock actions)', audit !== undefined && audit.reason === 'old session gone' && audit.by === '@lead' && typeof audit.executorAction === 'string' && audit.executorAction.indexOf('retired') >= 0 && typeof audit.lockAction === 'string', JSON.stringify(audit))
+    const takeoverHandoff = taken.onboard === undefined || taken.onboard === null ? null : taken.onboard.handoff
+    check('T-153 the takeover decision is recorded and the handoff is resolved', taken.ok === true && takeoverHandoff !== null && takeoverHandoff.required === false && takeoverHandoff.decision !== null && takeoverHandoff.decision.mode === 'takeover' && taken.onboard.stage !== 'handoff' && taken.onboard.setup.did.some((step) => step.step === 'handoff-takeover'), JSON.stringify({ code: taken.ok === true ? null : taken.code, handoff: takeoverHandoff && { required: takeoverHandoff.required, decision: takeoverHandoff.decision && takeoverHandoff.decision.mode }, stage: taken.onboard && taken.onboard.stage }))
+  }
+
+  // 3) STALE owner + ALIVE executor: no lock stealing; read-only fallback.
+  {
+    const team = twoSessionTeam()
+    const rig = onboardRig({ board: boardOf({ tasks: [runningCard()] }), team: team, agents: bothAgents, roles: 'auto' })
+    markSession(rig, OLD, OLD_STALE)
+    const seededLock = acquireLocks(emptyLocks(), ['scripts/live.gd'], { taskId: 'T-6' }, NOW_MS, 60 * 60 * 1000)
+    rig.state.memory.locks = seededLock.locks
+    const first = (await rig.onboard()).onboard
+    check('T-153 a live executor blocks takeover and onboarding answers read-only join', first.stage === 'handoff' && first.next.code === 'join-project-read-only' && first.handoff.eligibility.takeover.ok === false && first.handoff.eligibility.takeover.blockedBy.some((entry) => entry.taskId === 'T-6' && entry.reason === 'executor-alive'), JSON.stringify({ next: first.next && first.next.code, blocked: first.handoff && first.handoff.eligibility }))
+    const refused = await rig.api.perform('onboard', { handoff: { decision: 'takeover', confirm: true } }, rig.context)
+    check('T-153 takeover is refused while the old executor is alive', refused.ok === false && refused.code === 'executor-alive' && refused.nextStep !== null && refused.nextStep.code !== 'bootstrap-team', JSON.stringify({ code: refused.code, next: refused.nextStep && refused.nextStep.code }))
+    const interruptRefused = await rig.api.perform('onboard', { handoff: { decision: 'takeover', confirm: true, interrupt: true } }, rig.context)
+    const interrupts = team.calls.filter((call) => call.kind === 'interrupt').length
+    const after = boardJson(rig.fs, rig.project).tasks.filter((task) => task.id === 'T-6')[0]
+    const held = Object.values(rig.state.memory.locks).filter((lock) => String(lock.taskId) === 'T-6')
+    check('T-153 an explicit interrupt is attempted, but a still-live executor keeps the card and its lock', interruptRefused.ok === false && interrupts >= 1 && after.ownerSession === OLD && after.status === 'running' && held.length === 1, JSON.stringify({ code: interruptRefused.code, interrupts: interrupts, owner: after.ownerSession, locks: held.length }))
+  }
+
+  // 4) REVIEWING/TESTING takeover: live stage records kept, roles re-provisioned.
+  {
+    const reviewing = taskOf({ id: 'T-7', title: 'Waiting review', status: 'reviewing', ownerSession: OLD, attempts: 1, writeFiles: [], review: { status: 'pending', by: 'worker', at: new Date(NOW_MS - 20 * 60 * 1000).toISOString(), reasons: null, attempt: 2, deliveredTo: { name: 'old-reviewer', id: 'session-old-reviewer', at: new Date(NOW_MS - 20 * 60 * 1000).toISOString() } }, merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-7', mergeCommit: null } })
+    const testing = taskOf({ id: 'T-8', title: 'Testing card', status: 'testing', ownerSession: OLD, attempts: 1, writeFiles: [], test: { status: 'passed', by: 'tester', at: new Date(NOW_MS - 20 * 60 * 1000).toISOString(), evidence: 'suite green', attempt: 1, deliveredTo: { name: 'old-tester', id: 'session-old-tester', at: new Date(NOW_MS - 20 * 60 * 1000).toISOString() } }, merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-8', mergeCommit: 'candidate-8' } })
+    const team = twoSessionTeam()
+    const rig = onboardRig({ board: boardOf({ tasks: [reviewing, testing] }), team: team, agents: bothAgents, roles: 'auto' })
+    markSession(rig, OLD, OLD_STALE)
+    const taken = await rig.api.perform('onboard', { handoff: { decision: 'takeover', confirm: true } }, rig.context)
+    const tasks = boardJson(rig.fs, rig.project).tasks
+    const reviewed = tasks.filter((task) => task.id === 'T-7')[0]
+    const tested = tasks.filter((task) => task.id === 'T-8')[0]
+    const spawns = team.calls.filter((call) => call.kind === 'spawn')
+    check('T-153 stage cards hold no write lock, so the takeover reports none released', taken.ok === true && taken.onboard.takeover !== null && taken.onboard.takeover.releasedLocks.length === 0, JSON.stringify(taken.onboard && taken.onboard.takeover && taken.onboard.takeover.releasedLocks))
+    check('T-153 reviewing takeover keeps the round + an approved record and re-queues the reviewer', taken.ok === true && reviewed.ownerSession === NEW && reviewed.status === 'reviewing' && reviewed.review.attempt === 2 && reviewed.review.status === 'pending' && reviewed.review.deliveredTo !== null && String(reviewed.review.deliveredTo.name).indexOf('reviewer') === 0 && reviewed.merge !== null && reviewed.merge.status === 'open', JSON.stringify({ owner: reviewed.ownerSession, status: reviewed.status, review: reviewed.review }))
+    check('T-153 testing takeover keeps the candidate + passed test and does not re-run a passed round', tested.ownerSession === NEW && tested.status === 'testing' && tested.test.status === 'passed' && tested.test.evidence === 'suite green' && tested.merge !== null && tested.merge.mergeCommit === 'candidate-8' && tested.test.deliveredTo !== null && tested.test.deliveredTo.id === 'session-old-tester', JSON.stringify({ owner: tested.ownerSession, test: tested.test, merge: tested.merge }))
+    check('T-153 the takeover session re-provisions a reviewer and a tester for the moved cards', spawns.some((call) => call.caller === NEW && String(call.name).indexOf('reviewer') === 0) && spawns.some((call) => call.caller === NEW && String(call.name).indexOf('tester') === 0), JSON.stringify(spawns))
+    check(
+      'T-153 the takeover audit records the per-phase executor action (re-queue vs kept verdict)',
+      [reviewed, tested].every((task) =>
+        (task.history || []).some(
+          (row) =>
+            row.fromSession === OLD &&
+            row.toSession === NEW &&
+            typeof row.executorAction === 'string' &&
+            (row.executorAction.indexOf('re-queued') >= 0 || row.executorAction.indexOf('kept') >= 0) &&
+            typeof row.lockAction === 'string',
+        ),
+      ),
+      JSON.stringify(tasks.map((task) => (task.history || []).map((row) => row.executorAction))),
+    )
+    // The old session comes back: the taken-over cards are READ-ONLY to it. It is
+    // offered 'resume the owning session', never an automatic steal-back.
+    const oldBack = await rig.api.perform('onboard', { path: rig.project }, { projectPath: rig.project, by: '@lead', role: 'agent', agent: { id: OLD } })
+    const backTasks = boardJson(rig.fs, rig.project).tasks
+    check(
+      'T-153 an old session coming back never auto-steals a taken-over card',
+      oldBack.ok === true &&
+        backTasks.filter((task) => task.id === 'T-7' || task.id === 'T-8').every((task) => task.ownerSession === NEW) &&
+        oldBack.onboard.handoff.required === true &&
+        oldBack.onboard.handoff.eligibility.takeover.ok === false &&
+        oldBack.onboard.handoff.eligibility.resume.ok === true &&
+        oldBack.onboard.next.code === 'resume-owning-session' &&
+        oldBack.onboard.stage === 'handoff',
+      JSON.stringify({ code: oldBack.code, owners: backTasks.map((task) => [task.id, task.ownerSession]), next: oldBack.onboard && oldBack.onboard.next && oldBack.onboard.next.code, eligibility: oldBack.onboard && oldBack.onboard.handoff && oldBack.onboard.handoff.eligibility }),
+    )
+  }
+
+  // 5) join read-only: old cards stay put; the decision unblocks create.
+  {
+    const rig = onboardRig({ board: boardOf({ tasks: [runningCard()] }), team: leadOnlyTeam(), roles: 'auto' })
+    markSession(rig, OLD, OLD_STALE)
+    const blocked = await rig.api.perform('create', { title: 'blocked card' }, rig.context)
+    check('T-153 create stays refused before the handoff decision', blocked.ok === false && blocked.code === 'handoff-required', JSON.stringify({ code: blocked.code }))
+    const joined = await rig.api.perform('onboard', { handoff: { decision: 'join-read-only' } }, rig.context)
+    const after = boardJson(rig.fs, rig.project).tasks.filter((task) => task.id === 'T-6')[0]
+    check('T-153 join read-only records the decision and leaves the old card with its owner', joined.ok === true && joined.onboard.handoff.decision !== null && joined.onboard.handoff.decision.mode === 'join-read-only' && after.ownerSession === OLD && after.status === 'running' && joined.onboard.setup.did.some((step) => step.step === 'handoff-join'), JSON.stringify({ decision: joined.onboard.handoff && joined.onboard.handoff.decision, owner: after.ownerSession }))
+    const created = await rig.api.perform('create', { title: 'own card now' }, rig.context)
+    check('T-153 after joining read-only the session may create its OWN cards', created.ok === true && created.task.ownerSession === NEW, JSON.stringify({ ok: created.ok, code: created.code }))
+  }
+
+  // 6) A decision made when the board is already at the cap must SURVIVE the
+  //    write/read round-trip (review round 1 blocker: the cap kept the oldest).
+  {
+    const SEED = 32
+    const decisions = {}
+    for (let index = 0; index < SEED; index += 1) {
+      decisions['session-history-' + String(index)] = {
+        mode: 'join-read-only',
+        // index 0 is the newest seed, index 31 the oldest one (the cap should drop it)
+        at: new Date(NOW_MS - (index + 2) * 60 * 1000).toISOString(),
+        by: '@user',
+        byName: null,
+        reason: null,
+        taskIds: [],
+      }
+    }
+    const seeded = Object.assign(boardOf({ tasks: [runningCard()] }), { handoff: { version: 1, sessions: decisions } })
+    const rig = onboardRig({ board: seeded, team: leadOnlyTeam(), roles: 'auto' })
+    markSession(rig, OLD, OLD_STALE)
+    const joined = await rig.api.perform('onboard', { handoff: { decision: 'join-read-only' } }, rig.context)
+    const persisted = boardJson(rig.fs, rig.project).handoff
+    const persistedSessions = persisted === null || persisted === undefined || persisted.sessions === null || persisted.sessions === undefined ? {} : persisted.sessions
+    const keys = Object.keys(persistedSessions)
+    check(
+      'T-153 a decision made at the handoff cap survives the write/read round-trip (newest wins)',
+      joined.ok === true &&
+        persistedSessions[NEW] !== undefined &&
+        persistedSessions[NEW].mode === 'join-read-only' &&
+        keys.length === SEED &&
+        keys.indexOf('session-history-' + String(SEED - 1)) < 0 &&
+        joined.onboard.handoff.decision !== null &&
+        joined.onboard.handoff.decision.mode === 'join-read-only',
+      JSON.stringify({ code: joined.code, keys: keys.length, decision: persistedSessions[NEW], oldestSeedKept: keys.indexOf('session-history-' + String(SEED - 1)) }),
+    )
+    const created = await rig.api.perform('create', { title: 'after cap join' }, rig.context)
+    check('T-153 the persisted decision still unblocks create', created.ok === true, JSON.stringify({ ok: created.ok, code: created.code }))
+  }
+}
+
 // ── pure decisions: the contract order and the next-code vocabulary ───────
 {
-  check('the next-code vocabulary is complete', ONBOARD_NEXT_CODES.length === 13 && ONBOARD_NEXT_CODES.indexOf('choose-project') === 0 && ONBOARD_NEXT_CODES.indexOf('none') === 12, ONBOARD_NEXT_CODES.join(','))
+  check(
+    'the next-code vocabulary is complete (T-153 adds the three handoff codes)',
+    ONBOARD_NEXT_CODES.length === 16 && ONBOARD_NEXT_CODES.indexOf('choose-project') === 0 && ONBOARD_NEXT_CODES.indexOf('none') === 15 &&
+      ONBOARD_NEXT_CODES.indexOf('resume-owning-session') === 5 && ONBOARD_NEXT_CODES.indexOf('takeover-active-tasks') === 6 && ONBOARD_NEXT_CODES.indexOf('join-project-read-only') === 7,
+    ONBOARD_NEXT_CODES.join(','),
+  )
   check(
     'the stage order is unusable > choose > setup > attention > active > empty > idle',
     decideOnboardStage({ kind: 'none' }) === 'choose' &&

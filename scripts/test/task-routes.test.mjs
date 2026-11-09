@@ -7423,6 +7423,87 @@ rig.scheduler.dispose()
 
 
 // ══════════════════════════════════════════════════════════════════════════
+// T-153: /state exposes the handoff inventory, and create/start answer with THE
+// SAME session next step. A session that is not the board's project must never
+// be told to bootstrap that project's team (T-152 follow-up §8/§9).
+// ══════════════════════════════════════════════════════════════════════════
+{
+  const FOREIGN = 'session-foreign'
+  const T153_STAMP = '2026-11-03T12:00:00.000Z'
+  const T153_OLD = new Date(Date.parse(T153_STAMP) - 30 * 60 * 1000).toISOString()
+  const rig = createRig({ allowSpawn: false, team: createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] }) })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({
+    version: 2,
+    seq: 2,
+    dispatch: { state: 'paused' },
+    tasks: [{ id: 'T-90', title: 'Foreign in-flight', status: 'running', priority: 0, dependsOn: [], writeFiles: [], evidence: '', ownerSession: FOREIGN, assignee: { name: 'foreign-worker', session: 'session-foreign-worker' }, leaseUntil: T153_OLD, history: [], createdAt: T153_STAMP, updatedAt: T153_STAMP, attempts: 1, maxAttempts: 3 }],
+  }))
+  const projectKey = projectIdOf(PROJECT)
+  rig.state.memory.registry = {
+    version: 1,
+    lastActiveProjectId: projectKey,
+    projects: [{ id: projectKey, root: PROJECT, lastSeenAt: T153_OLD, lastSessionId: FOREIGN, worktreeRoot: null, preflight: null, sessions: [{ sessionId: FOREIGN, firstSeenAt: T153_OLD, lastSeenAt: T153_OLD }] }],
+  }
+  rig.state.memory.registryLoaded = true
+  const surface = install(rig)
+  const snap = (await call(surface, STATE_PATH)).json()
+  check(
+    'T-153 /state carries the handoff inventory in scope',
+    snap.ok === true && snap.scope.handoff !== undefined && snap.scope.handoff.required === true && snap.scope.handoff.reason === 'foreign-active-tasks' && snap.scope.handoff.cards.length === 1 && snap.scope.handoff.cards[0].id === 'T-90' && snap.scope.handoff.sessions.some((row) => row.sessionId === FOREIGN && row.status === 'stale') && snap.scope.handoff.eligibility.takeover.ok === true,
+    JSON.stringify(snap.scope && snap.scope.handoff),
+  )
+  check(
+    'T-153 /state nextStep is the handoff decision, not bootstrap-team',
+    snap.nextStep !== null && snap.nextStep !== undefined && snap.nextStep.code === 'takeover-active-tasks' && snap.nextStep.code !== 'bootstrap-team' && snap.nextStep.handoff !== undefined && snap.nextStep.handoff.required === true,
+    JSON.stringify(snap.nextStep),
+  )
+  const created = (await postTo(surface, { action: 'create', title: 'blocked' })).json()
+  check(
+    'T-153 create refusal uses the snapshot nextStep (consistent handoff semantics)',
+    created.ok === false && created.code === 'handoff-required' && created.nextStep !== null && created.nextStep !== undefined && created.nextStep.code === snap.nextStep.code && created.nextStep.code !== 'bootstrap-team' && created.handoff !== undefined && created.handoff.required === true,
+    JSON.stringify(created).slice(0, 400),
+  )
+  const started = (await postTo(surface, { action: 'start' })).json()
+  check(
+    'T-153 start refusal uses the snapshot nextStep too',
+    started.ok === false && started.code === 'handoff-required' && started.nextStep !== null && started.nextStep !== undefined && started.nextStep.code === snap.nextStep.code,
+    JSON.stringify(started).slice(0, 400),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// T-153: create/start from a session that does not own the board must answer with
+// the SAME session-mismatch handoff /state answers — never 'bootstrap-team'.
+{
+  const OTHER_PROJECT = PROJECT + '-t153-other'
+  const rig = createRig({ allowSpawn: false, team: createTeam({ roster: [] }) })
+  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 2, seq: 1, dispatch: { state: 'paused' }, tasks: [] }))
+  rig.state.setSessionRoot('session-lead', OTHER_PROJECT)
+  const surface = install(rig)
+  const snap = (await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT))).json()
+  check(
+    'T-153 a session bound elsewhere reads the board with a session-mismatch handoff',
+    snap.ok === true && snap.scope.currentSessionProject === OTHER_PROJECT && snap.nextStep !== null && snap.nextStep !== undefined && snap.nextStep.code === 'handoff' && snap.nextStep.reason === 'session-project-mismatch',
+    JSON.stringify({ scope: snap.scope && { current: snap.scope.currentSessionProject, board: snap.scope.boardProject }, next: snap.nextStep && { code: snap.nextStep.code, reason: snap.nextStep.reason } }),
+  )
+  const created = (await postTo(surface, { action: 'create', title: 'x', project: PROJECT })).json()
+  check(
+    'T-153 create from a non-owning session answers with the snapshot handoff, never bootstrap-team',
+    created.ok === false && created.nextStep !== null && created.nextStep !== undefined && created.nextStep.code === snap.nextStep.code && created.nextStep.code !== 'bootstrap-team',
+    JSON.stringify({ code: created.code, next: created.nextStep && created.nextStep.code }),
+  )
+  const started = (await postTo(surface, { action: 'start', project: PROJECT })).json()
+  check(
+    'T-153 start from a non-owning session matches the snapshot too',
+    started.ok === false && started.nextStep !== null && started.nextStep !== undefined && started.nextStep.code === snap.nextStep.code && started.nextStep.code !== 'bootstrap-team',
+    JSON.stringify({ code: started.code, next: started.nextStep && started.nextStep.code }),
+  )
+  surface.dispose()
+  rig.scheduler.dispose()
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // T-139 / T-152: the BOARD belongs to the PROJECT, a Team belongs to a SESSION.
 //
 // /state now exposes the scopes explicitly — scope.boardProject / panelSession /

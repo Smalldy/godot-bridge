@@ -90,6 +90,8 @@ const {
     teamBootstrapStep,
     sessionOwnsProject,
     sessionWorkspaceOf,
+    sessionLastActiveAt,
+    livenessOfMember,
   },
   task: {
     REVIEW_MAX_ROUNDS,
@@ -124,6 +126,9 @@ import {
   writeRoleConfig,
 } from './board.mjs'
 import { mergeEligible, recordCandidate, recordMergeResult, refreshMergeRequest, testCandidateFor } from './merge.mjs'
+// T-153: the handoff inventory/decision rules (pure) — one definition shared by
+// onboard, /state and the create/start gates.
+import { applyTakeover, buildHandoff, handoffNextCode, recordHandoffDecision } from './handoff.mjs'
 import { renderTaskLine } from './skill.mjs'
 import {
   ONBOARD_VERSION,
@@ -550,6 +555,10 @@ export function createApi(ctx, options) {
     renderTaskLine: renderTaskLine,
     blockedSuffixOf: blockedSuffixOf,
     teamLabelOf: teamLabelOf,
+    // T-153: handoff inventory + the two decisions the user can make.
+    handoffFor: handoffOf,
+    performTakeover: performTakeoverDecision,
+    recordJoin: recordJoinDecision,
     ok: ok,
     failure: failure,
   })
@@ -588,6 +597,8 @@ export function createApi(ctx, options) {
     locks: locks,
     state: state,
     preflightRefusal: preflightRefusal,
+    // T-153: create/start share the snapshot's session/handoff gate.
+    sessionGate: sessionGateFor,
     readBoardOrFail: readBoardOrFail,
     worktreeRefusal: worktreeRefusal,
     scheduler: scheduler,
@@ -2891,34 +2902,91 @@ export function createApi(ctx, options) {
     return value
   }
 
+  /** The session a card belongs to, or null for a legacy ownerless card. */
+  function cardOwnerSessionOf(task) {
+    return task !== null && task !== undefined && typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
+  }
+
   /**
-   * T-152: 'live' / 'stale' / 'unknown' for one participating session.
+   * T-153: what the handoff inventory needs to know about ONE card's executors.
    *
-   *   live    — the host still lists an agent for it (and, for a Lead session, that
-   *             Lead is not stale);
-   *   stale   — this process knows the session (it recorded its workspace) but the
-   *             host no longer lists it;
-   *   unknown — the id is only a name recorded on the board/registry.
+   * The worker claim (executor ledger + a running card's assignee) and the stage
+   * executor the brief was actually delivered to (review/test) are both listed,
+   * each judged by the dispatcher's own roster rule (livenessOfMember). 'alive'
+   * is what blocks a takeover: the host must never steal a lock from a live turn.
    */
-  function sessionLivenessOf(sessionId, inventory, agentList) {
-    const leadRow =
-      inventory !== null && inventory !== undefined && Array.isArray(inventory.leads)
-        ? inventory.leads.filter((row) => row !== null && row !== undefined && (row.session === sessionId || row.id === sessionId))[0]
-        : undefined
-    if (leadRow !== undefined) return leadRow.stale === true ? 'stale' : 'live'
-    const listed =
-      Array.isArray(agentList) &&
-      agentList.some(
-        (candidate) =>
-          candidate !== null &&
-          candidate !== undefined &&
-          (String(candidate.id) === sessionId || (typeof candidate.session === 'string' && candidate.session === sessionId)),
-      )
-    if (listed) return 'live'
-    try {
-      if (state.sessionRootOf(sessionId) !== null) return 'stale'
-    } catch (error) {}
-    return 'unknown'
+  function executorStatesOf(task) {
+    const rows = []
+    if (task === null || task === undefined) return rows
+    const cardSession = cardOwnerSessionOf(task)
+    for (const entry of model.liveExecutors(task)) {
+      const identity = {
+        name: typeof entry.name === 'string' ? entry.name : null,
+        session: typeof entry.session === 'string' ? entry.session : null,
+      }
+      const liveness = livenessOfMember(ctx, identity, { sessionId: cardSession })
+      rows.push({
+        name: identity.name,
+        session: identity.session,
+        phase: 'worker',
+        alive: liveness.alive === true,
+        known: liveness.known === true,
+        status: liveness.status === undefined ? null : liveness.status,
+        at: entry.at === undefined ? null : entry.at,
+      })
+    }
+    const stage = task.status === 'reviewing' ? { record: task.review, phase: 'review' } : task.status === 'testing' ? { record: task.test, phase: 'test' } : null
+    const delivered =
+      stage !== null && stage.record !== null && stage.record !== undefined && stage.record.deliveredTo !== null && stage.record.deliveredTo !== undefined
+        ? stage.record.deliveredTo
+        : null
+    if (delivered !== null) {
+      const identity = {
+        name: typeof delivered.name === 'string' ? delivered.name : null,
+        session: typeof delivered.id === 'string' ? delivered.id : null,
+      }
+      const liveness = livenessOfMember(ctx, identity, { sessionId: cardSession })
+      rows.push({
+        name: identity.name,
+        session: identity.session,
+        phase: stage.phase,
+        alive: liveness.alive === true,
+        known: liveness.known === true,
+        status: liveness.status === undefined ? null : liveness.status,
+        at: typeof delivered.at === 'string' ? delivered.at : null,
+      })
+    }
+    return rows
+  }
+
+  /**
+   * T-153: the handoff inventory of one board, for one panel session.
+   * 'sessions' defaults to the project's participating set (registry / board
+   * owners); a caller that already read it passes it in so one snapshot reads it
+   * once. Also feeds sessionSummaries, so liveness has ONE definition.
+   */
+  function handoffOf(projectPath, board, sessionId, sessions) {
+    const read =
+      sessions === undefined || sessions === null
+        ? typeof state.projectSessionsFor === 'function'
+          ? state.projectSessionsFor(projectPath, board)
+          : { source: 'none', sessions: [] }
+        : { source: 'given', sessions: sessions }
+    const list = Array.isArray(read.sessions) ? read.sessions : []
+    const decisions =
+      board !== null && board !== undefined && board.handoff !== null && board.handoff !== undefined && board.handoff.sessions !== null && typeof board.handoff.sessions === 'object'
+        ? board.handoff.sessions
+        : {}
+    return buildHandoff({
+      board: board,
+      sessions: list,
+      sessionId: sessionId,
+      decisions: decisions,
+      now: clock(),
+      sessionActiveAtOf: (id) => (typeof sessionLastActiveAt === 'function' ? sessionLastActiveAt(id) : null),
+      teamOf: (id) => projectTeamState(ctx, { sessionId: id, projectPath: projectPath }),
+      executorStatesOf: executorStatesOf,
+    })
   }
 
   /**
@@ -2927,26 +2995,15 @@ export function createApi(ctx, options) {
    * Every participating session gets its own row — its own team, its own card
    * count, its own liveness — so the panel never has to read the CURRENT
    * session's team as if it were the project's team.
+   *
+   * T-153: liveness comes from the handoff inventory (ONE definition), so a
+   * session that is only idle is stale by the handoff window, not the 6h Lead
+   * window; an id with no evidence at all stays 'unknown'.
    */
-  async function sessionSummariesOf(projectPath, board, sessions, inventoryInput) {
+  async function sessionSummariesOf(projectPath, board, sessions, handoffRows) {
     const rows = []
     if (!Array.isArray(sessions) || sessions.length === 0) return rows
-    let inventory = inventoryInput === undefined ? null : inventoryInput
-    if (inventoryInput === undefined) {
-      try {
-        inventory = leadInventory(ctx)
-      } catch (error) {
-        inventory = null
-      }
-    }
-    let agentList = []
-    try {
-      const { agents } = servicesFor(ctx)
-      const listed = agents !== undefined && agents !== null && typeof agents.list === 'function' ? agents.list() : []
-      agentList = Array.isArray(listed) ? listed : []
-    } catch (error) {
-      agentList = []
-    }
+    const liveness = new Map((Array.isArray(handoffRows) ? handoffRows : []).map((row) => [row.sessionId, row]))
     const tasks = board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []
     for (const entry of sessions) {
       const sessionId = entry.sessionId
@@ -2960,12 +3017,14 @@ export function createApi(ctx, options) {
       const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath, sessionRoot: sessionProject })
       const owned = tasks.filter((task) => task !== null && task !== undefined && task.ownerSession === sessionId)
       const active = owned.filter((task) => task.status === 'running' || task.status === 'reviewing' || task.status === 'testing').length
+      const handoffRow = liveness.get(sessionId)
       rows.push({
         sessionId: sessionId,
-        // live / stale / unknown, never a ranking.
-        status: sessionLivenessOf(sessionId, inventory, agentList),
+        // live / stale / unknown (handoff window), never a ranking.
+        status: handoffRow === undefined ? 'unknown' : handoffRow.status,
         firstSeenAt: entry.firstSeenAt === undefined ? null : entry.firstSeenAt,
         lastSeenAt: entry.lastSeenAt === undefined ? null : entry.lastSeenAt,
+        lastActiveAt: handoffRow === undefined ? null : handoffRow.lastActiveAt,
         sessionProject: sessionProject,
         team: {
           available: team.available === true,
@@ -2996,9 +3055,12 @@ export function createApi(ctx, options) {
    *                           SET with no primary/selected member;
    *   sessionSummaries      — one row per participating session (live/stale/unknown,
    *                           its own team, its own ownerSession card counts);
-   *   currentSessionProject — the workspace the panel session itself resolves to.
+   *   currentSessionProject — the workspace the panel session itself resolves to;
+   *   handoff               — other sessions' in-progress cards, per-session
+   *                           liveness and what a takeover would require (T-153).
    */
-  async function projectScopeOf(projectPath, board, panelSession) {
+  async function projectScopeOf(projectPath, board, panelSession, options) {
+    const o = options === undefined || options === null ? {} : options
     const ref = projectRefOf(projectPath)
     const read = typeof state.projectSessionsFor === 'function' ? state.projectSessionsFor(projectPath, board) : { source: 'none', sessions: [] }
     const sessions = Array.isArray(read.sessions) ? read.sessions : []
@@ -3012,16 +3074,9 @@ export function createApi(ctx, options) {
         currentSessionProject = null
       }
     }
-    // One inventory read for the whole answer: /state is polled every few seconds
-    // and leadInventory() reads session activity from disk per Lead.
-    let inventory = null
-    if (sessions.length > 0) {
-      try {
-        inventory = leadInventory(ctx)
-      } catch (error) {
-        inventory = null
-      }
-    }
+    // One handoff pass for the whole answer: /state is polled every few seconds,
+    // and the inventory is the only place liveness is derived.
+    const handoff = handoffOf(projectPath, board, panelSession, sessions)
     return {
       boardProject: { id: ref.id, root: ref.root },
       panelSession: panelSession,
@@ -3033,8 +3088,50 @@ export function createApi(ctx, options) {
       // 'registry' | 'board-owners' | 'none' — where the participation set came from.
       projectSessionsSource: read.source,
       panelSessionParticipates: panelSessionParticipates,
-      sessionSummaries: await sessionSummariesOf(projectPath, board, sessions, inventory),
+      sessionSummaries: o.summaries === false ? [] : await sessionSummariesOf(projectPath, board, sessions, handoff.sessions),
       currentSessionProject: currentSessionProject,
+      // T-153: foreign in-progress cards + liveness + takeover eligibility.
+      handoff: handoff,
+    }
+  }
+
+  /**
+   * T-153: the next step for an UNRESOLVED handoff (another session's cards are
+   * still in progress). The user picks one: resume the owning session, take the
+   * cards over (only when they are provably dead), or join read-only.
+   */
+  function handoffNextStepFor(scope, code) {
+    const handoff = scope.handoff
+    const participants = scope.projectSessions.map((entry) => entry.sessionId)
+    const cards = Array.isArray(handoff.cards) ? handoff.cards : []
+    const eligible = handoff.eligibility !== null && handoff.eligibility !== undefined && handoff.eligibility.takeover !== null && handoff.eligibility.takeover !== undefined ? handoff.eligibility.takeover : {}
+    const liveSessions = (Array.isArray(handoff.sessions) ? handoff.sessions : [])
+      .filter((row) => row.status === 'live' && row.cards !== undefined && Number(row.cards.active) > 0)
+      .map((row) => row.sessionId)
+    const ids = cards.map((card) => String(card.id))
+    const instruction =
+      code === 'resume-owning-session'
+        ? 'In-progress cards belong to ' + (liveSessions.length === 0 ? 'another session' : 'live session(s) ' + liveSessions.join(', ')) + ' (' + ids.join(', ') + '). Continue in the owning session, or choose read-only join / takeover explicitly. A live executor is never displaced.'
+        : code === 'takeover-active-tasks'
+          ? 'The owning session is stale and its executors are gone: ' + ids.join(', ') + ' can be taken over after the user confirms. Takeover releases stale leases/locks, keeps worktree/commits, keeps review/test verdicts and never charges an attempt.'
+          : 'Takeover is not safe: ' + (Array.isArray(eligible.blockedBy) && eligible.blockedBy.length > 0 ? eligible.blockedBy.slice(0, 3).map((entry) => String(entry.taskId) + ' ' + String(entry.reason)).join(', ') : 'the owning session or its executor cannot be confirmed dead') + '. Join read-only (the board stays readable, the old cards are not dispatched to this session), or continue in the owning session.'
+    return {
+      code: code,
+      reason: 'foreign-active-tasks',
+      scope: 'panel-session',
+      boardProject: scope.boardProject.root,
+      panelSession: scope.panelSession,
+      currentSessionProject: scope.currentSessionProject,
+      participatingSessions: participants,
+      handoff: {
+        required: handoff.required === true,
+        reason: handoff.reason,
+        decision: handoff.decision === undefined ? null : handoff.decision,
+        cards: ids,
+        sessions: (Array.isArray(handoff.sessions) ? handoff.sessions : []).map((row) => ({ sessionId: row.sessionId, status: row.status, lastSeenAt: row.lastSeenAt, cards: row.cards })),
+        eligibility: handoff.eligibility,
+      },
+      instruction: instruction,
     }
   }
 
@@ -3097,6 +3194,14 @@ export function createApi(ctx, options) {
           ', but its own workspace cannot be resolved, so a project action (like bootstrapping the Team) could not be proven to belong to this project. Open this project explicitly from that session first.',
       )
     }
+    if (ownsBoard === true) {
+      // T-153: another session's in-progress cards must be resolved FIRST. Until
+      // the user picks resume/read-only/takeover this session may not bootstrap a
+      // team, create a card or start dispatch.
+      const code = handoffNextCode(scope.handoff)
+      if (code !== null) return handoffNextStepFor(scope, code)
+      return teamNextStep === undefined ? null : teamNextStep
+    }
     if (ownsBoard !== true) {
       return handoff(
         'session-project-mismatch',
@@ -3112,6 +3217,229 @@ export function createApi(ctx, options) {
       )
     }
     return teamNextStep === undefined ? null : teamNextStep
+  }
+
+  /**
+   * T-153: the ONE session gate create/start share with the snapshot.
+   *
+   * It answers three things in one read: where this session really runs
+   * (ownsBoard), which other sessions hold in-progress cards (handoff), and the
+   * one next step that belongs to THIS session. A gate must never tell a foreign
+   * session to bootstrap the project's team (T-152 follow-up §8/§9).
+   */
+  async function sessionGateFor(projectPath, sessionId) {
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return null
+    const board = read.board
+    const scope = await projectScopeOf(projectPath, board, sessionId, { summaries: false })
+    const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath })
+    const nextStep = nextStepForScope(scope, teamBootstrapStep(team))
+    const handoff = scope.handoff
+    const decision = handoff === null || handoff === undefined || handoff.decision === undefined ? null : handoff.decision
+    return {
+      scope: scope,
+      handoff: handoff,
+      nextStep: nextStep,
+      decision: decision,
+      // Unresolved foreign in-progress cards block create/start.
+      blocked: sessionId !== null && handoff !== null && handoff !== undefined && handoff.required === true && decision === null,
+      ownsBoard: scope.currentSessionProject === null ? null : projectIdOf(scope.currentSessionProject) === scope.boardProject.id,
+    }
+  }
+
+  /**
+   * T-153: provision + deliver the stage brief for a card that just changed
+   * owner. The takeover session's reviewer/tester receives the same brief the
+   * normal stage path sends; an approved or passed record is never recomputed.
+   */
+  async function redeliverStage(kind, projectPath, board, task) {
+    const outcome = { kind: kind, taskId: String(task.id), provisioned: false, delivered: false, position: null, error: null }
+    try {
+      const ensured = await provisionRole(kind, projectPath, task)
+      outcome.provisioned = ensured !== null && ensured !== undefined && ensured.ok === true
+    } catch (error) {
+      outcome.error = messageOf(error)
+    }
+    try {
+      // Only an OPEN round gets a second brief. An approved review / passed test
+      // is a verdict: the takeover keeps it and must not manufacture another turn.
+      const record = kind === 'reviewer' ? task.review : task.test
+      const open = record !== null && record !== undefined && record.status === 'pending'
+      if (!open) {
+        outcome.delivered = false
+        return outcome
+      }
+      const slot = await assignStageSlot(projectPath, task, kind)
+      outcome.position = slot.position === undefined ? null : slot.position
+      const member = roleSlotNameOf(kind, task.ownerSession)
+      if (slot.delivered === true && member !== null) {
+        const candidate = kind === 'tester' ? candidateOf(projectPath, board, task) : null
+        const text =
+          kind === 'reviewer'
+            ? reviewBriefFor(task, projectPath)
+            : testerBriefFor(task, projectPath, candidate, { godot: await godotInfoFor(projectPath, candidate === null ? null : candidate.path) })
+        const sentTo = await notifyMember(member, text, task.ownerSession, projectPath)
+        outcome.delivered = true
+        await recordDeliveredTo(projectPath, task.id, kind, sentTo !== null && sentTo !== undefined ? sentTo : { name: member, id: null })
+      }
+    } catch (error) {
+      outcome.error = messageOf(error)
+    }
+    return outcome
+  }
+
+  /** T-153: stop a live executor only after the user asked for it explicitly. */
+  async function interruptHandoffExecutor(task, entry, toSession) {
+    const name = entry !== null && entry !== undefined && typeof entry.name === 'string' && entry.name !== '' ? entry.name : null
+    if (name === null) return { ok: false, code: 'no-name' }
+    return interruptMemberNamed(ctx, {
+      name: name,
+      key: 'handoff@' + String(task.id) + '@' + name,
+      sessionId: cardOwnerSessionOf(task),
+      message: 'Task ' + String(task.id) + ' (' + String(task.title) + ') is being taken over by session ' + toSession + ' after the user confirmed it. Stop now and do not submit.',
+    })
+  }
+
+  /**
+   * T-153: the takeover decision. Only cards whose owner is stale/unknown AND
+   * whose executors are not alive may move; a live owner is never displaced, and
+   * a live executor needs an explicit interrupt first. Every moved card gets an
+   * audit row (fromSession/toSession/reason/executorAction/lockAction) and keeps
+   * its attempts, worktree and verdict records.
+   */
+  async function performTakeoverDecision(projectPath, sessionId, input, context) {
+    const source = input === undefined || input === null ? {} : input
+    const by = context !== undefined && context !== null && typeof context.by === 'string' && context.by !== '' ? context.by : '@user'
+    const agent = context === undefined || context === null ? null : context.agent
+    const byName = agent !== null && agent !== undefined && typeof agent.name === 'string' && agent.name !== '' ? agent.name : null
+    const reason = typeof source.reason === 'string' && source.reason !== '' ? source.reason : 'user confirmed takeover of stale in-progress cards'
+    if (sessionId === null || sessionId === undefined || sessionId === '') {
+      return failure('no-session-context', 'a takeover needs the session that will own the cards')
+    }
+    if (source.confirm !== true) {
+      const read = await readBoardOrFail(projectPath)
+      const handoff = read.failed === undefined ? handoffOf(projectPath, read.board, sessionId) : null
+      const scope = read.failed === undefined ? await projectScopeOf(projectPath, read.board, sessionId, { summaries: false }) : null
+      return failure('handoff-confirmation-required', 'takeover changes card ownership; ask the user to confirm it explicitly (confirm: true)', {
+        handoff: handoff,
+        nextStep: scope === null ? null : nextStepForScope(scope, null),
+      })
+    }
+    let interruptedOnce = false
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const read = await readBoardOrFail(projectPath)
+      if (read.failed !== undefined) return read.failed
+      const handoff = handoffOf(projectPath, read.board, sessionId)
+      const scope = await projectScopeOf(projectPath, read.board, sessionId, { summaries: false })
+      const refuse = (code, message) => failure(code, message, { handoff: handoff, nextStep: nextStepForScope(scope, null) })
+      if (handoff.required !== true) return refuse('no-handoff-required', 'no in-progress card is owned by another session')
+      // Candidates = the requested cards that are foreign and in progress. A
+      // blocked card is still a CANDIDATE: it is why the takeover is refused, so
+      // the refusal names the real blocker instead of 'nothing eligible'.
+      const requested =
+        Array.isArray(source.taskIds) && source.taskIds.length > 0
+          ? source.taskIds.map((entry) => String(entry))
+          : handoff.cards.map((card) => String(card.id))
+      const candidates = handoff.cards.map((card) => String(card.id)).filter((id) => requested.indexOf(id) >= 0)
+      if (candidates.length === 0) return refuse('no-takeover-targets', 'none of the requested cards is an in-progress card owned by another session')
+      const blockerList = Array.isArray(handoff.eligibility.takeover.blockedBy) ? handoff.eligibility.takeover.blockedBy : []
+      const blockedHere = blockerList.filter((entry) => candidates.indexOf(entry.taskId) >= 0)
+      const liveOwners = blockedHere.filter((entry) => entry.reason === 'owning-session-live')
+      if (liveOwners.length > 0) {
+        return refuse('owning-session-live', 'the owning session of ' + liveOwners.map((entry) => entry.taskId).join(', ') + ' is still live; go back to it instead of taking its cards (a takeover only covers stale/unknown sessions)')
+      }
+      const targets = candidates.filter((id) => blockedHere.every((entry) => entry.taskId !== id))
+      const alive = blockedHere.filter((entry) => entry.reason === 'executor-alive')
+      if (alive.length > 0) {
+        if (source.interrupt !== true) return refuse('executor-alive', 'an executor of ' + alive.map((entry) => entry.taskId).join(', ') + ' is still alive; refusing to steal its lock. Pass interrupt: true to stop it first.')
+        if (interruptedOnce) return refuse('executor-still-alive', 'the executor is still alive after the interrupt request; takeover refused')
+        interruptedOnce = true
+        for (const entry of alive) {
+          const task = model.findTask(read.board, entry.taskId)
+          // egress blockers name the executor in 'executor' (they also carry the
+          // card id and phase), which is what the interrupt path consumes.
+          if (task !== undefined) await interruptHandoffExecutor(task, { name: entry.executor }, sessionId)
+        }
+        continue
+      }
+      const applied = await state.apply(
+        projectPath,
+        (current) => {
+          const fresh = handoffOf(projectPath, current, sessionId)
+          const freshBlockers = (Array.isArray(fresh.eligibility.takeover.blockedBy) ? fresh.eligibility.takeover.blockedBy : []).filter((entry) => targets.indexOf(entry.taskId) >= 0)
+          if (freshBlockers.length > 0) return { ok: false, code: 'handoff-changed', message: 'the handoff state changed while confirming; nothing was taken over' }
+          const take = applyTakeover(current, { toSession: sessionId, taskIds: targets, by: by, byName: byName, now: clock(), reason: reason })
+          if (take.ok !== true) return take
+          return { ok: true, board: take.board, events: take.moved.map((entry) => ({ kind: 'handoff', id: entry.id, from: entry.fromSession, to: sessionId })) }
+        },
+        writePolicyFor(projectPath),
+      )
+      if (applied.failed !== null) return applied.failed
+      const movedIds = new Set(applied.events.map((entry) => String(entry.id)))
+      // Report the paths actually freed. A reviewing/testing card holds no write
+      // lock, so "every moved card" would claim a lock action that never happened.
+      const releasedLocks = []
+      for (const id of movedIds) {
+        const released = locks.releaseTask(state.memory.locks, id)
+        if (released.ok === true) {
+          state.memory.locks = released.locks
+          for (const path of Array.isArray(released.released) ? released.released : []) releasedLocks.push(String(path))
+        }
+      }
+      const taken = applied.board.tasks.filter((task) => movedIds.has(String(task.id)))
+      const stages = []
+      for (const task of taken) {
+        if (task.status === 'reviewing') stages.push(await redeliverStage('reviewer', projectPath, applied.board, task))
+        else if (task.status === 'testing') stages.push(await redeliverStage('tester', projectPath, applied.board, task))
+      }
+      if (scheduler !== null && scheduler !== undefined && typeof scheduler.kick === 'function') {
+        try {
+          await scheduler.kick(projectPath)
+        } catch (error) {}
+      }
+      emitActivity(context, 'handoff', 'took over ' + String(movedIds.size) + ' card(s) from a stale session', movedIds.size === 1 ? Array.from(movedIds)[0] : null, 'host')
+      return ok({
+        board: applied.board,
+        handoff: handoffOf(projectPath, applied.board, sessionId),
+        takeover: {
+          taskIds: Array.from(movedIds),
+          releasedLocks: releasedLocks.sort(),
+          attemptsConsumed: 0,
+          stages: stages,
+          reason: reason,
+        },
+      })
+    }
+    return failure('executor-still-alive', 'takeover refused: the old executor could not be stopped')
+  }
+
+  /** T-153: the 'join read-only' decision — the old cards stay with their session. */
+  async function recordJoinDecision(projectPath, sessionId, input, context) {
+    const source = input === undefined || input === null ? {} : input
+    if (sessionId === null || sessionId === undefined || sessionId === '') return failure('no-session-context', 'joining read-only needs the session identity')
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const handoff = handoffOf(projectPath, read.board, sessionId)
+    if (handoff.required !== true) return ok({ board: read.board, handoff: handoff, recorded: false })
+    const by = context !== undefined && context !== null && typeof context.by === 'string' && context.by !== '' ? context.by : '@user'
+    const applied = await state.apply(
+      projectPath,
+      (current) => {
+        const recorded = recordHandoffDecision(current, {
+          sessionId: sessionId,
+          mode: 'join-read-only',
+          by: by,
+          now: clock(),
+          reason: typeof source.reason === 'string' && source.reason !== '' ? source.reason : 'the user chose to join read-only; the old cards stay with their owning session',
+        })
+        if (recorded.ok !== true) return recorded
+        return { ok: true, board: recorded.board, events: [{ kind: 'handoff-join', id: null }] }
+      },
+      writePolicyFor(projectPath),
+    )
+    if (applied.failed !== null) return applied.failed
+    emitActivity(context, 'handoff', 'joined the project read-only; the old cards stay with their owning session', null, 'user')
+    return ok({ board: applied.board, handoff: handoffOf(projectPath, applied.board, sessionId), recorded: true })
   }
 
   async function snapshot(projectPath, options) {
@@ -4772,7 +5100,10 @@ export function createApi(ctx, options) {
     if (teamMissing) {
       const teamRead = await projectTeamFor(projectPath, opts.sessionId)
       refused.team = teamRead.team
-      refused.nextStep = teamRead.nextStep
+      // T-152/T-153: the caller passes the SESSION-AWARE next step (the same one
+      // /state answers); the project team's bootstrap instruction is only right
+      // when this session actually owns the board and has no unresolved handoff.
+      refused.nextStep = opts.nextStep === undefined ? teamRead.nextStep : opts.nextStep
     }
     return refused
   }

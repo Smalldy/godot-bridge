@@ -526,6 +526,52 @@ export async function writeRoleConfig(io, options) {
   }
 }
 
+/** How many sessions one board remembers a handoff DECISION for. */
+export const MAX_HANDOFF_SESSIONS = 32
+
+/**
+ * T-153: per-session HANDOFF DECISIONS on the shared board.
+ *
+ * A new session that finds another session's in-progress cards must decide
+ * (join read-only or take over) before it may create cards. The decision is
+ * project state, so it lives on the board next to the cards — not in a panel's
+ * memory. Only the modes the host can act on are kept; an unknown mode would
+ * silently unlock create, so it is dropped.
+ */
+export function normaliseHandoff(raw) {
+  const sessions = {}
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw) && raw.sessions !== null && typeof raw.sessions === 'object' && !Array.isArray(raw.sessions)) {
+    // NEWEST-WINS, like normaliseProjectSessions and the task-history cap: this
+    // normaliser runs on the WRITE path too, and a decision made just now is the
+    // one that must survive. Slicing insertion order kept the oldest 32 and threw
+    // the new decision away (T-153 review round 1, blocker).
+    const keys = Object.keys(raw.sessions)
+      .map((key) => {
+        const entry = raw.sessions[key]
+        const at = entry !== null && typeof entry === 'object' && typeof entry.at === 'string' ? Date.parse(entry.at) : NaN
+        return { key: key, at: Number.isFinite(at) ? at : -Infinity }
+      })
+      .sort((left, right) => right.at - left.at)
+      .slice(0, MAX_HANDOFF_SESSIONS)
+      .map((entry) => entry.key)
+    for (const key of keys) {
+      const entry = raw.sessions[key]
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
+      const mode = entry.mode === 'join-read-only' || entry.mode === 'takeover' ? entry.mode : null
+      if (mode === null) continue
+      sessions[key] = {
+        mode: mode,
+        at: isIso(entry.at) ? entry.at : null,
+        by: typeof entry.by === 'string' ? entry.by : null,
+        byName: typeof entry.byName === 'string' ? entry.byName : null,
+        reason: typeof entry.reason === 'string' ? entry.reason : null,
+        taskIds: stringList(entry.taskIds),
+      }
+    }
+  }
+  return { version: 1, sessions: sessions }
+}
+
 /** A fresh, empty board. */
 export function emptyBoard(now) {
   const at = new Date(typeof now === 'number' ? now : Date.now()).toISOString()
@@ -534,6 +580,7 @@ export function emptyBoard(now) {
     seq: 1,
     tasks: [],
     dispatch: normaliseDispatch(DISPATCH_DEFAULTS),
+    handoff: normaliseHandoff(null),
     updatedAt: at,
   }
 }
@@ -673,14 +720,23 @@ function normaliseTask(raw, index, now) {
   if (Array.isArray(raw.history)) {
     for (const entry of raw.history) {
       if (entry === null || typeof entry !== 'object') continue
-      history.push({
+      const row = {
         at: isIso(entry.at) ? entry.at : iso(now),
         by: typeof entry.by === 'string' ? entry.by : 'unknown',
         byName: typeof entry.byName === 'string' && entry.byName !== '' ? entry.byName : null,
         from: typeof entry.from === 'string' ? entry.from : null,
         to: typeof entry.to === 'string' ? entry.to : null,
         note: typeof entry.note === 'string' ? entry.note : '',
-      })
+      }
+      // T-153: a handoff audit row names both sessions plus what the host did.
+      // They stay OPTIONAL so every pre-handoff row (and every other writer that
+      // only sets at/by/from/to/note) keeps its exact shape.
+      if (typeof entry.fromSession === 'string' && entry.fromSession !== '') row.fromSession = entry.fromSession
+      if (typeof entry.toSession === 'string' && entry.toSession !== '') row.toSession = entry.toSession
+      if (typeof entry.reason === 'string' && entry.reason !== '') row.reason = entry.reason
+      if (typeof entry.executorAction === 'string' && entry.executorAction !== '') row.executorAction = entry.executorAction
+      if (typeof entry.lockAction === 'string' && entry.lockAction !== '') row.lockAction = entry.lockAction
+      history.push(row)
     }
   }
   // Keep the creation entry plus the newest entries. The creation entry is how a
@@ -836,6 +892,8 @@ function normaliseBoard(parsed, now) {
       seq: seq,
       tasks: tasks,
       dispatch: normaliseDispatch(source.dispatch),
+      // T-153: per-session handoff decisions (join read-only / takeover).
+      handoff: normaliseHandoff(source.handoff),
       updatedAt: isIso(source.updatedAt) ? source.updatedAt : iso(now),
     },
   }

@@ -53,6 +53,10 @@ export const dispatchPort = {
     teamBootstrapStep: dispatch.teamBootstrapStep,
     sessionOwnsProject: dispatch.sessionOwnsProject,
     sessionWorkspaceOf: dispatch.sessionWorkspaceOf,
+    // T-153: session activity (DSH directory) and the executor liveness rule —
+    // both feed the handoff inventory through ONE definition.
+    sessionLastActiveAt: dispatch.sessionLastActiveAt,
+    livenessOfMember: dispatch.livenessOfMember,
   },
   task: {
     REVIEW_MAX_ROUNDS: dispatch.REVIEW_MAX_ROUNDS,
