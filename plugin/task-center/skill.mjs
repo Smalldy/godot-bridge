@@ -120,7 +120,6 @@ export function buildInitContent(options) {
     '## 先有团队，再建卡',
     '',
     '- `onboard` 默认补团队（Lead + worker），reviewer/tester 到阶段再补；失败按 next 报告，不借别的项目团队。`create`/`start` 缺团队仍拒 `no-team-for-project`。',
-
     '',
     '## 接入（onboard）',
     '',

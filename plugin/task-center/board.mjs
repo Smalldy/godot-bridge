@@ -541,7 +541,19 @@ export const MAX_HANDOFF_SESSIONS = 32
 export function normaliseHandoff(raw) {
   const sessions = {}
   if (raw !== null && typeof raw === 'object' && !Array.isArray(raw) && raw.sessions !== null && typeof raw.sessions === 'object' && !Array.isArray(raw.sessions)) {
-    const keys = Object.keys(raw.sessions).slice(0, MAX_HANDOFF_SESSIONS)
+    // NEWEST-WINS, like normaliseProjectSessions and the task-history cap: this
+    // normaliser runs on the WRITE path too, and a decision made just now is the
+    // one that must survive. Slicing insertion order kept the oldest 32 and threw
+    // the new decision away (T-153 review round 1, blocker).
+    const keys = Object.keys(raw.sessions)
+      .map((key) => {
+        const entry = raw.sessions[key]
+        const at = entry !== null && typeof entry === 'object' && typeof entry.at === 'string' ? Date.parse(entry.at) : NaN
+        return { key: key, at: Number.isFinite(at) ? at : -Infinity }
+      })
+      .sort((left, right) => right.at - left.at)
+      .slice(0, MAX_HANDOFF_SESSIONS)
+      .map((entry) => entry.key)
     for (const key of keys) {
       const entry = raw.sessions[key]
       if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue

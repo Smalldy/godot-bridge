@@ -245,16 +245,6 @@ export function handoffNextCode(handoff) {
   return 'join-project-read-only'
 }
 
-/** The cards a takeover would move (explicit ids restricted to the eligible set). */
-export function takeoverTargetIds(handoff, requested) {
-  const eligibility = handoff !== null && handoff !== undefined && handoff.eligibility !== null && handoff.eligibility !== undefined ? handoff.eligibility.takeover : null
-  if (eligibility === null || eligibility === undefined) return []
-  const eligible = Array.isArray(eligibility.taskIds) ? eligibility.taskIds : []
-  const asked = Array.isArray(requested) ? requested.map((entry) => String(entry)) : []
-  if (asked.length === 0) return eligible.slice()
-  return asked.filter((id) => eligible.indexOf(id) >= 0)
-}
-
 /**
  * Apply a takeover to a board: move exactly the eligible cards to the deciding
  * session, with an audit row naming both sessions and what the host did.

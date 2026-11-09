@@ -499,6 +499,7 @@ function spawnCalls(team) {
     check('T-153 takeover re-owns the running card, releases the stale claim and keeps attempts/worktree/commit', taken.ok === true && after.ownerSession === NEW && after.status === 'pending' && after.assignee === null && after.leaseUntil === null && after.attempts === 2 && after.worktree === 'C:/ws/.worktrees/T-6-2' && after.branch === 'task/T-6-2' && after.commit === 'head-6', JSON.stringify({ owner: after.ownerSession, status: after.status, attempts: after.attempts, worktree: after.worktree, commit: after.commit }))
     const held = Object.values(rig.state.memory.locks).filter((lock) => String(lock.taskId) === 'T-6')
     check('T-153 takeover releases the stale write locks', held.length === 0, JSON.stringify(rig.state.memory.locks))
+    check('T-153 the takeover reports exactly the lock paths it released', taken.onboard.takeover !== null && taken.onboard.takeover.releasedLocks.indexOf('scripts/live.gd') >= 0, JSON.stringify(taken.onboard.takeover && taken.onboard.takeover.releasedLocks))
     const audit = (after.history || []).filter((row) => row.fromSession === OLD && row.toSession === NEW)[0]
     check('T-153 takeover writes an audit row (sessions, reason, executor/lock actions)', audit !== undefined && audit.reason === 'old session gone' && audit.by === '@lead' && typeof audit.executorAction === 'string' && audit.executorAction.indexOf('retired') >= 0 && typeof audit.lockAction === 'string', JSON.stringify(audit))
     const takeoverHandoff = taken.onboard === undefined || taken.onboard === null ? null : taken.onboard.handoff
@@ -535,6 +536,7 @@ function spawnCalls(team) {
     const reviewed = tasks.filter((task) => task.id === 'T-7')[0]
     const tested = tasks.filter((task) => task.id === 'T-8')[0]
     const spawns = team.calls.filter((call) => call.kind === 'spawn')
+    check('T-153 stage cards hold no write lock, so the takeover reports none released', taken.ok === true && taken.onboard.takeover !== null && taken.onboard.takeover.releasedLocks.length === 0, JSON.stringify(taken.onboard && taken.onboard.takeover && taken.onboard.takeover.releasedLocks))
     check('T-153 reviewing takeover keeps the round + an approved record and re-queues the reviewer', taken.ok === true && reviewed.ownerSession === NEW && reviewed.status === 'reviewing' && reviewed.review.attempt === 2 && reviewed.review.status === 'pending' && reviewed.review.deliveredTo !== null && String(reviewed.review.deliveredTo.name).indexOf('reviewer') === 0 && reviewed.merge !== null && reviewed.merge.status === 'open', JSON.stringify({ owner: reviewed.ownerSession, status: reviewed.status, review: reviewed.review }))
     check('T-153 testing takeover keeps the candidate + passed test and does not re-run a passed round', tested.ownerSession === NEW && tested.status === 'testing' && tested.test.status === 'passed' && tested.test.evidence === 'suite green' && tested.merge !== null && tested.merge.mergeCommit === 'candidate-8' && tested.test.deliveredTo !== null && tested.test.deliveredTo.id === 'session-old-tester', JSON.stringify({ owner: tested.ownerSession, test: tested.test, merge: tested.merge }))
     check('T-153 the takeover session re-provisions a reviewer and a tester for the moved cards', spawns.some((call) => call.caller === NEW && String(call.name).indexOf('reviewer') === 0) && spawns.some((call) => call.caller === NEW && String(call.name).indexOf('tester') === 0), JSON.stringify(spawns))
@@ -580,6 +582,44 @@ function spawnCalls(team) {
     check('T-153 join read-only records the decision and leaves the old card with its owner', joined.ok === true && joined.onboard.handoff.decision !== null && joined.onboard.handoff.decision.mode === 'join-read-only' && after.ownerSession === OLD && after.status === 'running' && joined.onboard.setup.did.some((step) => step.step === 'handoff-join'), JSON.stringify({ decision: joined.onboard.handoff && joined.onboard.handoff.decision, owner: after.ownerSession }))
     const created = await rig.api.perform('create', { title: 'own card now' }, rig.context)
     check('T-153 after joining read-only the session may create its OWN cards', created.ok === true && created.task.ownerSession === NEW, JSON.stringify({ ok: created.ok, code: created.code }))
+  }
+
+  // 6) A decision made when the board is already at the cap must SURVIVE the
+  //    write/read round-trip (review round 1 blocker: the cap kept the oldest).
+  {
+    const SEED = 32
+    const decisions = {}
+    for (let index = 0; index < SEED; index += 1) {
+      decisions['session-history-' + String(index)] = {
+        mode: 'join-read-only',
+        // index 0 is the newest seed, index 31 the oldest one (the cap should drop it)
+        at: new Date(NOW_MS - (index + 2) * 60 * 1000).toISOString(),
+        by: '@user',
+        byName: null,
+        reason: null,
+        taskIds: [],
+      }
+    }
+    const seeded = Object.assign(boardOf({ tasks: [runningCard()] }), { handoff: { version: 1, sessions: decisions } })
+    const rig = onboardRig({ board: seeded, team: leadOnlyTeam(), roles: 'auto' })
+    markSession(rig, OLD, OLD_STALE)
+    const joined = await rig.api.perform('onboard', { handoff: { decision: 'join-read-only' } }, rig.context)
+    const persisted = boardJson(rig.fs, rig.project).handoff
+    const persistedSessions = persisted === null || persisted === undefined || persisted.sessions === null || persisted.sessions === undefined ? {} : persisted.sessions
+    const keys = Object.keys(persistedSessions)
+    check(
+      'T-153 a decision made at the handoff cap survives the write/read round-trip (newest wins)',
+      joined.ok === true &&
+        persistedSessions[NEW] !== undefined &&
+        persistedSessions[NEW].mode === 'join-read-only' &&
+        keys.length === SEED &&
+        keys.indexOf('session-history-' + String(SEED - 1)) < 0 &&
+        joined.onboard.handoff.decision !== null &&
+        joined.onboard.handoff.decision.mode === 'join-read-only',
+      JSON.stringify({ code: joined.code, keys: keys.length, decision: persistedSessions[NEW], oldestSeedKept: keys.indexOf('session-history-' + String(SEED - 1)) }),
+    )
+    const created = await rig.api.perform('create', { title: 'after cap join' }, rig.context)
+    check('T-153 the persisted decision still unblocks create', created.ok === true, JSON.stringify({ ok: created.ok, code: created.code }))
   }
 }
 

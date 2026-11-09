@@ -128,7 +128,7 @@ import {
 import { mergeEligible, recordCandidate, recordMergeResult, refreshMergeRequest, testCandidateFor } from './merge.mjs'
 // T-153: the handoff inventory/decision rules (pure) — one definition shared by
 // onboard, /state and the create/start gates.
-import { applyTakeover, buildHandoff, handoffNextCode, recordHandoffDecision, takeoverTargetIds } from './handoff.mjs'
+import { applyTakeover, buildHandoff, handoffNextCode, recordHandoffDecision } from './handoff.mjs'
 import { renderTaskLine } from './skill.mjs'
 import {
   ONBOARD_VERSION,
@@ -3376,9 +3376,15 @@ export function createApi(ctx, options) {
       )
       if (applied.failed !== null) return applied.failed
       const movedIds = new Set(applied.events.map((entry) => String(entry.id)))
+      // Report the paths actually freed. A reviewing/testing card holds no write
+      // lock, so "every moved card" would claim a lock action that never happened.
+      const releasedLocks = []
       for (const id of movedIds) {
         const released = locks.releaseTask(state.memory.locks, id)
-        if (released.ok === true) state.memory.locks = released.locks
+        if (released.ok === true) {
+          state.memory.locks = released.locks
+          for (const path of Array.isArray(released.released) ? released.released : []) releasedLocks.push(String(path))
+        }
       }
       const taken = applied.board.tasks.filter((task) => movedIds.has(String(task.id)))
       const stages = []
@@ -3397,7 +3403,7 @@ export function createApi(ctx, options) {
         handoff: handoffOf(projectPath, applied.board, sessionId),
         takeover: {
           taskIds: Array.from(movedIds),
-          releasedLocks: Array.from(movedIds),
+          releasedLocks: releasedLocks.sort(),
           attemptsConsumed: 0,
           stages: stages,
           reason: reason,
