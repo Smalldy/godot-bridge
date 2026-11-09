@@ -177,8 +177,10 @@ export function createOnboardAction(deps) {
         ownsProject = await sessionOwnsProject(state, sessionId, root)
       }
     }
-    remember(root)
-    state.touchProject(root, undefined, { worktreeRoot: preflight.worktreeRoot, preflight: preflight })
+    remember(root, sessionId)
+    // T-152: the onboarding session joins the project's participating-session SET
+    // (explicitly null when this caller has no identity), never undefined.
+    state.touchProject(root, sessionId, { worktreeRoot: preflight.worktreeRoot, preflight: preflight })
     if (sessionId !== null && state !== null && typeof state.setSessionRoot === 'function') {
       try {
         state.setSessionRoot(sessionId, root)

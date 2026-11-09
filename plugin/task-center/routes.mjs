@@ -131,8 +131,10 @@ export function registerTaskRoutes(ctx, options) {
     // background drive exactly like a panel-pinned one. A last-active project is
     // already recorded — re-touching it every /state poll would rewrite the
     // registry on a timer for no gain.
-    if (explicit !== null || resolved.resolvedFrom === 'session-lookup') await state.adoptPanelProject(resolved.project.root)
-    else if (resolved.resolvedFrom !== 'last-active') state.touchProject(resolved.project.root)
+    // T-152: the caller's session joins the project's participating SESSION SET.
+    // Never undefined: a request without a session id passes null explicitly.
+    if (explicit !== null || resolved.resolvedFrom === 'session-lookup') await state.adoptPanelProject(resolved.project.root, sessionId === undefined ? null : sessionId)
+    else if (resolved.resolvedFrom !== 'last-active') state.touchProject(resolved.project.root, sessionId === undefined ? null : sessionId)
     return { root: resolved.project.root, resolvedFrom: resolved.resolvedFrom }
   }
 
@@ -176,7 +178,7 @@ export function registerTaskRoutes(ctx, options) {
         return
       }
       const project = target.root
-      state.noteProject(project)
+      state.noteProject(project, sessionId)
       // T-124: resolving a session's project records it, so later reads (team
       // matchesSession, dispatch ownership) agree with this answer.
       // Only a SESSION-derived answer is the session's project; a panel pin (or
@@ -241,7 +243,7 @@ export function registerTaskRoutes(ctx, options) {
         return
       }
       const project = target.failed !== undefined ? null : target.root
-      if (project !== null && project !== undefined) state.noteProject(project)
+      if (project !== null && project !== undefined) state.noteProject(project, sessionId)
       // T-124: every action that resolved this session's project records it.
       if (sessionId !== null && typeof project === 'string' && project.length > 0 && (target.resolvedFrom === 'session' || target.resolvedFrom === 'session-lookup')) {
         try {
@@ -289,7 +291,8 @@ export function registerTaskRoutes(ctx, options) {
 
   async function handleTask(req, res) {
     try {
-      const target = await resolveProject(req, null, sessionFromRequest(req, null))
+      const sessionId = sessionFromRequest(req, null)
+      const target = await resolveProject(req, null, sessionId)
       if (target.failed !== undefined) {
         sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return
@@ -301,7 +304,7 @@ export function registerTaskRoutes(ctx, options) {
         sendJson(res, 400, { ok: false, code: 'missing-id', params: {} })
         return
       }
-      state.noteProject(project)
+      state.noteProject(project, sessionId)
       sendJson(res, 200, await api.taskDetail(project, id))
     } catch (error) {
       sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
@@ -310,14 +313,15 @@ export function registerTaskRoutes(ctx, options) {
 
   async function handleList(req, res) {
     try {
-      const target = await resolveProject(req, null, sessionFromRequest(req, null))
+      const sessionId = sessionFromRequest(req, null)
+      const target = await resolveProject(req, null, sessionId)
       if (target.failed !== undefined) {
         sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return
       }
       const project = target.root
       const url = queryOf(req)
-      state.noteProject(project)
+      state.noteProject(project, sessionId)
       const get = (name) => (url === null ? null : url.searchParams.get(name))
       sendJson(res, 200, await api.taskList(project, {
         status: get('status'),
@@ -333,13 +337,14 @@ export function registerTaskRoutes(ctx, options) {
 
   async function handleWorktrees(req, res) {
     try {
-      const target = await resolveProject(req, null, sessionFromRequest(req, null))
+      const sessionId = sessionFromRequest(req, null)
+      const target = await resolveProject(req, null, sessionId)
       if (target.failed !== undefined) {
         sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
         return
       }
       const project = target.root
-      state.noteProject(project)
+      state.noteProject(project, sessionId)
       const url = queryOf(req)
       const paths = []
       if (url !== null) {
@@ -369,7 +374,7 @@ export function registerTaskRoutes(ctx, options) {
       let workspacePlan = null
       if (target.failed === undefined) {
         project = target.root
-        state.noteProject(project)
+        state.noteProject(project, sessionId)
         if (doctor !== null && typeof doctor.inspect === 'function') health = await doctor.inspect(project)
         if (workspace !== null && typeof workspace.plan === 'function') workspacePlan = await workspace.plan(project)
       }

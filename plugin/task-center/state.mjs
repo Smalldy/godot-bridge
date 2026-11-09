@@ -11,6 +11,8 @@ import { createSessionLookup } from './session-lookup.mjs'
 import { resolve } from 'node:path'
 import {
   PROJECT_ACTIVE_MS,
+  mergeProjectSessions,
+  normaliseProjectSessions,
   projectRefOf,
   readBoard,
   readProjectRegistry,
@@ -95,7 +97,9 @@ export function createState(ctx, options) {
 
   let registryWrite = Promise.resolve()
 
-  /** Merge two registry snapshots by project id, newest lastSeenAt wins. */
+  /** Merge two registry snapshots by project id, newest lastSeenAt wins — and the
+   * participating-session sets are ALWAYS unioned (T-152): a session recorded by
+   * another surface must never be erased by the newer copy of the file. */
   function mergeRegistries(left, right) {
     const byId = new Map()
     for (const entry of left.projects.concat(right.projects)) {
@@ -105,8 +109,14 @@ export function createState(ctx, options) {
       // Two touches in the same millisecond must not drop a worktreeRoot/preflight
       // that only one of them carries.
       const richer = sameInstant && (entry.worktreeRoot !== null || entry.preflight !== null) && (current.worktreeRoot === null && current.preflight === null)
+      if (current === undefined) {
+        byId.set(entry.id, Object.assign({}, entry, { sessions: normaliseProjectSessions(entry.sessions) }))
+        continue
+      }
       if (newer || (sameInstant && (richer || current === undefined))) {
-        byId.set(entry.id, entry)
+        byId.set(entry.id, Object.assign({}, entry, { sessions: mergeProjectSessions(current.sessions, entry.sessions) }))
+      } else {
+        byId.set(entry.id, Object.assign({}, current, { sessions: mergeProjectSessions(current.sessions, entry.sessions) }))
       }
     }
     // The last-active marker follows the newer copy, exactly like the file merge in
@@ -203,6 +213,25 @@ export function createState(ctx, options) {
     await registryWrite
   }
 
+  /**
+   * The participating-session set after one session touched the project: first
+   * sighting keeps its firstSeenAt, every sighting moves lastSeenAt. The set is
+   * NEVER ranked, so touching a project can only add or refresh a session — it can
+   * never make one session "the project's session" (T-152).
+   */
+  function recordProjectSession(sessions, sessionId, nowIso) {
+    const rows = normaliseProjectSessions(sessions)
+    const sid = typeof sessionId === 'string' ? sessionId.trim() : ''
+    if (sid === '') return rows
+    const index = rows.map((row) => row.sessionId).indexOf(sid)
+    if (index < 0) {
+      rows.push({ sessionId: sid, firstSeenAt: nowIso, lastSeenAt: nowIso })
+    } else {
+      rows[index] = { sessionId: sid, firstSeenAt: rows[index].firstSeenAt === null ? nowIso : rows[index].firstSeenAt, lastSeenAt: nowIso }
+    }
+    return normaliseProjectSessions(rows)
+  }
+
   /** Remember a project as active: memory now, disk soon, never blocking the caller. */
   function touchProject(projectPath, sessionId, extra) {
     if (typeof projectPath !== 'string' || projectPath.length === 0) return null
@@ -210,11 +239,16 @@ export function createState(ctx, options) {
     const nowIso = new Date(clock()).toISOString()
     const previous = memory.registry.projects.filter((entry) => entry.id === ref.id)[0]
     const projects = memory.registry.projects.filter((entry) => entry.id !== ref.id)
+    const previousSessions = previous === undefined ? [] : normaliseProjectSessions(previous.sessions)
     projects.unshift({
       id: ref.id,
       root: ref.root,
       lastSeenAt: nowIso,
-      lastSessionId: typeof sessionId === 'string' ? sessionId : null,
+      // Legacy single-value marker (the last call site that passed a session).
+      // It is NOT a scope source: projectSessionsFor() is the only reader that
+      // decides who participates, and it reads the SET below.
+      lastSessionId: typeof sessionId === 'string' && sessionId.trim() !== '' ? sessionId.trim() : null,
+      sessions: recordProjectSession(previousSessions, sessionId, nowIso),
       worktreeRoot: extra !== undefined && extra !== null && typeof extra.worktreeRoot === 'string' ? extra.worktreeRoot : previous === undefined ? null : previous.worktreeRoot,
       preflight: extra !== undefined && extra !== null && extra.preflight !== undefined ? extra.preflight : previous === undefined ? null : previous.preflight,
     })
@@ -320,6 +354,44 @@ export function createState(ctx, options) {
       .sort((left, right) => String(right.lastSeenAt).localeCompare(String(left.lastSeenAt)))
   }
 
+  /**
+   * Every session that participates in this project, as a SET (T-152).
+   *
+   * The registry's recorded sessions come first (they carry first/lastSeenAt).
+   * The board is the other source of clean participation evidence: a card's
+   * tasks[].ownerSession. A board written before T-152 has no registry set, so
+   * that is the fallback — but the owners are also UNIONED into a non-empty set,
+   * so upgrading cannot hide a pre-T-152 card's owner just because another
+   * session touched the project first. All owners are kept in first-appearance
+   * order: there is no "main" session and no picking of one. A caller that reads
+   * this must therefore treat it as a set, not a priority list.
+   */
+  function projectSessionsFor(projectPath, board) {
+    if (typeof projectPath !== 'string' || projectPath === '') return { source: 'none', sessions: [] }
+    const ref = projectRefOf(resolve(projectPath))
+    const entry = memory.registry.projects.filter((candidate) => candidate.id === ref.id)[0]
+    const recorded = entry === undefined ? [] : normaliseProjectSessions(entry.sessions)
+    const derived = []
+    const tasks = board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []
+    for (const task of tasks) {
+      const sessionId = task !== null && task !== undefined && typeof task.ownerSession === 'string' ? task.ownerSession.trim() : ''
+      if (sessionId === '') continue
+      if (derived.some((row) => row.sessionId === sessionId)) continue
+      // A legacy card records WHO owns it but not when that session was seen; the
+      // timestamps stay null instead of inventing a time.
+      derived.push({ sessionId: sessionId, firstSeenAt: null, lastSeenAt: null })
+    }
+    if (recorded.length === 0) return { source: derived.length > 0 ? 'board-owners' : 'none', sessions: derived }
+    // Once the registry has a set, the board's owners are still participation
+    // evidence (pre-T-152 cards outlive the upgrade): union them in, never drop
+    // one because another session happened to touch the project first.
+    const sessions = recorded.slice()
+    for (const row of derived) {
+      if (!sessions.some((candidate) => candidate.sessionId === row.sessionId)) sessions.push(row)
+    }
+    return { source: derived.length > 0 ? 'registry+board-owners' : 'registry', sessions: sessions }
+  }
+
   /** Adopt the project a panel request carries, and make sure the loop drives it. */
   async function adoptPanelProject(projectPath, sessionId) {
     const ref = touchProject(projectPath, sessionId)
@@ -392,6 +464,7 @@ export function createState(ctx, options) {
     lastActiveProject: lastActiveProject,
     resolveProject: resolveProject,
     activeProjects: activeProjects,
+    projectSessionsFor: projectSessionsFor,
     adoptPanelProject: adoptPanelProject,
     setSessionRoot: function (sessionId, root) {
       if (typeof sessionId !== 'string' || sessionId === '' || root === undefined) return null

@@ -51,8 +51,11 @@ export function createProjectActions(deps) {
       }
       return refused
     }
-    remember(absolute)
-    state.touchProject(absolute, undefined, { worktreeRoot: preflight.worktreeRoot, preflight: preflight })
+    remember(absolute, sessionId)
+    // T-152: the caller's session joins the project's participating-session SET.
+    // It is passed explicitly (null when this caller has no identity), never as
+    // an undefined placeholder, so the registry can tell "no session" apart.
+    state.touchProject(absolute, sessionId, { worktreeRoot: preflight.worktreeRoot, preflight: preflight })
     // Bind the opened project to the session that asked (tool call); the HTTP
     // route binds its own session after this answer.
     if (state !== null && typeof state.setSessionRoot === 'function') {

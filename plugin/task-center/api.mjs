@@ -2362,9 +2362,12 @@ export function createApi(ctx, options) {
     return resolve(state.memory.projectHint === null ? process.cwd() : state.memory.projectHint, candidate)
   }
 
-  /** The scheduler follows the project whose board was last touched. */
-  function remember(projectPath) {
-    state.noteProject(projectPath)
+  /** The scheduler follows the project whose board was last touched. T-152: the
+   * caller's session is recorded on that project's participating-session SET, so
+   * a project accumulates EVERY session that worked on it instead of one "last"
+   * session. The session is passed explicitly (null when unknown). */
+  function remember(projectPath, sessionId) {
+    state.noteProject(projectPath, typeof sessionId === 'string' && sessionId !== '' ? sessionId : null)
   }
 
   async function readBoardOrFail(projectPath) {
@@ -2556,6 +2559,9 @@ export function createApi(ctx, options) {
       // behind /task.
       kind: detail.kind,
       reportSummary: detail.reportSummary,
+      // T-152: the card's owner is readable from the summary too, so the panel can
+      // group cards by participating session without a /task round-trip per card.
+      ownerSession: detail.ownerSession === undefined ? null : detail.ownerSession,
       priority: detail.priority,
       dependsOn: detail.dependsOn,
       dependency: detail.dependency,
@@ -2885,10 +2891,236 @@ export function createApi(ctx, options) {
     return value
   }
 
+  /**
+   * T-152: 'live' / 'stale' / 'unknown' for one participating session.
+   *
+   *   live    — the host still lists an agent for it (and, for a Lead session, that
+   *             Lead is not stale);
+   *   stale   — this process knows the session (it recorded its workspace) but the
+   *             host no longer lists it;
+   *   unknown — the id is only a name recorded on the board/registry.
+   */
+  function sessionLivenessOf(sessionId, inventory, agentList) {
+    const leadRow =
+      inventory !== null && inventory !== undefined && Array.isArray(inventory.leads)
+        ? inventory.leads.filter((row) => row !== null && row !== undefined && (row.session === sessionId || row.id === sessionId))[0]
+        : undefined
+    if (leadRow !== undefined) return leadRow.stale === true ? 'stale' : 'live'
+    const listed =
+      Array.isArray(agentList) &&
+      agentList.some(
+        (candidate) =>
+          candidate !== null &&
+          candidate !== undefined &&
+          (String(candidate.id) === sessionId || (typeof candidate.session === 'string' && candidate.session === sessionId)),
+      )
+    if (listed) return 'live'
+    try {
+      if (state.sessionRootOf(sessionId) !== null) return 'stale'
+    } catch (error) {}
+    return 'unknown'
+  }
+
+  /**
+   * T-152: the per-session view of ONE project.
+   *
+   * Every participating session gets its own row — its own team, its own card
+   * count, its own liveness — so the panel never has to read the CURRENT
+   * session's team as if it were the project's team.
+   */
+  async function sessionSummariesOf(projectPath, board, sessions, inventoryInput) {
+    const rows = []
+    if (!Array.isArray(sessions) || sessions.length === 0) return rows
+    let inventory = inventoryInput === undefined ? null : inventoryInput
+    if (inventoryInput === undefined) {
+      try {
+        inventory = leadInventory(ctx)
+      } catch (error) {
+        inventory = null
+      }
+    }
+    let agentList = []
+    try {
+      const { agents } = servicesFor(ctx)
+      const listed = agents !== undefined && agents !== null && typeof agents.list === 'function' ? agents.list() : []
+      agentList = Array.isArray(listed) ? listed : []
+    } catch (error) {
+      agentList = []
+    }
+    const tasks = board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []
+    for (const entry of sessions) {
+      const sessionId = entry.sessionId
+      let sessionProject = null
+      try {
+        const requester = await requesterRootOf(sessionId)
+        sessionProject = requester.root
+      } catch (error) {
+        sessionProject = null
+      }
+      const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath, sessionRoot: sessionProject })
+      const owned = tasks.filter((task) => task !== null && task !== undefined && task.ownerSession === sessionId)
+      const active = owned.filter((task) => task.status === 'running' || task.status === 'reviewing' || task.status === 'testing').length
+      rows.push({
+        sessionId: sessionId,
+        // live / stale / unknown, never a ranking.
+        status: sessionLivenessOf(sessionId, inventory, agentList),
+        firstSeenAt: entry.firstSeenAt === undefined ? null : entry.firstSeenAt,
+        lastSeenAt: entry.lastSeenAt === undefined ? null : entry.lastSeenAt,
+        sessionProject: sessionProject,
+        team: {
+          available: team.available === true,
+          ok: team.ok === true,
+          lead: team.lead === undefined ? null : team.lead,
+          leadId: team.leadId === undefined ? null : team.leadId,
+          leadSession: team.leadSession === undefined ? null : team.leadSession,
+          members: Array.isArray(team.members)
+            ? team.members.map((member) => String(member !== null && member !== undefined && member.name !== undefined ? member.name : member))
+            : [],
+          memberCount: Array.isArray(team.members) ? team.members.length : 0,
+          missingRoles: Array.isArray(team.missingRoles) ? team.missingRoles.slice() : [],
+          error: team.error === undefined || team.error === null ? null : String(team.error),
+        },
+        cards: { owned: owned.length, active: active },
+      })
+    }
+    return rows
+  }
+
+  /**
+   * T-152: the project/session SCOPES of one snapshot.
+   *
+   *   boardProject          — the board this snapshot was read from (cards, locks,
+   *                           dispatch, target: all project state);
+   *   panelSession          — the session that asked (browser session or tool call);
+   *   projectSessions       — EVERY session that participates in this project, a
+   *                           SET with no primary/selected member;
+   *   sessionSummaries      — one row per participating session (live/stale/unknown,
+   *                           its own team, its own ownerSession card counts);
+   *   currentSessionProject — the workspace the panel session itself resolves to.
+   */
+  async function projectScopeOf(projectPath, board, panelSession) {
+    const ref = projectRefOf(projectPath)
+    const read = typeof state.projectSessionsFor === 'function' ? state.projectSessionsFor(projectPath, board) : { source: 'none', sessions: [] }
+    const sessions = Array.isArray(read.sessions) ? read.sessions : []
+    const panelSessionParticipates = panelSession === null ? null : sessions.some((entry) => entry.sessionId === panelSession)
+    let currentSessionProject = null
+    if (panelSession !== null) {
+      try {
+        const requester = await requesterRootOf(panelSession)
+        currentSessionProject = requester.root
+      } catch (error) {
+        currentSessionProject = null
+      }
+    }
+    // One inventory read for the whole answer: /state is polled every few seconds
+    // and leadInventory() reads session activity from disk per Lead.
+    let inventory = null
+    if (sessions.length > 0) {
+      try {
+        inventory = leadInventory(ctx)
+      } catch (error) {
+        inventory = null
+      }
+    }
+    return {
+      boardProject: { id: ref.id, root: ref.root },
+      panelSession: panelSession,
+      projectSessions: sessions.map((entry) => ({
+        sessionId: entry.sessionId,
+        firstSeenAt: entry.firstSeenAt === undefined ? null : entry.firstSeenAt,
+        lastSeenAt: entry.lastSeenAt === undefined ? null : entry.lastSeenAt,
+      })),
+      // 'registry' | 'board-owners' | 'none' — where the participation set came from.
+      projectSessionsSource: read.source,
+      panelSessionParticipates: panelSessionParticipates,
+      sessionSummaries: await sessionSummariesOf(projectPath, board, sessions, inventory),
+      currentSessionProject: currentSessionProject,
+    }
+  }
+
+  /**
+   * T-152: nextStep belongs to the PANEL SESSION, never to the project.
+   *
+   * A session that does not participate in the board's project gets an explicit
+   * handoff (which board this is, where that session actually runs) instead of the
+   * project's bootstrap-team instruction — that instruction was how another
+   * session's team silently became "the project team".
+   */
+  function nextStepForScope(scope, teamNextStep) {
+    const participants = scope.projectSessions.map((entry) => entry.sessionId)
+    if (scope.panelSession === null) {
+      return {
+        code: 'handoff',
+        reason: 'no-session-context',
+        scope: 'panel-session',
+        boardProject: scope.boardProject.root,
+        panelSession: null,
+        currentSessionProject: scope.currentSessionProject,
+        participatingSessions: participants,
+        instruction:
+          'This request carries no panel session, so there is no session next step for this board. Open the task center from the session that works on ' +
+          scope.boardProject.root +
+          '. Do not bootstrap a team for it from here.',
+      }
+    }
+    const handoff = (reason, instruction) => ({
+      code: 'handoff',
+      reason: reason,
+      scope: 'panel-session',
+      boardProject: scope.boardProject.root,
+      panelSession: scope.panelSession,
+      currentSessionProject: scope.currentSessionProject,
+      participatingSessions: participants,
+      instruction: instruction,
+    })
+    if (scope.panelSessionParticipates !== true) {
+      return handoff(
+        'session-not-participating',
+        'Session ' +
+          scope.panelSession +
+          ' has not participated in the board ' +
+          scope.boardProject.root +
+          (scope.currentSessionProject === null ? ' (its own workspace is unknown)' : ' (its own project is ' + scope.currentSessionProject + ')') +
+          '. This is not the project team: open the board from a participating session, or open this project explicitly in your own session. Do not bootstrap a team for another project here.',
+      )
+    }
+    // Participating, but the session's OWN workspace decides whether a project
+    // next step is even executable for it: bootstrapTeam refuses another project.
+    const ownsBoard = scope.currentSessionProject === null ? null : projectIdOf(scope.currentSessionProject) === scope.boardProject.id
+    if (ownsBoard === null) {
+      return handoff(
+        'session-workspace-unknown',
+        'Session ' +
+          scope.panelSession +
+          ' participates in the board ' +
+          scope.boardProject.root +
+          ', but its own workspace cannot be resolved, so a project action (like bootstrapping the Team) could not be proven to belong to this project. Open this project explicitly from that session first.',
+      )
+    }
+    if (ownsBoard !== true) {
+      return handoff(
+        'session-project-mismatch',
+        'Session ' +
+          scope.panelSession +
+          ' participates in the board ' +
+          scope.boardProject.root +
+          ', but its own project is ' +
+          String(scope.currentSessionProject) +
+          '. Its next step belongs to that project, not this one: act on this board from a session whose workspace is ' +
+          scope.boardProject.root +
+          ', and never bootstrap this project’s team from a foreign session.',
+      )
+    }
+    return teamNextStep === undefined ? null : teamNextStep
+  }
+
   async function snapshot(projectPath, options) {
     const opts = options === undefined || options === null ? {} : options
+    // T-152: the panel session is resolved ONCE. Every block below either speaks
+    // for it explicitly or names the project it belongs to — nothing is inferred.
+    const panelSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
     // T-110: the Team is a property of the session that owns the project.
-    const snapshotTeam = await projectTeamFor(projectPath, typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null)
+    const snapshotTeam = await projectTeamFor(projectPath, panelSession)
     const summaryOnly = opts.full === false
     projectPath = resolve(projectPath)
     const read = await readBoardOrFail(projectPath)
@@ -2902,7 +3134,10 @@ export function createApi(ctx, options) {
     reconcileLocks(board)
     const archive = await archiveInfo(projectPath, now)
     const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
-    const workers = workerPool(ctx, board, { roleConfig: roleRead.config, sessionId: typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null })
+    // T-152: the pool is resolved for the PANEL SESSION only. With no session at
+    // all this is the documented LEGACY single-team fallback — it is labelled as
+    // such below and never presented as the project's team.
+    const workers = workerPool(ctx, board, { roleConfig: roleRead.config, sessionId: panelSession })
     // T-139: make the executor team's project EXPLICIT. The member table is still
     // the request session's Team (T-122/T-130). This only says which project that
     // team lives in, and whether it is the project this snapshot is for — so the
@@ -2999,8 +3234,38 @@ export function createApi(ctx, options) {
     const boardSize = await boardSizeOf(projectPath, board)
     const registryStatus = typeof state.registryStatus === 'function' ? state.registryStatus() : null
     const projectRef = projectRefOf(projectPath)
-    const lastTouched = state.activeProjects(now)[0]
-    const registryConsistent = lastTouched === undefined || lastTouched.id === projectRef.id
+    // T-152: the project/session scopes are an EXPLICIT source, not something the
+    // panel has to infer from "the current team". The board belongs to the
+    // project; each participating session owns its own team and its own cards.
+    const scope = await projectScopeOf(projectPath, board, panelSession)
+    // T-152: consistency is about THIS board vs THIS panel session — never about
+    // which project the host happened to drive last. activeProjects[0] is gone
+    // from this decision: a host that recently drove another project is not a
+    // warning; a panel session whose own project is a different one is.
+    const boardIsPanelProject = scope.currentSessionProject === null ? null : projectIdOf(scope.currentSessionProject) === projectRef.id
+    const projectWarning =
+      boardIsPanelProject === false
+        ? 'this board (' +
+          projectRef.root +
+          ') is not the project the panel session ' +
+          String(panelSession) +
+          ' resolves to (' +
+          String(scope.currentSessionProject) +
+          '); the panel and that session point at different projects — open the board from the session that works on it'
+        : null
+    const registryConsistent = projectWarning === null
+    // Every legacy "team-ish" block below speaks for the PANEL SESSION only.
+    // T-152: these fields are how a reader can tell that from a project team
+    // instead of silently borrowing the current session's team as "the" team.
+    const sessionScopeFields = {
+      // 'panel-session' when a session asked; with NO session identity the only
+      // thing these blocks can describe is the legacy single-team view, which is
+      // labelled as such instead of being passed off as the project's team.
+      scope: panelSession === null ? 'legacy-single-team' : 'panel-session',
+      participatesInBoardProject: scope.panelSessionParticipates,
+      boardProject: scope.boardProject.root,
+      panelSession: panelSession,
+    }
     return ok({
       project: projectPath,
       projectId: projectRef.id,
@@ -3012,10 +3277,9 @@ export function createApi(ctx, options) {
       preflight: (state.memory.registry.projects.filter((entry) => entry.id === projectRef.id)[0] || {}).preflight || null,
       resolvedFrom: opts.resolvedFrom === undefined ? 'explicit' : opts.resolvedFrom,
       registryConsistent: registryConsistent,
-      projectWarning:
-        registryConsistent || lastTouched === undefined
-          ? null
-          : 'this board (' + projectRef.root + ') is not the last project the host drove (' + lastTouched.root + '); check that the session and the panel point at the same project',
+      projectWarning: projectWarning,
+      // T-152: the explicit project/session source (see projectScopeOf).
+      scope: scope,
       version: board.version,
       seq: seq,
       full: full,
@@ -3026,23 +3290,30 @@ export function createApi(ctx, options) {
       dispatch: board.dispatch,
       roles: roleRead.config,
       rolePreviews: rolePreviewsFor(projectPath, roleRead.config),
-      workers: workersView,
+      // T-152: the pool is the PANEL SESSION's pool; the project's board is the
+      // project's. The fields say which is which instead of implying one team.
+      workers: Object.assign({}, workersView, sessionScopeFields),
       // T-109: what the Team service ACTUALLY exposes — every Lead it can see,
       // with its session and roster size, plus how many agents were scanned. This
       // is what answers "how many Leading teams does the plugin see?", which a
       // wrong-session dispatch otherwise leaves to inference.
-      teams: await teamsSnapshot(typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null),
+      // T-152: this is the WHOLE HOST's Lead inventory, not this project's team.
+      teams: Object.assign({}, await teamsSnapshot(panelSession), { scope: 'host-inventory', panelSession: panelSession }),
       // Agents are the live Team members (lead + teammates), with their kind,
       // session and current task. System/host work is NOT listed here.
-      agents: {
-        lead: workers.leadInfo,
-        members: workers.members,
-        kinds: workers.kinds,
-        roles: workers.roles,
-        // T-122: the whole-host inventory is a separate field; the member table
-        // above is only this session's team.
-        inventory: agentInventoryRows(typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null),
-      },
+      agents: Object.assign(
+        {
+          lead: workers.leadInfo,
+          members: workers.members,
+          kinds: workers.kinds,
+          roles: workers.roles,
+          // T-122: the whole-host inventory is a separate field; the member table
+          // above is only this session's team. T-152: the block carries its scope
+          // and never stands in for the project's team.
+          inventory: agentInventoryRows(panelSession),
+        },
+        sessionScopeFields,
+      ),
       worktrees: worktrees,
       activity: activitySnapshot(),
       // T-111: the status timeline is DERIVED from the board (task history + merge
@@ -3074,10 +3345,11 @@ export function createApi(ctx, options) {
       // T-108: "is the main tree clean, and when was that checked" — the panel uses
       // it to tell a merge-window blip from a really dirty checkout.
       environment: await environmentSnapshot(projectPath, now, board),
-      // T-110: the project's Team (ok/lead/source/members) and, while it does not
-      // exist, the one instruction the calling session must act on.
-      team: snapshotTeamView,
-      nextStep: snapshotTeam.nextStep,
+      // T-110/T-152: the PANEL SESSION's team (ok/lead/source/members), annotated
+      // with its scope; sessionSummaries is where every project session's team
+      // lives. nextStep is the panel session's own next step, never the project's.
+      team: snapshotTeamView === null || snapshotTeamView === undefined ? snapshotTeamView : Object.assign({}, snapshotTeamView, sessionScopeFields),
+      nextStep: nextStepForScope(scope, snapshotTeam.nextStep),
       serverTime: new Date(now).toISOString(),
     })
   }
@@ -4239,7 +4511,7 @@ export function createApi(ctx, options) {
   }
 
   async function performResolved(action, source, context, projectPath) {
-    remember(projectPath)
+    remember(projectPath, sessionIdOf(context))
     const now = clock()
     // Any activity by the assignee renews its lease and file locks, so the
     // heartbeat runs ONCE here, before the action, for every action an agent can

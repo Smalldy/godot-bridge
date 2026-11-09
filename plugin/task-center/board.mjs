@@ -102,6 +102,71 @@ export function registryTargets(options) {
   return targets
 }
 
+/** How many participating sessions one project remembers. A cap keeps a
+ * long-lived host's registry file bounded; the newest lastSeenAt win. */
+export const MAX_PROJECT_SESSIONS = 64
+
+/**
+ * The participating sessions of a project: a SET, never a ranking.
+ *
+ * Each entry is { sessionId, firstSeenAt, lastSeenAt }. There is deliberately no
+ * primary/selected field: the board belongs to the project, and every session
+ * that opened or worked on it participates on equal terms (T-152). A bare
+ * session id string is accepted so a hand-edited registry stays readable.
+ */
+export function normaliseProjectSessions(value) {
+  const rows = []
+  const seen = new Set()
+  if (!Array.isArray(value)) return rows
+  for (const entry of value) {
+    const sessionId =
+      typeof entry === 'string'
+        ? entry.trim()
+        : entry !== null && typeof entry === 'object' && typeof entry.sessionId === 'string'
+          ? entry.sessionId.trim()
+          : ''
+    if (sessionId === '' || seen.has(sessionId)) continue
+    seen.add(sessionId)
+    const firstSeenAt = entry !== null && typeof entry === 'object' && typeof entry.firstSeenAt === 'string' && entry.firstSeenAt !== '' ? entry.firstSeenAt : null
+    const lastSeenAt = entry !== null && typeof entry === 'object' && typeof entry.lastSeenAt === 'string' && entry.lastSeenAt !== '' ? entry.lastSeenAt : null
+    rows.push({ sessionId: sessionId, firstSeenAt: firstSeenAt, lastSeenAt: lastSeenAt })
+  }
+  if (rows.length <= MAX_PROJECT_SESSIONS) return rows
+  // Keep the most recently seen sessions; a session never seen has no recency.
+  const ranked = rows
+    .map((row, index) => ({ row: row, index: index }))
+    .sort((left, right) => {
+      const byTime = String(right.row.lastSeenAt === null ? '' : right.row.lastSeenAt).localeCompare(String(left.row.lastSeenAt === null ? '' : left.row.lastSeenAt))
+      return byTime !== 0 ? byTime : left.index - right.index
+    })
+  const keep = new Set(ranked.slice(0, MAX_PROJECT_SESSIONS).map((item) => item.row.sessionId))
+  return rows.filter((row) => keep.has(row.sessionId))
+}
+
+/** Union two session lists without picking a winner: earliest firstSeenAt,
+ * latest lastSeenAt, every id kept. Used by both registry merges so two
+ * surfaces that each recorded their own session do not erase each other. */
+export function mergeProjectSessions(left, right) {
+  const byId = new Map()
+  for (const source of [normaliseProjectSessions(left), normaliseProjectSessions(right)]) {
+    for (const row of source) {
+      const current = byId.get(row.sessionId)
+      if (current === undefined) {
+        byId.set(row.sessionId, Object.assign({}, row))
+        continue
+      }
+      const first = [current.firstSeenAt, row.firstSeenAt].filter((value) => typeof value === 'string' && value !== '').sort()[0]
+      const last = [current.lastSeenAt, row.lastSeenAt].filter((value) => typeof value === 'string' && value !== '').sort().pop()
+      byId.set(row.sessionId, {
+        sessionId: row.sessionId,
+        firstSeenAt: first === undefined ? null : first,
+        lastSeenAt: last === undefined ? null : last,
+      })
+    }
+  }
+  return normaliseProjectSessions(Array.from(byId.values()))
+}
+
 export function normaliseProjectRegistry(value) {
   const projects = []
   if (value !== null && typeof value === 'object' && value.projects !== undefined) {
@@ -115,6 +180,8 @@ export function normaliseProjectRegistry(value) {
           root: entry.root,
           lastSeenAt: typeof entry.lastSeenAt === 'string' ? entry.lastSeenAt : new Date(0).toISOString(),
           lastSessionId: typeof entry.lastSessionId === 'string' ? entry.lastSessionId : null,
+          // T-152: the participating sessions are a SET. No primary/selected.
+          sessions: normaliseProjectSessions(entry.sessions),
           worktreeRoot: typeof entry.worktreeRoot === 'string' && entry.worktreeRoot.length > 0 ? entry.worktreeRoot : null,
           preflight: entry.preflight !== undefined && entry.preflight !== null && typeof entry.preflight === 'object' ? entry.preflight : null,
         })
@@ -144,12 +211,19 @@ async function readRegistryAt(io, target, signal) {
   }
 }
 
-/** Merge two registries by project id, the newer lastSeenAt winning. */
+/** Merge two registries by project id, the newer lastSeenAt winning — and the
+ * participating-session SETS always unioned, so a copy written by another surface
+ * never erases the sessions only the other copy recorded (T-152). */
 function mergeProjectRegistries(left, right) {
   const byId = new Map()
   for (const entry of left.projects.concat(right.projects)) {
     const current = byId.get(entry.id)
-    if (current === undefined || String(entry.lastSeenAt).localeCompare(String(current.lastSeenAt)) >= 0) byId.set(entry.id, entry)
+    if (current === undefined) {
+      byId.set(entry.id, entry)
+      continue
+    }
+    const winner = String(entry.lastSeenAt).localeCompare(String(current.lastSeenAt)) >= 0 ? entry : current
+    byId.set(entry.id, Object.assign({}, winner, { sessions: mergeProjectSessions(current.sessions, entry.sessions) }))
   }
   // The last-active id follows the newer of the two copies (the copy that was
   // written last wins); an id whose project is gone is dropped rather than kept
