@@ -23,6 +23,16 @@ function createWorkersView(deps) {
 		const snapshot = props.snapshot
 		const workers = snapshot.workers
 		const [copied, setCopied] = React.useState(null)
+		// T-155: this hook is UNCONDITIONAL and must stay above the early returns
+		// below: the store's loading snapshot has workers === null, so a mounted
+		// executors tab can render once with the pool and later without it (and the
+		// reverse on an ok:false poll). A hook below those returns changes the hook
+		// count between renders and real React unmounts the view tree.
+		const [sessionFilter, setSessionFilterState] = React.useState(workersUi.sessionFilter)
+		const setSessionFilter = function (next) {
+			workersUi.sessionFilter = next
+			setSessionFilterState(next)
+		}
 		const shell = function (child) { return h('div', { className: 'gbt-workersview' }, child) }
 		const blocks = []
 		const hint = h('p', { key: 'hint', className: 'gbt-footnote', 'data-worker-hint': 'true' }, t('workersHint'))
@@ -89,11 +99,6 @@ function createWorkersView(deps) {
 		const scope = snapshot.scope !== null && snapshot.scope !== undefined && typeof snapshot.scope === 'object' ? snapshot.scope : null
 		const sessionRows = scope !== null && Array.isArray(scope.sessionSummaries) ? scope.sessionSummaries.filter(function (row) { return row !== null && typeof row === 'object' }) : []
 		const currentSession = scope !== null && typeof scope.panelSession === 'string' && scope.panelSession !== '' ? scope.panelSession : null
-		const [sessionFilter, setSessionFilterState] = React.useState(workersUi.sessionFilter)
-		const setSessionFilter = function (next) {
-			workersUi.sessionFilter = next
-			setSessionFilterState(next)
-		}
 		const sessionShortText = function (value) {
 			const text = typeof value === 'string' ? value : ''
 			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)

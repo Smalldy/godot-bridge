@@ -388,18 +388,12 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeam: '该项目团队',
 				projectTeamOk: '{lead} · {n} 名成员',
 				projectTeamMissing: '无 → 请在该会话中初始化',
-			projectTeamNoMembers: '只有 Lead，缺 {roles} · Agent 会在需要时自动创建',
 			projectTeamStale: '团队会话已过期（最后活动 {at}）→ 请在该项目的当前会话里打开任务中心',
-			projectTeamMissingRoles: '缺 {roles} · 不是故障，Agent 会在需要时自动创建',
 				projectTeamUnavailable: '本 profile 没有团队服务（看板仍可用）',
 				projectTeamCurrent: '当前会话 Team',
 				projectTeamMismatch: '当前会话 Team 属于项目 {team}，不是面板项目 {panel}',
-				projectTeamBuild: '建队',
-				projectTeamBuilding: '建队中…',
 				projectTeamScopeHint: 'Team 属于会话，不跨会话；Agent 会在需要时自动建队，无需手动操作。',
-				projectTeamSessionCopied: '已复制会话 id',
 				projectTeamCopyFailed: '复制失败',
-				projectTeamMissingTeam: '等待 Agent 建立团队（不是故障）',
 				projectTeamWaiting: '等待 Agent 建队',
 				projectTeamNext: '下一步（先建团队再建卡）：',
 				// T-155: per-session aggregation, one workspace scope bar, no primary session.
@@ -1044,18 +1038,12 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeam: 'Project team',
 				projectTeamOk: '{lead} · {n} members',
 				projectTeamMissing: 'none → initialize it in this session',
-			projectTeamNoMembers: 'Lead only, missing {roles} · the Agent creates them when needed',
 			projectTeamStale: 'The team session is stale (last active {at}) → open the task center from the project\'s current session',
-			projectTeamMissingRoles: 'missing {roles} · not a failure; the Agent creates them when needed',
 				projectTeamUnavailable: 'no team services in this profile (the board still works)',
 				projectTeamCurrent: 'This session\'s team',
 				projectTeamMismatch: 'This session\'s team belongs to project {team}, not the panel project {panel}',
-				projectTeamBuild: 'Create team',
-				projectTeamBuilding: 'Creating team…',
 				projectTeamScopeHint: 'A team belongs to a session; the Agent creates it when needed — no manual action required.',
-				projectTeamSessionCopied: 'Session id copied',
 				projectTeamCopyFailed: 'Copy failed',
-				projectTeamMissingTeam: 'Waiting for the Agent to create the team (this is not a failure)',
 				projectTeamWaiting: 'Waiting for the Agent to create the team',
 				projectTeamNext: 'Next step (create the team before cards):',
 				// T-155: per-session aggregation, one workspace scope bar, no primary session.
@@ -3807,6 +3795,16 @@ function createWorkersView(deps) {
 		const snapshot = props.snapshot
 		const workers = snapshot.workers
 		const [copied, setCopied] = React.useState(null)
+		// T-155: this hook is UNCONDITIONAL and must stay above the early returns
+		// below: the store's loading snapshot has workers === null, so a mounted
+		// executors tab can render once with the pool and later without it (and the
+		// reverse on an ok:false poll). A hook below those returns changes the hook
+		// count between renders and real React unmounts the view tree.
+		const [sessionFilter, setSessionFilterState] = React.useState(workersUi.sessionFilter)
+		const setSessionFilter = function (next) {
+			workersUi.sessionFilter = next
+			setSessionFilterState(next)
+		}
 		const shell = function (child) { return h('div', { className: 'gbt-workersview' }, child) }
 		const blocks = []
 		const hint = h('p', { key: 'hint', className: 'gbt-footnote', 'data-worker-hint': 'true' }, t('workersHint'))
@@ -3873,11 +3871,6 @@ function createWorkersView(deps) {
 		const scope = snapshot.scope !== null && snapshot.scope !== undefined && typeof snapshot.scope === 'object' ? snapshot.scope : null
 		const sessionRows = scope !== null && Array.isArray(scope.sessionSummaries) ? scope.sessionSummaries.filter(function (row) { return row !== null && typeof row === 'object' }) : []
 		const currentSession = scope !== null && typeof scope.panelSession === 'string' && scope.panelSession !== '' ? scope.panelSession : null
-		const [sessionFilter, setSessionFilterState] = React.useState(workersUi.sessionFilter)
-		const setSessionFilter = function (next) {
-			workersUi.sessionFilter = next
-			setSessionFilterState(next)
-		}
 		const sessionShortText = function (value) {
 			const text = typeof value === 'string' ? value : ''
 			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
@@ -4014,6 +4007,7 @@ function createWorkersView(deps) {
 }
 
 module.exports = { createWorkersView }
+
 				})(module, module.exports)
 				const factory = module.exports.createWorkersView
 				return factory({ React: React, h: h, tcBaseName: tcBaseName, tcSessionShort: tcSessionShort, tcLeadText: tcLeadText, copyToClipboard: copyToClipboard, roleKindLabel: roleKindLabel, workerStatusLabel: workerStatusLabel })
@@ -7330,7 +7324,7 @@ function createTaskCenter(deps) {
 	const store = deps.store
 	// T-155: one workspace-follow driver per panel. key memoises the attempt per
 	// (board, chat) pair, so a setup/failed workspace is not retried on every poll.
-	const workspaceSwitch = { key: null, status: 'idle', board: null, target: null, error: '', missing: [], fade: false }
+	const workspaceSwitch = { key: null, status: 'idle', board: null, target: null, error: '', missing: [], fade: false, fadeFrames: false }
 
 	function TaskCenter(props) {
 		const t = useTranslate()
@@ -7685,6 +7679,19 @@ function createTaskCenter(deps) {
 		else if (workspaceMismatch !== true) workspaceState = workspaceSwitch.fade === true ? 'followed' : 'same'
 		else if (workspaceSwitch.key !== wsKey) workspaceState = 'switching'
 		else workspaceState = workspaceSwitch.status
+		// T-155 review: the fade is ONE render, not a permanent state. The first
+		// settled render after a follow shows 'followed' + the fade class; the next
+		// one drops both, so the steady state reads 同一工作区 and a SECOND follow
+		// re-adds the class (which is what replays the CSS animation).
+		if (workspaceState === 'followed') {
+			if (workspaceSwitch.fadeFrames === true) {
+				workspaceSwitch.fade = false
+				workspaceSwitch.fadeFrames = false
+				workspaceState = 'same'
+			} else {
+				workspaceSwitch.fadeFrames = true
+			}
+		}
 		function retryWorkspace() {
 			workspaceSwitch.key = null
 			workspaceSwitch.status = 'idle'

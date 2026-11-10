@@ -33,7 +33,7 @@ function createTaskCenter(deps) {
 	const store = deps.store
 	// T-155: one workspace-follow driver per panel. key memoises the attempt per
 	// (board, chat) pair, so a setup/failed workspace is not retried on every poll.
-	const workspaceSwitch = { key: null, status: 'idle', board: null, target: null, error: '', missing: [], fade: false }
+	const workspaceSwitch = { key: null, status: 'idle', board: null, target: null, error: '', missing: [], fade: false, fadeFrames: false }
 
 	function TaskCenter(props) {
 		const t = useTranslate()
@@ -388,6 +388,19 @@ function createTaskCenter(deps) {
 		else if (workspaceMismatch !== true) workspaceState = workspaceSwitch.fade === true ? 'followed' : 'same'
 		else if (workspaceSwitch.key !== wsKey) workspaceState = 'switching'
 		else workspaceState = workspaceSwitch.status
+		// T-155 review: the fade is ONE render, not a permanent state. The first
+		// settled render after a follow shows 'followed' + the fade class; the next
+		// one drops both, so the steady state reads 同一工作区 and a SECOND follow
+		// re-adds the class (which is what replays the CSS animation).
+		if (workspaceState === 'followed') {
+			if (workspaceSwitch.fadeFrames === true) {
+				workspaceSwitch.fade = false
+				workspaceSwitch.fadeFrames = false
+				workspaceState = 'same'
+			} else {
+				workspaceSwitch.fadeFrames = true
+			}
+		}
 		function retryWorkspace() {
 			workspaceSwitch.key = null
 			workspaceSwitch.status = 'idle'
