@@ -1045,7 +1045,7 @@ await flush()
   check(
     'T-137 the global project-team header hides the raw session id too (H7), exactly once',
     teamLine !== undefined &&
-      textOf(teamLine) === '该项目团队：本会话 Lead · eb9ba775 · 3 名成员' &&
+      textOf(teamLine) === '当前会话 Team：本会话 Lead · eb9ba775 · 3 名成员' &&
       (textOf(teamLine).match(/eb9ba775/g) || []).length === 1 &&
       textOf(teamLine).indexOf('session-eb9ba775') < 0 &&
       String(teamLine.props.title).indexOf('session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c') >= 0,
@@ -1136,7 +1136,7 @@ await flush()
   check(
     'T-137 the global project-team header formats the session lead exactly once too',
     namedTeamLine !== undefined &&
-      textOf(namedTeamLine) === '该项目团队：本会话 Lead · eb9ba775 · 3 名成员' &&
+      textOf(namedTeamLine) === '当前会话 Team：本会话 Lead · eb9ba775 · 3 名成员' &&
       (textOf(namedTeamLine).match(/eb9ba775/g) || []).length === 1,
     namedTeamLine && textOf(namedTeamLine),
   )
@@ -1190,9 +1190,9 @@ await flush()
   const cardsRoot = findAll(statusTree, (node) => node.props && node.props['data-status'] === 'cards')[0]
   const statusCards = findAll(statusTree, (node) => node.props && node.props['data-status-card'] !== undefined)
   check(
-    'the status page is a summary line plus three narrow cards and one full-width activity card',
+    'T-155 the status page is a summary line plus the per-session card, three narrow cards and one full-width activity card',
     cardsRoot !== undefined &&
-      statusCards.map((card) => card.props['data-status-card']).join(',') === 'dispatch,worktrees,agents,activity' &&
+      statusCards.map((card) => card.props['data-status-card']).join(',') === 'dispatch,sessions,worktrees,agents,activity' &&
       findAll(statusTree, (node) => node.props && node.props['data-status-grid'] === 'true').length === 1 &&
       findAll(statusTree, (node) => node.props && node.props['data-status-top'] === 'true').length === 1,
     JSON.stringify(statusCards.map((card) => card.props['data-status-card'])),
@@ -3964,11 +3964,13 @@ await flush()
     'input[placeholder="项目目录的绝对路径"]',
     '[data-project-source="session"]',
     '[data-project-mismatch="true"]',
+    '[data-workspace-scope="true"]',
     '[data-panel-session]',
     'data-session-source="host"',
     'data-session-source="window"',
     '[data-action="use-current-project"]',
-    '[data-action="switch-to-session-project"]',
+    '[data-action="workspace-recheck"]',
+    '[data-action="copy-team-session"]',
     '打开项目',
     'key Escape',
     'harnessStart',
@@ -4706,39 +4708,39 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   check('T-90 loading alone never writes a pin', STORAGE.has('godotBridge.taskCenter.project') === false, String(STORAGE.get('godotBridge.taskCenter.project')))
   check('T-90 no mismatch bar is shown when the two agree', findAll(t90, (node) => node.props && node.props['data-project-mismatch'] === 'true').length === 0)
 
-  // 2. A pin that differs from the session: actionable mismatch bar.
+  // 2. A pin that differs from the session: the ONE workspace scope bar names both
+  // workspaces and follows the chat one by itself (no second confirmation).
+  const settleUntil = async function (predicate) {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      if (predicate()) return true
+      withHooks(panel, { initialView: 'board' })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      await flush()
+    }
+    return predicate()
+  }
   STORAGE.set('godotBridge.taskCenter.project', 'v2:' + pinnedOther)
-  let t90b = withHooks(panel, { initialView: 'board' })
-  await flush()
-  t90b = withHooks(panel, { initialView: 'board' })
-  await flush()
-  t90b = withHooks(panel, { initialView: 'board' })
-  const manualBadge = findAll(t90b, (node) => node.props && node.props['data-project-source'] === 'manual')[0]
-  check('T-90 a pinned project is labelled as manual', manualBadge !== undefined && textOf(manualBadge) === '手动', manualBadge && textOf(manualBadge))
-  const mismatch = findAll(t90b, (node) => node.props && node.props['data-project-mismatch'] === 'true')[0]
-  check(
-    'T-90 a pinned panel that differs from the session shows the mismatch bar',
-    mismatch !== undefined && textOf(mismatch).indexOf(pinnedOther) >= 0 && textOf(mismatch).indexOf(sessionRoot) >= 0,
-    mismatch && textOf(mismatch),
-  )
-  const switchButton = mismatch === undefined ? undefined : findAll(mismatch, (node) => node.type === 'button' && node.props['data-action'] === 'switch-to-session-project')[0]
-  check('T-90 the bar carries one switch action', switchButton !== undefined, mismatch && mismatch.props.children === undefined)
-
-  // 3. Clicking it: openProject on the Host, then the pin follows.
   postsBefore = posts.length
-  if (switchButton !== undefined) switchButton.props.onClick()
-  await flush()
-  await flush()
-  const switchPost = posts.slice(postsBefore).filter((post) => post.action === 'openProject')[0]
-  check('T-90 switching sends openProject to the Host (write = bind)', switchPost !== undefined && switchPost.path === sessionRoot, JSON.stringify(posts.slice(postsBefore)))
-  check('T-90 and pins the session project in the browser', STORAGE.get('godotBridge.taskCenter.project') === 'v2:' + sessionRoot, String(STORAGE.get('godotBridge.taskCenter.project')))
-  t90b = withHooks(panel, { initialView: 'board' })
-  await flush()
-  t90b = withHooks(panel, { initialView: 'board' })
-  check('T-90 after the switch the mismatch bar is gone', findAll(t90b, (node) => node.props && node.props['data-project-mismatch'] === 'true').length === 0, textOf(t90b).slice(0, 200))
+  const sawPin = await settleUntil(function () { return captured.getSnapshot().project === pinnedOther })
+  check('T-90 a pinned project is labelled as manual', sawPin && findAll(withHooks(panel, { initialView: 'board' }), (node) => node.props && node.props['data-project-source'] === 'manual').length === 1)
+  const followed = await settleUntil(function () { return STORAGE.get('godotBridge.taskCenter.project') === 'v2:' + sessionRoot })
+  check('T-155 a pinned project that differs from the chat workspace is followed automatically', sawPin && followed, JSON.stringify({ pinned: STORAGE.get('godotBridge.taskCenter.project'), posts: posts.slice(postsBefore).map((post) => post.action + ':' + String(post.path)) }))
+  check('T-155 following sends openProject with the chat workspace path', posts.slice(postsBefore).filter((post) => post.action === 'openProject').length === 1 && posts.slice(postsBefore).filter((post) => post.action === 'openProject')[0].path === sessionRoot, JSON.stringify(posts.slice(postsBefore)))
+  let t90b = withHooks(panel, { initialView: 'board' })
+  const followedBar = findAll(t90b, (node) => node.props && node.props['data-workspace-scope'] === 'true')[0]
+  const fadedMain = findAll(t90b, (node) => node.props && typeof node.props.className === 'string' && node.props.className.indexOf('gbt-workspacefade') >= 0)[0]
+  check(
+    'T-155 after following, the bar reports the follow and the new board fades in',
+    followedBar !== undefined &&
+      (followedBar.props['data-workspace-state'] === 'followed' || followedBar.props['data-workspace-state'] === 'same') &&
+      textOf(followedBar).indexOf('已跟随') >= 0 &&
+      fadedMain !== undefined &&
+      findAll(followedBar, (node) => node.type === 'button' && node.props && String(node.props['data-action']).indexOf('switch-') === 0).length === 0,
+    JSON.stringify({ state: followedBar && followedBar.props['data-workspace-state'], text: followedBar && textOf(followedBar), fade: fadedMain !== undefined }),
+  )
 
   // 4. The project dialog offers the Host-resolved path instead of hand typing.
-  STORAGE.set('godotBridge.taskCenter.project', 'v2:' + pinnedOther)
+  STORAGE.delete('godotBridge.taskCenter.project')
   let formTree = withHooks(panel, { initialView: 'board', initialProjectOpen: true })
   await flush()
   formTree = withHooks(panel, { initialView: 'board', initialProjectOpen: true })
@@ -4746,9 +4748,9 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   formTree = withHooks(panel, { initialView: 'board', initialProjectOpen: true })
   const projectInput = findAll(formTree, (node) => node.type === 'input' && node.props && node.props['data-project-input'] === 'true')[0]
   check(
-    'T-90 the dialog starts on the pinned path',
-    projectInput !== undefined && projectInput.props.defaultValue === pinnedOther,
-    JSON.stringify({ input: projectInput && projectInput.props.defaultValue, snapshotProject: captured.getSnapshot().project, pinned: STORAGE.get('godotBridge.taskCenter.project'), urls: stateUrls.slice(-2) }),
+    'T-90 the dialog starts on the Host-resolved session path',
+    projectInput !== undefined && projectInput.props.defaultValue === sessionRoot,
+    JSON.stringify({ input: projectInput && projectInput.props.defaultValue, pinned: STORAGE.get('godotBridge.taskCenter.project') }),
   )
   const useCurrentButton = findAll(formTree, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'use-current-project')[0]
   check('T-90 the dialog offers "use current project"', useCurrentButton !== undefined && textOf(useCurrentButton).indexOf('使用当前项目') >= 0, useCurrentButton && textOf(useCurrentButton))
@@ -5069,7 +5071,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   let line = teamLine(tree)
   check(
     'T-110 the header says the project has no Team',
-    line !== undefined && line.props['data-project-team'] === 'missing' && textOf(line).indexOf('该项目团队') >= 0 && textOf(line).indexOf('请在该会话中初始化') >= 0,
+    line !== undefined && line.props['data-project-team'] === 'missing' && textOf(line).indexOf('当前会话 Team') >= 0 && textOf(line).indexOf('请在该会话中初始化') >= 0,
     line && textOf(line),
   )
   let statusTree = withHooks(panel, { initialView: 'status' })
@@ -5168,22 +5170,40 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     error: null,
   }
   let tree = await headerTree()
-  const mismatch = findAll(tree, (node) => node.props && node.props['data-project-mismatch'] === 'true')[0]
+  const teamInfo = findAll(tree, (node) => node.props && node.props['data-team-info'] === 'true')[0]
   const switchButton = actionButton(tree, 'switch-team-project')
   const sessionButton = actionButton(tree, 'copy-team-session')
   check(
-    'T-150 another project\'s Team is named as a mismatch, with switch/copy actions',
-    mismatch !== undefined &&
-      mismatch.props['data-team-project'] === otherProject &&
-      mismatch.props['data-panel-project'] === PROJECT &&
-      deepText(mismatch).indexOf('属于项目 ' + otherProject) >= 0 &&
-      deepText(mismatch).indexOf('不是面板项目 ' + PROJECT) >= 0 &&
-      switchButton !== undefined && switchButton.props['data-team-project'] === otherProject &&
-      sessionButton !== undefined && sessionButton.props['data-session'] === 'session-other-team' &&
+    'T-155 another project\'s Team is INFORMATION (copy session id), never a project switch',
+    teamInfo !== undefined &&
+      teamInfo.props['data-team-project'] === otherProject &&
+      teamInfo.props['data-panel-project'] === PROJECT &&
+      deepText(teamInfo).indexOf('属于项目 ' + otherProject) >= 0 &&
+      deepText(teamInfo).indexOf('不是面板项目 ' + PROJECT) >= 0 &&
+      switchButton === undefined &&
+      sessionButton !== undefined &&
+      sessionButton.props['data-session'] === 'session-other-team' &&
+      textOf(sessionButton) === '复制会话 ID' &&
       actionButton(tree, 'bootstrap-team') === undefined &&
       deepText(tree).indexOf('请在该会话中建队') < 0,
-    JSON.stringify({ mismatch: mismatch && deepText(mismatch), switch: switchButton && switchButton.props, session: sessionButton && sessionButton.props }),
+    JSON.stringify({ info: teamInfo && deepText(teamInfo), switch: switchButton !== undefined, session: sessionButton && sessionButton.props }),
   )
+  const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  try {
+    Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async function () {} } }, configurable: true })
+  } catch (_error) {}
+  sessionButton.props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  await flush()
+  tree = await headerTree()
+  const copyToast = findAll(tree, (node) => node.props && node.props['data-copy-toast'] === 'copied')[0]
+  check(
+    'T-155 copying the owning session id confirms with a toast (not a project switch)',
+    copyToast !== undefined && deepText(copyToast).indexOf('已复制会话 ID') >= 0,
+    copyToast && deepText(copyToast),
+  )
+  if (savedNavigator === undefined) delete globalThis.navigator
+  else Object.defineProperty(globalThis, 'navigator', savedNavigator)
 
   // Same project, only the Lead: the Agent creates the rest on demand; the panel
   // must not offer a user-facing build button.
@@ -5205,31 +5225,32 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     error: 'no-members',
   }
   tree = await headerTree()
-  const buildBanner = findAll(tree, (node) => node.props && node.props['data-team-build'] === 'true')[0]
+  const workerWait = findAll(tree, (node) => node.props && node.props['data-team-waiting-worker'] === 'true')[0]
   const buildWait = findAll(tree, (node) => node.props && node.props['data-team-waiting'] === 'true')[0]
+  const buildBanner = findAll(tree, (node) => node.props && node.props['data-team-build'] === 'true')[0]
   check(
-    'T-150 a same-project team with only the Lead waits for the Agent, with no user build action',
-    buildBanner !== undefined &&
-      actionButton(tree, 'bootstrap-team') === undefined &&
+    'T-155 a team without a worker waits for a worker, with no global build banner',
+    workerWait !== undefined &&
       buildWait !== undefined &&
-      deepText(buildBanner).indexOf('Agent') >= 0 &&
-      deepText(buildBanner).indexOf('Team 属于会话') >= 0 &&
+      buildBanner === undefined &&
+      deepText(workerWait).indexOf('等待 worker') >= 0 &&
+      actionButton(tree, 'bootstrap-team') === undefined &&
       deepText(tree).indexOf('请在该会话中建队') < 0,
-    JSON.stringify({ banner: buildBanner && deepText(buildBanner), wait: buildWait && deepText(buildWait) }),
+    JSON.stringify({ wait: workerWait && deepText(workerWait), banner: buildBanner !== undefined }),
   )
 
-  // No team data at all: still a wait state, not a manual build action.
+  // No team data at all: the same worker-wait state, not a manual build action.
   HOST.team = null
   tree = await headerTree()
-  const missingBanner = findAll(tree, (node) => node.props && node.props['data-team-missing'] === 'true')[0]
+  const missingWaitLine = findAll(tree, (node) => node.props && node.props['data-team-waiting-worker'] === 'true')[0]
   const missingWait = findAll(tree, (node) => node.props && node.props['data-team-waiting'] === 'true')[0]
   check(
-    'T-150 a missing Team shows the Agent wait copy and no user build action',
-    missingBanner !== undefined &&
+    'T-155 a missing Team shows the worker wait state and no user build action',
+    missingWaitLine !== undefined &&
       actionButton(tree, 'bootstrap-team') === undefined &&
       missingWait !== undefined &&
-      deepText(missingBanner).indexOf('等待 Agent 建立团队') >= 0,
-    missingBanner && deepText(missingBanner),
+      deepText(tree).indexOf('等待 worker') >= 0,
+    missingWaitLine && deepText(missingWaitLine),
   )
 
   // Unknown/empty team project: degrade to the original line, no false alarm.
@@ -5254,7 +5275,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     'T-150 an unknown team project degrades to the original team line without a false mismatch',
     degradedLine !== undefined &&
       findAll(tree, (node) => node.props && node.props['data-project-mismatch'] === 'true').length === 0 &&
-      findAll(tree, (node) => node.props && node.props['data-team-build'] === 'true').length === 0 &&
+      findAll(tree, (node) => node.props && node.props['data-team-info'] === 'true').length === 0 &&
       deepText(tree).indexOf('请在该会话中建队') < 0 &&
       actionButton(tree, 'bootstrap-team') === undefined,
     degradedLine && textOf(degradedLine),
@@ -5330,13 +5351,13 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   let readyTree = await treeOf()
   const readyLine = findAll(readyTree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
   check(
-    'T-154 a dispatch-ready Team with missing reviewer/tester shows no team-build prompt',
+    'T-154 a dispatch-ready Team with missing reviewer/tester has no global team/build warning',
     buildBannerOf(readyTree) === undefined &&
+      findAll(readyTree, (node) => node.props && node.props['data-team-waiting-worker'] === 'true').length === 0 &&
       findAll(readyTree, (node) => node.props && node.props['data-team-waiting'] === 'true').length === 0 &&
       readyLine !== undefined &&
       readyLine.props['data-project-team'] === 'ok' &&
-      deepText(readyLine).indexOf('reviewer') >= 0 &&
-      deepText(readyLine).indexOf('不是故障') >= 0,
+      deepText(readyLine).indexOf('reviewer') < 0,
     JSON.stringify({ line: readyLine && deepText(readyLine), banner: buildBannerOf(readyTree) !== undefined }),
   )
   // Only a reviewer (no worker): the team exists (ok) but cannot dispatch, so the
@@ -5351,13 +5372,228 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     stageReady: { review: true, test: false },
   })
   const reviewerTree = await treeOf()
+  const reviewerWait = findAll(reviewerTree, (node) => node.props && node.props['data-team-waiting-worker'] === 'true')[0]
   check(
-    'T-154 a Team without a worker is not dispatch-ready and the panel asks for the build',
-    buildBannerOf(reviewerTree) !== undefined && findAll(reviewerTree, (node) => node.props && node.props['data-team-waiting'] === 'true').length >= 1,
-    JSON.stringify({ banner: buildBannerOf(reviewerTree) !== undefined }),
+    'T-154 a Team without a worker is not dispatch-ready and waits for a worker',
+    reviewerWait !== undefined && deepText(reviewerTree).indexOf('等待 worker') >= 0 && buildBannerOf(reviewerTree) === undefined,
+    reviewerWait && deepText(reviewerWait),
   )
   HOST.team = savedTeam
   globalThis.fetch = savedFetch
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+}
+
+
+// ── T-155: one workspace scope bar, per-session aggregation, no primary ─────
+{
+  const savedFetch = globalThis.fetch
+  const savedProject = HOST.project
+  const savedProjectRoot = HOST.projectRoot
+  const savedSessionProject = HOST.sessionProject
+  const savedScope = HOST.scope
+  const savedTeam = HOST.team
+  const savedTasks = HOST.tasks
+  const projectA = 'J:\\demo\\workspace-a'
+  const projectSetup = 'J:\\demo\\workspace-setup'
+  const projectBad = 'J:\\demo\\workspace-bad'
+  let postReply = null
+  let postPending = false
+  globalThis.fetch = async function (url, options) {
+    if (options !== undefined && options.method === 'POST') {
+      posts.push(JSON.parse(options.body))
+      if (postPending) return new Promise(function () {})
+      return { json: async () => postReply }
+    }
+    return { json: async () => HOST }
+  }
+  HOST.project = projectA
+  HOST.projectRoot = projectA
+  HOST.sessionProject = 'J:\\demo\\elsewhere'
+  HOST.scope = null
+  HOST.team = null
+  STORAGE.delete('godotBridge.taskCenter.project')
+  const viewOf = async function (name, props) {
+    withHooks(panel, Object.assign({ initialView: name }, props === undefined ? {} : props))
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    await flush()
+    return withHooks(panel, Object.assign({ initialView: name }, props === undefined ? {} : props))
+  }
+  const barOf = function (tree) {
+    return findAll(tree, (node) => node.props && node.props['data-workspace-scope'] === 'true')[0]
+  }
+  const settle = async function (name, predicate) {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const tree = await viewOf(name)
+      if (predicate(tree)) return tree
+    }
+    return viewOf(name)
+  }
+
+  // 1) A switch in flight: the ONE bar shows both workspaces and a spinner; the
+  // old per-project switch actions are gone.
+  postPending = true
+  const pendingTree = await settle('board', function (tree) { const bar = barOf(tree); return bar !== undefined && bar.props['data-workspace-state'] === 'switching' })
+  const pendingBar = barOf(pendingTree)
+  check(
+    'T-155 mismatched workspaces show ONE bar with the 正在切换工作区 spinner',
+    pendingBar !== undefined &&
+      pendingBar.props['data-workspace-state'] === 'switching' &&
+      deepText(pendingBar).indexOf('正在切换工作区') >= 0 &&
+      findAll(pendingBar, (node) => node.props && node.props['className'] === 'gbt-spinner').length === 1 &&
+      findAll(pendingTree, (node) => node.type === 'button' && node.props && ['switch-to-session-project', 'switch-team-project'].indexOf(node.props['data-action']) >= 0).length === 0 &&
+      captured.getSnapshot().project === projectA,
+    pendingBar && deepText(pendingBar),
+  )
+  postPending = false
+
+  // 2) Not onboarded: setup state lists the missing checks, keeps the old board and
+  // offers recheck / open-another-project — it does NOT switch.
+  postReply = { ok: false, code: 'not-ready', message: 'project is not ready', preflight: { failed: [{ id: 'repository', label: 'git repository' }, { id: 'board', label: 'task board' }] } }
+  HOST.sessionProject = projectSetup
+  const setupTree = await settle('board', function (tree) { const bar = barOf(tree); return bar !== undefined && bar.props['data-workspace-state'] === 'setup' })
+  const setupBar = barOf(setupTree)
+  check(
+    'T-155 a chat workspace that is not onboarded shows a setup card and keeps the old board',
+    setupBar !== undefined &&
+      setupBar.props['data-workspace-state'] === 'setup' &&
+      deepText(setupBar).indexOf('git repository') >= 0 &&
+      deepText(setupBar).indexOf('task board') >= 0 &&
+      findAll(setupTree, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'workspace-recheck').length === 1 &&
+      findAll(setupTree, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'workspace-open-project').length === 1 &&
+      captured.getSnapshot().project === projectA,
+    setupBar && deepText(setupBar),
+  )
+
+  // 3) A real switch failure: the old board stays, the bar shows a readable error
+  // and a retry — never a silent close.
+  postReply = { ok: false, code: 'invalid-project', message: 'not a directory: ' + projectBad }
+  HOST.sessionProject = projectBad
+  const failedTree = await settle('board', function (tree) { const bar = barOf(tree); return bar !== undefined && bar.props['data-workspace-state'] === 'failed' })
+  const failedBar = barOf(failedTree)
+  check(
+    'T-155 a failed switch keeps the old board and shows a readable inline error',
+    failedBar !== undefined &&
+      failedBar.props['data-workspace-state'] === 'failed' &&
+      failedBar.props['data-workspace-tone'] === 'error' &&
+      deepText(failedBar).indexOf('not a directory') >= 0 &&
+      findAll(failedTree, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'workspace-retry').length === 1 &&
+      captured.getSnapshot().project === projectA,
+    failedBar && deepText(failedBar),
+  )
+  postReply = null
+
+  // 4) Per-session aggregation: status / workers / roles list BOTH sessions with
+  // their own teams and card counts; the current one is highlighted, never primary.
+  HOST.sessionProject = projectA
+  HOST.scope = {
+    boardProject: { id: 'p-a', root: projectA },
+    panelSession: 'session-b',
+    currentSessionProject: projectA,
+    projectSessions: [{ sessionId: 'session-a' }, { sessionId: 'session-b' }],
+    sessionSummaries: [
+      { sessionId: 'session-a', status: 'live', dispatchReady: true, stageReady: { review: true, test: false }, cards: { owned: 2, active: 1 }, team: { lead: 'lead-a', members: ['a1', 'a2'], memberCount: 2, missingRoles: [], error: null } },
+      { sessionId: 'session-b', status: 'stale', dispatchReady: false, stageReady: { review: false, test: true }, cards: { owned: 1, active: 0 }, team: { lead: 'lead-b', members: ['b1'], memberCount: 1, missingRoles: ['worker'], error: null } },
+    ],
+  }
+  const statusTree = await viewOf('status')
+  const statusCard = findAll(statusTree, (node) => node.props && node.props['data-status-card'] === 'sessions')[0]
+  const statusRows = findAll(statusCard, (node) => node.props && node.props['data-session'] !== undefined && node.props['data-current'] !== undefined)
+  check(
+    'T-155 the status page lists every participating session with its own team and card counts',
+    statusCard !== undefined &&
+      statusRows.length === 2 &&
+      statusRows.filter((row) => row.props['data-current'] === 'true').length === 1 &&
+      statusRows.filter((row) => row.props['data-current'] === 'true')[0].props['data-session'] === 'session-b' &&
+      deepText(statusCard).indexOf('lead-a') >= 0 &&
+      deepText(statusCard).indexOf('lead-b') >= 0 &&
+      deepText(statusCard).indexOf('主会话：') < 0,
+    statusCard && deepText(statusCard).slice(0, 260),
+  )
+  const statusFilter = findAll(statusTree, (node) => node.type === 'select' && node.props && node.props['data-session-filter'] === 'true')[0]
+  if (statusFilter !== undefined) statusFilter.props.onChange({ target: { value: 'session-a' } })
+  const filteredStatus = await viewOf('status')
+  const filteredCard = findAll(filteredStatus, (node) => node.props && node.props['data-status-card'] === 'sessions')[0]
+  const filteredRows = findAll(filteredCard, (node) => node.props && node.props['data-session'] !== undefined && node.props['data-current'] !== undefined)
+  check('T-155 the status session filter narrows the list', filteredRows.length === 1 && filteredRows[0].props['data-session'] === 'session-a', JSON.stringify(filteredRows.map((row) => row.props['data-session'])))
+  // The fade + reduced-motion rules really ship in the bundle (spinner OFF, short fade).
+  const clientCss = readFileSync(SRC, 'utf8')
+  check(
+    'T-155 the workspace fade and prefers-reduced-motion rules ship in the bundle',
+    clientCss.indexOf('@keyframes gbt-workspacefade') >= 0 &&
+      clientCss.indexOf('@media (prefers-reduced-motion: reduce)') >= 0 &&
+      clientCss.indexOf('.gbt-workspacefade{') >= 0 &&
+      clientCss.indexOf('.gbt-session[data-current=') >= 0,
+    String(clientCss.length),
+  )
+
+  const workersTree = await viewOf('workers')
+  const workerRows = findAll(workersTree, (node) => node.props && node.props['data-worker-sessions'] === 'true')[0]
+  const workerSessionRows = findAll(workerRows, (node) => node.props && node.props['data-session'] !== undefined && node.props['data-dispatch-ready'] !== undefined && node.props['data-current'] !== undefined)
+  check(
+    'T-155 the executors page groups the same sessions (no single project team)',
+    workerRows !== undefined && workerSessionRows.length === 2 && deepText(workerRows).indexOf('lead-a') >= 0 && deepText(workerRows).indexOf('lead-b') >= 0 && deepText(workerRows).indexOf('主会话：') < 0,
+    workerRows && deepText(workerRows).slice(0, 220),
+  )
+
+  const rolesTree = await viewOf('roles')
+  const rolesRows = findAll(rolesTree, (node) => node.props && node.props['data-roles-sessions'] === 'true')[0]
+  const rolesSessionRows = findAll(rolesRows, (node) => node.props && node.props['data-session'] !== undefined && node.props['data-dispatch-ready'] !== undefined)
+  check(
+    'T-155 the roles page shows each session\'s dispatch/stage readiness',
+    rolesRows !== undefined && rolesSessionRows.length >= 2 && deepText(rolesRows).indexOf('可派发') >= 0 && deepText(rolesRows).indexOf('未就绪') >= 0,
+    rolesRows && deepText(rolesRows).slice(0, 220),
+  )
+
+  // 5) Cards carry the owning session badge.
+  HOST.tasks = savedTasks.map(function (task) { return Object.assign({}, task, { ownerSession: 'session-a' }) })
+  const boardTree = await viewOf('board')
+  const ownerBadge = findAll(boardTree, (node) => node.props && node.props['data-owner-session'] === 'session-a')[0]
+  check(
+    'T-155 a card shows its owning session badge',
+    ownerBadge !== undefined && deepText(ownerBadge).indexOf('session-a') < 0 && String(ownerBadge.props.title).indexOf('session-a') >= 0,
+    ownerBadge && JSON.stringify({ text: deepText(ownerBadge), title: ownerBadge.props.title }),
+  )
+  HOST.tasks = savedTasks
+
+  // 6) ProjectForm: a not-ready project lists the missing items, keeps the dialog
+  // open, turns the primary action into a re-check and never looks dead.
+  postReply = { ok: false, code: 'not-ready', message: 'project is not ready: repository (no git)', preflight: { failed: [{ id: 'repository', label: 'git repository' }] } }
+  HOST.project = projectSetup
+  HOST.projectRoot = projectSetup
+  HOST.sessionProject = projectSetup
+  HOST.scope = null
+  STORAGE.delete('godotBridge.taskCenter.project')
+  const formTree = await viewOf('board', { initialProjectOpen: true })
+  const formPrimary = findAll(formTree, (node) => node.type === 'button' && node.props && node.props['data-project-primary'] !== undefined)[0]
+  if (formPrimary !== undefined) formPrimary.props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 15))
+  await flush()
+  const afterForm = await viewOf('board', { initialProjectOpen: true })
+  const missingList = findAll(afterForm, (node) => node.props && node.props['data-project-missing-list'] === 'true')[0]
+  const formError = findAll(afterForm, (node) => node.props && node.props['data-project-error'] === 'true')[0]
+  const checkPrimary = findAll(afterForm, (node) => node.type === 'button' && node.props && node.props['data-project-primary'] === 'check')[0]
+  check(
+    'T-155 ProjectForm keeps the dialog, lists the missing checks and offers 检查项目',
+    findAll(afterForm, (node) => node.type === 'input' && node.props && node.props['data-project-input'] === 'true').length === 1 &&
+      missingList !== undefined &&
+      deepText(missingList).indexOf('git repository') >= 0 &&
+      formError !== undefined &&
+      checkPrimary !== undefined &&
+      textOf(checkPrimary).indexOf('检查项目') >= 0,
+    JSON.stringify({ missing: missingList && deepText(missingList), error: formError && textOf(formError), primary: checkPrimary && textOf(checkPrimary) }),
+  )
+  postReply = null
+
+  // restore
+  HOST.project = savedProject
+  HOST.projectRoot = savedProjectRoot
+  HOST.sessionProject = savedSessionProject
+  HOST.scope = savedScope
+  HOST.team = savedTeam
+  HOST.tasks = savedTasks
+  globalThis.fetch = savedFetch
+  STORAGE.delete('godotBridge.taskCenter.project')
   withHooks(panel, { initialView: 'board' })
   await flush()
 }

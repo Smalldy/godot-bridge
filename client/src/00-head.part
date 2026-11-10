@@ -394,8 +394,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeamUnavailable: '本 profile 没有团队服务（看板仍可用）',
 				projectTeamCurrent: '当前会话 Team',
 				projectTeamMismatch: '当前会话 Team 属于项目 {team}，不是面板项目 {panel}',
-				projectTeamSwitch: '切换项目',
-				projectTeamOpenSession: '打开所属会话',
 				projectTeamBuild: '建队',
 				projectTeamBuilding: '建队中…',
 				projectTeamScopeHint: 'Team 属于会话，不跨会话；Agent 会在需要时自动建队，无需手动操作。',
@@ -404,6 +402,45 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeamMissingTeam: '等待 Agent 建立团队（不是故障）',
 				projectTeamWaiting: '等待 Agent 建队',
 				projectTeamNext: '下一步（先建团队再建卡）：',
+				// T-155: per-session aggregation, one workspace scope bar, no primary session.
+				sessionsLabel: '会话',
+				sessionsHint: '每个参与会话有自己的团队与卡；当前对话会话只高亮，不是主会话。',
+				sessionsEmpty: '还没有记录到参与该项目的会话',
+				sessionsCurrent: '当前',
+				sessionsStatusLive: '在线',
+				sessionsStatusStale: '已静默',
+				sessionsStatusUnknown: '状态未知',
+				sessionsCards: '卡 {n}',
+				sessionsActive: '进行 {n}',
+				sessionsReadiness: '可派发',
+				sessionsStageReview: '评审',
+				sessionsStageTest: '测试',
+				sessionsReady: '已就绪',
+				sessionsNotReady: '未就绪',
+				sessionFilter: '会话筛选',
+				sessionFilterAll: '全部会话',
+				sessionCardTitle: '会话',
+				workspaceBoard: '看板工作区',
+				workspaceChat: '当前对话工作区',
+				workspaceSame: '同一工作区',
+				workspaceFollowing: '正在切换工作区…',
+				workspaceFollowed: '已跟随当前对话工作区',
+				workspaceUnknown: '当前对话工作区未知',
+				workspaceNotReady: '当前对话工作区还没接入',
+				workspaceMissing: '缺少：{items}',
+				workspaceSwitchFailed: '切换失败：{error}',
+				workspaceRetry: '重试',
+				workspaceRecheck: '重新检查',
+				workspaceOpenOther: '打开其他项目',
+				teamWaitingWorker: '等待 worker · 团队还没就绪（不是故障）',
+				projectTeamCopySession: '复制会话 ID',
+				sessionIdCopiedToast: '已复制会话 ID',
+				ownerSession: '所属会话',
+				ownerSessionHint: '这张卡属于该会话',
+				projectMissingTitle: '项目尚未就绪',
+				projectCheck: '检查项目',
+				projectChecking: '检查中…',
+				stageRoles: '阶段角色',
 				waitConcurrency: '并发已满',
 				waitCandidateStale: '候选过期，自动重建中',
 				waitNeedsRebase: '等待人工 rebase',
@@ -494,7 +531,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				statusWhyNoReady: '没有就绪任务（全部完成或被依赖挡住）',
 				statusWhyFull: '并发已满',
 				statusWhyBlocked: '有 {n} 个任务被阻塞',
-				statusWhyRunning: '派发中，队列已清空',
+				statusWhyRunning: '派发中，仍有就绪任务等待派发',
 				statusLastScan: '上次扫描',
 				statusMergeQueue: '合并队列',
 				statusWtTotal: '个工作树',
@@ -1013,8 +1050,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeamUnavailable: 'no team services in this profile (the board still works)',
 				projectTeamCurrent: 'This session\'s team',
 				projectTeamMismatch: 'This session\'s team belongs to project {team}, not the panel project {panel}',
-				projectTeamSwitch: 'Switch project',
-				projectTeamOpenSession: 'Open owning session',
 				projectTeamBuild: 'Create team',
 				projectTeamBuilding: 'Creating team…',
 				projectTeamScopeHint: 'A team belongs to a session; the Agent creates it when needed — no manual action required.',
@@ -1023,6 +1058,45 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeamMissingTeam: 'Waiting for the Agent to create the team (this is not a failure)',
 				projectTeamWaiting: 'Waiting for the Agent to create the team',
 				projectTeamNext: 'Next step (create the team before cards):',
+				// T-155: per-session aggregation, one workspace scope bar, no primary session.
+				sessionsLabel: 'Sessions',
+				sessionsHint: 'Every participating session keeps its own team and cards; the current chat session is highlighted, never primary.',
+				sessionsEmpty: 'No participating session recorded for this project yet',
+				sessionsCurrent: 'current',
+				sessionsStatusLive: 'live',
+				sessionsStatusStale: 'stale',
+				sessionsStatusUnknown: 'unknown',
+				sessionsCards: '{n} cards',
+				sessionsActive: '{n} active',
+				sessionsReadiness: 'dispatch-ready',
+				sessionsStageReview: 'review',
+				sessionsStageTest: 'test',
+				sessionsReady: 'ready',
+				sessionsNotReady: 'not ready',
+				sessionFilter: 'Session filter',
+				sessionFilterAll: 'All sessions',
+				sessionCardTitle: 'Sessions',
+				workspaceBoard: 'Board workspace',
+				workspaceChat: 'Chat workspace',
+				workspaceSame: 'Same workspace',
+				workspaceFollowing: 'Switching workspace…',
+				workspaceFollowed: 'Following the chat workspace',
+				workspaceUnknown: 'Chat workspace unknown',
+				workspaceNotReady: 'The chat workspace is not onboarded yet',
+				workspaceMissing: 'missing: {items}',
+				workspaceSwitchFailed: 'Switch failed: {error}',
+				workspaceRetry: 'Retry',
+				workspaceRecheck: 'Check again',
+				workspaceOpenOther: 'Open another project',
+				teamWaitingWorker: 'Waiting for a worker · the team is not dispatch-ready yet (this is not a failure)',
+				projectTeamCopySession: 'Copy session ID',
+				sessionIdCopiedToast: 'Session ID copied',
+				ownerSession: 'Owning session',
+				ownerSessionHint: 'This card belongs to that session',
+				projectMissingTitle: 'The project is not ready yet',
+				projectCheck: 'Check project',
+				projectChecking: 'Checking…',
+				stageRoles: 'Stage roles',
 				waitConcurrency: 'concurrency full',
 				waitCandidateStale: 'candidate stale, rebuilding',
 				waitNeedsRebase: 'waiting for a manual rebase',
@@ -1113,7 +1187,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				statusWhyNoReady: 'no ready task (all done or blocked by dependencies)',
 				statusWhyFull: 'concurrency is full',
 				statusWhyBlocked: '{n} task(s) are blocked',
-				statusWhyRunning: 'dispatching; queue is empty',
+				statusWhyRunning: 'dispatching; ready tasks are still waiting',
 				statusLastScan: 'last scan',
 				statusMergeQueue: 'merge queue',
 				statusWtTotal: 'worktrees',
@@ -1791,6 +1865,37 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-pill[data-status="passed"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-success-primary)}',
 			'.gbt-iconbtn{appearance:none;border:none;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:16px;line-height:1;padding:2px 5px;border-radius:6px}',
 			'.gbt-iconbtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+			// T-155: sessions are grouped per participant; the panel session is highlighted,
+			// never "primary". One workspace scope bar replaces the two switch notices.
+			'.gbt-sessions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:2px 0 0}' +
+				'.gbt-sessionslabel{font-size:11px;color:var(--dsw-alias-label-tertiary)}' +
+				'.gbt-session{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:999px;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-secondary)}' +
+				'.gbt-session[data-current="true"]{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}' +
+				'.gbt-session[data-status="stale"]{opacity:.72}' +
+				'.gbt-session[data-status="unknown"]{opacity:.72;border-style:dashed}' +
+				'.gbt-session b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:600;font-size:11px}' +
+				'.gbt-session .gbt-sessionnow{font-size:10px;color:var(--dsw-alias-state-business-primary)}' +
+				'.gbt-workspacebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 18px 0;padding:7px 11px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:9px;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-secondary)}' +
+				'.gbt-workspacebar[data-project-mismatch="true"]{border-color:var(--dsw-alias-state-warn-label)}' +
+				'.gbt-workspace{display:inline-flex;align-items:center;gap:5px;min-width:0}' +
+				'.gbt-workspace .gbt-workspacelabel{color:var(--dsw-alias-label-tertiary)}' +
+				'.gbt-workspace b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:600;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}' +
+				'.gbt-workspacearrow{color:var(--dsw-alias-label-tertiary)}' +
+				'.gbt-workspacestate{display:inline-flex;align-items:center;gap:6px;min-width:0;flex:1 1 260px;color:var(--dsw-alias-label-secondary)}' +
+				'.gbt-workspacestate[data-workspace-tone="error"]{color:var(--dsw-alias-state-error-primary)}' +
+				'.gbt-workspacestate[data-workspace-tone="warn"]{color:var(--dsw-alias-state-warn-label)}' +
+				'.gbt-workspacemissing{display:flex;flex-wrap:wrap;gap:4px}' +
+				'.gbt-workspacemissing span{padding:1px 6px;border-radius:999px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}' +
+				'.gbt-workspaceactions{display:flex;gap:6px;margin-left:auto}' +
+				'.gbt-workspacefade{animation:gbt-workspacefade .18s ease-out}' +
+				'@keyframes gbt-workspacefade{from{opacity:0}to{opacity:1}}' +
+				'@media (prefers-reduced-motion: reduce){.gbt-spinner{animation:none;border-right-color:currentColor;opacity:.7}.gbt-workspacefade{animation-duration:.12s}}' +
+				'.gbt-sessionscards{display:flex;flex-direction:column;gap:6px}' +
+				'.gbt-sessionsrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 9px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3)}' +
+				'.gbt-sessionsrow[data-current="true"]{border-color:var(--dsw-alias-state-business-primary)}' +
+				'.gbt-sessionsmeta{color:var(--dsw-alias-label-tertiary);font-size:11px}' +
+				'.gbt-sessionfilter{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}' +
+				'.gbt-sessionfilter select{font:inherit;font-size:11px;padding:2px 6px;border-radius:6px;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2);color:inherit}' +
 			'.gbt-projectform{display:flex;gap:6px;align-items:center;margin-top:10px;flex-wrap:wrap}',
 			'.gbt-projectform .gbt-input{flex:1;min-width:220px}',
 			'.gbt-busy{opacity:.6;pointer-events:none}',

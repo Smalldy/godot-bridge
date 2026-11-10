@@ -5,6 +5,12 @@
  * the two board-local helpers. The component keeps its exact rendering.
  */
 function createTaskCard(deps) {
+	/** T-155: a compact owning-session label; the full id stays in the title. */
+	function ownerSessionShort(value) {
+		const text = typeof value === 'string' ? value : ''
+		return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
+	}
+
 	const React = deps.React
 	const h = deps.h
 	const tcBaseName = deps.tcBaseName
@@ -72,6 +78,11 @@ function createTaskCard(deps) {
 		children.push(h('div', { key: 'title', className: 'gbt-cardtitle' }, task.title))
 		const meta = []
 		meta.push(h('span', { key: 'phase', className: 'gbt-chip', 'data-tone': tcPhaseTone(task), title: t('phaseCurrent') }, '▸ ' + tcPhaseLabel(task, t)))
+		// T-155 §8: the card names the session that owns it (no primary session).
+		if (typeof task.ownerSession === 'string' && task.ownerSession !== '') {
+			const ownerShort = ownerSessionShort(task.ownerSession)
+			meta.push(h('span', { key: 'owner', className: 'gbt-chip', 'data-owner-session': task.ownerSession, title: t('ownerSessionHint') + ' · ' + task.ownerSession }, '👤 ' + (ownerShort === '' ? task.ownerSession : ownerShort)))
+		}
 		if (task.assignee !== null && task.assignee !== undefined) meta.push(h('span', { key: 'who', className: 'gbt-chip', 'data-tone': 'running' }, task.assignee.name))
 		if (typeof task.requiredRole === 'string' && task.requiredRole !== '') {
 			meta.push(h('span', { key: 'role', className: 'gbt-chip', title: t('requiredRole') }, '🧩 ' + task.requiredRole))

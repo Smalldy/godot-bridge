@@ -213,10 +213,13 @@
 			 * (and, since T-86, writes the project registry), so a failed switch pins
 			 * nothing.
 			 */
-			async function switchProject(path) {
+			async function switchProject(path, options) {
 				const next = typeof path === 'string' ? path.trim() : ''
 				if (next === '') return { ok: false, payload: { ok: false, code: 'missing-path' } }
-				const result = await send('openProject', { path: next })
+				const opts = options === undefined || options === null ? {} : options
+				// T-155: an AUTOMATIC workspace follow is quiet — it must not raise the
+				// global action banner; the workspace scope bar carries its own error.
+				const result = await send('openProject', { path: next }, opts.quiet === true ? { quiet: true } : undefined)
 				if (result.ok !== true) return result
 				tcPinProject(next)
 				emit(Object.assign({}, snapshot, { project: next, projectRoot: next, resolvedFrom: 'panel' }))

@@ -219,6 +219,10 @@ function tcHostSessionId() {
 				// T-110: the project's Team and, when it does not exist, the one
 				// instruction the session must act on.
 				team: payload.team === undefined || payload.team === null ? null : payload.team,
+				// T-155: the explicit project/session scope (projectSessions, sessionSummaries,
+				// panelSession, currentSessionProject). The panel groups teams BY SESSION
+				// from this; it never treats one team as "the project team".
+				scope: payload.scope === undefined || payload.scope === null || typeof payload.scope !== 'object' ? null : payload.scope,
 				// T-122: host-wide team inventory (diagnostics); the member table uses team.members.
 				teams: payload.teams === undefined || payload.teams === null ? null : payload.teams,
 				nextStep: payload.nextStep === undefined || payload.nextStep === null ? null : payload.nextStep,

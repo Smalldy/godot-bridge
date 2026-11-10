@@ -394,8 +394,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeamUnavailable: '本 profile 没有团队服务（看板仍可用）',
 				projectTeamCurrent: '当前会话 Team',
 				projectTeamMismatch: '当前会话 Team 属于项目 {team}，不是面板项目 {panel}',
-				projectTeamSwitch: '切换项目',
-				projectTeamOpenSession: '打开所属会话',
 				projectTeamBuild: '建队',
 				projectTeamBuilding: '建队中…',
 				projectTeamScopeHint: 'Team 属于会话，不跨会话；Agent 会在需要时自动建队，无需手动操作。',
@@ -404,6 +402,45 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeamMissingTeam: '等待 Agent 建立团队（不是故障）',
 				projectTeamWaiting: '等待 Agent 建队',
 				projectTeamNext: '下一步（先建团队再建卡）：',
+				// T-155: per-session aggregation, one workspace scope bar, no primary session.
+				sessionsLabel: '会话',
+				sessionsHint: '每个参与会话有自己的团队与卡；当前对话会话只高亮，不是主会话。',
+				sessionsEmpty: '还没有记录到参与该项目的会话',
+				sessionsCurrent: '当前',
+				sessionsStatusLive: '在线',
+				sessionsStatusStale: '已静默',
+				sessionsStatusUnknown: '状态未知',
+				sessionsCards: '卡 {n}',
+				sessionsActive: '进行 {n}',
+				sessionsReadiness: '可派发',
+				sessionsStageReview: '评审',
+				sessionsStageTest: '测试',
+				sessionsReady: '已就绪',
+				sessionsNotReady: '未就绪',
+				sessionFilter: '会话筛选',
+				sessionFilterAll: '全部会话',
+				sessionCardTitle: '会话',
+				workspaceBoard: '看板工作区',
+				workspaceChat: '当前对话工作区',
+				workspaceSame: '同一工作区',
+				workspaceFollowing: '正在切换工作区…',
+				workspaceFollowed: '已跟随当前对话工作区',
+				workspaceUnknown: '当前对话工作区未知',
+				workspaceNotReady: '当前对话工作区还没接入',
+				workspaceMissing: '缺少：{items}',
+				workspaceSwitchFailed: '切换失败：{error}',
+				workspaceRetry: '重试',
+				workspaceRecheck: '重新检查',
+				workspaceOpenOther: '打开其他项目',
+				teamWaitingWorker: '等待 worker · 团队还没就绪（不是故障）',
+				projectTeamCopySession: '复制会话 ID',
+				sessionIdCopiedToast: '已复制会话 ID',
+				ownerSession: '所属会话',
+				ownerSessionHint: '这张卡属于该会话',
+				projectMissingTitle: '项目尚未就绪',
+				projectCheck: '检查项目',
+				projectChecking: '检查中…',
+				stageRoles: '阶段角色',
 				waitConcurrency: '并发已满',
 				waitCandidateStale: '候选过期，自动重建中',
 				waitNeedsRebase: '等待人工 rebase',
@@ -494,7 +531,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				statusWhyNoReady: '没有就绪任务（全部完成或被依赖挡住）',
 				statusWhyFull: '并发已满',
 				statusWhyBlocked: '有 {n} 个任务被阻塞',
-				statusWhyRunning: '派发中，队列已清空',
+				statusWhyRunning: '派发中，仍有就绪任务等待派发',
 				statusLastScan: '上次扫描',
 				statusMergeQueue: '合并队列',
 				statusWtTotal: '个工作树',
@@ -1013,8 +1050,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeamUnavailable: 'no team services in this profile (the board still works)',
 				projectTeamCurrent: 'This session\'s team',
 				projectTeamMismatch: 'This session\'s team belongs to project {team}, not the panel project {panel}',
-				projectTeamSwitch: 'Switch project',
-				projectTeamOpenSession: 'Open owning session',
 				projectTeamBuild: 'Create team',
 				projectTeamBuilding: 'Creating team…',
 				projectTeamScopeHint: 'A team belongs to a session; the Agent creates it when needed — no manual action required.',
@@ -1023,6 +1058,45 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				projectTeamMissingTeam: 'Waiting for the Agent to create the team (this is not a failure)',
 				projectTeamWaiting: 'Waiting for the Agent to create the team',
 				projectTeamNext: 'Next step (create the team before cards):',
+				// T-155: per-session aggregation, one workspace scope bar, no primary session.
+				sessionsLabel: 'Sessions',
+				sessionsHint: 'Every participating session keeps its own team and cards; the current chat session is highlighted, never primary.',
+				sessionsEmpty: 'No participating session recorded for this project yet',
+				sessionsCurrent: 'current',
+				sessionsStatusLive: 'live',
+				sessionsStatusStale: 'stale',
+				sessionsStatusUnknown: 'unknown',
+				sessionsCards: '{n} cards',
+				sessionsActive: '{n} active',
+				sessionsReadiness: 'dispatch-ready',
+				sessionsStageReview: 'review',
+				sessionsStageTest: 'test',
+				sessionsReady: 'ready',
+				sessionsNotReady: 'not ready',
+				sessionFilter: 'Session filter',
+				sessionFilterAll: 'All sessions',
+				sessionCardTitle: 'Sessions',
+				workspaceBoard: 'Board workspace',
+				workspaceChat: 'Chat workspace',
+				workspaceSame: 'Same workspace',
+				workspaceFollowing: 'Switching workspace…',
+				workspaceFollowed: 'Following the chat workspace',
+				workspaceUnknown: 'Chat workspace unknown',
+				workspaceNotReady: 'The chat workspace is not onboarded yet',
+				workspaceMissing: 'missing: {items}',
+				workspaceSwitchFailed: 'Switch failed: {error}',
+				workspaceRetry: 'Retry',
+				workspaceRecheck: 'Check again',
+				workspaceOpenOther: 'Open another project',
+				teamWaitingWorker: 'Waiting for a worker · the team is not dispatch-ready yet (this is not a failure)',
+				projectTeamCopySession: 'Copy session ID',
+				sessionIdCopiedToast: 'Session ID copied',
+				ownerSession: 'Owning session',
+				ownerSessionHint: 'This card belongs to that session',
+				projectMissingTitle: 'The project is not ready yet',
+				projectCheck: 'Check project',
+				projectChecking: 'Checking…',
+				stageRoles: 'Stage roles',
 				waitConcurrency: 'concurrency full',
 				waitCandidateStale: 'candidate stale, rebuilding',
 				waitNeedsRebase: 'waiting for a manual rebase',
@@ -1113,7 +1187,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				statusWhyNoReady: 'no ready task (all done or blocked by dependencies)',
 				statusWhyFull: 'concurrency is full',
 				statusWhyBlocked: '{n} task(s) are blocked',
-				statusWhyRunning: 'dispatching; queue is empty',
+				statusWhyRunning: 'dispatching; ready tasks are still waiting',
 				statusLastScan: 'last scan',
 				statusMergeQueue: 'merge queue',
 				statusWtTotal: 'worktrees',
@@ -1791,6 +1865,37 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-pill[data-status="passed"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-success-primary)}',
 			'.gbt-iconbtn{appearance:none;border:none;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:16px;line-height:1;padding:2px 5px;border-radius:6px}',
 			'.gbt-iconbtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+			// T-155: sessions are grouped per participant; the panel session is highlighted,
+			// never "primary". One workspace scope bar replaces the two switch notices.
+			'.gbt-sessions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:2px 0 0}' +
+				'.gbt-sessionslabel{font-size:11px;color:var(--dsw-alias-label-tertiary)}' +
+				'.gbt-session{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:999px;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-secondary)}' +
+				'.gbt-session[data-current="true"]{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}' +
+				'.gbt-session[data-status="stale"]{opacity:.72}' +
+				'.gbt-session[data-status="unknown"]{opacity:.72;border-style:dashed}' +
+				'.gbt-session b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:600;font-size:11px}' +
+				'.gbt-session .gbt-sessionnow{font-size:10px;color:var(--dsw-alias-state-business-primary)}' +
+				'.gbt-workspacebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 18px 0;padding:7px 11px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:9px;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-secondary)}' +
+				'.gbt-workspacebar[data-project-mismatch="true"]{border-color:var(--dsw-alias-state-warn-label)}' +
+				'.gbt-workspace{display:inline-flex;align-items:center;gap:5px;min-width:0}' +
+				'.gbt-workspace .gbt-workspacelabel{color:var(--dsw-alias-label-tertiary)}' +
+				'.gbt-workspace b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:600;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}' +
+				'.gbt-workspacearrow{color:var(--dsw-alias-label-tertiary)}' +
+				'.gbt-workspacestate{display:inline-flex;align-items:center;gap:6px;min-width:0;flex:1 1 260px;color:var(--dsw-alias-label-secondary)}' +
+				'.gbt-workspacestate[data-workspace-tone="error"]{color:var(--dsw-alias-state-error-primary)}' +
+				'.gbt-workspacestate[data-workspace-tone="warn"]{color:var(--dsw-alias-state-warn-label)}' +
+				'.gbt-workspacemissing{display:flex;flex-wrap:wrap;gap:4px}' +
+				'.gbt-workspacemissing span{padding:1px 6px;border-radius:999px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}' +
+				'.gbt-workspaceactions{display:flex;gap:6px;margin-left:auto}' +
+				'.gbt-workspacefade{animation:gbt-workspacefade .18s ease-out}' +
+				'@keyframes gbt-workspacefade{from{opacity:0}to{opacity:1}}' +
+				'@media (prefers-reduced-motion: reduce){.gbt-spinner{animation:none;border-right-color:currentColor;opacity:.7}.gbt-workspacefade{animation-duration:.12s}}' +
+				'.gbt-sessionscards{display:flex;flex-direction:column;gap:6px}' +
+				'.gbt-sessionsrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 9px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3)}' +
+				'.gbt-sessionsrow[data-current="true"]{border-color:var(--dsw-alias-state-business-primary)}' +
+				'.gbt-sessionsmeta{color:var(--dsw-alias-label-tertiary);font-size:11px}' +
+				'.gbt-sessionfilter{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}' +
+				'.gbt-sessionfilter select{font:inherit;font-size:11px;padding:2px 6px;border-radius:6px;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2);color:inherit}' +
 			'.gbt-projectform{display:flex;gap:6px;align-items:center;margin-top:10px;flex-wrap:wrap}',
 			'.gbt-projectform .gbt-input{flex:1;min-width:220px}',
 			'.gbt-busy{opacity:.6;pointer-events:none}',
@@ -2531,6 +2636,10 @@ function tcHostSessionId() {
 				// T-110: the project's Team and, when it does not exist, the one
 				// instruction the session must act on.
 				team: payload.team === undefined || payload.team === null ? null : payload.team,
+				// T-155: the explicit project/session scope (projectSessions, sessionSummaries,
+				// panelSession, currentSessionProject). The panel groups teams BY SESSION
+				// from this; it never treats one team as "the project team".
+				scope: payload.scope === undefined || payload.scope === null || typeof payload.scope !== 'object' ? null : payload.scope,
 				// T-122: host-wide team inventory (diagnostics); the member table uses team.members.
 				teams: payload.teams === undefined || payload.teams === null ? null : payload.teams,
 				nextStep: payload.nextStep === undefined || payload.nextStep === null ? null : payload.nextStep,
@@ -2846,10 +2955,13 @@ const createTaskStore = (function () {
 			 * (and, since T-86, writes the project registry), so a failed switch pins
 			 * nothing.
 			 */
-			async function switchProject(path) {
+			async function switchProject(path, options) {
 				const next = typeof path === 'string' ? path.trim() : ''
 				if (next === '') return { ok: false, payload: { ok: false, code: 'missing-path' } }
-				const result = await send('openProject', { path: next })
+				const opts = options === undefined || options === null ? {} : options
+				// T-155: an AUTOMATIC workspace follow is quiet — it must not raise the
+				// global action banner; the workspace scope bar carries its own error.
+				const result = await send('openProject', { path: next }, opts.quiet === true ? { quiet: true } : undefined)
 				if (result.ok !== true) return result
 				tcPinProject(next)
 				emit(Object.assign({}, snapshot, { project: next, projectRoot: next, resolvedFrom: 'panel' }))
@@ -3007,6 +3119,12 @@ const createTaskStore = (function () {
  * the two board-local helpers. The component keeps its exact rendering.
  */
 function createTaskCard(deps) {
+	/** T-155: a compact owning-session label; the full id stays in the title. */
+	function ownerSessionShort(value) {
+		const text = typeof value === 'string' ? value : ''
+		return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
+	}
+
 	const React = deps.React
 	const h = deps.h
 	const tcBaseName = deps.tcBaseName
@@ -3074,6 +3192,11 @@ function createTaskCard(deps) {
 		children.push(h('div', { key: 'title', className: 'gbt-cardtitle' }, task.title))
 		const meta = []
 		meta.push(h('span', { key: 'phase', className: 'gbt-chip', 'data-tone': tcPhaseTone(task), title: t('phaseCurrent') }, '▸ ' + tcPhaseLabel(task, t)))
+		// T-155 §8: the card names the session that owns it (no primary session).
+		if (typeof task.ownerSession === 'string' && task.ownerSession !== '') {
+			const ownerShort = ownerSessionShort(task.ownerSession)
+			meta.push(h('span', { key: 'owner', className: 'gbt-chip', 'data-owner-session': task.ownerSession, title: t('ownerSessionHint') + ' · ' + task.ownerSession }, '👤 ' + (ownerShort === '' ? task.ownerSession : ownerShort)))
+		}
 		if (task.assignee !== null && task.assignee !== undefined) meta.push(h('span', { key: 'who', className: 'gbt-chip', 'data-tone': 'running' }, task.assignee.name))
 		if (typeof task.requiredRole === 'string' && task.requiredRole !== '') {
 			meta.push(h('span', { key: 'role', className: 'gbt-chip', title: t('requiredRole') }, '🧩 ' + task.requiredRole))
@@ -3666,6 +3789,9 @@ module.exports = { createQueueViews }
  * clipboard are injected by the build. WORKER_ERROR is local to this view.
  */
 function createWorkersView(deps) {
+	// T-155: the session filter survives a remount (view switch).
+	const workersUi = { sessionFilter: 'all' }
+
 	const React = deps.React
 	const h = deps.h
 	const tcBaseName = deps.tcBaseName
@@ -3742,6 +3868,73 @@ function createWorkersView(deps) {
 			headParts.push(h('div', { key: 'mismatch', className: 'gbt-banner', 'data-tone': 'warn', 'data-worker-mismatch': 'true', 'data-team-project': teamProject, 'data-panel-project': panelProject }, t('workersMismatch').replace('{team}', shortPath(teamProject)).replace('{panel}', shortPath(panelProject))))
 		}
 		blocks.push(h('div', { key: 'head', className: 'gbt-workerhead', 'data-worker-head': 'true' }, headParts))
+		// T-155 §1/§8: every participating session with ITS OWN team and card count,
+		// filterable. No primary session, no "project team".
+		const scope = snapshot.scope !== null && snapshot.scope !== undefined && typeof snapshot.scope === 'object' ? snapshot.scope : null
+		const sessionRows = scope !== null && Array.isArray(scope.sessionSummaries) ? scope.sessionSummaries.filter(function (row) { return row !== null && typeof row === 'object' }) : []
+		const currentSession = scope !== null && typeof scope.panelSession === 'string' && scope.panelSession !== '' ? scope.panelSession : null
+		const [sessionFilter, setSessionFilterState] = React.useState(workersUi.sessionFilter)
+		const setSessionFilter = function (next) {
+			workersUi.sessionFilter = next
+			setSessionFilterState(next)
+		}
+		const sessionShortText = function (value) {
+			const text = typeof value === 'string' ? value : ''
+			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
+		}
+		const sessionStatus = function (status) {
+			return status === 'live' ? t('sessionsStatusLive') : status === 'stale' ? t('sessionsStatusStale') : t('sessionsStatusUnknown')
+		}
+		if (sessionRows.length > 0) {
+			const visibleSessions = sessionFilter === 'all' ? sessionRows : sessionRows.filter(function (row) { return row.sessionId === sessionFilter })
+			blocks.push(
+				h(
+					'div',
+					{ key: 'sessions', className: 'gbt-sessionscards', 'data-worker-sessions': 'true' },
+					h('div', { className: 'gbt-workerheadtop' }, h('h3', { className: 'gbt-workertitle' }, t('sessionCardTitle')), h('span', { className: 'gbt-footnote' }, t('sessionsHint'))),
+					h(
+						'label',
+						{ className: 'gbt-sessionfilter' },
+						t('sessionFilter'),
+						h(
+							'select',
+							{
+								'data-session-filter': 'true',
+								value: sessionFilter,
+								onChange: function (event) {
+									setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all')
+								},
+							},
+							h('option', { value: 'all' }, t('sessionFilterAll')),
+							sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) }),
+						),
+					),
+					visibleSessions.map(function (row, index) {
+						const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
+						const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
+						const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
+						return h(
+							'div',
+							{
+								key: 'session-' + String(index),
+								className: 'gbt-sessionsrow',
+								'data-session': String(row.sessionId),
+								'data-current': currentSession !== null && row.sessionId === currentSession ? 'true' : 'false',
+								'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+							},
+							h('span', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
+							currentSession !== null && row.sessionId === currentSession ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
+							team === null ? null : h('span', null, t('workersLead') + ' ' + (typeof team.lead === 'string' ? team.lead : '—')),
+							h('span', { className: 'gbt-statusmeta' }, t('sessionsCards').replace('{n}', String(Number.isFinite(cards.owned) ? cards.owned : 0)) + ' · ' + t('sessionsActive').replace('{n}', String(Number.isFinite(cards.active) ? cards.active : 0))),
+							h('span', { className: 'gbt-pill', 'data-session-status-pill': typeof row.status === 'string' ? row.status : 'unknown' }, sessionStatus(row.status)),
+							h('span', { className: 'gbt-pill', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, t('sessionsReadiness') + ' ' + (row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
+							h('span', { className: 'gbt-pill', 'data-stage-ready': stage.review === true ? 'true' : 'false' }, t('sessionsStageReview') + ' ' + (stage.review === true ? t('sessionsReady') : t('sessionsNotReady'))),
+							h('span', { className: 'gbt-pill', 'data-stage-ready': stage.test === true ? 'true' : 'false' }, t('sessionsStageTest') + ' ' + (stage.test === true ? t('sessionsReady') : t('sessionsNotReady'))),
+						)
+					}),
+				),
+			)
+		}
 		// Role overview: three (or four on a merge team) compact cards with LIVE numbers only.
 		const roleCounts = workers.roleCounts !== null && workers.roleCounts !== undefined && typeof workers.roleCounts === 'object' ? workers.roleCounts : null
 		const kindOrder = ['worker', 'reviewer', 'tester', 'merger']
@@ -3821,7 +4014,6 @@ function createWorkersView(deps) {
 }
 
 module.exports = { createWorkersView }
-
 				})(module, module.exports)
 				const factory = module.exports.createWorkersView
 				return factory({ React: React, h: h, tcBaseName: tcBaseName, tcSessionShort: tcSessionShort, tcLeadText: tcLeadText, copyToClipboard: copyToClipboard, roleKindLabel: roleKindLabel, workerStatusLabel: workerStatusLabel })
@@ -4797,6 +4989,9 @@ module.exports = { createRolesEditor }
  * the build.
  */
 function createRolesView(deps) {
+	// T-155: the session filter survives a remount (view switch).
+	const rolesUi = { sessionFilter: 'all' }
+
 	const React = deps.React
 	const h = deps.h
 	const RolesEditor = deps.RolesEditor
@@ -4819,12 +5014,78 @@ function createRolesView(deps) {
 		const match = /^(worker|reviewer|tester)-\d+$/.exec(member.name)
 		return { name: member.name, kind: match === null ? 'worker' : match[1], status: typeof member.status === 'string' ? member.status : 'unknown' }
 			})
+		// T-155 §1/§8: sessions are aggregated per participant, with their OWN team
+		// readiness. The current chat session is highlighted, never primary.
+		const scope = snapshot.scope !== null && snapshot.scope !== undefined && typeof snapshot.scope === 'object' ? snapshot.scope : null
+		const sessionRows = scope !== null && Array.isArray(scope.sessionSummaries) ? scope.sessionSummaries.filter(function (row) { return row !== null && typeof row === 'object' }) : []
+		const currentSession = scope !== null && typeof scope.panelSession === 'string' && scope.panelSession !== '' ? scope.panelSession : null
+		// Rendering tests may inject a minimal React without hooks; the module state
+		// still carries the filter, so a no-op setter is a safe fallback.
+		const useState = typeof React.useState === 'function' ? React.useState : function (initial) { return [initial, function () {}] }
+		const [sessionFilter, setSessionFilterState] = useState(rolesUi.sessionFilter)
+		const setSessionFilter = function (next) {
+			rolesUi.sessionFilter = next
+			setSessionFilterState(next)
+		}
+		const sessionShortText = function (value) {
+			const text = typeof value === 'string' ? value : ''
+			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
+		}
+		const sessionStatusText = function (status) {
+			return status === 'live' ? t('sessionsStatusLive') : status === 'stale' ? t('sessionsStatusStale') : t('sessionsStatusUnknown')
+		}
+		const stageLabel = function (ready) {
+			return ready === true ? t('sessionsReady') : t('sessionsNotReady')
+		}
+		const sessionsSection = sessionRows.length === 0
+			? null
+			: (function () {
+				const visibleSessions = sessionFilter === 'all' ? sessionRows : sessionRows.filter(function (row) { return row.sessionId === sessionFilter })
+				return h(
+					'section',
+					{ className: 'gbt-rolesview-card', 'data-card': 'sessions', 'data-roles-sessions': 'true' },
+					h('div', { className: 'gbt-rhead' }, h('h3', { className: 'gbt-rtitle' }, t('sessionCardTitle')), h('span', { className: 'gbt-footnote' }, t('sessionsHint'))),
+					h(
+						'div',
+						{ className: 'gbt-rbody' },
+						h('label', { className: 'gbt-sessionfilter' }, t('sessionFilter'), h('select', { 'data-session-filter': 'true', value: sessionFilter, onChange: function (event) { setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all') } }, h('option', { value: 'all' }, t('sessionFilterAll')), sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) }))),
+						h(
+							'div',
+							{ className: 'gbt-sessionscards', 'data-sessions-list': 'true' },
+							visibleSessions.map(function (row, index) {
+								const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
+								const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
+								const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
+								return h(
+									'div',
+									{
+										key: 'session-' + String(index),
+										className: 'gbt-sessionsrow',
+										'data-session': String(row.sessionId),
+										'data-current': currentSession !== null && row.sessionId === currentSession ? 'true' : 'false',
+										'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+									},
+									h('span', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
+									currentSession !== null && row.sessionId === currentSession ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
+									team === null ? null : h('span', null, t('workersLead') + ' ' + (typeof team.lead === 'string' ? team.lead : '—')),
+									h('span', { className: 'gbt-pill', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, t('sessionsReadiness') + ' ' + (row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
+									h('span', { className: 'gbt-pill', 'data-stage-ready': stage.review === true ? 'true' : 'false' }, t('sessionsStageReview') + ' ' + stageLabel(stage.review === true)),
+									h('span', { className: 'gbt-pill', 'data-stage-ready': stage.test === true ? 'true' : 'false' }, t('sessionsStageTest') + ' ' + stageLabel(stage.test === true)),
+									h('span', { className: 'gbt-statusmeta' }, t('sessionsCards').replace('{n}', String(Number.isFinite(cards.owned) ? cards.owned : 0))),
+								)
+							}),
+						),
+					),
+				)
+			})()
 		if (config === null) {
-			return h('div', null, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
+			// T-155: even without a role config the per-session readiness list is useful.
+			return h('div', { className: 'gbt-rolesview' }, sessionsSection, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
 		}
 		return h(
 			'div',
 			{ className: 'gbt-rolesview' },
+			sessionsSection,
 			h(
 		'section',
 		{ className: 'gbt-rolesview-card', 'data-card': 'editor' },
@@ -4868,6 +5129,10 @@ module.exports = { createRolesView }
  * shared labels and the merge/activity helpers are injected by the build.
  */
 function createStatusView(deps) {
+	// T-155: the session filter survives a remount (view switch) like the other
+	// panel UI state.
+	const statusUi = { sessionFilter: 'all' }
+
 	const React = deps.React
 	const h = deps.h
 	const statusUiState = deps.statusUiState
@@ -5504,6 +5769,91 @@ function createStatusView(deps) {
 		function activityLabel(type) {
 			return t('evtLabel-' + type)
 		}
+		// T-155 §1/§8: every participating session, aggregated PER SESSION. There is
+		// no "project team" and no primary session — the current chat session is only
+		// highlighted. Stage-role readiness lives here (not in a global warning).
+		const scope = snapshot.scope !== null && snapshot.scope !== undefined && typeof snapshot.scope === 'object' ? snapshot.scope : null
+		const sessionRows = scope !== null && Array.isArray(scope.sessionSummaries) ? scope.sessionSummaries.filter(function (row) { return row !== null && typeof row === 'object' }) : []
+		const currentSession = scope !== null && typeof scope.panelSession === 'string' && scope.panelSession !== '' ? scope.panelSession : null
+		const [sessionFilter, setSessionFilterState] = React.useState(statusUi.sessionFilter)
+		const setSessionFilter = function (next) {
+			statusUi.sessionFilter = next
+			setSessionFilterState(next)
+		}
+		const visibleSessions = sessionFilter === 'all' ? sessionRows : sessionRows.filter(function (row) { return row.sessionId === sessionFilter })
+		const sessionShortText = function (value) {
+			const text = typeof value === 'string' ? value : ''
+			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
+		}
+		const sessionStatusText = function (status) {
+			return status === 'live' ? t('sessionsStatusLive') : status === 'stale' ? t('sessionsStatusStale') : t('sessionsStatusUnknown')
+		}
+		const stageBadge = function (key, label, ready) {
+			return h('span', { key: key, className: 'gbt-pill', 'data-stage-ready': ready === true ? 'true' : 'false' }, label + ' ' + (ready === true ? t('sessionsReady') : t('sessionsNotReady')))
+		}
+		const sessionsCard = h(
+			'section',
+			{ className: 'gbt-statuscard', 'data-status-card': 'sessions' },
+			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('sessionCardTitle'), h('span', { className: 'gbt-statusmeta' }, String(sessionRows.length) + ' ' + t('sessionsLabel'))),
+			h(
+				'div',
+				{ className: 'gbt-statuscardbody' },
+				h('p', { className: 'gbt-statusnote' }, t('sessionsHint')),
+				sessionRows.length === 0
+					? h('div', { className: 'gbt-statusnote', 'data-sessions-empty': 'true' }, t('sessionsEmpty'))
+					: h(
+						'div',
+						null,
+						h(
+							'label',
+							{ className: 'gbt-sessionfilter' },
+							t('sessionFilter'),
+							h(
+								'select',
+								{
+									'data-session-filter': 'true',
+									value: sessionFilter,
+									onChange: function (event) {
+										setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all')
+									},
+								},
+								h('option', { value: 'all' }, t('sessionFilterAll')),
+								sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) }),
+							),
+						),
+						h(
+							'div',
+							{ className: 'gbt-sessionscards', 'data-sessions-list': 'true' },
+							visibleSessions.map(function (row, index) {
+								const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
+								const current = currentSession !== null && row.sessionId === currentSession
+								const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
+								const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
+								return h(
+									'div',
+									{
+										key: 'session-' + String(index),
+										className: 'gbt-sessionsrow',
+										'data-session': String(row.sessionId),
+										'data-current': current ? 'true' : 'false',
+										'data-session-status': typeof row.status === 'string' ? row.status : 'unknown',
+										'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+									},
+									h('span', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
+									current ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
+									team === null ? null : h('span', null, t('workersLead') + ' ' + (typeof team.lead === 'string' ? team.lead : '—')),
+									h('span', { className: 'gbt-statusmeta' }, t('sessionsCards').replace('{n}', String(Number.isFinite(cards.owned) ? cards.owned : 0)) + ' · ' + t('sessionsActive').replace('{n}', String(Number.isFinite(cards.active) ? cards.active : 0))),
+									h('span', { className: 'gbt-pill', 'data-session-status-pill': typeof row.status === 'string' ? row.status : 'unknown' }, sessionStatusText(row.status)),
+									h('span', { className: 'gbt-pill', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, t('sessionsReadiness') + ' ' + (row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
+									stageBadge('stage-review', t('sessionsStageReview'), stage.review === true),
+									stageBadge('stage-test', t('sessionsStageTest'), stage.test === true),
+								)
+							}),
+						),
+					),
+			),
+		)
+
 		return h(
 			'div',
 			{ className: 'gbt-statusview', 'data-status': 'cards' },
@@ -5517,7 +5867,7 @@ function createStatusView(deps) {
 			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
 		),
 			),
-			h('div', { className: 'gbt-statusgrid', 'data-status-grid': 'true' }, dispatchCard, worktreesCard, agentsCard, activityCard),
+			h('div', { className: 'gbt-statusgrid', 'data-status-grid': 'true' }, dispatchCard, sessionsCard, worktreesCard, agentsCard, activityCard),
 		)
 	}
 	return StatusView
@@ -6569,7 +6919,22 @@ function createProjectForm(deps) {
 	function ProjectForm(props) {
 		const t = props.t
 		const input = React.useRef(null)
-		const [error, setError] = React.useState('')
+		// Module-backed so a remount keeps the failure visible (the dialog must never
+		// look like the click did nothing).
+		const [error, setErrorState] = React.useState(projectFormState.error === undefined ? '' : projectFormState.error)
+		function setError(next) {
+			projectFormState.error = next
+			setErrorState(next)
+		}
+		// T-155 §6: checking a project is a visible state (busy button), and a
+		// not-ready answer keeps the dialog open with the missing checks listed and
+		// the primary action turned into a re-check.
+		const [busy, setBusy] = React.useState(false)
+		const [missing, setMissingState] = React.useState(projectFormState.missing === undefined ? [] : projectFormState.missing)
+		function setMissing(next) {
+			projectFormState.missing = next
+			setMissingState(next)
+		}
 		// The project the Host resolves right now (the session project when this
 		// browser has not pinned one). It is what "use current project" fills in,
 		// so returning to this project never needs a hand-typed path (T-90).
@@ -6579,6 +6944,7 @@ function createProjectForm(deps) {
 			if (hostProject === null) return
 			projectFormState.value = hostProject
 			setError('')
+			setMissing([])
 			if (input.current !== null && input.current !== undefined) input.current.value = hostProject
 		}
 		function open() {
@@ -6591,16 +6957,31 @@ function createProjectForm(deps) {
 		return
 			}
 			// Write = bind: the pin and the Host's openProject move together.
+			setBusy(true)
+			setMissing([])
 			void store.switchProject(value).then(function (result) {
+		setBusy(false)
 		if (result.ok === true) {
 			projectFormState.value = null
+			setError('')
+			setMissing([])
 			props.onClose()
 			return
 		}
 		const payload = result.payload === undefined || result.payload === null ? {} : result.payload
 		setError(tcErrorMessage(payload, t))
+		// A not-ready project explains WHY: the preflight's failed checks are the
+		// missing items (git repository / board / team...). Keep the dialog open.
+		const preflight = payload.preflight !== null && payload.preflight !== undefined && typeof payload.preflight === 'object' ? payload.preflight : null
+		const failed = preflight !== null && Array.isArray(preflight.failed) ? preflight.failed : []
+		const labels = []
+		for (const check of failed) {
+			if (check !== null && typeof check === 'object' && typeof check.label === 'string' && check.label !== '') labels.push(check.label)
+		}
+		setMissing(labels)
 			})
 		}
+		const primaryLabel = busy ? t('projectChecking') : missing.length > 0 ? t('projectCheck') : t('openProject')
 		return h(
 			Modal,
 			{ title: t('project'), onClose: props.onClose, t: t },
@@ -6609,11 +6990,16 @@ function createProjectForm(deps) {
 		{ className: 'gbt-form' },
 		h('div', { className: 'gbt-field' }, h('label', null, t('project')), h('input', { className: 'gbt-input', ref: input, placeholder: t('projectPlaceholder'), defaultValue: draft, 'data-project-input': 'true' })),
 		hostProject === null ? null : h('p', { className: 'gbt-footnote', 'data-host-project': hostProject }, t('useCurrentProjectHint') + ' · ' + hostProject),
-		error === '' ? null : h('p', { className: 'gbt-footnote' }, error),
+		missing.length === 0
+			? null
+			: h('div', { className: 'gbt-banner', 'data-project-missing': 'true', style: { margin: '0 0 8px' } },
+				h('strong', null, t('projectMissingTitle')),
+				h('ul', { className: 'gbt-footnote', 'data-project-missing-list': 'true' }, missing.map(function (label, index) { return h('li', { key: 'missing-' + String(index) }, String(label)) }))),
+		error === '' ? null : h('p', { className: 'gbt-footnote', 'data-project-error': 'true' }, error),
 		h('div', { className: 'gbt-actions' },
-			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'use-current-project', title: t('useCurrentProjectHint'), disabled: hostProject === null, onClick: useCurrent }, '⌖ ' + t('useCurrentProject')),
-			h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: open }, t('openProject')),
-			h('button', { type: 'button', className: 'gbt-btn', onClick: props.onClose }, t('cancel'))),
+			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'use-current-project', title: t('useCurrentProjectHint'), disabled: hostProject === null || busy, onClick: useCurrent }, '⌖ ' + t('useCurrentProject')),
+			h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-busy': busy ? 'true' : 'false', 'data-project-primary': missing.length > 0 ? 'check' : 'open', disabled: busy, onClick: open }, busy ? h('span', null, h('span', { className: 'gbt-spinner' }), primaryLabel) : primaryLabel),
+			h('button', { type: 'button', className: 'gbt-btn', disabled: busy, onClick: props.onClose }, t('cancel'))),
 			),
 		)
 	}
@@ -6942,6 +7328,9 @@ function createTaskCenter(deps) {
 	const tcLeadText = deps.tcLeadText
 	const copyToClipboard = deps.copyToClipboard
 	const store = deps.store
+	// T-155: one workspace-follow driver per panel. key memoises the attempt per
+	// (board, chat) pair, so a setup/failed workspace is not retried on every poll.
+	const workspaceSwitch = { key: null, status: 'idle', board: null, target: null, error: '', missing: [], fade: false }
 
 	function TaskCenter(props) {
 		const t = useTranslate()
@@ -6977,16 +7366,21 @@ function createTaskCenter(deps) {
 		// Rendering tests may open the project dialog; the production slot passes no props.
 		const initialProjectOpen = props !== undefined && props !== null && props.initialProjectOpen === true
 		const [projectOpen, setProjectOpen] = React.useState(initialProjectOpen)
-		// T-150: copy confirmation for the owning session id in the header.
-		const [teamSessionCopied, setTeamSessionCopied] = React.useState(null)
+		// T-155: drives the auto-follow render pass and the retry action.
+		const [workspaceTick, setWorkspaceTick] = React.useState(0)
+		// T-150/T-155: copy confirmation for the owning session id in the header.
+		// Module-backed so a remount (view switch, polling render) still shows the
+		// toast that the copy really happened.
+		const [teamSessionCopied, setTeamSessionCopiedState] = React.useState(panelState.teamSessionCopied === undefined ? null : panelState.teamSessionCopied)
+		function setTeamSessionCopied(next) {
+			panelState.teamSessionCopied = next
+			setTeamSessionCopiedState(next)
+		}
 		function openProjectDialog() {
 			projectFormState.value = null
-			setProjectOpen(true)
-		}
-		/** T-150: open the existing project dialog prefilled with the team's project. */
-		function switchToTeamProject(path) {
-			if (typeof path !== 'string' || path === '') return
-			projectFormState.value = path
+			// T-155 §6: a fresh dialog starts without the previous failure's items.
+			projectFormState.error = ''
+			projectFormState.missing = []
 			setProjectOpen(true)
 		}
 		function copyTeamSession(value) {
@@ -6995,11 +7389,6 @@ function createTaskCenter(deps) {
 		setTeamSessionCopied(ok === true ? value : 'failed')
 			})
 		}
-		/** Switch to the session project: pin + openProject on the Host (T-90). */
-		function switchToProject(path) {
-			void store.switchProject(path)
-		}
-
 		React.useEffect(function () {
 			void store.load()
 			store.startPolling(2500)
@@ -7044,76 +7433,143 @@ function createTaskCenter(deps) {
 			void store.send(active ? 'pause' : 'start')
 		}
 
-		// T-110: the project's Team (and the session's next step while it is
-		// missing) is read by the header line and the status card.
+		// T-110/T-155: the panel never presents ONE "project team". Teams are grouped
+		// by session from the host's explicit scope; the current chat session is
+		// highlighted, never primary.
 		const projectTeam = snapshot.team === null || snapshot.team === undefined ? null : snapshot.team
-		// One project-context decision for the whole header: a panel/session split
-		// outranks a Team/project split, so the user is never offered two switches.
+		const scope = snapshot.scope !== null && snapshot.scope !== undefined && typeof snapshot.scope === 'object' ? snapshot.scope : null
+		const scopeSessions = scope !== null && Array.isArray(scope.sessionSummaries)
+			? scope.sessionSummaries.filter(function (row) { return row !== null && typeof row === 'object' })
+			: []
+		const scopePanelSession = scope !== null && typeof scope.panelSession === 'string' && scope.panelSession !== '' ? scope.panelSession : null
+		const panelSessionRow = scopePanelSession === null ? null : scopeSessions.filter(function (row) { return row.sessionId === scopePanelSession })[0] || null
 		const mismatchProject = projectMismatchOf(snapshot)
-		// T-150: the Team is the request session's team, not automatically this
-		// project's. Use the explicit project/projectMatch fields so another
-		// project's Team is never presented as this one, and give each state an
-		// action instead of a dead-end sentence.
-		const headerTeamProject = projectTeam !== null && typeof projectTeam.project === 'string' && projectTeam.project !== '' ? projectTeam.project : null
-		const headerPanelProject = typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : null
-		const headerTeamSession = projectTeam === null ? null : typeof projectTeam.session === 'string' && projectTeam.session !== '' ? projectTeam.session : typeof projectTeam.leadSession === 'string' && projectTeam.leadSession !== '' ? projectTeam.leadSession : null
-		const headerTeamMismatch = projectTeam !== null && projectTeam.projectMatch === false && headerTeamProject !== null && headerPanelProject !== null
-		const headerTeamAvailable = projectTeam !== null && projectTeam.available === false
-		const headerTeamMissingRoles = projectTeam !== null && Array.isArray(projectTeam.missingRoles) ? projectTeam.missingRoles : []
-		// T-154: 'needs a Team built' is DISPATCH readiness (Lead + worker). Missing
-		// reviewer/tester is a stage fact, shown in the roles text only — it must not
-		// make the panel ask for another team.
-		const headerTeamDispatchReady = projectTeam !== null && (projectTeam.dispatchReady === undefined ? projectTeam.ok === true : projectTeam.dispatchReady === true)
-		const headerTeamBuildable =
-			projectTeam === null
-		? headerPanelProject !== null
-		: projectTeam.available !== false && projectTeam.projectMatch === true && headerTeamDispatchReady !== true
-		// Team creation is an Agent action (bootstrapTeam is agent-scoped). The panel
-		// shows a quiet wait state instead of offering the user a manual button.
-		const teamWaitChip = h('span', { className: 'gbt-teamwait', 'data-team-waiting': 'true' }, t('projectTeamWaiting'))
-		const projectTeamNotice = headerTeamMismatch && mismatchProject !== null
-			? null
-			: headerTeamMismatch
-			? h('div', {
-			className: 'gbt-projectsync',
-			'data-project-mismatch': 'true',
-			'data-team-project': headerTeamProject,
-			'data-panel-project': headerPanelProject,
-			'data-tone': 'warn',
-		},
-			h('span', { className: 'gbt-projectsynccopy' }, t('projectTeamMismatch').replace('{team}', headerTeamProject).replace('{panel}', headerPanelProject)),
-			h('div', { className: 'gbt-actions' },
-				h('button', {
-			type: 'button',
-			className: 'gbt-btn',
-			'data-action': 'switch-team-project',
-			'data-team-project': headerTeamProject,
-			onClick: function () { switchToTeamProject(headerTeamProject) },
-				}, t('projectTeamSwitch')),
-				headerTeamSession === null
-			? null
-			: h('button', {
-					type: 'button',
-					className: 'gbt-btn',
-					'data-action': 'copy-team-session',
-					'data-session': headerTeamSession,
-					title: headerTeamSession,
-					onClick: function () { copyTeamSession(headerTeamSession) },
-				}, teamSessionCopied === headerTeamSession ? t('projectTeamSessionCopied') : teamSessionCopied === 'failed' ? t('projectTeamCopyFailed') : t('projectTeamOpenSession')),
-			),
-		)
-			: headerTeamAvailable
-		? null
-		: projectTeam === null
-			? h('div', { className: 'gbt-projectsync', 'data-team-missing': 'true', 'data-tone': 'warn' },
-			h('span', { className: 'gbt-projectsynccopy' }, t('projectTeamMissingTeam')),
-			h('div', { className: 'gbt-actions' }, teamWaitChip))
-			: headerTeamBuildable
-				? h('div', { className: 'gbt-projectsync', 'data-team-build': 'true', 'data-tone': 'warn' },
-				h('span', { className: 'gbt-projectsynccopy', 'data-team-scope-hint': 'true' }, t('projectTeamScopeHint')),
-				h('div', { className: 'gbt-actions' }, teamWaitChip))
+		const baseNameOf = function (value) {
+			if (typeof value !== 'string' || value === '') return null
+			const parts = value.split(/[\\/]/).filter(function (part) { return part !== '' })
+			return parts.length === 0 ? value : parts[parts.length - 1]
+		}
+		const sessionShortOf = function (value) {
+			if (typeof value !== 'string' || value === '') return '—'
+			return value.indexOf('session-') === 0 ? value.slice(8, 16) : value.slice(0, 8)
+		}
+		const sessionStatusLabel = function (status) {
+			if (status === 'live') return t('sessionsStatusLive')
+			if (status === 'stale') return t('sessionsStatusStale')
+			return t('sessionsStatusUnknown')
+		}
+		const panelDispatchReady =
+			panelSessionRow !== null && panelSessionRow.dispatchReady !== undefined
+				? panelSessionRow.dispatchReady === true
+				: projectTeam !== null && projectTeam.dispatchReady !== undefined
+					? projectTeam.dispatchReady === true
+					: projectTeam !== null && projectTeam.ok === true
+		// T-155 §4: only a team that cannot DISPATCH waits for the Agent. Missing
+		// reviewer/tester is stage information (status/roles pages), never a global warning.
+		const teamWaitingWorker =
+			panelSessionRow !== null
+				? panelSessionRow.dispatchReady !== true
+				: projectTeam === null
+					? typeof snapshot.project === 'string' && snapshot.project !== ''
+					: projectTeam.available !== false && panelDispatchReady !== true
+		const sessionChips =
+			scopeSessions.length === 0
+				? null
+				: h(
+					'div',
+					{ className: 'gbt-sessions', 'data-sessions': 'true', 'data-panel-session': scopePanelSession === null ? '' : scopePanelSession },
+					[h('span', { key: 'label', className: 'gbt-sessionslabel' }, t('sessionsLabel'))].concat(
+						scopeSessions.map(function (row, index) {
+							const current = scopePanelSession !== null && row.sessionId === scopePanelSession
+							const lead = row.team !== null && row.team !== undefined && typeof row.team.lead === 'string' ? row.team.lead : null
+							const cards = row.cards !== null && row.cards !== undefined && Number.isFinite(row.cards.owned) ? row.cards.owned : 0
+							return h(
+								'span',
+								{
+									key: 'session-' + String(index),
+									className: 'gbt-session',
+									'data-session': String(row.sessionId),
+									'data-current': current ? 'true' : 'false',
+									'data-status': typeof row.status === 'string' ? row.status : 'unknown',
+									'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+									'data-stage-review': row.stageReady !== undefined && row.stageReady !== null && row.stageReady.review === true ? 'true' : 'false',
+									'data-stage-test': row.stageReady !== undefined && row.stageReady !== null && row.stageReady.test === true ? 'true' : 'false',
+									title: String(row.sessionId) + (lead === null ? '' : ' · ' + t('workersLead') + ' ' + lead),
+								},
+								h('b', null, sessionShortOf(row.sessionId)),
+								current ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
+								lead === null ? null : h('span', { className: 'gbt-sessionsmeta', 'data-session-lead': 'true' }, lead),
+								h('span', null, t('sessionsCards').replace('{n}', String(cards))),
+								h('span', null, sessionStatusLabel(row.status)),
+							)
+						}),
+					),
+				)
+		// Team belongs to another project: INFORMATION only. The workspace scope bar is
+		// the single place a workspace is switched (T-155 §2/§7).
+		const teamInfoLine =
+			projectTeam !== null && projectTeam.available !== false && projectTeam.projectMatch === false && typeof projectTeam.project === 'string' && projectTeam.project !== ''
+				? h(
+					'div',
+					{ className: 'gbt-projectsync', 'data-team-info': 'true', 'data-team-project': String(projectTeam.project), 'data-panel-project': String(snapshot.project) },
+					h('span', { className: 'gbt-projectsynccopy' }, t('projectTeamMismatch').replace('{team}', String(projectTeam.project)).replace('{panel}', String(snapshot.project)) + ' · ' + t('projectTeamScopeHint')),
+					h(
+						'div',
+						{ className: 'gbt-actions' },
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'gbt-btn',
+								'data-action': 'copy-team-session',
+								'data-session': typeof projectTeam.session === 'string' ? projectTeam.session : typeof projectTeam.leadSession === 'string' ? projectTeam.leadSession : '',
+								onClick: function () {
+									copyTeamSession(typeof projectTeam.session === 'string' ? projectTeam.session : projectTeam.leadSession)
+								},
+							},
+							t('projectTeamCopySession'),
+						),
+						teamSessionCopied === null
+							? null
+							: h('span', { className: 'gbt-footnote', role: 'status', 'aria-live': 'polite', 'data-copy-toast': teamSessionCopied === 'failed' ? 'failed' : 'copied' }, teamSessionCopied === 'failed' ? t('projectTeamCopyFailed') : t('sessionIdCopiedToast')),
+					),
+				)
 				: null
-
+		const teamWaitLine = teamWaitingWorker
+			? h(
+				'div',
+				{ className: 'gbt-projectsync', 'data-team-waiting-worker': 'true', 'data-tone': 'warn' },
+				h('span', { className: 'gbt-projectsynccopy' }, t('teamWaitingWorker')),
+				h('div', { className: 'gbt-actions' }, h('span', { className: 'gbt-teamwait', 'data-team-waiting': 'true' }, t('projectTeamWaiting'))),
+			)
+			: null
+		// Legacy fallback for hosts without the explicit scope: one team line, labelled
+		// as THIS SESSION's team — never "the project team".
+		const legacyTeamLine =
+			scopeSessions.length > 0
+				? null
+				: projectTeam === null
+					? null
+					: h(
+						'p',
+						{
+							className: 'gbt-projectteam',
+							'data-project-team': projectTeam.ok === true ? 'ok' : projectTeam.available === false ? 'unavailable' : 'missing',
+							'data-team-lead': projectTeam.lead === null || projectTeam.lead === undefined ? '' : String(projectTeam.lead),
+							title: (function () {
+								const parts = []
+								if (projectTeam.lead !== null && projectTeam.lead !== undefined && /^session-/.test(String(projectTeam.lead))) parts.push(String(projectTeam.lead))
+								if (snapshot.nextStep !== null && snapshot.nextStep !== undefined) parts.push(String(snapshot.nextStep.instruction))
+								return parts.join(' · ')
+							})(),
+						},
+						t('projectTeamCurrent') + '：' +
+							(projectTeam.ok === true
+								? t('projectTeamOk').replace('{lead}', tcLeadText(projectTeam.lead, t)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0))
+								: projectTeam.available === false
+									? t('projectTeamUnavailable')
+									: t('projectTeamMissing')),
+					)
 		const tabs = [
 			{ key: 'board', label: t('boardTab') },
 			{ key: 'queue', label: t('queue') },
@@ -7145,36 +7601,11 @@ function createTaskCenter(deps) {
 				),
 			),
 			h('p', { className: 'gbt-project', title: snapshot.project || '' }, snapshot.project === null ? t('projectUnknown') : snapshot.project),
-			// T-110: whose Team the board dispatches to, and what to do
-			// while it does not exist (the session creates it, never the panel).
-			projectTeam === null
-				? null
-				: h(
-				'p',
-				{
-					className: 'gbt-projectteam',
-					'data-project-team': projectTeam.ok === true ? 'ok' : projectTeam.available === false ? 'unavailable' : 'missing',
-					'data-team-lead': projectTeam.lead === null || projectTeam.lead === undefined ? '' : String(projectTeam.lead),
-					title: (function () {
-				const parts = []
-				if (projectTeam.lead !== null && projectTeam.lead !== undefined && /^session-/.test(String(projectTeam.lead))) parts.push(String(projectTeam.lead))
-				if (snapshot.nextStep !== null && snapshot.nextStep !== undefined) parts.push(String(snapshot.nextStep.instruction))
-				return parts.join(' · ')
-					})(),
-				},
-				t(headerTeamMismatch ? 'projectTeamCurrent' : 'projectTeam') + '：' +
-					(projectTeam.ok === true
-				? t('projectTeamOk').replace('{lead}', tcLeadText(projectTeam.lead, t)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0)) +
-					(Array.isArray(projectTeam.missingRoles) && projectTeam.missingRoles.length > 0
-						? ' · ' + t('projectTeamMissingRoles').replace('{roles}', projectTeam.missingRoles.join(', '))
-						: '')
-				: projectTeam.available === false
-					? t('projectTeamUnavailable')
-					: projectTeam.error === 'no-members'
-						? t('projectTeamNoMembers').replace('{roles}', Array.isArray(projectTeam.missingRoles) ? projectTeam.missingRoles.join(', ') : '')
-						: t('projectTeamMissing')),
-			),
-			projectTeamNotice,
+			legacyTeamLine,
+			sessionChips,
+			teamInfoLine,
+			teamWaitLine,
+
 		),
 			),
 			h(
@@ -7225,55 +7656,123 @@ function createTaskCenter(deps) {
 			h('span', { style: { marginLeft: 'auto' } }, t('subtitle')),
 		)
 
-		// The actionable split: the panel is pinned to A while the session resolves
-		// B. One click pins B AND opens it on the Host, so the GUI and the
-		// scheduler agree again (T-90). This is the only switch shown when the
-		// session itself is the mismatching project.
-		const projectMismatchBar =
-			mismatchProject === null
-		? null
-		: h(
-				'div',
-				{
-			className: 'gbt-banner',
-			'data-tone': 'warn',
-			'data-project-mismatch': 'true',
-			role: 'button',
-			tabIndex: 0,
-			onClick: function () { switchToProject(mismatchProject) },
-			onKeyDown: function (event) {
-				if (event.key === 'Enter' || event.key === ' ') {
-					event.preventDefault()
-					switchToProject(mismatchProject)
+		// T-155 §2/§3: the ONE workspace scope bar. It shows the board workspace and the
+		// current chat workspace, auto-follows the chat workspace when it is a valid
+		// project, keeps the old board on failure, and shows a setup card (not a
+		// switch) when the chat workspace is not onboarded yet.
+		const boardWorkspace = typeof snapshot.projectRoot === 'string' && snapshot.projectRoot !== '' ? snapshot.projectRoot : typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : null
+		const chatWorkspace = scope !== null && typeof scope.currentSessionProject === 'string' && scope.currentSessionProject !== '' ? scope.currentSessionProject : typeof snapshot.sessionProject === 'string' && snapshot.sessionProject !== '' ? snapshot.sessionProject : null
+		const samePath = function (left, right) {
+			if (typeof left !== 'string' || typeof right !== 'string') return false
+			const norm = function (value) { return value.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase() }
+			return norm(left) === norm(right)
+		}
+		const workspaceMismatch =
+			mismatchProject !== null || (boardWorkspace !== null && chatWorkspace !== null && samePath(boardWorkspace, chatWorkspace) !== true)
+		const wsKey = boardWorkspace === null || chatWorkspace === null ? null : boardWorkspace + '|' + chatWorkspace
+		const reduceMotion = (function () {
+			try {
+				return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches === true
+			} catch (error) {
+				return false
+			}
+		})()
+		let workspaceState = 'same'
+		if (boardWorkspace === null) workspaceState = 'hidden'
+		// No chat workspace at all is a setup state: there is nothing to follow yet,
+		// and the bar offers recheck / open-another-project instead of switching.
+		else if (chatWorkspace === null) workspaceState = 'setup'
+		else if (workspaceMismatch !== true) workspaceState = workspaceSwitch.fade === true ? 'followed' : 'same'
+		else if (workspaceSwitch.key !== wsKey) workspaceState = 'switching'
+		else workspaceState = workspaceSwitch.status
+		function retryWorkspace() {
+			workspaceSwitch.key = null
+			workspaceSwitch.status = 'idle'
+			workspaceSwitch.error = ''
+			workspaceSwitch.missing = []
+			setWorkspaceTick(function (count) { return count + 1 })
+			void store.load()
+		}
+		// One auto-follow per (board, chat) pair: a failed/setup workspace is not
+		// retried on every poll; the bar's action is the explicit retry.
+		React.useEffect(function () {
+			if (workspaceMismatch !== true || wsKey === null || chatWorkspace === null) return
+			if (workspaceSwitch.key === wsKey) return
+			workspaceSwitch.key = wsKey
+			workspaceSwitch.status = 'switching'
+			workspaceSwitch.board = boardWorkspace
+			workspaceSwitch.target = chatWorkspace
+			workspaceSwitch.error = ''
+			workspaceSwitch.missing = []
+			setWorkspaceTick(function (count) { return count + 1 })
+			void store.switchProject(chatWorkspace, { quiet: true }).then(function (result) {
+				const payload = result === null || result === undefined || result.payload === undefined || result.payload === null ? {} : result.payload
+				if (result !== null && result !== undefined && result.ok === true) {
+					workspaceSwitch.status = 'followed'
+					workspaceSwitch.fade = true
+				} else {
+					const code = typeof payload.code === 'string' ? payload.code : ''
+					const preflight = payload.preflight !== null && payload.preflight !== undefined && typeof payload.preflight === 'object' ? payload.preflight : null
+					const failedChecks = preflight !== null && Array.isArray(preflight.failed) ? preflight.failed : []
+					const missing = []
+					for (const check of failedChecks) {
+						if (check !== null && typeof check === 'object' && typeof check.label === 'string' && check.label !== '') missing.push(check.label)
+					}
+					// "Not onboarded" (no git/board/team) is a SETUP state: the old board stays
+					// and nothing is pinned. Any other failure is a readable switch error.
+					// "Not onboarded" = the workspace exists but lacks git/board/team. A bad
+					// path or an unreadable directory is a real switch FAILURE, not setup.
+					const setup = ['not-a-repository', 'cannot-exclude', 'not-ready', 'no-project-bound'].indexOf(code) >= 0
+					workspaceSwitch.status = setup ? 'setup' : 'failed'
+					workspaceSwitch.missing = missing
+					workspaceSwitch.error = typeof payload.message === 'string' && payload.message !== '' ? payload.message : code
 				}
-			},
-				},
-				h(
-			'span',
-			{ style: { flex: '1', minWidth: '220px' } },
-			t('projectMismatch').split('{panel}').join(String(snapshot.project)).split('{session}').join(mismatchProject),
-				),
-				h(
-			'div',
-			{ className: 'gbt-actions' },
-			h(
-				'button',
-				{
-					type: 'button',
-					className: 'gbt-btn',
-					'data-variant': 'primary',
-					'data-action': 'switch-to-session-project',
-					disabled: busy !== null,
-					onClick: function (event) {
-				if (event !== undefined && event !== null && typeof event.stopPropagation === 'function') event.stopPropagation()
-				switchToProject(mismatchProject)
+				setWorkspaceTick(function (count) { return count + 1 })
+			})
+		}, [wsKey, workspaceMismatch, workspaceTick])
+		const workspaceActions = []
+		if (workspaceState === 'failed') {
+			workspaceActions.push(h('button', { key: 'retry', type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'workspace-retry', onClick: retryWorkspace }, t('workspaceRetry')))
+		} else if (workspaceState === 'setup' || workspaceState === 'unknown') {
+			workspaceActions.push(h('button', { key: 'recheck', type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'workspace-recheck', onClick: retryWorkspace }, t('workspaceRecheck')))
+			workspaceActions.push(h('button', { key: 'open', type: 'button', className: 'gbt-btn', 'data-action': 'workspace-open-project', onClick: function () { openProjectDialog() } }, t('workspaceOpenOther')))
+		}
+		function workspaceStateText() {
+			if (workspaceState === 'switching') {
+				return [h('span', { key: 'spin', className: 'gbt-spinner', 'aria-hidden': 'true' }), h('span', { key: 'text' }, t('workspaceFollowing'))]
+			}
+			if (workspaceState === 'failed') {
+				return t('workspaceSwitchFailed').replace('{error}', workspaceSwitch.error === '' ? '—' : workspaceSwitch.error)
+			}
+			if (workspaceState === 'setup') {
+				if (chatWorkspace === null) return t('workspaceUnknown')
+				const items = workspaceSwitch.missing.length === 0 ? t('workspaceNotReady') : t('workspaceNotReady') + ' · ' + t('workspaceMissing').replace('{items}', workspaceSwitch.missing.join('、'))
+				return items
+			}
+			if (workspaceState === 'unknown') return t('workspaceUnknown')
+			return '✓ ' + (workspaceState === 'followed' ? t('workspaceFollowed') : t('workspaceSame'))
+		}
+		const workspaceBar =
+			boardWorkspace === null && chatWorkspace === null
+				? null
+				: h(
+					'div',
+					{
+						className: 'gbt-workspacebar',
+						'data-workspace-scope': 'true',
+						'data-workspace-state': workspaceState,
+						'data-workspace-tone': workspaceState === 'failed' ? 'error' : workspaceState === 'setup' || workspaceState === 'unknown' ? 'warn' : undefined,
+						'data-project-mismatch': workspaceMismatch === true ? 'true' : undefined,
+						'data-reduce-motion': reduceMotion ? 'true' : 'false',
+						'data-board-workspace': boardWorkspace === null ? '' : boardWorkspace,
+						'data-chat-workspace': chatWorkspace === null ? '' : chatWorkspace,
 					},
-				},
-				t('projectSwitch'),
-			),
-				),
-			)
-
+					h('span', { key: 'board', className: 'gbt-workspace', 'data-workspace': 'board' }, h('span', { className: 'gbt-workspacelabel' }, t('workspaceBoard')), h('b', { title: boardWorkspace === null ? '' : boardWorkspace }, baseNameOf(boardWorkspace) === null ? '—' : baseNameOf(boardWorkspace))),
+					h('span', { key: 'arrow', className: 'gbt-workspacearrow', 'aria-hidden': 'true' }, '→'),
+					h('span', { key: 'chat', className: 'gbt-workspace', 'data-workspace': 'chat' }, h('span', { className: 'gbt-workspacelabel' }, t('workspaceChat')), h('b', { title: chatWorkspace === null ? '' : chatWorkspace }, baseNameOf(chatWorkspace) === null ? '—' : baseNameOf(chatWorkspace))),
+					h('span', { key: 'state', className: 'gbt-workspacestate', 'data-workspace-tone': workspaceState === 'failed' ? 'error' : workspaceState === 'setup' || workspaceState === 'unknown' ? 'warn' : undefined }, workspaceStateText()),
+					workspaceActions.length === 0 ? null : h('span', { key: 'actions', className: 'gbt-workspaceactions' }, workspaceActions),
+				)
 		// T-108: the main checkout's cleanliness, worded for what it is. While a
 		// merge runs the tree is briefly dirty — that is a passing notice ("will
 		// retry"), not an alarm. Only a sustained streak (the cards escalated by
@@ -7441,7 +7940,7 @@ function createTaskCenter(deps) {
 			header,
 			statusline,
 			environmentBar,
-			projectMismatchBar,
+			workspaceBar,
 			busyBar,
 			banner,
 			requestBanner,
@@ -7468,7 +7967,7 @@ function createTaskCenter(deps) {
 		? null
 		: h(
 				'div',
-				{ className: 'gbt-main' },
+				{ className: 'gbt-main' + (workspaceSwitch.fade === true ? ' gbt-workspacefade' : '') },
 				h('div', { className: 'gbt-content' }, tabsView, h('div', { className: 'gbt-view' }, content)),
 				selected === null ? null : h(DetailView, {
 			task: Object.assign({}, selected, snapshot.details[selected.id] === undefined ? {} : snapshot.details[selected.id].task),

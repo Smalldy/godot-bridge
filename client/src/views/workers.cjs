@@ -5,6 +5,9 @@
  * clipboard are injected by the build. WORKER_ERROR is local to this view.
  */
 function createWorkersView(deps) {
+	// T-155: the session filter survives a remount (view switch).
+	const workersUi = { sessionFilter: 'all' }
+
 	const React = deps.React
 	const h = deps.h
 	const tcBaseName = deps.tcBaseName
@@ -81,6 +84,73 @@ function createWorkersView(deps) {
 			headParts.push(h('div', { key: 'mismatch', className: 'gbt-banner', 'data-tone': 'warn', 'data-worker-mismatch': 'true', 'data-team-project': teamProject, 'data-panel-project': panelProject }, t('workersMismatch').replace('{team}', shortPath(teamProject)).replace('{panel}', shortPath(panelProject))))
 		}
 		blocks.push(h('div', { key: 'head', className: 'gbt-workerhead', 'data-worker-head': 'true' }, headParts))
+		// T-155 §1/§8: every participating session with ITS OWN team and card count,
+		// filterable. No primary session, no "project team".
+		const scope = snapshot.scope !== null && snapshot.scope !== undefined && typeof snapshot.scope === 'object' ? snapshot.scope : null
+		const sessionRows = scope !== null && Array.isArray(scope.sessionSummaries) ? scope.sessionSummaries.filter(function (row) { return row !== null && typeof row === 'object' }) : []
+		const currentSession = scope !== null && typeof scope.panelSession === 'string' && scope.panelSession !== '' ? scope.panelSession : null
+		const [sessionFilter, setSessionFilterState] = React.useState(workersUi.sessionFilter)
+		const setSessionFilter = function (next) {
+			workersUi.sessionFilter = next
+			setSessionFilterState(next)
+		}
+		const sessionShortText = function (value) {
+			const text = typeof value === 'string' ? value : ''
+			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
+		}
+		const sessionStatus = function (status) {
+			return status === 'live' ? t('sessionsStatusLive') : status === 'stale' ? t('sessionsStatusStale') : t('sessionsStatusUnknown')
+		}
+		if (sessionRows.length > 0) {
+			const visibleSessions = sessionFilter === 'all' ? sessionRows : sessionRows.filter(function (row) { return row.sessionId === sessionFilter })
+			blocks.push(
+				h(
+					'div',
+					{ key: 'sessions', className: 'gbt-sessionscards', 'data-worker-sessions': 'true' },
+					h('div', { className: 'gbt-workerheadtop' }, h('h3', { className: 'gbt-workertitle' }, t('sessionCardTitle')), h('span', { className: 'gbt-footnote' }, t('sessionsHint'))),
+					h(
+						'label',
+						{ className: 'gbt-sessionfilter' },
+						t('sessionFilter'),
+						h(
+							'select',
+							{
+								'data-session-filter': 'true',
+								value: sessionFilter,
+								onChange: function (event) {
+									setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all')
+								},
+							},
+							h('option', { value: 'all' }, t('sessionFilterAll')),
+							sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) }),
+						),
+					),
+					visibleSessions.map(function (row, index) {
+						const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
+						const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
+						const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
+						return h(
+							'div',
+							{
+								key: 'session-' + String(index),
+								className: 'gbt-sessionsrow',
+								'data-session': String(row.sessionId),
+								'data-current': currentSession !== null && row.sessionId === currentSession ? 'true' : 'false',
+								'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+							},
+							h('span', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
+							currentSession !== null && row.sessionId === currentSession ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
+							team === null ? null : h('span', null, t('workersLead') + ' ' + (typeof team.lead === 'string' ? team.lead : '—')),
+							h('span', { className: 'gbt-statusmeta' }, t('sessionsCards').replace('{n}', String(Number.isFinite(cards.owned) ? cards.owned : 0)) + ' · ' + t('sessionsActive').replace('{n}', String(Number.isFinite(cards.active) ? cards.active : 0))),
+							h('span', { className: 'gbt-pill', 'data-session-status-pill': typeof row.status === 'string' ? row.status : 'unknown' }, sessionStatus(row.status)),
+							h('span', { className: 'gbt-pill', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, t('sessionsReadiness') + ' ' + (row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
+							h('span', { className: 'gbt-pill', 'data-stage-ready': stage.review === true ? 'true' : 'false' }, t('sessionsStageReview') + ' ' + (stage.review === true ? t('sessionsReady') : t('sessionsNotReady'))),
+							h('span', { className: 'gbt-pill', 'data-stage-ready': stage.test === true ? 'true' : 'false' }, t('sessionsStageTest') + ' ' + (stage.test === true ? t('sessionsReady') : t('sessionsNotReady'))),
+						)
+					}),
+				),
+			)
+		}
 		// Role overview: three (or four on a merge team) compact cards with LIVE numbers only.
 		const roleCounts = workers.roleCounts !== null && workers.roleCounts !== undefined && typeof workers.roleCounts === 'object' ? workers.roleCounts : null
 		const kindOrder = ['worker', 'reviewer', 'tester', 'merger']
