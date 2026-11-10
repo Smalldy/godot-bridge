@@ -771,6 +771,24 @@ export function normaliseTest(raw) {
   }
 }
 
+/** T-156: the audit record of a target moving under a card. */
+function normaliseTargetDrift(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const from = typeof raw.from === 'string' && raw.from !== '' ? raw.from : null
+  const to = typeof raw.to === 'string' && raw.to !== '' ? raw.to : null
+  if (from === null || to === null) return null
+  return { from: from, to: to, at: typeof raw.at === 'string' && raw.at !== '' ? raw.at : null }
+}
+
+/** T-156: the old/new verify fingerprints when the declaration changed. */
+function normaliseVerifyFingerprints(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const from = typeof raw.from === 'string' && raw.from !== '' ? raw.from : null
+  const to = typeof raw.to === 'string' && raw.to !== '' ? raw.to : null
+  if (from === null || to === null) return null
+  return { from: from, to: to }
+}
+
 /**
  * A merge-request record, or null. Every member is optional so a hand-written
  * board survives; `conflict` keeps a boolean or a description, whichever a
@@ -795,6 +813,12 @@ export function normaliseMerge(raw) {
     // sweep's memory) so "the same conflict every round" can escalate to
     // needs-rebase instead of spinning candidate-stale forever.
     rebuildAttempts: Number.isFinite(raw.rebuildAttempts) ? Math.max(0, Math.min(10, Math.floor(raw.rebuildAttempts))) : 0,
+    // T-156: the target moved while the card was in flight (candidate rebuilt on
+    // the new head; base/actualFiles refreshed) — and/or the verify declaration
+    // changed. Both are explicit, never inferred by the reviewer.
+    targetDrift: normaliseTargetDrift(raw.targetDrift),
+    verifyChanged: raw.verifyChanged === true,
+    verifyFingerprints: normaliseVerifyFingerprints(raw.verifyFingerprints),
   }
 }
 

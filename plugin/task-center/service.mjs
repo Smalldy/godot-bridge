@@ -512,6 +512,11 @@ export function claimTask(board, id, worker, now) {
   retireExecutorsIn(target, now, 'superseded by ' + target.assignee.name)
   pushExecutor(target, target.assignee, now)
   target.base = typeof worktree.base === 'string' ? worktree.base : null
+  // T-156: the audit baseline for this attempt. The dispatcher passes the SAME
+  // target head the worktree was created on and the verify fingerprint it read;
+  // fall back to the worktree base so older callers keep a usable baseline.
+  target.targetBase = typeof worker.targetBase === 'string' && worker.targetBase !== '' ? worker.targetBase : target.base
+  target.verifyFingerprint = typeof worker.verifyFingerprint === 'string' && worker.verifyFingerprint !== '' ? worker.verifyFingerprint : null
   target.target = typeof worktree.target === 'string' ? worktree.target : null
   target.branch = typeof worktree.branch === 'string' ? worktree.branch : null
   target.worktree = typeof worktree.path === 'string' ? worktree.path : null
@@ -841,6 +846,21 @@ export function submitTask(board, id, input, now, by, byName) {
   if (input !== undefined && input.commit !== undefined) target.commit = String(input.commit)
   if (input !== undefined && input.actualFiles !== undefined) target.actualFiles = normaliseList(input.actualFiles)
   if (input !== undefined && input.merge !== undefined) target.merge = normaliseMerge(input.merge)
+  // T-156: record the target head and verify fingerprint the submission SAW, and
+  // flag a declaration that changed while the card was running. The old/new pair
+  // rides on the merge request so the review brief can show it.
+  if (input !== undefined && input.targetBase !== undefined) target.targetBase = typeof input.targetBase === 'string' && input.targetBase !== '' ? input.targetBase : null
+  if (input !== undefined && input.verifyFingerprint !== undefined) {
+    const previousPrint = typeof target.verifyFingerprint === 'string' && target.verifyFingerprint !== '' ? target.verifyFingerprint : null
+    const nextPrint = typeof input.verifyFingerprint === 'string' && input.verifyFingerprint !== '' ? input.verifyFingerprint : null
+    target.verifyFingerprint = nextPrint
+    if (target.merge !== null && typeof target.merge === 'object' && !Array.isArray(target.merge)) {
+      if (previousPrint !== null && nextPrint !== null && previousPrint !== nextPrint) {
+        target.merge.verifyChanged = true
+        target.merge.verifyFingerprints = { from: previousPrint, to: nextPrint }
+      }
+    }
+  }
   // A submission is proof the worker ran: the infrastructure-interruption streak
   // (and the attempt refunds that came with it) starts over.
   target.interruptions = 0
@@ -1306,6 +1326,9 @@ export function summary(board, task, now) {
     worktreeError: task.worktreeError,
     branch: task.branch,
     base: task.base,
+    // T-156: audit baseline, readable from board/get.
+    targetBase: task.targetBase === undefined ? null : task.targetBase,
+    verifyFingerprint: task.verifyFingerprint === undefined ? null : task.verifyFingerprint,
     target: task.target,
     commit: task.commit,
     actualFiles: task.actualFiles,

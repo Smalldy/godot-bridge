@@ -19,10 +19,53 @@
  */
 
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { serialiseWorktreeCreate } from './git.mjs'
-import { HOST_ACTION_TIMEOUT_MS } from './schema.mjs'
+import { HOST_ACTION_TIMEOUT_MS, normaliseVerify } from './schema.mjs'
 
 export const DEFAULT_VERIFY_COMMAND = 'npm run verify'
+
+/**
+ * T-156: the script-like paths a verify command mentions. The fingerprint hashes
+ * the command AND these files' contents, so an edit to the test script the worker
+ * was told to satisfy is visible to the reviewer instead of silent.
+ */
+export function verifyScriptPaths(verify) {
+  const spec = normaliseVerify(verify)
+  if (spec === null) return []
+  const tokens = spec.command.split(/[\s;&|()]+/).map((token) => token.replace(/^['"]|['"]$/g, '')).filter((token) => token !== '')
+  const paths = []
+  for (const token of tokens) {
+    if (!/^[A-Za-z0-9_./\\-]+$/.test(token)) continue
+    if (!/\.(mjs|js|cjs|gd|sh|py|ts|json)$/i.test(token)) continue
+    if (paths.indexOf(token) < 0) paths.push(token)
+    if (paths.length >= 8) break
+  }
+  return paths
+}
+
+/**
+ * T-156: a stable fingerprint of what was declared. Pure, so both the dispatcher
+ * and the review/test stages can compute the same value; script contents are
+ * hashed by the caller (which has the filesystem) and folded in by path order.
+ */
+export function fingerprintVerify(verify, scripts) {
+  const spec = normaliseVerify(verify)
+  if (spec === null) return null
+  const files = []
+  if (Array.isArray(scripts)) {
+    for (const entry of scripts) {
+      if (entry === null || typeof entry !== 'object') continue
+      const path = typeof entry.path === 'string' ? entry.path : ''
+      const text = typeof entry.text === 'string' ? entry.text : ''
+      if (path === '') continue
+      files.push({ path: path, hash: createHash('sha256').update(text).digest('hex').slice(0, 16) })
+    }
+  }
+  files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+  const payload = JSON.stringify({ command: spec.command, timeoutMs: spec.timeoutMs === undefined ? null : spec.timeoutMs, scripts: files })
+  return 'sha256:' + createHash('sha256').update(payload).digest('hex').slice(0, 16)
+}
 
 /** The candidate checkout for a task's independent test: <root>/test-<id>. */
 export function testCandidateFor(projectPath, root, taskId) {
@@ -823,6 +866,11 @@ export function recordCandidate(board, id, candidate, now, options) {
   }
   const at = new Date(now).toISOString()
   const candidateFiles = Array.isArray(candidate.actualFiles) ? candidate.actualFiles.slice() : null
+  // The base recorded by the submission (or dispatch) is what the candidate's
+  // base is compared against: a candidate is always built from the target's
+  // CURRENT head, so a difference is evidence the target moved under the card.
+  const previousBase =
+    typeof task.merge.base === 'string' && task.merge.base !== '' ? task.merge.base : typeof task.base === 'string' && task.base !== '' ? task.base : null
   task.base = candidate.base
   task.merge = Object.assign({}, task.merge, {
     status: 'open',
@@ -832,6 +880,25 @@ export function recordCandidate(board, id, candidate, now, options) {
     output: null,
     at: at,
   })
+  const audit = []
+  if (previousBase !== null && previousBase !== candidate.base) {
+    // T-156: TARGET DRIFT. Not a failure: the candidate was rebuilt on the new
+    // head, the diff/actualFiles are refreshed below, and the review must see it.
+    task.merge.targetDrift = { from: previousBase, to: candidate.base, at: at }
+    audit.push('target drift ' + previousBase + ' -> ' + candidate.base)
+  }
+  if (opts.verifyFingerprint !== undefined && opts.verifyFingerprint !== null) {
+    const nextPrint = String(opts.verifyFingerprint)
+    const previousPrint = typeof task.verifyFingerprint === 'string' && task.verifyFingerprint !== '' ? task.verifyFingerprint : null
+    task.verifyFingerprint = nextPrint
+    if (previousPrint !== null && previousPrint !== nextPrint) {
+      // T-156: the command (or a script it names) changed while the card was in
+      // flight. The reviewer must be told both fingerprints; never continue quietly.
+      task.merge.verifyChanged = true
+      task.merge.verifyFingerprints = { from: previousPrint, to: nextPrint }
+      audit.push('verify changed ' + previousPrint + ' -> ' + nextPrint)
+    }
+  }
   if (candidateFiles !== null) {
     task.actualFiles = candidateFiles.slice()
     task.merge.actualFiles = candidateFiles.slice()
@@ -857,7 +924,8 @@ export function recordCandidate(board, id, candidate, now, options) {
       (opts.retest === true ? 'test verdict invalidated (target moved); new candidate ' : 'test candidate built at ') +
       String(candidate.head) +
       ' for ' +
-      String(candidate.base),
+      String(candidate.base) +
+      (audit.length === 0 ? '' : ' · ' + audit.join(' · ')),
   })
   return { ok: true, board: next, events: [{ kind: 'candidate', id: id, head: candidate.head }] }
 }
@@ -975,6 +1043,11 @@ export function refreshMergeRequest(board, id, base, head, actualFiles, now, by,
     reviewer: null,
     at: at,
   })
+  if (typeof previousBase === 'string' && previousBase !== '' && previousBase !== base) {
+    // A refresh is an explicit repair, but the target still moved: keep the same
+    // audit trail the reviewer's brief shows for an automatic rebuild.
+    task.merge.targetDrift = { from: previousBase, to: base, at: at }
+  }
   const previousReview = task.review
   const from = task.status
   task.status = 'reviewing'

@@ -61,7 +61,7 @@ export function createSubmitAction(deps) {
     // Only a running task has a worktree worth committing; any other status
     // must reach submitTask's own refusal without touching git.
     const submittedAt = clock()
-    const prepared = checked.task.status === 'running' ? await prepareMergeRequest(checked.task, source, submittedAt) : { ok: true, mr: null }
+    const prepared = checked.task.status === 'running' ? await prepareMergeRequest(checked.task, source, submittedAt, projectPath) : { ok: true, mr: null }
     if (prepared.ok !== true) return prepared
     // Ensure the reviewer BEFORE the stage write: the write kicks the scheduler,
     // whose stage-role pass would otherwise race this provisioning and report
@@ -78,6 +78,10 @@ export function createSubmitAction(deps) {
       input.commit = prepared.mr.commit
       input.actualFiles = prepared.mr.actualFiles
       input.merge = prepared.mr.merge
+      // T-156 audit baseline at submit: the target head this request was opened
+      // against and the verify declaration's fingerprint.
+      input.targetBase = prepared.mr.targetBase
+      input.verifyFingerprint = prepared.mr.verifyFingerprint
     }
     if (willReview && provisionFailedHard(provisioned)) {
       // No reviewer: do NOT advance into an empty phase. The card stays running

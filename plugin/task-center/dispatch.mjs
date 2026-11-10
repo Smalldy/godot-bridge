@@ -27,6 +27,7 @@
 import { join } from 'node:path'
 import { serialiseWorktreeCreate } from './git.mjs'
 import { createHash, randomUUID } from 'node:crypto'
+import { fingerprintVerify, verifyScriptPaths } from './merge.mjs'
 import { realpathSync } from 'node:fs'
 import { boardPath, projectIdOf, readRoleConfig } from './board.mjs'
 import { createSessionLookup } from './session-lookup.mjs'
@@ -2498,6 +2499,32 @@ function readCollected(handle) {
  * @returns { ok: true, check } with the record, or { ok: false, code, message }
  *   when the check could not run at all (no subprocess service, no candidate).
  */
+/**
+ * T-156: the stable fingerprint of a verify declaration, including the contents
+ * of the script files it names (when those exist). One definition shared by
+ * dispatch, submit and the candidate/rebuild audit, so the baseline and the
+ * comparison can never drift apart.
+ */
+export async function verifyFingerprintFor(ctx, projectPath, verify) {
+  const spec = normaliseVerify(verify)
+  if (spec === null) return null
+  const fs = ctx === undefined || ctx === null ? undefined : ctx.fs
+  const scripts = []
+  if (fs !== undefined && fs !== null && typeof fs.resolve === 'function' && typeof fs.readText === 'function') {
+    for (const path of verifyScriptPaths(spec)) {
+      try {
+        const target = await fs.resolve(path, { cwd: projectPath })
+        const text = await fs.readText(target)
+        scripts.push({ path: path, text: String(text) })
+      } catch (error) {
+        // A named script that does not exist is not part of the fingerprint; the
+        // command string itself still is, so an edit to the name is visible.
+      }
+    }
+  }
+  return fingerprintVerify(spec, scripts)
+}
+
 export async function runHostCheck(ctx, options) {
   const opts = options === undefined || options === null ? {} : options
   const verify = normaliseVerify(opts.verify)
@@ -2639,6 +2666,24 @@ export function reviewBriefFor(task, projectPath) {
     lines.push('Files changed beyond the declaration (ask why, or request changes): ' + extras.join(', '))
   } else if (actual.length > 0) {
     lines.push('Every changed file was declared.')
+  }
+  // T-156: two first-class audit signals. Both MUST be in the brief: a reviewer
+  // who only reads the diff cannot know the target moved or the command changed.
+  const drift = merge.targetDrift === null || merge.targetDrift === undefined ? null : merge.targetDrift
+  if (drift !== null) {
+    lines.push(
+      '',
+      'TARGET DRIFT: ' + String(task.target === null || task.target === undefined ? 'the target' : task.target) + ' moved while this card was in flight (' + String(drift.from) + ' -> ' + String(drift.to) + (drift.at === null || drift.at === undefined ? '' : ' at ' + String(drift.at)) + ').',
+      'The test candidate was rebuilt on the NEW head and the changed-file list above was recomputed from it. Review the CURRENT base shown above, not the one in the submission note.',
+    )
+  }
+  if (merge.verifyChanged === true) {
+    const prints = merge.verifyFingerprints === null || merge.verifyFingerprints === undefined ? null : merge.verifyFingerprints
+    lines.push(
+      '',
+      'VERIFY DECLARATION CHANGED while this card was in flight' + (prints === null ? '' : ' (fingerprint ' + String(prints.from) + ' -> ' + String(prints.to) + ')') + '.',
+      'The acceptance above must hold under the NEW verify command; the old one was not what this round was dispatched with.',
+    )
   }
   lines.push('', 'Worker self-test evidence:', typeof task.evidence === 'string' && task.evidence !== '' ? task.evidence : '(none recorded)')
   // The host already recorded the mechanical side of the checklist (the diff's
@@ -4700,6 +4745,9 @@ export function createDispatcher(ctx, options) {
             detail: 'worktree add for ' + String(worktree.path) + ' succeeded on retry (' + String(worktree.elapsedMs) + 'ms; cleanup: ' + summary + ')',
           })
         }
+        // T-156: pin WHAT this attempt was told to satisfy (target head + verify
+        // declaration) before the claim writes the card into running.
+        const dispatchVerifyPrint = await verifyFingerprintFor(ctx, project, task.verify)
         const claimed = await state.apply(
           project,
           (board) =>
@@ -4721,6 +4769,8 @@ export function createDispatcher(ctx, options) {
                 compatDetail: compatDetail,
                 project: project,
                 worktree: worktree,
+                targetBase: typeof worktree.base === 'string' ? worktree.base : null,
+                verifyFingerprint: dispatchVerifyPrint,
                 adopt:
                   worktree.adopted === true
                     ? { fromAttempt: worktree.fromAttempt, branch: worktree.branch, head: worktree.head === undefined ? null : worktree.head }

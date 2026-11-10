@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { mkdirSync, writeFileSync, utimesSync, rmSync, readFileSync } from 'node:fs'
 import { readRoleConfig, rolesPath, updateBoard, projectIdOf } from '../../plugin/task-center/board.mjs'
 import { createState, writePolicyFor } from '../../plugin/task-center/state.mjs'
-import { findTask } from '../../plugin/task-center/service.mjs'
+import { claimTask, findTask } from '../../plugin/task-center/service.mjs'
 import {
   briefFor,
   briefPartsFor,
@@ -19,6 +19,7 @@ import {
   liveLeads,
   leadInventory,
   projectTeamState,
+  verifyFingerprintFor,
   teamBootstrapStep,
   hostCheckEvidence,
   reviewBriefFor,
@@ -5636,6 +5637,57 @@ try {
   const held = (await rig.action('locks')).locks.filter((entry) => entry.path === file)
   check('T-131 the file lock belongs to the dev card, not the investigation', held.length === 1 && String(held[0].taskId) === dev.id, JSON.stringify(held))
   rig.scheduler.dispose()
+}
+
+// ── T-156: target drift / verify fingerprint audit ──────────────────────────
+{
+  const nowMs = Date.parse('2026-11-11T00:00:00.000Z')
+  const stamp = new Date(nowMs).toISOString()
+  const baseBoard = {
+    version: 2,
+    seq: 1,
+    tasks: [
+      {
+        id: 'T-9',
+        title: 'baseline',
+        status: 'pending',
+        kind: 'dev',
+        dependsOn: [],
+        writeFiles: [],
+        attempts: 0,
+        maxAttempts: 3,
+        history: [],
+        executors: [],
+        createdAt: stamp,
+        updatedAt: stamp,
+      },
+    ],
+  }
+  const claimed = claimTask(
+    baseBoard,
+    'T-9',
+    {
+      name: 'worker',
+      session: 'session-w',
+      worktree: { base: 'target-head-9', target: 'main', branch: 'task/T-9-1', path: '/wt/T-9' },
+      targetBase: 'target-head-9',
+      verifyFingerprint: 'sha256:baseline',
+    },
+    nowMs,
+  )
+  check(
+    'T-156 a dispatch claim records targetBase and verifyFingerprint',
+    claimed.ok === true && claimed.task.targetBase === 'target-head-9' && claimed.task.verifyFingerprint === 'sha256:baseline',
+    JSON.stringify(claimed.ok === true ? { targetBase: claimed.task.targetBase, verifyFingerprint: claimed.task.verifyFingerprint } : claimed),
+  )
+  const fpA = await verifyFingerprintFor({}, '/p', { command: 'npm run verify' })
+  const fpA2 = await verifyFingerprintFor({}, '/p', { command: 'npm run verify' })
+  const fpB = await verifyFingerprintFor({}, '/p', { command: 'npm run verify', timeoutMs: 7 })
+  check(
+    'T-156 the dispatcher verify fingerprint is stable and timeout-sensitive',
+    fpA !== null && fpA === fpA2 && fpA !== fpB,
+    JSON.stringify({ a: fpA, b: fpB }),
+  )
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
