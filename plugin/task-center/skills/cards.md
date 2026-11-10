@@ -7,6 +7,7 @@
 - writeFiles 就是锁：派发前原子加锁，漏写会互踩；文件路径相对项目根。
 - dependsOn 表示前序必须 **done + merged**；不要依赖一张只是 running/reviewing 的卡。
 - priority 只在 ready 卡之间比较；maxAttempts 用尽会 blocked。
+- 每张卡有 `ownerSession`（创建它的会话）：看板按项目共享，但卡只由该会话的团队执行/评审/测试；不要替别的会话改卡或换 owner。
 - 改卡用 `update`；不要手改 `.agents/tasks.json`。
 
 ## verify

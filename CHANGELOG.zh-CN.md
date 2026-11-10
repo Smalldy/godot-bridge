@@ -1,4 +1,4 @@
-﻿# 更新日志
+# 更新日志
 
 本文件记录本项目的所有重要变更。
 
@@ -9,6 +9,7 @@
 
 ### 变更
 
+- **项目/会话/团队模型写入文档（T-157）**：README、init skill 与按需资源现在与代码同一套契约——看板按项目共享、Team 属于**会话**（没有主/次会话）；每张卡都有 `ownerSession`，派发解析该会话的团队；状态/执行者/角色页按会话聚合所有参与会话并提供会话筛选，卡片带 `ownerSession` 徽标；新会话进入一个有别的会话进行中卡的项目时得到 `stage: "handoff"`，默认不接管；面板只保留**一个**工作区作用域条（自动跟随 + spinner/淡入、未接入显示 setup 卡、失败在条内给出可读错误、尊重 `prefers-reduced-motion`）；`dispatchReady`（Lead + worker）才是 create/start 门禁，reviewer/tester 是阶段角色；状态卡读取真实 `mergeQueue`（无 merger 为 null），不再把派发队列当合并队列。`scripts/test/skill-resources.test.mjs` 在比较生成的 `reference.md` 前先把 CRLF/LF 归一，Windows `core.autocrlf=true` 的检出也能通过。
 - **项目/团队头一致性（T-150）**：header 现在使用 `team.project`/`projectMatch`。当前会话 Team 属于另一个项目时明确显示不一致，并提供「切换项目」（打开项目对话框并预填 Team 所属项目）与「打开所属会话」（复制所属会话 id），不再把「请在该会话中建队」当主提示。同项目只有 Lead，或完全没有 team 数据时，提供「建队」按钮（调用 `bootstrapTeam` 后刷新），并提示 Team 属于会话、不跨会话。团队服务不可用时保持原有说明且不放假按钮；team.project 为空/projectMatch 未知时降级为原提示，不误报。
 - **非 Godot / 无标记仓库的接入指导（T-151）**：`not-a-project` 不再要求「Godot 项目路径」。git 仓库没有标记时，会说明空 `.agents/` 就够（不要求 Godot）、`.agents/` 与 `.worktrees/` 会写入 `.git/info/exclude`，并只在用户同意时提议建空看板，或换一个项目路径。运行时 skill 也写明同样的标记边界（git + `.agents/` 或 `project.godot`）、显式 `project` 备选，以及不要盲跑 `npm run verify`（如 `verify:blender` 缺 Blender 会失败）：先看 package scripts，用 typecheck/test，首次接入在宿主侧实测。
 - **角色技能边界：host skill 只给 Lead（T-149）**：`godot-bridge-task-center` 是 Lead 的接入/拆卡指南，只出现在 Lead 的 Skills 里；worker/reviewer/tester 只列 `profile.skills`，没有项目技能时整个 Skills 段消失（不再出现假 bullet，Rules 的加载指令也只在有 Skills 时出现）。Lead 没有项目技能时仍列 host skill。**列名 ≠ 注入，勾选 ≠ 授权**：skill 正文只有在 agent 调用 skill 工具且 host catalog 可见时才到达；真正的硬边界是 host catalog/工具可用性 + task_center 动作角色门禁，不存在 skill allowlist。worker role brief 与 Lead preview 仍由同一套 section 生成，preview 分开标注规则（host-fixed）与技能（host-injected）。
