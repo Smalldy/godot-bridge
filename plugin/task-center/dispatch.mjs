@@ -590,6 +590,11 @@ export function projectTeamState(ctx, options) {
     leadSession: null,
     members: [],
     missingRoles: [],
+    // T-154: "can this session DISPATCH?" (Lead + worker) is separate from
+    // "are the stage roles bound?" (reviewer/tester). Only dispatchReady gates
+    // create/start; missing reviewer/tester is a stage fact, not a blocker.
+    dispatchReady: false,
+    stageReady: { review: false, test: false },
     error: null,
   }
   if (base.available !== true) return Object.assign({}, base, { error: 'no-team-service' })
@@ -678,9 +683,20 @@ export function projectTeamState(ctx, options) {
     if (kind !== null && roleKinds[kind] !== undefined) roleKinds[kind] = true
   }
   const missingRoles = ['worker', 'reviewer', 'tester'].filter((kind) => roleKinds[kind] !== true)
+  // T-154: three separate answers, never merged:
+  //   ok            — the team EXISTS (Lead + at least one non-Lead)
+  //   dispatchReady — Lead + worker: enough to hand a card to the dispatcher
+  //   stageReady    — reviewer/tester are provisioned for their own stages
+  // A caller that may not create work must test dispatchReady, not ok: a Team
+  // that only has a reviewer is not dispatch-ready, and missing stage roles are
+  // NOT a reason to block create/start.
   const qualified = nonLead > 0
+  const dispatchReady = roleKinds.worker === true
+  const stageReady = { review: roleKinds.reviewer === true, test: roleKinds.tester === true }
   return Object.assign({}, base, {
     ok: qualified,
+    dispatchReady: dispatchReady,
+    stageReady: stageReady,
     source: 'session',
     lead: leadName,
     leadId: typeof lead.id === 'string' && lead.id !== '' ? lead.id : null,
@@ -691,10 +707,18 @@ export function projectTeamState(ctx, options) {
   })
 }
 
-/** The structured hint that tells the calling session to bootstrap the Team. */
+/**
+ * The structured hint that tells the calling session to bootstrap the Team.
+ *
+ * T-154: readiness means dispatchReady (Lead + worker). A team that exists but
+ * has no worker still needs one, while a missing reviewer/tester must NOT demand
+ * a bootstrap — those are provisioned by their own stage.
+ */
 export function teamBootstrapStep(team) {
-  if (team !== undefined && team !== null && team.ok === true) return null
-  if (team !== undefined && team !== null && team.available === false) return null
+  if (team === undefined || team === null) return { code: 'bootstrap-team', instruction: TEAM_BOOTSTRAP_INSTRUCTION }
+  if (team.available === false) return null
+  const ready = team.dispatchReady === undefined ? team.ok === true : team.dispatchReady === true
+  if (ready) return null
   return { code: 'bootstrap-team', instruction: TEAM_BOOTSTRAP_INSTRUCTION }
 }
 

@@ -50,10 +50,13 @@ export function createTaskAdminActions(deps) {
     // T-110: no cards before the project has a Team. The refusal carries the
     // instruction, so the calling session can bootstrap it and retry.
     const gate = await projectTeamFor(projectPath, callerSessionId(source, context))
-    if (gate.team.available === true && gate.team.ok !== true) {
+    // T-154: only DISPATCH readiness (Lead + worker) gates a new card. A missing
+    // reviewer/tester is provisioned by its stage and must not block create.
+    const gateReady = gate.team.dispatchReady === undefined ? gate.team.ok === true : gate.team.dispatchReady === true
+    if (gate.team.available === true && gateReady !== true) {
       return failure(
         'no-team-for-project',
-        'This project has no Team (' + String(gate.team.error) + '), so a card cannot be created yet.',
+        'This project has no dispatch-ready Team (' + String(gate.team.error) + '), so a card cannot be created yet.',
         { team: gate.team, nextStep: session !== null && session !== undefined && session.nextStep !== undefined && session.nextStep !== null ? session.nextStep : gate.nextStep },
       )
     }

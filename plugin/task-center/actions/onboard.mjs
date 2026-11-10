@@ -45,6 +45,13 @@ export function createOnboardAction(deps) {
   const ok = deps.ok
   const failure = deps.failure
 
+  /** T-154: dispatch readiness (Lead + worker). Missing stage roles are not a
+   * bootstrap reason — reviewer/tester are provisioned by their own stages. */
+  function teamDispatchReadyOf(team) {
+    if (team === null || team === undefined) return false
+    return team.dispatchReady === undefined ? team.ok === true : team.dispatchReady === true
+  }
+
   async function onboard(input, context) {
     const source = input === undefined || input === null ? {} : input
     // The route injects the panel's resolved project; onboarding deliberately
@@ -259,7 +266,7 @@ export function createOnboardAction(deps) {
       if (team.available !== true) warnings.push('本环境没有团队服务（单机模式）：建卡和派发不走团队。')
     } else if (team.available !== true) {
       warnings.push('本环境没有团队服务（单机模式）：建卡和派发不走团队。')
-    } else if (team.ok === true) {
+    } else if (teamDispatchReadyOf(team)) {
       setup.did.push({ step: 'team-ready', ok: true, detail: typeof team.lead === 'string' ? team.lead : '' })
     } else {
       const owns = ownsProject
@@ -281,14 +288,14 @@ export function createOnboardAction(deps) {
           setup.did.push({ step: 'team-bootstrap', ok: true, detail: created.join('、') })
           const reread = await projectTeamFor(root, sessionId)
           team = reread.team
-          if (team.ok === true) setup.did.push({ step: 'team-ready', ok: true, detail: typeof team.lead === 'string' ? team.lead : '' })
+          if (teamDispatchReadyOf(team)) setup.did.push({ step: 'team-ready', ok: true, detail: typeof team.lead === 'string' ? team.lead : '' })
         } else {
           teamFailureCode = typeof boot.code === 'string' ? boot.code : 'bootstrap-failed'
           teamError = String(boot.message === undefined ? '团队建立失败' : boot.message)
         }
       }
     }
-    if (handoffBlocked !== true && team.available !== false && team.ok !== true) {
+    if (handoffBlocked !== true && team.available !== false && teamDispatchReadyOf(team) !== true) {
       // An unresolved handoff is not a Team failure: the session simply may not
       // build a second team yet (T-153), so the stage stays 'handoff'.
       teamFailed = true

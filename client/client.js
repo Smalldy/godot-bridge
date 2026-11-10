@@ -2541,6 +2541,9 @@ function tcHostSessionId() {
 				dispatch: payload.dispatch !== undefined && payload.dispatch !== null ? payload.dispatch : { state: 'paused' },
 				counts: payload.counts !== undefined && payload.counts !== null ? payload.counts : {},
 				queue: Array.isArray(payload.queue) ? payload.queue : [],
+				// T-154: the real merge queue ({ active, queued, chains, last }) from the
+				// merger, or null when the host has none. Never derived from queue.
+				mergeQueue: payload.mergeQueue === undefined || payload.mergeQueue === null ? null : payload.mergeQueue,
 				tasks: tasks,
 				locks: Array.isArray(payload.locks) ? payload.locks : [],
 				workers: payload.workers === undefined || payload.workers === null ? null : payload.workers,
@@ -4901,7 +4904,12 @@ function createStatusView(deps) {
 		const boardSize = snapshot.boardSize === undefined || snapshot.boardSize === null ? null : snapshot.boardSize
 		const boardSizeWarn = boardSize !== null && (boardSize.level === 'half' || boardSize.level === 'three-quarters')
 		const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : []
-		const queue = Array.isArray(snapshot.queue) ? snapshot.queue : []
+		// T-154: the merge queue is the MERGER's real reading (active/queued/last).
+		// snapshot.queue is the DISPATCH queue (ready cards) and must never be shown
+		// as merges; a host without a merger answers null, and that is not zero.
+		const mergeQueue = snapshot.mergeQueue !== null && snapshot.mergeQueue !== undefined && typeof snapshot.mergeQueue === 'object' ? snapshot.mergeQueue : null
+		const mergeQueued = mergeQueue !== null && Number.isFinite(mergeQueue.queued) ? mergeQueue.queued : null
+		const mergeActive = mergeQueue !== null && Number.isFinite(mergeQueue.active) ? mergeQueue.active : null
 		const scheduler = snapshot.scheduler === undefined || snapshot.scheduler === null ? null : snapshot.scheduler
 		const running = tasks.filter(function (task) { return task.status === 'running' })
 		const maxConcurrent = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
@@ -5183,7 +5191,7 @@ function createStatusView(deps) {
 			h(
 		'div',
 		{ className: 'gbt-statuscardbody' },
-		h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv', 'data-kv': 'concurrent' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), Number.isFinite(counts.investigating) && counts.investigating > 0 ? h('span', { className: 'gbt-statuskv', 'data-kv': 'investigating', 'data-kind': 'investigate' }, h('b', null, String(counts.investigating)), h('span', null, t('statusInvestigating'))) : null, h('span', { className: 'gbt-statuskv', 'data-kv': 'merge-queue' }, h('b', null, String(queue.length)), h('span', null, t('statusMergeQueue')))),
+		h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv', 'data-kv': 'concurrent' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), Number.isFinite(counts.investigating) && counts.investigating > 0 ? h('span', { className: 'gbt-statuskv', 'data-kv': 'investigating', 'data-kind': 'investigate' }, h('b', null, String(counts.investigating)), h('span', null, t('statusInvestigating'))) : null, h('span', { className: 'gbt-statuskv', 'data-kv': 'merge-queue', 'data-merge-queue': mergeQueued === null ? 'unavailable' : 'ready', title: mergeActive === null ? '' : String(mergeActive) }, h('b', null, mergeQueued === null ? '—' : String(mergeQueued)), h('span', null, t('statusMergeQueue')))),
 		h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
 		h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
 		panelSessionLine,
@@ -7052,10 +7060,14 @@ function createTaskCenter(deps) {
 		const headerTeamMismatch = projectTeam !== null && projectTeam.projectMatch === false && headerTeamProject !== null && headerPanelProject !== null
 		const headerTeamAvailable = projectTeam !== null && projectTeam.available === false
 		const headerTeamMissingRoles = projectTeam !== null && Array.isArray(projectTeam.missingRoles) ? projectTeam.missingRoles : []
+		// T-154: 'needs a Team built' is DISPATCH readiness (Lead + worker). Missing
+		// reviewer/tester is a stage fact, shown in the roles text only — it must not
+		// make the panel ask for another team.
+		const headerTeamDispatchReady = projectTeam !== null && (projectTeam.dispatchReady === undefined ? projectTeam.ok === true : projectTeam.dispatchReady === true)
 		const headerTeamBuildable =
 			projectTeam === null
 		? headerPanelProject !== null
-		: projectTeam.available !== false && projectTeam.projectMatch === true && (projectTeam.error === 'no-members' || headerTeamMissingRoles.length > 0)
+		: projectTeam.available !== false && projectTeam.projectMatch === true && headerTeamDispatchReady !== true
 		// Team creation is an Agent action (bootstrapTeam is agent-scoped). The panel
 		// shows a quiet wait state instead of offering the user a manual button.
 		const teamWaitChip = h('span', { className: 'gbt-teamwait', 'data-team-waiting': 'true' }, t('projectTeamWaiting'))

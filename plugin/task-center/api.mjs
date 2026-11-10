@@ -3018,10 +3018,20 @@ export function createApi(ctx, options) {
       const owned = tasks.filter((task) => task !== null && task !== undefined && task.ownerSession === sessionId)
       const active = owned.filter((task) => task.status === 'running' || task.status === 'reviewing' || task.status === 'testing').length
       const handoffRow = liveness.get(sessionId)
+      // T-154: readiness is per SESSION, never merged into one project-level team.
+      const teamDispatchReady = team.dispatchReady === undefined ? team.ok === true : team.dispatchReady === true
+      const teamStageReady =
+        team.stageReady !== undefined && team.stageReady !== null && typeof team.stageReady === 'object'
+          ? { review: team.stageReady.review === true, test: team.stageReady.test === true }
+          : { review: false, test: false }
       rows.push({
         sessionId: sessionId,
         // live / stale / unknown (handoff window), never a ranking.
         status: handoffRow === undefined ? 'unknown' : handoffRow.status,
+        // T-154: what THIS session can do — dispatch (Lead + worker) and which
+        // stage roles are bound. Deliberately per-row, not a project aggregate.
+        dispatchReady: teamDispatchReady,
+        stageReady: teamStageReady,
         firstSeenAt: entry.firstSeenAt === undefined ? null : entry.firstSeenAt,
         lastSeenAt: entry.lastSeenAt === undefined ? null : entry.lastSeenAt,
         lastActiveAt: handoffRow === undefined ? null : handoffRow.lastActiveAt,
@@ -3043,6 +3053,31 @@ export function createApi(ctx, options) {
       })
     }
     return rows
+  }
+
+  /**
+   * T-154: the real merge-queue reading, or null when this host has no merger.
+   *
+   * The merge queue is owned by merger.mjs (active/queued/chains/last). It is NOT
+   * the dispatch queue: a board full of ready cards says nothing about merges.
+   * Never fabricate zero for a host that has no merger — "unknown" and "empty"
+   * are different answers.
+   */
+  function mergerQueueStatus() {
+    if (merger === null || merger === undefined || typeof merger.status !== 'function') return null
+    let read = null
+    try {
+      read = merger.status()
+    } catch (error) {
+      return null
+    }
+    if (read === null || typeof read !== 'object' || Array.isArray(read)) return null
+    return {
+      active: Number.isFinite(read.active) ? Math.max(0, Math.floor(read.active)) : null,
+      queued: Number.isFinite(read.queued) ? Math.max(0, Math.floor(read.queued)) : null,
+      chains: Number.isFinite(read.chains) ? Math.max(0, Math.floor(read.chains)) : null,
+      last: read.last === undefined ? null : read.last,
+    }
   }
 
   /**
@@ -3662,7 +3697,12 @@ export function createApi(ctx, options) {
       // three-quarters), cards, bytesPerCard, headroomCards and a readable
       // warning. The status page shows it from 50% on.
       boardSize: boardSize,
+      // The DISPATCH queue: cards ready to be dispatched. This is NOT the merge
+      // queue (T-154: the status page used to misread it as one).
       queue: model.readyTasks(board).map((task) => model.summary(board, task, now)),
+      // T-154: the REAL merge queue, read from the merger that owns it. A host
+      // without a merger answers null — never a fabricated zero.
+      mergeQueue: mergerQueueStatus(),
       tasks: tasks,
       locks: locks.view(state.memory.locks, board, now).map((lock) =>
         Object.assign({}, lock, { waiters: lockWaiters(board, lock) }),
@@ -5031,15 +5071,18 @@ export function createApi(ctx, options) {
     // its old behaviour — the board must work there — so the check only blocks when
     // the services exist and answer "no Team".
     const teamRead = projectTeamState(ctx, { sessionId: typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null, projectPath: projectPath })
+    // T-154: dispatch readiness is Lead + worker. A provisioned reviewer/tester is
+    // NOT a readiness gate — those are the stage's business.
+    const teamDispatchReady = teamRead.dispatchReady === undefined ? teamRead.ok === true : teamRead.dispatchReady === true
     const teamDetail =
-      teamRead.ok === true
+      teamDispatchReady === true
         ? String(teamRead.lead === null ? 'lead' : teamRead.lead) + ' · ' + String(teamRead.members.length) + ' members'
         : teamRead.available === true
-          ? 'no Team for this project (' + String(teamRead.error) + ') — initialize it in the session that owns the project'
+          ? 'no dispatch-ready Team for this project (' + String(teamRead.error) + ') — initialize it in the session that owns the project'
           : 'this profile has no team services'
     // Not applicable (no team services in this profile) is not a failure: such a
     // host keeps the old board-only behaviour.
-    record('team', 'this project has a Team for its session', teamRead.ok === true || teamRead.available !== true, teamDetail, { openBlocking: false })
+    record('team', 'this project has a dispatch-ready Team for its session', teamDispatchReady === true || teamRead.available !== true, teamDetail, { openBlocking: false })
 
     const boardRead = await readBoardOrFail(projectPath)
     record('board', 'board is readable', boardRead.failed === undefined, boardRead.failed === undefined ? null : boardRead.failed.message)

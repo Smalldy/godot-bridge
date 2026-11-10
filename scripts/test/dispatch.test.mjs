@@ -19,6 +19,7 @@ import {
   liveLeads,
   leadInventory,
   projectTeamState,
+  teamBootstrapStep,
   hostCheckEvidence,
   reviewBriefFor,
   reworkBriefFor,
@@ -3842,6 +3843,11 @@ function fakeHostSubprocess(result) {
     JSON.stringify(leadOnly.missingRoles) === JSON.stringify(['worker', 'reviewer', 'tester']),
     JSON.stringify(leadOnly.missingRoles),
   )
+  check(
+    'T-154 lead-only is neither dispatch-ready nor stage-ready',
+    leadOnly.dispatchReady === false && leadOnly.stageReady !== undefined && leadOnly.stageReady.review === false && leadOnly.stageReady.test === false,
+    JSON.stringify({ dispatchReady: leadOnly.dispatchReady, stageReady: leadOnly.stageReady }),
+  )
   const refused = await rig.action('create', { title: 'card without a team' })
   check(
     'T-115 create is gated again and carries the bootstrap next step',
@@ -3873,6 +3879,14 @@ function fakeHostSubprocess(result) {
     JSON.stringify(withWorker.missingRoles) === JSON.stringify(['reviewer', 'tester']),
     JSON.stringify(withWorker.missingRoles),
   )
+  check(
+    'T-154 Lead + worker is dispatch-ready while reviewer/tester are missing',
+    withWorker.dispatchReady === true &&
+      withWorker.stageReady.review === false &&
+      withWorker.stageReady.test === false &&
+      teamBootstrapStep(withWorker) === null,
+    JSON.stringify({ dispatchReady: withWorker.dispatchReady, stageReady: withWorker.stageReady }),
+  )
   const created = await rig.action('create', { title: 'card with a team' })
   check('T-115 create passes once a teammate exists', created.ok === true, JSON.stringify(created).slice(0, 240))
   const started = await rig.action('start')
@@ -3883,6 +3897,47 @@ function fakeHostSubprocess(result) {
     boardOk.team !== undefined && boardOk.team.ok === true && boardOk.nextStep === null && JSON.stringify(boardOk.team.missingRoles) === JSON.stringify(['reviewer', 'tester']),
     JSON.stringify({ team: boardOk.team, nextStep: boardOk.nextStep }).slice(0, 300),
   )
+  rig.team.roster.push({ id: 'session-reviewer', name: 'reviewer-1', role: 'reviewer', status: 'idle' })
+  rig.team.roster.push({ id: 'session-tester', name: 'tester-1', role: 'tester', status: 'idle' })
+  const staged = projectTeamState(rig.ctx, { sessionId: 'session-lead' })
+  check(
+    'T-154 reviewer/tester fill stageReady without changing dispatchReady',
+    staged.ok === true &&
+      staged.dispatchReady === true &&
+      staged.stageReady.review === true &&
+      staged.stageReady.test === true &&
+      JSON.stringify(staged.missingRoles) === JSON.stringify([]),
+    JSON.stringify({ dispatchReady: staged.dispatchReady, stageReady: staged.stageReady, missing: staged.missingRoles }),
+  )
+  rig.scheduler.dispose()
+}
+// ── T-154: stage roles alone never make a team dispatch-ready ─────────────
+{
+  const lead = { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }
+  const rig = createRig({
+    team: createTeam({
+      roster: [
+        lead,
+        { id: 'session-reviewer', name: 'reviewer-1', role: 'reviewer', status: 'idle' },
+        { id: 'session-tester', name: 'tester-1', role: 'tester', status: 'idle' },
+      ],
+    }),
+    agents: { list: () => [{ id: 'session-lead' }] },
+  })
+  const staged = projectTeamState(rig.ctx, { sessionId: 'session-lead' })
+  check(
+    'T-154 reviewer+tester without a worker is a Team, but not dispatch-ready',
+    staged.ok === true && staged.dispatchReady === false && staged.stageReady.review === true && staged.stageReady.test === true && JSON.stringify(staged.missingRoles) === JSON.stringify(['worker']),
+    JSON.stringify({ ok: staged.ok, dispatchReady: staged.dispatchReady, stageReady: staged.stageReady, missing: staged.missingRoles }),
+  )
+  const created = await rig.action('create', { title: 'no worker yet' })
+  check(
+    'T-154 create is refused until a worker exists, with the bootstrap next step',
+    created.ok === false && created.code === 'no-team-for-project' && created.nextStep !== undefined && created.nextStep.code === 'bootstrap-team',
+    JSON.stringify(created).slice(0, 300),
+  )
+  const started = await rig.action('start')
+  check('T-154 start is refused for the same reason', started.ok === false && started.code === 'no-team-for-project', JSON.stringify(started).slice(0, 240))
   rig.scheduler.dispose()
 }
 {

@@ -229,6 +229,9 @@ function tcHostSessionId() {
 				dispatch: payload.dispatch !== undefined && payload.dispatch !== null ? payload.dispatch : { state: 'paused' },
 				counts: payload.counts !== undefined && payload.counts !== null ? payload.counts : {},
 				queue: Array.isArray(payload.queue) ? payload.queue : [],
+				// T-154: the real merge queue ({ active, queued, chains, last }) from the
+				// merger, or null when the host has none. Never derived from queue.
+				mergeQueue: payload.mergeQueue === undefined || payload.mergeQueue === null ? null : payload.mergeQueue,
 				tasks: tasks,
 				locks: Array.isArray(payload.locks) ? payload.locks : [],
 				workers: payload.workers === undefined || payload.workers === null ? null : payload.workers,
