@@ -426,11 +426,42 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				workspaceRetry: '重试',
 				workspaceRecheck: '重新检查',
 				workspaceOpenOther: '打开其他项目',
+				workspaceFollowAction: '跟随',
 				teamWaitingWorker: '等待 worker · 团队还没就绪（不是故障）',
 				projectTeamCopySession: '复制会话 ID',
 				sessionIdCopiedToast: '已复制会话 ID',
 				ownerSession: '所属会话',
 				ownerSessionHint: '这张卡属于该会话',
+				// T-158 夜航作战板：两行 header、六个泳道、紧凑卡片。
+				sharedBoard: '共享看板',
+				sessionsPill: '{n} 个会话',
+				sessionsPopoverTitle: '参与会话',
+				teamPillReady: '当前团队 · 就绪',
+				teamPillWaiting: '当前团队 · 待 worker',
+				teamPillNone: '当前团队 · 未参与',
+				teamPopoverTitle: '当前会话团队',
+				teamMissingRoles: '缺 {roles}',
+				moreActions: '更多',
+				diagnostics: '诊断',
+				dispatchCol: '待派发',
+				readyCount: '就绪 {n}',
+				waitingCount: '等待 {n}',
+				doneAllSummary: '{total} 个已完成 · 最近 {recent} 个',
+				viewArchive: '查看归档 →',
+				stateReady: '已就绪',
+				stateWaiting: '等待派发',
+				stateRunning: '执行中',
+				stateReviewing: '评审中',
+				stateTesting: '测试中',
+				stateDone: '已完成',
+				stateBlocked: '阻塞',
+				depCount: '依赖 {n}',
+				dependencyNone: '无依赖',
+				lastScan: '上次扫描 {ago}',
+				local: '本地',
+				writeFiles: '写卡文件',
+				noBlockedTitle: '没有阻塞任务',
+				noBlockedHint: '依赖、锁和权限都正常',
 				projectMissingTitle: '项目尚未就绪',
 				projectCheck: '检查项目',
 				projectChecking: '检查中…',
@@ -1076,11 +1107,42 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				workspaceRetry: 'Retry',
 				workspaceRecheck: 'Check again',
 				workspaceOpenOther: 'Open another project',
+				workspaceFollowAction: 'Follow',
 				teamWaitingWorker: 'Waiting for a worker · the team is not dispatch-ready yet (this is not a failure)',
 				projectTeamCopySession: 'Copy session ID',
 				sessionIdCopiedToast: 'Session ID copied',
 				ownerSession: 'Owning session',
 				ownerSessionHint: 'This card belongs to that session',
+				// T-158 night-watch board: two-row header, six lanes, compact cards.
+				sharedBoard: 'shared board',
+				sessionsPill: '{n} sessions',
+				sessionsPopoverTitle: 'Participating sessions',
+				teamPillReady: 'Team · ready',
+				teamPillWaiting: 'Team · needs a worker',
+				teamPillNone: 'Team · not participating',
+				teamPopoverTitle: 'This session\'s team',
+				teamMissingRoles: 'missing {roles}',
+				moreActions: 'More',
+				diagnostics: 'Diagnostics',
+				dispatchCol: 'Dispatch',
+				readyCount: 'Ready {n}',
+				waitingCount: 'Wait {n}',
+				doneAllSummary: '{total} done · latest {recent}',
+				viewArchive: 'View archive →',
+				stateReady: 'Ready',
+				stateWaiting: 'Waiting for dispatch',
+				stateRunning: 'Running',
+				stateReviewing: 'In review',
+				stateTesting: 'In test',
+				stateDone: 'Done',
+				stateBlocked: 'Blocked',
+				depCount: '{n} deps',
+				dependencyNone: 'no dependencies',
+				lastScan: 'Last scan {ago}',
+				local: 'Local',
+				writeFiles: 'Write files',
+				noBlockedTitle: 'No blocked tasks',
+				noBlockedHint: 'Dependencies, locks and permissions look fine',
 				projectMissingTitle: 'The project is not ready yet',
 				projectCheck: 'Check project',
 				projectChecking: 'Checking…',
@@ -1894,6 +1956,110 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-spinner{display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:gbt-spin .7s linear infinite;vertical-align:-1px;margin-right:6px}',
 			'@keyframes gbt-spin{to{transform:rotate(360deg)}}',
 			'@keyframes gbt-slide{0%{left:-40%}100%{left:100%}}',
+			// T-158 夜航作战板：两行顶部、紧凑上下文胶囊、会话/团队 popover、六列看板。
+			`.gbt-header.gbt-headertwo{display:flex;flex-direction:column;align-items:stretch;gap:0;padding:0;background:var(--dsw-alias-bg-layer-3);flex-wrap:nowrap}
+.gbt-toprow{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:0.5px solid var(--dsw-alias-border-l4);min-width:0;flex-wrap:wrap}
+.gbt-brand{display:flex;align-items:center;gap:10px;min-width:0;flex:0 1 auto}
+.gbt-brandcopy{display:flex;flex-direction:column;gap:2px;min-width:0}
+.gbt-eyebrow{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}
+.gbt-projectline{display:flex;align-items:baseline;gap:8px;min-width:0}
+.gbt-projectname{font-size:14px;font-weight:650;color:var(--dsw-alias-label-primary);white-space:nowrap}
+.gbt-projectpath{font-size:11px;color:var(--dsw-alias-label-tertiary);max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.gbt-projectsep,.gbt-projecthint{font-size:10px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+.gbt-context{display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0;flex-wrap:wrap;justify-content:center}
+.gbt-topactions{display:flex;align-items:center;gap:7px;margin-left:auto;flex:none}
+.gbt-chipbtn{appearance:none;cursor:pointer;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2);height:28px;padding:0 9px;border-radius:8px;font:inherit;font-size:11.5px;color:var(--dsw-alias-label-secondary);display:inline-flex;align-items:center;gap:6px}
+.gbt-chipbtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.gbt-chipbtn b{font-weight:600;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}
+.gbt-sessionsdots{display:inline-flex;align-items:center}
+.gbt-sessionsdots i{width:13px;height:13px;border-radius:50%;border:2px solid var(--dsw-alias-bg-layer-2);margin-left:-4px;background:var(--dsw-alias-state-business-primary)}
+.gbt-sessionsdots i:first-child{margin-left:0}
+.gbt-sessionsdots i:nth-child(2){background:var(--dsw-alias-state-success-primary)}
+.gbt-sessionsdots i:nth-child(3){background:var(--dsw-alias-state-warn-label)}
+.gbt-sessionsdots i:nth-child(4){background:var(--dsw-alias-state-error-primary)}
+.gbt-sessionsdots i:nth-child(5){background:var(--dsw-alias-label-tertiary)}
+.gbt-caret{font-size:9px;opacity:.7}
+.gbt-currentsession{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}
+.gbt-currentsession b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}
+.gbt-tag{font-size:9px;padding:1px 5px;border-radius:4px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-business-primary)}
+.gbt-teampill[data-team-pill="ready"]{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}
+.gbt-teampill[data-team-pill="waiting"]{color:var(--dsw-alias-state-warn-label);border-color:var(--dsw-alias-state-warn-label)}
+.gbt-teampill[data-team-pill="none"]{color:var(--dsw-alias-label-tertiary)}
+.gbt-dispatchpill[data-dispatch-state="running"]{color:var(--dsw-alias-state-success-primary)}
+.gbt-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 16px;border-bottom:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2)}
+.gbt-toolbar .gbt-tabs{padding:0;gap:2px;flex-wrap:nowrap;min-width:0;overflow-x:auto;scrollbar-width:none}
+.gbt-toolbar .gbt-tab{position:relative;display:inline-flex;align-items:center;gap:6px;height:40px;border-radius:0;padding:0 11px;background:transparent;white-space:nowrap}
+.gbt-toolbar .gbt-tab[data-active="true"]{background:transparent;font-weight:600;box-shadow:inset 0 -2px 0 var(--dsw-alias-state-business-primary)}
+.gbt-tabcount{font-size:10px;padding:0 5px;border-radius:4px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-tertiary);border:0.5px solid var(--dsw-alias-border-l4)}
+.gbt-tab[data-active="true"] .gbt-tabcount{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-business-primary)}
+.gbt-toolbarright{display:flex;align-items:center;gap:8px;flex:none}
+.gbt-toolbarright .gbt-kindfilter{margin:0}
+.gbt-iconbtn{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:7px}
+.gbt-morewrap{position:relative}
+.gbt-popover{position:absolute;top:calc(100% + 6px);right:0;z-index:40;min-width:260px;max-width:min(360px,92vw);max-height:min(420px,70vh);overflow:auto;padding:10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;background:var(--dsw-alias-bg-layer-3);box-shadow:0 14px 36px rgba(0,0,0,.28);text-align:left;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.gbt-popover[hidden]{display:none}
+.gbt-sessionpopover{right:auto;left:0;min-width:320px}
+.gbt-teampopover{right:auto;left:0;min-width:280px}
+.gbt-popoverhead{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);padding-bottom:6px;border-bottom:0.5px solid var(--dsw-alias-border-l4);margin-bottom:8px}
+.gbt-sessionrow{display:flex;flex-direction:column;gap:4px;padding:7px 8px;border-radius:7px;border:0.5px solid transparent}
+.gbt-sessionrow[data-current="true"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-module-platform)}
+.gbt-sessionrow + .gbt-sessionrow{margin-top:6px}
+.gbt-sessionrowhead{display:flex;align-items:center;gap:7px}
+.gbt-sessionrowhead b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-primary)}
+.gbt-sessionstatus{font-size:10px;color:var(--dsw-alias-label-tertiary);margin-left:auto}
+.gbt-sessionrowmeta{display:flex;flex-wrap:wrap;gap:4px 8px;font-size:10.5px;color:var(--dsw-alias-label-tertiary)}
+.gbt-sessionready[data-ready="true"]{color:var(--dsw-alias-state-success-primary)}
+.gbt-sessionrow .gbt-linkbtn{padding:0;margin-top:2px}
+.gbt-popoverrow{margin:3px 0;line-height:1.55}
+.gbt-popoverwarn{color:var(--dsw-alias-state-warn-label)}
+.gbt-popovernote{margin:8px 0 0;font-size:10.5px;line-height:1.5;color:var(--dsw-alias-state-warn-label)}
+.gbt-popoverempty{margin:2px 0;font-size:10.5px;color:var(--dsw-alias-label-tertiary)}
+.gbt-popoveractions{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.gbt-menu{right:0;min-width:190px;padding:5px}
+.gbt-menuitem{display:flex;width:100%;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;cursor:pointer;text-align:left}
+.gbt-menuitem:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.gbt-statusbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 16px;border-top:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2);font-size:10.5px;color:var(--dsw-alias-label-tertiary);flex-wrap:wrap}
+.gbt-statusleft,.gbt-statusright{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.gbt-statusleft b{font-weight:600;color:var(--dsw-alias-label-secondary)}
+.gbt-board{gap:10px;overflow:hidden auto}
+.gbt-col{flex:1 1 0;min-width:168px;max-width:420px;min-height:120px}
+.gbt-col[data-empty="true"]{flex:0 1 155px;min-width:150px;max-width:180px}
+.gbt-col[data-empty="true"] .gbt-colhead{opacity:.8}
+.gbt-emptyslim{min-height:64px;padding:10px;gap:4px;border-style:dashed;align-items:flex-start}
+.gbt-emptytitle{color:var(--dsw-alias-label-secondary)}
+.gbt-emptyslim span{display:block;line-height:1.45;font-size:10.5px}
+.gbt-emptyslim .gbt-emptytitle{font-size:11px;margin-bottom:2px}
+.gbt-colsubcounts{display:inline-flex;gap:4px;margin-left:auto}
+.gbt-colsubcount{font-size:9.5px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary)}
+.gbt-colsubcount[data-subcount="ready"]{color:var(--dsw-alias-state-success-primary)}
+.gbt-colhead .gbt-colcount{margin-left:6px}
+.gbt-done-summary{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 8px;border-radius:7px;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2);font-size:10.5px;color:var(--dsw-alias-label-tertiary)}
+.gbt-card{padding:9px 10px;gap:6px;min-height:96px}
+.gbt-cardtop{justify-content:space-between;flex-wrap:nowrap}
+.gbt-cardtopid{display:flex;align-items:center;gap:5px;min-width:0}
+.gbt-priority{font-size:9px;padding:1px 5px;border-radius:4px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-tertiary);border:0.5px solid var(--dsw-alias-border-l4);flex:none}
+.gbt-cardtitle{font-size:12.5px;line-height:1.42;font-weight:560}
+.gbt-cardmeta{font-size:10px;gap:4px}
+.gbt-ownerchip{background:transparent;padding-left:0}
+.gbt-ownerdot{width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-state-business-primary);display:inline-block;flex:none}
+.gbt-cardfoot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:2px}
+.gbt-cardstate{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--dsw-alias-label-tertiary);min-width:0}
+.gbt-cardstate::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block;flex:none;opacity:.9}
+.gbt-cardstate .gbt-dot{width:5px;height:5px}
+.gbt-cardstate[data-running="true"]{color:var(--dsw-alias-state-business-primary)}
+.gbt-cardstate[data-state="done"]{color:var(--dsw-alias-state-success-primary)}
+.gbt-cardstate[data-state="reviewing"]{color:var(--dsw-alias-state-business-primary)}
+.gbt-cardstate[data-state="testing"]{color:var(--dsw-alias-state-warn-label)}
+.gbt-cardstate[data-state="blocked"]{color:var(--dsw-alias-state-error-primary)}
+.gbt-cardtime{font-size:9.5px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex:none}
+.gbt-context .gbt-workspacebar{flex:0 1 auto;margin:0;padding:0 8px;height:28px;gap:6px;border-radius:8px;font-size:10.5px;max-width:min(430px,42vw);overflow:hidden}
+.gbt-context .gbt-workspacebar .gbt-workspacestate{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.gbt-context .gbt-workspacebar .gbt-workspace .gbt-workspacelabel{display:none}
+.gbt-context .gbt-workspacebar .gbt-workspace b{max-width:110px}
+.gbt-cardmeta{gap:3px}
+.gbt-cardmeta .gbt-chip{padding:0 5px;font-size:9.5px}
+@media (max-width:1500px){.gbt-projectpath{max-width:200px}.gbt-context{justify-content:flex-start}}
+@media (max-width:1200px){.gbt-sessionschip{display:none}.gbt-toprow{gap:8px}.gbt-board{overflow-x:auto}.gbt-col{min-width:150px}.gbt-col[data-empty="true"]{min-width:132px}}`,
 		].join('')
 
 		/** ISO-8601 to epoch milliseconds, or null. */

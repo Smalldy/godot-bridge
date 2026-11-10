@@ -784,6 +784,10 @@ function deepText(node) {
 function findButton(root, label) {
   return findAll(root, (node) => node.type === 'button' && typeof node.props.children !== 'object' && String(textOf(node)).indexOf(label) >= 0)[0]
 }
+/** T-158: toolbar controls are icon-only now, so find them by data-action. */
+function findAction(root, action) {
+  return findAll(root, (node) => node.props && node.props['data-action'] === action)[0]
+}
 
 const panel = registrations.filter((entry) => entry.meta.name === 'main')[0].component
 let tree = withHooks(panel, {})
@@ -795,11 +799,11 @@ check('the header names the panel', textOf(tree).indexOf('任务中心') >= 0, t
 check('the project path is shown', textOf(tree).indexOf(PROJECT) >= 0)
 check('the Host task title is rendered', textOf(tree).indexOf('Build damage system') >= 0)
 check('the waiting task is rendered', textOf(tree).indexOf('Enemy AI') >= 0)
-const COLUMN_KEYS = ['ready', 'waiting', 'running', 'reviewing', 'testing', 'done', 'blocked']
+const COLUMN_KEYS = ['dispatch', 'running', 'reviewing', 'testing', 'done', 'blocked']
 const boardColumns = findAll(tree, (node) => node.props && node.props.className === 'gbt-col')
-check('the board has seven columns', boardColumns.length === 7, String(boardColumns.length))
+check('T-158 the board has six columns', boardColumns.length === 6, String(boardColumns.length))
 check(
-  'the columns are ready / waiting / implementing / reviewing / testing / done / blocked',
+  'T-158 the columns are dispatch / implementing / reviewing / testing / done / blocked',
   boardColumns.map((column) => column.props['data-group']).join(',') === COLUMN_KEYS.join(','),
   boardColumns.map((column) => column.props['data-group']).join(','),
 )
@@ -811,8 +815,17 @@ function columnText(key) {
   return columnCards(key).map(textOf).join(' | ')
 }
 check('all eight cards are rendered', findAll(tree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card').length === 8)
-check('a ready task sits in the ready column', columnText('ready').indexOf('Ready task') >= 0, columnText('ready'))
-check('a waiting task sits in the waiting column', columnText('waiting').indexOf('Enemy AI') >= 0, columnText('waiting'))
+check('T-158 a ready task sits in the dispatch column', columnText('dispatch').indexOf('Ready task') >= 0, columnText('dispatch'))
+check('T-158 a waiting task sits in the dispatch column too', columnText('dispatch').indexOf('Enemy AI') >= 0, columnText('dispatch'))
+{
+  const dispatchColumn = findAll(tree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'dispatch')[0]
+  const subcounts = findAll(dispatchColumn, (node) => node.props && node.props['data-col-subcounts'] === 'true')[0]
+  check(
+    'T-158 the dispatch head carries BOTH the ready and the waiting count',
+    subcounts !== undefined && deepText(subcounts).indexOf('就绪 1') >= 0 && deepText(subcounts).indexOf('等待 1') >= 0 && findAll(subcounts, (node) => node.props && node.props['data-subcount'] !== undefined).length === 2,
+    subcounts && deepText(subcounts),
+  )
+}
 check('an implementing task sits in the implementing column', columnText('running').indexOf('Build damage system') >= 0, columnText('running'))
 check('a reviewing task sits in the reviewing column', columnText('reviewing').indexOf('Review the crate API') >= 0, columnText('reviewing'))
 check('a testing task sits in the testing column', columnText('testing').indexOf('Test the crate API') >= 0, columnText('testing'))
@@ -831,11 +844,11 @@ check('a running task renders no waiting reason', textOf(tree).indexOf('派发�
   const cards = findAll(tree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card')
   const runningCard = cards.filter((card) => textOf(card).indexOf('Build damage system') >= 0)[0]
   const runningText = textOf(runningCard)
-  check('the card shows its current phase', runningText.indexOf('实现中') >= 0, runningText)
+  check('T-158 the card state row follows the current phase', runningText.indexOf('执行中') >= 0, runningText)
   check('the card shows the review status', runningText.indexOf('已打回') >= 0, runningText)
   check('the card shows the review round and the reviewer', runningText.indexOf('#1') >= 0 && runningText.indexOf('@reviewer') >= 0, runningText)
   check('the card shows the test verdict and the tester', runningText.indexOf('测试未通过') >= 0 && runningText.indexOf('@tester') >= 0, runningText)
-  check('the card shows the attempt budget and the required role', runningText.indexOf('↻ 2/3') >= 0 && runningText.indexOf('implementer') >= 0, runningText)
+  check('T-158 the card keeps the attempt budget (the role lives in the detail)', runningText.indexOf('↻ 2/3') >= 0, runningText)
   const reviewingCard = cards.filter((card) => textOf(card).indexOf('Review the crate API') >= 0)[0]
   check(
     'a reviewing card shows the pending review round',
@@ -844,8 +857,8 @@ check('a running task renders no waiting reason', textOf(tree).indexOf('派发�
   )
   const testingCard = cards.filter((card) => textOf(card).indexOf('Test the crate API') >= 0)[0]
   check(
-    'a testing card shows the pending test and its required role',
-    textOf(testingCard).indexOf('待测试') >= 0 && textOf(testingCard).indexOf('tester') >= 0,
+    'T-158 a testing card shows the pending test (the role lives in the detail)',
+    textOf(testingCard).indexOf('待测试') >= 0,
     textOf(testingCard),
   )
   const doneCard = cards.filter((card) => textOf(card).indexOf('Tail output feature') >= 0)[0]
@@ -864,7 +877,7 @@ check('a running task renders no waiting reason', textOf(tree).indexOf('派发�
   moving.status = 'testing'
   moving.review = { status: 'approved', by: '@reviewer', at: REVIEW_AT, reasons: null, attempt: 1 }
   moving.test = { status: 'pending', by: null, at: TEST_AT, evidence: null, attempt: 2 }
-  findButton(tree, '刷新').props.onClick()
+  findAction(tree, 'refresh').props.onClick()
   await flush()
   tree = withHooks(panel, {})
   check(
@@ -874,7 +887,7 @@ check('a running task renders no waiting reason', textOf(tree).indexOf('派发�
   )
   check('the moved card shows its new test round', columnText('testing').indexOf('待测试') >= 0 && columnText('testing').indexOf('#2') >= 0, columnText('testing'))
   Object.assign(moving, before)
-  findButton(tree, '刷新').props.onClick()
+  findAction(tree, 'refresh').props.onClick()
   await flush()
   tree = withHooks(panel, {})
 }
@@ -897,7 +910,7 @@ check('a running task renders no waiting reason', textOf(tree).indexOf('派发�
   }
   TASKS.push(doneTask('T-9', 'Newest done', 100), doneTask('T-10', 'Older done', 5000))
   HOST.counts = Object.assign({}, savedCounts, { total: 10, done: 3 })
-  findButton(tree, '刷新').props.onClick()
+  findAction(tree, 'refresh').props.onClick()
   await flush()
   tree = withHooks(panel, {})
   const doneCol = findAll(tree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done')[0]
@@ -911,17 +924,17 @@ check('a running task renders no waiting reason', textOf(tree).indexOf('派发�
   TASKS.length = 0
   savedTasks.forEach((task) => TASKS.push(task))
   HOST.counts = savedCounts
-  findButton(tree, '刷新').props.onClick()
+  findAction(tree, 'refresh').props.onClick()
   await flush()
   tree = withHooks(panel, {})
 }
 
-const startButton = findButton(tree, '开始派发')
-check('a start button is offered while paused', startButton !== undefined)
+const dispatchPill = findAll(tree, (node) => node.props && node.props['data-dispatch-pill'] === 'true')[0]
+check('T-158 the dispatch pill is offered while paused', dispatchPill !== undefined && dispatchPill.props['data-dispatch-state'] === 'paused', dispatchPill && JSON.stringify(dispatchPill.props))
 check('a pending start request is shown', textOf(tree).indexOf('请求开始派发') >= 0 && textOf(tree).indexOf('deps are ready') >= 0)
 const approveButton = findButton(tree, '批准并开始')
 check('the request offers an approve action', approveButton !== undefined)
-startButton.props.onClick()
+dispatchPill.props.onClick()
 await flush()
 check('start sends the start action', posts.length === 1 && posts[0].action === 'start', JSON.stringify(posts))
 check('and carries the project', posts[0].project === PROJECT, JSON.stringify(posts[0]))
@@ -930,7 +943,7 @@ await flush()
 check('approving sends approveStart', posts.length === 2 && posts[1].action === 'approveStart', JSON.stringify(posts))
 check('and carries the request id', posts[1].requestId === 'R-1', JSON.stringify(posts[1]))
 const loadsBeforeRefresh = loads
-findButton(tree, '刷新').props.onClick()
+findAction(tree, 'refresh').props.onClick()
 await flush()
 check('refresh asks the Host again', loads > loadsBeforeRefresh, String(loads))
 
@@ -941,8 +954,8 @@ check('refresh asks the Host again', loads > loadsBeforeRefresh, String(loads))
   postGate = new Promise(function (resolve) { releasePost = resolve })
   const before = withHooks(panel, {})
   await flush()
-  const startNow = findButton(before, '开始派发')
-  check('the slow-action start button is available', startNow !== undefined)
+  const startNow = findAll(before, (node) => node.props && node.props['data-dispatch-pill'] === 'true')[0]
+  check('T-158 the slow-action dispatch pill is available', startNow !== undefined)
   startNow.props.onClick()
   const pending = withHooks(panel, {})
   check('a slow action renders a working indicator', textOf(pending).indexOf('启动中') >= 0, textOf(pending).slice(0, 200))
@@ -1041,14 +1054,10 @@ await flush()
       findAll(tree, (node) => node.type === 'button' && node.props['data-action'] === 'copy-session' && node.props['data-session'] === 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c').length === 1,
     JSON.stringify({ hasFull: text.indexOf('session-eb9ba775-c7e9') >= 0 }),
   )
-  const teamLine = findAll(tree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
+  const teamLine = findAll(tree, (node) => node.props && node.props['data-team-pill'] !== undefined)[0]
   check(
-    'T-137 the global project-team header hides the raw session id too (H7), exactly once',
-    teamLine !== undefined &&
-      textOf(teamLine) === '当前会话 Team：本会话 Lead · eb9ba775 · 3 名成员' &&
-      (textOf(teamLine).match(/eb9ba775/g) || []).length === 1 &&
-      textOf(teamLine).indexOf('session-eb9ba775') < 0 &&
-      String(teamLine.props.title).indexOf('session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c') >= 0,
+    'T-137 the team pill hides the raw session id too (H7)',
+    teamLine !== undefined && textOf(teamLine) === '当前团队 · 就绪' && textOf(teamLine).indexOf('session-') < 0 && String(teamLine.props.title).indexOf('当前会话团队') >= 0,
     teamLine && textOf(teamLine) + ' | title=' + String(teamLine.props.title),
   )
   const defaultLeadCell = findAll(tree, (node) => node.props && node.props['data-worker-lead'] === 'lead')[0]
@@ -1132,12 +1141,10 @@ await flush()
       String(namedLeadBold.props.title) === 'session-eb9ba775-c7e9-4c02-a02c-e207590f5f1c',
     namedLeadCell && textOf(namedLeadCell) + ' | title=' + String(namedLeadBold && namedLeadBold.props.title),
   )
-  const namedTeamLine = findAll(namedTree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
+  const namedTeamLine = findAll(namedTree, (node) => node.props && node.props['data-team-pill'] !== undefined)[0]
   check(
-    'T-137 the global project-team header formats the session lead exactly once too',
-    namedTeamLine !== undefined &&
-      textOf(namedTeamLine) === '当前会话 Team：本会话 Lead · eb9ba775 · 3 名成员' &&
-      (textOf(namedTeamLine).match(/eb9ba775/g) || []).length === 1,
+    'T-137 the team pill formats the session lead in the popover, not the pill text',
+    namedTeamLine !== undefined && textOf(namedTeamLine) === '当前团队 · 就绪' && textOf(namedTeamLine).indexOf('eb9ba775') < 0,
     namedTeamLine && textOf(namedTeamLine),
   )
   HOST.workers.lead = savedLead
@@ -3483,8 +3490,8 @@ await flush()
     targetTree = withHooks(panel, { initialView: 'board' })
     const targetCard = findAll(targetTree, (node) => node.type === 'article' && node.props && node.props.className === 'gbt-card' && textOf(node).indexOf('Build damage system') >= 0)[0]
     check(
-      'the task card shows its target branch',
-      targetCard !== undefined && findAll(targetCard, (node) => node.props && node.props['data-target-branch'] === 'main').length === 1,
+      'T-158 the compact card leaves the target branch to the detail drawer',
+      targetCard !== undefined && findAll(targetCard, (node) => node.props && node.props['data-target-branch'] !== undefined).length === 0,
       targetCard && textOf(targetCard),
     )
     const targetDrawer = await openDetail('Build damage system')
@@ -4074,7 +4081,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     JSON.stringify({ collapsed: doneSection(tree).props['data-collapsed'], cards: cardCount(doneSection(tree)), head: textOf(headerOf(doneSection(tree))) }),
   )
   const viewAll = findAll(tree, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'done-all')[0]
-  check('the done column offers a view-all entry named after the total', viewAll !== undefined && textOf(viewAll).indexOf('查看全部') >= 0 && textOf(viewAll).indexOf('120') >= 0, viewAll && textOf(viewAll))
+  check('T-158 the done column offers the archive entry', viewAll !== undefined && textOf(viewAll).indexOf('查看归档') >= 0 && textOf(doneSection(tree)).indexOf('120') >= 0, viewAll && textOf(viewAll))
   // Expanding the blocked column is remembered (localStorage), done is independent.
   const blockedSection = function (root) { return findAll(root, (node) => node.props && node.props['data-group'] === 'blocked')[0] }
   headerOf(blockedSection(tree)).props.onClick()
@@ -4333,7 +4340,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     findAll(leftover, function (node) { return node.type === 'button' && node.props && node.props.className === 'gbt-iconbtn' })[0].props.onClick()
     tree = withHooks(panel, { initialView: 'board' })
   }
-  findButton(tree, '刷新').props.onClick()
+  findAction(tree, 'refresh').props.onClick()
   await flush()
   await flush()
   tree = withHooks(panel, { initialView: 'board' })
@@ -4347,8 +4354,8 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   )
   const viewAll = findAll(tree, function (node) { return node.type === 'button' && node.props && node.props['data-action'] === 'done-all' })[0]
   check(
-    'T-83 summary: the folded column ends with 查看全部 · 120',
-    viewAll !== undefined && textOf(viewAll).indexOf('查看全部') >= 0 && textOf(viewAll).indexOf('120') >= 0,
+    'T-83 summary: the folded column ends with the archive entry and the total',
+    viewAll !== undefined && textOf(viewAll).indexOf('查看归档') >= 0 && textOf(doneSection).indexOf('120') >= 0,
     viewAll && textOf(viewAll),
   )
   const blockedSection = sectionOf(tree, 'blocked')
@@ -4730,13 +4737,11 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   const followedBar = findAll(t90b, (node) => node.props && node.props['data-workspace-scope'] === 'true')[0]
   const fadedMain = findAll(t90b, (node) => node.props && typeof node.props.className === 'string' && node.props.className.indexOf('gbt-workspacefade') >= 0)[0]
   check(
-    'T-155 after following, the bar reports the follow and the new board fades in',
-    followedBar !== undefined &&
-      (followedBar.props['data-workspace-state'] === 'followed' || followedBar.props['data-workspace-state'] === 'same') &&
-      textOf(followedBar).indexOf('已跟随') >= 0 &&
+    'T-158 after following, the settled workspace chip disappears and the new board fades in',
+    followedBar === undefined &&
       fadedMain !== undefined &&
-      findAll(followedBar, (node) => node.type === 'button' && node.props && String(node.props['data-action']).indexOf('switch-') === 0).length === 0,
-    JSON.stringify({ state: followedBar && followedBar.props['data-workspace-state'], text: followedBar && textOf(followedBar), fade: fadedMain !== undefined }),
+      findAll(t90b, (node) => node.type === 'button' && node.props && String(node.props['data-action']).indexOf('switch-') === 0).length === 0,
+    JSON.stringify({ bar: followedBar !== undefined, fade: fadedMain !== undefined }),
   )
 
   // 4. The project dialog offers the Host-resolved path instead of hand typing.
@@ -4896,7 +4901,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     stateUrls.length > 0 && stateUrls.every((url) => url.indexOf('session=host-session-A') >= 0),
     JSON.stringify(stateUrls.slice(-2)),
   )
-  const startButton = findAll(t99, (node) => node.type === 'button' && textOf(node).indexOf('开始派发') >= 0)[0]
+  const startButton = findAll(t99, (node) => node.props && node.props['data-dispatch-pill'] === 'true')[0]
   const postsBefore = posts.length
   if (startButton !== undefined) startButton.props.onClick()
   await flush()
@@ -5069,10 +5074,11 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   await flush()
   tree = withHooks(panel, { initialView: 'board' })
   let line = teamLine(tree)
+  const topTeamPopover = findAll(tree, (node) => node.props && node.props['data-team-popover'] === 'true')[0]
   check(
     'T-110 the header says the project has no Team',
-    line !== undefined && line.props['data-project-team'] === 'missing' && textOf(line).indexOf('当前会话 Team') >= 0 && textOf(line).indexOf('请在该会话中初始化') >= 0,
-    line && textOf(line),
+    line !== undefined && line.props['data-project-team'] === 'missing' && textOf(line) === '当前团队 · 待 worker' && deepText(topTeamPopover).indexOf('请在该会话中初始化') >= 0,
+    line && textOf(line) + ' | ' + deepText(topTeamPopover).slice(0, 120),
   )
   let statusTree = withHooks(panel, { initialView: 'status' })
   await flush()
@@ -5104,10 +5110,11 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   await flush()
   withTeam = withHooks(panel, { initialView: 'board' })
   line = teamLine(withTeam)
+  const healedPopover = findAll(withTeam, (node) => node.props && node.props['data-team-popover'] === 'true')[0]
   check(
-    'T-110 once the Team exists the line names the Lead and the roster size',
-    line !== undefined && line.props['data-project-team'] === 'ok' && line.props['data-team-lead'] === 'lead' && textOf(line).indexOf('2 名成员') >= 0,
-    line && textOf(line),
+    'T-110 once the Team exists the pill is ready and the popover names the roster size',
+    line !== undefined && line.props['data-project-team'] === 'ok' && line.props['data-team-lead'] === 'lead' && deepText(healedPopover).indexOf('2 名成员') >= 0,
+    line && textOf(line) + ' | ' + deepText(healedPopover).slice(0, 120),
   )
   const healedStatus = withHooks(panel, { initialView: 'status' })
   check('T-110 and the next-step guidance is gone', findAll(healedStatus, (node) => node.props && node.props['data-status-team'] !== undefined).length === 0)
@@ -5117,7 +5124,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   let legacy = withHooks(panel, { initialView: 'board' })
   await flush()
   legacy = withHooks(panel, { initialView: 'board' })
-  check('T-110 an older host without team data renders no line at all', teamLine(legacy) === undefined)
+  check('T-158 a host without team data shows the neutral pill, never a warning', findAll(legacy, (node) => node.props && node.props['data-team-pill'] === 'none').length === 1 && deepText(legacy).indexOf('团队还没就绪') < 0 && findAll(legacy, (node) => node.props && node.props['data-team-waiting-worker'] === 'true').length === 0)
 
   HOST.team = savedTeam
   HOST.nextStep = savedNextStep
@@ -5242,15 +5249,12 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   // No team data at all: the same worker-wait state, not a manual build action.
   HOST.team = null
   tree = await headerTree()
-  const missingWaitLine = findAll(tree, (node) => node.props && node.props['data-team-waiting-worker'] === 'true')[0]
   const missingWait = findAll(tree, (node) => node.props && node.props['data-team-waiting'] === 'true')[0]
+  const missingPill = findAll(tree, (node) => node.props && node.props['data-team-pill'] === 'none')[0]
   check(
-    'T-155 a missing Team shows the worker wait state and no user build action',
-    missingWaitLine !== undefined &&
-      actionButton(tree, 'bootstrap-team') === undefined &&
-      missingWait !== undefined &&
-      deepText(tree).indexOf('等待 worker') >= 0,
-    missingWaitLine && deepText(missingWaitLine),
+    'T-158 no Team data is a neutral pill (not a worker wait) and no user build action',
+    missingPill !== undefined && actionButton(tree, 'bootstrap-team') === undefined && missingWait === undefined && deepText(tree).indexOf('团队还没就绪') < 0,
+    missingPill && JSON.stringify(missingPill.props),
   )
 
   // Unknown/empty team project: degrade to the original line, no false alarm.
@@ -5706,8 +5710,8 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   const filteredDoneCol = findAll(boardTree, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done')[0]
   const filteredDoneCount = filteredDoneCol === undefined ? undefined : findAll(filteredDoneCol, (node) => node.props && node.props.className === 'gbt-colcount')[0]
   check('T-132 the done column count follows the kind filter', filteredDoneCount !== undefined && textOf(filteredDoneCount) === '1', filteredDoneCount && textOf(filteredDoneCount))
-  const filteredDoneFoot = filteredDoneCol === undefined ? undefined : findAll(filteredDoneCol, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'done-all')[0]
-  check('T-132 the done footer labels the filtered count', filteredDoneFoot !== undefined && textOf(filteredDoneFoot).indexOf('查看全部 · 1') >= 0, filteredDoneFoot && textOf(filteredDoneFoot))
+  const filteredDoneSummary = filteredDoneCol === undefined ? undefined : findAll(filteredDoneCol, (node) => node.props && node.props['data-done-summary'] === 'true')[0]
+  check('T-158 the done summary carries the filtered count and opens the archive', filteredDoneSummary !== undefined && deepText(filteredDoneSummary).indexOf('1 个已完成') >= 0 && deepText(filteredDoneSummary).indexOf('查看归档') >= 0, filteredDoneSummary && deepText(filteredDoneSummary))
   // The Dev filter hides every investigation: the running note and the done count
   // must follow it instead of advertising cards the column does not show.
   const devFilterButton = findAll(boardTree, (node) => node.type === 'button' && node.props && node.props['data-kind-filter'] === 'dev')[0]
@@ -6039,7 +6043,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   let tree = renderBoard()
   await flush()
   tree = renderBoard()
-  check('T-135 a mixed board points at the first non-empty column', scrollTargetOf(tree) === 'ready', String(scrollTargetOf(tree)))
+  check('T-158 a mixed board points at the first non-empty column', scrollTargetOf(tree) === 'dispatch', String(scrollTargetOf(tree)))
   check('T-135 the kind filter stays outside the board scrollport', kindFilterInsideBoard(tree) === 0)
 
   HOST.tasks = savedTasks.map(function (task) {
@@ -6055,7 +6059,7 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   await flush()
   tree = renderBoard()
   check('T-135 a board with no visible card has an empty scroll target', scrollTargetOf(tree) === '', JSON.stringify(scrollTargetOf(tree)))
-  check('T-135 the seven columns survive the empty per-column case', findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length === 7)
+  check('T-158 the six columns survive the empty per-column case', findAll(tree, (node) => node.props && node.props.className === 'gbt-col').length === 6)
 
   HOST.tasks = savedTasks
   HOST.counts = savedCounts
@@ -6174,6 +6178,146 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   HOST.tasks.filter((entry) => entry.id === 'T-2')[0].status = savedTest
   await flush()
   withHooks(panel, { initialView: 'board' })
+}
+
+
+// ── T-158: two-row header, session popover, dispatch/team pills, archive lane ──
+{
+  const savedFetch = globalThis.fetch
+  const savedScope = HOST.scope
+  const savedTeam = HOST.team
+  const savedDispatch = HOST.dispatch
+  const savedPosts = posts.length
+  globalThis.fetch = async function (url, options) {
+    if (options !== undefined && options.method === 'POST') {
+      posts.push(JSON.parse(options.body))
+      return { json: async () => ({ ok: true, snapshot: HOST }) }
+    }
+    return { json: async () => HOST }
+  }
+  HOST.scope = {
+    boardProject: { id: 'p', root: PROJECT },
+    panelSession: 'session-5',
+    currentSessionProject: PROJECT,
+    projectSessions: [1, 2, 3, 4, 5].map((n) => ({ sessionId: 'session-' + String(n) })),
+    sessionSummaries: [1, 2, 3, 4, 5].map(function (n) {
+      return {
+        sessionId: 'session-' + String(n),
+        status: n === 3 ? 'stale' : 'live',
+        dispatchReady: n !== 2,
+        stageReady: { review: n % 2 === 0, test: n % 2 === 1 },
+        cards: { owned: n, active: 0 },
+        team: { lead: 'lead-' + String(n), members: ['lead', 'w' + String(n)], memberCount: 2, missingRoles: n === 3 ? ['worker'] : [], error: null },
+      }
+    }),
+  }
+  HOST.team = {
+    ok: true,
+    available: true,
+    source: 'session',
+    sessionScoped: true,
+    session: 'session-5',
+    lead: 'lead-5',
+    leadId: 'session-lead-5',
+    leadSession: 'session-lead-5',
+    project: PROJECT,
+    projectMatch: true,
+    members: [{ name: 'lead-5', role: 'lead', status: 'running' }, { name: 'w5', role: 'worker', status: 'idle' }],
+    missingRoles: ['reviewer', 'tester'],
+    dispatchReady: true,
+    stageReady: { review: false, test: false },
+    error: null,
+  }
+  HOST.dispatch = Object.assign({}, HOST.dispatch, { state: 'paused' })
+  let t158 = withHooks(panel, { initialView: 'board' })
+  findAction(t158, 'refresh').props.onClick()
+  await flush()
+  await flush()
+  t158 = withHooks(panel, { initialView: 'board' })
+  const header = findAll(t158, (node) => node.props && node.props.className === 'gbt-header gbt-headertwo')[0]
+  const topRow = findAll(t158, (node) => node.props && node.props.className === 'gbt-toprow')[0]
+  const toolRow = findAll(t158, (node) => node.props && node.props.className === 'gbt-toolbar')[0]
+  check(
+    'T-158 the top is exactly TWO rows and the old count/status/session strips are gone',
+    header !== undefined &&
+      topRow !== undefined &&
+      toolRow !== undefined &&
+      findAll(t158, (node) => node.props && node.props.className === 'gbt-counts').length === 0 &&
+      findAll(t158, (node) => node.props && node.props.className === 'gbt-statusline').length === 0 &&
+      findAll(t158, (node) => node.props && node.props.className === 'gbt-sessions').length === 0,
+    JSON.stringify({ header: header !== undefined, top: topRow !== undefined, tools: toolRow !== undefined }),
+  )
+  const sessionsPill = findAll(t158, (node) => node.props && node.props['data-sessions-pill'] === 'true')[0]
+  const sessionPopover = findAll(t158, (node) => node.props && node.props['data-session-popover'] === 'true')[0]
+  const sessionRows = findAll(sessionPopover, (node) => node.props && node.props['data-session'] !== undefined && node.props['data-current'] !== undefined)
+  check(
+    'T-158 five sessions live in ONE popover; the current one is highlighted, never primary',
+    sessionsPill !== undefined &&
+      deepText(sessionsPill).indexOf('5 个会话') >= 0 &&
+      sessionPopover !== undefined &&
+      sessionRows.length === 5 &&
+      sessionRows.filter((row) => row.props['data-current'] === 'true').length === 1 &&
+      sessionRows.filter((row) => row.props['data-current'] === 'true')[0].props['data-session'] === 'session-5' &&
+      findAll(t158, (node) => node.props && (node.props['data-primary'] !== undefined || node.props['data-selected-session'] !== undefined)).length === 0 &&
+      deepText(t158).indexOf('主会话：') < 0,
+    JSON.stringify({ pill: sessionsPill && deepText(sessionsPill), rows: sessionRows.map((row) => row.props['data-session']) }),
+  )
+  const teamPill = findAll(t158, (node) => node.props && node.props['data-team-pill'] !== undefined)[0]
+  check(
+    'T-158 the team pill reads dispatchReady only (Lead + worker with missing reviewer/tester is READY)',
+    teamPill !== undefined &&
+      teamPill.props['data-team-pill'] === 'ready' &&
+      teamPill.props['data-team-waiting'] === undefined &&
+      findAll(t158, (node) => node.props && node.props['data-team-waiting-worker'] === 'true').length === 0,
+    teamPill && JSON.stringify(teamPill.props),
+  )
+  HOST.team = Object.assign({}, HOST.team, { dispatchReady: false, stageReady: { review: true, test: false } })
+  // Make the PANEL session the one that cannot dispatch (the per-session row wins).
+  HOST.scope = Object.assign({}, HOST.scope, { panelSession: 'session-2' })
+  findAction(t158, 'refresh').props.onClick()
+  await flush()
+  await flush()
+  t158 = withHooks(panel, { initialView: 'board' })
+  const waitingPill = findAll(t158, (node) => node.props && node.props['data-team-pill'] === 'waiting')[0]
+  const teamPopover = findAll(t158, (node) => node.props && node.props['data-team-popover'] === 'true')[0]
+  check(
+    'T-158 only a team that cannot dispatch waits for a worker, and the popover explains it',
+    waitingPill !== undefined &&
+      waitingPill.props['data-team-waiting'] === 'true' &&
+      teamPopover !== undefined &&
+      deepText(teamPopover).indexOf('等待 worker') >= 0 &&
+      deepText(teamPopover).indexOf('reviewer') < 0,
+    waitingPill && JSON.stringify(waitingPill.props),
+  )
+  const dispatchPill = findAll(t158, (node) => node.props && node.props['data-dispatch-pill'] === 'true')[0]
+  const before = posts.length
+  dispatchPill.props.onClick()
+  await flush()
+  check(
+    'T-158 the dispatch pill is the pause/resume entry (no separate status row)',
+    dispatchPill.props['data-dispatch-state'] === 'paused' && posts.length === before + 1 && posts[posts.length - 1].action === 'start',
+    JSON.stringify(posts.slice(-1)),
+  )
+  const doneCol = findAll(t158, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done')[0]
+  const doneSummary = findAll(doneCol, (node) => node.props && node.props['data-done-summary'] === 'true')[0]
+  check(
+    'T-158 the done lane carries the archive summary and the 查看归档 entry',
+    doneSummary !== undefined && deepText(doneSummary).indexOf('查看归档') >= 0 && deepText(doneSummary).indexOf('已完成') >= 0 && findAll(doneSummary, (node) => node.props && node.props['data-action'] === 'done-all').length === 1,
+    doneSummary && deepText(doneSummary),
+  )
+  const scopeNodes = findAll(t158, (node) => node.props && node.props['data-workspace-scope'] === 'true')
+  check(
+    'T-158 a settled workspace shows NO scope chip (and never a second switch entry)',
+    scopeNodes.length === 0 && findAll(t158, (node) => node.type === 'button' && node.props && ['switch-to-session-project', 'switch-team-project'].indexOf(node.props['data-action']) >= 0).length === 0,
+    String(scopeNodes.length),
+  )
+  HOST.scope = savedScope
+  HOST.team = savedTeam
+  HOST.dispatch = savedDispatch
+  globalThis.fetch = savedFetch
+  panel
+  withHooks(panel, { initialView: 'board' })
+  await flush()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
