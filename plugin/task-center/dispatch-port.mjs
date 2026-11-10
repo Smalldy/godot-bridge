@@ -62,6 +62,9 @@ export const dispatchPort = {
     REVIEW_MAX_ROUNDS: dispatch.REVIEW_MAX_ROUNDS,
     hostCheckEvidence: dispatch.hostCheckEvidence,
     runHostCheck: dispatch.runHostCheck,
+    // T-156: the SAME verify fingerprint the dispatcher records at claim, so the
+    // submit/review audit baseline can never disagree with it.
+    verifyFingerprintFor: dispatch.verifyFingerprintFor,
     recordPhaseActivity: dispatch.recordPhaseActivity,
     recordStageSlot: dispatch.recordStageSlot,
     stageSlotOf: dispatch.stageSlotOf,

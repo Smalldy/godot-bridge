@@ -97,6 +97,7 @@ const {
     REVIEW_MAX_ROUNDS,
     hostCheckEvidence,
     runHostCheck,
+    verifyFingerprintFor,
     recordPhaseActivity,
     recordStageSlot,
     stageSlotOf,
@@ -489,6 +490,7 @@ export function createApi(ctx, options) {
     setRebuildAttempts: setRebuildAttempts,
     normaliseVerify: normaliseVerify,
     runHostCheck: runHostCheck,
+    verifyFingerprintFor: verifyFingerprintFor,
     ctx: ctx,
     hostCheckEvidence: hostCheckEvidence,
     recordCandidate: recordCandidate,
@@ -889,6 +891,10 @@ export function createApi(ctx, options) {
         await discardRebuilt()
         return failure('action-abandoned', 'the merge queue turn for ' + id + ' was abandoned after the retest host check; nothing was recorded')
       }
+      // T-156: the retest path records the SAME audit signals as a first build:
+      // the candidate's base may already differ from the submitted base (that is
+      // why the target moved), and the declaration may have changed meanwhile.
+      const retestVerifyPrint = await verifyFingerprintFor(ctx, projectPath, latestTask.verify)
       const recorded = await writeTask(
         projectPath,
         id,
@@ -897,7 +903,7 @@ export function createApi(ctx, options) {
           // decision): recording the rebuilt candidate first resets the round to
           // pending, then the host verdict can land. The hostCheck record is kept
           // on the failed round exactly like the first-build path.
-          const candidateRecorded = recordCandidate(board, id, rebuilt, clock(), { retest: true, by: by })
+          const candidateRecorded = recordCandidate(board, id, rebuilt, clock(), { retest: true, by: by, verifyFingerprint: retestVerifyPrint })
           if (candidateRecorded.ok !== true) return candidateRecorded
           if (!retestFailed) {
             const checkedTask = model.findTask(candidateRecorded.board, id)
@@ -2543,6 +2549,11 @@ export function createApi(ctx, options) {
       actualCount: Array.isArray(detail.merge.actualFiles) ? detail.merge.actualFiles.length : 0,
       outputLength: typeof detail.merge.output === 'string' ? detail.merge.output.length : 0,
       testsLength: typeof detail.merge.tests === 'string' ? detail.merge.tests.length : 0,
+      // T-156: the audit signals are small facts, not detail-class strings — the
+      // panel shows a drift/verify badge straight from /state, like queue[] does.
+      targetDrift: detail.merge.targetDrift === undefined ? null : detail.merge.targetDrift,
+      verifyChanged: detail.merge.verifyChanged === true,
+      verifyFingerprints: detail.merge.verifyFingerprints === undefined ? null : detail.merge.verifyFingerprints,
     }
     const review = detail.review === null || detail.review === undefined ? null : {
       status: detail.review.status,
@@ -2579,6 +2590,9 @@ export function createApi(ctx, options) {
       writeFileCount: Array.isArray(detail.writeFiles) ? detail.writeFiles.length : 0,
       target: detail.target,
       base: detail.base,
+      // T-156: the dispatch/submit audit baseline rides the compact summary too.
+      targetBase: detail.targetBase === undefined ? null : detail.targetBase,
+      verifyFingerprint: detail.verifyFingerprint === undefined ? null : detail.verifyFingerprint,
       branch: detail.branch,
       worktree: detail.worktree,
       worktreeError: detail.worktreeError,
@@ -4236,7 +4250,10 @@ export function createApi(ctx, options) {
     }
   }
 
-  async function prepareMergeRequest(task, source, now) {
+  async function prepareMergeRequest(task, source, now, projectPath) {
+    // T-156: the project path is needed to read the target ref and the verify
+    // script contents for the submit-time audit baseline.
+    const baseProject = typeof projectPath === 'string' && projectPath !== '' ? projectPath : typeof task.worktree === 'string' && task.worktree !== '' ? task.worktree : null
     if (typeof task.worktree !== 'string' || task.worktree.length === 0) return { ok: true, mr: null }
     if (git === null) {
       return failure('no-git-service', task.id + ' has a worktree at ' + task.worktree + ' but this profile has no git service; submit it where git is available')
@@ -4290,10 +4307,22 @@ export function createApi(ctx, options) {
     const actualFiles = Array.isArray(diff.files) ? diff.files : []
     const evidence = source.evidence === undefined || source.evidence === null ? '' : String(source.evidence)
     const note = source.note === undefined || source.note === null ? '' : String(source.note)
+    // T-156 audit baseline at SUBMIT: the target head the request is being opened
+    // against (it may already have moved since dispatch) and the verify fingerprint
+    // the submission saw. Never fail the submit when the ref is unreadable — the
+    // base recorded by dispatch stays the fallback.
+    let targetBase = base
+    if (baseProject !== null && typeof task.target === 'string' && task.target !== '') {
+      const targetRead = await readTargetHead(baseProject, task.target)
+      if (targetRead.ok === true) targetBase = targetRead.head
+    }
+    const verifyFingerprint = baseProject === null ? null : await verifyFingerprintFor(ctx, baseProject, task.verify)
     return {
       ok: true,
       mr: {
         commit: head,
+        targetBase: targetBase,
+        verifyFingerprint: verifyFingerprint,
         actualFiles: actualFiles,
         commitScope: committed !== null && committed !== undefined && committed.commitScope !== undefined ? committed.commitScope : { skipped: [], notCommitted: [] },
         merge: {
@@ -4566,6 +4595,9 @@ export function createApi(ctx, options) {
       await markWaiting(projectPath, id, 'candidate-stale', detail, context)
       return failure('verify-failed', detail)
     }
+    // T-156: the auto-rebuild path is still a target move — record the same audit
+    // fields the first build would have written, so the panel/get tells the truth.
+    const rebuildVerifyPrint = await verifyFingerprintFor(ctx, projectPath, task.verify)
     const recorded = await writeTask(
       projectPath,
       id,
@@ -4573,13 +4605,29 @@ export function createApi(ctx, options) {
         const tasks = board.tasks.map((entry) => {
           if (String(entry.id) !== String(id) || entry.merge === null || entry.merge === undefined) return entry
           const evidence = String(entry.evidence === undefined || entry.evidence === null ? '' : entry.evidence)
+          const at = new Date(clock()).toISOString()
+          const previousBase = typeof entry.merge.base === 'string' && entry.merge.base !== '' ? entry.merge.base : null
+          const drift = previousBase !== null && previousBase !== built.base ? { from: previousBase, to: built.base, at: at } : entry.merge.targetDrift === undefined ? null : entry.merge.targetDrift
+          const previousPrint = typeof entry.verifyFingerprint === 'string' && entry.verifyFingerprint !== '' ? entry.verifyFingerprint : null
+          const verifyChanged = previousPrint !== null && rebuildVerifyPrint !== null && previousPrint !== rebuildVerifyPrint
           const note =
-            'base-only drift：已在 ' + String(built.base) + ' 上重建候选并复跑验证（' + String(verifySpec.command) + '，通过），diff 与已验证提交等价，不新增评审轮次。'
+            'base-only drift：已在 ' + String(built.base) + ' 上重建候选并复跑验证（' + String(verifySpec.command) + '，通过），diff 与已验证提交等价，不新增评审轮次。' +
+            (drift === null ? '' : ' target drift ' + drift.from + ' -> ' + drift.to + '。') +
+            (verifyChanged ? ' verify fingerprint ' + previousPrint + ' -> ' + rebuildVerifyPrint + '。' : '')
           return Object.assign({}, entry, {
             waitingReason: null,
             waitingDetail: null,
             base: built.base,
-            merge: Object.assign({}, entry.merge, { base: built.base, mergeCommit: built.head, rebuildAttempts: 0 }),
+            targetBase: built.base,
+            verifyFingerprint: rebuildVerifyPrint === null ? entry.verifyFingerprint : rebuildVerifyPrint,
+            merge: Object.assign({}, entry.merge, {
+              base: built.base,
+              mergeCommit: built.head,
+              rebuildAttempts: 0,
+              targetDrift: drift,
+              verifyChanged: verifyChanged ? true : entry.merge.verifyChanged === true,
+              verifyFingerprints: verifyChanged ? { from: previousPrint, to: rebuildVerifyPrint } : entry.merge.verifyFingerprints === undefined ? null : entry.merge.verifyFingerprints,
+            }),
             evidence: evidence === '' ? note : evidence + '\n' + note,
             history: (Array.isArray(entry.history) ? entry.history : []).concat([
               {

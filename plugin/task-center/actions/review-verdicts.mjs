@@ -25,6 +25,8 @@ export function createReviewVerdictActions(deps) {
   const setRebuildAttempts = deps.setRebuildAttempts
   const normaliseVerify = deps.normaliseVerify
   const runHostCheck = deps.runHostCheck
+  // T-156: the verify fingerprint of THIS round, recorded with the candidate.
+  const verifyFingerprintFor = deps.verifyFingerprintFor
   const ctx = deps.ctx
   const hostCheckEvidence = deps.hostCheckEvidence
   const recordCandidate = deps.recordCandidate
@@ -115,6 +117,10 @@ export function createReviewVerdictActions(deps) {
         hostCheckFailed = hostCheck.timedOut === true || hostCheck.exitCode !== 0
       }
     }
+    // T-156: the candidate was just built from the target's CURRENT head and the
+    // declaration may have changed since dispatch/submit. Compute the fingerprint
+    // even when there is no candidate: the reviewer still deserves the truth.
+    const reviewVerifyPrint = await verifyFingerprintFor(ctx, projectPath, reviewTask.verify)
     const result = await writeTask(
       projectPath,
       id,
@@ -133,7 +139,7 @@ export function createReviewVerdictActions(deps) {
           if (failed.ok !== true) return failed
           next = failed
         } else if (candidate !== null) {
-          const recorded = recordCandidate(transitioned.board, id, candidate, clock(), { by: context.by })
+          const recorded = recordCandidate(transitioned.board, id, candidate, clock(), { by: context.by, verifyFingerprint: reviewVerifyPrint })
           if (recorded.ok !== true) return recorded
           next = recorded
         }

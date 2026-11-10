@@ -777,6 +777,10 @@ function normaliseTask(raw, index, now) {
       // historical flow where the tester runs the suite itself.
       verify: normaliseVerify(raw.verify),
       base: typeof raw.base === 'string' ? raw.base : null,
+      // T-156: the target head as recorded at dispatch/submit, plus the verify
+      // declaration's fingerprint at that moment (the audit baseline).
+      targetBase: typeof raw.targetBase === 'string' ? raw.targetBase : null,
+      verifyFingerprint: typeof raw.verifyFingerprint === 'string' ? raw.verifyFingerprint : null,
       target: typeof raw.target === 'string' ? raw.target : null,
       branch: typeof raw.branch === 'string' ? raw.branch : null,
       worktree: typeof raw.worktree === 'string' ? raw.worktree : null,
