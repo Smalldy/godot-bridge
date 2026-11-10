@@ -533,6 +533,9 @@ const HOST = {
   dispatch: { state: 'paused', maxConcurrent: 3, allowSpawn: true, maxWorkAgents: 4, maxAttempts: 3, request: { id: 'R-1', by: '@lead', at: new Date(now - 30000).toISOString(), note: 'deps are ready' } },
   counts: { total: 8, pending: 2, ready: 1, running: 1, reviewing: 1, testing: 1, done: 1, blocked: 1, cancelled: 1 },
   queue: [],
+  // T-154: the real merge-queue reading ({active,queued,chains,last}) or null when
+  // the host has no merger. Tests set it explicitly; it is NOT snapshot.queue.
+  mergeQueue: null,
   tasks: TASKS,
   workers: {
     lead: 'lead',
@@ -2104,10 +2107,14 @@ await flush()
     HOST.boardSize = savedBoardSize
   }
 
-  // The dispatch card names its three KVs and does not repeat the merge queue.
+  // T-154: the dispatch card's third KV is the MERGER's real merge queue. The
+  // dispatch queue (snapshot.queue) is a different number and must not be shown.
   {
     const savedQueue = HOST.queue
-    HOST.queue = [{ id: 'T-1' }, { id: 'T-2' }]
+    const savedMergeQueue = HOST.mergeQueue
+    // Deliberately different numbers: queue.length is 3, the merge queue is 2.
+    HOST.queue = [{ id: 'T-1' }, { id: 'T-2' }, { id: 'T-3' }]
+    HOST.mergeQueue = { active: 1, queued: 2, chains: 1, last: { taskId: 'T-3', ok: true } }
     let kvTree = withHooks(panel, { initialView: 'status' })
     await flush()
     kvTree = withHooks(panel, { initialView: 'status' })
@@ -2120,9 +2127,12 @@ await flush()
       dispatchCard && textOf(dispatchCard).slice(0, 200),
     )
     check(
-      'the three KVs carry running / ready / snapshot.queue.length',
-      String(textOf(kv('concurrent')).replace(/[^0-9/]/g, '')) === String(expectedRunning) + '/' + String(HOST.dispatch.maxConcurrent) && textOf(kv('merge-queue')).indexOf('2') >= 0,
-      JSON.stringify({ concurrent: textOf(kv('concurrent')), merge: textOf(kv('merge-queue')) }),
+      'T-154 the merge-queue KV is mergeQueue.queued, never snapshot.queue.length',
+      String(textOf(kv('concurrent')).replace(/[^0-9/]/g, '')) === String(expectedRunning) + '/' + String(HOST.dispatch.maxConcurrent) &&
+        kv('merge-queue').props['data-merge-queue'] === 'ready' &&
+        textOf(kv('merge-queue')).indexOf('2') >= 0 &&
+        textOf(kv('merge-queue')).indexOf('3') < 0,
+      JSON.stringify({ concurrent: textOf(kv('concurrent')), merge: textOf(kv('merge-queue')), queueLen: HOST.queue.length, mergeQueue: HOST.mergeQueue }),
     )
     const scanFooter = findAll(dispatchCard, (node) => node.props && node.props['data-status-scan'] === 'true')[0]
     check(
@@ -2142,7 +2152,21 @@ await flush()
       textOf(enCard).slice(0, 200),
     )
     locale = 'zh'
+    // A host without a merger answers null: the card says unavailable instead of
+    // inventing 0 merges.
+    HOST.mergeQueue = null
+    let nullTree = withHooks(panel, { initialView: 'status' })
+    await flush()
+    nullTree = withHooks(panel, { initialView: 'status' })
+    const nullCard = findAll(nullTree, (node) => node.props && node.props['data-status-card'] === 'dispatch')[0]
+    const nullKv = findAll(nullCard, (node) => node.props && node.props['data-kv'] === 'merge-queue')[0]
+    check(
+      'T-154 a host without a merger shows no merge-queue number (null is not 0)',
+      nullKv !== undefined && nullKv.props['data-merge-queue'] === 'unavailable' && textOf(nullKv).indexOf('—') >= 0 && textOf(nullKv).indexOf('0') < 0,
+      JSON.stringify({ merge: nullKv && textOf(nullKv), attr: nullKv && nullKv.props['data-merge-queue'] }),
+    )
     HOST.queue = savedQueue
+    HOST.mergeQueue = savedMergeQueue
   }
 
   // ── empty states are plain text, not a card inside a card ──
@@ -5176,6 +5200,8 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     projectMatch: true,
     members: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }],
     missingRoles: ['worker', 'reviewer', 'tester'],
+    dispatchReady: false,
+    stageReady: { review: false, test: false },
     error: 'no-members',
   }
   tree = await headerTree()
@@ -5257,6 +5283,80 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
 
   HOST.team = savedTeam
   HOST.nextStep = savedNextStep
+  globalThis.fetch = savedFetch
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+}
+
+// ── T-154: dispatch readiness (Lead + worker) vs the stage roles ────────────
+{
+  const savedFetch = globalThis.fetch
+  const savedTeam = HOST.team
+  globalThis.fetch = async function () {
+    loads += 1
+    return { json: async () => HOST }
+  }
+  const treeOf = async function () {
+    withHooks(panel, { initialView: 'board' })
+    await flush()
+    await flush()
+    return withHooks(panel, { initialView: 'board' })
+  }
+  const buildBannerOf = function (tree) {
+    return findAll(tree, (node) => node.props && node.props['data-team-build'] === 'true')[0]
+  }
+  // Lead + worker: the team CAN dispatch. Missing reviewer/tester are stage facts,
+  // so the panel must not ask the session to build another team.
+  HOST.team = {
+    ok: true,
+    available: true,
+    source: 'session',
+    sessionScoped: true,
+    session: 'session-own-team',
+    lead: 'lead',
+    leadId: 'session-lead',
+    leadSession: 'session-lead',
+    project: PROJECT,
+    projectMatch: true,
+    members: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-worker', name: 'worker-1', role: 'worker', status: 'idle' },
+    ],
+    missingRoles: ['reviewer', 'tester'],
+    dispatchReady: true,
+    stageReady: { review: false, test: false },
+    error: null,
+  }
+  let readyTree = await treeOf()
+  const readyLine = findAll(readyTree, (node) => node.props && node.props['data-project-team'] !== undefined)[0]
+  check(
+    'T-154 a dispatch-ready Team with missing reviewer/tester shows no team-build prompt',
+    buildBannerOf(readyTree) === undefined &&
+      findAll(readyTree, (node) => node.props && node.props['data-team-waiting'] === 'true').length === 0 &&
+      readyLine !== undefined &&
+      readyLine.props['data-project-team'] === 'ok' &&
+      deepText(readyLine).indexOf('reviewer') >= 0 &&
+      deepText(readyLine).indexOf('不是故障') >= 0,
+    JSON.stringify({ line: readyLine && deepText(readyLine), banner: buildBannerOf(readyTree) !== undefined }),
+  )
+  // Only a reviewer (no worker): the team exists (ok) but cannot dispatch, so the
+  // session still has to build the worker.
+  HOST.team = Object.assign({}, HOST.team, {
+    members: [
+      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'session-reviewer', name: 'reviewer-1', role: 'reviewer', status: 'idle' },
+    ],
+    missingRoles: ['worker', 'tester'],
+    dispatchReady: false,
+    stageReady: { review: true, test: false },
+  })
+  const reviewerTree = await treeOf()
+  check(
+    'T-154 a Team without a worker is not dispatch-ready and the panel asks for the build',
+    buildBannerOf(reviewerTree) !== undefined && findAll(reviewerTree, (node) => node.props && node.props['data-team-waiting'] === 'true').length >= 1,
+    JSON.stringify({ banner: buildBannerOf(reviewerTree) !== undefined }),
+  )
+  HOST.team = savedTeam
   globalThis.fetch = savedFetch
   withHooks(panel, { initialView: 'board' })
   await flush()

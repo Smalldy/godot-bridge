@@ -149,10 +149,14 @@ function createTaskCenter(deps) {
 		const headerTeamMismatch = projectTeam !== null && projectTeam.projectMatch === false && headerTeamProject !== null && headerPanelProject !== null
 		const headerTeamAvailable = projectTeam !== null && projectTeam.available === false
 		const headerTeamMissingRoles = projectTeam !== null && Array.isArray(projectTeam.missingRoles) ? projectTeam.missingRoles : []
+		// T-154: 'needs a Team built' is DISPATCH readiness (Lead + worker). Missing
+		// reviewer/tester is a stage fact, shown in the roles text only — it must not
+		// make the panel ask for another team.
+		const headerTeamDispatchReady = projectTeam !== null && (projectTeam.dispatchReady === undefined ? projectTeam.ok === true : projectTeam.dispatchReady === true)
 		const headerTeamBuildable =
 			projectTeam === null
 		? headerPanelProject !== null
-		: projectTeam.available !== false && projectTeam.projectMatch === true && (projectTeam.error === 'no-members' || headerTeamMissingRoles.length > 0)
+		: projectTeam.available !== false && projectTeam.projectMatch === true && headerTeamDispatchReady !== true
 		// Team creation is an Agent action (bootstrapTeam is agent-scoped). The panel
 		// shows a quiet wait state instead of offering the user a manual button.
 		const teamWaitChip = h('span', { className: 'gbt-teamwait', 'data-team-waiting': 'true' }, t('projectTeamWaiting'))

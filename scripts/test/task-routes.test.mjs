@@ -7555,7 +7555,10 @@ rig.scheduler.dispose()
   ]
   const rosterB = [
     { id: SB, name: 'lead-beta', role: 'lead', status: 'running' },
-    { id: 'session-beta-worker', name: roleSlotName('worker', 1, BETA), role: 'teammate', status: 'inactive' },
+    // T-154: B has its STAGE roles but no WORKER, so it is a Team that is NOT
+    // dispatch-ready — the per-session readiness fields must say different things.
+    { id: 'session-beta-reviewer', name: roleSlotName('reviewer', 1, BETA), role: 'teammate', status: 'inactive' },
+    { id: 'session-beta-tester', name: roleSlotName('tester', 1, BETA), role: 'teammate', status: 'inactive' },
   ]
   const rosters = new Map([[SA, rosterA], [SB, rosterB]])
   const keyOfLead = (lead) => String(lead === null || lead === undefined ? 'unknown' : lead.id === undefined ? lead : lead.id)
@@ -7639,6 +7642,18 @@ rig.scheduler.dispose()
       typeof sumA.lastSeenAt === 'string' &&
       typeof sumB.lastSeenAt === 'string',
     JSON.stringify({ sumA: sumA && { lead: sumA.team && sumA.team.lead, cards: sumA.cards, status: sumA.status }, sumB: sumB && { lead: sumB.team && sumB.team.lead, cards: sumB.cards, status: sumB.status } }),
+  )
+  check(
+    'T-154 sessionSummaries carries each session\'s dispatchReady/stageReady — never merged',
+    sumA.dispatchReady === true &&
+      sumB.dispatchReady === false &&
+      sumA.stageReady.review === false &&
+      sumA.stageReady.test === false &&
+      sumB.stageReady.review === true &&
+      sumB.stageReady.test === true &&
+      ab.team.dispatchReady === false &&
+      ab.dispatchReady === undefined,
+    JSON.stringify({ a: { dispatchReady: sumA.dispatchReady, stageReady: sumA.stageReady }, b: { dispatchReady: sumB.dispatchReady, stageReady: sumB.stageReady }, panel: ab.team.dispatchReady, topLevel: ab.dispatchReady }),
   )
   check(
     'T-152 no participating session is primary/selected',
@@ -8225,6 +8240,60 @@ rig.scheduler.dispose()
     ctx.surface.dispose()
     ctx.rig.scheduler.dispose()
   }
+}
+
+// ── T-154: /state carries the REAL merge queue, separate from the dispatch queue
+{
+  const ready = {
+    id: 'T-9',
+    title: 'Ready card',
+    status: 'pending',
+    priority: 0,
+    dependsOn: [],
+    writeFiles: [],
+    evidence: '',
+    history: [],
+    createdAt: '2026-11-02T12:00:00.000Z',
+    updatedAt: '2026-11-02T12:00:00.000Z',
+    attempts: 0,
+    maxAttempts: 3,
+  }
+  // A host WITH a merger: active/queued/last are the merger's own reading.
+  const real = createSubmitRig({ git: null, merger: createMerger({ git: null }) })
+  seedBoard(real.fs, PROJECT, JSON.stringify({ version: 2, seq: 1, dispatch: { state: 'paused' }, tasks: [ready] }))
+  const realSurface = install(real)
+  const realSnap = (await call(realSurface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT) + '&session=' + encodeURIComponent(TEST_SESSION), {})).json()
+  check(
+    'T-154 /state.mergeQueue is the merger status (active/queued/chains/last)',
+    realSnap.ok === true &&
+      realSnap.mergeQueue !== null &&
+      realSnap.mergeQueue.active === 0 &&
+      realSnap.mergeQueue.queued === 0 &&
+      realSnap.mergeQueue.chains === 0 &&
+      realSnap.mergeQueue.last === null,
+    JSON.stringify(realSnap.mergeQueue),
+  )
+  check(
+    'T-154 snapshot.queue stays the DISPATCH queue (ready cards), not the merge queue',
+    Array.isArray(realSnap.queue) && realSnap.queue.length === 1 && realSnap.queue[0].id === 'T-9' && realSnap.mergeQueue.queued === 0,
+    JSON.stringify({ queue: (realSnap.queue || []).map((task) => task.id), mergeQueue: realSnap.mergeQueue }),
+  )
+  realSurface.dispose()
+  real.scheduler.dispose()
+}
+{
+  // A host WITHOUT a merger: null answers "unknown", it must never be 0.
+  const noMerger = createSubmitRig({ git: null })
+  seedBoard(noMerger.fs, PROJECT, JSON.stringify({ version: 2, seq: 1, dispatch: { state: 'paused' }, tasks: [] }))
+  const noSurface = install(noMerger)
+  const noSnap = (await call(noSurface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT) + '&session=' + encodeURIComponent(TEST_SESSION), {})).json()
+  check(
+    'T-154 a host without a merger reports mergeQueue null, never a fake zero',
+    noSnap.ok === true && noSnap.mergeQueue === null,
+    JSON.stringify(noSnap.mergeQueue),
+  )
+  noSurface.dispose()
+  noMerger.scheduler.dispose()
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
