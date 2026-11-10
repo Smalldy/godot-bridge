@@ -1,10 +1,11 @@
 # 派发与执行
 
-## 先有团队，再建卡
+## 先有可派发的团队，再建卡
 
-- `onboard` 默认补团队（Lead + worker）；reviewer/tester 到阶段再补。
-- `create`/`start` 缺团队仍拒 `no-team-for-project`；不要借别的项目团队。
-- 角色缺失由宿主经活的 Lead 自动 provision；用户不需要手工建队。
+- 项目 board 共享；**Team 属于会话**，没有主/次会话；每张卡有 `ownerSession`，派发/评审/测试都用该会话的团队。
+- `dispatchReady`（Lead + worker）才能 `create`/`start`；缺团队仍拒 `no-team-for-project`，不要借其他项目的团队。reviewer/tester 到阶段再补，不阻止建卡。
+- `onboard` 默认补团队并盘点会话；别的会话有进行中卡时 `stage: "handoff"`：默认**不接管**，按 `next.code` 让用户选 `resume-owning-session` / `join-project-read-only` / `takeover-active-tasks`（接管需旧会话 stale/unknown 且执行者已停，不消耗尝试、复用旧 worktree）。
+- 面板只有一个工作区作用域条：与当前对话工作区不一致时自动跟随（spinner → 淡入），未接入显示 setup 卡，失败保留旧 board 并在条内报错；团队属于别的会话只是信息。
 
 ## start 是申请，不是启动
 
@@ -27,7 +28,7 @@
 
 ## 状态与追踪
 
-- `board`/`get` 看阶段、轮次、证据、`waitingReason`、`queuePosition`。
+- `board`/`get` 看阶段、轮次、证据、`waitingReason`、`queuePosition`；状态/执行者/角色页按会话聚合所有参与会话（各自己的团队与卡数，带会话筛选），没有主次。
 - 派发前看依赖是否 done+merged；target 动了结论失效，用 `refreshMerge` 重开一轮。
 - 卡住先查事实：看板、分支、ref、合并记录，再决定 reopen / retry / 打回。
 

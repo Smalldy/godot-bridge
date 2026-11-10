@@ -18,6 +18,14 @@ const options = {
   userOnlyActions: USER_ONLY_ACTIONS,
 }
 
+/**
+ * T-157: line endings are an environment fact, not content. On Windows with
+ * `core.autocrlf=true` the checked-out reference.md is CRLF while the generator
+ * emits LF; comparing raw strings would fail a perfectly consistent resource.
+ * Every content comparison in this file therefore normalises CRLF to LF first.
+ */
+const normaliseEol = (text) => String(text).replace(/\r\n/g, '\n')
+
 assert.equal(SKILL_NAME, 'godot-bridge-task-center-init')
 const init = buildInitContent(options)
 assert.ok(init.includes('接入（onboard）'))
@@ -30,8 +38,15 @@ for (const name of SKILL_RESOURCE_FILES) {
   assert.ok(text.trim().length > 200, name + ' is non-empty')
 }
 
-const reference = readFileSync(join(SKILL_RESOURCE_DIR, 'reference.md'), 'utf8').trim()
-assert.equal(reference, buildReferenceContent(options), 'reference.md is generated from the live registry')
+const generatedReference = buildReferenceContent(options)
+const reference = normaliseEol(readFileSync(join(SKILL_RESOURCE_DIR, 'reference.md'), 'utf8')).trim()
+assert.equal(reference, normaliseEol(generatedReference), 'reference.md is generated from the live registry (after CRLF/LF normalisation)')
+// Explicit cross-platform assertion: a CRLF copy of the generated resource must
+// compare equal after normalisation, while the raw bytes differ (so this check
+// really exercises the normaliser instead of being trivially true).
+const crlfReference = generatedReference.replace(/\n/g, '\r\n')
+assert.notEqual(crlfReference, generatedReference, 'the CRLF variant differs byte-wise from the LF generator output')
+assert.equal(normaliseEol(crlfReference), normaliseEol(generatedReference), 'CRLF and LF copies compare equal after normalisation')
 for (const action of ACTIONS) assert.ok(reference.includes('`' + action + '`'), 'reference names ' + action)
 
 const cards = readFileSync(join(SKILL_RESOURCE_DIR, 'cards.md'), 'utf8')

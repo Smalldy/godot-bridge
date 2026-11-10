@@ -24,6 +24,12 @@
 - 卡声明的 `verify` 由宿主在候选里先跑；失败/超时 = 宿主 failTest，回 running。
 - 冲突自动重建；再次冲突升级 needs-rebase，等 worker/Lead。只认真实 hex base。
 
+## 读取审计信号
+
+- `snapshot.mergeQueue` 是 merger 的真实队列（`active`/`queued`/`chains`/`last`；宿主没有 merger 时为 `null`）；`snapshot.queue` 只是 ready 卡（派发队列），不要当合并队列读。
+- 基线：`task.targetBase`、`task.verifyFingerprint`（dispatch/submit 写入）。变更：`merge.targetDrift`（`{from,to,at}`）、`merge.verifyChanged` + `merge.verifyFingerprints`（`{from,to}`）。board/get 明细与 /state 摘要都带这些字段。
+- reviewer 的 brief 会显式列出 target drift 与 verify 变更；没有这两个信号时才可以说“与上轮一致”。
+
 ## 测试
 
 - 仅 tester 能 `passTest` / `failTest`；tester 证据分【宿主基线】【我的探针】，基线是下限。
