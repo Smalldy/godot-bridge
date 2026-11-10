@@ -64,7 +64,10 @@ assert.equal(out.type, 'div')
 assert.equal(out.props.className, 'gbt-root')
 assert.equal(out.props['data-panel'], 'task-center')
 assert.ok(JSON.stringify(out).includes('gbt-tabs'))
-assert.ok(JSON.stringify(out).includes('data-team-waiting'))
+// T-158: no team data is a NEUTRAL pill (not a worker wait), and the top has two rows.
+assert.ok(JSON.stringify(out).includes('data-team-pill'))
+assert.ok(JSON.stringify(out).includes('data-header-rows'))
+assert.ok(JSON.stringify(out).includes('data-sessions-pill'))
 assert.ok(!JSON.stringify(out).includes('bootstrap-team'))
 console.log('PASS  TaskCenter is an independently testable view module')
 

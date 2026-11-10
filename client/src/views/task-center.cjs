@@ -34,6 +34,9 @@ function createTaskCenter(deps) {
 	// T-155: one workspace-follow driver per panel. key memoises the attempt per
 	// (board, chat) pair, so a setup/failed workspace is not retried on every poll.
 	const workspaceSwitch = { key: null, status: 'idle', board: null, target: null, error: '', missing: [], fade: false, fadeFrames: false }
+	// T-158: the board kind filter now lives in the toolbar row (not inside the
+	// board scrollport), so its state belongs to the panel shell.
+	const panelBoardUi = { kind: 'all' }
 
 	function TaskCenter(props) {
 		const t = useTranslate()
@@ -79,6 +82,13 @@ function createTaskCenter(deps) {
 			panelState.teamSessionCopied = next
 			setTeamSessionCopiedState(next)
 		}
+		// T-158: the two-row header keeps sessions, the team and the overflow
+		// actions in popovers; all three are ALWAYS rendered and merely hidden, so
+		// a closed popover still has its rows/actions in the DOM for tests and for
+		// the next open without a remount.
+		const [sessionsOpen, setSessionsOpen] = React.useState(false)
+		const [teamOpen, setTeamOpen] = React.useState(false)
+		const [menuOpen, setMenuOpen] = React.useState(false)
 		function openProjectDialog() {
 			projectFormState.value = null
 			// T-155 §6: a fresh dialog starts without the previous failure's items.
@@ -175,104 +185,6 @@ function createTaskCenter(deps) {
 				: projectTeam === null
 					? typeof snapshot.project === 'string' && snapshot.project !== ''
 					: projectTeam.available !== false && panelDispatchReady !== true
-		const sessionChips =
-			scopeSessions.length === 0
-				? null
-				: h(
-					'div',
-					{ className: 'gbt-sessions', 'data-sessions': 'true', 'data-panel-session': scopePanelSession === null ? '' : scopePanelSession },
-					[h('span', { key: 'label', className: 'gbt-sessionslabel' }, t('sessionsLabel'))].concat(
-						scopeSessions.map(function (row, index) {
-							const current = scopePanelSession !== null && row.sessionId === scopePanelSession
-							const lead = row.team !== null && row.team !== undefined && typeof row.team.lead === 'string' ? row.team.lead : null
-							const cards = row.cards !== null && row.cards !== undefined && Number.isFinite(row.cards.owned) ? row.cards.owned : 0
-							return h(
-								'span',
-								{
-									key: 'session-' + String(index),
-									className: 'gbt-session',
-									'data-session': String(row.sessionId),
-									'data-current': current ? 'true' : 'false',
-									'data-status': typeof row.status === 'string' ? row.status : 'unknown',
-									'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
-									'data-stage-review': row.stageReady !== undefined && row.stageReady !== null && row.stageReady.review === true ? 'true' : 'false',
-									'data-stage-test': row.stageReady !== undefined && row.stageReady !== null && row.stageReady.test === true ? 'true' : 'false',
-									title: String(row.sessionId) + (lead === null ? '' : ' · ' + t('workersLead') + ' ' + lead),
-								},
-								h('b', null, sessionShortOf(row.sessionId)),
-								current ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
-								lead === null ? null : h('span', { className: 'gbt-sessionsmeta', 'data-session-lead': 'true' }, lead),
-								h('span', null, t('sessionsCards').replace('{n}', String(cards))),
-								h('span', null, sessionStatusLabel(row.status)),
-							)
-						}),
-					),
-				)
-		// Team belongs to another project: INFORMATION only. The workspace scope bar is
-		// the single place a workspace is switched (T-155 §2/§7).
-		const teamInfoLine =
-			projectTeam !== null && projectTeam.available !== false && projectTeam.projectMatch === false && typeof projectTeam.project === 'string' && projectTeam.project !== ''
-				? h(
-					'div',
-					{ className: 'gbt-projectsync', 'data-team-info': 'true', 'data-team-project': String(projectTeam.project), 'data-panel-project': String(snapshot.project) },
-					h('span', { className: 'gbt-projectsynccopy' }, t('projectTeamMismatch').replace('{team}', String(projectTeam.project)).replace('{panel}', String(snapshot.project)) + ' · ' + t('projectTeamScopeHint')),
-					h(
-						'div',
-						{ className: 'gbt-actions' },
-						h(
-							'button',
-							{
-								type: 'button',
-								className: 'gbt-btn',
-								'data-action': 'copy-team-session',
-								'data-session': typeof projectTeam.session === 'string' ? projectTeam.session : typeof projectTeam.leadSession === 'string' ? projectTeam.leadSession : '',
-								onClick: function () {
-									copyTeamSession(typeof projectTeam.session === 'string' ? projectTeam.session : projectTeam.leadSession)
-								},
-							},
-							t('projectTeamCopySession'),
-						),
-						teamSessionCopied === null
-							? null
-							: h('span', { className: 'gbt-footnote', role: 'status', 'aria-live': 'polite', 'data-copy-toast': teamSessionCopied === 'failed' ? 'failed' : 'copied' }, teamSessionCopied === 'failed' ? t('projectTeamCopyFailed') : t('sessionIdCopiedToast')),
-					),
-				)
-				: null
-		const teamWaitLine = teamWaitingWorker
-			? h(
-				'div',
-				{ className: 'gbt-projectsync', 'data-team-waiting-worker': 'true', 'data-tone': 'warn' },
-				h('span', { className: 'gbt-projectsynccopy' }, t('teamWaitingWorker')),
-				h('div', { className: 'gbt-actions' }, h('span', { className: 'gbt-teamwait', 'data-team-waiting': 'true' }, t('projectTeamWaiting'))),
-			)
-			: null
-		// Legacy fallback for hosts without the explicit scope: one team line, labelled
-		// as THIS SESSION's team — never "the project team".
-		const legacyTeamLine =
-			scopeSessions.length > 0
-				? null
-				: projectTeam === null
-					? null
-					: h(
-						'p',
-						{
-							className: 'gbt-projectteam',
-							'data-project-team': projectTeam.ok === true ? 'ok' : projectTeam.available === false ? 'unavailable' : 'missing',
-							'data-team-lead': projectTeam.lead === null || projectTeam.lead === undefined ? '' : String(projectTeam.lead),
-							title: (function () {
-								const parts = []
-								if (projectTeam.lead !== null && projectTeam.lead !== undefined && /^session-/.test(String(projectTeam.lead))) parts.push(String(projectTeam.lead))
-								if (snapshot.nextStep !== null && snapshot.nextStep !== undefined) parts.push(String(snapshot.nextStep.instruction))
-								return parts.join(' · ')
-							})(),
-						},
-						t('projectTeamCurrent') + '：' +
-							(projectTeam.ok === true
-								? t('projectTeamOk').replace('{lead}', tcLeadText(projectTeam.lead, t)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0))
-								: projectTeam.available === false
-									? t('projectTeamUnavailable')
-									: t('projectTeamMissing')),
-					)
 		const tabs = [
 			{ key: 'board', label: t('boardTab') },
 			{ key: 'queue', label: t('queue') },
@@ -280,84 +192,6 @@ function createTaskCenter(deps) {
 			{ key: 'status', label: t('statusTab') },
 			{ key: 'roles', label: t('rolesTab') },
 		]
-
-		const header = h(
-			'header',
-			{ className: 'gbt-header' },
-			h(
-		'div',
-		{ className: 'gbt-brand' },
-		h('div', { className: 'gbt-mark' }, '▦'),
-		h(
-			'div',
-			null,
-			h(
-				'div',
-				{ className: 'gbt-titleline' },
-				h('h1', { className: 'gbt-title' }, t('title')),
-				projectSourceLabel(projectSourceKey(snapshot), t) === null
-			? null
-			: h(
-					'span',
-					{ className: 'gbt-projectsource', 'data-project-source': projectSourceKey(snapshot), title: snapshot.projectWarning === null ? t('projectSourceHint') : snapshot.projectWarning },
-					projectSourceLabel(projectSourceKey(snapshot), t),
-				),
-			),
-			h('p', { className: 'gbt-project', title: snapshot.project || '' }, snapshot.project === null ? t('projectUnknown') : snapshot.project),
-			legacyTeamLine,
-			sessionChips,
-			teamInfoLine,
-			teamWaitLine,
-
-		),
-			),
-			h(
-		'div',
-		{ className: 'gbt-counts' },
-		h('span', { className: 'gbt-count' }, t('ready'), h('b', null, String(counts.ready || 0))),
-		h('span', { className: 'gbt-count' }, t('waiting'), h('b', null, String(Math.max(0, (counts.pending || 0) - (counts.ready || 0))))),
-		h('span', { className: 'gbt-count' }, t('runningCol'), h('b', null, String(counts.running || 0))),
-		h('span', { className: 'gbt-count' }, t('reviewingCol'), h('b', null, String(counts.reviewing || 0))),
-		h('span', { className: 'gbt-count' }, t('testingCol'), h('b', null, String(counts.testing || 0))),
-		h('span', { className: 'gbt-count' }, t('doneCol'), h('b', null, String(counts.done || 0))),
-		h('span', { className: 'gbt-count' }, t('blockedCol'), h('b', null, String((counts.blocked || 0) + (counts.cancelled || 0)))),
-			),
-			h(
-		'div',
-		{ className: 'gbt-controls' },
-		h('button', {
-			type: 'button',
-			className: 'gbt-btn',
-			'data-variant': active ? undefined : 'primary',
-			'data-busy': isBusy('start') || isBusy('pause') ? 'true' : 'false',
-			onClick: toggleDispatch,
-			disabled: snapshot.source === 'error' || snapshot.project === null || busy !== null,
-		}, isBusy('start') || isBusy('pause') ? h('span', null, h('span', { className: 'gbt-spinner' }), active ? t('pausing') : t('starting')) : active ? '⏸ ' + t('pause') : '▶ ' + t('start')),
-		h('button', { type: 'button', className: 'gbt-btn', onClick: function () { startEdit(null) }, disabled: snapshot.project === null }, '+ ' + t('newTask')),
-		h('button', { type: 'button', className: 'gbt-btn', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
-		snapshot.project === null || snapshot.project === undefined
-			? null
-			: h('button', { type: 'button', className: 'gbt-btn', onClick: function () { openProjectDialog() } }, '⌂ ' + t('project')),
-		h('button', { type: 'button', className: 'gbt-btn', onClick: function () { setSettingsOpen(true) } }, '⚙ ' + t('settings')),
-			),
-		)
-
-		const statusline = h(
-			'div',
-			{ className: 'gbt-statusline' },
-			h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }),
-			h('span', null, active ? t('running') : t('paused')),
-			h('span', null, '· ' + String(counts.total || tasks.length) + ' ' + t('taskCount')),
-			h('span', null, '· ' + t('maxConcurrent') + ' ' + String(dispatch.maxConcurrent === undefined ? 3 : dispatch.maxConcurrent)),
-			h('span', null, '· ' + t('queue') + ' ' + String(queue.length)),
-			scheduler !== null && scheduler !== undefined && scheduler.lastTickAt !== null
-		? h('span', null, '· tick ' + tcAgo(scheduler.lastTickAt, now))
-		: null,
-			scheduler !== null && scheduler !== undefined && scheduler.lastError !== null
-		? h('span', { style: { color: 'var(--dsw-alias-state-error-primary)' } }, '· ' + String(scheduler.lastError))
-		: null,
-			h('span', { style: { marginLeft: 'auto' } }, t('subtitle')),
-		)
 
 		// T-155 §2/§3: the ONE workspace scope bar. It shows the board workspace and the
 		// current chat workspace, auto-follows the chat workspace when it is a valid
@@ -447,6 +281,12 @@ function createTaskCenter(deps) {
 			})
 		}, [wsKey, workspaceMismatch, workspaceTick])
 		const workspaceActions = []
+		// T-158: the chip's ONE explicit action. While the automatic follow is in
+		// flight the button re-runs it (a stuck poll can always be retried); a
+		// failure keeps the retry below.
+		if (workspaceMismatch === true && (workspaceState === 'switching' || workspaceState === 'same' || workspaceState === 'followed')) {
+			workspaceActions.push(h('button', { key: 'follow', type: 'button', className: 'gbt-btn', 'data-size': 'sm', 'data-action': 'workspace-follow', onClick: retryWorkspace }, t('workspaceFollowAction')))
+		}
 		if (workspaceState === 'failed') {
 			workspaceActions.push(h('button', { key: 'retry', type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'workspace-retry', onClick: retryWorkspace }, t('workspaceRetry')))
 		} else if (workspaceState === 'setup' || workspaceState === 'unknown') {
@@ -468,10 +308,15 @@ function createTaskCenter(deps) {
 			if (workspaceState === 'unknown') return t('workspaceUnknown')
 			return '✓ ' + (workspaceState === 'followed' ? t('workspaceFollowed') : t('workspaceSame'))
 		}
+		// T-158: only a workspace that is NOT settled needs a chip (the steady state
+		// "same workspace" was a full-width box in the header). Mismatch, switching,
+		// setup and failure keep it — that is the ONE switch entry point.
 		const workspaceBar =
 			boardWorkspace === null && chatWorkspace === null
 				? null
-				: h(
+				: workspaceState === 'same' || workspaceState === 'followed'
+					? null
+					: h(
 					'div',
 					{
 						className: 'gbt-workspacebar',
@@ -489,6 +334,312 @@ function createTaskCenter(deps) {
 					h('span', { key: 'state', className: 'gbt-workspacestate', 'data-workspace-tone': workspaceState === 'failed' ? 'error' : workspaceState === 'setup' || workspaceState === 'unknown' ? 'warn' : undefined }, workspaceStateText()),
 					workspaceActions.length === 0 ? null : h('span', { key: 'actions', className: 'gbt-workspaceactions' }, workspaceActions),
 				)
+		// ── T-158 two-row header ────────────────────────────────────────────────
+		// Row 1: identity + context pills + workspace scope chip, then the ONE
+		// primary action and the "more" popover. Row 2: tabs + kind filter +
+		// refresh. The seven-count strip, the standalone status line and the flat
+		// session chip row are gone; their facts live in the pills, the column
+		// heads and the footer.
+		function closePopovers() {
+			setSessionsOpen(false)
+			setTeamOpen(false)
+			setMenuOpen(false)
+		}
+		const projectName = baseNameOf(snapshot.project)
+		const projectLabel = projectName === null ? t('projectUnknown') : projectName
+		const panelSessionId = scopePanelSession
+		const copySessionValue =
+			panelSessionId !== null
+				? panelSessionId
+				: projectTeam !== null && typeof projectTeam.session === 'string'
+					? projectTeam.session
+					: projectTeam !== null && typeof projectTeam.leadSession === 'string'
+						? projectTeam.leadSession
+						: ''
+		// T-158: the pill only ever reads dispatchReady. No team data at all is
+		// 'none' (information), never a warning: only an existing team that cannot
+		// dispatch reads 'waiting'.
+		const teamState = panelDispatchReady === true ? 'ready' : projectTeam === null || projectTeam.available === false ? 'none' : teamWaitingWorker ? 'waiting' : 'none'
+		const teamLabel = teamState === 'ready' ? t('teamPillReady') : teamState === 'waiting' ? t('teamPillWaiting') : t('teamPillNone')
+		const dispatchCap = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
+		const sourceBadge =
+			projectSourceLabel(projectSourceKey(snapshot), t) === null
+				? null
+				: h('span', { className: 'gbt-projectsource', 'data-project-source': projectSourceKey(snapshot), title: snapshot.projectWarning === null ? t('projectSourceHint') : snapshot.projectWarning }, projectSourceLabel(projectSourceKey(snapshot), t))
+		const brand = h(
+			'div',
+			{ className: 'gbt-brand', 'data-brand': 'true' },
+			h('div', { className: 'gbt-mark' }, '▦'),
+			h(
+				'div',
+				{ className: 'gbt-brandcopy' },
+				h('div', { className: 'gbt-titleline' }, h('span', { className: 'gbt-eyebrow' }, t('title')), sourceBadge),
+				h(
+					'div',
+					{ className: 'gbt-projectline' },
+					h('b', { className: 'gbt-projectname', title: snapshot.project === null ? '' : snapshot.project }, projectLabel),
+					h('span', { className: 'gbt-projectpath', title: snapshot.project === null ? '' : snapshot.project }, snapshot.project === null ? '' : snapshot.project),
+					h('span', { className: 'gbt-projectsep', 'aria-hidden': 'true' }, '·'),
+					h('span', { className: 'gbt-projecthint' }, t('sharedBoard')),
+				),
+			),
+		)
+		const sessionsButton = h(
+			'button',
+			{
+				type: 'button',
+				className: 'gbt-chip gbt-chipbtn gbt-sessionschip',
+				'data-sessions-pill': 'true',
+				'data-sessions-count': String(scopeSessions.length),
+				'aria-haspopup': 'dialog',
+				'aria-expanded': sessionsOpen ? 'true' : 'false',
+				title: t('sessionsHint'),
+				onClick: function () { setSessionsOpen(!sessionsOpen) },
+			},
+			scopeSessions.length === 0
+				? null
+				: h('span', { className: 'gbt-sessionsdots', 'aria-hidden': 'true' }, scopeSessions.slice(0, 5).map(function (row, index) { return h('i', { key: 'dot-' + String(index) }) })),
+			h('span', null, t('sessionsPill').replace('{n}', String(scopeSessions.length))),
+			h('span', { className: 'gbt-caret', 'aria-hidden': 'true' }, '▾'),
+		)
+		const currentPill =
+			panelSessionId === null
+				? null
+				: h('span', { className: 'gbt-chip gbt-currentsession', 'data-current-session': panelSessionId, title: panelSessionId }, h('span', { className: 'gbt-dot', 'data-running': 'true' }), h('b', { className: 'gbt-mono' }, sessionShortOf(panelSessionId)), h('span', { className: 'gbt-tag' }, t('sessionsCurrent')))
+		const dispatchPill = h(
+			'button',
+			{
+				type: 'button',
+				className: 'gbt-chip gbt-chipbtn gbt-dispatchpill',
+				'data-dispatch-pill': 'true',
+				'data-dispatch-state': active ? 'running' : 'paused',
+				'data-busy': isBusy('start') || isBusy('pause') ? 'true' : 'false',
+				title: active ? t('pause') : t('start'),
+				disabled: snapshot.source === 'error' || snapshot.project === null || busy !== null,
+				onClick: toggleDispatch,
+			},
+			isBusy('start') || isBusy('pause') ? h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' }) : h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }),
+			h('span', null, active ? t('running') : t('paused')),
+			h('b', null, String(counts.running || 0) + '/' + String(dispatchCap)),
+		)
+		const teamPopoverLead = panelSessionRow !== null && panelSessionRow.team !== null && panelSessionRow.team !== undefined && typeof panelSessionRow.team.lead === 'string' ? panelSessionRow.team.lead : projectTeam !== null && typeof projectTeam.lead === 'string' ? projectTeam.lead : null
+		const teamPopoverTitleWithLead = t('teamPopoverTitle') + (teamPopoverLead === null ? '' : ' · ' + teamPopoverLead)
+		const teamPill = h(
+			'button',
+			{
+				type: 'button',
+				className: 'gbt-chip gbt-chipbtn gbt-teampill',
+				'data-team-pill': teamState,
+				'data-team-waiting': teamState === 'waiting' ? 'true' : undefined,
+				'data-dispatch-ready': panelDispatchReady === true ? 'true' : 'false',
+				// Kept for readers/tests that still ask the pill which team state it is.
+				'data-project-team': teamState === 'ready' ? 'ok' : projectTeam !== null && projectTeam.available === false ? 'unavailable' : 'missing',
+				'data-team-lead': panelSessionRow !== null && panelSessionRow.team !== null && panelSessionRow.team !== undefined && typeof panelSessionRow.team.lead === 'string' ? panelSessionRow.team.lead : projectTeam !== null && typeof projectTeam.lead === 'string' ? projectTeam.lead : '',
+				'aria-haspopup': 'dialog',
+				'aria-expanded': teamOpen ? 'true' : 'false',
+				title: teamPopoverTitleWithLead,
+				onClick: function () { setTeamOpen(!teamOpen) },
+			},
+			h('span', { className: 'gbt-dot', 'data-running': teamState === 'ready' ? 'true' : 'false' }),
+			h('span', null, teamLabel),
+		)
+		const sessionRows =
+			scopeSessions.length === 0
+				? [h('p', { key: 'empty', className: 'gbt-popoverempty' }, t('sessionsEmpty'))]
+				: scopeSessions.map(function (row, index) {
+					const current = panelSessionId !== null && row.sessionId === panelSessionId
+					const lead = row.team !== null && row.team !== undefined && typeof row.team.lead === 'string' ? row.team.lead : null
+					const cards = row.cards !== null && row.cards !== undefined && Number.isFinite(row.cards.owned) ? row.cards.owned : 0
+					const activeCards = row.cards !== null && row.cards !== undefined && Number.isFinite(row.cards.active) ? row.cards.active : null
+					const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : null
+					return h(
+						'div',
+						{
+							key: 'session-' + String(index),
+							className: 'gbt-sessionrow',
+							'data-session': String(row.sessionId),
+							'data-current': current ? 'true' : 'false',
+							'data-status': typeof row.status === 'string' ? row.status : 'unknown',
+							'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+							'data-stage-review': stage !== null && stage.review === true ? 'true' : 'false',
+							'data-stage-test': stage !== null && stage.test === true ? 'true' : 'false',
+						},
+						h(
+							'div',
+							{ className: 'gbt-sessionrowhead' },
+							h('b', { className: 'gbt-mono' }, sessionShortOf(row.sessionId)),
+							current ? h('span', { className: 'gbt-tag' }, t('sessionsCurrent')) : null,
+							h('span', { className: 'gbt-sessionstatus', 'data-status': typeof row.status === 'string' ? row.status : 'unknown' }, sessionStatusLabel(row.status)),
+						),
+						h(
+							'div',
+							{ className: 'gbt-sessionrowmeta' },
+							lead === null ? null : h('span', { 'data-session-lead': 'true' }, t('workersLead') + ' ' + lead),
+							h('span', null, t('sessionsCards').replace('{n}', String(cards))),
+							activeCards === null ? null : h('span', null, t('sessionsActive').replace('{n}', String(activeCards))),
+							h('span', { className: 'gbt-sessionready', 'data-ready': row.dispatchReady === true ? 'true' : 'false' }, row.dispatchReady === true ? t('sessionsReadiness') : t('sessionsNotReady')),
+							stage === null
+								? null
+								: h('span', null, t('sessionsStageReview') + ' ' + (stage.review === true ? t('sessionsReady') : t('sessionsNotReady')) + ' · ' + t('sessionsStageTest') + ' ' + (stage.test === true ? t('sessionsReady') : t('sessionsNotReady'))),
+						),
+						h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'copy-session-id', 'data-session': String(row.sessionId), onClick: function () { copyTeamSession(String(row.sessionId)) } }, t('projectTeamCopySession')),
+					)
+				})
+		const sessionsPopover = h(
+			'div',
+			{
+				className: 'gbt-popover gbt-sessionpopover',
+				'data-session-popover': 'true',
+				'data-open': sessionsOpen ? 'true' : 'false',
+				hidden: sessionsOpen ? undefined : true,
+				role: 'dialog',
+				'aria-label': t('sessionsPopoverTitle'),
+			},
+			h('div', { className: 'gbt-popoverhead' }, t('sessionsPopoverTitle')),
+			sessionRows,
+			projectTeam !== null && projectTeam.available !== false && projectTeam.projectMatch === false && typeof projectTeam.project === 'string' && projectTeam.project !== ''
+				? h('p', { className: 'gbt-popovernote', 'data-team-info': 'true', 'data-team-project': String(projectTeam.project), 'data-panel-project': String(snapshot.project) }, t('projectTeamMismatch').replace('{team}', String(projectTeam.project)).replace('{panel}', String(snapshot.project)) + ' · ' + t('projectTeamScopeHint'))
+				: null,
+		)
+		const panelTeam = panelSessionRow !== null ? panelSessionRow.team : projectTeam
+		const teamLead = panelTeam !== null && panelTeam !== undefined && typeof panelTeam.lead === 'string' ? panelTeam.lead : null
+		const teamMemberCount =
+			panelTeam !== null && panelTeam !== undefined && Number.isFinite(panelTeam.memberCount)
+				? panelTeam.memberCount
+				: panelTeam !== null && panelTeam !== undefined && Array.isArray(panelTeam.members)
+					? panelTeam.members.length
+					: 0
+		const teamMissingRoles = panelTeam !== null && panelTeam !== undefined && Array.isArray(panelTeam.missingRoles) ? panelTeam.missingRoles.map(String) : []
+		const teamStage = panelSessionRow !== null && panelSessionRow.stageReady !== null && panelSessionRow.stageReady !== undefined && typeof panelSessionRow.stageReady === 'object' ? panelSessionRow.stageReady : null
+		const teamPopover = h(
+			'div',
+			{
+				className: 'gbt-popover gbt-teampopover',
+				'data-team-popover': 'true',
+				'data-team-state': teamState,
+				'data-open': teamOpen ? 'true' : 'false',
+				hidden: teamOpen ? undefined : true,
+				role: 'dialog',
+				'aria-label': t('teamPopoverTitle'),
+			},
+			h('div', { className: 'gbt-popoverhead' }, t('teamPopoverTitle')),
+			projectTeam !== null && projectTeam.available === false
+				? h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-unavailable': 'true' }, t('projectTeamUnavailable'))
+				: null,
+			h('p', { className: 'gbt-popoverrow' }, t('projectTeamCurrent') + '：' + (teamLead === null ? t('projectTeamMissing') : t('projectTeamOk').replace('{lead}', tcLeadText(teamLead, t)).replace('{n}', String(teamMemberCount)))),
+			h('p', { className: 'gbt-popoverrow', 'data-team-readiness': panelDispatchReady === true ? 'ready' : 'not-ready' }, t('sessionsReadiness') + '：' + (panelDispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
+			teamStage === null ? null : h('p', { className: 'gbt-popoverrow' }, t('sessionsStageReview') + '：' + (teamStage.review === true ? t('sessionsReady') : t('sessionsNotReady')) + ' · ' + t('sessionsStageTest') + '：' + (teamStage.test === true ? t('sessionsReady') : t('sessionsNotReady'))),
+			teamMissingRoles.length === 0 ? null : h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-missing-roles': teamMissingRoles.join(',') }, t('teamMissingRoles').replace('{roles}', teamMissingRoles.join('、'))),
+			teamWaitingWorker && projectTeam !== null ? h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-waiting-worker': 'true' }, t('teamWaitingWorker') + ' · ' + t('projectTeamWaiting')) : null,
+			h(
+				'div',
+				{ className: 'gbt-popoveractions' },
+				h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'copy-team-session', 'data-session': copySessionValue, onClick: function () { copyTeamSession(copySessionValue) } }, t('projectTeamCopySession')),
+				teamSessionCopied === null
+					? null
+					: h('span', { className: 'gbt-footnote', role: 'status', 'aria-live': 'polite', 'data-copy-toast': teamSessionCopied === 'failed' ? 'failed' : 'copied' }, teamSessionCopied === 'failed' ? t('projectTeamCopyFailed') : t('sessionIdCopiedToast')),
+			),
+		)
+		const newTaskButton = h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'new-task', disabled: snapshot.project === null, onClick: function () { startEdit(null) } }, '+ ' + t('newTask'))
+		const menuItems = [
+			['refresh', t('refresh'), function () { closePopovers(); void store.load() }],
+			['project', t('project'), function () { closePopovers(); openProjectDialog() }],
+			['settings', t('settings'), function () { closePopovers(); setSettingsOpen(true) }],
+			['copy-team-session', t('projectTeamCopySession'), function () { copyTeamSession(copySessionValue) }],
+			['diagnostics', t('diagnostics'), function () { closePopovers(); setView('status') }],
+		]
+		const moreMenu = h(
+			'div',
+			{ className: 'gbt-morewrap' },
+			h('button', { type: 'button', className: 'gbt-iconbtn gbt-morebtn', 'data-more-menu': 'true', 'aria-haspopup': 'menu', 'aria-expanded': menuOpen ? 'true' : 'false', title: t('moreActions'), onClick: function () { setMenuOpen(!menuOpen) } }, '⋯'),
+			h(
+				'div',
+				{ className: 'gbt-popover gbt-menu', 'data-more-popover': 'true', role: 'menu', 'data-open': menuOpen ? 'true' : 'false', hidden: menuOpen ? undefined : true },
+				menuItems.map(function (entry) {
+					return h('button', { key: entry[0], type: 'button', className: 'gbt-menuitem', role: 'menuitem', 'data-action': entry[0], 'data-session': entry[0] === 'copy-team-session' ? copySessionValue : undefined, onClick: entry[2] }, entry[1])
+				}),
+			),
+		)
+		const refreshButton = h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'refresh', title: t('refresh'), onClick: function () { void store.load() } }, '↻')
+		const kindFilterBar = h(
+			'div',
+			{ className: 'gbt-kindfilter', 'data-kind-filter': panelBoardUi.kind, title: t('kindFilterHint') },
+			[
+				['all', t('kindFilterAll')],
+				['dev', t('kindDev')],
+				['investigate', t('kindInvestigate')],
+			].map(function (entry) {
+				return h(
+					'button',
+					{
+						key: entry[0],
+						type: 'button',
+						className: 'gbt-kindfilterbtn',
+						'data-kind-filter': entry[0],
+						'data-active': panelBoardUi.kind === entry[0] ? 'true' : 'false',
+						'aria-pressed': panelBoardUi.kind === entry[0] ? 'true' : 'false',
+						onClick: function () {
+							panelBoardUi.kind = entry[0]
+							setColumnTick(function (count) { return count + 1 })
+						},
+					},
+					entry[1],
+				)
+			}),
+		)
+		const tabCountOf = function (key) {
+			if (key === 'board') return Number.isFinite(counts.total) ? counts.total : tasks.length
+			if (key === 'queue') return queue.length
+			return null
+		}
+		const tabsView = h(
+			'nav',
+			{ className: 'gbt-tabs', 'aria-label': t('title') },
+			tabs.map(function (tab) {
+				const tabCount = tabCountOf(tab.key)
+				if (tabCount === null) {
+					return h('button', { key: tab.key, type: 'button', className: 'gbt-tab', 'data-view': tab.key, 'data-active': view === tab.key ? 'true' : 'false', onClick: function () { setView(tab.key) } }, tab.label)
+				}
+				return h(
+					'button',
+					{ key: tab.key, type: 'button', className: 'gbt-tab', 'data-view': tab.key, 'data-active': view === tab.key ? 'true' : 'false', onClick: function () { setView(tab.key) } },
+					tab.label,
+					h('span', { className: 'gbt-tabcount' }, String(tabCount)),
+				)
+			}),
+			snapshot.project === null || snapshot.project === undefined
+				? h('button', { type: 'button', className: 'gbt-tab', 'data-action': 'open-project', onClick: function () { openProjectDialog() } }, '+ ' + t('openProject'))
+				: null,
+		)
+		// T-158 review: the popovers are anchored to their pill through a
+		// positioned wrapper. Without one, `position:absolute` resolved against the
+		// initial containing block and the popover opened off-screen.
+		const sessionsAnchor = h('div', { className: 'gbt-anchor', 'data-popover-anchor': 'sessions' }, sessionsButton, sessionsPopover)
+		const teamAnchor = h('div', { className: 'gbt-anchor', 'data-popover-anchor': 'team' }, teamPill, teamPopover)
+		const topRow = h(
+			'div',
+			{ className: 'gbt-toprow' },
+			brand,
+			h('div', { className: 'gbt-context' }, sessionsAnchor, currentPill, dispatchPill, teamAnchor, workspaceBar),
+			h('div', { className: 'gbt-topactions' }, newTaskButton, moreMenu),
+		)
+		const toolbarRow = h('div', { className: 'gbt-toolbar' }, tabsView, h('div', { className: 'gbt-toolbarright' }, refreshButton, kindFilterBar))
+		const header = h('header', { className: 'gbt-header gbt-headertwo', 'data-header-rows': '2' }, topRow, toolbarRow)
+		const footer = h(
+			'footer',
+			{ className: 'gbt-statusbar', 'data-panel-footer': 'true' },
+			h(
+				'div',
+				{ className: 'gbt-statusleft' },
+				h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }),
+				h('span', null, active ? t('running') : t('paused')),
+				h('span', null, '· ' + String(Number.isFinite(counts.total) ? counts.total : tasks.length) + ' ' + t('taskCount')),
+				h('span', null, '· ' + t('sessionsPill').replace('{n}', String(scopeSessions.length))),
+				h('span', null, t('subtitle')),
+			),
+			h('div', { className: 'gbt-statusright' }, scheduler !== null && scheduler !== undefined && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? h('span', null, t('lastScan').replace('{ago}', tcAgo(scheduler.lastTickAt, now))) : null, h('span', null, t('local'))),
+		)
+
 		// T-108: the main checkout's cleanliness, worded for what it is. While a
 		// merge runs the tree is briefly dirty — that is a passing notice ("will
 		// retry"), not an alarm. Only a sustained streak (the cards escalated by
@@ -599,6 +750,7 @@ function createTaskCenter(deps) {
 				void store.send(action, Object.assign({ id: id }, payload === undefined ? {} : payload))
 					},
 					onOpenDoneAll: function () { doneAllReset(); setDoneAllArchived(false); setDoneAllOpen(true) },
+					kind: panelBoardUi.kind,
 					onColumnToggle: function () { setColumnTick(function (count) { return count + 1 }) },
 					onKindFilterChange: function () { setColumnTick(function (count) { return count + 1 }) },
 				})
@@ -631,32 +783,16 @@ function createTaskCenter(deps) {
 		onVerdict: function (action, id, payload) {
 			void store.send(action, Object.assign({ id: id }, payload === undefined ? {} : payload))
 		},
+		kind: panelBoardUi.kind,
 		// T-132: the kind filter is module state; this forces a rerender.
 		onKindFilterChange: function () { setColumnTick(function (count) { return count + 1 }) },
 			})
-
-		const tabsView = h(
-			'div',
-			{ className: 'gbt-tabs' },
-			tabs.map(function (tab) {
-		return h(
-			'button',
-			{ key: tab.key, type: 'button', className: 'gbt-tab', 'data-view': tab.key, 'data-active': view === tab.key ? 'true' : 'false', onClick: function () { setView(tab.key) } },
-			tab.label,
-		)
-			}),
-			snapshot.project === null || snapshot.project === undefined
-		? h('button', { type: 'button', className: 'gbt-tab', onClick: function () { openProjectDialog() } }, '+ ' + t('openProject'))
-		: null,
-		)
 
 		return h(
 			'div',
 			{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center' },
 			header,
-			statusline,
 			environmentBar,
-			workspaceBar,
 			busyBar,
 			banner,
 			requestBanner,
@@ -684,7 +820,7 @@ function createTaskCenter(deps) {
 		: h(
 				'div',
 				{ className: 'gbt-main' + (workspaceSwitch.fade === true ? ' gbt-workspacefade' : '') },
-				h('div', { className: 'gbt-content' }, tabsView, h('div', { className: 'gbt-view' }, content)),
+				h('div', { className: 'gbt-content' }, h('div', { className: 'gbt-view' }, content)),
 				selected === null ? null : h(DetailView, {
 			task: Object.assign({}, selected, snapshot.details[selected.id] === undefined ? {} : snapshot.details[selected.id].task),
 			snapshot: snapshot,
@@ -707,6 +843,7 @@ function createTaskCenter(deps) {
 			})
 				: null,
 			),
+			footer,
 			editing === null ? null : h(TaskForm, {
 		task: editingTask,
 		snapshot: snapshot,

@@ -1,13 +1,15 @@
 /**
  * Board view module.
  *
- * Extracted from the views fragment; React, h, the two card/column components,
- * selectors and the mutable board UI state are injected by the build.
+ * T-158 (夜航作战板): six lanes instead of seven. ready + waiting collapse into
+ * one 待派发 lane whose head carries BOTH counts; the done lane always shows the
+ * newest cards plus the archive entry point, and an empty lane narrows instead of
+ * stretching. The kind filter lives in the panel toolbar now, so the board only
+ * reads props.kind.
  */
 function createBoard(deps) {
 	const React = deps.React
 	const h = deps.h
-	const TaskCard = deps.TaskCard
 	const Column = deps.Column
 	const tcTime = deps.tcTime
 	const tcKindOf = deps.tcKindOf
@@ -18,54 +20,44 @@ function createBoard(deps) {
 	const boardUiState = deps.boardUiState
 
 	function Board(props) {
-		// T-135: the board is its own horizontal scrollport; this ref lets the
-		// effect below park it on the first column that actually has cards.
+		// T-135: the board is its own scrollport and parks on the first lane with
+		// cards; T-158 keeps that behaviour for the six-lane layout.
 		const boardRef = React.useRef(null)
 		const t = props.t
 		const tasks = props.snapshot.tasks
 		const counts = props.snapshot.counts === undefined || props.snapshot.counts === null ? {} : props.snapshot.counts
-		// Recently finished work is the first thing a reader looks for; the done
-		// and blocked columns are therefore newest-first. The other columns keep
-		// the host's scheduling order (priority, then age).
 		function recentFirst(left, right) {
 			const leftAt = tcTime(left.updatedAt) === null ? tcTime(left.createdAt) : tcTime(left.updatedAt)
 			const rightAt = tcTime(right.updatedAt) === null ? tcTime(right.createdAt) : tcTime(right.updatedAt)
 			const delta = (rightAt === null ? 0 : rightAt) - (leftAt === null ? 0 : leftAt)
 			return delta !== 0 ? delta : String(right.id).localeCompare(String(left.id))
 		}
-		// T-132: the kind filter narrows the whole board. The running note counts
-		// the investigations the FILTERED board contains (under the Dev filter it
-		// must not advertise investigations the filter hides), and the done column
-		// count/footer follow the filter instead of the global host total.
-		const kindFilter = boardUiState.kind === 'dev' || boardUiState.kind === 'investigate' ? boardUiState.kind : 'all'
+		const kindFilter = props.kind === 'dev' || props.kind === 'investigate' ? props.kind : 'all'
 		const filtered = kindFilter === 'all' ? tasks : tasks.filter(function (task) { return tcKindOf(task) === kindFilter })
 		const investigatingRunning = filtered.filter(function (task) { return tcKindOf(task) === 'investigate' && task.status === 'running' }).length
 		const visibleDone = filtered.filter(function (task) { return task.status === 'done' }).slice().sort(recentFirst)
 		const doneCount = kindFilter === 'all' && Number.isFinite(counts.done) ? counts.done : visibleDone.length
+		const pending = filtered.filter(function (task) { return task.status === 'pending' })
+		const readyTasks = pending.filter(function (task) { return task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready' })
+		const waitingTasks = pending.filter(function (task) { return !(task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready') })
+		// T-158: six lanes. 待派发 covers BOTH ready and waiting cards; its head
+		// shows the two numbers so the split stays readable without a seventh lane.
 		const groups = [
-			{ key: 'ready', label: t('ready'), tasks: filtered.filter(function (task) { return task.status === 'pending' && task.dependency !== undefined && task.dependency.state === 'ready' }) },
-			{ key: 'waiting', label: t('waiting'), tasks: filtered.filter(function (task) { return task.status === 'pending' && (task.dependency === undefined || task.dependency.state !== 'ready') }) },
+			{ key: 'dispatch', label: t('dispatchCol'), tasks: readyTasks.concat(waitingTasks), subcounts: { ready: readyTasks.length, waiting: waitingTasks.length } },
 			{ key: 'running', label: t('runningCol'), tasks: filtered.filter(function (task) { return task.status === 'running' }) },
 			{ key: 'reviewing', label: t('reviewingCol'), tasks: filtered.filter(function (task) { return task.status === 'reviewing' }) },
 			{ key: 'testing', label: t('testingCol'), tasks: filtered.filter(function (task) { return task.status === 'testing' }) },
 			{ key: 'done', label: t('doneCol'), tasks: visibleDone },
-			{
-		key: 'blocked',
-		label: t('blockedCol'),
-		tasks: filtered.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst),
-			},
+			{ key: 'blocked', label: t('blockedCol'), tasks: filtered.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst) },
 		]
-		// T-135: where the scrollport should sit. Computing it during render keeps
-		// the attribute testable; the effect applies it only when the target is
-		// not already fully visible, so manual panning is never fought.
 		const scrollTarget = tcFirstNonEmptyColumn(groups)
 		React.useEffect(function () {
 			const board = boardRef.current
 			if (board === null || board === undefined) return
 			if (typeof board.scrollLeft !== 'number') return
 			if (scrollTarget === null) {
-		board.scrollLeft = 0
-		return
+				board.scrollLeft = 0
+				return
 			}
 			if (typeof board.querySelector !== 'function') return
 			const target = board.querySelector('[data-group="' + scrollTarget + '"]')
@@ -76,94 +68,79 @@ function createBoard(deps) {
 			const width = typeof target.offsetWidth === 'number' ? target.offsetWidth : 0
 			if (left >= scrollLeft && left + width <= scrollLeft + clientWidth) return
 			board.scrollLeft = Math.max(0, left - 12)
-		}, [tasks.length, boardUiState.kind, scrollTarget])
-		const kindFilterBar = h(
-			'div',
-			{ className: 'gbt-kindfilter', 'data-kind-filter': kindFilter, title: t('kindFilterHint') },
-			[
-		['all', t('kindFilterAll')],
-		['dev', t('kindDev')],
-		['investigate', t('kindInvestigate')],
-			].map(function (entry) {
-		return h(
-			'button',
-			{
-				key: entry[0],
-				type: 'button',
-				className: 'gbt-kindfilterbtn',
-				'data-kind-filter': entry[0],
-				'data-active': kindFilter === entry[0] ? 'true' : 'false',
-				'aria-pressed': kindFilter === entry[0] ? 'true' : 'false',
-				onClick: function () {
-			boardUiState.kind = entry[0]
-			if (typeof props.onKindFilterChange === 'function') props.onKindFilterChange()
-				},
-			},
-			entry[1],
-		)
-			}),
-		)
+		}, [tasks.length, kindFilter, scrollTarget])
 		if (tasks.length === 0) return h('div', { className: 'gbt-empty' }, t('emptyBoard'))
 		function toggle(key) {
 			tcWriteColumnCollapsed(key, !tcColumnCollapsed(key))
 			if (props.onColumnToggle !== undefined) props.onColumnToggle()
 		}
+		const donePreview = visibleDone.slice(0, DONE_COLUMN_PREVIEW)
+		// T-158 review: an EMPTY done lane must stay empty (and narrow). The archive
+		// summary only exists when there is something to archive.
+		const doneSummary = doneCount === 0 ? null : h(
+			'div',
+			{ className: 'gbt-done-summary', 'data-done-summary': 'true' },
+			h('span', null, t('doneAllSummary').replace('{total}', String(doneCount)).replace('{recent}', String(donePreview.length))),
+			h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'done-all', onClick: function () { if (props.onOpenDoneAll !== undefined) props.onOpenDoneAll() } }, t('viewArchive')),
+		)
 		const board = h(
 			'div',
 			{ className: 'gbt-board', ref: boardRef, 'data-scroll-target': scrollTarget === null ? '' : scrollTarget },
 			groups.map(function (group) {
-		const collapsed = tcColumnCollapsed(group.key)
-		// The done column folds to the newest five cards, not to nothing:
-		// the preview must stay readable while the archive stays out of the way.
-		if (group.key === 'done') {
-			const visible = collapsed ? group.tasks.slice(0, DONE_COLUMN_PREVIEW) : group.tasks
-			return h(Column, {
-				key: group.key,
-				group: group,
-				count: doneCount,
-				visibleTasks: visible,
-				collapsed: collapsed,
-				allTasks: tasks,
-				previewWhenCollapsed: true,
-				t: t,
-				now: props.now,
-				selectedId: props.selectedId,
-				onOpen: props.onOpen,
-				onVerdict: props.onVerdict,
-				onToggle: function () { toggle(group.key) },
-				footer:
-			doneCount === 0
-				? null
-				: h(
-				'button',
-				{
-					type: 'button',
-					className: 'gbt-linkbtn',
-					'data-action': 'done-all',
-					onClick: function () { if (props.onOpenDoneAll !== undefined) props.onOpenDoneAll() },
-				},
-				t('viewAllDone') + ' · ' + String(doneCount),
-					),
-			})
-		}
-		return h(Column, {
-			key: group.key,
-			group: group,
-			collapsed: collapsed,
-			allTasks: tasks,
-			t: t,
-			now: props.now,
-			selectedId: props.selectedId,
-			note: group.key === 'running' && investigatingRunning > 0 ? t('investigatingCount').replace('{n}', String(investigatingRunning)) : null,
-		onOpen: props.onOpen,
-		onVerdict: props.onVerdict,
-		onToggle: function () { toggle(group.key) },
-		})
+				const collapsed = tcColumnCollapsed(group.key)
+				if (group.key === 'done') {
+					return h(Column, {
+						key: group.key,
+						group: group,
+						count: doneCount,
+						visibleTasks: collapsed ? donePreview : visibleDone,
+						summary: doneSummary,
+						collapsed: collapsed,
+						allTasks: tasks,
+						previewWhenCollapsed: true,
+						t: t,
+						now: props.now,
+						selectedId: props.selectedId,
+						onOpen: props.onOpen,
+						onVerdict: props.onVerdict,
+						onToggle: function () { toggle(group.key) },
+					})
+				}
+				if (group.key === 'blocked') {
+					return h(Column, {
+						key: group.key,
+						group: group,
+						collapsed: collapsed,
+						allTasks: tasks,
+						t: t,
+						now: props.now,
+						selectedId: props.selectedId,
+						emptyTitle: t('noBlockedTitle'),
+						emptyHint: t('noBlockedHint'),
+						onOpen: props.onOpen,
+						onVerdict: props.onVerdict,
+						onToggle: function () { toggle(group.key) },
+					})
+				}
+				return h(Column, {
+					key: group.key,
+					group: group,
+					collapsed: collapsed,
+					allTasks: tasks,
+					t: t,
+					now: props.now,
+					selectedId: props.selectedId,
+					subcounts: group.subcounts === undefined ? null : group.subcounts,
+					note: group.key === 'running' && investigatingRunning > 0 ? t('investigatingCount').replace('{n}', String(investigatingRunning)) : null,
+					onOpen: props.onOpen,
+					onVerdict: props.onVerdict,
+					onToggle: function () { toggle(group.key) },
+				})
 			}),
 		)
-		return h('div', { className: 'gbt-boardwrap', 'data-board-kind': kindFilter }, kindFilterBar, board)
-	}
 
+		return h('div', { className: 'gbt-boardwrap', 'data-board-kind': kindFilter }, board)
+	}
 
 	return Board
 }

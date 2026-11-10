@@ -426,11 +426,42 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				workspaceRetry: '重试',
 				workspaceRecheck: '重新检查',
 				workspaceOpenOther: '打开其他项目',
+				workspaceFollowAction: '跟随',
 				teamWaitingWorker: '等待 worker · 团队还没就绪（不是故障）',
 				projectTeamCopySession: '复制会话 ID',
 				sessionIdCopiedToast: '已复制会话 ID',
 				ownerSession: '所属会话',
 				ownerSessionHint: '这张卡属于该会话',
+				// T-158 夜航作战板：两行 header、六个泳道、紧凑卡片。
+				sharedBoard: '共享看板',
+				sessionsPill: '{n} 个会话',
+				sessionsPopoverTitle: '参与会话',
+				teamPillReady: '当前团队 · 就绪',
+				teamPillWaiting: '当前团队 · 待 worker',
+				teamPillNone: '当前团队 · 未参与',
+				teamPopoverTitle: '当前会话团队',
+				teamMissingRoles: '缺 {roles}',
+				moreActions: '更多',
+				diagnostics: '诊断',
+				dispatchCol: '待派发',
+				readyCount: '就绪 {n}',
+				waitingCount: '等待 {n}',
+				doneAllSummary: '{total} 个已完成 · 最近 {recent} 个',
+				viewArchive: '查看归档 →',
+				stateReady: '已就绪',
+				stateWaiting: '等待派发',
+				stateRunning: '执行中',
+				stateReviewing: '评审中',
+				stateTesting: '测试中',
+				stateDone: '已完成',
+				stateBlocked: '阻塞',
+				depCount: '依赖 {n}',
+				dependencyNone: '无依赖',
+				lastScan: '上次扫描 {ago}',
+				local: '本地',
+				writeFiles: '写卡文件',
+				noBlockedTitle: '没有阻塞任务',
+				noBlockedHint: '依赖、锁和权限都正常',
 				projectMissingTitle: '项目尚未就绪',
 				projectCheck: '检查项目',
 				projectChecking: '检查中…',
@@ -1076,11 +1107,42 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				workspaceRetry: 'Retry',
 				workspaceRecheck: 'Check again',
 				workspaceOpenOther: 'Open another project',
+				workspaceFollowAction: 'Follow',
 				teamWaitingWorker: 'Waiting for a worker · the team is not dispatch-ready yet (this is not a failure)',
 				projectTeamCopySession: 'Copy session ID',
 				sessionIdCopiedToast: 'Session ID copied',
 				ownerSession: 'Owning session',
 				ownerSessionHint: 'This card belongs to that session',
+				// T-158 night-watch board: two-row header, six lanes, compact cards.
+				sharedBoard: 'shared board',
+				sessionsPill: '{n} sessions',
+				sessionsPopoverTitle: 'Participating sessions',
+				teamPillReady: 'Team · ready',
+				teamPillWaiting: 'Team · needs a worker',
+				teamPillNone: 'Team · not participating',
+				teamPopoverTitle: 'This session\'s team',
+				teamMissingRoles: 'missing {roles}',
+				moreActions: 'More',
+				diagnostics: 'Diagnostics',
+				dispatchCol: 'Dispatch',
+				readyCount: 'Ready {n}',
+				waitingCount: 'Wait {n}',
+				doneAllSummary: '{total} done · latest {recent}',
+				viewArchive: 'View archive →',
+				stateReady: 'Ready',
+				stateWaiting: 'Waiting for dispatch',
+				stateRunning: 'Running',
+				stateReviewing: 'In review',
+				stateTesting: 'In test',
+				stateDone: 'Done',
+				stateBlocked: 'Blocked',
+				depCount: '{n} deps',
+				dependencyNone: 'no dependencies',
+				lastScan: 'Last scan {ago}',
+				local: 'Local',
+				writeFiles: 'Write files',
+				noBlockedTitle: 'No blocked tasks',
+				noBlockedHint: 'Dependencies, locks and permissions look fine',
 				projectMissingTitle: 'The project is not ready yet',
 				projectCheck: 'Check project',
 				projectChecking: 'Checking…',
@@ -1894,6 +1956,112 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-spinner{display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:gbt-spin .7s linear infinite;vertical-align:-1px;margin-right:6px}',
 			'@keyframes gbt-spin{to{transform:rotate(360deg)}}',
 			'@keyframes gbt-slide{0%{left:-40%}100%{left:100%}}',
+			// T-158 夜航作战板：两行顶部、紧凑上下文胶囊、会话/团队 popover、六列看板。
+			`.gbt-header.gbt-headertwo{display:flex;flex-direction:column;align-items:stretch;gap:0;padding:0;background:var(--dsw-alias-bg-layer-3);flex-wrap:nowrap}
+.gbt-toprow{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:0.5px solid var(--dsw-alias-border-l4);min-width:0;flex-wrap:wrap}
+.gbt-brand{display:flex;align-items:center;gap:10px;min-width:0;flex:0 1 auto}
+.gbt-brandcopy{display:flex;flex-direction:column;gap:2px;min-width:0}
+.gbt-eyebrow{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}
+.gbt-projectline{display:flex;align-items:baseline;gap:8px;min-width:0}
+.gbt-projectname{font-size:14px;font-weight:650;color:var(--dsw-alias-label-primary);white-space:nowrap}
+.gbt-projectpath{font-size:11px;color:var(--dsw-alias-label-tertiary);max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.gbt-projectsep,.gbt-projecthint{font-size:10px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+.gbt-context{display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0;flex-wrap:wrap;justify-content:center}
+.gbt-topactions{display:flex;align-items:center;gap:7px;margin-left:auto;flex:none}
+.gbt-chipbtn{appearance:none;cursor:pointer;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2);height:28px;padding:0 9px;border-radius:8px;font:inherit;font-size:11.5px;color:var(--dsw-alias-label-secondary);display:inline-flex;align-items:center;gap:6px}
+.gbt-chipbtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.gbt-chipbtn b{font-weight:600;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}
+.gbt-sessionsdots{display:inline-flex;align-items:center}
+.gbt-sessionsdots i{width:13px;height:13px;border-radius:50%;border:2px solid var(--dsw-alias-bg-layer-2);margin-left:-4px;background:var(--dsw-alias-state-business-primary)}
+.gbt-sessionsdots i:first-child{margin-left:0}
+.gbt-sessionsdots i:nth-child(2){background:var(--dsw-alias-state-success-primary)}
+.gbt-sessionsdots i:nth-child(3){background:var(--dsw-alias-state-warn-label)}
+.gbt-sessionsdots i:nth-child(4){background:var(--dsw-alias-state-error-primary)}
+.gbt-sessionsdots i:nth-child(5){background:var(--dsw-alias-label-tertiary)}
+.gbt-caret{font-size:9px;opacity:.7}
+.gbt-currentsession{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}
+.gbt-currentsession b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}
+.gbt-tag{font-size:9px;padding:1px 5px;border-radius:4px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-business-primary)}
+.gbt-teampill[data-team-pill="ready"]{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}
+.gbt-teampill[data-team-pill="waiting"]{color:var(--dsw-alias-state-warn-label);border-color:var(--dsw-alias-state-warn-label)}
+.gbt-teampill[data-team-pill="none"]{color:var(--dsw-alias-label-tertiary)}
+.gbt-dispatchpill[data-dispatch-state="running"]{color:var(--dsw-alias-state-success-primary)}
+.gbt-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 16px;border-bottom:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2)}
+.gbt-toolbar .gbt-tabs{padding:0;gap:2px;flex-wrap:nowrap;min-width:0;overflow-x:auto;scrollbar-width:none}
+.gbt-toolbar .gbt-tab{position:relative;display:inline-flex;align-items:center;gap:6px;height:40px;border-radius:0;padding:0 11px;background:transparent;white-space:nowrap}
+.gbt-toolbar .gbt-tab[data-active="true"]{background:transparent;font-weight:600;box-shadow:inset 0 -2px 0 var(--dsw-alias-state-business-primary)}
+.gbt-tabcount{font-size:10px;padding:0 5px;border-radius:4px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-tertiary);border:0.5px solid var(--dsw-alias-border-l4)}
+.gbt-tab[data-active="true"] .gbt-tabcount{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-business-primary)}
+.gbt-toolbarright{display:flex;align-items:center;gap:8px;flex:none}
+.gbt-toolbarright .gbt-kindfilter{margin:0}
+.gbt-iconbtn{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:7px}
+.gbt-morewrap{position:relative}
+.gbt-anchor{position:relative;display:inline-flex;min-width:0;align-items:center}
+.gbt-anchor .gbt-popover{left:0;right:auto;top:calc(100% + 8px)}
+.gbt-popover{position:absolute;top:calc(100% + 6px);right:0;z-index:40;min-width:260px;max-width:min(360px,92vw);max-height:min(420px,70vh);overflow:auto;padding:10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;background:var(--dsw-alias-bg-layer-3);box-shadow:0 14px 36px rgba(0,0,0,.28);text-align:left;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.gbt-popover[hidden]{display:none}
+.gbt-sessionpopover{right:auto;left:0;min-width:320px}
+.gbt-teampopover{right:auto;left:0;min-width:280px}
+.gbt-popoverhead{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);padding-bottom:6px;border-bottom:0.5px solid var(--dsw-alias-border-l4);margin-bottom:8px}
+.gbt-sessionrow{display:flex;flex-direction:column;align-items:stretch;gap:4px;padding:7px 8px;border-radius:7px;border:0.5px solid transparent}
+.gbt-sessionrow[data-current="true"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-module-platform)}
+.gbt-sessionrow + .gbt-sessionrow{margin-top:6px}
+.gbt-sessionrowhead{display:flex;align-items:center;gap:7px}
+.gbt-sessionrowhead b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-primary)}
+.gbt-sessionstatus{font-size:10px;color:var(--dsw-alias-label-tertiary);margin-left:auto}
+.gbt-sessionrowmeta{display:flex;flex-wrap:wrap;gap:4px 8px;font-size:10.5px;color:var(--dsw-alias-label-tertiary)}
+.gbt-sessionready[data-ready="true"]{color:var(--dsw-alias-state-success-primary)}
+.gbt-sessionrow .gbt-linkbtn{align-self:flex-start;padding:0;margin-top:2px}
+.gbt-popoverrow{margin:3px 0;line-height:1.55}
+.gbt-popoverwarn{color:var(--dsw-alias-state-warn-label)}
+.gbt-popovernote{margin:8px 0 0;font-size:10.5px;line-height:1.5;color:var(--dsw-alias-state-warn-label)}
+.gbt-popoverempty{margin:2px 0;font-size:10.5px;color:var(--dsw-alias-label-tertiary)}
+.gbt-popoveractions{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.gbt-menu{right:0;min-width:190px;padding:5px}
+.gbt-menuitem{display:flex;width:100%;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;cursor:pointer;text-align:left}
+.gbt-menuitem:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.gbt-statusbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 16px;border-top:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2);font-size:10.5px;color:var(--dsw-alias-label-tertiary);flex-wrap:wrap}
+.gbt-statusleft,.gbt-statusright{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.gbt-statusleft b{font-weight:600;color:var(--dsw-alias-label-secondary)}
+.gbt-board{gap:10px;overflow:hidden auto}
+.gbt-col{flex:1 1 0;min-width:168px;max-width:420px;min-height:120px}
+.gbt-col[data-empty="true"]{flex:0 1 155px;min-width:150px;max-width:180px}
+.gbt-col[data-empty="true"] .gbt-colhead{opacity:.8}
+.gbt-emptyslim{min-height:64px;padding:10px;gap:4px;border-style:dashed;align-items:flex-start}
+.gbt-emptytitle{color:var(--dsw-alias-label-secondary)}
+.gbt-emptyslim span{display:block;line-height:1.45;font-size:10.5px}
+.gbt-emptyslim .gbt-emptytitle{font-size:11px;margin-bottom:2px}
+.gbt-colsubcounts{display:inline-flex;gap:4px;margin-left:auto}
+.gbt-colsubcount{font-size:9.5px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary)}
+.gbt-colsubcount[data-subcount="ready"]{color:var(--dsw-alias-state-success-primary)}
+.gbt-colhead .gbt-colcount{margin-left:6px}
+.gbt-done-summary{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 8px;border-radius:7px;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2);font-size:10.5px;color:var(--dsw-alias-label-tertiary)}
+.gbt-card{padding:9px 10px;gap:6px;min-height:96px}
+.gbt-cardtop{justify-content:space-between;flex-wrap:nowrap}
+.gbt-cardtopid{display:flex;align-items:center;gap:5px;min-width:0}
+.gbt-priority{font-size:9px;padding:1px 5px;border-radius:4px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-tertiary);border:0.5px solid var(--dsw-alias-border-l4);flex:none}
+.gbt-cardtitle{font-size:12.5px;line-height:1.42;font-weight:560}
+.gbt-cardmeta{font-size:10px;gap:4px}
+.gbt-ownerchip{background:transparent;padding-left:0}
+.gbt-ownerdot{width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-state-business-primary);display:inline-block;flex:none}
+.gbt-cardfoot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:2px}
+.gbt-cardstate{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--dsw-alias-label-tertiary);min-width:0}
+.gbt-cardstate::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block;flex:none;opacity:.9}
+.gbt-cardstate .gbt-dot{width:5px;height:5px}
+.gbt-cardstate[data-running="true"]{color:var(--dsw-alias-state-business-primary)}
+.gbt-cardstate[data-state="done"]{color:var(--dsw-alias-state-success-primary)}
+.gbt-cardstate[data-state="reviewing"]{color:var(--dsw-alias-state-business-primary)}
+.gbt-cardstate[data-state="testing"]{color:var(--dsw-alias-state-warn-label)}
+.gbt-cardstate[data-state="blocked"]{color:var(--dsw-alias-state-error-primary)}
+.gbt-cardtime{font-size:9.5px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex:none}
+.gbt-context .gbt-workspacebar{flex:0 1 auto;margin:0;padding:0 8px;height:28px;gap:6px;border-radius:8px;font-size:10.5px;max-width:min(430px,42vw);overflow:hidden}
+.gbt-context .gbt-workspacebar .gbt-workspacestate{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.gbt-context .gbt-workspacebar .gbt-workspace .gbt-workspacelabel{display:none}
+.gbt-context .gbt-workspacebar .gbt-workspace b{max-width:110px}
+.gbt-cardmeta{gap:3px}
+.gbt-cardmeta .gbt-chip{padding:0 5px;font-size:9.5px}
+@media (max-width:1500px){.gbt-projectpath{max-width:200px}.gbt-context{justify-content:flex-start}}
+@media (max-width:1200px){.gbt-sessionschip{padding:0 7px;gap:5px}.gbt-context{gap:5px}.gbt-toprow{gap:8px}.gbt-board{overflow-x:auto}.gbt-col{min-width:150px}.gbt-col[data-empty="true"]{min-width:132px}}`,
 		].join('')
 
 		/** ISO-8601 to epoch milliseconds, or null. */
@@ -3103,14 +3271,31 @@ const createTaskStore = (function () {
 /**
  * Task card view module.
  *
- * Extracted from the views fragment; the build injects React, h, selectors and
- * the two board-local helpers. The component keeps its exact rendering.
+ * T-158 (夜航作战板): the face of a card is compact — short id + priority, a
+ * two-line title, one meta row (owning session, dependency count, role) and one
+ * state row (state dot + label on the left, elapsed time on the right). The
+ * chips for review/test/merge/lease/waiting stay: they are the evidence a reader
+ * opens the card for, only typeset smaller.
  */
 function createTaskCard(deps) {
-	/** T-155: a compact owning-session label; the full id stays in the title. */
+	/** A compact owning-session label; the full id stays in the title. */
 	function ownerSessionShort(value) {
 		const text = typeof value === 'string' ? value : ''
 		return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
+	}
+
+	/** "12m" / "3h" / "2d" from the card's last change, or em dash. */
+	function elapsedText(task, now) {
+		const raw = typeof task.updatedAt === 'string' && task.updatedAt !== '' ? task.updatedAt : task.createdAt
+		const at = typeof raw === 'string' ? Date.parse(raw) : NaN
+		const current = typeof now === 'number' ? now : Date.now()
+		if (!Number.isFinite(at)) return '—'
+		const minutes = Math.max(0, Math.floor((current - at) / 60000))
+		if (minutes < 1) return '—'
+		if (minutes < 60) return String(minutes) + 'm'
+		const hours = Math.floor(minutes / 60)
+		if (hours < 24) return String(hours) + 'h'
+		return String(Math.floor(hours / 24)) + 'd'
 	}
 
 	const React = deps.React
@@ -3121,9 +3306,9 @@ function createTaskCard(deps) {
 	const tcLease = deps.tcLease
 	const tcMergeLabel = deps.tcMergeLabel
 	const tcMergeOf = deps.tcMergeOf
-	const tcMergeTone = deps.tcMergeTone
 	const tcPhaseLabel = deps.tcPhaseLabel
 	const tcPhaseTone = deps.tcPhaseTone
+	const tcMergeTone = deps.tcMergeTone
 	const tcReviewLabel = deps.tcReviewLabel
 	const tcReviewOf = deps.tcReviewOf
 	const tcReviewTone = deps.tcReviewTone
@@ -3139,7 +3324,6 @@ function createTaskCard(deps) {
 		const task = props.task
 		const t = props.t
 		const now = props.now
-		// T-132: investigations are a distinct card kind on the board.
 		const investigate = tcIsInvestigation(task)
 		const lease = task.status === 'running' ? tcLease(task.leaseUntil, now, t, task) : null
 		const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
@@ -3152,8 +3336,6 @@ function createTaskCard(deps) {
 		const branch = typeof task.branch === 'string' ? task.branch : ''
 		const commit = typeof task.commit === 'string' ? task.commit : ''
 		const worktree = typeof task.worktree === 'string' ? task.worktree : ''
-		// T-113: the user can record the review/test verdict from the card. The
-		// server still decides permissions; this is only the missing entry point.
 		const [verdictOpen, setVerdictOpen] = React.useState(null)
 		const [verdictReason, setVerdictReason] = React.useState('')
 		const verdictKind = task.status === 'reviewing' ? 'review' : task.status === 'testing' ? 'test' : null
@@ -3163,196 +3345,156 @@ function createTaskCard(deps) {
 			setVerdictOpen(null)
 			setVerdictReason('')
 		}
-		function verdictEvent(event, work) {
-			return function (clickEvent) {
-		if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation()
-		work(clickEvent)
-			}
+		// The state row is what a reader scans first; it follows the phase, not the
+		// verdict chips (those keep the round detail).
+		let stateKey = 'waiting'
+		let stateLabel = t('stateWaiting')
+		if (task.status === 'running') {
+			stateKey = 'running'
+			stateLabel = t('stateRunning')
+		} else if (task.status === 'reviewing') {
+			stateKey = 'reviewing'
+			stateLabel = t('stateReviewing')
+		} else if (task.status === 'testing') {
+			stateKey = 'testing'
+			stateLabel = t('stateTesting')
+		} else if (task.status === 'done') {
+			stateKey = 'done'
+			stateLabel = t('stateDone')
+		} else if (task.status === 'blocked' || task.status === 'cancelled') {
+			stateKey = 'blocked'
+			stateLabel = t('stateBlocked')
+		} else if (task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready') {
+			stateKey = 'ready'
+			stateLabel = t('stateReady')
 		}
 		const children = []
-		const top = [h('span', { key: 'id', className: 'gbt-id' }, task.id)]
+		const topLeft = [h('span', { key: 'id', className: 'gbt-id' }, task.id)]
 		if (investigate) {
-			top.push(h('span', { key: 'kind', className: 'gbt-chip', 'data-tone': 'investigating', 'data-kind': 'investigate', title: t('kindInvestigateHint') }, '🔍 ' + t('kindInvestigate')))
+			topLeft.push(h('span', { key: 'kind', className: 'gbt-chip', 'data-tone': 'investigating', 'data-kind': 'investigate', title: t('kindInvestigateHint') }, '🔍 ' + t('kindInvestigate')))
 		}
-		if (task.priority !== 0) top.push(h('span', { key: 'prio', className: 'gbt-chip', 'data-tone': 'running' }, 'P' + String(task.priority)))
-		if (task.status === 'blocked') top.push(h('span', { key: 'blocked', className: 'gbt-chip', 'data-tone': 'blocked' }, t('statusBlocked')))
-		children.push(h('div', { key: 'top', className: 'gbt-cardtop' }, top))
+		children.push(
+			h(
+				'div',
+				{ key: 'top', className: 'gbt-cardtop' },
+				h('div', { className: 'gbt-cardtopid' }, topLeft),
+				task.priority !== 0 ? h('span', { key: 'prio', className: 'gbt-priority', title: t('priority') }, 'P' + String(task.priority)) : null,
+			),
+		)
 		children.push(h('div', { key: 'title', className: 'gbt-cardtitle' }, task.title))
 		const meta = []
-		meta.push(h('span', { key: 'phase', className: 'gbt-chip', 'data-tone': tcPhaseTone(task), title: t('phaseCurrent') }, '▸ ' + tcPhaseLabel(task, t)))
-		// T-155 §8: the card names the session that owns it (no primary session).
 		if (typeof task.ownerSession === 'string' && task.ownerSession !== '') {
 			const ownerShort = ownerSessionShort(task.ownerSession)
-			meta.push(h('span', { key: 'owner', className: 'gbt-chip', 'data-owner-session': task.ownerSession, title: t('ownerSessionHint') + ' · ' + task.ownerSession }, '👤 ' + (ownerShort === '' ? task.ownerSession : ownerShort)))
+			meta.push(h('span', { key: 'owner', className: 'gbt-chip gbt-ownerchip', 'data-owner-session': task.ownerSession, title: t('ownerSessionHint') + ' · ' + task.ownerSession }, h('i', { className: 'gbt-ownerdot', 'aria-hidden': 'true' }), ownerShort === '' ? task.ownerSession : ownerShort))
 		}
-		if (task.assignee !== null && task.assignee !== undefined) meta.push(h('span', { key: 'who', className: 'gbt-chip', 'data-tone': 'running' }, task.assignee.name))
-		if (typeof task.requiredRole === 'string' && task.requiredRole !== '') {
-			meta.push(h('span', { key: 'role', className: 'gbt-chip', title: t('requiredRole') }, '🧩 ' + task.requiredRole))
+		const depCount = deps.length
+		if (depCount > 0 || task.status === 'pending') {
+			meta.push(h('span', { key: 'deps', className: 'gbt-chip', title: depCount === 0 ? t('dependencyNone') : deps.join(', ') }, t('depCount').replace('{n}', String(depCount))))
 		}
-		if (task.attempts > 0) meta.push(h('span', { key: 'attempts', className: 'gbt-chip', title: t('attempts') }, '↻ ' + String(task.attempts) + '/' + String(task.maxAttempts)))
-		// T-132: an investigation has no review/test/merge phase, so those chips
-		// are never rendered for it — not even from a stale hand-written record.
-		if (!investigate && review !== null) {
-			meta.push(
-		h('span', { key: 'review', className: 'gbt-chip', 'data-tone': tcReviewTone(review.status), title: t('reviewStatus') + ' · ' + t('reviewAttempt') + ' ' + String(tcRound(review)) }, '👁 ' + tcReviewLabel(review.status, t) + ' · #' + String(tcRound(review))),
-			)
-			if (review.status !== 'pending' && typeof review.by === 'string' && review.by !== '') {
-		meta.push(h('span', { key: 'reviewer', className: 'gbt-chip', title: t('reviewer') }, '👤 ' + review.by))
-			}
+		// A recorded verdict stays visible wherever the card sits (a failed test on a
+		// running card is a fact); a pending phase is only shown in that phase.
+		if (!investigate && review !== null && (task.status === 'reviewing' || task.status === 'testing' || task.status === 'done' || review.status !== 'pending')) {
+			meta.push(h('span', { key: 'review', className: 'gbt-chip', 'data-tone': tcReviewTone(review.status), title: t('reviewStatus') + ' · ' + t('reviewAttempt') + ' ' + String(tcRound(review)) }, '👁 ' + tcReviewLabel(review.status, t) + ' · #' + String(tcRound(review))))
+			if (task.status !== 'done' && review.status !== 'pending' && typeof review.by === 'string' && review.by !== '') meta.push(h('span', { key: 'reviewer', className: 'gbt-chip', title: t('reviewer') }, review.by))
 		}
-		if (!investigate && test !== null) {
-			meta.push(
-		h('span', { key: 'test', className: 'gbt-chip', 'data-tone': tcTestTone(test.status), title: t('testStatus') + ' · ' + t('testAttempt') + ' ' + String(tcRound(test)) }, '🧪 ' + tcTestLabel(test.status, t) + ' · #' + String(tcRound(test))),
-			)
-			if (typeof test.by === 'string' && test.by !== '') {
-		meta.push(h('span', { key: 'tester', className: 'gbt-chip', title: t('tester') }, '👤 ' + test.by))
-			}
+		if (!investigate && test !== null && (task.status === 'testing' || task.status === 'done' || test.status !== 'pending')) {
+			meta.push(h('span', { key: 'test', className: 'gbt-chip', 'data-tone': tcTestTone(test.status), title: t('testStatus') + ' · ' + t('testAttempt') + ' ' + String(tcRound(test)) }, '🧪 ' + tcTestLabel(test.status, t) + ' · #' + String(tcRound(test))))
+			if (task.status !== 'done' && typeof test.by === 'string' && test.by !== '') meta.push(h('span', { key: 'tester', className: 'gbt-chip', title: t('tester') }, test.by))
 		}
+		if (!investigate && merge !== null && task.status === 'done') meta.push(h('span', { key: 'merge', className: 'gbt-chip', 'data-tone': tcMergeTone(merge.status), title: t('mergeTitle') }, '⇄ ' + tcMergeLabel(merge.status, t)))
 		if (lease !== null) {
-			meta.push(
-		h(
-			'span',
-			{
-				key: 'lease',
-				className: 'gbt-chip',
-				'data-tone': lease.warn ? 'blocked' : 'waiting',
-				'data-lease': lease.expired === true ? 'expired' : lease.remind === true ? 'reminder' : 'ok',
-				title: lease.remind === true ? t('leaseReminder') : t('leaseLeft'),
-			},
-			lease.text,
-		),
-			)
+			meta.push(h('span', { key: 'lease', className: 'gbt-chip', 'data-tone': lease.warn ? 'blocked' : 'waiting', 'data-lease': lease.expired === true ? 'expired' : lease.remind === true ? 'reminder' : 'ok', title: lease.remind === true ? t('leaseReminder') : t('leaseLeft') }, lease.text))
 		}
-		if (fileCount > 0) meta.push(h('span', { key: 'files', className: 'gbt-chip' }, '🔒 ' + String(fileCount)))
-		if (!investigate && merge !== null) {
-			meta.push(h('span', { key: 'merge', className: 'gbt-chip', 'data-tone': tcMergeTone(merge.status), title: t('mergeTitle') }, '⇄ ' + tcMergeLabel(merge.status, t)))
-		}
-		if (!investigate && typeof task.target === 'string' && task.target !== '') meta.push(h('span', { key: 'target', className: 'gbt-chip', 'data-target-branch': task.target, title: t('targetBranch') }, '🎯 ' + task.target))
-		if (branch !== '') meta.push(h('span', { key: 'branch', className: 'gbt-chip', title: branch }, '⎇ ' + branch))
-		if (commit !== '') meta.push(h('span', { key: 'commit', className: 'gbt-chip', title: commit }, '● ' + commit.slice(0, 10)))
-		if (worktree !== '') meta.push(h('span', { key: 'worktree', className: 'gbt-chip', title: worktree }, '🌿 ' + tcBaseName(worktree)))
-		if (dispatchError !== null && task.status !== 'running') meta.push(h('span', { key: 'error', className: 'gbt-chip', 'data-tone': 'blocked', title: dispatchError }, '⚠ ' + t('dispatchError')))
-		if (tcStageQueued(task)) {
-			meta.push(h('span', { key: 'queued', className: 'gbt-chip', 'data-tone': 'waiting', 'data-queue': String(task.queuePosition) }, '⏳ ' + t('queuedChip').replace('{n}', String(task.queuePosition))))
-		}
+		if (fileCount > 0) meta.push(h('span', { key: 'files', className: 'gbt-chip', title: t('writeFiles') }, '🔒 ' + String(fileCount)))
+		if (task.attempts > 0) meta.push(h('span', { key: 'attempts', className: 'gbt-chip', title: t('attempts') }, '↻ ' + String(task.attempts) + '/' + String(task.maxAttempts)))
+		if (dispatchError !== null && task.status !== 'running') meta.push(h('span', { key: 'error', className: 'gbt-chip', 'data-tone': 'blocked', title: dispatchError }, t('dispatchError')))
+		if (tcStageQueued(task)) meta.push(h('span', { key: 'queued', className: 'gbt-chip', 'data-tone': 'waiting', 'data-queue': String(task.queuePosition) }, t('queuedChip').replace('{n}', String(task.queuePosition))))
 		const waiting = waitingChip(task, t, 'waiting')
 		if (waiting !== null) meta.push(waiting)
 		if (meta.length > 0) children.push(h('div', { key: 'meta', className: 'gbt-cardmeta' }, meta))
+		children.push(
+			h(
+				'div',
+				{ key: 'foot', className: 'gbt-cardfoot' },
+				// The state label is a DIRECT text child: the card face is read by the
+				// same text walker the panel tests use, and a nested dot element would
+				// hide it. The dot is CSS ::before.
+				h('span', { className: 'gbt-cardstate', 'data-state': stateKey, 'data-running': stateKey === 'running' || stateKey === 'ready' ? 'true' : 'false' }, stateLabel),
+				h('span', { className: 'gbt-cardtime', title: typeof task.updatedAt === 'string' ? task.updatedAt : '' }, elapsedText(task, now)),
+			),
+		)
+		// T-113: the user records the review/test verdict from the card.
 		if (verdictKind !== null) {
 			const title = verdictKind === 'review' ? t('verdictReviewTitle') : t('verdictTestTitle')
 			const passing = verdictKind === 'review' ? 'approveReview' : 'passTest'
 			const blocking = verdictKind === 'review' ? 'requestChanges' : 'failTest'
 			const needsReason = verdictOpen === blocking
 			children.push(
-		h(
-			'div',
-			{ key: 'verdict', className: 'gbt-cardverdict', 'data-verdict-phase': verdictKind },
-			h('div', { className: 'gbt-cardverdicthead' }, title),
-			h(
-				'div',
-				{ className: 'gbt-cardverdictactions' },
 				h(
-			'button',
-			{
-				type: 'button',
-				className: 'gbt-btn',
-				// T-140: the positive verdict is the card's primary action;
-				// the blocking one stays a danger outline.
-				'data-variant': 'primary',
-				'data-verdict-action': passing,
-				onClick: function (clickEvent) {
-					if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation()
-					recordVerdict(passing, verdictKind === 'test' ? { evidence: '' } : {})
-				},
-			},
-			verdictKind === 'review' ? t('verdictReviewPass') : t('verdictTestPass'),
+					'div',
+					{ key: 'verdict', className: 'gbt-cardverdict', 'data-verdict-phase': verdictKind },
+					h('div', { className: 'gbt-cardverdicthead' }, title),
+					h(
+						'div',
+						{ className: 'gbt-cardverdictactions' },
+						h(
+							'button',
+							{ type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-verdict-action': passing, onClick: function (clickEvent) { if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation(); recordVerdict(passing, verdictKind === 'test' ? { evidence: '' } : {}) } },
+							verdictKind === 'review' ? t('verdictReviewPass') : t('verdictTestPass'),
+						),
+						h(
+							'button',
+							{ type: 'button', className: 'gbt-btn', 'data-variant': 'danger', 'data-verdict-action': blocking, 'data-verdict-needs-reason': 'true', onClick: function (clickEvent) { if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation(); setVerdictOpen(blocking) } },
+							verdictKind === 'review' ? t('verdictReviewReject') : t('verdictTestFail'),
+						),
+					),
+					needsReason
+						? h(
+							'div',
+							{ className: 'gbt-cardverdictform', 'data-verdict-form': 'true' },
+							h('label', { className: 'gbt-footnote' }, t('verdictReasonLabel')),
+							h('textarea', { rows: 3, value: verdictReason, 'data-verdict-reason': 'true', onInput: function (inputEvent) { setVerdictReason(String(inputEvent.target.value)) }, onClick: function (clickEvent) { if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation() } }),
+							h(
+								'div',
+								{ className: 'gbt-cardverdictactions' },
+								h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-verdict-submit': 'true', disabled: verdictReason.trim() === '', title: verdictReason.trim() === '' ? t('verdictReasonRequired') : undefined, onClick: function (clickEvent) { if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation(); if (verdictReason.trim() !== '') recordVerdict(blocking, verdictKind === 'test' ? { evidence: verdictReason.trim() } : { reasons: verdictReason.trim() }) } }, t('verdictSubmit')),
+								h('button', { type: 'button', className: 'gbt-btn', 'data-verdict-cancel': 'true', onClick: function () { setVerdictOpen(null); setVerdictReason('') } }, t('verdictCancel')),
+							),
+						)
+						: null,
 				),
-				h(
-			'button',
-			{
-				type: 'button',
-				className: 'gbt-btn',
-				'data-variant': 'danger',
-				'data-verdict-action': blocking,
-				// The blocking verdict needs a reason before it can be recorded.
-				'data-verdict-needs-reason': 'true',
-				onClick: function (clickEvent) {
-					if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation()
-					setVerdictOpen(blocking)
-				},
-			},
-			verdictKind === 'review' ? t('verdictReviewReject') : t('verdictTestFail'),
-				),
-			),
-			needsReason
-				? h(
-			'div',
-			{ className: 'gbt-cardverdictform', 'data-verdict-form': 'true' },
-			h('label', { className: 'gbt-footnote' }, t('verdictReasonLabel')),
-			h('textarea', {
-				rows: 3,
-				value: verdictReason,
-				'data-verdict-reason': 'true',
-				onInput: function (inputEvent) { setVerdictReason(String(inputEvent.target.value)) },
-				onClick: function (clickEvent) { if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation() },
-			}),
-			h(
-				'div',
-				{ className: 'gbt-cardverdictactions' },
-				h(
-					'button',
-					{
-				type: 'button',
-				className: 'gbt-btn',
-				'data-variant': 'primary',
-				'data-verdict-submit': 'true',
-				disabled: verdictReason.trim() === '',
-				title: verdictReason.trim() === '' ? t('verdictReasonRequired') : undefined,
-				onClick: function (clickEvent) {
-					if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation()
-					if (verdictReason.trim() !== '') recordVerdict(blocking, verdictKind === 'test' ? { evidence: verdictReason.trim() } : { reasons: verdictReason.trim() })
-				},
-					},
-					t('verdictSubmit'),
-				),
-				h('button', { type: 'button', className: 'gbt-btn', 'data-verdict-cancel': 'true', onClick: function () { setVerdictOpen(null); setVerdictReason('') } }, t('verdictCancel')),
-			),
 			)
-				: null,
-			)
-		)
 		}
 		if (deps.length > 0) {
 			children.push(
-		h(
-			'div',
-			{ key: 'deps', className: 'gbt-cardmeta' },
-			deps.map(function (id) {
-				return h('span', { key: id, className: 'gbt-chip', 'data-tone': toneForDependency(props.allTasks, id) }, '↳ ' + id)
-			}),
-		),
+				h(
+					'div',
+					{ key: 'deps', className: 'gbt-cardmeta gbt-carddeps' },
+					deps.map(function (id) {
+						return h('span', { key: id, className: 'gbt-chip', 'data-tone': toneForDependency(props.allTasks, id) }, '↳ ' + id)
+					}),
+				),
 			)
 		}
 		return h(
 			'article',
 			{
-		className: 'gbt-card',
-		'data-kind': tcKindOf(task),
-		'data-selected': props.selected === true ? 'true' : 'false',
-		role: 'button',
-		tabIndex: 0,
-		onClick: function () { props.onOpen(task.id) },
-		onKeyDown: function (event) {
-			if (event.key === 'Enter' || event.key === ' ') {
-				event.preventDefault()
-				props.onOpen(task.id)
-			}
-		},
+				className: 'gbt-card',
+				'data-kind': tcKindOf(task),
+				'data-selected': props.selected === true ? 'true' : 'false',
+				role: 'button',
+				tabIndex: 0,
+				onClick: function () { props.onOpen(task.id) },
+				onKeyDown: function (event) {
+					if (event.key === 'Enter' || event.key === ' ') {
+						event.preventDefault()
+						props.onOpen(task.id)
+					}
+				},
 			},
 			children,
 		)
 	}
-
 
 	return TaskCard
 }
@@ -3392,7 +3534,9 @@ module.exports = { createTaskCard }
 /**
  * Column view module.
  *
- * Extracted from the views fragment; h and TaskCard are injected by the build.
+ * T-158: a lane head now carries the lane's count AND (for 待派发) the two
+ * ready/waiting sub-counts, a done lane can carry an archive summary, and an
+ * empty lane marks itself so the board can narrow it instead of stretching it.
  */
 function createColumn(deps) {
 	const h = deps.h
@@ -3405,48 +3549,61 @@ function createColumn(deps) {
 		const count = typeof props.count === 'number' ? props.count : group.tasks.length
 		const visible = props.visibleTasks !== undefined ? props.visibleTasks : group.tasks
 		const showBody = collapsed !== true || props.previewWhenCollapsed === true
+		const empty = visible.length === 0 && (props.summary === undefined || props.summary === null)
+		const subcounts = props.subcounts === undefined || props.subcounts === null ? null : props.subcounts
+		const head = h(
+			'div',
+			{
+				className: 'gbt-colhead',
+				role: 'button',
+				tabIndex: 0,
+				'data-collapsible': 'true',
+				title: collapsed ? t('expandColumn') : t('collapseColumn'),
+				onClick: props.onToggle,
+			},
+			h('span', { className: 'gbt-colchev', 'aria-hidden': 'true' }, collapsed ? '▸' : '▾'),
+			h('span', { className: 'gbt-colname' }, group.label),
+			subcounts === null ? null : h('span', { className: 'gbt-colsubcounts', 'data-col-subcounts': 'true' }, [
+				h('span', { key: 'ready', className: 'gbt-colsubcount', 'data-subcount': 'ready', title: t('ready') }, t('readyCount').replace('{n}', String(subcounts.ready))),
+				h('span', { key: 'waiting', className: 'gbt-colsubcount', 'data-subcount': 'waiting', title: t('waiting') }, t('waitingCount').replace('{n}', String(subcounts.waiting))),
+			]),
+			h('span', { className: 'gbt-colcount' }, String(count)),
+			props.note === undefined || props.note === null ? null : h('span', { className: 'gbt-colnote', 'data-col-note': 'investigating' }, props.note),
+		)
+
 		return h(
 			'section',
-			{ className: 'gbt-col', 'data-group': group.key, 'data-collapsed': collapsed ? 'true' : 'false' },
-			h(
-		'div',
-		{
-			className: 'gbt-colhead',
-			role: 'button',
-			tabIndex: 0,
-			'data-collapsible': 'true',
-			title: collapsed ? t('expandColumn') : t('collapseColumn'),
-			onClick: props.onToggle,
-		},
-		h('span', { className: 'gbt-colchev', 'aria-hidden': 'true' }, collapsed ? '▸' : '▾'),
-		h('span', null, group.key === 'done' ? group.label + ' · ' : group.label),
-		h('span', { className: 'gbt-colcount' }, String(count)),
-		props.note === undefined || props.note === null ? null : h('span', { className: 'gbt-colnote', 'data-col-note': 'investigating' }, props.note),
-			),
+			{ className: 'gbt-col', 'data-group': group.key, 'data-collapsed': collapsed ? 'true' : 'false', 'data-empty': empty ? 'true' : 'false' },
+			head,
 			showBody === false
-		? null
-		: h(
-				'div',
-				{ className: 'gbt-cards' },
-				visible.length === 0
-			? h('div', { className: 'gbt-empty' }, t('noTasks'))
-			: visible.map(function (task) {
-					return h(TaskCard, {
-				key: task.id,
-				task: task,
-				allTasks: props.allTasks,
-				t: t,
-				now: props.now,
-				selected: props.selectedId === task.id,
-				onOpen: props.onOpen,
-				onVerdict: props.onVerdict,
-					})
-				}),
-			),
+				? null
+				: h(
+					'div',
+					{ className: 'gbt-cards' },
+					props.summary === undefined || props.summary === null ? null : props.summary,
+					visible.length === 0
+						? h(
+							'div',
+							{ className: 'gbt-empty gbt-emptyslim', 'data-col-empty': group.key },
+							props.emptyTitle === undefined || props.emptyTitle === null ? null : h('span', { className: 'gbt-emptytitle' }, props.emptyTitle),
+							h('span', null, props.emptyHint === undefined || props.emptyHint === null ? t('noTasks') : props.emptyHint),
+						)
+						: visible.map(function (task) {
+							return h(TaskCard, {
+								key: task.id,
+								task: task,
+								allTasks: props.allTasks,
+								t: t,
+								now: props.now,
+								selected: props.selectedId === task.id,
+								onOpen: props.onOpen,
+								onVerdict: props.onVerdict,
+							})
+						}),
+				),
 			props.footer === undefined || props.footer === null ? null : h('div', { className: 'gbt-colfoot' }, props.footer),
 		)
 	}
-
 
 	return Column
 }
@@ -3464,13 +3621,15 @@ module.exports = { createColumn }
 /**
  * Board view module.
  *
- * Extracted from the views fragment; React, h, the two card/column components,
- * selectors and the mutable board UI state are injected by the build.
+ * T-158 (夜航作战板): six lanes instead of seven. ready + waiting collapse into
+ * one 待派发 lane whose head carries BOTH counts; the done lane always shows the
+ * newest cards plus the archive entry point, and an empty lane narrows instead of
+ * stretching. The kind filter lives in the panel toolbar now, so the board only
+ * reads props.kind.
  */
 function createBoard(deps) {
 	const React = deps.React
 	const h = deps.h
-	const TaskCard = deps.TaskCard
 	const Column = deps.Column
 	const tcTime = deps.tcTime
 	const tcKindOf = deps.tcKindOf
@@ -3481,54 +3640,44 @@ function createBoard(deps) {
 	const boardUiState = deps.boardUiState
 
 	function Board(props) {
-		// T-135: the board is its own horizontal scrollport; this ref lets the
-		// effect below park it on the first column that actually has cards.
+		// T-135: the board is its own scrollport and parks on the first lane with
+		// cards; T-158 keeps that behaviour for the six-lane layout.
 		const boardRef = React.useRef(null)
 		const t = props.t
 		const tasks = props.snapshot.tasks
 		const counts = props.snapshot.counts === undefined || props.snapshot.counts === null ? {} : props.snapshot.counts
-		// Recently finished work is the first thing a reader looks for; the done
-		// and blocked columns are therefore newest-first. The other columns keep
-		// the host's scheduling order (priority, then age).
 		function recentFirst(left, right) {
 			const leftAt = tcTime(left.updatedAt) === null ? tcTime(left.createdAt) : tcTime(left.updatedAt)
 			const rightAt = tcTime(right.updatedAt) === null ? tcTime(right.createdAt) : tcTime(right.updatedAt)
 			const delta = (rightAt === null ? 0 : rightAt) - (leftAt === null ? 0 : leftAt)
 			return delta !== 0 ? delta : String(right.id).localeCompare(String(left.id))
 		}
-		// T-132: the kind filter narrows the whole board. The running note counts
-		// the investigations the FILTERED board contains (under the Dev filter it
-		// must not advertise investigations the filter hides), and the done column
-		// count/footer follow the filter instead of the global host total.
-		const kindFilter = boardUiState.kind === 'dev' || boardUiState.kind === 'investigate' ? boardUiState.kind : 'all'
+		const kindFilter = props.kind === 'dev' || props.kind === 'investigate' ? props.kind : 'all'
 		const filtered = kindFilter === 'all' ? tasks : tasks.filter(function (task) { return tcKindOf(task) === kindFilter })
 		const investigatingRunning = filtered.filter(function (task) { return tcKindOf(task) === 'investigate' && task.status === 'running' }).length
 		const visibleDone = filtered.filter(function (task) { return task.status === 'done' }).slice().sort(recentFirst)
 		const doneCount = kindFilter === 'all' && Number.isFinite(counts.done) ? counts.done : visibleDone.length
+		const pending = filtered.filter(function (task) { return task.status === 'pending' })
+		const readyTasks = pending.filter(function (task) { return task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready' })
+		const waitingTasks = pending.filter(function (task) { return !(task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready') })
+		// T-158: six lanes. 待派发 covers BOTH ready and waiting cards; its head
+		// shows the two numbers so the split stays readable without a seventh lane.
 		const groups = [
-			{ key: 'ready', label: t('ready'), tasks: filtered.filter(function (task) { return task.status === 'pending' && task.dependency !== undefined && task.dependency.state === 'ready' }) },
-			{ key: 'waiting', label: t('waiting'), tasks: filtered.filter(function (task) { return task.status === 'pending' && (task.dependency === undefined || task.dependency.state !== 'ready') }) },
+			{ key: 'dispatch', label: t('dispatchCol'), tasks: readyTasks.concat(waitingTasks), subcounts: { ready: readyTasks.length, waiting: waitingTasks.length } },
 			{ key: 'running', label: t('runningCol'), tasks: filtered.filter(function (task) { return task.status === 'running' }) },
 			{ key: 'reviewing', label: t('reviewingCol'), tasks: filtered.filter(function (task) { return task.status === 'reviewing' }) },
 			{ key: 'testing', label: t('testingCol'), tasks: filtered.filter(function (task) { return task.status === 'testing' }) },
 			{ key: 'done', label: t('doneCol'), tasks: visibleDone },
-			{
-		key: 'blocked',
-		label: t('blockedCol'),
-		tasks: filtered.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst),
-			},
+			{ key: 'blocked', label: t('blockedCol'), tasks: filtered.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst) },
 		]
-		// T-135: where the scrollport should sit. Computing it during render keeps
-		// the attribute testable; the effect applies it only when the target is
-		// not already fully visible, so manual panning is never fought.
 		const scrollTarget = tcFirstNonEmptyColumn(groups)
 		React.useEffect(function () {
 			const board = boardRef.current
 			if (board === null || board === undefined) return
 			if (typeof board.scrollLeft !== 'number') return
 			if (scrollTarget === null) {
-		board.scrollLeft = 0
-		return
+				board.scrollLeft = 0
+				return
 			}
 			if (typeof board.querySelector !== 'function') return
 			const target = board.querySelector('[data-group="' + scrollTarget + '"]')
@@ -3539,94 +3688,79 @@ function createBoard(deps) {
 			const width = typeof target.offsetWidth === 'number' ? target.offsetWidth : 0
 			if (left >= scrollLeft && left + width <= scrollLeft + clientWidth) return
 			board.scrollLeft = Math.max(0, left - 12)
-		}, [tasks.length, boardUiState.kind, scrollTarget])
-		const kindFilterBar = h(
-			'div',
-			{ className: 'gbt-kindfilter', 'data-kind-filter': kindFilter, title: t('kindFilterHint') },
-			[
-		['all', t('kindFilterAll')],
-		['dev', t('kindDev')],
-		['investigate', t('kindInvestigate')],
-			].map(function (entry) {
-		return h(
-			'button',
-			{
-				key: entry[0],
-				type: 'button',
-				className: 'gbt-kindfilterbtn',
-				'data-kind-filter': entry[0],
-				'data-active': kindFilter === entry[0] ? 'true' : 'false',
-				'aria-pressed': kindFilter === entry[0] ? 'true' : 'false',
-				onClick: function () {
-			boardUiState.kind = entry[0]
-			if (typeof props.onKindFilterChange === 'function') props.onKindFilterChange()
-				},
-			},
-			entry[1],
-		)
-			}),
-		)
+		}, [tasks.length, kindFilter, scrollTarget])
 		if (tasks.length === 0) return h('div', { className: 'gbt-empty' }, t('emptyBoard'))
 		function toggle(key) {
 			tcWriteColumnCollapsed(key, !tcColumnCollapsed(key))
 			if (props.onColumnToggle !== undefined) props.onColumnToggle()
 		}
+		const donePreview = visibleDone.slice(0, DONE_COLUMN_PREVIEW)
+		// T-158 review: an EMPTY done lane must stay empty (and narrow). The archive
+		// summary only exists when there is something to archive.
+		const doneSummary = doneCount === 0 ? null : h(
+			'div',
+			{ className: 'gbt-done-summary', 'data-done-summary': 'true' },
+			h('span', null, t('doneAllSummary').replace('{total}', String(doneCount)).replace('{recent}', String(donePreview.length))),
+			h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'done-all', onClick: function () { if (props.onOpenDoneAll !== undefined) props.onOpenDoneAll() } }, t('viewArchive')),
+		)
 		const board = h(
 			'div',
 			{ className: 'gbt-board', ref: boardRef, 'data-scroll-target': scrollTarget === null ? '' : scrollTarget },
 			groups.map(function (group) {
-		const collapsed = tcColumnCollapsed(group.key)
-		// The done column folds to the newest five cards, not to nothing:
-		// the preview must stay readable while the archive stays out of the way.
-		if (group.key === 'done') {
-			const visible = collapsed ? group.tasks.slice(0, DONE_COLUMN_PREVIEW) : group.tasks
-			return h(Column, {
-				key: group.key,
-				group: group,
-				count: doneCount,
-				visibleTasks: visible,
-				collapsed: collapsed,
-				allTasks: tasks,
-				previewWhenCollapsed: true,
-				t: t,
-				now: props.now,
-				selectedId: props.selectedId,
-				onOpen: props.onOpen,
-				onVerdict: props.onVerdict,
-				onToggle: function () { toggle(group.key) },
-				footer:
-			doneCount === 0
-				? null
-				: h(
-				'button',
-				{
-					type: 'button',
-					className: 'gbt-linkbtn',
-					'data-action': 'done-all',
-					onClick: function () { if (props.onOpenDoneAll !== undefined) props.onOpenDoneAll() },
-				},
-				t('viewAllDone') + ' · ' + String(doneCount),
-					),
-			})
-		}
-		return h(Column, {
-			key: group.key,
-			group: group,
-			collapsed: collapsed,
-			allTasks: tasks,
-			t: t,
-			now: props.now,
-			selectedId: props.selectedId,
-			note: group.key === 'running' && investigatingRunning > 0 ? t('investigatingCount').replace('{n}', String(investigatingRunning)) : null,
-		onOpen: props.onOpen,
-		onVerdict: props.onVerdict,
-		onToggle: function () { toggle(group.key) },
-		})
+				const collapsed = tcColumnCollapsed(group.key)
+				if (group.key === 'done') {
+					return h(Column, {
+						key: group.key,
+						group: group,
+						count: doneCount,
+						visibleTasks: collapsed ? donePreview : visibleDone,
+						summary: doneSummary,
+						collapsed: collapsed,
+						allTasks: tasks,
+						previewWhenCollapsed: true,
+						t: t,
+						now: props.now,
+						selectedId: props.selectedId,
+						onOpen: props.onOpen,
+						onVerdict: props.onVerdict,
+						onToggle: function () { toggle(group.key) },
+					})
+				}
+				if (group.key === 'blocked') {
+					return h(Column, {
+						key: group.key,
+						group: group,
+						collapsed: collapsed,
+						allTasks: tasks,
+						t: t,
+						now: props.now,
+						selectedId: props.selectedId,
+						emptyTitle: t('noBlockedTitle'),
+						emptyHint: t('noBlockedHint'),
+						onOpen: props.onOpen,
+						onVerdict: props.onVerdict,
+						onToggle: function () { toggle(group.key) },
+					})
+				}
+				return h(Column, {
+					key: group.key,
+					group: group,
+					collapsed: collapsed,
+					allTasks: tasks,
+					t: t,
+					now: props.now,
+					selectedId: props.selectedId,
+					subcounts: group.subcounts === undefined ? null : group.subcounts,
+					note: group.key === 'running' && investigatingRunning > 0 ? t('investigatingCount').replace('{n}', String(investigatingRunning)) : null,
+					onOpen: props.onOpen,
+					onVerdict: props.onVerdict,
+					onToggle: function () { toggle(group.key) },
+				})
 			}),
 		)
-		return h('div', { className: 'gbt-boardwrap', 'data-board-kind': kindFilter }, kindFilterBar, board)
-	}
 
+		return h('div', { className: 'gbt-boardwrap', 'data-board-kind': kindFilter }, board)
+	}
 
 	return Board
 }
@@ -7325,6 +7459,9 @@ function createTaskCenter(deps) {
 	// T-155: one workspace-follow driver per panel. key memoises the attempt per
 	// (board, chat) pair, so a setup/failed workspace is not retried on every poll.
 	const workspaceSwitch = { key: null, status: 'idle', board: null, target: null, error: '', missing: [], fade: false, fadeFrames: false }
+	// T-158: the board kind filter now lives in the toolbar row (not inside the
+	// board scrollport), so its state belongs to the panel shell.
+	const panelBoardUi = { kind: 'all' }
 
 	function TaskCenter(props) {
 		const t = useTranslate()
@@ -7370,6 +7507,13 @@ function createTaskCenter(deps) {
 			panelState.teamSessionCopied = next
 			setTeamSessionCopiedState(next)
 		}
+		// T-158: the two-row header keeps sessions, the team and the overflow
+		// actions in popovers; all three are ALWAYS rendered and merely hidden, so
+		// a closed popover still has its rows/actions in the DOM for tests and for
+		// the next open without a remount.
+		const [sessionsOpen, setSessionsOpen] = React.useState(false)
+		const [teamOpen, setTeamOpen] = React.useState(false)
+		const [menuOpen, setMenuOpen] = React.useState(false)
 		function openProjectDialog() {
 			projectFormState.value = null
 			// T-155 §6: a fresh dialog starts without the previous failure's items.
@@ -7466,104 +7610,6 @@ function createTaskCenter(deps) {
 				: projectTeam === null
 					? typeof snapshot.project === 'string' && snapshot.project !== ''
 					: projectTeam.available !== false && panelDispatchReady !== true
-		const sessionChips =
-			scopeSessions.length === 0
-				? null
-				: h(
-					'div',
-					{ className: 'gbt-sessions', 'data-sessions': 'true', 'data-panel-session': scopePanelSession === null ? '' : scopePanelSession },
-					[h('span', { key: 'label', className: 'gbt-sessionslabel' }, t('sessionsLabel'))].concat(
-						scopeSessions.map(function (row, index) {
-							const current = scopePanelSession !== null && row.sessionId === scopePanelSession
-							const lead = row.team !== null && row.team !== undefined && typeof row.team.lead === 'string' ? row.team.lead : null
-							const cards = row.cards !== null && row.cards !== undefined && Number.isFinite(row.cards.owned) ? row.cards.owned : 0
-							return h(
-								'span',
-								{
-									key: 'session-' + String(index),
-									className: 'gbt-session',
-									'data-session': String(row.sessionId),
-									'data-current': current ? 'true' : 'false',
-									'data-status': typeof row.status === 'string' ? row.status : 'unknown',
-									'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
-									'data-stage-review': row.stageReady !== undefined && row.stageReady !== null && row.stageReady.review === true ? 'true' : 'false',
-									'data-stage-test': row.stageReady !== undefined && row.stageReady !== null && row.stageReady.test === true ? 'true' : 'false',
-									title: String(row.sessionId) + (lead === null ? '' : ' · ' + t('workersLead') + ' ' + lead),
-								},
-								h('b', null, sessionShortOf(row.sessionId)),
-								current ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
-								lead === null ? null : h('span', { className: 'gbt-sessionsmeta', 'data-session-lead': 'true' }, lead),
-								h('span', null, t('sessionsCards').replace('{n}', String(cards))),
-								h('span', null, sessionStatusLabel(row.status)),
-							)
-						}),
-					),
-				)
-		// Team belongs to another project: INFORMATION only. The workspace scope bar is
-		// the single place a workspace is switched (T-155 §2/§7).
-		const teamInfoLine =
-			projectTeam !== null && projectTeam.available !== false && projectTeam.projectMatch === false && typeof projectTeam.project === 'string' && projectTeam.project !== ''
-				? h(
-					'div',
-					{ className: 'gbt-projectsync', 'data-team-info': 'true', 'data-team-project': String(projectTeam.project), 'data-panel-project': String(snapshot.project) },
-					h('span', { className: 'gbt-projectsynccopy' }, t('projectTeamMismatch').replace('{team}', String(projectTeam.project)).replace('{panel}', String(snapshot.project)) + ' · ' + t('projectTeamScopeHint')),
-					h(
-						'div',
-						{ className: 'gbt-actions' },
-						h(
-							'button',
-							{
-								type: 'button',
-								className: 'gbt-btn',
-								'data-action': 'copy-team-session',
-								'data-session': typeof projectTeam.session === 'string' ? projectTeam.session : typeof projectTeam.leadSession === 'string' ? projectTeam.leadSession : '',
-								onClick: function () {
-									copyTeamSession(typeof projectTeam.session === 'string' ? projectTeam.session : projectTeam.leadSession)
-								},
-							},
-							t('projectTeamCopySession'),
-						),
-						teamSessionCopied === null
-							? null
-							: h('span', { className: 'gbt-footnote', role: 'status', 'aria-live': 'polite', 'data-copy-toast': teamSessionCopied === 'failed' ? 'failed' : 'copied' }, teamSessionCopied === 'failed' ? t('projectTeamCopyFailed') : t('sessionIdCopiedToast')),
-					),
-				)
-				: null
-		const teamWaitLine = teamWaitingWorker
-			? h(
-				'div',
-				{ className: 'gbt-projectsync', 'data-team-waiting-worker': 'true', 'data-tone': 'warn' },
-				h('span', { className: 'gbt-projectsynccopy' }, t('teamWaitingWorker')),
-				h('div', { className: 'gbt-actions' }, h('span', { className: 'gbt-teamwait', 'data-team-waiting': 'true' }, t('projectTeamWaiting'))),
-			)
-			: null
-		// Legacy fallback for hosts without the explicit scope: one team line, labelled
-		// as THIS SESSION's team — never "the project team".
-		const legacyTeamLine =
-			scopeSessions.length > 0
-				? null
-				: projectTeam === null
-					? null
-					: h(
-						'p',
-						{
-							className: 'gbt-projectteam',
-							'data-project-team': projectTeam.ok === true ? 'ok' : projectTeam.available === false ? 'unavailable' : 'missing',
-							'data-team-lead': projectTeam.lead === null || projectTeam.lead === undefined ? '' : String(projectTeam.lead),
-							title: (function () {
-								const parts = []
-								if (projectTeam.lead !== null && projectTeam.lead !== undefined && /^session-/.test(String(projectTeam.lead))) parts.push(String(projectTeam.lead))
-								if (snapshot.nextStep !== null && snapshot.nextStep !== undefined) parts.push(String(snapshot.nextStep.instruction))
-								return parts.join(' · ')
-							})(),
-						},
-						t('projectTeamCurrent') + '：' +
-							(projectTeam.ok === true
-								? t('projectTeamOk').replace('{lead}', tcLeadText(projectTeam.lead, t)).replace('{n}', String(Array.isArray(projectTeam.members) ? projectTeam.members.length : 0))
-								: projectTeam.available === false
-									? t('projectTeamUnavailable')
-									: t('projectTeamMissing')),
-					)
 		const tabs = [
 			{ key: 'board', label: t('boardTab') },
 			{ key: 'queue', label: t('queue') },
@@ -7571,84 +7617,6 @@ function createTaskCenter(deps) {
 			{ key: 'status', label: t('statusTab') },
 			{ key: 'roles', label: t('rolesTab') },
 		]
-
-		const header = h(
-			'header',
-			{ className: 'gbt-header' },
-			h(
-		'div',
-		{ className: 'gbt-brand' },
-		h('div', { className: 'gbt-mark' }, '▦'),
-		h(
-			'div',
-			null,
-			h(
-				'div',
-				{ className: 'gbt-titleline' },
-				h('h1', { className: 'gbt-title' }, t('title')),
-				projectSourceLabel(projectSourceKey(snapshot), t) === null
-			? null
-			: h(
-					'span',
-					{ className: 'gbt-projectsource', 'data-project-source': projectSourceKey(snapshot), title: snapshot.projectWarning === null ? t('projectSourceHint') : snapshot.projectWarning },
-					projectSourceLabel(projectSourceKey(snapshot), t),
-				),
-			),
-			h('p', { className: 'gbt-project', title: snapshot.project || '' }, snapshot.project === null ? t('projectUnknown') : snapshot.project),
-			legacyTeamLine,
-			sessionChips,
-			teamInfoLine,
-			teamWaitLine,
-
-		),
-			),
-			h(
-		'div',
-		{ className: 'gbt-counts' },
-		h('span', { className: 'gbt-count' }, t('ready'), h('b', null, String(counts.ready || 0))),
-		h('span', { className: 'gbt-count' }, t('waiting'), h('b', null, String(Math.max(0, (counts.pending || 0) - (counts.ready || 0))))),
-		h('span', { className: 'gbt-count' }, t('runningCol'), h('b', null, String(counts.running || 0))),
-		h('span', { className: 'gbt-count' }, t('reviewingCol'), h('b', null, String(counts.reviewing || 0))),
-		h('span', { className: 'gbt-count' }, t('testingCol'), h('b', null, String(counts.testing || 0))),
-		h('span', { className: 'gbt-count' }, t('doneCol'), h('b', null, String(counts.done || 0))),
-		h('span', { className: 'gbt-count' }, t('blockedCol'), h('b', null, String((counts.blocked || 0) + (counts.cancelled || 0)))),
-			),
-			h(
-		'div',
-		{ className: 'gbt-controls' },
-		h('button', {
-			type: 'button',
-			className: 'gbt-btn',
-			'data-variant': active ? undefined : 'primary',
-			'data-busy': isBusy('start') || isBusy('pause') ? 'true' : 'false',
-			onClick: toggleDispatch,
-			disabled: snapshot.source === 'error' || snapshot.project === null || busy !== null,
-		}, isBusy('start') || isBusy('pause') ? h('span', null, h('span', { className: 'gbt-spinner' }), active ? t('pausing') : t('starting')) : active ? '⏸ ' + t('pause') : '▶ ' + t('start')),
-		h('button', { type: 'button', className: 'gbt-btn', onClick: function () { startEdit(null) }, disabled: snapshot.project === null }, '+ ' + t('newTask')),
-		h('button', { type: 'button', className: 'gbt-btn', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
-		snapshot.project === null || snapshot.project === undefined
-			? null
-			: h('button', { type: 'button', className: 'gbt-btn', onClick: function () { openProjectDialog() } }, '⌂ ' + t('project')),
-		h('button', { type: 'button', className: 'gbt-btn', onClick: function () { setSettingsOpen(true) } }, '⚙ ' + t('settings')),
-			),
-		)
-
-		const statusline = h(
-			'div',
-			{ className: 'gbt-statusline' },
-			h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }),
-			h('span', null, active ? t('running') : t('paused')),
-			h('span', null, '· ' + String(counts.total || tasks.length) + ' ' + t('taskCount')),
-			h('span', null, '· ' + t('maxConcurrent') + ' ' + String(dispatch.maxConcurrent === undefined ? 3 : dispatch.maxConcurrent)),
-			h('span', null, '· ' + t('queue') + ' ' + String(queue.length)),
-			scheduler !== null && scheduler !== undefined && scheduler.lastTickAt !== null
-		? h('span', null, '· tick ' + tcAgo(scheduler.lastTickAt, now))
-		: null,
-			scheduler !== null && scheduler !== undefined && scheduler.lastError !== null
-		? h('span', { style: { color: 'var(--dsw-alias-state-error-primary)' } }, '· ' + String(scheduler.lastError))
-		: null,
-			h('span', { style: { marginLeft: 'auto' } }, t('subtitle')),
-		)
 
 		// T-155 §2/§3: the ONE workspace scope bar. It shows the board workspace and the
 		// current chat workspace, auto-follows the chat workspace when it is a valid
@@ -7738,6 +7706,12 @@ function createTaskCenter(deps) {
 			})
 		}, [wsKey, workspaceMismatch, workspaceTick])
 		const workspaceActions = []
+		// T-158: the chip's ONE explicit action. While the automatic follow is in
+		// flight the button re-runs it (a stuck poll can always be retried); a
+		// failure keeps the retry below.
+		if (workspaceMismatch === true && (workspaceState === 'switching' || workspaceState === 'same' || workspaceState === 'followed')) {
+			workspaceActions.push(h('button', { key: 'follow', type: 'button', className: 'gbt-btn', 'data-size': 'sm', 'data-action': 'workspace-follow', onClick: retryWorkspace }, t('workspaceFollowAction')))
+		}
 		if (workspaceState === 'failed') {
 			workspaceActions.push(h('button', { key: 'retry', type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'workspace-retry', onClick: retryWorkspace }, t('workspaceRetry')))
 		} else if (workspaceState === 'setup' || workspaceState === 'unknown') {
@@ -7759,10 +7733,15 @@ function createTaskCenter(deps) {
 			if (workspaceState === 'unknown') return t('workspaceUnknown')
 			return '✓ ' + (workspaceState === 'followed' ? t('workspaceFollowed') : t('workspaceSame'))
 		}
+		// T-158: only a workspace that is NOT settled needs a chip (the steady state
+		// "same workspace" was a full-width box in the header). Mismatch, switching,
+		// setup and failure keep it — that is the ONE switch entry point.
 		const workspaceBar =
 			boardWorkspace === null && chatWorkspace === null
 				? null
-				: h(
+				: workspaceState === 'same' || workspaceState === 'followed'
+					? null
+					: h(
 					'div',
 					{
 						className: 'gbt-workspacebar',
@@ -7780,6 +7759,312 @@ function createTaskCenter(deps) {
 					h('span', { key: 'state', className: 'gbt-workspacestate', 'data-workspace-tone': workspaceState === 'failed' ? 'error' : workspaceState === 'setup' || workspaceState === 'unknown' ? 'warn' : undefined }, workspaceStateText()),
 					workspaceActions.length === 0 ? null : h('span', { key: 'actions', className: 'gbt-workspaceactions' }, workspaceActions),
 				)
+		// ── T-158 two-row header ────────────────────────────────────────────────
+		// Row 1: identity + context pills + workspace scope chip, then the ONE
+		// primary action and the "more" popover. Row 2: tabs + kind filter +
+		// refresh. The seven-count strip, the standalone status line and the flat
+		// session chip row are gone; their facts live in the pills, the column
+		// heads and the footer.
+		function closePopovers() {
+			setSessionsOpen(false)
+			setTeamOpen(false)
+			setMenuOpen(false)
+		}
+		const projectName = baseNameOf(snapshot.project)
+		const projectLabel = projectName === null ? t('projectUnknown') : projectName
+		const panelSessionId = scopePanelSession
+		const copySessionValue =
+			panelSessionId !== null
+				? panelSessionId
+				: projectTeam !== null && typeof projectTeam.session === 'string'
+					? projectTeam.session
+					: projectTeam !== null && typeof projectTeam.leadSession === 'string'
+						? projectTeam.leadSession
+						: ''
+		// T-158: the pill only ever reads dispatchReady. No team data at all is
+		// 'none' (information), never a warning: only an existing team that cannot
+		// dispatch reads 'waiting'.
+		const teamState = panelDispatchReady === true ? 'ready' : projectTeam === null || projectTeam.available === false ? 'none' : teamWaitingWorker ? 'waiting' : 'none'
+		const teamLabel = teamState === 'ready' ? t('teamPillReady') : teamState === 'waiting' ? t('teamPillWaiting') : t('teamPillNone')
+		const dispatchCap = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
+		const sourceBadge =
+			projectSourceLabel(projectSourceKey(snapshot), t) === null
+				? null
+				: h('span', { className: 'gbt-projectsource', 'data-project-source': projectSourceKey(snapshot), title: snapshot.projectWarning === null ? t('projectSourceHint') : snapshot.projectWarning }, projectSourceLabel(projectSourceKey(snapshot), t))
+		const brand = h(
+			'div',
+			{ className: 'gbt-brand', 'data-brand': 'true' },
+			h('div', { className: 'gbt-mark' }, '▦'),
+			h(
+				'div',
+				{ className: 'gbt-brandcopy' },
+				h('div', { className: 'gbt-titleline' }, h('span', { className: 'gbt-eyebrow' }, t('title')), sourceBadge),
+				h(
+					'div',
+					{ className: 'gbt-projectline' },
+					h('b', { className: 'gbt-projectname', title: snapshot.project === null ? '' : snapshot.project }, projectLabel),
+					h('span', { className: 'gbt-projectpath', title: snapshot.project === null ? '' : snapshot.project }, snapshot.project === null ? '' : snapshot.project),
+					h('span', { className: 'gbt-projectsep', 'aria-hidden': 'true' }, '·'),
+					h('span', { className: 'gbt-projecthint' }, t('sharedBoard')),
+				),
+			),
+		)
+		const sessionsButton = h(
+			'button',
+			{
+				type: 'button',
+				className: 'gbt-chip gbt-chipbtn gbt-sessionschip',
+				'data-sessions-pill': 'true',
+				'data-sessions-count': String(scopeSessions.length),
+				'aria-haspopup': 'dialog',
+				'aria-expanded': sessionsOpen ? 'true' : 'false',
+				title: t('sessionsHint'),
+				onClick: function () { setSessionsOpen(!sessionsOpen) },
+			},
+			scopeSessions.length === 0
+				? null
+				: h('span', { className: 'gbt-sessionsdots', 'aria-hidden': 'true' }, scopeSessions.slice(0, 5).map(function (row, index) { return h('i', { key: 'dot-' + String(index) }) })),
+			h('span', null, t('sessionsPill').replace('{n}', String(scopeSessions.length))),
+			h('span', { className: 'gbt-caret', 'aria-hidden': 'true' }, '▾'),
+		)
+		const currentPill =
+			panelSessionId === null
+				? null
+				: h('span', { className: 'gbt-chip gbt-currentsession', 'data-current-session': panelSessionId, title: panelSessionId }, h('span', { className: 'gbt-dot', 'data-running': 'true' }), h('b', { className: 'gbt-mono' }, sessionShortOf(panelSessionId)), h('span', { className: 'gbt-tag' }, t('sessionsCurrent')))
+		const dispatchPill = h(
+			'button',
+			{
+				type: 'button',
+				className: 'gbt-chip gbt-chipbtn gbt-dispatchpill',
+				'data-dispatch-pill': 'true',
+				'data-dispatch-state': active ? 'running' : 'paused',
+				'data-busy': isBusy('start') || isBusy('pause') ? 'true' : 'false',
+				title: active ? t('pause') : t('start'),
+				disabled: snapshot.source === 'error' || snapshot.project === null || busy !== null,
+				onClick: toggleDispatch,
+			},
+			isBusy('start') || isBusy('pause') ? h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' }) : h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }),
+			h('span', null, active ? t('running') : t('paused')),
+			h('b', null, String(counts.running || 0) + '/' + String(dispatchCap)),
+		)
+		const teamPopoverLead = panelSessionRow !== null && panelSessionRow.team !== null && panelSessionRow.team !== undefined && typeof panelSessionRow.team.lead === 'string' ? panelSessionRow.team.lead : projectTeam !== null && typeof projectTeam.lead === 'string' ? projectTeam.lead : null
+		const teamPopoverTitleWithLead = t('teamPopoverTitle') + (teamPopoverLead === null ? '' : ' · ' + teamPopoverLead)
+		const teamPill = h(
+			'button',
+			{
+				type: 'button',
+				className: 'gbt-chip gbt-chipbtn gbt-teampill',
+				'data-team-pill': teamState,
+				'data-team-waiting': teamState === 'waiting' ? 'true' : undefined,
+				'data-dispatch-ready': panelDispatchReady === true ? 'true' : 'false',
+				// Kept for readers/tests that still ask the pill which team state it is.
+				'data-project-team': teamState === 'ready' ? 'ok' : projectTeam !== null && projectTeam.available === false ? 'unavailable' : 'missing',
+				'data-team-lead': panelSessionRow !== null && panelSessionRow.team !== null && panelSessionRow.team !== undefined && typeof panelSessionRow.team.lead === 'string' ? panelSessionRow.team.lead : projectTeam !== null && typeof projectTeam.lead === 'string' ? projectTeam.lead : '',
+				'aria-haspopup': 'dialog',
+				'aria-expanded': teamOpen ? 'true' : 'false',
+				title: teamPopoverTitleWithLead,
+				onClick: function () { setTeamOpen(!teamOpen) },
+			},
+			h('span', { className: 'gbt-dot', 'data-running': teamState === 'ready' ? 'true' : 'false' }),
+			h('span', null, teamLabel),
+		)
+		const sessionRows =
+			scopeSessions.length === 0
+				? [h('p', { key: 'empty', className: 'gbt-popoverempty' }, t('sessionsEmpty'))]
+				: scopeSessions.map(function (row, index) {
+					const current = panelSessionId !== null && row.sessionId === panelSessionId
+					const lead = row.team !== null && row.team !== undefined && typeof row.team.lead === 'string' ? row.team.lead : null
+					const cards = row.cards !== null && row.cards !== undefined && Number.isFinite(row.cards.owned) ? row.cards.owned : 0
+					const activeCards = row.cards !== null && row.cards !== undefined && Number.isFinite(row.cards.active) ? row.cards.active : null
+					const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : null
+					return h(
+						'div',
+						{
+							key: 'session-' + String(index),
+							className: 'gbt-sessionrow',
+							'data-session': String(row.sessionId),
+							'data-current': current ? 'true' : 'false',
+							'data-status': typeof row.status === 'string' ? row.status : 'unknown',
+							'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+							'data-stage-review': stage !== null && stage.review === true ? 'true' : 'false',
+							'data-stage-test': stage !== null && stage.test === true ? 'true' : 'false',
+						},
+						h(
+							'div',
+							{ className: 'gbt-sessionrowhead' },
+							h('b', { className: 'gbt-mono' }, sessionShortOf(row.sessionId)),
+							current ? h('span', { className: 'gbt-tag' }, t('sessionsCurrent')) : null,
+							h('span', { className: 'gbt-sessionstatus', 'data-status': typeof row.status === 'string' ? row.status : 'unknown' }, sessionStatusLabel(row.status)),
+						),
+						h(
+							'div',
+							{ className: 'gbt-sessionrowmeta' },
+							lead === null ? null : h('span', { 'data-session-lead': 'true' }, t('workersLead') + ' ' + lead),
+							h('span', null, t('sessionsCards').replace('{n}', String(cards))),
+							activeCards === null ? null : h('span', null, t('sessionsActive').replace('{n}', String(activeCards))),
+							h('span', { className: 'gbt-sessionready', 'data-ready': row.dispatchReady === true ? 'true' : 'false' }, row.dispatchReady === true ? t('sessionsReadiness') : t('sessionsNotReady')),
+							stage === null
+								? null
+								: h('span', null, t('sessionsStageReview') + ' ' + (stage.review === true ? t('sessionsReady') : t('sessionsNotReady')) + ' · ' + t('sessionsStageTest') + ' ' + (stage.test === true ? t('sessionsReady') : t('sessionsNotReady'))),
+						),
+						h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'copy-session-id', 'data-session': String(row.sessionId), onClick: function () { copyTeamSession(String(row.sessionId)) } }, t('projectTeamCopySession')),
+					)
+				})
+		const sessionsPopover = h(
+			'div',
+			{
+				className: 'gbt-popover gbt-sessionpopover',
+				'data-session-popover': 'true',
+				'data-open': sessionsOpen ? 'true' : 'false',
+				hidden: sessionsOpen ? undefined : true,
+				role: 'dialog',
+				'aria-label': t('sessionsPopoverTitle'),
+			},
+			h('div', { className: 'gbt-popoverhead' }, t('sessionsPopoverTitle')),
+			sessionRows,
+			projectTeam !== null && projectTeam.available !== false && projectTeam.projectMatch === false && typeof projectTeam.project === 'string' && projectTeam.project !== ''
+				? h('p', { className: 'gbt-popovernote', 'data-team-info': 'true', 'data-team-project': String(projectTeam.project), 'data-panel-project': String(snapshot.project) }, t('projectTeamMismatch').replace('{team}', String(projectTeam.project)).replace('{panel}', String(snapshot.project)) + ' · ' + t('projectTeamScopeHint'))
+				: null,
+		)
+		const panelTeam = panelSessionRow !== null ? panelSessionRow.team : projectTeam
+		const teamLead = panelTeam !== null && panelTeam !== undefined && typeof panelTeam.lead === 'string' ? panelTeam.lead : null
+		const teamMemberCount =
+			panelTeam !== null && panelTeam !== undefined && Number.isFinite(panelTeam.memberCount)
+				? panelTeam.memberCount
+				: panelTeam !== null && panelTeam !== undefined && Array.isArray(panelTeam.members)
+					? panelTeam.members.length
+					: 0
+		const teamMissingRoles = panelTeam !== null && panelTeam !== undefined && Array.isArray(panelTeam.missingRoles) ? panelTeam.missingRoles.map(String) : []
+		const teamStage = panelSessionRow !== null && panelSessionRow.stageReady !== null && panelSessionRow.stageReady !== undefined && typeof panelSessionRow.stageReady === 'object' ? panelSessionRow.stageReady : null
+		const teamPopover = h(
+			'div',
+			{
+				className: 'gbt-popover gbt-teampopover',
+				'data-team-popover': 'true',
+				'data-team-state': teamState,
+				'data-open': teamOpen ? 'true' : 'false',
+				hidden: teamOpen ? undefined : true,
+				role: 'dialog',
+				'aria-label': t('teamPopoverTitle'),
+			},
+			h('div', { className: 'gbt-popoverhead' }, t('teamPopoverTitle')),
+			projectTeam !== null && projectTeam.available === false
+				? h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-unavailable': 'true' }, t('projectTeamUnavailable'))
+				: null,
+			h('p', { className: 'gbt-popoverrow' }, t('projectTeamCurrent') + '：' + (teamLead === null ? t('projectTeamMissing') : t('projectTeamOk').replace('{lead}', tcLeadText(teamLead, t)).replace('{n}', String(teamMemberCount)))),
+			h('p', { className: 'gbt-popoverrow', 'data-team-readiness': panelDispatchReady === true ? 'ready' : 'not-ready' }, t('sessionsReadiness') + '：' + (panelDispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
+			teamStage === null ? null : h('p', { className: 'gbt-popoverrow' }, t('sessionsStageReview') + '：' + (teamStage.review === true ? t('sessionsReady') : t('sessionsNotReady')) + ' · ' + t('sessionsStageTest') + '：' + (teamStage.test === true ? t('sessionsReady') : t('sessionsNotReady'))),
+			teamMissingRoles.length === 0 ? null : h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-missing-roles': teamMissingRoles.join(',') }, t('teamMissingRoles').replace('{roles}', teamMissingRoles.join('、'))),
+			teamWaitingWorker && projectTeam !== null ? h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-waiting-worker': 'true' }, t('teamWaitingWorker') + ' · ' + t('projectTeamWaiting')) : null,
+			h(
+				'div',
+				{ className: 'gbt-popoveractions' },
+				h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'copy-team-session', 'data-session': copySessionValue, onClick: function () { copyTeamSession(copySessionValue) } }, t('projectTeamCopySession')),
+				teamSessionCopied === null
+					? null
+					: h('span', { className: 'gbt-footnote', role: 'status', 'aria-live': 'polite', 'data-copy-toast': teamSessionCopied === 'failed' ? 'failed' : 'copied' }, teamSessionCopied === 'failed' ? t('projectTeamCopyFailed') : t('sessionIdCopiedToast')),
+			),
+		)
+		const newTaskButton = h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'new-task', disabled: snapshot.project === null, onClick: function () { startEdit(null) } }, '+ ' + t('newTask'))
+		const menuItems = [
+			['refresh', t('refresh'), function () { closePopovers(); void store.load() }],
+			['project', t('project'), function () { closePopovers(); openProjectDialog() }],
+			['settings', t('settings'), function () { closePopovers(); setSettingsOpen(true) }],
+			['copy-team-session', t('projectTeamCopySession'), function () { copyTeamSession(copySessionValue) }],
+			['diagnostics', t('diagnostics'), function () { closePopovers(); setView('status') }],
+		]
+		const moreMenu = h(
+			'div',
+			{ className: 'gbt-morewrap' },
+			h('button', { type: 'button', className: 'gbt-iconbtn gbt-morebtn', 'data-more-menu': 'true', 'aria-haspopup': 'menu', 'aria-expanded': menuOpen ? 'true' : 'false', title: t('moreActions'), onClick: function () { setMenuOpen(!menuOpen) } }, '⋯'),
+			h(
+				'div',
+				{ className: 'gbt-popover gbt-menu', 'data-more-popover': 'true', role: 'menu', 'data-open': menuOpen ? 'true' : 'false', hidden: menuOpen ? undefined : true },
+				menuItems.map(function (entry) {
+					return h('button', { key: entry[0], type: 'button', className: 'gbt-menuitem', role: 'menuitem', 'data-action': entry[0], 'data-session': entry[0] === 'copy-team-session' ? copySessionValue : undefined, onClick: entry[2] }, entry[1])
+				}),
+			),
+		)
+		const refreshButton = h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'refresh', title: t('refresh'), onClick: function () { void store.load() } }, '↻')
+		const kindFilterBar = h(
+			'div',
+			{ className: 'gbt-kindfilter', 'data-kind-filter': panelBoardUi.kind, title: t('kindFilterHint') },
+			[
+				['all', t('kindFilterAll')],
+				['dev', t('kindDev')],
+				['investigate', t('kindInvestigate')],
+			].map(function (entry) {
+				return h(
+					'button',
+					{
+						key: entry[0],
+						type: 'button',
+						className: 'gbt-kindfilterbtn',
+						'data-kind-filter': entry[0],
+						'data-active': panelBoardUi.kind === entry[0] ? 'true' : 'false',
+						'aria-pressed': panelBoardUi.kind === entry[0] ? 'true' : 'false',
+						onClick: function () {
+							panelBoardUi.kind = entry[0]
+							setColumnTick(function (count) { return count + 1 })
+						},
+					},
+					entry[1],
+				)
+			}),
+		)
+		const tabCountOf = function (key) {
+			if (key === 'board') return Number.isFinite(counts.total) ? counts.total : tasks.length
+			if (key === 'queue') return queue.length
+			return null
+		}
+		const tabsView = h(
+			'nav',
+			{ className: 'gbt-tabs', 'aria-label': t('title') },
+			tabs.map(function (tab) {
+				const tabCount = tabCountOf(tab.key)
+				if (tabCount === null) {
+					return h('button', { key: tab.key, type: 'button', className: 'gbt-tab', 'data-view': tab.key, 'data-active': view === tab.key ? 'true' : 'false', onClick: function () { setView(tab.key) } }, tab.label)
+				}
+				return h(
+					'button',
+					{ key: tab.key, type: 'button', className: 'gbt-tab', 'data-view': tab.key, 'data-active': view === tab.key ? 'true' : 'false', onClick: function () { setView(tab.key) } },
+					tab.label,
+					h('span', { className: 'gbt-tabcount' }, String(tabCount)),
+				)
+			}),
+			snapshot.project === null || snapshot.project === undefined
+				? h('button', { type: 'button', className: 'gbt-tab', 'data-action': 'open-project', onClick: function () { openProjectDialog() } }, '+ ' + t('openProject'))
+				: null,
+		)
+		// T-158 review: the popovers are anchored to their pill through a
+		// positioned wrapper. Without one, `position:absolute` resolved against the
+		// initial containing block and the popover opened off-screen.
+		const sessionsAnchor = h('div', { className: 'gbt-anchor', 'data-popover-anchor': 'sessions' }, sessionsButton, sessionsPopover)
+		const teamAnchor = h('div', { className: 'gbt-anchor', 'data-popover-anchor': 'team' }, teamPill, teamPopover)
+		const topRow = h(
+			'div',
+			{ className: 'gbt-toprow' },
+			brand,
+			h('div', { className: 'gbt-context' }, sessionsAnchor, currentPill, dispatchPill, teamAnchor, workspaceBar),
+			h('div', { className: 'gbt-topactions' }, newTaskButton, moreMenu),
+		)
+		const toolbarRow = h('div', { className: 'gbt-toolbar' }, tabsView, h('div', { className: 'gbt-toolbarright' }, refreshButton, kindFilterBar))
+		const header = h('header', { className: 'gbt-header gbt-headertwo', 'data-header-rows': '2' }, topRow, toolbarRow)
+		const footer = h(
+			'footer',
+			{ className: 'gbt-statusbar', 'data-panel-footer': 'true' },
+			h(
+				'div',
+				{ className: 'gbt-statusleft' },
+				h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }),
+				h('span', null, active ? t('running') : t('paused')),
+				h('span', null, '· ' + String(Number.isFinite(counts.total) ? counts.total : tasks.length) + ' ' + t('taskCount')),
+				h('span', null, '· ' + t('sessionsPill').replace('{n}', String(scopeSessions.length))),
+				h('span', null, t('subtitle')),
+			),
+			h('div', { className: 'gbt-statusright' }, scheduler !== null && scheduler !== undefined && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? h('span', null, t('lastScan').replace('{ago}', tcAgo(scheduler.lastTickAt, now))) : null, h('span', null, t('local'))),
+		)
+
 		// T-108: the main checkout's cleanliness, worded for what it is. While a
 		// merge runs the tree is briefly dirty — that is a passing notice ("will
 		// retry"), not an alarm. Only a sustained streak (the cards escalated by
@@ -7890,6 +8175,7 @@ function createTaskCenter(deps) {
 				void store.send(action, Object.assign({ id: id }, payload === undefined ? {} : payload))
 					},
 					onOpenDoneAll: function () { doneAllReset(); setDoneAllArchived(false); setDoneAllOpen(true) },
+					kind: panelBoardUi.kind,
 					onColumnToggle: function () { setColumnTick(function (count) { return count + 1 }) },
 					onKindFilterChange: function () { setColumnTick(function (count) { return count + 1 }) },
 				})
@@ -7922,32 +8208,16 @@ function createTaskCenter(deps) {
 		onVerdict: function (action, id, payload) {
 			void store.send(action, Object.assign({ id: id }, payload === undefined ? {} : payload))
 		},
+		kind: panelBoardUi.kind,
 		// T-132: the kind filter is module state; this forces a rerender.
 		onKindFilterChange: function () { setColumnTick(function (count) { return count + 1 }) },
 			})
-
-		const tabsView = h(
-			'div',
-			{ className: 'gbt-tabs' },
-			tabs.map(function (tab) {
-		return h(
-			'button',
-			{ key: tab.key, type: 'button', className: 'gbt-tab', 'data-view': tab.key, 'data-active': view === tab.key ? 'true' : 'false', onClick: function () { setView(tab.key) } },
-			tab.label,
-		)
-			}),
-			snapshot.project === null || snapshot.project === undefined
-		? h('button', { type: 'button', className: 'gbt-tab', onClick: function () { openProjectDialog() } }, '+ ' + t('openProject'))
-		: null,
-		)
 
 		return h(
 			'div',
 			{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center' },
 			header,
-			statusline,
 			environmentBar,
-			workspaceBar,
 			busyBar,
 			banner,
 			requestBanner,
@@ -7975,7 +8245,7 @@ function createTaskCenter(deps) {
 		: h(
 				'div',
 				{ className: 'gbt-main' + (workspaceSwitch.fade === true ? ' gbt-workspacefade' : '') },
-				h('div', { className: 'gbt-content' }, tabsView, h('div', { className: 'gbt-view' }, content)),
+				h('div', { className: 'gbt-content' }, h('div', { className: 'gbt-view' }, content)),
 				selected === null ? null : h(DetailView, {
 			task: Object.assign({}, selected, snapshot.details[selected.id] === undefined ? {} : snapshot.details[selected.id].task),
 			snapshot: snapshot,
@@ -7998,6 +8268,7 @@ function createTaskCenter(deps) {
 			})
 				: null,
 			),
+			footer,
 			editing === null ? null : h(TaskForm, {
 		task: editingTask,
 		snapshot: snapshot,

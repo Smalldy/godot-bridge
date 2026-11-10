@@ -17,7 +17,7 @@ const Board = createBoard({
   Column: Column,
   tcTime: () => 0,
   tcKindOf: (task) => (task.kind === 'investigate' ? 'investigate' : 'dev'),
-  tcFirstNonEmptyColumn: () => 'running',
+  tcFirstNonEmptyColumn: () => 'dispatch',
   tcColumnCollapsed: () => false,
   tcWriteColumnCollapsed: () => {},
   DONE_COLUMN_PREVIEW: 5,
@@ -29,13 +29,20 @@ const tasks = [
   { id: 'T-2', status: 'running' },
   { id: 'T-3', status: 'done' },
 ]
-const out = Board({ snapshot: { tasks: tasks, counts: { done: 1 } }, t: t, now: 1000, selectedId: null, onOpen: () => {}, onVerdict: () => {}, onKindFilterChange: () => {}, onOpenDoneAll: () => {}, onColumnToggle: () => {} })
+const out = Board({ snapshot: { tasks: tasks, counts: { done: 1 } }, t: t, now: 1000, kind: 'all', selectedId: null, onOpen: () => {}, onVerdict: () => {}, onKindFilterChange: () => {}, onOpenDoneAll: () => {}, onColumnToggle: () => {} })
 assert.equal(out.type, 'div')
 assert.equal(out.props.className, 'gbt-boardwrap')
 assert.equal(out.props['data-board-kind'], 'all')
 const text = JSON.stringify(out)
-assert.ok(text.includes('gbt-kindfilter'))
-assert.ok(text.includes('T-1'))
+// T-158: the kind filter moved to the panel toolbar (it is not part of the board).
+assert.ok(!text.includes('gbt-kindfilter'), 'the toolbar owns the kind filter')
+const lanes = out.props.children.props.children
+assert.deepEqual(lanes.map((lane) => lane.props.group.key), ['dispatch', 'running', 'reviewing', 'testing', 'done', 'blocked'])
+const dispatchLane = lanes[0].props
+assert.deepEqual(dispatchLane.subcounts, { ready: 1, waiting: 0 }, 'the dispatch lane carries both counts')
+assert.deepEqual(dispatchLane.group.tasks.map((task) => task.id), ['T-1'], 'pending cards share the dispatch lane')
+assert.equal(lanes[4].props.summary !== undefined && lanes[4].props.summary !== null, true, 'the done lane carries the archive summary')
+assert.ok(text.includes('T-1') && text.includes('T-2') && text.includes('T-3'))
 assert.equal(boardUiState.kind, 'all')
 
-console.log('PASS  Board is an independently testable view module')
+console.log('PASS  Board is an independently testable view module (six lanes)')
