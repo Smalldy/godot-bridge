@@ -6262,6 +6262,23 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
       deepText(t158).indexOf('主会话：') < 0,
     JSON.stringify({ pill: sessionsPill && deepText(sessionsPill), rows: sessionRows.map((row) => row.props['data-session']) }),
   )
+  const sessionsAnchor = findAll(t158, (node) => node.props && node.props['data-popover-anchor'] === 'sessions')[0]
+  const teamAnchor = findAll(t158, (node) => node.props && node.props['data-popover-anchor'] === 'team')[0]
+  const css158 = readFileSync(SRC, 'utf8')
+  check(
+    'T-158 both popovers are anchored inside a positioned wrapper next to their pill (review round 1 blocker)',
+    sessionsAnchor !== undefined &&
+      teamAnchor !== undefined &&
+      findAll(sessionsAnchor, (node) => node.props && node.props['data-session-popover'] === 'true').length === 1 &&
+      findAll(teamAnchor, (node) => node.props && node.props['data-team-popover'] === 'true').length === 1 &&
+      css158.indexOf('.gbt-anchor{position:relative') >= 0,
+    JSON.stringify({ sessions: sessionsAnchor !== undefined, team: teamAnchor !== undefined }),
+  )
+  check(
+    'T-158 a narrow window keeps the sessions entry (it is never display:none)',
+    css158.indexOf('.gbt-sessionschip{display:none}') < 0 && css158.indexOf('@media (max-width:1200px){.gbt-sessionschip{padding') >= 0,
+    'sessions pill hidden rule: ' + String(css158.indexOf('.gbt-sessionschip{display:none}')),
+  )
   const teamPill = findAll(t158, (node) => node.props && node.props['data-team-pill'] !== undefined)[0]
   check(
     'T-158 the team pill reads dispatchReady only (Lead + worker with missing reviewer/tester is READY)',
@@ -6289,6 +6306,11 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
       deepText(teamPopover).indexOf('reviewer') < 0,
     waitingPill && JSON.stringify(waitingPill.props),
   )
+  check(
+    'T-158 the team popover does not repeat the lead (review round 1 nit)',
+    teamPopover !== undefined && /lead-2 · 2 名成员/.test(deepText(teamPopover)) && deepText(teamPopover).indexOf('lead-2 · lead-2') < 0,
+    teamPopover && deepText(teamPopover).slice(0, 160),
+  )
   const dispatchPill = findAll(t158, (node) => node.props && node.props['data-dispatch-pill'] === 'true')[0]
   const before = posts.length
   dispatchPill.props.onClick()
@@ -6311,6 +6333,23 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     scopeNodes.length === 0 && findAll(t158, (node) => node.type === 'button' && node.props && ['switch-to-session-project', 'switch-team-project'].indexOf(node.props['data-action']) >= 0).length === 0,
     String(scopeNodes.length),
   )
+  // A done lane with ZERO completed cards must narrow like any empty lane.
+  const savedTasks158 = HOST.tasks
+  const savedCounts158 = HOST.counts
+  HOST.tasks = HOST.tasks.filter((task) => task.status === 'running')
+  HOST.counts = Object.assign({}, HOST.counts, { total: HOST.tasks.length, pending: 0, ready: 0, waiting: 0, reviewing: 0, testing: 0, done: 0, blocked: 0 })
+  findAction(t158, 'refresh').props.onClick()
+  await flush()
+  await flush()
+  t158 = withHooks(panel, { initialView: 'board' })
+  const emptyDone = findAll(t158, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done')[0]
+  check(
+    'T-158 an empty done lane narrows and shows no 0-card archive summary',
+    emptyDone !== undefined && emptyDone.props['data-empty'] === 'true' && findAll(emptyDone, (node) => node.props && node.props['data-done-summary'] === 'true').length === 0,
+    emptyDone && JSON.stringify({ empty: emptyDone.props['data-empty'] }),
+  )
+  HOST.tasks = savedTasks158
+  HOST.counts = savedCounts158
   HOST.scope = savedScope
   HOST.team = savedTeam
   HOST.dispatch = savedDispatch

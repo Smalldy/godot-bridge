@@ -37,6 +37,7 @@ function createColumn(deps) {
 			h('span', { className: 'gbt-colcount' }, String(count)),
 			props.note === undefined || props.note === null ? null : h('span', { className: 'gbt-colnote', 'data-col-note': 'investigating' }, props.note),
 		)
+
 		return h(
 			'section',
 			{ className: 'gbt-col', 'data-group': group.key, 'data-collapsed': collapsed ? 'true' : 'false', 'data-empty': empty ? 'true' : 'false' },

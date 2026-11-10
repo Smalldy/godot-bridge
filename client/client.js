@@ -1996,12 +1996,14 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 .gbt-toolbarright .gbt-kindfilter{margin:0}
 .gbt-iconbtn{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:7px}
 .gbt-morewrap{position:relative}
+.gbt-anchor{position:relative;display:inline-flex;min-width:0;align-items:center}
+.gbt-anchor .gbt-popover{left:0;right:auto;top:calc(100% + 8px)}
 .gbt-popover{position:absolute;top:calc(100% + 6px);right:0;z-index:40;min-width:260px;max-width:min(360px,92vw);max-height:min(420px,70vh);overflow:auto;padding:10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;background:var(--dsw-alias-bg-layer-3);box-shadow:0 14px 36px rgba(0,0,0,.28);text-align:left;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
 .gbt-popover[hidden]{display:none}
 .gbt-sessionpopover{right:auto;left:0;min-width:320px}
 .gbt-teampopover{right:auto;left:0;min-width:280px}
 .gbt-popoverhead{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);padding-bottom:6px;border-bottom:0.5px solid var(--dsw-alias-border-l4);margin-bottom:8px}
-.gbt-sessionrow{display:flex;flex-direction:column;gap:4px;padding:7px 8px;border-radius:7px;border:0.5px solid transparent}
+.gbt-sessionrow{display:flex;flex-direction:column;align-items:stretch;gap:4px;padding:7px 8px;border-radius:7px;border:0.5px solid transparent}
 .gbt-sessionrow[data-current="true"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-module-platform)}
 .gbt-sessionrow + .gbt-sessionrow{margin-top:6px}
 .gbt-sessionrowhead{display:flex;align-items:center;gap:7px}
@@ -2009,7 +2011,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 .gbt-sessionstatus{font-size:10px;color:var(--dsw-alias-label-tertiary);margin-left:auto}
 .gbt-sessionrowmeta{display:flex;flex-wrap:wrap;gap:4px 8px;font-size:10.5px;color:var(--dsw-alias-label-tertiary)}
 .gbt-sessionready[data-ready="true"]{color:var(--dsw-alias-state-success-primary)}
-.gbt-sessionrow .gbt-linkbtn{padding:0;margin-top:2px}
+.gbt-sessionrow .gbt-linkbtn{align-self:flex-start;padding:0;margin-top:2px}
 .gbt-popoverrow{margin:3px 0;line-height:1.55}
 .gbt-popoverwarn{color:var(--dsw-alias-state-warn-label)}
 .gbt-popovernote{margin:8px 0 0;font-size:10.5px;line-height:1.5;color:var(--dsw-alias-state-warn-label)}
@@ -2059,7 +2061,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 .gbt-cardmeta{gap:3px}
 .gbt-cardmeta .gbt-chip{padding:0 5px;font-size:9.5px}
 @media (max-width:1500px){.gbt-projectpath{max-width:200px}.gbt-context{justify-content:flex-start}}
-@media (max-width:1200px){.gbt-sessionschip{display:none}.gbt-toprow{gap:8px}.gbt-board{overflow-x:auto}.gbt-col{min-width:150px}.gbt-col[data-empty="true"]{min-width:132px}}`,
+@media (max-width:1200px){.gbt-sessionschip{padding:0 7px;gap:5px}.gbt-context{gap:5px}.gbt-toprow{gap:8px}.gbt-board{overflow-x:auto}.gbt-col{min-width:150px}.gbt-col[data-empty="true"]{min-width:132px}}`,
 		].join('')
 
 		/** ISO-8601 to epoch milliseconds, or null. */
@@ -3568,6 +3570,7 @@ function createColumn(deps) {
 			h('span', { className: 'gbt-colcount' }, String(count)),
 			props.note === undefined || props.note === null ? null : h('span', { className: 'gbt-colnote', 'data-col-note': 'investigating' }, props.note),
 		)
+
 		return h(
 			'section',
 			{ className: 'gbt-col', 'data-group': group.key, 'data-collapsed': collapsed ? 'true' : 'false', 'data-empty': empty ? 'true' : 'false' },
@@ -3692,7 +3695,9 @@ function createBoard(deps) {
 			if (props.onColumnToggle !== undefined) props.onColumnToggle()
 		}
 		const donePreview = visibleDone.slice(0, DONE_COLUMN_PREVIEW)
-		const doneSummary = h(
+		// T-158 review: an EMPTY done lane must stay empty (and narrow). The archive
+		// summary only exists when there is something to archive.
+		const doneSummary = doneCount === 0 ? null : h(
 			'div',
 			{ className: 'gbt-done-summary', 'data-done-summary': 'true' },
 			h('span', null, t('doneAllSummary').replace('{total}', String(doneCount)).replace('{recent}', String(donePreview.length))),
@@ -3753,6 +3758,7 @@ function createBoard(deps) {
 				})
 			}),
 		)
+
 		return h('div', { className: 'gbt-boardwrap', 'data-board-kind': kindFilter }, board)
 	}
 
@@ -7945,7 +7951,7 @@ function createTaskCenter(deps) {
 			projectTeam !== null && projectTeam.available === false
 				? h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-unavailable': 'true' }, t('projectTeamUnavailable'))
 				: null,
-			h('p', { className: 'gbt-popoverrow' }, t('projectTeamCurrent') + '：' + (teamLead === null ? t('projectTeamMissing') : tcLeadText(teamLead, t) + ' · ' + t('projectTeamOk').replace('{lead}', tcLeadText(teamLead, t)).replace('{n}', String(teamMemberCount)))),
+			h('p', { className: 'gbt-popoverrow' }, t('projectTeamCurrent') + '：' + (teamLead === null ? t('projectTeamMissing') : t('projectTeamOk').replace('{lead}', tcLeadText(teamLead, t)).replace('{n}', String(teamMemberCount)))),
 			h('p', { className: 'gbt-popoverrow', 'data-team-readiness': panelDispatchReady === true ? 'ready' : 'not-ready' }, t('sessionsReadiness') + '：' + (panelDispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
 			teamStage === null ? null : h('p', { className: 'gbt-popoverrow' }, t('sessionsStageReview') + '：' + (teamStage.review === true ? t('sessionsReady') : t('sessionsNotReady')) + ' · ' + t('sessionsStageTest') + '：' + (teamStage.test === true ? t('sessionsReady') : t('sessionsNotReady'))),
 			teamMissingRoles.length === 0 ? null : h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-missing-roles': teamMissingRoles.join(',') }, t('teamMissingRoles').replace('{roles}', teamMissingRoles.join('、'))),
@@ -8030,15 +8036,20 @@ function createTaskCenter(deps) {
 				? h('button', { type: 'button', className: 'gbt-tab', 'data-action': 'open-project', onClick: function () { openProjectDialog() } }, '+ ' + t('openProject'))
 				: null,
 		)
+		// T-158 review: the popovers are anchored to their pill through a
+		// positioned wrapper. Without one, `position:absolute` resolved against the
+		// initial containing block and the popover opened off-screen.
+		const sessionsAnchor = h('div', { className: 'gbt-anchor', 'data-popover-anchor': 'sessions' }, sessionsButton, sessionsPopover)
+		const teamAnchor = h('div', { className: 'gbt-anchor', 'data-popover-anchor': 'team' }, teamPill, teamPopover)
 		const topRow = h(
 			'div',
 			{ className: 'gbt-toprow' },
 			brand,
-			h('div', { className: 'gbt-context' }, sessionsButton, currentPill, dispatchPill, teamPill, workspaceBar),
+			h('div', { className: 'gbt-context' }, sessionsAnchor, currentPill, dispatchPill, teamAnchor, workspaceBar),
 			h('div', { className: 'gbt-topactions' }, newTaskButton, moreMenu),
 		)
 		const toolbarRow = h('div', { className: 'gbt-toolbar' }, tabsView, h('div', { className: 'gbt-toolbarright' }, refreshButton, kindFilterBar))
-		const header = h('header', { className: 'gbt-header gbt-headertwo', 'data-header-rows': '2' }, topRow, toolbarRow, sessionsPopover, teamPopover)
+		const header = h('header', { className: 'gbt-header gbt-headertwo', 'data-header-rows': '2' }, topRow, toolbarRow)
 		const footer = h(
 			'footer',
 			{ className: 'gbt-statusbar', 'data-panel-footer': 'true' },
@@ -8275,6 +8286,7 @@ function createTaskCenter(deps) {
 }
 
 module.exports = { createTaskCenter }
+
 				})(module, module.exports)
 				const factory = module.exports.createTaskCenter
 				return factory({

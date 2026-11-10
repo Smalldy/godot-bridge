@@ -75,7 +75,9 @@ function createBoard(deps) {
 			if (props.onColumnToggle !== undefined) props.onColumnToggle()
 		}
 		const donePreview = visibleDone.slice(0, DONE_COLUMN_PREVIEW)
-		const doneSummary = h(
+		// T-158 review: an EMPTY done lane must stay empty (and narrow). The archive
+		// summary only exists when there is something to archive.
+		const doneSummary = doneCount === 0 ? null : h(
 			'div',
 			{ className: 'gbt-done-summary', 'data-done-summary': 'true' },
 			h('span', null, t('doneAllSummary').replace('{total}', String(doneCount)).replace('{recent}', String(donePreview.length))),
@@ -136,6 +138,7 @@ function createBoard(deps) {
 				})
 			}),
 		)
+
 		return h('div', { className: 'gbt-boardwrap', 'data-board-kind': kindFilter }, board)
 	}
 
