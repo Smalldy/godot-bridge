@@ -29,6 +29,12 @@ export const DEFAULT_VERIFY_COMMAND = 'npm run verify'
  * T-156: the script-like paths a verify command mentions. The fingerprint hashes
  * the command AND these files' contents, so an edit to the test script the worker
  * was told to satisfy is visible to the reviewer instead of silent.
+ *
+ * Deliberate cap: at most the FIRST EIGHT script-like paths are content-hashed
+ * (a pathological command must not turn into an unbounded file walk). A ninth
+ * script still contributes its path to the command string, so renaming/splitting
+ * the command is visible; only a content-only edit to the 9th+ path is not.
+ * gates.md states the same limit.
  */
 export function verifyScriptPaths(verify) {
   const spec = normaliseVerify(verify)
@@ -1032,6 +1038,13 @@ export function refreshMergeRequest(board, id, base, head, actualFiles, now, by,
   const previousHead = typeof task.merge.head === 'string' ? task.merge.head : null
   task.commit = head
   task.actualFiles = files.slice()
+  // T-156 review: the refresh changes WHICH base the request is against, so the
+  // top-level record must move with it — the review brief and detailOf print the
+  // diff range from task.base, and mergeCandidate prefers task.base over
+  // merge.base. Leaving it old made the brief show base-1 while the drift text
+  // claimed the current base was shown.
+  task.base = base
+  task.targetBase = base
   task.merge = Object.assign({}, task.merge, {
     status: 'open',
     base: base,

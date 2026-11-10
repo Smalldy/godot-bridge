@@ -2549,6 +2549,11 @@ export function createApi(ctx, options) {
       actualCount: Array.isArray(detail.merge.actualFiles) ? detail.merge.actualFiles.length : 0,
       outputLength: typeof detail.merge.output === 'string' ? detail.merge.output.length : 0,
       testsLength: typeof detail.merge.tests === 'string' ? detail.merge.tests.length : 0,
+      // T-156: the audit signals are small facts, not detail-class strings — the
+      // panel shows a drift/verify badge straight from /state, like queue[] does.
+      targetDrift: detail.merge.targetDrift === undefined ? null : detail.merge.targetDrift,
+      verifyChanged: detail.merge.verifyChanged === true,
+      verifyFingerprints: detail.merge.verifyFingerprints === undefined ? null : detail.merge.verifyFingerprints,
     }
     const review = detail.review === null || detail.review === undefined ? null : {
       status: detail.review.status,
@@ -2585,6 +2590,9 @@ export function createApi(ctx, options) {
       writeFileCount: Array.isArray(detail.writeFiles) ? detail.writeFiles.length : 0,
       target: detail.target,
       base: detail.base,
+      // T-156: the dispatch/submit audit baseline rides the compact summary too.
+      targetBase: detail.targetBase === undefined ? null : detail.targetBase,
+      verifyFingerprint: detail.verifyFingerprint === undefined ? null : detail.verifyFingerprint,
       branch: detail.branch,
       worktree: detail.worktree,
       worktreeError: detail.worktreeError,

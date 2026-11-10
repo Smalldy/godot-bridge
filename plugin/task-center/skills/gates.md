@@ -19,6 +19,7 @@
 - 候选的 base 可能比 submit 时更新；重建候选会刷新 `actualFiles`，reviewer 看到的是当前 base 的 diff。
 - **target drift 必须显式说明**：dispatch/submit 记录 `targetBase` 和 `verifyFingerprint`；候选重建时若 target head 变了，宿主写 `merge.targetDrift = {from, to, at}` 并刷新 base/actualFiles，review brief 会显示 drift。
 - **verify 变更必须显式说明**：verify 命令/超时（以及命令点名的脚本内容）变了会写 `merge.verifyChanged = true` 与旧/新 `merge.verifyFingerprints`，review brief 必须显示。缺这两个信号时不得声称“与上轮一致”。
+- 脚本内容 hash 只覆盖命令里**前 8 个**脚本路径（防无界读文件）；第 9 个以后的脚本只按命令字符串计入，内容级改动不会单独触发 verifyChanged。
 - drift 不是自动失败：候选重建通过后可继续，但已批准的 review 结论按既有规则失效（内容变了要重评）；不要替 reviewer 决定是否接受新 base。
 - 卡声明的 `verify` 由宿主在候选里先跑；失败/超时 = 宿主 failTest，回 running。
 - 冲突自动重建；再次冲突升级 needs-rebase，等 worker/Lead。只认真实 hex base。

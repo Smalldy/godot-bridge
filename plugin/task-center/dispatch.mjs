@@ -2674,7 +2674,7 @@ export function reviewBriefFor(task, projectPath) {
     lines.push(
       '',
       'TARGET DRIFT: ' + String(task.target === null || task.target === undefined ? 'the target' : task.target) + ' moved while this card was in flight (' + String(drift.from) + ' -> ' + String(drift.to) + (drift.at === null || drift.at === undefined ? '' : ' at ' + String(drift.at)) + ').',
-      'The test candidate was rebuilt on the NEW head and the changed-file list above was recomputed from it. Review the CURRENT base shown above, not the one in the submission note.',
+      'The request (or the test candidate) was re-based on the NEW head and the changed-file list above was recomputed from it. Review the CURRENT base shown above, not the one in the submission note.',
     )
   }
   if (merge.verifyChanged === true) {

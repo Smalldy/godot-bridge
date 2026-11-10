@@ -59,7 +59,7 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
     assert.ok(condition, label + (detail === undefined ? '' : ' -> ' + String(detail).slice(0, 600)))
     console.log('PASS  ' + label)
   }
-  const { recordCandidate, fingerprintVerify, verifyScriptPaths } = await import('../../plugin/task-center/merge.mjs')
+  const { recordCandidate, refreshMergeRequest, fingerprintVerify, verifyScriptPaths } = await import('../../plugin/task-center/merge.mjs')
   const { reviewBriefFor } = await import('../../plugin/task-center/dispatch.mjs')
   const { normaliseMerge } = await import('../../plugin/task-center/schema.mjs')
   const { submitTask } = await import('../../plugin/task-center/service.mjs')
@@ -174,6 +174,25 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
       submitted.task.merge.verifyFingerprints.from === 'sha256:old' &&
       submitted.task.merge.verifyFingerprints.to === 'sha256:new',
     JSON.stringify(submitted.ok === true ? { targetBase: submitted.task.targetBase, verifyChanged: submitted.task.merge.verifyChanged, prints: submitted.task.merge.verifyFingerprints } : submitted),
+  )
+  const refreshed = refreshMergeRequest(boardOf(makeTask()), 'T-9', 'base-2', 'head-2', ['new.gd'], now, 'merger')
+  const refreshedTask = refreshed.ok === true ? refreshed.board.tasks[0] : null
+  const refreshedBrief = refreshedTask === null ? '' : reviewBriefFor(refreshedTask, '/project')
+  check(
+    'T-156 a refreshed drift moves task.base too, so the brief shows the NEW base in the diff line',
+    refreshedTask !== null &&
+      refreshedTask.base === 'base-2' &&
+      refreshedTask.targetBase === 'base-2' &&
+      refreshedTask.merge.base === 'base-2' &&
+      refreshedTask.merge.targetDrift.from === 'base-1' &&
+      refreshedBrief.indexOf('Diff under review: base-2..head-2') >= 0 &&
+      refreshedBrief.indexOf('base-1..head-2') < 0,
+    JSON.stringify(refreshedTask === null ? refreshed : { base: refreshedTask.base, mergeBase: refreshedTask.merge.base, brief: refreshedBrief.slice(0, 300) }),
+  )
+  check(
+    'T-156 the drift paragraph is true for a refresh too (re-based, not a candidate-rebuild claim)',
+    refreshedBrief.indexOf('re-based on the NEW head') >= 0 && refreshedBrief.indexOf('test candidate was rebuilt') < 0,
+    refreshedBrief.slice(0, 700),
   )
   const legacy = normaliseMerge({ status: 'open' })
   check('T-156 a legacy/unchanged merge record has no drift noise', legacy.targetDrift === null && legacy.verifyChanged === false && legacy.verifyFingerprints === null, JSON.stringify(legacy))
