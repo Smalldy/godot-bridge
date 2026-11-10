@@ -96,9 +96,9 @@ oil_ui_shoot({ target: "http://127.0.0.1:<port>/?token=<token>", size: "1440x900
 
 如果某个页面里没有项目（面板里出现打开项目表单），在 `click [data-view="roles"]` 之前追加：`fill input[placeholder="项目目录的绝对路径"] <项目绝对路径>; click text="打开项目"; waitfor [data-panel-root="task-center"]`。
 
-## T-90：项目跟随会话（不再手填路径）
+## T-90 / T-155：工作区跟随会话（不再手填路径，也没有第二个切换入口）
 
-目标：证明 (1) 新浏览器 localStorage 为空时面板直接显示会话项目；(2) 项目弹窗有「使用当前项目」；(3) 面板记住的路径 ≠ 会话项目时顶部有可点击提示；(4) 切换会调用 `openProject`（界面切换 = 调度器绑定）。
+目标：证明 (1) 新浏览器 localStorage 为空时面板直接显示会话项目；(2) 项目弹窗有「使用当前项目」；(3) 面板记住的路径 ≠ 当前对话工作区时，顶部只有**一个**工作区作用域条 `[data-workspace-scope="true"]`（同时显示看板工作区与当前对话工作区，`[data-project-mismatch="true"]`），它会自动跟随（`data-workspace-state="switching"` → `"followed"`，新 board 淡入）；(4) 跟随与手动打开都会调用 `openProject`（界面切换 = 调度器绑定）。旧的项目切换按钮（`switch-to-session-project` / `switch-team-project`）已不存在；团队属于别的会话只是信息，动作是「复制会话 ID」（`[data-action="copy-team-session"]`）。
 
 准备：先把浏览器里的 pin 清掉，模拟“第一次打开”：`localStorage.removeItem('godotBridge.taskCenter.project')`（无痕窗口等效）。
 
@@ -120,12 +120,11 @@ wait 300
 预期：`[data-project-input]` 已被填入服务端解析的项目路径（输入框旁的小字给出同一个路径），不需要手打。
 
 ```
-# 3) 不一致提示：手动切到另一个项目，再回到会话项目
-fill [data-project-input] <另一个真实存在的项目路径>
-click text="打开项目"
+# 3) 不一致时自动跟随：页面里已有旧 pin 时直接看作用域条
+waitfor [data-workspace-scope="true"]
 wait 800
 ```
-预期：顶部出现橙色 `[data-project-mismatch="true"]` 提示「面板：A · 当前会话：B」，右侧是「切换到会话项目」按钮（`[data-action="switch-to-session-project"]`）。点它之后：提示消失、项目行变成会话项目、来源徽标回到「会话」，并且 DSH 日志里能看到一次 `openProject` 动作（绑定同步，而不是只改了前端）。
+预期：橙色作用域条 `[data-workspace-scope="true"][data-project-mismatch="true"]` 同时列出看板工作区与当前对话工作区；`data-workspace-state` 先为 `switching`（文案「正在切换工作区…」），随后自动变成 `followed`（「已跟随当前对话工作区」，新 board 淡入）。全程不需要点击任何「切换项目」按钮（已删除），DSH 日志里能看到一次 `openProject`（绑定同步，而不是只改了前端）。若当前对话工作区尚未接入项目，作用域条显示 setup 态与「重新检查」`[data-action="workspace-recheck"]` / 「打开其他项目」`[data-action="workspace-open-project"]`，旧 board 保持不变。
 
 若 harness 里没有会话工作区（服务端解析不出项目），面板会退回「尚未选择项目」+ 项目表单，此时「使用当前项目」按钮是禁用的——这是预期形态，不是失败。
 

@@ -5,6 +5,10 @@
  * shared labels and the merge/activity helpers are injected by the build.
  */
 function createStatusView(deps) {
+	// T-155: the session filter survives a remount (view switch) like the other
+	// panel UI state.
+	const statusUi = { sessionFilter: 'all' }
+
 	const React = deps.React
 	const h = deps.h
 	const statusUiState = deps.statusUiState
@@ -641,6 +645,91 @@ function createStatusView(deps) {
 		function activityLabel(type) {
 			return t('evtLabel-' + type)
 		}
+		// T-155 §1/§8: every participating session, aggregated PER SESSION. There is
+		// no "project team" and no primary session — the current chat session is only
+		// highlighted. Stage-role readiness lives here (not in a global warning).
+		const scope = snapshot.scope !== null && snapshot.scope !== undefined && typeof snapshot.scope === 'object' ? snapshot.scope : null
+		const sessionRows = scope !== null && Array.isArray(scope.sessionSummaries) ? scope.sessionSummaries.filter(function (row) { return row !== null && typeof row === 'object' }) : []
+		const currentSession = scope !== null && typeof scope.panelSession === 'string' && scope.panelSession !== '' ? scope.panelSession : null
+		const [sessionFilter, setSessionFilterState] = React.useState(statusUi.sessionFilter)
+		const setSessionFilter = function (next) {
+			statusUi.sessionFilter = next
+			setSessionFilterState(next)
+		}
+		const visibleSessions = sessionFilter === 'all' ? sessionRows : sessionRows.filter(function (row) { return row.sessionId === sessionFilter })
+		const sessionShortText = function (value) {
+			const text = typeof value === 'string' ? value : ''
+			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
+		}
+		const sessionStatusText = function (status) {
+			return status === 'live' ? t('sessionsStatusLive') : status === 'stale' ? t('sessionsStatusStale') : t('sessionsStatusUnknown')
+		}
+		const stageBadge = function (key, label, ready) {
+			return h('span', { key: key, className: 'gbt-pill', 'data-stage-ready': ready === true ? 'true' : 'false' }, label + ' ' + (ready === true ? t('sessionsReady') : t('sessionsNotReady')))
+		}
+		const sessionsCard = h(
+			'section',
+			{ className: 'gbt-statuscard', 'data-status-card': 'sessions' },
+			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('sessionCardTitle'), h('span', { className: 'gbt-statusmeta' }, String(sessionRows.length) + ' ' + t('sessionsLabel'))),
+			h(
+				'div',
+				{ className: 'gbt-statuscardbody' },
+				h('p', { className: 'gbt-statusnote' }, t('sessionsHint')),
+				sessionRows.length === 0
+					? h('div', { className: 'gbt-statusnote', 'data-sessions-empty': 'true' }, t('sessionsEmpty'))
+					: h(
+						'div',
+						null,
+						h(
+							'label',
+							{ className: 'gbt-sessionfilter' },
+							t('sessionFilter'),
+							h(
+								'select',
+								{
+									'data-session-filter': 'true',
+									value: sessionFilter,
+									onChange: function (event) {
+										setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all')
+									},
+								},
+								h('option', { value: 'all' }, t('sessionFilterAll')),
+								sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) }),
+							),
+						),
+						h(
+							'div',
+							{ className: 'gbt-sessionscards', 'data-sessions-list': 'true' },
+							visibleSessions.map(function (row, index) {
+								const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
+								const current = currentSession !== null && row.sessionId === currentSession
+								const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
+								const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
+								return h(
+									'div',
+									{
+										key: 'session-' + String(index),
+										className: 'gbt-sessionsrow',
+										'data-session': String(row.sessionId),
+										'data-current': current ? 'true' : 'false',
+										'data-session-status': typeof row.status === 'string' ? row.status : 'unknown',
+										'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+									},
+									h('span', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
+									current ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
+									team === null ? null : h('span', null, t('workersLead') + ' ' + (typeof team.lead === 'string' ? team.lead : '—')),
+									h('span', { className: 'gbt-statusmeta' }, t('sessionsCards').replace('{n}', String(Number.isFinite(cards.owned) ? cards.owned : 0)) + ' · ' + t('sessionsActive').replace('{n}', String(Number.isFinite(cards.active) ? cards.active : 0))),
+									h('span', { className: 'gbt-pill', 'data-session-status-pill': typeof row.status === 'string' ? row.status : 'unknown' }, sessionStatusText(row.status)),
+									h('span', { className: 'gbt-pill', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, t('sessionsReadiness') + ' ' + (row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
+									stageBadge('stage-review', t('sessionsStageReview'), stage.review === true),
+									stageBadge('stage-test', t('sessionsStageTest'), stage.test === true),
+								)
+							}),
+						),
+					),
+			),
+		)
+
 		return h(
 			'div',
 			{ className: 'gbt-statusview', 'data-status': 'cards' },
@@ -654,7 +743,7 @@ function createStatusView(deps) {
 			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
 		),
 			),
-			h('div', { className: 'gbt-statusgrid', 'data-status-grid': 'true' }, dispatchCard, worktreesCard, agentsCard, activityCard),
+			h('div', { className: 'gbt-statusgrid', 'data-status-grid': 'true' }, dispatchCard, sessionsCard, worktreesCard, agentsCard, activityCard),
 		)
 	}
 	return StatusView

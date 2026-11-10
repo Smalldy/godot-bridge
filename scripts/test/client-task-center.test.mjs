@@ -68,8 +68,9 @@ assert.ok(JSON.stringify(out).includes('data-team-waiting'))
 assert.ok(!JSON.stringify(out).includes('bootstrap-team'))
 console.log('PASS  TaskCenter is an independently testable view module')
 
-// A panel/session split outranks a Team/project split: the header must offer
-// exactly one switch (the session one), not the Team switch as well.
+// T-155: there is exactly ONE workspace switch — the scope bar. A team that
+// belongs to another project is INFORMATION (copy its session id), never a
+// second project switch, and the old per-project switch entries are gone.
 const mismatchSnapshot = Object.assign({}, deps.useSnapshot(), {
   project: '/repo',
   projectRoot: '/repo',
@@ -82,6 +83,12 @@ const mismatchView = createTaskCenter(Object.assign({}, deps, {
 }))
 const mismatchOut = mismatchView({})
 const mismatchJson = JSON.stringify(mismatchOut)
-assert.ok(mismatchJson.includes('switch-to-session-project'))
+assert.ok(mismatchJson.includes('data-workspace-scope'))
+assert.ok(mismatchJson.includes('"data-workspace-state":"switching"'))
+assert.ok(mismatchJson.includes('workspaceFollowing'))
+assert.ok(!mismatchJson.includes('switch-to-session-project'))
 assert.ok(!mismatchJson.includes('switch-team-project'))
-console.log('PASS  one project switch wins when session and Team both mismatch')
+assert.ok(!mismatchJson.includes('projectTeamOpenSession'))
+assert.ok(mismatchJson.includes('copy-team-session'))
+assert.ok(mismatchJson.includes('projectTeamCopySession'))
+console.log('PASS  one workspace scope bar, no per-project switch duplicates')
