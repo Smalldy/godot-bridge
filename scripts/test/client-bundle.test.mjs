@@ -6344,8 +6344,8 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   t158 = withHooks(panel, { initialView: 'board' })
   const emptyDone = findAll(t158, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'done')[0]
   check(
-    'T-158 an empty done lane narrows and shows no 0-card archive summary',
-    emptyDone !== undefined && emptyDone.props['data-empty'] === 'true' && findAll(emptyDone, (node) => node.props && node.props['data-done-summary'] === 'true').length === 0,
+    'T-159 an empty done lane keeps its normal width but shows no 0-card archive summary',
+    emptyDone !== undefined && emptyDone.props['data-empty'] === 'false' && findAll(emptyDone, (node) => node.props && node.props['data-done-summary'] === 'true').length === 0,
     emptyDone && JSON.stringify({ empty: emptyDone.props['data-empty'] }),
   )
   HOST.tasks = savedTasks158
@@ -6355,6 +6355,89 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   HOST.dispatch = savedDispatch
   globalThis.fetch = savedFetch
   panel
+  withHooks(panel, { initialView: 'board' })
+  await flush()
+}
+
+
+// ── T-159: wide-window fill, rail-only empty lanes, readable dispatch head ──
+{
+  const savedFetch = globalThis.fetch
+  const savedTasks = HOST.tasks
+  const savedCounts = HOST.counts
+  globalThis.fetch = async function (url, options) {
+    if (options !== undefined && options.method === 'POST') return { json: async () => ({ ok: true, snapshot: HOST }) }
+    return { json: async () => HOST }
+  }
+  const nowIso = new Date().toISOString()
+  HOST.tasks = [
+    { id: 'T-1', title: 'only running task', status: 'running', kind: 'dev', priority: 80, ownerSession: 'session-a', dependsOn: [], writeFiles: [], dependency: { state: 'ready' }, assignee: { name: 'worker' }, createdAt: nowIso, updatedAt: nowIso },
+  ]
+  HOST.counts = { total: 1, pending: 0, ready: 0, waiting: 0, running: 1, reviewing: 0, testing: 0, done: 0, blocked: 0, cancelled: 0 }
+  let t159 = withHooks(panel, { initialView: 'board' })
+  findAction(t159, 'refresh').props.onClick()
+  await flush()
+  await flush()
+  t159 = withHooks(panel, { initialView: 'board' })
+  const lane159 = function (key) {
+    return findAll(t159, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === key)[0]
+  }
+  const css159 = readFileSync(SRC, 'utf8')
+  check(
+    'T-159 the board chain owns width:100% so a wide panel is filled',
+    css159.indexOf('.gbt-main,.gbt-content,.gbt-view,.gbt-boardwrap,.gbt-board{width:100%') >= 0,
+    'width rule missing',
+  )
+  check(
+    'T-159 only dispatch/blocked narrow when empty; the three active lanes and done keep their share',
+    lane159('dispatch').props['data-empty'] === 'true' &&
+      lane159('running').props['data-empty'] === 'false' &&
+      lane159('reviewing').props['data-empty'] === 'false' &&
+      lane159('testing').props['data-empty'] === 'false' &&
+      lane159('done').props['data-empty'] === 'false' &&
+      lane159('blocked').props['data-empty'] === 'true',
+    JSON.stringify(['dispatch', 'running', 'reviewing', 'testing', 'done', 'blocked'].map((key) => lane159(key).props['data-empty'])),
+  )
+  check(
+    'T-159 dispatch is a 190px+ nowrap rail and a collapsed dispatch stays readable',
+    css159.indexOf('.gbt-col[data-group="dispatch"]{min-width:190px}') >= 0 &&
+      css159.indexOf('.gbt-col[data-group="dispatch"] .gbt-colhead') >= 0 &&
+      css159.indexOf('.gbt-col[data-group="dispatch"][data-collapsed="true"]{flex:0 0 190px') >= 0,
+    'dispatch rail rule missing',
+  )
+  check(
+    'T-159 the done lane can absorb width while its cards keep a readable line width',
+    css159.indexOf('.gbt-col[data-group="done"]{max-width:none') >= 0 && css159.indexOf('.gbt-col[data-group="done"] .gbt-card{max-width:560px') >= 0,
+    'done width rule missing',
+  )
+  const dispatchSub = findAll(lane159('dispatch'), (node) => node.props && node.props['data-col-subcounts'] === 'true')[0]
+  check(
+    'T-159 the dispatch sub-counts are label+number nodes and the label hides (dot+number) on narrow windows',
+    dispatchSub !== undefined &&
+      findAll(dispatchSub, (node) => node.props && node.props.className === 'gbt-sublabel').length === 2 &&
+      findAll(dispatchSub, (node) => node.props && node.props.className === 'gbt-subnum').length === 2 &&
+      css159.indexOf('.gbt-colsubcount .gbt-sublabel{display:none}') >= 0,
+    dispatchSub && JSON.stringify(dispatchSub.props),
+  )
+  const dispatchHead = findAll(lane159('dispatch'), (node) => node.props && node.props.className === 'gbt-colhead')[0]
+  dispatchHead.props.onClick()
+  t159 = withHooks(panel, { initialView: 'board' })
+  const collapsedDispatch = findAll(t159, (node) => node.props && node.props.className === 'gbt-col' && node.props['data-group'] === 'dispatch')[0]
+  const collapsedHead = collapsedDispatch === undefined ? undefined : findAll(collapsedDispatch, (node) => node.props && node.props.className === 'gbt-colhead')[0]
+  check(
+    'T-159 a collapsed dispatch keeps its chevron, name and count (no vertical text)',
+    collapsedDispatch !== undefined &&
+      collapsedDispatch.props['data-collapsed'] === 'true' &&
+      collapsedHead !== undefined &&
+      deepText(collapsedHead).indexOf('▸') >= 0 &&
+      deepText(collapsedHead).indexOf('待派发') >= 0 &&
+      findAll(collapsedHead, (node) => node.props && node.props.className === 'gbt-colcount').length === 1,
+    collapsedHead && deepText(collapsedHead),
+  )
+  collapsedHead.props.onClick()
+  HOST.tasks = savedTasks
+  HOST.counts = savedCounts
+  globalThis.fetch = savedFetch
   withHooks(panel, { initialView: 'board' })
   await flush()
 }

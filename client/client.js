@@ -2023,16 +2023,30 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 .gbt-statusbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 16px;border-top:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2);font-size:10.5px;color:var(--dsw-alias-label-tertiary);flex-wrap:wrap}
 .gbt-statusleft,.gbt-statusright{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .gbt-statusleft b{font-weight:600;color:var(--dsw-alias-label-secondary)}
+/* T-159 wide-screen fill: the board owns the full content width; only the
+   dispatch and blocked rails narrow when they are empty. */
+.gbt-main,.gbt-content,.gbt-view,.gbt-boardwrap,.gbt-board{width:100%;box-sizing:border-box}
 .gbt-board{gap:10px;overflow:hidden auto}
 .gbt-col{flex:1 1 0;min-width:168px;max-width:420px;min-height:120px}
-.gbt-col[data-empty="true"]{flex:0 1 155px;min-width:150px;max-width:180px}
+.gbt-col[data-group="dispatch"]{min-width:190px}
+.gbt-col[data-group="dispatch"] .gbt-colhead,
+.gbt-col[data-group="dispatch"] .gbt-colname,
+.gbt-col[data-group="dispatch"] .gbt-colcount,
+.gbt-col[data-group="dispatch"] .gbt-colsubcounts,
+.gbt-col[data-group="dispatch"] .gbt-colsubcount{white-space:nowrap}
+.gbt-col[data-group="done"]{max-width:none;flex-grow:1.15}
+.gbt-col[data-group="done"] .gbt-card{max-width:560px;width:100%}
+.gbt-col[data-empty="true"]{flex:0 0 170px;min-width:160px;max-width:190px}
+.gbt-col[data-group="dispatch"][data-empty="true"]{flex:0 0 200px;min-width:190px;max-width:230px}
+.gbt-col[data-group="dispatch"][data-collapsed="true"]{flex:0 0 190px;min-width:190px;max-width:220px}
 .gbt-col[data-empty="true"] .gbt-colhead{opacity:.8}
 .gbt-emptyslim{min-height:64px;padding:10px;gap:4px;border-style:dashed;align-items:flex-start}
 .gbt-emptytitle{color:var(--dsw-alias-label-secondary)}
 .gbt-emptyslim span{display:block;line-height:1.45;font-size:10.5px}
 .gbt-emptyslim .gbt-emptytitle{font-size:11px;margin-bottom:2px}
-.gbt-colsubcounts{display:inline-flex;gap:4px;margin-left:auto}
-.gbt-colsubcount{font-size:9.5px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary)}
+.gbt-colsubcounts{display:inline-flex;gap:4px;margin-left:auto;white-space:nowrap;min-width:0}
+.gbt-colsubcount{font-size:9.5px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary);white-space:nowrap;display:inline-flex;align-items:center}
+.gbt-colsubcount .gbt-subnum{font-weight:600}
 .gbt-colsubcount[data-subcount="ready"]{color:var(--dsw-alias-state-success-primary)}
 .gbt-colhead .gbt-colcount{margin-left:6px}
 .gbt-done-summary{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 8px;border-radius:7px;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2);font-size:10.5px;color:var(--dsw-alias-label-tertiary)}
@@ -2061,6 +2075,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 .gbt-cardmeta{gap:3px}
 .gbt-cardmeta .gbt-chip{padding:0 5px;font-size:9.5px}
 @media (max-width:1500px){.gbt-projectpath{max-width:200px}.gbt-context{justify-content:flex-start}}
+@media (max-width:1360px){.gbt-colsubcount .gbt-sublabel{display:none}.gbt-colsubcount .gbt-subnum{margin-left:0}
+.gbt-colsubcount::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block;margin-right:3px}}
 @media (max-width:1200px){.gbt-sessionschip{padding:0 7px;gap:5px}.gbt-context{gap:5px}.gbt-toprow{gap:8px}.gbt-board{overflow-x:auto}.gbt-col{min-width:150px}.gbt-col[data-empty="true"]{min-width:132px}}`,
 		].join('')
 
@@ -3549,7 +3565,10 @@ function createColumn(deps) {
 		const count = typeof props.count === 'number' ? props.count : group.tasks.length
 		const visible = props.visibleTasks !== undefined ? props.visibleTasks : group.tasks
 		const showBody = collapsed !== true || props.previewWhenCollapsed === true
-		const empty = visible.length === 0 && (props.summary === undefined || props.summary === null)
+		// T-159: an empty lane only becomes a narrow rail for 待派发 / 阻塞. The three
+		// active lanes and 完成 keep their full share so a wide window is filled.
+		const narrowable = group.key === 'dispatch' || group.key === 'blocked'
+		const empty = narrowable && visible.length === 0 && (props.summary === undefined || props.summary === null)
 		const subcounts = props.subcounts === undefined || props.subcounts === null ? null : props.subcounts
 		const head = h(
 			'div',
@@ -3564,8 +3583,18 @@ function createColumn(deps) {
 			h('span', { className: 'gbt-colchev', 'aria-hidden': 'true' }, collapsed ? '▸' : '▾'),
 			h('span', { className: 'gbt-colname' }, group.label),
 			subcounts === null ? null : h('span', { className: 'gbt-colsubcounts', 'data-col-subcounts': 'true' }, [
-				h('span', { key: 'ready', className: 'gbt-colsubcount', 'data-subcount': 'ready', title: t('ready') }, t('readyCount').replace('{n}', String(subcounts.ready))),
-				h('span', { key: 'waiting', className: 'gbt-colsubcount', 'data-subcount': 'waiting', title: t('waiting') }, t('waitingCount').replace('{n}', String(subcounts.waiting))),
+				h(
+					'span',
+					{ key: 'ready', className: 'gbt-colsubcount', 'data-subcount': 'ready', title: t('readyCount').replace('{n}', String(subcounts.ready)) },
+					h('span', { className: 'gbt-sublabel' }, t('ready')),
+					h('b', { className: 'gbt-subnum' }, ' ' + String(subcounts.ready)),
+				),
+				h(
+					'span',
+					{ key: 'waiting', className: 'gbt-colsubcount', 'data-subcount': 'waiting', title: t('waitingCount').replace('{n}', String(subcounts.waiting)) },
+					h('span', { className: 'gbt-sublabel' }, t('waiting')),
+					h('b', { className: 'gbt-subnum' }, ' ' + String(subcounts.waiting)),
+				),
 			]),
 			h('span', { className: 'gbt-colcount' }, String(count)),
 			props.note === undefined || props.note === null ? null : h('span', { className: 'gbt-colnote', 'data-col-note': 'investigating' }, props.note),
@@ -3662,6 +3691,8 @@ function createBoard(deps) {
 		const waitingTasks = pending.filter(function (task) { return !(task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready') })
 		// T-158: six lanes. 待派发 covers BOTH ready and waiting cards; its head
 		// shows the two numbers so the split stays readable without a seventh lane.
+		// T-159: every lane is always emitted (even when empty); the width policy is
+		// decided in the column/ CSS, not by dropping lanes from the board.
 		const groups = [
 			{ key: 'dispatch', label: t('dispatchCol'), tasks: readyTasks.concat(waitingTasks), subcounts: { ready: readyTasks.length, waiting: waitingTasks.length } },
 			{ key: 'running', label: t('runningCol'), tasks: filtered.filter(function (task) { return task.status === 'running' }) },
