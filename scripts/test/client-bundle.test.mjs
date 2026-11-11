@@ -6442,5 +6442,47 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   await flush()
 }
 
+
+// ── T-160: narrow panels stack the six lanes instead of scrolling sideways ──
+{
+  const css160 = readFileSync(SRC, 'utf8')
+  const narrow = css160.slice(css160.indexOf('@media (max-width:860px){'))
+  check(
+    'T-160 a <=860px panel stacks the lanes vertically and forbids horizontal board scrolling',
+    narrow.length > 0 &&
+      narrow.indexOf('.gbt-board{display:flex;flex-direction:column') >= 0 &&
+      narrow.indexOf('.gbt-board{' ) >= 0 &&
+      narrow.indexOf('overflow-x:hidden;overflow-y:auto') >= 0,
+    'narrow board rule missing',
+  )
+  check(
+    'T-160 each lane is full-width in the stacked layout (no fixed rails, no max-width cap)',
+    narrow.indexOf('.gbt-col,.gbt-col[data-group="dispatch"],.gbt-col[data-group="done"]') >= 0 &&
+      narrow.indexOf('{width:100%;max-width:none;min-width:0;flex:0 0 auto') >= 0 &&
+      narrow.indexOf('.gbt-col[data-group="dispatch"][data-empty="true"]') >= 0,
+    'narrow lane rule missing',
+  )
+  check(
+    'T-160 narrow cards take the lane width and wrap their title instead of clipping',
+    narrow.indexOf('.gbt-card,.gbt-col[data-group="done"] .gbt-card{max-width:none;width:100%}') >= 0 &&
+      narrow.indexOf('.gbt-cardtitle{display:block;-webkit-line-clamp:unset}') >= 0,
+    'narrow card rule missing',
+  )
+  check(
+    'T-160 the narrow header wraps (current session + new task stay reachable, project path folds away)',
+    narrow.indexOf('.gbt-toprow{flex-wrap:wrap') >= 0 &&
+      narrow.indexOf('.gbt-context{flex:1 1 100%') >= 0 &&
+      narrow.indexOf('.gbt-topactions{margin-left:auto') >= 0 &&
+      narrow.indexOf('.gbt-projectpath{display:none}') >= 0 &&
+      narrow.indexOf('.gbt-toolbar{flex-direction:column') >= 0,
+    'narrow header rule missing',
+  )
+  check(
+    'T-160 no zoom/transform-scale is used to hide the clipping',
+    !/zoom\s*:/.test(css160) && !/transform\s*:\s*scale\(/.test(css160),
+    'a zoom/scale rule exists',
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
