@@ -16,7 +16,10 @@ function createColumn(deps) {
 		const count = typeof props.count === 'number' ? props.count : group.tasks.length
 		const visible = props.visibleTasks !== undefined ? props.visibleTasks : group.tasks
 		const showBody = collapsed !== true || props.previewWhenCollapsed === true
-		const empty = visible.length === 0 && (props.summary === undefined || props.summary === null)
+		// T-159: an empty lane only becomes a narrow rail for 待派发 / 阻塞. The three
+		// active lanes and 完成 keep their full share so a wide window is filled.
+		const narrowable = group.key === 'dispatch' || group.key === 'blocked'
+		const empty = narrowable && visible.length === 0 && (props.summary === undefined || props.summary === null)
 		const subcounts = props.subcounts === undefined || props.subcounts === null ? null : props.subcounts
 		const head = h(
 			'div',
@@ -31,8 +34,18 @@ function createColumn(deps) {
 			h('span', { className: 'gbt-colchev', 'aria-hidden': 'true' }, collapsed ? '▸' : '▾'),
 			h('span', { className: 'gbt-colname' }, group.label),
 			subcounts === null ? null : h('span', { className: 'gbt-colsubcounts', 'data-col-subcounts': 'true' }, [
-				h('span', { key: 'ready', className: 'gbt-colsubcount', 'data-subcount': 'ready', title: t('ready') }, t('readyCount').replace('{n}', String(subcounts.ready))),
-				h('span', { key: 'waiting', className: 'gbt-colsubcount', 'data-subcount': 'waiting', title: t('waiting') }, t('waitingCount').replace('{n}', String(subcounts.waiting))),
+				h(
+					'span',
+					{ key: 'ready', className: 'gbt-colsubcount', 'data-subcount': 'ready', title: t('readyCount').replace('{n}', String(subcounts.ready)) },
+					h('span', { className: 'gbt-sublabel' }, t('ready')),
+					h('b', { className: 'gbt-subnum' }, ' ' + String(subcounts.ready)),
+				),
+				h(
+					'span',
+					{ key: 'waiting', className: 'gbt-colsubcount', 'data-subcount': 'waiting', title: t('waitingCount').replace('{n}', String(subcounts.waiting)) },
+					h('span', { className: 'gbt-sublabel' }, t('waiting')),
+					h('b', { className: 'gbt-subnum' }, ' ' + String(subcounts.waiting)),
+				),
 			]),
 			h('span', { className: 'gbt-colcount' }, String(count)),
 			props.note === undefined || props.note === null ? null : h('span', { className: 'gbt-colnote', 'data-col-note': 'investigating' }, props.note),

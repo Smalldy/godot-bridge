@@ -42,6 +42,8 @@ function createBoard(deps) {
 		const waitingTasks = pending.filter(function (task) { return !(task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready') })
 		// T-158: six lanes. 待派发 covers BOTH ready and waiting cards; its head
 		// shows the two numbers so the split stays readable without a seventh lane.
+		// T-159: every lane is always emitted (even when empty); the width policy is
+		// decided in the column/ CSS, not by dropping lanes from the board.
 		const groups = [
 			{ key: 'dispatch', label: t('dispatchCol'), tasks: readyTasks.concat(waitingTasks), subcounts: { ready: readyTasks.length, waiting: waitingTasks.length } },
 			{ key: 'running', label: t('runningCol'), tasks: filtered.filter(function (task) { return task.status === 'running' }) },
