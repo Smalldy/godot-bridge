@@ -6484,5 +6484,30 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   )
 }
 
+
+// ── T-162: the team popover anchors right in a narrow panel ──
+{
+  const css162 = readFileSync(SRC, 'utf8')
+  const narrow162 = css162.slice(css162.indexOf('@media (max-width:860px){'))
+  check(
+    'T-162 a <=860px panel right-anchors the team popover with an explicit viewport-capped width',
+    narrow162.length > 0 &&
+      narrow162.indexOf('.gbt-anchor .gbt-teampopover{left:auto;right:0;min-width:0;width:min(280px,calc(100vw - 24px));max-width:calc(100vw - 24px)}') >= 0 &&
+      narrow162.indexOf('.gbt-popover{max-width:calc(100vw - 24px);max-height:min(420px,calc(100vh - 140px))}') >= 0,
+    'narrow team popover rule missing',
+  )
+  check(
+    'T-162 the session popover keeps its left anchor but is capped in a narrow panel',
+    narrow162.indexOf('.gbt-anchor .gbt-sessionpopover{left:0;right:auto;max-width:min(320px,calc(100vw - 24px))}') >= 0,
+    'narrow session popover rule missing',
+  )
+  check(
+    'T-162 desktop popover anchoring is unchanged (base rule still left:0, override only inside the narrow media)',
+    css162.indexOf('.gbt-teampopover{right:auto;left:0;min-width:280px}') >= 0 &&
+      css162.slice(0, css162.indexOf('@media (max-width:860px){')).indexOf('.gbt-anchor .gbt-teampopover{left:auto') < 0,
+    'desktop team popover rule changed',
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
