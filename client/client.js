@@ -337,7 +337,29 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				rejectStart: '拒绝',
 				settingsTitle: '派发设置',
 				maxConcurrent: '最大并发',
-				concurrencyHint: '1–8。执行者上限自动设为并发 + 1；没有空闲执行者时会自动新建；连续失败 3 次后任务阻塞。',
+				concurrencyHint: '1–8。只决定同时运行的卡数，不直接决定 worker 数量。',
+				settingsConcurrencyGroup: '任务并发',
+				settingsWorkerGroup: 'Worker 池',
+				settingsWorkerCap: 'Worker 池上限',
+				settingsWorkerCapHint: '1–12。实际池目标 = min(任务并发, 池上限)。这是 worker 池上限，不是团队总人数。',
+				settingsUseSuggested: '使用建议值（并发 + 1）',
+				settingsWorkerSuggestionNote: '只有点击此按钮才会按并发 + 1 填入，保存时不会自动改写。',
+				settingsRetryGroup: '重试',
+				settingsMaxAttempts: '最大尝试次数',
+				settingsAllowSpawn: '允许自动创建 Worker',
+				settingsAllowSpawnHint: '关闭后只复用已有 worker；池不足时任务保持等待。',
+				settingsCapacityTitle: '容量预览',
+				settingsCapacityLine: '按当前输入：worker 目标 {cap}；团队需要 1 lead + {cap} workers + 1 reviewer + 1 tester = {total} 人。',
+				settingsCapacityLive: '当前 worker：live {live} · missing {missing}',
+				settingsCapacityUnknown: '当前没有可读的 worker 池数据。',
+				settingsCapacityWarn: 'worker 池不足：目标 {cap}，当前 live {live}，缺 {missing}。并发不会自动变成可同时运行的卡数。',
+				settingsSpawnFailWarn: '最近一次扩容失败（spawn-failed）；请检查宿主 Agent Teams 容量或手动创建 worker。',
+				settingsRoleCapWarn: '上一次派发尝试达到 worker 池上限（role-cap）；不会再自动扩容，请检查 Worker 池上限或当前池。',
+				settingsRoleFullWarn: '上一次派发时所有 worker 都被占用（role-full）；等待空闲或调大 Worker 池上限。',
+				settingsNoIdleWarn: '上一次派发没有空闲 worker（no-idle-member）；卡会排队，容量不足时并发不会真的跑满。',
+				settingsWorkersUnavailable: '宿主没有可用的 Agent Teams：无法显示实时 live/missing，也不会自动创建 worker。',
+				invalidWorkerAgents: 'Worker 池上限必须是 1–12 的整数',
+				invalidMaxAttempts: '最大尝试次数必须是 1–10 的整数',
 				invalidConcurrency: '并发必须是 1–8 的整数',
 				apply: '应用',
 				leaseLeft: '剩余',
@@ -1018,7 +1040,29 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				rejectStart: 'Reject',
 				settingsTitle: 'Dispatch settings',
 				maxConcurrent: 'Maximum concurrency',
-				concurrencyHint: '1–8. The worker cap becomes concurrency + 1; a worker is spawned when none is idle; a task blocks after 3 consecutive failures.',
+				concurrencyHint: '1–8. Limits how many cards run at once; it does not decide the worker count by itself.',
+				settingsConcurrencyGroup: 'Task concurrency',
+				settingsWorkerGroup: 'Worker pool',
+				settingsWorkerCap: 'Worker pool ceiling',
+				settingsWorkerCapHint: '1–12. The effective pool target is min(concurrency, ceiling). This is a worker-pool ceiling, not a total team size.',
+				settingsUseSuggested: 'Use suggested value (concurrency + 1)',
+				settingsWorkerSuggestionNote: 'Only this button fills concurrency + 1; saving never rewrites the value automatically.',
+				settingsRetryGroup: 'Retries',
+				settingsMaxAttempts: 'Maximum attempts',
+				settingsAllowSpawn: 'Allow spawning workers',
+				settingsAllowSpawnHint: 'When off, only existing workers are reused; cards wait while the pool is short.',
+				settingsCapacityTitle: 'Capacity preview',
+				settingsCapacityLine: 'With these values: worker target {cap}; the team needs 1 lead + {cap} workers + 1 reviewer + 1 tester = {total} people.',
+				settingsCapacityLive: 'Current workers: live {live} · missing {missing}',
+				settingsCapacityUnknown: 'No readable worker-pool data right now.',
+				settingsCapacityWarn: 'Worker pool is short: target {cap}, live {live}, missing {missing}. Concurrency does not magically make that many cards runnable.',
+				settingsSpawnFailWarn: 'The last worker grow failed (spawn-failed); check the host Agent Teams capacity or create a worker manually.',
+				settingsRoleCapWarn: 'The last dispatch reached the worker-pool ceiling (role-cap); it will not grow further — check the pool ceiling or the current pool.',
+				settingsRoleFullWarn: 'Every worker was busy on the last dispatch (role-full); wait for an idle worker or raise the pool ceiling.',
+				settingsNoIdleWarn: 'There was no idle worker on the last dispatch (no-idle-member); cards queue, and concurrency does not make them all runnable.',
+				settingsWorkersUnavailable: 'The host has no Agent Teams service: live/missing are unavailable and workers cannot be spawned.',
+				invalidWorkerAgents: 'Worker pool ceiling must be an integer from 1 to 12',
+				invalidMaxAttempts: 'Maximum attempts must be an integer from 1 to 10',
 				invalidConcurrency: 'Concurrency must be an integer from 1 to 8',
 				apply: 'Apply',
 				leaseLeft: 'left',
@@ -1901,6 +1945,17 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				'.gbt-banner[data-tone="warn"]{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-state-warn-label);color:var(--dsw-alias-state-warn-label)}' +
 				'.gbt-banner[data-project-mismatch="true"]{cursor:pointer}',
 			'.gbt-footnote{font-size:10px;color:var(--dsw-alias-label-tertiary);margin:0}',
+'.gbt-settingsform{gap:12px}',
+'.gbt-settingsgroup{display:flex;flex-direction:column;gap:7px;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}',
+'.gbt-settingsgrouphead{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+'.gbt-settingsnote{margin:0;font-size:10.5px;line-height:1.55;color:var(--dsw-alias-label-tertiary)}',
+'.gbt-settingsinline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-secondary)}',
+'.gbt-settingsinline input[type="checkbox"]{margin:0}',
+'.gbt-settingscapacity{display:flex;flex-direction:column;gap:5px;padding:10px 12px;border-radius:8px;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2)}',
+'.gbt-settingscapacity b{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}',
+'.gbt-settingswarning{margin:0;font-size:10.5px;line-height:1.55;color:var(--dsw-alias-state-warn-label)}',
+'.gbt-settingswarning[data-settings-warning="spawn-failed"],.gbt-settingswarning[data-settings-warning="workers-unavailable"]{color:var(--dsw-alias-state-error-primary)}',
+'@media (max-width:720px){.gbt-settingsgroup,.gbt-settingscapacity{padding:8px 10px}.gbt-settingsinline .gbt-btn{width:100%}}',
 			'.gbt-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:500;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}',
 			'.gbt-pill[data-status="running"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-success-primary)}',
 			'.gbt-pill[data-status="reviewing"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-warn-label)}',
@@ -6988,6 +7043,11 @@ module.exports = { createTaskForm }
  *
  * Extracted from the forms fragment; React, h, Modal and the panel store are
  * injected by the build.
+ *
+ * T-167: task concurrency and the Worker-pool ceiling are two explicit knobs.
+ * The form also shows the derived workerCap, the team the settings need, and
+ * the current live/missing pool, so "concurrency 3" is never mistaken for
+ * "three workers are available".
  */
 function createSettingsForm(deps) {
 	const React = deps.React
@@ -6997,53 +7057,257 @@ function createSettingsForm(deps) {
 
 	function SettingsForm(props) {
 		const t = props.t
-		const dispatch = props.dispatch
+		const dispatch = props.dispatch !== null && props.dispatch !== undefined ? props.dispatch : {}
+		// T-167: the panel already holds the live worker/scheduler snapshot; read it
+		// through the injected store so the settings modal can show live/missing and
+		// the last spawn failure without widening the task-center view's props.
+		const snapshot = store !== null && store !== undefined && typeof store.getSnapshot === 'function' ? store.getSnapshot() : null
+		const workers = snapshot !== null && snapshot.workers !== null && snapshot.workers !== undefined ? snapshot.workers : props.workers !== null && props.workers !== undefined ? props.workers : null
+		const scheduler = snapshot !== null && snapshot.scheduler !== null && snapshot.scheduler !== undefined ? snapshot.scheduler : props.scheduler !== null && props.scheduler !== undefined ? props.scheduler : null
 		const concurrent = React.useRef(null)
+		const workerAgents = React.useRef(null)
+		const attempts = React.useRef(null)
+		const allowSpawn = React.useRef(null)
 		const defaultTarget = React.useRef(null)
 		const [error, setError] = React.useState('')
-		function save() {
-			const raw = concurrent.current === null ? dispatch.maxConcurrent : concurrent.current.value
-			const value = Number(raw)
-			if (!Number.isFinite(value) || value < 1 || value > 8 || Math.floor(value) !== value) {
-		setError(t('invalidConcurrency'))
-		return
+		const currentConcurrent = Number.isFinite(dispatch.maxConcurrent) ? Math.max(1, Math.floor(dispatch.maxConcurrent)) : 3
+		const currentWorkerAgents = Number.isFinite(dispatch.maxWorkAgents) ? Math.max(1, Math.floor(dispatch.maxWorkAgents)) : Math.min(12, currentConcurrent + 1)
+		const currentAttempts = Number.isFinite(dispatch.maxAttempts) ? Math.max(1, Math.floor(dispatch.maxAttempts)) : 3
+		const [preview, setPreview] = React.useState({ concurrent: currentConcurrent, agents: currentWorkerAgents })
+		const previewConcurrent = Number.isFinite(preview.concurrent) && preview.concurrent >= 1 ? preview.concurrent : currentConcurrent
+		const previewAgents = Number.isFinite(preview.agents) && preview.agents >= 1 ? preview.agents : currentWorkerAgents
+		const workerCap = Math.max(1, Math.min(previewConcurrent, previewAgents))
+		const teamRequired = workerCap + 3
+		// T-166/T-168: reuse the capacity fields the dispatcher already exposes
+		// instead of re-deriving the pool from dispatch settings here.
+		const lastCapacity = scheduler !== null && scheduler.lastCapacity !== null && scheduler.lastCapacity !== undefined ? scheduler.lastCapacity : null
+		const roles = workers !== null && workers.roles !== null && workers.roles !== undefined ? workers.roles : null
+		let liveWorkers = null
+		if (lastCapacity !== null && Number.isFinite(lastCapacity.live)) {
+			liveWorkers = Math.max(0, Math.floor(lastCapacity.live))
+		} else if (roles !== null && roles.live !== null && roles.live !== undefined && Number.isFinite(roles.live.worker)) {
+			liveWorkers = Math.max(0, Math.floor(roles.live.worker))
+		} else if (workers !== null && Array.isArray(workers.members)) {
+			liveWorkers = workers.members.filter(function (member) {
+				return member !== null && typeof member === 'object' && member.kind === 'worker' && member.status !== 'failed'
+			}).length
+		}
+		const missingWorkers = liveWorkers === null ? null : Math.max(0, workerCap - liveWorkers)
+		const lastResults = scheduler !== null && Array.isArray(scheduler.lastResults) ? scheduler.lastResults : []
+		const skippedCodes = new Set()
+		lastResults.forEach(function (entry) {
+			if (entry !== null && entry !== undefined && typeof entry.skipped === 'string' && entry.skipped !== '') skippedCodes.add(entry.skipped)
+		})
+		const workersError = workers !== null && typeof workers.error === 'string' && workers.error !== '' ? workers.error : null
+
+		function numberFrom(ref, fallback) {
+			if (ref !== null && ref !== undefined && ref.current !== null && ref.current !== undefined && ref.current.value !== undefined) {
+				const value = Number(ref.current.value)
+				if (Number.isFinite(value)) return Math.floor(value)
 			}
-			const targetValue = defaultTarget.current === null ? '' : String(defaultTarget.current.value || '').trim()
-			void store.send('settings', { maxConcurrent: value, defaultTarget: targetValue }).then(function (result) {
-		if (result.ok === true) props.onClose()
-		else setError(t('error'))
+			return fallback
+		}
+
+		function fill(template, values) {
+			let out = String(template)
+			Object.keys(values).forEach(function (key) {
+				out = out.split('{' + key + '}').join(String(values[key]))
+			})
+			return out
+		}
+
+		function useSuggestion() {
+			const concurrency = numberFrom(concurrent, currentConcurrent)
+			const suggested = Math.min(12, Math.max(1, concurrency + 1))
+			if (workerAgents.current !== null && workerAgents.current !== undefined) workerAgents.current.value = String(suggested)
+			setPreview({ concurrent: concurrency, agents: suggested })
+		}
+
+		function save() {
+			const concurrency = numberFrom(concurrent, currentConcurrent)
+			const agents = numberFrom(workerAgents, currentWorkerAgents)
+			const maxAttempts = numberFrom(attempts, currentAttempts)
+			if (concurrency < 1 || concurrency > 8) {
+				setError(t('invalidConcurrency'))
+				return
+			}
+			if (agents < 1 || agents > 12) {
+				setError(t('invalidWorkerAgents'))
+				return
+			}
+			if (maxAttempts < 1 || maxAttempts > 10) {
+				setError(t('invalidMaxAttempts'))
+				return
+			}
+			const targetValue = defaultTarget.current === null || defaultTarget.current === undefined ? '' : String(defaultTarget.current.value === undefined || defaultTarget.current.value === null ? '' : defaultTarget.current.value).trim()
+			const spawnOn = allowSpawn.current === null || allowSpawn.current === undefined ? dispatch.allowSpawn !== false : allowSpawn.current.checked === true
+			// T-167: both capacity knobs are always sent, even when the user only
+			// touched concurrency. The Host must never re-derive the worker ceiling
+			// from concurrency and silently overwrite the stored value.
+			void store.send('settings', {
+				maxConcurrent: concurrency,
+				maxWorkAgents: agents,
+				maxAttempts: maxAttempts,
+				allowSpawn: spawnOn,
+				defaultTarget: targetValue,
+			}).then(function (result) {
+				if (result.ok === true) props.onClose()
+				else setError(t('error'))
 			})
 		}
+
+		const capacityRows = [
+			h('p', { key: 'cap', className: 'gbt-settingsnote' }, fill(t('settingsCapacityLine'), { cap: workerCap, total: teamRequired })),
+			h(
+				'p',
+				{ key: 'live', className: 'gbt-settingsnote', 'data-capacity-live': liveWorkers === null ? '' : String(liveWorkers), 'data-capacity-missing': missingWorkers === null ? '' : String(missingWorkers) },
+				liveWorkers === null || missingWorkers === null
+					? t('settingsCapacityUnknown')
+					: fill(t('settingsCapacityLive'), { live: liveWorkers, missing: missingWorkers }),
+			),
+		]
+		// T-166 error codes are the capacity vocabulary; surface the ones the last
+		// tick actually reported instead of only a generic "pool is short" line.
+		if (skippedCodes.has('spawn-failed')) {
+			capacityRows.push(h('p', { key: 'spawn', className: 'gbt-settingswarning', 'data-settings-warning': 'spawn-failed' }, t('settingsSpawnFailWarn')))
+		}
+		if (skippedCodes.has('role-cap')) {
+			capacityRows.push(h('p', { key: 'role-cap', className: 'gbt-settingswarning', 'data-settings-warning': 'role-cap' }, t('settingsRoleCapWarn')))
+		}
+		if (skippedCodes.has('role-full')) {
+			capacityRows.push(h('p', { key: 'role-full', className: 'gbt-settingswarning', 'data-settings-warning': 'role-full' }, t('settingsRoleFullWarn')))
+		}
+		if (skippedCodes.has('no-idle-member')) {
+			capacityRows.push(h('p', { key: 'no-idle', className: 'gbt-settingswarning', 'data-settings-warning': 'no-idle-member' }, t('settingsNoIdleWarn')))
+		}
+		if (missingWorkers !== null && missingWorkers > 0 && skippedCodes.size === 0) {
+			capacityRows.push(
+				h(
+					'p',
+					{ key: 'warn', className: 'gbt-settingswarning', 'data-settings-warning': 'worker-capacity' },
+					fill(t('settingsCapacityWarn'), { cap: workerCap, live: liveWorkers, missing: missingWorkers }),
+				),
+			)
+		}
+		if (workersError !== null) {
+			capacityRows.push(h('p', { key: 'no-team', className: 'gbt-settingswarning', 'data-settings-warning': 'workers-unavailable' }, t('settingsWorkersUnavailable')))
+		}
+
 		return h(
 			Modal,
 			{ title: t('settingsTitle'), onClose: props.onClose, t: t },
 			h(
-		'div',
-		{ className: 'gbt-form' },
-		h(
-			'div',
-			{ className: 'gbt-field' },
-			h('label', null, t('maxConcurrent')),
-			h('input', { className: 'gbt-input', type: 'number', min: 1, max: 8, step: 1, ref: concurrent, defaultValue: String(dispatch.maxConcurrent) }),
-		),
-		h(
-			'div',
-			{ className: 'gbt-field' },
-			h('label', null, t('defaultTargetLabel')),
-			h('input', { className: 'gbt-input', 'data-field': 'default-target', ref: defaultTarget, defaultValue: typeof dispatch.defaultTarget === 'string' ? dispatch.defaultTarget : '', placeholder: t('defaultTargetHint') }),
-		),
-		h('p', { className: 'gbt-footnote' }, t('concurrencyHint')),
-		error === '' ? null : h('p', { className: 'gbt-footnote', style: { color: 'var(--dsw-alias-state-error-primary)' } }, error),
-		h(
-			'div',
-			{ className: 'gbt-actions' },
-			h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: save }, t('apply')),
-			h('button', { type: 'button', className: 'gbt-btn', onClick: props.onClose }, t('cancel')),
-		),
+				'div',
+				{ className: 'gbt-form gbt-settingsform' },
+				h(
+					'div',
+					{ className: 'gbt-settingsgroup', 'data-settings-group': 'concurrency' },
+					h('div', { className: 'gbt-settingsgrouphead' }, t('settingsConcurrencyGroup')),
+					h(
+						'div',
+						{ className: 'gbt-field' },
+						h('label', null, t('maxConcurrent')),
+						h('input', {
+							className: 'gbt-input',
+							type: 'number',
+							min: 1,
+							max: 8,
+							step: 1,
+							ref: concurrent,
+							defaultValue: String(currentConcurrent),
+							'data-field': 'max-concurrent',
+							onChange: function (event) {
+								const value = Number(event !== null && event !== undefined && event.target !== undefined ? event.target.value : NaN)
+								setPreview({ concurrent: Number.isFinite(value) ? Math.floor(value) : currentConcurrent, agents: preview.agents })
+							},
+						}),
+					),
+					h('p', { className: 'gbt-settingsnote' }, t('concurrencyHint')),
+				),
+				h(
+					'div',
+					{ className: 'gbt-settingsgroup', 'data-settings-group': 'workers' },
+					h('div', { className: 'gbt-settingsgrouphead' }, t('settingsWorkerGroup')),
+					h(
+						'div',
+						{ className: 'gbt-field' },
+						h('label', null, t('settingsWorkerCap')),
+						h('input', {
+							className: 'gbt-input',
+							type: 'number',
+							min: 1,
+							max: 12,
+							step: 1,
+							ref: workerAgents,
+							defaultValue: String(currentWorkerAgents),
+							'data-field': 'max-work-agents',
+							onChange: function (event) {
+								const value = Number(event !== null && event !== undefined && event.target !== undefined ? event.target.value : NaN)
+								setPreview({ concurrent: preview.concurrent, agents: Number.isFinite(value) ? Math.floor(value) : currentWorkerAgents })
+							},
+						}),
+					),
+					h(
+						'div',
+						{ className: 'gbt-settingsinline' },
+						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'suggest-worker-cap', onClick: useSuggestion }, t('settingsUseSuggested')),
+						h('span', { className: 'gbt-settingsnote' }, t('settingsWorkerSuggestionNote')),
+					),
+					h('p', { className: 'gbt-settingsnote' }, t('settingsWorkerCapHint')),
+				),
+				h(
+					'div',
+					{ className: 'gbt-settingsgroup', 'data-settings-group': 'retry' },
+					h('div', { className: 'gbt-settingsgrouphead' }, t('settingsRetryGroup')),
+					h(
+						'div',
+						{ className: 'gbt-field' },
+						h('label', null, t('settingsMaxAttempts')),
+						h('input', { className: 'gbt-input', type: 'number', min: 1, max: 10, step: 1, ref: attempts, defaultValue: String(currentAttempts), 'data-field': 'max-attempts' }),
+					),
+					h(
+						'label',
+						{ className: 'gbt-settingsinline' },
+						h('input', { type: 'checkbox', ref: allowSpawn, defaultChecked: dispatch.allowSpawn !== false, 'data-field': 'allow-spawn' }),
+						h('span', null, t('settingsAllowSpawn')),
+					),
+					h('p', { className: 'gbt-settingsnote' }, t('settingsAllowSpawnHint')),
+				),
+				h(
+					'div',
+					{ className: 'gbt-field' },
+					h('label', null, t('defaultTargetLabel')),
+					h('input', {
+						className: 'gbt-input',
+						'data-field': 'default-target',
+						ref: defaultTarget,
+						defaultValue: typeof dispatch.defaultTarget === 'string' ? dispatch.defaultTarget : '',
+						placeholder: t('defaultTargetHint'),
+					}),
+				),
+				h(
+					'div',
+					{
+						className: 'gbt-settingscapacity',
+						'data-settings-capacity': 'true',
+						'data-worker-cap': String(workerCap),
+						'data-team-required': String(teamRequired),
+						'data-capacity-live': liveWorkers === null ? '' : String(liveWorkers),
+						'data-capacity-missing': missingWorkers === null ? '' : String(missingWorkers),
+					},
+					h('div', { className: 'gbt-settingsgrouphead' }, t('settingsCapacityTitle')),
+					capacityRows,
+				),
+				error === '' ? null : h('p', { className: 'gbt-settingsnote', style: { color: 'var(--dsw-alias-state-error-primary)' } }, error),
+				h(
+					'div',
+					{ className: 'gbt-actions' },
+					h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: save }, t('apply')),
+					h('button', { type: 'button', className: 'gbt-btn', onClick: props.onClose }, t('cancel')),
+				),
 			),
 		)
 	}
-
 
 	return SettingsForm
 }

@@ -32,17 +32,21 @@ export function createControlActions(deps) {
     for (const key of ['maxConcurrent', 'allowSpawn', 'maxWorkAgents', 'maxAttempts', 'defaultTarget']) {
       if (source[key] !== undefined) patch[key] = source[key]
     }
-    // The GUI exposes a single number: maximum concurrency. The worker cap and
-    // spawning policy are derived so a user does not have to reason about two
-    // capacity knobs. An explicit advanced value still wins.
+    // T-167: the settings form sends maxConcurrent AND maxWorkAgents explicitly
+    // (plus retry/spawn), so a concurrency edit can never silently overwrite the
+    // stored worker ceiling. The old concurrency+1 derivation stays only as a
+    // compatibility path for legacy callers that send maxConcurrent ALONE.
+    const explicitCapacity = ['maxWorkAgents', 'allowSpawn', 'maxAttempts', 'defaultTarget'].some(function (key) {
+      return source[key] !== undefined
+    })
     if (source.maxConcurrent !== undefined) {
       const concurrency = Number(source.maxConcurrent)
       if (Number.isFinite(concurrency)) patch.maxConcurrent = Math.floor(concurrency)
-      if (source.maxWorkAgents === undefined && Number.isFinite(concurrency)) {
+      if (source.maxWorkAgents === undefined && explicitCapacity !== true && Number.isFinite(concurrency)) {
         patch.maxWorkAgents = Math.min(12, Math.max(1, Math.floor(concurrency) + 1))
       }
-      if (source.allowSpawn === undefined) patch.allowSpawn = true
-      if (source.maxAttempts === undefined) patch.maxAttempts = 3
+      if (source.allowSpawn === undefined && explicitCapacity !== true) patch.allowSpawn = true
+      if (source.maxAttempts === undefined && explicitCapacity !== true) patch.maxAttempts = 3
     }
     if (Object.keys(patch).length === 0) return failure('no-change', 'no dispatch setting was supplied')
     const result = await mutate(

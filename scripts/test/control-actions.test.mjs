@@ -39,6 +39,19 @@ assert.equal(configured.ok, true)
 assert.deepEqual(patches[patches.length - 1], { maxConcurrent: 3, maxWorkAgents: 4, allowSpawn: true, maxAttempts: 3 })
 assert.equal(kicked, true)
 
+// T-167: the settings form sends both capacity knobs plus retry/spawn. An
+// explicit maxWorkAgents must survive a concurrency change untouched.
+const explicit = await actions.settings(
+  { maxConcurrent: 6, maxWorkAgents: 2, maxAttempts: 4, allowSpawn: false },
+  { role: 'user', by: 'user' },
+  '/project',
+)
+assert.equal(explicit.ok, true)
+assert.deepEqual(patches[patches.length - 1], { maxConcurrent: 6, maxWorkAgents: 2, maxAttempts: 4, allowSpawn: false })
+const concurrencyOnly = await actions.settings({ maxConcurrent: 5 }, { role: 'user', by: 'user' }, '/project')
+assert.equal(concurrencyOnly.ok, true)
+assert.deepEqual(patches[patches.length - 1], { maxConcurrent: 5, maxWorkAgents: 6, allowSpawn: true, maxAttempts: 3 })
+
 const denied = await actions.settings({}, { role: 'agent' }, '/project')
 assert.equal(denied.code, 'user-only')
 const noChange = await actions.settings({}, { role: 'user' }, '/project')
