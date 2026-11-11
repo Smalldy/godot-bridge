@@ -133,6 +133,14 @@ export function createTaskAdminActions(deps) {
     const session = typeof sessionGate === 'function' ? await sessionGate(projectPath, sessionId) : null
     if (session !== null && session !== undefined && session.blocked === true) return handoffRefusal(session, 'start')
     {
+      // T-165: an already-running dispatcher answers with its current state
+      // BEFORE any readiness gate. A failing preflight must never demote a
+      // running scheduler (and must never leave it attributed to @user).
+      const current = await readBoardOrFail(projectPath)
+      if (current.failed !== undefined) return current.failed
+      if (current.board.dispatch.state === 'running') return ok({ dispatch: current.board.dispatch, alreadyRunning: true })
+    }
+    {
       // T-152 §8: the team-missing refusal answers with the session-aware next
       // step, so a foreign session is never told to bootstrap this project team.
       const gate = await preflightRefusal(projectPath, { sessionId: sessionId, nextStep: session !== null && session !== undefined ? session.nextStep : undefined })

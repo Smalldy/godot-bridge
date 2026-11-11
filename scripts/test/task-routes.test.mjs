@@ -135,6 +135,100 @@ check('registers state, action, task, list, worktrees and diagnostics', surface.
   check('the route returns the board', res.json().ok === true && res.json().tasks.length === 1)
 }
 
+// ── T-165: readiness gates never silently pause a running dispatch ─────────
+//   and every pause names its actor + reason.
+{
+  // A running dispatch must answer alreadyRunning BEFORE the readiness gate.
+  const runningRig = createRig({ allowSpawn: false, gitOptions: { repo: false } })
+  seedBoard(runningRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'running', by: '@user', since: '2026-01-01T00:00:00.000Z' }, tasks: [] }))
+  const runningSurface = install(runningRig)
+  const already = await postTo(runningSurface, { action: 'start' })
+  check(
+    'T-165 a failed preflight on a running dispatch answers alreadyRunning instead of pausing it',
+    already.json().ok === true && already.json().alreadyRunning === true && already.json().dispatch.state === 'running',
+    already.text,
+  )
+  const runningBoard = boardJson(runningRig.fs, PROJECT).dispatch
+  check(
+    'T-165 the running board keeps running and its original identity',
+    runningBoard.state === 'running' && runningBoard.by === '@user',
+    JSON.stringify(runningBoard),
+  )
+  runningSurface.dispose()
+  runningRig.scheduler.dispose()
+
+  // A paused board that fails preflight is paused BY the preflight, visibly.
+  const pausedRig = createRig({ allowSpawn: false, gitOptions: { repo: false } })
+  seedBoard(pausedRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused', by: '@user', since: '2026-01-01T00:00:00.000Z', error: null }, tasks: [] }))
+  const pausedSurface = install(pausedRig)
+  const refused = await postTo(pausedSurface, { action: 'start' })
+  check('T-165 a paused board with a failing preflight refuses the start', refused.json().ok === false && (refused.json().code === 'not-ready' || refused.json().code === 'no-team-for-project'), refused.text)
+  const refusedBoard = boardJson(pausedRig.fs, PROJECT).dispatch
+  check(
+    'T-165 the automatic pause records preflight as its source, never @user',
+    refusedBoard.state === 'paused' && refusedBoard.by === 'preflight' && refusedBoard.pauseSource === 'preflight',
+    JSON.stringify(refusedBoard),
+  )
+  check(
+    'T-165 the automatic pause carries the failed checks, a reason and a timestamp',
+    typeof refusedBoard.pauseReason === 'string' &&
+      refusedBoard.pauseReason.length > 0 &&
+      typeof refusedBoard.error === 'string' &&
+      refusedBoard.error.length > 0 &&
+      typeof refusedBoard.since === 'string',
+    JSON.stringify(refusedBoard),
+  )
+  const exposedState = await call(pausedSurface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  const exposedDispatch = exposedState.json().dispatch
+  check(
+    'T-165 /state exposes pauseSource and pauseReason for the panel',
+    exposedDispatch.pauseSource === 'preflight' && typeof exposedDispatch.pauseReason === 'string' && exposedDispatch.pauseReason.length > 0,
+    exposedState.text.slice(0, 400),
+  )
+  pausedSurface.dispose()
+  pausedRig.scheduler.dispose()
+
+  // Recovery: a healthy preflight resumes and clears the pause audit.
+  const recoveryRig = createRig({ allowSpawn: false })
+  seedBoard(recoveryRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused', by: 'preflight', pauseSource: 'preflight', pauseReason: 'Team missing', error: 'Team missing', since: '2026-01-01T00:00:00.000Z' }, tasks: [] }))
+  const recoverySurface = install(recoveryRig)
+  const recovered = await postTo(recoverySurface, { action: 'start' })
+  const recoveredDispatch = recovered.json().dispatch
+  check(
+    'T-165 a recovered preflight resumes dispatch and clears the pause audit',
+    recovered.json().ok === true && recoveredDispatch.state === 'running' && recoveredDispatch.pauseSource === null && recoveredDispatch.pauseReason === null && recoveredDispatch.error === null,
+    recovered.text,
+  )
+  const explicitPause = await postTo(recoverySurface, { action: 'pause' })
+  check(
+    'T-165 an explicit pause is attributed to the user',
+    explicitPause.json().ok === true && explicitPause.json().dispatch.pauseSource === 'user' && explicitPause.json().dispatch.by === '@user',
+    explicitPause.text,
+  )
+  const explicitResume = await postTo(recoverySurface, { action: 'start' })
+  check(
+    'T-165 an explicit resume clears pauseSource and pauseReason',
+    explicitResume.json().dispatch.state === 'running' && explicitResume.json().dispatch.pauseSource === null && explicitResume.json().dispatch.pauseReason === null,
+    explicitResume.text,
+  )
+  recoverySurface.dispose()
+  recoveryRig.scheduler.dispose()
+
+  // Legacy boards have no audit fields: they read back as null, not an error.
+  const legacyRig = createRig({ allowSpawn: false })
+  seedBoard(legacyRig.fs, PROJECT, JSON.stringify({ version: 2, seq: 3, dispatch: { state: 'paused' }, tasks: [] }))
+  const legacySurface = install(legacyRig)
+  const legacyState = await call(legacySurface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
+  check(
+    'T-165 a legacy pause record exposes null audit fields without failing',
+    legacyState.json().ok === true && legacyState.json().dispatch.pauseSource === null && legacyState.json().dispatch.pauseReason === null,
+    legacyState.text.slice(0, 300),
+  )
+  legacySurface.dispose()
+  legacyRig.scheduler.dispose()
+}
+
+
 // one public setting: concurrency; the worker cap is derived
 {
   const res = await post({ action: 'settings', maxConcurrent: 5 })
@@ -899,6 +993,13 @@ function holdFile(rig, path) {
   const payload = started.json()
   check('start accepts a clean repository', payload.ok === true, started.text)
   check('a claim-time worktree refusal pauses dispatch', payload.snapshot !== undefined && payload.snapshot.dispatch.state === 'paused', started.text)
+  check(
+    'T-165 a claim-time worktree refusal records the worktree source and a readable reason',
+    payload.snapshot.dispatch.pauseSource === 'worktree' &&
+      typeof payload.snapshot.dispatch.pauseReason === 'string' &&
+      payload.snapshot.dispatch.pauseReason.length > 0,
+    JSON.stringify(payload.snapshot.dispatch),
+  )
   check('the task stays pending', payload.snapshot.tasks[0].status === 'pending', started.text)
   check('and records the worktree failure', String(payload.snapshot.tasks[0].worktreeError).indexOf('worktree-add-failed') === 0, String(payload.snapshot.tasks[0].worktreeError))
   check('the scheduler explains the pause', String(payload.snapshot.scheduler && payload.snapshot.scheduler.lastError).indexOf('worktree refused') >= 0, JSON.stringify(payload.snapshot && payload.snapshot.scheduler))

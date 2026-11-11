@@ -642,6 +642,8 @@ export function normaliseRoleConfig(raw) {
  * concurrency and spawn policy survive a restart. */
 export const DISPATCH_DEFAULTS = {
   state: 'paused',
+  pauseSource: null,
+  pauseReason: null,
   maxConcurrent: 3,
   allowSpawn: true,
   maxWorkAgents: 4,
@@ -826,12 +828,25 @@ export function normaliseMerge(raw) {
 export function normaliseDispatch(raw) {
   const source = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
   const state = source.state === 'running' ? 'running' : 'paused'
+  // T-165: pause audit. A legacy board has neither field; it reads back as null
+  // instead of being rewritten with a guessed source.
+  const PAUSE_SOURCES = ['user', 'preflight', 'scheduler', 'worktree', 'legacy']
+  const pauseSource =
+    state === 'running' ? null : PAUSE_SOURCES.indexOf(source.pauseSource) >= 0 ? source.pauseSource : null
+  const pauseReason =
+    state === 'running'
+      ? null
+      : typeof source.pauseReason === 'string' && source.pauseReason.trim() !== ''
+        ? source.pauseReason
+        : null
   const clamp = (value, limit, fallback) =>
     Number.isFinite(value) ? Math.min(limit.max, Math.max(limit.min, Math.floor(value))) : fallback
   return {
     state: state,
     since: typeof source.since === 'string' ? source.since : null,
     by: typeof source.by === 'string' ? source.by : null,
+    pauseSource: pauseSource,
+    pauseReason: pauseReason,
     maxConcurrent: clamp(source.maxConcurrent, DISPATCH_LIMITS.maxConcurrent, DISPATCH_DEFAULTS.maxConcurrent),
     allowSpawn: source.allowSpawn === undefined ? DISPATCH_DEFAULTS.allowSpawn : source.allowSpawn === true,
     maxWorkAgents: clamp(source.maxWorkAgents, DISPATCH_LIMITS.maxWorkAgents, DISPATCH_DEFAULTS.maxWorkAgents),

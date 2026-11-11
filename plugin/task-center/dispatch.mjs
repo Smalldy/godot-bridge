@@ -3618,7 +3618,12 @@ export function createDispatcher(ctx, options) {
     const applied = await state.apply(
       projectPath,
       (board) => {
-        const next = model.setDispatch(board, { state: 'paused' }, state.clock(), 'scheduler')
+        const next = model.setDispatch(
+          board,
+          { state: 'paused', pauseSource: 'worktree', pauseReason: message, error: message },
+          state.clock(),
+          'scheduler',
+        )
         if (next.ok !== true) return next
         const task = model.findTask(next.board, taskId)
         if (task !== undefined) task.worktreeError = reason

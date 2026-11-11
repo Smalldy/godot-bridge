@@ -404,7 +404,17 @@ export function clearDispatchRequest(board, now, by) {
 export function approveDispatch(board, now, by) {
   const next = clone(board)
   next.dispatch = normaliseDispatch(
-    Object.assign({}, next.dispatch, { state: 'running', request: null, since: iso(now), by: by }),
+    Object.assign({}, next.dispatch, {
+      state: 'running',
+      request: null,
+      since: iso(now),
+      by: by,
+      // T-165: a resume ends the pause episode; the audit fields describe a
+      // CURRENT pause, not the previous one.
+      pauseSource: null,
+      pauseReason: null,
+      error: null,
+    }),
   )
   next.updatedAt = iso(now)
   return done(next, [{ kind: 'dispatch', state: 'running', who: by }], { dispatch: next.dispatch })
@@ -418,10 +428,30 @@ export function setDispatch(board, patch, now, by) {
   const next = clone(board)
   const merged = normaliseDispatch(Object.assign({}, next.dispatch, source))
   const changedState = merged.state !== next.dispatch.state
+  // T-165: a pause audit write (preflight/worktree) refreshes the actor even
+  // when the board was already paused, so a legacy @user attribution can never
+  // survive an automatic pause.
+  const pauseAuditWrite =
+    merged.state === 'paused' &&
+    (source.pauseSource !== undefined || source.pauseReason !== undefined || source.error !== undefined)
   next.dispatch = merged
-  if (changedState) {
+  if (changedState || pauseAuditWrite) {
     next.dispatch.since = iso(now)
     next.dispatch.by = by
+    if (next.dispatch.state === 'running') {
+      // T-165: running has no pause episode to describe.
+      next.dispatch.pauseSource = null
+      next.dispatch.pauseReason = null
+    } else {
+      // Every pause write names its actor. Explicit routes (control.mjs) call
+      // this without a source, so default them to user/scheduler; preflight and
+      // worktree pauses pass their own source and a readable reason.
+      if (source.pauseSource === undefined) next.dispatch.pauseSource = by === 'scheduler' ? 'scheduler' : 'user'
+      if (source.pauseReason === undefined) {
+        next.dispatch.pauseReason =
+          typeof next.dispatch.error === 'string' && next.dispatch.error !== '' ? next.dispatch.error : null
+      }
+    }
   }
   next.updatedAt = iso(now)
   return done(next, [{ kind: 'dispatch', state: merged.state, who: by }], { dispatch: merged })
