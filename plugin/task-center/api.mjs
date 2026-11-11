@@ -5158,14 +5158,29 @@ export function createApi(ctx, options) {
     if (preflight.ok === true) {
       // A ready project clears an old refusal so the panel stops showing it.
       const current = await readBoardOrFail(projectPath)
-      if (current.failed === undefined && current.board.dispatch.error !== null) {
-        try {
-          await state.apply(
-            projectPath,
-            (board) => ({ ok: true, board: Object.assign({}, board, { dispatch: Object.assign({}, board.dispatch, { error: null }) }), events: [] }),
-            writePolicyFor(projectPath),
-          )
-        } catch (error) {}
+      if (current.failed === undefined) {
+        const dispatch = current.board.dispatch
+        const pausedByPreflight = dispatch.state !== 'running' && dispatch.pauseSource === 'preflight'
+        if (dispatch.error !== null || pausedByPreflight) {
+          const patch = { error: null }
+          // T-165: preflight recovery must not leave a paused dispatch with no
+          // readable reason. Keep the pause, but say why it is still paused and
+          // that a resume is the next step.
+          if (pausedByPreflight) {
+            patch.pauseSource = 'preflight'
+            patch.pauseReason = 'Preflight checks now pass; resume dispatch to continue.'
+          }
+          try {
+            await state.apply(
+              projectPath,
+              (board) => {
+                const next = model.setDispatch(board, patch, clock(), 'preflight')
+                return next.ok === true ? { ok: true, board: next.board, events: next.events } : next
+              },
+              writePolicyFor(projectPath),
+            )
+          } catch (error) {}
+        }
       }
       return null
     }
@@ -5178,11 +5193,19 @@ export function createApi(ctx, options) {
     try {
       await state.apply(
         projectPath,
-        (board) => ({
-          ok: true,
-          board: Object.assign({}, board, { dispatch: Object.assign({}, board.dispatch, { state: 'paused', error: missing }) }),
-          events: [],
-        }),
+        (board) => {
+          // T-165: a failed preflight must never demote a running dispatch, and
+          // when it pauses a paused/legacy board it must name itself instead of
+          // silently keeping the previous @user identity.
+          if (board.dispatch.state === 'running') return { ok: true, board: board, events: [] }
+          const next = model.setDispatch(
+            board,
+            { state: 'paused', error: missing, pauseSource: 'preflight', pauseReason: missing },
+            clock(),
+            'preflight',
+          )
+          return next.ok === true ? { ok: true, board: next.board, events: next.events } : next
+        },
         writePolicyFor(projectPath),
       )
     } catch (error) {}
