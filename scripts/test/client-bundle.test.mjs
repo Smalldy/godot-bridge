@@ -3204,10 +3204,37 @@ await flush()
   check('and the old locks page copy is not rendered anywhere', textOf(tree).indexOf('等待者') < 0 && textOf(tree).indexOf('当前没有文件锁') < 0)
 }
 
-// Settings: the phase machine owns review/test, so the old self/independent
-// testing switch is gone and a save carries the concurrency only.
+// T-167 Settings: concurrency and the Worker-pool ceiling are separate knobs.
+// The modal also previews workerCap / team size / live-missing and only the
+// "use suggested value" button derives concurrency + 1.
 {
-  const settingsTree = withHooks(panel, { initialView: 'board', initialSettingsOpen: true })
+  const savedWorkers = HOST.workers
+  const savedDispatch = HOST.dispatch
+  const savedScheduler = HOST.scheduler
+  HOST.dispatch = Object.assign({}, savedDispatch, { maxConcurrent: 3, maxWorkAgents: 4, maxAttempts: 3, allowSpawn: true })
+  HOST.workers = Object.assign({}, savedWorkers, {
+    roles: {
+      desired: { worker: 3, reviewer: 1, tester: 1 },
+      live: { worker: 1, reviewer: 1, tester: 1 },
+      missing: { worker: 2, reviewer: 0, tester: 0 },
+    },
+  })
+  HOST.scheduler = {
+    lastTickAt: now,
+    lastError: null,
+    lastCapacity: { maxConcurrent: 3, maxWorkAgents: 4, workerCap: 3, live: 1, busy: 1, missing: 2, rosterReadable: true },
+    lastResults: [{ id: 'T-1', skipped: 'spawn-failed', growth: { spawnFailed: true } }],
+  }
+  async function reloadHost() {
+    const tree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    findAction(tree, 'refresh').props.onClick()
+    await flush()
+    await flush()
+  }
+  await reloadHost()
+
+  let settingsTree = withHooks(panel, { initialView: 'board', initialSettingsOpen: true })
   await flush()
   const settingsText = textOf(settingsTree)
   check('the settings form no longer offers a testing choice', findAll(settingsTree, (node) => node.type === 'select').length === 0)
@@ -3216,19 +3243,116 @@ await flush()
     ['独立测试', '自测', '系统验证', '仅用户可修改'].every((label) => settingsText.indexOf(label) < 0),
     settingsText,
   )
-  check('the settings form keeps the concurrency field', settingsText.indexOf('最大并发') >= 0, settingsText)
-  const input = findAll(settingsTree, (node) => node.type === 'input' && node.props && node.props.type === 'number')[0]
-  check('the concurrency field is the settings control', input !== undefined)
-  input.props.ref.current = { value: '5' }
+  const field = (name) => findAll(settingsTree, (node) => node.type === 'input' && node.props && node.props['data-field'] === name)[0]
+  const concurrencyInput = field('max-concurrent')
+  const workersInput = field('max-work-agents')
+  const attemptsInput = field('max-attempts')
+  const spawnInput = field('allow-spawn')
+  check(
+    'T-167 the settings modal exposes concurrency, worker ceiling, attempts and spawn separately',
+    concurrencyInput !== undefined && workersInput !== undefined && attemptsInput !== undefined && spawnInput !== undefined && findAction(settingsTree, 'suggest-worker-cap') !== undefined,
+    JSON.stringify(['max-concurrent', 'max-work-agents', 'max-attempts', 'allow-spawn'].map((name) => field(name) !== undefined)),
+  )
+  const capacityNode = findAll(settingsTree, (node) => node.props && node.props['data-settings-capacity'] === 'true')[0]
+  check(
+    'T-167 the capacity preview shows workerCap, the required team and live/missing',
+    capacityNode !== undefined &&
+      capacityNode.props['data-worker-cap'] === '3' &&
+      capacityNode.props['data-team-required'] === '6' &&
+      textOf(capacityNode).indexOf('1 lead') >= 0 &&
+      textOf(capacityNode).indexOf('live 1') >= 0 &&
+      textOf(capacityNode).indexOf('missing 2') >= 0,
+    capacityNode && textOf(capacityNode),
+  )
+  check(
+    'T-167 the capacity preview consumes scheduler.lastCapacity for live/missing',
+    capacityNode.props['data-capacity-live'] === '1' && capacityNode.props['data-capacity-missing'] === '2',
+    JSON.stringify(capacityNode.props),
+  )
+  check(
+    'T-167 a failed spawn is shown as a readable spawn-failed warning',
+    findAll(capacityNode, (node) => node.props && node.props['data-settings-warning'] === 'spawn-failed').length === 1 &&
+      textOf(capacityNode).indexOf('spawn-failed') >= 0,
+    textOf(capacityNode),
+  )
+  // The other T-166 capacity codes are part of the settings vocabulary too.
+  for (const code of ['role-cap', 'no-idle-member']) {
+    HOST.scheduler = Object.assign({}, HOST.scheduler, { lastResults: [{ id: 'T-1', skipped: code }] })
+    await reloadHost()
+    const codeTree = withHooks(panel, { initialView: 'board', initialSettingsOpen: true })
+    await flush()
+    const codeCapacity = findAll(codeTree, (node) => node.props && node.props['data-settings-capacity'] === 'true')[0]
+    check(
+      'T-167 the capacity warning consumes the ' + code + ' dispatcher code',
+      findAll(codeCapacity, (node) => node.props && node.props['data-settings-warning'] === code).length === 1,
+      textOf(codeCapacity),
+    )
+  }
+  HOST.scheduler = Object.assign({}, HOST.scheduler, { lastResults: [{ id: 'T-1', skipped: 'spawn-failed', growth: { spawnFailed: true } }] })
+  await reloadHost()
+  concurrencyInput.props.ref.current = { value: '6' }
+  workersInput.props.ref.current = { value: '4' }
+  findAction(settingsTree, 'suggest-worker-cap').props.onClick()
+  await flush()
+  check(
+    'T-167 only the suggestion button derives the worker ceiling (concurrency + 1)',
+    workersInput.props.ref.current !== null && String(workersInput.props.ref.current.value) === '7',
+    workersInput.props.ref.current && String(workersInput.props.ref.current.value),
+  )
+  // Explicit values are sent together; the ceiling is NOT re-derived here.
+  concurrencyInput.props.ref.current = { value: '5' }
+  workersInput.props.ref.current = { value: '7' }
+  attemptsInput.props.ref.current = { value: '4' }
+  spawnInput.props.ref.current = { checked: false }
   findButton(settingsTree, '应用').props.onClick()
   await flush()
-  const settingsPost = posts[posts.length - 1]
+  let settingsPost = posts[posts.length - 1]
   check(
-    'applying settings sends only maxConcurrent',
-    settingsPost.action === 'settings' && settingsPost.maxConcurrent === 5 && settingsPost.testing === undefined,
+    'T-167 applying settings sends concurrency and the explicit worker ceiling together',
+    settingsPost.action === 'settings' &&
+      settingsPost.maxConcurrent === 5 &&
+      settingsPost.maxWorkAgents === 7 &&
+      settingsPost.maxAttempts === 4 &&
+      settingsPost.allowSpawn === false &&
+      settingsPost.testing === undefined,
     JSON.stringify(settingsPost),
   )
   check('the settings save carries the project', settingsPost.project === PROJECT, JSON.stringify(settingsPost))
+
+  // Changing ONLY concurrency must keep the stored explicit ceiling (no silent
+  // concurrency + 1 rewrite). The form re-opens with the saved 7.
+  HOST.dispatch = Object.assign({}, HOST.dispatch, { maxWorkAgents: 7 })
+  await reloadHost()
+  settingsTree = withHooks(panel, { initialView: 'board', initialSettingsOpen: true })
+  await flush()
+  const secondConcurrency = field('max-concurrent')
+  const secondWorkers = field('max-work-agents')
+  secondConcurrency.props.ref.current = { value: '6' }
+  findButton(settingsTree, '应用').props.onClick()
+  await flush()
+  settingsPost = posts[posts.length - 1]
+  check(
+    'T-167 changing concurrency does not overwrite the explicit worker ceiling',
+    settingsPost.maxConcurrent === 6 && settingsPost.maxWorkAgents === 7,
+    JSON.stringify(settingsPost),
+  )
+
+  // Invalid values are refused before any POST.
+  const postsBeforeInvalid = posts.length
+  settingsTree = withHooks(panel, { initialView: 'board', initialSettingsOpen: true })
+  await flush()
+  field('max-concurrent').props.ref.current = { value: '9' }
+  findButton(settingsTree, '应用').props.onClick()
+  await flush()
+  check(
+    'T-167 an out-of-range concurrency is refused with a readable error',
+    posts.length === postsBeforeInvalid && textOf(settingsTree).indexOf('1–8') >= 0,
+    textOf(settingsTree).slice(-200),
+  )
+
+  HOST.workers = savedWorkers
+  HOST.dispatch = savedDispatch
+  HOST.scheduler = savedScheduler
 }
 
 // Detail page: stage spine, "where it is now" and the summary column.
