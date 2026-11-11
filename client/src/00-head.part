@@ -2108,6 +2108,12 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
   .gbt-toolbar .gbt-tabs{width:100%;max-width:100%;overflow-x:auto}
   .gbt-toolbarright{justify-content:flex-end;flex-wrap:wrap;padding:0 0 5px}
   .gbt-statusbar{padding:6px 10px;gap:6px}
+  /* T-162: in a narrow panel the team popover anchors to the RIGHT edge of
+     its pill so it cannot cross the panel edge; the session popover keeps its
+     left anchor but both are capped to the viewport. Desktop rules unchanged. */
+  .gbt-anchor .gbt-teampopover{left:auto;right:0;min-width:0;width:min(280px,calc(100vw - 24px));max-width:calc(100vw - 24px)}
+  .gbt-anchor .gbt-sessionpopover{left:0;right:auto;max-width:min(320px,calc(100vw - 24px))}
+  .gbt-popover{max-width:calc(100vw - 24px);max-height:min(420px,calc(100vh - 140px))}
 }`,
 		].join('')
 
