@@ -38,6 +38,9 @@ assert.deepEqual(sparseLanes.map((lane) => lane.props.group.key), ['dispatch', '
 assert.deepEqual(sparseLanes[0].props.subcounts, { ready: 0, waiting: 0 }, 'the dispatch rail still carries both counts')
 assert.equal(sparseLanes[4].props.summary, null, 'an empty done lane has no archive summary')
 assert.equal(sparseLanes[1].props.collapsed, false, 'an active lane is not collapsed just because it is empty')
+// T-160: the same six lanes and order are what the narrow media query stacks.
+assert.equal(out.props.children.props.className, 'gbt-board', 'the board keeps its own scrollport class')
+assert.equal(sparseLanes.length, 6, 'narrow stacking never drops a lane')
 assert.equal(out.type, 'div')
 assert.equal(out.props.className, 'gbt-boardwrap')
 assert.equal(out.props['data-board-kind'], 'all')

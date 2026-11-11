@@ -2077,7 +2077,38 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 @media (max-width:1500px){.gbt-projectpath{max-width:200px}.gbt-context{justify-content:flex-start}}
 @media (max-width:1360px){.gbt-colsubcount .gbt-sublabel{display:none}.gbt-colsubcount .gbt-subnum{margin-left:0}
 .gbt-colsubcount::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block;margin-right:3px}}
-@media (max-width:1200px){.gbt-sessionschip{padding:0 7px;gap:5px}.gbt-context{gap:5px}.gbt-toprow{gap:8px}.gbt-board{overflow-x:auto}.gbt-col{min-width:150px}.gbt-col[data-empty="true"]{min-width:132px}}`,
+@media (max-width:1200px){.gbt-sessionschip{padding:0 7px;gap:5px}.gbt-context{gap:5px}.gbt-toprow{gap:8px}.gbt-board{overflow-x:auto}.gbt-col{min-width:150px}.gbt-col[data-empty="true"]{min-width:132px}}
+/* T-160 narrow panels stack the six lanes vertically instead of scrolling
+   sideways. Only the desktop grid rules above change here. */
+@media (max-width:860px){
+  .gbt-root{max-width:100%;overflow-x:hidden}
+  .gbt-main,.gbt-content,.gbt-view{max-width:100%;min-width:0}
+  .gbt-view{overflow-x:hidden;padding:10px 10px 14px}
+  .gbt-boardwrap{display:flex;flex-direction:column;width:100%;max-width:100%;height:100%;min-height:0;overflow-x:hidden}
+  .gbt-board{display:flex;flex-direction:column;width:100%;max-width:100%;flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;gap:10px}
+  .gbt-col,.gbt-col[data-group="dispatch"],.gbt-col[data-group="done"],
+  .gbt-col[data-empty="true"],.gbt-col[data-group="dispatch"][data-empty="true"],
+  .gbt-col[data-group="dispatch"][data-collapsed="true"]{width:100%;max-width:none;min-width:0;flex:0 0 auto;max-height:none;min-height:0}
+  .gbt-col[data-group="dispatch"] .gbt-colhead,.gbt-col[data-group="dispatch"] .gbt-colname,
+  .gbt-col[data-group="dispatch"] .gbt-colcount,.gbt-col[data-group="dispatch"] .gbt-colsubcounts,
+  .gbt-col[data-group="dispatch"] .gbt-colsubcount{white-space:nowrap}
+  .gbt-col[data-group="dispatch"] .gbt-colsubcounts{margin-left:auto;flex:0 1 auto;overflow:hidden}
+  .gbt-cards{overflow:visible;flex:0 0 auto;min-height:0;max-height:none}
+  .gbt-card,.gbt-col[data-group="done"] .gbt-card{max-width:none;width:100%}
+  .gbt-cardtitle{display:block;-webkit-line-clamp:unset}
+  .gbt-emptyslim{min-height:56px}
+  .gbt-toprow{flex-wrap:wrap;gap:6px;padding:8px 10px}
+  .gbt-brand{flex:1 1 auto;min-width:0}
+  .gbt-projectpath{display:none}
+  .gbt-projectname{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .gbt-context{flex:1 1 100%;justify-content:flex-start;gap:5px;min-width:0;flex-wrap:wrap}
+  .gbt-context .gbt-workspacebar{max-width:100%}
+  .gbt-topactions{margin-left:auto;gap:5px}
+  .gbt-toolbar{flex-direction:column;align-items:stretch;padding:0 8px;gap:2px}
+  .gbt-toolbar .gbt-tabs{width:100%;max-width:100%;overflow-x:auto}
+  .gbt-toolbarright{justify-content:flex-end;flex-wrap:wrap;padding:0 0 5px}
+  .gbt-statusbar{padding:6px 10px;gap:6px}
+}`,
 		].join('')
 
 		/** ISO-8601 to epoch milliseconds, or null. */
