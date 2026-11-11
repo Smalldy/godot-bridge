@@ -5748,5 +5748,138 @@ try {
   summaryRig.scheduler.dispose()
 }
 
+// ── T-166: a busy worker must not starve the rest of the ready queue ───────
+{
+  const workerName = roleSlotName('worker', 1, PROJECT)
+  const busyTeam = (extra) =>
+    createTeam(
+      Object.assign(
+        {
+          roster: [
+            { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
+            { id: 'session-w1', name: workerName, role: 'teammate', status: 'running' },
+          ],
+        },
+        extra === undefined ? {} : extra,
+      ),
+    )
+  async function markBusy(rig, id) {
+    await patchTask(rig, id, (task) => {
+      task.status = 'running'
+      task.assignee = { name: workerName, session: 'session-w1' }
+      task.attempts = 1
+      task.leaseUntil = new Date(Date.now() + 600000).toISOString()
+      task.dispatch = {
+        status: 'sent',
+        at: new Date().toISOString(),
+        target: workerName,
+        targetId: 'session-w1',
+        via: 'message',
+        error: null,
+        host: rig.scheduler.boot,
+      }
+    })
+  }
+  async function threeReady(rig, withInvestigation) {
+    const busy = (await createTask(rig, { title: 'busy', priority: 10 })).id
+    const high = (await createTask(rig, { title: 'high', priority: 90 })).id
+    const lowInput = { title: 'low', priority: 50 }
+    if (withInvestigation === true) lowInput.kind = 'investigate'
+    const low = (await createTask(rig, lowInput)).id
+    const mid = (await createTask(rig, { title: 'mid', priority: 80 })).id
+    await markBusy(rig, busy)
+    return { busy: busy, high: high, low: low, mid: mid }
+  }
+
+  // 1. no-idle-member no longer breaks the loop: every ready card gets a result.
+  {
+    const rig = createRig({ team: busyTeam() })
+    const cards = await threeReady(rig, true)
+    await rig.action('settings', { maxConcurrent: 3, maxWorkAgents: 4, allowSpawn: false })
+    await rig.action('start')
+    const tick = await rig.scheduler.settle(rig.project)
+    const skipped = tick.results.filter((entry) => entry.skipped === 'no-idle-member')
+    check(
+      'T-166 a busy worker produces one skip per ready card instead of starving the rest',
+      skipped.length === 3 && [cards.high, cards.low, cards.mid].every((id) => skipped.some((entry) => entry.id === id)),
+      JSON.stringify(tick.results),
+    )
+    check(
+      'T-166 a high-priority dev card does not starve the lower-priority investigation card',
+      skipped.some((entry) => entry.id === cards.low),
+      JSON.stringify(skipped.map((entry) => entry.id)),
+    )
+    check(
+      'T-166 the starved cards are tried in priority order',
+      tick.results.map((entry) => entry.id).slice(0, 3).join(',') === [cards.high, cards.mid, cards.low].join(','),
+      JSON.stringify(tick.results.map((entry) => entry.id)),
+    )
+    check(
+      'T-166 the skip carries workerCap/live/missing for the panel',
+      tick.capacity !== null && tick.capacity.workerCap === 3 && tick.capacity.live === 1 && tick.capacity.missing === 2,
+      JSON.stringify(tick.capacity),
+    )
+    await patchTask(rig, cards.busy, (task) => {
+      task.status = 'done'
+    })
+    await rig.scheduler.settle(rig.project)
+    const snap = await snapshot(rig)
+    check('T-166 when the worker frees up the highest-priority card runs', byId(snap, cards.high).status === 'running', JSON.stringify(ids(snap)))
+    rig.scheduler.dispose()
+  }
+
+  // 2. a failed grow is readable on every skipped card, not swallowed.
+  {
+    const rig = createRig({ team: busyTeam({ spawnThrows: true }) })
+    const cards = await threeReady(rig)
+    await rig.action('settings', { maxConcurrent: 3, maxWorkAgents: 4, allowSpawn: true })
+    await rig.action('start')
+    const tick = await rig.scheduler.settle(rig.project)
+    const failed = tick.results.filter((entry) => entry.skipped === 'spawn-failed')
+    check(
+      'T-166 a failed worker grow is reported as spawn-failed on every ready card',
+      failed.length === 3 && [cards.high, cards.low, cards.mid].every((id) => failed.some((entry) => entry.id === id)),
+      JSON.stringify(tick.results),
+    )
+    check(
+      'T-166 the spawn failure keeps its growth result and readable capacity',
+      failed.every((entry) => entry.growth !== undefined && entry.growth.spawnFailed === true && typeof entry.growth.message === 'string') &&
+        tick.capacity !== null &&
+        tick.capacity.live === 1 &&
+        tick.capacity.workerCap === 3,
+      JSON.stringify({ capacity: tick.capacity, growth: failed.map((entry) => entry.growth) }),
+    )
+    check(
+      'T-166 the scheduler status exposes the last capacity snapshot',
+      rig.scheduler.status(rig.project).lastCapacity !== null &&
+        rig.scheduler.status(rig.project).lastCapacity.live === 1 &&
+        rig.scheduler.status(rig.project).lastCapacity.missing === 2,
+      JSON.stringify(rig.scheduler.status(rig.project).lastCapacity),
+    )
+    rig.scheduler.dispose()
+  }
+
+  // 3. the corrected roster read lets the pool grow past its first worker.
+  {
+    const rig = createRig({ team: busyTeam({ spawnedStatus: 'running' }) })
+    await threeReady(rig)
+    await rig.action('settings', { maxConcurrent: 3, maxWorkAgents: 4, allowSpawn: true })
+    await rig.action('start')
+    const snap = await snapshot(rig)
+    const spawns = rig.team.calls.filter((call) => call.kind === 'spawn')
+    check(
+      'T-166 a busy pool grows another worker and dispatches the waiting cards',
+      spawns.length >= 1 && running(snap).length >= 2,
+      JSON.stringify({ spawns: spawns.map((call) => call.name), running: running(snap) }),
+    )
+    check(
+      'T-166 the grown pool is used for the next card instead of one worker starved',
+      rig.team.roster.filter((member) => /^worker-p/.test(member.name)).length >= 2 && running(snap).length >= 2,
+      JSON.stringify(rig.team.roster.map((member) => member.name)),
+    )
+    rig.scheduler.dispose()
+  }
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
