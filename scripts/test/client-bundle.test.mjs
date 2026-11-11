@@ -6509,5 +6509,43 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   )
 }
 
+// ── T-161: the status page never scrolls sideways at wide viewports ──
+{
+  const css161 = readFileSync(SRC, 'utf8')
+  check(
+    'T-161 the status page chain and grid own the width and clip horizontal overflow',
+    css161.indexOf('.gbt-statusview{display:flex;flex-direction:column;gap:12px;width:100%;min-width:0;max-width:100%;overflow-x:clip;box-sizing:border-box}') >= 0 &&
+      css161.indexOf('.gbt-statusgrid{display:grid;gap:12px;grid-template-columns:300px minmax(0,1fr) minmax(0,1.15fr)') >= 0 &&
+      css161.indexOf('width:100%;min-width:0;max-width:100%;overflow-x:clip;box-sizing:border-box}') >= 0,
+    'status width chain missing',
+  )
+  check(
+    'T-161 the 1fr status columns cannot grow to min-content (300px rail stays)',
+    css161.indexOf('grid-template-columns:300px minmax(0,1fr) minmax(0,1.15fr)') >= 0 &&
+      css161.indexOf('@media (max-width:900px){.gbt-statusgrid{grid-template-columns:minmax(0,1fr)}') >= 0,
+    'status grid minmax rule missing',
+  )
+  check(
+    'T-161 long task/activity/worktree text ellipsizes instead of widening the page',
+    css161.indexOf('.gbt-statustask{color:var(--t2,var(--dsw-alias-label-secondary));overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1 1 auto;max-width:100%}') >= 0 &&
+      css161.indexOf('.gbt-statusevtext{') >= 0 &&
+      css161.indexOf('.gbt-statusevtext{color:var(--t1,var(--dsw-alias-label-primary));overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0;max-width:100%}') >= 0 &&
+      css161.indexOf('.gbt-wtpath,.gbt-wtbranch{min-width:0;flex:1 1 90px;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap') >= 0,
+    'status ellipsis rules missing',
+  )
+  check(
+    'T-161 worktree actions/badges stay inside the card and may wrap their note',
+    css161.indexOf('.gbt-wtactions{display:inline-flex;align-items:center;gap:5px;flex:1 1 100%;justify-content:flex-end;min-width:0;flex-wrap:wrap;white-space:normal;max-width:100%}') >= 0 &&
+      css161.indexOf('.gbt-wtactions .gbt-statusnote{flex:1 1 100%;min-width:0;white-space:normal;overflow-wrap:anywhere;text-align:left}') >= 0 &&
+      css161.indexOf('.gbt-wtbadges{display:inline-flex;align-items:center;gap:4px;flex:1 1 100%;justify-content:flex-start;flex-wrap:wrap;min-width:0;max-width:100%}') >= 0,
+    'worktree action rules missing',
+  )
+  check(
+    'T-161 no zoom/scale is used to hide the status overflow',
+    !/zoom\s*:/.test(css161) && !/transform\s*:\s*scale\(/.test(css161),
+    'zoom/scale found',
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)
