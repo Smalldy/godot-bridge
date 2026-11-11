@@ -3375,6 +3375,7 @@ export function createDispatcher(ctx, options) {
     lastTickAt: null,
     lastError: null,
     lastResults: [],
+    lastCapacity: null,
     ticks: 0,
     // One reminder per review round: key id@review.at -> when the reminder went out.
     reviewReminders: new Map(),
@@ -3427,6 +3428,36 @@ export function createDispatcher(ctx, options) {
     })
   }
 
+  /** T-166: the worker-pool reality a dispatch pass acted on, in the same
+   * shape /state exposes for the panel. Read-only. */
+  function capacitySnapshot(dispatch, roster, board) {
+    const d = dispatch === null || dispatch === undefined ? {} : dispatch
+    const maxConcurrent = Number.isFinite(d.maxConcurrent) ? Math.max(1, Math.floor(d.maxConcurrent)) : 3
+    const maxWorkAgents = Number.isFinite(d.maxWorkAgents) ? Math.max(1, Math.floor(d.maxWorkAgents)) : DEFAULT_MAX_WORK_AGENTS
+    const workerCap = Math.max(1, Math.min(maxConcurrent, maxWorkAgents))
+    const members = Array.isArray(roster) ? roster : []
+    const pool = members.filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string' && /^worker-p/.test(member.name) && member.status !== 'failed')
+    // T-166: a pool member that is busy may be 'inactive' between worker turns
+    // (T-127). Count every non-failed pool member as live so the growth request
+    // does not under-count the slot it already occupies.
+    const live = pool.length
+    const held = new Set()
+    const tasks = board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []
+    for (const card of tasks) {
+      if (card.status === 'running' && card.assignee !== null && card.assignee !== undefined && typeof card.assignee.name === 'string') held.add(card.assignee.name)
+    }
+    const busy = pool.filter((member) => held.has(member.name)).length
+    return {
+      maxConcurrent: maxConcurrent,
+      maxWorkAgents: maxWorkAgents,
+      workerCap: workerCap,
+      live: live,
+      busy: busy,
+      missing: Math.max(0, workerCap - live),
+      rosterReadable: Array.isArray(roster),
+    }
+  }
+
   function status(projectPath) {
     return {
       boot: boot,
@@ -3434,6 +3465,7 @@ export function createDispatcher(ctx, options) {
       lastTickAt: memory.lastTickAt,
       lastError: memory.lastError,
       lastResults: memory.lastResults,
+      lastCapacity: memory.lastCapacity,
       ticks: memory.ticks,
       // T-130: the environment reading is scoped to one project when the caller
       // names it (the API passes its project); diagnostics can still ask for all.
@@ -4376,6 +4408,8 @@ export function createDispatcher(ctx, options) {
     memory.sweeping = true
     const now = state.clock()
     const results = []
+    // T-166: the capacity this pass actually saw / grew, exposed with the results.
+    let capacity = null
     let paused = false
     try {
       // One project has one leader. A refused claim means another live host owns
@@ -4573,6 +4607,9 @@ export function createDispatcher(ctx, options) {
           legacyDispatch: dispatchSession === null,
         })
         let pickedNow = picked
+        // T-166: the capacity/growth of THIS card's worker-pool attempt, surfaced
+        // in the tick result instead of being swallowed.
+        let growth = null
         if (pickedNow.ok !== true && (pickedNow.code === 'no-teammates' || pickedNow.code === 'no-idle-member') && dispatch.allowSpawn === true && spawnAllowed) {
           // T-138: the worker pool target comes from the DISPATCH settings, not
           // from a role profile: workerCap = min(maxConcurrent, maxWorkAgents).
@@ -4581,23 +4618,22 @@ export function createDispatcher(ctx, options) {
             Number.isFinite(dispatch.maxConcurrent) ? Math.floor(dispatch.maxConcurrent) : 3,
             Number.isFinite(dispatch.maxWorkAgents) ? Math.floor(dispatch.maxWorkAgents) : DEFAULT_MAX_WORK_AGENTS,
           ))
-          let rosterNow = []
-          try { rosterNow = ctx.get('agentTeams').listMembers() } catch (error) { rosterNow = [] }
-          const poolMembers = rosterNow.filter((member) => typeof member.name === 'string' && /^worker-p/.test(member.name) && member.status !== 'failed')
-          const livePool = poolMembers.filter((member) => member.status === 'running').length
-          const heldNames = new Set()
-          for (const card of current.tasks) {
-            if (card.status === 'running' && card.assignee !== null && card.assignee !== undefined && typeof card.assignee.name === 'string') heldNames.add(card.assignee.name)
-          }
-          const busyPool = poolMembers.filter((member) => heldNames.has(member.name)).length
+          // T-166: pickTarget already read the roster with the Lead credential;
+          // that read is the one the host accepts. The old call without a caller
+          // agent threw TEAM_NOT_MEMBER, was swallowed as [], and always asked
+          // for count=1, so the pool could never grow past its first worker.
+          const rosterNow = Array.isArray(picked.members) ? picked.members : []
+          capacity = capacitySnapshot(dispatch, rosterNow, current)
+          const livePool = capacity.live
+          const busyPool = capacity.busy
           if (livePool >= workerCap) {
             if (busyPool >= workerCap) {
               await markExecutorMissing(project, task.id, '角色已满', 'every worker slot is busy (cap ' + String(workerCap) + ', live ' + String(livePool) + ', busy ' + String(busyPool) + ')')
-              results.push({ id: task.id, skipped: 'role-full', reason: '角色已满' })
+              results.push({ id: task.id, skipped: 'role-full', reason: '角色已满', capacity: capacity })
               continue
             }
             // The cap is reached and none of the live workers is idle for this card.
-            results.push({ id: task.id, skipped: 'role-cap', message: 'worker cap reached (cap ' + String(workerCap) + ', live ' + String(livePool) + ', busy ' + String(busyPool) + '); refusing to create another worker' })
+            results.push({ id: task.id, skipped: 'role-cap', message: 'worker cap reached (cap ' + String(workerCap) + ', live ' + String(livePool) + ', busy ' + String(busyPool) + '); refusing to create another worker', capacity: capacity })
             continue
           }
           // Below the cap: grow the pool by exactly ONE slot through the role
@@ -4616,6 +4652,21 @@ export function createDispatcher(ctx, options) {
           } catch (error) {
             ensured = { ok: false, code: 'provision-error', message: String((error && error.message) || error) }
           }
+          const created = ensured !== null && ensured.ok === true && Array.isArray(ensured.created) ? ensured.created.length : 0
+          const spawnFailed = ensured === null || ensured.ok !== true
+          growth = {
+            workerCap: workerCap,
+            live: livePool,
+            busy: busyPool,
+            requested: livePool + 1,
+            created: created,
+            reused: ensured !== null && ensured.ok === true && Array.isArray(ensured.reused) ? ensured.reused.length : 0,
+            spawnFailed: spawnFailed,
+            code: ensured === null ? 'spawn-failed' : ensured.code === undefined || ensured.code === null ? null : String(ensured.code),
+            message: spawnFailed
+              ? (ensured === null ? 'the role manager returned no result' : String(ensured.message === undefined || ensured.message === null ? 'worker provisioning failed' : ensured.message))
+              : null,
+          }
           pickedNow = pickTarget(ctx, {
             reserved: reserved,
             spawn: false,
@@ -4625,8 +4676,10 @@ export function createDispatcher(ctx, options) {
             board: current,
             legacyDispatch: dispatchSession === null,
           })
+          if (Array.isArray(pickedNow.members)) capacity = capacitySnapshot(dispatch, pickedNow.members, current)
         }
         if (pickedNow.ok !== true) {
+          if (capacity === null && Array.isArray(picked.members)) capacity = capacitySnapshot(dispatch, picked.members, current)
           const reason =
             pickedNow.code === 'no-live-lead'
               ? 'no-live-lead'
@@ -4635,17 +4688,40 @@ export function createDispatcher(ctx, options) {
                 : picked.code === 'no-teammates'
                   ? 'no-roster'
                   : null
-          if (reason !== null && ownerSession !== null) {
+          // T-166: a per-card shortage (no idle worker / empty roster) must only
+          // skip THIS card. Breaking here is what let one busy worker starve every
+          // other ready card on the board.
+          const perCard = pickedNow.code === 'no-idle-member' || pickedNow.code === 'no-teammates'
+          const skipped = perCard
+            ? growth !== null && growth.spawnFailed
+              ? 'spawn-failed'
+              : pickedNow.code === 'no-teammates'
+                ? 'no-roster'
+                : 'no-idle-member'
+            : reason !== null
+              ? reason
+              : pickedNow.code
+          const entry = {
+            id: task.id,
+            skipped: skipped,
+            message:
+              growth !== null
+                ? 'worker capacity live=' + String(capacity === null ? '?' : capacity.live) + ' cap=' + String(capacity === null ? '?' : capacity.workerCap) + ' (maxWorkAgents ' + String(capacity === null ? '?' : capacity.maxWorkAgents) + ')' + (growth.message === null ? '' : '; ' + growth.message)
+                : pickedNow.message,
+          }
+          if (capacity !== null) entry.capacity = capacity
+          if (growth !== null) entry.growth = growth
+          if (!perCard && reason !== null && ownerSession !== null) {
             // Only a session-owned card records this reason; legacy/ownerless
             // cards keep the historical "stays pending, no waiting reason".
             await markExecutorMissing(project, task.id, reason, pickedNow.message)
-            results.push({ id: task.id, skipped: reason, message: pickedNow.message })
-            break
           }
-          results.push({ id: task.id, skipped: pickedNow.code, message: pickedNow.message })
-          break
+          results.push(entry)
+          if (!perCard) break
+          continue
         }
         picked = pickedNow
+        if (capacity === null && Array.isArray(picked.members)) capacity = capacitySnapshot(dispatch, picked.members, current)
         reserved.add(picked.target.name)
         // Retire whoever held this card before, THEN claim. A re-dispatch after a
         // host restart must not leave the old worker running beside the new one.
@@ -4893,7 +4969,7 @@ export function createDispatcher(ctx, options) {
         )
         if (recorded.failed === null) current = recorded.board
         slots -= 1
-        results.push({
+        const dispatchedResult = {
           id: task.id,
           ok: true,
           target: picked.target.name,
@@ -4901,7 +4977,12 @@ export function createDispatcher(ctx, options) {
           files: lockPaths,
           worktree: worktree.path,
           worktreeError: worktree.error,
-        })
+        }
+        // T-166: keep the growth attempt on the successful card too, so a tick
+        // says "grew one worker, then dispatched" instead of hiding the attempt.
+        if (growth !== null) dispatchedResult.growth = growth
+        if (capacity !== null) dispatchedResult.capacity = capacity
+        results.push(dispatchedResult)
       }
       return {
         ok: true,
@@ -4910,6 +4991,7 @@ export function createDispatcher(ctx, options) {
         dispatched: results.filter((entry) => entry.ok === true).length,
         results: results,
         roles: roleResults,
+        capacity: capacity,
       }
     } catch (error) {
       memory.lastError = String((error && error.message) || error)
@@ -4919,6 +5001,7 @@ export function createDispatcher(ctx, options) {
       memory.lastTickAt = state.clock()
       memory.ticks += 1
       memory.lastResults = results
+      memory.lastCapacity = capacity
       if (memory.rerun !== null) {
         const project = memory.rerun
         memory.rerun = null
