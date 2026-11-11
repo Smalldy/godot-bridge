@@ -631,6 +631,13 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				statusSweepsShown: '心跳已显示',
 				statusMinutes: '分钟',
 				statusPausedBy: '由 {by} 暂停',
+				statusPauseSourceLabel: '暂停来源',
+				statusPauseReasonLabel: '暂停原因',
+				pauseSourceUser: '用户',
+				pauseSourcePreflight: '启动前检查',
+				pauseSourceScheduler: '调度器',
+				pauseSourceWorktree: '工作树',
+				pauseSourceLegacy: '未知/旧数据',
 				statusYou: '你',
 				stageDispatch: '派发',
 				stageImplement: '实现',
@@ -1334,6 +1341,13 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				statusSweepsShown: 'heartbeats shown',
 				statusMinutes: 'min',
 				statusPausedBy: 'paused by {by}',
+				statusPauseSourceLabel: 'Pause source',
+				statusPauseReasonLabel: 'Pause reason',
+				pauseSourceUser: 'User',
+				pauseSourcePreflight: 'Preflight check',
+				pauseSourceScheduler: 'Scheduler',
+				pauseSourceWorktree: 'Worktree',
+				pauseSourceLegacy: 'Unknown/legacy',
 				statusYou: 'you',
 				stageDispatch: 'Dispatch',
 				stageImplement: 'Implement',
@@ -1866,6 +1880,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-statuskv b{font-size:18px;font-weight:600}',
 '.gbt-statuskv span{font-size:11.5px;color:var(--t2,var(--dsw-alias-label-tertiary))}',
 '.gbt-statuswhy{margin-top:6px;padding:8px 10px;border-radius:6px;background:var(--elev,var(--dsw-alias-bg-layer-2));font-size:12px;color:var(--t2,var(--dsw-alias-label-secondary));line-height:1.55}',
+'.gbt-pauseaudit{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px}',
 '.gbt-statusscan{margin-top:2px;font-size:11.5px;color:var(--t2,var(--dsw-alias-label-tertiary))}',
 '.gbt-statusrow{display:flex;align-items:center;gap:8px;min-height:30px;border-bottom:1px solid var(--line,var(--dsw-alias-border-l4));font-size:12px;min-width:0;max-width:100%}',
 '.gbt-statusrow:last-child{border-bottom:0}',
@@ -5449,11 +5464,23 @@ function createStatusView(deps) {
 		function memberName(value, byName, fallbackKey) {
 			return actorDisplay(value, byName, roster, t, fallbackKey)
 		}
+		// T-169: pauseSource is the audit vocabulary (user/preflight/scheduler/worktree);
+		// legacy/null pause records must still render as a safe "unknown/legacy" label.
+		function pauseSourceLabelOf(value) {
+			if (value === 'user') return t('pauseSourceUser')
+			if (value === 'preflight') return t('pauseSourcePreflight')
+			if (value === 'scheduler') return t('pauseSourceScheduler')
+			if (value === 'worktree') return t('pauseSourceWorktree')
+			return t('pauseSourceLegacy')
+		}
 		function whyNotRunning() {
 			if (active !== true) {
 		const since = typeof dispatch.since === 'string' ? dispatch.since : null
 		const by = typeof dispatch.by === 'string' && dispatch.by !== '' ? memberName(dispatch.by) : null
-		const who = by === null ? null : by
+		// T-169: when the audit source is known, the dedicated source line names it
+		// readably; do not echo the raw internal token (preflight/scheduler) here.
+		const knownPauseSource = typeof dispatch.pauseSource === 'string' && ['user', 'preflight', 'scheduler', 'worktree', 'legacy'].indexOf(dispatch.pauseSource) >= 0
+		const who = knownPauseSource ? null : by === null ? null : by
 		if (since === null) return t('statusWhyPaused') + (who === null ? '' : '（' + t('statusPausedBy').replace('{by}', who) + '）')
 		const clock = new Date(since).toTimeString().slice(0, 5)
 		return t('statusWhyPaused') + '（' + clock + (who === null ? '' : ' ' + t('statusPausedBy').replace('{by}', who)) + '）'
@@ -5702,6 +5729,16 @@ function createStatusView(deps) {
 			' · ',
 			h('span', null, panelSession.source === 'host' ? t('sessionSourceHost') : panelSession.source === 'url' ? t('sessionSourceUrl') : t('sessionSourceWindow')),
 		)
+		const pauseSourceValue = typeof dispatch.pauseSource === 'string' && dispatch.pauseSource !== '' ? dispatch.pauseSource : 'unknown'
+		const pauseReason = typeof dispatch.pauseReason === 'string' && dispatch.pauseReason.trim() !== '' ? dispatch.pauseReason : null
+		const pauseAuditLine = active === true
+			? null
+			: h(
+				'div',
+				{ className: 'gbt-statuswhy gbt-pauseaudit', 'data-status-pause': 'true', 'data-pause-source': pauseSourceValue },
+				h('span', null, t('statusPauseSourceLabel') + '：' + pauseSourceLabelOf(pauseSourceValue)),
+				pauseReason === null ? null : h('span', { 'data-pause-reason': 'true' }, ' · ' + t('statusPauseReasonLabel') + '：' + pauseReason),
+			)
 		const dispatchCard = h(
 			'section',
 			{ className: 'gbt-statuscard', 'data-status-card': 'dispatch' },
@@ -5711,6 +5748,7 @@ function createStatusView(deps) {
 		{ className: 'gbt-statuscardbody' },
 		h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv', 'data-kv': 'concurrent' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), Number.isFinite(counts.investigating) && counts.investigating > 0 ? h('span', { className: 'gbt-statuskv', 'data-kv': 'investigating', 'data-kind': 'investigate' }, h('b', null, String(counts.investigating)), h('span', null, t('statusInvestigating'))) : null, h('span', { className: 'gbt-statuskv', 'data-kv': 'merge-queue', 'data-merge-queue': mergeQueued === null ? 'unavailable' : 'ready', title: mergeActive === null ? '' : String(mergeActive) }, h('b', null, mergeQueued === null ? '—' : String(mergeQueued)), h('span', null, t('statusMergeQueue')))),
 		h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
+		pauseAuditLine,
 		h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
 		panelSessionLine,
 		snapshot.nextStep === null || snapshot.nextStep === undefined

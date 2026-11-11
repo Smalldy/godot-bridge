@@ -1239,6 +1239,69 @@ await flush()
       textOf(dispatchCard).indexOf('合并队列') >= 0,
     dispatchCard && textOf(dispatchCard),
   )
+  // T-169: the paused dispatch card exposes the audit source/reason in Chinese.
+  {
+    const savedPauseDispatch = HOST.dispatch
+    async function renderPaused(patch) {
+      HOST.dispatch = Object.assign({}, savedPauseDispatch, { state: 'paused' }, patch)
+      const refreshTree = withHooks(panel, { initialView: 'board' })
+      await flush()
+      findAction(refreshTree, 'refresh').props.onClick()
+      await flush()
+      await flush()
+      return withHooks(panel, { initialView: 'status' })
+    }
+    const pauseNodeOf = (tree) => findAll(tree, (node) => node.props && node.props['data-status-pause'] === 'true')[0]
+    const cases = [
+      ['user', '用户'],
+      ['preflight', '启动前检查'],
+      ['scheduler', '调度器'],
+      ['worktree', '工作树'],
+    ]
+    for (const entry of cases) {
+      const tree = await renderPaused({ pauseSource: entry[0], pauseReason: 'reason for ' + entry[0] })
+      const node = pauseNodeOf(tree)
+      check(
+        'T-169 the status card maps pauseSource ' + entry[0] + ' to ' + entry[1],
+        node !== undefined && node.props['data-pause-source'] === entry[0] && textOf(node).indexOf(entry[1]) >= 0,
+        node && textOf(node),
+      )
+    }
+    const legacyTree = await renderPaused({ pauseSource: null, pauseReason: null })
+    const legacyNode = pauseNodeOf(legacyTree)
+    check(
+      'T-169 a null pauseSource renders unknown/legacy data without crashing',
+      legacyNode !== undefined && legacyNode.props['data-pause-source'] === 'unknown' && textOf(legacyNode).indexOf('未知/旧数据') >= 0,
+      legacyNode && textOf(legacyNode),
+    )
+    const literalLegacyTree = await renderPaused({ pauseSource: 'legacy', pauseReason: null })
+    const literalLegacyNode = pauseNodeOf(literalLegacyTree)
+    check(
+      'T-169 the literal legacy pauseSource also renders unknown/legacy data',
+      literalLegacyNode !== undefined && textOf(literalLegacyNode).indexOf('未知/旧数据') >= 0,
+      literalLegacyNode && textOf(literalLegacyNode),
+    )
+    const reasonTree = await renderPaused({ pauseSource: 'preflight', pauseReason: 'Team missing: reviewer' })
+    const reasonNode = pauseNodeOf(reasonTree)
+    check(
+      'T-169 pauseReason is shown verbatim when present',
+      reasonNode !== undefined && textOf(reasonNode).indexOf('Team missing: reviewer') >= 0 && findAll(reasonNode, (node) => node.props && node.props['data-pause-reason'] === 'true').length === 1,
+      reasonNode && textOf(reasonNode),
+    )
+    const noReasonTree = await renderPaused({ pauseSource: 'user', pauseReason: null })
+    const noReasonNode = pauseNodeOf(noReasonTree)
+    check(
+      'T-169 a missing pauseReason is not fabricated',
+      noReasonNode !== undefined && findAll(noReasonNode, (node) => node.props && node.props['data-pause-reason'] === 'true').length === 0,
+      noReasonNode && textOf(noReasonNode),
+    )
+    HOST.dispatch = savedPauseDispatch
+    const restoredTree = withHooks(panel, { initialView: 'board' })
+    await flush()
+    findAction(restoredTree, 'refresh').props.onClick()
+    await flush()
+    await flush()
+  }
   const worktreesCard = statusCards.filter((card) => card.props['data-status-card'] === 'worktrees')[0]
   check('the worktrees card renders on the status page', worktreesCard !== undefined)
   const agentsCard = statusCards.filter((card) => card.props['data-status-card'] === 'agents')[0]
