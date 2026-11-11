@@ -17,6 +17,7 @@ const slot = (kind, index) => roleSlotName(kind, index, PROJECT)
 import { MAX_BOARD_BYTES, archivePath, boardPath as boardPathOf, projectIdOf, projectRefOf, readProjectRegistry, rolesPath } from '../../plugin/task-center/board.mjs'
 import { homedir } from 'node:os'
 import { createApi } from '../../plugin/task-center/api.mjs'
+import { setDispatch } from '../../plugin/task-center/service.mjs'
 import { phaseActivityAt } from '../../plugin/task-center/dispatch.mjs'
 import { createMerger } from '../../plugin/task-center/merge.mjs'
 import { DEFAULT_ROLE_PROMPTS, ROLE_TEMPLATE_VARIABLE_NAMES, defaultRoleConfig } from '../../plugin/task-center/schema.mjs'
@@ -210,6 +211,56 @@ check('registers state, action, task, list, worktrees and diagnostics', surface.
     'T-165 an explicit resume clears pauseSource and pauseReason',
     explicitResume.json().dispatch.state === 'running' && explicitResume.json().dispatch.pauseSource === null && explicitResume.json().dispatch.pauseReason === null,
     explicitResume.text,
+  )
+
+  // T-169: a NEW explicit pause is a new episode; it must not inherit an old
+  // preflight error as pauseReason, and an error-only cleanup must not rewrite
+  // the attribution of a user/scheduler pause.
+  const staleErrorBoard = {
+    version: 2,
+    seq: 1,
+    tasks: [],
+    dispatch: { state: 'running', by: '@user', error: 'old preflight failure', since: '2026-01-01T00:00:00.000Z' },
+  }
+  const userPause = setDispatch(staleErrorBoard, { state: 'paused' }, Date.parse('2026-01-01T00:00:01.000Z'), '@user')
+  check(
+    'T-169 an explicit user pause does not inherit the old preflight error as pauseReason',
+    userPause.ok === true &&
+      userPause.dispatch.state === 'paused' &&
+      userPause.dispatch.by === '@user' &&
+      userPause.dispatch.pauseSource === 'user' &&
+      userPause.dispatch.pauseReason === null,
+    JSON.stringify(userPause.dispatch),
+  )
+  const userPausedBoard = {
+    version: 2,
+    seq: 1,
+    tasks: [],
+    dispatch: { state: 'paused', by: '@user', pauseSource: 'user', pauseReason: 'user asked to stop', error: 'old preflight failure' },
+  }
+  const cleared = setDispatch(userPausedBoard, { error: null }, Date.parse('2026-01-01T00:00:02.000Z'), 'preflight')
+  check(
+    'T-169 clearing a non-preflight error leaves by/pauseSource/pauseReason untouched',
+    cleared.ok === true &&
+      cleared.dispatch.error === null &&
+      cleared.dispatch.by === '@user' &&
+      cleared.dispatch.pauseSource === 'user' &&
+      cleared.dispatch.pauseReason === 'user asked to stop',
+    JSON.stringify(cleared.dispatch),
+  )
+  const preflightAudit = setDispatch(
+    userPausedBoard,
+    { error: null, pauseSource: 'preflight', pauseReason: 'Preflight checks now pass; resume dispatch to continue.' },
+    Date.parse('2026-01-01T00:00:03.000Z'),
+    'preflight',
+  )
+  check(
+    'T-169 a preflight audit refresh is the only path that rewrites the pause attribution',
+    preflightAudit.ok === true &&
+      preflightAudit.dispatch.by === 'preflight' &&
+      preflightAudit.dispatch.pauseSource === 'preflight' &&
+      preflightAudit.dispatch.pauseReason.indexOf('resume dispatch') >= 0,
+    JSON.stringify(preflightAudit.dispatch),
   )
   recoverySurface.dispose()
   recoveryRig.scheduler.dispose()

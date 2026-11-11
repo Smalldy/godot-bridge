@@ -5163,6 +5163,10 @@ export function createApi(ctx, options) {
         const pausedByPreflight = dispatch.state !== 'running' && dispatch.pauseSource === 'preflight'
         if (dispatch.error !== null || pausedByPreflight) {
           const patch = { error: null }
+          // T-169: only a preflight-owned pause may rewrite by/pauseSource/
+          // pauseReason here. For a user/scheduler/worktree pause this is an
+          // error-only cleanup; service.setDispatch deliberately ignores error
+          // alone as a pause-audit write, so the original attribution survives.
           // T-165: preflight recovery must not leave a paused dispatch with no
           // readable reason. Keep the pause, but say why it is still paused and
           // that a resume is the next step.

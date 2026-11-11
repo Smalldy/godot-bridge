@@ -431,9 +431,13 @@ export function setDispatch(board, patch, now, by) {
   // T-165: a pause audit write (preflight/worktree) refreshes the actor even
   // when the board was already paused, so a legacy @user attribution can never
   // survive an automatic pause.
+  // T-169: clearing an old error is NOT a pause-audit write. Only an explicit
+  // source/reason (preflight/worktree failure, or preflight recovery naming
+  // itself) may rewrite by/pauseSource/pauseReason; a plain error cleanup must
+  // leave the user/scheduler attribution untouched.
   const pauseAuditWrite =
     merged.state === 'paused' &&
-    (source.pauseSource !== undefined || source.pauseReason !== undefined || source.error !== undefined)
+    (source.pauseSource !== undefined || source.pauseReason !== undefined)
   next.dispatch = merged
   if (changedState || pauseAuditWrite) {
     next.dispatch.since = iso(now)
@@ -448,8 +452,11 @@ export function setDispatch(board, patch, now, by) {
       // worktree pauses pass their own source and a readable reason.
       if (source.pauseSource === undefined) next.dispatch.pauseSource = by === 'scheduler' ? 'scheduler' : 'user'
       if (source.pauseReason === undefined) {
-        next.dispatch.pauseReason =
-          typeof next.dispatch.error === 'string' && next.dispatch.error !== '' ? next.dispatch.error : null
+        // T-169: a NEW explicit pause starts a new pause episode. It must not
+        // inherit an old preflight/worktree error as its reason; the audit field
+        // stays null unless the caller supplies a reason. An audit refresh on an
+        // already-paused board keeps the existing reason.
+        next.dispatch.pauseReason = changedState ? null : next.dispatch.pauseReason
       }
     }
   }

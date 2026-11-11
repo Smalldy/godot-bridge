@@ -33,6 +33,9 @@ const paused = await actions.pause({}, { by: 'user' }, '/project')
 assert.equal(paused.ok, true)
 assert.equal(paused.dispatch.state, 'paused')
 assert.deepEqual(paused.events, ['dispatch'])
+// T-169: control.pause opens a pause episode with the bare state only; the
+// service layer owns attribution and must not inherit an old error as reason.
+assert.deepEqual(patches[0], { state: 'paused' })
 
 const configured = await actions.settings({ maxConcurrent: 3 }, { role: 'user', by: 'user' }, '/project')
 assert.equal(configured.ok, true)
