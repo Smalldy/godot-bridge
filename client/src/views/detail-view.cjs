@@ -33,7 +33,8 @@ function createDetailView(deps) {
 		const snapshot = props.snapshot
 		const [deleteError, setDeleteError] = React.useState(null)
 		const [evidenceOpen, setEvidenceOpen] = React.useState(detailUiState.evidence === true)
-		const [specOpen, setSpecOpen] = React.useState(detailUiState.spec === true)
+		// T-177: the task spec/acceptance is main content, not a hidden aside.
+		const [specOpen, setSpecOpen] = React.useState(true)
 		const evidence = React.useRef(null)
 		const note = React.useRef(null)
 		const allTasks = snapshot.tasks
@@ -392,8 +393,6 @@ function createDetailView(deps) {
 		? null
 		: h('div', { className: 'gbt-detailstatline', 'data-detail-target': 'true' }, t('targetBranch') + ': ' + (typeof task.target === 'string' && task.target !== '' ? task.target : t('targetDefaultLabel')) + (typeof task.base === 'string' && task.base !== '' ? ' · ' + String(task.base).slice(0, 10) + ' → ' + (typeof task.target === 'string' && task.target !== '' ? task.target : t('targetDefaultLabel')) : '')),
 			summaryFacts,
-			specToggle,
-			specBody,
 		)
 		// In the single-column layout the elapsed/rounds move into the one-line
 		// card, so the details card keeps only files/host-check/attempts/spec.
@@ -401,8 +400,6 @@ function createDetailView(deps) {
 			'div',
 			{ className: 'gbt-detailsummary', 'data-detail': 'summary', 'data-detail-summary': 'details' },
 			summaryFacts,
-			specToggle,
-			specBody,
 		)
 
 		// T-144: the delivered report is the investigation's product; the casebook renders
@@ -512,97 +509,87 @@ function createDetailView(deps) {
 		)
 		const casebook = h('div', { key: 'casebook', className: 'gbt-casebook', 'data-detail': 'casebook', 'data-detail-layout': 'casebook' }, caseIndex, reportPaper)
 
-		const blocks = []
-		blocks.push(
+		const allFields = h(
+			'details',
+			{ key: 'fields', className: 'gbt-section gbt-detailallfields', 'data-detail-allfields': 'true' },
+			h('summary', null, t('detailAllFields')),
 			h(
-		'div',
-		{ key: 'actions', className: 'gbt-actions' },
-		actions,
-		deleteError === 'referenced' ? h('button', { key: 'force', type: 'button', className: 'gbt-btn', 'data-variant': 'danger', onClick: function () { remove(true) } }, t('forceDelete')) : null,
+				'dl',
+				{ className: 'gbt-meta' },
+				h('dt', null, t('priority')),
+				h('dd', null, String(task.priority)),
+				h('dt', null, t('assignee')),
+				h('dd', null, task.assignee !== null && task.assignee !== undefined ? actorName(task.assignee.name) : '—'),
+				h('dt', null, t('attempts')),
+				h('dd', null, String(task.attempts) + ' / ' + String(task.maxAttempts)),
+				h('dt', null, t('created')),
+				h('dd', null, tcAgo(task.createdAt, now)),
+				h('dt', null, t('updated')),
+				h('dd', null, tcAgo(finishedAt === null ? task.updatedAt : finishedAt, now)),
+				h('dt', null, t('phaseCurrent')),
+				h('dd', null, h('span', { className: 'gbt-pill', 'data-status': task.status }, tcPhaseLabel(task, t))),
+				h('dt', null, t('requiredRole')),
+				h('dd', null, typeof task.requiredRole === 'string' && task.requiredRole !== '' ? task.requiredRole : '—'),
+				h('dt', null, t('worktree')),
+				h('dd', null, typeof task.worktree === 'string' && task.worktree !== '' ? task.worktree : '—'),
+				h('dt', null, t('branch')),
+				h('dd', null, typeof task.branch === 'string' && task.branch !== '' ? task.branch : '—'),
+				h('dt', null, t('commit')),
+				h('dd', null, typeof task.commit === 'string' && task.commit !== '' ? task.commit : '—'),
+			),
+			h('div', { className: 'gbt-subhead' }, t('dependencies')),
+			deps.length === 0 ? h('p', { className: 'gbt-footnote' }, t('noDeps')) : h('div', { className: 'gbt-cardmeta' }, deps.map(function (id) {
+				const dependency = allTasks.filter(function (entry) { return entry.id === id })[0]
+				return h('span', { key: id, className: 'gbt-chip', 'data-tone': toneForDependency(allTasks, id) }, dependency === undefined ? id + ' · ' + t('depBroken') : id + ' · ' + t(tcStatusKey(dependency.status)))
+			})),
+			h('div', { className: 'gbt-subhead' }, t('files')),
+			files.length === 0 ? h('p', { className: 'gbt-footnote' }, t('noFiles')) : h('div', { className: 'gbt-cardmeta' }, files.map(function (path) {
+				return h('span', { key: path, className: 'gbt-chip', 'data-tone': held.indexOf(path) >= 0 ? 'running' : 'waiting' }, (held.indexOf(path) >= 0 ? '🔒 ' : '') + path)
+			})),
+			dispatch === null
+				? null
+				: h(
+				'div',
+				null,
+				h('div', { className: 'gbt-subhead' }, t('dispatch')),
+				h('dl', { className: 'gbt-meta' }, h('dt', null, t('status')), h('dd', null, String(dispatch.status === null || dispatch.status === undefined ? '—' : dispatch.status)), h('dt', null, t('assignee')), h('dd', null, String(dispatch.target === null || dispatch.target === undefined ? '—' : dispatch.target)), dispatch.error === null || dispatch.error === undefined || dispatch.error === '' ? null : h('dt', null, t('dispatchError')), dispatch.error === null || dispatch.error === undefined || dispatch.error === '' ? null : h('dd', { 'data-dispatch-error': 'true' }, String(dispatch.error))),
+				task.ownerSession !== null && task.ownerSession !== undefined && dispatch.leadSession !== null && dispatch.leadSession !== undefined && task.ownerSession !== dispatch.leadSession
+					? h('p', { className: 'gbt-footnote', 'data-owner-mismatch': 'true' }, t('ownerMismatch').replace('{owner}', String(task.ownerSession)).replace('{lead}', String(dispatch.leadSession)))
+					: null,
 			),
 		)
-		if (deleteError === 'referenced') blocks.push(h('p', { key: 'forcehint', className: 'gbt-footnote' }, t('forceHint')))
-		if (deleteError === 'failed') blocks.push(h('p', { key: 'deletefail', className: 'gbt-footnote' }, t('error')))
-		blocks.push(stages)
-		if (investigate) {
-			// T-144: investigations render as a casebook: index aside + full report paper.
-			blocks.push(casebook)
-		} else {
-			const eventsCard = h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody)
-			blocks.push(h('div', { className: 'gbt-detailbody', 'data-detail-body': layout, 'data-detail-layout': layout }, layout === 'single' ? compactSummary : null, eventsCard, layout === 'single' ? summaryDetails : summary))
-		}
-
-		// An investigation never submits code: its completion action is report, so
-		// the submit box must not invite a refused action.
+		const specCard = h('section', { className: 'gbt-detailcard gbt-detailspec', 'data-detail-card': 'spec', 'data-detail-spec-card': 'true' },
+			h('div', { className: 'gbt-detailcardhead' }, h('span', null, t('detailSpecTitle')), specToggle),
+			h('div', { className: 'gbt-detailspecbody' }, specBody))
+		const historyCard = h('section', { className: 'gbt-detailcard gbt-detailhistory', 'data-detail-card': 'history' },
+			h('div', { className: 'gbt-detailcardhead' }, t('history')),
+			h('div', { className: 'gbt-detailcardbody' }, history.length === 0 ? h('p', { className: 'gbt-footnote' }, t('emptyHistory')) : h('div', { className: 'gbt-timeline' }, history.slice().reverse().map(function (entry, index) {
+				return h('div', { key: String(index), className: 'gbt-event' }, h('span', { className: 'gbt-mono' }, tcAgo(entry.at, now)), ' ', h('b', null, actorName(entry.by)), ' ', h('span', null, (entry.from === null ? '·' : entry.from) + ' → ' + (entry.to === null ? '·' : entry.to) + (typeof entry.note === 'string' && entry.note !== '' ? ' · ' + entry.note : '')))
+			}))))
+		const eventsCard = h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody)
+		const mainChildren = [stages]
+		if (investigate) mainChildren.push(casebook, specCard, historyCard)
+		else mainChildren.push(eventsCard, specCard, historyCard)
 		if (task.status === 'running' && investigate !== true) {
-			blocks.push(
-		h(
-			'section',
-			{ key: 'work', className: 'gbt-section' },
-			h('h3', null, t('evidence')),
-			h('textarea', { className: 'gbt-area', ref: evidence, placeholder: t('evidence') }),
-			h('div', { className: 'gbt-actions', style: { marginTop: '6px' } }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: submitWork }, t('submit'))),
-		),
-			)
+			mainChildren.push(h('section', { key: 'work', className: 'gbt-section gbt-detailwork' }, h('h3', null, t('evidence')), h('textarea', { className: 'gbt-area', ref: evidence, placeholder: t('evidence') }), h('div', { className: 'gbt-actions', style: { marginTop: '6px' } }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: submitWork }, t('submit')))))
 		}
-
-		blocks.push(
-			h(
-		'details',
-		{ key: 'fields', className: 'gbt-section' },
-		h('summary', null, t('detailAllFields')),
-		h(
-			'dl',
-			{ className: 'gbt-meta' },
-			h('dt', null, t('priority')),
-			h('dd', null, String(task.priority)),
-			h('dt', null, t('assignee')),
-			h('dd', null, task.assignee !== null && task.assignee !== undefined ? actorName(task.assignee.name) : '—'),
-			h('dt', null, t('attempts')),
-			h('dd', null, String(task.attempts) + ' / ' + String(task.maxAttempts)),
-			h('dt', null, t('created')),
-			h('dd', null, tcAgo(task.createdAt, now)),
-			h('dt', null, t('updated')),
-			h('dd', null, tcAgo(finishedAt === null ? task.updatedAt : finishedAt, now)),
-			h('dt', null, t('phaseCurrent')),
-			h('dd', null, h('span', { className: 'gbt-pill', 'data-status': task.status }, tcPhaseLabel(task, t))),
-			h('dt', null, t('requiredRole')),
-			h('dd', null, typeof task.requiredRole === 'string' && task.requiredRole !== '' ? task.requiredRole : '—'),
-			h('dt', null, t('worktree')),
-			h('dd', null, typeof task.worktree === 'string' && task.worktree !== '' ? task.worktree : '—'),
-			h('dt', null, t('branch')),
-			h('dd', null, typeof task.branch === 'string' && task.branch !== '' ? task.branch : '—'),
-			h('dt', null, t('commit')),
-			h('dd', null, typeof task.commit === 'string' && task.commit !== '' ? task.commit : '—'),
-		),
-		h('div', { className: 'gbt-subhead' }, t('dependencies')),
-		deps.length === 0 ? h('p', { className: 'gbt-footnote' }, t('noDeps')) : h('div', { className: 'gbt-cardmeta' }, deps.map(function (id) {
-			const dependency = allTasks.filter(function (entry) { return entry.id === id })[0]
-			return h('span', { key: id, className: 'gbt-chip', 'data-tone': toneForDependency(allTasks, id) }, dependency === undefined ? id + ' · ' + t('depBroken') : id + ' · ' + t(tcStatusKey(dependency.status)))
-		})),
-		h('div', { className: 'gbt-subhead' }, t('files')),
-		files.length === 0 ? h('p', { className: 'gbt-footnote' }, t('noFiles')) : h('div', { className: 'gbt-cardmeta' }, files.map(function (path) {
-			return h('span', { key: path, className: 'gbt-chip', 'data-tone': held.indexOf(path) >= 0 ? 'running' : 'waiting' }, (held.indexOf(path) >= 0 ? '🔒 ' : '') + path)
-		})),
-		dispatch === null
-			? null
-			: h(
-			'div',
-			null,
-			h('div', { className: 'gbt-subhead' }, t('dispatch')),
-			h('dl', { className: 'gbt-meta' }, h('dt', null, t('status')), h('dd', null, String(dispatch.status === null || dispatch.status === undefined ? '—' : dispatch.status)), h('dt', null, t('assignee')), h('dd', null, String(dispatch.target === null || dispatch.target === undefined ? '—' : dispatch.target)), dispatch.error === null || dispatch.error === undefined ? null : h('dt', null, t('dispatchError')), dispatch.error === null || dispatch.error === undefined ? null : h('dd', null, String(dispatch.error))),
-			// T-107: an owner session that differs from the dispatching Lead's session is a red flag, not noise.
-			task.ownerSession !== null && task.ownerSession !== undefined && dispatch.leadSession !== null && dispatch.leadSession !== undefined && task.ownerSession !== dispatch.leadSession
-				? h('p', { className: 'gbt-footnote', 'data-owner-mismatch': 'true' }, t('ownerMismatch').replace('{owner}', String(task.ownerSession)).replace('{lead}', String(dispatch.leadSession)))
-				: null,
-				),
-		h('div', { className: 'gbt-subhead' }, t('history')),
-		history.length === 0 ? h('p', { className: 'gbt-footnote' }, t('emptyHistory')) : h('div', { className: 'gbt-timeline' }, history.slice().reverse().map(function (entry, index) {
-			return h('div', { key: String(index), className: 'gbt-event' }, h('span', { className: 'gbt-mono' }, tcAgo(entry.at, now)), ' ', h('b', null, actorName(entry.by)), ' ', h('span', null, (entry.from === null ? '·' : entry.from) + ' → ' + (entry.to === null ? '·' : entry.to)), entry.note === '' ? null : h('div', null, entry.note))
-		})),
-			),
-		)
-		blocks.push(h('input', { key: 'note', className: 'gbt-input', ref: note, placeholder: t('notePlaceholder') }))
+		const mainCol = h('div', { className: 'gbt-detailmain', 'data-detail-main': 'true' }, mainChildren)
+		const asideCol = h('aside', { className: 'gbt-detailaside', 'data-detail-aside': 'true' }, layout === 'single' ? null : summary, allFields)
+		const detailBody = h('div', { className: 'gbt-detailbody', 'data-detail-body': layout, 'data-detail-layout': layout },
+			layout === 'single' ? compactSummary : null,
+			mainCol,
+			layout === 'single' ? summaryDetails : null,
+			asideCol)
+		const needsNote = task.status === 'pending' || task.status === 'running' || task.status === 'blocked'
+		const noteField = needsNote
+			? h('label', { className: 'gbt-detailnote', 'data-detail-note': 'true' }, h('span', null, t('detailActionNote')), h('input', { className: 'gbt-input', 'data-field': 'note', ref: note, placeholder: t('notePlaceholder') }))
+			: null
+		const actionFooter = h('div', { className: 'gbt-detailfooter', 'data-detail-footer': 'true' },
+			noteField,
+			h('div', { className: 'gbt-actions' }, actions, deleteError === 'referenced' ? h('button', { key: 'force', type: 'button', className: 'gbt-btn', 'data-variant': 'danger', onClick: function () { remove(true) } }, t('forceDelete')) : null),
+			deleteError === 'referenced' ? h('p', { className: 'gbt-footnote' }, t('forceHint')) : null,
+			deleteError === 'failed' ? h('p', { className: 'gbt-footnote' }, t('error')) : null)
+		const blocks = [detailBody]
 		return h(
 			'div',
 			{ className: 'gbt-detailoverlay', 'data-detail-overlay': 'true', 'data-detail-width': widthClass, 'data-detail-layout': layout,
@@ -624,6 +611,7 @@ function createDetailView(deps) {
 		h('button', { type: 'button', className: 'gbt-iconbtn', onClick: props.onClose, 'aria-label': t('close') }, '×'),
 			),
 			h('div', { className: 'gbt-drawerbody' }, blocks),
+			actionFooter,
 			),
 		)
 	}
