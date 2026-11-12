@@ -24,10 +24,12 @@ function createRolesView(deps) {
 		const members = teamView !== null ? teamView : agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
 		const instances = members
 			.filter(function (member) {
-		return member !== null && typeof member === 'object' && typeof member.name === 'string' && /^(worker|reviewer|tester)-\d+$/.test(member.name)
+		// T-172: project-scoped instance names look like worker-pb58f7-1,
+		// not only worker-1; stage live counts must see both.
+		return member !== null && typeof member === 'object' && typeof member.name === 'string' && /^(worker|reviewer|tester)(?:-[a-z0-9]+)*?-\d+$/.test(member.name)
 			})
 			.map(function (member) {
-		const match = /^(worker|reviewer|tester)-\d+$/.exec(member.name)
+		const match = /^(worker|reviewer|tester)(?:-[a-z0-9]+)*?-\d+$/.exec(member.name)
 		return { name: member.name, kind: match === null ? 'worker' : match[1], status: typeof member.status === 'string' ? member.status : 'unknown' }
 			})
 		// T-155 §1/§8: sessions are aggregated per participant, with their OWN team
@@ -59,48 +61,43 @@ function createRolesView(deps) {
 				const visibleSessions = sessionFilter === 'all' ? sessionRows : sessionRows.filter(function (row) { return row.sessionId === sessionFilter })
 				return h(
 					'section',
-					{ className: 'gbt-rolesview-card', 'data-card': 'sessions', 'data-roles-sessions': 'true' },
-					h('div', { className: 'gbt-rhead' }, h('h3', { className: 'gbt-rtitle' }, t('sessionCardTitle')), h('span', { className: 'gbt-footnote' }, t('sessionsHint'))),
-					h(
-						'div',
-						{ className: 'gbt-rbody' },
-						h('label', { className: 'gbt-sessionfilter' }, t('sessionFilter'), h('select', { 'data-session-filter': 'true', value: sessionFilter, onChange: function (event) { setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all') } }, h('option', { value: 'all' }, t('sessionFilterAll')), sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) }))),
-						h(
-							'div',
-							{ className: 'gbt-sessionscards', 'data-sessions-list': 'true' },
-							visibleSessions.map(function (row, index) {
-								const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
-								const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
-								const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
-								return h(
-									'div',
-									{
-										key: 'session-' + String(index),
-										className: 'gbt-sessionsrow',
-										'data-session': String(row.sessionId),
-										'data-current': currentSession !== null && row.sessionId === currentSession ? 'true' : 'false',
-										'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
-									},
-									h('span', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
-									currentSession !== null && row.sessionId === currentSession ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
-									team === null ? null : h('span', null, t('workersLead') + ' ' + (typeof team.lead === 'string' ? team.lead : '—')),
-									h('span', { className: 'gbt-pill', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, t('sessionsReadiness') + ' ' + (row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
-									h('span', { className: 'gbt-pill', 'data-stage-ready': stage.review === true ? 'true' : 'false' }, t('sessionsStageReview') + ' ' + stageLabel(stage.review === true)),
-									h('span', { className: 'gbt-pill', 'data-stage-ready': stage.test === true ? 'true' : 'false' }, t('sessionsStageTest') + ' ' + stageLabel(stage.test === true)),
-									h('span', { className: 'gbt-statusmeta' }, t('sessionsCards').replace('{n}', String(Number.isFinite(cards.owned) ? cards.owned : 0))),
-								)
-							}),
-						),
-					),
+					{ className: 'gbt-rolesready', 'data-roles-sessions': 'true' },
+					h('div', { className: 'gbt-rolesreadyhead' },
+						h('span', { className: 'gbt-deckeyebrow' }, 'READY / 参与会话'),
+						h('h3', null, t('sessionCardTitle')),
+						h('span', { className: 'gbt-rolesreadymeta' }, String(sessionRows.length) + ' ' + t('sessionsLabel')),
+						h('label', { className: 'gbt-sessionfilter' }, t('sessionFilter'),
+							h('select', { 'data-session-filter': 'true', value: sessionFilter, onChange: function (event) { setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all') } },
+								h('option', { value: 'all' }, t('sessionFilterAll')),
+								sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) })))),
+					h('div', { className: 'gbt-rolesreadyrows', 'data-sessions-list': 'true' }, visibleSessions.map(function (row, index) {
+						const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
+						const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
+						const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
+						const current = currentSession !== null && row.sessionId === currentSession
+						return h('div', {
+							key: 'session-' + String(index), className: 'gbt-rolesreadyrow',
+							'data-session': String(row.sessionId), 'data-current': current ? 'true' : 'false', 'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+							'data-session-status': typeof row.status === 'string' ? row.status : 'unknown',
+						},
+							h('span', { className: 'gbt-rolesreadyid gbt-mono' }, sessionShortText(row.sessionId)),
+							current ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
+							h('span', { className: 'gbt-rolesreadystatus' }, h('i', { className: 'gbt-deckdot', 'data-on': row.status === 'live' ? 'true' : 'false' }), sessionStatusText(row.status)),
+							h('span', { className: 'gbt-rolesreadylead', title: team === null ? '' : String(team.lead) }, team === null ? '—' : team.lead),
+							h('span', { className: 'gbt-rolesreadyready', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, h('i', { className: 'gbt-deckdot', 'data-on': row.dispatchReady === true ? 'true' : 'false' }), t('sessionsReadiness') + ' ' + (row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
+							h('span', { className: 'gbt-footnote', 'data-stage-ready': stage.review === true ? 'true' : 'false' }, t('sessionsStageReview') + ' ' + stageLabel(stage.review === true)),
+							h('span', { className: 'gbt-footnote', 'data-stage-ready': stage.test === true ? 'true' : 'false' }, t('sessionsStageTest') + ' ' + stageLabel(stage.test === true)),
+							h('span', { className: 'gbt-rolesreadycards gbt-mono' }, String(Number.isFinite(cards.owned) ? cards.owned : 0)))
+					}))
 				)
 			})()
 		if (config === null) {
 			// T-155: even without a role config the per-session readiness list is useful.
-			return h('div', { className: 'gbt-rolesview' }, sessionsSection, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
+			return h('div', { className: 'gbt-rolesview', 'data-roles-deck': 'true' }, sessionsSection, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
 		}
 		return h(
 			'div',
-			{ className: 'gbt-rolesview' },
+			{ className: 'gbt-rolesview', 'data-roles-deck': 'true' },
 			sessionsSection,
 			h(
 		'section',

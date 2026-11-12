@@ -2323,15 +2323,15 @@ await flush()
   // Segmented tabs: real, focusable buttons with an aria selection state.
   const tabs = findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind')
   check(
-    'the editor offers 实现/测试/评审 tabs as real buttons',
-    tabs.length === 3 && tabs.every((tab) => tab.type === 'button' && tab.props.role === 'tab') && tabs.map((tab) => tab.props['data-kind']).join(',') === 'worker,tester,reviewer',
+    'T-172 the editor offers implement/review/test stage slots as real buttons',
+    tabs.length === 3 && tabs.every((tab) => tab.type === 'button' && tab.props.role === 'tab') && tabs.map((tab) => tab.props['data-kind']).join(',') === 'worker,reviewer,tester' && tabs.map((tab) => tab.props['data-stage-slot']).join(',') === 'implement,review,test',
     JSON.stringify(tabs.map((tab) => [tab.type, tab.props.role, tab.props['data-kind']])),
   )
-  check('the tabs are labelled 实现/测试/评审', tabs.map(textOf).join(',') === '实现,测试,评审', tabs.map(textOf).join(','))
+  check('T-172 the stage slots are labelled 实现/评审/测试 and show their bound profile + live count', tabs.map(textOf).join(',').indexOf('实现') >= 0 && tabs.map(textOf).join(',').indexOf('评审') >= 0 && tabs.map(textOf).join(',').indexOf('测试') >= 0 && tabs.every((tab) => tab.props['data-bound-profile'] !== undefined && tab.props['data-live'] !== undefined), tabs.map(textOf).join(','))
   check(
     'the panel root carries the visual-check marker and every role tab its data-roles-tab',
     findAll(rolesTree, (node) => node.props && node.props['data-panel-root'] === 'task-center').length === 1 &&
-      findAll(editor, (node) => node.props && node.props['data-roles-tab'] !== undefined).map((node) => node.props['data-roles-tab']).join(',') === 'worker,tester,reviewer',
+      findAll(editor, (node) => node.props && node.props['data-roles-tab'] !== undefined).map((node) => node.props['data-roles-tab']).join(',') === 'worker,reviewer,tester',
     JSON.stringify(findAll(editor, (node) => node.props && node.props['data-roles-tab'] !== undefined).map((node) => node.props['data-roles-tab'])),
   )
   check('the tabs sit in a labelled tablist', findAll(editor, (node) => node.props && node.props.role === 'tablist').length === 1)
@@ -2340,7 +2340,7 @@ await flush()
     tabs[0].props['aria-selected'] === 'true' && tabs[1].props['aria-selected'] === 'false' && tabs[2].props['aria-selected'] === 'false',
     JSON.stringify(tabs.map((tab) => tab.props['aria-selected'])),
   )
-  check('exactly one tab is marked active', findAll(editor, (node) => node.props && node.props.className === 'gbt-rolesegitem' && node.props['data-active'] === 'true').length === 1)
+  check('exactly one stage slot is marked active', findAll(editor, (node) => node.props && node.props.className === 'gbt-rstagesslot' && node.props['data-active'] === 'true').length === 1)
 
   // Identity row: kind + custom/default state + the ONE "current use" picker.
   let identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
@@ -2388,10 +2388,10 @@ await flush()
       findAll(editor, (node) => node.props && node.props['data-role-card'] === 'injected').length === 1,
   )
   check(
-    'the role page tabs are the role-specific segmented control',
-    findAll(editor, (node) => node.props && node.props.className === 'gbt-roleseg').length === 1 &&
+    'T-172 the role page stage strip is the role-specific segmented control',
+    findAll(editor, (node) => node.props && node.props['data-role-stage-strip'] === 'true').length === 1 &&
       findAll(editor, (node) => node.props && node.props['data-role-tabs'] === 'true').length === 1 &&
-      findAll(editor, (node) => node.props && node.props.className === 'gbt-rolesegitem').length === 3 &&
+      findAll(editor, (node) => node.props && node.props.className === 'gbt-rstagesslot').length === 3 &&
       findAll(editor, (node) => node.props && node.props.className === 'gbt-segmented').length === 0 &&
       findAll(editor, (node) => node.props && node.props.className === 'gbt-seg').length === 0,
   )
@@ -2438,7 +2438,7 @@ await flush()
   // action-result channel (neither set nor clear the user's last outcome).
   const previewResultBefore = captured.getSnapshot().actionResult
   const previewErrorBefore = captured.getSnapshot().actionError
-  tabs[2].props.onClick()
+  tabs.filter((tab) => tab.props['data-kind'] === 'reviewer')[0].props.onClick()
   rolesTree = withHooks(panel, { initialView: 'roles' })
   await flush()
   rolesTree = withHooks(panel, { initialView: 'roles' })
@@ -2993,7 +2993,7 @@ await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   const kindTabs = findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-kind')
-  check('the editor offers worker/tester/reviewer tabs', kindTabs.map((tab) => tab.props['data-kind']).join(',') === 'worker,tester,reviewer', JSON.stringify(kindTabs.map((tab) => tab.props['data-kind'])))
+  check('T-172 the editor offers implement/review/test stage slots', kindTabs.map((tab) => tab.props['data-kind']).join(',') === 'worker,reviewer,tester', JSON.stringify(kindTabs.map((tab) => tab.props['data-kind'])))
   let identity = findAll(editor, (node) => node.props && node.props['data-editor-identity'] === 'true')[0]
   check('the worker tab shows its bound profile', identity.props['data-kind'] === 'worker' && identity.props['data-profile'] === 'worker' && identity.props['data-draft'] === 'false', JSON.stringify(identity.props))
   check('the identity has no free-text control', findAll(identity, (node) => node.type === 'input' || node.type === 'textarea').length === 0)
