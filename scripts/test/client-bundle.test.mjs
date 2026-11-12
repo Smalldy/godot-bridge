@@ -6920,6 +6920,73 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   )
 }
 
+// ── T-175: the detail facts use continuous rules and card counts say preview/total ──
+{
+  const savedScope = HOST.scope
+  const savedTasks = HOST.tasks
+  HOST.scope = {
+    boardProject: { id: 'p-a', root: 'J:\\demo\\mm13d' },
+    panelSession: 'session-a',
+    sessionSummaries: [
+      { sessionId: 'session-a', status: 'live', dispatchReady: true, stageReady: { review: true, test: false }, cards: { owned: 23, active: 7 }, team: { lead: 'lead-a', members: ['a1'], memberCount: 1, missingRoles: [], error: null } },
+    ],
+  }
+  HOST.tasks = ['a', 'b', 'c'].map(function (suffix, index) {
+    return { id: 'T-175-' + suffix, title: 'Preview card ' + suffix, status: index === 0 ? 'running' : 'queued', ownerSession: 'session-a' }
+  })
+  let tree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  const filter = findAll(tree, (node) => node.type === 'select' && node.props && node.props['data-session-filter'] === 'true')[0]
+  if (filter !== undefined && filter.props.value !== 'all') {
+    filter.props.onChange({ target: { value: 'all' } })
+    await flush()
+    tree = withHooks(panel, { initialView: 'status' })
+  }
+  const detail = findAll(tree, (node) => node.props && node.props['data-session-detail'] === 'session-a')[0]
+  const previewNode = detail === undefined ? undefined : findAll(detail, (node) => node.props && node.props['data-detail-preview-count'] !== undefined)[0]
+  check(
+    'T-175 the detail CARDS header reads preview count / real owned total, never the slice as total',
+    previewNode !== undefined &&
+      previewNode.props['data-detail-preview-count'] === '2' &&
+      previewNode.props['data-detail-total-count'] === '23' &&
+      textOf(previewNode).indexOf('2 / 23') >= 0 &&
+      findAll(detail, (node) => node.props && node.props['data-detail-preview-label'] === 'true').length === 1,
+    previewNode && textOf(previewNode),
+  )
+  const facts = findAll(detail, (node) => node.props && node.props['data-session-detail-fact'] === 'cards')[0]
+  check(
+    'T-175 the detail facts keep the owned / active card meaning',
+    facts !== undefined && textOf(facts).indexOf('23 / 7') >= 0,
+    facts && textOf(facts),
+  )
+  const cardsLabel = findAll(tree, (node) => node.props && node.props['data-session-cards-label'] === 'true')[0]
+  check(
+    'T-175 the session table card column says total / active',
+    cardsLabel !== undefined && (/总|TOTAL/.test(textOf(cardsLabel)) && /活跃|ACTIVE/.test(textOf(cardsLabel))),
+    cardsLabel && textOf(cardsLabel),
+  )
+  const css = readFileSync(SRC, 'utf8')
+  check(
+    'T-175 facts use one continuous container rule and no per-fact dangling borders',
+    css.indexOf('.gbt-detailfacts{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;min-width:0;padding:8px 12px 0 0;border-top:1px solid var(--deck-line)') >= 0 &&
+      css.indexOf('.gbt-detailfact{min-width:0;border-top:0;padding-top:0}') >= 0 &&
+      css.indexOf('.gbt-detailfact{min-width:0;border-top:1px solid') < 0,
+    'fact separator CSS did not converge on the container',
+  )
+  locale = 'en'
+  const enTree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  const enCardsLabel = findAll(enTree, (node) => node.props && node.props['data-session-cards-label'] === 'true')[0]
+  check(
+    'T-175 en card column stays short enough for the fixed 27px thead',
+    enCardsLabel !== undefined && textOf(enCardsLabel) === 'TOTAL / ACTIVE' && textOf(enCardsLabel).length <= 14 && enCardsLabel.props.title === 'Cards (total / active)',
+    enCardsLabel && JSON.stringify({ text: textOf(enCardsLabel), title: enCardsLabel.props.title }),
+  )
+  locale = 'zh'
+  HOST.scope = savedScope
+  HOST.tasks = savedTasks
+}
+
 // ── T-162: the team popover anchors right in a narrow panel ──
 {
   const css162 = readFileSync(SRC, 'utf8')

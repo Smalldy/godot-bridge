@@ -427,7 +427,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionsLabel: '会话',
 				sessionsHint: '每个参与会话有自己的团队与卡；当前对话会话只高亮，不是主会话。',
 				sessionColSession: '会话 / LEAD',
-				sessionColCards: '卡数',
+				sessionColCards: '卡数 · 总 / 活跃',
 				sessionColStatus: '状态',
 				sessionColDispatch: '派发',
 				sessionColReview: '评审',
@@ -437,6 +437,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionDetailProject: '项目',
 				sessionDetailTeam: '团队成员',
 				sessionDetailCards: '卡（总数 / 进行中）',
+				sessionDetailPreview: '预览',
 				sessionDetailMissing: '缺少角色',
 				sessionDetailSelected: '已选中',
 				sessionDetailSelectedTitle: '选中会话详情',
@@ -1159,7 +1160,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionsLabel: 'Sessions',
 				sessionsHint: 'Every participating session keeps its own team and cards; the current chat session is highlighted, never primary.',
 				sessionColSession: 'SESSION / LEAD',
-				sessionColCards: 'CARDS',
+				sessionColCards: 'TOTAL / ACTIVE',
 				sessionColStatus: 'STATUS',
 				sessionColDispatch: 'DISPATCH',
 				sessionColReview: 'REVIEW',
@@ -1169,6 +1170,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionDetailProject: 'Project',
 				sessionDetailTeam: 'Team',
 				sessionDetailCards: 'Cards (total / active)',
+				sessionDetailPreview: 'preview',
 				sessionDetailMissing: 'Missing roles',
 				sessionDetailSelected: 'selected',
 				sessionDetailSelectedTitle: 'Selected session detail',
@@ -2084,8 +2086,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-detailstatus{display:inline-flex;align-items:center;gap:5px;color:var(--deck-muted);font-size:10.5px;white-space:nowrap}',
 '.gbt-detailid{color:var(--deck-dim);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}',
 '.gbt-detailteamcount{color:var(--deck-muted);font-size:10.5px;margin-top:2px}',
-'.gbt-detailfacts{display:grid;grid-template-columns:1fr 1fr;gap:7px 10px;min-width:0;padding-right:12px;border-right:1px solid var(--deck-line)}',
-'.gbt-detailfact{min-width:0;border-top:1px solid var(--deck-line);padding-top:5px}',
+'.gbt-detailfacts{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;min-width:0;padding:8px 12px 0 0;border-top:1px solid var(--deck-line);border-right:1px solid var(--deck-line)}',
+'.gbt-detailfact{min-width:0;border-top:0;padding-top:0}',
+'.gbt-detailpreview{font-size:9px;color:var(--deck-dim);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}',
 '.gbt-detailfact b{display:block;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:400;color:var(--deck-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
 '.gbt-detailfact span{display:block;color:var(--deck-dim);font-size:9.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
 '.gbt-detailteam{display:flex;flex-direction:column;gap:4px;min-width:0;min-height:0;overflow:hidden}',
@@ -6453,11 +6456,14 @@ function createStatusView(deps) {
 			if (typeof snapshot.project === 'string' && snapshot.project !== '') return snapshot.project
 			return row !== null && typeof row.projectRoot === 'string' ? row.projectRoot : '—'
 		}
-		const detailTasks = detailSession === null ? [] : tasks.filter(function (task) {
+		const detailTaskMatches = detailSession === null ? [] : tasks.filter(function (task) {
 			if (task === null || task === undefined) return false
 			const assigneeSession = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.session === 'string' ? task.assignee.session : null
 			return task.ownerSession === detailSession.sessionId || assigneeSession === detailSession.sessionId
-		}).slice(0, 2)
+		})
+		// The card header shows this preview count against the session's real
+		// owned count; never let the preview limit read as the total.
+		const detailTasks = detailTaskMatches.slice(0, 2)
 		const sessionShortText = function (value) {
 			const text = typeof value === 'string' ? value : ''
 			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
@@ -6484,7 +6490,7 @@ function createStatusView(deps) {
 			),
 			h('div', { className: 'gbt-deckthead', 'data-session-columns': 'true' },
 				h('span', null, t('sessionColSession')),
-				h('span', null, t('sessionColCards')),
+				h('span', { 'data-session-cards-label': 'true', title: t('sessionDetailCards') }, t('sessionColCards')),
 				h('span', null, t('sessionColStatus')),
 				h('span', null, t('sessionColDispatch')),
 				h('span', null, t('sessionColReview')),
@@ -6514,7 +6520,7 @@ function createStatusView(deps) {
 								current ? h('span', { className: 'gbt-decksession-current' }, t('sessionsCurrent')) : null,
 								h('span', { title: lead === null ? '' : lead }, lead === null ? '—' : t('workersLead') + ' · ' + lead),
 							),
-							h('span', { className: 'gbt-decknum', 'data-session-cards': 'true' }, h('b', null, String(owned)), ' / ' + String(activeCards)),
+							h('span', { className: 'gbt-decknum', 'data-session-cards': 'true', title: t('sessionDetailCards') }, h('b', null, String(owned)), ' / ' + String(activeCards)),
 							h('span', { className: 'gbt-deckstatus', 'data-session-status-pill': typeof row.status === 'string' ? row.status : 'unknown', 'data-status': typeof row.status === 'string' ? row.status : 'unknown' }, h('i', { className: 'gbt-deckdot', 'data-on': row.status === 'live' ? 'true' : 'false' }), sessionStatusText(row.status)),
 							h('span', { className: 'gbt-deckstate', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, h('i', { className: 'gbt-deckdot', 'data-on': row.dispatchReady === true ? 'true' : 'false' }), row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady')),
 							stageBadge('stage-review', t('sessionsStageReview'), stage.review === true),
@@ -6529,6 +6535,8 @@ function createStatusView(deps) {
 		const detailFacts = []
 		const detailTeam = detailSession !== null && detailSession.team !== null && detailSession.team !== undefined && typeof detailSession.team === 'object' ? detailSession.team : null
 		const detailCards = detailSession !== null && detailSession.cards !== null && detailSession.cards !== undefined && typeof detailSession.cards === 'object' ? detailSession.cards : {}
+		const detailOwned = Number.isFinite(detailCards.owned) ? detailCards.owned : detailTaskMatches.length
+		const detailActive = Number.isFinite(detailCards.active) ? detailCards.active : 0
 		const detailStage = detailSession !== null && detailSession.stageReady !== null && detailSession.stageReady !== undefined && typeof detailSession.stageReady === 'object' ? detailSession.stageReady : {}
 		const detailLead = detailTeam === null || typeof detailTeam.lead !== 'string' || detailTeam.lead === '' ? null : detailTeam.lead
 		const detailMembers = detailTeam !== null && Array.isArray(detailTeam.members) ? detailTeam.members.filter(function (name) { return typeof name === 'string' && name !== '' }) : []
@@ -6537,7 +6545,7 @@ function createStatusView(deps) {
 		if (detailSession !== null) {
 			detailFacts.push({ key: 'lead', label: t('sessionDetailLead'), value: detailLead === null ? '—' : detailLead })
 			detailFacts.push({ key: 'project', label: t('sessionDetailProject'), value: projectRootOf(detailSession) })
-			detailFacts.push({ key: 'cards', label: t('sessionDetailCards'), value: String(Number.isFinite(detailCards.owned) ? detailCards.owned : 0) + ' / ' + String(Number.isFinite(detailCards.active) ? detailCards.active : 0) })
+			detailFacts.push({ key: 'cards', label: t('sessionDetailCards'), value: String(detailOwned) + ' / ' + String(detailActive) })
 			detailFacts.push({ key: 'dispatch', label: t('sessionColDispatch'), value: detailSession.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady') })
 			detailFacts.push({ key: 'review', label: t('sessionsStageReview'), value: detailStage.review === true ? t('sessionsReady') : t('sessionsNotReady') })
 			detailFacts.push({ key: 'test', label: t('sessionsStageTest'), value: detailStage.test === true ? t('sessionsReady') : t('sessionsNotReady') })
@@ -6586,7 +6594,7 @@ function createStatusView(deps) {
 							}),
 							),
 					h('div', { className: 'gbt-detailtasks', 'data-session-detail-tasks': 'true' },
-						h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'CARDS'), h('b', null, String(detailTasks.length))),
+						h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'CARDS'), h('span', { className: 'gbt-detailpreview', 'data-detail-preview-label': 'true' }, t('sessionDetailPreview')), h('b', { 'data-detail-preview-count': String(detailTasks.length), 'data-detail-total-count': String(detailOwned) }, String(detailTasks.length) + ' / ' + String(detailOwned))),
 						detailTasks.length === 0
 							? h('div', { className: 'gbt-deckempty' }, t('sessionDetailNoTasks'))
 							: detailTasks.map(function (task) {
