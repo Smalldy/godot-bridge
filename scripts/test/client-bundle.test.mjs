@@ -6672,6 +6672,50 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
 }
 
 
+// ── T-170: the status page is dispatch-on-top, two equal main columns,
+// then full-width agents and activity; bodies scroll instead of the page. ──
+{
+  const css170 = readFileSync(SRC, 'utf8')
+  check(
+    'T-170 the status grid uses explicit areas: dispatch full, sessions/worktrees equal, agents/activity full',
+    css170.indexOf('grid-template-areas:"dispatch dispatch" "sessions worktrees" "agents agents" "activity activity"') >= 0 &&
+      css170.indexOf('grid-template-rows:auto minmax(180px,1.15fr) auto minmax(140px,0.72fr)') >= 0,
+    'status grid areas/rows missing',
+  )
+  check(
+    'T-170 every status card is assigned to its area',
+    ['.gbt-statuscard[data-status-card="dispatch"]{grid-area:dispatch}',
+      '.gbt-statuscard[data-status-card="sessions"]{grid-area:sessions}',
+      '.gbt-statuscard[data-status-card="worktrees"]{grid-area:worktrees}',
+      '.gbt-statuscard[data-status-card="agents"]{grid-area:agents}',
+      '.gbt-statuscard[data-status-card="activity"]{grid-area:activity}'].every((rule) => css170.indexOf(rule) >= 0),
+    'one or more status areas missing',
+  )
+  check(
+    'T-170 the grid fills the viewport and each card body is the internal scroll owner',
+    css170.indexOf('.gbt-statusview{display:flex;flex-direction:column;gap:12px;width:100%;min-width:0;max-width:100%;height:100%;min-height:0;overflow:hidden;box-sizing:border-box}') >= 0 &&
+      css170.indexOf('flex:1 1 auto;min-height:0;width:100%;min-width:0;max-width:100%;overflow:hidden;box-sizing:border-box}') >= 0 &&
+      css170.indexOf('.gbt-statuscardbody{padding:10px 12px;min-height:0;flex:1 1 auto;display:flex;flex-direction:column;gap:6px;width:100%;min-width:0;max-width:100%;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box}') >= 0,
+    'status fill/body scroll rules missing',
+  )
+  check(
+    'T-170 <=900px stacks one column with auto height and visible page scrolling',
+    css170.indexOf('@media (max-width:900px){.gbt-statusview{height:auto;min-height:0;overflow:visible}.gbt-statusgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"dispatch" "sessions" "worktrees" "agents" "activity";grid-template-rows:auto') >= 0 &&
+      css170.indexOf('.gbt-statuscardbody{flex:0 0 auto;overflow-x:visible;overflow-y:visible}}') >= 0,
+    'status mobile stack rules missing',
+  )
+  const statusGrid = withHooks(panel, { initialView: 'status' })
+  await flush()
+  const gridTree = withHooks(panel, { initialView: 'status' })
+  const gridChildren = findAll(gridTree, (node) => node.props && node.props['data-status-card'] !== undefined).map((node) => node.props['data-status-card'])
+  check(
+    'T-170 the DOM order still feeds the CSS areas without rearranging the cards',
+    gridChildren.join(',') === 'dispatch,sessions,worktrees,agents,activity' &&
+      findAll(gridTree, (node) => node.props && node.props['data-status-grid'] === 'true').length === 1,
+    JSON.stringify(gridChildren),
+  )
+}
+
 // ── T-162: the team popover anchors right in a narrow panel ──
 {
   const css162 = readFileSync(SRC, 'utf8')
@@ -6700,17 +6744,17 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
 {
   const css161 = readFileSync(SRC, 'utf8')
   check(
-    'T-161 the status page chain and grid own the width and clip horizontal overflow',
-    css161.indexOf('.gbt-statusview{display:flex;flex-direction:column;gap:12px;width:100%;min-width:0;max-width:100%;overflow-x:clip;box-sizing:border-box}') >= 0 &&
-      css161.indexOf('.gbt-statusgrid{display:grid;gap:12px;grid-template-columns:300px minmax(0,1fr) minmax(0,1.15fr)') >= 0 &&
-      css161.indexOf('width:100%;min-width:0;max-width:100%;overflow-x:clip;box-sizing:border-box}') >= 0,
+    'T-170 the status page owns the width and the grid carries the four-area layout',
+    css161.indexOf('.gbt-statusview{display:flex;flex-direction:column;gap:12px;width:100%;min-width:0;max-width:100%;height:100%;min-height:0;overflow:hidden;box-sizing:border-box}') >= 0 &&
+      css161.indexOf('.gbt-statusgrid{display:grid;gap:12px;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"dispatch dispatch" "sessions worktrees" "agents agents" "activity activity"') >= 0 &&
+      css161.indexOf('width:100%;min-width:0;max-width:100%;overflow:hidden;box-sizing:border-box}') >= 0,
     'status width chain missing',
   )
   check(
-    'T-161 the 1fr status columns cannot grow to min-content (300px rail stays)',
-    css161.indexOf('grid-template-columns:300px minmax(0,1fr) minmax(0,1.15fr)') >= 0 &&
-      css161.indexOf('@media (max-width:900px){.gbt-statusgrid{grid-template-columns:minmax(0,1fr)}') >= 0,
-    'status grid minmax rule missing',
+    'T-170 the two 1fr main columns cannot grow to min-content and the mobile stack is explicit',
+    css161.indexOf('grid-template-columns:minmax(0,1fr) minmax(0,1fr)') >= 0 &&
+      css161.indexOf('@media (max-width:900px){.gbt-statusview{height:auto;min-height:0;overflow:visible}.gbt-statusgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"dispatch" "sessions" "worktrees" "agents" "activity";grid-template-rows:auto') >= 0,
+    'status grid minmax/mobile rule missing',
   )
   check(
     'T-161 long task/activity/worktree text ellipsizes instead of widening the page',
