@@ -18,6 +18,7 @@ function createSettingsForm(deps) {
 	function SettingsForm(props) {
 		const t = props.t
 		const dispatch = props.dispatch !== null && props.dispatch !== undefined ? props.dispatch : {}
+		const theme = props.theme === 'console' ? 'console' : 'dsh'
 		// T-167: the panel already holds the live worker/scheduler snapshot; read it
 		// through the injected store so the settings modal can show live/missing and
 		// the last spawn failure without widening the task-center view's props.
@@ -159,6 +160,29 @@ function createSettingsForm(deps) {
 			h(
 				'div',
 				{ className: 'gbt-form gbt-settingsform' },
+				h(
+					'div',
+					{ className: 'gbt-settingsgroup', 'data-settings-group': 'theme' },
+					h('div', { className: 'gbt-settingsgrouphead' }, t('settingsThemeGroup')),
+					h(
+						'div',
+						{ className: 'gbt-field' },
+						h('label', null, t('settingsTheme')),
+						h('select', {
+							className: 'gbt-input',
+							'data-field': 'ui-theme',
+							'data-tc-theme-select': 'true',
+							value: theme,
+							onChange: function (event) {
+								const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'dsh'
+								if (typeof props.onThemeChange === 'function') props.onThemeChange(next)
+							},
+						},
+						h('option', { value: 'dsh' }, t('settingsThemeDsh')),
+						h('option', { value: 'console' }, t('settingsThemeConsole'))),
+					),
+					h('p', { className: 'gbt-settingsnote' }, t('settingsThemeHint')),
+				),
 				h(
 					'div',
 					{ className: 'gbt-settingsgroup', 'data-settings-group': 'concurrency' },

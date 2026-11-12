@@ -69,6 +69,25 @@ function createTaskCenter(deps) {
 		// Rendering tests may open the settings modal; the production slot passes no props.
 		const initialSettingsOpen = props !== undefined && props !== null && props.initialSettingsOpen === true
 		const [settingsOpen, setSettingsOpen] = React.useState(initialSettingsOpen)
+		// T-174: theme is a browser preference, never a dispatch/server field.
+		function readTheme() {
+			try {
+				const raw = typeof window !== 'undefined' && window !== null && window.localStorage !== undefined && typeof window.localStorage.getItem === 'function' ? window.localStorage.getItem('gbt-theme') : null
+				return raw === 'console' ? 'console' : 'dsh'
+			} catch (error) {
+				return 'dsh'
+			}
+		}
+		const [theme, setThemeState] = React.useState(readTheme)
+		function setTheme(next) {
+			const value = next === 'console' ? 'console' : 'dsh'
+			try {
+				if (typeof window !== 'undefined' && window !== null && window.localStorage !== undefined && typeof window.localStorage.setItem === 'function') window.localStorage.setItem('gbt-theme', value)
+			} catch (error) {
+				// A storage denial must not break the panel; the in-memory theme still applies.
+			}
+			setThemeState(value)
+		}
 		// Rendering tests may open the project dialog; the production slot passes no props.
 		const initialProjectOpen = props !== undefined && props !== null && props.initialProjectOpen === true
 		const [projectOpen, setProjectOpen] = React.useState(initialProjectOpen)
@@ -790,7 +809,7 @@ function createTaskCenter(deps) {
 
 		return h(
 			'div',
-			{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center' },
+			{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center', 'data-tc-theme': theme },
 			header,
 			environmentBar,
 			busyBar,
@@ -851,7 +870,7 @@ function createTaskCenter(deps) {
 		onClose: function () { setEditing(null) },
 		onSaved: function () { setEditing(null) },
 			}),
-			settingsOpen ? h(SettingsForm, { t: t, dispatch: dispatch, onClose: function () { setSettingsOpen(false) } }) : null,
+			settingsOpen ? h(SettingsForm, { t: t, dispatch: dispatch, theme: theme, onThemeChange: setTheme, onClose: function () { setSettingsOpen(false) } }) : null,
 			projectOpen ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,
 		)
 	}
