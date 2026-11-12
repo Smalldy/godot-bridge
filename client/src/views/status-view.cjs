@@ -713,7 +713,7 @@ function createStatusView(deps) {
 			if (task === null || task === undefined) return false
 			const assigneeSession = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.session === 'string' ? task.assignee.session : null
 			return task.ownerSession === detailSession.sessionId || assigneeSession === detailSession.sessionId
-		}).slice(0, 5)
+		}).slice(0, 2)
 		const sessionShortText = function (value) {
 			const text = typeof value === 'string' ? value : ''
 			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
@@ -803,10 +803,11 @@ function createStatusView(deps) {
 			className: 'gbt-statuscard gbt-decksessiondetail',
 			'data-session-detail': detailSession === null ? '' : String(detailSession.sessionId),
 			'data-detail-current': detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? 'true' : 'false',
+			'data-detail-title': detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? 'current' : 'selected',
 		},
 			h('div', { className: 'gbt-deckpanelhead' },
 				h('span', { className: 'gbt-deckeyebrow' }, 'SESSION / DETAIL'),
-				h('h2', null, t('sessionDetailTitle')),
+				h('h2', null, detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? t('sessionDetailTitle') : t('sessionDetailSelectedTitle')),
 				h('span', { className: 'gbt-deckpanelmeta' }, detailSession === null ? t('sessionsEmpty') : String(detailSession.sessionId)),
 			),
 			detailSession === null
@@ -826,7 +827,8 @@ function createStatusView(deps) {
 							h('b', { className: 'gbt-mono', title: String(fact.value) }, String(fact.value)),
 							h('span', null, fact.label))
 					})),
-					h('div', { className: 'gbt-detailteam', 'data-session-detail-team': 'true' },
+					h('div', { className: 'gbt-detailright' },
+						h('div', { className: 'gbt-detailteam', 'data-session-detail-team': 'true' },
 						h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'TEAM'), h('b', null, String(detailMembers.length))),
 						detailMembers.length === 0
 							? h('div', { className: 'gbt-deckempty' }, '—')
@@ -850,6 +852,7 @@ function createStatusView(deps) {
 									h('em', { className: 'gbt-mono' }, typeof task.status === 'string' ? task.status : '—'))
 							}),
 						),
+					),
 					),
 				)
 		return h(

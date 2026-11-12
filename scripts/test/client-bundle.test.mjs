@@ -6789,6 +6789,9 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
 // ── T-173: wide-screen session detail follows the current/filtered session ──
 {
   const savedScope = HOST.scope
+  const savedTasks = HOST.tasks
+  const detailTaskTitle = (Array.isArray(HOST.tasks) && HOST.tasks[0] && typeof HOST.tasks[0].title === 'string') ? HOST.tasks[0].title : 'Session detail card'
+  HOST.tasks = [Object.assign({}, (Array.isArray(HOST.tasks) ? HOST.tasks[0] : null) || { id: 'T-173', title: 'Session detail card', status: 'running' }, { ownerSession: 'session-b' })].concat(Array.isArray(HOST.tasks) ? HOST.tasks.slice(1) : [])
   HOST.scope = {
     boardProject: { id: 'p-a', root: 'J:\\demo\\mm13d' },
     panelSession: 'session-b',
@@ -6823,24 +6826,32 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     detail !== undefined && findAll(detail, (node) => node.props && node.props['data-session-member'] === 'b1').length === 1 && textOf(detail).indexOf('worker') >= 0,
     detail && textOf(detail),
   )
+  check(
+    'T-173 detail CARDS lists the session-owned real task instead of an empty state',
+    detail !== undefined && findAll(detail, (node) => node.props && node.props['data-session-task'] !== undefined).length >= 1 && textOf(detail).indexOf(detailTaskTitle) >= 0,
+    detail && textOf(detail),
+  )
   filter().props.onChange({ target: { value: 'session-a' } })
   await flush()
   detailTree = withHooks(panel, { initialView: 'status' })
   const filteredDetail = findAll(detailTree, (node) => node.props && node.props['data-session-detail'] !== undefined)[0]
   check(
     'T-173 the detail follows the session filter, not only the current session',
-    filteredDetail !== undefined && filteredDetail.props['data-session-detail'] === 'session-a' && filteredDetail.props['data-detail-current'] === 'false' && textOf(filteredDetail).indexOf('lead-a') >= 0,
+    filteredDetail !== undefined && filteredDetail.props['data-session-detail'] === 'session-a' && filteredDetail.props['data-detail-current'] === 'false' && filteredDetail.props['data-detail-title'] === 'selected' && textOf(filteredDetail).indexOf('lead-a') >= 0,
     filteredDetail === undefined ? 'no filtered detail' : JSON.stringify(filteredDetail.props),
   )
   HOST.scope = savedScope
+  HOST.tasks = savedTasks
   const css = readFileSync(SRC, 'utf8')
   check(
     'T-173 >=1800px uses content-driven rows: sessions, detail, activity; worktrees span full height',
     css.indexOf('@media (min-width:1800px){.gbt-deckgrid{grid-template-areas:"rail sessions worktrees" "rail detail worktrees" "rail activity worktrees"') >= 0 &&
       css.indexOf('grid-template-rows:auto auto minmax(172px,1fr)') >= 0 &&
       css.indexOf('.gbt-deckworktrees{grid-area:worktrees;grid-row:1 / 4}') >= 0 &&
-      css.indexOf('.gbt-decksessiondetail{grid-area:detail;display:flex') >= 0,
-    'wide content-driven grid missing',
+      css.indexOf('.gbt-decksessiondetail{grid-area:detail;display:flex') >= 0 &&
+      css.indexOf('.gbt-decksessions{grid-area:sessions;overflow:hidden;height:454px') >= 0 &&
+      css.indexOf('.gbt-decksessions .gbt-deckrows{flex:1 1 auto;min-height:0;overflow-y:auto') >= 0,
+    'wide content-driven grid/session scroll missing',
   )
   check(
     'T-173 1440 keeps the original four-zone areas and hides the wide-only detail',

@@ -434,6 +434,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionDetailCards: '卡（总数 / 进行中）',
 				sessionDetailMissing: '缺少角色',
 				sessionDetailSelected: '已选中',
+				sessionDetailSelectedTitle: '选中会话详情',
 				sessionDetailNoTasks: '该会话暂无任务',
 				sessionsEmpty: '还没有记录到参与该项目的会话',
 				sessionsCurrent: '当前',
@@ -1160,6 +1161,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionDetailCards: 'Cards (total / active)',
 				sessionDetailMissing: 'Missing roles',
 				sessionDetailSelected: 'selected',
+				sessionDetailSelectedTitle: 'Selected session detail',
 				sessionDetailNoTasks: 'No cards for this session yet',
 				sessionsEmpty: 'No participating session recorded for this project yet',
 				sessionsCurrent: 'current',
@@ -2056,8 +2058,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-shiftdeck .gbt-btn[data-variant="primary"]{background:var(--deck-lime);border-color:var(--deck-lime);color:#11170c}',
 '@media (max-width:900px){.gbt-statusview.gbt-shiftdeck{height:auto;min-height:100%;overflow:visible}.gbt-deckgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"rail" "sessions" "worktrees" "activity";grid-template-rows:auto;flex:0 0 auto;height:auto;min-height:0;overflow:visible}.gbt-deckrail{overflow:visible}.gbt-deckdispatch,.gbt-deckexecutors,.gbt-decksessions,.gbt-deckworktrees{overflow:visible}.gbt-deckpeople,.gbt-deckrows,.gbt-deckwtrows,.gbt-deckactivitybody{overflow:visible}.gbt-deckhead{height:auto;min-height:44px;flex-wrap:wrap;padding:8px 12px}.gbt-deckheadcrumb{display:none}.gbt-deckthead,.gbt-decksessionrow{grid-template-columns:minmax(0,1.4fr) 58px 64px 60px 52px 52px;padding:0 10px}.gbt-deckactivity{min-height:0}.gbt-deckpanelhead,.gbt-deckwtool{padding:0 10px}.gbt-deckwtoolmeta{display:none}}',
 '.gbt-decksessiondetail{display:none}',
-'@media (min-width:1800px){.gbt-deckgrid{grid-template-areas:"rail sessions worktrees" "rail detail worktrees" "rail activity worktrees";grid-template-rows:auto auto minmax(172px,1fr);height:100%}.gbt-decksessions{grid-area:sessions;overflow:visible}.gbt-decksessions .gbt-deckrows{flex:0 0 auto;overflow:visible;max-height:none}.gbt-decksessiondetail{grid-area:detail;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;background:var(--deck-panel)}.gbt-deckworktrees{grid-area:worktrees;grid-row:1 / 4}.gbt-deckactivity{grid-area:activity;min-height:172px;height:100%;align-self:stretch}}',
-'.gbt-detailbody{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.85fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);gap:12px;padding:12px;min-width:0}',
+'@media (min-width:1800px){.gbt-deckgrid{grid-template-areas:"rail sessions worktrees" "rail detail worktrees" "rail activity worktrees";grid-template-rows:auto auto minmax(172px,1fr);height:100%}.gbt-decksessions{grid-area:sessions;overflow:hidden;height:454px;max-height:454px}.gbt-decksessions .gbt-deckrows{flex:1 1 auto;min-height:0;overflow-y:auto;max-height:none}.gbt-decksessiondetail{grid-area:detail;display:flex;flex-direction:column;min-height:290px;max-height:290px;height:290px;min-width:0;overflow:hidden;background:var(--deck-panel)}.gbt-deckworktrees{grid-area:worktrees;grid-row:1 / 4}.gbt-deckactivity{grid-area:activity;min-height:172px;height:100%;align-self:stretch}}',
+'.gbt-detailbody{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.85fr) minmax(0,1fr);grid-template-rows:auto;align-content:start;gap:10px 12px;padding:12px;min-width:0}',
 '.gbt-detailidentity{display:flex;flex-direction:column;gap:6px;min-width:0;padding-right:12px;border-right:1px solid var(--deck-line)}',
 '.gbt-detailidentityline{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}',
 '.gbt-detailidentityline b{font-size:22px;line-height:1;letter-spacing:-.04em;font-weight:500}',
@@ -2072,12 +2074,13 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-detailteam{display:flex;flex-direction:column;gap:4px;min-width:0;min-height:0;overflow:hidden}',
 '.gbt-detailpanelhead{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--deck-dim);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding-bottom:4px;border-bottom:1px solid var(--deck-line)}',
 '.gbt-detailpanelhead b{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:400;color:var(--deck-muted)}',
-'.gbt-detailmember{display:grid;grid-template-columns:7px minmax(0,1fr) 64px 54px;gap:6px;align-items:center;min-height:24px;border-bottom:1px solid #1a2425;min-width:0}',
+'.gbt-detailmember{display:grid;grid-template-columns:7px minmax(0,1fr) 64px 54px;gap:6px;align-items:center;min-height:22px;border-bottom:1px solid #1a2425;min-width:0}',
 '.gbt-detailmembername{font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 '.gbt-detailmemberstate{color:var(--deck-dim);font-size:9.5px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 '.gbt-detailmembertask{color:var(--deck-muted);font-size:9.5px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-'.gbt-detailtasks{grid-column:1 / -1;display:flex;flex-direction:column;gap:3px;min-width:0;min-height:0;overflow:hidden;border-top:1px solid var(--deck-line);padding-top:7px}',
-'.gbt-detailtask{display:grid;grid-template-columns:54px minmax(0,1fr) 72px;gap:8px;align-items:center;min-height:23px;border-bottom:1px solid #1a2425;min-width:0}',
+'.gbt-detailright{display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0;overflow:hidden}',
+'.gbt-detailtasks{display:flex;flex-direction:column;gap:3px;min-width:0;min-height:0;overflow:hidden;border-top:1px solid var(--deck-line);padding-top:7px}',
+'.gbt-detailtask{display:grid;grid-template-columns:54px minmax(0,1fr) 72px;gap:8px;align-items:center;min-height:22px;border-bottom:1px solid #1a2425;min-width:0}',
 '.gbt-detailtask b{font-size:10px;font-weight:400;color:var(--deck-lime)}',
 '.gbt-detailtasktitle{font-size:10.5px;color:var(--deck-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
 '.gbt-detailtask em{font-style:normal;color:var(--deck-dim);font-size:9.5px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -6437,7 +6440,7 @@ function createStatusView(deps) {
 			if (task === null || task === undefined) return false
 			const assigneeSession = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.session === 'string' ? task.assignee.session : null
 			return task.ownerSession === detailSession.sessionId || assigneeSession === detailSession.sessionId
-		}).slice(0, 5)
+		}).slice(0, 2)
 		const sessionShortText = function (value) {
 			const text = typeof value === 'string' ? value : ''
 			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
@@ -6527,10 +6530,11 @@ function createStatusView(deps) {
 			className: 'gbt-statuscard gbt-decksessiondetail',
 			'data-session-detail': detailSession === null ? '' : String(detailSession.sessionId),
 			'data-detail-current': detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? 'true' : 'false',
+			'data-detail-title': detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? 'current' : 'selected',
 		},
 			h('div', { className: 'gbt-deckpanelhead' },
 				h('span', { className: 'gbt-deckeyebrow' }, 'SESSION / DETAIL'),
-				h('h2', null, t('sessionDetailTitle')),
+				h('h2', null, detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? t('sessionDetailTitle') : t('sessionDetailSelectedTitle')),
 				h('span', { className: 'gbt-deckpanelmeta' }, detailSession === null ? t('sessionsEmpty') : String(detailSession.sessionId)),
 			),
 			detailSession === null
@@ -6550,7 +6554,8 @@ function createStatusView(deps) {
 							h('b', { className: 'gbt-mono', title: String(fact.value) }, String(fact.value)),
 							h('span', null, fact.label))
 					})),
-					h('div', { className: 'gbt-detailteam', 'data-session-detail-team': 'true' },
+					h('div', { className: 'gbt-detailright' },
+						h('div', { className: 'gbt-detailteam', 'data-session-detail-team': 'true' },
 						h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'TEAM'), h('b', null, String(detailMembers.length))),
 						detailMembers.length === 0
 							? h('div', { className: 'gbt-deckempty' }, '—')
@@ -6574,6 +6579,7 @@ function createStatusView(deps) {
 									h('em', { className: 'gbt-mono' }, typeof task.status === 'string' ? task.status : '—'))
 							}),
 						),
+					),
 					),
 				)
 		return h(
