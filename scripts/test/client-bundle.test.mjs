@@ -2544,7 +2544,24 @@ await flush()
   postReply = { ok: false, code: 'invalid-role-skills', message: 'skills must be a list' }
   const errorTree0 = withHooks(panel, { initialView: 'roles' })
   const blankCreate = findAll(errorTree0, (node) => node.props && node.props['data-section'] === 'role-create-blank')[0]
-  check('the blank-create form is the editor\'s secondary entry', blankCreate !== undefined && findAll(blankCreate, (node) => node.props && node.props['data-form'] === 'role-create').length === 1)
+  const applicationSection = findAll(errorTree0, (node) => node.props && node.props['data-role-section'] === 'application')[0]
+  const createSummary = blankCreate === undefined ? undefined : findAll(blankCreate, (node) => node.props && node.props['data-role-create-summary'] === 'true')[0]
+  check(
+    'T-176 the blank-create entry moved into the roster, is closed by default and no longer says secondary',
+    blankCreate !== undefined &&
+      blankCreate.props['data-role-create-entry'] === 'true' &&
+      blankCreate.props.open === undefined &&
+      createSummary !== undefined &&
+      textOf(createSummary).indexOf('新建空白 profile') >= 0 &&
+      textOf(createSummary).indexOf('次要入口') < 0 &&
+      findAll(blankCreate, (node) => node.props && node.props['data-form'] === 'role-create').length === 1,
+    createSummary && textOf(createSummary),
+  )
+  check(
+    'T-176 the editor application section no longer contains a create form',
+    applicationSection !== undefined && findAll(applicationSection, (node) => node.props && node.props['data-form'] === 'role-create').length === 0 && findAll(applicationSection, (node) => node.props && node.props['data-action'] === 'rolesCreate').length === 0,
+    applicationSection && textOf(applicationSection).slice(0, 120),
+  )
   const errorForm = findAll(blankCreate, (node) => node.props && node.props['data-form'] === 'role-create')[0]
   findAll(errorForm, (node) => node.props && node.props['data-field'] === 'name')[0].props.ref.current = { value: 'bad-reviewer' }
   findAll(errorForm, (node) => node.props && node.props['data-action'] === 'rolesCreate')[0].props.onClick()
@@ -3046,7 +3063,7 @@ await flush()
   tree = withHooks(panel, { initialView: 'roles' })
   editor = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
   findAll(editor, (node) => node.type === 'textarea' && node.props['data-field'] === 'template')[0].props.ref.current = { value: 'Review {{SPEC}} and {{SPEC}}.' }
-  findAll(editor, (node) => node.props && node.props['data-field'] === 'skills')[0].props.ref.current = { value: 'dsh-plugin-workflow' }
+  findAll(findAll(editor, (node) => node.props && node.props['data-roles-pane'] === 'raw')[0], (node) => node.props && node.props['data-field'] === 'skills')[0].props.ref.current = { value: 'dsh-plugin-workflow' }
   const customSaveBefore = posts.length
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-save')[0].props.onClick()
   await flush()
@@ -3121,7 +3138,7 @@ await flush()
     snapshot: HOST,
   }
   // The reviewer profile's current skills seed the dialog.
-  const reviewerSkillsField = findAll(editor, (node) => node.props && node.props['data-field'] === 'skills')[0]
+  const reviewerSkillsField = findAll(findAll(editor, (node) => node.props && node.props['data-roles-pane'] === 'raw')[0], (node) => node.props && node.props['data-field'] === 'skills')[0]
   if (reviewerSkillsField !== undefined && reviewerSkillsField.props.ref.current !== null && reviewerSkillsField.props.ref.current !== undefined) reviewerSkillsField.props.ref.current.value = 'dsh-plugin-workflow'
   findAll(editor, (node) => node.props && node.props['data-action'] === 'role-editor-skills-manage')[0].props.onClick()
   await flush()
@@ -3144,7 +3161,7 @@ await flush()
   const modalAfter = findAll(tree, (node) => node.props && node.props['data-modal'] === 'role-skills')[0]
   check('checking a skill marks it', findAll(modalAfter, (node) => node.type === 'input' && node.props['data-skill'] === 'find-skills')[0].props.checked === true)
   const editorInModalPass = findAll(findAll(tree, (node) => node.props && node.props['data-card'] === 'editor')[0], (node) => node.props && node.props['data-editor'] === 'true')[0]
-  const skillsField = findAll(editorInModalPass, (node) => node.props && node.props['data-field'] === 'skills')[0]
+  const skillsField = findAll(findAll(editorInModalPass, (node) => node.props && node.props['data-roles-pane'] === 'raw')[0], (node) => node.props && node.props['data-field'] === 'skills')[0]
   // The fake React never attaches a DOM node to a ref; a real one holds the input.
   skillsField.props.ref.current = { value: 'dsh-plugin-workflow' }
   findAll(modalAfter, (node) => node.props && node.props['data-action'] === 'role-skills-save')[0].props.onClick()
@@ -4043,7 +4060,8 @@ await flush()
   }
   function fieldOf(tree, field) {
     const editor = editorOf(tree)
-    return editor === undefined ? undefined : findAll(editor, function (node) { return node.props && node.props['data-field'] === field })[0]
+    const pane = editor === undefined ? undefined : findAll(editor, function (node) { return node.props && node.props['data-roles-pane'] === 'raw' })[0]
+    return pane === undefined ? undefined : findAll(pane, function (node) { return node.props && node.props['data-field'] === field })[0]
   }
   function valueOf(node) {
     const ref = node === undefined ? undefined : node.props.ref

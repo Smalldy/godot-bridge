@@ -840,7 +840,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleEditor: '角色上下文编辑器',
 				roleEditorDraft: '草稿（未保存）',
 				roleEditorTabsLabel: '角色种类',
-				roleEditorCreateBlank: '空白新建 profile（次要入口）',
+				roleEditorCreateBlank: '新建空白 profile',
 				roleEditorNoProfile: '该阶段没有可用的角色',
 				roleCurrentUse: '当前使用',
 				roleApplyHint: '选择后立即绑定该阶段；有运行实例时会一起替换。',
@@ -1573,7 +1573,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleEditor: 'Role context editor',
 				roleEditorDraft: 'draft (unsaved)',
 				roleEditorTabsLabel: 'Role kind',
-				roleEditorCreateBlank: 'New blank profile (secondary)',
+				roleEditorCreateBlank: 'Create blank profile',
 				roleEditorNoProfile: 'no role is available for this stage',
 				roleCurrentUse: 'Currently using',
 				roleApplyHint: 'Picking a profile binds this stage and replaces running instances.',
@@ -2172,6 +2172,18 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-roleslist{display:flex;flex-direction:column;min-height:0;min-width:0;background:var(--deck-panel);overflow:hidden}',
 '.gbt-roleslisthead{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:0 12px;border-bottom:1px solid var(--deck-line)}',
 '.gbt-roleslisthead b{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:400;color:var(--deck-muted)}',
+'.gbt-roleslistcreate{flex:0 0 auto;border-bottom:1px solid var(--deck-line);background:var(--deck-panel);min-width:0}',
+'.gbt-roleslistcreate summary{display:flex;align-items:center;gap:6px;min-height:30px;padding:0 12px;color:var(--deck-muted);font-size:10.5px;white-space:nowrap;cursor:pointer;list-style:none}',
+'.gbt-roleslistcreate summary::-webkit-details-marker{display:none}',
+
+'.gbt-roleslistcreate[open] summary{color:var(--deck-text);border-bottom:1px solid var(--deck-line)}',
+'.gbt-roleslistcreatebody{max-height:300px;overflow:auto;padding:8px 12px 10px;background:var(--deck-panel2);min-width:0}',
+'.gbt-roleslistcreatebody .gbt-formgrid{display:flex;flex-direction:column;gap:6px;min-width:0}',
+'.gbt-roleslistcreatebody label{display:flex;flex-direction:column;gap:3px;font-size:10px;color:var(--deck-dim);min-width:0}',
+'.gbt-roleslistcreatebody .gbt-input{width:100%;box-sizing:border-box;background:var(--tc-input-bg,var(--dsw-alias-bg-layer-1));color:var(--deck-text);border:1px solid var(--deck-line);border-radius:2px;min-height:28px;font-size:11px;padding:4px 6px}',
+'.gbt-roleslistcreatebody textarea.gbt-input{min-height:56px;resize:vertical}',
+'.gbt-roleslistcreatebody .gbt-formactions{display:flex;justify-content:flex-end;margin-top:2px}',
+'.gbt-roleslistcreatebody .gbt-formactions .gbt-btn{height:26px;padding:0 9px;font-size:10.5px}',
 '.gbt-roleslistrows{flex:1 1 auto;min-height:0;overflow-y:auto}',
 '.gbt-roleslistrow{position:relative;display:grid;grid-template-columns:7px minmax(0,1fr) auto;gap:8px;align-items:center;width:100%;min-height:45px;padding:7px 12px;border:0;border-bottom:1px solid var(--deck-line);background:none;color:var(--deck-text);text-align:left;cursor:pointer;font:inherit;min-width:0}',
 '.gbt-roleslistrow:hover{background:var(--tc-hover)}',
@@ -5449,6 +5461,9 @@ function createRolesEditor(deps) {
 		})
 		const rosterList = h('aside', { className: 'gbt-roleslist', 'data-role-list': 'true' },
 			h('div', { className: 'gbt-roleslisthead' }, h('span', { className: 'gbt-deckeyebrow' }, 'ROSTER / 角色'), h('b', null, String(rosterEntries.length))),
+			h('details', { key: 'roster-create', className: 'gbt-roleslistcreate', 'data-section': 'role-create-blank', 'data-role-create-entry': 'true' },
+				h('summary', { 'data-role-create-summary': 'true' }, '＋ ' + t('roleEditorCreateBlank')),
+				h('div', { className: 'gbt-roleslistcreatebody', 'data-role-create-body': 'true' }, h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }))),
 			h('div', { className: 'gbt-roleslistrows' }, rosterEntries.map(function (entry) {
 				const selected = selectedName !== null && String(selectedName) === entry.name
 				return h('button', {
@@ -5483,12 +5498,6 @@ function createRolesEditor(deps) {
 		function createBlankInvalid(code) {
 			report('rolesCreate', false, { code: code, message: '' })
 		}
-		const blankCreate = h(
-			'details',
-			{ key: 'blank-create', className: 'gbt-createblank', 'data-section': 'role-create-blank' },
-			h('summary', null, t('roleEditorCreateBlank')),
-			h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }),
-		)
 		const runningNames = instances.filter(function (entry) { return entry.kind === kind }).map(function (entry) { return entry.name })
 		const runningRow = h('div', { className: 'gbt-footnote', 'data-role-running': 'true' },
 			t('roleRunningNow') + ': ' + (runningNames.length === 0 ? t('roleNoneRunning') : runningNames.join(', ')) + ' · ' + (boundName === kind ? t('roleFromDefault') : t('roleFromCopy')))
@@ -5508,7 +5517,7 @@ function createRolesEditor(deps) {
 					editablePrompt ? rawColumn() : builtinDefaultColumn(),
 					h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow))),
 			h('section', { className: 'gbt-rolesection', 'data-role-section': 'application' }, sectionHead('APPLICATION / 应用', t('roleCurrentUse')), currentUseSelect, h('div', { className: 'gbt-footnote', 'data-role-apply-hint': 'true' }, t('roleApplyHint')), runningRow),
-			blankCreate)
+			)
 		const rightPane = h('section', { className: 'gbt-rolespane gbt-rolespreviewpane', 'data-roles-pane': 'injected' },
 			h('div', { className: 'gbt-rolespreviewhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'PREVIEW / 注入预览'), h('h3', null, t('rolePreviewInjectedTitle'))),
 			h('div', { className: 'gbt-rolecard', 'data-role-card': 'injected' }, injectedColumn()),
