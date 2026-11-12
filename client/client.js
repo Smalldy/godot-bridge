@@ -1882,7 +1882,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-detailpanel .gbt-detailaside{display:flex;flex-direction:column;gap:12px;width:360px;max-width:100%;min-width:0}',
 '.gbt-detailpanel .gbt-detailaside .gbt-detailsummary{margin:0}',
 '.gbt-detailpanel .gbt-detailbody[data-detail-layout="single"]{grid-template-columns:minmax(0,1fr)}',
-'.gbt-detailpanel .gbt-detailbody[data-detail-layout="single"] .gbt-detailaside{width:auto}',
+'.gbt-detailpanel .gbt-detailbody[data-detail-layout="single"] .gbt-detailaside{width:100%;max-width:none}',
 '.gbt-detailspec .gbt-detailspecbody{padding:10px 12px;min-width:0}',
 '.gbt-detailspec .gbt-detailspecbody .gbt-prose{font-size:13px;line-height:1.7;max-width:none;white-space:pre-wrap}',
 '.gbt-detailspec .gbt-detailspecbody .gbt-subhead{margin-top:10px}',
@@ -1898,6 +1898,10 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-detailbody[data-detail-layout="compact"]{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;align-items:start}',
 '.gbt-detailbody[data-detail-layout="single"]{display:flex;flex-direction:column;gap:10px}',
 '.gbt-detailbody[data-detail-layout="compact"] .gbt-detailevent{flex-wrap:nowrap;overflow-x:auto}',
+// T-177: these must beat the legacy 280px two-column rule above. The old
+// selector has the same specificity as the base rule but appears later.
+'.gbt-detailpanel .gbt-detailbody[data-detail-layout="two-column"]{grid-template-columns:minmax(0,1fr) 360px}',
+'.gbt-detailpanel .gbt-detailbody[data-detail-layout="two-column"] .gbt-detailaside{width:360px}',
 '.gbt-detailstages{display:grid;grid-template-columns:repeat(5,minmax(64px,1fr));gap:8px;margin:4px 0 2px;overflow-x:auto}',
 '.gbt-detailstages[data-detail-stages="wrap"]{grid-template-columns:repeat(3,minmax(64px,1fr));overflow:visible}',
 '.gbt-detailsummary-one{flex-direction:row;align-items:baseline;gap:12px;flex-wrap:wrap}',

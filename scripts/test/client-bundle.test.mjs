@@ -3661,7 +3661,10 @@ await flush()
       detailCss.indexOf('.gbt-detailspec .gbt-detailspecbody .gbt-prose{font-size:13px;line-height:1.7') >= 0 &&
       detailCss.indexOf('.gbt-detailfooter{flex:0 0 auto;') >= 0 &&
       detailCss.indexOf('.gbt-detailpanel .gbt-detailbody[data-detail-layout="compact"]{grid-template-columns:minmax(0,1fr) 360px}') >= 0 &&
-      detailCss.indexOf('.gbt-detailpanel .gbt-detailbody[data-detail-layout="compact"] .gbt-detailaside{width:360px}') >= 0,
+      detailCss.indexOf('.gbt-detailpanel .gbt-detailbody[data-detail-layout="compact"] .gbt-detailaside{width:360px}') >= 0 &&
+      detailCss.indexOf('.gbt-detailpanel .gbt-detailbody[data-detail-layout="two-column"]{grid-template-columns:minmax(0,1fr) 360px}') >= 0 &&
+      detailCss.indexOf('.gbt-detailpanel .gbt-detailbody[data-detail-layout="two-column"] .gbt-detailaside{width:360px}') >= 0 &&
+      detailCss.indexOf('.gbt-detailpanel .gbt-detailbody[data-detail-layout="single"] .gbt-detailaside{width:100%;max-width:none}') >= 0,
     'detail CSS missing',
   )
   check('all raw fields stay reachable in the folded field block', doneText.indexOf('全部字段') >= 0 && doneText.indexOf('abcdef1234567890') >= 0, doneText.slice(-400))
