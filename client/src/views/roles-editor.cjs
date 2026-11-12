@@ -31,7 +31,7 @@ function createRolesEditor(deps) {
 		const bump = props.bump
 		const config = snapshot.roles
 		const kind = roleEditorState.kind
-		const stage = ROLE_EDITOR_STAGES[kind]
+		const stage = ROLE_EDITOR_STAGES[kind] || (kind === 'merger' ? 'merge' : 'implement')
 		const profiles = config !== null && config !== undefined && config.profiles !== null && config.profiles !== undefined && typeof config.profiles === 'object' ? config.profiles : {}
 		const bound = roleBoundProfile(config, kind)
 		const boundName = bound !== null && typeof bound.name === 'string' ? bound.name : null
@@ -68,7 +68,20 @@ function createRolesEditor(deps) {
 		const templateText = target !== null && typeof target.prompt === 'string' ? target.prompt : ''
 		const skillsText = target !== null && Array.isArray(target.skills) ? target.skills.join(', ') : ''
 		const catalog = Array.isArray(roleEditorState.skills) ? roleEditorState.skills : []
-		const instances = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
+		const allInstances = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry !== null && entry !== undefined && typeof entry.kind === 'string' })
+		const instances = allInstances.filter(function (entry) { return entry.kind === kind })
+		function liveCountOf(roleKind) {
+			return allInstances.filter(function (entry) { return entry.kind === roleKind && entry.status !== 'failed' }).length
+		}
+		const STAGE_SLOTS = [
+			{ key: 'implement', kind: 'worker', label: 'roleKindWorker' },
+			{ key: 'review', kind: 'reviewer', label: 'sessionsStageReview' },
+			{ key: 'test', kind: 'tester', label: 'sessionsStageTest' },
+		]
+		const stageBoundProfile = function (stageKey) {
+			const stages = config !== null && config !== undefined && config.stages !== null && config.stages !== undefined ? config.stages : {}
+			return typeof stages[stageKey] === 'string' && stages[stageKey] !== '' ? stages[stageKey] : null
+		}
 		const templateRef = React.useRef(null)
 		const skillsRef = React.useRef(null)
 		// Real React reuses a host node across renders, so an uncontrolled control
@@ -188,6 +201,25 @@ function createRolesEditor(deps) {
 			roleEditorState.previewKey = null
 			roleEditorState.previewPending = false
 			roleEditorState.previewError = null
+			bump()
+		}
+		/** Select a profile from the roster; an open draft blocks a silent switch. */
+		function selectProfile(name, roleKind) {
+			if (typeof name !== 'string' || name === '') return
+			if (draft !== null && String(name) !== String(selectedName)) {
+				report('role-editor-kind', false, { code: 'role-unsaved' })
+				return
+			}
+			roleEditorState.kind = typeof roleKind === 'string' && roleKind !== '' ? roleKind : kind
+			roleEditorState.selected = name
+			roleEditorState.saved = null
+			roleEditorState.applySkipped = false
+			roleEditorState.notice = null
+			roleEditorState.preview = null
+			roleEditorState.previewKey = null
+			roleEditorState.previewPending = false
+			roleEditorState.previewError = null
+			roleEditorState.pickVersion = (roleEditorState.pickVersion || 0) + 1
 			bump()
 		}
 		/**
@@ -442,16 +474,8 @@ function createRolesEditor(deps) {
 			})
 				})()))
 		}
-		// 02 对照式: one toolbar (tabs + current use), a 45/55 pair of panes sharing
-		// four section anchors, then a fixed bottom action bar. No instance table,
-		// no refresh button, no repeated guidance sentence.
-		const toolbar = h('div', { className: 'gbt-rolesheader', 'data-roles-header': 'true' },
-			h('div', { className: 'gbt-roleseg', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-role-tabs': 'true', 'data-section': 'role-editor-kinds' }, ROLE_EDITOR_KINDS.map(function (entry) {
-		return h('button', { key: entry, type: 'button', className: 'gbt-rolesegitem', role: 'tab', 'aria-selected': entry === kind ? 'true' : 'false', 'data-action': 'role-editor-kind', 'data-kind': entry, 'data-roles-tab': entry, 'data-active': entry === kind ? 'true' : 'false', onClick: function () { switchKind(entry) } }, roleKindLabel(entry, t))
-			})),
-			h('div', { className: 'gbt-rolesheader-right' },
-		h('span', { className: 'gbt-pill' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')),
-		h('label', { className: 'gbt-editor-select' }, t('roleCurrentUse'),
+		// T-172: Shift Deck stage strip + roster + a fixed three-column editor.
+		const currentUseSelect = h('label', { className: 'gbt-editor-select gbt-rolescurrent' }, t('roleCurrentUse'),
 			h('select', {
 				key: 'current-use:' + controlKey,
 				className: 'gbt-input',
@@ -460,14 +484,62 @@ function createRolesEditor(deps) {
 				'data-stage': stage,
 				'data-bound': boundName === null ? '' : String(boundName),
 				defaultValue: useValue,
-				onChange: function (event) {
-			void chooseUse(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : '')
-				},
+				onChange: function (event) { void chooseUse(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : '') },
 			},
-				useOptions.length === 0
-			? h('option', { key: 'none', value: '' }, t('roleEditorNoProfile'))
-			: useOptions.map(function (name) { return h('option', { key: name, value: name }, name === kind ? t('roleUseDefault') : name) })))))
-		const identityRow = h('div', { className: 'gbt-editor-identity', 'data-editor-identity': 'true', 'data-kind': kind, 'data-profile': selectedName === null ? '' : String(selectedName), 'data-bound': boundName === null ? '' : String(boundName), 'data-draft': draft === null ? 'false' : 'true' })
+			useOptions.length === 0
+				? h('option', { key: 'none', value: '' }, t('roleEditorNoProfile'))
+				: useOptions.map(function (name) { return h('option', { key: name, value: name }, name === kind ? t('roleUseDefault') : name) })))
+		const stageStrip = h('div', { className: 'gbt-rolesstages', 'data-roles-header': 'true', 'data-role-stage-strip': 'true' },
+			h('div', { className: 'gbt-rolesstages-head' }, h('span', { className: 'gbt-deckeyebrow' }, 'STAGES / 阶段'), h('h2', null, t('roleSectionRole')), h('span', { className: 'gbt-deckpanelmeta' }, t('roleEditorTabsLabel'))),
+			h('div', { className: 'gbt-rolesstages-row', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-role-tabs': 'true', 'data-section': 'role-editor-kinds' },
+				STAGE_SLOTS.map(function (slot, index) {
+					const boundProfile = stageBoundProfile(slot.key)
+					const slotProfile = boundProfile !== null && profiles[boundProfile] !== undefined ? profiles[boundProfile] : null
+					const live = liveCountOf(slot.kind)
+					const ready = slotProfile !== null
+					return h('button', {
+						key: 'stage-' + slot.key, type: 'button', role: 'tab', className: 'gbt-rstagesslot', 'aria-selected': slot.kind === kind ? 'true' : 'false',
+						'data-action': 'role-editor-kind', 'data-kind': slot.kind, 'data-roles-tab': slot.kind, 'data-active': slot.kind === kind ? 'true' : 'false',
+						'data-stage-slot': slot.key, 'data-bound-profile': boundProfile === null ? '' : String(boundProfile), 'data-live': String(live), 'data-ready': ready ? 'true' : 'false',
+						onClick: function () { switchKind(slot.kind) },
+					},
+						h('span', { className: 'gbt-rstagestep gbt-mono' }, '0' + String(index + 1)),
+						h('span', { className: 'gbt-rstagebody' }, h('b', null, t(slot.label)), h('span', { className: 'gbt-rstagesub gbt-mono', title: boundProfile === null ? '' : String(boundProfile) }, boundProfile === null ? '—' : String(boundProfile)), h('small', null, 'live ' + String(live) + ' · ' + (ready ? t('sessionsReady') : t('sessionsNotReady')))),
+						h('i', { className: 'gbt-deckdot', 'data-on': ready ? 'true' : 'false' }))
+				})))
+		const builtinNames = ['worker', 'reviewer', 'tester']
+		const rosterEntries = builtinNames.map(function (name) {
+			return { name: name, kind: name, label: roleKindLabel(name, t), stage: ROLE_EDITOR_STAGES[name], disabled: false }
+		})
+		// Merger has no editable stage in the host yet, but the selector still
+		// opens its read-only profile so the roster has the full four roles.
+		rosterEntries.push({ name: 'merger', kind: 'merger', label: t('roleKindMerger'), stage: 'merge', disabled: false })
+		Object.keys(profiles).filter(function (name) { return builtinNames.indexOf(name) < 0 && name !== 'merger' }).forEach(function (name) {
+			const profile = profiles[name]
+			const role = profile !== null && profile !== undefined && typeof profile.role === 'string' ? profile.role : 'worker'
+			rosterEntries.push({ name: name, kind: role, label: roleKindLabel(role, t), stage: profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_EDITOR_STAGES[role], disabled: ROLE_EDITOR_KINDS.indexOf(role) < 0 && role !== 'merger' })
+		})
+		const rosterList = h('aside', { className: 'gbt-roleslist', 'data-role-list': 'true' },
+			h('div', { className: 'gbt-roleslisthead' }, h('span', { className: 'gbt-deckeyebrow' }, 'ROSTER / 角色'), h('b', null, String(rosterEntries.length))),
+			h('div', { className: 'gbt-roleslistrows' }, rosterEntries.map(function (entry) {
+				const selected = selectedName !== null && String(selectedName) === entry.name
+				return h('button', {
+					key: 'roster-' + entry.name, type: 'button', className: 'gbt-roleslistrow', 'data-role-profile': entry.name, 'data-role-kind': entry.kind, 'data-role-stage': entry.stage === null ? '' : String(entry.stage),
+					'data-role-live': String(liveCountOf(entry.kind)), 'data-role-selected': selected ? 'true' : 'false', disabled: entry.disabled === true,
+					onClick: function () { if (entry.disabled !== true) selectProfile(entry.name, entry.kind) },
+				},
+				h('i', { className: 'gbt-deckdot', 'data-on': entry.disabled ? 'false' : liveCountOf(entry.kind) > 0 ? 'true' : 'false' }),
+				h('span', { className: 'gbt-roleslistmain' }, h('b', null, entry.name), h('span', null, entry.label + ' · ' + (entry.stage === null ? '—' : String(entry.stage)))),
+				h('em', { className: 'gbt-mono' }, entry.disabled ? '—' : String(liveCountOf(entry.kind))))
+			})))
+		const identityRow = h('div', { className: 'gbt-roleidentity', 'data-editor-identity': 'true', 'data-kind': kind, 'data-profile': selectedName === null ? '' : String(selectedName), 'data-bound': boundName === null ? '' : String(boundName), 'data-draft': draft === null ? 'false' : 'true' },
+			h('div', { className: 'gbt-roleidentity-main' },
+				h('span', { className: 'gbt-roleidentity-name gbt-mono', title: selectedName === null ? '' : String(selectedName) }, selectedName === null ? '—' : String(selectedName)),
+				h('span', { className: 'gbt-pill', 'data-role-identity-kind': kind }, roleKindLabel(kind, t)),
+				h('span', { className: 'gbt-footnote', 'data-role-identity-stage': stage }, 'STAGE · ' + stage),
+				h('span', { className: 'gbt-footnote', 'data-role-identity-context': target !== null && typeof target.context === 'string' ? target.context : 'fresh' }, 'CONTEXT · ' + (target !== null && typeof target.context === 'string' ? target.context : 'fresh')),
+			),
+			h('span', { className: 'gbt-footnote' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')))
 		const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
 			h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
 			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
@@ -489,42 +561,57 @@ function createRolesEditor(deps) {
 			h('summary', null, t('roleEditorCreateBlank')),
 			h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }),
 		)
-		const leftPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'raw' },
-			h('div', { className: 'gbt-rolecard', 'data-role-card': 'raw' },
-		h('div', { className: 'gbt-rolecardhead', 'data-role-card-title': 'true' }, t('rolePreviewRawTitle')),
-		editablePrompt ? rawColumn() : builtinDefaultColumn(),
-		h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow)),
-			blankCreate)
-		const rightPane = h('section', { className: 'gbt-rolespane', 'data-roles-pane': 'injected' }, h('div', { className: 'gbt-rolecard', 'data-role-card': 'injected' }, injectedColumn()))
 		const runningNames = instances.filter(function (entry) { return entry.kind === kind }).map(function (entry) { return entry.name })
 		const runningRow = h('div', { className: 'gbt-footnote', 'data-role-running': 'true' },
 			t('roleRunningNow') + ': ' + (runningNames.length === 0 ? t('roleNoneRunning') : runningNames.join(', ')) + ' · ' + (boundName === kind ? t('roleFromDefault') : t('roleFromCopy')))
+		const stateHint = draft !== null
+			? h('div', { className: 'gbt-footnote', 'data-role-draft-hint': 'true' }, t('roleDraftHint'))
+			: roleEditorState.applySkipped === true
+				? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleUsePendingNextDispatch'))
+				: null
+		const sectionHead = function (eyebrow, title) {
+			return h('div', { className: 'gbt-rolesectionhead' }, h('span', { className: 'gbt-deckeyebrow' }, eyebrow), h('h3', null, title))
+		}
+		const leftPane = h('section', { className: 'gbt-rolespane gbt-roleseditorpane', 'data-roles-pane': 'raw' },
+			h('section', { className: 'gbt-rolesection', 'data-role-section': 'identity' }, sectionHead('IDENTITY / 身份', t('roleSectionRole')), identityRow),
+			h('section', { className: 'gbt-rolesection', 'data-role-section': 'behavior' }, sectionHead('BEHAVIOR / 行为', t('roleAnchorPrompt')),
+				h('div', { className: 'gbt-rolecard', 'data-role-card': 'raw' },
+					h('div', { className: 'gbt-rolecardhead', 'data-role-card-title': 'true' }, t('rolePreviewRawTitle')),
+					editablePrompt ? rawColumn() : builtinDefaultColumn(),
+					h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow))),
+			h('section', { className: 'gbt-rolesection', 'data-role-section': 'application' }, sectionHead('APPLICATION / 应用', t('roleCurrentUse')), currentUseSelect, h('div', { className: 'gbt-footnote', 'data-role-apply-hint': 'true' }, t('roleApplyHint')), runningRow),
+			blankCreate)
+		const rightPane = h('section', { className: 'gbt-rolespane gbt-rolespreviewpane', 'data-roles-pane': 'injected' },
+			h('div', { className: 'gbt-rolespreviewhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'PREVIEW / 注入预览'), h('h3', null, t('rolePreviewInjectedTitle'))),
+			h('div', { className: 'gbt-rolecard', 'data-role-card': 'injected' }, injectedColumn()),
+			stateHint,
+			h('div', { className: 'gbt-footnote gbt-rolespreviewnote' }, t('roleUsePendingNextDispatch')))
 		const draftNameRow = draft === null ? null : h('label', { className: 'gbt-editorfield', 'data-section': 'role-draft-name' }, t('roleDraftName'),
 			h('input', { key: 'draft-name:' + controlKey, className: 'gbt-input', 'data-field': 'draft-name', defaultValue: draft.name, spellCheck: false, onChange: function (event) {
-		const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : ''
-		if (roleEditorState.draft !== null) roleEditorState.draft.name = next
+				const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : ''
+				if (roleEditorState.draft !== null) roleEditorState.draft.name = next
 			} }))
 		const modal = roleEditorState.skillsOpen === true
 			? h('div', { className: 'gbt-overlay', 'data-modal': 'role-skills' },
-			h('div', { className: 'gbt-modal' },
-				h('div', { className: 'gbt-modalhead' },
-			h('h2', null, t('roleEditorSkillsTitle') + (selectedName === null ? '' : ' · ' + String(selectedName))),
-			h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'role-skills-close', onClick: function () { roleEditorState.skillsOpen = false; bump() } }, '×')),
-				roleEditorState.skillsError !== null
-			? h('div', { className: 'gbt-banner', 'data-tone': 'error', 'data-skills-unavailable': String(roleEditorState.skillsError.code === undefined || roleEditorState.skillsError.code === null ? 'skills-unavailable' : roleEditorState.skillsError.code) }, t('roleEditorSkillsUnavailable') + (typeof roleEditorState.skillsError.message === 'string' && roleEditorState.skillsError.message !== '' ? ' — ' + roleEditorState.skillsError.message : ''))
-			: null,
-				roleEditorState.skillsError === null && catalog.length === 0 ? h('div', { className: 'gbt-empty' }, t('roleEditorSkillsEmpty')) : null,
-				catalog.map(function (skill) {
-			const name = String(skill.name)
-			return h('label', { key: name, className: 'gbt-check gbt-skillrow', 'data-skill-row': name },
-				h('input', { type: 'checkbox', 'data-skill': name, checked: roleEditorState.skillsSelected.has(name), onChange: function () { toggleSkill(name) } }),
-				h('span', { className: 'gbt-mono' }, name),
-				h('span', { className: 'gbt-footnote' }, ' ' + String(skill.description === undefined || skill.description === null ? '' : skill.description)),
-				skill.invocation !== null && skill.invocation !== undefined && skill.invocation.modelInvocable === false
-					? h('span', { className: 'gbt-pill', 'data-skill-user-only': name }, t('roleEditorSkillUserOnly'))
-					: null)
-				}),
-				h('div', { className: 'gbt-formactions' }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-skills-save', onClick: saveSkills }, t('roleEditorSkillsSave')))))
+				h('div', { className: 'gbt-modal' },
+					h('div', { className: 'gbt-modalhead' },
+						h('h2', null, t('roleEditorSkillsTitle') + (selectedName === null ? '' : ' · ' + String(selectedName))),
+						h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'role-skills-close', onClick: function () { roleEditorState.skillsOpen = false; bump() } }, '×')),
+					roleEditorState.skillsError !== null
+						? h('div', { className: 'gbt-banner', 'data-tone': 'error', 'data-skills-unavailable': String(roleEditorState.skillsError.code === undefined || roleEditorState.skillsError.code === null ? 'skills-unavailable' : roleEditorState.skillsError.code) }, t('roleErrSkillsUnavailable') + '（' + String(roleEditorState.skillsError.code === undefined || roleEditorState.skillsError.code === null ? 'skills-unavailable' : roleEditorState.skillsError.code) + '）' + (typeof roleEditorState.skillsError.message === 'string' && roleEditorState.skillsError.message !== '' ? ' · ' + roleEditorState.skillsError.message : ''))
+						: null,
+					roleEditorState.skillsError === null && catalog.length === 0 ? h('div', { className: 'gbt-empty' }, t('roleEditorSkillsEmpty')) : null,
+					catalog.map(function (skill) {
+						const name = String(skill.name)
+						return h('label', { key: name, className: 'gbt-check gbt-skillrow', 'data-skill-row': name },
+							h('input', { type: 'checkbox', 'data-skill': name, checked: roleEditorState.skillsSelected.has(name), onChange: function () { toggleSkill(name) } }),
+							h('span', { className: 'gbt-mono' }, name),
+							h('span', { className: 'gbt-footnote' }, ' ' + String(skill.description === undefined || skill.description === null ? '' : skill.description)),
+							skill.invocation !== null && skill.invocation !== undefined && skill.invocation.modelInvocable === false
+								? h('span', { className: 'gbt-pill', 'data-skill-user-only': name }, t('roleEditorSkillUserOnly'))
+								: null)
+					}),
+					h('div', { className: 'gbt-formactions' }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-skills-save', onClick: saveSkills }, t('roleEditorSkillsSave')))))
 			: null
 		const saveButton = h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'role-editor-save', onClick: function () { void save() } }, t('roleSave'))
 		const discardButton = h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-discard', onClick: discardDraft }, t('roleDiscard'))
@@ -536,24 +623,20 @@ function createRolesEditor(deps) {
 			: null
 		const actionBar = h('div', { className: 'gbt-rolesactions', 'data-roles-actions': 'true' },
 			h('div', { className: 'gbt-rolesactions-left' },
-		draft !== null ? discardButton : null,
-		draft !== null || (editablePrompt && selectedName !== null) ? saveButton : null,
-		draftNameRow),
+				draft !== null ? discardButton : null,
+				draft !== null || (editablePrompt && selectedName !== null) ? saveButton : null,
+				draftNameRow),
 			h('div', { className: 'gbt-rolesactions-right' }, forkButton, deleteButton))
-		const stateHint = draft !== null
-			? h('div', { className: 'gbt-footnote', 'data-role-draft-hint': 'true' }, t('roleDraftHint'))
-			: roleEditorState.applySkipped === true
-		? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleUsePendingNextDispatch'))
-		: null
-		return h('div', { className: 'gbt-roleeditor', 'data-editor': 'true', 'data-kind': kind, 'data-draft': draft === null ? 'false' : 'true' },
-			toolbar,
-			identityRow,
-			h('div', { className: 'gbt-rolescroll', 'data-roles-scroll': 'true' },
-		h('div', { className: 'gbt-rolespanes', 'data-roles-panes': 'true', 'data-role-layout': 'split' }, leftPane, rightPane),
-		runningRow),
+		return h('div', { className: 'gbt-roleeditor', 'data-editor': 'true', 'data-role-deck': 'true', 'data-kind': kind, 'data-draft': draft === null ? 'false' : 'true' },
+			stageStrip,
+			h('div', { className: 'gbt-rolesdeckbody' },
+				rosterList,
+				h('div', { className: 'gbt-rolesmain' },
+					h('div', { className: 'gbt-roleseditscroll', 'data-roles-scroll': 'true' },
+						h('div', { className: 'gbt-rolespanes', 'data-roles-panes': 'true', 'data-role-layout': 'split' }, leftPane, rightPane)),
+					actionBar),
+			),
 			roleEditorState.notice === null ? null : roleResultBanner(roleEditorState.notice, t),
-			stateHint,
-			actionBar,
 			modal)
 	}
 
