@@ -3667,6 +3667,24 @@ await flush()
       detailCss.indexOf('.gbt-detailpanel .gbt-detailbody[data-detail-layout="single"] .gbt-detailaside{width:100%;max-width:none}') >= 0,
     'detail CSS missing',
   )
+  check(
+    'T-178 the detail panel closes to content but caps at 90vh',
+    detailCss.indexOf('.gbt-detailpanel{position:relative;display:flex;flex-direction:column;width:calc(100% - 48px);max-width:1080px;height:auto;max-height:90vh;overflow:hidden;') >= 0 &&
+      detailCss.indexOf('.gbt-detailpanel .gbt-drawerhead{flex:0 0 auto;') >= 0 &&
+      detailCss.indexOf('.gbt-detailpanel .gbt-drawerbody{flex:1 1 auto;min-height:0;overflow:auto;') >= 0,
+    'panel height CSS missing',
+  )
+  check(
+    'T-178 the body is the only scroll container and the footer stays outside it',
+    detailCss.indexOf('.gbt-detailfooter{flex:0 0 auto;') >= 0 &&
+      detailCss.indexOf('.gbt-detailpanel .gbt-drawerbody{flex:1 1 auto;min-height:0;overflow:auto;') >= 0,
+    'footer/body order missing',
+  )
+  check(
+    'T-178 575px keeps the full-screen drawer with no 90vh cap',
+    detailCss.indexOf('@media (max-width:899px){.gbt-detailoverlay{padding:0}.gbt-detailpanel{width:100%;max-width:none;height:100%;max-height:100%;border-radius:0;border:0}}') >= 0,
+    'mobile full-screen CSS missing',
+  )
   check('all raw fields stay reachable in the folded field block', doneText.indexOf('全部字段') >= 0 && doneText.indexOf('abcdef1234567890') >= 0, doneText.slice(-400))
 
   const runningDrawer = await openDetail('Build damage system')
