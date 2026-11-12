@@ -427,6 +427,15 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionColDispatch: '派发',
 				sessionColReview: '评审',
 				sessionColTest: '测试',
+				sessionDetailTitle: '当前会话详情',
+				sessionDetailLead: 'Lead',
+				sessionDetailProject: '项目',
+				sessionDetailTeam: '团队成员',
+				sessionDetailCards: '卡（总数 / 进行中）',
+				sessionDetailMissing: '缺少角色',
+				sessionDetailSelected: '已选中',
+				sessionDetailSelectedTitle: '选中会话详情',
+				sessionDetailNoTasks: '该会话暂无任务',
 				sessionsEmpty: '还没有记录到参与该项目的会话',
 				sessionsCurrent: '当前',
 				sessionsStatusLive: '在线',
@@ -1145,6 +1154,15 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionColDispatch: 'DISPATCH',
 				sessionColReview: 'REVIEW',
 				sessionColTest: 'TEST',
+				sessionDetailTitle: 'Session detail',
+				sessionDetailLead: 'Lead',
+				sessionDetailProject: 'Project',
+				sessionDetailTeam: 'Team',
+				sessionDetailCards: 'Cards (total / active)',
+				sessionDetailMissing: 'Missing roles',
+				sessionDetailSelected: 'selected',
+				sessionDetailSelectedTitle: 'Selected session detail',
+				sessionDetailNoTasks: 'No cards for this session yet',
 				sessionsEmpty: 'No participating session recorded for this project yet',
 				sessionsCurrent: 'current',
 				sessionsStatusLive: 'live',
@@ -2039,6 +2057,33 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-shiftdeck .gbt-statusnote{color:var(--deck-dim);font-size:10.5px}',
 '.gbt-shiftdeck .gbt-btn[data-variant="primary"]{background:var(--deck-lime);border-color:var(--deck-lime);color:#11170c}',
 '@media (max-width:900px){.gbt-statusview.gbt-shiftdeck{height:auto;min-height:100%;overflow:visible}.gbt-deckgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"rail" "sessions" "worktrees" "activity";grid-template-rows:auto;flex:0 0 auto;height:auto;min-height:0;overflow:visible}.gbt-deckrail{overflow:visible}.gbt-deckdispatch,.gbt-deckexecutors,.gbt-decksessions,.gbt-deckworktrees{overflow:visible}.gbt-deckpeople,.gbt-deckrows,.gbt-deckwtrows,.gbt-deckactivitybody{overflow:visible}.gbt-deckhead{height:auto;min-height:44px;flex-wrap:wrap;padding:8px 12px}.gbt-deckheadcrumb{display:none}.gbt-deckthead,.gbt-decksessionrow{grid-template-columns:minmax(0,1.4fr) 58px 64px 60px 52px 52px;padding:0 10px}.gbt-deckactivity{min-height:0}.gbt-deckpanelhead,.gbt-deckwtool{padding:0 10px}.gbt-deckwtoolmeta{display:none}}',
+'.gbt-decksessiondetail{display:none}',
+'@media (min-width:1800px){.gbt-deckgrid{grid-template-areas:"rail sessions worktrees" "rail detail worktrees" "rail activity worktrees";grid-template-rows:auto auto minmax(172px,1fr);height:100%}.gbt-decksessions{grid-area:sessions;overflow:hidden;height:454px;max-height:454px}.gbt-decksessions .gbt-deckrows{flex:1 1 auto;min-height:0;overflow-y:auto;max-height:none}.gbt-decksessiondetail{grid-area:detail;display:flex;flex-direction:column;min-height:290px;max-height:290px;height:290px;min-width:0;overflow:hidden;background:var(--deck-panel)}.gbt-deckworktrees{grid-area:worktrees;grid-row:1 / 4}.gbt-deckactivity{grid-area:activity;min-height:172px;height:100%;align-self:stretch}}',
+'.gbt-detailbody{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.85fr) minmax(0,1fr);grid-template-rows:auto;align-content:start;gap:10px 12px;padding:12px;min-width:0}',
+'.gbt-detailidentity{display:flex;flex-direction:column;gap:6px;min-width:0;padding-right:12px;border-right:1px solid var(--deck-line)}',
+'.gbt-detailidentityline{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}',
+'.gbt-detailidentityline b{font-size:22px;line-height:1;letter-spacing:-.04em;font-weight:500}',
+'.gbt-detailcurrent{font:9.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--deck-lime);border:1px solid #3d5830;padding:1px 5px;white-space:nowrap}',
+'.gbt-detailstatus{display:inline-flex;align-items:center;gap:5px;color:var(--deck-muted);font-size:10.5px;white-space:nowrap}',
+'.gbt-detailid{color:var(--deck-dim);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}',
+'.gbt-detailteamcount{color:var(--deck-muted);font-size:10.5px;margin-top:2px}',
+'.gbt-detailfacts{display:grid;grid-template-columns:1fr 1fr;gap:7px 10px;min-width:0;padding-right:12px;border-right:1px solid var(--deck-line)}',
+'.gbt-detailfact{min-width:0;border-top:1px solid var(--deck-line);padding-top:5px}',
+'.gbt-detailfact b{display:block;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:400;color:var(--deck-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-detailfact span{display:block;color:var(--deck-dim);font-size:9.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-detailteam{display:flex;flex-direction:column;gap:4px;min-width:0;min-height:0;overflow:hidden}',
+'.gbt-detailpanelhead{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--deck-dim);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding-bottom:4px;border-bottom:1px solid var(--deck-line)}',
+'.gbt-detailpanelhead b{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:400;color:var(--deck-muted)}',
+'.gbt-detailmember{display:grid;grid-template-columns:7px minmax(0,1fr) 64px 54px;gap:6px;align-items:center;min-height:22px;border-bottom:1px solid #1a2425;min-width:0}',
+'.gbt-detailmembername{font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-detailmemberstate{color:var(--deck-dim);font-size:9.5px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-detailmembertask{color:var(--deck-muted);font-size:9.5px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-detailright{display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0;overflow:hidden}',
+'.gbt-detailtasks{display:flex;flex-direction:column;gap:3px;min-width:0;min-height:0;overflow:hidden;border-top:1px solid var(--deck-line);padding-top:7px}',
+'.gbt-detailtask{display:grid;grid-template-columns:54px minmax(0,1fr) 72px;gap:8px;align-items:center;min-height:22px;border-bottom:1px solid #1a2425;min-width:0}',
+'.gbt-detailtask b{font-size:10px;font-weight:400;color:var(--deck-lime)}',
+'.gbt-detailtasktitle{font-size:10.5px;color:var(--deck-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
+'.gbt-detailtask em{font-style:normal;color:var(--deck-dim);font-size:9.5px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
 '.gbt-roleseg{display:inline-flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:7px;background:var(--dsw-alias-bg-layer-2)}',
 '.gbt-rolesegitem{appearance:none;height:26px;padding:0 14px;border:none;border-radius:5px;background:transparent;color:var(--t2,var(--dsw-alias-label-secondary));font:inherit;font-size:12px;font-weight:400;line-height:26px;cursor:pointer;text-decoration:none}',
 '.gbt-rolesegitem:hover{background:var(--dsw-alias-bg-layer-3);color:var(--t1,var(--dsw-alias-label-primary))}',
@@ -6371,6 +6416,31 @@ function createStatusView(deps) {
 			setSessionFilterState(next)
 		}
 		const visibleSessions = sessionFilter === 'all' ? sessionRows : sessionRows.filter(function (row) { return row.sessionId === sessionFilter })
+		// T-173: on wide screens the detail follows the filter, then the current
+		// chat session, then the first visible row; no synthetic session is made.
+		const currentSessionRow = currentSession === null ? null : sessionRows.filter(function (row) { return row.sessionId === currentSession })[0]
+		const detailSession = sessionFilter !== 'all'
+			? sessionRows.filter(function (row) { return row.sessionId === sessionFilter })[0] || null
+			: currentSessionRow !== undefined
+				? currentSessionRow
+				: visibleSessions[0] !== undefined
+					? visibleSessions[0]
+					: sessionRows[0] !== undefined
+						? sessionRows[0]
+						: null
+		const projectRootOf = function (row) {
+			const boardProject = scope !== null && scope.boardProject !== null && scope.boardProject !== undefined && typeof scope.boardProject === 'object' ? scope.boardProject : null
+			if (boardProject !== null && typeof boardProject.root === 'string' && boardProject.root !== '') return boardProject.root
+			if (snapshot.project !== null && snapshot.project !== undefined && typeof snapshot.project === 'object' && typeof snapshot.project.root === 'string') return snapshot.project.root
+			if (typeof snapshot.projectRoot === 'string' && snapshot.projectRoot !== '') return snapshot.projectRoot
+			if (typeof snapshot.project === 'string' && snapshot.project !== '') return snapshot.project
+			return row !== null && typeof row.projectRoot === 'string' ? row.projectRoot : '—'
+		}
+		const detailTasks = detailSession === null ? [] : tasks.filter(function (task) {
+			if (task === null || task === undefined) return false
+			const assigneeSession = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.session === 'string' ? task.assignee.session : null
+			return task.ownerSession === detailSession.sessionId || assigneeSession === detailSession.sessionId
+		}).slice(0, 2)
 		const sessionShortText = function (value) {
 			const text = typeof value === 'string' ? value : ''
 			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
@@ -6437,6 +6507,81 @@ function createStatusView(deps) {
 				),
 		)
 
+		// T-173: wide-screen detail lives outside the table so the table keeps its
+		// natural row height instead of stretching to fill the center column.
+		const detailFacts = []
+		const detailTeam = detailSession !== null && detailSession.team !== null && detailSession.team !== undefined && typeof detailSession.team === 'object' ? detailSession.team : null
+		const detailCards = detailSession !== null && detailSession.cards !== null && detailSession.cards !== undefined && typeof detailSession.cards === 'object' ? detailSession.cards : {}
+		const detailStage = detailSession !== null && detailSession.stageReady !== null && detailSession.stageReady !== undefined && typeof detailSession.stageReady === 'object' ? detailSession.stageReady : {}
+		const detailLead = detailTeam === null || typeof detailTeam.lead !== 'string' || detailTeam.lead === '' ? null : detailTeam.lead
+		const detailMembers = detailTeam !== null && Array.isArray(detailTeam.members) ? detailTeam.members.filter(function (name) { return typeof name === 'string' && name !== '' }) : []
+		const detailMissing = detailTeam !== null && Array.isArray(detailTeam.missingRoles) ? detailTeam.missingRoles : []
+		const detailAgentPool = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members) ? snapshot.team.members : []
+		if (detailSession !== null) {
+			detailFacts.push({ key: 'lead', label: t('sessionDetailLead'), value: detailLead === null ? '—' : detailLead })
+			detailFacts.push({ key: 'project', label: t('sessionDetailProject'), value: projectRootOf(detailSession) })
+			detailFacts.push({ key: 'cards', label: t('sessionDetailCards'), value: String(Number.isFinite(detailCards.owned) ? detailCards.owned : 0) + ' / ' + String(Number.isFinite(detailCards.active) ? detailCards.active : 0) })
+			detailFacts.push({ key: 'dispatch', label: t('sessionColDispatch'), value: detailSession.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady') })
+			detailFacts.push({ key: 'review', label: t('sessionsStageReview'), value: detailStage.review === true ? t('sessionsReady') : t('sessionsNotReady') })
+			detailFacts.push({ key: 'test', label: t('sessionsStageTest'), value: detailStage.test === true ? t('sessionsReady') : t('sessionsNotReady') })
+			detailFacts.push({ key: 'missing', label: t('sessionDetailMissing'), value: detailMissing.length === 0 ? '—' : detailMissing.join(', ') })
+		}
+		const detailSessionCard = h('section', {
+			className: 'gbt-statuscard gbt-decksessiondetail',
+			'data-session-detail': detailSession === null ? '' : String(detailSession.sessionId),
+			'data-detail-current': detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? 'true' : 'false',
+			'data-detail-title': detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? 'current' : 'selected',
+		},
+			h('div', { className: 'gbt-deckpanelhead' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'SESSION / DETAIL'),
+				h('h2', null, detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? t('sessionDetailTitle') : t('sessionDetailSelectedTitle')),
+				h('span', { className: 'gbt-deckpanelmeta' }, detailSession === null ? t('sessionsEmpty') : String(detailSession.sessionId)),
+			),
+			detailSession === null
+				? h('div', { className: 'gbt-deckempty', 'data-session-detail-empty': 'true' }, t('sessionsEmpty'))
+				: h('div', { className: 'gbt-detailbody' },
+					h('div', { className: 'gbt-detailidentity' },
+						h('div', { className: 'gbt-detailidentityline' },
+							h('b', { className: 'gbt-mono' }, sessionShortText(detailSession.sessionId)),
+							h('span', { className: 'gbt-detailcurrent' }, detailSession.sessionId === currentSession ? t('sessionsCurrent') : t('sessionDetailSelected')),
+							h('span', { className: 'gbt-detailstatus' }, h('i', { className: 'gbt-deckdot', 'data-on': detailSession.status === 'live' ? 'true' : 'false' }), sessionStatusText(detailSession.status)),
+						),
+						h('div', { className: 'gbt-detailid gbt-mono', title: String(detailSession.sessionId) }, String(detailSession.sessionId)),
+						h('div', { className: 'gbt-detailteamcount' }, t('sessionDetailTeam') + ' · ' + String(Number.isFinite(detailTeam === null ? null : detailTeam.memberCount) ? detailTeam.memberCount : detailMembers.length)),
+					),
+					h('div', { className: 'gbt-detailfacts' }, detailFacts.map(function (fact) {
+						return h('div', { key: fact.key, className: 'gbt-detailfact', 'data-session-detail-fact': fact.key },
+							h('b', { className: 'gbt-mono', title: String(fact.value) }, String(fact.value)),
+							h('span', null, fact.label))
+					})),
+					h('div', { className: 'gbt-detailright' },
+						h('div', { className: 'gbt-detailteam', 'data-session-detail-team': 'true' },
+						h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'TEAM'), h('b', null, String(detailMembers.length))),
+						detailMembers.length === 0
+							? h('div', { className: 'gbt-deckempty' }, '—')
+							: detailMembers.map(function (name) {
+								const member = detailAgentPool.filter(function (entry) { return entry !== null && entry !== undefined && entry.name === name })[0]
+								return h('div', { key: 'detail-member-' + name, className: 'gbt-detailmember', 'data-session-member': name },
+									h('i', { className: 'gbt-deckdot', 'data-on': member !== undefined && member.status === 'running' ? 'true' : 'false' }),
+									h('span', { className: 'gbt-detailmembername gbt-mono', title: name }, name),
+									h('span', { className: 'gbt-detailmemberstate' }, member === undefined ? '—' : String(member.status)),
+									h('span', { className: 'gbt-detailmembertask gbt-mono' }, member !== undefined && member.currentTask !== null && member.currentTask !== undefined && typeof member.currentTask.id === 'string' ? member.currentTask.id : '—'))
+							}),
+							),
+					h('div', { className: 'gbt-detailtasks', 'data-session-detail-tasks': 'true' },
+						h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'CARDS'), h('b', null, String(detailTasks.length))),
+						detailTasks.length === 0
+							? h('div', { className: 'gbt-deckempty' }, t('sessionDetailNoTasks'))
+							: detailTasks.map(function (task) {
+								return h('div', { key: 'detail-task-' + String(task.id), className: 'gbt-detailtask', 'data-session-task': String(task.id) },
+									h('b', { className: 'gbt-mono' }, String(task.id)),
+									h('span', { className: 'gbt-detailtasktitle', title: typeof task.title === 'string' ? task.title : '' }, typeof task.title === 'string' ? task.title : '—'),
+									h('em', { className: 'gbt-mono' }, typeof task.status === 'string' ? task.status : '—'))
+							}),
+						),
+					),
+					),
+				)
 		return h(
 			'div',
 			{ className: 'gbt-statusview gbt-shiftdeck', 'data-status': 'cards' },
@@ -6454,6 +6599,7 @@ function createStatusView(deps) {
 			h('div', { className: 'gbt-statusgrid gbt-deckgrid', 'data-status-grid': 'true' },
 				h('aside', { className: 'gbt-deckrail' }, dispatchCard, agentsCard),
 				sessionsCard,
+				detailSessionCard,
 				worktreesCard,
 				activityCard,
 			),

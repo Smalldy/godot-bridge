@@ -6786,6 +6786,88 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   )
 }
 
+// ── T-173: wide-screen session detail follows the current/filtered session ──
+{
+  const savedScope = HOST.scope
+  const savedTasks = HOST.tasks
+  const detailTaskTitle = (Array.isArray(HOST.tasks) && HOST.tasks[0] && typeof HOST.tasks[0].title === 'string') ? HOST.tasks[0].title : 'Session detail card'
+  HOST.tasks = [Object.assign({}, (Array.isArray(HOST.tasks) ? HOST.tasks[0] : null) || { id: 'T-173', title: 'Session detail card', status: 'running' }, { ownerSession: 'session-b' })].concat(Array.isArray(HOST.tasks) ? HOST.tasks.slice(1) : [])
+  HOST.scope = {
+    boardProject: { id: 'p-a', root: 'J:\\demo\\mm13d' },
+    panelSession: 'session-b',
+    sessionSummaries: [
+      { sessionId: 'session-a', status: 'live', dispatchReady: true, stageReady: { review: true, test: false }, cards: { owned: 2, active: 1 }, team: { lead: 'lead-a', members: ['a1', 'a2'], memberCount: 2, missingRoles: [], error: null } },
+      { sessionId: 'session-b', status: 'stale', dispatchReady: false, stageReady: { review: false, test: true }, cards: { owned: 1, active: 0 }, team: { lead: 'lead-b', members: ['b1'], memberCount: 1, missingRoles: ['worker'], error: null } },
+    ],
+  }
+  let detailTree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  const filter = () => findAll(detailTree, (node) => node.type === 'select' && node.props['data-session-filter'] === 'true')[0]
+  if (filter() !== undefined && filter().props.value !== 'all') {
+    filter().props.onChange({ target: { value: 'all' } })
+    await flush()
+    detailTree = withHooks(panel, { initialView: 'status' })
+  }
+  const detail = findAll(detailTree, (node) => node.props && node.props['data-session-detail'] !== undefined)[0]
+  const facts = detail === undefined ? [] : findAll(detail, (node) => node.props && node.props['data-session-detail-fact'] !== undefined)
+  check(
+    'T-173 wide-screen detail uses the current session row and real lead/project/cards/stages',
+    detail !== undefined &&
+      detail.props['data-session-detail'] === 'session-b' &&
+      detail.props['data-detail-current'] === 'true' &&
+      facts.map((node) => node.props['data-session-detail-fact']).join(',') === 'lead,project,cards,dispatch,review,test,missing' &&
+      textOf(detail).indexOf('lead-b') >= 0 &&
+      textOf(detail).indexOf('J:\\demo\\mm13d') >= 0 &&
+      textOf(detail).indexOf('1 / 0') >= 0,
+    detail === undefined ? 'no detail' : textOf(detail).slice(0, 260),
+  )
+  check(
+    'T-173 detail lists the real session team members and missing roles',
+    detail !== undefined && findAll(detail, (node) => node.props && node.props['data-session-member'] === 'b1').length === 1 && textOf(detail).indexOf('worker') >= 0,
+    detail && textOf(detail),
+  )
+  check(
+    'T-173 detail CARDS lists the session-owned real task instead of an empty state',
+    detail !== undefined && findAll(detail, (node) => node.props && node.props['data-session-task'] !== undefined).length >= 1 && textOf(detail).indexOf(detailTaskTitle) >= 0,
+    detail && textOf(detail),
+  )
+  filter().props.onChange({ target: { value: 'session-a' } })
+  await flush()
+  detailTree = withHooks(panel, { initialView: 'status' })
+  const filteredDetail = findAll(detailTree, (node) => node.props && node.props['data-session-detail'] !== undefined)[0]
+  check(
+    'T-173 the detail follows the session filter, not only the current session',
+    filteredDetail !== undefined && filteredDetail.props['data-session-detail'] === 'session-a' && filteredDetail.props['data-detail-current'] === 'false' && filteredDetail.props['data-detail-title'] === 'selected' && textOf(filteredDetail).indexOf('lead-a') >= 0,
+    filteredDetail === undefined ? 'no filtered detail' : JSON.stringify(filteredDetail.props),
+  )
+  HOST.scope = savedScope
+  HOST.tasks = savedTasks
+  const css = readFileSync(SRC, 'utf8')
+  check(
+    'T-173 >=1800px uses content-driven rows: sessions, detail, activity; worktrees span full height',
+    css.indexOf('@media (min-width:1800px){.gbt-deckgrid{grid-template-areas:"rail sessions worktrees" "rail detail worktrees" "rail activity worktrees"') >= 0 &&
+      css.indexOf('grid-template-rows:auto auto minmax(172px,1fr)') >= 0 &&
+      css.indexOf('.gbt-deckworktrees{grid-area:worktrees;grid-row:1 / 4}') >= 0 &&
+      css.indexOf('.gbt-decksessiondetail{grid-area:detail;display:flex') >= 0 &&
+      css.indexOf('.gbt-decksessions{grid-area:sessions;overflow:hidden;height:454px') >= 0 &&
+      css.indexOf('.gbt-decksessions .gbt-deckrows{flex:1 1 auto;min-height:0;overflow-y:auto') >= 0,
+    'wide content-driven grid/session scroll missing',
+  )
+  check(
+    'T-173 1440 keeps the original four-zone areas and hides the wide-only detail',
+    css.indexOf('grid-template-areas:"rail sessions worktrees" "rail activity activity"') >= 0 &&
+      css.indexOf('.gbt-decksessiondetail{display:none}') >= 0 &&
+      css.indexOf('@media (max-width:900px){.gbt-statusview.gbt-shiftdeck') >= 0,
+    'default/mobile layout regressed',
+  )
+  check(
+    'T-173 575 stacks one column and has no zoom/scale fallback',
+    css.indexOf('grid-template-areas:"rail" "sessions" "worktrees" "activity"') >= 0 &&
+      css.indexOf('zoom:') < 0 && css.indexOf('transform:scale') < 0,
+    'mobile stack or no-zoom rule missing',
+  )
+}
+
 // ── T-162: the team popover anchors right in a narrow panel ──
 {
   const css162 = readFileSync(SRC, 'utf8')
