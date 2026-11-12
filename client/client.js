@@ -421,6 +421,12 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				// T-155: per-session aggregation, one workspace scope bar, no primary session.
 				sessionsLabel: '会话',
 				sessionsHint: '每个参与会话有自己的团队与卡；当前对话会话只高亮，不是主会话。',
+				sessionColSession: '会话 / LEAD',
+				sessionColCards: '卡数',
+				sessionColStatus: '状态',
+				sessionColDispatch: '派发',
+				sessionColReview: '评审',
+				sessionColTest: '测试',
 				sessionsEmpty: '还没有记录到参与该项目的会话',
 				sessionsCurrent: '当前',
 				sessionsStatusLive: '在线',
@@ -581,6 +587,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				statusWhyRunning: '派发中，仍有就绪任务等待派发',
 				statusLastScan: '上次扫描',
 				statusMergeQueue: '合并队列',
+				statusTasks: '任务',
 				statusWtTotal: '个工作树',
 				statusWtActive: '活跃',
 				statusWtMain: '主',
@@ -1131,6 +1138,12 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				// T-155: per-session aggregation, one workspace scope bar, no primary session.
 				sessionsLabel: 'Sessions',
 				sessionsHint: 'Every participating session keeps its own team and cards; the current chat session is highlighted, never primary.',
+				sessionColSession: 'SESSION / LEAD',
+				sessionColCards: 'CARDS',
+				sessionColStatus: 'STATUS',
+				sessionColDispatch: 'DISPATCH',
+				sessionColReview: 'REVIEW',
+				sessionColTest: 'TEST',
 				sessionsEmpty: 'No participating session recorded for this project yet',
 				sessionsCurrent: 'current',
 				sessionsStatusLive: 'live',
@@ -1291,6 +1304,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				statusWhyRunning: 'dispatching; ready tasks are still waiting',
 				statusLastScan: 'last scan',
 				statusMergeQueue: 'merge queue',
+				statusTasks: 'tasks',
 				statusWtTotal: 'worktrees',
 				statusWtActive: 'active',
 				statusWtMain: 'main',
@@ -1920,6 +1934,109 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-wtpreviewrow{max-width:100%;min-width:0;padding:1px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 			'.gbt-wtresult[data-wt-result="error"]{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}',
 '@media (max-width:900px){.gbt-statusview{height:auto;min-height:0;overflow:visible}.gbt-statusgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"dispatch" "sessions" "worktrees" "agents" "activity";grid-template-rows:auto;flex:0 0 auto;height:auto;min-height:0;overflow:visible}.gbt-statuscard{overflow:visible}.gbt-statuscardbody{flex:0 0 auto;overflow-x:visible;overflow-y:visible}}',
+'.gbt-shiftdeck{--deck-bg:#080b0c;--deck-panel:#0e1415;--deck-panel2:#111819;--deck-line:#243033;--deck-text:#e3ece7;--deck-muted:#849396;--deck-dim:#5f6e71;--deck-lime:#b9f36b;--deck-amber:#ffbd68;--deck-cyan:#74d8d2;--deck-red:#ff7d6b}',
+'.gbt-statusview.gbt-shiftdeck{display:flex;flex-direction:column;gap:0;width:100%;min-width:0;max-width:100%;height:100%;min-height:0;overflow:hidden;box-sizing:border-box;background:var(--deck-bg);color:var(--deck-text)}',
+'.gbt-deckhead{display:flex;align-items:center;gap:14px;height:44px;min-height:44px;padding:0 14px;border-bottom:1px solid var(--deck-line);background:var(--deck-panel);min-width:0;flex-wrap:nowrap}',
+'.gbt-deckeyebrow{font-size:10px;letter-spacing:.13em;color:var(--deck-dim);text-transform:uppercase;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+'.gbt-deckhead h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.04em;white-space:nowrap}',
+'.gbt-deckheadcrumb{font-size:11px;color:var(--deck-dim);border-left:1px solid var(--deck-line);padding-left:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}',
+'.gbt-deckhead .gbt-statusactions{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:11px;color:var(--deck-muted);flex:none}',
+'.gbt-decklastscan{white-space:nowrap;color:var(--deck-dim)}',
+'.gbt-deckhead .gbt-btn{background:none;color:var(--deck-muted);border:1px solid var(--deck-line);padding:4px 9px;border-radius:3px;font:inherit;font-size:11px}',
+'.gbt-deckgrid{display:grid;grid-template-columns:260px minmax(0,1fr) 420px;grid-template-areas:"rail sessions worktrees" "rail activity activity";grid-template-rows:minmax(0,1fr) 172px;gap:1px;background:var(--deck-line);flex:1 1 auto;min-height:0;width:100%;min-width:0;max-width:100%;overflow:auto;box-sizing:border-box}',
+'.gbt-shiftdeck .gbt-statuscard{border:0;border-radius:0;background:var(--deck-panel);color:var(--deck-text);min-height:0;min-width:0;overflow:hidden;box-shadow:none}',
+'.gbt-deckrail{grid-area:rail;display:flex;flex-direction:column;gap:1px;min-height:0;min-width:0;overflow:auto;background:var(--deck-line)}',
+'.gbt-deckdispatch{flex:0 0 auto;padding:13px 14px 11px;display:flex;flex-direction:column;gap:0;min-width:0;overflow:hidden}',
+'.gbt-decklabel{display:flex;align-items:center;gap:7px;font-size:10px;letter-spacing:.12em;color:var(--deck-dim);text-transform:uppercase;min-width:0;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+'.gbt-decklabelzh{font-size:11px;letter-spacing:0;color:var(--deck-muted);text-transform:none;font-family:inherit}',
+'.gbt-decklabel em{margin-left:auto;font-style:normal;color:var(--deck-lime);font-size:10px;letter-spacing:.08em;white-space:nowrap}',
+'.gbt-decklabel em[data-running="false"]{color:var(--deck-amber)}',
+'.gbt-deckbig{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:44px;line-height:1;letter-spacing:-.06em;margin:12px 0 2px;font-variant-numeric:tabular-nums}',
+'.gbt-deckbig small{font-size:17px;color:var(--deck-dim);letter-spacing:0}',
+'.gbt-deckbar{height:4px;display:flex;gap:2px;background:#1b2922;margin:9px 0 7px}',
+'.gbt-deckbar i{flex:1;display:block;background:#2b3a3d}',
+'.gbt-deckbar i[data-on="true"]{background:var(--deck-lime)}',
+'.gbt-decknote{margin:6px 0 0;color:var(--deck-muted);font-size:11px;line-height:1.5;min-width:0;overflow-wrap:anywhere}',
+'.gbt-pauseaudit{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;margin-top:7px;padding:6px 0 0;border-top:1px solid var(--deck-line);font-size:10.5px;color:var(--deck-muted)}',
+'.gbt-deckmetrics{display:grid;grid-template-columns:1fr 1fr;gap:7px 10px;margin:9px 0 0;padding-top:8px;border-top:1px solid var(--deck-line)}',
+'.gbt-deckmetric{min-width:0;border-top:1px solid var(--deck-line);padding-top:6px}',
+'.gbt-deckmetric b{display:block;font:17px/1 ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:500;letter-spacing:-.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-deckmetric span{display:block;color:var(--deck-dim);font-size:10px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-decknext{margin-top:8px;padding-top:7px;border-top:1px solid var(--deck-line);font-size:10.5px;line-height:1.5;color:var(--deck-amber);overflow-wrap:anywhere}',
+'.gbt-deckscanline{font-size:10.5px;color:var(--deck-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-deckdispatch .gbt-statusscan{font-size:10.5px;color:var(--deck-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-deckexecutors{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden;border-top:1px solid var(--deck-line)}',
+'.gbt-deckexecutors .gbt-decklabel{flex:none;padding:11px 14px 4px}',
+'.gbt-deckpeople{flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 14px 10px}',
+'.gbt-deckperson{display:grid;grid-template-columns:7px minmax(0,1fr) auto;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--deck-line);min-width:0}',
+'.gbt-deckdot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:none;background:var(--deck-muted)}',
+'.gbt-deckdot[data-on="true"]{background:var(--deck-lime);box-shadow:0 0 0 3px #b9f36b1c}',
+'.gbt-deckpersonmain{min-width:0}',
+'.gbt-deckpersonmain b{display:block;font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-deckpersonmain span{display:block;color:var(--deck-dim);font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}',
+'.gbt-deckrole{color:var(--deck-muted)}',
+'.gbt-deckpersonmeta{display:flex;align-items:center;gap:5px;min-width:0}',
+'.gbt-deckpersonmeta em{font-style:normal;color:var(--deck-dim);font-size:10px;max-width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}',
+'.gbt-deckperson .gbt-statusmore{color:var(--deck-dim);background:none;border:0;padding:0;cursor:pointer}',
+'.gbt-decksession{grid-column:1 / -1;display:flex;align-items:center;gap:6px;padding-top:4px;font-size:10.5px;color:var(--deck-dim);min-width:0;overflow:hidden}',
+'.gbt-decksession code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
+'.gbt-deckpeople .gbt-statusrow{display:grid;grid-template-columns:minmax(0,1fr) 46px minmax(0,1fr) auto;gap:6px;align-items:center;border-bottom:1px solid var(--deck-line);min-width:0}',
+'.gbt-decksessions{grid-area:sessions;display:flex;flex-direction:column;min-height:0;overflow:hidden}',
+'.gbt-deckworktrees{grid-area:worktrees;display:flex;flex-direction:column;min-height:0;overflow:hidden}',
+'.gbt-deckpanelhead{display:flex;align-items:center;gap:10px;height:49px;min-height:49px;padding:0 13px;border-bottom:1px solid var(--deck-line);min-width:0}',
+'.gbt-deckpanelhead h2{font-size:13px;font-weight:600;margin:0;letter-spacing:.04em;white-space:nowrap}',
+'.gbt-deckpanelmeta{margin-left:auto;color:var(--deck-dim);font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:52%}',
+'.gbt-deckfilter{display:flex;align-items:center;gap:6px;margin-left:8px;color:var(--deck-dim);font-size:10.5px;flex:none}',
+'.gbt-deckfilter select{background:var(--deck-panel2);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:2px;font-size:10.5px;padding:2px 4px;max-width:110px}',
+'.gbt-deckthead{height:27px;min-height:27px;display:grid;grid-template-columns:minmax(0,1.45fr) 76px 70px 74px 58px 58px;gap:8px;align-items:center;padding:0 13px;border-bottom:1px solid var(--deck-line);color:var(--deck-dim);font-size:10px;letter-spacing:.07em;text-transform:uppercase;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+'.gbt-deckthead span:nth-child(n+2){text-align:right}',
+'.gbt-deckrows{flex:1 1 auto;min-height:0;overflow-y:auto}',
+'.gbt-decksessionrow{min-height:54px;display:grid;grid-template-columns:minmax(0,1.45fr) 76px 70px 74px 58px 58px;gap:8px;align-items:center;padding:0 13px;border-bottom:1px solid var(--deck-line);position:relative;min-width:0}',
+'.gbt-decksessionrow.is-current{background:#101b16}',
+'.gbt-decksessionrow.is-current:before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--deck-lime)}',
+'.gbt-decksessionname{min-width:0;display:flex;flex-direction:column;gap:2px;align-items:flex-start}',
+'.gbt-decksessionname b{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}',
+'.gbt-decksessionname span:last-child{max-width:100%;color:var(--deck-dim);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-decksession-current{width:max-content;color:var(--deck-lime);font:9px ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #3d5830;padding:1px 4px;letter-spacing:.04em}',
+'.gbt-decknum{text-align:right;font:10.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--deck-muted);white-space:nowrap}',
+'.gbt-decknum b{color:var(--deck-text);font-weight:500}',
+'.gbt-deckstatus,.gbt-deckstate{display:inline-flex;align-items:center;justify-content:flex-end;gap:5px;color:var(--deck-muted);font-size:10.5px;white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-deckstatus[data-status="live"]{color:var(--deck-lime)}',
+'.gbt-deckstatus[data-status="stale"]{color:var(--deck-red)}',
+'.gbt-deckstate[data-stage-ready="false"],.gbt-deckstate[data-dispatch-badge="false"]{color:var(--deck-dim)}',
+'.gbt-deckempty{color:var(--deck-dim);font-size:11px;padding:10px 13px}',
+'.gbt-deckwtview{display:flex;flex-direction:column;min-height:0;flex:1 1 auto}',
+'.gbt-deckwtool{display:flex;align-items:center;gap:6px;padding:7px 13px;border-bottom:1px solid var(--deck-line);min-height:36px;flex:none;min-width:0}',
+'.gbt-deckwtool .gbt-btn{height:24px;padding:0 8px;font-size:10.5px;white-space:nowrap}',
+'.gbt-deckwtoolmeta{margin-left:auto;color:var(--deck-dim);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-deckwtrows{flex:1 1 auto;min-height:0;overflow-y:auto}',
+'.gbt-deckwtgroup{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 13px;border-bottom:1px solid var(--deck-line);color:var(--deck-dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+'.gbt-deckwtgroup b{font-weight:400;color:var(--deck-muted)}',
+'.gbt-shiftdeck .gbt-deckwtrow{display:grid;grid-template-columns:minmax(0,1fr) 52px 58px auto;gap:6px;align-items:center;padding:8px 13px;border-bottom:1px solid var(--deck-line);min-height:56px;min-width:0}',
+'.gbt-shiftdeck .gbt-wtlabel{grid-column:1;grid-row:1;display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden}',
+'.gbt-shiftdeck .gbt-wtlabel b{min-width:0;font-size:11.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-shiftdeck .gbt-wtpath{grid-column:1;grid-row:2;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--deck-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}',
+'.gbt-shiftdeck .gbt-wtbranch{grid-column:1;grid-row:3;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--deck-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}',
+'.gbt-shiftdeck .gbt-wtsha{grid-column:2;grid-row:1 / 4;text-align:right;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--deck-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-shiftdeck .gbt-wtbadges{grid-column:3;grid-row:1 / 4;display:flex;flex-direction:column;align-items:flex-end;gap:3px;min-width:0}',
+'.gbt-shiftdeck .gbt-wtactions{grid-column:4;grid-row:1 / 4;display:flex;flex-direction:column;align-items:flex-end;gap:3px;min-width:0;white-space:normal}',
+'.gbt-shiftdeck .gbt-wtactions .gbt-btn{height:22px;padding:0 6px;font-size:10px}',
+'.gbt-shiftdeck .gbt-chip{display:inline-flex;align-items:center;gap:4px;background:none;border:0;padding:0;border-radius:0;color:var(--deck-dim);font-size:10px;white-space:nowrap}',
+'.gbt-shiftdeck .gbt-chip:before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block;flex:none}',
+'.gbt-shiftdeck .gbt-chip[data-tone="ready"]{color:var(--deck-lime)}',
+'.gbt-shiftdeck .gbt-chip[data-tone="waiting"]{color:var(--deck-amber)}',
+'.gbt-shiftdeck .gbt-chip[data-tone="blocked"]{color:var(--deck-red)}',
+'.gbt-deckwtview .gbt-wtpreview,.gbt-deckwtview .gbt-wtresult{margin:6px 13px;padding:6px 8px;border:1px solid var(--deck-line);border-radius:2px;background:var(--deck-panel2);font-size:10.5px;color:var(--deck-muted);max-height:110px;overflow:auto}',
+'.gbt-deckactivity{grid-area:activity;display:flex;flex-direction:column;min-height:0;overflow:hidden}',
+'.gbt-deckactivitybody{flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 13px}',
+'.gbt-shiftdeck .gbt-deckarow{display:grid;grid-template-columns:52px 84px minmax(0,1fr);gap:10px;align-items:center;min-height:25px;padding:4px 0;border-bottom:1px solid #1a2425;font-size:10.5px;color:var(--deck-muted);min-width:0}',
+'.gbt-shiftdeck .gbt-statusevtime{width:auto;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--deck-dim);white-space:nowrap}',
+'.gbt-shiftdeck .gbt-statusevkind{width:auto;color:var(--deck-lime);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-shiftdeck .gbt-statusevtext{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;max-width:100%;color:var(--deck-text)}',
+'.gbt-shiftdeck .gbt-statusfold{margin:4px 0;border-top:1px dashed var(--deck-line);font-size:10px;color:var(--deck-dim)}',
+'.gbt-shiftdeck .gbt-statusnote{color:var(--deck-dim);font-size:10.5px}',
+'.gbt-shiftdeck .gbt-btn[data-variant="primary"]{background:var(--deck-lime);border-color:var(--deck-lime);color:#11170c}',
+'@media (max-width:900px){.gbt-statusview.gbt-shiftdeck{height:auto;min-height:100%;overflow:visible}.gbt-deckgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"rail" "sessions" "worktrees" "activity";grid-template-rows:auto;flex:0 0 auto;height:auto;min-height:0;overflow:visible}.gbt-deckrail{overflow:visible}.gbt-deckdispatch,.gbt-deckexecutors,.gbt-decksessions,.gbt-deckworktrees{overflow:visible}.gbt-deckpeople,.gbt-deckrows,.gbt-deckwtrows,.gbt-deckactivitybody{overflow:visible}.gbt-deckhead{height:auto;min-height:44px;flex-wrap:wrap;padding:8px 12px}.gbt-deckheadcrumb{display:none}.gbt-deckthead,.gbt-decksessionrow{grid-template-columns:minmax(0,1.4fr) 58px 64px 60px 52px 52px;padding:0 10px}.gbt-deckactivity{min-height:0}.gbt-deckpanelhead,.gbt-deckwtool{padding:0 10px}.gbt-deckwtoolmeta{display:none}}',
 '.gbt-roleseg{display:inline-flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:7px;background:var(--dsw-alias-bg-layer-2)}',
 '.gbt-rolesegitem{appearance:none;height:26px;padding:0 14px;border:none;border-radius:5px;background:transparent;color:var(--t2,var(--dsw-alias-label-secondary));font:inherit;font-size:12px;font-weight:400;line-height:26px;cursor:pointer;text-decoration:none}',
 '.gbt-rolesegitem:hover{background:var(--dsw-alias-bg-layer-3);color:var(--t1,var(--dsw-alias-label-primary))}',
@@ -5692,32 +5809,29 @@ function createStatusView(deps) {
 				: t('statusIdle') + ' ' + String(idleMinutes) + ' ' + t('statusMinutes')) + (queueLength > 0 ? ' · ' + t('queueLengthChip').replace('{n}', String(queueLength)) : '')
 			const resultText = isLead ? typeof member.description === 'string' && member.description !== '' ? member.description : '—' : lastResultFor(name)
 			const expanded = openSession === name
+			const runningNow = isLead === true || member.status === 'running' || current !== null
 			return h(
 		'div',
-		{ key: 'agent-' + name, className: 'gbt-statusrow', 'data-status-agent': name },
-		h('span', { className: 'gbt-statuswho gbt-mono' }, name),
-		h('span', { className: 'gbt-statusrole' }, roleKindLabel(isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate', t)),
-		h('span', { className: 'gbt-statustask' }, statusText),
-		h('span', { className: 'gbt-statustime' }, resultText),
-		h(
-			'button',
-			{ type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } },
-			'⋯',
+		{ key: 'agent-' + name, className: 'gbt-deckperson', 'data-status-agent': name, 'data-tone': runningNow ? 'live' : 'idle' },
+		h('span', { className: 'gbt-deckdot', 'data-running': runningNow ? 'true' : 'false' }),
+		h('div', { className: 'gbt-deckpersonmain' },
+			h('b', { className: 'gbt-mono', title: name }, name),
+			h('span', null, roleKindLabel(isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate', t) + ' · ' + statusText),
+		),
+		h('div', { className: 'gbt-deckpersonmeta' },
+			h('em', { title: resultText }, resultText),
+			h('button', { type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } }, '⋯'),
 		),
 		expanded
 			? h(
 			'div',
-			{ className: 'gbt-sessionrow', 'data-status-session': name },
+			{ className: 'gbt-decksession', 'data-status-session': name },
 			h('span', { className: 'gbt-footnote' }, t('statusSession')),
 			h('code', { className: 'gbt-mono' }, session === '' ? '—' : session),
 			session === ''
 				? null
-				: h(
-				'button',
-				{ type: 'button', className: 'gbt-btn', 'data-action': 'copy-session', 'data-session': session, onClick: function () { void copyToClipboard(session).then(function (okopy) { const next = okopy === true ? session : 'failed'; statusUiState.copied = next; setCopied(next) }) } },
-				copied === session ? t('sessionCopied') : t('copySession'),
-					),
-				)
+				: h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'copy-session', 'data-session': session, onClick: function () { void copyToClipboard(session).then(function (okopy) { const next = okopy === true ? session : 'failed'; statusUiState.copied = next; setCopied(next) }) } }, copied === session ? t('sessionCopied') : t('copySession')),
+			)
 			: null,
 			)
 		}
@@ -5743,40 +5857,39 @@ function createStatusView(deps) {
 				h('span', null, t('statusPauseSourceLabel') + '：' + pauseSourceLabelOf(pauseSourceValue)),
 				pauseReason === null ? null : h('span', { 'data-pause-reason': 'true' }, ' · ' + t('statusPauseReasonLabel') + '：' + pauseReason),
 			)
+		function deckMetric(key, value, label) {
+			return h('div', { className: 'gbt-deckmetric', 'data-kv': key }, h('b', null, String(value)), h('span', null, label))
+		}
+		function deckPanelHead(eyebrow, title, meta) {
+			return h('div', { className: 'gbt-deckpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, eyebrow), h('h2', null, title), meta === null || meta === undefined ? null : h('span', { className: 'gbt-deckpanelmeta' }, meta))
+		}
+		const scanAgo = scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—'
 		const dispatchCard = h(
 			'section',
-			{ className: 'gbt-statuscard', 'data-status-card': 'dispatch' },
-			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }), t('statusCardDispatch'), h('span', { className: 'gbt-statusmeta' }, active ? t('running') : t('paused'))),
-			h(
-		'div',
-		{ className: 'gbt-statuscardbody' },
-		h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv', 'data-kv': 'concurrent' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), Number.isFinite(counts.investigating) && counts.investigating > 0 ? h('span', { className: 'gbt-statuskv', 'data-kv': 'investigating', 'data-kind': 'investigate' }, h('b', null, String(counts.investigating)), h('span', null, t('statusInvestigating'))) : null, h('span', { className: 'gbt-statuskv', 'data-kv': 'merge-queue', 'data-merge-queue': mergeQueued === null ? 'unavailable' : 'ready', title: mergeActive === null ? '' : String(mergeActive) }, h('b', null, mergeQueued === null ? '—' : String(mergeQueued)), h('span', null, t('statusMergeQueue')))),
-		h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
-		pauseAuditLine,
-		h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
-		panelSessionLine,
-		snapshot.nextStep === null || snapshot.nextStep === undefined
-			? null
-			: h(
-			'div',
-			{ className: 'gbt-statuswhy', 'data-status-team': 'missing', 'data-status-next-step': String(snapshot.nextStep.code) },
-			t('projectTeamNext') + ' ' + String(snapshot.nextStep.instruction),
-				),
-		archivedCount > 0
-			? h('div', { className: 'gbt-statusscan', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)), ' ', h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'archive-open', onClick: function () { if (props.onOpenArchive !== undefined) props.onOpenArchive() } }, t('archiveOpen')))
-			: null,
-		boardSizeWarn
-			? h(
-			'div',
-			{ className: 'gbt-statusscan', 'data-status-board-size': boardSize.level, 'data-board-bytes': String(boardSize.bytes), title: boardSize.warning === null ? '' : String(boardSize.warning) },
-			t('statusBoardSize')
-				.replace('{mb}', String(Math.round((boardSize.bytes / (1024 * 1024)) * 10) / 10))
-				.replace('{limit}', String(Math.round(boardSize.limit / (1024 * 1024))))
-				.replace('{percent}', String(boardSize.percent))
-				.replace('{n}', boardSize.headroomCards === null ? '—' : String(boardSize.headroomCards)),
-				)
-			: null,
+			{ className: 'gbt-statuscard gbt-deckdispatch', 'data-status-card': 'dispatch' },
+			h('div', { className: 'gbt-decklabel' }, h('span', null, 'DISPATCH'), h('span', { className: 'gbt-decklabelzh' }, t('statusCardDispatch')), h('em', { 'data-running': active ? 'true' : 'false' }, active ? t('running') : t('paused'))),
+			h('div', { className: 'gbt-deckbig' }, String(running.length), h('small', null, ' / ' + String(maxConcurrent))),
+			h('div', { className: 'gbt-deckbar' }, Array.from({ length: Math.max(1, Number(maxConcurrent) || 1) }, function (_, index) { return h('i', { key: 'bar-' + String(index), 'data-on': index < running.length ? 'true' : 'false' }) })),
+			h('p', { className: 'gbt-decknote', 'data-status-why': 'true' }, whyNotRunning()),
+			pauseAuditLine,
+			h('div', { className: 'gbt-deckmetrics' },
+				h('div', { className: 'gbt-deckmetric', 'data-kv': 'concurrent' }, h('b', null, String(running.length) + ' / ' + String(maxConcurrent)), h('span', null, t('statusConcurrent'))),
+				h('div', { className: 'gbt-deckmetric', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))),
+				h('div', { className: 'gbt-deckmetric', 'data-kv': 'merge-queue', 'data-merge-queue': mergeQueued === null ? 'unavailable' : 'ready', title: mergeActive === null ? '' : String(mergeActive) }, h('b', null, mergeQueued === null ? '—' : String(mergeQueued)), h('span', null, t('statusMergeQueue'))),
+				h('div', { className: 'gbt-deckmetric', 'data-kv': 'tasks' }, h('b', null, String(tasks.length)), h('span', null, t('statusTasks'))),
+				h('div', { className: 'gbt-deckmetric', 'data-kv': 'last-scan', 'data-status-scan': 'true' }, h('b', null, scanAgo), h('span', null, t('statusLastScan'))),
+				Number.isFinite(counts.investigating) && counts.investigating > 0 ? h('div', { className: 'gbt-deckmetric', 'data-kv': 'investigating', 'data-kind': 'investigate' }, h('b', null, String(counts.investigating)), h('span', null, t('statusInvestigating'))) : null,
 			),
+			panelSessionLine,
+			snapshot.nextStep === null || snapshot.nextStep === undefined
+				? null
+				: h('div', { className: 'gbt-decknext', 'data-status-team': 'missing', 'data-status-next-step': String(snapshot.nextStep.code) }, t('projectTeamNext') + ' ' + String(snapshot.nextStep.instruction)),
+			archivedCount > 0
+				? h('div', { className: 'gbt-deckscanline', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)), ' ', h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'archive-open', onClick: function () { if (props.onOpenArchive !== undefined) props.onOpenArchive() } }, t('archiveOpen')))
+				: null,
+			boardSizeWarn
+				? h('div', { className: 'gbt-deckscanline', 'data-status-board-size': boardSize.level, 'data-board-bytes': String(boardSize.bytes), title: boardSize.warning === null ? '' : String(boardSize.warning) }, t('statusBoardSize').replace('{mb}', String(Math.round((boardSize.bytes / (1024 * 1024)) * 10) / 10)).replace('{limit}', String(Math.round(boardSize.limit / (1024 * 1024)))).replace('{percent}', String(boardSize.percent)).replace('{n}', boardSize.headroomCards === null ? '—' : String(boardSize.headroomCards)))
+				: null,
 		)
 				const wtList = worktrees !== null && worktrees !== undefined && worktrees.available === true && Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
 		const mainWt = wtList.filter(function (entry) { return entry.type === 'main' })[0]
@@ -5904,7 +6017,7 @@ function createStatusView(deps) {
 		h('span', { className: 'gbt-chip', 'data-wt-merge': entry.merged === true ? 'merged' : entry.merged === false ? 'unmerged' : 'unknown', 'data-tone': merged ? 'ready' : 'waiting' }, entry.merged === false || entry.merged === true ? t(merged ? 'statusWtMerged' : 'statusWtUnmerged') : '—'))
 		}
 		const wtRowBase = function (key, entry, rowMarker, stateText) {
-			return h('div', { key: key, className: 'gbt-wtrow', 'data-worktree-row': rowMarker, 'data-wt-task': String(entry.taskId === undefined || entry.taskId === null ? '' : entry.taskId) },
+			return h('div', { key: key, className: 'gbt-wtrow gbt-deckwtrow', 'data-worktree-row': rowMarker, 'data-wt-task': String(entry.taskId === undefined || entry.taskId === null ? '' : entry.taskId) },
 		h('span', { className: 'gbt-wtlabel' }, h('b', null, wtLabelOf(entry)), h('span', { className: 'gbt-pill', 'data-wt-type': String(entry.type) }, wtTypeLabel(entry.type))),
 		h('span', { className: 'gbt-wtpath gbt-mono', title: String(entry.path) }, wtBaseOf(entry.path)),
 		h('span', { className: 'gbt-wtbranch gbt-mono', title: typeof entry.branch === 'string' ? entry.branch : '' }, typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : '—'),
@@ -5934,7 +6047,7 @@ function createStatusView(deps) {
 			} else {
 		actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate !== undefined ? wtReasonLabel(String(candidate.why)) : effective.probed !== true ? t(cleanupUi.probeState === 'loading' ? 'statusWtProbing' : cleanupUi.probeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed') : t('statusWtPreflightFirst')))
 			}
-			return h('div', { key: 'wt-stale-' + actionId, className: 'gbt-wtrow', 'data-worktree-stale': wtLabelOf(entry), 'data-path': entry.path, 'data-reason': String(effective.reason === undefined || effective.reason === null ? '' : effective.reason), 'data-wt-probed': effective.probed === true ? 'true' : 'false' },
+			return h('div', { key: 'wt-stale-' + actionId, className: 'gbt-wtrow gbt-deckwtrow', 'data-worktree-stale': wtLabelOf(entry), 'data-path': entry.path, 'data-reason': String(effective.reason === undefined || effective.reason === null ? '' : effective.reason), 'data-wt-probed': effective.probed === true ? 'true' : 'false' },
 		h('span', { className: 'gbt-wtlabel' }, h('b', null, wtLabelOf(entry)), h('span', { className: 'gbt-pill', 'data-wt-type': String(entry.type) }, wtTypeLabel(entry.type))),
 		h('span', { className: 'gbt-wtpath gbt-mono', title: String(entry.path) }, wtBaseOf(entry.path)),
 		h('span', { className: 'gbt-wtbranch gbt-mono', title: typeof entry.branch === 'string' ? entry.branch : '' }, typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : '—'),
@@ -5953,27 +6066,42 @@ function createStatusView(deps) {
 			cleanupResult.ok === true && Array.isArray(cleanupResult.failed)
 		? cleanupResult.failed.map(function (entry) { return h('div', { key: 'failed-' + String(entry.path), className: 'gbt-wtpreviewrow gbt-mono' }, wtBaseOf(entry.path) + ' · ' + String(entry.code === undefined ? '' : entry.code)) })
 		: null)
-		const worktreesCard = h('section', { className: 'gbt-statuscard', 'data-status-card': 'worktrees' },
-			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardWorktrees'), h('span', { className: 'gbt-statusmeta', 'data-wt-summary': 'true' }, String(totalCount) + ' ' + t('statusWtTotal') + ' · ' + String(activeCount) + ' ' + t('statusWtActive') + ' · ' + String(safeCount) + ' ' + t('statusWtSafe') + ' · ' + String(confirmCount) + ' ' + t('statusWtConfirm'))),
-			h('div', { className: 'gbt-statuscardbody' },
-		worktrees === null || worktrees === undefined || worktrees.available !== true
-			? h('div', { className: 'gbt-statusnote' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : snapshot.source === 'loading' ? t('statusWtLoading') : t('statusWorktreesUnavailable'))
-			: h('div', { className: 'gbt-wtview' },
-				h('div', { className: 'gbt-wtbatch' },
-			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'worktree-preflight', disabled: cleanupUi.pending === true, onClick: wtRunPreflight }, cleanupUi.pending === true ? t('statusWtPreflighting') : t('statusWtPreflight')),
-			h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'worktree-cleanup-safe', disabled: cleanupBusy || selectedSafePaths.length === 0, onClick: function () { wtExecute(selectedSafePaths, false) } }, t('statusWtCleanupSafe').replace('{n}', String(selectedSafePaths.length)))),
-				mainRow,
-				activeRows,
-				h('div', { className: 'gbt-wtsectionhead' }, t('statusStaleWorktrees') + ' · ' + String(staleWts.length)),
-				staleWts.length === 0 ? h('div', { className: 'gbt-statusnote' }, t('statusWtNoStale')) : h('div', { className: 'gbt-wtlines', 'data-wt-lines': 'true' }, staleRows),
-				preflightBlock,
-				resultBlock)))
+		const worktreesCard = h('section', { className: 'gbt-statuscard gbt-deckworktrees', 'data-status-card': 'worktrees' },
+			h('div', { className: 'gbt-deckpanelhead' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'WORKTREES / ' + String(totalCount).padStart(2, '0')),
+				h('h2', null, t('statusCardWorktrees')),
+				h('span', { className: 'gbt-deckpanelmeta', 'data-wt-summary': 'true' }, String(totalCount) + ' ' + t('statusWtTotal') + ' · ' + String(activeCount) + ' ' + t('statusWtActive') + ' · ' + String(safeCount) + ' ' + t('statusWtSafe') + ' · ' + String(confirmCount) + ' ' + t('statusWtConfirm')),
+			),
+			worktrees === null || worktrees === undefined || worktrees.available !== true
+				? h('div', { className: 'gbt-deckempty' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : snapshot.source === 'loading' ? t('statusWtLoading') : t('statusWorktreesUnavailable'))
+				: h('div', { className: 'gbt-deckwtview' },
+					h('div', { className: 'gbt-deckwtool' },
+						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'worktree-preflight', disabled: cleanupUi.pending === true, onClick: wtRunPreflight }, cleanupUi.pending === true ? t('statusWtPreflighting') : t('statusWtPreflight')),
+						h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'worktree-cleanup-safe', disabled: cleanupBusy || selectedSafePaths.length === 0, onClick: function () { wtExecute(selectedSafePaths, false) } }, t('statusWtCleanupSafe').replace('{n}', String(selectedSafePaths.length))),
+						h('span', { className: 'gbt-deckwtoolmeta' }, String(staleWts.length) + ' ' + t('statusStaleWorktrees')),
+					),
+					h('div', { className: 'gbt-deckwtrows' },
+						h('div', { className: 'gbt-deckwtgroup', 'data-wt-section': 'main' }, h('span', null, 'MAIN / ' + t('statusWtMain')), h('b', null, '1')),
+						mainRow,
+						activeWts.length === 0 ? null : h('div', { className: 'gbt-deckwtgroup', 'data-wt-section': 'active' }, h('span', null, 'ACTIVE / ' + t('statusWtActive')), h('b', null, String(activeWts.length))),
+						activeRows,
+						h('div', { className: 'gbt-deckwtgroup', 'data-wt-section': 'stale' }, h('span', null, 'STALE / ' + t('statusStaleWorktrees')), h('b', null, String(staleWts.length))),
+						staleWts.length === 0 ? h('div', { className: 'gbt-deckempty' }, t('statusWtNoStale')) : h('div', { className: 'gbt-wtlines', 'data-wt-lines': 'true' }, staleRows),
+					),
+					preflightBlock,
+					resultBlock,
+				),
+		)
 		const reviewerQueue = tasks.filter(function (task) { return task.status === 'reviewing' && tcStageQueued(task) }).length
 		const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && tcStageQueued(task) }).length
 		const lead = agents !== null && agents !== undefined ? agents.lead : null
 		// T-122: member table = the requesting session's team (team.members).
 		const teamMembersView = snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members) ? snapshot.team.members : null
-		const members = teamMembersView !== null ? teamMembersView : agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+		// T-171: the Lead can also appear in a flat member list; list it once in the
+		// executors rail. The old card tolerated a duplicate, a console row cannot.
+		const leadName = lead !== null && typeof lead.name === 'string' ? lead.name : null
+		const memberSource = teamMembersView !== null ? teamMembersView : agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+		const members = memberSource.filter(function (member) { return member !== null && member !== undefined && (leadName === null || member.name !== leadName) })
 		// T-118: role instances whose slot project is NOT this session's project
 		// can only be leftovers from an older build; mark them instead of hiding.
 		const teams = snapshot.teams
@@ -6000,16 +6128,14 @@ function createStatusView(deps) {
 		members.forEach(function (member, index) { agentRows.push(agentRow(member, false, index)) })
 		const agentsCard = h(
 			'section',
-			{ className: 'gbt-statuscard', 'data-status-card': 'agents' },
-			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot', 'data-running': members.some(function (member) { return member.status === 'running' }) ? 'true' : 'false' }), t('statusCardAgents'), h('span', { className: 'gbt-statusmeta' }, String(agentRows.length) + ' ' + t('statusAgentUnit'))),
-			h(
-		'div',
-		{ className: 'gbt-statuscardbody' },
-		agents === null || agents === undefined
-			? h('div', { className: 'gbt-statusnote' }, t('statusAgentsUnavailable'))
-			: agentRows.length === 0 && leftoverRows.length === 0
-				? h('div', { className: 'gbt-statusnote' }, t('workersEmpty'))
-				: h('div', null, agentRows, leftoverRows),
+			{ className: 'gbt-statuscard gbt-deckexecutors', 'data-status-card': 'agents' },
+			h('div', { className: 'gbt-decklabel' }, h('span', null, 'EXECUTORS'), h('span', { className: 'gbt-decklabelzh' }, t('statusCardAgents')), h('em', { 'data-running': members.some(function (member) { return member.status === 'running' }) ? 'true' : 'false' }, String(agentRows.length))),
+			h('div', { className: 'gbt-deckpeople', 'data-status-agents': 'true' },
+				agents === null || agents === undefined
+					? h('div', { className: 'gbt-statusnote' }, t('statusAgentsUnavailable'))
+					: agentRows.length === 0 && leftoverRows.length === 0
+						? h('div', { className: 'gbt-statusnote' }, t('workersEmpty'))
+						: h('div', null, agentRows, leftoverRows),
 			),
 		)
 		const timeline = snapshot.activityEvents
@@ -6022,11 +6148,11 @@ function createStatusView(deps) {
 		const sweepRows = showAllActivity && lastSweep !== null ? [lastSweep] : []
 		const activityCard = h(
 			'section',
-			{ className: 'gbt-statuscard', 'data-status-card': 'activity' },
-			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardActivity'), h('span', { className: 'gbt-statusmeta' }, t('statusLatestActivity') + ' ' + String(recentStream.length) + ' ' + t('statusEventUnit'))),
+			{ className: 'gbt-statuscard gbt-deckactivity', 'data-status-card': 'activity' },
+			h('div', { className: 'gbt-deckpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'ACTIVITY / ' + String(recentStream.length).padStart(2, '0')), h('h2', null, t('statusCardActivity')), h('span', { className: 'gbt-deckpanelmeta' }, t('statusLatestActivity') + ' ' + String(recentStream.length) + ' ' + t('statusEventUnit'))),
 			h(
 		'div',
-		{ className: 'gbt-statuscardbody' },
+		{ className: 'gbt-deckactivitybody' },
 		!activityAvailable
 			? h('div', { className: 'gbt-statusnote' }, t('statusActivityUnavailable'))
 			: recentStream.length === 0 && sweepRows.length === 0 && lastSweep === null
@@ -6035,7 +6161,7 @@ function createStatusView(deps) {
 			recentStream.map(function (event) {
 				return h(
 					'div',
-					{ key: event.key, className: 'gbt-statusev', 'data-activity': event.type, 'data-activity-kind': event.type, 'data-activity-task': event.taskId, title: event.raw === null ? undefined : event.raw },
+					{ key: event.key, className: 'gbt-statusev gbt-deckarow', 'data-activity': event.type, 'data-activity-kind': event.type, 'data-activity-task': event.taskId, title: event.raw === null ? undefined : event.raw },
 					h('span', { className: 'gbt-statusevtime gbt-mono' }, typeof event.at === 'string' ? new Date(event.at).toTimeString().slice(0, 5) : '—'),
 					h('span', { className: 'gbt-statusevkind' }, activityLabel(event.type)),
 					h('span', { className: 'gbt-statusevtext' }, event.html),
@@ -6084,85 +6210,84 @@ function createStatusView(deps) {
 			return status === 'live' ? t('sessionsStatusLive') : status === 'stale' ? t('sessionsStatusStale') : t('sessionsStatusUnknown')
 		}
 		const stageBadge = function (key, label, ready) {
-			return h('span', { key: key, className: 'gbt-pill', 'data-stage-ready': ready === true ? 'true' : 'false' }, label + ' ' + (ready === true ? t('sessionsReady') : t('sessionsNotReady')))
+			return h('span', { key: key, className: 'gbt-deckstate', 'data-stage-ready': ready === true ? 'true' : 'false' }, h('i', { className: 'gbt-deckdot', 'data-on': ready === true ? 'true' : 'false' }), label + ' ' + (ready === true ? t('sessionsReady') : t('sessionsNotReady')))
 		}
 		const sessionsCard = h(
 			'section',
-			{ className: 'gbt-statuscard', 'data-status-card': 'sessions' },
-			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('sessionCardTitle'), h('span', { className: 'gbt-statusmeta' }, String(sessionRows.length) + ' ' + t('sessionsLabel'))),
-			h(
-				'div',
-				{ className: 'gbt-statuscardbody' },
-				h('p', { className: 'gbt-statusnote' }, t('sessionsHint')),
-				sessionRows.length === 0
-					? h('div', { className: 'gbt-statusnote', 'data-sessions-empty': 'true' }, t('sessionsEmpty'))
-					: h(
-						'div',
-						null,
-						h(
-							'label',
-							{ className: 'gbt-sessionfilter' },
-							t('sessionFilter'),
-							h(
-								'select',
-								{
-									'data-session-filter': 'true',
-									value: sessionFilter,
-									onChange: function (event) {
-										setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all')
-									},
-								},
-								h('option', { value: 'all' }, t('sessionFilterAll')),
-								sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) }),
-							),
-						),
-						h(
-							'div',
-							{ className: 'gbt-sessionscards', 'data-sessions-list': 'true' },
-							visibleSessions.map(function (row, index) {
-								const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
-								const current = currentSession !== null && row.sessionId === currentSession
-								const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
-								const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
-								return h(
-									'div',
-									{
-										key: 'session-' + String(index),
-										className: 'gbt-sessionsrow',
-										'data-session': String(row.sessionId),
-										'data-current': current ? 'true' : 'false',
-										'data-session-status': typeof row.status === 'string' ? row.status : 'unknown',
-										'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
-									},
-									h('span', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
-									current ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
-									team === null ? null : h('span', null, t('workersLead') + ' ' + (typeof team.lead === 'string' ? team.lead : '—')),
-									h('span', { className: 'gbt-statusmeta' }, t('sessionsCards').replace('{n}', String(Number.isFinite(cards.owned) ? cards.owned : 0)) + ' · ' + t('sessionsActive').replace('{n}', String(Number.isFinite(cards.active) ? cards.active : 0))),
-									h('span', { className: 'gbt-pill', 'data-session-status-pill': typeof row.status === 'string' ? row.status : 'unknown' }, sessionStatusText(row.status)),
-									h('span', { className: 'gbt-pill', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, t('sessionsReadiness') + ' ' + (row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
-									stageBadge('stage-review', t('sessionsStageReview'), stage.review === true),
-									stageBadge('stage-test', t('sessionsStageTest'), stage.test === true),
-								)
-							}),
-						),
+			{ className: 'gbt-statuscard gbt-decksessions', 'data-status-card': 'sessions' },
+			h('div', { className: 'gbt-deckpanelhead' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'SESSIONS / ' + String(sessionRows.length).padStart(2, '0')),
+				h('h2', null, t('sessionCardTitle')),
+				h('span', { className: 'gbt-deckpanelmeta' }, String(visibleSessions.length) + ' / ' + String(sessionRows.length) + ' ' + t('sessionsLabel')),
+				h('label', { className: 'gbt-deckfilter' }, t('sessionFilter'),
+					h('select', { 'data-session-filter': 'true', value: sessionFilter, onChange: function (event) { setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all') } },
+						h('option', { value: 'all' }, t('sessionFilterAll')),
+						sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) }),
 					),
+				),
 			),
+			h('div', { className: 'gbt-deckthead', 'data-session-columns': 'true' },
+				h('span', null, t('sessionColSession')),
+				h('span', null, t('sessionColCards')),
+				h('span', null, t('sessionColStatus')),
+				h('span', null, t('sessionColDispatch')),
+				h('span', null, t('sessionColReview')),
+				h('span', null, t('sessionColTest')),
+			),
+			sessionRows.length === 0
+				? h('div', { className: 'gbt-deckempty', 'data-sessions-empty': 'true' }, t('sessionsEmpty'))
+				: h('div', { className: 'gbt-deckrows', 'data-sessions-list': 'true', title: t('sessionsHint') },
+					visibleSessions.map(function (row, index) {
+						const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
+						const current = currentSession !== null && row.sessionId === currentSession
+						const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
+						const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
+						const lead = team === null || typeof team.lead !== 'string' || team.lead === '' ? null : team.lead
+						const owned = Number.isFinite(cards.owned) ? cards.owned : 0
+						const activeCards = Number.isFinite(cards.active) ? cards.active : 0
+						return h('div', {
+							key: 'session-' + String(index),
+							className: 'gbt-decksessionrow' + (current ? ' is-current' : ''),
+							'data-session': String(row.sessionId),
+							'data-current': current ? 'true' : 'false',
+							'data-session-status': typeof row.status === 'string' ? row.status : 'unknown',
+							'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+						},
+							h('div', { className: 'gbt-decksessionname' },
+								h('b', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
+								current ? h('span', { className: 'gbt-decksession-current' }, t('sessionsCurrent')) : null,
+								h('span', { title: lead === null ? '' : lead }, lead === null ? '—' : t('workersLead') + ' · ' + lead),
+							),
+							h('span', { className: 'gbt-decknum', 'data-session-cards': 'true' }, h('b', null, String(owned)), ' / ' + String(activeCards)),
+							h('span', { className: 'gbt-deckstatus', 'data-session-status-pill': typeof row.status === 'string' ? row.status : 'unknown', 'data-status': typeof row.status === 'string' ? row.status : 'unknown' }, h('i', { className: 'gbt-deckdot', 'data-on': row.status === 'live' ? 'true' : 'false' }), sessionStatusText(row.status)),
+							h('span', { className: 'gbt-deckstate', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, h('i', { className: 'gbt-deckdot', 'data-on': row.dispatchReady === true ? 'true' : 'false' }), row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady')),
+							stageBadge('stage-review', t('sessionsStageReview'), stage.review === true),
+							stageBadge('stage-test', t('sessionsStageTest'), stage.test === true),
+						)
+					}),
+				),
 		)
 
 		return h(
 			'div',
-			{ className: 'gbt-statusview', 'data-status': 'cards' },
+			{ className: 'gbt-statusview gbt-shiftdeck', 'data-status': 'cards' },
 			h(
-		'div',
-		{ className: 'gbt-statustop', 'data-status-top': 'true' },
-		h('div', { className: 'gbt-statussummary' }, lastActivityText === null ? '' : lastActivityText),
-		h(
-			'div',
-			{ className: 'gbt-statusactions' },
-			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
-		),
+				'div',
+				{ className: 'gbt-statustop gbt-deckhead', 'data-status-top': 'true' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'STATUS / 03'),
+				h('h1', null, t('status')),
+				h('span', { className: 'gbt-deckheadcrumb', title: lastActivityText === null ? '' : lastActivityText }, lastActivityText === null ? '' : lastActivityText),
+				h('div', { className: 'gbt-statusactions' },
+					h('span', { className: 'gbt-decklastscan' }, t('statusLastScan') + ' · ' + scanAgo),
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
+				),
 			),
-			h('div', { className: 'gbt-statusgrid', 'data-status-grid': 'true' }, dispatchCard, sessionsCard, worktreesCard, agentsCard, activityCard),
+			h('div', { className: 'gbt-statusgrid gbt-deckgrid', 'data-status-grid': 'true' },
+				h('aside', { className: 'gbt-deckrail' }, dispatchCard, agentsCard),
+				sessionsCard,
+				worktreesCard,
+				activityCard,
+			),
 		)
 	}
 	return StatusView
