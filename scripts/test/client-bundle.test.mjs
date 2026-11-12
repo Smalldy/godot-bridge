@@ -3302,7 +3302,8 @@ await flush()
   let settingsTree = withHooks(panel, { initialView: 'board', initialSettingsOpen: true })
   await flush()
   const settingsText = textOf(settingsTree)
-  check('the settings form no longer offers a testing choice', findAll(settingsTree, (node) => node.type === 'select').length === 0)
+  const settingsSelects = findAll(settingsTree, (node) => node.type === 'select')
+  check('the settings form no longer offers a testing choice; the only select is the UI theme', settingsSelects.length === 1 && settingsSelects[0].props['data-field'] === 'ui-theme')
   check(
     'the retired self/independent testing copy is gone',
     ['独立测试', '自测', '系统验证', '仅用户可修改'].every((label) => settingsText.indexOf(label) < 0),
@@ -3328,6 +3329,57 @@ await flush()
       textOf(capacityNode).indexOf('live 1') >= 0 &&
       textOf(capacityNode).indexOf('missing 2') >= 0,
     capacityNode && textOf(capacityNode),
+  )
+  // T-174: the UI theme is a browser preference, separate from dispatch.
+  STORAGE.delete('gbt-theme')
+  const themeTree = withHooks(panel, { initialView: 'board', initialSettingsOpen: true })
+  await flush()
+  const themeSelect = findAll(themeTree, (node) => node.type === 'select' && node.props && node.props['data-tc-theme-select'] === 'true')[0]
+  check(
+    'T-174 the task center defaults to the dsh theme and the settings form offers both themes',
+    themeTree.props['data-tc-theme'] === 'dsh' &&
+      themeSelect !== undefined &&
+      themeSelect.props.value === 'dsh' &&
+      findAll(themeSelect, (node) => node.type === 'option').map((option) => option.props.value).join(',') === 'dsh,console',
+    JSON.stringify({ root: themeTree.props['data-tc-theme'], value: themeSelect && themeSelect.props.value }),
+  )
+  const postsBeforeTheme = posts.length
+  themeSelect.props.onChange({ target: { value: 'console' } })
+  check(
+    'T-174 switching the theme saves gbt-theme locally and sends no server request',
+    STORAGE.get('gbt-theme') === 'console' && posts.length === postsBeforeTheme,
+    JSON.stringify({ stored: STORAGE.get('gbt-theme'), posts: posts.length - postsBeforeTheme }),
+  )
+  const consoleTree = withHooks(panel, { initialView: 'board' })
+  await flush()
+  check(
+    'T-174 a remount reads the stored console theme immediately',
+    consoleTree.props['data-tc-theme'] === 'console',
+    consoleTree.props['data-tc-theme'],
+  )
+  STORAGE.set('gbt-theme', 'dsh')
+  const themeCss = readFileSync(SRC, 'utf8')
+  check(
+    'T-174 the root defines tc tokens and scopes DSH token overrides to console',
+    themeCss.indexOf('.gbt-root[data-tc-theme="dsh"]{--tc-bg:var(--dsw-alias-bg-layer-2)') >= 0 &&
+      themeCss.indexOf('.gbt-root[data-tc-theme="console"]{--tc-bg:#080b0c') >= 0 &&
+      themeCss.indexOf('--dsw-alias-bg-layer-2:var(--tc-panel)') >= 0 &&
+      themeCss.indexOf('--dsw-alias-state-business-primary:var(--tc-accent)') >= 0,
+    'tc/DSH theme token mapping missing',
+  )
+  check(
+    'T-174 status and roles deck variables derive from tc, not hardcoded dark hex',
+    themeCss.indexOf('.gbt-shiftdeck{--deck-bg:var(--tc-bg)') >= 0 &&
+      themeCss.indexOf('.gbt-rolesview[data-roles-deck]{--deck-bg:var(--tc-bg)') >= 0 &&
+      themeCss.indexOf('--deck-bg:#080b0c') < 0 &&
+      themeCss.indexOf('--deck-panel:#0e1415') < 0,
+    'deck hardcoded palette still present',
+  )
+  check(
+    'T-174 console keeps primary actions readable on the lime accent',
+    themeCss.indexOf('.gbt-root[data-tc-theme="console"] .gbt-btn[data-variant="primary"]{color:var(--tc-accent-ink)}') >= 0 &&
+      themeCss.indexOf('.gbt-root[data-tc-theme="console"] .gbt-mark{color:var(--tc-accent-ink)}') >= 0,
+    'console primary contrast override missing',
   )
   check(
     'T-167 the capacity preview consumes scheduler.lastCapacity for live/missing',
