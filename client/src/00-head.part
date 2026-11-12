@@ -1160,7 +1160,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				sessionsLabel: 'Sessions',
 				sessionsHint: 'Every participating session keeps its own team and cards; the current chat session is highlighted, never primary.',
 				sessionColSession: 'SESSION / LEAD',
-				sessionColCards: 'CARDS · TOTAL / ACTIVE',
+				sessionColCards: 'TOTAL / ACTIVE',
 				sessionColStatus: 'STATUS',
 				sessionColDispatch: 'DISPATCH',
 				sessionColReview: 'REVIEW',

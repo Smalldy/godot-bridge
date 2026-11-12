@@ -6973,6 +6973,16 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
       css.indexOf('.gbt-detailfact{min-width:0;border-top:1px solid') < 0,
     'fact separator CSS did not converge on the container',
   )
+  locale = 'en'
+  const enTree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  const enCardsLabel = findAll(enTree, (node) => node.props && node.props['data-session-cards-label'] === 'true')[0]
+  check(
+    'T-175 en card column stays short enough for the fixed 27px thead',
+    enCardsLabel !== undefined && textOf(enCardsLabel) === 'TOTAL / ACTIVE' && textOf(enCardsLabel).length <= 14 && enCardsLabel.props.title === 'Cards (total / active)',
+    enCardsLabel && JSON.stringify({ text: textOf(enCardsLabel), title: enCardsLabel.props.title }),
+  )
+  locale = 'zh'
   HOST.scope = savedScope
   HOST.tasks = savedTasks
 }

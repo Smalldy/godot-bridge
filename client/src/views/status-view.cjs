@@ -743,7 +743,7 @@ function createStatusView(deps) {
 			),
 			h('div', { className: 'gbt-deckthead', 'data-session-columns': 'true' },
 				h('span', null, t('sessionColSession')),
-				h('span', { 'data-session-cards-label': 'true' }, t('sessionColCards')),
+				h('span', { 'data-session-cards-label': 'true', title: t('sessionDetailCards') }, t('sessionColCards')),
 				h('span', null, t('sessionColStatus')),
 				h('span', null, t('sessionColDispatch')),
 				h('span', null, t('sessionColReview')),
