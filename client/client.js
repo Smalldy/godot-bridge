@@ -678,7 +678,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				detailResubmitted: '重新提交',
 				detailFixSubmit: '修复后重新提交',
 				detailWhereNow: '做到哪了',
-				detailAllFields: '全部字段（含历史）',
+				detailAllFields: '全部字段',
 				detailNoEvents: '还没有阶段结论。',
 				detailInterrupted: '任务被中断',
 				detailElapsed: '用时',
@@ -689,7 +689,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				detailHostCheckIncomplete: '未完成',
 				detailHostCheckFailed: '失败',
 				detailSpecExpand: '展开说明与验收',
-				detailSpecHint: '说明与验收默认折叠。',
+				detailSpecHint: '说明与验收可收起。',
 				detailNow: '现在',
 				detailMinutes: '分钟',
 				detailHours: '小时',
@@ -1413,7 +1413,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				detailResubmitted: 'resubmitted',
 				detailFixSubmit: 'resubmitted after fix',
 				detailWhereNow: 'Where it is now',
-				detailAllFields: 'All fields (with history)',
+				detailAllFields: 'All fields',
 				detailNoEvents: 'No phase conclusion yet.',
 				detailInterrupted: 'Task was interrupted',
 				detailElapsed: 'elapsed',
@@ -1424,7 +1424,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				detailHostCheckIncomplete: 'incomplete',
 				detailHostCheckFailed: 'failed',
 				detailSpecExpand: 'Expand spec and acceptance',
-				detailSpecHint: 'Spec and acceptance are collapsed by default.',
+				detailSpecHint: 'Spec and acceptance can be collapsed.',
 				detailNow: 'now',
 				detailMinutes: 'min',
 				detailHours: 'h',
@@ -1891,8 +1891,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-detailnote{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dsw-alias-label-secondary);min-width:0}',
 '.gbt-detailnote .gbt-input{width:100%;box-sizing:border-box}',
 '.gbt-detailfooter .gbt-actions{flex-wrap:wrap;margin:0}',
-'.gbt-detailpanel .gbt-detailbody[data-detail-layout="compact"]{grid-template-columns:minmax(0,1fr) 300px}',
-'.gbt-detailpanel .gbt-detailbody[data-detail-layout="compact"] .gbt-detailaside{width:300px}',
+'.gbt-detailpanel .gbt-detailbody[data-detail-layout="compact"]{grid-template-columns:minmax(0,1fr) 360px}',
+'.gbt-detailpanel .gbt-detailbody[data-detail-layout="compact"] .gbt-detailaside{width:360px}',
 '@media (max-width:900px){.gbt-detailpanel .gbt-detailbody{grid-template-columns:minmax(0,1fr)}.gbt-detailpanel .gbt-detailaside{width:auto}.gbt-detailfooter{padding:8px 12px calc(8px + env(safe-area-inset-bottom,0px))}.gbt-detailfooter .gbt-actions{justify-content:flex-start}}',
 '.gbt-detailbody[data-detail-layout="two-column"]{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:12px;align-items:start}',
 '.gbt-detailbody[data-detail-layout="compact"]{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;align-items:start}',
@@ -7341,7 +7341,7 @@ function createDetailView(deps) {
 				'div',
 				null,
 				h('div', { className: 'gbt-subhead' }, t('dispatch')),
-				h('dl', { className: 'gbt-meta' }, h('dt', null, t('status')), h('dd', null, String(dispatch.status === null || dispatch.status === undefined ? '—' : dispatch.status)), h('dt', null, t('assignee')), h('dd', null, String(dispatch.target === null || dispatch.target === undefined ? '—' : dispatch.target))),
+				h('dl', { className: 'gbt-meta' }, h('dt', null, t('status')), h('dd', null, String(dispatch.status === null || dispatch.status === undefined ? '—' : dispatch.status)), h('dt', null, t('assignee')), h('dd', null, String(dispatch.target === null || dispatch.target === undefined ? '—' : dispatch.target)), dispatch.error === null || dispatch.error === undefined || dispatch.error === '' ? null : h('dt', null, t('dispatchError')), dispatch.error === null || dispatch.error === undefined || dispatch.error === '' ? null : h('dd', { 'data-dispatch-error': 'true' }, String(dispatch.error))),
 				task.ownerSession !== null && task.ownerSession !== undefined && dispatch.leadSession !== null && dispatch.leadSession !== undefined && task.ownerSession !== dispatch.leadSession
 					? h('p', { className: 'gbt-footnote', 'data-owner-mismatch': 'true' }, t('ownerMismatch').replace('{owner}', String(task.ownerSession)).replace('{lead}', String(dispatch.leadSession)))
 					: null,
@@ -7357,7 +7357,7 @@ function createDetailView(deps) {
 			}))))
 		const eventsCard = h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody)
 		const mainChildren = [stages]
-		if (investigate) mainChildren.push(casebook)
+		if (investigate) mainChildren.push(casebook, specCard, historyCard)
 		else mainChildren.push(eventsCard, specCard, historyCard)
 		if (task.status === 'running' && investigate !== true) {
 			mainChildren.push(h('section', { key: 'work', className: 'gbt-section gbt-detailwork' }, h('h3', null, t('evidence')), h('textarea', { className: 'gbt-area', ref: evidence, placeholder: t('evidence') }), h('div', { className: 'gbt-actions', style: { marginTop: '6px' } }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: submitWork }, t('submit')))))

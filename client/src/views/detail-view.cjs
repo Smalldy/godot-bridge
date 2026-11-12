@@ -552,7 +552,7 @@ function createDetailView(deps) {
 				'div',
 				null,
 				h('div', { className: 'gbt-subhead' }, t('dispatch')),
-				h('dl', { className: 'gbt-meta' }, h('dt', null, t('status')), h('dd', null, String(dispatch.status === null || dispatch.status === undefined ? '—' : dispatch.status)), h('dt', null, t('assignee')), h('dd', null, String(dispatch.target === null || dispatch.target === undefined ? '—' : dispatch.target))),
+				h('dl', { className: 'gbt-meta' }, h('dt', null, t('status')), h('dd', null, String(dispatch.status === null || dispatch.status === undefined ? '—' : dispatch.status)), h('dt', null, t('assignee')), h('dd', null, String(dispatch.target === null || dispatch.target === undefined ? '—' : dispatch.target)), dispatch.error === null || dispatch.error === undefined || dispatch.error === '' ? null : h('dt', null, t('dispatchError')), dispatch.error === null || dispatch.error === undefined || dispatch.error === '' ? null : h('dd', { 'data-dispatch-error': 'true' }, String(dispatch.error))),
 				task.ownerSession !== null && task.ownerSession !== undefined && dispatch.leadSession !== null && dispatch.leadSession !== undefined && task.ownerSession !== dispatch.leadSession
 					? h('p', { className: 'gbt-footnote', 'data-owner-mismatch': 'true' }, t('ownerMismatch').replace('{owner}', String(task.ownerSession)).replace('{lead}', String(dispatch.leadSession)))
 					: null,
@@ -568,7 +568,7 @@ function createDetailView(deps) {
 			}))))
 		const eventsCard = h('section', { className: 'gbt-detailcard', 'data-detail-card': 'events' }, h('div', { className: 'gbt-detailcardhead' }, t('detailWhereNow')), eventsBody)
 		const mainChildren = [stages]
-		if (investigate) mainChildren.push(casebook)
+		if (investigate) mainChildren.push(casebook, specCard, historyCard)
 		else mainChildren.push(eventsCard, specCard, historyCard)
 		if (task.status === 'running' && investigate !== true) {
 			mainChildren.push(h('section', { key: 'work', className: 'gbt-section gbt-detailwork' }, h('h3', null, t('evidence')), h('textarea', { className: 'gbt-area', ref: evidence, placeholder: t('evidence') }), h('div', { className: 'gbt-actions', style: { marginTop: '6px' } }, h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: submitWork }, t('submit')))))

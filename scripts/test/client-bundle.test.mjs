@@ -3659,7 +3659,9 @@ await flush()
     'T-177 readable prose and a 360px metadata rail are registered in CSS',
     detailCss.indexOf('.gbt-detailpanel .gbt-detailaside{display:flex;flex-direction:column;gap:12px;width:360px') >= 0 &&
       detailCss.indexOf('.gbt-detailspec .gbt-detailspecbody .gbt-prose{font-size:13px;line-height:1.7') >= 0 &&
-      detailCss.indexOf('.gbt-detailfooter{flex:0 0 auto;') >= 0,
+      detailCss.indexOf('.gbt-detailfooter{flex:0 0 auto;') >= 0 &&
+      detailCss.indexOf('.gbt-detailpanel .gbt-detailbody[data-detail-layout="compact"]{grid-template-columns:minmax(0,1fr) 360px}') >= 0 &&
+      detailCss.indexOf('.gbt-detailpanel .gbt-detailbody[data-detail-layout="compact"] .gbt-detailaside{width:360px}') >= 0,
     'detail CSS missing',
   )
   check('all raw fields stay reachable in the folded field block', doneText.indexOf('全部字段') >= 0 && doneText.indexOf('abcdef1234567890') >= 0, doneText.slice(-400))
@@ -3719,6 +3721,17 @@ await flush()
     resubmitRow && textOf(resubmitRow),
   )
   runningTask.history = savedHistory
+  const savedDispatchError = runningTask.dispatch === null || runningTask.dispatch === undefined ? null : runningTask.dispatch.error
+  runningTask.dispatch = Object.assign({}, runningTask.dispatch, { error: 'spawn-failed' })
+  const dispatchErrorDrawer = await openDetail('Build damage system')
+  check(
+    'T-177 dispatch errors remain visible in the all-fields metadata',
+    findAll(dispatchErrorDrawer, (node) => node.props && node.props['data-dispatch-error'] === 'true').length === 1 &&
+      textOf(dispatchErrorDrawer).indexOf('派发错误') >= 0 &&
+      textOf(dispatchErrorDrawer).indexOf('spawn-failed') >= 0,
+    textOf(dispatchErrorDrawer).slice(-300),
+  )
+  runningTask.dispatch.error = savedDispatchError
 
   // A realistic tool label ("session-" stripped, non-alphanumerics removed, 8 chars)
   // must resolve too, not just the kind fallback.
@@ -6098,6 +6111,13 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
     'T-144 the investigation detail is a casebook: index aside + report paper',
     casebookNode !== undefined && caseIndexNode !== undefined && caseFactsNode !== undefined && textOf(caseIndexNode).indexOf('案件索引') >= 0 && textOf(caseIndexNode).indexOf('执行者') >= 0 && textOf(caseIndexNode).indexOf('基线') >= 0 && textOf(caseIndexNode).indexOf('目标') >= 0 && textOf(caseIndexNode).indexOf('时间线') >= 0 && textOf(caseIndexNode).indexOf('T-9') >= 0,
     caseIndexNode && textOf(caseIndexNode).slice(0, 300),
+  )
+  check(
+    'T-177 an investigation keeps spec/acceptance and history below its casebook',
+    findAll(drawer, (node) => node.props && node.props['data-detail-spec-card'] === 'true').length === 1 &&
+      findAll(drawer, (node) => node.props && node.props['data-detail-card'] === 'history').length === 1 &&
+      findAll(drawer, (node) => node.props && node.props['data-detail-allfields'] === 'true').length === 1,
+    'investigation spec/history missing',
   )
   const bodyHeadings = findAll(reportBody, (node) => node.props && node.props['data-report-block'] === 'heading')
   const bodyParagraphs = findAll(reportBody, (node) => node.props && node.props['data-report-block'] === 'paragraph')
