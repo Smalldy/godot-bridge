@@ -3565,8 +3565,8 @@ await flush()
     check('Escape closes the overlay', findAll(closedByEsc, (node) => node.props && node.props['data-detail-overlay'] === 'true').length === 0)
 
     check(
-      'the 420px layout still renders the spec/acceptance summary (collapsed by default)',
-      findAll(narrowDrawer, (node) => node.props && node.props['data-detail-spec'] === 'collapsed').length === 1 &&
+      'the 420px layout still renders the full spec/acceptance in the main column',
+      findAll(narrowDrawer, (node) => node.props && node.props['data-detail-spec'] === 'full').length === 1 &&
         findAll(narrowDrawer, (node) => node.props && node.props['data-detail'] === 'summary').length === 2,
       JSON.stringify(findAll(narrowDrawer, (node) => node.props && node.props['data-detail'] === 'summary').map((node) => node.props['data-detail-summary'])),
     )
@@ -3625,7 +3625,43 @@ await flush()
     mergeEvent && textOf(mergeEvent),
   )
   check('the summary column shows elapsed time, rounds and attempts', doneText.indexOf('用时') >= 0 && doneText.indexOf('尝试') >= 0 && doneText.indexOf('1 / 3') >= 0, doneText.slice(-400))
-  check('the spec/acceptance block is collapsed by default', findAll(doneDrawer, (node) => node.props && node.props['data-detail-spec'] === 'collapsed').length === 1 && findAll(doneDrawer, (node) => node.props && node.props['data-detail-spec'] === 'full').length === 0)
+  check('T-177 the spec/acceptance block is full by default', findAll(doneDrawer, (node) => node.props && node.props['data-detail-spec'] === 'full').length === 1 && findAll(doneDrawer, (node) => node.props && node.props['data-detail-spec'] === 'collapsed').length === 0)
+  const doneMain = findAll(doneDrawer, (node) => node.props && node.props['data-detail-main'] === 'true')[0]
+  const doneAside = findAll(doneDrawer, (node) => node.props && node.props['data-detail-aside'] === 'true')[0]
+  const doneFooter = findAll(doneDrawer, (node) => node.props && node.props['data-detail-footer'] === 'true')[0]
+  check(
+    'T-177 spec and acceptance move to a full-width main card, not the narrow sidebar',
+    doneMain !== undefined &&
+      doneAside !== undefined &&
+      findAll(doneMain, (node) => node.props && node.props['data-detail-spec-card'] === 'true').length === 1 &&
+      findAll(doneAside, (node) => node.props && node.props['data-detail-spec-card'] === 'true').length === 0,
+    JSON.stringify({ main: doneMain !== undefined, aside: doneAside !== undefined }),
+  )
+  check(
+    'T-177 history timeline is full width, while raw metadata stays in the aside',
+    doneMain !== undefined &&
+      doneAside !== undefined &&
+      findAll(doneMain, (node) => node.props && node.props['data-detail-card'] === 'history').length === 1 &&
+      findAll(doneAside, (node) => node.props && node.props['data-detail-card'] === 'history').length === 0 &&
+      findAll(doneAside, (node) => node.props && node.props['data-detail-allfields'] === 'true').length === 1,
+    'history/aside placement wrong',
+  )
+  check(
+    'T-177 normal detail has no global action note; the note lives only in the action footer',
+    doneDrawer !== undefined &&
+      doneFooter !== undefined &&
+      findAll(doneDrawer, (node) => node.props && node.props['data-field'] === 'note').length === 0 &&
+      findAll(doneDrawer, (node) => node.props && node.props['data-detail-note'] === 'true').length === 0,
+    doneFooter && textOf(doneFooter).slice(0, 100),
+  )
+  const detailCss = styleTags.map((tag) => String(tag.textContent || '')).join('\n')
+  check(
+    'T-177 readable prose and a 360px metadata rail are registered in CSS',
+    detailCss.indexOf('.gbt-detailpanel .gbt-detailaside{display:flex;flex-direction:column;gap:12px;width:360px') >= 0 &&
+      detailCss.indexOf('.gbt-detailspec .gbt-detailspecbody .gbt-prose{font-size:13px;line-height:1.7') >= 0 &&
+      detailCss.indexOf('.gbt-detailfooter{flex:0 0 auto;') >= 0,
+    'detail CSS missing',
+  )
   check('all raw fields stay reachable in the folded field block', doneText.indexOf('全部字段') >= 0 && doneText.indexOf('abcdef1234567890') >= 0, doneText.slice(-400))
 
   const runningDrawer = await openDetail('Build damage system')
@@ -3645,6 +3681,30 @@ await flush()
   const evidenceFull = findAll(reopenedRunning, (node) => node.props && node.props['data-detail-evidence'] === 'full')[0]
   check('view full reveals the evidence text', evidenceFull !== undefined && textOf(evidenceFull).indexOf('deep stderr tail marker') >= 0, evidenceFull && textOf(evidenceFull).slice(0, 200))
 
+  const runningFooter = findAll(runningDrawer, (node) => node.props && node.props['data-detail-footer'] === 'true')[0]
+  const runningNote = findAll(runningDrawer, (node) => node.props && node.props['data-detail-note'] === 'true')[0]
+  const runningNoteInput = findAll(runningDrawer, (node) => node.props && node.props['data-field'] === 'note')[0]
+  const blockButton = findAll(runningDrawer, (node) => node.type === 'button' && /阻塞|Block/.test(textOf(node)))[0]
+  check(
+    'T-177 block/cancel actions show the contextual note in the fixed footer',
+    runningFooter !== undefined &&
+      runningNote !== undefined &&
+      runningNoteInput !== undefined &&
+      textOf(runningNote).indexOf('备注') >= 0 &&
+      textOf(runningNote).indexOf('阻塞/取消') >= 0 &&
+      blockButton !== undefined,
+    runningNote && textOf(runningNote),
+  )
+  runningNoteInput.props.ref.current = { value: 'blocked for review' }
+  const beforeBlock = posts.length
+  if (blockButton !== undefined) blockButton.props.onClick()
+  await flush()
+  const blockPost = posts.slice(beforeBlock).filter((post) => post.action === 'block')[0]
+  check(
+    'T-177 submitting block still carries the contextual note',
+    blockPost !== undefined && blockPost.note === 'blocked for review',
+    JSON.stringify(blockPost),
+  )
   const runningTask = HOST.tasks.filter((entry) => entry.id === 'T-1')[0]
   const savedHistory = runningTask.history
   runningTask.history = [
