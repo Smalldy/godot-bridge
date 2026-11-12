@@ -689,6 +689,31 @@ function createStatusView(deps) {
 			setSessionFilterState(next)
 		}
 		const visibleSessions = sessionFilter === 'all' ? sessionRows : sessionRows.filter(function (row) { return row.sessionId === sessionFilter })
+		// T-173: on wide screens the detail follows the filter, then the current
+		// chat session, then the first visible row; no synthetic session is made.
+		const currentSessionRow = currentSession === null ? null : sessionRows.filter(function (row) { return row.sessionId === currentSession })[0]
+		const detailSession = sessionFilter !== 'all'
+			? sessionRows.filter(function (row) { return row.sessionId === sessionFilter })[0] || null
+			: currentSessionRow !== undefined
+				? currentSessionRow
+				: visibleSessions[0] !== undefined
+					? visibleSessions[0]
+					: sessionRows[0] !== undefined
+						? sessionRows[0]
+						: null
+		const projectRootOf = function (row) {
+			const boardProject = scope !== null && scope.boardProject !== null && scope.boardProject !== undefined && typeof scope.boardProject === 'object' ? scope.boardProject : null
+			if (boardProject !== null && typeof boardProject.root === 'string' && boardProject.root !== '') return boardProject.root
+			if (snapshot.project !== null && snapshot.project !== undefined && typeof snapshot.project === 'object' && typeof snapshot.project.root === 'string') return snapshot.project.root
+			if (typeof snapshot.projectRoot === 'string' && snapshot.projectRoot !== '') return snapshot.projectRoot
+			if (typeof snapshot.project === 'string' && snapshot.project !== '') return snapshot.project
+			return row !== null && typeof row.projectRoot === 'string' ? row.projectRoot : '—'
+		}
+		const detailTasks = detailSession === null ? [] : tasks.filter(function (task) {
+			if (task === null || task === undefined) return false
+			const assigneeSession = task.assignee !== null && task.assignee !== undefined && typeof task.assignee.session === 'string' ? task.assignee.session : null
+			return task.ownerSession === detailSession.sessionId || assigneeSession === detailSession.sessionId
+		}).slice(0, 5)
 		const sessionShortText = function (value) {
 			const text = typeof value === 'string' ? value : ''
 			return text.indexOf('session-') === 0 ? text.slice(8, 16) : text.slice(0, 8)
@@ -755,6 +780,78 @@ function createStatusView(deps) {
 				),
 		)
 
+		// T-173: wide-screen detail lives outside the table so the table keeps its
+		// natural row height instead of stretching to fill the center column.
+		const detailFacts = []
+		const detailTeam = detailSession !== null && detailSession.team !== null && detailSession.team !== undefined && typeof detailSession.team === 'object' ? detailSession.team : null
+		const detailCards = detailSession !== null && detailSession.cards !== null && detailSession.cards !== undefined && typeof detailSession.cards === 'object' ? detailSession.cards : {}
+		const detailStage = detailSession !== null && detailSession.stageReady !== null && detailSession.stageReady !== undefined && typeof detailSession.stageReady === 'object' ? detailSession.stageReady : {}
+		const detailLead = detailTeam === null || typeof detailTeam.lead !== 'string' || detailTeam.lead === '' ? null : detailTeam.lead
+		const detailMembers = detailTeam !== null && Array.isArray(detailTeam.members) ? detailTeam.members.filter(function (name) { return typeof name === 'string' && name !== '' }) : []
+		const detailMissing = detailTeam !== null && Array.isArray(detailTeam.missingRoles) ? detailTeam.missingRoles : []
+		const detailAgentPool = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members) ? snapshot.team.members : []
+		if (detailSession !== null) {
+			detailFacts.push({ key: 'lead', label: t('sessionDetailLead'), value: detailLead === null ? '—' : detailLead })
+			detailFacts.push({ key: 'project', label: t('sessionDetailProject'), value: projectRootOf(detailSession) })
+			detailFacts.push({ key: 'cards', label: t('sessionDetailCards'), value: String(Number.isFinite(detailCards.owned) ? detailCards.owned : 0) + ' / ' + String(Number.isFinite(detailCards.active) ? detailCards.active : 0) })
+			detailFacts.push({ key: 'dispatch', label: t('sessionColDispatch'), value: detailSession.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady') })
+			detailFacts.push({ key: 'review', label: t('sessionsStageReview'), value: detailStage.review === true ? t('sessionsReady') : t('sessionsNotReady') })
+			detailFacts.push({ key: 'test', label: t('sessionsStageTest'), value: detailStage.test === true ? t('sessionsReady') : t('sessionsNotReady') })
+			detailFacts.push({ key: 'missing', label: t('sessionDetailMissing'), value: detailMissing.length === 0 ? '—' : detailMissing.join(', ') })
+		}
+		const detailSessionCard = h('section', {
+			className: 'gbt-statuscard gbt-decksessiondetail',
+			'data-session-detail': detailSession === null ? '' : String(detailSession.sessionId),
+			'data-detail-current': detailSession !== null && currentSession !== null && detailSession.sessionId === currentSession ? 'true' : 'false',
+		},
+			h('div', { className: 'gbt-deckpanelhead' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'SESSION / DETAIL'),
+				h('h2', null, t('sessionDetailTitle')),
+				h('span', { className: 'gbt-deckpanelmeta' }, detailSession === null ? t('sessionsEmpty') : String(detailSession.sessionId)),
+			),
+			detailSession === null
+				? h('div', { className: 'gbt-deckempty', 'data-session-detail-empty': 'true' }, t('sessionsEmpty'))
+				: h('div', { className: 'gbt-detailbody' },
+					h('div', { className: 'gbt-detailidentity' },
+						h('div', { className: 'gbt-detailidentityline' },
+							h('b', { className: 'gbt-mono' }, sessionShortText(detailSession.sessionId)),
+							h('span', { className: 'gbt-detailcurrent' }, detailSession.sessionId === currentSession ? t('sessionsCurrent') : t('sessionDetailSelected')),
+							h('span', { className: 'gbt-detailstatus' }, h('i', { className: 'gbt-deckdot', 'data-on': detailSession.status === 'live' ? 'true' : 'false' }), sessionStatusText(detailSession.status)),
+						),
+						h('div', { className: 'gbt-detailid gbt-mono', title: String(detailSession.sessionId) }, String(detailSession.sessionId)),
+						h('div', { className: 'gbt-detailteamcount' }, t('sessionDetailTeam') + ' · ' + String(Number.isFinite(detailTeam === null ? null : detailTeam.memberCount) ? detailTeam.memberCount : detailMembers.length)),
+					),
+					h('div', { className: 'gbt-detailfacts' }, detailFacts.map(function (fact) {
+						return h('div', { key: fact.key, className: 'gbt-detailfact', 'data-session-detail-fact': fact.key },
+							h('b', { className: 'gbt-mono', title: String(fact.value) }, String(fact.value)),
+							h('span', null, fact.label))
+					})),
+					h('div', { className: 'gbt-detailteam', 'data-session-detail-team': 'true' },
+						h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'TEAM'), h('b', null, String(detailMembers.length))),
+						detailMembers.length === 0
+							? h('div', { className: 'gbt-deckempty' }, '—')
+							: detailMembers.map(function (name) {
+								const member = detailAgentPool.filter(function (entry) { return entry !== null && entry !== undefined && entry.name === name })[0]
+								return h('div', { key: 'detail-member-' + name, className: 'gbt-detailmember', 'data-session-member': name },
+									h('i', { className: 'gbt-deckdot', 'data-on': member !== undefined && member.status === 'running' ? 'true' : 'false' }),
+									h('span', { className: 'gbt-detailmembername gbt-mono', title: name }, name),
+									h('span', { className: 'gbt-detailmemberstate' }, member === undefined ? '—' : String(member.status)),
+									h('span', { className: 'gbt-detailmembertask gbt-mono' }, member !== undefined && member.currentTask !== null && member.currentTask !== undefined && typeof member.currentTask.id === 'string' ? member.currentTask.id : '—'))
+							}),
+							),
+					h('div', { className: 'gbt-detailtasks', 'data-session-detail-tasks': 'true' },
+						h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'CARDS'), h('b', null, String(detailTasks.length))),
+						detailTasks.length === 0
+							? h('div', { className: 'gbt-deckempty' }, t('sessionDetailNoTasks'))
+							: detailTasks.map(function (task) {
+								return h('div', { key: 'detail-task-' + String(task.id), className: 'gbt-detailtask', 'data-session-task': String(task.id) },
+									h('b', { className: 'gbt-mono' }, String(task.id)),
+									h('span', { className: 'gbt-detailtasktitle', title: typeof task.title === 'string' ? task.title : '' }, typeof task.title === 'string' ? task.title : '—'),
+									h('em', { className: 'gbt-mono' }, typeof task.status === 'string' ? task.status : '—'))
+							}),
+						),
+					),
+				)
 		return h(
 			'div',
 			{ className: 'gbt-statusview gbt-shiftdeck', 'data-status': 'cards' },
@@ -772,6 +869,7 @@ function createStatusView(deps) {
 			h('div', { className: 'gbt-statusgrid gbt-deckgrid', 'data-status-grid': 'true' },
 				h('aside', { className: 'gbt-deckrail' }, dispatchCard, agentsCard),
 				sessionsCard,
+				detailSessionCard,
 				worktreesCard,
 				activityCard,
 			),
