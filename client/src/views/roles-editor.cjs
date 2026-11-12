@@ -521,6 +521,9 @@ function createRolesEditor(deps) {
 		})
 		const rosterList = h('aside', { className: 'gbt-roleslist', 'data-role-list': 'true' },
 			h('div', { className: 'gbt-roleslisthead' }, h('span', { className: 'gbt-deckeyebrow' }, 'ROSTER / 角色'), h('b', null, String(rosterEntries.length))),
+			h('details', { key: 'roster-create', className: 'gbt-roleslistcreate', 'data-section': 'role-create-blank', 'data-role-create-entry': 'true' },
+				h('summary', { 'data-role-create-summary': 'true' }, '＋ ' + t('roleEditorCreateBlank')),
+				h('div', { className: 'gbt-roleslistcreatebody', 'data-role-create-body': 'true' }, h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }))),
 			h('div', { className: 'gbt-roleslistrows' }, rosterEntries.map(function (entry) {
 				const selected = selectedName !== null && String(selectedName) === entry.name
 				return h('button', {
@@ -555,12 +558,6 @@ function createRolesEditor(deps) {
 		function createBlankInvalid(code) {
 			report('rolesCreate', false, { code: code, message: '' })
 		}
-		const blankCreate = h(
-			'details',
-			{ key: 'blank-create', className: 'gbt-createblank', 'data-section': 'role-create-blank' },
-			h('summary', null, t('roleEditorCreateBlank')),
-			h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }),
-		)
 		const runningNames = instances.filter(function (entry) { return entry.kind === kind }).map(function (entry) { return entry.name })
 		const runningRow = h('div', { className: 'gbt-footnote', 'data-role-running': 'true' },
 			t('roleRunningNow') + ': ' + (runningNames.length === 0 ? t('roleNoneRunning') : runningNames.join(', ')) + ' · ' + (boundName === kind ? t('roleFromDefault') : t('roleFromCopy')))
@@ -580,7 +577,7 @@ function createRolesEditor(deps) {
 					editablePrompt ? rawColumn() : builtinDefaultColumn(),
 					h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow))),
 			h('section', { className: 'gbt-rolesection', 'data-role-section': 'application' }, sectionHead('APPLICATION / 应用', t('roleCurrentUse')), currentUseSelect, h('div', { className: 'gbt-footnote', 'data-role-apply-hint': 'true' }, t('roleApplyHint')), runningRow),
-			blankCreate)
+			)
 		const rightPane = h('section', { className: 'gbt-rolespane gbt-rolespreviewpane', 'data-roles-pane': 'injected' },
 			h('div', { className: 'gbt-rolespreviewhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'PREVIEW / 注入预览'), h('h3', null, t('rolePreviewInjectedTitle'))),
 			h('div', { className: 'gbt-rolecard', 'data-role-card': 'injected' }, injectedColumn()),

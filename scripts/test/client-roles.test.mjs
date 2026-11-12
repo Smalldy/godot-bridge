@@ -106,6 +106,13 @@ assert.equal(deps.roleEditorState.selected, 'merger')
 const sections = findAll(editor, (node) => node.props['data-role-section'] !== undefined).map((node) => node.props['data-role-section'])
 assert.deepEqual(sections.filter((value, index) => sections.indexOf(value) === index), ['identity', 'behavior', 'application'])
 assert.equal(findAll(editor, (node) => node.props['data-roles-pane'] === 'raw').length, 1)
+const createEntry = findAll(editor, (node) => node.props['data-role-create-entry'] === 'true')[0]
+const applicationSection = findAll(editor, (node) => node.props['data-role-section'] === 'application')[0]
+assert.ok(createEntry !== undefined && applicationSection !== undefined)
+assert.equal(createEntry.props.open, undefined)
+assert.ok(textOf(findAll(createEntry, (node) => node.props['data-role-create-summary'] === 'true')[0]).indexOf('roleEditorCreateBlank') >= 0)
+assert.equal(findAll(applicationSection, (node) => node.props['data-form'] === 'role-create').length, 0)
+assert.equal(findAll(createEntry, (node) => node.type === deps.RoleCreateForm).length, 1)
 assert.equal(findAll(editor, (node) => node.props['data-roles-pane'] === 'injected').length, 1)
 assert.equal(findAll(editor, (node) => node.props['data-role-card'] === 'raw').length, 1)
 assert.equal(findAll(editor, (node) => node.props['data-role-card'] === 'injected').length, 1)
