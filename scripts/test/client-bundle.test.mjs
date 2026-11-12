@@ -1197,9 +1197,9 @@ await flush()
   const cardsRoot = findAll(statusTree, (node) => node.props && node.props['data-status'] === 'cards')[0]
   const statusCards = findAll(statusTree, (node) => node.props && node.props['data-status-card'] !== undefined)
   check(
-    'T-155 the status page is a summary line plus the per-session card, three narrow cards and one full-width activity card',
+    'T-171 the status page is a Shift Deck: dispatch+executors rail, sessions table, worktrees rail, activity band',
     cardsRoot !== undefined &&
-      statusCards.map((card) => card.props['data-status-card']).join(',') === 'dispatch,sessions,worktrees,agents,activity' &&
+      statusCards.map((card) => card.props['data-status-card']).join(',') === 'dispatch,agents,sessions,worktrees,activity' &&
       findAll(statusTree, (node) => node.props && node.props['data-status-grid'] === 'true').length === 1 &&
       findAll(statusTree, (node) => node.props && node.props['data-status-top'] === 'true').length === 1,
     JSON.stringify(statusCards.map((card) => card.props['data-status-card'])),
@@ -1229,14 +1229,16 @@ await flush()
   )
   const dispatchCard = statusCards.filter((card) => card.props['data-status-card'] === 'dispatch')[0]
   check(
-    'the dispatch card shows concurrency, ready and queue plus a why-not-running reason',
+    'T-171 the dispatch rail shows the big running/total, ready, queue, tasks, last scan and why-not-running',
     dispatchCard !== undefined &&
-      textOf(dispatchCard).indexOf('1/ 3 并发') >= 0 &&
+      textOf(dispatchCard).indexOf('1 / 3') >= 0 &&
+      textOf(dispatchCard).indexOf('并发') >= 0 &&
       textOf(dispatchCard).indexOf('1就绪') >= 0 &&
       findAll(dispatchCard, (node) => node.props && node.props['data-status-why'] === 'true').length === 1 &&
       textOf(dispatchCard).indexOf('派发已暂停') >= 0 &&
       textOf(dispatchCard).indexOf('上次扫描') >= 0 &&
-      textOf(dispatchCard).indexOf('合并队列') >= 0,
+      textOf(dispatchCard).indexOf('合并队列') >= 0 &&
+      textOf(dispatchCard).indexOf('任务') >= 0,
     dispatchCard && textOf(dispatchCard),
   )
   // T-169: the paused dispatch card exposes the audit source/reason in Chinese.
@@ -2206,8 +2208,8 @@ await flush()
     )
     const scanFooter = findAll(dispatchCard, (node) => node.props && node.props['data-status-scan'] === 'true')[0]
     check(
-      'the footer keeps only the last scan and no merge-queue count',
-      scanFooter !== undefined && textOf(scanFooter).indexOf('上次扫描') >= 0 && textOf(scanFooter).indexOf('合并队列') < 0 && findAll(scanFooter, (node) => node.props && node.props['data-kv'] !== undefined).length === 0,
+      'T-171 the dispatch rail keeps a last-scan reading',
+      scanFooter !== undefined && scanFooter.props['data-kv'] === 'last-scan' && textOf(scanFooter).indexOf('上次扫描') >= 0,
       scanFooter && textOf(scanFooter),
     )
     locale = 'en'
@@ -6709,10 +6711,78 @@ check('teardown removes the styles', styleTags.every((tag) => tag.removed === tr
   const gridTree = withHooks(panel, { initialView: 'status' })
   const gridChildren = findAll(gridTree, (node) => node.props && node.props['data-status-card'] !== undefined).map((node) => node.props['data-status-card'])
   check(
-    'T-170 the DOM order still feeds the CSS areas without rearranging the cards',
-    gridChildren.join(',') === 'dispatch,sessions,worktrees,agents,activity' &&
+    'T-171 the DOM carries the deck rail, sessions, worktrees and activity in one grid',
+    gridChildren.join(',') === 'dispatch,agents,sessions,worktrees,activity' &&
       findAll(gridTree, (node) => node.props && node.props['data-status-grid'] === 'true').length === 1,
     JSON.stringify(gridChildren),
+  )
+}
+
+// ── T-171: the status page is the Shift Deck console, not the T-170 card grid ──
+{
+  const css171 = readFileSync(SRC, 'utf8')
+  check(
+    'T-171 the deck grid is a 260px rail + flexible sessions + 420px worktrees, with a full-width activity band',
+    css171.indexOf('grid-template-columns:260px minmax(0,1fr) 420px') >= 0 &&
+      css171.indexOf('grid-template-areas:"rail sessions worktrees" "rail activity activity"') >= 0 &&
+      css171.indexOf('grid-template-rows:minmax(0,1fr) 172px') >= 0,
+    'Shift Deck grid areas/columns missing',
+  )
+  const deckTree = withHooks(panel, { initialView: 'status' })
+  await flush()
+  const freshTree = withHooks(panel, { initialView: 'status' })
+  const rail = findAll(freshTree, (node) => node.props && node.props.className === 'gbt-deckrail')[0]
+  check(
+    'T-171 dispatch and executors live in the left rail while sessions/worktrees sit in the main grid',
+    rail !== undefined &&
+      findAll(rail, (node) => node.props && node.props['data-status-card'] !== undefined).map((node) => node.props['data-status-card']).join(',') === 'dispatch,agents' &&
+      findAll(freshTree, (node) => node.props && node.props['data-status-card'] === 'sessions').length === 1,
+    rail === undefined ? 'no rail' : JSON.stringify(findAll(rail, (node) => node.props && node.props['data-status-card'] !== undefined).map((node) => node.props['data-status-card'])),
+  )
+  check(
+    'T-171 the sessions panel has six fixed columns and keeps the filter',
+    css171.indexOf('.gbt-deckthead{') >= 0 &&
+      css171.indexOf('.gbt-decksessionrow{') >= 0 &&
+      css171.indexOf('grid-template-columns:minmax(0,1.45fr) 76px 70px 74px 58px 58px') >= 0 &&
+      findAll(freshTree, (node) => node.props && node.props['data-session-columns'] === 'true').length === 1 &&
+      findAll(freshTree, (node) => node.props && node.props['data-session-filter'] === 'true').length === 1,
+    'session table columns/filter missing',
+  )
+  const groups = findAll(freshTree, (node) => node.props && node.props['data-wt-section'] !== undefined).map((node) => node.props['data-wt-section'])
+  check(
+    'T-171 worktrees are grouped (main, active when present, stale) in the right rail',
+    groups.join(',').indexOf('main') === 0 && groups.indexOf('stale') >= 0 &&
+      findAll(freshTree, (node) => node.props && node.props['data-status-card'] === 'worktrees').length === 1,
+    JSON.stringify(groups),
+  )
+  check(
+    'T-171 the activity band spans the center and right columns',
+    css171.indexOf('.gbt-deckactivity{grid-area:activity;') >= 0 &&
+      findAll(freshTree, (node) => node.props && node.props['data-status-card'] === 'activity').length === 1 &&
+      findAll(freshTree, (node) => node.props && node.props['data-activity-kind'] !== undefined).length > 0,
+    'activity band missing',
+  )
+  check(
+    'T-171 long session/worktree/activity text ellipsizes instead of widening the deck',
+    css171.indexOf('.gbt-decksessionname b{') >= 0 &&
+      css171.indexOf('.gbt-shiftdeck .gbt-wtbranch{') >= 0 &&
+      css171.indexOf('text-overflow:ellipsis') >= 0 &&
+      css171.indexOf('.gbt-shiftdeck .gbt-statusevtext{') >= 0,
+    'deck ellipsis rules missing',
+  )
+  check(
+    'T-171 <=900px stacks the deck in one column with the rail first and no zoom transform',
+    css171.indexOf('@media (max-width:900px){.gbt-statusview.gbt-shiftdeck') >= 0 &&
+      css171.indexOf('grid-template-areas:"rail" "sessions" "worktrees" "activity"') >= 0 &&
+      css171.indexOf('zoom:') < 0 && css171.indexOf('transform:scale') < 0,
+    'deck mobile/stack or no-zoom rule missing',
+  )
+  check(
+    'T-171 refresh and the worktree actions remain wired after the redesign',
+    findAll(freshTree, (node) => node.props && node.props['data-action'] === 'status-refresh').length === 1 &&
+      findAll(freshTree, (node) => node.props && node.props['data-action'] === 'worktree-preflight').length === 1 &&
+      findAll(freshTree, (node) => node.props && node.props['data-action'] === 'worktree-cleanup-safe').length === 1,
+    'refresh/worktree actions missing',
   )
 }
 

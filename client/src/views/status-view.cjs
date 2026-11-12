@@ -296,32 +296,29 @@ function createStatusView(deps) {
 				: t('statusIdle') + ' ' + String(idleMinutes) + ' ' + t('statusMinutes')) + (queueLength > 0 ? ' · ' + t('queueLengthChip').replace('{n}', String(queueLength)) : '')
 			const resultText = isLead ? typeof member.description === 'string' && member.description !== '' ? member.description : '—' : lastResultFor(name)
 			const expanded = openSession === name
+			const runningNow = isLead === true || member.status === 'running' || current !== null
 			return h(
 		'div',
-		{ key: 'agent-' + name, className: 'gbt-statusrow', 'data-status-agent': name },
-		h('span', { className: 'gbt-statuswho gbt-mono' }, name),
-		h('span', { className: 'gbt-statusrole' }, roleKindLabel(isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate', t)),
-		h('span', { className: 'gbt-statustask' }, statusText),
-		h('span', { className: 'gbt-statustime' }, resultText),
-		h(
-			'button',
-			{ type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } },
-			'⋯',
+		{ key: 'agent-' + name, className: 'gbt-deckperson', 'data-status-agent': name, 'data-tone': runningNow ? 'live' : 'idle' },
+		h('span', { className: 'gbt-deckdot', 'data-running': runningNow ? 'true' : 'false' }),
+		h('div', { className: 'gbt-deckpersonmain' },
+			h('b', { className: 'gbt-mono', title: name }, name),
+			h('span', null, roleKindLabel(isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate', t) + ' · ' + statusText),
+		),
+		h('div', { className: 'gbt-deckpersonmeta' },
+			h('em', { title: resultText }, resultText),
+			h('button', { type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } }, '⋯'),
 		),
 		expanded
 			? h(
 			'div',
-			{ className: 'gbt-sessionrow', 'data-status-session': name },
+			{ className: 'gbt-decksession', 'data-status-session': name },
 			h('span', { className: 'gbt-footnote' }, t('statusSession')),
 			h('code', { className: 'gbt-mono' }, session === '' ? '—' : session),
 			session === ''
 				? null
-				: h(
-				'button',
-				{ type: 'button', className: 'gbt-btn', 'data-action': 'copy-session', 'data-session': session, onClick: function () { void copyToClipboard(session).then(function (okopy) { const next = okopy === true ? session : 'failed'; statusUiState.copied = next; setCopied(next) }) } },
-				copied === session ? t('sessionCopied') : t('copySession'),
-					),
-				)
+				: h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'copy-session', 'data-session': session, onClick: function () { void copyToClipboard(session).then(function (okopy) { const next = okopy === true ? session : 'failed'; statusUiState.copied = next; setCopied(next) }) } }, copied === session ? t('sessionCopied') : t('copySession')),
+			)
 			: null,
 			)
 		}
@@ -347,40 +344,39 @@ function createStatusView(deps) {
 				h('span', null, t('statusPauseSourceLabel') + '：' + pauseSourceLabelOf(pauseSourceValue)),
 				pauseReason === null ? null : h('span', { 'data-pause-reason': 'true' }, ' · ' + t('statusPauseReasonLabel') + '：' + pauseReason),
 			)
+		function deckMetric(key, value, label) {
+			return h('div', { className: 'gbt-deckmetric', 'data-kv': key }, h('b', null, String(value)), h('span', null, label))
+		}
+		function deckPanelHead(eyebrow, title, meta) {
+			return h('div', { className: 'gbt-deckpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, eyebrow), h('h2', null, title), meta === null || meta === undefined ? null : h('span', { className: 'gbt-deckpanelmeta' }, meta))
+		}
+		const scanAgo = scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—'
 		const dispatchCard = h(
 			'section',
-			{ className: 'gbt-statuscard', 'data-status-card': 'dispatch' },
-			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot', 'data-running': active ? 'true' : 'false' }), t('statusCardDispatch'), h('span', { className: 'gbt-statusmeta' }, active ? t('running') : t('paused'))),
-			h(
-		'div',
-		{ className: 'gbt-statuscardbody' },
-		h('div', { className: 'gbt-statuskvs' }, h('span', { className: 'gbt-statuskv', 'data-kv': 'concurrent' }, h('b', null, String(running.length)), h('span', null, '/ ' + String(maxConcurrent) + ' ' + t('statusConcurrent'))), h('span', { className: 'gbt-statuskv', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))), Number.isFinite(counts.investigating) && counts.investigating > 0 ? h('span', { className: 'gbt-statuskv', 'data-kv': 'investigating', 'data-kind': 'investigate' }, h('b', null, String(counts.investigating)), h('span', null, t('statusInvestigating'))) : null, h('span', { className: 'gbt-statuskv', 'data-kv': 'merge-queue', 'data-merge-queue': mergeQueued === null ? 'unavailable' : 'ready', title: mergeActive === null ? '' : String(mergeActive) }, h('b', null, mergeQueued === null ? '—' : String(mergeQueued)), h('span', null, t('statusMergeQueue')))),
-		h('div', { className: 'gbt-statuswhy', 'data-status-why': 'true' }, whyNotRunning()),
-		pauseAuditLine,
-		h('div', { className: 'gbt-statusscan', 'data-status-scan': 'true' }, t('statusLastScan') + ' ' + (scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—')),
-		panelSessionLine,
-		snapshot.nextStep === null || snapshot.nextStep === undefined
-			? null
-			: h(
-			'div',
-			{ className: 'gbt-statuswhy', 'data-status-team': 'missing', 'data-status-next-step': String(snapshot.nextStep.code) },
-			t('projectTeamNext') + ' ' + String(snapshot.nextStep.instruction),
-				),
-		archivedCount > 0
-			? h('div', { className: 'gbt-statusscan', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)), ' ', h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'archive-open', onClick: function () { if (props.onOpenArchive !== undefined) props.onOpenArchive() } }, t('archiveOpen')))
-			: null,
-		boardSizeWarn
-			? h(
-			'div',
-			{ className: 'gbt-statusscan', 'data-status-board-size': boardSize.level, 'data-board-bytes': String(boardSize.bytes), title: boardSize.warning === null ? '' : String(boardSize.warning) },
-			t('statusBoardSize')
-				.replace('{mb}', String(Math.round((boardSize.bytes / (1024 * 1024)) * 10) / 10))
-				.replace('{limit}', String(Math.round(boardSize.limit / (1024 * 1024))))
-				.replace('{percent}', String(boardSize.percent))
-				.replace('{n}', boardSize.headroomCards === null ? '—' : String(boardSize.headroomCards)),
-				)
-			: null,
+			{ className: 'gbt-statuscard gbt-deckdispatch', 'data-status-card': 'dispatch' },
+			h('div', { className: 'gbt-decklabel' }, h('span', null, 'DISPATCH'), h('span', { className: 'gbt-decklabelzh' }, t('statusCardDispatch')), h('em', { 'data-running': active ? 'true' : 'false' }, active ? t('running') : t('paused'))),
+			h('div', { className: 'gbt-deckbig' }, String(running.length), h('small', null, ' / ' + String(maxConcurrent))),
+			h('div', { className: 'gbt-deckbar' }, Array.from({ length: Math.max(1, Number(maxConcurrent) || 1) }, function (_, index) { return h('i', { key: 'bar-' + String(index), 'data-on': index < running.length ? 'true' : 'false' }) })),
+			h('p', { className: 'gbt-decknote', 'data-status-why': 'true' }, whyNotRunning()),
+			pauseAuditLine,
+			h('div', { className: 'gbt-deckmetrics' },
+				h('div', { className: 'gbt-deckmetric', 'data-kv': 'concurrent' }, h('b', null, String(running.length) + ' / ' + String(maxConcurrent)), h('span', null, t('statusConcurrent'))),
+				h('div', { className: 'gbt-deckmetric', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))),
+				h('div', { className: 'gbt-deckmetric', 'data-kv': 'merge-queue', 'data-merge-queue': mergeQueued === null ? 'unavailable' : 'ready', title: mergeActive === null ? '' : String(mergeActive) }, h('b', null, mergeQueued === null ? '—' : String(mergeQueued)), h('span', null, t('statusMergeQueue'))),
+				h('div', { className: 'gbt-deckmetric', 'data-kv': 'tasks' }, h('b', null, String(tasks.length)), h('span', null, t('statusTasks'))),
+				h('div', { className: 'gbt-deckmetric', 'data-kv': 'last-scan', 'data-status-scan': 'true' }, h('b', null, scanAgo), h('span', null, t('statusLastScan'))),
+				Number.isFinite(counts.investigating) && counts.investigating > 0 ? h('div', { className: 'gbt-deckmetric', 'data-kv': 'investigating', 'data-kind': 'investigate' }, h('b', null, String(counts.investigating)), h('span', null, t('statusInvestigating'))) : null,
 			),
+			panelSessionLine,
+			snapshot.nextStep === null || snapshot.nextStep === undefined
+				? null
+				: h('div', { className: 'gbt-decknext', 'data-status-team': 'missing', 'data-status-next-step': String(snapshot.nextStep.code) }, t('projectTeamNext') + ' ' + String(snapshot.nextStep.instruction)),
+			archivedCount > 0
+				? h('div', { className: 'gbt-deckscanline', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)), ' ', h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'archive-open', onClick: function () { if (props.onOpenArchive !== undefined) props.onOpenArchive() } }, t('archiveOpen')))
+				: null,
+			boardSizeWarn
+				? h('div', { className: 'gbt-deckscanline', 'data-status-board-size': boardSize.level, 'data-board-bytes': String(boardSize.bytes), title: boardSize.warning === null ? '' : String(boardSize.warning) }, t('statusBoardSize').replace('{mb}', String(Math.round((boardSize.bytes / (1024 * 1024)) * 10) / 10)).replace('{limit}', String(Math.round(boardSize.limit / (1024 * 1024)))).replace('{percent}', String(boardSize.percent)).replace('{n}', boardSize.headroomCards === null ? '—' : String(boardSize.headroomCards)))
+				: null,
 		)
 				const wtList = worktrees !== null && worktrees !== undefined && worktrees.available === true && Array.isArray(worktrees.worktrees) ? worktrees.worktrees : []
 		const mainWt = wtList.filter(function (entry) { return entry.type === 'main' })[0]
@@ -508,7 +504,7 @@ function createStatusView(deps) {
 		h('span', { className: 'gbt-chip', 'data-wt-merge': entry.merged === true ? 'merged' : entry.merged === false ? 'unmerged' : 'unknown', 'data-tone': merged ? 'ready' : 'waiting' }, entry.merged === false || entry.merged === true ? t(merged ? 'statusWtMerged' : 'statusWtUnmerged') : '—'))
 		}
 		const wtRowBase = function (key, entry, rowMarker, stateText) {
-			return h('div', { key: key, className: 'gbt-wtrow', 'data-worktree-row': rowMarker, 'data-wt-task': String(entry.taskId === undefined || entry.taskId === null ? '' : entry.taskId) },
+			return h('div', { key: key, className: 'gbt-wtrow gbt-deckwtrow', 'data-worktree-row': rowMarker, 'data-wt-task': String(entry.taskId === undefined || entry.taskId === null ? '' : entry.taskId) },
 		h('span', { className: 'gbt-wtlabel' }, h('b', null, wtLabelOf(entry)), h('span', { className: 'gbt-pill', 'data-wt-type': String(entry.type) }, wtTypeLabel(entry.type))),
 		h('span', { className: 'gbt-wtpath gbt-mono', title: String(entry.path) }, wtBaseOf(entry.path)),
 		h('span', { className: 'gbt-wtbranch gbt-mono', title: typeof entry.branch === 'string' ? entry.branch : '' }, typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : '—'),
@@ -538,7 +534,7 @@ function createStatusView(deps) {
 			} else {
 		actions = h('span', { className: 'gbt-wtactions' }, h('span', { className: 'gbt-statusnote' }, candidate !== undefined ? wtReasonLabel(String(candidate.why)) : effective.probed !== true ? t(cleanupUi.probeState === 'loading' ? 'statusWtProbing' : cleanupUi.probeState === 'error' ? 'statusWtProbeFailed' : 'statusWtUnprobed') : t('statusWtPreflightFirst')))
 			}
-			return h('div', { key: 'wt-stale-' + actionId, className: 'gbt-wtrow', 'data-worktree-stale': wtLabelOf(entry), 'data-path': entry.path, 'data-reason': String(effective.reason === undefined || effective.reason === null ? '' : effective.reason), 'data-wt-probed': effective.probed === true ? 'true' : 'false' },
+			return h('div', { key: 'wt-stale-' + actionId, className: 'gbt-wtrow gbt-deckwtrow', 'data-worktree-stale': wtLabelOf(entry), 'data-path': entry.path, 'data-reason': String(effective.reason === undefined || effective.reason === null ? '' : effective.reason), 'data-wt-probed': effective.probed === true ? 'true' : 'false', 'data-wt-probed': effective.probed === true ? 'true' : 'false' },
 		h('span', { className: 'gbt-wtlabel' }, h('b', null, wtLabelOf(entry)), h('span', { className: 'gbt-pill', 'data-wt-type': String(entry.type) }, wtTypeLabel(entry.type))),
 		h('span', { className: 'gbt-wtpath gbt-mono', title: String(entry.path) }, wtBaseOf(entry.path)),
 		h('span', { className: 'gbt-wtbranch gbt-mono', title: typeof entry.branch === 'string' ? entry.branch : '' }, typeof entry.branch === 'string' && entry.branch !== '' ? entry.branch : '—'),
@@ -557,27 +553,42 @@ function createStatusView(deps) {
 			cleanupResult.ok === true && Array.isArray(cleanupResult.failed)
 		? cleanupResult.failed.map(function (entry) { return h('div', { key: 'failed-' + String(entry.path), className: 'gbt-wtpreviewrow gbt-mono' }, wtBaseOf(entry.path) + ' · ' + String(entry.code === undefined ? '' : entry.code)) })
 		: null)
-		const worktreesCard = h('section', { className: 'gbt-statuscard', 'data-status-card': 'worktrees' },
-			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardWorktrees'), h('span', { className: 'gbt-statusmeta', 'data-wt-summary': 'true' }, String(totalCount) + ' ' + t('statusWtTotal') + ' · ' + String(activeCount) + ' ' + t('statusWtActive') + ' · ' + String(safeCount) + ' ' + t('statusWtSafe') + ' · ' + String(confirmCount) + ' ' + t('statusWtConfirm'))),
-			h('div', { className: 'gbt-statuscardbody' },
-		worktrees === null || worktrees === undefined || worktrees.available !== true
-			? h('div', { className: 'gbt-statusnote' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : snapshot.source === 'loading' ? t('statusWtLoading') : t('statusWorktreesUnavailable'))
-			: h('div', { className: 'gbt-wtview' },
-				h('div', { className: 'gbt-wtbatch' },
-			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'worktree-preflight', disabled: cleanupUi.pending === true, onClick: wtRunPreflight }, cleanupUi.pending === true ? t('statusWtPreflighting') : t('statusWtPreflight')),
-			h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'worktree-cleanup-safe', disabled: cleanupBusy || selectedSafePaths.length === 0, onClick: function () { wtExecute(selectedSafePaths, false) } }, t('statusWtCleanupSafe').replace('{n}', String(selectedSafePaths.length)))),
-				mainRow,
-				activeRows,
-				h('div', { className: 'gbt-wtsectionhead' }, t('statusStaleWorktrees') + ' · ' + String(staleWts.length)),
-				staleWts.length === 0 ? h('div', { className: 'gbt-statusnote' }, t('statusWtNoStale')) : h('div', { className: 'gbt-wtlines', 'data-wt-lines': 'true' }, staleRows),
-				preflightBlock,
-				resultBlock)))
+		const worktreesCard = h('section', { className: 'gbt-statuscard gbt-deckworktrees', 'data-status-card': 'worktrees' },
+			h('div', { className: 'gbt-deckpanelhead' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'WORKTREES / ' + String(totalCount).padStart(2, '0')),
+				h('h2', null, t('statusCardWorktrees')),
+				h('span', { className: 'gbt-deckpanelmeta', 'data-wt-summary': 'true' }, String(totalCount) + ' ' + t('statusWtTotal') + ' · ' + String(activeCount) + ' ' + t('statusWtActive') + ' · ' + String(safeCount) + ' ' + t('statusWtSafe') + ' · ' + String(confirmCount) + ' ' + t('statusWtConfirm')),
+			),
+			worktrees === null || worktrees === undefined || worktrees.available !== true
+				? h('div', { className: 'gbt-deckempty' }, worktrees !== null && worktrees !== undefined && worktrees.error === 'no-git-service' ? t('statusNoGit') : snapshot.source === 'loading' ? t('statusWtLoading') : t('statusWorktreesUnavailable'))
+				: h('div', { className: 'gbt-deckwtview' },
+					h('div', { className: 'gbt-deckwtool' },
+						h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'worktree-preflight', disabled: cleanupUi.pending === true, onClick: wtRunPreflight }, cleanupUi.pending === true ? t('statusWtPreflighting') : t('statusWtPreflight')),
+						h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'worktree-cleanup-safe', disabled: cleanupBusy || selectedSafePaths.length === 0, onClick: function () { wtExecute(selectedSafePaths, false) } }, t('statusWtCleanupSafe').replace('{n}', String(selectedSafePaths.length))),
+						h('span', { className: 'gbt-deckwtoolmeta' }, String(staleWts.length) + ' ' + t('statusStaleWorktrees')),
+					),
+					h('div', { className: 'gbt-deckwtrows' },
+						h('div', { className: 'gbt-deckwtgroup', 'data-wt-section': 'main' }, h('span', null, 'MAIN / ' + t('statusWtMain')), h('b', null, '1')),
+						mainRow,
+						activeWts.length === 0 ? null : h('div', { className: 'gbt-deckwtgroup', 'data-wt-section': 'active' }, h('span', null, 'ACTIVE / ' + t('statusWtActive')), h('b', null, String(activeWts.length))),
+						activeRows,
+						h('div', { className: 'gbt-deckwtgroup', 'data-wt-section': 'stale' }, h('span', null, 'STALE / ' + t('statusStaleWorktrees')), h('b', null, String(staleWts.length))),
+						staleWts.length === 0 ? h('div', { className: 'gbt-deckempty' }, t('statusWtNoStale')) : h('div', { className: 'gbt-wtlines', 'data-wt-lines': 'true' }, staleRows),
+					),
+					preflightBlock,
+					resultBlock,
+				),
+		)
 		const reviewerQueue = tasks.filter(function (task) { return task.status === 'reviewing' && tcStageQueued(task) }).length
 		const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && tcStageQueued(task) }).length
 		const lead = agents !== null && agents !== undefined ? agents.lead : null
 		// T-122: member table = the requesting session's team (team.members).
 		const teamMembersView = snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members) ? snapshot.team.members : null
-		const members = teamMembersView !== null ? teamMembersView : agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+		// T-171: the Lead can also appear in a flat member list; list it once in the
+		// executors rail. The old card tolerated a duplicate, a console row cannot.
+		const leadName = lead !== null && typeof lead.name === 'string' ? lead.name : null
+		const memberSource = teamMembersView !== null ? teamMembersView : agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
+		const members = memberSource.filter(function (member) { return member !== null && member !== undefined && (leadName === null || member.name !== leadName) })
 		// T-118: role instances whose slot project is NOT this session's project
 		// can only be leftovers from an older build; mark them instead of hiding.
 		const teams = snapshot.teams
@@ -604,16 +615,14 @@ function createStatusView(deps) {
 		members.forEach(function (member, index) { agentRows.push(agentRow(member, false, index)) })
 		const agentsCard = h(
 			'section',
-			{ className: 'gbt-statuscard', 'data-status-card': 'agents' },
-			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot', 'data-running': members.some(function (member) { return member.status === 'running' }) ? 'true' : 'false' }), t('statusCardAgents'), h('span', { className: 'gbt-statusmeta' }, String(agentRows.length) + ' ' + t('statusAgentUnit'))),
-			h(
-		'div',
-		{ className: 'gbt-statuscardbody' },
-		agents === null || agents === undefined
-			? h('div', { className: 'gbt-statusnote' }, t('statusAgentsUnavailable'))
-			: agentRows.length === 0 && leftoverRows.length === 0
-				? h('div', { className: 'gbt-statusnote' }, t('workersEmpty'))
-				: h('div', null, agentRows, leftoverRows),
+			{ className: 'gbt-statuscard gbt-deckexecutors', 'data-status-card': 'agents' },
+			h('div', { className: 'gbt-decklabel' }, h('span', null, 'EXECUTORS'), h('span', { className: 'gbt-decklabelzh' }, t('statusCardAgents')), h('em', { 'data-running': members.some(function (member) { return member.status === 'running' }) ? 'true' : 'false' }, String(agentRows.length))),
+			h('div', { className: 'gbt-deckpeople', 'data-status-agents': 'true' },
+				agents === null || agents === undefined
+					? h('div', { className: 'gbt-statusnote' }, t('statusAgentsUnavailable'))
+					: agentRows.length === 0 && leftoverRows.length === 0
+						? h('div', { className: 'gbt-statusnote' }, t('workersEmpty'))
+						: h('div', null, agentRows, leftoverRows),
 			),
 		)
 		const timeline = snapshot.activityEvents
@@ -626,11 +635,11 @@ function createStatusView(deps) {
 		const sweepRows = showAllActivity && lastSweep !== null ? [lastSweep] : []
 		const activityCard = h(
 			'section',
-			{ className: 'gbt-statuscard', 'data-status-card': 'activity' },
-			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('statusCardActivity'), h('span', { className: 'gbt-statusmeta' }, t('statusLatestActivity') + ' ' + String(recentStream.length) + ' ' + t('statusEventUnit'))),
+			{ className: 'gbt-statuscard gbt-deckactivity', 'data-status-card': 'activity' },
+			h('div', { className: 'gbt-deckpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'ACTIVITY / ' + String(recentStream.length).padStart(2, '0')), h('h2', null, t('statusCardActivity')), h('span', { className: 'gbt-deckpanelmeta' }, t('statusLatestActivity') + ' ' + String(recentStream.length) + ' ' + t('statusEventUnit'))),
 			h(
 		'div',
-		{ className: 'gbt-statuscardbody' },
+		{ className: 'gbt-deckactivitybody' },
 		!activityAvailable
 			? h('div', { className: 'gbt-statusnote' }, t('statusActivityUnavailable'))
 			: recentStream.length === 0 && sweepRows.length === 0 && lastSweep === null
@@ -639,7 +648,7 @@ function createStatusView(deps) {
 			recentStream.map(function (event) {
 				return h(
 					'div',
-					{ key: event.key, className: 'gbt-statusev', 'data-activity': event.type, 'data-activity-kind': event.type, 'data-activity-task': event.taskId, title: event.raw === null ? undefined : event.raw },
+					{ key: event.key, className: 'gbt-statusev gbt-deckarow', 'data-activity': event.type, 'data-activity-kind': event.type, 'data-activity-task': event.taskId, title: event.raw === null ? undefined : event.raw },
 					h('span', { className: 'gbt-statusevtime gbt-mono' }, typeof event.at === 'string' ? new Date(event.at).toTimeString().slice(0, 5) : '—'),
 					h('span', { className: 'gbt-statusevkind' }, activityLabel(event.type)),
 					h('span', { className: 'gbt-statusevtext' }, event.html),
@@ -688,85 +697,84 @@ function createStatusView(deps) {
 			return status === 'live' ? t('sessionsStatusLive') : status === 'stale' ? t('sessionsStatusStale') : t('sessionsStatusUnknown')
 		}
 		const stageBadge = function (key, label, ready) {
-			return h('span', { key: key, className: 'gbt-pill', 'data-stage-ready': ready === true ? 'true' : 'false' }, label + ' ' + (ready === true ? t('sessionsReady') : t('sessionsNotReady')))
+			return h('span', { key: key, className: 'gbt-deckstate', 'data-stage-ready': ready === true ? 'true' : 'false' }, h('i', { className: 'gbt-deckdot', 'data-on': ready === true ? 'true' : 'false' }), label + ' ' + (ready === true ? t('sessionsReady') : t('sessionsNotReady')))
 		}
 		const sessionsCard = h(
 			'section',
-			{ className: 'gbt-statuscard', 'data-status-card': 'sessions' },
-			h('div', { className: 'gbt-statuscardhead' }, h('span', { className: 'gbt-dot' }), t('sessionCardTitle'), h('span', { className: 'gbt-statusmeta' }, String(sessionRows.length) + ' ' + t('sessionsLabel'))),
-			h(
-				'div',
-				{ className: 'gbt-statuscardbody' },
-				h('p', { className: 'gbt-statusnote' }, t('sessionsHint')),
-				sessionRows.length === 0
-					? h('div', { className: 'gbt-statusnote', 'data-sessions-empty': 'true' }, t('sessionsEmpty'))
-					: h(
-						'div',
-						null,
-						h(
-							'label',
-							{ className: 'gbt-sessionfilter' },
-							t('sessionFilter'),
-							h(
-								'select',
-								{
-									'data-session-filter': 'true',
-									value: sessionFilter,
-									onChange: function (event) {
-										setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all')
-									},
-								},
-								h('option', { value: 'all' }, t('sessionFilterAll')),
-								sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) }),
-							),
-						),
-						h(
-							'div',
-							{ className: 'gbt-sessionscards', 'data-sessions-list': 'true' },
-							visibleSessions.map(function (row, index) {
-								const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
-								const current = currentSession !== null && row.sessionId === currentSession
-								const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
-								const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
-								return h(
-									'div',
-									{
-										key: 'session-' + String(index),
-										className: 'gbt-sessionsrow',
-										'data-session': String(row.sessionId),
-										'data-current': current ? 'true' : 'false',
-										'data-session-status': typeof row.status === 'string' ? row.status : 'unknown',
-										'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
-									},
-									h('span', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
-									current ? h('span', { className: 'gbt-sessionnow' }, t('sessionsCurrent')) : null,
-									team === null ? null : h('span', null, t('workersLead') + ' ' + (typeof team.lead === 'string' ? team.lead : '—')),
-									h('span', { className: 'gbt-statusmeta' }, t('sessionsCards').replace('{n}', String(Number.isFinite(cards.owned) ? cards.owned : 0)) + ' · ' + t('sessionsActive').replace('{n}', String(Number.isFinite(cards.active) ? cards.active : 0))),
-									h('span', { className: 'gbt-pill', 'data-session-status-pill': typeof row.status === 'string' ? row.status : 'unknown' }, sessionStatusText(row.status)),
-									h('span', { className: 'gbt-pill', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, t('sessionsReadiness') + ' ' + (row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
-									stageBadge('stage-review', t('sessionsStageReview'), stage.review === true),
-									stageBadge('stage-test', t('sessionsStageTest'), stage.test === true),
-								)
-							}),
-						),
+			{ className: 'gbt-statuscard gbt-decksessions', 'data-status-card': 'sessions' },
+			h('div', { className: 'gbt-deckpanelhead' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'SESSIONS / ' + String(sessionRows.length).padStart(2, '0')),
+				h('h2', null, t('sessionCardTitle')),
+				h('span', { className: 'gbt-deckpanelmeta' }, String(visibleSessions.length) + ' / ' + String(sessionRows.length) + ' ' + t('sessionsLabel')),
+				h('label', { className: 'gbt-deckfilter' }, t('sessionFilter'),
+					h('select', { 'data-session-filter': 'true', value: sessionFilter, onChange: function (event) { setSessionFilter(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'all') } },
+						h('option', { value: 'all' }, t('sessionFilterAll')),
+						sessionRows.map(function (row) { return h('option', { key: 'opt-' + String(row.sessionId), value: String(row.sessionId) }, sessionShortText(row.sessionId)) }),
 					),
+				),
 			),
+			h('div', { className: 'gbt-deckthead', 'data-session-columns': 'true' },
+				h('span', null, t('sessionColSession')),
+				h('span', null, t('sessionColCards')),
+				h('span', null, t('sessionColStatus')),
+				h('span', null, t('sessionColDispatch')),
+				h('span', null, t('sessionColReview')),
+				h('span', null, t('sessionColTest')),
+			),
+			sessionRows.length === 0
+				? h('div', { className: 'gbt-deckempty', 'data-sessions-empty': 'true' }, t('sessionsEmpty'))
+				: h('div', { className: 'gbt-deckrows', 'data-sessions-list': 'true', title: t('sessionsHint') },
+					visibleSessions.map(function (row, index) {
+						const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
+						const current = currentSession !== null && row.sessionId === currentSession
+						const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
+						const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
+						const lead = team === null || typeof team.lead !== 'string' || team.lead === '' ? null : team.lead
+						const owned = Number.isFinite(cards.owned) ? cards.owned : 0
+						const activeCards = Number.isFinite(cards.active) ? cards.active : 0
+						return h('div', {
+							key: 'session-' + String(index),
+							className: 'gbt-decksessionrow' + (current ? ' is-current' : ''),
+							'data-session': String(row.sessionId),
+							'data-current': current ? 'true' : 'false',
+							'data-session-status': typeof row.status === 'string' ? row.status : 'unknown',
+							'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
+						},
+							h('div', { className: 'gbt-decksessionname' },
+								h('b', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
+								current ? h('span', { className: 'gbt-decksession-current' }, t('sessionsCurrent')) : null,
+								h('span', { title: lead === null ? '' : lead }, lead === null ? '—' : t('workersLead') + ' · ' + lead),
+							),
+							h('span', { className: 'gbt-decknum', 'data-session-cards': 'true' }, h('b', null, String(owned)), ' / ' + String(activeCards)),
+							h('span', { className: 'gbt-deckstatus', 'data-session-status-pill': typeof row.status === 'string' ? row.status : 'unknown', 'data-status': typeof row.status === 'string' ? row.status : 'unknown' }, h('i', { className: 'gbt-deckdot', 'data-on': row.status === 'live' ? 'true' : 'false' }), sessionStatusText(row.status)),
+							h('span', { className: 'gbt-deckstate', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, h('i', { className: 'gbt-deckdot', 'data-on': row.dispatchReady === true ? 'true' : 'false' }), row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady')),
+							stageBadge('stage-review', t('sessionsStageReview'), stage.review === true),
+							stageBadge('stage-test', t('sessionsStageTest'), stage.test === true),
+						)
+					}),
+				),
 		)
 
 		return h(
 			'div',
-			{ className: 'gbt-statusview', 'data-status': 'cards' },
+			{ className: 'gbt-statusview gbt-shiftdeck', 'data-status': 'cards' },
 			h(
-		'div',
-		{ className: 'gbt-statustop', 'data-status-top': 'true' },
-		h('div', { className: 'gbt-statussummary' }, lastActivityText === null ? '' : lastActivityText),
-		h(
-			'div',
-			{ className: 'gbt-statusactions' },
-			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
-		),
+				'div',
+				{ className: 'gbt-statustop gbt-deckhead', 'data-status-top': 'true' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'STATUS / 03'),
+				h('h1', null, t('status')),
+				h('span', { className: 'gbt-deckheadcrumb', title: lastActivityText === null ? '' : lastActivityText }, lastActivityText === null ? '' : lastActivityText),
+				h('div', { className: 'gbt-statusactions' },
+					h('span', { className: 'gbt-decklastscan' }, t('statusLastScan') + ' · ' + scanAgo),
+					h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'status-refresh', onClick: function () { void store.load() } }, '↻ ' + t('refresh')),
+				),
 			),
-			h('div', { className: 'gbt-statusgrid', 'data-status-grid': 'true' }, dispatchCard, sessionsCard, worktreesCard, agentsCard, activityCard),
+			h('div', { className: 'gbt-statusgrid gbt-deckgrid', 'data-status-grid': 'true' },
+				h('aside', { className: 'gbt-deckrail' }, dispatchCard, agentsCard),
+				sessionsCard,
+				worktreesCard,
+				activityCard,
+			),
 		)
 	}
 	return StatusView
