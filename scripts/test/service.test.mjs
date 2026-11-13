@@ -473,8 +473,8 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('dispatch starts paused', board.dispatch.state === 'paused')
   const started = setDispatch(board, { state: 'running' }, T0, '@user')
   check('start records the state', started.ok === true && started.dispatch.state === 'running' && started.dispatch.by === '@user')
-  const clamped = setDispatch(started.board, { maxConcurrent: 99, maxWorkAgents: 99, maxAttempts: 0 }, T0, '@user')
-  check('settings are clamped', clamped.dispatch.maxConcurrent === 8 && clamped.dispatch.maxWorkAgents === 12 && clamped.dispatch.maxAttempts === 1)
+  const clamped = setDispatch(started.board, { maxConcurrent: 99, maxAttempts: 0 }, T0, '@user')
+  check('settings are clamped', clamped.dispatch.maxConcurrent === 8 && clamped.dispatch.maxWorkAgents === undefined && clamped.dispatch.maxAttempts === 1)
   check('an invalid state is refused', setDispatch(board, { state: 'sometimes' }, T0, '@user').code === 'invalid-dispatch')
   check(
     'dispatch.worktree defaults to the internal root with no switch',

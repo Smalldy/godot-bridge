@@ -276,30 +276,30 @@ check(
   }
   check(
     'the body defines the Lead role and the onboarding entrance (T-129)',
-    ['你是谁：Lead', '接入（onboard）', 'onboard', 'next.code', '把 `onboard.brief` **原样**给用户', '拆卡', '不替 reviewer', '停下来问'].every((needle) => generated.indexOf(needle) >= 0),
-    ['你是谁：Lead', '接入（onboard）', 'onboard', 'next.code', '把 `onboard.brief` **原样**给用户', '拆卡', '不替 reviewer', '停下来问'].filter((needle) => generated.indexOf(needle) < 0).join(','),
+    ['你是谁：根 Agent', '接入（onboard）', 'onboard', 'next.code', '把 `onboard.brief` **原样**给用户', '拆卡', '不替 reviewer', '停下来问'].every((needle) => generated.indexOf(needle) >= 0),
+    ['你是谁：根 Agent', '接入（onboard）', 'onboard', 'next.code', '把 `onboard.brief` **原样**给用户', '拆卡', '不替 reviewer', '停下来问'].filter((needle) => generated.indexOf(needle) < 0).join(','),
   )
   check('the old 进入流程 entrance is gone', generated.indexOf('进入流程') < 0, generated.slice(generated.indexOf('接入'), generated.indexOf('接入') + 80))
   check(
     'the onboarding table covers every next code (T-129)',
-    ONBOARD_NEXT_CODES.every((code) => generated.indexOf('`' + code + '`') >= 0),
-    ONBOARD_NEXT_CODES.filter((code) => generated.indexOf('`' + code + '`') < 0).join(','),
+    ONBOARD_NEXT_CODES.filter((code) => code !== 'bootstrap-team').every((code) => generated.indexOf('`' + code + '`') >= 0),
+    ONBOARD_NEXT_CODES.filter((code) => code !== 'bootstrap-team').filter((code) => generated.indexOf('`' + code + '`') < 0).join(','),
   )
   check(
     'the body carries the workflow, the slot/merge/target rules and the corrections',
-    ['worker', 'reviewer', 'provision', '候选', 'godot_run_headless', '自动合并', 'queuePosition', 'target-not-advanced', 'ref 真的前进了', '一个 reviewer / tester 槽位'].every(
+    ['worker', 'reviewer', '候选', 'godot_run_headless', '自动合并', 'queuePosition', 'target-not-advanced', 'ref 真的前进了', '临时子代理'].every(
       (needle) => generated.indexOf(needle) >= 0,
     ),
-    ['worker', 'reviewer', 'provision', '候选', 'godot_run_headless', '自动合并', 'queuePosition', 'target-not-advanced', 'ref 真的前进了', '一个 reviewer / tester 槽位'].filter((needle) => generated.indexOf(needle) < 0).join(','),
+    ['worker', 'reviewer', '候选', 'godot_run_headless', '自动合并', 'queuePosition', 'target-not-advanced', 'ref 真的前进了', '临时子代理'].filter((needle) => generated.indexOf(needle) < 0).join(','),
   )
   check('the outdated "small changes can be committed directly" advice is gone', generated.indexOf('一次性小改动直接改') < 0)
   check('pause is documented as the dispatcher switch, not a single card', generated.indexOf('暂停/恢复**派发器**') >= 0 && generated.indexOf('tick') >= 0 && generated.indexOf('立即跑一轮 settle') >= 0)
   check(
     'the body carries the verdict gates and the refusal codes',
-    ['worker-cannot-self-review', 'worker-cannot-self-test', 'merger-only', 'user-only', 'head-drift', 'needs-consent', 'worktree-*', 'test-required'].every(
+    ['worker-cannot-self-review', 'worker-cannot-self-test', 'user-only', 'head-drift', 'needs-consent', 'worktree-*', 'test-required'].every(
       (needle) => generated.indexOf(needle) >= 0,
     ),
-    ['worker-cannot-self-review', 'worker-cannot-self-test', 'merger-only', 'user-only', 'head-drift', 'needs-consent', 'worktree-*', 'test-required'].filter((needle) => generated.indexOf(needle) < 0).join(','),
+    ['worker-cannot-self-review', 'worker-cannot-self-test', 'user-only', 'head-drift', 'needs-consent', 'worktree-*', 'test-required'].filter((needle) => generated.indexOf(needle) < 0).join(','),
   )
   check('the body keeps the guard-exemption prohibition', generated.indexOf('不给自己的提交开守卫豁免') >= 0)
   check('the body keeps the Godot launch rule', generated.indexOf('pwsh') >= 0 && generated.indexOf('sandbox-crash') >= 0)

@@ -95,8 +95,8 @@ check(
   }
   check(
     'the skill body carries the narrative the description gave up',
-    ['候选', 'godot_run_headless', 'merger-only', 'head-drift', 'queuePosition', 'target-not-advanced', 'ref 真的前进了'].every((needle) => content.indexOf(needle) >= 0),
-    ['候选', 'godot_run_headless', 'merger-only', 'head-drift', 'queuePosition', 'target-not-advanced', 'ref 真的前进了'].filter((needle) => content.indexOf(needle) < 0).join(','),
+    ['候选', 'godot_run_headless', 'user-only', 'head-drift', 'queuePosition', 'target-not-advanced', 'ref 真的前进了'].every((needle) => content.indexOf(needle) >= 0),
+    ['候选', 'godot_run_headless', 'user-only', 'head-drift', 'queuePosition', 'target-not-advanced', 'ref 真的前进了'].filter((needle) => content.indexOf(needle) < 0).join(','),
   )
   check('the description no longer duplicates the manual', String(rig.tool.description).indexOf('候选 worktree') < 0)
 }
@@ -115,7 +115,7 @@ check(
   const content = buildSkillContent({ actions: ACTIONS, agentActions: AGENT_ACTIONS, readActions: READ_ACTIONS, userOnlyActions: USER_ONLY_ACTIONS })
   check(
     'the skill defines the Lead role and the onboard entrance (T-129)',
-    content.indexOf('你是谁：Lead') >= 0 && content.indexOf('接入（onboard）') >= 0 && content.indexOf('onboard') >= 0 && content.indexOf('停下来问') >= 0,
+    content.indexOf('你是谁：根 Agent') >= 0 && content.indexOf('接入（onboard）') >= 0 && content.indexOf('onboard') >= 0 && content.indexOf('停下来问') >= 0,
     content.slice(0, 400),
   )
   check('the old 进入流程 entrance is gone from the skill', content.indexOf('进入流程') < 0, content.slice(content.indexOf('接入'), content.indexOf('接入') + 80))
@@ -254,12 +254,11 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   const sends = mergeRig.team.calls.filter((call) => call.kind === 'send')
   check('the submit notified the merger', sends.some((call) => call.target === 'merger' && call.text.indexOf(id) >= 0), JSON.stringify(sends))
   const other = await toolCall({ action: 'mergeRequest', id: id }, { id: 'session-fixer' })
-  check('another agent cannot merge from the tool', other.error !== undefined && other.code === 'merger-only', JSON.stringify(other))
+  check('another agent cannot merge from the tool', other.error !== undefined && other.code === 'user-only', JSON.stringify(other))
   const otherReject = await toolCall({ action: 'rejectMerge', id: id }, { id: 'session-fixer' })
-  check('and cannot reject either', otherReject.error !== undefined && otherReject.code === 'merger-only', JSON.stringify(otherReject))
+  check('and cannot reject either', otherReject.error !== undefined && otherReject.code === 'user-only', JSON.stringify(otherReject))
   const merger = await toolCall({ action: 'mergeRequest', id: id }, { id: 'session-merger' })
-  check('the merger passes the gate', merger.code !== 'merger-only', JSON.stringify(merger))
-  check('and reaches the merge queue', merger.error !== undefined && merger.code === 'no-merge-service', JSON.stringify(merger))
+  check('a merger-named agent still cannot merge', merger.code === 'user-only', JSON.stringify(merger))
   const refreshed = await toolCall({ action: 'refreshMerge', id: id }, { id: 'session-fixer' })
   check(
     'the owner can refresh the merge request from the tool',
@@ -286,7 +285,7 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
     JSON.stringify(passed),
   )
   const refusedMerge = await toolCall({ action: 'mergeRequest', id: id }, { id: 'session-merger' })
-  check('a passed test still needs the merge queue', refusedMerge.error !== undefined && refusedMerge.code === 'no-merge-service', JSON.stringify(refusedMerge))
+  check('a passed test still refuses an agent merge', refusedMerge.error !== undefined && refusedMerge.code === 'user-only', JSON.stringify(refusedMerge))
   mergeRig.scheduler.dispose()
 }
 

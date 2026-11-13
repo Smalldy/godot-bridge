@@ -3,11 +3,11 @@
 ## 动作矩阵
 
 **只读（并发安全）**：`board`、`list`、`get`、`locks`、`harnessStatus`。
-**可写（模型侧）**：`create`、`update`、`delete`、`start`、`pause`、`tick`、`submit`、`report`、`approveReview`、`requestChanges`、`passTest`、`failTest`、`mergeRequest`、`refreshMerge`、`rejectMerge`、`harnessStart`、`harnessStop`、`harnessRestart`、`harnessSmoke`、`bootstrapTeam`、`cancelStartRequest`、`cancel`、`reopen`、`block`、`unblock`、`retry`、`openProject`、`onboard`。
+**可写（模型侧）**：`create`、`update`、`delete`、`start`、`pause`、`tick`、`submit`、`report`、`approveReview`、`requestChanges`、`passTest`、`failTest`、`mergeRequest`、`refreshMerge`、`rejectMerge`、`harnessStart`、`harnessStop`、`harnessRestart`、`harnessSmoke`、`cancelStartRequest`、`cancel`、`reopen`、`block`、`unblock`、`retry`、`openProject`、`onboard`。
 
 - `pause` 暂停/恢复**派发器**（同面板开关），不是单张卡；`start` 是申请。`tick` 立即跑一轮 settle，排查“为什么没派发”。
-- 归属：`submit`、`refreshMerge` 仅 assignee / 用户 / merger。
-- 仅评审：`approveReview`、`requestChanges`；仅测试：`passTest`、`failTest`、`harnessStart`、`harnessStop`、`harnessRestart`、`harnessStatus`、`harnessSmoke`；仅合并：`mergeRequest`、`rejectMerge`。
+- 归属：`submit`、`refreshMerge` 仅 assignee / 用户。
+- 仅评审：`approveReview`、`requestChanges`；仅测试：`passTest`、`failTest`、`harnessStart`、`harnessStop`、`harnessRestart`、`harnessStatus`、`harnessSmoke`。
 - 仅用户（工具不暴露，agent 调用报 `user-only`）：`settings`、`rolesList`、`rolesPreview`、`rolesCreate`、`rolesUpdate`、`rolesDelete`、`rolesBind`、`rolesDrain`、`rolesReplace`、`rolesPrune`、`rolesReset`、`skillsCatalog`、`approveStart`、`rejectStart`、`worktreesCleanup`。
 
 ## 拒绝码（可读失败，不是崩溃）
@@ -15,7 +15,7 @@
 - `unknown-project` / `missing-project` / `missing-path`：项目没绑定或路径不对 —— 先 `openProject`。
 - `needs-consent`：start 只是申请 —— 等用户批准，别重试。
 - `wrong-role` / `role-required` / `worker-cannot-self-review` / `worker-cannot-self-test`：结论只属于对应角色 —— 交独立 reviewer / tester。
-- `merger-only` / `user-only`：合并与面板动作不属于你 —— 报告现状。
+- `user-only`：合并、拒绝合并与面板动作不属于 agent —— 报告现状。
 - `head-drift`：分支越过请求的 head —— `refreshMerge` 对齐。
 - `test-required`/`review-required`/`not-mergeable-phase`：还到不了合并，按阶段走；`target-not-advanced`：合并没推进（ref 未动），查 git 报错。
 - `worktree-*` / `invalid-verify`：worktree 没建好或 verify 声明不合法。
@@ -36,8 +36,8 @@
 
 ## 面板
 
-任务页 5 页签：`看板`、`队列`、`执行者`、`状态`、`角色`。只有用户能：批/拒派发、开关派发、改设置、管角色、代替 reviewer/tester/merger 下结论——agent 写成“请用户操作”。
+任务页 5 页签：`看板`、`队列`、`执行者`、`状态`、`角色`。只有用户能：批/拒派发、开关派发、改设置、管角色、代替 reviewer/tester 下结论——agent 写成“请用户操作”。
 
 ## 角色分组
 
-评审 `approveReview`、`requestChanges`；测试 `passTest`、`failTest`、`harnessStart`、`harnessStop`、`harnessRestart`、`harnessStatus`、`harnessSmoke`；合并 `mergeRequest`、`rejectMerge`；归属 `submit`、`refreshMerge`。
+评审 `approveReview`、`requestChanges`；测试 `passTest`、`failTest`、`harnessStart`、`harnessStop`、`harnessRestart`、`harnessStatus`、`harnessSmoke`；归属 `submit`、`refreshMerge`。

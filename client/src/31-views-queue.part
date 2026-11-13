@@ -1,6 +1,4 @@
 			/* QUEUE_VIEWS_MODULE */
+			/* AGENT_ROW_MODULE */
 			/* WORKERS_VIEW_MODULE */
-			const WORKER_STATUS = { running: 'workersBusy', idle: 'workersIdle', inactive: 'workersIdle', provisioning: 'workersProvisioning', failed: 'workersFailed' }
 
-
-			/** A worker status label; an unknown status is shown raw rather than guessed. */

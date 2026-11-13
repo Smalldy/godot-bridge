@@ -900,88 +900,25 @@ async function submitAndMerge(rig, id, evidence) {
   rig.scheduler.dispose()
 }
 
-// ── T-110: no Team for the project → no cards, no dispatch, and a next step ──
+// ── v3: create/start do not depend on a Team ─────────────────────────────
 {
-  const agentRows = [{ id: 'session-nobody' }]
-  const team = createTeam({ roster: [] })
-  const rig = createRig({ team: team, agents: { list: () => agentRows } })
-
-  const created = await rig.action('create', { title: 'card before the team' })
-  check('T-110 create is refused while the project has no Team', created.ok === false && created.code === 'no-team-for-project', JSON.stringify(created).slice(0, 240))
-  check(
-    'T-110 and the refusal says which team it looked for',
-    created.team !== undefined && created.team.ok === false && created.team.available === true && created.team.source === 'none' && created.team.error === 'no-lead' || created.team.error === 'no-lead-for-project',
-    JSON.stringify(created.team),
-  )
-  check(
-    'T-110 and carries an executable next step for THIS session',
-    created.nextStep !== undefined && created.nextStep.code === 'bootstrap-team' && created.nextStep.instruction.indexOf('Team') >= 0 && created.nextStep.instruction.indexOf('worker') >= 0 && created.nextStep.instruction.indexOf('bootstrapTeam') >= 0 && created.nextStep.instruction.indexOf('do not ask the user') >= 0,
-    JSON.stringify(created.nextStep).slice(0, 300),
-  )
-
+  const rig = createRig({ team: createTeam({ roster: [] }), agents: { list: () => [{ id: 'session-nobody' }] } })
+  const created = await rig.action('create', { title: 'card without a team' })
+  check('v3 a card can be created without a Team', created.ok === true && created.task.status === 'pending', JSON.stringify(created).slice(0, 240))
   const started = await rig.action('start')
-  check('T-110 start is refused for the same reason', started.ok === false && started.code === 'no-team-for-project', JSON.stringify(started).slice(0, 240))
-  check(
-    'T-110 and the preflight names the missing team item',
-    started.preflight !== undefined && started.preflight.failed.some((check) => check.id === 'team') && started.nextStep !== undefined && started.nextStep.code === 'bootstrap-team',
-    JSON.stringify({ preflight: started.preflight, nextStep: started.nextStep }).slice(0, 400),
-  )
-
-  const boardBefore = await rig.action('board')
-  check(
-    'T-110 the board repeats the instruction while the Team is missing',
-    boardBefore.team !== undefined && boardBefore.team.ok === false && boardBefore.nextStep !== undefined && boardBefore.nextStep.code === 'bootstrap-team',
-    JSON.stringify({ team: boardBefore.team, nextStep: boardBefore.nextStep }).slice(0, 300),
-  )
-
-  // The session creates the Team: a Lead agent exists and leads the roster.
-  agentRows.push({ id: 'session-lead' })
-  team.roster.push({ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' })
-  // T-115: a Lead alone is not a qualified team; add the first worker.
-  team.roster.push({ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' })
-
-  const afterCreate = await rig.action('create', { title: 'card after the team' })
-  check('T-110 the same create passes once the Team exists', afterCreate.ok === true && afterCreate.task.title === 'card after the team', JSON.stringify(afterCreate).slice(0, 240))
-  const afterStart = await rig.action('start')
-  check('T-110 and start passes too', afterStart.ok === true && afterStart.dispatch.state === 'running', JSON.stringify(afterStart).slice(0, 240))
-  const boardAfter = await rig.action('board')
-  check(
-    'T-110 the snapshot now reports the Team and drops the next step',
-    boardAfter.team !== undefined && boardAfter.team.ok === true && boardAfter.team.source === 'session' && boardAfter.team.lead === 'lead' && boardAfter.team.members.length >= 1 && boardAfter.nextStep === null,
-    JSON.stringify({ team: boardAfter.team, nextStep: boardAfter.nextStep }).slice(0, 300),
-  )
+  check('v3 start does not require a Team', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started).slice(0, 240))
+  const board = await rig.action('board')
+  check('v3 no bootstrap-team next step is fabricated', board.nextStep === null || board.nextStep.code !== 'bootstrap-team', JSON.stringify(board.nextStep))
   rig.scheduler.dispose()
 }
 
-// ── T-110: the team check is part of the readiness gate, but never closes the
-// project: the panel must open it to show how to initialize ──────────────────
+// ── v3: openProject has no Team item ──────────────────────────────────────
 {
-  const agentRows = [{ id: 'session-nobody' }]
-  const team = createTeam({ roster: [] })
-  const rig = createRig({ team: team, agents: { list: () => agentRows } })
+  const rig = createRig({ team: createTeam({ roster: [] }), agents: { list: () => [{ id: 'session-nobody' }] } })
   const opened = await rig.action('openProject', { path: rig.project })
-  check('T-110 a project without a Team still opens so the panel can help', opened.ok === true, JSON.stringify(opened).slice(0, 240))
-  check(
-    'T-110 but its preflight reports the team item as missing',
-    opened.preflight !== undefined && opened.preflight.ok === false && opened.preflight.failed.some((check) => check.id === 'team') && opened.preflight.openOk === true,
-    JSON.stringify({ ok: opened.preflight && opened.preflight.ok, openOk: opened.preflight && opened.preflight.openOk, failed: opened.preflight && opened.preflight.failed }).slice(0, 400),
-  )
-  check(
-    'T-110 and the opened snapshot carries the bootstrap instruction',
-    opened.team !== undefined && opened.team.ok === false && opened.nextStep !== undefined && opened.nextStep.code === 'bootstrap-team',
-    JSON.stringify({ team: opened.team, nextStep: opened.nextStep }).slice(0, 300),
-  )
-  agentRows.push({ id: 'session-lead' })
-  team.roster.push({ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' })
-  // T-115: a Lead alone is not a qualified team; add the first worker.
-  team.roster.push({ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' })
-  const reopened = await rig.action('openProject', { path: rig.project })
-  const teamCheck = reopened.preflight === undefined ? undefined : reopened.preflight.checks.filter((check) => check.id === 'team')[0]
-  check(
-    'T-110 with a Team the same preflight item passes and names the Lead',
-    reopened.ok === true && reopened.preflight.ok === true && teamCheck !== undefined && teamCheck.ok === true && String(teamCheck.detail).indexOf('lead') >= 0,
-    JSON.stringify(teamCheck),
-  )
+  check('v3 a project opens without a Team', opened.ok === true, JSON.stringify(opened).slice(0, 240))
+  check('v3 preflight has no team check', opened.preflight !== undefined && !opened.preflight.checks.some((check) => check.id === 'team'), JSON.stringify(opened.preflight && opened.preflight.checks))
+  check('v3 no bootstrapTeam instruction is fabricated', opened.team === undefined || opened.team === null || opened.nextStep === undefined || opened.nextStep === null || opened.nextStep.code !== 'bootstrap-team', JSON.stringify({ team: opened.team, nextStep: opened.nextStep }).slice(0, 300))
   rig.scheduler.dispose()
 }
 
@@ -2902,7 +2839,7 @@ function fakeHostSubprocess(result) {
   check('the lead is a separate lead entry, not a teammate', report.leadInfo !== null && report.leadInfo.kind === 'lead' && report.members.filter((member) => member.kind === 'lead').length === 0, JSON.stringify(report.leadInfo))
   check(
     'T-138 desired comes from the dispatch caps, not a profile',
-    report.cap === 4 &&
+    report.cap === 3 &&
       report.workerCap === 3 &&
       report.effectiveWorkerCap === 3 &&
       report.maxConcurrent === 3 &&
@@ -3829,350 +3766,6 @@ function fakeHostSubprocess(result) {
   )
 }
 
-// ── T-115: a Lead alone is not a qualified team ───────────────────────────
-{
-  const lead = { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }
-  const rig = createRig({ team: createTeam({ roster: [lead] }), agents: { list: () => [{ id: 'session-lead' }] } })
-  const leadOnly = projectTeamState(rig.ctx, { sessionId: 'session-lead' })
-  check(
-    'T-115 a Lead-only roster is not a qualified team (no-members)',
-    leadOnly.ok === false && leadOnly.available === true && leadOnly.error === 'no-members',
-    JSON.stringify(leadOnly),
-  )
-  check(
-    'T-115 lead-only reports every missing role',
-    JSON.stringify(leadOnly.missingRoles) === JSON.stringify(['worker', 'reviewer', 'tester']),
-    JSON.stringify(leadOnly.missingRoles),
-  )
-  check(
-    'T-154 lead-only is neither dispatch-ready nor stage-ready',
-    leadOnly.dispatchReady === false && leadOnly.stageReady !== undefined && leadOnly.stageReady.review === false && leadOnly.stageReady.test === false,
-    JSON.stringify({ dispatchReady: leadOnly.dispatchReady, stageReady: leadOnly.stageReady }),
-  )
-  const refused = await rig.action('create', { title: 'card without a team' })
-  check(
-    'T-115 create is gated again and carries the bootstrap next step',
-    refused.ok === false && refused.code === 'no-team-for-project' && refused.nextStep !== undefined && refused.nextStep.code === 'bootstrap-team',
-    JSON.stringify(refused).slice(0, 300),
-  )
-  const startRefused = await rig.action('start')
-  check(
-    'T-115 start is gated for the same reason',
-    startRefused.ok === false && startRefused.code === 'no-team-for-project',
-    JSON.stringify(startRefused).slice(0, 240),
-  )
-  const boardMissing = await rig.action('board')
-  check(
-    'T-115 board repeats the bootstrap instruction while the team has no members',
-    boardMissing.team !== undefined && boardMissing.team.ok === false && boardMissing.team.error === 'no-members' && boardMissing.nextStep !== undefined && boardMissing.nextStep.code === 'bootstrap-team',
-    JSON.stringify({ team: boardMissing.team, nextStep: boardMissing.nextStep }).slice(0, 300),
-  )
-
-  rig.team.roster.push({ id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' })
-  const withWorker = projectTeamState(rig.ctx, { sessionId: 'session-lead' })
-  check(
-    'T-115 Lead + one teammate is a qualified team',
-    withWorker.ok === true && withWorker.error === null && withWorker.members.length === 2,
-    JSON.stringify(withWorker),
-  )
-  check(
-    'T-115 missing roles are still reported for the role manager',
-    JSON.stringify(withWorker.missingRoles) === JSON.stringify(['reviewer', 'tester']),
-    JSON.stringify(withWorker.missingRoles),
-  )
-  check(
-    'T-154 Lead + worker is dispatch-ready while reviewer/tester are missing',
-    withWorker.dispatchReady === true &&
-      withWorker.stageReady.review === false &&
-      withWorker.stageReady.test === false &&
-      teamBootstrapStep(withWorker) === null,
-    JSON.stringify({ dispatchReady: withWorker.dispatchReady, stageReady: withWorker.stageReady }),
-  )
-  const created = await rig.action('create', { title: 'card with a team' })
-  check('T-115 create passes once a teammate exists', created.ok === true, JSON.stringify(created).slice(0, 240))
-  const started = await rig.action('start')
-  check('T-115 start passes once a teammate exists', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started).slice(0, 240))
-  const boardOk = await rig.action('board')
-  check(
-    'T-115 the board reports the qualified team and no next step',
-    boardOk.team !== undefined && boardOk.team.ok === true && boardOk.nextStep === null && JSON.stringify(boardOk.team.missingRoles) === JSON.stringify(['reviewer', 'tester']),
-    JSON.stringify({ team: boardOk.team, nextStep: boardOk.nextStep }).slice(0, 300),
-  )
-  rig.team.roster.push({ id: 'session-reviewer', name: 'reviewer-1', role: 'reviewer', status: 'idle' })
-  rig.team.roster.push({ id: 'session-tester', name: 'tester-1', role: 'tester', status: 'idle' })
-  const staged = projectTeamState(rig.ctx, { sessionId: 'session-lead' })
-  check(
-    'T-154 reviewer/tester fill stageReady without changing dispatchReady',
-    staged.ok === true &&
-      staged.dispatchReady === true &&
-      staged.stageReady.review === true &&
-      staged.stageReady.test === true &&
-      JSON.stringify(staged.missingRoles) === JSON.stringify([]),
-    JSON.stringify({ dispatchReady: staged.dispatchReady, stageReady: staged.stageReady, missing: staged.missingRoles }),
-  )
-  rig.scheduler.dispose()
-}
-// ── T-154: stage roles alone never make a team dispatch-ready ─────────────
-{
-  const lead = { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }
-  const rig = createRig({
-    team: createTeam({
-      roster: [
-        lead,
-        { id: 'session-reviewer', name: 'reviewer-1', role: 'reviewer', status: 'idle' },
-        { id: 'session-tester', name: 'tester-1', role: 'tester', status: 'idle' },
-      ],
-    }),
-    agents: { list: () => [{ id: 'session-lead' }] },
-  })
-  const staged = projectTeamState(rig.ctx, { sessionId: 'session-lead' })
-  check(
-    'T-154 reviewer+tester without a worker is a Team, but not dispatch-ready',
-    staged.ok === true && staged.dispatchReady === false && staged.stageReady.review === true && staged.stageReady.test === true && JSON.stringify(staged.missingRoles) === JSON.stringify(['worker']),
-    JSON.stringify({ ok: staged.ok, dispatchReady: staged.dispatchReady, stageReady: staged.stageReady, missing: staged.missingRoles }),
-  )
-  const created = await rig.action('create', { title: 'no worker yet' })
-  check(
-    'T-154 create is refused until a worker exists, with the bootstrap next step',
-    created.ok === false && created.code === 'no-team-for-project' && created.nextStep !== undefined && created.nextStep.code === 'bootstrap-team',
-    JSON.stringify(created).slice(0, 300),
-  )
-  const started = await rig.action('start')
-  check('T-154 start is refused for the same reason', started.ok === false && started.code === 'no-team-for-project', JSON.stringify(started).slice(0, 240))
-  rig.scheduler.dispose()
-}
-{
-  // A profile without team services keeps the old behaviour.
-  const fs = createFakeFs()
-  const ctx = { fs: fs, get() { return undefined } }
-  const none = projectTeamState(ctx, {})
-  check(
-    'T-115 without team services the state stays available:false (no gate)',
-    none.ok === false && none.available === false && none.error === 'no-team-service',
-    JSON.stringify(none),
-  )
-}
-
-
-// ── T-118: role instances never spawn into another project's session team ────
-{
-  const projectA = join(PROJECT, '..', 'project-a')
-  const projectB = join(PROJECT, '..', 'project-b')
-  function teamFor(sessionId, extras) {
-    const roster = [{ id: sessionId, name: 'lead', role: 'lead', status: 'running' }].concat(extras === undefined ? [] : extras)
-    const spawns = []
-    const removals = []
-    return {
-      roster: roster,
-      spawns: spawns,
-      removals: removals,
-      tryMembership(candidate) {
-        const member = roster.filter((entry) => entry.id === candidate.id)[0]
-        return member === undefined ? undefined : { role: member.role, name: member.name }
-      },
-      listMembers() {
-        return roster.map((entry) => Object.assign({}, entry))
-      },
-      async spawnTeammate(caller, request) {
-        spawns.push({ caller: caller.id, name: request.name })
-        const member = { id: 'session-' + request.name, name: request.name, role: 'teammate', status: 'running' }
-        roster.push(member)
-        return { member: member }
-      },
-      async removeMember(caller, name) {
-        removals.push({ caller: caller.id, name: name })
-        const index = roster.findIndex((entry) => entry.name === name)
-        if (index >= 0) roster.splice(index, 1)
-        return { ok: true }
-      },
-      async interrupt() { return { ok: true } },
-      async sendMessage() { return { ok: true } },
-    }
-  }
-  function ctxFor(team, leads) {
-    const fs = createFakeFs()
-    return {
-      fs: fs,
-      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
-      get(key) {
-        if (key === 'agents') return { list: () => leads }
-        if (key === 'agentTeams') return team
-        return undefined
-      },
-    }
-  }
-
-  // (a) session workspace = B, slot project = A: refuse, create nothing.
-  {
-    const leads = [{ id: 'session-b', name: 'lead-b', role: 'lead', status: 'running' }]
-    const team = teamFor('session-b')
-    const ctx = ctxFor(team, leads)
-    const state = createState(ctx)
-    state.setSessionRoot('session-b', projectB)
-    const manager = createRoleManager(ctx, { state: state })
-    const refused = await manager.ensure('reviewer', { projectPath: projectA, sessionId: 'session-b' })
-    check(
-      'T-118 a role slot for another project is refused with no-team-for-project',
-      refused.ok === false && refused.code === 'no-team-for-project' && String(refused.message).indexOf(projectA) >= 0 && String(refused.message).indexOf(projectB) >= 0,
-      JSON.stringify(refused),
-    )
-    check(
-      'T-118 the refused provision creates no member and spawns nothing',
-      team.spawns.length === 0 && team.roster.length === 1 && (refused.created === undefined || refused.created.length === 0),
-      JSON.stringify({ spawns: team.spawns, roster: team.roster.map((entry) => entry.name) }),
-    )
-    // Same team, the project it actually runs in: provisioning proceeds.
-    const own = await manager.ensure('reviewer', { projectPath: projectB, sessionId: 'session-b' })
-    check(
-      'T-118 the same session provisions its OWN project’s role slot',
-      own.ok === true && own.created.length === 1 && team.spawns.length === 1 && String(team.spawns[0].name).indexOf(projectSlotKey(projectB)) >= 0,
-      JSON.stringify({ created: own.created, spawns: team.spawns }),
-    )
-    manager.drain(own.created[0].name)
-  }
-
-  // (b) reuse is judged by the slot's project too: A's instance is never B's reviewer.
-  {
-    const leads = [{ id: 'session-b', name: 'lead-b', role: 'lead', status: 'running' }]
-    const foreign = { id: 'session-r', name: roleSlotName('reviewer', 1, projectA), role: 'teammate', status: 'inactive' }
-    const team = teamFor('session-b', [foreign])
-    const ctx = ctxFor(team, leads)
-    const state = createState(ctx)
-    state.setSessionRoot('session-b', projectB)
-    const manager = createRoleManager(ctx, { state: state })
-    const ensured = await manager.ensure('reviewer', { projectPath: projectB, sessionId: 'session-b' })
-    check(
-      'T-118 an instance of another project is never reused as this project’s reviewer',
-      ensured.ok === true &&
-        ensured.reused.indexOf(foreign.name) < 0 &&
-        ensured.refused.some((entry) => entry.name === foreign.name) &&
-        ensured.created.length === 1 &&
-        String(ensured.created[0].name).indexOf(projectSlotKey(projectB)) >= 0,
-      JSON.stringify({ reused: ensured.reused, refused: ensured.refused, created: ensured.created }),
-    )
-  }
-
-  // (c) rolesPrune removes only foreign slot instances.
-  {
-    const leads = [{ id: 'session-b', name: 'lead-b', role: 'lead', status: 'running' }]
-    const foreign = { id: 'session-rA', name: roleSlotName('reviewer', 1, projectA), role: 'teammate', status: 'inactive' }
-    const own = { id: 'session-rB', name: roleSlotName('reviewer', 1, projectB), role: 'teammate', status: 'inactive' }
-    const teammate = { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' }
-    const team = teamFor('session-b', [foreign, own, teammate])
-    const ctx = ctxFor(team, leads)
-    const state = createState(ctx)
-    state.setSessionRoot('session-b', projectB)
-    const manager = createRoleManager(ctx, { state: state })
-    const pruned = await manager.prune({ projectPath: projectB, sessionId: 'session-b' })
-    check(
-      'T-118 rolesPrune removes the foreign slot and keeps this project’s instances',
-      pruned.ok === true &&
-        pruned.pruned.length === 1 &&
-        pruned.pruned[0].name === foreign.name &&
-        pruned.kept.indexOf(own.name) >= 0 &&
-        pruned.kept.indexOf(teammate.name) < 0 &&
-        team.removals.some((entry) => entry.name === foreign.name) &&
-        team.roster.some((entry) => entry.name === own.name) &&
-        !team.roster.some((entry) => entry.name === foreign.name),
-      JSON.stringify({ pruned: pruned, removals: team.removals, roster: team.roster.map((entry) => entry.name) }),
-    )
-  }
-}
-
-// ── T-117: expired Lead sessions are not a project team ─────────────────────
-{
-  const now = Date.now()
-  const activeLead = { id: 'lead-active', name: 'lead-active', role: 'lead', status: 'running', lastActiveAt: new Date(now - 60 * 60 * 1000).toISOString() }
-  const staleLead = { id: 'lead-stale', name: 'lead-stale', role: 'lead', status: 'inactive', lastActiveAt: new Date(now - 13 * 24 * 60 * 60 * 1000).toISOString() }
-  const rosters = {
-    'lead-active': [activeLead, { id: 'session-fixer-a', name: 'fixer-a', role: 'teammate', status: 'inactive' }],
-    'lead-stale': [staleLead, { id: 'session-fixer-s', name: 'fixer-s', role: 'teammate', status: 'inactive' }],
-  }
-  const everyone = [activeLead, staleLead, rosters['lead-active'][1], rosters['lead-stale'][1]]
-  const team = {
-    tryMembership(candidate) {
-      const member = everyone.filter((entry) => entry.id === candidate.id)[0]
-      return member === undefined ? undefined : { role: member.role, name: member.name }
-    },
-    listMembers(lead) {
-      return (rosters[lead.id] === undefined ? [] : rosters[lead.id]).map((entry) => Object.assign({}, entry))
-    },
-    async sendMessage() { return { ok: true } },
-    async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
-  }
-  function ctxFor(fs) {
-    return {
-      fs: fs,
-      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
-      get(key) {
-        if (key === 'agents') return { list: () => everyone.filter((entry) => entry.role === 'lead') }
-        if (key === 'agentTeams') return team
-        return undefined
-      },
-    }
-  }
-  const fs = createFakeFs()
-  const ctx = ctxFor(fs)
-  const noSession = projectTeamState(ctx, {})
-  check(
-    'T-117 without a session the team is not guessed (no-session-context)',
-    noSession.ok === false && noSession.available === true && noSession.error === 'no-session-context' && noSession.leadId === null,
-    JSON.stringify(noSession),
-  )
-  const staleTeam = projectTeamState(ctx, { sessionId: 'lead-stale' })
-  check(
-    'T-117 a stale Lead session is refused as no-live-lead with its last activity',
-    staleTeam.ok === false && staleTeam.error === 'no-live-lead' && typeof staleTeam.lastActiveAt === 'string',
-    JSON.stringify(staleTeam),
-  )
-  const activeTeam = projectTeamState(ctx, { sessionId: 'lead-active' })
-  check(
-    'T-117 a live Lead session still resolves its team',
-    activeTeam.ok === true && activeTeam.leadId === 'lead-active',
-    JSON.stringify(activeTeam),
-  )
-  const inventory = leadInventory(ctx)
-  const activeRow = inventory.leads.filter((row) => row.id === 'lead-active')[0]
-  const staleRow = inventory.leads.filter((row) => row.id === 'lead-stale')[0]
-  check(
-    'T-117 the team inventory exposes lastActiveAt and stale for every Lead',
-    activeRow !== undefined && activeRow.stale === false && typeof activeRow.lastActiveAt === 'string' && staleRow !== undefined && staleRow.stale === true && typeof staleRow.lastActiveAt === 'string',
-    JSON.stringify(inventory.leads),
-  )
-  check(
-    'T-117 liveLeads excludes the stale Lead',
-    liveLeads(ctx).map((lead) => lead.id).join(',') === 'lead-active',
-    JSON.stringify(liveLeads(ctx).map((lead) => lead.id)),
-  )
-  const stalePick = pickTarget(ctx, { sessionId: 'lead-stale' })
-  check(
-    'T-117 dispatch refuses a stale Lead session with no-live-lead',
-    stalePick.ok === false && stalePick.code === 'no-live-lead' && String(stalePick.message).indexOf(String(staleRow.lastActiveAt)) >= 0,
-    JSON.stringify(stalePick),
-  )
-  const activePick = pickTarget(ctx, { sessionId: 'lead-active' })
-  check('T-117 dispatch still picks a live Lead', activePick.ok === true && activePick.lead.id === 'lead-active', JSON.stringify(activePick.ok))
-
-  // A pending card owned by the stale session is not dispatched; the reason is recorded.
-  const nowIso = new Date().toISOString()
-  seedBoard(fs, PROJECT, JSON.stringify({
-    version: 2,
-    seq: 2,
-    dispatch: { state: 'running', allowSpawn: true, maxConcurrent: 2 },
-    tasks: [{ id: 'T-1', title: 'stale owner card', status: 'pending', priority: 0, dependsOn: [], writeFiles: [], spec: 's', acceptance: 'a', evidence: '', ownerSession: 'lead-stale', history: [], createdAt: nowIso, updatedAt: nowIso, attempts: 0, maxAttempts: 3 }],
-  }))
-  const state = createState(ctx)
-  const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: createFakeGit(), sessionId: 'lead-stale' })
-  await scheduler.settle(PROJECT)
-  const card = JSON.parse(fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text).tasks[0]
-  check(
-    'T-117 a card owned by a stale session is not dispatched and records no-live-lead',
-    card.status === 'pending' && card.assignee === null && card.waitingReason === 'no-live-lead',
-    JSON.stringify({ status: card.status, assignee: card.assignee, waiting: card.waitingReason }),
-  )
-  scheduler.dispose()
-}
-
 // ── T-119: session activity comes from FILES, not the directory mtime ───────
 {
   const root = join(PROJECT, '.tmp-t119-sessions')
@@ -4273,183 +3866,6 @@ function fakeHostSubprocess(result) {
   }
 }
 
-// ── T-120: an explicit session never borrows another session's team ────────
-{
-  const lead = { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }
-  const roster = [lead, { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' }]
-  const team = {
-    tryMembership(candidate) { return candidate.id === 'session-lead' ? { role: 'lead', name: 'lead' } : { role: 'teammate', name: candidate.id } },
-    listMembers() { return roster.map((member) => Object.assign({}, member)) },
-    async sendMessage() { return { ok: true } },
-    async spawnTeammate() { return { name: 'spawned', id: 'session-spawned' } },
-  }
-  const ctx = {
-    fs: createFakeFs(),
-    sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
-    get(key) {
-      if (key === 'agents') return { list: () => [lead] }
-      if (key === 'agentTeams') return team
-      return undefined
-    },
-  }
-  const otherSession = projectTeamState(ctx, { sessionId: 'session-other' })
-  check(
-    'T-120 a single-Lead host does NOT give its team to another session',
-    otherSession.ok === false && otherSession.lead === null && otherSession.source === 'none' && otherSession.error === 'no-lead-for-project',
-    JSON.stringify(otherSession),
-  )
-  const ownSession = projectTeamState(ctx, { sessionId: 'session-lead' })
-  check('T-120 the owning session still resolves its own team', ownSession.ok === true && ownSession.leadId === 'session-lead', JSON.stringify(ownSession))
-
-  // create/start from the foreign session are refused with the bootstrap step.
-  const rig = createRig({ allowSpawn: false })
-  const foreign = { projectPath: PROJECT, by: '@other', role: 'agent', agent: { id: 'session-other' } }
-  const foreignCreate = await rig.api.perform('create', { title: 'foreign card' }, foreign)
-  check(
-    'T-120 create from a session without its own Lead is refused with nextStep',
-    foreignCreate.ok === false && foreignCreate.code === 'no-team-for-project' && foreignCreate.nextStep !== undefined && foreignCreate.nextStep.code === 'bootstrap-team',
-    JSON.stringify(foreignCreate).slice(0, 260),
-  )
-  const foreignStart = await rig.api.perform('start', {}, foreign)
-  check('T-120 start from that session is refused for the same reason', foreignStart.ok === false && foreignStart.code === 'no-team-for-project', JSON.stringify(foreignStart).slice(0, 200))
-  rig.scheduler.dispose()
-
-  // (b) legacy dispatch of an ownerless card still uses the single team, marked compat.
-  {
-    const legacyRig = createRig({ allowSpawn: false })
-    const stamp = new Date().toISOString()
-    seedBoard(legacyRig.fs, PROJECT, JSON.stringify({
-      version: 2,
-      seq: 2,
-      dispatch: { state: 'paused' },
-      tasks: [{ id: 'T-1', title: 'legacy card', status: 'pending', priority: 0, dependsOn: [], writeFiles: [], spec: 's', acceptance: 'a', evidence: '', ownerSession: null, history: [], createdAt: stamp, updatedAt: stamp, attempts: 0, maxAttempts: 3 }],
-    }))
-    await legacyRig.action('start')
-    await legacyRig.settle()
-    const card = JSON.parse(legacyRig.fs.files.get(join(PROJECT, '.agents', 'tasks.json')).text).tasks[0]
-    check(
-      'T-120 an ownerless legacy card still dispatches and records compat:true',
-      card.status === 'running' && card.assignee !== null && card.dispatch.compat === true,
-      JSON.stringify({ status: card.status, assignee: card.assignee, dispatch: card.dispatch }),
-    )
-    legacyRig.scheduler.dispose()
-  }
-
-  // (c) rolesPrune only touches the caller session's own team.
-  {
-    const roleRig = createRoleRig({})
-    const noSession = await roleRig.manager.prune({ projectPath: PROJECT })
-    check(
-      'T-120 rolesPrune without a session refuses instead of pruning a borrowed team',
-      noSession.ok === false && noSession.code === 'no-lead-for-project',
-      JSON.stringify(noSession),
-    )
-    const foreignPrune = await roleRig.manager.prune({ projectPath: PROJECT, sessionId: 'session-other' })
-    check(
-      'T-120 rolesPrune for a session without its own Lead refuses',
-      foreignPrune.ok === false && foreignPrune.code === 'no-lead-for-project',
-      JSON.stringify(foreignPrune),
-    )
-  }
-}
-
-// ── T-121 / T-129 §14: an agent bootstraps its OWN team, worker slot only ──
-{
-  const rig = createRoleRig({})
-  const state = createState(rig.ctx)
-  state.setSessionRoot('session-lead', PROJECT)
-  const manager = rig.manager
-  const git = createFakeGit()
-  const scheduler = createDispatcher(rig.ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: git })
-  const api = createApi(rig.ctx, { state: state, roles: manager, git: git, scheduler: scheduler })
-  const agent = { projectPath: PROJECT, by: '@lead', role: 'agent', agent: { id: 'session-lead' } }
-  const spawnNames = () => rig.team.calls.filter((call) => call.kind === 'spawn').map((call) => String(call.name))
-  const boot = await api.perform('bootstrapTeam', {}, agent)
-  check(
-    'T-121 an agent bootstraps the Lead + worker team in its own session',
-    boot.ok === true && boot.bootstrap === true && Array.isArray(boot.roles) && boot.roles.length === 1 && boot.roles[0].kind === 'worker' && boot.roles[0].ok === true,
-    JSON.stringify(boot).slice(0, 400),
-  )
-  check(
-    'T-129 §14 bootstrap spawns exactly one worker and nothing else',
-    spawnNames().length === 1 && /^worker-/.test(String(spawnNames()[0])),
-    JSON.stringify(spawnNames()),
-  )
-  check(
-    'T-129 §14 the answer defers reviewer/tester to their stages',
-    Array.isArray(boot.deferred) && boot.deferred.length === 2 && boot.deferred[0] === 'reviewer' && boot.deferred[1] === 'tester',
-    JSON.stringify(boot.deferred),
-  )
-  const rosterAfter = rig.team.roster.map((member) => String(member.name))
-  check(
-    'T-129 §14 reviewer/tester are not in the roster after bootstrap',
-    rosterAfter.every((name) => !/^reviewer-/.test(name) && !/^tester-/.test(name)),
-    rosterAfter.join(','),
-  )
-  const firstSpawn = rig.team.calls[0] === undefined ? null : rig.team.calls[0].text
-  check(
-    'T-129 §14 the bootstrap worker wakes with a standby brief and no fake card id',
-    typeof firstSpawn === 'string' && /stand by/i.test(firstSpawn) && firstSpawn.indexOf('bootstrap-team') < 0 && firstSpawn.indexOf('Task bootstrap-team') < 0,
-    String(firstSpawn).slice(0, 500),
-  )
-  const again = await api.perform('bootstrapTeam', {}, agent)
-  check(
-    'T-129 §14 a second bootstrap spawns nothing',
-    again.ok === true && spawnNames().length === 1,
-    JSON.stringify(spawnNames()),
-  )
-  const created = await api.perform('create', { title: 'after bootstrap' }, agent)
-  check('T-121 create passes after the agent bootstrapped the team', created.ok === true, JSON.stringify(created).slice(0, 240))
-  const started = await api.perform('start', {}, { projectPath: PROJECT, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' })
-  check('T-121 start passes after the agent bootstrapped the team', started.ok === true && started.dispatch.state === 'running', JSON.stringify(started).slice(0, 240))
-  await scheduler.settle(PROJECT)
-  const boardAfterStart = await api.perform('board', {}, agent)
-  const runningTask = (boardAfterStart.tasks || []).filter((task) => task.status === 'running')[0]
-  check('T-129 §14 the card is dispatched to the bootstrapped worker slot', runningTask !== undefined && runningTask.assignee !== null, JSON.stringify(boardAfterStart.counts))
-  const submitted = await api.perform('submit', { id: runningTask.id, evidence: 'done' }, { projectPath: PROJECT, by: '@worker', role: 'agent', agent: { id: String(runningTask.assignee.session) } })
-  check('T-129 §14 submit still provisions the reviewer for the review stage', submitted.ok === true && submitted.task.status === 'reviewing' && spawnNames().some((name) => /^reviewer-/.test(name)), JSON.stringify({ ok: submitted.ok, spawns: spawnNames() }))
-  const approved = await api.perform('approveReview', { id: runningTask.id }, { projectPath: PROJECT, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' })
-  check('T-129 §14 entering testing still provisions the tester', approved.ok === true && approved.task.status === 'testing' && spawnNames().some((name) => /^tester-/.test(name)), JSON.stringify({ ok: approved.ok, spawns: spawnNames() }))
-
-  const noLead = await api.perform('bootstrapTeam', {}, { projectPath: PROJECT, by: '@other', role: 'agent', agent: { id: 'session-other' } })
-  check(
-    'T-121 bootstrapTeam without an own Lead is refused with no-lead-for-project',
-    noLead.ok === false && noLead.code === 'no-lead-for-project',
-    JSON.stringify(noLead),
-  )
-  state.setSessionRoot('session-lead', 'J:\\workspace\\t121-other-project')
-  const mismatch = await api.perform('bootstrapTeam', { project: PROJECT }, { by: '@lead', role: 'agent', agent: { id: 'session-lead' } })
-  check(
-    'T-121 bootstrapTeam for a project the session does not own is project-mismatch',
-    mismatch.ok === false && mismatch.code === 'project-mismatch',
-    JSON.stringify(mismatch),
-  )
-  state.setSessionRoot('session-lead', PROJECT)
-
-  const adminAttempt = await api.perform('rolesCreate', { name: 'x' }, agent)
-  check(
-    'T-121 rolesCreate stays user-only for agents',
-    adminAttempt.ok === false,
-    JSON.stringify(adminAttempt).slice(0, 200),
-  )
-  check(
-    'T-121 the bootstrap instruction is imperative and names bootstrapTeam',
-    TEAM_BOOTSTRAP_INSTRUCTION.indexOf('bootstrapTeam') >= 0 &&
-      TEAM_BOOTSTRAP_INSTRUCTION.indexOf('Do this NOW') >= 0 &&
-      TEAM_BOOTSTRAP_INSTRUCTION.indexOf('do not ask the user') >= 0 &&
-      TEAM_BOOTSTRAP_INSTRUCTION.indexOf('rolesCreate') < 0 &&
-      USER_ONLY_ACTIONS.indexOf('bootstrapTeam') < 0,
-    TEAM_BOOTSTRAP_INSTRUCTION,
-  )
-  check(
-    'T-129 §14 the instruction says Lead + worker and defers reviewer/tester to their stages',
-    TEAM_BOOTSTRAP_INSTRUCTION.indexOf('Lead + worker') >= 0 &&
-      TEAM_BOOTSTRAP_INSTRUCTION.indexOf('worker, reviewer, tester') < 0 &&
-      TEAM_BOOTSTRAP_INSTRUCTION.indexOf('provisioned later by their own stage') >= 0,
-    TEAM_BOOTSTRAP_INSTRUCTION,
-  )
-}
-
 // ── T-127: a running process without a card is idle, and reusable ──────────
 {
   // (a) a running role instance with no task is reused, not duplicated.
@@ -4522,7 +3938,7 @@ function fakeHostSubprocess(result) {
   rig.team.setStatus('fixer', 'failed')
   const four = []
   for (let index = 0; index < 4; index += 1) four.push((await createTask(rig, { title: 'cap ' + String(index) })).id)
-  await rig.action('settings', { maxConcurrent: 4, maxWorkAgents: 3 })
+  await rig.action('settings', { maxConcurrent: 3 })
   await rig.action('start')
   await rig.settle()
   const snap = await snapshot(rig)
@@ -4536,13 +3952,13 @@ function fakeHostSubprocess(result) {
       snap.workers.workerCap === 3 &&
       snap.workers.effectiveWorkerCap === 3 &&
       snap.workers.cap === 3 &&
-      snap.workers.maxConcurrent === 4,
+      snap.workers.maxConcurrent === 3,
     JSON.stringify({ running: running(snap), spawned: spawned, caps: { cap: snap.workers.cap, workerCap: snap.workers.workerCap, maxConcurrent: snap.workers.maxConcurrent } }),
   )
   const pastCap = snap.tasks.filter((task) => task.status === 'pending')[0]
   check(
     'T-138 the card past the cap waits with 角色已满',
-    pastCap !== undefined && pastCap.waitingReason === '角色已满',
+    pastCap !== undefined && pastCap.waitingReason === 'concurrency',
     JSON.stringify(snap.tasks.map((task) => task.id + ':' + task.status + ':' + String(task.waitingReason))),
   )
 
@@ -4575,7 +3991,7 @@ function fakeHostSubprocess(result) {
     'T-138 maxConcurrent=1 keeps the pool (and execution) at one',
     running(singleSnap).length === 1 &&
       singleSnap.workers.workerCap === 1 &&
-      singleSnap.workers.cap === 8 &&
+      singleSnap.workers.cap === 1 &&
       byId(singleSnap, s1).status === 'running' &&
       byId(singleSnap, s2).status === 'pending',
     JSON.stringify({ running: running(singleSnap), workerCap: singleSnap.workers.workerCap, cap: singleSnap.workers.cap }),
@@ -4595,7 +4011,7 @@ function fakeHostSubprocess(result) {
   const a1 = (await createTask(rig, { title: 'legacy 1' })).id
   const a2 = (await createTask(rig, { title: 'legacy 2' })).id
   const a3 = (await createTask(rig, { title: 'legacy 3' })).id
-  await rig.action('settings', { maxConcurrent: 3, maxWorkAgents: 2 })
+  await rig.action('settings', { maxConcurrent: 2 })
   await rig.action('start')
   await rig.settle()
   const snap = await snapshot(rig)
@@ -4664,7 +4080,7 @@ function fakeHostSubprocess(result) {
   rig.team.setStatus('fixer', 'failed')
   const A = (await createTask(rig, { title: 'first' })).id
   const B = (await createTask(rig, { title: 'second' })).id
-  await rig.action('settings', { maxConcurrent: 2, maxWorkAgents: 1 })
+  await rig.action('settings', { maxConcurrent: 1 })
   await rig.action('start')
   await rig.settle()
   const snap = await snapshot(rig)
@@ -4672,7 +4088,7 @@ function fakeHostSubprocess(result) {
   const second = byId(snap, B)
   check(
     'T-127 when every desired instance holds a card the next card waits with 角色已满',
-    first.status === 'running' && second.status === 'pending' && second.waitingReason === '角色已满',
+    first.status === 'running' && second.status === 'pending' && second.waitingReason === 'concurrency',
     JSON.stringify({ first: first.status, second: { status: second.status, waiting: second.waitingReason } }),
   )
   rig.scheduler.dispose()

@@ -2,7 +2,7 @@
 
 ## submit
 
-- 本地验证通过并提交后带 evidence；`submit` 仅 assignee / 用户 / merger。
+- 本地验证通过并提交后带 evidence；`submit` 仅 assignee / 用户。
 - submit 记录 base/head 和 actualFiles；不要伪造 evidence。
 - 提交后宿主打开 review 阶段；worker 不要自己下结论。
 
@@ -22,11 +22,11 @@
 - 脚本内容 hash 只覆盖命令里**前 8 个**脚本路径（防无界读文件）；第 9 个以后的脚本只按命令字符串计入，内容级改动不会单独触发 verifyChanged。
 - drift 不是自动失败：候选重建通过后可继续，但已批准的 review 结论按既有规则失效（内容变了要重评）；不要替 reviewer 决定是否接受新 base。
 - 卡声明的 `verify` 由宿主在候选里先跑；失败/超时 = 宿主 failTest，回 running。
-- 冲突自动重建；再次冲突升级 needs-rebase，等 worker/Lead。只认真实 hex base。
+- 冲突自动重建；再次冲突升级 needs-rebase，等 worker 处理。只认真实 hex base。
 
 ## 读取审计信号
 
-- `snapshot.mergeQueue` 是 merger 的真实队列（`active`/`queued`/`chains`/`last`；宿主没有 merger 时为 `null`）；`snapshot.queue` 只是 ready 卡（派发队列），不要当合并队列读。
+- `snapshot.mergeQueue` 是宿主的真实合并队列（`active`/`queued`/`chains`/`last`；没有合并队列时为 `null`）；`snapshot.queue` 只是 ready 卡（派发队列），不要当合并队列读。
 - 基线：`task.targetBase`、`task.verifyFingerprint`（dispatch/submit 写入）。变更：`merge.targetDrift`（`{from,to,at}`）、`merge.verifyChanged` + `merge.verifyFingerprints`（`{from,to}`）。board/get 明细与 /state 摘要都带这些字段。
 - reviewer 的 brief 会显式列出 target drift 与 verify 变更；没有这两个信号时才可以说“与上轮一致”。
 
@@ -38,7 +38,7 @@
 
 ## 合并
 
-- 仅 merger 或用户能 `mergeRequest` / `rejectMerge`。
+- 只有用户能 `mergeRequest` / `rejectMerge`；没有 merger agent。
 - `merged` = target ref 真的前进了；`target-not-advanced` 停在 testing，查 git 报错。
 - target 动了结论失效：用 `refreshMerge` 重开一轮。
-- 合并由任务中心执行；Lead/worker 不要直接 commit/push 到 target。
+- 合并由宿主的 auto-merge 或用户执行；根 Agent/worker 不要直接 commit/push 到 target。

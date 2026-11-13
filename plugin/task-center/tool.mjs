@@ -147,7 +147,6 @@ export function registerTaskTool(ctx, options) {
       maxAttempts: { type: 'number', description: 'Dispatch attempts before the task blocks.' },
       maxConcurrent: { type: 'number', description: 'Concurrent running tasks (settings).' },
       allowSpawn: { type: 'boolean', description: 'Whether the scheduler may spawn a WorkAgent (settings).' },
-      maxWorkAgents: { type: 'number', description: 'Maximum WorkAgents (settings).' },
       status: { type: 'string', description: 'Filter for list.' },
       taskId: { type: 'string', description: 'Task id for actions that accept it.' },
       project: { type: 'string', description: 'Project directory; defaults to the session workspace.' },

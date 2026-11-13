@@ -1,13 +1,6 @@
-			function workerStatusLabel(status, t) {
-				const key = WORKER_STATUS[status]
-				return key === undefined ? status : t(key)
-			}
-
-
-			// ── Roles / Status views: agents, worktrees, activity and role admin ──
-			const ROLE_KIND_KEYS = { worker: 'roleKindWorker', reviewer: 'roleKindReviewer', tester: 'roleKindTester', merger: 'roleKindMerger', lead: 'roleKindLead', teammate: 'roleKindTeammate' }
+			// ── Roles / Status views: stage profiles, worktrees, activity and role admin ──
+			const ROLE_KIND_KEYS = { worker: 'roleKindWorker', reviewer: 'roleKindReviewer', tester: 'roleKindTester' }
 			const WORKTREE_TYPE_KEYS = { main: 'wtTypeMain', task: 'wtTypeTask', verify: 'wtTypeVerify', test: 'wtTypeTest', merge: 'wtTypeMerge', other: 'wtTypeOther' }
-			const AGENT_ERROR_KEYS = { 'no-team-service': 'workersErrNoService', 'no-lead': 'workersErrNoLead', 'roster-unreadable': 'workersErrRoster' }
 			const ROLE_ERROR_KEYS = {
 				'missing-name': 'roleErrMissingName',
 				'invalid-role-name': 'roleErrName',
@@ -84,8 +77,6 @@
 					.filter(function (part) { return part !== '' })
 			}
 
-			/** One agent row: kind, description, session (copy only — no fake jump), current task. */
-			/* AGENT_ROW_MODULE */
 			/* ROLE_CREATE_FORM_MODULE */
 			function roleResultBanner(result, t) {
 				if (result === null || result === undefined) return null

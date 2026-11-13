@@ -42,3 +42,7 @@ release-notes.md
 # Test scratch: redirected TEMP for the task-center suites (node compile cache +
 # fixtures). Machine-local working state, never committed.
 .tmp-run/
+
+# The task-center suite's project fixture. Some tests intentionally drive a real
+# board/lease path here; it is machine-local scratch, not source.
+/demo-project/

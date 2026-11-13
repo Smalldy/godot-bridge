@@ -23,15 +23,10 @@ export function createGates(deps) {
   }
 
   function mergeRefusal(context) {
+    // v3: merge belongs to the user (or the host's auto-merge sweep). No Agent
+    // role is a merger, and a worker cannot integrate its own task.
     if (context !== undefined && context !== null && context.role === 'user') return null
-    const member = callerMemberOf(context)
-    if (member !== null && member.name === MERGER_NAME) return null
-    return failure(
-      'merger-only',
-      'Only the user or the Team member named "' +
-        MERGER_NAME +
-        '" can merge or reject merge requests; everyone else reports done and lets the merger integrate.',
-    )
+    return failure('user-only', 'Merge and reject belong to the user (or the host auto-merge). Report done from the worker; the host integrates the tested candidate.')
   }
 
   function harnessRefusal(context) {

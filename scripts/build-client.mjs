@@ -176,7 +176,7 @@ const workersWrapper =
   workers +
   '\n\t\t\t\t})(module, module.exports)\n' +
   '\t\t\t\tconst factory = module.exports.createWorkersView\n' +
-  '\t\t\t\treturn factory({ React: React, h: h, tcBaseName: tcBaseName, tcSessionShort: tcSessionShort, tcLeadText: tcLeadText, copyToClipboard: copyToClipboard, roleKindLabel: roleKindLabel, workerStatusLabel: workerStatusLabel })\n' +
+  '\t\t\t\treturn factory({ React: React, h: h, tcBaseName: tcBaseName, tcAgentTreeOf: tcAgentTreeOf, AgentRow: AgentRow, copyToClipboard: copyToClipboard })\n' +
   '\t\t\t})()\n'
 const agentRow = read('views/agent-row.cjs')
 const agentRowWrapper =
@@ -186,7 +186,7 @@ const agentRowWrapper =
   agentRow +
   '\n\t\t\t\t})(module, module.exports)\n' +
   '\t\t\t\tconst factory = module.exports.createAgentRow\n' +
-  '\t\t\t\treturn factory({ React: React, h: h, roleKindLabel: roleKindLabel, copyToClipboard: copyToClipboard })\n' +
+  '\t\t\t\treturn factory({ h: h, roleKindLabel: roleKindLabel, tcAgentStatusKey: tcAgentStatusKey })\n' +
   '\t\t\t})()\n'
 const roleCreateForm = read('views/role-create-form.cjs')
 const roleCreateFormWrapper =
@@ -206,7 +206,7 @@ const rolesViewWrapper =
   rolesView +
   '\n\t\t\t\t})(module, module.exports)\n' +
   '\t\t\t\tconst factory = module.exports.createRolesView\n' +
-  '\t\t\t\treturn factory({ React: React, h: h, RolesEditor: RolesEditor })\n' +
+  '\t\t\t\treturn factory({ React: React, h: h, RolesEditor: RolesEditor, tcAgentTreeOf: tcAgentTreeOf })\n' +
   '\t\t\t})()\n'
 const rolesEditor = read('views/roles-editor.cjs')
 const rolesEditorWrapper =
@@ -224,12 +224,9 @@ const rolesEditorWrapper =
   '\t\t\t\t\troleBoundProfile: roleBoundProfile,\n' +
   '\t\t\t\t\troleSelectableProfiles: roleSelectableProfiles,\n' +
   '\t\t\t\t\troleProfileCopy: roleProfileCopy,\n' +
-  '\t\t\t\t\tAgentRow: AgentRow,\n' +
   '\t\t\t\t\tRoleCreateForm: RoleCreateForm,\n' +
   '\t\t\t\t\troleErrorText: roleErrorText,\n' +
-  '\t\t\t\t\tworkerStatusLabel: workerStatusLabel,\n' +
   '\t\t\t\t\troleKindLabel: roleKindLabel,\n' +
-  '\t\t\t\t\tactorLabel: actorLabel,\n' +
   '\t\t\t\t\ttcSplitList: tcSplitList,\n' +
   '\t\t\t\t\troleEditorState: roleEditorState,\n' +
   '\t\t\t\t\tROLE_EDITOR_KINDS: ROLE_EDITOR_KINDS,\n' +
@@ -253,6 +250,8 @@ const statusViewWrapper =
   '\t\t\t\t\tactorDisplay: actorDisplay,\n' +
   '\t\t\t\t\tmergeActorOf: mergeActorOf,\n' +
   '\t\t\t\t\troleKindLabel: roleKindLabel,\n' +
+  '\t\t\t\t\ttcAgentTreeOf: tcAgentTreeOf,\n' +
+  '\t\t\t\t\ttcAgentStatusKey: tcAgentStatusKey,\n' +
   '\t\t\t\t\ttestSummaryText: testSummaryText,\n' +
   '\t\t\t\t\ttcAgo: tcAgo,\n' +
   '\t\t\t\t\ttcMergeOf: tcMergeOf,\n' +
@@ -275,6 +274,7 @@ const detailViewWrapper =
   '\t\t\t\t\tdetailUiState: detailUiState,\n' +
   '\t\t\t\t\tactorDisplay: actorDisplay,\n' +
   '\t\t\t\t\tmergeActorOf: mergeActorOf,\n' +
+  '\t\t\t\t\ttcAgentTreeOf: tcAgentTreeOf,\n' +
   '\t\t\t\t\ttestSummaryText: testSummaryText,\n' +
   '\t\t\t\t\ttoneForDependency: toneForDependency,\n' +
   '\t\t\t\t\twaitingChip: waitingChip,\n' +
@@ -383,7 +383,9 @@ const taskCenterWrapper =
   '\t\t\t\t\tprojectSourceKey: projectSourceKey,\n' +
   '\t\t\t\t\tprojectSourceLabel: projectSourceLabel,\n' +
   '\t\t\t\t\ttcAgo: tcAgo,\n' +
-  '\t\t\t\t\ttcLeadText: tcLeadText,\n' +
+  '\t\t\t\t\ttcAgentTreeOf: tcAgentTreeOf,\n' +
+  '\t\t\t\t\ttcAgentStatusKey: tcAgentStatusKey,\n' +
+  '\t\t\t\t\troleKindLabel: roleKindLabel,\n' +
   '\t\t\t\t\tcopyToClipboard: copyToClipboard,\n' +
   '\t\t\t\t\tstore: store,\n' +
   '\t\t\t\t})\n' +
@@ -400,12 +402,12 @@ const bundle =
   storeWrapper +
   VIEW_PARTS.map((name) => {
     if (name === '30-views-core.part') return viewsCore
-    if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_EDITOR_MODULE \*\//, rolesEditorWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper).replace(/\t+\/\* STATUS_VIEW_MODULE \*\//, statusViewWrapper)
+    if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_EDITOR_MODULE \*\//, rolesEditorWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper).replace(/\t+\/\* STATUS_VIEW_MODULE \*\//, statusViewWrapper)
     if (name === '34-views-detail.part') return read(name).replace(/\t+\/\* DETAIL_VIEW_MODULE \*\//, detailViewWrapper)
     if (name === '35-views-forms.part') return read(name).replace(/\t+\/\* TASK_FORM_MODULE \*\//, taskFormWrapper).replace(/\t+\/\* SETTINGS_FORM_MODULE \*\//, settingsFormWrapper).replace(/\t+\/\* PROJECT_FORM_MODULE \*\//, projectFormWrapper)
     if (name === '36-views-shell.part') return read(name).replace(/\t+\/\* GLYPH_MODULE \*\//, glyphWrapper).replace(/\t+\/\* TASK_CENTER_MODULE \*\//, taskCenterWrapper)
     return read(name)
-  }).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper).replace(/\t+\/\* WORKERS_VIEW_MODULE \*\//, workersWrapper) +
+  }).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* WORKERS_VIEW_MODULE \*\//, workersWrapper) +
   read('40-tail.part')
 
 const check = process.argv.indexOf('--check') >= 0

@@ -12,6 +12,7 @@ export function createTestVerdictActions(deps) {
   const clock = deps.clock
   const writeByName = deps.writeByName
   const promoteStageSlots = deps.promoteStageSlots
+  const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
   const roleSlotNameOf = deps.roleSlotNameOf
   const state = deps.state
   const testerBriefFor = deps.testerBriefFor
@@ -72,8 +73,14 @@ export function createTestVerdictActions(deps) {
       result.task.merge !== undefined &&
       typeof result.task.merge.mergeCommit === 'string' &&
       result.task.merge.mergeCommit.length > 0
+    if (stageAgents !== null) {
+      const testerId = result.task !== null && result.task !== undefined && result.task.test !== null && result.task.test !== undefined && result.task.test.deliveredTo !== null && result.task.test.deliveredTo !== undefined
+        ? result.task.test.deliveredTo.id
+        : null
+      if (typeof testerId === 'string' && testerId !== '') await stageAgents.release(testerId)
+    }
     // Keep the tester delivery timestamp for the finished round's duration.
-    const promotedTest = await promoteStageSlots(projectPath, 'tester')
+    const promotedTest = stageAgents !== null ? [] : await promoteStageSlots(projectPath, 'tester')
     if (promotedTest.length > 0) {
       const testerSlot = roleSlotNameOf('tester', result.task.ownerSession)
       if (testerSlot !== null) {
@@ -130,11 +137,15 @@ export function createTestVerdictActions(deps) {
       )
       if (boundedDiscard.timedOut === true) actionTimeoutFailure('failTest discard candidate', id, discardStarted)
       emitActivity(null, 'worktree-remove', 'test candidate discarded after a failed test', id, 'host')
-      const owner =
-        result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
-          ? null
-          : result.task.assignee.name
-      if (owner !== null) await notifyMember(owner, testFailureBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
+      if (stageAgents !== null) {
+        await stageAgents.sendAssignee(result.task, testFailureBriefFor(result.task, projectPath))
+      } else {
+        const owner =
+          result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
+            ? null
+            : result.task.assignee.name
+        if (owner !== null) await notifyMember(owner, testFailureBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
+      }
     }
     return ok({ task: result.task, events: result.events })
   }

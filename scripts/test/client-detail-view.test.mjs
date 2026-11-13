@@ -17,6 +17,7 @@ const DetailView = createDetailView({
   toneForDependency: () => 'ready',
   waitingChip: () => null,
   tcAgo: () => 'now',
+  tcAgentTreeOf: () => ({ available: false, root: null, members: [], count: 0, error: null }),
   tcIsInvestigation: () => false,
   tcMergeLabel: () => 'merge',
   tcMergeOf: () => null,

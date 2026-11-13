@@ -173,8 +173,8 @@ function spawnCalls(team) {
   check('1 the brief carries the T-125 task line for an empty board', o.brief.indexOf('任务  无卡') >= 0, o.brief)
   check('1 the brief starts with the project line and ends with the next step', o.brief.split('\n')[0].indexOf('项目  ' + rig.project + ' · main @ ') === 0 && o.brief.indexOf('下一步  ') >= 0, o.brief)
   check('1 the brief stays under eight lines', stageLineCount(o.brief) <= 8, o.brief)
-  check('1 the team is reported ready and no bootstrap ran', o.team.ok === true && o.team.bootstrapped === false && o.team.lead === 'lead', JSON.stringify(o.team))
-  check('1 setup records the bind and the ready team', o.setup.did.some((step) => step.step === 'project-bound' && step.ok === true) && o.setup.did.some((step) => step.step === 'team-ready'), JSON.stringify(o.setup))
+  check('1 no fictional team is reported', o.team === null, JSON.stringify(o.team))
+  check('1 setup records the bind and no team step', o.setup.did.some((step) => step.step === 'project-bound' && step.ok === true) && !o.setup.did.some((step) => step.step === 'team-ready' || step.step === 'team-bootstrap'), JSON.stringify(o.setup))
   check('1 a healthy first onboard provisions nothing', spawnCalls(rig.team).length === 0, JSON.stringify(rig.team.calls))
 }
 
@@ -254,22 +254,18 @@ function spawnCalls(team) {
   const rig = onboardRig({ board: boardOf({}), team: leadOnly, roles: 'auto' })
   const first = (await rig.onboard()).onboard
   const afterFirst = spawnCalls(rig.team).length
-  check('6 a lead-only team triggers the automatic bootstrap', first.team.bootstrapped === true && first.team.ok === true, JSON.stringify(first.team))
-  check('6 the bootstrap spawns the worker slot only (T-129 §14)', afterFirst === 1 && /^worker-/.test(String(spawnCalls(rig.team)[0].name)), JSON.stringify(spawnCalls(rig.team).map((call) => call.name)))
+  check('6 onboarding never bootstraps a team', first.team === null, JSON.stringify(first.team))
+  check('6 onboarding spawns no worker slots', afterFirst === 0 && spawnCalls(rig.team).length === 0, JSON.stringify(spawnCalls(rig.team).map((call) => call.name)))
   check(
-    '6 reviewer/tester are deferred to their stages and not in the roster',
-    first.team.roles !== null &&
-      first.team.roles.length === 1 &&
-      first.team.roles[0].kind === 'worker' &&
-      first.team.members.every((name) => !/^reviewer-/.test(name) && !/^tester-/.test(name)) &&
-      first.team.missingRoles.join(',') === 'reviewer,tester',
-    JSON.stringify({ members: first.team.members, missing: first.team.missingRoles }),
+    '6 no reviewer/tester roster is fabricated',
+    first.team === null,
+    JSON.stringify(first.team),
   )
-  check('6 the bootstrap is recorded in setup.did', first.setup.did.some((step) => step.step === 'team-bootstrap' && step.ok === true), JSON.stringify(first.setup))
+  check('6 no team bootstrap is recorded', !first.setup.did.some((step) => step.step === 'team-bootstrap'), JSON.stringify(first.setup))
   const boardBefore = boardText(rig.fs, rig.project)
   const second = (await rig.onboard()).onboard
   check('6 a second onboard provisions nothing', spawnCalls(rig.team).length === afterFirst, JSON.stringify(rig.team.calls))
-  check('6 the second onboard reports the team as reused, not bootstrapped', second.team.bootstrapped === false && second.team.ok === true && !second.setup.did.some((step) => step.step === 'team-bootstrap'), JSON.stringify(second.setup))
+  check('6 the second onboard is still team-free', second.team === null && !second.setup.did.some((step) => step.step === 'team-bootstrap'), JSON.stringify(second.setup))
   check('6 neither onboard creates a card', boardText(rig.fs, rig.project) === boardBefore, 'board changed')
 }
 
@@ -280,10 +276,10 @@ function spawnCalls(team) {
   const rig = onboardRig({ board: boardOf({}), team: leadOnly, roles: 'auto', sessionRoot: other })
   const o = (await rig.onboard()).onboard
   check('7 a foreign project is not bootstrapped', spawnCalls(rig.team).length === 0, JSON.stringify(rig.team.calls))
-  check('7 the project mismatch is recorded as a failed step', o.setup.failed.length === 1 && o.setup.failed[0].code === 'project-mismatch', JSON.stringify(o.setup))
-  check('7 the stage is setup', o.stage === 'setup', o.stage)
-  check('7 the next step sends the user to the owning session', o.next.code === 'open-owning-session', JSON.stringify(o.next))
-  check('7 the team block explains the mismatch', o.team.bootstrapped === false && o.team.ok === false && o.warnings.length >= 0, JSON.stringify(o.team))
+  check('7 a project mismatch is not a team failure', o.setup.failed.length === 0, JSON.stringify(o.setup))
+  check('7 the stage is not setup', o.stage !== 'setup', o.stage)
+  check('7 the next step does not send the user to a team', o.next.code !== 'bootstrap-team', JSON.stringify(o.next))
+  check('7 the team block is gone', o.team === null, JSON.stringify(o.team))
 }
 
 // ── 8) a profile without team services stays usable ───────────────────────
@@ -291,9 +287,9 @@ function spawnCalls(team) {
   const rig = onboardRig({ board: boardOf({}), teamService: false })
   const o = (await rig.onboard()).onboard
   check('8 no team services is not the setup stage', o.stage !== 'setup', o.stage)
-  check('8 the degradation is a warning, not a failure', o.warnings.some((warning) => warning.indexOf('无团队服务') >= 0 || warning.indexOf('没有团队服务') >= 0), JSON.stringify(o.warnings))
+  check('8 no Team warning is fabricated', !o.warnings.some((warning) => warning.indexOf('团队服务') >= 0), JSON.stringify(o.warnings))
   check('8 the empty board still suggests create-task', o.next.code === 'create-task', JSON.stringify(o.next))
-  check('8 the team block reports the missing service', o.team.available === false && o.setup.failed.length === 0, JSON.stringify(o.team))
+  check('8 the team block is gone', o.team === null && o.setup.failed.length === 0, JSON.stringify(o.team))
 }
 
 // ── 9) a hard-broken main checkout -> fix-environment, approval still wins ─
@@ -473,11 +469,11 @@ function spawnCalls(team) {
     check('T-153 a live owning session puts onboarding in the handoff stage', o.stage === 'handoff' && o.next.code === 'resume-owning-session' && o.handoff.required === true && o.handoff.reason === 'foreign-active-tasks', JSON.stringify({ stage: o.stage, next: o.next && o.next.code, handoff: o.handoff && { required: o.handoff.required, reason: o.handoff.reason } }))
     const row = (o.handoff.sessions || []).filter((entry) => entry.sessionId === OLD)[0]
     check('T-153 handoff payload names sessions, liveness, cards and eligibility', row !== undefined && row.status === 'live' && row.cards.active === 1 && o.handoff.cards.length === 1 && o.handoff.cards[0].id === 'T-6' && o.handoff.cards[0].ownerSession === OLD && Array.isArray(o.handoff.cards[0].liveExecutors) && o.handoff.cards[0].lease.until !== null && o.handoff.eligibility.takeover.ok === false && o.handoff.eligibility.resume.ok === true, JSON.stringify({ row: row, cards: o.handoff.cards }))
-    check('T-153 a live owner is never taken over and no second team is built', spawnCalls(rig.team).length === 0 && o.team.ok !== true, JSON.stringify({ spawns: spawnCalls(rig.team).length, team: o.team }))
+    check('T-153 a live owner is never taken over and no second team is built', spawnCalls(rig.team).length === 0 && o.team === null, JSON.stringify({ spawns: spawnCalls(rig.team).length, team: o.team }))
     const created = await rig.api.perform('create', { title: 'new work' }, rig.context)
-    check('T-153 create is refused with the handoff next step (never bootstrap-team)', created.ok === false && created.code === 'handoff-required' && created.nextStep !== null && created.nextStep.code === 'resume-owning-session' && created.nextStep.code !== 'bootstrap-team' && Array.isArray(created.handoff.cards) && created.handoff.cards[0].id === 'T-6', JSON.stringify({ code: created.code, next: created.nextStep && created.nextStep.code }))
+    check('v3 create is not blocked by another session\'s handoff', created.ok === true, JSON.stringify({ code: created.code }))
     const started = await rig.api.perform('start', {}, rig.context)
-    check('T-153 start is refused with the same handoff next step', started.ok === false && started.code === 'handoff-required' && started.nextStep !== null && started.nextStep.code === 'resume-owning-session', JSON.stringify({ code: started.code, next: started.nextStep && started.nextStep.code }))
+    check('v3 start is not blocked by another session\'s handoff', started.ok === true || started.code === 'needs-consent', JSON.stringify({ code: started.code }))
     const unchanged = boardJson(rig.fs, rig.project).tasks[0]
     check('T-153 nothing is auto-reowned while the decision is open', unchanged.ownerSession === OLD && unchanged.status === 'running', JSON.stringify({ owner: unchanged.ownerSession, status: unchanged.status }))
   }
@@ -576,7 +572,7 @@ function spawnCalls(team) {
     const rig = onboardRig({ board: boardOf({ tasks: [runningCard()] }), team: leadOnlyTeam(), roles: 'auto' })
     markSession(rig, OLD, OLD_STALE)
     const blocked = await rig.api.perform('create', { title: 'blocked card' }, rig.context)
-    check('T-153 create stays refused before the handoff decision', blocked.ok === false && blocked.code === 'handoff-required', JSON.stringify({ code: blocked.code }))
+    check('v3 create is allowed before another session\'s handoff decision', blocked.ok === true, JSON.stringify({ code: blocked.code }))
     const joined = await rig.api.perform('onboard', { handoff: { decision: 'join-read-only' } }, rig.context)
     const after = boardJson(rig.fs, rig.project).tasks.filter((task) => task.id === 'T-6')[0]
     check('T-153 join read-only records the decision and leaves the old card with its owner', joined.ok === true && joined.onboard.handoff.decision !== null && joined.onboard.handoff.decision.mode === 'join-read-only' && after.ownerSession === OLD && after.status === 'running' && joined.onboard.setup.did.some((step) => step.step === 'handoff-join'), JSON.stringify({ decision: joined.onboard.handoff && joined.onboard.handoff.decision, owner: after.ownerSession }))
@@ -627,7 +623,7 @@ function spawnCalls(team) {
 {
   check(
     'the next-code vocabulary is complete (T-153 adds the three handoff codes)',
-    ONBOARD_NEXT_CODES.length === 16 && ONBOARD_NEXT_CODES.indexOf('choose-project') === 0 && ONBOARD_NEXT_CODES.indexOf('none') === 15 &&
+    ONBOARD_NEXT_CODES.length === 15 && ONBOARD_NEXT_CODES.indexOf('choose-project') === 0 && ONBOARD_NEXT_CODES.indexOf('none') === 14 &&
       ONBOARD_NEXT_CODES.indexOf('resume-owning-session') === 5 && ONBOARD_NEXT_CODES.indexOf('takeover-active-tasks') === 6 && ONBOARD_NEXT_CODES.indexOf('join-project-read-only') === 7,
     ONBOARD_NEXT_CODES.join(','),
   )
@@ -649,7 +645,6 @@ function spawnCalls(team) {
       selectOnboardNext({ kind: 'git-only' }).code === 'not-a-project' &&
       selectOnboardNext({ kind: 'root', preflightOk: false }).code === 'fix-host' &&
       selectOnboardNext({ kind: 'root', preflightOk: true, teamFailureCode: 'project-mismatch' }).code === 'open-owning-session' &&
-      selectOnboardNext({ kind: 'root', preflightOk: true, teamFailed: true, teamFailureCode: 'no-members' }).code === 'bootstrap-team' &&
       selectOnboardNext({ kind: 'root', preflightOk: true, counts: { pending: 1 }, dispatchState: 'paused' }).code === 'start-dispatch' &&
       selectOnboardNext({ kind: 'root', preflightOk: true, counts: { total: 0 } }).code === 'create-task' &&
       selectOnboardNext({ kind: 'root', preflightOk: true, counts: { total: 1, running: 1 }, stage: 'active' }).code === 'none',

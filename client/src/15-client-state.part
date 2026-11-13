@@ -216,16 +216,14 @@ function tcHostSessionId() {
 				// are waiting on it — the panel separates a merge-window blip from a
 				// really dirty checkout with this.
 				environment: payload.environment === undefined || payload.environment === null ? null : payload.environment,
-				// T-110: the project's Team and, when it does not exist, the one
-				// instruction the session must act on.
-				team: payload.team === undefined || payload.team === null ? null : payload.team,
 				// T-155: the explicit project/session scope (projectSessions, sessionSummaries,
-				// panelSession, currentSessionProject). The panel groups teams BY SESSION
-				// from this; it never treats one team as "the project team".
+				// panelSession, currentSessionProject). The panel groups cards BY SESSION
+				// from this; no session is primary.
 				scope: payload.scope === undefined || payload.scope === null || typeof payload.scope !== 'object' ? null : payload.scope,
-				// T-122: host-wide team inventory (diagnostics); the member table uses team.members.
-				teams: payload.teams === undefined || payload.teams === null ? null : payload.teams,
-				nextStep: payload.nextStep === undefined || payload.nextStep === null ? null : payload.nextStep,
+				// v3: the live execution tree — the root Agent plus every live child.
+				// It is the only membership view the panel renders; the legacy
+				// team/teams/workers/agents blocks are not carried into the UI state.
+				agentTree: payload.agentTree === undefined || payload.agentTree === null || typeof payload.agentTree !== 'object' ? null : payload.agentTree,
 				// How full the board file is: { bytes, limit, percent, level, cards,
 				// bytesPerCard, headroomCards, warning }. The status page warns at 50%
 				// and 75% of the cap, before the file stops loading at all.
@@ -238,8 +236,6 @@ function tcHostSessionId() {
 				mergeQueue: payload.mergeQueue === undefined || payload.mergeQueue === null ? null : payload.mergeQueue,
 				tasks: tasks,
 				locks: Array.isArray(payload.locks) ? payload.locks : [],
-				workers: payload.workers === undefined || payload.workers === null ? null : payload.workers,
-				agents: payload.agents === undefined || payload.agents === null ? null : payload.agents,
 				worktrees: payload.worktrees === undefined || payload.worktrees === null ? null : payload.worktrees,
 				activity: payload.activity === undefined || payload.activity === null ? null : payload.activity,
 				// T-111: the status timeline the Host derives from the board (task

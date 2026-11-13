@@ -646,7 +646,6 @@ export const DISPATCH_DEFAULTS = {
   pauseReason: null,
   maxConcurrent: 3,
   allowSpawn: true,
-  maxWorkAgents: 4,
   maxAttempts: 3,
   // The project's default target branch; null follows the main checkout's branch.
   defaultTarget: null,
@@ -657,7 +656,6 @@ export const DISPATCH_DEFAULTS = {
 /** Upper bounds for user-provided dispatch settings. */
 export const DISPATCH_LIMITS = {
   maxConcurrent: { min: 1, max: 8 },
-  maxWorkAgents: { min: 1, max: 12 },
   maxAttempts: { min: 1, max: 10 },
 }
 
@@ -849,7 +847,6 @@ export function normaliseDispatch(raw) {
     pauseReason: pauseReason,
     maxConcurrent: clamp(source.maxConcurrent, DISPATCH_LIMITS.maxConcurrent, DISPATCH_DEFAULTS.maxConcurrent),
     allowSpawn: source.allowSpawn === undefined ? DISPATCH_DEFAULTS.allowSpawn : source.allowSpawn === true,
-    maxWorkAgents: clamp(source.maxWorkAgents, DISPATCH_LIMITS.maxWorkAgents, DISPATCH_DEFAULTS.maxWorkAgents),
     maxAttempts: clamp(source.maxAttempts, DISPATCH_LIMITS.maxAttempts, DISPATCH_DEFAULTS.maxAttempts),
     defaultTarget: typeof source.defaultTarget === 'string' && source.defaultTarget.trim() !== '' ? source.defaultTarget.trim() : null,
     request: normaliseRequest(source.request),

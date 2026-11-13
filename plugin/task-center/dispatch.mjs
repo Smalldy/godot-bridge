@@ -1097,8 +1097,7 @@ export function workerPool(ctx, board, options) {
   // bounded by how many cards may run at once (maxConcurrent), so a panel can
   // show "concurrency 3 · ceiling 4" without consulting any role profile.
   const maxConcurrent = Number.isFinite(dispatch.maxConcurrent) ? Math.max(1, Math.floor(dispatch.maxConcurrent)) : 3
-  const maxWorkAgents = Number.isFinite(dispatch.maxWorkAgents) ? Math.max(1, Math.floor(dispatch.maxWorkAgents)) : DEFAULT_MAX_WORK_AGENTS
-  const effectiveWorkerCap = Math.max(1, Math.min(maxConcurrent, maxWorkAgents))
+  const effectiveWorkerCap = maxConcurrent
   const report = {
     lead: null,
     leadInfo: null,
@@ -1107,7 +1106,7 @@ export function workerPool(ctx, board, options) {
     idle: 0,
     provisioning: 0,
     failed: 0,
-    cap: maxWorkAgents,
+    cap: maxConcurrent,
     maxConcurrent: maxConcurrent,
     // The worker pool target: min(maxConcurrent, maxWorkAgents). Both names are
     // exposed while the panel migrates (T-137); they are always the same number.
@@ -3334,6 +3333,14 @@ export function createDispatcher(ctx, options) {
   // The host-side role provisioner. Null means this caller did not opt into
   // role provisioning (older tests / direct API users); dispatch still works.
   const roles = opts.roles === undefined ? null : opts.roles
+  // New runtime path: when supplied, dispatch starts a per-task worker from the
+  // root's subagent tree instead of looking for an idle Team member. Old callers
+  // (and the transition tests) leave this null while the Team path is removed.
+  const taskAgents = opts.taskAgents === undefined || opts.taskAgents === null ? null : opts.taskAgents
+  // Production rows set this so a missing runtime is an explicit error instead of
+  // silently falling back to the removed Agent Teams roster. Direct test rigs
+  // leave it false while the old-path tests are retired.
+  const requireTaskAgents = opts.requireTaskAgents === true
   // The in-memory activity ring the snapshot exposes. Null is a normal setup
   // (direct dispatcher users) and simply records nothing.
   const activity = opts.activity === undefined || opts.activity === null ? null : opts.activity
@@ -3433,8 +3440,8 @@ export function createDispatcher(ctx, options) {
   function capacitySnapshot(dispatch, roster, board) {
     const d = dispatch === null || dispatch === undefined ? {} : dispatch
     const maxConcurrent = Number.isFinite(d.maxConcurrent) ? Math.max(1, Math.floor(d.maxConcurrent)) : 3
-    const maxWorkAgents = Number.isFinite(d.maxWorkAgents) ? Math.max(1, Math.floor(d.maxWorkAgents)) : DEFAULT_MAX_WORK_AGENTS
-    const workerCap = Math.max(1, Math.min(maxConcurrent, maxWorkAgents))
+    const maxWorkAgents = maxConcurrent
+    const workerCap = maxConcurrent
     const members = Array.isArray(roster) ? roster : []
     const pool = members.filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string' && /^worker-p/.test(member.name) && member.status !== 'failed')
     // T-166: a pool member that is busy may be 'inactive' between worker turns
@@ -4398,6 +4405,111 @@ export function createDispatcher(ctx, options) {
     }
   }
 
+  /**
+   * The v3 dispatch path: one task, one worker spawned under the exact root
+   * Agent. No idle-member scan, no worker pool, no team-name routing.
+   */
+  async function dispatchWithAgent(task, project, dispatch, reserved, workerConfig) {
+    if (taskAgents === null || taskAgents.available !== true) return { id: task.id, skipped: 'agent-runtime-unavailable', message: 'the root Agent subagent runtime is not ready' }
+    const cardSession = typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : taskAgents.rootId !== null ? taskAgents.rootId : selfSessionId
+    if (cardSession === null) return { id: task.id, skipped: 'no-root-session', message: 'the task has no root Session to be owned by' }
+    if (task.writeFiles.length > 0) {
+      const conflicts = locks.conflictsFor(state.memory.locks, task.writeFiles, 'task:' + task.id)
+      if (conflicts.length > 0) return { id: task.id, skipped: 'files-busy', conflicts: conflicts }
+    }
+    let lockPaths = []
+    if (task.kind !== 'investigate' && task.writeFiles.length > 0) {
+      const acquired = locks.acquire(
+        state.memory.locks,
+        task.writeFiles,
+        { taskId: task.id, agent: 'worker-' + String(task.id) },
+        state.clock(),
+        TASK_LEASE_MS,
+      )
+      if (acquired.ok !== true || acquired.granted !== true) {
+        return { id: task.id, skipped: 'files-busy', conflicts: acquired.conflicts === undefined ? [] : acquired.conflicts }
+      }
+      state.memory.locks = acquired.locks
+      lockPaths = acquired.paths
+    }
+    let worktree
+    try {
+      worktree = await prepareWorktree(gitFacade(), project, task, dispatch, model.attemptSlot(task), worktreeDeadlineMs)
+    } catch (error) {
+      worktree = worktreeFallback('worktree-error', String((error && error.message) || error))
+    }
+    if (worktree.error !== null) {
+      releaseTaskLocks(task.id)
+      return {
+        id: task.id,
+        skipped: isTransientEnvironmentCode(worktree.code) ? 'environment-dirty' : 'worktree-unavailable',
+        reason: String(worktree.code),
+        detail: String(worktree.message),
+      }
+    }
+    const brief = task.kind === 'investigate'
+      ? investigationBriefFor(task, project, { path: worktree.path, base: worktree.base, target: worktree.target })
+      : briefFor(task, project, taskAgents.root === null ? 'lead' : String(taskAgents.root.name || 'lead'), workerConfig)
+    let spawned
+    try {
+      spawned = await taskAgents.startWorker(task, brief)
+    } catch (error) {
+      releaseTaskLocks(task.id)
+      await removeWorktree(gitFacade(), project, worktree.path)
+      return { id: task.id, skipped: 'spawn-failed', message: String((error && error.message) || error) }
+    }
+    let claimed = null
+    try {
+      claimed = await state.apply(
+        project,
+        (board) => model.claimTask(board, task.id, {
+          name: spawned.name,
+          session: spawned.agentId,
+          via: 'spawn',
+          host: boot,
+          lead: taskAgents.root === null ? null : String(taskAgents.root.name || 'lead'),
+          leadSession: taskAgents.rootId,
+          cardSession: cardSession,
+          project: project,
+          worktree: worktree,
+          targetBase: typeof worktree.base === 'string' ? worktree.base : null,
+          ownerCompat: false,
+          compat: false,
+          compatDetail: null,
+        }, state.clock()),
+        writePolicyFor(project),
+      )
+    } catch (error) {
+      claimed = { failed: { message: String((error && error.message) || error) } }
+    }
+    if (claimed === null || claimed.failed !== undefined) {
+      const message = claimed === null ? 'claim failed' : String(claimed.failed.message || 'claim failed')
+      releaseTaskLocks(task.id)
+      await taskAgents.release(spawned.agentId)
+      await removeWorktree(gitFacade(), project, worktree.path)
+      return { id: task.id, error: message, skipped: 'claim-failed' }
+    }
+    const recorded = await state.apply(
+      project,
+      (board) => model.recordDispatch(board, task.id, { status: 'sent', at: new Date(state.clock()).toISOString() }, state.clock()),
+      writePolicyFor(project),
+    )
+    if (recorded.failed !== undefined) {
+      // The worker was already started; leave it alive and let the normal
+      // reconciliation path settle the card. The result still names the agent.
+    }
+    return {
+      id: task.id,
+      ok: true,
+      target: spawned.name,
+      agentId: spawned.agentId,
+      spawned: true,
+      files: lockPaths,
+      worktree: worktree.path,
+      worktreeError: null,
+    }
+  }
+
   async function tick(projectPath) {
     const project = typeof projectPath === 'string' && projectPath.length > 0 ? projectPath : projectOf()
     if (typeof project !== 'string' || project.length === 0) return { ok: true, skipped: 'unknown-project' }
@@ -4592,11 +4704,21 @@ export function createDispatcher(ctx, options) {
             continue
           }
         }
+        if (taskAgents === null && requireTaskAgents === true) {
+          results.push({ id: task.id, skipped: 'agent-runtime-unavailable', message: 'the root Agent subagent runtime is not available; the task stays pending' })
+          continue
+        }
+        if (taskAgents !== null) {
+          const v3 = await dispatchWithAgent(task, project, dispatch, reserved, workerConfig)
+          results.push(v3)
+          if (v3.ok === true) slots -= 1
+          continue
+        }
         const projectKey = projectSlotKey(project)
         let picked = pickTarget(ctx, {
           reserved: reserved,
           spawn: dispatch.allowSpawn === true && spawnAllowed,
-          maxWorkAgents: dispatch.maxWorkAgents,
+          maxWorkAgents: dispatch.maxConcurrent,
           projectKey: projectKey,
           // The LEAD that creates the executor is the one this card BELONGS to
           // (owned card) or the project session that adopted it (ownerless card).
@@ -4616,7 +4738,6 @@ export function createDispatcher(ctx, options) {
           // Count the pool workers and the cards they hold before growing it.
           const workerCap = Math.max(1, Math.min(
             Number.isFinite(dispatch.maxConcurrent) ? Math.floor(dispatch.maxConcurrent) : 3,
-            Number.isFinite(dispatch.maxWorkAgents) ? Math.floor(dispatch.maxWorkAgents) : DEFAULT_MAX_WORK_AGENTS,
           ))
           // T-166: pickTarget already read the roster with the Lead credential;
           // that read is the one the host accepts. The old call without a caller
@@ -4670,7 +4791,7 @@ export function createDispatcher(ctx, options) {
           pickedNow = pickTarget(ctx, {
             reserved: reserved,
             spawn: false,
-            maxWorkAgents: dispatch.maxWorkAgents,
+            maxWorkAgents: dispatch.maxConcurrent,
             projectKey: projectKey,
             sessionId: dispatchSession,
             board: current,

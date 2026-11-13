@@ -47,7 +47,6 @@ const TABLE = [
   { name: 'rolesPrune', scope: 'user', readOnly: false, devOnly: false },
   { name: 'rolesReset', scope: 'user', readOnly: false, devOnly: false },
   { name: 'skillsCatalog', scope: 'user', readOnly: true, devOnly: false },
-  { name: 'bootstrapTeam', scope: 'agent', readOnly: false, devOnly: false },
   { name: 'approveStart', scope: 'user', readOnly: false, devOnly: false },
   { name: 'rejectStart', scope: 'user', readOnly: false, devOnly: false },
   { name: 'cancelStartRequest', scope: 'agent', readOnly: false, devOnly: false },

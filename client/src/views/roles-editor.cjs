@@ -12,12 +12,9 @@ function createRolesEditor(deps) {
 	const roleBoundProfile = deps.roleBoundProfile
 	const roleSelectableProfiles = deps.roleSelectableProfiles
 	const roleProfileCopy = deps.roleProfileCopy
-	const AgentRow = deps.AgentRow
 	const RoleCreateForm = deps.RoleCreateForm
 	const roleErrorText = deps.roleErrorText
-	const workerStatusLabel = deps.workerStatusLabel
 	const roleKindLabel = deps.roleKindLabel
-	const actorLabel = deps.actorLabel
 	const tcSplitList = deps.tcSplitList
 	const roleEditorState = deps.roleEditorState
 	const ROLE_EDITOR_KINDS = deps.ROLE_EDITOR_KINDS
@@ -31,7 +28,7 @@ function createRolesEditor(deps) {
 		const bump = props.bump
 		const config = snapshot.roles
 		const kind = roleEditorState.kind
-		const stage = ROLE_EDITOR_STAGES[kind] || (kind === 'merger' ? 'merge' : 'implement')
+		const stage = ROLE_EDITOR_STAGES[kind] || 'implement'
 		const profiles = config !== null && config !== undefined && config.profiles !== null && config.profiles !== undefined && typeof config.profiles === 'object' ? config.profiles : {}
 		const bound = roleBoundProfile(config, kind)
 		const boundName = bound !== null && typeof bound.name === 'string' ? bound.name : null
@@ -511,13 +508,10 @@ function createRolesEditor(deps) {
 		const rosterEntries = builtinNames.map(function (name) {
 			return { name: name, kind: name, label: roleKindLabel(name, t), stage: ROLE_EDITOR_STAGES[name], disabled: false }
 		})
-		// Merger has no editable stage in the host yet, but the selector still
-		// opens its read-only profile so the roster has the full four roles.
-		rosterEntries.push({ name: 'merger', kind: 'merger', label: t('roleKindMerger'), stage: 'merge', disabled: false })
-		Object.keys(profiles).filter(function (name) { return builtinNames.indexOf(name) < 0 && name !== 'merger' }).forEach(function (name) {
+		Object.keys(profiles).filter(function (name) { return builtinNames.indexOf(name) < 0 }).forEach(function (name) {
 			const profile = profiles[name]
 			const role = profile !== null && profile !== undefined && typeof profile.role === 'string' ? profile.role : 'worker'
-			rosterEntries.push({ name: name, kind: role, label: roleKindLabel(role, t), stage: profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_EDITOR_STAGES[role], disabled: ROLE_EDITOR_KINDS.indexOf(role) < 0 && role !== 'merger' })
+			rosterEntries.push({ name: name, kind: role, label: roleKindLabel(role, t), stage: profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_EDITOR_STAGES[role], disabled: ROLE_EDITOR_KINDS.indexOf(role) < 0 })
 		})
 		const rosterList = h('aside', { className: 'gbt-roleslist', 'data-role-list': 'true' },
 			h('div', { className: 'gbt-roleslisthead' }, h('span', { className: 'gbt-deckeyebrow' }, 'ROSTER / 角色'), h('b', null, String(rosterEntries.length))),

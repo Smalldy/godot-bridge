@@ -1,71 +1,40 @@
 /**
- * Agent row view module.
+ * Agent row module.
  *
- * Extracted from the roles fragment; React, h, the kind label and clipboard are
- * injected by the build.
+ * One member of the live execution tree: role, agent, status and the task it is
+ * running. The root Agent is the same shape with isRoot set; there is no team
+ * roster and no worker-pool slot behind this row.
  */
 function createAgentRow(deps) {
-	const React = deps.React
 	const h = deps.h
 	const roleKindLabel = deps.roleKindLabel
-	const copyToClipboard = deps.copyToClipboard
+	const tcAgentStatusKey = deps.tcAgentStatusKey
 
 	function AgentRow(props) {
 		const t = props.t
-		const member = props.member
-		const isLead = props.isLead === true
-		const [copied, setCopied] = React.useState(null)
-		const name = typeof member.name === 'string' && member.name !== '' ? member.name : typeof member.id === 'string' ? member.id : '—'
-		const kind = isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate'
-		const session = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' && member.id !== '' ? member.id : ''
-		const status = typeof member.status === 'string' ? member.status : 'unknown'
-		const current = member.currentTask !== null && member.currentTask !== undefined ? member.currentTask : null
-		let task = '—'
-		if (current !== null && typeof current.id === 'string' && current.id !== '') {
-			task = typeof current.title === 'string' && current.title !== '' ? current.id + ' · ' + current.title : current.id
-		} else if (status === 'inactive') {
-			task = t('workersIdle')
-		}
+		const member = props.member === null || props.member === undefined ? {} : props.member
+		const isRoot = props.isRoot === true
+		const name = typeof member.name === 'string' && member.name !== '' ? member.name : typeof member.id === 'string' && member.id !== '' ? member.id : '—'
+		const role = typeof member.role === 'string' && member.role !== '' ? member.role : null
+		const status = typeof member.status === 'string' && member.status !== '' ? member.status : null
+		const taskId = typeof member.taskId === 'string' && member.taskId !== '' ? member.taskId : null
+		const roleText = isRoot ? t('agentRootRole') : role === null ? '—' : roleKindLabel(role, t)
 		return h(
 			'tr',
-			{ 'data-agent': name, 'data-kind': kind, 'data-status': status },
-			h('td', { className: 'gbt-mono', 'data-col': 'agent-name' }, isLead ? name + ' · ' + t('statusLead') : name),
-			h('td', { 'data-col': 'agent-kind' }, roleKindLabel(kind, t)),
-			h('td', { 'data-col': 'agent-description' }, typeof member.description === 'string' && member.description !== '' ? member.description : '—'),
-			h(
-		'td',
-		{ 'data-col': 'agent-session' },
-		session === '' ? '—' : h('code', { className: 'gbt-mono' }, session),
-		session === ''
-			? null
-			: h(
-			'button',
 			{
-				type: 'button',
-				className: 'gbt-btn',
-				style: { marginLeft: '6px' },
-				'data-action': 'copy-session',
-				'data-session': session,
-				onClick: function () {
-					void copyToClipboard(session).then(function (ok) {
-				setCopied(ok === true ? session : 'failed')
-					})
-				},
+				'data-agent': name,
+				'data-agent-id': typeof member.id === 'string' ? member.id : '',
+				'data-agent-role': isRoot ? 'root' : role === null ? '' : role,
+				'data-agent-status': status === null ? '' : status,
+				'data-agent-task': taskId === null ? '' : taskId,
+				'data-agent-root': isRoot ? 'true' : undefined,
 			},
-			copied === session ? t('sessionCopied') : t('copySession'),
-				),
-		copied === 'failed' ? h('span', { className: 'gbt-footnote' }, ' ' + t('copyFailed')) : null,
-			),
-			h('td', { 'data-col': 'agent-task' }, task),
+			h('td', { 'data-col': 'agent-role' }, h('span', { className: 'gbt-pill', 'data-role-badge': isRoot ? 'root' : role === null ? '' : role }, roleText)),
+			h('td', { className: 'gbt-mono', 'data-col': 'agent-name' }, h('span', { className: 'gbt-workername', title: name }, name)),
+			h('td', { 'data-col': 'agent-status' }, status === null ? '—' : h('span', { className: 'gbt-pill', 'data-status': status }, t(tcAgentStatusKey(status)))),
+			h('td', { className: 'gbt-mono', 'data-col': 'agent-task', title: taskId === null ? '' : taskId }, taskId === null ? '—' : taskId),
 		)
 	}
-
-	/** One stage binding row: current profile plus a bind control. */
-	/**
-	 * The blank-create form. Fork is the primary path to a new profile; this
-	 * stays as the secondary entry for one that is not a copy of anything.
-	 * It lives inside the editor card, collapsed.
-	 */
 
 	return AgentRow
 }

@@ -38,7 +38,6 @@ const EXPECTED_ACTIONS = [
   'rolesPrune',
   'rolesReset',
   'skillsCatalog',
-  'bootstrapTeam',
   'approveStart',
   'rejectStart',
   'cancelStartRequest',

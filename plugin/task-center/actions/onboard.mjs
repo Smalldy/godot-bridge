@@ -250,64 +250,20 @@ export function createOnboardAction(deps) {
     facts.handoff = handoff
     facts.handoffBlocked = handoffBlocked
 
-    // ── Team: reuse when ok, bootstrap ONCE when missing — but NEVER while
-    //    another session's in-progress cards are unresolved (T-153) ─────────
-    const teamRead = await projectTeamFor(root, sessionId)
-    let team = teamRead.team
-    let bootstrapped = false
-    let bootstrappedRoles = null
-    let teamFailed = false
-    let teamFailureCode = null
-    let teamError = null
-    if (handoffBlocked) {
-      // No second team: the handoff decision comes first. The session's own team
-      // state is still reported, and nothing is created.
-      setup.did.push({ step: 'handoff-pending', ok: true, detail: String(handoff.reason === null || handoff.reason === undefined ? 'handoff' : handoff.reason) })
-      if (team.available !== true) warnings.push('本环境没有团队服务（单机模式）：建卡和派发不走团队。')
-    } else if (team.available !== true) {
-      warnings.push('本环境没有团队服务（单机模式）：建卡和派发不走团队。')
-    } else if (teamDispatchReadyOf(team)) {
-      setup.did.push({ step: 'team-ready', ok: true, detail: typeof team.lead === 'string' ? team.lead : '' })
-    } else {
-      const owns = ownsProject
-      if (sessionId === null) {
-        teamFailureCode = 'no-session-context'
-        teamError = '这个请求没有会话身份，无法建团队'
-      } else if (owns !== true) {
-        teamFailureCode = 'project-mismatch'
-        teamError = '这个会话不属于该项目'
-      } else if (roles === null || typeof roles.ensure !== 'function') {
-        teamFailureCode = 'no-role-manager'
-        teamError = '这个环境没有角色管理器'
-      } else {
-        const boot = await bootstrapTeamFor(root, sessionId)
-        if (boot.ok === true) {
-          bootstrapped = true
-          bootstrappedRoles = boot.roles
-          const created = boot.roles.filter((entry) => entry.ok === true).map((entry) => entry.kind)
-          setup.did.push({ step: 'team-bootstrap', ok: true, detail: created.join('、') })
-          const reread = await projectTeamFor(root, sessionId)
-          team = reread.team
-          if (teamDispatchReadyOf(team)) setup.did.push({ step: 'team-ready', ok: true, detail: typeof team.lead === 'string' ? team.lead : '' })
-        } else {
-          teamFailureCode = typeof boot.code === 'string' ? boot.code : 'bootstrap-failed'
-          teamError = String(boot.message === undefined ? '团队建立失败' : boot.message)
-        }
-      }
-    }
-    if (handoffBlocked !== true && team.available !== false && teamDispatchReadyOf(team) !== true) {
-      // An unresolved handoff is not a Team failure: the session simply may not
-      // build a second team yet (T-153), so the stage stays 'handoff'.
-      teamFailed = true
-      if (teamFailureCode === null) teamFailureCode = typeof team.error === 'string' && team.error !== '' ? team.error : 'no-members'
-      if (teamError === null) teamError = team.error === undefined || team.error === null ? '团队仍然不完整' : String(team.error)
-      setup.failed.push({ step: 'team-bootstrap', code: teamFailureCode, message: teamError })
-    }
-    facts.team = team
-    facts.teamFailed = teamFailed
-    facts.teamFailureCode = teamFailureCode
-    facts.teamError = teamError
-    facts.missingRoles = team !== null && team !== undefined && Array.isArray(team.missingRoles) ? team.missingRoles : []
+    // v3: onboarding never creates a Team. Execution is the root Agent's
+    // subagent tree, so the only ownership question is which board this is.
+    const team = null
+    const bootstrapped = false
+    const bootstrappedRoles = null
+    const teamFailed = false
+    const teamFailureCode = null
+    const teamError = null
+    if (handoffBlocked) setup.did.push({ step: 'handoff-pending', ok: true, detail: String(handoff.reason === null || handoff.reason === undefined ? 'handoff' : handoff.reason) })
+    facts.team = null
+    facts.teamFailed = false
+    facts.teamFailureCode = null
+    facts.teamError = null
+    facts.missingRoles = []
 
     // ── board facts (compact) ───────────────────────────────────────────────
     const summary = summariseBoard(board)
@@ -376,7 +332,7 @@ export function createOnboardAction(deps) {
       stage: stage,
       projectLine: renderProjectLine({ kind: 'root', path: root, branch: facts.branch, head: facts.head }),
       taskLine: taskLine,
-      team: { label: teamLabelOf(team) },
+      team: null,
       dispatchState: dispatchState,
       queue: summary.ready,
       active: summary.active,
@@ -393,7 +349,7 @@ export function createOnboardAction(deps) {
         stage: stage,
         brief: brief,
         project: onboardProjectSummary(facts),
-        team: onboardTeamSummary(team, bootstrapped, bootstrappedRoles),
+        team: null,
         dispatch: onboardDispatchSummary(dispatch),
         environment: environment,
         setup: setup,

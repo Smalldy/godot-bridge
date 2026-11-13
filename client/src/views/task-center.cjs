@@ -28,7 +28,9 @@ function createTaskCenter(deps) {
 	const projectSourceKey = deps.projectSourceKey
 	const projectSourceLabel = deps.projectSourceLabel
 	const tcAgo = deps.tcAgo
-	const tcLeadText = deps.tcLeadText
+	const tcAgentTreeOf = deps.tcAgentTreeOf
+	const tcAgentStatusKey = deps.tcAgentStatusKey
+	const roleKindLabel = deps.roleKindLabel
 	const copyToClipboard = deps.copyToClipboard
 	const store = deps.store
 	// T-155: one workspace-follow driver per panel. key memoises the attempt per
@@ -96,17 +98,17 @@ function createTaskCenter(deps) {
 		// T-150/T-155: copy confirmation for the owning session id in the header.
 		// Module-backed so a remount (view switch, polling render) still shows the
 		// toast that the copy really happened.
-		const [teamSessionCopied, setTeamSessionCopiedState] = React.useState(panelState.teamSessionCopied === undefined ? null : panelState.teamSessionCopied)
-		function setTeamSessionCopied(next) {
-			panelState.teamSessionCopied = next
-			setTeamSessionCopiedState(next)
+		const [sessionCopied, setSessionCopiedState] = React.useState(panelState.sessionCopied === undefined ? null : panelState.sessionCopied)
+		function setSessionCopied(next) {
+			panelState.sessionCopied = next
+			setSessionCopiedState(next)
 		}
-		// T-158: the two-row header keeps sessions, the team and the overflow
-		// actions in popovers; all three are ALWAYS rendered and merely hidden, so
-		// a closed popover still has its rows/actions in the DOM for tests and for
-		// the next open without a remount.
+		// T-158: the two-row header keeps sessions, the live agent tree and the
+		// overflow actions in popovers; all three are ALWAYS rendered and merely
+		// hidden, so a closed popover still has its rows/actions in the DOM for
+		// tests and for the next open without a remount.
 		const [sessionsOpen, setSessionsOpen] = React.useState(false)
-		const [teamOpen, setTeamOpen] = React.useState(false)
+		const [agentsOpen, setAgentsOpen] = React.useState(false)
 		const [menuOpen, setMenuOpen] = React.useState(false)
 		function openProjectDialog() {
 			projectFormState.value = null
@@ -115,10 +117,10 @@ function createTaskCenter(deps) {
 			projectFormState.missing = []
 			setProjectOpen(true)
 		}
-		function copyTeamSession(value) {
+		function copySessionId(value) {
 			if (typeof value !== 'string' || value === '') return
 			void copyToClipboard(value).then(function (ok) {
-		setTeamSessionCopied(ok === true ? value : 'failed')
+			setSessionCopied(ok === true ? value : 'failed')
 			})
 		}
 		React.useEffect(function () {
@@ -141,8 +143,6 @@ function createTaskCenter(deps) {
 		})()
 		const queue = snapshot.queue === undefined || snapshot.queue === null ? [] : snapshot.queue
 		const scheduler = snapshot.scheduler
-		const workersPool = snapshot.workers
-		const workerMembers = workersPool !== null && workersPool !== undefined && Array.isArray(workersPool.members) ? workersPool.members : null
 		const busy = snapshot.busy === undefined || snapshot.busy === null ? null : snapshot.busy
 
 		function isBusy(action, id) {
@@ -165,16 +165,15 @@ function createTaskCenter(deps) {
 			void store.send(active ? 'pause' : 'start')
 		}
 
-		// T-110/T-155: the panel never presents ONE "project team". Teams are grouped
-		// by session from the host's explicit scope; the current chat session is
-		// highlighted, never primary.
-		const projectTeam = snapshot.team === null || snapshot.team === undefined ? null : snapshot.team
+		// The panel never presents a team. Sessions are grouped from the Host's
+		// explicit scope (the current chat session is highlighted, never primary),
+		// and the execution view is the live agent tree.
 		const scope = snapshot.scope !== null && snapshot.scope !== undefined && typeof snapshot.scope === 'object' ? snapshot.scope : null
 		const scopeSessions = scope !== null && Array.isArray(scope.sessionSummaries)
 			? scope.sessionSummaries.filter(function (row) { return row !== null && typeof row === 'object' })
 			: []
 		const scopePanelSession = scope !== null && typeof scope.panelSession === 'string' && scope.panelSession !== '' ? scope.panelSession : null
-		const panelSessionRow = scopePanelSession === null ? null : scopeSessions.filter(function (row) { return row.sessionId === scopePanelSession })[0] || null
+		const agentTree = tcAgentTreeOf(snapshot)
 		const mismatchProject = projectMismatchOf(snapshot)
 		const baseNameOf = function (value) {
 			if (typeof value !== 'string' || value === '') return null
@@ -190,24 +189,10 @@ function createTaskCenter(deps) {
 			if (status === 'stale') return t('sessionsStatusStale')
 			return t('sessionsStatusUnknown')
 		}
-		const panelDispatchReady =
-			panelSessionRow !== null && panelSessionRow.dispatchReady !== undefined
-				? panelSessionRow.dispatchReady === true
-				: projectTeam !== null && projectTeam.dispatchReady !== undefined
-					? projectTeam.dispatchReady === true
-					: projectTeam !== null && projectTeam.ok === true
-		// T-155 §4: only a team that cannot DISPATCH waits for the Agent. Missing
-		// reviewer/tester is stage information (status/roles pages), never a global warning.
-		const teamWaitingWorker =
-			panelSessionRow !== null
-				? panelSessionRow.dispatchReady !== true
-				: projectTeam === null
-					? typeof snapshot.project === 'string' && snapshot.project !== ''
-					: projectTeam.available !== false && panelDispatchReady !== true
 		const tabs = [
 			{ key: 'board', label: t('boardTab') },
 			{ key: 'queue', label: t('queue') },
-			{ key: 'workers', label: t('workersTab') },
+			{ key: 'workers', label: t('agentsTab') },
 			{ key: 'status', label: t('statusTab') },
 			{ key: 'roles', label: t('rolesTab') },
 		]
@@ -361,25 +346,17 @@ function createTaskCenter(deps) {
 		// heads and the footer.
 		function closePopovers() {
 			setSessionsOpen(false)
-			setTeamOpen(false)
+			setAgentsOpen(false)
 			setMenuOpen(false)
 		}
 		const projectName = baseNameOf(snapshot.project)
 		const projectLabel = projectName === null ? t('projectUnknown') : projectName
 		const panelSessionId = scopePanelSession
-		const copySessionValue =
-			panelSessionId !== null
-				? panelSessionId
-				: projectTeam !== null && typeof projectTeam.session === 'string'
-					? projectTeam.session
-					: projectTeam !== null && typeof projectTeam.leadSession === 'string'
-						? projectTeam.leadSession
-						: ''
-		// T-158: the pill only ever reads dispatchReady. No team data at all is
-		// 'none' (information), never a warning: only an existing team that cannot
-		// dispatch reads 'waiting'.
-		const teamState = panelDispatchReady === true ? 'ready' : projectTeam === null || projectTeam.available === false ? 'none' : teamWaitingWorker ? 'waiting' : 'none'
-		const teamLabel = teamState === 'ready' ? t('teamPillReady') : teamState === 'waiting' ? t('teamPillWaiting') : t('teamPillNone')
+		const copySessionValue = panelSessionId === null ? '' : panelSessionId
+		// The pill reports the live tree, not a team: a root Agent with N live
+		// children, or a neutral "not reported" state when the Host sends no tree.
+		const agentsState = agentTree.root !== null ? 'ready' : 'none'
+		const agentsPillLabel = agentsState === 'ready' ? t('agentsPillRoot').replace('{n}', String(agentTree.members.length)) : t('agentsPillNone')
 		const dispatchCap = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
 		const sourceBadge =
 			projectSourceLabel(projectSourceKey(snapshot), t) === null
@@ -441,36 +418,29 @@ function createTaskCenter(deps) {
 			h('span', null, active ? t('running') : t('paused')),
 			h('b', null, String(counts.running || 0) + '/' + String(dispatchCap)),
 		)
-		const teamPopoverLead = panelSessionRow !== null && panelSessionRow.team !== null && panelSessionRow.team !== undefined && typeof panelSessionRow.team.lead === 'string' ? panelSessionRow.team.lead : projectTeam !== null && typeof projectTeam.lead === 'string' ? projectTeam.lead : null
-		const teamPopoverTitleWithLead = t('teamPopoverTitle') + (teamPopoverLead === null ? '' : ' · ' + teamPopoverLead)
-		const teamPill = h(
+		const agentsPill = h(
 			'button',
 			{
 				type: 'button',
-				className: 'gbt-chip gbt-chipbtn gbt-teampill',
-				'data-team-pill': teamState,
-				'data-team-waiting': teamState === 'waiting' ? 'true' : undefined,
-				'data-dispatch-ready': panelDispatchReady === true ? 'true' : 'false',
-				// Kept for readers/tests that still ask the pill which team state it is.
-				'data-project-team': teamState === 'ready' ? 'ok' : projectTeam !== null && projectTeam.available === false ? 'unavailable' : 'missing',
-				'data-team-lead': panelSessionRow !== null && panelSessionRow.team !== null && panelSessionRow.team !== undefined && typeof panelSessionRow.team.lead === 'string' ? panelSessionRow.team.lead : projectTeam !== null && typeof projectTeam.lead === 'string' ? projectTeam.lead : '',
+				className: 'gbt-chip gbt-chipbtn gbt-agentpill',
+				'data-agent-pill': agentsState,
+				'data-agent-root': agentTree.root !== null && typeof agentTree.root.name === 'string' ? agentTree.root.name : '',
+				'data-agent-live': String(agentTree.members.length),
 				'aria-haspopup': 'dialog',
-				'aria-expanded': teamOpen ? 'true' : 'false',
-				title: teamPopoverTitleWithLead,
-				onClick: function () { setTeamOpen(!teamOpen) },
+				'aria-expanded': agentsOpen ? 'true' : 'false',
+				title: t('agentsPopoverTitle'),
+				onClick: function () { setAgentsOpen(!agentsOpen) },
 			},
-			h('span', { className: 'gbt-dot', 'data-running': teamState === 'ready' ? 'true' : 'false' }),
-			h('span', null, teamLabel),
+			h('span', { className: 'gbt-dot', 'data-running': agentsState === 'ready' ? 'true' : 'false' }),
+			h('span', null, agentsPillLabel),
 		)
 		const sessionRows =
 			scopeSessions.length === 0
 				? [h('p', { key: 'empty', className: 'gbt-popoverempty' }, t('sessionsEmpty'))]
 				: scopeSessions.map(function (row, index) {
 					const current = panelSessionId !== null && row.sessionId === panelSessionId
-					const lead = row.team !== null && row.team !== undefined && typeof row.team.lead === 'string' ? row.team.lead : null
 					const cards = row.cards !== null && row.cards !== undefined && Number.isFinite(row.cards.owned) ? row.cards.owned : 0
 					const activeCards = row.cards !== null && row.cards !== undefined && Number.isFinite(row.cards.active) ? row.cards.active : null
-					const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : null
 					return h(
 						'div',
 						{
@@ -479,9 +449,6 @@ function createTaskCenter(deps) {
 							'data-session': String(row.sessionId),
 							'data-current': current ? 'true' : 'false',
 							'data-status': typeof row.status === 'string' ? row.status : 'unknown',
-							'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
-							'data-stage-review': stage !== null && stage.review === true ? 'true' : 'false',
-							'data-stage-test': stage !== null && stage.test === true ? 'true' : 'false',
 						},
 						h(
 							'div',
@@ -493,15 +460,10 @@ function createTaskCenter(deps) {
 						h(
 							'div',
 							{ className: 'gbt-sessionrowmeta' },
-							lead === null ? null : h('span', { 'data-session-lead': 'true' }, t('workersLead') + ' ' + lead),
 							h('span', null, t('sessionsCards').replace('{n}', String(cards))),
 							activeCards === null ? null : h('span', null, t('sessionsActive').replace('{n}', String(activeCards))),
-							h('span', { className: 'gbt-sessionready', 'data-ready': row.dispatchReady === true ? 'true' : 'false' }, row.dispatchReady === true ? t('sessionsReadiness') : t('sessionsNotReady')),
-							stage === null
-								? null
-								: h('span', null, t('sessionsStageReview') + ' ' + (stage.review === true ? t('sessionsReady') : t('sessionsNotReady')) + ' · ' + t('sessionsStageTest') + ' ' + (stage.test === true ? t('sessionsReady') : t('sessionsNotReady'))),
 						),
-						h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'copy-session-id', 'data-session': String(row.sessionId), onClick: function () { copyTeamSession(String(row.sessionId)) } }, t('projectTeamCopySession')),
+						h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'copy-session-id', 'data-session': String(row.sessionId), onClick: function () { copySessionId(String(row.sessionId)) } }, t('copySessionId')),
 					)
 				})
 		const sessionsPopover = h(
@@ -516,47 +478,43 @@ function createTaskCenter(deps) {
 			},
 			h('div', { className: 'gbt-popoverhead' }, t('sessionsPopoverTitle')),
 			sessionRows,
-			projectTeam !== null && projectTeam.available !== false && projectTeam.projectMatch === false && typeof projectTeam.project === 'string' && projectTeam.project !== ''
-				? h('p', { className: 'gbt-popovernote', 'data-team-info': 'true', 'data-team-project': String(projectTeam.project), 'data-panel-project': String(snapshot.project) }, t('projectTeamMismatch').replace('{team}', String(projectTeam.project)).replace('{panel}', String(snapshot.project)) + ' · ' + t('projectTeamScopeHint'))
-				: null,
 		)
-		const panelTeam = panelSessionRow !== null ? panelSessionRow.team : projectTeam
-		const teamLead = panelTeam !== null && panelTeam !== undefined && typeof panelTeam.lead === 'string' ? panelTeam.lead : null
-		const teamMemberCount =
-			panelTeam !== null && panelTeam !== undefined && Number.isFinite(panelTeam.memberCount)
-				? panelTeam.memberCount
-				: panelTeam !== null && panelTeam !== undefined && Array.isArray(panelTeam.members)
-					? panelTeam.members.length
-					: 0
-		const teamMissingRoles = panelTeam !== null && panelTeam !== undefined && Array.isArray(panelTeam.missingRoles) ? panelTeam.missingRoles.map(String) : []
-		const teamStage = panelSessionRow !== null && panelSessionRow.stageReady !== null && panelSessionRow.stageReady !== undefined && typeof panelSessionRow.stageReady === 'object' ? panelSessionRow.stageReady : null
-		const teamPopover = h(
+		const agentRootName = agentTree.root !== null && typeof agentTree.root.name === 'string' && agentTree.root.name !== '' ? agentTree.root.name : agentTree.root !== null && typeof agentTree.root.id === 'string' ? agentTree.root.id : null
+		const agentPopover = h(
 			'div',
 			{
-				className: 'gbt-popover gbt-teampopover',
-				'data-team-popover': 'true',
-				'data-team-state': teamState,
-				'data-open': teamOpen ? 'true' : 'false',
-				hidden: teamOpen ? undefined : true,
+				className: 'gbt-popover gbt-agentpopover',
+				'data-agent-popover': 'true',
+				'data-agent-state': agentsState,
+				'data-open': agentsOpen ? 'true' : 'false',
+				hidden: agentsOpen ? undefined : true,
 				role: 'dialog',
-				'aria-label': t('teamPopoverTitle'),
+				'aria-label': t('agentsPopoverTitle'),
 			},
-			h('div', { className: 'gbt-popoverhead' }, t('teamPopoverTitle')),
-			projectTeam !== null && projectTeam.available === false
-				? h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-unavailable': 'true' }, t('projectTeamUnavailable'))
+			h('div', { className: 'gbt-popoverhead' }, t('agentsPopoverTitle')),
+			snapshot.agentTree === null || snapshot.agentTree === undefined || agentTree.available !== true
+				? h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-agent-unavailable': 'true' }, t('agentsUnavailable'))
 				: null,
-			h('p', { className: 'gbt-popoverrow' }, t('projectTeamCurrent') + '：' + (teamLead === null ? t('projectTeamMissing') : t('projectTeamOk').replace('{lead}', tcLeadText(teamLead, t)).replace('{n}', String(teamMemberCount)))),
-			h('p', { className: 'gbt-popoverrow', 'data-team-readiness': panelDispatchReady === true ? 'ready' : 'not-ready' }, t('sessionsReadiness') + '：' + (panelDispatchReady === true ? t('sessionsReady') : t('sessionsNotReady'))),
-			teamStage === null ? null : h('p', { className: 'gbt-popoverrow' }, t('sessionsStageReview') + '：' + (teamStage.review === true ? t('sessionsReady') : t('sessionsNotReady')) + ' · ' + t('sessionsStageTest') + '：' + (teamStage.test === true ? t('sessionsReady') : t('sessionsNotReady'))),
-			teamMissingRoles.length === 0 ? null : h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-missing-roles': teamMissingRoles.join(',') }, t('teamMissingRoles').replace('{roles}', teamMissingRoles.join('、'))),
-			teamWaitingWorker && projectTeam !== null ? h('p', { className: 'gbt-popoverrow gbt-popoverwarn', 'data-team-waiting-worker': 'true' }, t('teamWaitingWorker') + ' · ' + t('projectTeamWaiting')) : null,
+			agentTree.root === null
+				? h('p', { className: 'gbt-popoverrow', 'data-agent-no-root': 'true' }, t('agentsNoRoot'))
+				: h('p', { className: 'gbt-popoverrow', 'data-agent-root-line': 'true' }, t('agentsRootLine').replace('{name}', agentRootName === null ? '—' : agentRootName)),
+			h('p', { className: 'gbt-popoverrow', 'data-agent-live-line': String(agentTree.members.length) }, t('agentsLiveLine').replace('{n}', String(agentTree.members.length))),
+			agentTree.members.length === 0
+				? h('p', { className: 'gbt-popoverrow', 'data-agent-no-children': 'true' }, t('agentsNoChildren'))
+				: h('div', { className: 'gbt-agentmembers', 'data-agent-members': 'true' }, agentTree.members.map(function (member, index) {
+					const name = typeof member.name === 'string' && member.name !== '' ? member.name : typeof member.id === 'string' ? member.id : String(index)
+					const status = typeof member.status === 'string' && member.status !== '' ? t(tcAgentStatusKey(member.status)) : t('agentStatusUnknown')
+					const role = typeof member.role === 'string' && member.role !== '' ? roleKindLabel(member.role, t) : '—'
+					const task = typeof member.taskId === 'string' && member.taskId !== '' ? member.taskId : '—'
+					return h('p', { key: 'agent-member-' + name, className: 'gbt-popoverrow gbt-agentmember', 'data-agent-member': name, 'data-agent-status': typeof member.status === 'string' ? member.status : '' }, h('b', { className: 'gbt-mono' }, name), ' · ' + role + ' · ' + status + ' · ' + task)
+				})),
 			h(
 				'div',
 				{ className: 'gbt-popoveractions' },
-				h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'copy-team-session', 'data-session': copySessionValue, onClick: function () { copyTeamSession(copySessionValue) } }, t('projectTeamCopySession')),
-				teamSessionCopied === null
+				h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'copy-session-id', 'data-session': copySessionValue, onClick: function () { copySessionId(copySessionValue) } }, t('copySessionId')),
+				sessionCopied === null
 					? null
-					: h('span', { className: 'gbt-footnote', role: 'status', 'aria-live': 'polite', 'data-copy-toast': teamSessionCopied === 'failed' ? 'failed' : 'copied' }, teamSessionCopied === 'failed' ? t('projectTeamCopyFailed') : t('sessionIdCopiedToast')),
+					: h('span', { className: 'gbt-footnote', role: 'status', 'aria-live': 'polite', 'data-copy-toast': sessionCopied === 'failed' ? 'failed' : 'copied' }, sessionCopied === 'failed' ? t('copyFailed') : t('sessionIdCopiedToast')),
 			),
 		)
 		const newTaskButton = h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'new-task', disabled: snapshot.project === null, onClick: function () { startEdit(null) } }, '+ ' + t('newTask'))
@@ -564,7 +522,7 @@ function createTaskCenter(deps) {
 			['refresh', t('refresh'), function () { closePopovers(); void store.load() }],
 			['project', t('project'), function () { closePopovers(); openProjectDialog() }],
 			['settings', t('settings'), function () { closePopovers(); setSettingsOpen(true) }],
-			['copy-team-session', t('projectTeamCopySession'), function () { copyTeamSession(copySessionValue) }],
+			['copy-session-id', t('copySessionId'), function () { copySessionId(copySessionValue) }],
 			['diagnostics', t('diagnostics'), function () { closePopovers(); setView('status') }],
 		]
 		const moreMenu = h(
@@ -575,7 +533,7 @@ function createTaskCenter(deps) {
 				'div',
 				{ className: 'gbt-popover gbt-menu', 'data-more-popover': 'true', role: 'menu', 'data-open': menuOpen ? 'true' : 'false', hidden: menuOpen ? undefined : true },
 				menuItems.map(function (entry) {
-					return h('button', { key: entry[0], type: 'button', className: 'gbt-menuitem', role: 'menuitem', 'data-action': entry[0], 'data-session': entry[0] === 'copy-team-session' ? copySessionValue : undefined, onClick: entry[2] }, entry[1])
+					return h('button', { key: entry[0], type: 'button', className: 'gbt-menuitem', role: 'menuitem', 'data-action': entry[0], 'data-session': entry[0] === 'copy-session-id' ? copySessionValue : undefined, onClick: entry[2] }, entry[1])
 				}),
 			),
 		)
@@ -634,12 +592,12 @@ function createTaskCenter(deps) {
 		// positioned wrapper. Without one, `position:absolute` resolved against the
 		// initial containing block and the popover opened off-screen.
 		const sessionsAnchor = h('div', { className: 'gbt-anchor', 'data-popover-anchor': 'sessions' }, sessionsButton, sessionsPopover)
-		const teamAnchor = h('div', { className: 'gbt-anchor', 'data-popover-anchor': 'team' }, teamPill, teamPopover)
+		const agentsAnchor = h('div', { className: 'gbt-anchor', 'data-popover-anchor': 'agents' }, agentsPill, agentPopover)
 		const topRow = h(
 			'div',
 			{ className: 'gbt-toprow' },
 			brand,
-			h('div', { className: 'gbt-context' }, sessionsAnchor, currentPill, dispatchPill, teamAnchor, workspaceBar),
+			h('div', { className: 'gbt-context' }, sessionsAnchor, currentPill, dispatchPill, agentsAnchor, workspaceBar),
 			h('div', { className: 'gbt-topactions' }, newTaskButton, moreMenu),
 		)
 		const toolbarRow = h('div', { className: 'gbt-toolbar' }, tabsView, h('div', { className: 'gbt-toolbarright' }, refreshButton, kindFilterBar))

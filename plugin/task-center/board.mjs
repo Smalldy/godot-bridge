@@ -503,7 +503,7 @@ export async function readRoleConfig(io, options) {
     if (legacy.length > 0) {
       config.deprecated = {
         instances: 'ignored',
-        movedTo: 'dispatch.maxConcurrent / dispatch.maxWorkAgents',
+        movedTo: 'dispatch.maxConcurrent',
         fields: legacy,
       }
     }
