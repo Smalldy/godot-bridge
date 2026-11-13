@@ -3482,7 +3482,7 @@ export function createApi(ctx, options) {
    * The live execution tree for the panel: exact root plus every live child.
    * This is derived from the runtime on every snapshot; there is no roster file.
    */
-  async function agentTreeSnapshot(panelSession) {
+  async function agentTreeSnapshot(panelSession, board) {
     if (taskAgents === null || taskAgents.available !== true) {
       return { available: false, root: null, members: [], count: 0, error: 'agent runtime unavailable' }
     }
@@ -3492,9 +3492,31 @@ export function createApi(ctx, options) {
     } catch (error) {
       rootAgent = null
     }
+    // The root Session is live by definition: the panel is reading its tree.
     const root = typeof panelSession !== 'string' || panelSession === ''
       ? null
-      : { id: panelSession, name: rootAgent !== null && typeof rootAgent.name === 'string' ? rootAgent.name : null, role: 'lead' }
+      : {
+          id: panelSession,
+          name: rootAgent !== null && typeof rootAgent.name === 'string' && rootAgent.name !== '' ? rootAgent.name : null,
+          role: 'lead',
+          status: 'running',
+          taskId: null,
+        }
+    const activeTaskByAgent = new Map()
+    const tasks = board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []
+    for (const task of tasks) {
+      if (task === null || task === undefined) continue
+      const active = task.status === 'running' || task.status === 'reviewing' || task.status === 'testing'
+      if (!active) continue
+      const identities = [
+        task.assignee !== null && task.assignee !== undefined ? task.assignee.session : null,
+        task.review !== null && task.review !== undefined && task.review.deliveredTo !== null && task.review.deliveredTo !== undefined ? task.review.deliveredTo.id : null,
+        task.test !== null && task.test !== undefined && task.test.deliveredTo !== null && task.test.deliveredTo !== undefined ? task.test.deliveredTo.id : null,
+      ]
+      for (const identity of identities) {
+        if (typeof identity === 'string' && identity !== '') activeTaskByAgent.set(identity, task.id)
+      }
+    }
     try {
       const rows = typeof taskAgents.listFor === 'function'
         ? await taskAgents.listFor(panelSession)
@@ -3510,23 +3532,29 @@ export function createApi(ctx, options) {
         const name = row !== null && row !== undefined && typeof row.name === 'string' && row.name !== ''
           ? row.name
           : row !== null && row !== undefined && typeof row.path === 'string' && row.path !== ''
-            ? row.path
+            ? row.path.split('/').pop()
             : id
         const role = row !== null && row !== undefined && typeof row.role === 'string' && row.role !== ''
           ? row.role
           : /^worker-/.test(name) ? 'worker' : /^reviewer-/.test(name) ? 'reviewer' : /^tester-/.test(name) ? 'tester' : null
+        const status = row !== null && row !== undefined && typeof row.status === 'string' && row.status !== ''
+          ? row.status
+          : row !== null && row !== undefined && typeof row.activity === 'string' && row.activity !== ''
+            ? row.activity
+            : row !== null && row !== undefined && row.mode === 'continuable' && row.hasChildren === true
+              ? 'running'
+              : 'unknown'
         return {
           id: id,
           name: name,
           role: role,
-          status: row !== null && row !== undefined && typeof row.status === 'string'
-            ? row.status
-            : row !== null && row !== undefined && typeof row.activity === 'string'
-              ? row.activity
-              : 'unknown',
-          taskId: row !== null && row !== undefined && typeof row.taskId === 'string' ? row.taskId : null,
+          status: status,
+          taskId: row !== null && row !== undefined && typeof row.taskId === 'string' && row.taskId !== ''
+            ? row.taskId
+            : activeTaskByAgent.get(id) || null,
         }
       }).filter((row) => row.id !== '')
+      members.sort((left, right) => (left.status === 'running' ? 0 : 1) - (right.status === 'running' ? 0 : 1))
       return { available: true, root: root, members: members, count: members.length, error: null }
     } catch (error) {
       return { available: true, root: root, members: [], count: 0, error: String((error && error.message) || error) }
@@ -3767,7 +3795,7 @@ export function createApi(ctx, options) {
       // v3: the live execution tree is the root Agent plus every live descendant.
       // It is the only membership view the new panel uses; `team` below remains
       // for the old direct API surface until that surface is deleted.
-      agentTree: await agentTreeSnapshot(panelSession),
+      agentTree: await agentTreeSnapshot(panelSession, board),
       // T-110/T-152: the PANEL SESSION's team (ok/lead/source/members), annotated
       // with its scope; sessionSummaries is where every project session's team
       // lives. nextStep is the panel session's own next step, never the project's.
