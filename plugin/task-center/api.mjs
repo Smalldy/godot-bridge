@@ -37,6 +37,7 @@ import { createControlActions } from './actions/control.mjs'
 import { createLifecycleActions } from './actions/lifecycle.mjs'
 import { createRoleActions } from './actions/roles.mjs'
 import { createMergeActions } from './actions/merge.mjs'
+import { createStageService } from './stage-service.mjs'
 import { createReportAction } from './actions/report.mjs'
 import { createSubmitAction } from './actions/submit.mjs'
 import { createTestVerdictActions } from './actions/test-verdicts.mjs'
@@ -268,6 +269,11 @@ export function createApi(ctx, options) {
   const git = opts.git === undefined ? null : opts.git
   const merger = opts.merger === undefined ? null : opts.merger
   const roles = opts.roles === undefined ? null : opts.roles
+  // v3: when the row supplies the task-agent runtime, preflight checks it instead
+  // of the removed Agent Teams roster. Existing direct API callers (tests) keep
+  // the old board-only path until the Team surface is deleted.
+  const taskAgents = opts.taskAgents === undefined || opts.taskAgents === null ? null : opts.taskAgents
+  const stageAgents = taskAgents === null ? null : createStageService({ taskAgents: taskAgents })
   const autoMerge = opts.autoMerge === true
   // The independent tester workflow (candidate checkout + host auto-merge) is
   // active when the production row wires the role registry and merge queue.
@@ -396,6 +402,7 @@ export function createApi(ctx, options) {
     provisionRole: provisionRole,
     provisionFailedHard: provisionFailedHard,
     provisionReasonOf: provisionReasonOf,
+    stageAgents: stageAgents,
     markWaiting: markWaiting,
     clearWaiting: clearWaiting,
     roleSlotNameOf: roleSlotNameOf,
@@ -419,6 +426,7 @@ export function createApi(ctx, options) {
     provisionRole: provisionRole,
     provisionFailedHard: provisionFailedHard,
     provisionReasonOf: provisionReasonOf,
+    stageAgents: stageAgents,
     markWaiting: markWaiting,
     writeTask: writeTask,
     writeByName: writeByName,
@@ -441,6 +449,7 @@ export function createApi(ctx, options) {
   })
   const testVerdictActions = createTestVerdictActions({
     verdictRefusal: verdictRefusal,
+    stageAgents: stageAgents,
     readBoardOrFail: readBoardOrFail,
     model: model,
     writeTask: writeTask,
@@ -501,6 +510,7 @@ export function createApi(ctx, options) {
     provisionRole: provisionRole,
     provisionFailedHard: provisionFailedHard,
     provisionReasonOf: provisionReasonOf,
+    stageAgents: stageAgents,
     state: state,
     roleSlotNameOf: roleSlotNameOf,
     assignStageSlot: assignStageSlot,
@@ -2998,7 +3008,8 @@ export function createApi(ctx, options) {
       decisions: decisions,
       now: clock(),
       sessionActiveAtOf: (id) => (typeof sessionLastActiveAt === 'function' ? sessionLastActiveAt(id) : null),
-      teamOf: (id) => projectTeamState(ctx, { sessionId: id, projectPath: projectPath }),
+      // v3: handoff only needs session liveness/ownership; there is no Team to read.
+      teamOf: () => null,
       executorStatesOf: executorStatesOf,
     })
   }
@@ -3028,41 +3039,17 @@ export function createApi(ctx, options) {
       } catch (error) {
         sessionProject = null
       }
-      const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath, sessionRoot: sessionProject })
       const owned = tasks.filter((task) => task !== null && task !== undefined && task.ownerSession === sessionId)
       const active = owned.filter((task) => task.status === 'running' || task.status === 'reviewing' || task.status === 'testing').length
       const handoffRow = liveness.get(sessionId)
-      // T-154: readiness is per SESSION, never merged into one project-level team.
-      const teamDispatchReady = team.dispatchReady === undefined ? team.ok === true : team.dispatchReady === true
-      const teamStageReady =
-        team.stageReady !== undefined && team.stageReady !== null && typeof team.stageReady === 'object'
-          ? { review: team.stageReady.review === true, test: team.stageReady.test === true }
-          : { review: false, test: false }
       rows.push({
         sessionId: sessionId,
         // live / stale / unknown (handoff window), never a ranking.
         status: handoffRow === undefined ? 'unknown' : handoffRow.status,
-        // T-154: what THIS session can do — dispatch (Lead + worker) and which
-        // stage roles are bound. Deliberately per-row, not a project aggregate.
-        dispatchReady: teamDispatchReady,
-        stageReady: teamStageReady,
         firstSeenAt: entry.firstSeenAt === undefined ? null : entry.firstSeenAt,
         lastSeenAt: entry.lastSeenAt === undefined ? null : entry.lastSeenAt,
         lastActiveAt: handoffRow === undefined ? null : handoffRow.lastActiveAt,
         sessionProject: sessionProject,
-        team: {
-          available: team.available === true,
-          ok: team.ok === true,
-          lead: team.lead === undefined ? null : team.lead,
-          leadId: team.leadId === undefined ? null : team.leadId,
-          leadSession: team.leadSession === undefined ? null : team.leadSession,
-          members: Array.isArray(team.members)
-            ? team.members.map((member) => String(member !== null && member !== undefined && member.name !== undefined ? member.name : member))
-            : [],
-          memberCount: Array.isArray(team.members) ? team.members.length : 0,
-          missingRoles: Array.isArray(team.missingRoles) ? team.missingRoles.slice() : [],
-          error: team.error === undefined || team.error === null ? null : String(team.error),
-        },
         cards: { owned: owned.length, active: active },
       })
     }
@@ -3491,13 +3478,66 @@ export function createApi(ctx, options) {
     return ok({ board: applied.board, handoff: handoffOf(projectPath, applied.board, sessionId), recorded: true })
   }
 
+  /**
+   * The live execution tree for the panel: exact root plus every live child.
+   * This is derived from the runtime on every snapshot; there is no roster file.
+   */
+  async function agentTreeSnapshot(panelSession) {
+    if (taskAgents === null || taskAgents.available !== true) {
+      return { available: false, root: null, members: [], count: 0, error: 'agent runtime unavailable' }
+    }
+    let rootAgent = null
+    try {
+      rootAgent = typeof taskAgents.rootFor === 'function' ? taskAgents.rootFor(panelSession) : null
+    } catch (error) {
+      rootAgent = null
+    }
+    const root = typeof panelSession !== 'string' || panelSession === ''
+      ? null
+      : { id: panelSession, name: rootAgent !== null && typeof rootAgent.name === 'string' ? rootAgent.name : null, role: 'lead' }
+    try {
+      const rows = typeof taskAgents.listFor === 'function'
+        ? await taskAgents.listFor(panelSession)
+        : taskAgents.runtime !== null && taskAgents.runtime !== undefined && typeof taskAgents.runtime.list === 'function'
+          ? await taskAgents.runtime.list()
+          : []
+      const members = (Array.isArray(rows) ? rows : []).map((row) => {
+        const id = row !== null && row !== undefined && row.id !== undefined
+          ? String(row.id)
+          : row !== null && row !== undefined && row.sessionId !== undefined
+            ? String(row.sessionId)
+            : ''
+        const name = row !== null && row !== undefined && typeof row.name === 'string' && row.name !== ''
+          ? row.name
+          : row !== null && row !== undefined && typeof row.path === 'string' && row.path !== ''
+            ? row.path
+            : id
+        const role = row !== null && row !== undefined && typeof row.role === 'string' && row.role !== ''
+          ? row.role
+          : /^worker-/.test(name) ? 'worker' : /^reviewer-/.test(name) ? 'reviewer' : /^tester-/.test(name) ? 'tester' : null
+        return {
+          id: id,
+          name: name,
+          role: role,
+          status: row !== null && row !== undefined && typeof row.status === 'string'
+            ? row.status
+            : row !== null && row !== undefined && typeof row.activity === 'string'
+              ? row.activity
+              : 'unknown',
+          taskId: row !== null && row !== undefined && typeof row.taskId === 'string' ? row.taskId : null,
+        }
+      }).filter((row) => row.id !== '')
+      return { available: true, root: root, members: members, count: members.length, error: null }
+    } catch (error) {
+      return { available: true, root: root, members: [], count: 0, error: String((error && error.message) || error) }
+    }
+  }
+
   async function snapshot(projectPath, options) {
     const opts = options === undefined || options === null ? {} : options
     // T-152: the panel session is resolved ONCE. Every block below either speaks
     // for it explicitly or names the project it belongs to — nothing is inferred.
     const panelSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-    // T-110: the Team is a property of the session that owns the project.
-    const snapshotTeam = await projectTeamFor(projectPath, panelSession)
     const summaryOnly = opts.full === false
     projectPath = resolve(projectPath)
     const read = await readBoardOrFail(projectPath)
@@ -3536,10 +3576,7 @@ export function createApi(ctx, options) {
     }
     const workersTeamProjectMatch = workersTeamProject === null ? null : projectIdOf(workersTeamProject) === projectIdOf(projectPath)
     const workersView = Object.assign({}, workers, { project: workersTeamProject, projectMatch: workersTeamProjectMatch })
-    const snapshotTeamView =
-      snapshotTeam.team === null || snapshotTeam.team === undefined
-        ? snapshotTeam.team
-        : Object.assign({}, snapshotTeam.team, { project: workersTeamProject, projectMatch: workersTeamProjectMatch })
+    const snapshotTeamView = null
     const worktrees = await worktreeSnapshot(projectPath, board)
     const isoOf = (slot) => (slot === null || slot.at === null ? null : new Date(slot.at).toISOString())
     const buildTask = (task) => {
@@ -3727,11 +3764,17 @@ export function createApi(ctx, options) {
       // T-108: "is the main tree clean, and when was that checked" — the panel uses
       // it to tell a merge-window blip from a really dirty checkout.
       environment: await environmentSnapshot(projectPath, now, board),
+      // v3: the live execution tree is the root Agent plus every live descendant.
+      // It is the only membership view the new panel uses; `team` below remains
+      // for the old direct API surface until that surface is deleted.
+      agentTree: await agentTreeSnapshot(panelSession),
       // T-110/T-152: the PANEL SESSION's team (ok/lead/source/members), annotated
       // with its scope; sessionSummaries is where every project session's team
       // lives. nextStep is the panel session's own next step, never the project's.
-      team: snapshotTeamView === null || snapshotTeamView === undefined ? snapshotTeamView : Object.assign({}, snapshotTeamView, sessionScopeFields),
-      nextStep: nextStepForScope(scope, snapshotTeam.nextStep),
+      // v3: the panel reads agentTree, not the retired Team roster. Keep the
+      // field null so an old client cannot mistake a stale team for execution.
+      team: null,
+      nextStep: nextStepForScope(scope, null),
       serverTime: new Date(now).toISOString(),
     })
   }
@@ -4444,12 +4487,10 @@ export function createApi(ctx, options) {
     const recorded = await writeTask(projectPath, id, (board) => recordMergeResult(board, id, outcome, clock(), by, writeByName(context)), context)
     if (recorded.ok !== true) return recorded
     emitActivity(context, 'merge', String(outcome.status) + (outcome.mergeCommit !== undefined && outcome.mergeCommit !== null ? ' as ' + String(outcome.mergeCommit) : ''), id, actorOverride)
-    // T-118: after integrating a card, the team should not keep role instances of
-    // OTHER projects. Best effort: a refused prune never fails the merge.
-    if (outcome.status === 'merged' && roles !== null && typeof roles.prune === 'function') {
-      try {
-        await roles.prune({ projectPath: projectPath, sessionId: sessionIdOf(context) })
-      } catch (error) {}
+    // v3: a merged card's worker has no more work. Release its child handle;
+    // process restart may already have lost the handle, which is harmless.
+    if (outcome.status === 'merged' && stageAgents !== null && task.assignee !== null && task.assignee !== undefined && typeof task.assignee.session === 'string') {
+      await stageAgents.release(task.assignee.session)
     }
     if (outcome.status === 'merged' && outcome.taskWorktreeRemoved === true) {
       emitActivity(null, 'worktree-remove', 'task worktree removed after merge', id, 'host')
@@ -5082,26 +5123,6 @@ export function createApi(ctx, options) {
     }
     record('worktree', 'worktree root can be created', worktreeOk, worktreeDetail)
 
-    let leadOk = false
-    let leadDetail = 'no Team service'
-    try {
-      const team = ctx.get('agentTeams')
-      const roster = team !== null && team !== undefined && Array.isArray(team.roster) ? team.roster : []
-      const lead = roster.filter((member) => member.role === 'lead' && member.status === 'running')[0]
-      if (lead !== undefined) {
-        leadOk = true
-        leadDetail = lead.name
-      } else {
-        const agents = ctx.get('agents')
-        const list = agents !== null && agents !== undefined && typeof agents.list === 'function' ? agents.list() : []
-        leadOk = Array.isArray(list) && list.length > 0
-        leadDetail = leadOk ? 'agent sessions are visible' : 'no running Lead'
-      }
-    } catch (error) {
-      leadDetail = messageOf(error)
-    }
-    record('lead', 'a live Team Lead exists', leadOk, leadDetail)
-
     let rolesOk = false
     let rolesDetail = 'no role manager'
     try {
@@ -5115,22 +5136,11 @@ export function createApi(ctx, options) {
     }
     record('roles', 'reviewer/tester can be provisioned', rolesOk, rolesDetail)
 
-    // T-110: the project's Team (session-scoped). A profile without team tools keeps
-    // its old behaviour — the board must work there — so the check only blocks when
-    // the services exist and answer "no Team".
-    const teamRead = projectTeamState(ctx, { sessionId: typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null, projectPath: projectPath })
-    // T-154: dispatch readiness is Lead + worker. A provisioned reviewer/tester is
-    // NOT a readiness gate — those are the stage's business.
-    const teamDispatchReady = teamRead.dispatchReady === undefined ? teamRead.ok === true : teamRead.dispatchReady === true
-    const teamDetail =
-      teamDispatchReady === true
-        ? String(teamRead.lead === null ? 'lead' : teamRead.lead) + ' · ' + String(teamRead.members.length) + ' members'
-        : teamRead.available === true
-          ? 'no dispatch-ready Team for this project (' + String(teamRead.error) + ') — initialize it in the session that owns the project'
-          : 'this profile has no team services'
-    // Not applicable (no team services in this profile) is not a failure: such a
-    // host keeps the old board-only behaviour.
-    record('team', 'this project has a dispatch-ready Team for its session', teamDispatchReady === true || teamRead.available !== true, teamDetail, { openBlocking: false })
+    // v3: the only execution prerequisite is the root Agent's subagent runtime.
+    // Board-only direct callers may omit it; dispatch then reports its own error.
+    if (taskAgents !== null && taskAgents.available === true) {
+      record('agents', 'the root Agent can start subagents', true, 'root ' + String(taskAgents.rootId), { openBlocking: true })
+    }
 
     const boardRead = await readBoardOrFail(projectPath)
     record('board', 'board is readable', boardRead.failed === undefined, boardRead.failed === undefined ? null : boardRead.failed.message)

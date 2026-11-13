@@ -400,13 +400,36 @@
 			return value.indexOf('session-') === 0 ? value.slice(8, 16) : value.slice(0, 8)
 		}
 
-		/** A Team Lead name as DISPLAY text: a raw session id never appears verbatim. */
-		function tcLeadText(lead, t) {
-			const value = lead === null || lead === undefined ? '' : String(lead)
-			if (value === '') return '—'
-			if (value.indexOf('session-') !== 0) return value
-			const short = tcSessionShort(value)
-			return t('workersLeadSelf') + (short === null || short === '' ? '' : ' · ' + short)
+		/**
+		 * The live execution tree the Host reports: the root Agent plus every live
+		 * child. There is no roster file and no per-session team; an answer without
+		 * an agentTree block is UNAVAILABLE, never a fabricated membership.
+		 */
+		function tcAgentTreeOf(snapshot) {
+			const source =
+				snapshot !== null && snapshot !== undefined && snapshot.agentTree !== null && snapshot.agentTree !== undefined && typeof snapshot.agentTree === 'object'
+					? snapshot.agentTree
+					: null
+			if (source === null) return { available: false, root: null, members: [], count: 0, error: null }
+			const root = source.root !== null && source.root !== undefined && typeof source.root === 'object' ? source.root : null
+			const members = (Array.isArray(source.members) ? source.members : []).filter(function (member) {
+				return member !== null && member !== undefined && typeof member === 'object'
+			})
+			return {
+				available: source.available === true,
+				root: root,
+				members: members,
+				count: Number.isFinite(source.count) ? source.count : members.length,
+				error: typeof source.error === 'string' && source.error !== '' ? source.error : null,
+			}
+		}
+
+		/** A live tree member's display status key; an unknown status stays unknown. */
+		function tcAgentStatusKey(status) {
+			if (status === 'running') return 'agentStatusRunning'
+			if (status === 'idle' || status === 'inactive') return 'agentStatusIdle'
+			if (status === 'failed') return 'agentStatusFailed'
+			return 'agentStatusUnknown'
 		}
 
 		/** One labelled tail-only output block inside the drawer. */
@@ -491,7 +514,8 @@ module.exports = {
   tcTail,
   tcBaseName,
   tcSessionShort,
-  tcLeadText,
+  tcAgentTreeOf,
+  tcAgentStatusKey,
   outputBlock,
   tcParseList,
   tcParseFiles,

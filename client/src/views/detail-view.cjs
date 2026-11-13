@@ -10,6 +10,7 @@ function createDetailView(deps) {
 	const detailUiState = deps.detailUiState
 	const actorDisplay = deps.actorDisplay
 	const mergeActorOf = deps.mergeActorOf
+	const tcAgentTreeOf = deps.tcAgentTreeOf
 	const testSummaryText = deps.testSummaryText
 	const toneForDependency = deps.toneForDependency
 	const waitingChip = deps.waitingChip
@@ -90,17 +91,13 @@ function createDetailView(deps) {
 			})
 		}
 
-		// ── member names: session-id prefixes from @ids resolve to the roster ──
+		// ── member names: session-id prefixes from @ids resolve to the live tree ──
+		// The root Agent plus its live children are the only names the panel can
+		// honestly resolve; there is no team roster behind this drawer.
 		const roster = []
-		if (snapshot.agents !== null && snapshot.agents !== undefined) {
-			if (snapshot.agents.lead !== null && snapshot.agents.lead !== undefined) roster.push(snapshot.agents.lead)
-		}
-		// T-122: names resolve against the session's team, not the host inventory.
-		if (snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members)) {
-			snapshot.team.members.forEach(function (member) { roster.push(member) })
-		} else if (snapshot.agents !== null && snapshot.agents !== undefined && Array.isArray(snapshot.agents.members)) {
-			snapshot.agents.members.forEach(function (member) { roster.push(member) })
-		}
+		const agentTree = tcAgentTreeOf(snapshot)
+		if (agentTree.root !== null) roster.push({ id: agentTree.root.id, name: agentTree.root.name, kind: agentTree.root.role })
+		agentTree.members.forEach(function (member) { roster.push({ id: member.id, name: member.name, kind: member.role }) })
 		function actorName(value, byName, fallbackKey) {
 			return actorDisplay(value, byName, roster, t, fallbackKey)
 		}
@@ -277,7 +274,7 @@ function createDetailView(deps) {
 			h('span', { className: 'gbt-detailpill', 'data-tone': merge.status === 'merged' ? 'ok' : 'wait' }, tcMergeLabel(merge.status, t)),
 			h('b', null, t('stageMerge')),
 			h('span', { className: 'gbt-detailwho' }, typeof merge.target === 'string' && merge.target !== '' ? '→ ' + merge.target : '—'),
-			h('span', { className: 'gbt-detailwho' }, (function () { const actor = mergeActorOf(task); return actor === null ? '' : ' · ' + actorName(actor.by, actor.byName, 'actorRoleMerger') })()),
+			h('span', { className: 'gbt-detailwho' }, (function () { const actor = mergeActorOf(task); return actor === null ? '' : ' · ' + actorName(actor.by, actor.byName, 'statusActorHost') })()),
 			h('span', { className: 'gbt-detailwhen' }, merge.at === null || merge.at === undefined ? '' : new Date(merge.at).toTimeString().slice(0, 5)),
 			commit === null ? null : h('div', { className: 'gbt-detailex gbt-mono' }, commit + ' · ' + t('detailFilesDeclared').replace('{n}', String(files.length)) + (actualFiles.length === 0 ? '' : ' = ' + t('detailFilesActual').replace('{n}', String(actualFiles.length)))),
 		),
@@ -553,9 +550,12 @@ function createDetailView(deps) {
 				null,
 				h('div', { className: 'gbt-subhead' }, t('dispatch')),
 				h('dl', { className: 'gbt-meta' }, h('dt', null, t('status')), h('dd', null, String(dispatch.status === null || dispatch.status === undefined ? '—' : dispatch.status)), h('dt', null, t('assignee')), h('dd', null, String(dispatch.target === null || dispatch.target === undefined ? '—' : dispatch.target)), dispatch.error === null || dispatch.error === undefined || dispatch.error === '' ? null : h('dt', null, t('dispatchError')), dispatch.error === null || dispatch.error === undefined || dispatch.error === '' ? null : h('dd', { 'data-dispatch-error': 'true' }, String(dispatch.error))),
-				task.ownerSession !== null && task.ownerSession !== undefined && dispatch.leadSession !== null && dispatch.leadSession !== undefined && task.ownerSession !== dispatch.leadSession
-					? h('p', { className: 'gbt-footnote', 'data-owner-mismatch': 'true' }, t('ownerMismatch').replace('{owner}', String(task.ownerSession)).replace('{lead}', String(dispatch.leadSession)))
-					: null,
+				(function () {
+					const targetSession = dispatch.targetId !== null && dispatch.targetId !== undefined ? dispatch.targetId : dispatch.leadSession
+					return task.ownerSession !== null && task.ownerSession !== undefined && targetSession !== null && targetSession !== undefined && task.ownerSession !== targetSession
+						? h('p', { className: 'gbt-footnote', 'data-owner-mismatch': 'true' }, t('ownerMismatch').replace('{owner}', String(task.ownerSession)).replace('{target}', String(targetSession)))
+						: null
+				})(),
 			),
 		)
 		const specCard = h('section', { className: 'gbt-detailcard gbt-detailspec', 'data-detail-card': 'spec', 'data-detail-spec-card': 'true' },

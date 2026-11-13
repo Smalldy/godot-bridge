@@ -8,6 +8,7 @@
 export function createSubmitAction(deps) {
   const wrongProjectRefusal = deps.wrongProjectRefusal
   const roles = deps.roles
+  const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
   const callerRole = deps.callerRole
   const readBoardOrFail = deps.readBoardOrFail
   const taskForContext = deps.taskForContext
@@ -70,7 +71,7 @@ export function createSubmitAction(deps) {
     const nextReviewAttempt =
       checked.task.review === null || checked.task.review === undefined ? 1 : checked.task.review.attempt + 1
     let provisioned = null
-    if (willReview && nextReviewAttempt <= REVIEW_MAX_ROUNDS) {
+    if (willReview && nextReviewAttempt <= REVIEW_MAX_ROUNDS && stageAgents === null) {
       provisioned = await provisionRole('reviewer', projectPath, checked.task)
     }
     const input = { evidence: source.evidence, note: source.note }
@@ -120,14 +121,26 @@ export function createSubmitAction(deps) {
         }
         const round = result.task.review === null || result.task.review === undefined ? 1 : result.task.review.attempt
         emitActivity(context, 'review-start', 'submitted for review round ' + String(round), id)
-        const reviewer = roleSlotNameOf('reviewer', result.task.ownerSession)
-        const slot = await assignStageSlot(projectPath, result.task, 'reviewer')
-        result.queuePosition = slot.position
-        if (slot.delivered === true && reviewer !== null) {
-          const sentTo = await notifyMember(reviewer, reviewBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
-          await recordDeliveredTo(projectPath, result.task.id, 'reviewer', sentTo)
+        if (stageAgents !== null) {
+          // v3: start the reviewer only after the board says reviewing, so its
+          // first turn always sees the stage it is reviewing.
+          const started = await stageAgents.startReviewer(result.task, reviewBriefFor(result.task, projectPath))
+          if (started.ok !== true) {
+            await markWaiting(projectPath, id, 'reviewer-unavailable', String(started.message), context)
+            return failure('reviewer-unavailable', 'no reviewer could be started for ' + id + ' (' + String(started.message) + '); the task waits in review')
+          }
+          await recordDeliveredTo(projectPath, result.task.id, 'reviewer', { name: started.name, id: started.agentId })
+          result.provisioned = started
+        } else {
+          const reviewer = roleSlotNameOf('reviewer', result.task.ownerSession)
+          const slot = await assignStageSlot(projectPath, result.task, 'reviewer')
+          result.queuePosition = slot.position
+          if (slot.delivered === true && reviewer !== null) {
+            const sentTo = await notifyMember(reviewer, reviewBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
+            await recordDeliveredTo(projectPath, result.task.id, 'reviewer', sentTo)
+          }
+          if (provisioned !== null) result.provisioned = provisioned
         }
-        if (provisioned !== null) result.provisioned = provisioned
       }
     }
     return result

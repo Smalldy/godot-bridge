@@ -115,7 +115,7 @@ export function createRoleActions(deps) {
       const payload = { config: written.config, profile: written.config.profiles[name], source: 'file' }
       // T-138: tell an old client where the field went instead of storing it.
       if (legacyRoleFields(profileInput).length > 0) {
-        payload.deprecated = { instances: 'ignored', movedTo: 'dispatch.maxConcurrent / dispatch.maxWorkAgents' }
+        payload.deprecated = { instances: 'ignored', movedTo: 'dispatch.maxConcurrent' }
       }
       return ok(payload)
     }

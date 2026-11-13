@@ -30,19 +30,8 @@ export function createProjectAdminActions(deps) {
     return worktreesCleanup(projectPath, read.board, source)
   }
 
-  async function runBootstrapTeam(source, context, projectPath) {
-    // T-121: an agent can bootstrap its OWN team instead of asking the user.
-    // T-129: onboarding calls the SAME routine, so a team is only ever built
-    // one way (and a second onboard while the team is ok builds nothing).
-    const sessionId = callerSessionId(source, context)
-    const boot = await bootstrapTeamFor(projectPath, sessionId)
-    if (boot.ok !== true) return boot
-    return ok({ bootstrap: true, session: boot.session, lead: boot.lead, roles: boot.roles, deferred: boot.deferred, team: boot.team, nextStep: teamBootstrapStep(boot.team) })
-  }
-
   return {
     skillsCatalog: runSkillsCatalog,
     worktreesCleanup: runWorktreesCleanup,
-    bootstrapTeam: runBootstrapTeam,
   }
 }

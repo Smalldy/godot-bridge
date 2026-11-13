@@ -35,6 +35,7 @@ export function createReviewVerdictActions(deps) {
   const notifyMember = deps.notifyMember
   const reworkBriefFor = deps.reworkBriefFor
   const provisionRole = deps.provisionRole
+  const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
   const provisionFailedHard = deps.provisionFailedHard
   const provisionReasonOf = deps.provisionReasonOf
   const state = deps.state
@@ -204,39 +205,67 @@ export function createReviewVerdictActions(deps) {
         result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
           ? null
           : result.task.assignee.name
-      if (owner !== null) await notifyMember(owner, reworkBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
+      if (stageAgents !== null) {
+        await stageAgents.sendAssignee(result.task, reworkBriefFor(result.task, projectPath))
+      } else if (owner !== null) {
+        await notifyMember(owner, reworkBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
+      }
     }
     if (action === 'approveReview' && result.task !== null && result.task !== undefined && result.task.status === 'testing') {
       emitActivity(context, 'review-end', 'approved', id)
       emitActivity(null, 'test-start', 'test candidate stage started', id, 'host')
       if (candidate !== null) emitActivity(null, 'worktree-create', 'test candidate ' + String(candidate.path), id, 'host')
-      const provisioned = await provisionRole('tester', projectPath, result.task)
-      if (provisioned !== null) result.provisioned = provisioned
-      if (provisionFailedHard(provisioned)) {
-        const reason = provisionReasonOf(provisioned)
-        await markWaiting(projectPath, id, reason, provisioned.message, context)
-        return failure('tester-unavailable', 'no tester could be provisioned for ' + id + ' (' + reason + '); the task waits in testing with that reason and will be retried by the host')
+      if (stageAgents === null) {
+        const provisioned = await provisionRole('tester', projectPath, result.task)
+        if (provisioned !== null) result.provisioned = provisioned
+        if (provisionFailedHard(provisioned)) {
+          const reason = provisionReasonOf(provisioned)
+          await markWaiting(projectPath, id, reason, provisioned.message, context)
+          return failure('tester-unavailable', 'no tester could be provisioned for ' + id + ' (' + reason + '); the task waits in testing with that reason and will be retried by the host')
+        }
       }
       if (candidate !== null) {
         result.candidate = candidate
         if (state.memory.testCandidates === undefined || state.memory.testCandidates === null) state.memory.testCandidates = {}
         state.memory.testCandidates[result.task.id] = { candidate: candidate, hostCheck: hostCheck }
-        const tester = roleSlotNameOf('tester', result.task.ownerSession)
-        const testSlot = await assignStageSlot(projectPath, result.task, 'tester')
-        result.queuePosition = testSlot.position
-        if (testSlot.delivered === true && tester !== null) {
-          const sentTo = await notifyMember(
-            tester,
+        if (stageAgents !== null) {
+          const started = await stageAgents.startTester(
+            result.task,
             testerBriefFor(result.task, projectPath, candidate, {
               godot: await godotInfoFor(projectPath, candidate.path),
               hostCheck: hostCheck,
             }),
-            result.task.ownerSession,
-            projectPath,
           )
-          await recordDeliveredTo(projectPath, result.task.id, 'tester', sentTo)
+          if (!stageAgents.available || started.ok !== true) {
+            await markWaiting(projectPath, id, 'tester-unavailable', started.message, context)
+            return failure('tester-unavailable', 'no tester could be started for ' + id + ' (' + String(started.message) + '); the task waits in testing')
+          }
+          result.provisioned = started
+          await recordDeliveredTo(projectPath, result.task.id, 'tester', { name: started.name, id: started.agentId })
+        } else {
+          const tester = roleSlotNameOf('tester', result.task.ownerSession)
+          const testSlot = await assignStageSlot(projectPath, result.task, 'tester')
+          result.queuePosition = testSlot.position
+          if (testSlot.delivered === true && tester !== null) {
+            const sentTo = await notifyMember(
+              tester,
+              testerBriefFor(result.task, projectPath, candidate, {
+                godot: await godotInfoFor(projectPath, candidate.path),
+                hostCheck: hostCheck,
+              }),
+              result.task.ownerSession,
+              projectPath,
+            )
+            await recordDeliveredTo(projectPath, result.task.id, 'tester', sentTo)
+          }
         }
       }
+    }
+    if (stageAgents !== null && (action === 'approveReview' || action === 'requestChanges')) {
+      const reviewerId = result.task !== null && result.task !== undefined && result.task.review !== null && result.task.review !== undefined && result.task.review.deliveredTo !== null && result.task.review.deliveredTo !== undefined
+        ? result.task.review.deliveredTo.id
+        : null
+      if (typeof reviewerId === 'string' && reviewerId !== '') await stageAgents.release(reviewerId)
     }
     // The delivery timestamp is KEPT on the stage slot so the snapshot can still
     // report the finished round's duration; the verdict already means the task no

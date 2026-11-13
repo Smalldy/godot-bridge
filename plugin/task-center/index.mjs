@@ -25,6 +25,7 @@ import { dirname, join } from 'node:path'
 import { createSessionLookup } from './session-lookup.mjs'
 import { createState } from './state.mjs'
 import { bootId, createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
+import { createAgentRegistry } from './agent-registry.mjs'
 import { createMerger } from './merge.mjs'
 import { createMergeJournal } from './merge-journal.mjs'
 import { createMergeReconciler } from './merge-reconcile.mjs'
@@ -46,6 +47,8 @@ import {
   SKILL_RESOURCE_DIR,
 } from './skill.mjs'
 
+// Keep the row activatable on hosts where the subagent seam is not a declared
+// service: the runtime is resolved best-effort in createAgentRuntime(ctx).
 export const inject = ['fs', 'sandboxPolicy', 'tools', 'webServer']
 
 /**
@@ -205,6 +208,32 @@ function applyRow(ctx) {
   // T-118: the manager gets the shared state so it can judge whether the team's
   // session actually runs in the slot's project before spawning a role instance.
   const roles = createRoleManager(ctx, { state: state })
+  // v3: the task center's execution edge is the root Agent's subagent tree.
+  // The plugin row has no root at activation; every operation resolves the exact
+  // root from the card's ownerSession (or the panel session for the tree view).
+  const agentRegistry = createAgentRegistry(ctx)
+  const taskAgents = {
+    get available() { return agentRegistry.available },
+    get root() { return null },
+    get rootId() { return null },
+    get runtime() { return null },
+    get error() { return agentRegistry.available ? null : 'the agent registry or subagent service is unavailable' },
+    startWorker(task, prompt, extra) { return agentRegistry.requireForTask(task).startWorker(task, prompt, extra) },
+    startReviewer(task, prompt, extra) { return agentRegistry.requireForTask(task).startReviewer(task, prompt, extra) },
+    startTester(task, prompt, extra) { return agentRegistry.requireForTask(task).startTester(task, prompt, extra) },
+    send(agentId, text, options) {
+      const rootId = options !== undefined && options !== null && typeof options.rootId === 'string' ? options.rootId : null
+      const agents = rootId === null ? null : agentRegistry.taskAgentsFor(rootId)
+      if (agents === null) throw Object.assign(new Error('no root Agent for send target ' + String(agentId)), { code: 'agent-runtime-unavailable' })
+      return agents.send(agentId, text, options)
+    },
+    release(agentId) { return agentRegistry.release(agentId) },
+    rootFor(rootId) { return agentRegistry.rootFor(rootId) },
+    taskAgentsFor(rootId) { return agentRegistry.taskAgentsFor(rootId) },
+    listFor(rootId) { return agentRegistry.listFor(rootId) },
+    handleFor() { return null },
+    handles() { return [] },
+  }
   // The in-memory activity ring the status snapshot shows. One ring is shared by
   // the dispatcher and the API; it is pure memory and never writes the board.
   const activity = createActivity({})
@@ -231,6 +260,8 @@ function applyRow(ctx) {
     allowSpawn: true,
     git: git,
     roles: roles,
+    taskAgents: taskAgents,
+    requireTaskAgents: true,
     activity: activity,
     leases: leaseFor,
     reconcile: function (project) {
@@ -259,6 +290,8 @@ function applyRow(ctx) {
     git: git,
     merger: merger,
     roles: roles,
+    taskAgents: taskAgents,
+    requireTaskAgents: true,
     harness: harness,
     activity: activity,
     autoMerge: true,

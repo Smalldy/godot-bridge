@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const { createRolesEditor } = require('../../client/src/views/roles-editor.cjs')
 const { createRolesView } = require('../../client/src/views/roles-view.cjs')
+const { tcAgentTreeOf } = require('../../client/src/selectors.cjs')
 
 function h(type, props, ...children) {
   return { type, props: Object.assign({}, props, children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }) }
@@ -32,7 +33,7 @@ function textOf(node) {
 
 const ROLE_EDITOR_KINDS = ['worker', 'tester', 'reviewer']
 const ROLE_EDITOR_STAGES = { worker: 'implement', reviewer: 'review', tester: 'test' }
-const kindLabel = { worker: '实现', reviewer: '评审', tester: '测试', merger: '合并' }
+const kindLabel = { worker: '实现', reviewer: '评审', tester: '测试' }
 const config = {
   stages: { implement: 'worker', review: 'godot-reviewer', test: 'tester' },
   profiles: {
@@ -44,13 +45,18 @@ const config = {
 }
 const snapshot = {
   roles: config,
-  team: { members: [] },
-  agents: { lead: null, members: [] },
+  agentTree: {
+    available: true,
+    root: { id: 'session-root', name: 'root', role: 'lead' },
+    members: [
+      { id: 'session-w1', name: 'worker-1', role: 'worker', status: 'running', taskId: 'T-1' },
+      { id: 'session-r1', name: 'reviewer-1', role: 'reviewer', status: 'running', taskId: 'T-2' },
+      { id: 'session-t1', name: 'tester-1', role: 'tester', status: 'inactive', taskId: null },
+    ],
+    count: 3,
+    error: null,
+  },
   tasks: [],
-  scope: { panelSession: 'session-a', sessionSummaries: [
-    { sessionId: 'session-a', status: 'live', dispatchReady: true, stageReady: { review: true, test: false }, cards: { owned: 3 }, team: { lead: 'lead-a' } },
-    { sessionId: 'session-b', status: 'stale', dispatchReady: false, stageReady: { review: false, test: false }, cards: { owned: 0 }, team: { lead: 'lead-b' } },
-  ] },
 }
 const state = {
   kind: 'reviewer', selected: 'godot-reviewer', draft: null, saved: null, preview: null, previewKey: null, previewPending: false, previewError: null,
@@ -69,24 +75,22 @@ const deps = {
   roleBoundProfile,
   roleSelectableProfiles: (cfg, kind) => Object.keys(cfg.profiles).filter((name) => cfg.profiles[name].role === kind),
   roleProfileCopy: (profile) => Object.assign({}, profile),
-  AgentRow: () => null,
   RoleCreateForm: () => h('div', { 'data-form': 'role-create' }),
   roleErrorText: (payload) => String(payload && payload.code),
-  workerStatusLabel: (status) => String(status),
   roleKindLabel: (kind) => kindLabel[kind] || String(kind),
-  actorLabel: (value) => String(value),
   tcSplitList: () => [],
   roleEditorState: state,
   ROLE_EDITOR_KINDS,
   ROLE_EDITOR_STAGES,
   copyToClipboard: async () => true,
 }
-const RolesEditor = createRolesEditor(deps)
-const editor = RolesEditor({ t: (key) => key, snapshot, store: {}, instances: [
+const instances = [
   { name: 'worker-1', kind: 'worker', status: 'running' },
   { name: 'reviewer-1', kind: 'reviewer', status: 'running' },
   { name: 'tester-1', kind: 'tester', status: 'idle' },
-], bump: () => {} })
+]
+const RolesEditor = createRolesEditor(deps)
+const editor = RolesEditor({ t: (key) => key, snapshot, store: {}, instances, bump: () => {} })
 
 const stages = findAll(editor, (node) => node.props['data-stage-slot'] !== undefined)
 assert.equal(stages.length, 3)
@@ -96,13 +100,10 @@ assert.deepEqual(stages.map((node) => node.props['data-ready']), ['true', 'true'
 const roster = findAll(editor, (node) => node.props['data-role-profile'] !== undefined)
 const rosterNames = roster.map((node) => node.props['data-role-profile'])
 assert.ok(rosterNames.indexOf('worker') >= 0 && rosterNames.indexOf('reviewer') >= 0 && rosterNames.indexOf('tester') >= 0)
-assert.ok(rosterNames.indexOf('merger') >= 0 && rosterNames.indexOf('godot-reviewer') >= 0)
+assert.ok(rosterNames.indexOf('merger') < 0, 'no merger profile in the roster')
+assert.ok(rosterNames.indexOf('godot-reviewer') >= 0)
 assert.equal(roster.filter((node) => node.props['data-role-selected'] === 'true')[0].props['data-role-profile'], 'godot-reviewer')
-const mergerRow = roster.filter((node) => node.props['data-role-profile'] === 'merger')[0]
-assert.equal(mergerRow.props.disabled, false)
-mergerRow.props.onClick()
-assert.equal(deps.roleEditorState.kind, 'merger')
-assert.equal(deps.roleEditorState.selected, 'merger')
+assert.ok(textOf(editor).indexOf('merger') < 0 && textOf(editor).indexOf('合并') < 0)
 const sections = findAll(editor, (node) => node.props['data-role-section'] !== undefined).map((node) => node.props['data-role-section'])
 assert.deepEqual(sections.filter((value, index) => sections.indexOf(value) === index), ['identity', 'behavior', 'application'])
 assert.equal(findAll(editor, (node) => node.props['data-roles-pane'] === 'raw').length, 1)
@@ -129,18 +130,18 @@ assert.equal(draftEditor.props['data-draft'], 'true')
 assert.equal(findAll(draftEditor, (node) => node.props['data-action'] === 'role-editor-discard').length, 1)
 
 const RolesEditorStub = (props) => h('div', { 'data-editor-stub': 'true', 'data-kind': props.instances.length })
-const RolesView = createRolesView({ React: deps.React, h, RolesEditor: RolesEditorStub })
+const RolesView = createRolesView({ React: deps.React, h, RolesEditor: RolesEditorStub, tcAgentTreeOf })
 const view = RolesView({ t: (key) => key, snapshot, store: {} })
 assert.equal(view.props.className, 'gbt-rolesview')
 assert.equal(view.props['data-roles-deck'], 'true')
-assert.equal(findAll(view, (node) => node.props['data-roles-sessions'] === 'true').length, 1)
-assert.equal(findAll(view, (node) => node.props['data-session-filter'] === 'true').length, 1)
-assert.equal(findAll(view, (node) => node.props['data-session'] !== undefined).length, 2)
-assert.equal(findAll(view, (node) => node.type === 'table').length, 0)
+assert.equal(findAll(view, (node) => node.props['data-roles-sessions'] === 'true').length, 0)
+assert.equal(findAll(view, (node) => node.props['data-session-filter'] === 'true').length, 0)
+assert.equal(findAll(view, (node) => node.type === RolesEditorStub)[0].props.instances.length, 3)
 
 const css = readFileSync(new URL('../../client/src/00-head.part', import.meta.url), 'utf8')
 assert.ok(css.indexOf('grid-template-columns:300px minmax(0,1fr)') >= 0)
 assert.ok(css.indexOf('grid-template-columns:minmax(0,1fr) 360px') >= 0)
 assert.ok(css.indexOf('@media (max-width:900px){.gbt-rolesview[data-roles-deck]') >= 0)
 assert.ok(css.indexOf('zoom:') < 0 && css.indexOf('transform:scale') < 0)
+assert.ok(css.indexOf('roleKindMerger') < 0 && css.indexOf('gbt-teampill') < 0)
 console.log('PASS  T-172 roles Shift Deck: stage strip, roster, three-column editor, preview, compact readiness, CSS')

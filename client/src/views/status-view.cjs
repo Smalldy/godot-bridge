@@ -17,6 +17,8 @@ function createStatusView(deps) {
 	const mergeActorOf = deps.mergeActorOf
 	const roleKindLabel = deps.roleKindLabel
 	const testSummaryText = deps.testSummaryText
+	const tcAgentTreeOf = deps.tcAgentTreeOf
+	const tcAgentStatusKey = deps.tcAgentStatusKey
 	const tcAgo = deps.tcAgo
 	const tcMergeOf = deps.tcMergeOf
 	const tcSessionIdInfo = deps.tcSessionIdInfo
@@ -60,15 +62,15 @@ function createStatusView(deps) {
 		const activity = snapshot.activity
 		// T-111: the sweep is telemetry, not an event.
 		const lastSweep = snapshot.lastSweep !== null && snapshot.lastSweep !== undefined && typeof snapshot.lastSweep.at === 'string' ? snapshot.lastSweep : null
-		const agents = snapshot.agents
 		const entries = activity !== null && activity !== undefined && Array.isArray(activity.entries) ? activity.entries : []
-		// One resolver shared with the detail page: the tool writes @labels, the
-		// panel shows member names (unresolved ids stay verbatim).
+		// v3: the live execution tree is the only membership source. One resolver is
+		// shared with the detail page: the tool writes @labels, the panel resolves
+		// them against the root Agent plus its live children (unresolved ids stay
+		// verbatim).
+		const agentTree = tcAgentTreeOf(snapshot)
 		const roster = []
-		if (agents !== null && agents !== undefined) {
-			if (agents.lead !== null && agents.lead !== undefined) roster.push(agents.lead)
-			if (Array.isArray(agents.members)) agents.members.forEach(function (member) { roster.push(member) })
-		}
+		if (agentTree.root !== null) roster.push({ id: agentTree.root.id, name: agentTree.root.name, kind: agentTree.root.role })
+		agentTree.members.forEach(function (member) { roster.push({ id: member.id, name: member.name, kind: member.role }) })
 		function memberName(value, byName, fallbackKey) {
 			return actorDisplay(value, byName, roster, t, fallbackKey)
 		}
@@ -210,7 +212,7 @@ function createStatusView(deps) {
 				at: merge.at,
 				type: 'merge',
 				taskId: task.id,
-				html: task.id + ' · ' + task.title + ' → ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit) + (mergeActor === null ? '' : ' · ' + memberName(mergeActor.by, mergeActor.byName, 'actorRoleMerger')),
+				html: task.id + ' · ' + task.title + ' → ' + (typeof merge.target === 'string' ? merge.target : '—') + (commit === '' ? '' : ' · ' + commit) + (mergeActor === null ? '' : ' · ' + memberName(mergeActor.by, mergeActor.byName, 'statusActorHost')),
 				raw: typeof merge.output === 'string' ? merge.output.split('\n')[0] : null,
 			})
 		}
@@ -265,48 +267,31 @@ function createStatusView(deps) {
 			if (type === 'cancel') return task.id
 			return task.id
 		}
-		/** Minutes since this member's newest activity entry (entries are newest-first). */
-		function idleMinutesFor(name) {
-			const hit = entries.filter(function (entry) { return (entry.actor === name || entry.actorName === name) && typeof entry.at === 'string' })[0]
-			if (hit === undefined) return null
-			const age = now - new Date(hit.at).getTime()
-			return Number.isFinite(age) ? Math.max(0, Math.round(age / 60000)) : null
-		}
-		function lastResultFor(name) {
-			const hit = entries.filter(function (entry) { return (entry.actor === name || entry.actorName === name) && typeof entry.taskId === 'string' })[0]
-			if (hit === undefined) return '—'
-			if (hit.kind === 'test-end' && String(hit.detail).indexOf('passed') >= 0) return hit.taskId + ' ' + t('statusResultPassed')
-			if (hit.kind === 'merge') return hit.taskId + ' ' + t('statusResultCompleted')
-			if (hit.kind === 'submit') return hit.taskId + ' ' + t('statusResultSubmitted')
-			return hit.taskId
-		}
-		function agentRow(member, isLead, index) {
-			const name = typeof member.name === 'string' ? member.name : typeof member.id === 'string' ? member.id : String(index)
-			const session = typeof member.session === 'string' && member.session !== '' ? member.session : typeof member.id === 'string' ? member.id : ''
-			const current = member.currentTask === null || member.currentTask === undefined ? null : member.currentTask
-			const idleMinutes = idleMinutesFor(name)
-			const roleKind = isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate'
-			const queueLength = roleKind === 'reviewer' ? reviewerQueue : roleKind === 'tester' ? testerQueue : 0
-			const statusText = (isLead
-		? '—'
-		: current !== null
-			? current.id
-			: idleMinutes === null
-				? t('statusIdle')
-				: t('statusIdle') + ' ' + String(idleMinutes) + ' ' + t('statusMinutes')) + (queueLength > 0 ? ' · ' + t('queueLengthChip').replace('{n}', String(queueLength)) : '')
-			const resultText = isLead ? typeof member.description === 'string' && member.description !== '' ? member.description : '—' : lastResultFor(name)
+		/**
+		 * One row of the live tree. The Host reports a member's role, status and the
+		 * task it is running; nothing is inferred from a roster slot. The root Agent
+		 * has no status/task fields, so those cells read '—' instead of a guess.
+		 */
+		function agentRow(member, isRoot, index) {
+			const name = typeof member.name === 'string' && member.name !== '' ? member.name : typeof member.id === 'string' ? member.id : String(index)
+			const session = typeof member.id === 'string' && member.id !== '' ? member.id : ''
+			const status = typeof member.status === 'string' && member.status !== '' ? member.status : null
+			const taskId = typeof member.taskId === 'string' && member.taskId !== '' ? member.taskId : null
+			const role = isRoot === true ? null : typeof member.role === 'string' && member.role !== '' ? member.role : null
+			const roleText = isRoot === true ? t('agentRootRole') : role === null ? '—' : roleKindLabel(role, t)
+			const statusText = status === null ? '—' : t(tcAgentStatusKey(status))
 			const expanded = openSession === name
-			const runningNow = isLead === true || member.status === 'running' || current !== null
+			const runningNow = isRoot === true || status === 'running'
 			return h(
 		'div',
-		{ key: 'agent-' + name, className: 'gbt-deckperson', 'data-status-agent': name, 'data-tone': runningNow ? 'live' : 'idle' },
+		{ key: 'agent-' + name, className: 'gbt-deckperson', 'data-status-agent': name, 'data-status-agent-id': session, 'data-status-agent-role': isRoot === true ? 'root' : role === null ? '' : role, 'data-status-agent-status': status === null ? '' : status, 'data-status-agent-task': taskId === null ? '' : taskId, 'data-tone': runningNow ? 'live' : 'idle' },
 		h('span', { className: 'gbt-deckdot', 'data-running': runningNow ? 'true' : 'false' }),
 		h('div', { className: 'gbt-deckpersonmain' },
 			h('b', { className: 'gbt-mono', title: name }, name),
-			h('span', null, roleKindLabel(isLead === true ? 'lead' : typeof member.kind === 'string' ? member.kind : 'teammate', t) + ' · ' + statusText),
+			h('span', null, roleText + ' · ' + statusText),
 		),
 		h('div', { className: 'gbt-deckpersonmeta' },
-			h('em', { title: resultText }, resultText),
+			h('em', { className: 'gbt-mono', title: taskId === null ? '' : taskId }, taskId === null ? '—' : taskId),
 			h('button', { type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } }, '⋯'),
 		),
 		expanded
@@ -368,9 +353,6 @@ function createStatusView(deps) {
 				Number.isFinite(counts.investigating) && counts.investigating > 0 ? h('div', { className: 'gbt-deckmetric', 'data-kv': 'investigating', 'data-kind': 'investigate' }, h('b', null, String(counts.investigating)), h('span', null, t('statusInvestigating'))) : null,
 			),
 			panelSessionLine,
-			snapshot.nextStep === null || snapshot.nextStep === undefined
-				? null
-				: h('div', { className: 'gbt-decknext', 'data-status-team': 'missing', 'data-status-next-step': String(snapshot.nextStep.code) }, t('projectTeamNext') + ' ' + String(snapshot.nextStep.instruction)),
 			archivedCount > 0
 				? h('div', { className: 'gbt-deckscanline', 'data-status-archive': 'true' }, t('archiveLine').replace('{n}', String(archivedCount)).replace('{range}', archiveRange === null ? '—' : String(archiveRange.from).slice(0, 10) + ' → ' + String(archiveRange.to).slice(0, 10)), ' ', h('button', { type: 'button', className: 'gbt-linkbtn', 'data-action': 'archive-open', onClick: function () { if (props.onOpenArchive !== undefined) props.onOpenArchive() } }, t('archiveOpen')))
 				: null,
@@ -579,50 +561,24 @@ function createStatusView(deps) {
 					resultBlock,
 				),
 		)
-		const reviewerQueue = tasks.filter(function (task) { return task.status === 'reviewing' && tcStageQueued(task) }).length
-		const testerQueue = tasks.filter(function (task) { return task.status === 'testing' && tcStageQueued(task) }).length
-		const lead = agents !== null && agents !== undefined ? agents.lead : null
-		// T-122: member table = the requesting session's team (team.members).
-		const teamMembersView = snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members) ? snapshot.team.members : null
-		// T-171: the Lead can also appear in a flat member list; list it once in the
-		// executors rail. The old card tolerated a duplicate, a console row cannot.
-		const leadName = lead !== null && typeof lead.name === 'string' ? lead.name : null
-		const memberSource = teamMembersView !== null ? teamMembersView : agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : []
-		const members = memberSource.filter(function (member) { return member !== null && member !== undefined && (leadName === null || member.name !== leadName) })
-		// T-118: role instances whose slot project is NOT this session's project
-		// can only be leftovers from an older build; mark them instead of hiding.
-		const teams = snapshot.teams
-		const teamMembers = teams !== null && teams !== undefined && Array.isArray(teams.members) ? teams.members : []
-		const leftoverRoles = teamMembers.filter(function (member) { return member !== null && typeof member === 'object' && member.matchesSession === false })
-		function projectLabelOf(member) {
-			const root = typeof member.projectRoot === 'string' && member.projectRoot !== '' ? member.projectRoot : null
-			if (root !== null) return String(root).split(/[\\/]/).filter(Boolean).slice(-1)[0] || root
-			return typeof member.project === 'string' ? 'p' + member.project.slice(0, 6) : '—'
-		}
-		const leftoverRows = leftoverRoles.map(function (member, index) {
-			const leftoverName = typeof member.name === 'string' ? member.name : String(index)
-			return h(
-		'div',
-		{ key: 'leftover-' + leftoverName, className: 'gbt-statusrow', 'data-leftover-role': leftoverName, 'data-tone': 'blocked' },
-		h('span', { className: 'gbt-statuswho gbt-mono' }, leftoverName),
-		h('span', { className: 'gbt-statusrole' }, t('leftoverRole')),
-		h('span', { className: 'gbt-statustask' }, t('leftoverRoleFrom').replace('{project}', projectLabelOf(member))),
-		h('span', { className: 'gbt-statustime' }, ''),
-			)
-		})
+		// v3: the executors rail is the live execution tree — the root Agent plus
+		// every live child the Host reports. No roster, no team readiness, no
+		// leftover slot inventory.
 		const agentRows = []
-		if (lead !== null && lead !== undefined) agentRows.push(agentRow(lead, true, -1))
-		members.forEach(function (member, index) { agentRows.push(agentRow(member, false, index)) })
+		if (agentTree.root !== null) agentRows.push(agentRow(agentTree.root, true, -1))
+		agentTree.members.forEach(function (member, index) { agentRows.push(agentRow(member, false, index)) })
+		const liveCount = agentTree.root === null ? 0 : agentTree.members.length + 1
+		const anyRunning = agentTree.root !== null || agentTree.members.some(function (member) { return member.status === 'running' })
 		const agentsCard = h(
 			'section',
 			{ className: 'gbt-statuscard gbt-deckexecutors', 'data-status-card': 'agents' },
-			h('div', { className: 'gbt-decklabel' }, h('span', null, 'EXECUTORS'), h('span', { className: 'gbt-decklabelzh' }, t('statusCardAgents')), h('em', { 'data-running': members.some(function (member) { return member.status === 'running' }) ? 'true' : 'false' }, String(agentRows.length))),
+			h('div', { className: 'gbt-decklabel' }, h('span', null, 'AGENTS'), h('span', { className: 'gbt-decklabelzh' }, t('statusCardAgents')), h('em', { 'data-running': anyRunning ? 'true' : 'false' }, String(liveCount))),
 			h('div', { className: 'gbt-deckpeople', 'data-status-agents': 'true' },
-				agents === null || agents === undefined
-					? h('div', { className: 'gbt-statusnote' }, t('statusAgentsUnavailable'))
-					: agentRows.length === 0 && leftoverRows.length === 0
-						? h('div', { className: 'gbt-statusnote' }, t('workersEmpty'))
-						: h('div', null, agentRows, leftoverRows),
+				snapshot.agentTree === null || snapshot.agentTree === undefined || agentTree.available !== true
+					? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'unavailable' }, t('statusAgentsUnavailable'))
+					: agentTree.root === null
+						? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'no-root' }, t('statusAgentsNoRoot'))
+						: h('div', null, agentRows, agentTree.members.length === 0 ? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'no-children' }, t('statusAgentsNoChildren')) : null),
 			),
 		)
 		const timeline = snapshot.activityEvents
@@ -724,9 +680,6 @@ function createStatusView(deps) {
 		const sessionStatusText = function (status) {
 			return status === 'live' ? t('sessionsStatusLive') : status === 'stale' ? t('sessionsStatusStale') : t('sessionsStatusUnknown')
 		}
-		const stageBadge = function (key, label, ready) {
-			return h('span', { key: key, className: 'gbt-deckstate', 'data-stage-ready': ready === true ? 'true' : 'false' }, h('i', { className: 'gbt-deckdot', 'data-on': ready === true ? 'true' : 'false' }), label + ' ' + (ready === true ? t('sessionsReady') : t('sessionsNotReady')))
-		}
 		const sessionsCard = h(
 			'section',
 			{ className: 'gbt-statuscard gbt-decksessions', 'data-status-card': 'sessions' },
@@ -745,19 +698,13 @@ function createStatusView(deps) {
 				h('span', null, t('sessionColSession')),
 				h('span', { 'data-session-cards-label': 'true', title: t('sessionDetailCards') }, t('sessionColCards')),
 				h('span', null, t('sessionColStatus')),
-				h('span', null, t('sessionColDispatch')),
-				h('span', null, t('sessionColReview')),
-				h('span', null, t('sessionColTest')),
 			),
 			sessionRows.length === 0
 				? h('div', { className: 'gbt-deckempty', 'data-sessions-empty': 'true' }, t('sessionsEmpty'))
 				: h('div', { className: 'gbt-deckrows', 'data-sessions-list': 'true', title: t('sessionsHint') },
 					visibleSessions.map(function (row, index) {
-						const team = row.team !== null && row.team !== undefined && typeof row.team === 'object' ? row.team : null
 						const current = currentSession !== null && row.sessionId === currentSession
 						const cards = row.cards !== null && row.cards !== undefined && typeof row.cards === 'object' ? row.cards : {}
-						const stage = row.stageReady !== null && row.stageReady !== undefined && typeof row.stageReady === 'object' ? row.stageReady : {}
-						const lead = team === null || typeof team.lead !== 'string' || team.lead === '' ? null : team.lead
 						const owned = Number.isFinite(cards.owned) ? cards.owned : 0
 						const activeCards = Number.isFinite(cards.active) ? cards.active : 0
 						return h('div', {
@@ -766,43 +713,28 @@ function createStatusView(deps) {
 							'data-session': String(row.sessionId),
 							'data-current': current ? 'true' : 'false',
 							'data-session-status': typeof row.status === 'string' ? row.status : 'unknown',
-							'data-dispatch-ready': row.dispatchReady === true ? 'true' : 'false',
 						},
 							h('div', { className: 'gbt-decksessionname' },
 								h('b', { className: 'gbt-mono' }, sessionShortText(row.sessionId)),
 								current ? h('span', { className: 'gbt-decksession-current' }, t('sessionsCurrent')) : null,
-								h('span', { title: lead === null ? '' : lead }, lead === null ? '—' : t('workersLead') + ' · ' + lead),
 							),
 							h('span', { className: 'gbt-decknum', 'data-session-cards': 'true', title: t('sessionDetailCards') }, h('b', null, String(owned)), ' / ' + String(activeCards)),
 							h('span', { className: 'gbt-deckstatus', 'data-session-status-pill': typeof row.status === 'string' ? row.status : 'unknown', 'data-status': typeof row.status === 'string' ? row.status : 'unknown' }, h('i', { className: 'gbt-deckdot', 'data-on': row.status === 'live' ? 'true' : 'false' }), sessionStatusText(row.status)),
-							h('span', { className: 'gbt-deckstate', 'data-dispatch-badge': row.dispatchReady === true ? 'true' : 'false' }, h('i', { className: 'gbt-deckdot', 'data-on': row.dispatchReady === true ? 'true' : 'false' }), row.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady')),
-							stageBadge('stage-review', t('sessionsStageReview'), stage.review === true),
-							stageBadge('stage-test', t('sessionsStageTest'), stage.test === true),
 						)
 					}),
 				),
 		)
 
 		// T-173: wide-screen detail lives outside the table so the table keeps its
-		// natural row height instead of stretching to fill the center column.
+		// natural row height instead of stretching to fill the center column. It
+		// describes the SESSION (identity, project, cards) and never a team roster.
 		const detailFacts = []
-		const detailTeam = detailSession !== null && detailSession.team !== null && detailSession.team !== undefined && typeof detailSession.team === 'object' ? detailSession.team : null
 		const detailCards = detailSession !== null && detailSession.cards !== null && detailSession.cards !== undefined && typeof detailSession.cards === 'object' ? detailSession.cards : {}
 		const detailOwned = Number.isFinite(detailCards.owned) ? detailCards.owned : detailTaskMatches.length
 		const detailActive = Number.isFinite(detailCards.active) ? detailCards.active : 0
-		const detailStage = detailSession !== null && detailSession.stageReady !== null && detailSession.stageReady !== undefined && typeof detailSession.stageReady === 'object' ? detailSession.stageReady : {}
-		const detailLead = detailTeam === null || typeof detailTeam.lead !== 'string' || detailTeam.lead === '' ? null : detailTeam.lead
-		const detailMembers = detailTeam !== null && Array.isArray(detailTeam.members) ? detailTeam.members.filter(function (name) { return typeof name === 'string' && name !== '' }) : []
-		const detailMissing = detailTeam !== null && Array.isArray(detailTeam.missingRoles) ? detailTeam.missingRoles : []
-		const detailAgentPool = agents !== null && agents !== undefined && Array.isArray(agents.members) ? agents.members : snapshot.team !== null && snapshot.team !== undefined && Array.isArray(snapshot.team.members) ? snapshot.team.members : []
 		if (detailSession !== null) {
-			detailFacts.push({ key: 'lead', label: t('sessionDetailLead'), value: detailLead === null ? '—' : detailLead })
 			detailFacts.push({ key: 'project', label: t('sessionDetailProject'), value: projectRootOf(detailSession) })
 			detailFacts.push({ key: 'cards', label: t('sessionDetailCards'), value: String(detailOwned) + ' / ' + String(detailActive) })
-			detailFacts.push({ key: 'dispatch', label: t('sessionColDispatch'), value: detailSession.dispatchReady === true ? t('sessionsReady') : t('sessionsNotReady') })
-			detailFacts.push({ key: 'review', label: t('sessionsStageReview'), value: detailStage.review === true ? t('sessionsReady') : t('sessionsNotReady') })
-			detailFacts.push({ key: 'test', label: t('sessionsStageTest'), value: detailStage.test === true ? t('sessionsReady') : t('sessionsNotReady') })
-			detailFacts.push({ key: 'missing', label: t('sessionDetailMissing'), value: detailMissing.length === 0 ? '—' : detailMissing.join(', ') })
 		}
 		const detailSessionCard = h('section', {
 			className: 'gbt-statuscard gbt-decksessiondetail',
@@ -825,7 +757,6 @@ function createStatusView(deps) {
 							h('span', { className: 'gbt-detailstatus' }, h('i', { className: 'gbt-deckdot', 'data-on': detailSession.status === 'live' ? 'true' : 'false' }), sessionStatusText(detailSession.status)),
 						),
 						h('div', { className: 'gbt-detailid gbt-mono', title: String(detailSession.sessionId) }, String(detailSession.sessionId)),
-						h('div', { className: 'gbt-detailteamcount' }, t('sessionDetailTeam') + ' · ' + String(Number.isFinite(detailTeam === null ? null : detailTeam.memberCount) ? detailTeam.memberCount : detailMembers.length)),
 					),
 					h('div', { className: 'gbt-detailfacts' }, detailFacts.map(function (fact) {
 						return h('div', { key: fact.key, className: 'gbt-detailfact', 'data-session-detail-fact': fact.key },
@@ -833,33 +764,21 @@ function createStatusView(deps) {
 							h('span', null, fact.label))
 					})),
 					h('div', { className: 'gbt-detailright' },
-						h('div', { className: 'gbt-detailteam', 'data-session-detail-team': 'true' },
-						h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'TEAM'), h('b', null, String(detailMembers.length))),
-						detailMembers.length === 0
-							? h('div', { className: 'gbt-deckempty' }, '—')
-							: detailMembers.map(function (name) {
-								const member = detailAgentPool.filter(function (entry) { return entry !== null && entry !== undefined && entry.name === name })[0]
-								return h('div', { key: 'detail-member-' + name, className: 'gbt-detailmember', 'data-session-member': name },
-									h('i', { className: 'gbt-deckdot', 'data-on': member !== undefined && member.status === 'running' ? 'true' : 'false' }),
-									h('span', { className: 'gbt-detailmembername gbt-mono', title: name }, name),
-									h('span', { className: 'gbt-detailmemberstate' }, member === undefined ? '—' : String(member.status)),
-									h('span', { className: 'gbt-detailmembertask gbt-mono' }, member !== undefined && member.currentTask !== null && member.currentTask !== undefined && typeof member.currentTask.id === 'string' ? member.currentTask.id : '—'))
-							}),
-							),
-					h('div', { className: 'gbt-detailtasks', 'data-session-detail-tasks': 'true' },
-						h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'CARDS'), h('span', { className: 'gbt-detailpreview', 'data-detail-preview-label': 'true' }, t('sessionDetailPreview')), h('b', { 'data-detail-preview-count': String(detailTasks.length), 'data-detail-total-count': String(detailOwned) }, String(detailTasks.length) + ' / ' + String(detailOwned))),
-						detailTasks.length === 0
-							? h('div', { className: 'gbt-deckempty' }, t('sessionDetailNoTasks'))
-							: detailTasks.map(function (task) {
-								return h('div', { key: 'detail-task-' + String(task.id), className: 'gbt-detailtask', 'data-session-task': String(task.id) },
-									h('b', { className: 'gbt-mono' }, String(task.id)),
-									h('span', { className: 'gbt-detailtasktitle', title: typeof task.title === 'string' ? task.title : '' }, typeof task.title === 'string' ? task.title : '—'),
-									h('em', { className: 'gbt-mono' }, typeof task.status === 'string' ? task.status : '—'))
-							}),
+						h('div', { className: 'gbt-detailtasks', 'data-session-detail-tasks': 'true' },
+							h('div', { className: 'gbt-detailpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'CARDS'), h('span', { className: 'gbt-detailpreview', 'data-detail-preview-label': 'true' }, t('sessionDetailPreview')), h('b', { 'data-detail-preview-count': String(detailTasks.length), 'data-detail-total-count': String(detailOwned) }, String(detailTasks.length) + ' / ' + String(detailOwned))),
+							detailTasks.length === 0
+								? h('div', { className: 'gbt-deckempty' }, t('sessionDetailNoTasks'))
+								: detailTasks.map(function (task) {
+									return h('div', { key: 'detail-task-' + String(task.id), className: 'gbt-detailtask', 'data-session-task': String(task.id) },
+										h('b', { className: 'gbt-mono' }, String(task.id)),
+										h('span', { className: 'gbt-detailtasktitle', title: typeof task.title === 'string' ? task.title : '' }, typeof task.title === 'string' ? task.title : '—'),
+										h('em', { className: 'gbt-mono' }, typeof task.status === 'string' ? task.status : '—'))
+								}),
 						),
 					),
 					),
 				)
+
 		return h(
 			'div',
 			{ className: 'gbt-statusview gbt-shiftdeck', 'data-status': 'cards' },

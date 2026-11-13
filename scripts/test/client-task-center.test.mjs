@@ -3,11 +3,19 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const { createTaskCenter } = require('../../client/src/views/task-center.cjs')
+const { tcAgentTreeOf, tcAgentStatusKey } = require('../../client/src/selectors.cjs')
 
 function h(type, props, ...children) {
   return { type, props: Object.assign({}, props, children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }) }
 }
 const view = (name) => (props) => ({ type: name, props: props })
+const agentTree = {
+  available: true,
+  root: { id: 'session-root', name: 'root', role: 'lead' },
+  members: [{ id: 'session-w1', name: 'worker-1', role: 'worker', status: 'running', taskId: 'T-1' }],
+  count: 1,
+  error: null,
+}
 const deps = {
   React: { useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}], useEffect: () => {} },
   h: h,
@@ -34,8 +42,7 @@ const deps = {
     queue: [],
     details: {},
     locks: [],
-    team: null,
-    agents: null,
+    agentTree: agentTree,
     roles: null,
     worktrees: null,
     environment: null,
@@ -54,7 +61,9 @@ const deps = {
   projectSourceKey: () => 'session',
   projectSourceLabel: () => 'session',
   tcAgo: () => 'now',
-  tcLeadText: () => 'lead',
+  tcAgentTreeOf: tcAgentTreeOf,
+  tcAgentStatusKey: tcAgentStatusKey,
+  roleKindLabel: (kind) => kind,
   copyToClipboard: async () => true,
   store: { send: async () => ({ ok: true }), startPolling: () => {}, stopPolling: () => {}, switchProject: async () => ({ ok: true }), loadDetail: async () => ({ ok: true }) },
 }
@@ -63,22 +72,26 @@ const out = TaskCenter({})
 assert.equal(out.type, 'div')
 assert.equal(out.props.className, 'gbt-root')
 assert.equal(out.props['data-panel'], 'task-center')
-assert.ok(JSON.stringify(out).includes('gbt-tabs'))
-// T-158: no team data is a NEUTRAL pill (not a worker wait), and the top has two rows.
-assert.ok(JSON.stringify(out).includes('data-team-pill'))
-assert.ok(JSON.stringify(out).includes('data-header-rows'))
-assert.ok(JSON.stringify(out).includes('data-sessions-pill'))
-assert.ok(!JSON.stringify(out).includes('bootstrap-team'))
-console.log('PASS  TaskCenter is an independently testable view module')
+const text = JSON.stringify(out)
+assert.ok(text.includes('gbt-tabs'))
+assert.ok(text.includes('agentsTab'))
+assert.ok(text.includes('data-agent-pill'))
+assert.ok(text.includes('"data-agent-pill":"ready"'))
+assert.ok(text.includes('data-agent-popover'))
+assert.ok(text.includes('agentsPopoverTitle'))
+assert.ok(text.includes('worker-1'))
+assert.ok(!text.includes('data-team-pill'))
+assert.ok(!text.includes('data-team-popover'))
+assert.ok(!text.includes('bootstrapTeam'))
+assert.ok(!text.includes('teamPill'))
+assert.ok(!text.includes('workersTab'))
+console.log('PASS  TaskCenter renders the agent-tree pill and popover, never a team')
 
-// T-155: there is exactly ONE workspace switch — the scope bar. A team that
-// belongs to another project is INFORMATION (copy its session id), never a
-// second project switch, and the old per-project switch entries are gone.
+// T-155: there is exactly ONE workspace switch — the scope bar.
 const mismatchSnapshot = Object.assign({}, deps.useSnapshot(), {
   project: '/repo',
   projectRoot: '/repo',
   sessionProject: '/session',
-  team: { project: '/session', projectMatch: false, ok: true, lead: 'lead', members: [], session: 's-1' },
 })
 const mismatchView = createTaskCenter(Object.assign({}, deps, {
   useSnapshot: () => mismatchSnapshot,
@@ -92,6 +105,6 @@ assert.ok(mismatchJson.includes('workspaceFollowing'))
 assert.ok(!mismatchJson.includes('switch-to-session-project'))
 assert.ok(!mismatchJson.includes('switch-team-project'))
 assert.ok(!mismatchJson.includes('projectTeamOpenSession'))
-assert.ok(mismatchJson.includes('copy-team-session'))
-assert.ok(mismatchJson.includes('projectTeamCopySession'))
+assert.ok(mismatchJson.includes('copy-session-id'))
+assert.ok(mismatchJson.includes('copySessionId'))
 console.log('PASS  one workspace scope bar, no per-project switch duplicates')

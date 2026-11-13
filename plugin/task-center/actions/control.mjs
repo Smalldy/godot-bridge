@@ -29,24 +29,12 @@ export function createControlActions(deps) {
       return failure('user-only', 'Dispatch settings belong to the user; ask them to change it in the task center panel.')
     }
     const patch = {}
-    for (const key of ['maxConcurrent', 'allowSpawn', 'maxWorkAgents', 'maxAttempts', 'defaultTarget']) {
+    for (const key of ['maxConcurrent', 'allowSpawn', 'maxAttempts', 'defaultTarget']) {
       if (source[key] !== undefined) patch[key] = source[key]
     }
-    // T-167: the settings form sends maxConcurrent AND maxWorkAgents explicitly
-    // (plus retry/spawn), so a concurrency edit can never silently overwrite the
-    // stored worker ceiling. The old concurrency+1 derivation stays only as a
-    // compatibility path for legacy callers that send maxConcurrent ALONE.
-    const explicitCapacity = ['maxWorkAgents', 'allowSpawn', 'maxAttempts', 'defaultTarget'].some(function (key) {
-      return source[key] !== undefined
-    })
     if (source.maxConcurrent !== undefined) {
       const concurrency = Number(source.maxConcurrent)
       if (Number.isFinite(concurrency)) patch.maxConcurrent = Math.floor(concurrency)
-      if (source.maxWorkAgents === undefined && explicitCapacity !== true && Number.isFinite(concurrency)) {
-        patch.maxWorkAgents = Math.min(12, Math.max(1, Math.floor(concurrency) + 1))
-      }
-      if (source.allowSpawn === undefined && explicitCapacity !== true) patch.allowSpawn = true
-      if (source.maxAttempts === undefined && explicitCapacity !== true) patch.maxAttempts = 3
     }
     if (Object.keys(patch).length === 0) return failure('no-change', 'no dispatch setting was supplied')
     const result = await mutate(

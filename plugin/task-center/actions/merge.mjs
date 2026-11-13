@@ -27,6 +27,7 @@ export function createMergeActions(deps) {
   const git = deps.git
   const messageOf = deps.messageOf
   const provisionRole = deps.provisionRole
+  const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
   const provisionFailedHard = deps.provisionFailedHard
   const provisionReasonOf = deps.provisionReasonOf
   const markWaiting = deps.markWaiting
@@ -104,14 +105,13 @@ export function createMergeActions(deps) {
       const owner = ownerOf(context)
       const asUser = context !== undefined && context !== null && context.role === 'user'
       const asOwner = owner !== null && task.assignee !== null && task.assignee !== undefined && assigneeMatches(task, owner)
-      const member = asUser || asOwner ? null : callerMemberOf(context)
-      if (!asUser && !asOwner && (member === null || member.name !== mergerName)) {
+      if (!asUser && !asOwner) {
         return failure(
           'not-assignee',
           id +
             ' belongs to ' +
             (task.assignee === null || task.assignee === undefined ? 'nobody' : String(task.assignee.name)) +
-            '; only its owner, the user or the merger may refresh its merge request',
+            '; only its owner or the user may refresh its merge request',
         )
       }
       if (typeof task.branch !== 'string' || task.branch.length === 0) return failure('missing-branch', id + ' has no branch to read')
@@ -145,7 +145,9 @@ export function createMergeActions(deps) {
       // were taken on a different tree, so refreshMergeRequest resets the
       // phases and the queue waits for review + tests again. Ensure the
       // reviewer before the write so the scheduler's stage pass cannot race.
-      const provisioned = await provisionRole('reviewer', projectPath, task)
+      const provisioned = stageAgents !== null
+        ? await stageAgents.startReviewer(task, reviewBriefFor(task, projectPath))
+        : await provisionRole('reviewer', projectPath, task)
       if (provisionFailedHard(provisioned)) {
         const reason = provisionReasonOf(provisioned)
         await markWaiting(projectPath, id, reason, provisioned.message, context)
@@ -164,6 +166,12 @@ export function createMergeActions(deps) {
       if (recorded.task !== null && recorded.task !== undefined && recorded.task.status === 'reviewing') {
         const round = recorded.task.review === null || recorded.task.review === undefined ? 1 : recorded.task.review.attempt
         emitActivity(context, 'review-start', 'merge request refreshed; review round ' + String(round), id)
+        if (stageAgents !== null) {
+          if (provisioned !== null && provisioned.ok === true) {
+            await recordDeliveredTo(projectPath, recorded.task.id, 'reviewer', { name: provisioned.name, id: provisioned.agentId })
+          }
+          return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned })
+        }
         const reviewer = roleSlotNameOf('reviewer', recorded.task.ownerSession)
         const slot = await assignStageSlot(projectPath, recorded.task, 'reviewer')
         if (slot.delivered === true && reviewer !== null) {

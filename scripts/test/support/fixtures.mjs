@@ -390,6 +390,9 @@ export function createRig(options) {
     projectPath: () => project,
     allowSpawn: opts.allowSpawn !== false,
     git: git,
+    // v3: an optional task-agent runtime; when present dispatch bypasses the
+    // legacy Team pick path entirely.
+    taskAgents: opts.taskAgents,
     // T-43: tests bound ONE worktree creation (a hanging git must not hang the
     // pass). Production uses the dispatcher default.
     worktreeDeadlineMs: opts.worktreeDeadlineMs,
@@ -400,6 +403,8 @@ export function createRig(options) {
     git: git,
     now: opts.now,
     roles: opts.roles === undefined ? null : opts.roles,
+    merger: opts.merger,
+    taskAgents: opts.taskAgents,
     // T-131: report files need the parent directory; the rig mirrors the row.
     ensureDir: opts.ensureDir,
   })
