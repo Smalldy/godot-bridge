@@ -1584,7 +1584,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-board{display:flex;gap:12px;align-items:stretch;flex:1 1 auto;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l3,var(--dsw-alias-border-l4)) transparent}',
 			'.gbt-board::-webkit-scrollbar{height:8px;width:8px}',
 			'.gbt-board::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l3,var(--dsw-alias-border-l4));border-radius:4px}',
-			'.gbt-col{flex:1 1 0;min-width:172px;max-width:330px;background:var(--dsw-alias-bg-layer-3);border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;display:flex;flex-direction:column;max-height:100%;min-height:120px}',
+			'.gbt-col{box-sizing:border-box;flex:1 1 0;min-width:172px;max-width:330px;background:var(--dsw-alias-bg-layer-3);border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;display:flex;flex-direction:column;max-height:100%;min-height:120px}',
 			'.gbt-colhead{display:flex;align-items:center;gap:7px;padding:9px 11px;border-bottom:0.5px solid var(--dsw-alias-border-l4);font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary);letter-spacing:.04em;text-transform:uppercase}',
 			'.gbt-colhead[data-collapsible="true"]{cursor:pointer;user-select:none}' +
 				'.gbt-colhead[data-collapsible="true"]:hover{color:var(--dsw-alias-label-primary)}' +
@@ -1603,7 +1603,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				'@keyframes gbt-skel{0%{background-position:200% 0}100%{background-position:-200% 0}}' +
 				'.gbt-colcount{margin-left:auto;font-weight:500;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:0 7px;font-size:10px}',
 			'.gbt-cards{display:flex;flex-direction:column;gap:8px;padding:9px;overflow:auto;flex:1 1 auto;min-height:0}',
-			'.gbt-card{border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;padding:10px 11px;background:var(--dsw-alias-bg-layer-2);cursor:pointer;display:flex;flex-direction:column;gap:7px;transition:border-color .12s ease,box-shadow .12s ease}',
+			'.gbt-card{box-sizing:border-box;min-width:0;border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;padding:10px 11px;background:var(--dsw-alias-bg-layer-2);cursor:pointer;display:flex;flex-direction:column;gap:7px;transition:border-color .12s ease,box-shadow .12s ease}',
 			'.gbt-card:hover{border-color:var(--dsw-alias-state-business-primary)}',
 			'.gbt-card[data-selected="true"]{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 1px var(--dsw-alias-state-business-primary)}',
 			'.gbt-cardtop{display:flex;align-items:center;gap:6px;flex-wrap:wrap}',
@@ -2294,8 +2294,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 .gbt-col[data-group="dispatch"] .gbt-colcount,
 .gbt-col[data-group="dispatch"] .gbt-colsubcounts,
 .gbt-col[data-group="dispatch"] .gbt-colsubcount{white-space:nowrap}
-.gbt-col[data-group="done"]{max-width:none;flex-grow:1.15}
-.gbt-col[data-group="done"] .gbt-card{max-width:560px;width:100%}
+.gbt-col[data-group="done"]{max-width:420px;flex-grow:1;min-width:0}
+.gbt-col[data-group="done"] .gbt-card{max-width:none;width:100%}
 .gbt-col[data-empty="true"]{flex:0 0 170px;min-width:160px;max-width:190px}
 .gbt-col[data-group="dispatch"][data-empty="true"]{flex:0 0 200px;min-width:190px;max-width:230px}
 .gbt-col[data-group="dispatch"][data-collapsed="true"]{flex:0 0 190px;min-width:190px;max-width:220px}
