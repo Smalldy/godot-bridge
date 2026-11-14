@@ -228,6 +228,26 @@ function applyRow(ctx) {
       return agents.send(agentId, text, options)
     },
     release(agentId) { return agentRegistry.release(agentId) },
+    /**
+     * T-183: dispose every stage child of one card by role/name even after the
+     * per-root handle map was lost (plugin reload, blocked card).
+     */
+    releaseTask(task, options) {
+      if (task === null || task === undefined) {
+        return Promise.resolve({ ok: false, code: 'no-task', taskId: null, roles: [], released: [], interrupted: [], unresolved: [], failed: [] })
+      }
+      const rootId = typeof task.ownerSession === 'string' ? task.ownerSession : null
+      let agents = null
+      try {
+        agents = rootId === null ? null : agentRegistry.taskAgentsFor(rootId)
+      } catch (error) {
+        agents = null
+      }
+      if (agents === null || typeof agents.releaseTask !== 'function') {
+        return Promise.resolve({ ok: false, code: 'agent-runtime-unavailable', taskId: String(task.id === undefined ? '' : task.id), roles: [], released: [], interrupted: [], unresolved: [], failed: [] })
+      }
+      return agents.releaseTask(task, options)
+    },
     rootFor(rootId) { return agentRegistry.rootFor(rootId) },
     taskAgentsFor(rootId) { return agentRegistry.taskAgentsFor(rootId) },
     listFor(rootId) { return agentRegistry.listFor(rootId) },

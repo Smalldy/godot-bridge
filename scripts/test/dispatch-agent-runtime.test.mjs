@@ -70,6 +70,23 @@ read = await rig.state.read(rig.project)
 task = read.board.tasks.filter((entry) => entry.id === created.id)[0]
 check('the card is testing', task !== undefined && task.status === 'testing', task && task.status)
 check('the tester delivery is recorded by id', task !== undefined && task.test !== null && task.test !== undefined && task.test.deliveredTo !== null && task.test.deliveredTo.id === 'agent-tester', task && JSON.stringify(task.test))
+
+// T-183: a card that leaves its active phases must not keep presenting its
+// reviewer/tester/worker as live executors of the card in the snapshot.
+const blocked = await rig.action('block', { id: created.id, note: 'T-183 regression' })
+check('blocking a testing card succeeds', blocked.ok === true, JSON.stringify(blocked).slice(0, 600))
+const endedSnap = await rig.api.snapshot(rig.project, { sessionId: 'session-lead' })
+const endedMembers = endedSnap.agentTree === null ? [] : endedSnap.agentTree.members
+check(
+  'a blocked card leaves no running stage child in the snapshot',
+  endedSnap.agentTree !== null && endedMembers.every((member) => member.status !== 'running') && endedMembers.filter((member) => member.taskId === created.id).length === 0,
+  JSON.stringify(endedMembers),
+)
+check(
+  'finished-stage children are not shown as live executors of the ended card',
+  endedMembers.length === 0,
+  JSON.stringify(endedMembers),
+)
 rig.scheduler.dispose()
 
 const failed = checks.filter((entry) => !entry.ok)

@@ -49,6 +49,21 @@ export function createReviewVerdictActions(deps) {
   const ok = deps.ok
   const failure = deps.failure
 
+  /**
+   * T-183: release a stage child by the card's record AND by the name the live
+   * agent tree reports, so a verdict still disposes the reviewer after a plugin
+   * reload (the per-root handle map is gone but the child is not).
+   */
+  async function releaseStageRoster(task, roles) {
+    if (stageAgents === null || task === null || task === undefined) return null
+    if (typeof stageAgents.releaseTask !== 'function') return null
+    try {
+      return await stageAgents.releaseTask(task, { roles: roles })
+    } catch (error) {
+      return null
+    }
+  }
+
   async function run(action, source, context, projectPath) {
     const id = String(source.id === undefined ? '' : source.id)
     if (id === '') return failure('missing-id', action + ' needs a task id')
@@ -159,6 +174,10 @@ export function createReviewVerdictActions(deps) {
       emitActivity(context, 'review-end', 'changes requested: ' + String(source.reasons || '').slice(0, 200), id)
     }
     if (action === 'approveReview' && hostCheckFailed) {
+      // The review round is over even though the card returns to running: the
+      // reviewer must be disposed here too (the generic release below is skipped
+      // by this early return).
+      await releaseStageRoster(result.task, ['reviewer'])
       emitActivity(context, 'review-end', 'approved', id)
       emitActivity(
         null,
@@ -237,6 +256,9 @@ export function createReviewVerdictActions(deps) {
             }),
           )
           if (!stageAgents.available || started.ok !== true) {
+            // The review round is over; do not leave its reviewer running behind
+            // a card that waits for a tester (T-183).
+            await releaseStageRoster(result.task, ['reviewer'])
             await markWaiting(projectPath, id, 'tester-unavailable', started.message, context)
             return failure('tester-unavailable', 'no tester could be started for ' + id + ' (' + String(started.message) + '); the task waits in testing')
           }
@@ -262,10 +284,10 @@ export function createReviewVerdictActions(deps) {
       }
     }
     if (stageAgents !== null && (action === 'approveReview' || action === 'requestChanges')) {
-      const reviewerId = result.task !== null && result.task !== undefined && result.task.review !== null && result.task.review !== undefined && result.task.review.deliveredTo !== null && result.task.review.deliveredTo !== undefined
-        ? result.task.review.deliveredTo.id
-        : null
-      if (typeof reviewerId === 'string' && reviewerId !== '') await stageAgents.release(reviewerId)
+      // T-183: a request-changes verdict has no tester of this round, so any
+      // tester still alive under the card is a leftover and is disposed with the
+      // reviewer. An approval has just started the tester and must not touch it.
+      await releaseStageRoster(result.task, action === 'requestChanges' ? ['reviewer', 'tester'] : ['reviewer'])
     }
     // The delivery timestamp is KEPT on the stage slot so the snapshot can still
     // report the finished round's duration; the verdict already means the task no

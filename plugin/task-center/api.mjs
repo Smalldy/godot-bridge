@@ -376,6 +376,9 @@ export function createApi(ctx, options) {
     interruptAssignee: interruptAssignee,
     cleanupInvestigation: cleanupInvestigation,
     failure: failure,
+    // T-183: cancel/block/reopen/retry dispose the card's stage children, not
+    // only interrupt its worker.
+    stageAgents: stageAgents,
   })
   const mergeActions = createMergeActions({
     mergeRefusal: mergeRefusal,
@@ -1563,6 +1566,13 @@ export function createApi(ctx, options) {
       systemContext,
     )
     if (blocked.ok !== true) return null
+    // T-183: the card is leaving its active phases for triage, so its spawned
+    // worker/reviewer/tester must be disposed instead of silently staying alive.
+    if (stageAgents !== null && typeof stageAgents.releaseTask === 'function') {
+      try {
+        await stageAgents.releaseTask(task, { roles: ['worker', 'reviewer', 'tester'], reason: 'review round limit' })
+      } catch (error) {}
+    }
     emitActivity(null, 'error', 'review round limit reached; task blocked', task.id, 'system')
     // The reviewer slot no longer has work: interrupt it when it is still running.
     const reviewer = roleSlotNameOf('reviewer', task.ownerSession)
@@ -3554,6 +3564,11 @@ export function createApi(ctx, options) {
             : activeTaskByAgent.get(id) || null,
         }
       }).filter((row) => row.id !== '')
+        // T-183: an inactive descendant no live card claims is finished-stage
+        // history (the DSH catalog keeps disposed children), not a member of the
+        // live execution tree. Keeping it would let an orphaned child of an ended
+        // card be read as an executor of the card that happens to own the tree.
+        .filter((row) => (row.taskId !== null && row.taskId !== undefined ? true : row.status === 'running'))
       members.sort((left, right) => (left.status === 'running' ? 0 : 1) - (right.status === 'running' ? 0 : 1))
       return { available: true, root: root, members: members, count: members.length, error: null }
     } catch (error) {
