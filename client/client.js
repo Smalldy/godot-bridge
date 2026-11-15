@@ -307,6 +307,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				notActivatedStepCall: '在会话里使用 /godot-bridge-task-center-init 技能（任务中心入口）接入项目——宿主会把当前项目记为「上次项目」并激活它。',
 				notActivatedStepOpen: '或者点击「打开项目」手动选择一个项目目录；此后启动会直接回到它。',
 				err_unknown_project: '这个会话还没有绑定项目。请在会话里调用一次 task_center，或在面板里手动打开一个项目。',
+				err_no_project_bound: '尚未选择项目：先在面板里打开一个项目，或在会话里调用一次 task_center。',
 				err_content_type: '请求格式不正确：请发送 application/json。',
 				err_origin: '跨源请求已被拒绝。',
 				err_bad_request: '请求体无法解析。',
@@ -985,6 +986,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				notActivatedStepCall: 'Use the /godot-bridge-task-center-init skill (the task center entry point) in the session: the host records the current project as its last active project and activates it.',
 				notActivatedStepOpen: 'Or click “Open project” to pick a project directory manually; every later start returns to it.',
 				err_unknown_project: 'This session is not bound to a project yet. Call task_center once in the session, or open a project from the panel.',
+				err_no_project_bound: 'No project is selected yet: open one from the panel, or call task_center once in this session.',
 				err_content_type: 'Wrong request format: send application/json.',
 				err_origin: 'A cross-origin request was refused.',
 				err_bad_request: 'The request body could not be parsed.',
@@ -3262,6 +3264,22 @@ const createTaskStore = (function () {
 			let loading = null
 			let timer = null
 			let busy = null
+			// T-182: "no project is bound to this session" is the EXPECTED answer
+			// before the first project is opened. It is a SETUP state, not a failure:
+			// routing it into the error banner put "操作失败" over a panel that was
+			// correctly asking the user to pick a project. Its text is carried by the
+			// empty state (open-project entry) instead.
+			const UNBOUND_CODE = 'no-project-bound'
+			// Where the current banner text came from, so the next poll knows whether
+			// it may drop it: 'action' is the user's last action outcome (a routine
+			// poll keeps it), 'state' is this endpoint's own failure (the next good
+			// /state clears it), null means there is nothing to keep.
+			let messageKind = null
+
+			/** The host's expected "nothing is bound" refusal ({ ok:false, code }). */
+			function isUnbound(payload) {
+				return payload !== null && typeof payload === 'object' && payload.ok !== true && payload.code === UNBOUND_CODE
+			}
 
 			function emit(next) {
 				snapshot = Object.assign({}, next, { busy: busy })
@@ -3293,11 +3311,20 @@ const createTaskStore = (function () {
 				loading = (async function () {
 					try {
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
-						if (payload && payload.ok === true && (Array.isArray(payload.tasks) || payload.full === false)) {
+						if (isUnbound(payload) === true) {
+							// No project yet — the expected pre-setup answer. Keep project null so
+							// the view renders its open-project entry points, say nothing, and
+							// leave no message behind for the binding to inherit.
+							const unbound = tcSnapshot(Object.assign({}, payload, { ok: true, project: null, projectRoot: null, tasks: [] }), 'setup', '')
+							unbound.actionResult = snapshot.actionResult
+							unbound.actionError = snapshot.actionError
+							messageKind = null
+							emit(unbound)
+						} else if (payload && payload.ok === true && (Array.isArray(payload.tasks) || payload.full === false)) {
 							// The Host's answer is NOT written to localStorage: only an explicit
 							// switch pins a project, so "follow the session" stays the default.
-							// A routine poll keeps the outcome of the user's last action until
-							// the next action replaces it; only the board data is refreshed.
+							// Only an ACTION's outcome survives a routine poll (see below); what
+							// refreshes here is the board data.
 							const next = tcMergeSnapshot(snapshot, payload)
 							// T-111: accumulate the incremental activity page. A project switch
 							// starts a new log (the old project's events no longer apply).
@@ -3319,18 +3346,25 @@ const createTaskStore = (function () {
 							}
 							next.actionResult = snapshot.actionResult
 							next.actionError = snapshot.actionError
-							next.message = snapshot.message
+							// A routine poll keeps the user's last ACTION outcome (only the board
+							// data refreshes), but the transport's own text stops being true the
+							// moment /state answers again: clear it, so neither the unbound notice
+							// nor a real failure outlives the binding that fixes it.
+							next.message = messageKind === 'action' ? snapshot.message : ''
+							if (messageKind !== 'action') messageKind = null
 							emit(next)
 						} else {
 							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
 							failed.actionResult = snapshot.actionResult
 							failed.actionError = snapshot.actionError
+							messageKind = 'state'
 							emit(failed)
 						}
 					} catch (error) {
 						const offline = tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error))
 						offline.actionResult = snapshot.actionResult
 						offline.actionError = snapshot.actionError
+						messageKind = 'state'
 						emit(offline)
 					} finally {
 						loading = null
@@ -3368,17 +3402,33 @@ const createTaskStore = (function () {
 								next.actionResult = snapshot.actionResult
 								next.actionError = snapshot.actionError
 								next.message = snapshot.message
+							} else {
+								// A real action answered: whatever the banner said is no longer current.
+								messageKind = null
 							}
 							emit(next)
 						}
 						return { ok: true, payload: payload }
 					}
 					if (!quiet) {
-						emit(Object.assign({}, snapshot, { message: tcErrorMessage(payload, t), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
+						if (isUnbound(payload) === true) {
+							// The action was refused because no project is bound yet: the same
+							// setup state /state reports, not a failed operation.
+							messageKind = null
+							emit(Object.assign({}, snapshot, { source: 'setup', message: '', actionResult: null, actionError: null }))
+						} else {
+							messageKind = 'action'
+							emit(Object.assign({}, snapshot, { message: tcErrorMessage(payload, t), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
+						}
 					}
 					return { ok: false, payload: payload }
 				} catch (error) {
-					if (!quiet) emit(Object.assign({}, snapshot, { message: String((error && error.message) || error) }))
+					if (!quiet) {
+						// A failed action is still an ACTION outcome: it survives polls like any
+						// other, instead of being cleared by the next good /state.
+						messageKind = 'action'
+						emit(Object.assign({}, snapshot, { message: String((error && error.message) || error) }))
+					}
 					return { ok: false, error: error }
 				} finally {
 					if (busy === token) setBusy(null)
@@ -3453,7 +3503,19 @@ const createTaskStore = (function () {
 				const result = await send('openProject', { path: next }, opts.quiet === true ? { quiet: true } : undefined)
 				if (result.ok !== true) return result
 				tcPinProject(next)
-				emit(Object.assign({}, snapshot, { project: next, projectRoot: next, resolvedFrom: 'panel' }))
+				// Binding ANSWERS the setup state, so the banner goes away with the project
+				// it asked for. An AUTOMATIC follow (quiet) must not clear the user's last
+				// real action outcome — that is the quiet contract.
+				const explicit = opts.quiet !== true
+				if (explicit) messageKind = null
+				const bound = Object.assign({}, snapshot, {
+					project: next,
+					projectRoot: next,
+					resolvedFrom: 'panel',
+					source: snapshot.source === 'setup' || snapshot.source === 'error' ? 'host' : snapshot.source,
+				})
+				if (explicit) bound.message = ''
+				emit(bound)
 				return result
 			}
 
@@ -8367,12 +8429,18 @@ function createTaskCenter(deps) {
 		const bannerText = bannerMessage.indexOf('project is not ready:') === 0
 			? t('projectNotReady').replace('{project}', bannerProject)
 			: bannerMessage
+		// T-182: an unbound session is a SETUP state, not an alarm. The store reports
+		// it as source 'setup' with no text; even if a message survived (an older
+		// host, a poll in flight), the setup view must not raise the banner — the
+		// empty state below already asks for the project.
 		const banner =
-			snapshot.source === 'error'
-		? h('div', { className: 'gbt-banner', title: bannerMessage }, h('span', null, bannerMessage === '' ? t('offline') : bannerText))
-		: bannerMessage === ''
-			? null
-			: h('div', { className: 'gbt-banner', 'data-tone': 'info', title: bannerMessage }, bannerText)
+			snapshot.source === 'setup'
+		? null
+		: snapshot.source === 'error'
+			? h('div', { className: 'gbt-banner', title: bannerMessage }, h('span', null, bannerMessage === '' ? t('offline') : bannerText))
+			: bannerMessage === ''
+				? null
+				: h('div', { className: 'gbt-banner', 'data-tone': 'info', title: bannerMessage }, bannerText)
 
 		const startRequest = dispatch.request === null || dispatch.request === undefined ? null : dispatch.request
 		const requestBanner =
@@ -8490,8 +8558,10 @@ function createTaskCenter(deps) {
 			? h('p', { className: 'gbt-footnote', 'data-project-resolving': 'true' }, t('projectResolving'))
 			: h(
 					'div',
-					{ 'data-not-activated': 'true' },
-					h('p', { className: 'gbt-footnote', 'data-not-activated-title': 'true' }, t('notActivatedTitle')),
+					{ 'data-not-activated': 'true', 'data-unbound': snapshot.source === 'setup' ? 'true' : undefined },
+					// T-182: the host's "nothing bound" answer is worded as what the user has
+					// to do ("尚未选择项目"), not as a host state ("未激活任何项目").
+					h('p', { className: 'gbt-footnote', 'data-not-activated-title': 'true' }, snapshot.source === 'setup' ? t('projectUnknown') : t('notActivatedTitle')),
 					h('ol', { className: 'gbt-footnote', 'data-not-activated-steps': 'true' }, h('li', { key: 'call' }, t('notActivatedStepCall')), h('li', { key: 'open' }, t('notActivatedStepOpen'))),
 					// T-181: keep the manual entry one click away, but mount the dialog
 					// ONLY on request. An auto-mounted modal could not be dismissed: its

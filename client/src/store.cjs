@@ -31,6 +31,22 @@
 			let loading = null
 			let timer = null
 			let busy = null
+			// T-182: "no project is bound to this session" is the EXPECTED answer
+			// before the first project is opened. It is a SETUP state, not a failure:
+			// routing it into the error banner put "操作失败" over a panel that was
+			// correctly asking the user to pick a project. Its text is carried by the
+			// empty state (open-project entry) instead.
+			const UNBOUND_CODE = 'no-project-bound'
+			// Where the current banner text came from, so the next poll knows whether
+			// it may drop it: 'action' is the user's last action outcome (a routine
+			// poll keeps it), 'state' is this endpoint's own failure (the next good
+			// /state clears it), null means there is nothing to keep.
+			let messageKind = null
+
+			/** The host's expected "nothing is bound" refusal ({ ok:false, code }). */
+			function isUnbound(payload) {
+				return payload !== null && typeof payload === 'object' && payload.ok !== true && payload.code === UNBOUND_CODE
+			}
 
 			function emit(next) {
 				snapshot = Object.assign({}, next, { busy: busy })
@@ -62,11 +78,20 @@
 				loading = (async function () {
 					try {
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
-						if (payload && payload.ok === true && (Array.isArray(payload.tasks) || payload.full === false)) {
+						if (isUnbound(payload) === true) {
+							// No project yet — the expected pre-setup answer. Keep project null so
+							// the view renders its open-project entry points, say nothing, and
+							// leave no message behind for the binding to inherit.
+							const unbound = tcSnapshot(Object.assign({}, payload, { ok: true, project: null, projectRoot: null, tasks: [] }), 'setup', '')
+							unbound.actionResult = snapshot.actionResult
+							unbound.actionError = snapshot.actionError
+							messageKind = null
+							emit(unbound)
+						} else if (payload && payload.ok === true && (Array.isArray(payload.tasks) || payload.full === false)) {
 							// The Host's answer is NOT written to localStorage: only an explicit
 							// switch pins a project, so "follow the session" stays the default.
-							// A routine poll keeps the outcome of the user's last action until
-							// the next action replaces it; only the board data is refreshed.
+							// Only an ACTION's outcome survives a routine poll (see below); what
+							// refreshes here is the board data.
 							const next = tcMergeSnapshot(snapshot, payload)
 							// T-111: accumulate the incremental activity page. A project switch
 							// starts a new log (the old project's events no longer apply).
@@ -88,18 +113,25 @@
 							}
 							next.actionResult = snapshot.actionResult
 							next.actionError = snapshot.actionError
-							next.message = snapshot.message
+							// A routine poll keeps the user's last ACTION outcome (only the board
+							// data refreshes), but the transport's own text stops being true the
+							// moment /state answers again: clear it, so neither the unbound notice
+							// nor a real failure outlives the binding that fixes it.
+							next.message = messageKind === 'action' ? snapshot.message : ''
+							if (messageKind !== 'action') messageKind = null
 							emit(next)
 						} else {
 							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
 							failed.actionResult = snapshot.actionResult
 							failed.actionError = snapshot.actionError
+							messageKind = 'state'
 							emit(failed)
 						}
 					} catch (error) {
 						const offline = tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error))
 						offline.actionResult = snapshot.actionResult
 						offline.actionError = snapshot.actionError
+						messageKind = 'state'
 						emit(offline)
 					} finally {
 						loading = null
@@ -137,17 +169,33 @@
 								next.actionResult = snapshot.actionResult
 								next.actionError = snapshot.actionError
 								next.message = snapshot.message
+							} else {
+								// A real action answered: whatever the banner said is no longer current.
+								messageKind = null
 							}
 							emit(next)
 						}
 						return { ok: true, payload: payload }
 					}
 					if (!quiet) {
-						emit(Object.assign({}, snapshot, { message: tcErrorMessage(payload, t), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
+						if (isUnbound(payload) === true) {
+							// The action was refused because no project is bound yet: the same
+							// setup state /state reports, not a failed operation.
+							messageKind = null
+							emit(Object.assign({}, snapshot, { source: 'setup', message: '', actionResult: null, actionError: null }))
+						} else {
+							messageKind = 'action'
+							emit(Object.assign({}, snapshot, { message: tcErrorMessage(payload, t), actionResult: null, actionError: payload === undefined || payload === null ? null : payload }))
+						}
 					}
 					return { ok: false, payload: payload }
 				} catch (error) {
-					if (!quiet) emit(Object.assign({}, snapshot, { message: String((error && error.message) || error) }))
+					if (!quiet) {
+						// A failed action is still an ACTION outcome: it survives polls like any
+						// other, instead of being cleared by the next good /state.
+						messageKind = 'action'
+						emit(Object.assign({}, snapshot, { message: String((error && error.message) || error) }))
+					}
 					return { ok: false, error: error }
 				} finally {
 					if (busy === token) setBusy(null)
@@ -222,7 +270,19 @@
 				const result = await send('openProject', { path: next }, opts.quiet === true ? { quiet: true } : undefined)
 				if (result.ok !== true) return result
 				tcPinProject(next)
-				emit(Object.assign({}, snapshot, { project: next, projectRoot: next, resolvedFrom: 'panel' }))
+				// Binding ANSWERS the setup state, so the banner goes away with the project
+				// it asked for. An AUTOMATIC follow (quiet) must not clear the user's last
+				// real action outcome — that is the quiet contract.
+				const explicit = opts.quiet !== true
+				if (explicit) messageKind = null
+				const bound = Object.assign({}, snapshot, {
+					project: next,
+					projectRoot: next,
+					resolvedFrom: 'panel',
+					source: snapshot.source === 'setup' || snapshot.source === 'error' ? 'host' : snapshot.source,
+				})
+				if (explicit) bound.message = ''
+				emit(bound)
 				return result
 			}
 
