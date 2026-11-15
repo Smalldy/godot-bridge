@@ -49,16 +49,33 @@ export function createReviewVerdictActions(deps) {
   const ok = deps.ok
   const failure = deps.failure
 
+  /** T-185: the Agent id that is waiting for this action's tool result. */
+  function callerAgentIdOf(context) {
+    if (context === undefined || context === null) return null
+    if (typeof context.callerAgentId === 'string' && context.callerAgentId !== '') return context.callerAgentId
+    const agent = context.agent
+    if (agent !== null && agent !== undefined) {
+      if (typeof agent.id === 'string' && agent.id !== '') return agent.id
+      if (typeof agent.session === 'string' && agent.session !== '') return agent.session
+    }
+    return typeof context.sessionId === 'string' && context.sessionId !== '' ? context.sessionId : null
+  }
+
   /**
    * T-183: release a stage child by the card's record AND by the name the live
    * agent tree reports, so a verdict still disposes the reviewer after a plugin
    * reload (the per-root handle map is gone but the child is not).
+   *
+   * T-185: the caller is excluded from the immediate release. A verdict runs
+   * inside the reviewer's own turn; disposing that activation here would kill the
+   * turn before its tool result is delivered and leave a running zombie. The
+   * stage service queues the caller for the reconciler instead.
    */
-  async function releaseStageRoster(task, roles) {
+  async function releaseStageRoster(task, roles, context) {
     if (stageAgents === null || task === null || task === undefined) return null
     if (typeof stageAgents.releaseTask !== 'function') return null
     try {
-      return await stageAgents.releaseTask(task, { roles: roles })
+      return await stageAgents.releaseTask(task, { roles: roles, callerAgentId: callerAgentIdOf(context) })
     } catch (error) {
       return null
     }
@@ -176,8 +193,9 @@ export function createReviewVerdictActions(deps) {
     if (action === 'approveReview' && hostCheckFailed) {
       // The review round is over even though the card returns to running: the
       // reviewer must be disposed here too (the generic release below is skipped
-      // by this early return).
-      await releaseStageRoster(result.task, ['reviewer'])
+      // by this early return). It is the caller of this action, so the stage
+      // service queues it instead of disposing it in flight (T-185).
+      await releaseStageRoster(result.task, ['reviewer'], context)
       emitActivity(context, 'review-end', 'approved', id)
       emitActivity(
         null,
@@ -257,8 +275,9 @@ export function createReviewVerdictActions(deps) {
           )
           if (!stageAgents.available || started.ok !== true) {
             // The review round is over; do not leave its reviewer running behind
-            // a card that waits for a tester (T-183).
-            await releaseStageRoster(result.task, ['reviewer'])
+            // a card that waits for a tester (T-183). The reviewer is this
+            // action's caller, so it is queued, not disposed in flight (T-185).
+            await releaseStageRoster(result.task, ['reviewer'], context)
             await markWaiting(projectPath, id, 'tester-unavailable', started.message, context)
             return failure('tester-unavailable', 'no tester could be started for ' + id + ' (' + String(started.message) + '); the task waits in testing')
           }
@@ -287,7 +306,9 @@ export function createReviewVerdictActions(deps) {
       // T-183: a request-changes verdict has no tester of this round, so any
       // tester still alive under the card is a leftover and is disposed with the
       // reviewer. An approval has just started the tester and must not touch it.
-      await releaseStageRoster(result.task, action === 'requestChanges' ? ['reviewer', 'tester'] : ['reviewer'])
+      // T-185: the caller of this verdict is only queued; only the other stage
+      // children are disposed immediately.
+      await releaseStageRoster(result.task, action === 'requestChanges' ? ['reviewer', 'tester'] : ['reviewer'], context)
     }
     // The delivery timestamp is KEPT on the stage slot so the snapshot can still
     // report the finished round's duration; the verdict already means the task no

@@ -18,8 +18,8 @@ const taskAgents = {
     if (rootId === 'missing-root') return null
     return {
       async releaseTask(task, options) {
-        calls.push({ kind: 'release-task', id: task.id, roles: options.roles, reason: options.reason })
-        return { ok: true, taskId: task.id, roles: options.roles, released: [{ agentId: 'r-1', role: 'reviewer', sources: ['record'] }], interrupted: [], unresolved: [], failed: [] }
+        calls.push({ kind: 'release-task', id: task.id, roles: options.roles, reason: options.reason, callerAgentId: options.callerAgentId })
+        return { ok: true, taskId: task.id, roles: options.roles, released: [{ agentId: 'r-1', role: 'reviewer', sources: ['record'] }], interrupted: [], unresolved: [], failed: [], deferred: [] }
       },
     }
   },
@@ -101,12 +101,50 @@ await check('a plugin-reload release recovers the activation receipt by id', asy
   assert.deepEqual(disposed, ['child-reload'])
 })
 
+// ── T-185: a verdict's caller is passed through and never self-released ──────
+await check('releaseTask forwards the caller id so a stage can never self-release', async () => {
+  const result = await service.releaseTask(
+    { id: 'T-3', ownerSession: 'root', review: { deliveredTo: { id: 'r-3' } } },
+    { roles: ['reviewer'], callerAgentId: 'r-3', reason: 'review verdict' },
+  )
+  const call = calls.filter((entry) => entry.kind === 'release-task').slice(-1)[0]
+  assert.equal(call.callerAgentId, 'r-3')
+  assert.equal(call.reason, 'review verdict')
+  assert.deepEqual(result.deferred, [])
+})
+
+await check('release never disposes its own caller', async () => {
+  const before = calls.filter((entry) => entry.kind === 'release').length
+  assert.equal(await service.release('r-1', { callerAgentId: 'r-1' }), false)
+  assert.equal(calls.filter((entry) => entry.kind === 'release').length, before)
+  assert.equal(await service.release('r-1'), true, 'a non-caller release still goes through')
+})
+
+await check('the recorded-id fallback queues the caller instead of disposing it', async () => {
+  const before = calls.filter((entry) => entry.kind === 'release').length
+  const result = await service.releaseTask(
+    { id: 'T-4', ownerSession: 'missing-root', review: { deliveredTo: { id: 'r-4' } } },
+    { roles: ['reviewer'], callerAgentId: 'r-4' },
+  )
+  assert.equal(result.ok, true)
+  assert.equal(result.released.length, 0)
+  assert.deepEqual(result.deferred.map((entry) => entry.agentId), ['r-4'])
+  assert.equal(result.deferred[0].queued, false, 'no receipt in this process means no disposal capability')
+  assert.equal(calls.filter((entry) => entry.kind === 'release').length, before)
+})
+
+await check('the stage service exposes the deferred-release reconciler', async () => {
+  const report = await service.drainDeferredReleases()
+  assert.ok(Array.isArray(report))
+})
+
 const missing = createStageService({})
 await check('without a task-agent runtime the service refuses readably', async () => {
   assert.equal(missing.available, false)
   assert.equal((await missing.startTester({ id: 'T' }, 'x')).code, 'agent-runtime-unavailable')
   assert.equal((await missing.releaseTask({ id: 'T' })).code, 'agent-runtime-unavailable')
   assert.equal(await missing.release('agent'), false)
+  assert.deepEqual(await missing.drainDeferredReleases(), [])
 })
 
 // ── T-183: lifecycle transitions dispose the card's stage children ───────────

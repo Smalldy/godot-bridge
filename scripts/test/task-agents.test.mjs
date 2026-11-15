@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict'
-import { agentNameFor, createTaskAgents } from '../../plugin/task-center/task-agents.mjs'
+import {
+  agentNameFor,
+  createTaskAgents,
+  DEFERRED_RELEASE_GRACE_MS,
+  deferReleaseAgent,
+  deferredReleaseIds,
+  forgetDeferredRelease,
+  reapDeferredReleases,
+} from '../../plugin/task-center/task-agents.mjs'
 import { createAgentRuntime } from '../../plugin/task-center/agent-runtime.mjs'
 
 const checks = []
@@ -37,6 +45,8 @@ const state = {
   rejectNextNames: 0,
   listFails: false,
   disposeFailuresLeft: 0,
+  // T-185: a child whose turn already ended lists as inactive.
+  inactive: new Set(),
 }
 const subagents = {
   async startActivation(spec) {
@@ -82,7 +92,7 @@ const subagents = {
       name: entry[1],
       parentId: 'root',
       depth: 1,
-      activity: 'running',
+      activity: state.inactive.has(entry[0]) ? 'inactive' : 'running',
       mode: 'continuable',
     }))
   },
@@ -257,6 +267,72 @@ await check('the same task id in another project keeps its own agents', async ()
 
 await check('an unavailable runtime refuses task agents instead of degrading', () => {
   assert.throws(() => createTaskAgents({ runtime: { available: false } }), (error) => error.code === 'agent-runtime-unavailable')
+})
+
+// ── T-185: a verdict's caller is never self-released in flight ───────────────
+await check('releaseTask queues the caller instead of disposing it while its turn runs', async () => {
+  const reviewer = await agents.startReviewer({ id: 'T-20' }, 'review')
+  state.inactive.delete(reviewer.agentId)
+  const disposedBefore = state.disposed.length
+  const deferred = await agents.releaseTask(
+    { id: 'T-20', review: { deliveredTo: { id: reviewer.agentId } } },
+    { roles: ['reviewer'], callerAgentId: reviewer.agentId },
+  )
+  assert.equal(deferred.released.length, 0, 'the caller is not reported released')
+  assert.deepEqual(deferred.deferred.map((entry) => entry.agentId), [reviewer.agentId])
+  assert.equal(state.disposed.length, disposedBefore, 'nothing is disposed before the action returns')
+  assert.equal(state.live.has(reviewer.agentId), true)
+  assert.ok(deferredReleaseIds().indexOf(reviewer.agentId) >= 0, 'the self-release is queued for the reconciler')
+  const waiting = await reapDeferredReleases()
+  assert.ok(waiting.some((row) => row.agentId === reviewer.agentId && row.outcome === 'waiting'), JSON.stringify(waiting))
+  assert.equal(state.live.has(reviewer.agentId), true, 'a running caller is never disposed')
+  // The tool result was delivered and the turn ended: only now is it retired.
+  state.inactive.add(reviewer.agentId)
+  const reaped = await reapDeferredReleases()
+  assert.ok(reaped.some((row) => row.agentId === reviewer.agentId && row.outcome === 'released'), JSON.stringify(reaped))
+  assert.equal(state.live.has(reviewer.agentId), false)
+  assert.ok(state.disposed.indexOf(reviewer.agentId) >= 0)
+  assert.equal(deferredReleaseIds().indexOf(reviewer.agentId), -1, 'the queue drains; no zombie is left behind')
+})
+
+await check('release refuses to dispose its own caller', async () => {
+  const tester = await agents.startTester({ id: 'T-21' }, 'test')
+  state.inactive.delete(tester.agentId)
+  const disposedBefore = state.disposed.length
+  assert.equal(await agents.release(tester.agentId, { callerAgentId: tester.agentId }), false)
+  assert.equal(state.disposed.length, disposedBefore)
+  assert.equal(state.live.has(tester.agentId), true)
+  state.inactive.add(tester.agentId)
+  await reapDeferredReleases()
+  assert.equal(state.live.has(tester.agentId), false)
+})
+
+await check('an overrunning caller is interrupted, given a grace window, then disposed', async () => {
+  const worker = await agents.startWorker({ id: 'T-22' }, 'implement')
+  state.inactive.delete(worker.agentId)
+  await agents.releaseTask({ id: 'T-22' }, { roles: ['worker'], callerAgentId: worker.agentId })
+  const t0 = Date.now()
+  const interrupted = await reapDeferredReleases({ now: t0 + 10 * 60 * 1000 })
+  assert.ok(interrupted.some((row) => row.agentId === worker.agentId && row.outcome === 'interrupted'), JSON.stringify(interrupted))
+  assert.ok(state.interrupted.indexOf(worker.agentId) >= 0, 'the caller turn is interrupted first')
+  assert.equal(state.disposed.indexOf(worker.agentId), -1, 'an active activation is never disposed bare')
+  const grace = await reapDeferredReleases({ now: t0 + 10 * 60 * 1000 + 1 })
+  assert.ok(grace.some((row) => row.agentId === worker.agentId && row.outcome === 'grace'), JSON.stringify(grace))
+  assert.equal(state.disposed.indexOf(worker.agentId), -1)
+  const retired = await reapDeferredReleases({ now: t0 + 10 * 60 * 1000 + DEFERRED_RELEASE_GRACE_MS + 1 })
+  assert.ok(retired.some((row) => row.agentId === worker.agentId && row.outcome === 'released'), JSON.stringify(retired))
+  assert.equal(state.live.has(worker.agentId), false)
+})
+
+await check('deferring/reaping is idempotent and unknown ids are ignored', async () => {
+  const worker = await agents.startWorker({ id: 'T-23' }, 'implement')
+  const first = deferReleaseAgent(worker.agentId, { reason: 'test' })
+  const second = deferReleaseAgent(worker.agentId, { reason: 'again' })
+  assert.equal(first, second, 'the queue keeps one entry per agent')
+  assert.equal(deferReleaseAgent('no-such-agent'), null, 'an id without a receipt has no disposal capability')
+  forgetDeferredRelease(worker.agentId)
+  assert.equal(deferredReleaseIds().indexOf(worker.agentId), -1)
+  await agents.release(worker.agentId)
 })
 
 const failed = checks.filter((row) => !row.ok)

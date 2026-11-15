@@ -5002,7 +5002,9 @@ export function createApi(ctx, options) {
     const incoming = await projectActions.resolveIncoming(source, context)
     if (incoming.ok !== true) return incoming
     const projectPath = incoming.root
-    const actionContext = Object.assign({}, context, { resolvedFrom: incoming.resolvedFrom })
+    // T-185: every action knows which Agent called it, so a release can tell a
+    // stage child apart from the caller that is still waiting for the result.
+    const actionContext = Object.assign({}, context, { resolvedFrom: incoming.resolvedFrom, callerAgentId: sessionIdOf(context) })
     const result = await performResolved(action, source, actionContext, projectPath)
     // T-146: a merge can change merged/clean state without moving the worktree
     // HEAD, so the probe cache must be dropped for this project.
@@ -5365,5 +5367,20 @@ export function createApi(ctx, options) {
   }
 
 
-  return { perform: perform, snapshot: snapshot, worktrees: worktreesProbe, taskDetail: taskDetail, taskList: taskList, autoMergePending: autoMergePending, actions: ACTIONS, readActions: READ_ACTIONS }
+  /**
+   * T-185: retire queued self-releases whose turn has ended. The verdict action
+   * queues its caller; the host tick (and the agent/status event) drains it, so
+   * a reviewer/tester is never disposed while its tool result is in flight and
+   * never stays running as a zombie afterwards.
+   */
+  async function reapStageReleases(options) {
+    if (stageAgents === null || typeof stageAgents.drainDeferredReleases !== 'function') return []
+    try {
+      return await stageAgents.drainDeferredReleases(options)
+    } catch (error) {
+      return []
+    }
+  }
+
+  return { perform: perform, snapshot: snapshot, worktrees: worktreesProbe, taskDetail: taskDetail, taskList: taskList, autoMergePending: autoMergePending, reapStageReleases: reapStageReleases, actions: ACTIONS, readActions: READ_ACTIONS }
 }

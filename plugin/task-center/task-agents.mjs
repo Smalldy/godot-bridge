@@ -169,6 +169,149 @@ export async function releaseAgent(agentId) {
 }
 
 /**
+ * T-185: a self-release is never immediate.
+ *
+ * A verdict action (approveReview/requestChanges/passTest/failTest) runs inside
+ * the reviewer/tester's own turn. Disposing that activation while the action is
+ * still in flight kills the turn before its tool result is delivered: the agent
+ * never comes back, the card has already moved on and the child stays "running"
+ * forever (T-181). Such a release is queued here and retired later, by the host
+ * reconciler, only once the turn that owns the call is over:
+ *
+ *   - while the live tree still reports the child as running, wait;
+ *   - an inactive (or gone) child has finished its turn, so dispose it;
+ *   - after a bounded wait the child is interrupted first and disposed only
+ *     after the grace window — an active activation is never disposed bare.
+ */
+export const DEFERRED_RELEASE_MAX_WAIT_MS = 120 * 1000
+export const DEFERRED_RELEASE_GRACE_MS = 5 * 1000
+const deferredReleasesById = new Map()
+
+/**
+ * Queue one self-release. The disposal/interrupt/list capabilities come from the
+ * caller when it has them (a live task-agent instance) and fall back to the
+ * process-wide activation receipt (a release queued across a plugin reload).
+ *
+ * Returns the entry, or null when this process holds no capability at all — in
+ * that case nothing is disposed, which is exactly the required behaviour.
+ */
+export function deferReleaseAgent(agentId, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const id = String(agentId === undefined || agentId === null ? '' : agentId)
+  if (id === '' || id === 'undefined' || id === 'null') return null
+  const existing = deferredReleasesById.get(id)
+  if (existing !== undefined) return existing
+  const receipt = activations.get(id)
+  const dispose =
+    typeof opts.dispose === 'function' ? opts.dispose : receipt !== undefined && typeof receipt.dispose === 'function' ? receipt.dispose : null
+  if (dispose === null) return null
+  const entry = {
+    agentId: id,
+    taskId: typeof opts.taskId === 'string' && opts.taskId !== '' ? opts.taskId : null,
+    rootId: typeof opts.rootId === 'string' && opts.rootId !== '' ? opts.rootId : null,
+    reason: typeof opts.reason === 'string' && opts.reason !== '' ? opts.reason : 'self-release',
+    since: Number.isFinite(opts.now) ? opts.now : Date.now(),
+    interruptedAt: null,
+    attempts: 0,
+    dispose: dispose,
+    listRows:
+      typeof opts.listRows === 'function'
+        ? opts.listRows
+        : receipt !== undefined && typeof receipt.listRows === 'function'
+          ? receipt.listRows
+          : null,
+    interrupt:
+      typeof opts.interrupt === 'function'
+        ? opts.interrupt
+        : receipt !== undefined && typeof receipt.interrupt === 'function'
+          ? receipt.interrupt
+          : null,
+  }
+  deferredReleasesById.set(id, entry)
+  return entry
+}
+
+/** The ids queued for a deferred self-release (diagnostics and tests). */
+export function deferredReleaseIds() {
+  return Array.from(deferredReleasesById.keys())
+}
+
+/** Drop a queued self-release without disposing (tests, abandoned cards). */
+export function forgetDeferredRelease(agentId) {
+  return deferredReleasesById.delete(String(agentId))
+}
+
+async function activityOfDeferredEntry(entry) {
+  if (typeof entry.listRows !== 'function') return 'unknown'
+  try {
+    const rows = await entry.listRows()
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (row === null || row === undefined) continue
+      const id = row.id !== undefined ? row.id : row.sessionId
+      if (String(id) !== entry.agentId) continue
+      return row.activity === 'running' || row.status === 'running' ? 'running' : 'inactive'
+    }
+    // The catalog keeps inactive children; an id it no longer lists cannot be
+    // running any more.
+    return 'inactive'
+  } catch (error) {
+    return 'unknown'
+  }
+}
+
+async function retireDeferredEntry(entry) {
+  try {
+    await entry.dispose()
+    deferredReleasesById.delete(entry.agentId)
+    return 'released'
+  } catch (error) {
+    entry.attempts += 1
+    if (entry.attempts >= 3) deferredReleasesById.delete(entry.agentId)
+    return 'failed'
+  }
+}
+
+/**
+ * Retire every queued self-release whose turn has ended. Called by the host tick
+ * and by the agent/status event; the action that queued an entry never disposes
+ * the caller itself.
+ */
+export async function reapDeferredReleases(options) {
+  const opts = options === undefined || options === null ? {} : options
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now()
+  const maxWaitMs = Number.isFinite(opts.maxWaitMs) ? Math.max(0, opts.maxWaitMs) : DEFERRED_RELEASE_MAX_WAIT_MS
+  const graceMs = Number.isFinite(opts.graceMs) ? Math.max(0, opts.graceMs) : DEFERRED_RELEASE_GRACE_MS
+  const report = []
+  for (const entry of Array.from(deferredReleasesById.values())) {
+    const activity = await activityOfDeferredEntry(entry)
+    if (activity === 'running' || activity === 'unknown') {
+      if (now - entry.since < maxWaitMs) {
+        report.push({ agentId: entry.agentId, taskId: entry.taskId, activity: activity, outcome: 'waiting' })
+        continue
+      }
+      // The turn overran its bound: stop it, then give it the grace window
+      // before the activation is disposed.
+      if (entry.interruptedAt === null) {
+        if (typeof entry.interrupt === 'function') {
+          try {
+            entry.interrupt()
+          } catch (error) {}
+        }
+        entry.interruptedAt = now
+        report.push({ agentId: entry.agentId, taskId: entry.taskId, activity: activity, outcome: 'interrupted' })
+        continue
+      }
+      if (now - entry.interruptedAt < graceMs) {
+        report.push({ agentId: entry.agentId, taskId: entry.taskId, activity: activity, outcome: 'grace' })
+        continue
+      }
+    }
+    report.push({ agentId: entry.agentId, taskId: entry.taskId, activity: activity, outcome: await retireDeferredEntry(entry) })
+  }
+  return report
+}
+
+/**
  * @param {object} options
  * @param {object} options.runtime createAgentRuntime result
  */
@@ -223,6 +366,14 @@ export function createTaskAgents(options) {
       dispose: function () {
         return handle.dispose()
       },
+      // T-185: the deferred self-release reconciler must be able to watch this
+      // child's turn and, after the bounded wait, interrupt it before disposing.
+      listRows: function () {
+        return runtime.list()
+      },
+      interrupt: function () {
+        return interruptQuietly(agentId)
+      },
     })
     return { agentId: agentId, name: handle.name === null ? name : handle.name, role: role, handle: handle, generation: generation }
   }
@@ -257,9 +408,32 @@ export function createTaskAgents(options) {
     }
   }
 
-  async function release(agentId) {
+  async function release(agentId, options) {
     if (agentId === undefined || agentId === null || String(agentId) === '') return false
-    return (await disposeById(String(agentId))) === 'released'
+    const id = String(agentId)
+    const releaseOptions = options === undefined || options === null ? {} : options
+    const callerAgentId =
+      typeof releaseOptions.callerAgentId === 'string' && releaseOptions.callerAgentId !== '' ? releaseOptions.callerAgentId : null
+    // T-185: the agent waiting for this very action's tool result is never
+    // disposed here; the self-release is queued for the reconciler instead.
+    if (callerAgentId !== null && callerAgentId === id) {
+      deferReleaseAgent(id, {
+        taskId: releaseOptions.taskId,
+        rootId: releaseOptions.rootId,
+        reason: releaseOptions.reason,
+        dispose: function () {
+          return disposeById(id)
+        },
+        listRows: function () {
+          return runtime.list(releaseOptions.signal)
+        },
+        interrupt: function () {
+          return interruptQuietly(id)
+        },
+      })
+      return false
+    }
+    return (await disposeById(id)) === 'released'
   }
 
   function interruptQuietly(agentId) {
@@ -286,6 +460,12 @@ export function createTaskAgents(options) {
     const taskId = input.id === undefined || input.id === null ? 'task' : String(input.id)
     const releaseOptions = options === undefined || options === null ? {} : options
     const roles = normaliseRoles(releaseOptions.roles)
+    // T-185: the caller of a verdict action is still waiting for that action's
+    // tool result. It must never be disposed from inside the action, only queued
+    // for the reconciler once its turn has ended.
+    const callerAgentId =
+      typeof releaseOptions.callerAgentId === 'string' && releaseOptions.callerAgentId !== '' ? releaseOptions.callerAgentId : null
+    const deferred = []
     const found = new Map()
     const add = function (agentId, name, role, source) {
       const id = String(agentId === undefined || agentId === null ? '' : agentId)
@@ -348,6 +528,24 @@ export function createTaskAgents(options) {
     const failed = []
     for (const entry of found.values()) {
       if (roles.indexOf(entry.role) < 0 && entry.role !== null) continue
+      if (callerAgentId !== null && entry.agentId === callerAgentId) {
+        deferReleaseAgent(entry.agentId, {
+          taskId: taskId,
+          rootId: ownerSession,
+          reason: releaseOptions.reason,
+          dispose: function () {
+            return disposeById(entry.agentId)
+          },
+          listRows: function () {
+            return runtime.list(releaseOptions.signal)
+          },
+          interrupt: function () {
+            return interruptQuietly(entry.agentId)
+          },
+        })
+        deferred.push(entry)
+        continue
+      }
       const outcome = await disposeById(entry.agentId)
       if (outcome === 'released') {
         released.push(entry)
@@ -370,6 +568,9 @@ export function createTaskAgents(options) {
       interrupted: interrupted,
       unresolved: unresolved,
       failed: failed,
+      // T-185: queued self-releases. Not a failure: the caller is retired by the
+      // reconciler after its turn ends.
+      deferred: deferred,
     }
   }
 
