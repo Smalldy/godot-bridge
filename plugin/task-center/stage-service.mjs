@@ -8,9 +8,14 @@
  * tree even when this process lost the handle (plugin reload, block, retry).
  */
 
-import { releaseAgent } from './task-agents.mjs'
+import { deferReleaseAgent, markDeferredReleaseReturned, reapDeferredReleases, releaseAgent } from './task-agents.mjs'
 
 const ALL_ROLES = Object.freeze(['worker', 'reviewer', 'tester'])
+
+function callerAgentIdOf(options) {
+  const requested = options === undefined || options === null ? {} : options
+  return typeof requested.callerAgentId === 'string' && requested.callerAgentId !== '' ? requested.callerAgentId : null
+}
 
 function rolesOf(options) {
   const requested = options !== undefined && options !== null && Array.isArray(options.roles) ? options.roles : ALL_ROLES
@@ -52,8 +57,10 @@ export function createStageService(options) {
       async sendAssignee() { return unavailable() },
       async release() { return false },
       async releaseTask(task) {
-        return Object.assign(await unavailable(), { taskId: task === null || task === undefined ? null : task.id, released: [], interrupted: [], unresolved: [], failed: [] })
+        return Object.assign(await unavailable(), { taskId: task === null || task === undefined ? null : task.id, released: [], interrupted: [], unresolved: [], failed: [], deferred: [] })
       },
+      async drainDeferredReleases() { return [] },
+      markCallerReturned() { return false },
     }
   }
   async function start(kind, task, brief) {
@@ -92,10 +99,17 @@ export function createStageService(options) {
     available: true,
     startReviewer(task, brief) { return start('reviewer', task, brief) },
     startTester(task, brief) { return start('tester', task, brief) },
-    async release(agentId) {
+    async release(agentId, options) {
       if (typeof agentId !== 'string' || agentId === '') return false
+      const releaseOptions = options === undefined || options === null ? {} : options
+      // T-185: the caller of a verdict action is in flight; queue its retirement
+      // instead of disposing the activation its tool result is still owed to.
+      if (typeof releaseOptions.callerAgentId === 'string' && releaseOptions.callerAgentId !== '' && releaseOptions.callerAgentId === agentId) {
+        deferReleaseAgent(agentId, { taskId: releaseOptions.taskId, reason: releaseOptions.reason })
+        return false
+      }
       try {
-        if (await agents.release(agentId)) return true
+        if (await agents.release(agentId, releaseOptions)) return true
       } catch (error) {}
       // The per-root handle map can be gone (plugin reloaded) while the child is
       // still alive: the process-wide activation receipt is the last capability.
@@ -114,15 +128,21 @@ export function createStageService(options) {
       const releaseOptions = options === undefined || options === null ? {} : options
       const roles = rolesOf(releaseOptions)
       const taskId = task !== null && task !== undefined && task.id !== undefined ? String(task.id) : null
+      // T-185: a verdict action runs inside its caller's turn; the caller must
+      // never be disposed before the tool result reaches it.
+      const callerAgentId = callerAgentIdOf(releaseOptions)
       const instance = instanceFor(task)
       if (instance !== null && typeof instance.releaseTask === 'function') {
         try {
-          const result = await instance.releaseTask(task, { roles: roles, reason: releaseOptions.reason, signal: releaseOptions.signal })
+          const result = await instance.releaseTask(task, { roles: roles, reason: releaseOptions.reason, signal: releaseOptions.signal, callerAgentId: callerAgentId })
           if (result !== null && result !== undefined && typeof result === 'object') {
             const released = Array.isArray(result.released) ? result.released : []
             const failed = Array.isArray(result.failed) ? result.failed : []
             const unresolved = Array.isArray(result.unresolved) ? result.unresolved : []
-            if (result.ok === true || released.length > 0 || failed.length > 0 || unresolved.length > 0) return result
+            const deferred = Array.isArray(result.deferred) ? result.deferred : []
+            if (result.ok === true || released.length > 0 || failed.length > 0 || unresolved.length > 0 || deferred.length > 0) {
+              return Object.assign({}, result, { deferred: deferred })
+            }
           }
         } catch (error) {}
       }
@@ -130,10 +150,22 @@ export function createStageService(options) {
       // a facade that cannot resolve the root (or an older task-agent set).
       const released = []
       const unresolved = []
+      const deferred = []
       for (const id of recordedIdsOf(task, roles)) {
+        if (callerAgentId !== null && id === callerAgentId) {
+          // Queue the self-release; the process-wide reconciler retires it after
+          // the caller's turn ends. Never disposed from inside the action.
+          const entry = deferReleaseAgent(id, {
+            taskId: taskId,
+            rootId: task === null || task === undefined || typeof task.ownerSession !== 'string' ? null : task.ownerSession,
+            reason: releaseOptions.reason,
+          })
+          deferred.push({ agentId: id, name: null, role: null, sources: ['record'], queued: entry !== null })
+          continue
+        }
         let ok = false
         try {
-          ok = await agents.release(id)
+          ok = await agents.release(id, { callerAgentId: callerAgentId })
         } catch (error) {
           ok = false
         }
@@ -149,7 +181,22 @@ export function createStageService(options) {
         if (ok) released.push({ agentId: id, name: null, role: null, sources: ['record'] })
         else unresolved.push({ agentId: id, name: null, role: null, sources: ['record'] })
       }
-      return { ok: unresolved.length === 0, taskId: taskId, roles: roles, released: released, interrupted: [], unresolved: unresolved, failed: [] }
+      return { ok: unresolved.length === 0, taskId: taskId, roles: roles, released: released, interrupted: [], unresolved: unresolved, failed: [], deferred: deferred }
+    },
+    /**
+     * T-185: the verdict action has computed its result. Only now may the
+     * reconciler start the bounded wait of the caller's deferred self-release.
+     */
+    markCallerReturned(agentId) {
+      return markDeferredReleaseReturned(agentId)
+    },
+    /** T-185: retire queued self-releases whose turn has ended. */
+    async drainDeferredReleases(options) {
+      try {
+        return await reapDeferredReleases(options)
+      } catch (error) {
+        return []
+      }
     },
     async sendAssignee(task, text) {
       const id = task !== null && task !== undefined && task.assignee !== null && task.assignee !== undefined ? task.assignee.session : null

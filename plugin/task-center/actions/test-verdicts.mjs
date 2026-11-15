@@ -36,7 +36,34 @@ export function createTestVerdictActions(deps) {
   const ok = deps.ok
   const failure = deps.failure
 
+  /** T-185: the Agent id that is waiting for this action's tool result. */
+  function callerAgentIdOf(context) {
+    if (context === undefined || context === null) return null
+    if (typeof context.callerAgentId === 'string' && context.callerAgentId !== '') return context.callerAgentId
+    const agent = context.agent
+    if (agent !== null && agent !== undefined) {
+      if (typeof agent.id === 'string' && agent.id !== '') return agent.id
+      if (typeof agent.session === 'string' && agent.session !== '') return agent.session
+    }
+    return typeof context.sessionId === 'string' && context.sessionId !== '' ? context.sessionId : null
+  }
+
   async function run(action, source, context, projectPath) {
+    try {
+      return await execute(action, source, context, projectPath)
+    } finally {
+      // T-185 review round 1: passTest can spend the whole merge/verify budget
+      // after queuing the tester's self-release. The bounded wait starts only
+      // once this action has returned, never while it is still in flight.
+      try {
+        if (stageAgents !== null && typeof stageAgents.markCallerReturned === 'function') {
+          stageAgents.markCallerReturned(callerAgentIdOf(context))
+        }
+      } catch (error) {}
+    }
+  }
+
+  async function execute(action, source, context, projectPath) {
     const id = String(source.id === undefined ? '' : source.id)
     if (id === '') return failure('missing-id', action + ' needs a task id')
     const read = await readBoardOrFail(projectPath)
@@ -74,10 +101,19 @@ export function createTestVerdictActions(deps) {
       typeof result.task.merge.mergeCommit === 'string' &&
       result.task.merge.mergeCommit.length > 0
     if (stageAgents !== null) {
-      const testerId = result.task !== null && result.task !== undefined && result.task.test !== null && result.task.test !== undefined && result.task.test.deliveredTo !== null && result.task.test.deliveredTo !== undefined
-        ? result.task.test.deliveredTo.id
-        : null
-      if (typeof testerId === 'string' && testerId !== '') await stageAgents.release(testerId)
+      // T-185: the tester that records this verdict is usually the CALLER; the
+      // release must queue it for the reconciler instead of disposing the
+      // activation whose tool result is still in flight (that was the T-181
+      // zombie). Only a tester that is not this caller is disposed now.
+      const callerAgentId = callerAgentIdOf(context)
+      if (typeof stageAgents.releaseTask === 'function') {
+        await stageAgents.releaseTask(result.task, { roles: ['tester'], callerAgentId: callerAgentId, reason: 'test verdict' })
+      } else {
+        const testerId = result.task !== null && result.task !== undefined && result.task.test !== null && result.task.test !== undefined && result.task.test.deliveredTo !== null && result.task.test.deliveredTo !== undefined
+          ? result.task.test.deliveredTo.id
+          : null
+        if (typeof testerId === 'string' && testerId !== '') await stageAgents.release(testerId, { callerAgentId: callerAgentId })
+      }
     }
     // Keep the tester delivery timestamp for the finished round's duration.
     const promotedTest = stageAgents !== null ? [] : await promoteStageSlots(projectPath, 'tester')

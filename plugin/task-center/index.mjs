@@ -319,6 +319,17 @@ function applyRow(ctx) {
     ensureDir: ensureDir,
   })
 
+  // T-185: a verdict action queues its caller instead of disposing the turn it
+  // is still running in. This reconciler retires those queued self-releases once
+  // the caller's turn is over, so a reviewer/tester can never stay running as a
+  // zombie after its board stage already ended.
+  function reapStageReleases() {
+    try {
+      const pending = api.reapStageReleases()
+      if (pending !== undefined && pending !== null && typeof pending.catch === 'function') pending.catch(function () {})
+    } catch (error) {}
+  }
+
   // The project registry is what makes restarts seamless: load it once, before
   // the timers below can ask which projects to drive.
   void state.loadRegistry()
@@ -350,6 +361,9 @@ function applyRow(ctx) {
   ctx.effect(function () {
     if (typeof ctx.on !== 'function') return function () {}
     const off = ctx.on('agent/status', function () {
+      // A child that just went inactive is exactly the turn end a queued
+      // self-release waits for (T-185).
+      reapStageReleases()
       for (const entry of state.activeProjects()) {
         try {
           const pending = scheduler.kick(entry.root)
@@ -367,6 +381,7 @@ function applyRow(ctx) {
   // board, and what restarts queued work after a host restart.
   ctx.effect(function () {
     const timer = setInterval(function () {
+      reapStageReleases()
       for (const entry of state.activeProjects()) {
         try {
           const pending = scheduler.kick(entry.root)
