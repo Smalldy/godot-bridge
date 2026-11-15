@@ -4,6 +4,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const { createTaskCenter } = require('../../client/src/views/task-center.cjs')
+const { createTaskStore } = require('../../client/src/store.cjs')
 const { tcAgentTreeOf, tcAgentStatusKey } = require('../../client/src/selectors.cjs')
 
 function h(type, props, ...children) {
@@ -227,3 +228,196 @@ assert.equal(stepOpens.length, 2, 'the zh and en locales both carry notActivated
 assert.ok(stepOpens[0].includes('打开项目'), 'the zh manual step names the visible entry')
 assert.ok(stepOpens[1].includes('Open project'), 'the en manual step names the visible entry')
 console.log('PASS  empty-state copy points at /godot-bridge-task-center-init in zh and en')
+
+// ── T-182: no-project-bound is a SETUP state, not a failed operation ───────
+// The host answers { ok: false, code: 'no-project-bound' } before any project is
+// opened. The panel used to turn that into a generic "操作失败" banner that then
+// outlived the binding. It must read as "no project selected yet", carry the
+// open-project entry, and never raise the alarm banner.
+const unboundSnapshot = Object.assign({}, deps.useSnapshot(), {
+  source: 'setup',
+  project: null,
+  projectRoot: null,
+  sessionProject: null,
+  message: '',
+  tasks: [],
+  counts: {},
+})
+const unboundHarness = createHookHarness()
+const UnboundTaskCenter = createTaskCenter(Object.assign({}, deps, {
+  React: unboundHarness.React,
+  useSnapshot: () => unboundSnapshot,
+}))
+const unboundTree = renderAt(unboundHarness, UnboundTaskCenter, {})
+const unboundJson = JSON.stringify(unboundTree)
+assert.equal(unboundJson.includes('gbt-banner'), false, 'an unbound session must not raise a banner')
+assert.ok(unboundJson.includes('"data-unbound":"true"'), 'the empty state marks itself as unbound')
+assert.ok(unboundJson.includes('projectUnknown'), 'the empty state says no project has been selected')
+assert.ok(!unboundJson.includes('notActivatedTitle'), 'the unbound copy replaces the generic not-activated title')
+assert.ok(unboundJson.includes('"data-action":"open-project"'), 'the header open-project tab survives')
+assert.equal(openProjectEntryButtons(unboundTree).length, 1, 'the setup state keeps its manual open-project entry')
+assert.equal(projectDialogs(unboundTree).length, 0, 'the setup state still does not auto-mount the dialog')
+openProjectEntryButtons(unboundTree)[0].props.onClick()
+assert.equal(projectDialogs(renderAt(unboundHarness, UnboundTaskCenter, {})).length, 1, 'the setup entry still opens the project dialog')
+console.log('PASS  an unbound session renders its setup state, never a failure banner')
+
+// A setup snapshot is silent only while it has nothing to report: a real
+// action failure in the setup state (a bind that could not reach the host)
+// must surface its reason instead of hiding it — the setup wording stays.
+const failedSetupSnapshot = Object.assign({}, unboundSnapshot, { message: 'connect ECONNREFUSED 127.0.0.1:9090' })
+const failedSetupJson = JSON.stringify(createTaskCenter(Object.assign({}, deps, { useSnapshot: () => failedSetupSnapshot }))({}))
+assert.ok(failedSetupJson.includes('gbt-banner'), 'a setup snapshot with a real failure keeps a banner')
+assert.ok(failedSetupJson.includes('ECONNREFUSED'), 'the real reason is surfaced, not suppressed')
+assert.ok(failedSetupJson.includes('"data-unbound":"true"'), 'the empty state still asks for a project')
+console.log('PASS  a setup snapshot with a real failure surfaces its reason')
+
+// A real failure keeps reporting itself: the banner and its reason are still there.
+const failedSnapshot = Object.assign({}, deps.useSnapshot(), {
+  source: 'error',
+  project: null,
+  projectRoot: null,
+  sessionProject: null,
+  message: 'connect ECONNREFUSED 127.0.0.1:9090',
+  tasks: [],
+  counts: {},
+})
+const failedJson = JSON.stringify(createTaskCenter(Object.assign({}, deps, { useSnapshot: () => failedSnapshot }))({}))
+assert.ok(failedJson.includes('gbt-banner'), 'a real failure keeps its banner')
+assert.ok(failedJson.includes('ECONNREFUSED'), 'a real failure keeps its reason')
+console.log('PASS  setup is silent while a real failure still reports its reason')
+
+// The store side: the same code must become a setup snapshot, and the next good
+// /state (or a successful binding) must clear whatever text was left behind.
+function storeSnapshot(payload, source, message) {
+  return {
+    ok: payload.ok !== false,
+    source: source,
+    message: message === undefined ? '' : message,
+    project: typeof payload.project === 'string' ? payload.project : null,
+    projectRoot: typeof payload.project === 'string' ? payload.project : null,
+    sessionProject: null,
+    tasks: Array.isArray(payload.tasks) ? payload.tasks : [],
+    counts: payload.counts === undefined ? {} : payload.counts,
+    details: {},
+    seq: null,
+    activityEvents: null,
+    actionResult: null,
+    actionError: null,
+  }
+}
+const storeDeps = {
+  TC_STATE_URL: '/state',
+  TC_WORKTREES_URL: '/worktrees',
+  TC_TASK_URL: '/task',
+  TC_LIST_URL: '/list',
+  TC_ACTION_URL: '/action',
+  tcSnapshot: storeSnapshot,
+  tcPinnedProject: () => null,
+  tcMergeSnapshot: (previous, payload) => Object.assign({}, previous, storeSnapshot(payload, 'host', '')),
+  tcErrorMessage: (payload, t) => {
+    const code = payload !== null && payload !== undefined && typeof payload.code === 'string' ? payload.code : ''
+    if (code === 'no-project-bound') return t('err_no_project_bound')
+    if (payload !== null && payload !== undefined && typeof payload.message === 'string' && payload.message !== '') return payload.message
+    return t('error')
+  },
+  tcWithSession: (url) => url,
+  tcSessionId: () => 'session-test',
+  tcPinProject: () => {},
+}
+const answers = []
+// A queued Error simulates a rejected fetch (the failed-bind regression below).
+globalThis.fetch = async () => {
+  const next = answers.shift()
+  if (next instanceof Error) throw next
+  return { json: async () => next }
+}
+const boundStore = createTaskStore((key) => key, storeDeps)
+
+answers.push({ ok: false, code: 'no-project-bound', params: {} })
+await boundStore.load()
+assert.equal(boundStore.getSnapshot().source, 'setup', 'no-project-bound is a setup state')
+assert.equal(boundStore.getSnapshot().project, null, 'the setup snapshot has no project')
+assert.equal(boundStore.getSnapshot().message, '', 'the setup snapshot carries no failure text')
+console.log('PASS  the store maps no-project-bound to the setup state, not to an error')
+
+answers.push({ ok: true, full: true, project: '/repo', tasks: [], counts: {} })
+await boundStore.load()
+assert.equal(boundStore.getSnapshot().source, 'host')
+assert.equal(boundStore.getSnapshot().project, '/repo')
+assert.equal(boundStore.getSnapshot().message, '')
+
+// A real /state failure is reported, and the next good answer clears it.
+answers.push({ ok: false, code: 'failed', message: 'board read failed' })
+await boundStore.load()
+assert.equal(boundStore.getSnapshot().source, 'error')
+assert.equal(boundStore.getSnapshot().message, 'board read failed')
+answers.push({ ok: true, full: true, project: '/repo', tasks: [], counts: {} })
+await boundStore.load()
+assert.equal(boundStore.getSnapshot().message, '', 'a successful /state clears the stale failure')
+console.log('PASS  a real /state failure reports its reason and the next good answer clears it')
+
+// An ACTION's own outcome is not wiped by a routine poll.
+answers.push({ ok: false, code: 'blocked', message: 'start refused' })
+const refused = await boundStore.send('start', {})
+assert.equal(refused.ok, false)
+assert.equal(boundStore.getSnapshot().message, 'start refused')
+answers.push({ ok: true, full: true, project: '/repo', tasks: [], counts: {} })
+await boundStore.load()
+assert.equal(boundStore.getSnapshot().message, 'start refused', 'a routine poll keeps the action outcome')
+// ...and an AUTOMATIC workspace follow (quiet) must not clear it either.
+answers.push({ ok: true, project: '/followed', projectRoot: '/followed', tasks: [], counts: {} })
+await boundStore.switchProject('/followed', { quiet: true })
+assert.equal(boundStore.getSnapshot().message, 'start refused', 'a quiet follow keeps the action outcome')
+console.log('PASS  an action outcome survives a routine poll and a quiet follow')
+
+// Binding a project ends the setup state and takes the banner with it.
+const bindingStore = createTaskStore((key) => key, storeDeps)
+answers.push({ ok: false, code: 'no-project-bound', params: {} })
+await bindingStore.load()
+assert.equal(bindingStore.getSnapshot().source, 'setup')
+answers.push({ ok: true, project: '/opened', projectRoot: '/opened', tasks: [], counts: {} })
+const opened = await bindingStore.switchProject('/opened')
+assert.equal(opened.ok, true)
+assert.equal(bindingStore.getSnapshot().project, '/opened')
+assert.equal(bindingStore.getSnapshot().source, 'host')
+assert.equal(bindingStore.getSnapshot().message, '')
+console.log('PASS  binding a project leaves the setup state and clears the banner')
+
+// A bind the host cannot answer (rejected fetch) keeps the REAL reason in the
+// snapshot: the dialog reads result.error and the panel banner surfaces
+// store.message. The setup state stays, so the empty state keeps asking for a
+// project; a later successful bind clears the failure.
+const unreachableStore = createTaskStore((key) => key, storeDeps)
+answers.push({ ok: false, code: 'no-project-bound', params: {} })
+await unreachableStore.load()
+assert.equal(unreachableStore.getSnapshot().source, 'setup')
+answers.push(new Error('connect ECONNREFUSED 127.0.0.1:9090'))
+const failedBind = await unreachableStore.switchProject('/unreachable')
+assert.equal(failedBind.ok, false)
+assert.ok(String(failedBind.error && failedBind.error.message).includes('ECONNREFUSED'), 'the dialog receives the thrown error')
+assert.equal(unreachableStore.getSnapshot().source, 'setup', 'the setup state survives a failed bind')
+assert.ok(unreachableStore.getSnapshot().message.includes('ECONNREFUSED'), 'the store keeps the real reason for the banner')
+answers.push({ ok: true, project: '/opened', projectRoot: '/opened', tasks: [], counts: {} })
+const recovered = await unreachableStore.switchProject('/opened')
+assert.equal(recovered.ok, true)
+assert.equal(unreachableStore.getSnapshot().source, 'host')
+assert.equal(unreachableStore.getSnapshot().message, '')
+console.log('PASS  a failed bind keeps its real reason and a later bind clears it')
+
+// A bad path is still a real, readable failure.
+answers.push({ ok: false, code: 'invalid-project', message: 'ENOENT: no such directory' })
+const badPath = await bindingStore.switchProject('/does-not-exist')
+assert.equal(badPath.ok, false)
+assert.equal(bindingStore.getSnapshot().message, 'ENOENT: no such directory')
+console.log('PASS  a bad project path still fails with its own reason')
+
+// The fallback copy exists in both locales (a code with no dictionary entry would
+// fall back to the generic "操作失败" everywhere it is used).
+const zhStart = headSource.indexOf('zh: {')
+const enStart = headSource.indexOf('en: {')
+assert.ok(zhStart >= 0 && enStart > zhStart, 'both locale blocks exist')
+const zhBlock = headSource.slice(zhStart, enStart)
+const enBlock = headSource.slice(enStart)
+assert.ok(zhBlock.includes("err_no_project_bound: '尚未选择项目"), 'the zh copy names the missing project')
+assert.ok(enBlock.includes('err_no_project_bound:'), 'the en copy exists')
+console.log('PASS  no-project-bound has explicit copy in both locales')

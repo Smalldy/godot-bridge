@@ -660,12 +660,20 @@ function createTaskCenter(deps) {
 		const bannerText = bannerMessage.indexOf('project is not ready:') === 0
 			? t('projectNotReady').replace('{project}', bannerProject)
 			: bannerMessage
+		// T-182: an unbound session is a SETUP state, not an alarm — but only while it
+		// has nothing to report. The store reports the expected "nothing is bound"
+		// answer as source 'setup' with no text; the empty state below already asks
+		// for the project. A NON-empty setup text is a real action/transport failure
+		// (a bind that could not reach the host, a refused openProject): suppressing
+		// it hid ECONNREFUSED behind a silent dialog.
 		const banner =
-			snapshot.source === 'error'
-		? h('div', { className: 'gbt-banner', title: bannerMessage }, h('span', null, bannerMessage === '' ? t('offline') : bannerText))
-		: bannerMessage === ''
-			? null
-			: h('div', { className: 'gbt-banner', 'data-tone': 'info', title: bannerMessage }, bannerText)
+			snapshot.source === 'setup' && bannerMessage === ''
+		? null
+		: snapshot.source === 'error'
+			? h('div', { className: 'gbt-banner', title: bannerMessage }, h('span', null, bannerMessage === '' ? t('offline') : bannerText))
+			: bannerMessage === ''
+				? null
+				: h('div', { className: 'gbt-banner', 'data-tone': 'info', title: bannerMessage }, bannerText)
 
 		const startRequest = dispatch.request === null || dispatch.request === undefined ? null : dispatch.request
 		const requestBanner =
@@ -783,8 +791,10 @@ function createTaskCenter(deps) {
 			? h('p', { className: 'gbt-footnote', 'data-project-resolving': 'true' }, t('projectResolving'))
 			: h(
 					'div',
-					{ 'data-not-activated': 'true' },
-					h('p', { className: 'gbt-footnote', 'data-not-activated-title': 'true' }, t('notActivatedTitle')),
+					{ 'data-not-activated': 'true', 'data-unbound': snapshot.source === 'setup' ? 'true' : undefined },
+					// T-182: the host's "nothing bound" answer is worded as what the user has
+					// to do ("尚未选择项目"), not as a host state ("未激活任何项目").
+					h('p', { className: 'gbt-footnote', 'data-not-activated-title': 'true' }, snapshot.source === 'setup' ? t('projectUnknown') : t('notActivatedTitle')),
 					h('ol', { className: 'gbt-footnote', 'data-not-activated-steps': 'true' }, h('li', { key: 'call' }, t('notActivatedStepCall')), h('li', { key: 'open' }, t('notActivatedStepOpen'))),
 					// T-181: keep the manual entry one click away, but mount the dialog
 					// ONLY on request. An auto-mounted modal could not be dismissed: its
