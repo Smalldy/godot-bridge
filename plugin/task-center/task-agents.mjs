@@ -211,6 +211,11 @@ export function deferReleaseAgent(agentId, options) {
     rootId: typeof opts.rootId === 'string' && opts.rootId !== '' ? opts.rootId : null,
     reason: typeof opts.reason === 'string' && opts.reason !== '' ? opts.reason : 'self-release',
     since: Number.isFinite(opts.now) ? opts.now : Date.now(),
+    // T-185 review round 1: the bounded wait starts only when the verdict action
+    // that queued this release has RETURNED. A passTest merge/rebuild or an
+    // approveReview candidate discard can legitimately run for minutes; while it
+    // is in flight the caller must never be interrupted or disposed.
+    returnedAt: null,
     interruptedAt: null,
     attempts: 0,
     dispose: dispose,
@@ -229,6 +234,21 @@ export function deferReleaseAgent(agentId, options) {
   }
   deferredReleasesById.set(id, entry)
   return entry
+}
+
+/**
+ * Arm a queued self-release: the action that queued it calls this from its own
+ * `finally`, i.e. only once it is about to return its tool result. Until then
+ * the reaper reports the entry as in flight and never touches the caller.
+ */
+export function markDeferredReleaseReturned(agentId, options) {
+  const opts = options === undefined || options === null ? {} : options
+  const id = String(agentId === undefined || agentId === null ? '' : agentId)
+  if (id === '') return false
+  const entry = deferredReleasesById.get(id)
+  if (entry === undefined) return false
+  if (entry.returnedAt === null) entry.returnedAt = Number.isFinite(opts.now) ? opts.now : Date.now()
+  return true
 }
 
 /** The ids queued for a deferred self-release (diagnostics and tests). */
@@ -260,15 +280,24 @@ async function activityOfDeferredEntry(entry) {
 }
 
 async function retireDeferredEntry(entry) {
+  // The deferred closures wrap disposeById(), which reports a failed teardown as
+  // the string 'error' instead of throwing. A non-throwing call is therefore NOT
+  // proof of release (T-185 review round 1): only true/'released'/'missing' end
+  // the entry, false/'error'/a throw keeps it queued for a bounded retry.
+  let outcome = null
   try {
-    await entry.dispose()
-    deferredReleasesById.delete(entry.agentId)
-    return 'released'
+    outcome = await entry.dispose()
   } catch (error) {
+    outcome = 'error'
+  }
+  if (outcome === false || outcome === 'error') {
+    // Keep the entry and retry: a failed teardown is not a release, and dropping
+    // the only record of the child would turn it into an untracked zombie.
     entry.attempts += 1
-    if (entry.attempts >= 3) deferredReleasesById.delete(entry.agentId)
     return 'failed'
   }
+  deferredReleasesById.delete(entry.agentId)
+  return outcome === 'missing' ? 'missing' : 'released'
 }
 
 /**
@@ -283,9 +312,15 @@ export async function reapDeferredReleases(options) {
   const graceMs = Number.isFinite(opts.graceMs) ? Math.max(0, opts.graceMs) : DEFERRED_RELEASE_GRACE_MS
   const report = []
   for (const entry of Array.from(deferredReleasesById.values())) {
+    // The owning action is still running: nothing may be interrupted/disposed,
+    // however long it takes (a passTest merge can outlive every budget here).
+    if (entry.returnedAt === null) {
+      report.push({ agentId: entry.agentId, taskId: entry.taskId, activity: null, outcome: 'in-flight' })
+      continue
+    }
     const activity = await activityOfDeferredEntry(entry)
     if (activity === 'running' || activity === 'unknown') {
-      if (now - entry.since < maxWaitMs) {
+      if (now - entry.returnedAt < maxWaitMs) {
         report.push({ agentId: entry.agentId, taskId: entry.taskId, activity: activity, outcome: 'waiting' })
         continue
       }

@@ -12,6 +12,7 @@
 //   - the reconciler then retires it, so no running zombie is left.
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { createRig, createTask, PROJECT } from './support/fixtures.mjs'
 import { createAgentRuntime } from '../../plugin/task-center/agent-runtime.mjs'
 import {
@@ -94,6 +95,9 @@ const taskAgents = {
 }
 // The candidate workflow is active (roles + merger), so approveReview really
 // builds a candidate and starts a tester — the paths that used to self-release.
+// A merge gate lets one check park a verdict action inside its merge tail: the
+// tester's self-release is already queued, but the action has not returned yet.
+let mergeGate = null
 const merger = {
   async createCandidate(task, projectPath) {
     return {
@@ -105,6 +109,11 @@ const merger = {
     }
   },
   async mergeCandidate(task) {
+    if (mergeGate !== null) {
+      const gate = mergeGate
+      await gate.ready
+      return gate.result(task)
+    }
     return { ok: true, status: 'merged', mergeCommit: 'merged-' + String(task.id), candidateRemoved: false, taskWorktreeRemoved: false }
   },
   async discardCandidate() {
@@ -156,13 +165,23 @@ async function assertDeferredThenRetired(callerId, label) {
   assert.equal(state.live.has(callerId), true, label + ' killed its caller')
   assert.equal(state.activity.get(callerId), 'running', label + ' ended the caller turn itself')
   assert.ok(deferredReleaseIds().indexOf(callerId) >= 0, label + ' did not queue the self-release')
-  // Still running: the reconciler must wait, never dispose an active activation.
-  await reapDeferredReleases()
-  assert.equal(state.live.has(callerId), true, label + ' disposed an in-flight caller')
+  // The action returned, so the queued self-release is armed now — not earlier.
+  const waiting = await reapDeferredReleases()
+  assert.ok(
+    waiting.some((row) => row.agentId === callerId && row.outcome === 'waiting'),
+    label + ' did not arm the queued self-release when it returned: ' + JSON.stringify(waiting),
+  )
+  assert.equal(state.live.has(callerId), true, label + ' disposed a running caller')
   assert.equal(state.disposed.indexOf(callerId), -1)
   // The tool result was delivered; the caller finishes its turn.
   state.activity.set(callerId, 'inactive')
-  await reapDeferredReleases()
+  // The API seams feed the reconciler (host tick -> api.reapStageReleases ->
+  // stage service -> task agents); a broken wiring must fail here.
+  const retired = await rig.api.reapStageReleases()
+  assert.ok(
+    Array.isArray(retired) && retired.some((row) => row.agentId === callerId && row.outcome === 'released'),
+    label + ' reconciler wiring failed: ' + JSON.stringify(retired),
+  )
   assert.equal(state.live.has(callerId), false, label + ' left a running zombie')
   assert.ok(state.disposed.indexOf(callerId) >= 0, label + ' never disposed the finished caller')
   assert.equal(deferredReleaseIds().indexOf(callerId), -1)
@@ -234,6 +253,54 @@ await check('failTest returns to its tester before the reconciler retires it', a
   assert.equal(after.test.status, 'failed', 'the failed test is still recorded')
   await assertDeferredThenRetired(testerId, 'failTest')
   await rig.action('block', { id: card.id, note: 'test cleanup' })
+})
+
+// ── T-185 review round 1: the wait window starts at action RETURN ───────────
+await check('a verdict action that outlives the whole timeout budget is never reaped in flight', async () => {
+  const card = await makeCard('slow pass')
+  await submitCard(card)
+  const approved = await rig.action('approveReview', { id: card.id })
+  assert.equal(approved.ok, true, 'approveReview as user: ' + JSON.stringify(approved).slice(0, 700))
+  const testing = await taskById(card.id)
+  const testerId = testing.test.deliveredTo.id
+  state.activity.set(testerId, 'running')
+  let openGate = null
+  const ready = new Promise((resolve) => { openGate = resolve })
+  mergeGate = {
+    ready: ready,
+    result: (task) => ({ ok: true, status: 'merged', mergeCommit: 'slow-' + String(task.id), candidateRemoved: false, taskWorktreeRemoved: false }),
+  }
+  const pending = rig.api.perform('passTest', { id: card.id, evidence: 'slow checks' }, callerContext(testerId, 'tester-3'))
+  // Wait until passTest queued the tester self-release and parked in its merge.
+  for (let attempt = 0; attempt < 600 && deferredReleaseIds().indexOf(testerId) < 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  assert.ok(deferredReleaseIds().indexOf(testerId) >= 0, 'passTest queues the tester self-release before merging')
+  // Jump far past every action/verify budget while the action is STILL running.
+  const inFlight = await reapDeferredReleases({ now: Date.now() + 6 * 60 * 60 * 1000 })
+  assert.ok(inFlight.some((row) => row.agentId === testerId && row.outcome === 'in-flight'), JSON.stringify(inFlight))
+  assert.equal(state.interrupted.indexOf(testerId), -1, 'the in-flight action was interrupted')
+  assert.equal(state.disposed.indexOf(testerId), -1, 'the tester was disposed before its tool result')
+  assert.equal(state.live.has(testerId), true)
+  openGate()
+  const verdict = await pending
+  mergeGate = null
+  assert.equal(verdict.ok, true, 'passTest: ' + JSON.stringify(verdict).slice(0, 900))
+  assert.equal(state.disposed.indexOf(testerId), -1, 'the tester is only queued at return, never disposed in flight')
+  await assertDeferredThenRetired(testerId, 'slow passTest')
+  await rig.action('block', { id: card.id, note: 'test cleanup' })
+})
+
+// ── the host tick is still wired to the reconciler ──────────────────────────
+await check('the host tick and the API expose the stage-release reconciler', async () => {
+  const source = readFileSync(new URL('../../plugin/task-center/index.mjs', import.meta.url), 'utf8')
+  const tickStart = source.indexOf('const timer = setInterval(function () {')
+  assert.ok(tickStart >= 0, 'the host tick exists')
+  assert.ok(
+    source.slice(tickStart, tickStart + 400).indexOf('reapStageReleases()') >= 0,
+    'the host tick no longer drains queued self-releases (T-185)',
+  )
+  assert.equal(typeof rig.api.reapStageReleases, 'function')
 })
 
 // ── nothing is left running ─────────────────────────────────────────────────

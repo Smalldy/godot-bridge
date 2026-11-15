@@ -133,9 +133,10 @@ await check('the recorded-id fallback queues the caller instead of disposing it'
   assert.equal(calls.filter((entry) => entry.kind === 'release').length, before)
 })
 
-await check('the stage service exposes the deferred-release reconciler', async () => {
+await check('the stage service exposes the arming point and the deferred-release reconciler', async () => {
   const report = await service.drainDeferredReleases()
   assert.ok(Array.isArray(report))
+  assert.equal(service.markCallerReturned('no-entry'), false, 'arming an unknown caller is a no-op')
 })
 
 const missing = createStageService({})
@@ -145,6 +146,7 @@ await check('without a task-agent runtime the service refuses readably', async (
   assert.equal((await missing.releaseTask({ id: 'T' })).code, 'agent-runtime-unavailable')
   assert.equal(await missing.release('agent'), false)
   assert.deepEqual(await missing.drainDeferredReleases(), [])
+  assert.equal(missing.markCallerReturned('agent'), false)
 })
 
 // ── T-183: lifecycle transitions dispose the card's stage children ───────────

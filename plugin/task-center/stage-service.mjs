@@ -8,7 +8,7 @@
  * tree even when this process lost the handle (plugin reload, block, retry).
  */
 
-import { deferReleaseAgent, reapDeferredReleases, releaseAgent } from './task-agents.mjs'
+import { deferReleaseAgent, markDeferredReleaseReturned, reapDeferredReleases, releaseAgent } from './task-agents.mjs'
 
 const ALL_ROLES = Object.freeze(['worker', 'reviewer', 'tester'])
 
@@ -60,6 +60,7 @@ export function createStageService(options) {
         return Object.assign(await unavailable(), { taskId: task === null || task === undefined ? null : task.id, released: [], interrupted: [], unresolved: [], failed: [], deferred: [] })
       },
       async drainDeferredReleases() { return [] },
+      markCallerReturned() { return false },
     }
   }
   async function start(kind, task, brief) {
@@ -181,6 +182,13 @@ export function createStageService(options) {
         else unresolved.push({ agentId: id, name: null, role: null, sources: ['record'] })
       }
       return { ok: unresolved.length === 0, taskId: taskId, roles: roles, released: released, interrupted: [], unresolved: unresolved, failed: [], deferred: deferred }
+    },
+    /**
+     * T-185: the verdict action has computed its result. Only now may the
+     * reconciler start the bounded wait of the caller's deferred self-release.
+     */
+    markCallerReturned(agentId) {
+      return markDeferredReleaseReturned(agentId)
     },
     /** T-185: retire queued self-releases whose turn has ended. */
     async drainDeferredReleases(options) {

@@ -49,6 +49,21 @@ export function createTestVerdictActions(deps) {
   }
 
   async function run(action, source, context, projectPath) {
+    try {
+      return await execute(action, source, context, projectPath)
+    } finally {
+      // T-185 review round 1: passTest can spend the whole merge/verify budget
+      // after queuing the tester's self-release. The bounded wait starts only
+      // once this action has returned, never while it is still in flight.
+      try {
+        if (stageAgents !== null && typeof stageAgents.markCallerReturned === 'function') {
+          stageAgents.markCallerReturned(callerAgentIdOf(context))
+        }
+      } catch (error) {}
+    }
+  }
+
+  async function execute(action, source, context, projectPath) {
     const id = String(source.id === undefined ? '' : source.id)
     if (id === '') return failure('missing-id', action + ' needs a task id')
     const read = await readBoardOrFail(projectPath)

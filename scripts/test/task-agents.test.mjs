@@ -6,6 +6,7 @@ import {
   deferReleaseAgent,
   deferredReleaseIds,
   forgetDeferredRelease,
+  markDeferredReleaseReturned,
   reapDeferredReleases,
 } from '../../plugin/task-center/task-agents.mjs'
 import { createAgentRuntime } from '../../plugin/task-center/agent-runtime.mjs'
@@ -283,6 +284,12 @@ await check('releaseTask queues the caller instead of disposing it while its tur
   assert.equal(state.disposed.length, disposedBefore, 'nothing is disposed before the action returns')
   assert.equal(state.live.has(reviewer.agentId), true)
   assert.ok(deferredReleaseIds().indexOf(reviewer.agentId) >= 0, 'the self-release is queued for the reconciler')
+  // The action has not returned yet: even an enormous clock jump may not touch it.
+  const inFlight = await reapDeferredReleases({ now: Date.now() + 60 * 60 * 1000 })
+  assert.ok(inFlight.some((row) => row.agentId === reviewer.agentId && row.outcome === 'in-flight'), JSON.stringify(inFlight))
+  assert.equal(state.live.has(reviewer.agentId), true, 'an in-flight caller is never disposed')
+  // The action returned; now the wait window starts, but the turn still runs.
+  assert.equal(markDeferredReleaseReturned(reviewer.agentId), true)
   const waiting = await reapDeferredReleases()
   assert.ok(waiting.some((row) => row.agentId === reviewer.agentId && row.outcome === 'waiting'), JSON.stringify(waiting))
   assert.equal(state.live.has(reviewer.agentId), true, 'a running caller is never disposed')
@@ -303,6 +310,7 @@ await check('release refuses to dispose its own caller', async () => {
   assert.equal(state.disposed.length, disposedBefore)
   assert.equal(state.live.has(tester.agentId), true)
   state.inactive.add(tester.agentId)
+  markDeferredReleaseReturned(tester.agentId)
   await reapDeferredReleases()
   assert.equal(state.live.has(tester.agentId), false)
 })
@@ -312,6 +320,12 @@ await check('an overrunning caller is interrupted, given a grace window, then di
   state.inactive.delete(worker.agentId)
   await agents.releaseTask({ id: 'T-22' }, { roles: ['worker'], callerAgentId: worker.agentId })
   const t0 = Date.now()
+  // The action is still running: a jump past the whole budget must not stop it.
+  const stillRunning = await reapDeferredReleases({ now: t0 + 10 * 60 * 1000 })
+  assert.ok(stillRunning.some((row) => row.agentId === worker.agentId && row.outcome === 'in-flight'), JSON.stringify(stillRunning))
+  assert.equal(state.interrupted.indexOf(worker.agentId), -1)
+  // The action returned and its turn overran the wait: interrupt, grace, dispose.
+  markDeferredReleaseReturned(worker.agentId)
   const interrupted = await reapDeferredReleases({ now: t0 + 10 * 60 * 1000 })
   assert.ok(interrupted.some((row) => row.agentId === worker.agentId && row.outcome === 'interrupted'), JSON.stringify(interrupted))
   assert.ok(state.interrupted.indexOf(worker.agentId) >= 0, 'the caller turn is interrupted first')
@@ -333,6 +347,52 @@ await check('deferring/reaping is idempotent and unknown ids are ignored', async
   forgetDeferredRelease(worker.agentId)
   assert.equal(deferredReleaseIds().indexOf(worker.agentId), -1)
   await agents.release(worker.agentId)
+})
+
+// T-185 review round 1: an action can legitimately outrun the whole wait budget
+// (passTest merge/verify, approveReview candidate discard). While it is still in
+// flight NOTHING may happen to its caller, however far the reaper's clock jumps.
+await check('a queued self-release is never reaped before its action returns', async () => {
+  const reviewer = await agents.startReviewer({ id: 'T-25' }, 'review')
+  state.inactive.delete(reviewer.agentId)
+  await agents.releaseTask(
+    { id: 'T-25', review: { deliveredTo: { id: reviewer.agentId } } },
+    { roles: ['reviewer'], callerAgentId: reviewer.agentId },
+  )
+  const farFuture = Date.now() + 24 * 60 * 60 * 1000
+  const inFlight = await reapDeferredReleases({ now: farFuture })
+  assert.ok(inFlight.some((row) => row.agentId === reviewer.agentId && row.outcome === 'in-flight'), JSON.stringify(inFlight))
+  assert.equal(state.interrupted.indexOf(reviewer.agentId), -1, 'an in-flight action is never interrupted')
+  assert.equal(state.disposed.indexOf(reviewer.agentId), -1, 'an in-flight caller is never disposed')
+  // Even a child that files as inactive is kept while its action is in flight.
+  state.inactive.add(reviewer.agentId)
+  const stillInFlight = await reapDeferredReleases({ now: farFuture })
+  assert.ok(stillInFlight.some((row) => row.agentId === reviewer.agentId && row.outcome === 'in-flight'), JSON.stringify(stillInFlight))
+  assert.equal(state.disposed.indexOf(reviewer.agentId), -1)
+  // Only once the action returns may the reconciler retire the finished turn.
+  assert.equal(markDeferredReleaseReturned(reviewer.agentId), true)
+  const retired = await reapDeferredReleases({ now: farFuture })
+  assert.ok(retired.some((row) => row.agentId === reviewer.agentId && row.outcome === 'released'), JSON.stringify(retired))
+  assert.equal(state.live.has(reviewer.agentId), false)
+})
+
+// T-185 review round 1: disposeById reports a failed teardown as 'error' instead
+// of throwing; the deferred path must not mistake that for a release.
+await check('a deferred dispose failure keeps the entry and is retried', async () => {
+  const worker = await agents.startWorker({ id: 'T-26' }, 'implement')
+  state.inactive.delete(worker.agentId)
+  await agents.releaseTask({ id: 'T-26' }, { roles: ['worker'], callerAgentId: worker.agentId })
+  markDeferredReleaseReturned(worker.agentId)
+  state.inactive.add(worker.agentId)
+  state.disposeFailuresLeft = 1
+  const first = await reapDeferredReleases()
+  assert.ok(first.some((row) => row.agentId === worker.agentId && row.outcome === 'failed'), JSON.stringify(first))
+  assert.ok(deferredReleaseIds().indexOf(worker.agentId) >= 0, 'a failed dispose must keep the entry for a retry')
+  assert.equal(state.live.has(worker.agentId), true, 'a failed dispose is not a release')
+  const retried = await reapDeferredReleases()
+  assert.ok(retried.some((row) => row.agentId === worker.agentId && row.outcome === 'released'), JSON.stringify(retried))
+  assert.equal(state.live.has(worker.agentId), false)
+  assert.equal(deferredReleaseIds().indexOf(worker.agentId), -1)
 })
 
 const failed = checks.filter((row) => !row.ok)

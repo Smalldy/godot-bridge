@@ -82,6 +82,21 @@ export function createReviewVerdictActions(deps) {
   }
 
   async function run(action, source, context, projectPath) {
+    try {
+      return await execute(action, source, context, projectPath)
+    } finally {
+      // T-185 review round 1: the bounded wait of a queued self-release starts
+      // only here. Until the action has returned, the reviewer that called it is
+      // still in flight and must never be interrupted or disposed.
+      try {
+        if (stageAgents !== null && typeof stageAgents.markCallerReturned === 'function') {
+          stageAgents.markCallerReturned(callerAgentIdOf(context))
+        }
+      } catch (error) {}
+    }
+  }
+
+  async function execute(action, source, context, projectPath) {
     const id = String(source.id === undefined ? '' : source.id)
     if (id === '') return failure('missing-id', action + ' needs a task id')
     const read = await readBoardOrFail(projectPath)
