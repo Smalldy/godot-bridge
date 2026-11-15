@@ -22,7 +22,7 @@ assert.ok(forTask !== null)
 const task = { id: 'T-1', ownerSession: 'root', attempts: 1 }
 const worker = await forTask.startWorker(task, 'brief')
 assert.equal(worker.agentId, 'child-1')
-assert.equal(worker.name, 'worker-t-1')
+assert.match(worker.name, /^worker-t-1-[a-z0-9]+$/, 'T-183: the spawn name carries a unique generation suffix')
 assert.equal(calls[0].parent, root)
 const listed = await registry.listFor('root')
 assert.equal(listed.length, 1)

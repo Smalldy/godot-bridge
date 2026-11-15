@@ -4100,6 +4100,22 @@ export function createDispatcher(ctx, options) {
   }
 
   /**
+   * T-183: a system block (review/test timeout) is still a block. Dispose the
+   * card's spawned stage children instead of leaving them running behind a card
+   * that the panel already shows as blocked. Best-effort: the block itself has
+   * already been recorded.
+   */
+  async function releaseBlockedStageChildren(task, reason) {
+    if (taskAgents === null || taskAgents === undefined || task === null || task === undefined) return null
+    if (typeof taskAgents.releaseTask !== 'function') return null
+    try {
+      return await taskAgents.releaseTask(task, { roles: ['worker', 'reviewer', 'tester'], reason: reason })
+    } catch (error) {
+      return null
+    }
+  }
+
+  /**
    * The review timeout policy, driven by the host tick. Silence is measured from
    * the reviewer's last activity (review.at or a recorded task_center call):
    * REVIEW_TIMEOUT_MS of silence sends one reminder; two full timeouts of
@@ -4179,6 +4195,7 @@ export function createDispatcher(ctx, options) {
         memory.reviewReminders.delete(key)
         memory.reviewGrace.delete(key)
         blocked.push(task.id)
+        await releaseBlockedStageChildren(task, 'review timed out')
         emit('error', 'system', { taskId: task.id, detail: 'review timed out; task blocked for triage' })
         // The stalled reviewer is interrupted too: the task left reviewing, so
         // its turn must not keep running (interrupt lands at the next boundary).
@@ -4320,6 +4337,7 @@ export function createDispatcher(ctx, options) {
         memory.testReminders.delete(key)
         memory.testGrace.delete(key)
         blocked.push(task.id)
+        await releaseBlockedStageChildren(task, 'test timed out')
         emit('error', 'system', { taskId: task.id, detail: (blockNote === null ? 'test timeout' : blockNote) + '; task blocked for triage' })
         // The stalled tester is interrupted for the same reason as the reviewer.
         const stalledTester = typeof tester === 'string' && tester !== '' ? tester : null
