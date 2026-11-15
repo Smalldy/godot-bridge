@@ -65,7 +65,12 @@ function createProjectForm(deps) {
 			return
 		}
 		const payload = result.payload === undefined || result.payload === null ? {} : result.payload
-		setError(tcErrorMessage(payload, t))
+		// T-182: a THROWN transport failure (fetch rejected: ECONNREFUSED, DNS,
+		// offline) arrives as result.error, not as a payload. Reading only the
+		// payload turned the real reason into the generic "操作失败" and made the
+		// dialog look like the click failed for no reason.
+		const thrown = result.error === undefined || result.error === null ? '' : String((result.error && result.error.message) || result.error)
+		setError(thrown === '' ? tcErrorMessage(payload, t) : thrown)
 		// A not-ready project explains WHY: the preflight's failed checks are the
 		// missing items (git repository / board / team...). Keep the dialog open.
 		const preflight = payload.preflight !== null && payload.preflight !== undefined && typeof payload.preflight === 'object' ? payload.preflight : null

@@ -660,12 +660,14 @@ function createTaskCenter(deps) {
 		const bannerText = bannerMessage.indexOf('project is not ready:') === 0
 			? t('projectNotReady').replace('{project}', bannerProject)
 			: bannerMessage
-		// T-182: an unbound session is a SETUP state, not an alarm. The store reports
-		// it as source 'setup' with no text; even if a message survived (an older
-		// host, a poll in flight), the setup view must not raise the banner — the
-		// empty state below already asks for the project.
+		// T-182: an unbound session is a SETUP state, not an alarm — but only while it
+		// has nothing to report. The store reports the expected "nothing is bound"
+		// answer as source 'setup' with no text; the empty state below already asks
+		// for the project. A NON-empty setup text is a real action/transport failure
+		// (a bind that could not reach the host, a refused openProject): suppressing
+		// it hid ECONNREFUSED behind a silent dialog.
 		const banner =
-			snapshot.source === 'setup'
+			snapshot.source === 'setup' && bannerMessage === ''
 		? null
 		: snapshot.source === 'error'
 			? h('div', { className: 'gbt-banner', title: bannerMessage }, h('span', null, bannerMessage === '' ? t('offline') : bannerText))

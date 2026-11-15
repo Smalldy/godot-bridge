@@ -261,11 +261,15 @@ openProjectEntryButtons(unboundTree)[0].props.onClick()
 assert.equal(projectDialogs(renderAt(unboundHarness, UnboundTaskCenter, {})).length, 1, 'the setup entry still opens the project dialog')
 console.log('PASS  an unbound session renders its setup state, never a failure banner')
 
-// Defensive: even a stale text on a setup snapshot must not become the alarm.
-const staleSetupSnapshot = Object.assign({}, unboundSnapshot, { message: '操作失败' })
-const staleSetupJson = JSON.stringify(createTaskCenter(Object.assign({}, deps, { useSnapshot: () => staleSetupSnapshot }))({}))
-assert.equal(staleSetupJson.includes('gbt-banner'), false, 'a setup snapshot never renders the banner')
-console.log('PASS  a setup snapshot stays silent even if text survived')
+// A setup snapshot is silent only while it has nothing to report: a real
+// action failure in the setup state (a bind that could not reach the host)
+// must surface its reason instead of hiding it — the setup wording stays.
+const failedSetupSnapshot = Object.assign({}, unboundSnapshot, { message: 'connect ECONNREFUSED 127.0.0.1:9090' })
+const failedSetupJson = JSON.stringify(createTaskCenter(Object.assign({}, deps, { useSnapshot: () => failedSetupSnapshot }))({}))
+assert.ok(failedSetupJson.includes('gbt-banner'), 'a setup snapshot with a real failure keeps a banner')
+assert.ok(failedSetupJson.includes('ECONNREFUSED'), 'the real reason is surfaced, not suppressed')
+assert.ok(failedSetupJson.includes('"data-unbound":"true"'), 'the empty state still asks for a project')
+console.log('PASS  a setup snapshot with a real failure surfaces its reason')
 
 // A real failure keeps reporting itself: the banner and its reason are still there.
 const failedSnapshot = Object.assign({}, deps.useSnapshot(), {
@@ -321,7 +325,12 @@ const storeDeps = {
   tcPinProject: () => {},
 }
 const answers = []
-globalThis.fetch = async () => ({ json: async () => answers.shift() })
+// A queued Error simulates a rejected fetch (the failed-bind regression below).
+globalThis.fetch = async () => {
+  const next = answers.shift()
+  if (next instanceof Error) throw next
+  return { json: async () => next }
+}
 const boundStore = createTaskStore((key) => key, storeDeps)
 
 answers.push({ ok: false, code: 'no-project-bound', params: {} })
@@ -373,6 +382,27 @@ assert.equal(bindingStore.getSnapshot().project, '/opened')
 assert.equal(bindingStore.getSnapshot().source, 'host')
 assert.equal(bindingStore.getSnapshot().message, '')
 console.log('PASS  binding a project leaves the setup state and clears the banner')
+
+// A bind the host cannot answer (rejected fetch) keeps the REAL reason in the
+// snapshot: the dialog reads result.error and the panel banner surfaces
+// store.message. The setup state stays, so the empty state keeps asking for a
+// project; a later successful bind clears the failure.
+const unreachableStore = createTaskStore((key) => key, storeDeps)
+answers.push({ ok: false, code: 'no-project-bound', params: {} })
+await unreachableStore.load()
+assert.equal(unreachableStore.getSnapshot().source, 'setup')
+answers.push(new Error('connect ECONNREFUSED 127.0.0.1:9090'))
+const failedBind = await unreachableStore.switchProject('/unreachable')
+assert.equal(failedBind.ok, false)
+assert.ok(String(failedBind.error && failedBind.error.message).includes('ECONNREFUSED'), 'the dialog receives the thrown error')
+assert.equal(unreachableStore.getSnapshot().source, 'setup', 'the setup state survives a failed bind')
+assert.ok(unreachableStore.getSnapshot().message.includes('ECONNREFUSED'), 'the store keeps the real reason for the banner')
+answers.push({ ok: true, project: '/opened', projectRoot: '/opened', tasks: [], counts: {} })
+const recovered = await unreachableStore.switchProject('/opened')
+assert.equal(recovered.ok, true)
+assert.equal(unreachableStore.getSnapshot().source, 'host')
+assert.equal(unreachableStore.getSnapshot().message, '')
+console.log('PASS  a failed bind keeps its real reason and a later bind clears it')
 
 // A bad path is still a real, readable failure.
 answers.push({ ok: false, code: 'invalid-project', message: 'ENOENT: no such directory' })
