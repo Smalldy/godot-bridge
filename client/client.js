@@ -304,8 +304,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleScaleNote: 'Profile 只定义行为；并发由派发设置决定。',
 				unknownProjectHint: '这个会话还没有绑定项目。请在会话里调用一次 task_center，或在下方手动打开一个项目。',
 				notActivatedTitle: '未激活任何项目',
-				notActivatedStepCall: '在会话里调用一次 task_center——宿主会把当前项目记为「上次项目」并激活它。',
-				notActivatedStepOpen: '或者手动选择一个项目目录打开；此后启动会直接回到它。',
+				notActivatedStepCall: '在会话里使用 /godot-bridge-task-center-init 技能（任务中心入口）接入项目——宿主会把当前项目记为「上次项目」并激活它。',
+				notActivatedStepOpen: '或者点击「打开项目」手动选择一个项目目录；此后启动会直接回到它。',
 				err_unknown_project: '这个会话还没有绑定项目。请在会话里调用一次 task_center，或在面板里手动打开一个项目。',
 				err_content_type: '请求格式不正确：请发送 application/json。',
 				err_origin: '跨源请求已被拒绝。',
@@ -982,8 +982,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleScaleNote: 'A profile only defines behaviour; concurrency comes from the dispatch settings.',
 				unknownProjectHint: 'This session is not bound to a project yet. Call task_center once in the session, or open a project manually below.',
 				notActivatedTitle: 'No project is active',
-				notActivatedStepCall: 'Call task_center once in this session: the host records the current project as its last active project and activates it.',
-				notActivatedStepOpen: 'Or open a project directory manually; every later start returns to it.',
+				notActivatedStepCall: 'Use the /godot-bridge-task-center-init skill (the task center entry point) in the session: the host records the current project as its last active project and activates it.',
+				notActivatedStepOpen: 'Or click “Open project” to pick a project directory manually; every later start returns to it.',
 				err_unknown_project: 'This session is not bound to a project yet. Call task_center once in the session, or open a project from the panel.',
 				err_content_type: 'Wrong request format: send application/json.',
 				err_origin: 'A cross-origin request was refused.',
@@ -8493,10 +8493,15 @@ function createTaskCenter(deps) {
 					{ 'data-not-activated': 'true' },
 					h('p', { className: 'gbt-footnote', 'data-not-activated-title': 'true' }, t('notActivatedTitle')),
 					h('ol', { className: 'gbt-footnote', 'data-not-activated-steps': 'true' }, h('li', { key: 'call' }, t('notActivatedStepCall')), h('li', { key: 'open' }, t('notActivatedStepOpen'))),
+					// T-181: keep the manual entry one click away, but mount the dialog
+					// ONLY on request. An auto-mounted modal could not be dismissed: its
+					// close re-rendered the same empty state straight back into the form.
+					h(
+						'div',
+						{ className: 'gbt-actions', 'data-not-activated-actions': 'true' },
+						h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'open-project-empty', onClick: function () { openProjectDialog() } }, t('openProject')),
+					),
 				),
-				snapshot.source === 'loading'
-			? null
-			: h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }),
 			)
 		: null,
 			snapshot.project === null || snapshot.project === undefined
@@ -8536,7 +8541,9 @@ function createTaskCenter(deps) {
 		onSaved: function () { setEditing(null) },
 			}),
 			settingsOpen ? h(SettingsForm, { t: t, dispatch: dispatch, theme: theme, onThemeChange: setTheme, onClose: function () { setSettingsOpen(false) } }) : null,
-			projectOpen ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,
+			// T-181: the ONE project dialog. It is mounted only after the user asks for
+			// it — an empty project state never auto-opens it, and closing it unmounts.
+			projectOpen && snapshot.source !== 'loading' ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,
 		)
 	}
 

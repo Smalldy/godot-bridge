@@ -786,10 +786,15 @@ function createTaskCenter(deps) {
 					{ 'data-not-activated': 'true' },
 					h('p', { className: 'gbt-footnote', 'data-not-activated-title': 'true' }, t('notActivatedTitle')),
 					h('ol', { className: 'gbt-footnote', 'data-not-activated-steps': 'true' }, h('li', { key: 'call' }, t('notActivatedStepCall')), h('li', { key: 'open' }, t('notActivatedStepOpen'))),
+					// T-181: keep the manual entry one click away, but mount the dialog
+					// ONLY on request. An auto-mounted modal could not be dismissed: its
+					// close re-rendered the same empty state straight back into the form.
+					h(
+						'div',
+						{ className: 'gbt-actions', 'data-not-activated-actions': 'true' },
+						h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'open-project-empty', onClick: function () { openProjectDialog() } }, t('openProject')),
+					),
 				),
-				snapshot.source === 'loading'
-			? null
-			: h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }),
 			)
 		: null,
 			snapshot.project === null || snapshot.project === undefined
@@ -829,7 +834,9 @@ function createTaskCenter(deps) {
 		onSaved: function () { setEditing(null) },
 			}),
 			settingsOpen ? h(SettingsForm, { t: t, dispatch: dispatch, theme: theme, onThemeChange: setTheme, onClose: function () { setSettingsOpen(false) } }) : null,
-			projectOpen ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,
+			// T-181: the ONE project dialog. It is mounted only after the user asks for
+			// it — an empty project state never auto-opens it, and closing it unmounts.
+			projectOpen && snapshot.source !== 'loading' ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,
 		)
 	}
 
