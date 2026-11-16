@@ -30,7 +30,11 @@ const available = RolesView({ t: t, snapshot: {
   },
 }, store: {} })
 assert.equal(available.props.className, 'gbt-rolesview')
-assert.ok(JSON.stringify(available).includes('roleEditor'))
+assert.equal(available.props['data-roles-deck'], 'true')
+// A direction: the view adds NO header/card of its own — the editor's own page
+// head is the only heading, so there is one title and one navigation layer.
+assert.equal(JSON.stringify(available).includes('gbt-rolesview-card'), false)
+assert.equal(JSON.stringify(available).includes('roleEditor'), false)
 function walk(node, visit) {
   if (node === null || node === undefined || typeof node !== 'object') return
   visit(node)
@@ -48,5 +52,7 @@ assert.ok(!text.includes('data-roles-sessions'))
 assert.ok(!text.includes('dispatchReady'))
 assert.ok(!text.includes('missingRoles'))
 assert.ok(!text.includes('Team'))
+assert.ok(!text.includes('data-role-stage-strip'))
+assert.ok(!text.includes('data-role-tabs'))
 
-console.log('PASS  RolesView describes stage profiles and counts live tree members by role')
+console.log('PASS  RolesView mounts the single stage-rail editor and counts live tree members by role')

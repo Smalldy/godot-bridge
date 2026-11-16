@@ -829,6 +829,19 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleEditorSkillUserOnly: '仅限用户调用',
 				roleReplaced: '已替换',
 				roleReused: '复用',
+				// A direction: the stage rail is the only stage navigation.
+				roleProfileEyebrow: 'PROFILE / 档案',
+				roleStagesTitle: '阶段与角色',
+				roleStageProfile: '档案',
+				roleStageEditing: '编辑中',
+				roleStageEnabled: '已启用',
+				roleStageUnbound: '未启用',
+				roleStageField: '阶段',
+				roleReadonly: '只读',
+				roleStagesHint: '每个阶段只有一个角色，修改会在下一次派发时生效。',
+				roleStageImplementDesc: '在任务 worktree 内实现、测试并提交。',
+				roleStageReviewDesc: '独立审阅 diff，给出通过或打回理由。',
+				roleStageTestDesc: '在独立候选树验证行为与验收项。',
 			},
 			en: {
 				nav: 'GodotBridge Task Center',
@@ -1508,6 +1521,18 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleEditorSkillUserOnly: 'user-invocable only',
 				roleReplaced: 'Replaced',
 				roleReused: 'Reused',
+				roleProfileEyebrow: 'PROFILE / Profile',
+				roleStagesTitle: 'Stages and roles',
+				roleStageProfile: 'Profile',
+				roleStageEditing: 'Editing',
+				roleStageEnabled: 'Enabled',
+				roleStageUnbound: 'Not enabled',
+				roleStageField: 'Stage',
+				roleReadonly: 'Read-only',
+				roleStagesHint: 'Each stage has exactly one role; changes apply on the next dispatch.',
+				roleStageImplementDesc: 'Implements, tests and commits inside the task worktree.',
+				roleStageReviewDesc: 'Reviews the diff independently, then approves or sends it back.',
+				roleStageTestDesc: 'Verifies behaviour and acceptance items in a separate candidate tree.',
 			},
 		}
 
@@ -2045,67 +2070,57 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-editorinstances{display:flex;flex-direction:column;gap:4px}',
 '.gbt-createblank{margin-top:2px;border:0.5px dashed var(--dsw-alias-border-l4);border-radius:8px;padding:6px 10px}',
 '.gbt-createblank summary{cursor:pointer;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
-'.gbt-rolesview[data-roles-deck]{--deck-bg:var(--tc-bg);--deck-panel:var(--tc-panel);--deck-panel2:var(--tc-panel2);--deck-line:var(--tc-line);--deck-text:var(--tc-text);--deck-muted:var(--tc-muted);--deck-dim:var(--tc-dim);--deck-lime:var(--tc-accent);--deck-amber:var(--tc-amber);--deck-cyan:var(--tc-cyan);--deck-red:var(--tc-red);height:100%;min-height:0;display:flex;flex-direction:column;gap:8px;overflow:hidden;background:var(--deck-bg);color:var(--deck-text);box-sizing:border-box}',
-'.gbt-rolesview[data-roles-deck] .gbt-rolesready{flex:0 0 auto;display:flex;flex-direction:column;min-width:0;background:var(--deck-panel);border:1px solid var(--deck-line);border-radius:2px;overflow:hidden}',
-'.gbt-rolesreadyhead{display:flex;align-items:center;gap:10px;min-height:34px;padding:0 12px;border-bottom:1px solid var(--deck-line);min-width:0}',
-'.gbt-rolesreadyhead h3{font-size:12px;font-weight:600;margin:0;letter-spacing:.03em;white-space:nowrap}',
-'.gbt-rolesreadymeta{color:var(--deck-dim);font-size:10px;white-space:nowrap}',
-'.gbt-rolesreadyhead .gbt-sessionfilter{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--deck-dim);font-size:10.5px;flex:none}',
-'.gbt-rolesreadyhead .gbt-sessionfilter select{background:var(--deck-panel2);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:2px;font-size:10.5px;padding:2px 4px;max-width:120px}',
-'.gbt-rolesreadyrows{display:flex;flex-wrap:wrap;gap:1px;background:var(--deck-line);max-height:62px;overflow:auto}',
-'.gbt-rolesreadyrow{display:grid;grid-template-columns:62px auto auto minmax(0,1fr) auto;gap:7px;align-items:center;min-height:26px;padding:3px 10px;background:var(--deck-panel);min-width:0;flex:1 1 260px}',
-'.gbt-rolesreadyid{font-size:10.5px;color:var(--deck-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-'.gbt-rolesreadystatus{display:inline-flex;align-items:center;gap:4px;color:var(--deck-muted);font-size:10px;white-space:nowrap}',
-'.gbt-rolesreadylead{color:var(--deck-dim);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:170px}',
-'.gbt-rolesreadyready{display:inline-flex;align-items:center;gap:4px;color:var(--deck-muted);font-size:10px;white-space:nowrap}',
-'.gbt-rolesreadyrow .gbt-footnote{font-size:9.5px;color:var(--deck-dim);white-space:nowrap}',
-'.gbt-rolesreadycards{color:var(--deck-muted);font-size:10px;white-space:nowrap}',
-'.gbt-rolesview[data-roles-deck] .gbt-rolesview-card{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;border:1px solid var(--deck-line);border-radius:2px;background:var(--deck-panel);overflow:hidden}',
-'.gbt-rolesview[data-roles-deck] .gbt-rolesview-card>.gbt-rhead{flex:0 0 auto;display:flex;align-items:center;gap:10px;min-height:40px;padding:0 12px;border-bottom:1px solid var(--deck-line);margin:0}',
-'.gbt-rolesview[data-roles-deck] .gbt-rolesview-card>.gbt-rhead .gbt-rtitle{font-size:13px;margin:0;font-weight:600}',
-'.gbt-rolesview[data-roles-deck] .gbt-rolesview-card>.gbt-rhead .gbt-footnote{margin-left:auto;color:var(--deck-dim);font-size:10px;text-align:right}',
-'.gbt-rolesview[data-roles-deck] .gbt-rolesview-card>.gbt-rbody{flex:1 1 auto;min-height:0;display:flex}',
-'.gbt-roleeditor[data-role-deck]{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:0;width:100%;background:var(--deck-panel)}',
-'.gbt-rolesstages{flex:0 0 auto;padding:9px 12px 10px;border-bottom:1px solid var(--deck-line);background:var(--deck-panel);min-width:0}',
-'.gbt-rolesstages-head{display:flex;align-items:baseline;gap:10px;min-width:0;margin-bottom:8px}',
-'.gbt-rolesstages-head h2{font-size:13px;font-weight:600;margin:0;letter-spacing:.03em}',
-'.gbt-rolesstages-head .gbt-deckpanelmeta{margin-left:auto;color:var(--deck-dim);font-size:10px;white-space:nowrap}',
-'.gbt-rolesstages-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--deck-line);border:1px solid var(--deck-line)}',
-'.gbt-rstagesslot{display:grid;grid-template-columns:22px minmax(0,1fr) 6px;gap:8px;align-items:center;min-width:0;padding:8px 10px;border:0;background:var(--deck-panel2);color:var(--deck-text);text-align:left;cursor:pointer;font:inherit}',
-'.gbt-rstagesslot:hover{background:var(--tc-hover)}',
-'.gbt-rstagesslot[data-active="true"]{background:var(--tc-selected);box-shadow:inset 0 -2px var(--deck-lime)}',
-'.gbt-rstagestep{font-size:10px;color:var(--deck-dim);letter-spacing:.08em}',
-'.gbt-rstagebody{min-width:0;display:flex;flex-direction:column;gap:2px}',
-'.gbt-rstagebody b{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-'.gbt-rstagesub{font-size:10px;color:var(--deck-lime);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}',
-'.gbt-rstagebody small{font-size:9.5px;color:var(--deck-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-'.gbt-rolesdeckbody{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:300px minmax(0,1fr);gap:1px;background:var(--deck-line);overflow:hidden}',
-'.gbt-roleslist{display:flex;flex-direction:column;min-height:0;min-width:0;background:var(--deck-panel);overflow:hidden}',
-'.gbt-roleslisthead{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:0 12px;border-bottom:1px solid var(--deck-line)}',
-'.gbt-roleslisthead b{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:400;color:var(--deck-muted)}',
-'.gbt-roleslistcreate{flex:0 0 auto;border-bottom:1px solid var(--deck-line);background:var(--deck-panel);min-width:0}',
-'.gbt-roleslistcreate summary{display:flex;align-items:center;gap:6px;min-height:30px;padding:0 12px;color:var(--deck-muted);font-size:10.5px;white-space:nowrap;cursor:pointer;list-style:none}',
-'.gbt-roleslistcreate summary::-webkit-details-marker{display:none}',
-
-'.gbt-roleslistcreate[open] summary{color:var(--deck-text);border-bottom:1px solid var(--deck-line)}',
-'.gbt-roleslistcreatebody{max-height:300px;overflow:auto;padding:8px 12px 10px;background:var(--deck-panel2);min-width:0}',
-'.gbt-roleslistcreatebody .gbt-formgrid{display:flex;flex-direction:column;gap:6px;min-width:0}',
-'.gbt-roleslistcreatebody label{display:flex;flex-direction:column;gap:3px;font-size:10px;color:var(--deck-dim);min-width:0}',
-'.gbt-roleslistcreatebody .gbt-input{width:100%;box-sizing:border-box;background:var(--tc-input-bg,var(--dsw-alias-bg-layer-1));color:var(--deck-text);border:1px solid var(--deck-line);border-radius:2px;min-height:28px;font-size:11px;padding:4px 6px}',
-'.gbt-roleslistcreatebody textarea.gbt-input{min-height:56px;resize:vertical}',
-'.gbt-roleslistcreatebody .gbt-formactions{display:flex;justify-content:flex-end;margin-top:2px}',
-'.gbt-roleslistcreatebody .gbt-formactions .gbt-btn{height:26px;padding:0 9px;font-size:10.5px}',
-'.gbt-roleslistrows{flex:1 1 auto;min-height:0;overflow-y:auto}',
-'.gbt-roleslistrow{position:relative;display:grid;grid-template-columns:7px minmax(0,1fr) auto;gap:8px;align-items:center;width:100%;min-height:45px;padding:7px 12px;border:0;border-bottom:1px solid var(--deck-line);background:none;color:var(--deck-text);text-align:left;cursor:pointer;font:inherit;min-width:0}',
-'.gbt-roleslistrow:hover{background:var(--tc-hover)}',
-'.gbt-roleslistrow[data-role-selected="true"]{background:var(--tc-selected)}',
-'.gbt-roleslistrow[data-role-selected="true"]:before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--deck-lime)}',
-'.gbt-roleslistrow:disabled{opacity:.46;cursor:default}',
-'.gbt-roleslistmain{min-width:0;display:flex;flex-direction:column;gap:2px}',
-'.gbt-roleslistmain b{font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-'.gbt-roleslistmain span{font-size:10px;color:var(--deck-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-'.gbt-roleslistrow em{font-style:normal;color:var(--deck-muted);font-size:10px;white-space:nowrap}',
+'.gbt-rolesview[data-roles-deck]{--deck-bg:var(--tc-bg);--deck-panel:var(--tc-panel);--deck-panel2:var(--tc-panel2);--deck-line:var(--tc-line);--deck-text:var(--tc-text);--deck-muted:var(--tc-muted);--deck-dim:var(--tc-dim);--deck-lime:var(--tc-accent);--deck-amber:var(--tc-amber);--deck-cyan:var(--tc-cyan);--deck-red:var(--tc-red);height:100%;min-height:0;display:flex;flex-direction:column;gap:0;overflow:hidden;background:var(--deck-bg);color:var(--deck-text);box-sizing:border-box}',
+'.gbt-rolesview[data-roles-deck] .gbt-rolesview-empty{display:flex;flex-direction:column;gap:10px;padding:18px 16px}',
+'.gbt-roleeditor[data-role-deck]{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;width:100%;background:var(--deck-bg);overflow:hidden}',
+'.gbt-rolesworkspace{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:252px minmax(0,1fr);min-width:0;overflow:hidden}',
+'.gbt-rolestagerail{display:flex;flex-direction:column;min-height:0;min-width:0;padding:16px 12px 12px;border-right:1px solid var(--deck-line);background:var(--deck-panel);overflow:auto}',
+'.gbt-stageprofile{display:flex;flex-direction:column;gap:6px;margin-bottom:18px;min-width:0}',
+'.gbt-stageselect{width:100%;box-sizing:border-box;height:30px;padding:0 8px;border:1px solid var(--deck-line);border-radius:4px;background:var(--tc-input-bg);color:var(--deck-text);font:inherit;font-size:11px}',
+'.gbt-stageselect:focus-visible{outline:none;border-color:var(--tc-accent-line)}',
+'.gbt-rail-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px;color:var(--deck-muted);font-size:11px;white-space:nowrap}',
+'.gbt-rail-title em{font-style:normal;color:var(--deck-dim);font-size:10px}',
+'.gbt-stagelist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;position:relative;min-width:0}',
+'.gbt-stagelist:before{content:"";position:absolute;left:19px;top:22px;bottom:22px;width:1px;background:var(--deck-line)}',
+'.gbt-stageli{position:relative;min-width:0;display:flex}',
+'.gbt-stagerow{display:grid;grid-template-columns:40px minmax(0,1fr) auto;gap:10px;align-items:start;width:100%;min-width:0;padding:10px 8px 10px 0;border:0;border-radius:8px;background:none;color:var(--deck-text);text-align:left;font:inherit;cursor:pointer}',
+'.gbt-stagerow:hover{background:var(--tc-hover)}',
+'.gbt-stagerow[data-active="true"]{background:var(--tc-selected);box-shadow:inset 0 0 0 1px var(--deck-line)}',
+'.gbt-stagenum{position:relative;z-index:1;width:40px;height:40px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--deck-line);background:var(--deck-panel2);color:var(--deck-muted);font-size:11px}',
+'.gbt-stagerow[data-active="true"] .gbt-stagenum{background:var(--deck-lime);border-color:var(--deck-lime);color:var(--tc-accent-ink);font-weight:700}',
+'.gbt-stagebody{display:flex;flex-direction:column;gap:3px;min-width:0;padding-top:1px}',
+'.gbt-stagetitle{display:flex;align-items:baseline;gap:7px;min-width:0}',
+'.gbt-stagetitle b{font-size:13px;font-weight:600;white-space:nowrap}',
+'.gbt-stagetitle code{font-size:10px;font-weight:400;color:var(--deck-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-stagedesc{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:0;color:var(--deck-muted);font-size:10px;line-height:1.45}',
+'.gbt-stagemeta{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;min-width:0;margin-top:2px}',
+'.gbt-stagetag{font-size:9.5px;color:var(--deck-dim);white-space:nowrap}',
+'.gbt-stagerow[data-active="true"] .gbt-stagetag{color:var(--deck-lime)}',
+'.gbt-stagesub{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9.5px;color:var(--deck-dim)}',
+'.gbt-stageside{display:flex;flex-direction:column;align-items:flex-end;gap:5px;padding-top:4px}',
+'.gbt-stagelive{font-style:normal;font-size:9.5px;color:var(--deck-dim)}',
+'.gbt-rolesview[data-roles-deck] .gbt-deckdot[data-on="true"]{background:var(--deck-lime)}',
+'.gbt-stagenote{margin:16px 0 0;padding-top:12px;border-top:1px solid var(--deck-line);color:var(--deck-dim);font-size:10px;line-height:1.55}',
+'.gbt-stagecreatewrap{margin-top:12px}',
+'.gbt-stagecreate{min-width:0;border:1px dashed var(--deck-line);border-radius:6px}',
+'.gbt-stagecreate summary{display:flex;align-items:center;gap:6px;min-height:30px;padding:0 9px;color:var(--deck-muted);font-size:10.5px;white-space:nowrap;cursor:pointer;list-style:none}',
+'.gbt-stagecreate summary::-webkit-details-marker{display:none}',
+'.gbt-stagecreate[open] summary{color:var(--deck-text);border-bottom:1px solid var(--deck-line)}',
+'.gbt-stagecreatebody{max-height:280px;overflow:auto;padding:8px 9px 10px;background:var(--deck-panel2);min-width:0}',
+'.gbt-stagecreatebody .gbt-formgrid{display:flex;flex-direction:column;gap:6px;min-width:0}',
+'.gbt-stagecreatebody label{display:flex;flex-direction:column;gap:3px;font-size:10px;color:var(--deck-dim);min-width:0}',
+'.gbt-stagecreatebody .gbt-input{width:100%;box-sizing:border-box;min-height:28px;padding:4px 6px;border:1px solid var(--deck-line);border-radius:4px;background:var(--tc-input-bg);color:var(--deck-text);font-size:11px}',
+'.gbt-stagecreatebody textarea.gbt-input{min-height:56px;resize:vertical}',
+'.gbt-stagecreatebody .gbt-formactions{display:flex;justify-content:flex-end;margin-top:2px}',
+'.gbt-stagecreatebody .gbt-formactions .gbt-btn{height:26px;padding:0 9px;font-size:10.5px}',
 '.gbt-rolesmain{display:flex;flex-direction:column;min-height:0;min-width:0;background:var(--deck-panel);overflow:hidden}',
+'.gbt-rolehead{flex:0 0 auto;display:flex;align-items:flex-end;justify-content:space-between;gap:12px;padding:16px 20px 12px;border-bottom:1px solid var(--deck-line);min-width:0}',
+'.gbt-roleheadmain{display:flex;flex-direction:column;gap:6px;min-width:0}',
+'.gbt-roleheadtitle{display:flex;align-items:baseline;gap:6px;min-width:0;margin:0;font-size:22px;font-weight:650;line-height:1.1;letter-spacing:-.03em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-roleheadstage{font-size:13px;font-weight:400;letter-spacing:0;color:var(--deck-muted);white-space:nowrap}',
+'.gbt-roleheadmeta{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:10px;min-width:0;padding-bottom:2px}',
+'.gbt-roleheadmeta .gbt-pill{font-size:10px}',
+'.gbt-roleheadmeta .gbt-footnote{font-size:10px;color:var(--deck-dim);white-space:nowrap}',
 '.gbt-roleseditscroll{flex:1 1 auto;min-height:0;overflow:auto;display:flex;align-items:stretch}',
 '.gbt-rolespanes{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:1px;background:var(--deck-line);width:100%;min-height:0;align-items:stretch}',
 '.gbt-roleseditorpane{display:flex;flex-direction:column;gap:0;min-width:0;background:var(--deck-panel);padding:0 12px 10px;overflow:auto}',
@@ -2116,34 +2131,42 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-rolesection:last-of-type{border-bottom:0}',
 '.gbt-rolesectionhead{display:flex;align-items:baseline;gap:8px;min-width:0}',
 '.gbt-rolesectionhead h3{font-size:12px;font-weight:500;margin:0;white-space:nowrap}',
-'.gbt-rolesection .gbt-rolecard{border:1px solid var(--deck-line);border-radius:2px;background:var(--deck-panel2);padding:9px;min-width:0;min-height:0}',
+'.gbt-rolesectionhead .gbt-sectionnote{margin-left:auto;font-size:10px;color:var(--deck-dim);white-space:nowrap}',
+'.gbt-rolesection .gbt-rolecard{border:1px solid var(--deck-line);border-radius:4px;background:var(--deck-panel2);padding:9px;min-width:0;min-height:0}',
 '.gbt-rolesection .gbt-rolecardhead{font-size:10.5px;color:var(--deck-dim);letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px}',
-'.gbt-roleidentity{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0 2px;min-width:0}',
-'.gbt-roleidentity-main{display:flex;align-items:baseline;gap:8px;min-width:0;flex-wrap:wrap}',
-'.gbt-roleidentity-name{font-size:16px;font-weight:500;letter-spacing:-.02em;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-'.gbt-roleidentity .gbt-pill{font-size:9.5px}',
-'.gbt-roleidentity .gbt-footnote{font-size:10px;color:var(--deck-dim)}',
-'.gbt-roleseditorpane .gbt-rolecard textarea{width:100%;min-height:132px;max-height:210px;resize:vertical;font:11.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:2px;padding:8px}',
-'.gbt-roleseditorpane .gbt-rolecard input.gbt-input{background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:2px}',
+'.gbt-roleidentity{display:flex;flex-direction:column;gap:8px;min-width:0;padding:0}',
+'.gbt-identitygrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;min-width:0}',
+'.gbt-identityfield{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:10px;color:var(--deck-dim)}',
+'.gbt-identityfield > span{display:flex;align-items:baseline;justify-content:space-between;gap:6px;white-space:nowrap}',
+'.gbt-identityhint{font-style:normal;font-size:9px;color:var(--deck-dim)}',
+'.gbt-readonlyfield{width:100%;box-sizing:border-box;height:30px;padding:0 8px;border:1px solid var(--deck-line);border-radius:4px;background:var(--tc-input-bg);color:var(--deck-muted);font-size:11px}',
+'.gbt-roleseditorpane .gbt-rolecard textarea{width:100%;min-height:132px;max-height:210px;resize:vertical;font:11.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:4px;padding:8px}',
+'.gbt-roleseditorpane .gbt-rolecard input.gbt-input{background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:4px}',
 '.gbt-editorskills{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:end;margin-top:8px}',
 '.gbt-editorskills-field{display:flex;flex-direction:column;gap:3px;font-size:10px;color:var(--deck-dim)}',
 '.gbt-editorskills .gbt-btn{height:28px;white-space:nowrap}',
 '.gbt-roleseditorpane .gbt-editorfield{font-size:10px;color:var(--deck-dim);gap:3px}',
-'.gbt-roleseditorpane .gbt-editorfield .gbt-input{background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:2px;height:28px}',
+'.gbt-roleseditorpane .gbt-editorfield .gbt-input{background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:4px;height:28px}',
 '.gbt-roleseditorpane .gbt-rolescurrent{display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--deck-dim);margin:2px 0 4px}',
-'.gbt-roleseditorpane .gbt-rolescurrent select{background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:2px;height:28px;font-size:11px;min-width:150px}',
-'.gbt-roleseditorpane .gbt-createblank{margin-top:8px;border:1px dashed var(--deck-line);border-radius:2px;padding:6px 8px}',
+'.gbt-roleseditorpane .gbt-rolescurrent select{background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:4px;height:28px;font-size:11px;min-width:150px}',
+'.gbt-roleseditorpane .gbt-createblank{margin-top:8px;border:1px dashed var(--deck-line);border-radius:4px;padding:6px 8px}',
 '.gbt-roleseditorpane .gbt-createblank summary{font-size:10px;color:var(--deck-dim)}',
 '.gbt-roleseditorpane .gbt-rolefields{display:block}',
-'.gbt-rolespreviewpane .gbt-rolecard{flex:1 1 auto;min-height:0;border:1px solid var(--deck-line);border-radius:2px;background:var(--tc-input-bg);padding:9px;overflow:auto}',
+'.gbt-rolespreviewpane .gbt-rolecard{flex:1 1 auto;min-height:0;border:1px solid var(--deck-line);border-radius:4px;background:var(--tc-input-bg);padding:9px;overflow:auto}',
 '.gbt-rolespreviewpane .gbt-rolecard .gbt-promptpre{font-size:11px;line-height:1.6;color:var(--deck-text)}',
+'.gbt-rolespreviewpane .gbt-prompthead{flex-direction:column;align-items:stretch;gap:8px}',
+'.gbt-rolespreviewpane .gbt-prompttaskrow{flex-direction:column;align-items:stretch;gap:4px}',
+'.gbt-rolespreviewpane .gbt-editor-select{display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:0}',
+'.gbt-rolespreviewpane .gbt-editor-select .gbt-input{width:100%;min-width:0;height:28px;background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:4px;font-size:11px}',
+'.gbt-rolespreviewpane .gbt-prompthead .gbt-subhead{margin:0}',
 '.gbt-rolespreviewpane .gbt-footnote{font-size:10px;color:var(--deck-dim);line-height:1.5}',
 '.gbt-rolespreviewnote{margin-top:auto;padding-top:6px;border-top:1px solid var(--deck-line)}',
 '.gbt-rolesactions{flex:0 0 auto;display:flex;gap:8px;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;padding:8px 12px;border-top:1px solid var(--deck-line);background:var(--deck-panel);z-index:2}',
 '.gbt-rolesactions-left,.gbt-rolesactions-right{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;min-width:0}',
 '.gbt-rolesactions .gbt-btn{height:28px;white-space:nowrap}',
-'.gbt-rolesview[data-roles-deck] .gbt-role-result,.gbt-rolesview[data-roles-deck] .gbt-banner{margin:0}',
-'@media (max-width:900px){.gbt-rolesview[data-roles-deck]{height:auto;min-height:0;overflow:visible;gap:8px}.gbt-rolesview[data-roles-deck] .gbt-rolesview-card{flex:0 0 auto;min-height:0;overflow:visible}.gbt-roleeditor[data-role-deck]{min-height:0;overflow:visible}.gbt-rolesstages-row{grid-template-columns:minmax(0,1fr)}.gbt-rolesdeckbody{grid-template-columns:minmax(0,1fr);overflow:visible}.gbt-roleslist{max-height:260px;border-bottom:1px solid var(--deck-line)}.gbt-roleslistrows{overflow:visible;max-height:220px}.gbt-rolesmain{overflow:visible}.gbt-roleseditscroll{overflow:visible;display:block}.gbt-rolespanes{grid-template-columns:minmax(0,1fr)}.gbt-roleseditorpane{overflow:visible;padding:0 10px 8px}.gbt-rolespreviewpane{overflow:visible;border-top:1px solid var(--deck-line);min-height:220px}.gbt-rolesactions{position:static;padding:8px 10px}.gbt-rolesreadyrows{max-height:92px}.gbt-rolesreadyrow{flex:1 1 100%;grid-template-columns:56px auto minmax(0,1fr) auto}.gbt-rolesreadyrow .gbt-footnote{display:none}}',
+'.gbt-rolesview[data-roles-deck] .gbt-role-result,.gbt-rolesview[data-roles-deck] .gbt-banner{margin:0 10px 8px}',
+'@media (max-width:1180px){.gbt-rolesworkspace{grid-template-columns:220px minmax(0,1fr)}.gbt-rolespanes{grid-template-columns:minmax(0,1fr) 320px}}',
+'@media (max-width:900px){.gbt-rolesview[data-roles-deck]{height:auto;min-height:0;overflow:visible}.gbt-roleeditor[data-role-deck]{overflow:visible}.gbt-rolesworkspace{grid-template-columns:minmax(0,1fr);overflow:visible}.gbt-rolestagerail{border-right:0;border-bottom:1px solid var(--deck-line);overflow:visible}.gbt-stagelist{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.gbt-stagelist:before{display:none}.gbt-stagedesc{display:none}.gbt-rolesmain{overflow:visible}.gbt-roleseditscroll{overflow:visible;display:block}.gbt-rolespanes{grid-template-columns:minmax(0,1fr)}.gbt-roleseditorpane{overflow:visible;padding:0 10px 8px}.gbt-rolespreviewpane{overflow:visible;border-top:1px solid var(--deck-line);min-height:220px}.gbt-rolehead{padding:12px}.gbt-roleheadtitle{font-size:18px}.gbt-identitygrid{grid-template-columns:minmax(0,1fr)}.gbt-rolesactions{position:static;padding:8px 10px}}',
 '.gbt-rheadactions{display:flex;gap:6px;align-items:center}',
 			'.gbt-field{display:flex;flex-direction:column;gap:4px}',
 			'.gbt-field label{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
@@ -4838,13 +4861,12 @@ function createRolesEditor(deps) {
 		const catalog = Array.isArray(roleEditorState.skills) ? roleEditorState.skills : []
 		const allInstances = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry !== null && entry !== undefined && typeof entry.kind === 'string' })
 		const instances = allInstances.filter(function (entry) { return entry.kind === kind })
-		function liveCountOf(roleKind) {
-			return allInstances.filter(function (entry) { return entry.kind === roleKind && entry.status !== 'failed' }).length
-		}
+		// The three stages, in dispatch order. The rail lists them as 01/02/03 and
+		// they are the ONLY stage navigation on the page.
 		const STAGE_SLOTS = [
-			{ key: 'implement', kind: 'worker', label: 'roleKindWorker' },
-			{ key: 'review', kind: 'reviewer', label: 'sessionsStageReview' },
-			{ key: 'test', kind: 'tester', label: 'sessionsStageTest' },
+			{ key: 'implement', kind: 'worker', num: '01', label: 'roleKindWorker', desc: 'roleStageImplementDesc' },
+			{ key: 'review', kind: 'reviewer', num: '02', label: 'roleKindReviewer', desc: 'roleStageReviewDesc' },
+			{ key: 'test', kind: 'tester', num: '03', label: 'roleKindTester', desc: 'roleStageTestDesc' },
 		]
 		const stageBoundProfile = function (stageKey) {
 			const stages = config !== null && config !== undefined && config.stages !== null && config.stages !== undefined ? config.stages : {}
@@ -4976,6 +4998,10 @@ function createRolesEditor(deps) {
 			if (typeof name !== 'string' || name === '') return
 			if (draft !== null && String(name) !== String(selectedName)) {
 				report('role-editor-kind', false, { code: 'role-unsaved' })
+				// The picker is uncontrolled: remount it on the real value so a refused
+				// switch cannot leave a profile selected on screen that is not being edited.
+				roleEditorState.pickVersion += 1
+				bump()
 				return
 			}
 			roleEditorState.kind = typeof roleKind === 'string' && roleKind !== '' ? roleKind : kind
@@ -5242,7 +5268,8 @@ function createRolesEditor(deps) {
 			})
 				})()))
 		}
-		// T-172: Shift Deck stage strip + roster + a fixed three-column editor.
+		// APPLICATION / 当前使用: picking a profile binds the stage and replaces its
+		// running instances (the binding control, not the editor's profile picker).
 		const currentUseSelect = h('label', { className: 'gbt-editor-select gbt-rolescurrent' }, t('roleCurrentUse'),
 			h('select', {
 				key: 'current-use:' + controlKey,
@@ -5257,57 +5284,111 @@ function createRolesEditor(deps) {
 			useOptions.length === 0
 				? h('option', { key: 'none', value: '' }, t('roleEditorNoProfile'))
 				: useOptions.map(function (name) { return h('option', { key: name, value: name }, name === kind ? t('roleUseDefault') : name) })))
-		const stageStrip = h('div', { className: 'gbt-rolesstages', 'data-roles-header': 'true', 'data-role-stage-strip': 'true' },
-			h('div', { className: 'gbt-rolesstages-head' }, h('span', { className: 'gbt-deckeyebrow' }, 'STAGES / 阶段'), h('h2', null, t('roleSectionRole')), h('span', { className: 'gbt-deckpanelmeta' }, t('roleEditorTabsLabel'))),
-			h('div', { className: 'gbt-rolesstages-row', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-role-tabs': 'true', 'data-section': 'role-editor-kinds' },
-				STAGE_SLOTS.map(function (slot, index) {
-					const boundProfile = stageBoundProfile(slot.key)
-					const slotProfile = boundProfile !== null && profiles[boundProfile] !== undefined ? profiles[boundProfile] : null
-					const live = liveCountOf(slot.kind)
-					const ready = slotProfile !== null
-					return h('button', {
-						key: 'stage-' + slot.key, type: 'button', role: 'tab', className: 'gbt-rstagesslot', 'aria-selected': slot.kind === kind ? 'true' : 'false',
-						'data-action': 'role-editor-kind', 'data-kind': slot.kind, 'data-roles-tab': slot.kind, 'data-active': slot.kind === kind ? 'true' : 'false',
-						'data-stage-slot': slot.key, 'data-bound-profile': boundProfile === null ? '' : String(boundProfile), 'data-live': String(live), 'data-ready': ready ? 'true' : 'false',
+		// ── Stage rail (A direction): the ONLY stage navigation. The old top
+		// stage strip and the roster column are gone; a custom copy is picked from the
+		// rail's profile selector and blank creation lives in its footer.
+		const currentSlot = STAGE_SLOTS.filter(function (slot) { return slot.kind === kind })[0] || STAGE_SLOTS[0]
+		function liveCountOfKind(roleKind) {
+			return allInstances.filter(function (entry) { return entry.kind === roleKind && entry.status !== 'failed' }).length
+		}
+		/** The stage default is shown by its own name, a custom copy by its name. */
+		function profileLabelOf(slot, name) {
+			if (name === null || name === undefined) return t('roleUseDefault')
+			return String(name) === slot.kind ? t('roleUseDefault') : String(name)
+		}
+		function stageStateOf(slot) {
+			if (slot.kind === kind) return draft !== null ? t('roleEditorDraft') : t('roleStageEditing')
+			return stageBoundProfile(slot.key) === null ? t('roleStageUnbound') : t('roleStageEnabled')
+		}
+		// The page header reports whether THIS profile is applied: a draft, the one
+		// in use, or a copy that is not bound to its stage right now.
+		const headApplied = draft !== null ? 'draft' : selectedName !== null && boundName !== null && String(selectedName) === String(boundName) ? 'enabled' : 'idle'
+		const headAppliedLabel = headApplied === 'draft' ? t('roleEditorDraft') : headApplied === 'enabled' ? t('roleStageEnabled') : t('roleStageUnbound')
+		// The profile picker: the stage default plus every custom copy that owns this
+		// stage. Picking one edits it; binding stays in APPLICATION, exactly as before.
+		const pickerValue = draft !== null ? String(draft.source) : selectedName === null ? String(kind) : String(selectedName)
+		const profilePicker = h('select', {
+			key: 'profile-picker:' + controlKey,
+			className: 'gbt-stageselect',
+			'data-role-profile-select': 'true',
+			'data-field': 'profile',
+			'data-stage': stage,
+			'data-kind': kind,
+			defaultValue: pickerValue,
+			onChange: function (event) {
+				const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : ''
+				selectProfile(next === '' ? kind : next, kind)
+			},
+		}, useOptions.map(function (name) {
+			return h('option', { key: name, value: name }, name === kind ? t('roleUseDefault') : name)
+		}))
+		const stageRail = h('aside', { className: 'gbt-rolestagerail', 'data-role-stage-rail': 'true', 'data-role-nav': 'stages', 'aria-label': t('roleStagesTitle') },
+			h('div', { className: 'gbt-stageprofile', 'data-role-profile-picker': 'true' },
+				h('span', { className: 'gbt-deckeyebrow' }, t('roleProfileEyebrow')),
+				profilePicker),
+			h('div', { className: 'gbt-rail-title' },
+				h('span', null, t('roleStagesTitle')),
+				h('em', { className: 'gbt-mono' }, '0' + String(STAGE_SLOTS.length))),
+			h('ol', { className: 'gbt-stagelist', 'data-role-stage-list': 'true' }, STAGE_SLOTS.map(function (slot) {
+				const boundProfile = stageBoundProfile(slot.key)
+				const bound = boundProfile !== null && profiles[boundProfile] !== undefined ? boundProfile : null
+				const live = liveCountOfKind(slot.kind)
+				const active = slot.kind === kind
+				return h('li', { key: 'stage-' + slot.key, className: 'gbt-stageli' },
+					h('button', {
+						type: 'button',
+						className: 'gbt-stagerow',
+						'data-action': 'role-editor-kind',
+						'data-kind': slot.kind,
+						'data-stage-slot': slot.key,
+						'data-roles-stage': slot.kind,
+						// Kept so the existing screenshot steps can still click a stage by
+						// the attribute they always used; the rail is the only stage nav.
+						'data-roles-tab': slot.kind,
+						'data-active': active ? 'true' : 'false',
+						'data-bound-profile': bound === null ? '' : String(bound),
+						'data-live': String(live),
+						'data-ready': bound === null ? 'false' : 'true',
+						'aria-current': active ? 'step' : undefined,
 						onClick: function () { switchKind(slot.kind) },
 					},
-						h('span', { className: 'gbt-rstagestep gbt-mono' }, '0' + String(index + 1)),
-						h('span', { className: 'gbt-rstagebody' }, h('b', null, t(slot.label)), h('span', { className: 'gbt-rstagesub gbt-mono', title: boundProfile === null ? '' : String(boundProfile) }, boundProfile === null ? '—' : String(boundProfile)), h('small', null, 'live ' + String(live) + ' · ' + (ready ? t('sessionsReady') : t('sessionsNotReady')))),
-						h('i', { className: 'gbt-deckdot', 'data-on': ready ? 'true' : 'false' }))
-				})))
-		const builtinNames = ['worker', 'reviewer', 'tester']
-		const rosterEntries = builtinNames.map(function (name) {
-			return { name: name, kind: name, label: roleKindLabel(name, t), stage: ROLE_EDITOR_STAGES[name], disabled: false }
-		})
-		Object.keys(profiles).filter(function (name) { return builtinNames.indexOf(name) < 0 }).forEach(function (name) {
-			const profile = profiles[name]
-			const role = profile !== null && profile !== undefined && typeof profile.role === 'string' ? profile.role : 'worker'
-			rosterEntries.push({ name: name, kind: role, label: roleKindLabel(role, t), stage: profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_EDITOR_STAGES[role], disabled: ROLE_EDITOR_KINDS.indexOf(role) < 0 })
-		})
-		const rosterList = h('aside', { className: 'gbt-roleslist', 'data-role-list': 'true' },
-			h('div', { className: 'gbt-roleslisthead' }, h('span', { className: 'gbt-deckeyebrow' }, 'ROSTER / 角色'), h('b', null, String(rosterEntries.length))),
-			h('details', { key: 'roster-create', className: 'gbt-roleslistcreate', 'data-section': 'role-create-blank', 'data-role-create-entry': 'true' },
-				h('summary', { 'data-role-create-summary': 'true' }, '＋ ' + t('roleEditorCreateBlank')),
-				h('div', { className: 'gbt-roleslistcreatebody', 'data-role-create-body': 'true' }, h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }))),
-			h('div', { className: 'gbt-roleslistrows' }, rosterEntries.map(function (entry) {
-				const selected = selectedName !== null && String(selectedName) === entry.name
-				return h('button', {
-					key: 'roster-' + entry.name, type: 'button', className: 'gbt-roleslistrow', 'data-role-profile': entry.name, 'data-role-kind': entry.kind, 'data-role-stage': entry.stage === null ? '' : String(entry.stage),
-					'data-role-live': String(liveCountOf(entry.kind)), 'data-role-selected': selected ? 'true' : 'false', disabled: entry.disabled === true,
-					onClick: function () { if (entry.disabled !== true) selectProfile(entry.name, entry.kind) },
-				},
-				h('i', { className: 'gbt-deckdot', 'data-on': entry.disabled ? 'false' : liveCountOf(entry.kind) > 0 ? 'true' : 'false' }),
-				h('span', { className: 'gbt-roleslistmain' }, h('b', null, entry.name), h('span', null, entry.label + ' · ' + (entry.stage === null ? '—' : String(entry.stage)))),
-				h('em', { className: 'gbt-mono' }, entry.disabled ? '—' : String(liveCountOf(entry.kind))))
-			})))
+						h('span', { className: 'gbt-stagenum gbt-mono', 'aria-hidden': 'true' }, slot.num),
+						h('span', { className: 'gbt-stagebody' },
+							h('span', { className: 'gbt-stagetitle' }, h('b', null, t(slot.label)), h('code', { className: 'gbt-mono' }, slot.kind)),
+							h('span', { className: 'gbt-stagedesc' }, t(slot.desc)),
+							h('span', { className: 'gbt-stagemeta' },
+								h('span', { className: 'gbt-stagetag', 'data-role-stage-state': slot.key }, stageStateOf(slot)),
+								h('span', { className: 'gbt-stagesub gbt-mono', 'data-role-stage-bound': slot.key, title: bound === null ? '' : String(bound) }, t('roleStageProfile') + ' ' + profileLabelOf(slot, bound)))),
+						h('span', { className: 'gbt-stageside' },
+							h('i', { className: 'gbt-deckdot', 'data-on': bound === null ? 'false' : 'true' }),
+							h('em', { className: 'gbt-stagelive gbt-mono', 'data-role-stage-live': slot.key }, String(live))))
+				)
+			})),
+			h('p', { className: 'gbt-stagenote', 'data-role-stages-hint': 'true' }, t('roleStagesHint')),
+			h('div', { className: 'gbt-stagecreatewrap' },
+				h('details', { key: 'roster-create', className: 'gbt-stagecreate', 'data-section': 'role-create-blank', 'data-role-create-entry': 'true' },
+					h('summary', { 'data-role-create-summary': 'true' }, '＋ ' + t('roleEditorCreateBlank')),
+					h('div', { className: 'gbt-stagecreatebody', 'data-role-create-body': 'true' }, h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid })))))
+		const head = h('div', { className: 'gbt-rolehead', 'data-role-head': 'true' },
+			h('div', { className: 'gbt-roleheadmain' },
+				h('span', { className: 'gbt-deckeyebrow', 'data-role-head-stage': currentSlot.key }, 'STAGE ' + currentSlot.num + ' · ' + String(stage).toUpperCase()),
+				h('h2', { className: 'gbt-roleheadtitle', 'data-role-head-title': 'true' },
+					selectedName === null ? '—' : String(selectedName),
+					h('span', { className: 'gbt-roleheadstage' }, '/ ' + t(currentSlot.label)))),
+			h('div', { className: 'gbt-roleheadmeta' },
+				h('span', { className: 'gbt-pill', 'data-role-head-state': headApplied }, headAppliedLabel),
+				h('span', { className: 'gbt-footnote', 'data-role-head-bound': 'true' }, t('roleCurrentUse') + ' · ' + (boundName === null ? '—' : profileLabelOf(currentSlot, boundName)))))
+		// IDENTITY is read-only: the role name, its stage and the context the host
+		// resolves. Editing happens in BEHAVIOR/APPLICATION below, and in the rail
+		// for stage and profile selection.
 		const identityRow = h('div', { className: 'gbt-roleidentity', 'data-editor-identity': 'true', 'data-kind': kind, 'data-profile': selectedName === null ? '' : String(selectedName), 'data-bound': boundName === null ? '' : String(boundName), 'data-draft': draft === null ? 'false' : 'true' },
-			h('div', { className: 'gbt-roleidentity-main' },
-				h('span', { className: 'gbt-roleidentity-name gbt-mono', title: selectedName === null ? '' : String(selectedName) }, selectedName === null ? '—' : String(selectedName)),
-				h('span', { className: 'gbt-pill', 'data-role-identity-kind': kind }, roleKindLabel(kind, t)),
-				h('span', { className: 'gbt-footnote', 'data-role-identity-stage': stage }, 'STAGE · ' + stage),
-				h('span', { className: 'gbt-footnote', 'data-role-identity-context': target !== null && typeof target.context === 'string' ? target.context : 'fresh' }, 'CONTEXT · ' + (target !== null && typeof target.context === 'string' ? target.context : 'fresh')),
-			),
-			h('span', { className: 'gbt-footnote' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')))
+			h('div', { className: 'gbt-identitygrid' },
+				h('label', { className: 'gbt-identityfield' }, h('span', null, t('roleName'), h('em', { className: 'gbt-identityhint' }, t('roleReadonly'))),
+					h('input', { className: 'gbt-input gbt-readonlyfield', readOnly: true, tabIndex: -1, 'data-field': 'identity-name', value: selectedName === null ? '—' : String(selectedName) })),
+				h('label', { className: 'gbt-identityfield' }, h('span', null, t('roleStageField')),
+					h('input', { className: 'gbt-input gbt-readonlyfield', readOnly: true, tabIndex: -1, 'data-field': 'identity-stage', value: t(currentSlot.label) + ' / ' + String(stage) })),
+				h('label', { className: 'gbt-identityfield' }, h('span', null, t('roleContext')),
+					h('input', { className: 'gbt-input gbt-readonlyfield', readOnly: true, tabIndex: -1, 'data-field': 'identity-context', value: target !== null && typeof target.context === 'string' ? target.context : 'fresh' }))))
 		const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
 			h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
 			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
@@ -5331,23 +5412,21 @@ function createRolesEditor(deps) {
 			: roleEditorState.applySkipped === true
 				? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleUsePendingNextDispatch'))
 				: null
-		const sectionHead = function (eyebrow, title) {
-			return h('div', { className: 'gbt-rolesectionhead' }, h('span', { className: 'gbt-deckeyebrow' }, eyebrow), h('h3', null, title))
+		const sectionHead = function (eyebrow, title, note) {
+			return h('div', { className: 'gbt-rolesectionhead' }, h('span', { className: 'gbt-deckeyebrow' }, eyebrow), h('h3', null, title), note === undefined ? null : h('span', { className: 'gbt-footnote gbt-sectionnote' }, note))
 		}
 		const leftPane = h('section', { className: 'gbt-rolespane gbt-roleseditorpane', 'data-roles-pane': 'raw' },
-			h('section', { className: 'gbt-rolesection', 'data-role-section': 'identity' }, sectionHead('IDENTITY / 身份', t('roleSectionRole')), identityRow),
+			h('section', { className: 'gbt-rolesection', 'data-role-section': 'identity' }, sectionHead('IDENTITY / 身份', t('roleSectionRole'), draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')), identityRow),
 			h('section', { className: 'gbt-rolesection', 'data-role-section': 'behavior' }, sectionHead('BEHAVIOR / 行为', t('roleAnchorPrompt')),
 				h('div', { className: 'gbt-rolecard', 'data-role-card': 'raw' },
-					h('div', { className: 'gbt-rolecardhead', 'data-role-card-title': 'true' }, t('rolePreviewRawTitle')),
 					editablePrompt ? rawColumn() : builtinDefaultColumn(),
 					h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow))),
 			h('section', { className: 'gbt-rolesection', 'data-role-section': 'application' }, sectionHead('APPLICATION / 应用', t('roleCurrentUse')), currentUseSelect, h('div', { className: 'gbt-footnote', 'data-role-apply-hint': 'true' }, t('roleApplyHint')), runningRow),
 			)
 		const rightPane = h('section', { className: 'gbt-rolespane gbt-rolespreviewpane', 'data-roles-pane': 'injected' },
-			h('div', { className: 'gbt-rolespreviewhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'PREVIEW / 注入预览'), h('h3', null, t('rolePreviewInjectedTitle'))),
+			h('div', { className: 'gbt-rolespreviewhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'PREVIEW / 注入预览')),
 			h('div', { className: 'gbt-rolecard', 'data-role-card': 'injected' }, injectedColumn()),
-			stateHint,
-			h('div', { className: 'gbt-footnote gbt-rolespreviewnote' }, t('roleUsePendingNextDispatch')))
+			stateHint)
 		const draftNameRow = draft === null ? null : h('label', { className: 'gbt-editorfield', 'data-section': 'role-draft-name' }, t('roleDraftName'),
 			h('input', { key: 'draft-name:' + controlKey, className: 'gbt-input', 'data-field': 'draft-name', defaultValue: draft.name, spellCheck: false, onChange: function (event) {
 				const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : ''
@@ -5390,14 +5469,13 @@ function createRolesEditor(deps) {
 				draftNameRow),
 			h('div', { className: 'gbt-rolesactions-right' }, forkButton, deleteButton))
 		return h('div', { className: 'gbt-roleeditor', 'data-editor': 'true', 'data-role-deck': 'true', 'data-kind': kind, 'data-draft': draft === null ? 'false' : 'true' },
-			stageStrip,
-			h('div', { className: 'gbt-rolesdeckbody' },
-				rosterList,
-				h('div', { className: 'gbt-rolesmain' },
+			h('div', { className: 'gbt-rolesworkspace', 'data-role-workspace': 'true' },
+				stageRail,
+				h('div', { className: 'gbt-rolesmain', 'data-role-editor-main': 'true' },
+					head,
 					h('div', { className: 'gbt-roleseditscroll', 'data-roles-scroll': 'true' },
 						h('div', { className: 'gbt-rolespanes', 'data-roles-panes': 'true', 'data-role-layout': 'split' }, leftPane, rightPane)),
-					actionBar),
-			),
+					actionBar)),
 			roleEditorState.notice === null ? null : roleResultBanner(roleEditorState.notice, t),
 			modal)
 	}
@@ -5414,7 +5492,6 @@ function createRolesEditor(deps) {
 }
 
 module.exports = { createRolesEditor }
-
 				})(module, module.exports)
 				const factory = module.exports.createRolesEditor
 				return factory({
@@ -5445,6 +5522,10 @@ module.exports = { createRolesEditor }
  * Extracted from the roles fragment; React, h, the agent-tree selector and
  * RolesEditor are injected by the build. Stage profiles are project-level: there
  * is no per-session team readiness to aggregate here.
+ *
+ * A direction: this view owns no header of its own. The editor renders the one
+ * page header (stage + profile) and the stage rail; adding a second title card
+ * here would put a second navigation/heading layer above it.
  */
 function createRolesView(deps) {
 	const React = deps.React
@@ -5474,26 +5555,19 @@ function createRolesView(deps) {
 				}
 			})
 		if (config === null) {
-			return h('div', { className: 'gbt-rolesview', 'data-roles-deck': 'true' }, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
+			return h('div', { className: 'gbt-rolesview', 'data-roles-deck': 'true' },
+				h('div', { className: 'gbt-rolesview-empty', 'data-roles-unavailable': 'true' },
+					h('p', { className: 'gbt-footnote' }, t('rolesHint')),
+					h('div', { className: 'gbt-empty' }, t('rolesUnavailable'))))
 		}
-		return h(
-			'div',
-			{ className: 'gbt-rolesview', 'data-roles-deck': 'true' },
-			h(
-				'section',
-				{ className: 'gbt-rolesview-card', 'data-card': 'editor' },
-				h('div', { className: 'gbt-rhead' },
-					h('h3', { className: 'gbt-rtitle' }, t('roleEditor')),
-					h('div', { className: 'gbt-footnote', 'data-role-scale-note': 'true' }, t('roleScaleNote'))),
-				h('div', { className: 'gbt-rbody' }, h(RolesEditor, {
-					t: t,
-					snapshot: snapshot,
-					store: store,
-					instances: instances,
-					bump: bumpEditor,
-				})),
-			),
-		)
+		return h('div', { className: 'gbt-rolesview', 'data-roles-deck': 'true' },
+			h(RolesEditor, {
+				t: t,
+				snapshot: snapshot,
+				store: store,
+				instances: instances,
+				bump: bumpEditor,
+			}))
 	}
 
 	return RolesView
