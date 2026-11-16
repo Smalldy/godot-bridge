@@ -301,7 +301,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				agentStatusIdle: '空闲',
 				agentStatusFailed: '失败',
 				agentStatusUnknown: '状态未知',
-				roleScaleNote: 'Profile 只定义行为；并发由派发设置决定。',
 				unknownProjectHint: '这个会话还没有绑定项目。请在会话里调用一次 task_center，或在下方手动打开一个项目。',
 				notActivatedTitle: '未激活任何项目',
 				notActivatedStepCall: '在会话里使用 /godot-bridge-task-center-init 技能（任务中心入口）接入项目——宿主会把当前项目记为「上次项目」并激活它。',
@@ -785,7 +784,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleErrUnsaved: '还有未保存的修改，请先保存或丢弃，再切换当前使用。',
 				roleEditor: '角色上下文编辑器',
 				roleEditorDraft: '草稿（未保存）',
-				roleEditorTabsLabel: '角色种类',
 				roleEditorCreateBlank: '新建空白 profile',
 				roleEditorNoProfile: '该阶段没有可用的角色',
 				roleCurrentUse: '当前使用',
@@ -808,7 +806,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleUseDefault: '默认',
 				roleUsePendingNextDispatch: '没有在跑实例，下次派发生效。',
 				roleDeleteThis: '删除这份',
-				rolePreviewRawTitle: '原始提示词',
 				rolePreviewInjectedTitle: '注入后的提示词',
 				rolePreviewEmptyValue: '（空）',
 				rolePreviewTaskPick: '任务',
@@ -832,8 +829,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				// A direction: the stage rail is the only stage navigation.
 				roleProfileEyebrow: 'PROFILE / 档案',
 				roleStagesTitle: '阶段与角色',
-				roleStageProfile: '档案',
-				roleStageEditing: '编辑中',
+				roleStageCurrent: '当前',
 				roleStageEnabled: '已启用',
 				roleStageUnbound: '未启用',
 				roleStageField: '阶段',
@@ -993,7 +989,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				agentStatusIdle: 'idle',
 				agentStatusFailed: 'failed',
 				agentStatusUnknown: 'unknown',
-				roleScaleNote: 'A profile only defines behaviour; concurrency comes from the dispatch settings.',
 				unknownProjectHint: 'This session is not bound to a project yet. Call task_center once in the session, or open a project manually below.',
 				notActivatedTitle: 'No project is active',
 				notActivatedStepCall: 'Use the /godot-bridge-task-center-init skill (the task center entry point) in the session: the host records the current project as its last active project and activates it.',
@@ -1477,7 +1472,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleErrUnsaved: 'there are unsaved changes; save or discard them before switching the current use',
 				roleEditor: 'Role context editor',
 				roleEditorDraft: 'draft (unsaved)',
-				roleEditorTabsLabel: 'Role kind',
 				roleEditorCreateBlank: 'Create blank profile',
 				roleEditorNoProfile: 'no role is available for this stage',
 				roleCurrentUse: 'Currently using',
@@ -1500,7 +1494,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleUseDefault: 'Default',
 				roleUsePendingNextDispatch: 'No live instance; takes effect on the next dispatch.',
 				roleDeleteThis: 'Delete this copy',
-				rolePreviewRawTitle: 'Raw prompt',
 				rolePreviewInjectedTitle: 'Injected prompt',
 				rolePreviewEmptyValue: '(empty)',
 				rolePreviewTaskPick: 'Task',
@@ -1523,8 +1516,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleReused: 'Reused',
 				roleProfileEyebrow: 'PROFILE / Profile',
 				roleStagesTitle: 'Stages and roles',
-				roleStageProfile: 'Profile',
-				roleStageEditing: 'Editing',
+				roleStageCurrent: 'Current',
 				roleStageEnabled: 'Enabled',
 				roleStageUnbound: 'Not enabled',
 				roleStageField: 'Stage',
@@ -2046,7 +2038,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-rolesegitem:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}',
 '.gbt-rolesegitem[aria-selected="true"]{background:var(--elev,var(--dsw-alias-bg-module-platform));color:var(--t1,var(--dsw-alias-label-primary))}',
 '.gbt-rolecard{display:flex;flex-direction:column;gap:8px;min-width:0;border:1px solid var(--line,var(--dsw-alias-border-l4));border-radius:8px;background:var(--panel,var(--dsw-alias-bg-layer-1));padding:10px 12px}',
-'.gbt-rolecardhead{font-size:13px;line-height:1.4;color:var(--t1,var(--dsw-alias-label-primary));font-weight:600}',
 '.gbt-rolecardbody{display:flex;flex-direction:column;gap:6px;min-width:0}',
 '.gbt-rolespane .gbt-sectlabel{font-size:11px;font-weight:400;letter-spacing:0;text-transform:none;background:none;border-left:2px solid var(--dsw-alias-state-business-primary);border-radius:0;padding:0 0 0 6px;margin:2px 0}',
 '.gbt-rolespane .gbt-sectsource{font-size:11px;color:var(--t2,var(--dsw-alias-label-tertiary))}',
@@ -2078,8 +2069,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-stageprofile{display:flex;flex-direction:column;gap:6px;margin-bottom:18px;min-width:0}',
 '.gbt-stageselect{width:100%;box-sizing:border-box;height:30px;padding:0 8px;border:1px solid var(--deck-line);border-radius:4px;background:var(--tc-input-bg);color:var(--deck-text);font:inherit;font-size:11px}',
 '.gbt-stageselect:focus-visible{outline:none;border-color:var(--tc-accent-line)}',
+'.gbt-rolesview[data-roles-deck] .gbt-deckeyebrow{font-size:11px}',
 '.gbt-rail-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px;color:var(--deck-muted);font-size:11px;white-space:nowrap}',
-'.gbt-rail-title em{font-style:normal;color:var(--deck-dim);font-size:10px}',
+'.gbt-rail-title em{font-style:normal;color:var(--deck-dim);font-size:11px}',
 '.gbt-stagelist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;position:relative;min-width:0}',
 '.gbt-stagelist:before{content:"";position:absolute;left:19px;top:22px;bottom:22px;width:1px;background:var(--deck-line)}',
 '.gbt-stageli{position:relative;min-width:0;display:flex}',
@@ -2091,36 +2083,36 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-stagebody{display:flex;flex-direction:column;gap:3px;min-width:0;padding-top:1px}',
 '.gbt-stagetitle{display:flex;align-items:baseline;gap:7px;min-width:0}',
 '.gbt-stagetitle b{font-size:13px;font-weight:600;white-space:nowrap}',
-'.gbt-stagetitle code{font-size:10px;font-weight:400;color:var(--deck-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-'.gbt-stagedesc{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:0;color:var(--deck-muted);font-size:10px;line-height:1.45}',
-'.gbt-stagemeta{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;min-width:0;margin-top:2px}',
-'.gbt-stagetag{font-size:9.5px;color:var(--deck-dim);white-space:nowrap}',
+'.gbt-stagetitle code{font-size:11px;font-weight:400;color:var(--deck-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-stagedesc{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:0;color:var(--deck-muted);font-size:11px;line-height:1.5}',
+'.gbt-stagemeta{display:flex;align-items:baseline;gap:6px;flex-wrap:nowrap;min-width:0;margin-top:2px;overflow:hidden}',
+'.gbt-stagetag{flex:none;font-size:11px;color:var(--deck-dim);white-space:nowrap}',
 '.gbt-stagerow[data-active="true"] .gbt-stagetag{color:var(--deck-lime)}',
-'.gbt-stagesub{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9.5px;color:var(--deck-dim)}',
+'.gbt-stagesub{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--deck-dim)}',
 '.gbt-stageside{display:flex;flex-direction:column;align-items:flex-end;gap:5px;padding-top:4px}',
-'.gbt-stagelive{font-style:normal;font-size:9.5px;color:var(--deck-dim)}',
+'.gbt-stagelive{font-style:normal;font-size:11px;color:var(--deck-dim)}',
 '.gbt-rolesview[data-roles-deck] .gbt-deckdot[data-on="true"]{background:var(--deck-lime)}',
-'.gbt-stagenote{margin:16px 0 0;padding-top:12px;border-top:1px solid var(--deck-line);color:var(--deck-dim);font-size:10px;line-height:1.55}',
+'.gbt-stagenote{margin:16px 0 0;padding-top:12px;border-top:1px solid var(--deck-line);color:var(--deck-dim);font-size:11px;line-height:1.55}',
 '.gbt-stagecreatewrap{margin-top:12px}',
 '.gbt-stagecreate{min-width:0;border:1px dashed var(--deck-line);border-radius:6px}',
-'.gbt-stagecreate summary{display:flex;align-items:center;gap:6px;min-height:30px;padding:0 9px;color:var(--deck-muted);font-size:10.5px;white-space:nowrap;cursor:pointer;list-style:none}',
+'.gbt-stagecreate summary{display:flex;align-items:center;gap:6px;min-height:30px;padding:0 9px;color:var(--deck-muted);font-size:11px;white-space:nowrap;cursor:pointer;list-style:none}',
 '.gbt-stagecreate summary::-webkit-details-marker{display:none}',
 '.gbt-stagecreate[open] summary{color:var(--deck-text);border-bottom:1px solid var(--deck-line)}',
 '.gbt-stagecreatebody{max-height:280px;overflow:auto;padding:8px 9px 10px;background:var(--deck-panel2);min-width:0}',
 '.gbt-stagecreatebody .gbt-formgrid{display:flex;flex-direction:column;gap:6px;min-width:0}',
-'.gbt-stagecreatebody label{display:flex;flex-direction:column;gap:3px;font-size:10px;color:var(--deck-dim);min-width:0}',
+'.gbt-stagecreatebody label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--deck-dim);min-width:0}',
 '.gbt-stagecreatebody .gbt-input{width:100%;box-sizing:border-box;min-height:28px;padding:4px 6px;border:1px solid var(--deck-line);border-radius:4px;background:var(--tc-input-bg);color:var(--deck-text);font-size:11px}',
 '.gbt-stagecreatebody textarea.gbt-input{min-height:56px;resize:vertical}',
 '.gbt-stagecreatebody .gbt-formactions{display:flex;justify-content:flex-end;margin-top:2px}',
-'.gbt-stagecreatebody .gbt-formactions .gbt-btn{height:26px;padding:0 9px;font-size:10.5px}',
+'.gbt-stagecreatebody .gbt-formactions .gbt-btn{height:26px;padding:0 9px;font-size:11px}',
 '.gbt-rolesmain{display:flex;flex-direction:column;min-height:0;min-width:0;background:var(--deck-panel);overflow:hidden}',
 '.gbt-rolehead{flex:0 0 auto;display:flex;align-items:flex-end;justify-content:space-between;gap:12px;padding:16px 20px 12px;border-bottom:1px solid var(--deck-line);min-width:0}',
 '.gbt-roleheadmain{display:flex;flex-direction:column;gap:6px;min-width:0}',
 '.gbt-roleheadtitle{display:flex;align-items:baseline;gap:6px;min-width:0;margin:0;font-size:22px;font-weight:650;line-height:1.1;letter-spacing:-.03em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 '.gbt-roleheadstage{font-size:13px;font-weight:400;letter-spacing:0;color:var(--deck-muted);white-space:nowrap}',
 '.gbt-roleheadmeta{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:10px;min-width:0;padding-bottom:2px}',
-'.gbt-roleheadmeta .gbt-pill{font-size:10px}',
-'.gbt-roleheadmeta .gbt-footnote{font-size:10px;color:var(--deck-dim);white-space:nowrap}',
+'.gbt-roleheadmeta .gbt-pill{font-size:11px}',
+'.gbt-roleheadmeta .gbt-footnote{font-size:11px;color:var(--deck-dim);white-space:nowrap}',
 '.gbt-roleseditscroll{flex:1 1 auto;min-height:0;overflow:auto;display:flex;align-items:stretch}',
 '.gbt-rolespanes{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:1px;background:var(--deck-line);width:100%;min-height:0;align-items:stretch}',
 '.gbt-roleseditorpane{display:flex;flex-direction:column;gap:0;min-width:0;background:var(--deck-panel);padding:0 12px 10px;overflow:auto}',
@@ -2131,26 +2123,23 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-rolesection:last-of-type{border-bottom:0}',
 '.gbt-rolesectionhead{display:flex;align-items:baseline;gap:8px;min-width:0}',
 '.gbt-rolesectionhead h3{font-size:12px;font-weight:500;margin:0;white-space:nowrap}',
-'.gbt-rolesectionhead .gbt-sectionnote{margin-left:auto;font-size:10px;color:var(--deck-dim);white-space:nowrap}',
+'.gbt-rolesectionhead .gbt-sectionnote{margin-left:auto;font-size:11px;color:var(--deck-dim);white-space:nowrap}',
 '.gbt-rolesection .gbt-rolecard{border:1px solid var(--deck-line);border-radius:4px;background:var(--deck-panel2);padding:9px;min-width:0;min-height:0}',
-'.gbt-rolesection .gbt-rolecardhead{font-size:10.5px;color:var(--deck-dim);letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px}',
 '.gbt-roleidentity{display:flex;flex-direction:column;gap:8px;min-width:0;padding:0}',
 '.gbt-identitygrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;min-width:0}',
-'.gbt-identityfield{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:10px;color:var(--deck-dim)}',
+'.gbt-identityfield{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:11px;color:var(--deck-dim)}',
 '.gbt-identityfield > span{display:flex;align-items:baseline;justify-content:space-between;gap:6px;white-space:nowrap}',
-'.gbt-identityhint{font-style:normal;font-size:9px;color:var(--deck-dim)}',
+'.gbt-identityhint{font-style:normal;font-size:11px;color:var(--deck-dim)}',
 '.gbt-readonlyfield{width:100%;box-sizing:border-box;height:30px;padding:0 8px;border:1px solid var(--deck-line);border-radius:4px;background:var(--tc-input-bg);color:var(--deck-muted);font-size:11px}',
 '.gbt-roleseditorpane .gbt-rolecard textarea{width:100%;min-height:132px;max-height:210px;resize:vertical;font:11.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:4px;padding:8px}',
 '.gbt-roleseditorpane .gbt-rolecard input.gbt-input{background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:4px}',
 '.gbt-editorskills{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:end;margin-top:8px}',
-'.gbt-editorskills-field{display:flex;flex-direction:column;gap:3px;font-size:10px;color:var(--deck-dim)}',
+'.gbt-editorskills-field{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--deck-dim)}',
 '.gbt-editorskills .gbt-btn{height:28px;white-space:nowrap}',
-'.gbt-roleseditorpane .gbt-editorfield{font-size:10px;color:var(--deck-dim);gap:3px}',
+'.gbt-roleseditorpane .gbt-editorfield{font-size:11px;color:var(--deck-dim);gap:3px}',
 '.gbt-roleseditorpane .gbt-editorfield .gbt-input{background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:4px;height:28px}',
-'.gbt-roleseditorpane .gbt-rolescurrent{display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--deck-dim);margin:2px 0 4px}',
+'.gbt-roleseditorpane .gbt-rolescurrent{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--deck-dim);margin:2px 0 4px}',
 '.gbt-roleseditorpane .gbt-rolescurrent select{background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:4px;height:28px;font-size:11px;min-width:150px}',
-'.gbt-roleseditorpane .gbt-createblank{margin-top:8px;border:1px dashed var(--deck-line);border-radius:4px;padding:6px 8px}',
-'.gbt-roleseditorpane .gbt-createblank summary{font-size:10px;color:var(--deck-dim)}',
 '.gbt-roleseditorpane .gbt-rolefields{display:block}',
 '.gbt-rolespreviewpane .gbt-rolecard{flex:1 1 auto;min-height:0;border:1px solid var(--deck-line);border-radius:4px;background:var(--tc-input-bg);padding:9px;overflow:auto}',
 '.gbt-rolespreviewpane .gbt-rolecard .gbt-promptpre{font-size:11px;line-height:1.6;color:var(--deck-text)}',
@@ -2159,13 +2148,12 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-rolespreviewpane .gbt-editor-select{display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:0}',
 '.gbt-rolespreviewpane .gbt-editor-select .gbt-input{width:100%;min-width:0;height:28px;background:var(--tc-input-bg);color:var(--deck-text);border:1px solid var(--deck-line);border-radius:4px;font-size:11px}',
 '.gbt-rolespreviewpane .gbt-prompthead .gbt-subhead{margin:0}',
-'.gbt-rolespreviewpane .gbt-footnote{font-size:10px;color:var(--deck-dim);line-height:1.5}',
-'.gbt-rolespreviewnote{margin-top:auto;padding-top:6px;border-top:1px solid var(--deck-line)}',
+'.gbt-rolespreviewpane .gbt-footnote{font-size:11px;color:var(--deck-dim);line-height:1.5}',
 '.gbt-rolesactions{flex:0 0 auto;display:flex;gap:8px;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;padding:8px 12px;border-top:1px solid var(--deck-line);background:var(--deck-panel);z-index:2}',
 '.gbt-rolesactions-left,.gbt-rolesactions-right{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;min-width:0}',
 '.gbt-rolesactions .gbt-btn{height:28px;white-space:nowrap}',
 '.gbt-rolesview[data-roles-deck] .gbt-role-result,.gbt-rolesview[data-roles-deck] .gbt-banner{margin:0 10px 8px}',
-'@media (max-width:1180px){.gbt-rolesworkspace{grid-template-columns:220px minmax(0,1fr)}.gbt-rolespanes{grid-template-columns:minmax(0,1fr) 320px}}',
+'@media (max-width:1180px){.gbt-rolesworkspace{grid-template-columns:220px minmax(0,1fr)}.gbt-rolespanes{grid-template-columns:minmax(0,1fr) 320px}.gbt-stageside{display:none}.gbt-stagerow{gap:8px}.gbt-stagenum{width:36px;height:36px}.gbt-stagelist:before{left:17px}}',
 '@media (max-width:900px){.gbt-rolesview[data-roles-deck]{height:auto;min-height:0;overflow:visible}.gbt-roleeditor[data-role-deck]{overflow:visible}.gbt-rolesworkspace{grid-template-columns:minmax(0,1fr);overflow:visible}.gbt-rolestagerail{border-right:0;border-bottom:1px solid var(--deck-line);overflow:visible}.gbt-stagelist{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.gbt-stagelist:before{display:none}.gbt-stagedesc{display:none}.gbt-rolesmain{overflow:visible}.gbt-roleseditscroll{overflow:visible;display:block}.gbt-rolespanes{grid-template-columns:minmax(0,1fr)}.gbt-roleseditorpane{overflow:visible;padding:0 10px 8px}.gbt-rolespreviewpane{overflow:visible;border-top:1px solid var(--deck-line);min-height:220px}.gbt-rolehead{padding:12px}.gbt-roleheadtitle{font-size:18px}.gbt-identitygrid{grid-template-columns:minmax(0,1fr)}.gbt-rolesactions{position:static;padding:8px 10px}}',
 '.gbt-rheadactions{display:flex;gap:6px;align-items:center}',
 			'.gbt-field{display:flex;flex-direction:column;gap:4px}',
@@ -4609,6 +4597,11 @@ module.exports = { createWorkersView }
  *
  * Extracted from the roles fragment; React, h, tcSplitList and roleKindLabel
  * are injected by the build.
+ *
+ * The form is rendered inside the stage rail, so the kind it creates defaults to
+ * the stage the user is editing (`defaultRole`); a fixed reviewer default would
+ * create a profile for another stage and the immediate bind would be refused
+ * with stage-mismatch.
  */
 function createRoleCreateForm(deps) {
 	const React = deps.React
@@ -4618,6 +4611,8 @@ function createRoleCreateForm(deps) {
 
 	function RoleCreateForm(props) {
 		const t = props.t
+		// Stage-scoped default: worker/implement, reviewer/review or tester/test.
+		const roleDefault = typeof props.defaultRole === 'string' && ['worker', 'reviewer', 'tester'].indexOf(props.defaultRole) >= 0 ? props.defaultRole : 'reviewer'
 		const nameRef = React.useRef(null)
 		const roleRef = React.useRef(null)
 		const skillsRef = React.useRef(null)
@@ -4635,7 +4630,7 @@ function createRoleCreateForm(deps) {
 		return
 			}
 			props.onCreate(name, {
-		role: valueOf(roleRef, 'reviewer'),
+		role: valueOf(roleRef, roleDefault),
 		skills: tcSplitList(valueOf(skillsRef, '')),
 		context: valueOf(contextRef, 'fresh'),
 		permissions: tcSplitList(valueOf(permissionsRef, 'read-only')),
@@ -4646,7 +4641,7 @@ function createRoleCreateForm(deps) {
 			'div',
 			{ className: 'gbt-formgrid', 'data-form': 'role-create' },
 			h('label', null, t('roleName'), h('input', { ref: nameRef, className: 'gbt-input', 'data-field': 'name', defaultValue: '', spellCheck: false })),
-			h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: 'reviewer', 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
+			h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: roleDefault, 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
 			h('label', null, t('roleSkills'), h('input', { ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: '', spellCheck: false })),
 			h('label', null, t('roleContext'), h('select', { ref: contextRef, defaultValue: 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')])),
 			h('label', null, t('rolePermissions'), h('input', { ref: permissionsRef, className: 'gbt-input', 'data-field': 'permissions', defaultValue: 'read-only', spellCheck: false })),
@@ -4731,9 +4726,6 @@ module.exports = { createRoleCreateForm }
 				skillsSelected: new Set(),
 				applySkipped: false,
 				notice: null,
-				// Bumped when a "current use" switch is refused so the uncontrolled
-				// selector remounts back on the real value (no silent draft loss).
-				pickVersion: 0,
 				// The injected-text preview the host returned for the current identity,
 				// the identity it belongs to and the in-flight/failed state around it.
 				preview: null,
@@ -4808,10 +4800,8 @@ function createRolesEditor(deps) {
 	const roleProfileCopy = deps.roleProfileCopy
 	const RoleCreateForm = deps.RoleCreateForm
 	const roleErrorText = deps.roleErrorText
-	const roleKindLabel = deps.roleKindLabel
 	const tcSplitList = deps.tcSplitList
 	const roleEditorState = deps.roleEditorState
-	const ROLE_EDITOR_KINDS = deps.ROLE_EDITOR_KINDS
 	const ROLE_EDITOR_STAGES = deps.ROLE_EDITOR_STAGES
 	const copyToClipboard = deps.copyToClipboard
 
@@ -4880,7 +4870,7 @@ function createRolesEditor(deps) {
 		// forking and a successful save all remount the controls on the right
 		// profile instead of silently keeping the previous profile's text (which
 		// would then be saved onto the wrong profile).
-		const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved') + ':' + String(roleEditorState.pickVersion || 0)
+		const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved')
 		// What the selector shows as "in use": the draft's source while a draft is
 		// open, otherwise the edited profile (falling back to the bound one).
 		const useValue = draft !== null ? String(draft.source) : selectedName !== null ? String(selectedName) : String(kind)
@@ -4943,7 +4933,6 @@ function createRolesEditor(deps) {
 			roleEditorState.saved = null
 			roleEditorState.applySkipped = false
 			roleEditorState.notice = null
-			roleEditorState.pickVersion += 1
 			bump()
 		}
 		/** Fork is a DRAFT now: the user names it, then Save creates + applies it. */
@@ -4998,10 +4987,8 @@ function createRolesEditor(deps) {
 			if (typeof name !== 'string' || name === '') return
 			if (draft !== null && String(name) !== String(selectedName)) {
 				report('role-editor-kind', false, { code: 'role-unsaved' })
-				// The picker is uncontrolled: remount it on the real value so a refused
-				// switch cannot leave a profile selected on screen that is not being edited.
-				roleEditorState.pickVersion += 1
-				bump()
+				// The picker is controlled: the refused value never reaches it, and nothing
+				// remounts, so a typed draft prompt/skills edit survives the refusal.
 				return
 			}
 			roleEditorState.kind = typeof roleKind === 'string' && roleKind !== '' ? roleKind : kind
@@ -5013,7 +5000,6 @@ function createRolesEditor(deps) {
 			roleEditorState.previewKey = null
 			roleEditorState.previewPending = false
 			roleEditorState.previewError = null
-			roleEditorState.pickVersion = (roleEditorState.pickVersion || 0) + 1
 			bump()
 		}
 		/**
@@ -5021,40 +5007,40 @@ function createRolesEditor(deps) {
 		 * the running instances of this kind. With nothing live, only the binding
 		 * changes and the panel says it takes effect on the next dispatch.
 		 */
-		async function applyProfile(name) {
+		async function applyProfile(name, roleKind) {
+			// roleKind defaults to the stage being edited; a blank create can target a
+			// different stage, so the caller passes the created profile's own kind.
+			const profileKind = typeof roleKind === 'string' && ROLE_EDITOR_STAGES[roleKind] !== undefined ? roleKind : kind
+			const profileStage = ROLE_EDITOR_STAGES[profileKind]
 			roleEditorState.applySkipped = false
-			const boundResult = await send('rolesBind', { stage: stage, profile: name })
+			const boundResult = await send('rolesBind', { stage: profileStage, profile: name })
 			if (boundResult.ok !== true) {
-		roleEditorState.pickVersion += 1
-		bump()
 		return false
 			}
 			roleEditorState.selected = name
 			// Keep the optimistic copy of a just-created profile so the editor can
 			// target it before the next host poll carries it.
 			if (roleEditorState.saved !== null && roleEditorState.saved.name !== name) roleEditorState.saved = null
-			const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
+			const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === profileKind })
 			if (live.length === 0) {
 		roleEditorState.applySkipped = true
 		bump()
 		return true
 			}
-			await send('rolesReplace', { name: kind })
+			await send('rolesReplace', { name: profileKind })
 			bump()
 			return true
 		}
 		/**
 		 * The "current use" picker: one pick is one action. An open draft blocks the
-		 * switch with a readable notice (never a silent discard) and the selector
-		 * remounts on the real value.
+		 * switch with a readable notice (never a silent discard); the controlled
+		 * selector already shows the real value.
 		 */
 		async function chooseUse(name) {
 			if (typeof name !== 'string' || name === '') return
 			roleEditorState.notice = null
 			if (draft !== null) {
 		report('rolesBind', false, { code: 'role-unsaved' })
-		roleEditorState.pickVersion += 1
-		bump()
 		return
 			}
 			if (name === boundName) {
@@ -5131,7 +5117,6 @@ function createRolesEditor(deps) {
 			roleEditorState.selected = null
 			roleEditorState.saved = null
 			roleEditorState.applySkipped = false
-			roleEditorState.pickVersion += 1
 			bump()
 			if (wasBound) await applyProfile(kind)
 		}
@@ -5278,7 +5263,7 @@ function createRolesEditor(deps) {
 				'data-field': 'current-use',
 				'data-stage': stage,
 				'data-bound': boundName === null ? '' : String(boundName),
-				defaultValue: useValue,
+				value: useValue,
 				onChange: function (event) { void chooseUse(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : '') },
 			},
 			useOptions.length === 0
@@ -5297,7 +5282,7 @@ function createRolesEditor(deps) {
 			return String(name) === slot.kind ? t('roleUseDefault') : String(name)
 		}
 		function stageStateOf(slot) {
-			if (slot.kind === kind) return draft !== null ? t('roleEditorDraft') : t('roleStageEditing')
+			if (slot.kind === kind) return draft !== null ? t('roleEditorDraft') : t('roleStageCurrent')
 			return stageBoundProfile(slot.key) === null ? t('roleStageUnbound') : t('roleStageEnabled')
 		}
 		// The page header reports whether THIS profile is applied: a draft, the one
@@ -5314,7 +5299,7 @@ function createRolesEditor(deps) {
 			'data-field': 'profile',
 			'data-stage': stage,
 			'data-kind': kind,
-			defaultValue: pickerValue,
+			value: pickerValue,
 			onChange: function (event) {
 				const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : ''
 				selectProfile(next === '' ? kind : next, kind)
@@ -5358,7 +5343,7 @@ function createRolesEditor(deps) {
 							h('span', { className: 'gbt-stagedesc' }, t(slot.desc)),
 							h('span', { className: 'gbt-stagemeta' },
 								h('span', { className: 'gbt-stagetag', 'data-role-stage-state': slot.key }, stageStateOf(slot)),
-								h('span', { className: 'gbt-stagesub gbt-mono', 'data-role-stage-bound': slot.key, title: bound === null ? '' : String(bound) }, t('roleStageProfile') + ' ' + profileLabelOf(slot, bound)))),
+								h('span', { className: 'gbt-stagesub gbt-mono', 'data-role-stage-bound': slot.key, title: bound === null ? '' : String(bound) }, '\u00B7 ' + profileLabelOf(slot, bound)))),
 						h('span', { className: 'gbt-stageside' },
 							h('i', { className: 'gbt-deckdot', 'data-on': bound === null ? 'false' : 'true' }),
 							h('em', { className: 'gbt-stagelive gbt-mono', 'data-role-stage-live': slot.key }, String(live))))
@@ -5368,7 +5353,7 @@ function createRolesEditor(deps) {
 			h('div', { className: 'gbt-stagecreatewrap' },
 				h('details', { key: 'roster-create', className: 'gbt-stagecreate', 'data-section': 'role-create-blank', 'data-role-create-entry': 'true' },
 					h('summary', { 'data-role-create-summary': 'true' }, '＋ ' + t('roleEditorCreateBlank')),
-					h('div', { className: 'gbt-stagecreatebody', 'data-role-create-body': 'true' }, h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid })))))
+					h('div', { className: 'gbt-stagecreatebody', 'data-role-create-body': 'true' }, h(RoleCreateForm, { t: t, defaultRole: kind, onCreate: createBlank, onInvalid: createBlankInvalid })))))
 		const head = h('div', { className: 'gbt-rolehead', 'data-role-head': 'true' },
 			h('div', { className: 'gbt-roleheadmain' },
 				h('span', { className: 'gbt-deckeyebrow', 'data-role-head-stage': currentSlot.key }, 'STAGE ' + currentSlot.num + ' · ' + String(stage).toUpperCase()),
@@ -5396,10 +5381,14 @@ function createRolesEditor(deps) {
 		async function createBlank(name, fields) {
 			const outcome = await send('rolesCreate', { name: name, profile: fields })
 			if (outcome.ok !== true) return
+			// The entry is stage-scoped, but the form may have picked another kind:
+			// land the editor on the created kind and bind that stage, never the old one.
+			const createdKind = fields !== null && fields !== undefined && ['worker', 'reviewer', 'tester'].indexOf(fields.role) >= 0 ? fields.role : kind
+			roleEditorState.kind = createdKind
 			roleEditorState.selected = name
 			roleEditorState.saved = { name: name, profile: Object.assign({ name: name }, fields) }
 			bump()
-			await applyProfile(name)
+			await applyProfile(name, createdKind)
 		}
 		function createBlankInvalid(code) {
 			report('rolesCreate', false, { code: code, message: '' })
@@ -5492,6 +5481,7 @@ function createRolesEditor(deps) {
 }
 
 module.exports = { createRolesEditor }
+
 				})(module, module.exports)
 				const factory = module.exports.createRolesEditor
 				return factory({

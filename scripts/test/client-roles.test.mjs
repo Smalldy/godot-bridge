@@ -60,7 +60,7 @@ const snapshot = {
 }
 const state = {
   kind: 'reviewer', selected: 'godot-reviewer', draft: null, saved: null, preview: null, previewKey: null, previewPending: false, previewError: null,
-  notice: null, applySkipped: false, pickVersion: 0, skills: [], skillsOpen: false, skillsError: null, skillsSelected: new Set(), skillsFailed: false,
+  notice: null, applySkipped: false, skills: [], skillsOpen: false, skillsError: null, skillsSelected: new Set(), skillsFailed: false,
 }
 function roleBoundProfile(cfg, kind) {
   const stage = ROLE_EDITOR_STAGES[kind]
@@ -113,7 +113,7 @@ assert.deepEqual(stages.map((node) => node.props['data-live']), ['1', '1', '1'])
 assert.deepEqual(stages.map((node) => node.props['data-ready']), ['true', 'true', 'true'])
 const stageText = stages.map(textOf).join(' | ')
 assert.ok(stageText.indexOf('01') >= 0 && stageText.indexOf('02') >= 0 && stageText.indexOf('03') >= 0)
-assert.ok(stageText.indexOf('roleStageEditing') >= 0, 'the edited stage is marked as being edited')
+assert.ok(stageText.indexOf('roleStageCurrent') >= 0, 'the open stage is marked as current')
 assert.ok(stageText.indexOf('roleStageEnabled') >= 0, 'the other stages report their enabled state')
 assert.ok(stageText.indexOf('godot-reviewer') >= 0, 'the bound profile is visible on the stage row')
 
@@ -121,7 +121,10 @@ assert.ok(stageText.indexOf('godot-reviewer') >= 0, 'the bound profile is visibl
 const pickers = findAll(editor, (node) => node.props['data-role-profile-select'] === 'true')
 assert.equal(pickers.length, 1)
 assert.equal(pickers[0].props['data-stage'], 'review')
-assert.equal(pickers[0].props.defaultValue, 'godot-reviewer')
+// Controlled selector: the value comes from state, so a refused switch cannot
+// leave a value on screen and nothing remounts the draft controls.
+assert.equal(pickers[0].props.value, 'godot-reviewer')
+assert.equal(pickers[0].props.defaultValue, undefined)
 const pickerOptions = findAll(pickers[0], (node) => node.type === 'option').map((node) => node.props.value)
 assert.deepEqual(pickerOptions, ['reviewer', 'godot-reviewer'])
 
@@ -130,7 +133,10 @@ const createEntry = findAll(editor, (node) => node.props['data-role-create-entry
 assert.ok(createEntry !== undefined)
 assert.equal(createEntry.props.open, undefined)
 assert.ok(textOf(findAll(createEntry, (node) => node.props['data-role-create-summary'] === 'true')[0]).indexOf('roleEditorCreateBlank') >= 0)
-assert.equal(findAll(findAll(editor, (node) => node.props['data-role-stage-rail'] === 'true')[0], (node) => node.type === RoleCreateFormStub).length, 1)
+const railCreateForms = findAll(findAll(editor, (node) => node.props['data-role-stage-rail'] === 'true')[0], (node) => node.type === RoleCreateFormStub)
+assert.equal(railCreateForms.length, 1)
+// The stage-scoped entry defaults the new profile to the stage being edited.
+assert.equal(railCreateForms[0].props.defaultRole, 'reviewer')
 assert.equal(findAll(editor, (node) => node.props['data-role-section'] === 'application' && node.type === 'section').filter((node) => findAll(node, (child) => child.type === RoleCreateFormStub).length > 0).length, 0)
 
 // ── The editor keeps IDENTITY / BEHAVIOR / APPLICATION and the preview. ──
@@ -140,7 +146,10 @@ assert.equal(findAll(editor, (node) => node.props['data-roles-pane'] === 'raw').
 assert.equal(findAll(editor, (node) => node.props['data-roles-pane'] === 'injected').length, 1)
 assert.equal(findAll(editor, (node) => node.props['data-role-card'] === 'raw').length, 1)
 assert.equal(findAll(editor, (node) => node.props['data-role-card'] === 'injected').length, 1)
-assert.equal(findAll(editor, (node) => node.props['data-role-use-select'] === 'true').length, 1)
+const useSelects = findAll(editor, (node) => node.props['data-role-use-select'] === 'true')
+assert.equal(useSelects.length, 1)
+assert.equal(useSelects[0].props.value, 'godot-reviewer')
+assert.equal(useSelects[0].props.defaultValue, undefined)
 assert.equal(findAll(editor, (node) => node.props['data-editor-identity'] === 'true').length, 1)
 assert.equal(findAll(editor, (node) => node.props['data-action'] === 'role-editor-save').length, 1)
 assert.equal(findAll(editor, (node) => node.props['data-action'] === 'role-editor-fork').length, 0)
@@ -154,7 +163,46 @@ assert.ok(findAll(draftEditor, (node) => node.props['data-role-draft-hint'] === 
 assert.equal(draftEditor.props['data-draft'], 'true')
 assert.equal(findAll(draftEditor, (node) => node.props['data-action'] === 'role-editor-discard').length, 1)
 assert.ok(textOf(draftEditor).indexOf('roleEditorDraft') >= 0, 'the rail marks the stage as a draft while one is open')
-assert.equal(findAll(draftEditor, (node) => node.props['data-role-profile-select'] === 'true')[0].props.defaultValue, 'godot-reviewer')
+assert.equal(findAll(draftEditor, (node) => node.props['data-role-profile-select'] === 'true')[0].props.value, 'godot-reviewer')
+
+// ── Blank create from a stage rail: bind the CREATED stage, not the old one ──
+{
+  const sent = []
+  const createState = {
+    kind: 'reviewer', selected: null, draft: null, saved: null, preview: null, previewKey: null, previewPending: false, previewError: null,
+    notice: null, applySkipped: false, skills: [], skillsOpen: false, skillsError: null, skillsSelected: new Set(),
+  }
+  const createDeps = Object.assign({}, deps, {
+    roleEditorState: createState,
+    roleBoundProfile: () => ({ name: 'godot-reviewer', profile: config.profiles['godot-reviewer'] }),
+  })
+  const store = { send: async (action, body) => { sent.push({ action: action, body: body }); return { ok: true, payload: {} } } }
+  const createEditor = createRolesEditor(createDeps)({ t: (key) => key, snapshot, store, instances: [], bump: () => {} })
+  const form = findAll(createEditor, (node) => node.type === RoleCreateFormStub)[0]
+  assert.equal(form.props.defaultRole, 'reviewer')
+  await form.props.onCreate('tester-copy', { role: 'tester', skills: [], context: 'fresh', permissions: ['read-only'], prompt: '' })
+  assert.equal(sent[0].action, 'rolesCreate')
+  assert.equal(sent[1].action, 'rolesBind', 'the created profile is bound immediately')
+  assert.equal(sent[1].body.stage, 'test', 'the CREATED profile\'s stage is bound, not the edited one')
+  assert.equal(sent[1].body.profile, 'tester-copy')
+  assert.equal(createState.kind, 'tester', 'the editor lands on the created profile\'s stage')
+  assert.equal(createState.selected, 'tester-copy')
+  assert.equal(sent.length, 2, 'no replace without running instances')
+}
+{
+  const sent = []
+  const createState2 = {
+    kind: 'worker', selected: 'worker', draft: null, saved: null, preview: null, previewKey: null, previewPending: false, previewError: null,
+    notice: null, applySkipped: false, skills: [], skillsOpen: false, skillsError: null, skillsSelected: new Set(),
+  }
+  const store = { send: async (action, body) => { sent.push({ action: action, body: body }); return { ok: true, payload: {} } } }
+  const createEditor = createRolesEditor(Object.assign({}, deps, { roleEditorState: createState2 }))({ t: (key) => key, snapshot, store, instances: [], bump: () => {} })
+  const form = findAll(createEditor, (node) => node.type === RoleCreateFormStub)[0]
+  assert.equal(form.props.defaultRole, 'worker')
+  await form.props.onCreate('worker-copy', { role: 'worker', skills: [], context: 'fresh', permissions: ['read-only'], prompt: '' })
+  assert.equal(sent[1].body.stage, 'implement')
+  assert.equal(createState2.kind, 'worker')
+}
 
 const RolesEditorStub = (props) => h('div', { 'data-editor-stub': 'true', 'data-kind': props.instances.length })
 const RolesView = createRolesView({ React: deps.React, h, RolesEditor: RolesEditorStub, tcAgentTreeOf })

@@ -3,6 +3,11 @@
  *
  * Extracted from the roles fragment; React, h, tcSplitList and roleKindLabel
  * are injected by the build.
+ *
+ * The form is rendered inside the stage rail, so the kind it creates defaults to
+ * the stage the user is editing (`defaultRole`); a fixed reviewer default would
+ * create a profile for another stage and the immediate bind would be refused
+ * with stage-mismatch.
  */
 function createRoleCreateForm(deps) {
 	const React = deps.React
@@ -12,6 +17,8 @@ function createRoleCreateForm(deps) {
 
 	function RoleCreateForm(props) {
 		const t = props.t
+		// Stage-scoped default: worker/implement, reviewer/review or tester/test.
+		const roleDefault = typeof props.defaultRole === 'string' && ['worker', 'reviewer', 'tester'].indexOf(props.defaultRole) >= 0 ? props.defaultRole : 'reviewer'
 		const nameRef = React.useRef(null)
 		const roleRef = React.useRef(null)
 		const skillsRef = React.useRef(null)
@@ -29,7 +36,7 @@ function createRoleCreateForm(deps) {
 		return
 			}
 			props.onCreate(name, {
-		role: valueOf(roleRef, 'reviewer'),
+		role: valueOf(roleRef, roleDefault),
 		skills: tcSplitList(valueOf(skillsRef, '')),
 		context: valueOf(contextRef, 'fresh'),
 		permissions: tcSplitList(valueOf(permissionsRef, 'read-only')),
@@ -40,7 +47,7 @@ function createRoleCreateForm(deps) {
 			'div',
 			{ className: 'gbt-formgrid', 'data-form': 'role-create' },
 			h('label', null, t('roleName'), h('input', { ref: nameRef, className: 'gbt-input', 'data-field': 'name', defaultValue: '', spellCheck: false })),
-			h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: 'reviewer', 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
+			h('label', null, t('roleKind'), h('select', { ref: roleRef, defaultValue: roleDefault, 'data-field': 'role' }, ['worker', 'reviewer', 'tester'].map(function (kind) { return h('option', { key: kind, value: kind }, roleKindLabel(kind, t)) }))),
 			h('label', null, t('roleSkills'), h('input', { ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: '', spellCheck: false })),
 			h('label', null, t('roleContext'), h('select', { ref: contextRef, defaultValue: 'fresh', 'data-field': 'context' }, [h('option', { key: 'fresh', value: 'fresh' }, 'fresh'), h('option', { key: 'fork', value: 'fork' }, 'fork')])),
 			h('label', null, t('rolePermissions'), h('input', { ref: permissionsRef, className: 'gbt-input', 'data-field': 'permissions', defaultValue: 'read-only', spellCheck: false })),

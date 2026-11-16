@@ -14,10 +14,8 @@ function createRolesEditor(deps) {
 	const roleProfileCopy = deps.roleProfileCopy
 	const RoleCreateForm = deps.RoleCreateForm
 	const roleErrorText = deps.roleErrorText
-	const roleKindLabel = deps.roleKindLabel
 	const tcSplitList = deps.tcSplitList
 	const roleEditorState = deps.roleEditorState
-	const ROLE_EDITOR_KINDS = deps.ROLE_EDITOR_KINDS
 	const ROLE_EDITOR_STAGES = deps.ROLE_EDITOR_STAGES
 	const copyToClipboard = deps.copyToClipboard
 
@@ -86,7 +84,7 @@ function createRolesEditor(deps) {
 		// forking and a successful save all remount the controls on the right
 		// profile instead of silently keeping the previous profile's text (which
 		// would then be saved onto the wrong profile).
-		const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved') + ':' + String(roleEditorState.pickVersion || 0)
+		const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved')
 		// What the selector shows as "in use": the draft's source while a draft is
 		// open, otherwise the edited profile (falling back to the bound one).
 		const useValue = draft !== null ? String(draft.source) : selectedName !== null ? String(selectedName) : String(kind)
@@ -149,7 +147,6 @@ function createRolesEditor(deps) {
 			roleEditorState.saved = null
 			roleEditorState.applySkipped = false
 			roleEditorState.notice = null
-			roleEditorState.pickVersion += 1
 			bump()
 		}
 		/** Fork is a DRAFT now: the user names it, then Save creates + applies it. */
@@ -204,10 +201,8 @@ function createRolesEditor(deps) {
 			if (typeof name !== 'string' || name === '') return
 			if (draft !== null && String(name) !== String(selectedName)) {
 				report('role-editor-kind', false, { code: 'role-unsaved' })
-				// The picker is uncontrolled: remount it on the real value so a refused
-				// switch cannot leave a profile selected on screen that is not being edited.
-				roleEditorState.pickVersion += 1
-				bump()
+				// The picker is controlled: the refused value never reaches it, and nothing
+				// remounts, so a typed draft prompt/skills edit survives the refusal.
 				return
 			}
 			roleEditorState.kind = typeof roleKind === 'string' && roleKind !== '' ? roleKind : kind
@@ -219,7 +214,6 @@ function createRolesEditor(deps) {
 			roleEditorState.previewKey = null
 			roleEditorState.previewPending = false
 			roleEditorState.previewError = null
-			roleEditorState.pickVersion = (roleEditorState.pickVersion || 0) + 1
 			bump()
 		}
 		/**
@@ -227,40 +221,40 @@ function createRolesEditor(deps) {
 		 * the running instances of this kind. With nothing live, only the binding
 		 * changes and the panel says it takes effect on the next dispatch.
 		 */
-		async function applyProfile(name) {
+		async function applyProfile(name, roleKind) {
+			// roleKind defaults to the stage being edited; a blank create can target a
+			// different stage, so the caller passes the created profile's own kind.
+			const profileKind = typeof roleKind === 'string' && ROLE_EDITOR_STAGES[roleKind] !== undefined ? roleKind : kind
+			const profileStage = ROLE_EDITOR_STAGES[profileKind]
 			roleEditorState.applySkipped = false
-			const boundResult = await send('rolesBind', { stage: stage, profile: name })
+			const boundResult = await send('rolesBind', { stage: profileStage, profile: name })
 			if (boundResult.ok !== true) {
-		roleEditorState.pickVersion += 1
-		bump()
 		return false
 			}
 			roleEditorState.selected = name
 			// Keep the optimistic copy of a just-created profile so the editor can
 			// target it before the next host poll carries it.
 			if (roleEditorState.saved !== null && roleEditorState.saved.name !== name) roleEditorState.saved = null
-			const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
+			const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === profileKind })
 			if (live.length === 0) {
 		roleEditorState.applySkipped = true
 		bump()
 		return true
 			}
-			await send('rolesReplace', { name: kind })
+			await send('rolesReplace', { name: profileKind })
 			bump()
 			return true
 		}
 		/**
 		 * The "current use" picker: one pick is one action. An open draft blocks the
-		 * switch with a readable notice (never a silent discard) and the selector
-		 * remounts on the real value.
+		 * switch with a readable notice (never a silent discard); the controlled
+		 * selector already shows the real value.
 		 */
 		async function chooseUse(name) {
 			if (typeof name !== 'string' || name === '') return
 			roleEditorState.notice = null
 			if (draft !== null) {
 		report('rolesBind', false, { code: 'role-unsaved' })
-		roleEditorState.pickVersion += 1
-		bump()
 		return
 			}
 			if (name === boundName) {
@@ -337,7 +331,6 @@ function createRolesEditor(deps) {
 			roleEditorState.selected = null
 			roleEditorState.saved = null
 			roleEditorState.applySkipped = false
-			roleEditorState.pickVersion += 1
 			bump()
 			if (wasBound) await applyProfile(kind)
 		}
@@ -484,7 +477,7 @@ function createRolesEditor(deps) {
 				'data-field': 'current-use',
 				'data-stage': stage,
 				'data-bound': boundName === null ? '' : String(boundName),
-				defaultValue: useValue,
+				value: useValue,
 				onChange: function (event) { void chooseUse(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : '') },
 			},
 			useOptions.length === 0
@@ -503,7 +496,7 @@ function createRolesEditor(deps) {
 			return String(name) === slot.kind ? t('roleUseDefault') : String(name)
 		}
 		function stageStateOf(slot) {
-			if (slot.kind === kind) return draft !== null ? t('roleEditorDraft') : t('roleStageEditing')
+			if (slot.kind === kind) return draft !== null ? t('roleEditorDraft') : t('roleStageCurrent')
 			return stageBoundProfile(slot.key) === null ? t('roleStageUnbound') : t('roleStageEnabled')
 		}
 		// The page header reports whether THIS profile is applied: a draft, the one
@@ -520,7 +513,7 @@ function createRolesEditor(deps) {
 			'data-field': 'profile',
 			'data-stage': stage,
 			'data-kind': kind,
-			defaultValue: pickerValue,
+			value: pickerValue,
 			onChange: function (event) {
 				const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : ''
 				selectProfile(next === '' ? kind : next, kind)
@@ -564,7 +557,7 @@ function createRolesEditor(deps) {
 							h('span', { className: 'gbt-stagedesc' }, t(slot.desc)),
 							h('span', { className: 'gbt-stagemeta' },
 								h('span', { className: 'gbt-stagetag', 'data-role-stage-state': slot.key }, stageStateOf(slot)),
-								h('span', { className: 'gbt-stagesub gbt-mono', 'data-role-stage-bound': slot.key, title: bound === null ? '' : String(bound) }, t('roleStageProfile') + ' ' + profileLabelOf(slot, bound)))),
+								h('span', { className: 'gbt-stagesub gbt-mono', 'data-role-stage-bound': slot.key, title: bound === null ? '' : String(bound) }, '\u00B7 ' + profileLabelOf(slot, bound)))),
 						h('span', { className: 'gbt-stageside' },
 							h('i', { className: 'gbt-deckdot', 'data-on': bound === null ? 'false' : 'true' }),
 							h('em', { className: 'gbt-stagelive gbt-mono', 'data-role-stage-live': slot.key }, String(live))))
@@ -574,7 +567,7 @@ function createRolesEditor(deps) {
 			h('div', { className: 'gbt-stagecreatewrap' },
 				h('details', { key: 'roster-create', className: 'gbt-stagecreate', 'data-section': 'role-create-blank', 'data-role-create-entry': 'true' },
 					h('summary', { 'data-role-create-summary': 'true' }, '＋ ' + t('roleEditorCreateBlank')),
-					h('div', { className: 'gbt-stagecreatebody', 'data-role-create-body': 'true' }, h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid })))))
+					h('div', { className: 'gbt-stagecreatebody', 'data-role-create-body': 'true' }, h(RoleCreateForm, { t: t, defaultRole: kind, onCreate: createBlank, onInvalid: createBlankInvalid })))))
 		const head = h('div', { className: 'gbt-rolehead', 'data-role-head': 'true' },
 			h('div', { className: 'gbt-roleheadmain' },
 				h('span', { className: 'gbt-deckeyebrow', 'data-role-head-stage': currentSlot.key }, 'STAGE ' + currentSlot.num + ' · ' + String(stage).toUpperCase()),
@@ -602,10 +595,14 @@ function createRolesEditor(deps) {
 		async function createBlank(name, fields) {
 			const outcome = await send('rolesCreate', { name: name, profile: fields })
 			if (outcome.ok !== true) return
+			// The entry is stage-scoped, but the form may have picked another kind:
+			// land the editor on the created kind and bind that stage, never the old one.
+			const createdKind = fields !== null && fields !== undefined && ['worker', 'reviewer', 'tester'].indexOf(fields.role) >= 0 ? fields.role : kind
+			roleEditorState.kind = createdKind
 			roleEditorState.selected = name
 			roleEditorState.saved = { name: name, profile: Object.assign({ name: name }, fields) }
 			bump()
-			await applyProfile(name)
+			await applyProfile(name, createdKind)
 		}
 		function createBlankInvalid(code) {
 			report('rolesCreate', false, { code: code, message: '' })
