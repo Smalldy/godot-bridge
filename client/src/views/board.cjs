@@ -25,6 +25,7 @@ function createBoard(deps) {
 		const boardRef = React.useRef(null)
 		const t = props.t
 		const tasks = props.snapshot.tasks
+		const loading = props.loading === true
 		const counts = props.snapshot.counts === undefined || props.snapshot.counts === null ? {} : props.snapshot.counts
 		function recentFirst(left, right) {
 			const leftAt = tcTime(left.updatedAt) === null ? tcTime(left.createdAt) : tcTime(left.updatedAt)
@@ -71,7 +72,7 @@ function createBoard(deps) {
 			if (left >= scrollLeft && left + width <= scrollLeft + clientWidth) return
 			board.scrollLeft = Math.max(0, left - 12)
 		}, [tasks.length, kindFilter, scrollTarget])
-		if (tasks.length === 0) return h('div', { className: 'gbt-empty' }, t('emptyBoard'))
+		if (tasks.length === 0 && loading !== true) return h('div', { className: 'gbt-empty' }, t('emptyBoard'))
 		function toggle(key) {
 			tcWriteColumnCollapsed(key, !tcColumnCollapsed(key))
 			if (props.onColumnToggle !== undefined) props.onColumnToggle()
@@ -79,7 +80,7 @@ function createBoard(deps) {
 		const donePreview = visibleDone.slice(0, DONE_COLUMN_PREVIEW)
 		// T-158 review: an EMPTY done lane must stay empty (and narrow). The archive
 		// summary only exists when there is something to archive.
-		const doneSummary = doneCount === 0 ? null : h(
+		const doneSummary = loading === true || doneCount === 0 ? null : h(
 			'div',
 			{ className: 'gbt-done-summary', 'data-done-summary': 'true' },
 			h('span', null, t('doneAllSummary').replace('{total}', String(doneCount)).replace('{recent}', String(donePreview.length))),
@@ -100,6 +101,7 @@ function createBoard(deps) {
 						collapsed: collapsed,
 						allTasks: tasks,
 						previewWhenCollapsed: true,
+						skeleton: loading,
 						t: t,
 						now: props.now,
 						selectedId: props.selectedId,
@@ -119,6 +121,7 @@ function createBoard(deps) {
 						selectedId: props.selectedId,
 						emptyTitle: t('noBlockedTitle'),
 						emptyHint: t('noBlockedHint'),
+						skeleton: loading,
 						onOpen: props.onOpen,
 						onVerdict: props.onVerdict,
 						onToggle: function () { toggle(group.key) },
@@ -133,6 +136,7 @@ function createBoard(deps) {
 					now: props.now,
 					selectedId: props.selectedId,
 					subcounts: group.subcounts === undefined ? null : group.subcounts,
+					skeleton: loading,
 					note: group.key === 'running' && investigatingRunning > 0 ? t('investigatingCount').replace('{n}', String(investigatingRunning)) : null,
 					onOpen: props.onOpen,
 					onVerdict: props.onVerdict,

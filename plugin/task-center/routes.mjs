@@ -195,10 +195,20 @@ export function registerTaskRoutes(ctx, options) {
       // derived event key), independent of the board's numeric seq.
       const activitySinceRaw = url === null ? null : url.searchParams.get('activitySince')
       const activitySince = activitySinceRaw === null || activitySinceRaw === '' ? null : String(activitySinceRaw)
+      // First paint: board/counts only. The panel asks for the full snapshot next.
+      const core = url !== null && url.searchParams.get('core') === '1'
       // T-110: the Team belongs to the session, so the panel snapshot is resolved
       // for the SAME session the rest of its calls speak as.
       const snapshot = await api.snapshot(project, {
         full: false,
+        // Direct API callers still get the legacy Team inventory by default;
+        // the panel opts out with ?legacy=0 and renders agentTree/scope instead.
+        legacy: url === null || url.searchParams.get('legacy') !== '0',
+        // Session cards are grouped from board owners; do not resolve every
+        // participant's workspace on the hot state path.
+        resolveSessionProjects: false,
+        doneLimit: 30,
+        core: core,
         since: Number.isFinite(since) ? since : null,
         activitySince: activitySince,
         resolvedFrom: target.resolvedFrom,

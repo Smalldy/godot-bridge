@@ -135,6 +135,9 @@ function createTaskCenter(deps) {
 		const active = dispatch.state === 'running'
 		const counts = snapshot.counts === undefined || snapshot.counts === null ? {} : snapshot.counts
 		const tasks = snapshot.tasks
+		// One stable content tree. A known project always renders the board shell;
+		// loading only swaps lane contents (skeleton -> cards), never the shell.
+		const loading = snapshot.source === 'loading' || (Array.isArray(tasks) && tasks.length === 0 && Number(counts.total) > 0)
 		const selected = selectedId === null ? null : tasks.filter(function (task) { return task.id === selectedId })[0] || null
 		const editingTask = editing === null || editing === 'new' ? null : (function () {
 			const base = tasks.filter(function (task) { return task.id === editing })[0]
@@ -353,10 +356,15 @@ function createTaskCenter(deps) {
 		const projectLabel = projectName === null ? t('projectUnknown') : projectName
 		const panelSessionId = scopePanelSession
 		const copySessionValue = panelSessionId === null ? '' : panelSessionId
-		// The pill reports the live tree, not a team: a root Agent with N live
-		// children, or a neutral "not reported" state when the Host sends no tree.
-		const agentsState = agentTree.root !== null ? 'ready' : 'none'
-		const agentsPillLabel = agentsState === 'ready' ? t('agentsPillRoot').replace('{n}', String(agentTree.members.length)) : t('agentsPillNone')
+		// The pill reports the live tree, not a team. While the core snapshot is
+		// still missing scope/agentTree it shows a spinner instead of a fake zero.
+		const metadataLoading = scope === null || agentTree.error === 'deferred'
+		const agentsState = metadataLoading ? 'loading' : agentTree.root !== null ? 'ready' : 'none'
+		const agentsPillLabel = metadataLoading
+			? t('loading')
+			: agentsState === 'ready'
+				? t('agentsPillRoot').replace('{n}', String(agentTree.members.length))
+				: t('agentsPillNone')
 		const dispatchCap = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
 		const sourceBadge =
 			projectSourceLabel(projectSourceKey(snapshot), t) === null
@@ -386,21 +394,30 @@ function createTaskCenter(deps) {
 				type: 'button',
 				className: 'gbt-chip gbt-chipbtn gbt-sessionschip',
 				'data-sessions-pill': 'true',
-				'data-sessions-count': String(scopeSessions.length),
+				'data-sessions-count': metadataLoading ? 'loading' : String(scopeSessions.length),
+				'data-loading': metadataLoading ? 'true' : undefined,
+				'aria-busy': metadataLoading ? 'true' : undefined,
 				'aria-haspopup': 'dialog',
 				'aria-expanded': sessionsOpen ? 'true' : 'false',
-				title: t('sessionsHint'),
+				disabled: metadataLoading,
+				title: metadataLoading ? t('loading') : t('sessionsHint'),
 				onClick: function () { setSessionsOpen(!sessionsOpen) },
 			},
-			scopeSessions.length === 0
-				? null
-				: h('span', { className: 'gbt-sessionsdots', 'aria-hidden': 'true' }, scopeSessions.slice(0, 5).map(function (row, index) { return h('i', { key: 'dot-' + String(index) }) })),
-			h('span', null, t('sessionsPill').replace('{n}', String(scopeSessions.length))),
-			h('span', { className: 'gbt-caret', 'aria-hidden': 'true' }, '▾'),
+			metadataLoading
+				? [h('span', { key: 'spin', className: 'gbt-spinner', 'aria-hidden': 'true' }), h('span', { key: 'text' }, t('loading'))]
+				: [
+					scopeSessions.length === 0
+						? null
+						: h('span', { key: 'dots', className: 'gbt-sessionsdots', 'aria-hidden': 'true' }, scopeSessions.slice(0, 5).map(function (row, index) { return h('i', { key: 'dot-' + String(index) }) })),
+					h('span', { key: 'count' }, t('sessionsPill').replace('{n}', String(scopeSessions.length))),
+					h('span', { key: 'caret', className: 'gbt-caret', 'aria-hidden': 'true' }, '▾'),
+				],
 		)
 		const currentPill =
 			panelSessionId === null
-				? null
+				? metadataLoading
+					? h('span', { className: 'gbt-chip gbt-currentsession', 'data-current-session-loading': 'true', 'aria-busy': 'true' }, h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' }), h('span', null, t('loading')))
+					: null
 				: h('span', { className: 'gbt-chip gbt-currentsession', 'data-current-session': panelSessionId, title: panelSessionId }, h('span', { className: 'gbt-dot', 'data-running': 'true' }), h('b', { className: 'gbt-mono' }, sessionShortOf(panelSessionId)), h('span', { className: 'gbt-tag' }, t('sessionsCurrent')))
 		const dispatchPill = h(
 			'button',
@@ -425,13 +442,18 @@ function createTaskCenter(deps) {
 				className: 'gbt-chip gbt-chipbtn gbt-agentpill',
 				'data-agent-pill': agentsState,
 				'data-agent-root': agentTree.root !== null && typeof agentTree.root.name === 'string' ? agentTree.root.name : '',
-				'data-agent-live': String(agentTree.members.length),
+				'data-agent-live': metadataLoading ? 'loading' : String(agentTree.members.length),
+				'data-loading': metadataLoading ? 'true' : undefined,
+				'aria-busy': metadataLoading ? 'true' : undefined,
 				'aria-haspopup': 'dialog',
 				'aria-expanded': agentsOpen ? 'true' : 'false',
-				title: t('agentsPopoverTitle'),
+				disabled: metadataLoading,
+				title: metadataLoading ? t('loading') : t('agentsPopoverTitle'),
 				onClick: function () { setAgentsOpen(!agentsOpen) },
 			},
-			h('span', { className: 'gbt-dot', 'data-running': agentsState === 'ready' ? 'true' : 'false' }),
+			metadataLoading
+				? h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' })
+				: h('span', { className: 'gbt-dot', 'data-running': agentsState === 'ready' ? 'true' : 'false' }),
 			h('span', null, agentsPillLabel),
 		)
 		const sessionRows =
@@ -725,6 +747,7 @@ function createTaskCenter(deps) {
 			view === 'board'
 		? h(Board, {
 					snapshot: snapshot,
+					loading: loading,
 					t: t,
 					now: now,
 					selectedId: selectedId,
@@ -759,6 +782,7 @@ function createTaskCenter(deps) {
 				? h(RolesView, { snapshot: snapshot, t: t, store: store })
 				: h(Board, {
 		snapshot: snapshot,
+		loading: loading,
 		t: t,
 		now: now,
 		selectedId: selectedId,
@@ -788,7 +812,30 @@ function createTaskCenter(deps) {
 				// While the first /state is in flight the Host is resolving the session
 				// project: show that instead of flashing an "open project" form.
 				snapshot.source === 'loading'
-			? h('p', { className: 'gbt-footnote', 'data-project-resolving': 'true' }, t('projectResolving'))
+			? h(
+					'div',
+					{ className: 'gbt-loading', 'data-project-resolving': 'true', role: 'status', 'aria-busy': 'true' },
+					h(
+						'div',
+						{ className: 'gbt-loadingline' },
+						h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' }),
+						h('p', { className: 'gbt-footnote' }, t('projectResolving')),
+					),
+					h(
+						'div',
+						{ className: 'gbt-skellanes', 'aria-hidden': 'true' },
+						[0, 1, 2, 3].map(function (index) {
+							return h(
+								'div',
+								{ key: index, className: 'gbt-skellane' },
+								h('div', { className: 'gbt-skel gbt-skelhead' }),
+								h('div', { className: 'gbt-skel gbt-skelcard' }),
+								h('div', { className: 'gbt-skel gbt-skelcard' }),
+								h('div', { className: 'gbt-skel gbt-skelcard' }),
+							)
+						}),
+					),
+				)
 			: h(
 					'div',
 					{ 'data-not-activated': 'true', 'data-unbound': snapshot.source === 'setup' ? 'true' : undefined },

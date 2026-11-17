@@ -56,4 +56,12 @@ assert.equal(lanes[4].props.summary !== undefined && lanes[4].props.summary !== 
 assert.ok(text.includes('T-1') && text.includes('T-2') && text.includes('T-3'))
 assert.equal(boardUiState.kind, 'all')
 
+// Stable shell: a known project keeps the six lanes mounted while loading; the
+// lane bodies carry skeletons instead of being replaced by an empty board.
+const loading = Board({ snapshot: { tasks: [], counts: {} }, loading: true, t: t, now: 1000, kind: 'all', selectedId: null, onOpen: () => {}, onVerdict: () => {}, onKindFilterChange: () => {}, onOpenDoneAll: () => {}, onColumnToggle: () => {} })
+const loadingLanes = loading.props.children.props.children
+assert.equal(loadingLanes.length, 6, 'the six lanes stay mounted while loading')
+assert.equal(loadingLanes.every((lane) => lane.props.skeleton === true), true, 'every lane renders skeleton cards while loading')
+assert.equal(JSON.stringify(loading).includes('gbt-empty'), false, 'loading does not render the empty-board state')
+
 console.log('PASS  Board is an independently testable view module (six lanes)')

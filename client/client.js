@@ -1603,6 +1603,13 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				'.gbt-donewhen{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary);font-family:var(--mono,monospace)}' +
 				'.gbt-skel{height:34px;border-radius:7px;background:linear-gradient(90deg,var(--dsw-alias-bg-layer-3),var(--dsw-alias-bg-module-platform),var(--dsw-alias-bg-layer-3));background-size:200% 100%;animation:gbt-skel 1.2s linear infinite}' +
 				'@keyframes gbt-skel{0%{background-position:200% 0}100%{background-position:-200% 0}}' +
+				'.gbt-loading{display:flex;flex-direction:column;gap:16px;padding:18px 18px 24px;min-height:0}' +
+				'.gbt-loadingline{display:flex;align-items:center;gap:8px}' +
+				'.gbt-loadingline .gbt-footnote{margin:0}' +
+				'.gbt-skellanes{display:flex;gap:12px;min-height:0}' +
+				'.gbt-skellane{flex:1 1 0;min-width:120px;max-width:330px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-3);padding:10px;display:flex;flex-direction:column;gap:8px}' +
+				'.gbt-skelhead{height:16px;width:58%;margin-bottom:2px}' +
+				'.gbt-skelcard{height:58px}' +
 				'.gbt-colcount{margin-left:auto;font-weight:500;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:0 7px;font-size:10px}',
 			'.gbt-cards{display:flex;flex-direction:column;gap:8px;padding:9px;overflow:auto;flex:1 1 auto;min-height:0}',
 			'.gbt-card{box-sizing:border-box;min-width:0;border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;padding:10px 11px;background:var(--dsw-alias-bg-layer-2);cursor:pointer;display:flex;flex-direction:column;gap:7px;transition:border-color .12s ease,box-shadow .12s ease}',
@@ -2201,8 +2208,10 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				'.gbt-workspacemissing span{padding:1px 6px;border-radius:999px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}' +
 				'.gbt-workspaceactions{display:flex;gap:6px;margin-left:auto}' +
 				'.gbt-workspacefade{animation:gbt-workspacefade .18s ease-out}' +
+				'.gbt-main{animation:gbt-contentin .18s ease-out}' +
 				'@keyframes gbt-workspacefade{from{opacity:0}to{opacity:1}}' +
-				'@media (prefers-reduced-motion: reduce){.gbt-spinner{animation:none;border-right-color:currentColor;opacity:.7}.gbt-workspacefade{animation-duration:.12s}}' +
+				'@keyframes gbt-contentin{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}' +
+				'@media (prefers-reduced-motion: reduce){.gbt-spinner{animation:none;border-right-color:currentColor;opacity:.7}.gbt-workspacefade{animation-duration:.12s}.gbt-main{animation:none}.gbt-skel{animation:none}}' +
 				'.gbt-sessionscards{display:flex;flex-direction:column;gap:6px}' +
 				'.gbt-sessionsrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 9px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3)}' +
 				'.gbt-sessionsrow[data-current="true"]{border-color:var(--dsw-alias-state-business-primary)}' +
@@ -3260,6 +3269,11 @@ const createTaskStore = (function () {
 			// already have and ask only for events after the last one we saw.
 			let activityCursor = null
 			let activityLog = []
+			// First paint: fire a core /state (board + counts, no host inventory)
+			// alongside the full snapshot. Whichever arrives first renders; the
+			// full answer then replaces/merges it. This keeps the panel usable
+			// while the scope/session metadata is still loading.
+			let coreTried = false
 			const listeners = new Set()
 			let loading = null
 			let timer = null
@@ -3304,10 +3318,33 @@ const createTaskStore = (function () {
 				// No pin means NO ?project=: the Host resolves the session workspace and
 				// answers with the project, which is the whole point of T-90.
 				const pinned = tcPinnedProject()
-				let url = pinned === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(pinned)
+				// The v3 panel consumes agentTree/scope. ?legacy=0 keeps the first
+				// paint off the host-wide Team inventory it no longer renders.
+				let url = pinned === null ? TC_STATE_URL + '?legacy=0' : TC_STATE_URL + '?project=' + encodeURIComponent(pinned) + '&legacy=0'
 				if (snapshot.seq !== null && snapshot.seq !== undefined) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'since=' + String(snapshot.seq)
 				if (activityCursor !== null) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'activitySince=' + encodeURIComponent(activityCursor)
 				url = tcWithSession(url)
+				// Core first paint runs in parallel with the full request. It only
+				// lands while the panel is still on its initial skeleton.
+				if (!coreTried && snapshot.source === 'loading' && typeof window !== 'undefined' && window !== null) {
+					coreTried = true
+					const coreUrl = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'core=1'
+					void (async function () {
+						try {
+							const corePayload = await fetchJson(coreUrl, { headers: { accept: 'application/json' } })
+							if (snapshot.source !== 'loading') return
+							if (corePayload && corePayload.ok === true && Array.isArray(corePayload.tasks)) {
+								// Never paint an empty core board over a known non-empty board:
+								// a zero-task delta/edge answer is not useful as first paint.
+								const total = corePayload.counts !== null && corePayload.counts !== undefined && Number.isFinite(corePayload.counts.total) ? corePayload.counts.total : 0
+								if (corePayload.tasks.length === 0 && total > 0) return
+								emit(tcSnapshot(corePayload, 'host', ''))
+							}
+						} catch (error) {
+							/* the full request below is the fallback */
+						}
+					})()
+				}
 				loading = (async function () {
 					try {
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
@@ -3944,10 +3981,11 @@ function createColumn(deps) {
 		const count = typeof props.count === 'number' ? props.count : group.tasks.length
 		const visible = props.visibleTasks !== undefined ? props.visibleTasks : group.tasks
 		const showBody = collapsed !== true || props.previewWhenCollapsed === true
+		const skeleton = props.skeleton === true
 		// T-159: an empty lane only becomes a narrow rail for 待派发 / 阻塞. The three
 		// active lanes and 完成 keep their full share so a wide window is filled.
 		const narrowable = group.key === 'dispatch' || group.key === 'blocked'
-		const empty = narrowable && visible.length === 0 && (props.summary === undefined || props.summary === null)
+		const empty = skeleton !== true && narrowable && visible.length === 0 && (props.summary === undefined || props.summary === null)
 		const subcounts = props.subcounts === undefined || props.subcounts === null ? null : props.subcounts
 		const head = h(
 			'div',
@@ -3981,7 +4019,7 @@ function createColumn(deps) {
 
 		return h(
 			'section',
-			{ className: 'gbt-col', 'data-group': group.key, 'data-collapsed': collapsed ? 'true' : 'false', 'data-empty': empty ? 'true' : 'false' },
+			{ className: 'gbt-col', 'data-group': group.key, 'data-collapsed': collapsed ? 'true' : 'false', 'data-empty': empty ? 'true' : 'false', 'data-loading': skeleton ? 'true' : undefined },
 			head,
 			showBody === false
 				? null
@@ -3990,12 +4028,16 @@ function createColumn(deps) {
 					{ className: 'gbt-cards' },
 					props.summary === undefined || props.summary === null ? null : props.summary,
 					visible.length === 0
-						? h(
-							'div',
-							{ className: 'gbt-empty gbt-emptyslim', 'data-col-empty': group.key },
-							props.emptyTitle === undefined || props.emptyTitle === null ? null : h('span', { className: 'gbt-emptytitle' }, props.emptyTitle),
-							h('span', null, props.emptyHint === undefined || props.emptyHint === null ? t('noTasks') : props.emptyHint),
-						)
+						? skeleton === true
+							? [0, 1, 2].map(function (index) {
+								return h('div', { key: 'skeleton-' + String(index), className: 'gbt-skel gbt-skelcard', 'data-card-skeleton': 'true' })
+							})
+							: h(
+								'div',
+								{ className: 'gbt-empty gbt-emptyslim', 'data-col-empty': group.key },
+								props.emptyTitle === undefined || props.emptyTitle === null ? null : h('span', { className: 'gbt-emptytitle' }, props.emptyTitle),
+								h('span', null, props.emptyHint === undefined || props.emptyHint === null ? t('noTasks') : props.emptyHint),
+							)
 						: visible.map(function (task) {
 							return h(TaskCard, {
 								key: task.id,
@@ -4053,6 +4095,7 @@ function createBoard(deps) {
 		const boardRef = React.useRef(null)
 		const t = props.t
 		const tasks = props.snapshot.tasks
+		const loading = props.loading === true
 		const counts = props.snapshot.counts === undefined || props.snapshot.counts === null ? {} : props.snapshot.counts
 		function recentFirst(left, right) {
 			const leftAt = tcTime(left.updatedAt) === null ? tcTime(left.createdAt) : tcTime(left.updatedAt)
@@ -4099,7 +4142,7 @@ function createBoard(deps) {
 			if (left >= scrollLeft && left + width <= scrollLeft + clientWidth) return
 			board.scrollLeft = Math.max(0, left - 12)
 		}, [tasks.length, kindFilter, scrollTarget])
-		if (tasks.length === 0) return h('div', { className: 'gbt-empty' }, t('emptyBoard'))
+		if (tasks.length === 0 && loading !== true) return h('div', { className: 'gbt-empty' }, t('emptyBoard'))
 		function toggle(key) {
 			tcWriteColumnCollapsed(key, !tcColumnCollapsed(key))
 			if (props.onColumnToggle !== undefined) props.onColumnToggle()
@@ -4107,7 +4150,7 @@ function createBoard(deps) {
 		const donePreview = visibleDone.slice(0, DONE_COLUMN_PREVIEW)
 		// T-158 review: an EMPTY done lane must stay empty (and narrow). The archive
 		// summary only exists when there is something to archive.
-		const doneSummary = doneCount === 0 ? null : h(
+		const doneSummary = loading === true || doneCount === 0 ? null : h(
 			'div',
 			{ className: 'gbt-done-summary', 'data-done-summary': 'true' },
 			h('span', null, t('doneAllSummary').replace('{total}', String(doneCount)).replace('{recent}', String(donePreview.length))),
@@ -4128,6 +4171,7 @@ function createBoard(deps) {
 						collapsed: collapsed,
 						allTasks: tasks,
 						previewWhenCollapsed: true,
+						skeleton: loading,
 						t: t,
 						now: props.now,
 						selectedId: props.selectedId,
@@ -4147,6 +4191,7 @@ function createBoard(deps) {
 						selectedId: props.selectedId,
 						emptyTitle: t('noBlockedTitle'),
 						emptyHint: t('noBlockedHint'),
+						skeleton: loading,
 						onOpen: props.onOpen,
 						onVerdict: props.onVerdict,
 						onToggle: function () { toggle(group.key) },
@@ -4161,6 +4206,7 @@ function createBoard(deps) {
 					now: props.now,
 					selectedId: props.selectedId,
 					subcounts: group.subcounts === undefined ? null : group.subcounts,
+					skeleton: loading,
 					note: group.key === 'running' && investigatingRunning > 0 ? t('investigatingCount').replace('{n}', String(investigatingRunning)) : null,
 					onOpen: props.onOpen,
 					onVerdict: props.onVerdict,
@@ -7909,6 +7955,9 @@ function createTaskCenter(deps) {
 		const active = dispatch.state === 'running'
 		const counts = snapshot.counts === undefined || snapshot.counts === null ? {} : snapshot.counts
 		const tasks = snapshot.tasks
+		// One stable content tree. A known project always renders the board shell;
+		// loading only swaps lane contents (skeleton -> cards), never the shell.
+		const loading = snapshot.source === 'loading' || (Array.isArray(tasks) && tasks.length === 0 && Number(counts.total) > 0)
 		const selected = selectedId === null ? null : tasks.filter(function (task) { return task.id === selectedId })[0] || null
 		const editingTask = editing === null || editing === 'new' ? null : (function () {
 			const base = tasks.filter(function (task) { return task.id === editing })[0]
@@ -8127,10 +8176,15 @@ function createTaskCenter(deps) {
 		const projectLabel = projectName === null ? t('projectUnknown') : projectName
 		const panelSessionId = scopePanelSession
 		const copySessionValue = panelSessionId === null ? '' : panelSessionId
-		// The pill reports the live tree, not a team: a root Agent with N live
-		// children, or a neutral "not reported" state when the Host sends no tree.
-		const agentsState = agentTree.root !== null ? 'ready' : 'none'
-		const agentsPillLabel = agentsState === 'ready' ? t('agentsPillRoot').replace('{n}', String(agentTree.members.length)) : t('agentsPillNone')
+		// The pill reports the live tree, not a team. While the core snapshot is
+		// still missing scope/agentTree it shows a spinner instead of a fake zero.
+		const metadataLoading = scope === null || agentTree.error === 'deferred'
+		const agentsState = metadataLoading ? 'loading' : agentTree.root !== null ? 'ready' : 'none'
+		const agentsPillLabel = metadataLoading
+			? t('loading')
+			: agentsState === 'ready'
+				? t('agentsPillRoot').replace('{n}', String(agentTree.members.length))
+				: t('agentsPillNone')
 		const dispatchCap = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
 		const sourceBadge =
 			projectSourceLabel(projectSourceKey(snapshot), t) === null
@@ -8160,21 +8214,30 @@ function createTaskCenter(deps) {
 				type: 'button',
 				className: 'gbt-chip gbt-chipbtn gbt-sessionschip',
 				'data-sessions-pill': 'true',
-				'data-sessions-count': String(scopeSessions.length),
+				'data-sessions-count': metadataLoading ? 'loading' : String(scopeSessions.length),
+				'data-loading': metadataLoading ? 'true' : undefined,
+				'aria-busy': metadataLoading ? 'true' : undefined,
 				'aria-haspopup': 'dialog',
 				'aria-expanded': sessionsOpen ? 'true' : 'false',
-				title: t('sessionsHint'),
+				disabled: metadataLoading,
+				title: metadataLoading ? t('loading') : t('sessionsHint'),
 				onClick: function () { setSessionsOpen(!sessionsOpen) },
 			},
-			scopeSessions.length === 0
-				? null
-				: h('span', { className: 'gbt-sessionsdots', 'aria-hidden': 'true' }, scopeSessions.slice(0, 5).map(function (row, index) { return h('i', { key: 'dot-' + String(index) }) })),
-			h('span', null, t('sessionsPill').replace('{n}', String(scopeSessions.length))),
-			h('span', { className: 'gbt-caret', 'aria-hidden': 'true' }, '▾'),
+			metadataLoading
+				? [h('span', { key: 'spin', className: 'gbt-spinner', 'aria-hidden': 'true' }), h('span', { key: 'text' }, t('loading'))]
+				: [
+					scopeSessions.length === 0
+						? null
+						: h('span', { key: 'dots', className: 'gbt-sessionsdots', 'aria-hidden': 'true' }, scopeSessions.slice(0, 5).map(function (row, index) { return h('i', { key: 'dot-' + String(index) }) })),
+					h('span', { key: 'count' }, t('sessionsPill').replace('{n}', String(scopeSessions.length))),
+					h('span', { key: 'caret', className: 'gbt-caret', 'aria-hidden': 'true' }, '▾'),
+				],
 		)
 		const currentPill =
 			panelSessionId === null
-				? null
+				? metadataLoading
+					? h('span', { className: 'gbt-chip gbt-currentsession', 'data-current-session-loading': 'true', 'aria-busy': 'true' }, h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' }), h('span', null, t('loading')))
+					: null
 				: h('span', { className: 'gbt-chip gbt-currentsession', 'data-current-session': panelSessionId, title: panelSessionId }, h('span', { className: 'gbt-dot', 'data-running': 'true' }), h('b', { className: 'gbt-mono' }, sessionShortOf(panelSessionId)), h('span', { className: 'gbt-tag' }, t('sessionsCurrent')))
 		const dispatchPill = h(
 			'button',
@@ -8199,13 +8262,18 @@ function createTaskCenter(deps) {
 				className: 'gbt-chip gbt-chipbtn gbt-agentpill',
 				'data-agent-pill': agentsState,
 				'data-agent-root': agentTree.root !== null && typeof agentTree.root.name === 'string' ? agentTree.root.name : '',
-				'data-agent-live': String(agentTree.members.length),
+				'data-agent-live': metadataLoading ? 'loading' : String(agentTree.members.length),
+				'data-loading': metadataLoading ? 'true' : undefined,
+				'aria-busy': metadataLoading ? 'true' : undefined,
 				'aria-haspopup': 'dialog',
 				'aria-expanded': agentsOpen ? 'true' : 'false',
-				title: t('agentsPopoverTitle'),
+				disabled: metadataLoading,
+				title: metadataLoading ? t('loading') : t('agentsPopoverTitle'),
 				onClick: function () { setAgentsOpen(!agentsOpen) },
 			},
-			h('span', { className: 'gbt-dot', 'data-running': agentsState === 'ready' ? 'true' : 'false' }),
+			metadataLoading
+				? h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' })
+				: h('span', { className: 'gbt-dot', 'data-running': agentsState === 'ready' ? 'true' : 'false' }),
 			h('span', null, agentsPillLabel),
 		)
 		const sessionRows =
@@ -8499,6 +8567,7 @@ function createTaskCenter(deps) {
 			view === 'board'
 		? h(Board, {
 					snapshot: snapshot,
+					loading: loading,
 					t: t,
 					now: now,
 					selectedId: selectedId,
@@ -8533,6 +8602,7 @@ function createTaskCenter(deps) {
 				? h(RolesView, { snapshot: snapshot, t: t, store: store })
 				: h(Board, {
 		snapshot: snapshot,
+		loading: loading,
 		t: t,
 		now: now,
 		selectedId: selectedId,
@@ -8562,7 +8632,30 @@ function createTaskCenter(deps) {
 				// While the first /state is in flight the Host is resolving the session
 				// project: show that instead of flashing an "open project" form.
 				snapshot.source === 'loading'
-			? h('p', { className: 'gbt-footnote', 'data-project-resolving': 'true' }, t('projectResolving'))
+			? h(
+					'div',
+					{ className: 'gbt-loading', 'data-project-resolving': 'true', role: 'status', 'aria-busy': 'true' },
+					h(
+						'div',
+						{ className: 'gbt-loadingline' },
+						h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' }),
+						h('p', { className: 'gbt-footnote' }, t('projectResolving')),
+					),
+					h(
+						'div',
+						{ className: 'gbt-skellanes', 'aria-hidden': 'true' },
+						[0, 1, 2, 3].map(function (index) {
+							return h(
+								'div',
+								{ key: index, className: 'gbt-skellane' },
+								h('div', { className: 'gbt-skel gbt-skelhead' }),
+								h('div', { className: 'gbt-skel gbt-skelcard' }),
+								h('div', { className: 'gbt-skel gbt-skelcard' }),
+								h('div', { className: 'gbt-skel gbt-skelcard' }),
+							)
+						}),
+					),
+				)
 			: h(
 					'div',
 					{ 'data-not-activated': 'true', 'data-unbound': snapshot.source === 'setup' ? 'true' : undefined },

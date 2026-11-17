@@ -27,6 +27,11 @@
 			// already have and ask only for events after the last one we saw.
 			let activityCursor = null
 			let activityLog = []
+			// First paint: fire a core /state (board + counts, no host inventory)
+			// alongside the full snapshot. Whichever arrives first renders; the
+			// full answer then replaces/merges it. This keeps the panel usable
+			// while the scope/session metadata is still loading.
+			let coreTried = false
 			const listeners = new Set()
 			let loading = null
 			let timer = null
@@ -71,10 +76,33 @@
 				// No pin means NO ?project=: the Host resolves the session workspace and
 				// answers with the project, which is the whole point of T-90.
 				const pinned = tcPinnedProject()
-				let url = pinned === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(pinned)
+				// The v3 panel consumes agentTree/scope. ?legacy=0 keeps the first
+				// paint off the host-wide Team inventory it no longer renders.
+				let url = pinned === null ? TC_STATE_URL + '?legacy=0' : TC_STATE_URL + '?project=' + encodeURIComponent(pinned) + '&legacy=0'
 				if (snapshot.seq !== null && snapshot.seq !== undefined) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'since=' + String(snapshot.seq)
 				if (activityCursor !== null) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'activitySince=' + encodeURIComponent(activityCursor)
 				url = tcWithSession(url)
+				// Core first paint runs in parallel with the full request. It only
+				// lands while the panel is still on its initial skeleton.
+				if (!coreTried && snapshot.source === 'loading' && typeof window !== 'undefined' && window !== null) {
+					coreTried = true
+					const coreUrl = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'core=1'
+					void (async function () {
+						try {
+							const corePayload = await fetchJson(coreUrl, { headers: { accept: 'application/json' } })
+							if (snapshot.source !== 'loading') return
+							if (corePayload && corePayload.ok === true && Array.isArray(corePayload.tasks)) {
+								// Never paint an empty core board over a known non-empty board:
+								// a zero-task delta/edge answer is not useful as first paint.
+								const total = corePayload.counts !== null && corePayload.counts !== undefined && Number.isFinite(corePayload.counts.total) ? corePayload.counts.total : 0
+								if (corePayload.tasks.length === 0 && total > 0) return
+								emit(tcSnapshot(corePayload, 'host', ''))
+							}
+						} catch (error) {
+							/* the full request below is the fallback */
+						}
+					})()
+				}
 				loading = (async function () {
 					try {
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })

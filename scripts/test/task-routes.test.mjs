@@ -5189,7 +5189,7 @@ rig.scheduler.dispose()
   const fullRes = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(PROJECT), {})
   const full = fullRes.json()
   const bytes = Buffer.byteLength(fullRes.text, 'utf8')
-  check('an 81-card snapshot is under 200 KB', full.ok === true && full.tasks.length === 81 && bytes < 200 * 1024, String(bytes) + ' bytes')
+  check('a state snapshot caps done cards to the recent 30 and stays under 200 KB', full.ok === true && full.tasks.length === 30 && bytes < 200 * 1024, String(bytes) + ' bytes')
   check(
     'the summary drops the detail-class merge/test strings but keeps status and counts',
     full.tasks[0].merge.status === 'merged' &&

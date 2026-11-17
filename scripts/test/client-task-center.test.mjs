@@ -46,6 +46,7 @@ const deps = {
     details: {},
     locks: [],
     agentTree: agentTree,
+    scope: { panelSession: null, sessionSummaries: [] },
     roles: null,
     worktrees: null,
     environment: null,

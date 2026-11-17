@@ -3035,7 +3035,9 @@ export function createApi(ctx, options) {
    * session that is only idle is stale by the handoff window, not the 6h Lead
    * window; an id with no evidence at all stays 'unknown'.
    */
-  async function sessionSummariesOf(projectPath, board, sessions, handoffRows) {
+  async function sessionSummariesOf(projectPath, board, sessions, handoffRows, options) {
+    const opts = options === undefined || options === null ? {} : options
+    const resolveProject = opts.resolveProject !== false
     const rows = []
     if (!Array.isArray(sessions) || sessions.length === 0) return rows
     const liveness = new Map((Array.isArray(handoffRows) ? handoffRows : []).map((row) => [row.sessionId, row]))
@@ -3043,11 +3045,13 @@ export function createApi(ctx, options) {
     for (const entry of sessions) {
       const sessionId = entry.sessionId
       let sessionProject = null
-      try {
-        const requester = await requesterRootOf(sessionId)
-        sessionProject = requester.root
-      } catch (error) {
-        sessionProject = null
+      if (resolveProject) {
+        try {
+          const requester = await requesterRootOf(sessionId)
+          sessionProject = requester.root
+        } catch (error) {
+          sessionProject = null
+        }
       }
       const owned = tasks.filter((task) => task !== null && task !== undefined && task.ownerSession === sessionId)
       const active = owned.filter((task) => task.status === 'running' || task.status === 'reviewing' || task.status === 'testing').length
@@ -3134,7 +3138,12 @@ export function createApi(ctx, options) {
       // 'registry' | 'board-owners' | 'none' — where the participation set came from.
       projectSessionsSource: read.source,
       panelSessionParticipates: panelSessionParticipates,
-      sessionSummaries: o.summaries === false ? [] : await sessionSummariesOf(projectPath, board, sessions, handoff.sessions),
+      sessionSummaries: o.summaries === false ? [] : await sessionSummariesOf(projectPath, board, sessions, handoff.sessions, {
+        // The panel renders each session's own project from the board root; the
+        // per-session workspace lookup is only for direct API readers. On /state
+        // it was 32 sequential host lookups on every poll.
+        resolveProject: o.resolveSessionProjects !== false,
+      }),
       currentSessionProject: currentSessionProject,
       // T-153: foreign in-progress cards + liveness + takeover eligibility.
       handoff: handoff,
@@ -3582,6 +3591,10 @@ export function createApi(ctx, options) {
     // for it explicitly or names the project it belongs to — nothing is inferred.
     const panelSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
     const summaryOnly = opts.full === false
+    // Core is the first-paint answer: board + counts + dispatch, no host-wide
+    // session/worktree/environment/agent inventory. The panel immediately renders
+    // it, then asks for the full snapshot in the background.
+    const core = opts.core === true
     projectPath = resolve(projectPath)
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
@@ -3592,35 +3605,48 @@ export function createApi(ctx, options) {
     // a pending task, and the stale board would then drop its locks.
     state.sweepLocks()
     reconcileLocks(board)
-    const archive = await archiveInfo(projectPath, now)
-    const roleRead = await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
+    const archive = core
+      ? { archivedCount: null, archiveRange: null, archiveYears: [] }
+      : await archiveInfo(projectPath, now)
+    const roleRead = core
+      ? { config: null }
+      : await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
     // T-152: the pool is resolved for the PANEL SESSION only. With no session at
     // all this is the documented LEGACY single-team fallback — it is labelled as
     // such below and never presented as the project's team.
-    const workers = workerPool(ctx, board, { roleConfig: roleRead.config, sessionId: panelSession })
-    // T-139: make the executor team's project EXPLICIT. The member table is still
-    // the request session's Team (T-122/T-130). This only says which project that
-    // team lives in, and whether it is the project this snapshot is for — so the
-    // panel can stop presenting another project's Team as if it were this one.
-    const workersTeamSession =
-      workers.leadInfo !== null && workers.leadInfo !== undefined && typeof workers.leadInfo.session === 'string' && workers.leadInfo.session !== ''
-        ? workers.leadInfo.session
-        : typeof workers.session === 'string' && workers.session !== ''
-          ? workers.session
-          : null
-    let workersTeamProject = null
-    if (workersTeamSession !== null) {
-      try {
-        const teamRoot = await requesterRootOf(workersTeamSession)
-        workersTeamProject = typeof teamRoot.root === 'string' && teamRoot.root !== '' ? teamRoot.root : null
-      } catch (error) {
-        workersTeamProject = null
+    // Legacy Team/worker inventory is not read by the v3 panel. The /state path
+    // opts out of it: the state poll is the hot path and these blocks require a
+    // host-wide Lead scan plus per-Lead roster reads on every answer.
+    const includeLegacyInventory = core !== true && opts.legacy !== false
+    let workersView = null
+    if (includeLegacyInventory) {
+      const workers = workerPool(ctx, board, { roleConfig: roleRead.config, sessionId: panelSession })
+      // T-139: make the executor team's project EXPLICIT. The member table is still
+      // the request session's Team (T-122/T-130). This only says which project that
+      // team lives in, and whether it is the project this snapshot is for — so the
+      // panel can stop presenting another project's Team as if it were this one.
+      const workersTeamSession =
+        workers.leadInfo !== null && workers.leadInfo !== undefined && typeof workers.leadInfo.session === 'string' && workers.leadInfo.session !== ''
+          ? workers.leadInfo.session
+          : typeof workers.session === 'string' && workers.session !== ''
+            ? workers.session
+            : null
+      let workersTeamProject = null
+      if (workersTeamSession !== null) {
+        try {
+          const teamRoot = await requesterRootOf(workersTeamSession)
+          workersTeamProject = typeof teamRoot.root === 'string' && teamRoot.root !== '' ? teamRoot.root : null
+        } catch (error) {
+          workersTeamProject = null
+        }
       }
+      const workersTeamProjectMatch = workersTeamProject === null ? null : projectIdOf(workersTeamProject) === projectIdOf(projectPath)
+      workersView = Object.assign({}, workers, { project: workersTeamProject, projectMatch: workersTeamProjectMatch })
     }
-    const workersTeamProjectMatch = workersTeamProject === null ? null : projectIdOf(workersTeamProject) === projectIdOf(projectPath)
-    const workersView = Object.assign({}, workers, { project: workersTeamProject, projectMatch: workersTeamProjectMatch })
     const snapshotTeamView = null
-    const worktrees = await worktreeSnapshot(projectPath, board)
+    const worktrees = core
+      ? { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] }
+      : await worktreeSnapshot(projectPath, board)
     const isoOf = (slot) => (slot === null || slot.at === null ? null : new Date(slot.at).toISOString())
     const buildTask = (task) => {
       const view = summaryOnly
@@ -3688,18 +3714,40 @@ export function createApi(ctx, options) {
         }
       }
     }
+    // The board lane only renders a done preview; done-all is served by /list.
+    // Keep the hot /state payload to the recent tail instead of shipping every
+    // historical done card on first paint.
+    if (full && summaryOnly && Number.isFinite(opts.doneLimit)) {
+      const limit = Math.max(1, Math.min(200, Math.floor(opts.doneLimit)))
+      const keepDone = new Set(
+        allTasks
+          .filter((task) => task.status === 'done')
+          .slice()
+          .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)))
+          .slice(0, limit)
+          .map((task) => String(task.id)),
+      )
+      // Drop old done cards without moving the survivors: STATUS_RANK order is
+      // part of the panel contract (done before cancelled).
+      tasks = allTasks.filter((task) => task.status !== 'done' || keepDone.has(String(task.id)))
+    }
     const boardSize = await boardSizeOf(projectPath, board)
     const registryStatus = typeof state.registryStatus === 'function' ? state.registryStatus() : null
     const projectRef = projectRefOf(projectPath)
     // T-152: the project/session scopes are an EXPLICIT source, not something the
     // panel has to infer from "the current team". The board belongs to the
     // project; each participating session owns its own team and its own cards.
-    const scope = await projectScopeOf(projectPath, board, panelSession)
+    const scope = core ? null : await projectScopeOf(projectPath, board, panelSession, {
+      resolveSessionProjects: opts.resolveSessionProjects !== false,
+    })
     // T-152: consistency is about THIS board vs THIS panel session — never about
     // which project the host happened to drive last. activeProjects[0] is gone
     // from this decision: a host that recently drove another project is not a
     // warning; a panel session whose own project is a different one is.
-    const boardIsPanelProject = scope.currentSessionProject === null ? null : projectIdOf(scope.currentSessionProject) === projectRef.id
+    const boardIsPanelProject =
+      scope === null || scope.currentSessionProject === null
+        ? null
+        : projectIdOf(scope.currentSessionProject) === projectRef.id
     const projectWarning =
       boardIsPanelProject === false
         ? 'this board (' +
@@ -3719,8 +3767,8 @@ export function createApi(ctx, options) {
       // thing these blocks can describe is the legacy single-team view, which is
       // labelled as such instead of being passed off as the project's team.
       scope: panelSession === null ? 'legacy-single-team' : 'panel-session',
-      participatesInBoardProject: scope.panelSessionParticipates,
-      boardProject: scope.boardProject.root,
+      participatesInBoardProject: scope === null ? null : scope.panelSessionParticipates,
+      boardProject: scope === null ? projectRef.root : scope.boardProject.root,
       panelSession: panelSession,
     }
     return ok({
@@ -3745,38 +3793,40 @@ export function createApi(ctx, options) {
       archiveRange: archive.archiveRange,
       updatedAt: board.updatedAt,
       dispatch: board.dispatch,
-      roles: roleRead.config,
-      rolePreviews: rolePreviewsFor(projectPath, roleRead.config),
+      roles: core ? null : roleRead.config,
+      rolePreviews: core ? null : rolePreviewsFor(projectPath, roleRead.config),
       // T-152: the pool is the PANEL SESSION's pool; the project's board is the
       // project's. The fields say which is which instead of implying one team.
-      workers: Object.assign({}, workersView, sessionScopeFields),
-      // T-109: what the Team service ACTUALLY exposes — every Lead it can see,
-      // with its session and roster size, plus how many agents were scanned. This
-      // is what answers "how many Leading teams does the plugin see?", which a
-      // wrong-session dispatch otherwise leaves to inference.
-      // T-152: this is the WHOLE HOST's Lead inventory, not this project's team.
-      teams: Object.assign({}, await teamsSnapshot(panelSession), { scope: 'host-inventory', panelSession: panelSession }),
+      // v3 keeps these fields for old direct-API readers only. /state opts out:
+      // the panel uses agentTree + scope instead, and the host-wide Team scan is
+      // what made the first paint pay for data no v3 view renders.
+      workers: includeLegacyInventory ? Object.assign({}, workersView, sessionScopeFields) : null,
+      // T-109/T-152: legacy whole-host Team inventory, only when a direct API
+      // caller asked for the full snapshot.
+      teams: includeLegacyInventory ? Object.assign({}, await teamsSnapshot(panelSession), { scope: 'host-inventory', panelSession: panelSession }) : null,
       // Agents are the live Team members (lead + teammates), with their kind,
       // session and current task. System/host work is NOT listed here.
-      agents: Object.assign(
-        {
-          lead: workers.leadInfo,
-          members: workers.members,
-          kinds: workers.kinds,
-          roles: workers.roles,
-          // T-122: the whole-host inventory is a separate field; the member table
-          // above is only this session's team. T-152: the block carries its scope
-          // and never stands in for the project's team.
-          inventory: agentInventoryRows(panelSession),
-        },
-        sessionScopeFields,
-      ),
+      agents: includeLegacyInventory
+        ? Object.assign(
+            {
+              lead: workersView === null ? null : workersView.leadInfo,
+              members: workersView === null ? [] : workersView.members,
+              kinds: workersView === null ? [] : workersView.kinds,
+              roles: workersView === null ? [] : workersView.roles,
+              // T-122: the whole-host inventory is a separate field; the member table
+              // above is only this session's team. T-152: the block carries its scope
+              // and never stands in for the project's team.
+              inventory: agentInventoryRows(panelSession),
+            },
+            sessionScopeFields,
+          )
+        : null,
       worktrees: worktrees,
       activity: activitySnapshot(),
       // T-111: the status timeline is DERIVED from the board (task history + merge
       // records) on every request, so it survives restarts and no heartbeat can
       // flush it. `since` makes the answer incremental.
-      activityEvents: boardTimeline(board, {
+      activityEvents: core ? null : boardTimeline(board, {
         since: typeof opts.activitySince === 'string' ? opts.activitySince : null,
         limit: Number.isFinite(opts.activityLimit) ? opts.activityLimit : undefined,
       }),
@@ -3806,18 +3856,20 @@ export function createApi(ctx, options) {
       scheduler: scheduler === null ? null : scheduler.status(projectPath),
       // T-108: "is the main tree clean, and when was that checked" — the panel uses
       // it to tell a merge-window blip from a really dirty checkout.
-      environment: await environmentSnapshot(projectPath, now, board),
+      environment: core ? null : await environmentSnapshot(projectPath, now, board),
       // v3: the live execution tree is the root Agent plus every live descendant.
       // It is the only membership view the new panel uses; `team` below remains
       // for the old direct API surface until that surface is deleted.
-      agentTree: await agentTreeSnapshot(panelSession, board),
+      agentTree: core
+        ? { available: false, root: null, members: [], count: 0, error: 'deferred' }
+        : await agentTreeSnapshot(panelSession, board),
       // T-110/T-152: the PANEL SESSION's team (ok/lead/source/members), annotated
       // with its scope; sessionSummaries is where every project session's team
       // lives. nextStep is the panel session's own next step, never the project's.
       // v3: the panel reads agentTree, not the retired Team roster. Keep the
       // field null so an old client cannot mistake a stale team for execution.
       team: null,
-      nextStep: nextStepForScope(scope, null),
+      nextStep: core ? null : nextStepForScope(scope, null),
       serverTime: new Date(now).toISOString(),
     })
   }

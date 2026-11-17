@@ -16,10 +16,11 @@ function createColumn(deps) {
 		const count = typeof props.count === 'number' ? props.count : group.tasks.length
 		const visible = props.visibleTasks !== undefined ? props.visibleTasks : group.tasks
 		const showBody = collapsed !== true || props.previewWhenCollapsed === true
+		const skeleton = props.skeleton === true
 		// T-159: an empty lane only becomes a narrow rail for 待派发 / 阻塞. The three
 		// active lanes and 完成 keep their full share so a wide window is filled.
 		const narrowable = group.key === 'dispatch' || group.key === 'blocked'
-		const empty = narrowable && visible.length === 0 && (props.summary === undefined || props.summary === null)
+		const empty = skeleton !== true && narrowable && visible.length === 0 && (props.summary === undefined || props.summary === null)
 		const subcounts = props.subcounts === undefined || props.subcounts === null ? null : props.subcounts
 		const head = h(
 			'div',
@@ -53,7 +54,7 @@ function createColumn(deps) {
 
 		return h(
 			'section',
-			{ className: 'gbt-col', 'data-group': group.key, 'data-collapsed': collapsed ? 'true' : 'false', 'data-empty': empty ? 'true' : 'false' },
+			{ className: 'gbt-col', 'data-group': group.key, 'data-collapsed': collapsed ? 'true' : 'false', 'data-empty': empty ? 'true' : 'false', 'data-loading': skeleton ? 'true' : undefined },
 			head,
 			showBody === false
 				? null
@@ -62,12 +63,16 @@ function createColumn(deps) {
 					{ className: 'gbt-cards' },
 					props.summary === undefined || props.summary === null ? null : props.summary,
 					visible.length === 0
-						? h(
-							'div',
-							{ className: 'gbt-empty gbt-emptyslim', 'data-col-empty': group.key },
-							props.emptyTitle === undefined || props.emptyTitle === null ? null : h('span', { className: 'gbt-emptytitle' }, props.emptyTitle),
-							h('span', null, props.emptyHint === undefined || props.emptyHint === null ? t('noTasks') : props.emptyHint),
-						)
+						? skeleton === true
+							? [0, 1, 2].map(function (index) {
+								return h('div', { key: 'skeleton-' + String(index), className: 'gbt-skel gbt-skelcard', 'data-card-skeleton': 'true' })
+							})
+							: h(
+								'div',
+								{ className: 'gbt-empty gbt-emptyslim', 'data-col-empty': group.key },
+								props.emptyTitle === undefined || props.emptyTitle === null ? null : h('span', { className: 'gbt-emptytitle' }, props.emptyTitle),
+								h('span', null, props.emptyHint === undefined || props.emptyHint === null ? t('noTasks') : props.emptyHint),
+							)
 						: visible.map(function (task) {
 							return h(TaskCard, {
 								key: task.id,

@@ -43,7 +43,7 @@ globalThis.fetch = async (url) => {
   return { json: async () => ({ ok: true, full: true, project: '/p', tasks: [], counts: {} }) }
 }
 await store.load()
-assert.equal(fetched[0], '/state')
+assert.equal(fetched[0], '/state?legacy=0')
 assert.equal(store.getSnapshot().project, '/p')
 assert.equal(store.getSnapshot().source, 'host')
 

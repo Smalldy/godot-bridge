@@ -42,4 +42,19 @@ const collapsed = Column({
 assert.equal(collapsed.props['data-collapsed'], 'true')
 assert.equal(JSON.stringify(collapsed).includes('T-1'), false)
 
+const skeleton = Column({
+  group: { key: 'running', label: 'Running', tasks: [] },
+  allTasks: [],
+  t: t,
+  now: 1000,
+  selectedId: null,
+  onOpen: () => {},
+  onVerdict: () => {},
+  onToggle: () => {},
+  skeleton: true,
+})
+assert.equal(skeleton.props['data-loading'], 'true')
+assert.equal(JSON.stringify(skeleton).includes('data-card-skeleton'), true)
+assert.equal(JSON.stringify(skeleton).includes('noTasks'), false)
+
 console.log('PASS  Column is an independently testable view module')
