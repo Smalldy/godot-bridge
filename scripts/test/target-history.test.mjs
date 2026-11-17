@@ -272,7 +272,7 @@ function captureConsole(run) {
   if (result.skipped !== 'unknown-target') {
     check(
       'every out-of-band hotfix is honored as a declared emergency exception',
-      result.exceptions === 3 &&
+      result.exceptions === 4 &&
         [
           '2c895b4eb95c4435d0df03365205870f006ae07b',
           '745c7b0a35c7c2ee3e5d8d4a02fd530f5598c3f9',

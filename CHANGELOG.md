@@ -60,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Target history guard registers the out-of-band first-paint commit (T-188/T-189)**: `feat(task-center): progressive first paint and header loading states` (`2fd46bb`) reached `feat/task-center-v2` as a direct commit while the review pipeline was timing out, so the guard reported the target tip as untraceable and `npm test` could not pass for T-188/T-189. The commit is now declared in `EMERGENCY_EXCEPTIONS` with its reason and covering cards; the scan rules are unchanged and every other direct commit is still refused.
 - **The task-center panel localizes Host failures instead of showing English sentences**: the panel routes (`unknown-project`, `content-type`, `origin`, `bad-request`, `no-action`) now answer with a stable `code` and optional `params` instead of a hardcoded English sentence, and the browser half renders that code from the bilingual `TC_DICT` (`err_*` keys), falling back to the Host's own `message` for an unknown code so older/newer Hosts still say something truthful. Tool-facing errors for agents stay English by design (they are a different audience; the 500 `failed` message carries diagnostic exception text, not UI copy).
 
 - The roles page could show a fake "saved ✓" banner after a refused save; the banner now reports the actual outcome.
