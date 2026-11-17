@@ -60,6 +60,7 @@
 
 ### 修复
 
+- **目标分支历史守卫登记带外的首帧提交（T-188/T-189）**：`feat(task-center): progressive first paint and header loading states`（`2fd46bb`）在评审管线超时期间以直接提交落到 `feat/task-center-v2`，守卫因此把目标分支顶端报为不可追溯，T-188/T-189 的 `npm test` 无法通过。现已在 `EMERGENCY_EXCEPTIONS` 中登记该提交及其理由与覆盖卡片；扫描规则未改，其他直接提交仍会被拒绝。
 - **任务中心面板不再直出服务端英文提示**：面板路由（`unknown-project`、`content-type`、`origin`、`bad-request`、`no-action`）改为返回稳定的 `code` 与可选 `params`，不再硬编码英文句子；浏览器半按 code 从双语 `TC_DICT`（`err_*` 条目）渲染，遇到未知 code 回退显示服务端 `message`（兼容新旧宿主）。给 agent 的工具错误仍保持英文（受众不同；500 `failed` 携带的是异常诊断文本，不是 UI 文案）。
 
 - 角色页在保存被拒后可能显示假的「保存 ✓」横幅；现在横幅反映真实结果。

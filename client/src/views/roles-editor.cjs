@@ -14,10 +14,8 @@ function createRolesEditor(deps) {
 	const roleProfileCopy = deps.roleProfileCopy
 	const RoleCreateForm = deps.RoleCreateForm
 	const roleErrorText = deps.roleErrorText
-	const roleKindLabel = deps.roleKindLabel
 	const tcSplitList = deps.tcSplitList
 	const roleEditorState = deps.roleEditorState
-	const ROLE_EDITOR_KINDS = deps.ROLE_EDITOR_KINDS
 	const ROLE_EDITOR_STAGES = deps.ROLE_EDITOR_STAGES
 	const copyToClipboard = deps.copyToClipboard
 
@@ -67,13 +65,12 @@ function createRolesEditor(deps) {
 		const catalog = Array.isArray(roleEditorState.skills) ? roleEditorState.skills : []
 		const allInstances = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry !== null && entry !== undefined && typeof entry.kind === 'string' })
 		const instances = allInstances.filter(function (entry) { return entry.kind === kind })
-		function liveCountOf(roleKind) {
-			return allInstances.filter(function (entry) { return entry.kind === roleKind && entry.status !== 'failed' }).length
-		}
+		// The three stages, in dispatch order. The rail lists them as 01/02/03 and
+		// they are the ONLY stage navigation on the page.
 		const STAGE_SLOTS = [
-			{ key: 'implement', kind: 'worker', label: 'roleKindWorker' },
-			{ key: 'review', kind: 'reviewer', label: 'sessionsStageReview' },
-			{ key: 'test', kind: 'tester', label: 'sessionsStageTest' },
+			{ key: 'implement', kind: 'worker', num: '01', label: 'roleKindWorker', desc: 'roleStageImplementDesc' },
+			{ key: 'review', kind: 'reviewer', num: '02', label: 'roleKindReviewer', desc: 'roleStageReviewDesc' },
+			{ key: 'test', kind: 'tester', num: '03', label: 'roleKindTester', desc: 'roleStageTestDesc' },
 		]
 		const stageBoundProfile = function (stageKey) {
 			const stages = config !== null && config !== undefined && config.stages !== null && config.stages !== undefined ? config.stages : {}
@@ -87,7 +84,7 @@ function createRolesEditor(deps) {
 		// forking and a successful save all remount the controls on the right
 		// profile instead of silently keeping the previous profile's text (which
 		// would then be saved onto the wrong profile).
-		const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved') + ':' + String(roleEditorState.pickVersion || 0)
+		const controlKey = kind + ':' + (draft !== null ? String(draft.name) : String(selectedName)) + ':' + (draft !== null ? 'draft' : 'saved')
 		// What the selector shows as "in use": the draft's source while a draft is
 		// open, otherwise the edited profile (falling back to the bound one).
 		const useValue = draft !== null ? String(draft.source) : selectedName !== null ? String(selectedName) : String(kind)
@@ -150,7 +147,6 @@ function createRolesEditor(deps) {
 			roleEditorState.saved = null
 			roleEditorState.applySkipped = false
 			roleEditorState.notice = null
-			roleEditorState.pickVersion += 1
 			bump()
 		}
 		/** Fork is a DRAFT now: the user names it, then Save creates + applies it. */
@@ -205,6 +201,8 @@ function createRolesEditor(deps) {
 			if (typeof name !== 'string' || name === '') return
 			if (draft !== null && String(name) !== String(selectedName)) {
 				report('role-editor-kind', false, { code: 'role-unsaved' })
+				// The picker is controlled: the refused value never reaches it, and nothing
+				// remounts, so a typed draft prompt/skills edit survives the refusal.
 				return
 			}
 			roleEditorState.kind = typeof roleKind === 'string' && roleKind !== '' ? roleKind : kind
@@ -216,7 +214,6 @@ function createRolesEditor(deps) {
 			roleEditorState.previewKey = null
 			roleEditorState.previewPending = false
 			roleEditorState.previewError = null
-			roleEditorState.pickVersion = (roleEditorState.pickVersion || 0) + 1
 			bump()
 		}
 		/**
@@ -224,40 +221,40 @@ function createRolesEditor(deps) {
 		 * the running instances of this kind. With nothing live, only the binding
 		 * changes and the panel says it takes effect on the next dispatch.
 		 */
-		async function applyProfile(name) {
+		async function applyProfile(name, roleKind) {
+			// roleKind defaults to the stage being edited; a blank create can target a
+			// different stage, so the caller passes the created profile's own kind.
+			const profileKind = typeof roleKind === 'string' && ROLE_EDITOR_STAGES[roleKind] !== undefined ? roleKind : kind
+			const profileStage = ROLE_EDITOR_STAGES[profileKind]
 			roleEditorState.applySkipped = false
-			const boundResult = await send('rolesBind', { stage: stage, profile: name })
+			const boundResult = await send('rolesBind', { stage: profileStage, profile: name })
 			if (boundResult.ok !== true) {
-		roleEditorState.pickVersion += 1
-		bump()
 		return false
 			}
 			roleEditorState.selected = name
 			// Keep the optimistic copy of a just-created profile so the editor can
 			// target it before the next host poll carries it.
 			if (roleEditorState.saved !== null && roleEditorState.saved.name !== name) roleEditorState.saved = null
-			const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === kind })
+			const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === profileKind })
 			if (live.length === 0) {
 		roleEditorState.applySkipped = true
 		bump()
 		return true
 			}
-			await send('rolesReplace', { name: kind })
+			await send('rolesReplace', { name: profileKind })
 			bump()
 			return true
 		}
 		/**
 		 * The "current use" picker: one pick is one action. An open draft blocks the
-		 * switch with a readable notice (never a silent discard) and the selector
-		 * remounts on the real value.
+		 * switch with a readable notice (never a silent discard); the controlled
+		 * selector already shows the real value.
 		 */
 		async function chooseUse(name) {
 			if (typeof name !== 'string' || name === '') return
 			roleEditorState.notice = null
 			if (draft !== null) {
 		report('rolesBind', false, { code: 'role-unsaved' })
-		roleEditorState.pickVersion += 1
-		bump()
 		return
 			}
 			if (name === boundName) {
@@ -334,7 +331,6 @@ function createRolesEditor(deps) {
 			roleEditorState.selected = null
 			roleEditorState.saved = null
 			roleEditorState.applySkipped = false
-			roleEditorState.pickVersion += 1
 			bump()
 			if (wasBound) await applyProfile(kind)
 		}
@@ -471,7 +467,8 @@ function createRolesEditor(deps) {
 			})
 				})()))
 		}
-		// T-172: Shift Deck stage strip + roster + a fixed three-column editor.
+		// APPLICATION / 当前使用: picking a profile binds the stage and replaces its
+		// running instances (the binding control, not the editor's profile picker).
 		const currentUseSelect = h('label', { className: 'gbt-editor-select gbt-rolescurrent' }, t('roleCurrentUse'),
 			h('select', {
 				key: 'current-use:' + controlKey,
@@ -480,63 +477,117 @@ function createRolesEditor(deps) {
 				'data-field': 'current-use',
 				'data-stage': stage,
 				'data-bound': boundName === null ? '' : String(boundName),
-				defaultValue: useValue,
+				value: useValue,
 				onChange: function (event) { void chooseUse(event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : '') },
 			},
 			useOptions.length === 0
 				? h('option', { key: 'none', value: '' }, t('roleEditorNoProfile'))
 				: useOptions.map(function (name) { return h('option', { key: name, value: name }, name === kind ? t('roleUseDefault') : name) })))
-		const stageStrip = h('div', { className: 'gbt-rolesstages', 'data-roles-header': 'true', 'data-role-stage-strip': 'true' },
-			h('div', { className: 'gbt-rolesstages-head' }, h('span', { className: 'gbt-deckeyebrow' }, 'STAGES / 阶段'), h('h2', null, t('roleSectionRole')), h('span', { className: 'gbt-deckpanelmeta' }, t('roleEditorTabsLabel'))),
-			h('div', { className: 'gbt-rolesstages-row', role: 'tablist', 'aria-label': t('roleEditorTabsLabel'), 'data-role-tabs': 'true', 'data-section': 'role-editor-kinds' },
-				STAGE_SLOTS.map(function (slot, index) {
-					const boundProfile = stageBoundProfile(slot.key)
-					const slotProfile = boundProfile !== null && profiles[boundProfile] !== undefined ? profiles[boundProfile] : null
-					const live = liveCountOf(slot.kind)
-					const ready = slotProfile !== null
-					return h('button', {
-						key: 'stage-' + slot.key, type: 'button', role: 'tab', className: 'gbt-rstagesslot', 'aria-selected': slot.kind === kind ? 'true' : 'false',
-						'data-action': 'role-editor-kind', 'data-kind': slot.kind, 'data-roles-tab': slot.kind, 'data-active': slot.kind === kind ? 'true' : 'false',
-						'data-stage-slot': slot.key, 'data-bound-profile': boundProfile === null ? '' : String(boundProfile), 'data-live': String(live), 'data-ready': ready ? 'true' : 'false',
+		// ── Stage rail (A direction): the ONLY stage navigation. The old top
+		// stage strip and the roster column are gone; a custom copy is picked from the
+		// rail's profile selector and blank creation lives in its footer.
+		const currentSlot = STAGE_SLOTS.filter(function (slot) { return slot.kind === kind })[0] || STAGE_SLOTS[0]
+		function liveCountOfKind(roleKind) {
+			return allInstances.filter(function (entry) { return entry.kind === roleKind && entry.status !== 'failed' }).length
+		}
+		/** The stage default is shown by its own name, a custom copy by its name. */
+		function profileLabelOf(slot, name) {
+			if (name === null || name === undefined) return t('roleUseDefault')
+			return String(name) === slot.kind ? t('roleUseDefault') : String(name)
+		}
+		function stageStateOf(slot) {
+			if (slot.kind === kind) return draft !== null ? t('roleEditorDraft') : t('roleStageCurrent')
+			return stageBoundProfile(slot.key) === null ? t('roleStageUnbound') : t('roleStageEnabled')
+		}
+		// The page header reports whether THIS profile is applied: a draft, the one
+		// in use, or a copy that is not bound to its stage right now.
+		const headApplied = draft !== null ? 'draft' : selectedName !== null && boundName !== null && String(selectedName) === String(boundName) ? 'enabled' : 'idle'
+		const headAppliedLabel = headApplied === 'draft' ? t('roleEditorDraft') : headApplied === 'enabled' ? t('roleStageEnabled') : t('roleStageUnbound')
+		// The profile picker: the stage default plus every custom copy that owns this
+		// stage. Picking one edits it; binding stays in APPLICATION, exactly as before.
+		const pickerValue = draft !== null ? String(draft.source) : selectedName === null ? String(kind) : String(selectedName)
+		const profilePicker = h('select', {
+			key: 'profile-picker:' + controlKey,
+			className: 'gbt-stageselect',
+			'data-role-profile-select': 'true',
+			'data-field': 'profile',
+			'data-stage': stage,
+			'data-kind': kind,
+			value: pickerValue,
+			onChange: function (event) {
+				const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : ''
+				selectProfile(next === '' ? kind : next, kind)
+			},
+		}, useOptions.map(function (name) {
+			return h('option', { key: name, value: name }, name === kind ? t('roleUseDefault') : name)
+		}))
+		const stageRail = h('aside', { className: 'gbt-rolestagerail', 'data-role-stage-rail': 'true', 'data-role-nav': 'stages', 'aria-label': t('roleStagesTitle') },
+			h('div', { className: 'gbt-stageprofile', 'data-role-profile-picker': 'true' },
+				h('span', { className: 'gbt-deckeyebrow' }, t('roleProfileEyebrow')),
+				profilePicker),
+			h('div', { className: 'gbt-rail-title' },
+				h('span', null, t('roleStagesTitle')),
+				h('em', { className: 'gbt-mono' }, '0' + String(STAGE_SLOTS.length))),
+			h('ol', { className: 'gbt-stagelist', 'data-role-stage-list': 'true' }, STAGE_SLOTS.map(function (slot) {
+				const boundProfile = stageBoundProfile(slot.key)
+				const bound = boundProfile !== null && profiles[boundProfile] !== undefined ? boundProfile : null
+				const live = liveCountOfKind(slot.kind)
+				const active = slot.kind === kind
+				return h('li', { key: 'stage-' + slot.key, className: 'gbt-stageli' },
+					h('button', {
+						type: 'button',
+						className: 'gbt-stagerow',
+						'data-action': 'role-editor-kind',
+						'data-kind': slot.kind,
+						'data-stage-slot': slot.key,
+						'data-roles-stage': slot.kind,
+						// Kept so the existing screenshot steps can still click a stage by
+						// the attribute they always used; the rail is the only stage nav.
+						'data-roles-tab': slot.kind,
+						'data-active': active ? 'true' : 'false',
+						'data-bound-profile': bound === null ? '' : String(bound),
+						'data-live': String(live),
+						'data-ready': bound === null ? 'false' : 'true',
+						'aria-current': active ? 'step' : undefined,
 						onClick: function () { switchKind(slot.kind) },
 					},
-						h('span', { className: 'gbt-rstagestep gbt-mono' }, '0' + String(index + 1)),
-						h('span', { className: 'gbt-rstagebody' }, h('b', null, t(slot.label)), h('span', { className: 'gbt-rstagesub gbt-mono', title: boundProfile === null ? '' : String(boundProfile) }, boundProfile === null ? '—' : String(boundProfile)), h('small', null, 'live ' + String(live) + ' · ' + (ready ? t('sessionsReady') : t('sessionsNotReady')))),
-						h('i', { className: 'gbt-deckdot', 'data-on': ready ? 'true' : 'false' }))
-				})))
-		const builtinNames = ['worker', 'reviewer', 'tester']
-		const rosterEntries = builtinNames.map(function (name) {
-			return { name: name, kind: name, label: roleKindLabel(name, t), stage: ROLE_EDITOR_STAGES[name], disabled: false }
-		})
-		Object.keys(profiles).filter(function (name) { return builtinNames.indexOf(name) < 0 }).forEach(function (name) {
-			const profile = profiles[name]
-			const role = profile !== null && profile !== undefined && typeof profile.role === 'string' ? profile.role : 'worker'
-			rosterEntries.push({ name: name, kind: role, label: roleKindLabel(role, t), stage: profile !== null && profile !== undefined && typeof profile.stage === 'string' ? profile.stage : ROLE_EDITOR_STAGES[role], disabled: ROLE_EDITOR_KINDS.indexOf(role) < 0 })
-		})
-		const rosterList = h('aside', { className: 'gbt-roleslist', 'data-role-list': 'true' },
-			h('div', { className: 'gbt-roleslisthead' }, h('span', { className: 'gbt-deckeyebrow' }, 'ROSTER / 角色'), h('b', null, String(rosterEntries.length))),
-			h('details', { key: 'roster-create', className: 'gbt-roleslistcreate', 'data-section': 'role-create-blank', 'data-role-create-entry': 'true' },
-				h('summary', { 'data-role-create-summary': 'true' }, '＋ ' + t('roleEditorCreateBlank')),
-				h('div', { className: 'gbt-roleslistcreatebody', 'data-role-create-body': 'true' }, h(RoleCreateForm, { t: t, onCreate: createBlank, onInvalid: createBlankInvalid }))),
-			h('div', { className: 'gbt-roleslistrows' }, rosterEntries.map(function (entry) {
-				const selected = selectedName !== null && String(selectedName) === entry.name
-				return h('button', {
-					key: 'roster-' + entry.name, type: 'button', className: 'gbt-roleslistrow', 'data-role-profile': entry.name, 'data-role-kind': entry.kind, 'data-role-stage': entry.stage === null ? '' : String(entry.stage),
-					'data-role-live': String(liveCountOf(entry.kind)), 'data-role-selected': selected ? 'true' : 'false', disabled: entry.disabled === true,
-					onClick: function () { if (entry.disabled !== true) selectProfile(entry.name, entry.kind) },
-				},
-				h('i', { className: 'gbt-deckdot', 'data-on': entry.disabled ? 'false' : liveCountOf(entry.kind) > 0 ? 'true' : 'false' }),
-				h('span', { className: 'gbt-roleslistmain' }, h('b', null, entry.name), h('span', null, entry.label + ' · ' + (entry.stage === null ? '—' : String(entry.stage)))),
-				h('em', { className: 'gbt-mono' }, entry.disabled ? '—' : String(liveCountOf(entry.kind))))
-			})))
+						h('span', { className: 'gbt-stagenum gbt-mono', 'aria-hidden': 'true' }, slot.num),
+						h('span', { className: 'gbt-stagebody' },
+							h('span', { className: 'gbt-stagetitle' }, h('b', null, t(slot.label)), h('code', { className: 'gbt-mono' }, slot.kind)),
+							h('span', { className: 'gbt-stagedesc' }, t(slot.desc)),
+							h('span', { className: 'gbt-stagemeta' },
+								h('span', { className: 'gbt-stagetag', 'data-role-stage-state': slot.key }, stageStateOf(slot)),
+								h('span', { className: 'gbt-stagesub gbt-mono', 'data-role-stage-bound': slot.key, title: bound === null ? '' : String(bound) }, '\u00B7 ' + profileLabelOf(slot, bound)))),
+						h('span', { className: 'gbt-stageside' },
+							h('i', { className: 'gbt-deckdot', 'data-on': bound === null ? 'false' : 'true' }),
+							h('em', { className: 'gbt-stagelive gbt-mono', 'data-role-stage-live': slot.key }, String(live))))
+				)
+			})),
+			h('p', { className: 'gbt-stagenote', 'data-role-stages-hint': 'true' }, t('roleStagesHint')),
+			h('div', { className: 'gbt-stagecreatewrap' },
+				h('details', { key: 'roster-create', className: 'gbt-stagecreate', 'data-section': 'role-create-blank', 'data-role-create-entry': 'true' },
+					h('summary', { 'data-role-create-summary': 'true' }, '＋ ' + t('roleEditorCreateBlank')),
+					h('div', { className: 'gbt-stagecreatebody', 'data-role-create-body': 'true' }, h(RoleCreateForm, { t: t, defaultRole: kind, onCreate: createBlank, onInvalid: createBlankInvalid })))))
+		const head = h('div', { className: 'gbt-rolehead', 'data-role-head': 'true' },
+			h('div', { className: 'gbt-roleheadmain' },
+				h('span', { className: 'gbt-deckeyebrow', 'data-role-head-stage': currentSlot.key }, 'STAGE ' + currentSlot.num + ' · ' + String(stage).toUpperCase()),
+				h('h2', { className: 'gbt-roleheadtitle', 'data-role-head-title': 'true' },
+					selectedName === null ? '—' : String(selectedName),
+					h('span', { className: 'gbt-roleheadstage' }, '/ ' + t(currentSlot.label)))),
+			h('div', { className: 'gbt-roleheadmeta' },
+				h('span', { className: 'gbt-pill', 'data-role-head-state': headApplied }, headAppliedLabel),
+				h('span', { className: 'gbt-footnote', 'data-role-head-bound': 'true' }, t('roleCurrentUse') + ' · ' + (boundName === null ? '—' : profileLabelOf(currentSlot, boundName)))))
+		// IDENTITY is read-only: the role name, its stage and the context the host
+		// resolves. Editing happens in BEHAVIOR/APPLICATION below, and in the rail
+		// for stage and profile selection.
 		const identityRow = h('div', { className: 'gbt-roleidentity', 'data-editor-identity': 'true', 'data-kind': kind, 'data-profile': selectedName === null ? '' : String(selectedName), 'data-bound': boundName === null ? '' : String(boundName), 'data-draft': draft === null ? 'false' : 'true' },
-			h('div', { className: 'gbt-roleidentity-main' },
-				h('span', { className: 'gbt-roleidentity-name gbt-mono', title: selectedName === null ? '' : String(selectedName) }, selectedName === null ? '—' : String(selectedName)),
-				h('span', { className: 'gbt-pill', 'data-role-identity-kind': kind }, roleKindLabel(kind, t)),
-				h('span', { className: 'gbt-footnote', 'data-role-identity-stage': stage }, 'STAGE · ' + stage),
-				h('span', { className: 'gbt-footnote', 'data-role-identity-context': target !== null && typeof target.context === 'string' ? target.context : 'fresh' }, 'CONTEXT · ' + (target !== null && typeof target.context === 'string' ? target.context : 'fresh')),
-			),
-			h('span', { className: 'gbt-footnote' }, draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')))
+			h('div', { className: 'gbt-identitygrid' },
+				h('label', { className: 'gbt-identityfield' }, h('span', null, t('roleName'), h('em', { className: 'gbt-identityhint' }, t('roleReadonly'))),
+					h('input', { className: 'gbt-input gbt-readonlyfield', readOnly: true, tabIndex: -1, 'data-field': 'identity-name', value: selectedName === null ? '—' : String(selectedName) })),
+				h('label', { className: 'gbt-identityfield' }, h('span', null, t('roleStageField')),
+					h('input', { className: 'gbt-input gbt-readonlyfield', readOnly: true, tabIndex: -1, 'data-field': 'identity-stage', value: t(currentSlot.label) + ' / ' + String(stage) })),
+				h('label', { className: 'gbt-identityfield' }, h('span', null, t('roleContext')),
+					h('input', { className: 'gbt-input gbt-readonlyfield', readOnly: true, tabIndex: -1, 'data-field': 'identity-context', value: target !== null && typeof target.context === 'string' ? target.context : 'fresh' }))))
 		const skillsRow = h('div', { className: 'gbt-editorskills', 'data-section': 'role-editor-skills' },
 			h('label', { className: 'gbt-editorskills-field' }, t('roleSkills'), h('input', { key: 'skills-field:' + controlKey, ref: skillsRef, className: 'gbt-input', 'data-field': 'skills', defaultValue: skillsText, spellCheck: false })),
 			h('button', { type: 'button', className: 'gbt-btn', 'data-action': 'role-editor-skills-manage', onClick: function () { void openSkills() } }, t('roleEditorSkillsManage')))
@@ -544,10 +595,14 @@ function createRolesEditor(deps) {
 		async function createBlank(name, fields) {
 			const outcome = await send('rolesCreate', { name: name, profile: fields })
 			if (outcome.ok !== true) return
+			// The entry is stage-scoped, but the form may have picked another kind:
+			// land the editor on the created kind and bind that stage, never the old one.
+			const createdKind = fields !== null && fields !== undefined && ['worker', 'reviewer', 'tester'].indexOf(fields.role) >= 0 ? fields.role : kind
+			roleEditorState.kind = createdKind
 			roleEditorState.selected = name
 			roleEditorState.saved = { name: name, profile: Object.assign({ name: name }, fields) }
 			bump()
-			await applyProfile(name)
+			await applyProfile(name, createdKind)
 		}
 		function createBlankInvalid(code) {
 			report('rolesCreate', false, { code: code, message: '' })
@@ -560,23 +615,21 @@ function createRolesEditor(deps) {
 			: roleEditorState.applySkipped === true
 				? h('div', { className: 'gbt-footnote', 'data-editor-apply-skipped': 'true' }, t('roleUsePendingNextDispatch'))
 				: null
-		const sectionHead = function (eyebrow, title) {
-			return h('div', { className: 'gbt-rolesectionhead' }, h('span', { className: 'gbt-deckeyebrow' }, eyebrow), h('h3', null, title))
+		const sectionHead = function (eyebrow, title, note) {
+			return h('div', { className: 'gbt-rolesectionhead' }, h('span', { className: 'gbt-deckeyebrow' }, eyebrow), h('h3', null, title), note === undefined ? null : h('span', { className: 'gbt-footnote gbt-sectionnote' }, note))
 		}
 		const leftPane = h('section', { className: 'gbt-rolespane gbt-roleseditorpane', 'data-roles-pane': 'raw' },
-			h('section', { className: 'gbt-rolesection', 'data-role-section': 'identity' }, sectionHead('IDENTITY / 身份', t('roleSectionRole')), identityRow),
+			h('section', { className: 'gbt-rolesection', 'data-role-section': 'identity' }, sectionHead('IDENTITY / 身份', t('roleSectionRole'), draft !== null ? t('roleEditorDraft') : builtin ? t('roleBuiltin') : t('roleCustom')), identityRow),
 			h('section', { className: 'gbt-rolesection', 'data-role-section': 'behavior' }, sectionHead('BEHAVIOR / 行为', t('roleAnchorPrompt')),
 				h('div', { className: 'gbt-rolecard', 'data-role-card': 'raw' },
-					h('div', { className: 'gbt-rolecardhead', 'data-role-card-title': 'true' }, t('rolePreviewRawTitle')),
 					editablePrompt ? rawColumn() : builtinDefaultColumn(),
 					h('div', { className: 'gbt-rolefields', 'data-section': 'role-editor-fields' }, skillsRow))),
 			h('section', { className: 'gbt-rolesection', 'data-role-section': 'application' }, sectionHead('APPLICATION / 应用', t('roleCurrentUse')), currentUseSelect, h('div', { className: 'gbt-footnote', 'data-role-apply-hint': 'true' }, t('roleApplyHint')), runningRow),
 			)
 		const rightPane = h('section', { className: 'gbt-rolespane gbt-rolespreviewpane', 'data-roles-pane': 'injected' },
-			h('div', { className: 'gbt-rolespreviewhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'PREVIEW / 注入预览'), h('h3', null, t('rolePreviewInjectedTitle'))),
+			h('div', { className: 'gbt-rolespreviewhead' }, h('span', { className: 'gbt-deckeyebrow' }, 'PREVIEW / 注入预览')),
 			h('div', { className: 'gbt-rolecard', 'data-role-card': 'injected' }, injectedColumn()),
-			stateHint,
-			h('div', { className: 'gbt-footnote gbt-rolespreviewnote' }, t('roleUsePendingNextDispatch')))
+			stateHint)
 		const draftNameRow = draft === null ? null : h('label', { className: 'gbt-editorfield', 'data-section': 'role-draft-name' }, t('roleDraftName'),
 			h('input', { key: 'draft-name:' + controlKey, className: 'gbt-input', 'data-field': 'draft-name', defaultValue: draft.name, spellCheck: false, onChange: function (event) {
 				const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : ''
@@ -619,14 +672,13 @@ function createRolesEditor(deps) {
 				draftNameRow),
 			h('div', { className: 'gbt-rolesactions-right' }, forkButton, deleteButton))
 		return h('div', { className: 'gbt-roleeditor', 'data-editor': 'true', 'data-role-deck': 'true', 'data-kind': kind, 'data-draft': draft === null ? 'false' : 'true' },
-			stageStrip,
-			h('div', { className: 'gbt-rolesdeckbody' },
-				rosterList,
-				h('div', { className: 'gbt-rolesmain' },
+			h('div', { className: 'gbt-rolesworkspace', 'data-role-workspace': 'true' },
+				stageRail,
+				h('div', { className: 'gbt-rolesmain', 'data-role-editor-main': 'true' },
+					head,
 					h('div', { className: 'gbt-roleseditscroll', 'data-roles-scroll': 'true' },
 						h('div', { className: 'gbt-rolespanes', 'data-roles-panes': 'true', 'data-role-layout': 'split' }, leftPane, rightPane)),
-					actionBar),
-			),
+					actionBar)),
 			roleEditorState.notice === null ? null : roleResultBanner(roleEditorState.notice, t),
 			modal)
 	}

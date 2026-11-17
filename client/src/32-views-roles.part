@@ -138,9 +138,6 @@
 				skillsSelected: new Set(),
 				applySkipped: false,
 				notice: null,
-				// Bumped when a "current use" switch is refused so the uncontrolled
-				// selector remounts back on the real value (no silent draft loss).
-				pickVersion: 0,
 				// The injected-text preview the host returned for the current identity,
 				// the identity it belongs to and the in-flight/failed state around it.
 				preview: null,

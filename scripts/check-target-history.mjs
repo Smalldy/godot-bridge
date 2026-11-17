@@ -80,6 +80,16 @@ export const EMERGENCY_EXCEPTIONS = [
       'release commit for the v0.2.1 out-of-band hotfix (version bump + bilingual CHANGELOG; no runtime change of its own) that carries the diagnostic-guard correction and the by-exit-code outcome classification documented in 0.2.1.',
     tasks: ['T-74', 'T-76'],
   },
+  {
+    // Direct commit on the target: there is no merge commit to name.
+    // Registered narrowly so the guard can validate the rest of the history.
+    commit: '2fd46bb690063f45fdddac0cec39bd98d9812f0b',
+    merge: '',
+    branch: 'feat/task-center-v2 (direct)',
+    reason:
+      'progressive first paint/header loading landed out-of-band to unblock T-188/T-189 after review-pipeline timeouts; covered by T-188/T-189',
+    tasks: ['T-188', 'T-189'],
+  },
 ]
 
 /** Run git and return { ok, status, text }. Output goes through a temp FILE, not a

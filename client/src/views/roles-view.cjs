@@ -4,6 +4,10 @@
  * Extracted from the roles fragment; React, h, the agent-tree selector and
  * RolesEditor are injected by the build. Stage profiles are project-level: there
  * is no per-session team readiness to aggregate here.
+ *
+ * A direction: this view owns no header of its own. The editor renders the one
+ * page header (stage + profile) and the stage rail; adding a second title card
+ * here would put a second navigation/heading layer above it.
  */
 function createRolesView(deps) {
 	const React = deps.React
@@ -33,26 +37,19 @@ function createRolesView(deps) {
 				}
 			})
 		if (config === null) {
-			return h('div', { className: 'gbt-rolesview', 'data-roles-deck': 'true' }, h('p', { className: 'gbt-footnote' }, t('rolesHint')), h('div', { className: 'gbt-empty' }, t('rolesUnavailable')))
+			return h('div', { className: 'gbt-rolesview', 'data-roles-deck': 'true' },
+				h('div', { className: 'gbt-rolesview-empty', 'data-roles-unavailable': 'true' },
+					h('p', { className: 'gbt-footnote' }, t('rolesHint')),
+					h('div', { className: 'gbt-empty' }, t('rolesUnavailable'))))
 		}
-		return h(
-			'div',
-			{ className: 'gbt-rolesview', 'data-roles-deck': 'true' },
-			h(
-				'section',
-				{ className: 'gbt-rolesview-card', 'data-card': 'editor' },
-				h('div', { className: 'gbt-rhead' },
-					h('h3', { className: 'gbt-rtitle' }, t('roleEditor')),
-					h('div', { className: 'gbt-footnote', 'data-role-scale-note': 'true' }, t('roleScaleNote'))),
-				h('div', { className: 'gbt-rbody' }, h(RolesEditor, {
-					t: t,
-					snapshot: snapshot,
-					store: store,
-					instances: instances,
-					bump: bumpEditor,
-				})),
-			),
-		)
+		return h('div', { className: 'gbt-rolesview', 'data-roles-deck': 'true' },
+			h(RolesEditor, {
+				t: t,
+				snapshot: snapshot,
+				store: store,
+				instances: instances,
+				bump: bumpEditor,
+			}))
 	}
 
 	return RolesView
