@@ -7,9 +7,9 @@ import { readRoleConfig } from '../../plugin/task-center/board.mjs'
 import { updateBoard } from '../../plugin/task-center/board.mjs'
 import { writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
-import { briefFor, createActivity, createDispatcher, probeDispatch, recordStageSlot, stageSlotOf } from '../../plugin/task-center/dispatch.mjs'
-import { createApi } from '../../plugin/task-center/api.mjs'
-import { createFakeTaskAgents, createRig, createTask, sleep, PROJECT } from './support/fixtures.mjs'
+import { briefFor, createActivity, createDispatcher, probeDispatch, recordStageSlot, stageSlotOf, testerBriefFor } from '../../plugin/task-center/dispatch.mjs'
+import { createApi, readGodotProjectInfo } from '../../plugin/task-center/api.mjs'
+import { createFakeFs, createFakeTaskAgents, createRig, createTask, sleep, PROJECT } from './support/fixtures.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -155,5 +155,104 @@ async function boardOf(rig) {
   check('its attempt is refunded', after.attempts <= 1, String(after.attempts))
 }
 
+// ── T-199: a project without a main scene is never launched by the tester ───
+{
+  const task = {
+    id: 'T-199',
+    title: 'brief shapes',
+    status: 'testing',
+    target: 'main',
+    spec: 'the tester brief must respect the Godot main scene',
+    acceptance: 'no project launch without a main scene',
+    evidence: 'worker evidence',
+    writeFiles: ['plugin/a.mjs'],
+    actualFiles: ['plugin/a.mjs'],
+    branch: 'task/T-199-1',
+    worktree: join(PROJECT, '.worktrees', 'T-199-1'),
+    base: 'base-sha',
+    commit: 'head-sha',
+    review: null,
+    test: { status: 'pending', attempt: 1 },
+    merge: { status: 'open', base: 'base-sha', target: 'main', mergeCommit: 'head-sha', artifact: null },
+    verify: null,
+  }
+  const candidate = { path: join(PROJECT, '.worktrees', 'test-T-199'), branch: 'test/T-199', base: 'base-sha', head: 'head-sha' }
+
+  // The repo-root project.godot shape: an [application] section without run/main_scene.
+  const noSceneText = [
+    '; Minimal project so the headless guard test can be run.',
+    'config_version=5',
+    '',
+    '[application]',
+    '',
+    'config/name="godot-bridge tests"',
+    'config/features=PackedStringArray("4.4")',
+    '',
+  ].join('\n')
+  const noSceneFs = createFakeFs()
+  noSceneFs.files.set(join(PROJECT, 'project.godot'), { text: noSceneText, version: 'seed' })
+  const noScene = await readGodotProjectInfo(noSceneFs, null, PROJECT, null)
+  check(
+    'godotInfoFor detects a Godot project without a main scene',
+    noScene.project === true && noScene.hasMainScene === false && noScene.mainScene === null,
+    JSON.stringify(noScene),
+  )
+  const noSceneBrief = testerBriefFor(task, PROJECT, candidate, { godot: noScene })
+  check('a no-main-scene brief never offers godot_run_project', noSceneBrief.indexOf('godot_run_project') < 0, noSceneBrief)
+  check('a no-main-scene brief never offers a project-level headless run', noSceneBrief.indexOf('quit_after: 120') < 0, noSceneBrief)
+  check(
+    'a no-main-scene brief says not to start the project and names the native error',
+    noSceneBrief.indexOf('Do NOT start the project') >= 0 && noSceneBrief.indexOf('Can not run project: no main scene defined') >= 0,
+    noSceneBrief,
+  )
+  check(
+    'a no-main-scene brief tells the tester how to supply a concrete scene/script',
+    noSceneBrief.indexOf('scene: "<the task scene') >= 0 && noSceneBrief.indexOf('script: "<the task script') >= 0,
+    noSceneBrief,
+  )
+  check(
+    'a no-main-scene brief still keeps Godot errors visible and forbids the pwsh/bash channel',
+    noSceneBrief.indexOf('keep Godot errors visible') >= 0 && noSceneBrief.indexOf('Never launch Godot through pwsh/bash') >= 0,
+    noSceneBrief,
+  )
+
+  // A project.godot WITH a main scene keeps the project-level launch guidance.
+  const sceneText = '[application]\n\nconfig/name="game"\nrun/main_scene="res://scenes/main.tscn"\n'
+  const sceneFs = createFakeFs()
+  sceneFs.files.set(join(PROJECT, 'project.godot'), { text: sceneText, version: 'seed' })
+  const withScene = await readGodotProjectInfo(sceneFs, null, PROJECT, null)
+  check(
+    'godotInfoFor reads the declared main scene',
+    withScene.project === true && withScene.hasMainScene === true && withScene.mainScene === 'res://scenes/main.tscn',
+    JSON.stringify(withScene),
+  )
+  const withSceneBrief = testerBriefFor(task, PROJECT, candidate, { godot: withScene })
+  check(
+    'a main-scene brief keeps godot_run_project for the candidate',
+    withSceneBrief.indexOf('godot_run_project({ project_path: "' + candidate.path + '" })') >= 0,
+    withSceneBrief,
+  )
+  check(
+    'a main-scene brief keeps the project-level headless run',
+    withSceneBrief.indexOf('godot_run_headless({ project_path: "' + candidate.path + '", quit_after: 120 })') >= 0,
+    withSceneBrief,
+  )
+  check(
+    'a main-scene brief names the main scene it will run',
+    withSceneBrief.indexOf('Main scene ([application] run/main_scene): res://scenes/main.tscn') >= 0,
+    withSceneBrief,
+  )
+
+  // The CANDIDATE checkout is the source of truth for the brief it feeds.
+  const bothFs = createFakeFs()
+  bothFs.files.set(join(PROJECT, 'project.godot'), { text: sceneText, version: 'seed' })
+  bothFs.files.set(join(candidate.path, 'project.godot'), { text: noSceneText, version: 'seed' })
+  const both = await readGodotProjectInfo(bothFs, null, PROJECT, candidate.path)
+  check(
+    'the candidate project.godot wins over the project root',
+    both.projectFile === join(candidate.path, 'project.godot') && both.hasMainScene === false,
+    JSON.stringify(both),
+  )
+}
 console.log(failures === 0 ? '\nPASS  dispatch (v3 subagent edge)' : '\nFAIL  ' + String(failures) + ' dispatch check(s)')
 process.exit(failures === 0 ? 0 : 1)
