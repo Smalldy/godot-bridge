@@ -219,10 +219,22 @@
 						const host = payload.snapshot !== undefined && payload.snapshot !== null ? payload.snapshot : payload
 						if (host && Array.isArray(host.tasks)) {
 							const next = withDecisions(tcSnapshot(host, 'host', '', payload), host)
+							// T-196 review: the ANSWER landed but the host action it stood for
+							// failed (the board moved on, the card is not deletable, ...). The
+							// modal disappears with the decision, so the SAME banner a failed
+							// action uses must explain that nothing happened. An intentional
+							// 取消创建 is not a failure.
+							const applied = payload.applied !== undefined && payload.applied !== null && typeof payload.applied === 'object' ? payload.applied : null
+							const appliedFailed = applied !== null && applied.ok === false && applied.code !== 'decision-rejected'
 							if (quiet) {
 								next.actionResult = snapshot.actionResult
 								next.actionError = snapshot.actionError
 								next.message = snapshot.message
+							} else if (appliedFailed) {
+								messageKind = 'action'
+								next.message = typeof applied.message === 'string' && applied.message !== '' ? applied.message : t('decisionAppliedFailed')
+								next.actionResult = null
+								next.actionError = applied
 							} else {
 								// A real action answered: whatever the banner said is no longer current.
 								messageKind = null

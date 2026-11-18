@@ -57,6 +57,39 @@ assert.equal(sent.ok, true)
 assert.equal(fetched[0], '/action')
 assert.equal(store.getSnapshot().source, 'host')
 
+// T-196: an answer whose host action FAILED must raise the normal action banner,
+// because the decision modal disappears with the answered request.
+{
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      ok: true,
+      decision: { id: 'DEC-1', status: 'answered' },
+      applied: {
+        ok: false,
+        executed: false,
+        code: 'running',
+        action: 'delete',
+        message: 'Decision DEC-1 answered, but T-1 started running; cancel it first. Nothing was deleted.',
+      },
+      snapshot: { ok: true, full: true, tasks: [], counts: {} },
+    }),
+  })
+  const answered = await store.send('decisionAnswer', { decisionId: 'DEC-1', option: 'delete' })
+  assert.equal(answered.ok, true, 'the answer itself landed')
+  assert.equal(store.getSnapshot().message.indexOf('started running') >= 0, true, 'the failure reaches the banner')
+  assert.equal(store.getSnapshot().actionError.code, 'running')
+  // An intentional 取消创建 is not a failure.
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      ok: true,
+      applied: { ok: false, executed: false, code: 'decision-rejected', action: 'create', message: 'decision-rejected: the user cancelled the create request' },
+      snapshot: { ok: true, full: true, tasks: [], counts: {} },
+    }),
+  })
+  await store.send('decisionAnswer', { decisionId: 'DEC-2', option: 'cancel' })
+  assert.equal(store.getSnapshot().message, '', 'an intentional rejection is not an error banner')
+}
+
 const poll = globalThis.setInterval
 let polls = 0
 globalThis.setInterval = (fn, ms) => {

@@ -14,6 +14,7 @@
 
 - `unknown-project` / `missing-project` / `missing-path`：项目没绑定或路径不对 —— 先 `openProject`。
 - `needs-consent`：start 只是申请 —— 等用户批准，别重试。
+- `needs-decision`：create/start/reopen/delete/cancel 先问用户 —— 面板答复后宿主执行，别重试或绕行。
 - `wrong-role` / `role-required` / `worker-cannot-self-review` / `worker-cannot-self-test`：结论只属于对应角色 —— 交独立 reviewer / tester。
 - `user-only`：合并、拒绝合并与面板动作不属于 agent —— 报告现状。
 - `head-drift`：分支越过请求的 head —— `refreshMerge` 对齐。

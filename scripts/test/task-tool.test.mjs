@@ -33,6 +33,27 @@ const PROBES = { probes: [{ id: 'suite', command: 'npm test' }] }
 async function call(args, who) {
   return rig.tool.execute(args, { agent: who === undefined ? agent : who })
 }
+function callOn(rigRef, args, who) {
+  return rigRef.tool.execute(args, { agent: who === undefined ? agent : who })
+}
+/** T-196: the panel (role user) answers a pending decision. */
+async function answerAsPanel(rigRef, decision, option, extra) {
+  return rigRef.action('decisionAnswer', Object.assign({ decisionId: decision.id, option: option }, extra === undefined ? {} : extra))
+}
+/**
+ * T-196: an Agent create asks the human first, so a test that wants a card
+ * answers the question through the same panel path the user takes and then
+ * reads the created card back.
+ */
+async function createThroughDecision(rigRef, args, who) {
+  const first = await callOn(rigRef, Object.assign({ action: 'create' }, args), who)
+  if (first.ok === true) return first
+  if (first.code !== 'needs-decision' || first.decision === null || first.decision === undefined) return first
+  const answered = await answerAsPanel(rigRef, first.decision, 'create')
+  const taskId = answered.ok === true && answered.applied !== null && answered.applied.summary !== null ? answered.applied.summary.taskId : null
+  if (taskId === null || taskId === undefined) return { ok: false, code: answered.ok === true ? 'apply-failed' : answered.code, answer: answered }
+  return await callOn(rigRef, { action: 'get', id: taskId }, who)
+}
 
 // identity helpers
 check('agentLabel is stable', agentLabel(agent) === '@abcdef12', agentLabel(agent))
@@ -139,7 +160,7 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
 
 // create + board
 {
-  const result = await call({ action: 'create', title: 'from the model', dependsOn: [], writeFiles: ['scripts/a.gd'], verification: PROBES })
+  const result = await createThroughDecision(rig, { title: 'from the model', dependsOn: [], writeFiles: ['scripts/a.gd'], verification: PROBES })
   check('the tool creates a task', result.ok === true && result.task.title === 'from the model', JSON.stringify(result))
   check('a created task is pending', result.task.status === 'pending')
   const board = await call({ action: 'board' })
@@ -169,18 +190,27 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
 
 // start / dispatch / submit ownership
 {
-  const created = await call({ action: 'create', title: 'pool work', priority: 99, verification: PROBES })
+  const created = await createThroughDecision(rig, { title: 'pool work', priority: 99, verification: PROBES })
   const id = created.task.id
   const requested = await call({ action: 'start' })
-  check('an agent start is a request, not a start', requested.error !== undefined && requested.code === 'needs-consent' && requested.request !== null, JSON.stringify(requested))
+  check(
+    'an agent start is a request, not a start',
+    requested.error !== undefined && requested.code === 'needs-consent' && requested.request !== null && requested.decision !== null && requested.decision.eventKey === 'dispatch',
+    JSON.stringify(requested),
+  )
   let board = await call({ action: 'board' })
   check('the request leaves dispatch paused', board.dispatch.state === 'paused', JSON.stringify(board.dispatch))
-  const cancelled = await call({ action: 'cancelStartRequest' })
-  check('the agent can withdraw its request', cancelled.ok === true && cancelled.dispatch.request === null, JSON.stringify(cancelled))
-  await rig.api.perform('start', {}, rig.user)
+  const held = await answerAsPanel(rig, requested.decision, 'hold')
+  check('暂不派发 keeps dispatch paused and dispatches nothing', held.ok === true && held.applied.executed === false && held.applied.code === null, JSON.stringify(held.applied))
+  const withdrawn = await call({ action: 'cancelStartRequest' })
+  check('the agent can still withdraw a legacy start request', withdrawn.ok === true && withdrawn.dispatch.request === null, JSON.stringify(withdrawn))
+  const again = await call({ action: 'start' })
+  check('a second agent start asks again', again.code === 'needs-consent' && again.decision !== null && again.decision.id !== requested.decision.id, JSON.stringify({ code: again.code, id: again.decision && again.decision.id }))
+  const approved = await answerAsPanel(rig, again.decision, 'approve')
+  check('批准派发 starts dispatch', approved.ok === true && approved.applied.summary.dispatch === 'running', JSON.stringify(approved.applied))
   board = await call({ action: 'board' })
   const task = board.tasks.filter((entry) => entry.id === id)[0]
-  check('the user start dispatches the task', task.status === 'running' && task.assignee !== null && typeof task.assignee.session === 'string', JSON.stringify(task && task.assignee))
+  check('the approved start dispatches the task', task.status === 'running' && task.assignee !== null && typeof task.assignee.session === 'string', JSON.stringify(task && task.assignee))
   const wrong = await call({ action: 'submit', id: id, evidence: 'mine' }, other)
   check('a different agent cannot submit it', wrong.error !== undefined && wrong.code === 'not-assignee', JSON.stringify(wrong))
   const submitted = await call({ action: 'submit', id: id, evidence: 'tests pass' }, { id: task.assignee.session })
@@ -194,7 +224,7 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
 // automatic locks only: dispatch locks writeFiles, submit releases them, the
 // manual lock/unlock/forceUnlock actions are refusals now.
 {
-  const created = await call({ action: 'create', title: 'auto locked work', writeFiles: ['scripts/auto.gd'], verification: PROBES })
+  const created = await createThroughDecision(rig, { title: 'auto locked work', writeFiles: ['scripts/auto.gd'], verification: PROBES })
   const id = created.task.id
   await rig.api.perform('start', {}, rig.user)
   const board = await call({ action: 'board' })
@@ -233,7 +263,7 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   }
   registerTaskTool(mergeRig.ctx, { api: mergeRig.api })
   const toolCall = (args, who) => mergeRig.tool.execute(args, { agent: who === undefined ? { id: 'session-lead' } : who })
-  const created = await toolCall({ action: 'create', title: 'tool MR', verification: PROBES })
+  const created = await createThroughDecision(mergeRig, { title: 'tool MR', verification: PROBES })
   const id = created.task.id
   await mergeRig.action('start')
   const board = await mergeRig.action('board')
@@ -293,7 +323,7 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
 }
 
 {
-  const created = await call({ action: 'create', title: 'verify card', verify: { command: 'npm run verify && npm run e2e', timeoutMs: 120000 }, verification: PROBES })
+  const created = await createThroughDecision(rig, { title: 'verify card', verify: { command: 'npm run verify && npm run e2e', timeoutMs: 120000 }, verification: PROBES })
   check(
     'create carries the verify declaration through the tool',
     created.ok === true &&
@@ -309,9 +339,9 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
 
 // ── T-131: investigation cards through the tool ────────────────────────────
 {
-  const card = await call({ action: 'create', title: 'Why is the loader slow?', kind: 'investigate' })
+  const card = await createThroughDecision(rig, { title: 'Why is the loader slow?', kind: 'investigate' })
   check('T-131 the tool creates an investigation', card.ok === true && card.task.kind === 'investigate', JSON.stringify(card.ok === true ? card.task.kind : card.code))
-  const plain = await call({ action: 'create', title: 'Plain dev card', verification: PROBES })
+  const plain = await createThroughDecision(rig, { title: 'Plain dev card', verification: PROBES })
   check('T-131 create defaults to dev', plain.ok === true && plain.task.kind === 'dev', JSON.stringify(plain.ok === true ? plain.task.kind : plain.code))
   const changed = await call({ action: 'update', id: card.task.id, kind: 'dev' })
   check('T-131 the tool refuses a kind change', changed.ok !== true && changed.code === 'kind-immutable', JSON.stringify(changed.code))

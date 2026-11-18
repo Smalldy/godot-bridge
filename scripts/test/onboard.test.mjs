@@ -148,6 +148,24 @@ function onboardRig(options) {
   return { project: project, fs: fs, team: team, ctx: ctx, state: state, git: git, scheduler: scheduler, api: api, onboard: onboard, sessionId: sessionId, context: context }
 }
 
+const PANEL_CONTEXT = { by: '@user', role: 'user', agent: null }
+/**
+ * T-196: an Agent create asks the human first. These onboarding checks are about
+ * the handoff not blocking create, so the helper answers the question through
+ * the panel path and reads the card back.
+ */
+async function createViaDecision(rig, input) {
+  const asked = await rig.api.perform('create', input, rig.context)
+  if (asked.ok === true) return asked
+  if (asked.code !== 'needs-decision' || asked.decision === null || asked.decision === undefined) return asked
+  const panel = Object.assign({ projectPath: rig.project, sessionId: rig.sessionId }, PANEL_CONTEXT)
+  const answered = await rig.api.perform('decisionAnswer', { decisionId: asked.decision.id, option: 'create' }, panel)
+  if (answered.ok !== true) return answered
+  const id = answered.applied !== null && answered.applied.summary !== null ? answered.applied.summary.taskId : null
+  if (id === null || id === undefined) return { ok: false, code: 'apply-failed', answer: answered }
+  return await rig.api.perform('get', { id: id }, panel)
+}
+
 function stageLineCount(brief) {
   return String(brief)
     .split('\n')
@@ -466,8 +484,8 @@ function spawnCalls(team) {
     const row = (o.handoff.sessions || []).filter((entry) => entry.sessionId === OLD)[0]
     check('T-153 handoff payload names sessions, liveness, cards and eligibility', row !== undefined && row.status === 'live' && row.cards.active === 1 && o.handoff.cards.length === 1 && o.handoff.cards[0].id === 'T-6' && o.handoff.cards[0].ownerSession === OLD && Array.isArray(o.handoff.cards[0].liveExecutors) && o.handoff.cards[0].lease.until !== null && o.handoff.eligibility.takeover.ok === false && o.handoff.eligibility.resume.ok === true, JSON.stringify({ row: row, cards: o.handoff.cards }))
     check('T-153 a live owner is never taken over and no second team is built', spawnCalls(rig.team).length === 0 && o.team === null, JSON.stringify({ spawns: spawnCalls(rig.team).length, team: o.team }))
-    const created = await rig.api.perform('create', { title: 'new work', verification: { probes: [{ id: 'suite', command: 'npm test' }] } }, rig.context)
-    check('v3 create is not blocked by another session\'s handoff', created.ok === true, JSON.stringify({ code: created.code }))
+    const askedCreate = await rig.api.perform('create', { title: 'new work', verification: { probes: [{ id: 'suite', command: 'npm test' }] } }, rig.context)
+    check('v3 create is not blocked by another session\'s handoff (it asks the user instead)', askedCreate.ok === false && askedCreate.code === 'needs-decision' && askedCreate.decision !== undefined, JSON.stringify({ code: askedCreate.code }))
     const started = await rig.api.perform('start', {}, rig.context)
     check('v3 start is not blocked by another session\'s handoff', started.ok === true || started.code === 'needs-consent', JSON.stringify({ code: started.code }))
     const unchanged = boardJson(rig.fs, rig.project).tasks[0]
@@ -567,11 +585,11 @@ function spawnCalls(team) {
     const rig = onboardRig({ board: boardOf({ tasks: [runningCard()] }), team: leadOnlyTeam(), roles: 'auto' })
     markSession(rig, OLD, OLD_STALE)
     const blocked = await rig.api.perform('create', { title: 'blocked card', verification: { probes: [{ id: 'suite', command: 'npm test' }] } }, rig.context)
-    check('v3 create is allowed before another session\'s handoff decision', blocked.ok === true, JSON.stringify({ code: blocked.code }))
+    check('v3 create is allowed before another session\'s handoff decision (it asks the user instead)', blocked.ok === false && blocked.code === 'needs-decision' && blocked.decision !== undefined, JSON.stringify({ code: blocked.code }))
     const joined = await rig.api.perform('onboard', { handoff: { decision: 'join-read-only' } }, rig.context)
     const after = boardJson(rig.fs, rig.project).tasks.filter((task) => task.id === 'T-6')[0]
     check('T-153 join read-only records the decision and leaves the old card with its owner', joined.ok === true && joined.onboard.handoff.decision !== null && joined.onboard.handoff.decision.mode === 'join-read-only' && after.ownerSession === OLD && after.status === 'running' && joined.onboard.setup.did.some((step) => step.step === 'handoff-join'), JSON.stringify({ decision: joined.onboard.handoff && joined.onboard.handoff.decision, owner: after.ownerSession }))
-    const created = await rig.api.perform('create', { title: 'own card now', verification: { probes: [{ id: 'suite', command: 'npm test' }] } }, rig.context)
+    const created = await createViaDecision(rig, { title: 'own card now', verification: { probes: [{ id: 'suite', command: 'npm test' }] } })
     check('T-153 after joining read-only the session may create its OWN cards', created.ok === true && created.task.ownerSession === NEW, JSON.stringify({ ok: created.ok, code: created.code }))
   }
 
@@ -609,7 +627,7 @@ function spawnCalls(team) {
         joined.onboard.handoff.decision.mode === 'join-read-only',
       JSON.stringify({ code: joined.code, keys: keys.length, decision: persistedSessions[NEW], oldestSeedKept: keys.indexOf('session-history-' + String(SEED - 1)) }),
     )
-    const created = await rig.api.perform('create', { title: 'after cap join', verification: { probes: [{ id: 'suite', command: 'npm test' }] } }, rig.context)
+    const created = await createViaDecision(rig, { title: 'after cap join', verification: { probes: [{ id: 'suite', command: 'npm test' }] } })
     check('T-153 the persisted decision still unblocks create', created.ok === true, JSON.stringify({ ok: created.ok, code: created.code }))
   }
 }
