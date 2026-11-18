@@ -18,6 +18,7 @@ function createTaskCenter(deps) {
 	const TaskForm = deps.TaskForm
 	const SettingsForm = deps.SettingsForm
 	const ProjectForm = deps.ProjectForm
+	const DecisionModal = deps.DecisionModal
 	const useTranslate = deps.useTranslate
 	const useSnapshot = deps.useSnapshot
 	const useNow = deps.useNow
@@ -93,6 +94,10 @@ function createTaskCenter(deps) {
 		// Rendering tests may open the project dialog; the production slot passes no props.
 		const initialProjectOpen = props !== undefined && props !== null && props.initialProjectOpen === true
 		const [projectOpen, setProjectOpen] = React.useState(initialProjectOpen)
+		// T-195: the host decision queue. One question is foregrounded; "view card"
+		// hides the modal so the drawer behind it is readable, and closing the
+		// drawer brings the same question back (it is still pending).
+		const [decisionPeek, setDecisionPeek] = React.useState(false)
 		// T-155: drives the auto-follow render pass and the retry action.
 		const [workspaceTick, setWorkspaceTick] = React.useState(0)
 		// T-150/T-155: copy confirmation for the owning session id in the header.
@@ -147,6 +152,8 @@ function createTaskCenter(deps) {
 		const queue = snapshot.queue === undefined || snapshot.queue === null ? [] : snapshot.queue
 		const scheduler = snapshot.scheduler
 		const busy = snapshot.busy === undefined || snapshot.busy === null ? null : snapshot.busy
+		// T-195: pending host decisions, oldest first (the host's queue order).
+		const decisionQueue = Array.isArray(snapshot.decisions) ? snapshot.decisions : []
 
 		function isBusy(action, id) {
 			return busy !== null && busy.action === action && (id === undefined || busy.id === id)
@@ -158,6 +165,18 @@ function createTaskCenter(deps) {
 		}
 		function closeDetail() {
 			setSelectedId(null)
+			setDecisionPeek(false)
+		}
+		function openTaskFromDecision(id) {
+			setDecisionPeek(true)
+			setSelectedId(id)
+			void store.loadDetail(id)
+		}
+		function answerDecision(decision, answer) {
+			const body = { decisionId: decision.id, option: answer.option }
+			if (typeof answer.text === 'string' && answer.text !== '') body.text = answer.text
+			if (typeof answer.confirm === 'string' && answer.confirm !== '') body.confirm = answer.confirm
+			void store.send('decisionAnswer', body)
 		}
 		function startEdit(task) {
 			const id = task === null || task === undefined ? 'new' : task.id
@@ -894,6 +913,19 @@ function createTaskCenter(deps) {
 			// T-181: the ONE project dialog. It is mounted only after the user asks for
 			// it — an empty project state never auto-opens it, and closing it unmounts.
 			projectOpen && snapshot.source !== 'loading' ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,
+			// T-195: the host decision queue. The modal is keyed by the foregrounded
+		// decision id, so the answer form resets when the queue advances.
+			decisionQueue.length > 0 && decisionPeek !== true
+		? h(DecisionModal, {
+			key: decisionQueue[0].id,
+			t: t,
+			queue: decisionQueue,
+			receivedAt: snapshot.receivedAt,
+			busy: busy !== null && busy.action === 'decisionAnswer',
+			onAnswer: answerDecision,
+			onOpenTask: openTaskFromDecision,
+		})
+		: null,
 		)
 	}
 

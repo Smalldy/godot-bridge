@@ -2,8 +2,8 @@
 
 ## 动作矩阵
 
-**只读（并发安全）**：`board`、`list`、`get`、`locks`、`harnessStatus`。
-**可写（模型侧）**：`create`、`update`、`delete`、`start`、`pause`、`tick`、`submit`、`report`、`approveReview`、`requestChanges`、`passTest`、`failTest`、`mergeRequest`、`refreshMerge`、`rejectMerge`、`harnessStart`、`harnessStop`、`harnessRestart`、`harnessSmoke`、`cancelStartRequest`、`cancel`、`reopen`、`block`、`unblock`、`retry`、`openProject`、`onboard`。
+**只读（并发安全）**：`board`、`list`、`get`、`locks`、`harnessStatus`、`decisionList`。
+**可写（模型侧）**：`create`、`update`、`delete`、`start`、`pause`、`tick`、`submit`、`report`、`approveReview`、`requestChanges`、`passTest`、`failTest`、`mergeRequest`、`refreshMerge`、`rejectMerge`、`harnessStart`、`harnessStop`、`harnessRestart`、`harnessSmoke`、`cancelStartRequest`、`cancel`、`reopen`、`block`、`unblock`、`retry`、`openProject`、`onboard`、`decisionAnswer`。
 
 - `pause` 暂停/恢复**派发器**（同面板开关），不是单张卡；`start` 是申请。`tick` 立即跑一轮 settle，排查“为什么没派发”。
 - 归属：`submit`、`refreshMerge` 仅 assignee / 用户。

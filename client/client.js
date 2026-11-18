@@ -840,6 +840,33 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleStageImplementDesc: '在任务 worktree 内实现、测试并提交。',
 				roleStageReviewDesc: '独立审阅 diff，给出通过或打回理由。',
 				roleStageTestDesc: '在独立候选树验证行为与验收项。',
+				// T-195 — host decision requests (common modal copy, packet §2).
+				decisionTitle: '关键决策',
+				decisionSubtitleFallback: '关键事件',
+				decisionCountdown: '{seconds}s 后自动选择「{defaultLabel}」',
+				decisionNoCountdown: '不会自动选择',
+				decisionQueue: '还有 {n} 个待决策',
+				decisionDefaultBadge: '默认',
+				decisionTextLabel: '自定义文本',
+				decisionTextPlaceholder: '可补充说明（可选）',
+				decisionConfirm: '确认',
+				decisionAnswering: '正在提交…',
+				decisionHighRiskLabel: '输入 DELETE 确认',
+				decisionHighRiskHint: '此操作不可恢复；输入 DELETE 后才能确认。',
+				decisionOpenTask: '查看卡片详情',
+				err_already_answered: '该决策已经回答过，不能再次回答。',
+				err_decision_expired: '该决策已超时失效，回答不再生效。',
+				err_decision_cancelled: '该决策已取消。',
+				err_unknown_decision: '找不到该决策。',
+				err_already_resolved: '该决策已经处理过。',
+				err_invalid_option: '该选项不属于这个决策。',
+				err_invalid_answer: '请选择一个选项或输入文本。',
+				err_invalid_decision_id: '缺少决策编号。',
+				err_confirmation_required: '这是高危操作，请输入 DELETE 确认。',
+				err_decision_conflict: '同一编号已存在内容不同的决策。',
+				err_decision_capacity: '待决策数量已达上限，请先处理已有决策。',
+				err_invalid_request: '决策参数不完整。',
+				err_invalid_timeout: '超时时间无效。',
 			},
 			en: {
 				nav: 'GodotBridge Task Center',
@@ -1530,6 +1557,33 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleStageImplementDesc: 'Implements, tests and commits inside the task worktree.',
 				roleStageReviewDesc: 'Reviews the diff independently, then approves or sends it back.',
 				roleStageTestDesc: 'Verifies behaviour and acceptance items in a separate candidate tree.',
+				// T-195 — host decision requests (common modal copy, packet §2).
+				decisionTitle: 'Decision required',
+				decisionSubtitleFallback: 'Key event',
+				decisionCountdown: '{seconds}s until the default “{defaultLabel}” is chosen',
+				decisionNoCountdown: 'No automatic choice',
+				decisionQueue: '{n} more decisions queued',
+				decisionDefaultBadge: 'Default',
+				decisionTextLabel: 'Custom answer',
+				decisionTextPlaceholder: 'Optional note',
+				decisionConfirm: 'Confirm',
+				decisionAnswering: 'Submitting…',
+				decisionHighRiskLabel: 'Type DELETE to confirm',
+				decisionHighRiskHint: 'This cannot be undone; confirm only after typing DELETE.',
+				decisionOpenTask: 'View card',
+				err_already_answered: 'This decision was already answered and cannot be answered again.',
+				err_decision_expired: 'This decision timed out; the answer no longer applies.',
+				err_decision_cancelled: 'This decision was cancelled.',
+				err_unknown_decision: 'No such decision.',
+				err_already_resolved: 'This decision was already resolved.',
+				err_invalid_option: 'That option does not belong to this decision.',
+				err_invalid_answer: 'Choose an option or enter some text.',
+				err_invalid_decision_id: 'A decision id is required.',
+				err_confirmation_required: 'This is a high-risk action: type DELETE to confirm.',
+				err_decision_conflict: 'That id already exists with different content.',
+				err_decision_capacity: 'Too many pending decisions; resolve some first.',
+				err_invalid_request: 'The decision request is incomplete.',
+				err_invalid_timeout: 'Invalid timeout.',
 			},
 		}
 
@@ -1735,6 +1789,32 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-modal{width:min(580px,100%);max-height:86vh;overflow:auto;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.22),0 2px 8px rgba(0,0,0,.08);padding:18px}',
 			'.gbt-modalhead{display:flex;align-items:flex-start;gap:10px;margin-bottom:2px}',
 			'.gbt-modalhead h2{margin:0;font-size:15px;font-weight:600;flex:1}',
+			// T-195: the host-decision modal. One foregrounded question; the queue
+			// count, the server countdown and the default badge are the only
+			// additions over the shared modal shell.
+			'.gbt-decisionoverlay{position:fixed;inset:0;background:rgba(15,18,24,.48);display:grid;place-items:center;z-index:120;padding:20px}',
+			'.gbt-decision{width:min(560px,100%);max-height:86vh;overflow:auto;background:var(--dsw-alias-bg-layer-2);border:0.5px solid var(--dsw-alias-border-l4);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.24),0 2px 8px rgba(0,0,0,.08);padding:18px}',
+			'.gbt-decisionhead{display:flex;align-items:flex-start;gap:10px}',
+			'.gbt-decisionhead h2{margin:0;font-size:15px;font-weight:600;flex:1}',
+			'.gbt-decisionsub{margin:2px 0 0;font-size:11.5px;color:var(--dsw-alias-label-secondary);word-break:break-word}',
+			'.gbt-decisioncountdown{margin:8px 0 0;font-size:11.5px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+			'.gbt-decisionqueue{margin:2px 0 0;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-decisionbody{margin:10px 0 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}',
+			'.gbt-decisionoptions{display:flex;flex-direction:column;gap:6px;margin:12px 0 0}',
+			'.gbt-decisionoption{display:flex;align-items:flex-start;gap:8px;text-align:left;padding:9px 10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:9px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:1.45;cursor:pointer;min-width:0}',
+			'.gbt-decisionoption:hover{border-color:var(--dsw-alias-state-business-primary)}',
+			'.gbt-decisionoption[data-selected="true"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-module-platform)}',
+			'.gbt-decisionoption[data-danger="true"]{border-color:var(--dsw-alias-state-error,#d9534f)}',
+			'.gbt-decisionoption:disabled{opacity:.55;cursor:not-allowed}',
+			'.gbt-decisionoptionbody{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}',
+			'.gbt-decisionoptionlabel{font-weight:600}',
+			'.gbt-decisionoptiondesc{font-size:11px;color:var(--dsw-alias-label-tertiary);line-height:1.5}',
+			'.gbt-decisionbadge{font-size:9.5px;line-height:1;padding:3px 5px;border-radius:999px;border:0.5px solid var(--dsw-alias-border-l4);color:var(--dsw-alias-label-tertiary);flex:0 0 auto;align-self:center}',
+			'.gbt-decisiontext{display:flex;flex-direction:column;gap:4px;margin:12px 0 0;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-decisionhighrisk{margin:10px 0 0;display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-decisionhighriskin{margin:0;width:160px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}',
+			'.gbt-decisionfoot{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:14px 0 0;flex-wrap:wrap}',
+			'.gbt-decisionfoot .gbt-muted{flex:1 1 auto;min-width:0}',
 			'.gbt-form{display:flex;flex-direction:column;gap:10px;margin-top:12px}',
 '.gbt-rhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}',
 '.gbt-rtitle{margin:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}',
@@ -3283,6 +3363,11 @@ const createTaskStore = (function () {
 				tasks: [],
 				counts: {},
 			}, 'loading', '')
+			// T-195: the host's pending decisions and the local arrival time of the
+			// snapshot they came with. The modal counts down from the SERVER's
+			// remainingMs, corrected by this receipt time.
+			snapshot.decisions = []
+			snapshot.receivedAt = Date.now()
 			// T-111: the Host answers the activity timeline incrementally. Keep what we
 			// already have and ask only for events after the last one we saw.
 			let activityCursor = null
@@ -3326,6 +3411,22 @@ const createTaskStore = (function () {
 				emit(snapshot)
 			}
 
+			/**
+			 * T-195: carry the pending decision queue onto a snapshot. The server
+			 * sends each request's remainingMs, so the countdown is measured from
+			 * the server deadline; receivedAt turns it into a local elapsed time.
+			 */
+			function withDecisions(next, payload) {
+				const host =
+					payload !== null && payload !== undefined && payload.snapshot !== undefined && payload.snapshot !== null
+						? payload.snapshot
+						: payload
+				if (host !== null && host !== undefined && Array.isArray(host.decisions)) next.decisions = host.decisions
+				else if (!Array.isArray(next.decisions)) next.decisions = []
+				next.receivedAt = Date.now()
+				return next
+			}
+
 			async function fetchJson(url, options) {
 				const response = await fetch(url, options)
 				return await response.json()
@@ -3356,7 +3457,7 @@ const createTaskStore = (function () {
 								// a zero-task delta/edge answer is not useful as first paint.
 								const total = corePayload.counts !== null && corePayload.counts !== undefined && Number.isFinite(corePayload.counts.total) ? corePayload.counts.total : 0
 								if (corePayload.tasks.length === 0 && total > 0) return
-								emit(tcSnapshot(corePayload, 'host', ''))
+								emit(withDecisions(tcSnapshot(corePayload, 'host', ''), corePayload))
 							}
 						} catch (error) {
 							/* the full request below is the fallback */
@@ -3371,6 +3472,7 @@ const createTaskStore = (function () {
 							// the view renders its open-project entry points, say nothing, and
 							// leave no message behind for the binding to inherit.
 							const unbound = tcSnapshot(Object.assign({}, payload, { ok: true, project: null, projectRoot: null, tasks: [] }), 'setup', '')
+							withDecisions(unbound, payload)
 							unbound.actionResult = snapshot.actionResult
 							unbound.actionError = snapshot.actionError
 							messageKind = null
@@ -3380,7 +3482,7 @@ const createTaskStore = (function () {
 							// switch pins a project, so "follow the session" stays the default.
 							// Only an ACTION's outcome survives a routine poll (see below); what
 							// refreshes here is the board data.
-							const next = tcMergeSnapshot(snapshot, payload)
+							const next = withDecisions(tcMergeSnapshot(snapshot, payload), payload)
 							// T-111: accumulate the incremental activity page. A project switch
 							// starts a new log (the old project's events no longer apply).
 							if (next.project !== snapshot.project) {
@@ -3410,6 +3512,8 @@ const createTaskStore = (function () {
 							emit(next)
 						} else {
 							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
+							failed.decisions = snapshot.decisions
+							failed.receivedAt = snapshot.receivedAt
 							failed.actionResult = snapshot.actionResult
 							failed.actionError = snapshot.actionError
 							messageKind = 'state'
@@ -3417,6 +3521,8 @@ const createTaskStore = (function () {
 						}
 					} catch (error) {
 						const offline = tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error))
+						offline.decisions = snapshot.decisions
+						offline.receivedAt = snapshot.receivedAt
 						offline.actionResult = snapshot.actionResult
 						offline.actionError = snapshot.actionError
 						messageKind = 'state'
@@ -3452,7 +3558,7 @@ const createTaskStore = (function () {
 					if (payload && payload.ok === true) {
 						const host = payload.snapshot !== undefined && payload.snapshot !== null ? payload.snapshot : payload
 						if (host && Array.isArray(host.tasks)) {
-							const next = tcSnapshot(host, 'host', '', payload)
+							const next = withDecisions(tcSnapshot(host, 'host', '', payload), host)
 							if (quiet) {
 								next.actionResult = snapshot.actionResult
 								next.actionError = snapshot.actionError
@@ -7944,6 +8050,243 @@ module.exports = { createGlyph }
 				return factory({ h: h })
 			})()
 
+			const DecisionModal = (function () {
+				const module = { exports: {} }
+				;(function (module, exports) {
+/**
+ * DecisionRequest modal view module (T-195).
+ *
+ * The host may ask ONE critical question at a time and queue the rest. This view
+ * renders that queue front-to-back: the common modal copy from the requirement
+ * packet (title, task/event subtitle, server countdown, queue count, default
+ * badge), the options, an optional free-text answer, and the DELETE confirmation
+ * for a destructive option. Event-specific copy is supplied by the caller's
+ * eventLabel/body/title — this module knows nothing about create/review/test.
+ *
+ * Countdown: the host sends remainingMs from ITS clock. The panel stores the
+ * snapshot receipt time, so the rendered seconds are the server deadline minus
+ * the local elapsed time; a browser clock offset cannot shorten or extend it.
+ * Once a decision's deadline passes the PANEL still lets the user see it until
+ * the next poll removes it, but the host refuses the late answer (decision-expired).
+ *
+ * Injected by the build: React (useState/useEffect/useRef) and h.
+ */
+function createDecisionModal(deps) {
+	const React = deps.React
+	const h = deps.h
+	const CONFIRM_WORD = 'DELETE'
+
+	/** Seconds left from the SERVER deadline (remainingMs at receipt time). */
+	function decisionRemainingSeconds(decision, receivedAt, now) {
+		if (decision === null || decision === undefined) return null
+		const remaining = decision.remainingMs
+		if (remaining === null || remaining === undefined || !Number.isFinite(remaining)) return null
+		const received = Number.isFinite(receivedAt) ? receivedAt : now
+		const elapsed = Number.isFinite(now) ? Math.max(0, now - received) : 0
+		return Math.max(0, Math.ceil((remaining - elapsed) / 1000))
+	}
+
+	/** "{taskId} · {eventLabel}" — the packet's common subtitle. */
+	function decisionSubtitle(decision, t) {
+		if (decision === null || decision === undefined) return ''
+		const label = typeof decision.eventLabel === 'string' && decision.eventLabel !== '' ? decision.eventLabel : t('decisionSubtitleFallback')
+		const taskId = typeof decision.taskId === 'string' && decision.taskId !== '' ? decision.taskId : null
+		return taskId === null ? label : taskId + ' · ' + label
+	}
+
+	/** The label of the option flagged as the default (the timeout choice). */
+	function decisionDefaultLabel(decision) {
+		if (decision === null || decision === undefined || !Array.isArray(decision.options)) return null
+		const wanted = typeof decision.defaultOption === 'string' ? decision.defaultOption : null
+		const chosen = decision.options.filter((option) => option.default === true || (wanted !== null && option.id === wanted))[0]
+		return chosen === undefined ? null : chosen.label
+	}
+
+	/** The countdown sentence, or null when the host set no deadline. */
+	function decisionCountdownText(decision, receivedAt, now, t) {
+		const seconds = decisionRemainingSeconds(decision, receivedAt, now)
+		const defaultLabel = decisionDefaultLabel(decision)
+		if (seconds === null) return t('decisionNoCountdown')
+		if (defaultLabel === null) return t('decisionNoCountdown')
+		return t('decisionCountdown').replace('{seconds}', String(seconds)).replace('{defaultLabel}', defaultLabel)
+	}
+
+	/** The option the modal starts on: the marked default, when there is one. */
+	function decisionInitialOption(decision) {
+		if (decision === null || decision === undefined) return null
+		const wanted = typeof decision.defaultOption === 'string' ? decision.defaultOption : null
+		if (wanted === null) return null
+		const known = (Array.isArray(decision.options) ? decision.options : []).filter((option) => option.id === wanted)[0]
+		return known === undefined ? null : known.id
+	}
+
+	/**
+	 * Whether the confirm button may submit. A destructive option requires the
+	 * exact DELETE word; with no options the free text must be non-empty.
+	 */
+	function decisionCanConfirm(decision, optionId, text, confirmText) {
+		if (decision === null || decision === undefined) return false
+		const option = (Array.isArray(decision.options) ? decision.options : []).filter((candidate) => candidate.id === optionId)[0]
+		if (option === undefined) return typeof text === 'string' && text.trim() !== ''
+		if (option.danger === true && confirmText !== CONFIRM_WORD) return false
+		return true
+	}
+
+	/**
+	 * The generic plugin view: one foregrounded decision, the queued count and
+	 * the answer form. It never renders a close button — a question is resolved
+	 * by answering one of its options (a "return"/"keep" option is one of them).
+	 */
+	function DecisionModal(props) {
+		const t = props.t
+		const queue = Array.isArray(props.queue) ? props.queue : []
+		const current = queue.length === 0 ? null : queue[0]
+		// A one-second local tick keeps the server countdown live between polls.
+		const [tick, setTick] = React.useState(0)
+		React.useEffect(function () {
+			if (typeof setInterval !== 'function') return undefined
+			const handle = setInterval(function () {
+				setTick(function (value) { return value + 1 })
+			}, 1000)
+			return function () { clearInterval(handle) }
+		}, [])
+		const [selected, setSelected] = React.useState(current === null ? null : decisionInitialOption(current))
+		const [text, setText] = React.useState('')
+		const [confirmText, setConfirmText] = React.useState('')
+		if (current === null) return null
+		// The one-second tick re-renders this component; read the clock then, so the
+		// countdown keeps moving even while the parent's polling snapshot is idle.
+		const now = Date.now()
+		const chosenId = selected === null || selected === undefined ? decisionInitialOption(current) : selected
+		const chosen = (Array.isArray(current.options) ? current.options : []).filter((option) => option.id === chosenId)[0] || null
+		const danger = chosen !== null && chosen.danger === true
+		const canConfirm = decisionCanConfirm(current, chosenId, text, confirmText)
+		const submitting = props.busy === true
+		const queueLeft = queue.length - 1
+
+		const optionNodes = (Array.isArray(current.options) ? current.options : []).map(function (option) {
+			const isSelected = option.id === chosenId
+			return h(
+				'button',
+				{
+					key: option.id,
+					type: 'button',
+					className: 'gbt-decisionoption',
+					'data-decision-option': option.id,
+					'data-selected': isSelected ? 'true' : 'false',
+					'data-danger': option.danger === true ? 'true' : 'false',
+					disabled: submitting,
+					onClick: function () {
+						setSelected(option.id)
+						setConfirmText('')
+					},
+				},
+				h(
+					'span',
+					{ className: 'gbt-decisionoptionbody' },
+					h('span', { className: 'gbt-decisionoptionlabel' }, option.label),
+					typeof option.description === 'string' && option.description !== '' ? h('span', { className: 'gbt-decisionoptiondesc' }, option.description) : null,
+				),
+				option.default === true || option.id === current.defaultOption
+					? h('span', { className: 'gbt-decisionbadge', 'data-decision-default': 'true' }, t('decisionDefaultBadge'))
+					: null,
+			)
+		})
+
+		return h(
+			'div',
+			{ className: 'gbt-decisionoverlay', 'data-decision-overlay': 'true' },
+			h(
+				'div',
+				{ className: 'gbt-decision', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'gbt-decision-title', 'data-decision-id': current.id },
+				h(
+					'div',
+					{ className: 'gbt-decisionhead' },
+					h('h2', { id: 'gbt-decision-title', 'data-decision-title': 'true' }, t('decisionTitle')),
+					h('span', { className: 'gbt-muted', 'data-decision-queue': 'true' }, queueLeft > 0 ? t('decisionQueue').replace('{n}', String(queueLeft)) : ''),
+				),
+				h('p', { className: 'gbt-decisionsub', 'data-decision-subtitle': 'true' }, decisionSubtitle(current, t)),
+				h('p', { className: 'gbt-decisioncountdown', 'data-decision-countdown': 'true' }, decisionCountdownText(current, props.receivedAt, now, t)),
+				current.title === '' ? null : h('p', { className: 'gbt-decisionbody', 'data-decision-headline': 'true' }, current.title),
+				current.body === '' ? null : h('p', { className: 'gbt-decisionbody', 'data-decision-body': 'true' }, current.body),
+				optionNodes.length === 0 ? null : h('div', { className: 'gbt-decisionoptions', 'data-decision-options': 'true' }, optionNodes),
+				h(
+					'label',
+					{ className: 'gbt-decisiontext' },
+					h('span', null, t('decisionTextLabel')),
+					h('textarea', {
+						className: 'gbt-input gbt-editorarea',
+						style: { minHeight: '56px' },
+						value: text,
+						placeholder: t('decisionTextPlaceholder'),
+						'data-decision-text': 'true',
+						disabled: submitting,
+						onChange: function (event) { setText(String(event.target.value)) },
+					}),
+				),
+				danger
+					? h(
+						'label',
+						{ className: 'gbt-decisionhighrisk', 'data-decision-highrisk': 'true' },
+						h('span', null, t('decisionHighRiskLabel')),
+						h('input', {
+							className: 'gbt-input gbt-decisionhighriskin',
+							value: confirmText,
+							placeholder: CONFIRM_WORD,
+							'data-decision-confirm': 'true',
+							disabled: submitting,
+							onChange: function (event) { setConfirmText(String(event.target.value)) },
+						}),
+						h('span', { className: 'gbt-footnote' }, t('decisionHighRiskHint')),
+					)
+					: null,
+				h(
+					'div',
+					{ className: 'gbt-decisionfoot' },
+					typeof current.taskId === 'string' && current.taskId !== '' && typeof props.onOpenTask === 'function'
+						? h('button', {
+								type: 'button',
+								className: 'gbt-btn',
+								'data-decision-open-task': 'true',
+								onClick: function () { props.onOpenTask(current.taskId) },
+							}, t('decisionOpenTask'))
+						: null,
+					h(
+						'button',
+						{
+							type: 'button',
+							className: 'gbt-btn',
+							'data-variant': 'primary',
+							'data-decision-confirm-submit': 'true',
+							disabled: !canConfirm || submitting,
+							'data-decision-can-confirm': canConfirm ? 'true' : 'false',
+							onClick: function () {
+								if (!canConfirm || typeof props.onAnswer !== 'function') return
+								props.onAnswer(current, { option: chosenId, text: text, confirm: confirmText })
+							},
+						},
+						submitting ? t('decisionAnswering') : t('decisionConfirm'),
+					),
+				),
+			),
+		)
+	}
+
+	DecisionModal.decisionRemainingSeconds = decisionRemainingSeconds
+	DecisionModal.decisionSubtitle = decisionSubtitle
+	DecisionModal.decisionInitialOption = decisionInitialOption
+	DecisionModal.decisionCanConfirm = decisionCanConfirm
+	DecisionModal.decisionCountdownText = decisionCountdownText
+	DecisionModal.CONFIRM_WORD = CONFIRM_WORD
+	return DecisionModal
+}
+
+module.exports = { createDecisionModal }
+
+				})(module, module.exports)
+				const factory = module.exports.createDecisionModal
+				return factory({ React: React, h: h })
+			})()
 			const TaskCenter = (function () {
 				const module = { exports: {} }
 				;(function (module, exports) {
@@ -7967,6 +8310,7 @@ function createTaskCenter(deps) {
 	const TaskForm = deps.TaskForm
 	const SettingsForm = deps.SettingsForm
 	const ProjectForm = deps.ProjectForm
+	const DecisionModal = deps.DecisionModal
 	const useTranslate = deps.useTranslate
 	const useSnapshot = deps.useSnapshot
 	const useNow = deps.useNow
@@ -8042,6 +8386,10 @@ function createTaskCenter(deps) {
 		// Rendering tests may open the project dialog; the production slot passes no props.
 		const initialProjectOpen = props !== undefined && props !== null && props.initialProjectOpen === true
 		const [projectOpen, setProjectOpen] = React.useState(initialProjectOpen)
+		// T-195: the host decision queue. One question is foregrounded; "view card"
+		// hides the modal so the drawer behind it is readable, and closing the
+		// drawer brings the same question back (it is still pending).
+		const [decisionPeek, setDecisionPeek] = React.useState(false)
 		// T-155: drives the auto-follow render pass and the retry action.
 		const [workspaceTick, setWorkspaceTick] = React.useState(0)
 		// T-150/T-155: copy confirmation for the owning session id in the header.
@@ -8096,6 +8444,8 @@ function createTaskCenter(deps) {
 		const queue = snapshot.queue === undefined || snapshot.queue === null ? [] : snapshot.queue
 		const scheduler = snapshot.scheduler
 		const busy = snapshot.busy === undefined || snapshot.busy === null ? null : snapshot.busy
+		// T-195: pending host decisions, oldest first (the host's queue order).
+		const decisionQueue = Array.isArray(snapshot.decisions) ? snapshot.decisions : []
 
 		function isBusy(action, id) {
 			return busy !== null && busy.action === action && (id === undefined || busy.id === id)
@@ -8107,6 +8457,18 @@ function createTaskCenter(deps) {
 		}
 		function closeDetail() {
 			setSelectedId(null)
+			setDecisionPeek(false)
+		}
+		function openTaskFromDecision(id) {
+			setDecisionPeek(true)
+			setSelectedId(id)
+			void store.loadDetail(id)
+		}
+		function answerDecision(decision, answer) {
+			const body = { decisionId: decision.id, option: answer.option }
+			if (typeof answer.text === 'string' && answer.text !== '') body.text = answer.text
+			if (typeof answer.confirm === 'string' && answer.confirm !== '') body.confirm = answer.confirm
+			void store.send('decisionAnswer', body)
 		}
 		function startEdit(task) {
 			const id = task === null || task === undefined ? 'new' : task.id
@@ -8843,6 +9205,19 @@ function createTaskCenter(deps) {
 			// T-181: the ONE project dialog. It is mounted only after the user asks for
 			// it — an empty project state never auto-opens it, and closing it unmounts.
 			projectOpen && snapshot.source !== 'loading' ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,
+			// T-195: the host decision queue. The modal is keyed by the foregrounded
+		// decision id, so the answer form resets when the queue advances.
+			decisionQueue.length > 0 && decisionPeek !== true
+		? h(DecisionModal, {
+			key: decisionQueue[0].id,
+			t: t,
+			queue: decisionQueue,
+			receivedAt: snapshot.receivedAt,
+			busy: busy !== null && busy.action === 'decisionAnswer',
+			onAnswer: answerDecision,
+			onOpenTask: openTaskFromDecision,
+		})
+		: null,
 		)
 	}
 
@@ -8867,6 +9242,7 @@ module.exports = { createTaskCenter }
 					TaskForm: TaskForm,
 					SettingsForm: SettingsForm,
 					ProjectForm: ProjectForm,
+					DecisionModal: DecisionModal,
 					useTranslate: useTranslate,
 					useSnapshot: useSnapshot,
 					useNow: useNow,

@@ -202,5 +202,38 @@ check(
   check('an update cannot grow a card past six criteria', res.json().ok === false && res.json().code === 'too-many-acceptance', res.text)
 }
 
+// T-195: host decisions ride the ordinary action route (role user)
+{
+  const created = await rig.api.decisions.request(
+    PROJECT,
+    {
+      id: 'DEC-1',
+      eventKey: 'dispatch',
+      taskId: 'T-1',
+      eventLabel: '派发批准',
+      title: '派发 T-1？',
+      body: '任务已就绪，等待批准。',
+      options: [
+        { id: 'approve', label: '批准派发' },
+        { id: 'hold', label: '暂不派发', default: true },
+      ],
+      defaultOption: 'hold',
+      timeoutMs: 300000,
+    },
+    { by: '@user' },
+  )
+  check('a decision request persists beside the board', created.ok === true && created.created === true, JSON.stringify(created))
+  let res = await post({ action: 'decisionList' })
+  let payload = res.json()
+  check('the route lists pending decisions', payload.ok === true && Array.isArray(payload.decisions) && payload.decisions.length === 1 && payload.decisions[0].id === 'DEC-1', res.text.substring(0, 400))
+  check('the route answer carries the board snapshot for the panel', payload.snapshot !== undefined && Array.isArray(payload.snapshot.tasks))
+  res = await post({ action: 'decisionAnswer', decisionId: 'DEC-1', option: 'approve' })
+  payload = res.json()
+  check('the route answers a decision once', payload.ok === true && payload.decision.status === 'answered' && payload.decision.resolution.option === 'approve', res.text.substring(0, 400))
+  res = await post({ action: 'decisionAnswer', decisionId: 'DEC-1', option: 'hold' })
+  payload = res.json()
+  check('the route refuses a second answer by typed code', payload.ok === false && payload.code === 'already-answered', res.text.substring(0, 400))
+}
+
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')
 process.exit(failures === 0 ? 0 : 1)
