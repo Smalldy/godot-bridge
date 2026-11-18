@@ -11,8 +11,10 @@
  * never throws; the caller turns it into a tool error or an HTTP body.
  */
 
+import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import {
+  CLOSED_STATUSES,
   HOST_ACTION_TIMEOUT_MS,
   ROLE_KINDS,
   ROLE_STAGE,
@@ -782,6 +784,12 @@ export function createApi(ctx, options) {
     decisions: decisionStore,
     ok: ok,
     failure: failure,
+    // T-196: the panel must be told the server's timeout policy (a protected
+    // danger default never auto-runs), and an answered/expired ACTION decision
+    // is executed here, once, before the answer is returned.
+    decorate: withDecisionPolicy,
+    applyAnswered: executeDecisionAction,
+    applyExpired: applyExpiredDecisions,
     byOf: function (context) {
       return context !== null && context !== undefined && typeof context.by === 'string' && context.by !== '' ? context.by : '@unknown'
     },
@@ -3251,8 +3259,15 @@ export function createApi(ctx, options) {
     let decisionsError = null
     try {
       const swept = await decisionStore.sweep(projectPath)
-      if (swept.ok === true) pendingDecisions = swept.pending
-      else decisionsError = swept.code === undefined ? 'unreadable' : swept.code
+      if (swept.ok === true) {
+        pendingDecisions = swept.pending.map(withDecisionPolicy)
+        // T-196: a deadline that passed applies the SAFE default (create/reopen);
+        // protected danger defaults were expired unresolved by the store and are
+        // never executed here.
+        if (Array.isArray(swept.expired) && swept.expired.length > 0) await applyExpiredDecisions(projectPath, swept.expired)
+      } else {
+        decisionsError = swept.code === undefined ? 'unreadable' : swept.code
+      }
     } catch (error) {
       decisionsError = 'unreadable'
     }
@@ -3639,6 +3654,793 @@ export function createApi(ctx, options) {
       for (const task of read.board.tasks) if (typeof task.target === 'string' && task.target !== '') available.add(task.target)
     }
     return failure('unknown-target', 'target branch ' + target + ' does not exist in this repository; available branches: ' + Array.from(available).join(', '))
+  }
+
+  // ── T-196: action preflight decisions ─────────────────────────────────────
+  // Every Agent-initiated create/start/reopen/delete/cancel asks the human first
+  // through the durable DecisionRequest store (T-195). The panel (role 'user') IS
+  // the human, so its own calls run straight through; an Agent's call writes the
+  // pending question and answers immediately with the decision view. When the
+  // human answers — or the deadline passes and the default is safe — the host
+  // executes the STORED action in one step and sends the outcome back to the
+  // asking Agent as a message.
+  const ACTION_DECISION_GATED = ['create', 'start', 'reopen', 'delete', 'cancel']
+  const ACTION_DECISION_TIMEOUT_MS = { create: 120000, start: 300000, reopen: 120000, delete: 120000, cancel: 120000 }
+  const ACTION_DECISION_LABELS = { create: '创建任务', start: '派发批准', reopen: '重新打开', delete: '删除任务', cancel: '取消任务' }
+  const ACTION_DECISION_TREE_LIMIT = 40
+
+  /**
+   * Every LIVE card that (transitively) depends on `id`, in DFS order.
+   *
+   * Closed (done/cancelled) dependents are excluded: they are not "affected" by
+   * a cancel, and listing them in a purge would suggest deleting history. Note
+   * that model.deleteTask still unlinks them; that pre-existing behaviour is
+   * outside this panel's impact count on purpose.
+   */
+  function decisionDownstreamOf(board, id) {
+    const rows = []
+    const seen = new Set([String(id)])
+    const childrenOf = (parentId) =>
+      board.tasks.filter((task) => {
+        if (CLOSED_STATUSES.indexOf(task.status) >= 0) return false
+        if (!Array.isArray(task.dependsOn)) return false
+        if (seen.has(String(task.id))) return false
+        return task.dependsOn.map((dependency) => String(dependency)).indexOf(String(parentId)) >= 0
+      })
+    const walk = (parentId, prefix, depth) => {
+      const children = childrenOf(parentId)
+      children.forEach((task, index) => {
+        const last = index === children.length - 1
+        seen.add(String(task.id))
+        rows.push({
+          id: String(task.id),
+          title: typeof task.title === 'string' ? task.title : '',
+          status: typeof task.status === 'string' ? task.status : '',
+          depth: depth,
+          line: prefix + (last ? '└─ ' : '├─ ') + String(task.id),
+        })
+        walk(task.id, prefix + (last ? '   ' : '│  '), depth + 1)
+      })
+    }
+    walk(String(id), '', 0)
+    return rows
+  }
+
+  /** The packet's dependency tree, or "无". */
+  function decisionTreeText(id, rows) {
+    if (rows.length === 0) return '无'
+    const lines = [String(id)]
+    for (const row of rows.slice(0, ACTION_DECISION_TREE_LIMIT)) lines.push(row.line)
+    if (rows.length > ACTION_DECISION_TREE_LIMIT) lines.push('…（还有 ' + String(rows.length - ACTION_DECISION_TREE_LIMIT) + ' 张）')
+    return lines.join('\n')
+  }
+
+  /** Do two id lists name exactly the same card set? (order-insensitive) */
+  function sameDecisionIds(left, right) {
+    const a = (Array.isArray(left) ? left : []).map(String).sort()
+    const b = (Array.isArray(right) ? right : []).map(String).sort()
+    if (a.length !== b.length) return false
+    for (let index = 0; index < a.length; index += 1) if (a[index] !== b[index]) return false
+    return true
+  }
+
+  /**
+   * The server's timeout policy for one request, exposed so the panel never
+   * promises an automatic choice the host would refuse: a danger default is
+   * protected (the store expires it "requires-manual") and a request with no
+   * deadline never auto-selects.
+   */
+  function withDecisionPolicy(view) {
+    if (view === null || view === undefined) return view
+    const options = Array.isArray(view.options) ? view.options : []
+    const chosen = options.filter((option) => option.id === view.defaultOption)[0]
+    const autoRunAllowed =
+      view.status === 'pending' &&
+      typeof view.timeoutAt === 'string' &&
+      view.timeoutAt !== '' &&
+      chosen !== undefined &&
+      chosen.danger !== true
+    return Object.assign({}, view, { autoRunAllowed: autoRunAllowed })
+  }
+
+  /** Who asked, so the answer can be delivered back to that Session. */
+  function decisionRequester(context) {
+    const sessionId = sessionIdOf(context)
+    const agent = context !== undefined && context !== null && typeof context.agent === 'object' && context.agent !== null ? context.agent : null
+    return {
+      by: context !== undefined && context !== null && typeof context.by === 'string' && context.by !== '' ? context.by : '@unknown',
+      sessionId: sessionId,
+      name: agent !== null && typeof agent.name === 'string' && agent.name !== '' ? agent.name : null,
+    }
+  }
+
+  function decisionNoteOf(source) {
+    return source !== undefined && source !== null && typeof source.note === 'string' && source.note.trim() !== '' ? source.note.trim() : null
+  }
+
+  /**
+   * T-196 review: the decision PAYLOAD is capped at 8 KB, but a card's spec and
+   * acceptance are legitimately much larger. The gated action's input therefore
+   * lives in a content-addressed file beside the board
+   * (.agents/decision-inputs/<sha256>.json) and the decision payload carries the
+   * compact reference. Content addressing makes retries reuse one file.
+   */
+  const DECISION_INPUT_DIR = '.agents/decision-inputs'
+  const DECISION_INPUT_REF = /^\.agents\/decision-inputs\/[a-f0-9]{32}\.json$/
+
+  function decisionInputHash(text) {
+    return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32)
+  }
+
+  /** Clip one DISPLAY field so a huge card cannot overflow the 4000-char body. */
+  function decisionClip(value, limit) {
+    const text = typeof value === 'string' ? value.trim() : ''
+    if (text === '') return ''
+    return text.length <= limit ? text : text.slice(0, limit) + '…'
+  }
+
+  /** Persist an action input and return its project-relative reference. */
+  async function writeDecisionInput(projectPath, input) {
+    const text = JSON.stringify(input === undefined || input === null ? {} : input)
+    const hash = decisionInputHash(text)
+    const ref = DECISION_INPUT_DIR + '/' + hash + '.json'
+    const targetPath = join(projectPath, '.agents', 'decision-inputs', hash + '.json')
+    try {
+      if (ensureDir !== null) await Promise.resolve(ensureDir(join(projectPath, '.agents', 'decision-inputs')))
+      const target = await ctx.fs.resolve(targetPath, { cwd: projectPath })
+      const existing = await ctx.fs.stat(target)
+      if (existing !== undefined) return { ok: true, ref: ref, hash: hash, bytes: Buffer.byteLength(text, 'utf8') }
+      try {
+        await ctx.fs.writeText(target, text + '\n', { kind: 'createIfAbsent' }, undefined, writePolicyFor(projectPath))
+      } catch (error) {
+        // A concurrent identical write (same content-addressed name) is a win.
+        const raced = await ctx.fs.stat(target)
+        if (raced === undefined) return failure('decision-input-unwritable', 'could not store the decision input: ' + messageOf(error))
+      }
+      return { ok: true, ref: ref, hash: hash, bytes: Buffer.byteLength(text, 'utf8') }
+    } catch (error) {
+      return failure('decision-input-unwritable', 'could not store the decision input: ' + messageOf(error))
+    }
+  }
+
+  /** Read one stored action input back by reference (validated, no traversal). */
+  async function readDecisionInput(projectPath, ref) {
+    if (typeof ref !== 'string' || DECISION_INPUT_REF.test(ref) !== true) {
+      return failure('decision-input-invalid', 'the decision input reference ' + JSON.stringify(ref) + ' is not a stored decision input')
+    }
+    try {
+      const target = await ctx.fs.resolve(join(projectPath, ref), { cwd: projectPath })
+      const info = await ctx.fs.stat(target)
+      if (info === undefined) return failure('decision-input-missing', 'the stored decision input ' + ref + ' is gone; ask again')
+      const text = await ctx.fs.readText(target)
+      const parsed = JSON.parse(text)
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return failure('decision-input-invalid', 'the stored decision input is not an object')
+      return { ok: true, input: parsed }
+    } catch (error) {
+      return failure('decision-input-unreadable', 'the stored decision input ' + ref + ' could not be read: ' + messageOf(error))
+    }
+  }
+
+  /** The input a stored ACTION decision executes with (legacy inline or ref). */
+  async function decisionInputOf(projectPath, payload) {
+    if (payload === null || payload === undefined) return failure('decision-input-missing', 'the decision carries no action input')
+    if (payload.input !== undefined && payload.input !== null) return { ok: true, input: payload.input }
+    if (typeof payload.inputRef === 'string' && payload.inputRef !== '') return await readDecisionInput(projectPath, payload.inputRef)
+    return failure('decision-input-missing', 'the decision carries no action input')
+  }
+
+  /**
+   * Validate the action against the live board and build its question. A null
+   * plan means "nothing to ask" (a running dispatcher). A refusal is returned
+   * BEFORE the question, so the human is never asked to confirm the impossible.
+   */
+  async function planActionDecision(action, source, context, projectPath, board, now) {
+    if (action === 'create') {
+      const built = taskInput(projectPath, source)
+      if (built.ok !== true) return built
+      if (built.input.target !== undefined) {
+        const checked = await checkTarget(projectPath, built.input.target)
+        if (checked.ok !== true) return checked
+        built.input.target = checked.target
+      }
+      // Preview on the live board WITHOUT writing it: the copy shows the id the
+      // create would allocate, and an invalid create refuses before asking.
+      const preview = model.createTask(board, built.input, now, context.by)
+      if (preview.ok !== true) return preview
+      const task = preview.task
+      const inputText = JSON.stringify(built.input)
+      const deps = decisionClip((Array.isArray(task.dependsOn) ? task.dependsOn : []).join(', '), 300)
+      const files = decisionClip((Array.isArray(task.writeFiles) ? task.writeFiles : []).join(', '), 300)
+      const acceptance = decisionClip(typeof task.acceptance === 'string' ? task.acceptance : '', 600)
+      // The body is DISPLAY, so a huge card is clipped here; the full input lives
+      // in the content-addressed file (see writeDecisionInput) and is what the
+      // answer executes.
+      const body = [
+        '任务：' + decisionClip(task.title, 160),
+        '类型：' + String(task.kind),
+        '目标：' + (task.target === null || task.target === undefined ? '默认' : String(task.target)),
+        '依赖：' + (deps === '' ? '无' : deps),
+        '写入文件：' + (files === '' ? '无' : files),
+        '验收：' + (acceptance === '' ? '未填写' : acceptance),
+      ].join('\n')
+      return {
+        ok: true,
+        action: action,
+        key: 'create:' + decisionInputHash(inputText),
+        title: '创建任务 ' + String(task.id) + '？',
+        body: body.length > 3900 ? body.slice(0, 3900) + '…' : body,
+        options: [
+          { id: 'create', label: '创建任务', description: '写入任务板并加入待办队列', default: true },
+          { id: 'cancel', label: '取消创建', description: '不写入任务板，向 Agent 返回修改建议' },
+        ],
+        defaultOption: 'create',
+        highRisk: false,
+        taskId: null,
+        previewId: String(task.id),
+        payload: { input: built.input, previewId: String(task.id) },
+      }
+    }
+
+    if (action === 'start') {
+      // A running dispatcher answers alreadyRunning; there is nothing to ask.
+      if (board.dispatch.state === 'running') return null
+      // Do not ask the human to approve a dispatch the readiness gate would
+      // refuse: the same preflight runs here, BEFORE the question exists.
+      const unavailable = await preflightRefusal(projectPath, { sessionId: sessionIdOf(context) })
+      if (unavailable !== null) return unavailable
+      const running = board.tasks.filter((task) => task.status === 'running').length
+      const max = Number.isFinite(board.dispatch.maxConcurrent) ? board.dispatch.maxConcurrent : 0
+      const ready = model.readyTasks(board)
+      const readyIds = ready.slice(0, 20).map((task) => String(task.id))
+      const scope = ready.length === 1 ? String(ready[0].id) : ready.length === 0 ? '待办队列' : String(ready.length) + ' 张卡'
+      return {
+        ok: true,
+        action: action,
+        key: 'start',
+        title: '派发 ' + scope + '？',
+        body: '任务已就绪，等待批准。\n当前并发：' + String(running) + '/' + String(max) + '\n待执行：' + (readyIds.length === 0 ? '无' : readyIds.join(', ')),
+        options: [
+          { id: 'approve', label: '批准派发', description: '按当前并发立刻开始派发' },
+          { id: 'hold', label: '暂不派发', description: '保持待办，稍后决定', default: true },
+          { id: 'withdraw', label: '取消申请', description: '撤回这次派发申请' },
+        ],
+        defaultOption: 'hold',
+        highRisk: false,
+        taskId: null,
+        payload: {},
+      }
+    }
+
+    const id = String(source === undefined || source === null || source.id === undefined || source.id === null ? '' : source.id).trim()
+    if (id === '') return failure('missing-id', action + ' needs a task id')
+    const task = model.findTask(board, id)
+    if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
+    const note = decisionNoteOf(source)
+
+    if (action === 'reopen') {
+      // Pure validation on the live board: only done/cancelled/blocked cards are
+      // reopened, so an impossible reopen never becomes a question.
+      const validated = model.reopenTask(board, id, now, context.by, note === null ? undefined : note)
+      if (validated.ok !== true) return validated
+      return {
+        ok: true,
+        action: action,
+        key: 'reopen:' + id,
+        title: '重新打开 ' + id + '？',
+        body: '当前状态：' + String(task.status) + '。重新打开会回到待办、清空 review/test 现场并由 scheduler 重新派发',
+        // Default: 重新打开, exactly as the T-196 card copy and packet §3.6 say.
+        // Packet §5's summary table lists 保持关闭 for the same event; the detailed
+        // panel copy wins here until the lead resolves that inconsistency.
+        options: [
+          { id: 'reopen', label: '重新打开', description: '回到待办，清空 review/test 后重新派发', default: true },
+          { id: 'keep', label: '保持关闭', description: '不改动这张卡' },
+        ],
+        defaultOption: 'reopen',
+        highRisk: false,
+        taskId: id,
+        payload: { input: note === null ? {} : { note: note } },
+      }
+    }
+
+    if (action === 'delete') {
+      // force:true is the "the card exists and is not running" proof; the
+      // dependency question is what the panel is FOR, not a refusal.
+      const validated = model.deleteTask(board, id, now, context.by, { force: true })
+      if (validated.ok !== true) return validated
+      const rows = decisionDownstreamOf(board, id)
+      return {
+        ok: true,
+        action: action,
+        key: 'delete:' + id,
+        title: '删除 ' + id + '？',
+        body: ['任务：' + String(task.title), '状态：' + String(task.status), '被依赖：' + String(rows.length) + ' 张卡', '下游：', decisionTreeText(id, rows)].join('\n'),
+        options: [
+          { id: 'keep', label: '保留', description: '不做任何改动', default: true },
+          { id: 'delete', label: '删除', description: '从任务板移除；下游卡的依赖会被解除', danger: rows.length > 0 },
+        ],
+        defaultOption: 'keep',
+        highRisk: rows.length > 0,
+        taskId: id,
+        payload: {
+          input: { force: true },
+          downstream: rows.map((row) => ({ id: row.id, title: row.title, status: row.status })),
+        },
+      }
+    }
+
+    if (action === 'cancel') {
+      const validated = model.cancelTask(board, id, now, context.by, note === null ? undefined : note)
+      if (validated.ok !== true) return validated
+      const rows = decisionDownstreamOf(board, id)
+      const body =
+        '当前状态：' + String(task.status) + '。取消后终止当前 worker/reviewer/tester，下游 ' + String(rows.length) + ' 张卡进入阻塞/需重新评估' +
+        (rows.length === 0 ? '' : '\n下游：\n' + decisionTreeText(id, rows))
+      return {
+        ok: true,
+        action: action,
+        key: 'cancel:' + id,
+        title: '取消 ' + id + '？',
+        body: body,
+        options: [
+          { id: 'return', label: '返回', description: '保留这张卡继续工作', default: true },
+          { id: 'confirm', label: '确认取消', description: '任务进入取消终态' },
+        ],
+        defaultOption: 'return',
+        highRisk: false,
+        taskId: id,
+        payload: {
+          input: note === null ? {} : { note: note },
+          downstream: rows.map((row) => ({ id: row.id, title: row.title, status: row.status })),
+        },
+      }
+    }
+
+    return null
+  }
+
+  /** One pending question per (action, target): a retry returns the same request. */
+  async function requestActionDecision(projectPath, plan, context, board) {
+    const pending = await decisionStore.pending(projectPath)
+    if (pending.ok !== true) return pending
+    const existing = pending.pending.filter((decision) => {
+      const payload = decision.payload
+      return payload !== null && payload !== undefined && payload.action === plan.action && payload.key === plan.key
+    })[0]
+    if (existing !== undefined) return { ok: true, decision: withDecisionPolicy(existing), created: false }
+    // A create preview cannot write the board, so two pending creates would both
+    // predict T-<seq>. Count the ones already queued so the panel shows two
+    // distinct ids; the real id is still allocated at execution time.
+    if (plan.action === 'create' && plan.previewId !== undefined && pending.pending.length > 0) {
+      const queued = pending.pending.filter((decision) => decision.payload !== null && decision.payload !== undefined && decision.payload.action === 'create').length
+      if (queued > 0 && board !== undefined && board !== null && Number.isFinite(board.seq)) {
+        plan.title = '创建任务 T-' + String(board.seq + queued) + '？'
+      }
+    }
+    const payload = Object.assign(
+      {
+        action: plan.action,
+        key: plan.key,
+        // The executor addresses the card through the payload; the request's
+        // own taskId is only the panel's subtitle/shortcut.
+        taskId: plan.taskId === null || plan.taskId === undefined ? null : String(plan.taskId),
+        requester: decisionRequester(context),
+      },
+      plan.payload,
+    )
+    // The create input (spec/acceptance/verify/...) is far larger than a payload
+    // may be; store it beside the board and keep a compact reference instead.
+    if (plan.action === 'create') {
+      const stored = await writeDecisionInput(projectPath, payload.input)
+      if (stored.ok !== true) return stored
+      delete payload.input
+      payload.inputRef = stored.ref
+      payload.inputBytes = stored.bytes
+    }
+    const requested = await decisionStore.request(
+      projectPath,
+      {
+        eventKey: plan.action === 'start' ? 'dispatch' : plan.action,
+        taskId: plan.taskId === null || plan.taskId === undefined ? null : String(plan.taskId),
+        eventLabel: ACTION_DECISION_LABELS[plan.action] || plan.action,
+        title: plan.title,
+        body: plan.body,
+        options: plan.options,
+        defaultOption: plan.defaultOption,
+        highRisk: plan.highRisk === true,
+        timeoutMs: ACTION_DECISION_TIMEOUT_MS[plan.action],
+        payload: payload,
+      },
+      { by: context.by },
+    )
+    if (requested.ok !== true) return requested
+    return { ok: true, decision: withDecisionPolicy(requested.decision), created: requested.created === true }
+  }
+
+  /**
+   * The gate. Returns null when the action may run (panel calls, or a start with
+   * a running dispatcher), the plan's validation refusal, or the answer that
+   * carries the pending DecisionRequest. start keeps its historical
+   * 'needs-consent' code so existing sessions keep handling it as "wait".
+   */
+  async function actionDecisionGate(action, source, context, projectPath, now) {
+    if (ACTION_DECISION_GATED.indexOf(action) < 0) return null
+    if (context === undefined || context === null || context.role !== 'agent') return null
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const plan = await planActionDecision(action, source, context, projectPath, read.board, now)
+    if (plan === null) return null
+    if (plan.ok !== true) return plan
+    const requested = await requestActionDecision(projectPath, plan, context, read.board)
+    if (requested.ok !== true) return requested
+    const decision = requested.decision
+    const code = action === 'start' ? 'needs-consent' : 'needs-decision'
+    const label = typeof decision.title === 'string' && decision.title !== '' ? decision.title : String(action)
+    const message =
+      'Waiting for the user: decision ' + String(decision.id) + ' "' + label + '" is pending in the task center panel. Do not retry; the host executes the answer and sends you the result as a message.'
+    const extra = { decision: decision, decisions: [decision] }
+    if (action === 'start') {
+      extra.request = { id: decision.id, by: decision.createdBy, at: decision.createdAt, note: 'start needs the approval of the user' }
+    }
+    return failure(code, message, extra)
+  }
+
+  function decisionOutcomeCode(outcome) {
+    if (outcome === null || outcome === undefined) return null
+    if (outcome.ok === true) return null
+    return typeof outcome.code === 'string' ? outcome.code : 'failed'
+  }
+
+  function decisionOutcomeMessage(outcome) {
+    if (outcome === null || outcome === undefined || outcome.ok === true) return null
+    return typeof outcome.message === 'string' ? outcome.message : null
+  }
+
+  /** Deliver one execution outcome to the Agent that asked, in its own Session. */
+  async function deliverDecisionResult(decision, payload, text) {
+    if (typeof text !== 'string' || text === '') return false
+    const requester = payload !== null && payload !== undefined && payload.requester !== null && payload.requester !== undefined ? payload.requester : null
+    const sessionId = requester !== null && typeof requester.sessionId === 'string' && requester.sessionId !== '' ? requester.sessionId : null
+    if (sessionId === null) return false
+    return await notifyAgent(null, sessionId, text)
+  }
+
+  /**
+   * The second stage: the destructive dependency-tree confirmation.
+   *
+   * The question is recomputed from the LIVE board every time. A pending
+   * question is reused ONLY while it still names exactly this tree; a stale one
+   * is cancelled (host-side) so a human can never confirm a tree that no longer
+   * exists — the purge re-checks the id set anyway, but two competing bodies in
+   * the queue would be its own hazard.
+   */
+  async function requestDeleteTreeDecision(projectPath, payload, by) {
+    const id = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : ''
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    if (id !== '' && model.findTask(read.board, id) === undefined) return failure('unknown-task', 'no task with id ' + id)
+    const rows = id === '' ? [] : decisionDownstreamOf(read.board, id)
+    const ids = id === '' ? [] : [id].concat(rows.map((row) => row.id))
+    const total = ids.length
+    const requester = payload.requester === null || payload.requester === undefined ? null : payload.requester
+    const pending = await decisionStore.pending(projectPath)
+    if (pending.ok !== true) return pending
+    for (const decision of pending.pending) {
+      const body = decision.payload
+      if (body === null || body === undefined || body.action !== 'delete-tree' || String(body.taskId) !== String(id)) continue
+      if (sameDecisionIds(body.ids, ids) && body.total === total) return { ok: true, decision: withDecisionPolicy(decision), created: false }
+      await decisionStore.cancel(projectPath, { id: decision.id, note: 'the dependency tree changed; superseded by a fresh confirmation' }, { by: by })
+    }
+    const requested = await decisionStore.request(
+      projectPath,
+      {
+        eventKey: 'delete-tree',
+        taskId: id === '' ? null : id,
+        eventLabel: '删除依赖树',
+        title: '确认删除依赖树？',
+        body: '将永久删除本卡及所有链式下游，共 ' + String(total) + ' 张：\n\n' + decisionTreeText(id, rows) + '\n\n该操作不可恢复。',
+        options: [
+          { id: 'return', label: '返回', description: '不做任何删除', default: true },
+          { id: 'purge', label: '永久删除 ' + String(total) + ' 张卡', description: '本卡与全部链式下游，不可恢复', danger: true },
+        ],
+        defaultOption: 'return',
+        highRisk: true,
+        timeoutMs: ACTION_DECISION_TIMEOUT_MS.delete,
+        payload: {
+          action: 'delete-tree',
+          key: 'delete-tree:' + id,
+          taskId: id,
+          total: total,
+          ids: ids,
+          requester: requester,
+        },
+      },
+      { by: by },
+    )
+    if (requested.ok !== true) return requested
+    return { ok: true, decision: withDecisionPolicy(requested.decision), created: requested.created === true }
+  }
+
+  /**
+   * Permanently remove EXACTLY the cards the human confirmed.
+   *
+   * The live tree is compared with the confirmation's ids/total FIRST. A card
+   * that appeared after the panel was shown must never be destroyed by that
+   * confirmation: on any difference nothing is deleted and a FRESH DELETE-gated
+   * question goes up. Only when the sets are identical are those cards removed.
+   */
+  async function purgeDecisionTree(projectPath, payload, execContext) {
+    const rootId = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : ''
+    if (rootId === '') return failure('missing-id', 'delete-tree needs a task id')
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const root = model.findTask(read.board, rootId)
+    if (root === undefined) return failure('unknown-task', 'no task with id ' + rootId)
+    const rows = decisionDownstreamOf(read.board, rootId)
+    const ids = [rootId].concat(rows.map((row) => row.id))
+    const confirmedIds = Array.isArray(payload.ids) ? payload.ids.map(String) : []
+    const confirmedTotal = Number.isFinite(payload.total) ? payload.total : null
+    const unchanged = confirmedIds.length > 0 && confirmedTotal === ids.length && sameDecisionIds(confirmedIds, ids)
+    if (unchanged !== true) {
+      const refreshed = await requestDeleteTreeDecision(
+        projectPath,
+        { taskId: rootId, requester: payload.requester === undefined ? null : payload.requester },
+        execContext.by,
+      )
+      const fresh = refreshed.ok === true && refreshed.decision !== undefined ? refreshed.decision : null
+      const freshTotal = fresh !== null && fresh.payload !== null && fresh.payload !== undefined && Number.isFinite(fresh.payload.total) ? fresh.payload.total : ids.length
+      return failure(
+        'dependency-tree-changed',
+        'the dependency tree changed after the confirmation was shown; NOTHING was deleted.' +
+          (fresh === null ? ' Ask again for a fresh confirmation.' : ' The fresh confirmation ' + String(fresh.id) + ' lists ' + String(freshTotal) + ' card(s).'),
+        fresh === null ? {} : { next: fresh },
+      )
+    }
+    const tasksById = new Map(read.board.tasks.map((task) => [String(task.id), task]))
+    // Stop every stage child and release every lock BEFORE the board forgets
+    // the card, exactly like cancel/delete do one card at a time.
+    for (const id of ids) {
+      const task = tasksById.get(String(id))
+      if (task !== undefined && stageAgents !== null && typeof stageAgents.releaseTask === 'function') {
+        try {
+          await stageAgents.releaseTask(task, { roles: ['worker', 'reviewer', 'tester'], reason: 'dependency tree deleted' })
+        } catch (error) {}
+      }
+      const released = locks.releaseTask(state.memory.locks, id)
+      if (released.ok === true) state.memory.locks = released.locks
+    }
+    const order = ids.slice().reverse()
+    let deleted = []
+    const result = await mutate(
+      projectPath,
+      (board) => {
+        let current = board
+        const events = []
+        for (const id of order) {
+          // A live stage card must be stopped before it can be removed: cancel
+          // retires its executors, then delete drops the record in the SAME write.
+          const task = model.findTask(current, id)
+          if (task !== undefined && task.status !== 'pending' && task.status !== 'done' && task.status !== 'cancelled') {
+            const cancelled = model.cancelTask(current, id, clock(), execContext.by, 'dependency tree deleted')
+            if (cancelled.ok !== true) return cancelled
+            current = cancelled.board
+            for (const event of cancelled.events) events.push(event)
+          }
+          const outcome = model.deleteTask(current, id, clock(), execContext.by, { force: true })
+          if (outcome.ok !== true) return outcome
+          current = outcome.board
+          for (const event of outcome.events) events.push(event)
+        }
+        deleted = order.slice()
+        return { ok: true, board: current, events: events }
+      },
+      execContext,
+    )
+    if (result.ok !== true) return result
+    for (const id of deleted) {
+      const released = locks.releaseTask(state.memory.locks, id)
+      if (released.ok === true) state.memory.locks = released.locks
+    }
+    return ok({ deleted: deleted })
+  }
+
+  /**
+   * Execute the action a DecisionRequest stood for. Called exactly once after
+   * the answer (and by the timeout sweep when the safe default applies), in one
+   * step, and then delivered to the asking Agent as a message.
+   */
+  async function executeDecisionAction(projectPath, decision) {
+    if (decision === null || decision === undefined) return { ok: true, executed: false, code: 'no-decision' }
+    const payload = decision.payload === null || decision.payload === undefined ? {} : decision.payload
+    const action = typeof payload.action === 'string' ? payload.action : null
+    if (action === null) return { ok: true, executed: false, code: 'no-action' }
+    const resolution = decision.resolution === null || decision.resolution === undefined ? null : decision.resolution
+    const option = resolution === null ? null : resolution.option
+    const panelNote = resolution === null || resolution.text === null || resolution.text === undefined ? null : String(resolution.text)
+    // The note the Agent supplied with the request still applies when the panel
+    // did not type one.
+    const carriedNote =
+      payload.input !== null && payload.input !== undefined && typeof payload.input.note === 'string' && payload.input.note.trim() !== '' ? payload.input.note.trim() : null
+    const note = panelNote === null ? carriedNote : panelNote
+    const viaTimeout = resolution !== null && resolution.via === 'timeout'
+    const requester = payload.requester === null || payload.requester === undefined ? {} : payload.requester
+    const id = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : null
+    const execContext = {
+      projectPath: projectPath,
+      by: resolution !== null && typeof resolution.by === 'string' && resolution.by !== '' ? resolution.by : '@user',
+      role: 'user',
+      agent: null,
+      sessionId: typeof requester.sessionId === 'string' && requester.sessionId !== '' ? requester.sessionId : null,
+    }
+    const decided = 'Decision ' + String(decision.id) + (viaTimeout ? ' timed out; its safe default applied' : ' answered')
+    let outcome = null
+    let executed = false
+    let text = ''
+    let summary = {}
+    let nextDecision = null
+
+    if (action === 'create') {
+      if (option === 'cancel') {
+        outcome = failure('decision-rejected', 'the user cancelled the create request' + (note === null ? '' : ' — ' + note))
+        text =
+          'decision-rejected: ' + String(payload.previewId === undefined || payload.previewId === null ? 'the requested card' : payload.previewId) + ' was NOT written to the board' +
+          (note === null ? '' : ' — note: ' + note) +
+          '. Do not retry unless the user asks; apply the note and ask again.'
+      } else {
+        executed = true
+        const loaded = await decisionInputOf(projectPath, payload)
+        if (loaded.ok !== true) {
+          outcome = loaded
+          text = decided + ', but its stored card input could not be loaded (' + String(loaded.code) + '): ' + String(loaded.message)
+        } else {
+          outcome = await taskAdminActions.create(loaded.input, execContext, projectPath)
+        }
+        if (outcome.ok === true) {
+          const created = outcome.task === null || outcome.task === undefined ? null : String(outcome.task.id)
+          summary = { taskId: created }
+          text = decided + ': created ' + String(created) + '. It is queued for dispatch on the project board.'
+        } else {
+          text = decided + ', but the create failed: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+        }
+      }
+    } else if (action === 'start') {
+      if (option === 'approve') {
+        executed = true
+        outcome = await taskAdminActions.start({}, execContext, projectPath)
+        if (outcome.ok === true) {
+          summary = { dispatch: outcome.dispatch === null || outcome.dispatch === undefined ? null : outcome.dispatch.state }
+          text = decided + ': dispatch is ' + String(summary.dispatch === null ? 'running' : summary.dispatch) + '.'
+        } else {
+          text = decided + ', but dispatch could not start: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+        }
+      } else if (option === 'withdraw') {
+        outcome = ok({ withdrawn: true })
+        text = decided + ': the start request was withdrawn; dispatch stays paused.'
+      } else {
+        outcome = ok({ held: true })
+        text = decided + ': dispatch stays paused (hold); no card was dispatched.' + (viaTimeout ? ' The 300s deadline passed and the default keeps the queue waiting.' : '')
+      }
+    } else if (action === 'reopen') {
+      if (option === 'keep') {
+        outcome = ok({ kept: true })
+        text = decided + ': ' + String(id) + ' stays closed.'
+      } else {
+        executed = true
+        outcome = await lifecycleActions.reopen({ id: id, note: note === null ? 'reopened by decision ' + String(decision.id) : note }, execContext, projectPath)
+        if (outcome.ok === true) {
+          summary = { taskId: id, status: outcome.task === null || outcome.task === undefined ? 'pending' : outcome.task.status }
+          text = decided + ': ' + String(id) + ' is back in the todo queue, its review/test evidence cleared and dispatch will pick it again.'
+        } else {
+          text = decided + ', but ' + String(id) + ' could not be reopened: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+        }
+      }
+    } else if (action === 'cancel') {
+      if (option === 'confirm') {
+        executed = true
+        outcome = await lifecycleActions.cancel({ id: id, note: note === null ? 'cancelled by decision ' + String(decision.id) : note }, execContext, projectPath)
+        if (outcome.ok === true) {
+          summary = { taskId: id, status: 'cancelled' }
+          text = decided + ': ' + String(id) + ' is cancelled; its worker/reviewer/tester were stopped.'
+        } else {
+          text = decided + ', but ' + String(id) + ' could not be cancelled: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+        }
+      } else {
+        outcome = ok({ kept: true })
+        text = decided + ': ' + String(id) + ' stays open; nothing was stopped.'
+      }
+    } else if (action === 'delete') {
+      if (option === 'delete') {
+        // T-196 review: the question captured the board when it was asked. The
+        // ANSWER must be checked against the board NOW, or a dependent created
+        // while the panel waited is silently unlinked instead of getting the
+        // DELETE-gated dependency-tree stage.
+        const fresh = await readBoardOrFail(projectPath)
+        const live = fresh.failed === undefined && id !== null ? model.findTask(fresh.board, id) : undefined
+        let rows = []
+        if (fresh.failed !== undefined) {
+          outcome = fresh.failed
+          text = decided + ', but the board could not be read: ' + String(decisionOutcomeCode(fresh.failed))
+        } else if (live === undefined) {
+          outcome = failure('unknown-task', 'no task with id ' + String(id) + '; it no longer exists')
+          text = decided + ', but ' + String(id) + ' no longer exists on the board; nothing was deleted.'
+        } else if (live.status === 'running') {
+          outcome = failure('running', String(id) + ' is running; cancel it first')
+          text = decided + ', but ' + String(id) + ' started running while the question waited; cancel it first. Nothing was deleted.'
+        } else {
+          rows = decisionDownstreamOf(fresh.board, id)
+        }
+        if (outcome === null && rows.length > 0) {
+          // The stored input/downstream is stale; the second stage recomputes the
+          // tree from the live board and is still DELETE-gated.
+          const requested = await requestDeleteTreeDecision(projectPath, Object.assign({}, payload, { taskId: id }), execContext.by)
+          if (requested.ok !== true) {
+            outcome = requested
+            text = decided + ', but the dependency-tree confirmation could not be opened: ' + String(decisionOutcomeCode(requested))
+          } else {
+            nextDecision = requested.decision
+            outcome = ok({ next: nextDecision })
+            const total = nextDecision.payload !== null && nextDecision.payload !== undefined && Number.isFinite(nextDecision.payload.total) ? nextDecision.payload.total : rows.length + 1
+            summary = { nextDecisionId: nextDecision.id, total: total }
+            text = decided + ': ' + String(id) + ' is depended on by ' + String(rows.length) + ' live card(s), so it needs the high-risk dependency-tree confirmation (decision ' + String(nextDecision.id) + ', ' + String(total) + ' cards). Nothing has been deleted yet.'
+          }
+        } else if (outcome === null) {
+          executed = true
+          outcome = await taskAdminActions.delete({ id: id, force: true }, execContext, projectPath)
+          summary = { taskId: id, deleted: outcome.ok === true }
+          text = outcome.ok === true ? decided + ': ' + String(id) + ' was removed from the board.' : decided + ', but ' + String(id) + ' could not be deleted: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+        }
+      } else {
+        outcome = ok({ kept: true })
+        text = decided + ': ' + String(id) + ' was kept; nothing was deleted.'
+      }
+    } else if (action === 'delete-tree') {
+      if (option === 'purge') {
+        executed = true
+        outcome = await purgeDecisionTree(projectPath, payload, execContext)
+        if (outcome.ok === true) {
+          const deleted = Array.isArray(outcome.deleted) ? outcome.deleted : []
+          summary = { deleted: deleted }
+          text = decided + ': permanently deleted ' + String(deleted.length) + ' card(s) — ' + deleted.join(', ') + '.'
+        } else {
+          // A changed tree refuses without deleting and puts a FRESH
+          // DELETE-gated question up; the panel banner and the queue both show it.
+          nextDecision = outcome.next === null || outcome.next === undefined ? null : outcome.next
+          if (nextDecision !== null) summary = { nextDecisionId: nextDecision.id }
+          text = decided + ', but nothing was deleted: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+        }
+      } else {
+        outcome = ok({ kept: true })
+        text = decided + ': the dependency tree was kept; nothing was deleted.' + (viaTimeout ? ' The deadline passed and deletion never auto-runs.' : '')
+      }
+    }
+
+    const delivered = await deliverDecisionResult(decision, payload, text)
+    return {
+      ok: outcome === null ? true : outcome.ok !== false,
+      executed: executed,
+      code: decisionOutcomeCode(outcome),
+      action: action,
+      option: option,
+      viaTimeout: viaTimeout,
+      summary: summary,
+      next: nextDecision,
+      notified: delivered,
+      message: text,
+    }
+  }
+
+  /** Apply every timeout default that needs a board action (create/reopen). */
+  async function applyExpiredDecisions(projectPath, expired) {
+    const applied = []
+    for (const decision of Array.isArray(expired) ? expired : []) {
+      if (decision === null || decision === undefined) continue
+      if (decision.outcome !== 'default' || decision.resolution === null || decision.resolution === undefined) continue
+      try {
+        applied.push(await executeDecisionAction(projectPath, withDecisionPolicy(decision)))
+      } catch (error) {
+        applied.push({ ok: false, code: 'apply-failed', message: messageOf(error) })
+      }
+    }
+    return applied
   }
 
   function taskForContext(board, id, context) {
@@ -4512,6 +5314,10 @@ export function createApi(ctx, options) {
     // into expiry, and it stops an action from renewing twice.
     const preflightRefusal = await actionPreflight.run(action, source, context, projectPath, now)
     if (preflightRefusal !== null) return preflightRefusal
+    // T-196: an Agent's create/start/reopen/delete/cancel is a QUESTION to the
+    // human first. The panel (role 'user') is the human, so its own calls run.
+    const decisionRefusal = await actionDecisionGate(action, source, context, projectPath, now)
+    if (decisionRefusal !== null) return decisionRefusal
     const projectAdminHandler = projectAdminActions[action]
     if (projectAdminHandler !== undefined) return projectAdminHandler(source, context, projectPath)
     const roleHandler = roleActions[action]

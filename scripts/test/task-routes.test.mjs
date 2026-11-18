@@ -68,7 +68,8 @@ async function call(surface, url, options) {
 const post = (body, headers) =>
   call(surface, ACTION_PATH, { method: 'POST', body: body, headers: Object.assign({ 'content-type': 'application/json' }, headers) })
 
-const rig = createRig({ taskAgents: createFakeTaskAgents() })
+const routeAgents = createFakeTaskAgents()
+const rig = createRig({ taskAgents: routeAgents })
 const surface = install(rig)
 check('registers state, action, task, list, worktrees and diagnostics', surface.specs.length === 6, String(surface.specs.length))
 check(
@@ -233,6 +234,43 @@ check(
   res = await post({ action: 'decisionAnswer', decisionId: 'DEC-1', option: 'hold' })
   payload = res.json()
   check('the route refuses a second answer by typed code', payload.ok === false && payload.code === 'already-answered', res.text.substring(0, 400))
+}
+
+// T-196: an Agent action is a pending decision; /state shows it and the route's
+// answer is what executes it (the panel role is the human).
+{
+  const asAgent = { projectPath: rig.project, by: '@router', role: 'agent', agent: { id: 'session-router', name: 'router' } }
+  const asked = await rig.api.perform('create', { title: 'Routed card', kind: 'dev', verification: { probes: [{ id: 'suite', command: 'npm test' }] } }, asAgent)
+  check('T-196 an agent create is a pending decision, not a card', asked.ok === false && asked.code === 'needs-decision' && typeof asked.decision.id === 'string', JSON.stringify(asked).substring(0, 400))
+  let res = await call(surface, STATE_PATH, {})
+  let payload = res.json()
+  const pending = (payload.decisions === undefined || payload.decisions === null ? [] : payload.decisions).filter((decision) => decision.id === asked.decision.id)[0]
+  check(
+    'T-196 /state carries the pending action decision and its timeout policy',
+    pending !== undefined && pending.eventKey === 'create' && pending.autoRunAllowed === true && pending.remainingMs > 0,
+    JSON.stringify(payload.decisions),
+  )
+  check('T-196 the board is untouched while the question is pending', payload.tasks.filter((task) => task.title === 'Routed card').length === 0, JSON.stringify(payload.tasks.map((task) => task.title)))
+  res = await post({ action: 'decisionAnswer', decisionId: asked.decision.id, option: 'create' })
+  payload = res.json()
+  check('T-196 the route answer executes the stored create', payload.ok === true && payload.applied !== null && payload.applied.executed === true && typeof payload.applied.summary.taskId === 'string', res.text.substring(0, 600))
+  const taskId = payload.applied.summary.taskId
+  check('T-196 the answer carries the refreshed board', payload.snapshot !== undefined && payload.snapshot.tasks.some((task) => task.id === taskId), res.text.substring(0, 300))
+  res = await post({ action: 'decisionAnswer', decisionId: asked.decision.id, option: 'cancel' })
+  check('T-196 a second answer is refused by the same typed code', res.json().ok === false && res.json().code === 'already-answered', res.text.substring(0, 300))
+
+  // start: the agent asks, hold keeps the queue waiting, approve dispatches.
+  const startAsked = await rig.api.perform('start', {}, asAgent)
+  check('T-196 an agent start is a route-visible decision', startAsked.code === 'needs-consent' && startAsked.decision !== undefined, JSON.stringify(startAsked).substring(0, 400))
+  res = await post({ action: 'decisionAnswer', decisionId: startAsked.decision.id, option: 'hold' })
+  payload = res.json()
+  check('T-196 暂不派发 leaves dispatch paused through the route', payload.ok === true && payload.snapshot.dispatch.state === 'paused', res.text.substring(0, 400))
+  const startAgain = await rig.api.perform('start', {}, asAgent)
+  res = await post({ action: 'decisionAnswer', decisionId: startAgain.decision.id, option: 'approve' })
+  payload = res.json()
+  check('T-196 批准派发 starts dispatch through the route', payload.ok === true && payload.snapshot.dispatch.state === 'running', res.text.substring(0, 400))
+  check('T-196 the asking Session received the outcome as a message', routeAgents.calls.some((entry) => entry.kind === 'send' && entry.text.indexOf('created ' + String(taskId)) >= 0), JSON.stringify(routeAgents.calls.filter((entry) => entry.kind === 'send')))
+  await rig.action('pause')
 }
 
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')

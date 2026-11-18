@@ -23,6 +23,9 @@ const COPY = {
   decisionSubtitleFallback: '关键事件',
   decisionCountdown: '{seconds}s 后自动选择「{defaultLabel}」',
   decisionNoCountdown: '不会自动选择',
+  decisionCountdownProtected: '{seconds}s 后超时，不会自动执行「{defaultLabel}」（该选项需人工确认）',
+  decisionCountdownProtectedNoDefault: '{seconds}s 后超时，不会自动选择',
+  decisionCreateTextPlaceholder: '修改建议（可选）',
   decisionQueue: '还有 {n} 个待决策',
   decisionDefaultBadge: '默认',
   decisionTextLabel: '自定义文本',
@@ -111,7 +114,7 @@ function decision(overrides) {
   assert.equal(findAll(out, (node) => node.props && node.props['data-decision-option'] !== undefined).length, 2)
   const selected = find(out, (node) => node.props && node.props['data-decision-option'] === 'create')
   assert.equal(selected.props['data-selected'], 'true', 'the default option starts selected')
-  assert.equal(find(out, (node) => node.props && node.props['data-decision-text'] !== undefined).props.placeholder, '可补充说明（可选）')
+  assert.equal(find(out, (node) => node.props && node.props['data-decision-text'] !== undefined).props.placeholder, '修改建议（可选）', 'the create panel asks for a revision note')
   console.log('PASS  the generic modal renders the common copy (title, subtitle, countdown, queue, default, card entry, text)')
 }
 
@@ -149,6 +152,59 @@ function decision(overrides) {
   assert.equal(DecisionModal.decisionSubtitle(decision(), t), 'T-184 · 创建任务')
   assert.equal(DecisionModal.decisionSubtitle(decision({ taskId: null, eventLabel: '' }), t), '关键事件')
   console.log('PASS  the countdown is computed from the server deadline and the receipt time')
+}
+
+// ── T-196: the countdown never promises an auto-run the server refuses ─────
+{
+  const dangerDefault = decision({
+    id: 'DEC-12',
+    eventKey: 'delete',
+    title: '删除 T-184？',
+    options: [
+      { id: 'keep', label: '保留', danger: false, default: false },
+      { id: 'delete', label: '删除', danger: true, default: true },
+    ],
+    defaultOption: 'delete',
+    highRisk: true,
+    remainingMs: 120000,
+    autoRunAllowed: false,
+  })
+  const text = textOf(DecisionModal({ t: t, queue: [dangerDefault], receivedAt: Date.now(), onAnswer: () => {} }))
+  assert.ok(text.includes('不会自动执行「删除」'), 'a protected danger default is named as not auto-run')
+  assert.equal(/\d+s 后自动选择「删除」/.test(text), false, 'the modal never promises the danger auto-selection')
+  assert.equal(DecisionModal.decisionAutoRunAllowed(dangerDefault), false)
+  assert.ok(DecisionModal.decisionCountdownText(dangerDefault, Date.now(), Date.now(), t).includes('不会自动执行「删除」'), 'the protected sentence replaces the promise')
+  // The server policy is authoritative even when the option itself looks safe.
+  const held = decision({
+    id: 'DEC-13',
+    eventKey: 'dispatch',
+    defaultOption: 'hold',
+    remainingMs: 300000,
+    autoRunAllowed: false,
+    options: [
+      { id: 'approve', label: '批准派发' },
+      { id: 'hold', label: '暂不派发', default: true },
+    ],
+  })
+  assert.equal(DecisionModal.decisionAutoRunAllowed(held), false)
+  assert.ok(DecisionModal.decisionCountdownText(held, 1000, 1000, t).includes('不会自动执行「暂不派发」'))
+  // No server field: judge from the decision itself.
+  assert.equal(DecisionModal.decisionAutoRunAllowed(decision({ timeoutAt: '2026-11-19T00:02:00.000Z' })), true)
+  assert.equal(DecisionModal.decisionAutoRunAllowed(decision({ remainingMs: null, timeoutAt: null })), false)
+  const noDeadline = textOf(DecisionModal({ t: t, queue: [decision({ remainingMs: null, timeoutAt: null })], receivedAt: Date.now() }))
+  assert.ok(noDeadline.includes('不会自动选择'))
+  // A deadline with no default at all: the protected sentence without a label.
+  const noDefault = decision({ id: 'DEC-14', defaultOption: null, options: [{ id: 'a', label: 'A' }], remainingMs: 60000, autoRunAllowed: false })
+  assert.ok(DecisionModal.decisionCountdownText(noDefault, 1000, 1000, t).includes('不会自动选择'))
+  console.log('PASS  the countdown follows the server auto-run policy and never promises a protected option')
+}
+
+// ── T-196: only the create panel asks for a revision note ──────────────────
+{
+  const cancelDecision = decision({ id: 'DEC-15', eventKey: 'cancel', title: '取消 T-184？' })
+  const out = DecisionModal({ t: t, queue: [cancelDecision], receivedAt: Date.now() })
+  assert.equal(find(out, (node) => node.props && node.props['data-decision-text'] !== undefined).props.placeholder, '可补充说明（可选）')
+  console.log('PASS  only the create panel uses the revision-note placeholder')
 }
 
 // ── high-risk action requires the exact DELETE word ─────────────────────────
@@ -223,7 +279,20 @@ function decision(overrides) {
     scheduler: null,
     activity: { entries: [] },
     lastSweep: null,
-    decisions: [decision({ id: 'DEC-7', taskId: 'T-190', eventLabel: '创建任务' })],
+    // T-196: a real host action decision has the create panel copy and a safe
+    // auto-run policy; the shell must render it as-is.
+    decisions: [
+      decision({
+        id: 'DEC-7',
+        taskId: 'T-190',
+        eventKey: 'create',
+        eventLabel: '创建任务',
+        title: '创建任务 T-190？',
+        body: '任务：Third card\n类型：dev\n目标：默认\n依赖：无\n写入文件：无\n验收：npm test',
+        autoRunAllowed: true,
+        remainingMs: 120000,
+      }),
+    ],
     receivedAt: Date.now(),
   }
   const TaskCenter = createTaskCenter({
@@ -269,7 +338,11 @@ function decision(overrides) {
   assert.ok(modalText.includes('关键决策'))
   assert.ok(modalText.includes('T-190 · 创建任务'))
   assert.ok(modalText.includes('查看卡片详情'))
-  console.log('PASS  the task-center shell mounts the decision queue modal')
+  assert.ok(modalText.includes('创建任务 T-190？'), 'the create question headline is rendered')
+  assert.ok(modalText.includes('任务：Third card') && modalText.includes('验收：npm test'), 'the create field list is rendered')
+  assert.ok(modalText.includes('修改建议（可选）'), 'the create panel asks for the revision note')
+  assert.ok(/\d+s 后自动选择「创建任务」/.test(modalText), 'the safe create default is announced as auto-run')
+  console.log('PASS  the task-center shell mounts the decision queue modal with the T-196 create panel')
 }
 
 console.log('\nPASS  the decision modal renders the packet common copy and one-shot answer flow')

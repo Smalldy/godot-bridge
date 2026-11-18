@@ -53,10 +53,11 @@ const DESCRIPTION =
   // carries the full investigation chapter (when to use it, the report action,
   // the scratch/probe rules and the panel rendering).
   'A card with kind investigate delivers a report instead of code (the skill has the full investigation chapter): finish it with action report; submit/review/test/merge refuse it. ' +
-  'start only records a dispatch request for the scheduler until the user approves it in the task center panel (needs-consent is not a failure; it is dispatch-wide and does not take a taskId). ' +
+  'create/start/reopen/delete/cancel ask the user in the panel first: the call answers needs-decision (start: needs-consent); do not retry — the host executes the answer and messages you. ' +
   'Dependencies: B.dependsOn=[A] means A must be done and merged before B runs. ' +
-  // T-195: the host may ask a human a question and wait non-blockingly; the
-  // model reads the queue and can answer it, but every rule stays server-side.
+  // T-195/T-196: the host may ask a human a question and wait non-blockingly.
+  // The model reads the queue; a plain question may be answered here, while an
+  // ACTION question (create/start/reopen/delete/cancel) is user-only.
   'Decisions: decisionList reads the queue; decisionAnswer answers one with decisionId + option (or text); destructive options need "DELETE".'
 
 export function registerTaskTool(ctx, options) {
@@ -284,6 +285,10 @@ export function registerTaskTool(ctx, options) {
           error: result.message,
           code: result.code,
           request: result.request === undefined ? null : result.request,
+          // T-196: the pending question must survive the tool envelope: the model
+          // reports it to the user (and the panel is already showing it).
+          decision: result.decision === undefined ? null : result.decision,
+          decisions: result.decisions === undefined ? null : result.decisions,
           // T-110: a refusal that tells the model what to DO must survive the tool
           // envelope, otherwise the instruction is lost on the way to the session.
           nextStep: result.nextStep === undefined ? null : result.nextStep,
