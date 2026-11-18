@@ -7,6 +7,53 @@
  * chips for review/test/merge/lease/waiting stay: they are the evidence a reader
  * opens the card for, only typeset smaller.
  */
+/**
+ * T-191: the panel verdict is the USER's explicit override, so the card sends a
+ * structured record attributed to that override instead of free text.
+ *
+ * The contract's execution rules (the tester must run the candidate probes)
+ * apply to the tester role; a human decision is recorded as a human decision,
+ * not disguised as executed probe output. The action layer mirrors this
+ * payload for older clients, so a stale bundle cannot brick the override.
+ */
+function userVerdictPayload(action, reason) {
+	const text = typeof reason === 'string' ? reason.trim() : ''
+	if (action === 'approveReview') {
+		return {
+			checked: [{ criterion: 'human override from the task center panel', method: 'user review', result: 'approved' }],
+			findings: [],
+			residualRisks: [],
+		}
+	}
+	if (action === 'requestChanges') {
+		return {
+			checked: [],
+			findings: [
+				{
+					severity: 'blocking',
+					file: null,
+					line: null,
+					text: text === '' ? 'changes requested by the user in the task center panel' : text,
+				},
+			],
+			residualRisks: [],
+		}
+	}
+	const tail = text === '' ? (action === 'passTest' ? 'the user accepted the candidate in the task center panel' : 'the user rejected the candidate in the task center panel') : text
+	return {
+		probes: [
+			{
+				id: 'human-override',
+				command: 'human verdict from the task center panel',
+				exitCode: action === 'passTest' ? 0 : 1,
+				tail: tail,
+			},
+		],
+		adversarial: [],
+		notes: tail,
+	}
+}
+
 function createTaskCard(deps) {
 	/** A compact owning-session label; the full id stays in the title. */
 	function ownerSessionShort(value) {
@@ -169,7 +216,7 @@ function createTaskCard(deps) {
 						{ className: 'gbt-cardverdictactions' },
 						h(
 							'button',
-							{ type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-verdict-action': passing, onClick: function (clickEvent) { if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation(); recordVerdict(passing, verdictKind === 'test' ? { evidence: '' } : {}) } },
+							{ type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-verdict-action': passing, onClick: function (clickEvent) { if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation(); recordVerdict(passing, userVerdictPayload(passing, '')) } },
 							verdictKind === 'review' ? t('verdictReviewPass') : t('verdictTestPass'),
 						),
 						h(
@@ -187,7 +234,7 @@ function createTaskCard(deps) {
 							h(
 								'div',
 								{ className: 'gbt-cardverdictactions' },
-								h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-verdict-submit': 'true', disabled: verdictReason.trim() === '', title: verdictReason.trim() === '' ? t('verdictReasonRequired') : undefined, onClick: function (clickEvent) { if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation(); if (verdictReason.trim() !== '') recordVerdict(blocking, verdictKind === 'test' ? { evidence: verdictReason.trim() } : { reasons: verdictReason.trim() }) } }, t('verdictSubmit')),
+								h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-verdict-submit': 'true', disabled: verdictReason.trim() === '', title: verdictReason.trim() === '' ? t('verdictReasonRequired') : undefined, onClick: function (clickEvent) { if (clickEvent !== undefined && clickEvent !== null && typeof clickEvent.stopPropagation === 'function') clickEvent.stopPropagation(); if (verdictReason.trim() !== '') recordVerdict(blocking, userVerdictPayload(blocking, verdictReason.trim())) } }, t('verdictSubmit')),
 								h('button', { type: 'button', className: 'gbt-btn', 'data-verdict-cancel': 'true', onClick: function () { setVerdictOpen(null); setVerdictReason('') } }, t('verdictCancel')),
 							),
 						)

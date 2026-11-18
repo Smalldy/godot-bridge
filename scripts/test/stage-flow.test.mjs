@@ -3,7 +3,11 @@
 // plus hostCheck reuse on an unchanged candidate fingerprint.
 
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import { createFakeTaskAgents, createRig, createTask, PROJECT } from './support/fixtures.mjs'
+
+const require = createRequire(import.meta.url)
+const { createTaskCard } = require('../../client/src/views/task-card.cjs')
 
 const checks = []
 function check(name, fn) {
@@ -46,6 +50,11 @@ const subprocess = {
 }
 const baseGet = rig.ctx.get
 rig.ctx.get = (key) => (key === 'subprocess' ? subprocess : baseGet.call(rig.ctx, key))
+
+/** A stage child's context: the contract's hard rules bind these roles, not the user. */
+function performAs(agentId, name, action, payload) {
+  return rig.api.perform(action, payload, { projectPath: rig.project, by: '@' + name, role: 'agent', agent: { id: agentId, name: name } })
+}
 
 async function boardTask(id) {
   const snap = await rig.action('board')
@@ -100,20 +109,21 @@ check('submit starts a reviewer with the stage contract section', () => {
 })
 
 // ── the reviewer cannot fall back to free text ─────────────────────────────
-const refusedEmpty = await rig.action('approveReview', { id: main.id })
+const reviewerId = (await boardTask(main.id)).review.deliveredTo.id
+const refusedEmpty = await performAs(reviewerId, 'reviewer-x', 'approveReview', { id: main.id })
 check('approveReview without checked is refused and keeps the round open', () => {
   assert.equal(refusedEmpty.ok, false)
   assert.equal(refusedEmpty.code, 'missing-checked')
 })
 
-const refusedNoBlocking = await rig.action('requestChanges', { id: main.id, reasons: 'rename it', checked: [] })
+const refusedNoBlocking = await performAs(reviewerId, 'reviewer-x', 'requestChanges', { id: main.id, reasons: 'rename it', checked: [] })
 check('requestChanges without a blocking finding is refused', () => {
   assert.equal(refusedNoBlocking.ok, false)
   assert.equal(refusedNoBlocking.code, 'missing-blocking-finding')
 })
 
 // ── approve -> ReviewRecord + CandidateArtifact + host check ───────────────
-const approved = await rig.action('approveReview', Object.assign({ id: main.id }, REVIEWED))
+const approved = await performAs(reviewerId, 'reviewer-x', 'approveReview', Object.assign({ id: main.id }, REVIEWED))
 check('approveReview persists the structured ReviewRecord', () => {
   assert.equal(approved.ok, true, JSON.stringify(approved).slice(0, 900))
   const record = approved.task.review.record
@@ -148,19 +158,20 @@ check('the tester brief hands over scope and baseline but not the review verdict
 })
 
 // ── the tester cannot submit an empty or partial probe list ────────────────
-const refusedNoProbes = await rig.action('passTest', { id: main.id })
+const testerId = (await boardTask(main.id)).test.deliveredTo.id
+const refusedNoProbes = await performAs(testerId, 'tester-x', 'passTest', { id: main.id })
 check('passTest without a probe list is refused', () => {
   assert.equal(refusedNoProbes.ok, false)
   assert.equal(refusedNoProbes.code, 'missing-probes')
 })
 
-const refusedEmptyProbes = await rig.action('failTest', { id: main.id, probes: [] })
+const refusedEmptyProbes = await performAs(testerId, 'tester-x', 'failTest', { id: main.id, probes: [] })
 check('failTest with an empty probe list is refused', () => {
   assert.equal(refusedEmptyProbes.ok, false)
   assert.equal(refusedEmptyProbes.code, 'empty-probes')
 })
 
-const refusedPartial = await rig.action('passTest', { id: main.id, probes: [{ id: 'other-probe', command: 'node --test scripts/b.test.mjs', exitCode: 0 }] })
+const refusedPartial = await performAs(testerId, 'tester-x', 'passTest', { id: main.id, probes: [{ id: 'other-probe', command: 'node --test scripts/b.test.mjs', exitCode: 0 }] })
 check('a verdict that skips a declared probe is refused', () => {
   assert.equal(refusedPartial.ok, false)
   assert.equal(refusedPartial.code, 'missing-probe-execution')
@@ -168,7 +179,7 @@ check('a verdict that skips a declared probe is refused', () => {
 })
 
 // ── a failed test returns to running; an unchanged candidate reuses hostCheck ─
-const failedFirst = await rig.action('failTest', Object.assign({ id: main.id }, { probes: PASS_RECORD.probes }))
+const failedFirst = await performAs(testerId, 'tester-x', 'failTest', Object.assign({ id: main.id }, { probes: PASS_RECORD.probes }))
 check('failTest persists the TestRecord and returns the card to running', () => {
   assert.equal(failedFirst.ok, true, JSON.stringify(failedFirst).slice(0, 900))
   assert.equal(failedFirst.task.status, 'running')
@@ -182,7 +193,8 @@ check('re-submit reopens the review round', () => {
   assert.equal(resubmitted.task.status, 'reviewing')
 })
 
-const approvedAgain = await rig.action('approveReview', Object.assign({ id: main.id, checked: REVIEWED.checked }))
+const reviewerTwo = (await boardTask(main.id)).review.deliveredTo.id
+const approvedAgain = await performAs(reviewerTwo, 'reviewer-y', 'approveReview', Object.assign({ id: main.id, checked: REVIEWED.checked }))
 const afterReuse = await boardTask(main.id)
 check('an unchanged candidate fingerprint reuses the host baseline', () => {
   assert.equal(approvedAgain.ok, true, JSON.stringify(approvedAgain).slice(0, 900))
@@ -192,10 +204,12 @@ check('an unchanged candidate fingerprint reuses the host baseline', () => {
 
 // ── a moved candidate head must run the host check again ───────────────────
 candidateHead = 'candidate-sha-2'
-const failedAgain = await rig.action('failTest', Object.assign({ id: main.id }, { probes: PASS_RECORD.probes }))
-assert.equal(failedAgain.ok, true)
+const testerTwo = (await boardTask(main.id)).test.deliveredTo.id
+const failedAgain = await performAs(testerTwo, 'tester-y', 'failTest', Object.assign({ id: main.id }, { probes: PASS_RECORD.probes }))
+assert.equal(failedAgain.ok, true, JSON.stringify(failedAgain).slice(0, 1400))
 await rig.action('submit', { id: main.id, evidence: 'second repair' })
-const approvedMoved = await rig.action('approveReview', Object.assign({ id: main.id, checked: REVIEWED.checked }))
+const reviewerThree = (await boardTask(main.id)).review.deliveredTo.id
+const approvedMoved = await performAs(reviewerThree, 'reviewer-z', 'approveReview', Object.assign({ id: main.id, checked: REVIEWED.checked }))
 const afterMoved = await boardTask(main.id)
 check('a changed candidate head runs the host baseline again', () => {
   assert.equal(approvedMoved.ok, true, JSON.stringify(approvedMoved).slice(0, 900))
@@ -204,7 +218,8 @@ check('a changed candidate head runs the host baseline again', () => {
 })
 
 // ── pass -> TestRecord persisted, review scope not required in the record ──
-const passed = await rig.action('passTest', Object.assign({ id: main.id }, PASS_RECORD))
+const testerThree = (await boardTask(main.id)).test.deliveredTo.id
+const passed = await performAs(testerThree, 'tester-z', 'passTest', Object.assign({ id: main.id }, PASS_RECORD))
 check('passTest persists the structured TestRecord', () => {
   assert.equal(passed.ok, true, JSON.stringify(passed).slice(0, 900))
   const record = passed.task.test.record
@@ -234,6 +249,165 @@ check('the worker rework brief carries the blocking finding', () => {
   const call = taskAgents.calls.filter((entry) => entry.kind === 'send' && String(entry.text).indexOf(changesCard.id) >= 0).pop()
   assert.ok(call, 'the worker was never sent the rework brief')
   assert.match(call.text, /drop the silent catch/)
+})
+
+// ── the PANEL payload: the exact object the card sends must be accepted ────
+// The task card is the T-113 human override. These checks render the real view
+// module, click the real buttons and feed the EXACT payload it emits into the
+// API as the user, so a client/action contract drift fails here.
+const reactBridge = { useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}] }
+const h = (type, props, ...children) => ({ type, props: Object.assign({}, props, children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }) })
+const selectors = {
+  tcBaseName: (value) => String(value).split('/').pop(),
+  tcIsInvestigation: (task) => task.kind === 'investigate',
+  tcKindOf: (task) => (task.kind === 'investigate' ? 'investigate' : 'dev'),
+  tcLease: () => null,
+  tcMergeLabel: () => 'merge',
+  tcMergeOf: () => null,
+  tcMergeTone: () => 'running',
+  tcPhaseLabel: () => 'Running',
+  tcPhaseTone: () => 'running',
+  tcReviewLabel: () => 'review',
+  tcReviewOf: () => null,
+  tcReviewTone: () => 'waiting',
+  tcRound: () => 1,
+  tcStageQueued: () => false,
+  tcTestLabel: () => 'test',
+  tcTestOf: () => null,
+  tcTestTone: () => 'waiting',
+}
+const TaskCard = createTaskCard(Object.assign({ React: { useState: (initial) => reactBridge.useState(initial) }, h, toneForDependency: () => 'waiting', waitingChip: () => null }, selectors))
+
+function walk(node, visit) {
+  if (node === null || typeof node !== 'object') return
+  visit(node)
+  const children = node.props === undefined ? undefined : node.props.children
+  if (children === undefined) return
+  if (Array.isArray(children)) {
+    for (const child of children) walk(child, visit)
+  } else {
+    walk(children, visit)
+  }
+}
+
+/** Render the real card and drive it like a user; returns the captured verdict calls. */
+function renderCard(task) {
+  const state = []
+  let index = 0
+  let vnode = null
+  const calls = []
+  reactBridge.useState = function (initial) {
+    const at = index++
+    if (!Object.prototype.hasOwnProperty.call(state, at)) state[at] = typeof initial === 'function' ? initial() : initial
+    return [
+      state[at],
+      function (next) {
+        state[at] = typeof next === 'function' ? next(state[at]) : next
+        render()
+      },
+    ]
+  }
+  function render() {
+    index = 0
+    vnode = TaskCard({ task: task, t: (key) => key, now: 1000, selected: false, onOpen: () => {}, onVerdict: (action, id, payload) => calls.push({ action, id, payload }) })
+  }
+  render()
+  const click = (action) => {
+    let found = null
+    walk(vnode, (node) => {
+      if (node.props !== undefined && node.props['data-verdict-action'] === action) found = node
+    })
+    assert.ok(found, 'no panel button for ' + action)
+    found.props.onClick({ stopPropagation() {} })
+  }
+  const typeReason = (text) => {
+    let textarea = null
+    walk(vnode, (node) => {
+      if (node.props !== undefined && node.props['data-verdict-reason'] !== undefined) textarea = node
+    })
+    assert.ok(textarea, 'the blocking verdict has no reason field')
+    textarea.props.onInput({ target: { value: text } })
+  }
+  const submit = () => {
+    let button = null
+    walk(vnode, (node) => {
+      if (node.props !== undefined && node.props['data-verdict-submit'] === 'true') button = node
+    })
+    assert.ok(button, 'the blocking verdict has no submit button')
+    button.props.onClick({ stopPropagation() {} })
+  }
+  return { calls, click, typeReason, submit }
+}
+
+// Review pass: the panel emits the user-attributed ReviewRecord.
+const panelCard = await startCard('panel approve', [])
+const reviewRender = renderCard(await boardTask(panelCard.id))
+reviewRender.click('approveReview')
+const reviewCall = reviewRender.calls[0]
+const panelApproved = await rig.action(reviewCall.action, Object.assign({ id: reviewCall.id }, reviewCall.payload))
+check('the panel approveReview payload is accepted as the human override', () => {
+  assert.equal(reviewCall.action, 'approveReview')
+  assert.equal(reviewCall.payload.checked[0].method, 'user review')
+  assert.equal(panelApproved.ok, true, JSON.stringify(panelApproved).slice(0, 900))
+  assert.equal(panelApproved.task.review.record.checked[0].criterion, 'human override from the task center panel')
+  assert.equal(panelApproved.task.status, 'testing')
+})
+
+// Test pass: the panel emits the user-attributed TestRecord.
+const testRender = renderCard(await boardTask(panelCard.id))
+testRender.click('passTest')
+const passCall = testRender.calls[0]
+const panelPassed = await rig.action(passCall.action, Object.assign({ id: passCall.id }, passCall.payload))
+check('the panel passTest payload is accepted as the human override', () => {
+  assert.equal(passCall.action, 'passTest')
+  assert.equal(passCall.payload.probes[0].id, 'human-override')
+  assert.equal(panelPassed.ok, true, JSON.stringify(panelPassed).slice(0, 900))
+  assert.equal(panelPassed.task.test.record.probes[0].id, 'human-override')
+})
+
+// Review reject: the panel's reason becomes the blocking finding.
+const panelChangesCard = await startCard('panel request changes', [])
+const changesRender = renderCard(await boardTask(panelChangesCard.id))
+changesRender.click('requestChanges')
+changesRender.typeReason('the panel wants a rename')
+changesRender.submit()
+const changesCall = changesRender.calls[0]
+const panelChanges = await rig.action(changesCall.action, Object.assign({ id: changesCall.id }, changesCall.payload))
+check('the panel requestChanges payload is accepted and renders its reasons', () => {
+  assert.equal(changesCall.action, 'requestChanges')
+  assert.equal(changesCall.payload.findings[0].severity, 'blocking')
+  assert.equal(panelChanges.ok, true, JSON.stringify(panelChanges).slice(0, 900))
+  assert.equal(panelChanges.task.status, 'running')
+  assert.match(panelChanges.task.review.reasons, /the panel wants a rename/)
+})
+
+// Test fail: the panel's reason becomes the failing probe tail.
+await rig.action('submit', { id: panelChangesCard.id, evidence: 'second attempt' })
+const failRender = renderCard(await boardTask(panelChangesCard.id))
+failRender.click('approveReview')
+const approveAgainCall = failRender.calls[0]
+await rig.action(approveAgainCall.action, Object.assign({ id: approveAgainCall.id }, approveAgainCall.payload))
+const failTestRender = renderCard(await boardTask(panelChangesCard.id))
+failTestRender.click('failTest')
+failTestRender.typeReason('the panel reproduced a crash')
+failTestRender.submit()
+const failCall = failTestRender.calls[0]
+const panelFailed = await rig.action(failCall.action, Object.assign({ id: failCall.id }, failCall.payload))
+check('the panel failTest payload is accepted and returns the card to running', () => {
+  assert.equal(failCall.action, 'failTest')
+  assert.equal(failCall.payload.probes[0].exitCode, 1)
+  assert.equal(panelFailed.ok, true, JSON.stringify(panelFailed).slice(0, 900))
+  assert.equal(panelFailed.task.status, 'running')
+  assert.match(panelFailed.task.test.record.probes[0].tail, /reproduced a crash/)
+})
+
+// An older bundle that only sends {id} must still work: the ACTION attributes
+// the explicit human override instead of refusing it.
+const legacyCard = await startCard('legacy panel payload', [])
+const legacyApproved = await rig.action('approveReview', { id: legacyCard.id })
+check('a bare legacy panel approveReview is still attributed as the human override', () => {
+  assert.equal(legacyApproved.ok, true, JSON.stringify(legacyApproved).slice(0, 900))
+  assert.equal(legacyApproved.task.review.record.checked[0].criterion, 'human override from the task center panel')
 })
 
 const failedChecks = checks.filter((row) => !row.ok)

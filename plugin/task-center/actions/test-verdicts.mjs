@@ -61,6 +61,33 @@ export function createTestVerdictActions(deps) {
     }
   }
 
+  /**
+   * The explicit record the panel's human override stands for (T-113 + T-191).
+   * The contract's probe-execution rules bind the TESTER; a human decision is
+   * recorded as a human decision (by/role on the board), not as fake probe
+   * output masquerading as a tester run.
+   */
+  function userOverrideTestRecord(action, source) {
+    const text = typeof source.evidence === 'string' ? source.evidence.trim() : ''
+    const fallback =
+      action === 'passTest'
+        ? 'the user accepted the candidate in the task center panel'
+        : 'the user rejected the candidate in the task center panel'
+    return {
+      verdict: action === 'passTest' ? 'passed' : 'failed',
+      probes: [
+        {
+          id: 'human-override',
+          command: 'human verdict from the task center panel',
+          exitCode: action === 'passTest' ? 0 : 1,
+          tail: text === '' ? fallback : text,
+        },
+      ],
+      adversarial: [],
+      notes: text === '' ? fallback : text,
+    }
+  }
+
   async function execute(action, source, context, projectPath) {
     const id = String(source.id === undefined ? '' : source.id)
     if (id === '') return failure('missing-id', action + ' needs a task id')
@@ -89,10 +116,16 @@ export function createTestVerdictActions(deps) {
       testTask.test === null || testTask.test === undefined ? null : testTask.test.hostCheck,
     )
     // The record is validated BEFORE the board moves: a refusal leaves the test
-    // round open, exactly like a malformed review verdict.
-    const checkedRecord = validateTestRecord(source, {
+    // round open, exactly like a malformed review verdict. The USER's panel
+    // verdict is the explicit human override: a structured record from the panel
+    // is accepted, a bare {id, evidence} from an older bundle is attributed here
+    // (and is not held to the TESTER's probe-execution rule).
+    const userCaller = context !== undefined && context !== null && context.role === 'user'
+    const structuredTest = Array.isArray(source.probes) || (source.record !== undefined && source.record !== null)
+    const testInput = userCaller && !structuredTest ? userOverrideTestRecord(action, source) : source
+    const checkedRecord = validateTestRecord(testInput, {
       verdict: action === 'passTest' ? 'passed' : 'failed',
-      requiredProbes: artifact.probes,
+      requiredProbes: userCaller ? [] : artifact.probes,
     })
     if (checkedRecord.ok !== true) return failure(checkedRecord.code, checkedRecord.message)
     const testRecord = checkedRecord.record

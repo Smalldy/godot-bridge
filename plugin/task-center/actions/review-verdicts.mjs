@@ -94,6 +94,32 @@ export function createReviewVerdictActions(deps) {
     }
   }
 
+  /** The explicit record the panel's human override stands for (T-113 + T-191). */
+  function userOverrideReviewRecord(action, source) {
+    if (action === 'approveReview') {
+      return {
+        verdict: 'approved',
+        checked: [{ criterion: 'human override from the task center panel', method: 'user review', result: 'approved' }],
+        findings: [],
+        residualRisks: [],
+      }
+    }
+    const text = typeof source.reasons === 'string' ? source.reasons.trim() : ''
+    return {
+      verdict: 'changes-requested',
+      checked: [],
+      findings: [
+        {
+          severity: 'blocking',
+          file: null,
+          line: null,
+          text: text === '' ? 'changes requested by the user in the task center panel' : text,
+        },
+      ],
+      residualRisks: [],
+    }
+  }
+
   async function execute(action, source, context, projectPath) {
     const id = String(source.id === undefined ? '' : source.id)
     if (id === '') return failure('missing-id', action + ' needs a task id')
@@ -106,7 +132,17 @@ export function createReviewVerdictActions(deps) {
     // T-191: the reviewer's hand-off is a ReviewRecord, never free text. Validate
     // it BEFORE any candidate work, so a malformed verdict cannot build, run or
     // discard a candidate as a side effect of being refused.
-    const validated = validateReviewRecord(source, {
+    //
+    // The USER's panel verdict is the T-113 human override: it is recorded as an
+    // explicit, user-attributed decision (by/role on the board), never disguised
+    // as a reviewer's structured audit. A structured record from the panel is
+    // accepted as-is; a bare {id} from an older bundle is attributed here instead
+    // of being refused, so the override cannot be bricked by a cached client.
+    const userCaller = context !== undefined && context !== null && context.role === 'user'
+    const structuredReview =
+      Array.isArray(source.checked) || Array.isArray(source.findings) || (source.record !== undefined && source.record !== null)
+    const reviewInput = userCaller && !structuredReview ? userOverrideReviewRecord(action, source) : source
+    const validated = validateReviewRecord(reviewInput, {
       verdict: action === 'approveReview' ? 'approved' : 'changes-requested',
     })
     if (validated.ok !== true) return failure(validated.code, validated.message)

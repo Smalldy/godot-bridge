@@ -3856,7 +3856,7 @@ export function createApi(ctx, options) {
           declaredFiles: Array.isArray(task.writeFiles) ? task.writeFiles.slice() : [],
           actualFiles: actualFiles,
           artifact: summariseArtifact(artifact),
-          tests: evidence !== '' ? evidence : null,
+          tests: evidence !== '' ? evidence : note !== '' ? note : null,
           reviewer: null,
           conflict: null,
           at: new Date(now).toISOString(),

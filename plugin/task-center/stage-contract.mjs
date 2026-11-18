@@ -541,17 +541,27 @@ function diffstatLine(diffstat) {
   return '- diffstat: ' + String(diffstat.files) + ' file(s), +' + String(diffstat.insertions) + ' -' + String(diffstat.deletions)
 }
 
-function hostCheckLine(hostCheck) {
-  if (hostCheck === null) return '- host mechanical baseline: none for this candidate yet'
+/**
+ * The ONE copy of the host baseline in a brief: command, exit code, duration,
+ * candidate fingerprint and the output tail. Both the reviewer and the tester
+ * briefs show this line through the artifact section; neither prints it again.
+ */
+function hostCheckLines(hostCheck) {
+  if (hostCheck === null) return ['- host mechanical baseline: none for this candidate yet']
   const state = hostCheck.timedOut === true ? 'timed out' : 'exit ' + String(hostCheck.exitCode === null ? 'none' : hostCheck.exitCode)
-  return (
+  const lines = [
     '- host mechanical baseline: ' +
-    String(hostCheck.command) +
-    ' -> ' +
-    state +
-    (Number.isFinite(hostCheck.durationMs) ? ' in ' + String(Math.round(hostCheck.durationMs / 1000)) + 's' : '') +
-    (hostCheck.fingerprint === null ? '' : ' (candidate fingerprint ' + String(hostCheck.fingerprint) + ')')
-  )
+      String(hostCheck.command) +
+      ' -> ' +
+      state +
+      (Number.isFinite(hostCheck.durationMs) ? ' in ' + String(Math.round(hostCheck.durationMs / 1000)) + 's' : '') +
+      (hostCheck.fingerprint === null ? '' : ' (candidate fingerprint ' + String(hostCheck.fingerprint) + ')'),
+  ]
+  if (typeof hostCheck.tail === 'string' && hostCheck.tail.trim() !== '') {
+    lines.push('  output tail:')
+    for (const line of hostCheck.tail.split('\n')) lines.push('    ' + line)
+  }
+  return lines
 }
 
 /** The artifact section shared by the reviewer and tester briefs. */
@@ -595,7 +605,7 @@ export function renderCandidateArtifact(artifact) {
       lines.push('    [' + String(probe.id) + '] ' + String(probe.command) + (Number.isFinite(probe.timeoutMs) ? ' (timeout ' + String(probe.timeoutMs) + 'ms)' : ''))
     }
   }
-  lines.push(hostCheckLine(normaliseHostCheckShape(source.hostCheck)))
+  lines.push(...hostCheckLines(normaliseHostCheckShape(source.hostCheck)))
   return lines
 }
 
@@ -714,10 +724,9 @@ export function renderTesterBrief(task, artifact, reviewRecord, hostCheck, optio
     lines.push(
       '',
       reused
-        ? 'The host baseline check already PASSED for this exact candidate fingerprint, so it is reused: do NOT re-run the full suite just to confirm it.'
-        : 'The host baseline check ran on this candidate; it is the floor, not your verdict.',
-      hostCheckLine(check),
-      'Re-run it yourself only when you suspect flakiness or an environment difference, and say why in notes.',
+        ? 'The host baseline line above already PASSED for this exact candidate fingerprint, so it is reused: do NOT re-run the full suite just to confirm it.'
+        : 'The host baseline line above is the floor, not your verdict.',
+      'It is stated once, above; re-run it yourself only when you suspect flakiness or an environment difference, and say why in notes.',
     )
   } else {
     lines.push('', 'No host baseline check exists for this candidate; run what the acceptance needs and record it.')

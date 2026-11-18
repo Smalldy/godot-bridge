@@ -945,6 +945,14 @@ export function submitTask(board, id, input, now, by, byName) {
 /**
  * The review phase: a reviewer approves the submission (-> testing) or asks for
  * changes (-> running, back to the same worker).
+ *
+ * T-191 CONTRACT NOTE: the structured record is validated and persisted by the
+ * ACTION layer (actions/review-verdicts.mjs), which refuses an empty checked
+ * list / a changes request without a blocking finding BEFORE any side effect.
+ * These pure model functions only store a valid record and deliberately degrade
+ * a missing/invalid one to "no record" so host-internal calls (e.g. the host
+ * failTest in review-verdicts) and old boards can never throw here. A future
+ * direct caller of the model is NOT allowed to skip the action layer.
  */
 export function approveReview(board, id, now, by, byName, record) {
   const task = findTask(board, id)
@@ -979,6 +987,7 @@ export function approveReview(board, id, now, by, byName, record) {
   return done(next, [{ kind: 'review-approved', id: id, who: by }], { task: target })
 }
 
+/** Same T-191 contract note as approveReview: record validation lives in the action layer. */
 export function requestChanges(board, id, reasons, now, by, byName, record) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
@@ -1012,6 +1021,12 @@ export function requestChanges(board, id, reasons, now, by, byName, record) {
 /**
  * The test phase: a tester's pass makes the request merge-eligible (the queue
  * turns the task DONE after the merge), a failure sends it back to running.
+ *
+ * T-191 CONTRACT NOTE: the TestRecord (executed probes) is validated by the
+ * ACTION layer (actions/test-verdicts.mjs) — an empty probe list is refused
+ * there, before the board moves. The model stores a valid record and degrades an
+ * invalid/missing one to "no record" so the host's own failTest paths stay
+ * usable. A future direct caller is NOT allowed to skip the action layer.
  */
 export function passTest(board, id, now, by, byName, record) {
   const task = findTask(board, id)
@@ -1037,6 +1052,7 @@ export function passTest(board, id, now, by, byName, record) {
   return done(next, [{ kind: 'test-passed', id: id, who: by }], { task: target })
 }
 
+/** Same T-191 contract note as passTest: record validation lives in the action layer. */
 export function failTest(board, id, evidence, now, by, byName, record) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
