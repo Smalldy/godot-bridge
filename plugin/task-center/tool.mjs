@@ -56,7 +56,7 @@ const DESCRIPTION =
   'Dependencies: B.dependsOn=[A] means A must be done and merged before B runs. ' +
   // T-195: the host may ask a human a question and wait non-blockingly; the
   // model reads the queue and can answer it, but every rule stays server-side.
-  'Host decisions: decisionList returns the pending queue (server deadline and default); decisionAnswer resolves ONE decision with decisionId + option (or text) — destructive options require confirm: "DELETE"; an answered or expired decision cannot be answered again.'
+  'Decisions: decisionList reads the queue; decisionAnswer answers one with decisionId + option (or text); destructive options need "DELETE".'
 
 export function registerTaskTool(ctx, options) {
   const opts = options === undefined ? {} : options

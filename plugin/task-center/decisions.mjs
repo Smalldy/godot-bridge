@@ -484,6 +484,13 @@ export function createDecisionStore(io, options) {
     const written = await updateDecisionStore(io, optionsNow, function (store) {
       const raced = store.requests.filter((record) => record.id === id)[0]
       if (raced !== undefined) {
+        // An auto-generated id can collide across two concurrent creates. Only
+        // identical content is an idempotent replay; different content must not
+        // silently return someone else's question.
+        if (raced.fingerprint !== drafted.record.fingerprint) {
+          outcome = failure('decision-conflict', 'decision ' + id + ' was created concurrently with different content')
+          return null
+        }
         outcome = { ok: true, decision: decisionView(raced, now), created: false, duplicate: true }
         return store
       }

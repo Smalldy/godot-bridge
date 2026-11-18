@@ -4787,6 +4787,9 @@ export function createApi(ctx, options) {
     requestDecision: function (projectPath, input, context) {
       return decisionStore.request(projectPath, input, context)
     },
+    answerDecision: function (projectPath, input, context) {
+      return decisionStore.answer(projectPath, input, context)
+    },
     expireDecisions: function (projectPath) {
       return decisionStore.sweep(projectPath)
     },

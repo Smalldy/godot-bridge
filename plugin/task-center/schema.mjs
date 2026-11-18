@@ -1058,9 +1058,10 @@ export function normaliseDecisionOption(raw) {
 /** Normalise an option list; duplicate ids are refused (returns null). */
 export function normaliseDecisionOptions(raw) {
   if (!Array.isArray(raw)) return []
+  if (raw.length > MAX_DECISION_OPTIONS) return null
   const options = []
   const seen = new Set()
-  for (const entry of raw.slice(0, MAX_DECISION_OPTIONS)) {
+  for (const entry of raw) {
     const option = normaliseDecisionOption(entry)
     if (option === null) return null
     if (seen.has(option.id)) return null

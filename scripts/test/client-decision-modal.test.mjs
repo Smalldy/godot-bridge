@@ -194,4 +194,82 @@ function decision(overrides) {
   console.log('PASS  a text-only decision needs text before confirming')
 }
 
+
+// ── the panel shell mounts the queue (integration) ──────────────────────────
+{
+  const { createTaskCenter } = require('../../client/src/views/task-center.cjs')
+  const { tcAgentTreeOf, tcAgentStatusKey } = require('../../client/src/selectors.cjs')
+  const view = (name) => (props) => ({ type: name, props: props })
+  const snapshot = {
+    source: 'host',
+    project: '/repo',
+    projectRoot: '/repo',
+    sessionProject: '/repo',
+    message: '',
+    dispatch: { state: 'paused', maxConcurrent: 3, defaultTarget: '' },
+    counts: { pending: 0 },
+    tasks: [],
+    queue: [],
+    details: {},
+    locks: [],
+    agentTree: { available: false, root: null, members: [], count: 0, error: null },
+    scope: { panelSession: null, sessionSummaries: [] },
+    roles: null,
+    worktrees: null,
+    environment: null,
+    boardSize: null,
+    archivedCount: 0,
+    archiveRange: null,
+    scheduler: null,
+    activity: { entries: [] },
+    lastSweep: null,
+    decisions: [decision({ id: 'DEC-7', taskId: 'T-190', eventLabel: '创建任务' })],
+    receivedAt: Date.now(),
+  }
+  const TaskCenter = createTaskCenter({
+    React: React,
+    h: h,
+    Board: view('board'),
+    QueueView: view('queue'),
+    WorkersView: view('workers'),
+    StatusView: view('status'),
+    RolesView: view('roles'),
+    DetailView: view('detail'),
+    DoneAllDrawer: view('done-all'),
+    TaskForm: view('task-form'),
+    SettingsForm: view('settings-form'),
+    ProjectForm: view('project-form'),
+    DecisionModal: DecisionModal,
+    useTranslate: () => t,
+    useSnapshot: () => snapshot,
+    useNow: () => 1000,
+    panelState: { view: 'board', selectedId: null, doneAllOpen: false, doneAllArchived: false },
+    projectFormState: { value: null },
+    doneAllReset: () => {},
+    projectMismatchOf: () => null,
+    projectSourceKey: () => 'session',
+    projectSourceLabel: () => 'session',
+    tcAgo: () => 'now',
+    tcAgentTreeOf: tcAgentTreeOf,
+    tcAgentStatusKey: tcAgentStatusKey,
+    roleKindLabel: (kind) => kind,
+    copyToClipboard: async () => true,
+    store: { send: async () => ({ ok: true }), startPolling: () => {}, stopPolling: () => {}, switchProject: async () => ({ ok: true }), loadDetail: async () => ({ ok: true }) },
+  })
+  const shell = TaskCenter({})
+  const kids = Array.isArray(shell.props.children) ? shell.props.children : [shell.props.children]
+  const mounted = kids.filter((child) => child !== null && child !== undefined && child.type === DecisionModal)[0]
+  assert.ok(mounted !== undefined, 'the panel shell mounts the decision modal when a decision is pending')
+  assert.equal(mounted.props.queue[0].id, 'DEC-7', 'the foregrounded decision is the oldest pending one')
+  assert.equal(typeof mounted.props.onAnswer, 'function', 'the shell wires the answer callback')
+  assert.equal(typeof mounted.props.onOpenTask, 'function', 'the shell wires the card entry')
+  const modal = DecisionModal(mounted.props)
+  const modalText = textOf(modal)
+  assert.ok(modalText.includes('data-decision-overlay'))
+  assert.ok(modalText.includes('关键决策'))
+  assert.ok(modalText.includes('T-190 · 创建任务'))
+  assert.ok(modalText.includes('查看卡片详情'))
+  console.log('PASS  the task-center shell mounts the decision queue modal')
+}
+
 console.log('\nPASS  the decision modal renders the packet common copy and one-shot answer flow')
