@@ -56,6 +56,25 @@ assert.ok(cards.includes('调查卡（investigate）') && cards.includes('writeF
 assert.ok(run.includes('start') && run.includes('taskId') && run.includes('worktree'))
 assert.ok(gates.includes('reviewer') && gates.includes('tester') && gates.includes('mergeRequest'))
 
+// T-193: the splitting / parallelism rules belong in the always-loaded entry,
+// and cards.md must draw the dependsOn / writeFiles boundary explicitly instead
+// of presenting dependsOn as "everything must merge first".
+{
+  const vocabulary = ['不变量', '契约', '不按文件数', '逻辑前序', 'writeFiles', '纯模块卡', '集成卡', 'acceptance/probes']
+  assert.ok(init.includes('## 拆卡与并行'), 'the init body carries a splitting/parallelism section')
+  assert.ok(vocabulary.every((needle) => init.includes(needle)), 'the init splitting rules keep their vocabulary: ' + vocabulary.filter((needle) => init.indexOf(needle) < 0).join(','))
+  assert.ok(/dependsOn`?[^。\n]*逻辑前序/.test(init), 'the init ties dependsOn to logical precedence')
+  assert.ok(init.includes('不用于解决文件重叠'), 'the init refuses dependsOn as a file-overlap serialiser')
+  assert.ok(init.includes('锁串行'), 'the init sends file overlap to the writeFiles lock')
+
+  assert.ok(cards.includes('## 拆卡与并行'), 'cards.md carries the splitting chapter')
+  assert.ok(cards.includes('不变量') && cards.includes('不按文件数') && cards.includes('逻辑前序'), 'cards.md splits by invariant/file count and explains logical precedence')
+  assert.ok(!cards.includes('dependsOn 表示前序必须 **done + merged**'), 'cards.md drops the over-strong dependsOn wording')
+  assert.ok(cards.includes('writeFiles') && cards.includes('锁') && cards.includes('不要') && cards.includes('加 dependsOn'), 'cards.md sends file overlap to the writeFiles lock')
+  assert.ok(cards.includes('纯模块卡') && cards.includes('集成卡') && cards.includes('stage-contract.mjs'), 'cards.md documents the pure-module + integration split')
+  assert.ok(cards.includes('acceptance/probes') && cards.includes('worktree'), 'cards.md keeps acceptance/probes executable inside one card worktree')
+}
+
 const combined = buildSkillContent(options)
 assert.ok(combined.includes('worker-cannot-self-review'))
 assert.ok(combined.includes('sandbox-crash'))
