@@ -138,9 +138,14 @@ function createTaskCard(deps) {
 		} else if (task.status === 'done') {
 			stateKey = 'done'
 			stateLabel = t('stateDone')
-		} else if (task.status === 'blocked' || task.status === 'cancelled') {
+		} else if (task.status === 'blocked') {
 			stateKey = 'blocked'
 			stateLabel = t('stateBlocked')
+		} else if (task.status === 'cancelled') {
+			// T-194: cancelled is its own terminal state, never a red "blocked" — the
+			// card in the 已取消 lane names the state it is actually in.
+			stateKey = 'cancelled'
+			stateLabel = t('stateCancelled')
 		} else if (task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready') {
 			stateKey = 'ready'
 			stateLabel = t('stateReady')
