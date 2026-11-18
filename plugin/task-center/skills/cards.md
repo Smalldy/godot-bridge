@@ -19,6 +19,16 @@
 4. **单卡可验收**：每张卡的 acceptance/probes 都能在该卡自己的 worktree 内执行完，不依赖同批另一张卡尚未落地的行为。
 5. 不要把“等它合完我再改同一文件”写成 dependsOn —— 那是 writeFiles 的排队，不是逻辑依赖。
 
+## 阶段契约（v4 结构化交接）
+
+交接物由宿主从 git 生成，不写进 board；board 只存 review/test record 与候选摘要。
+
+- **CandidateArtifact**：`base..head`、changedFiles/declaredFiles/extras、diffstat、keyHunks、acceptance、任务声明的 `probes`、宿主 verify 基线（命令/退出码/输出尾部/候选指纹）。候选未变则指纹不变。
+- **reviewer** 交 `ReviewRecord`：`checked`（criterion/method/result，自己实际做的检查）、`findings`（severity blocking|non-blocking、file/line/text）、`residualRisks`。`approveReview` 空 checked 拒绝；`requestChanges` 至少一条 blocking finding，reasons 由 findings 渲染；record ≤ 16 KB。
+- **tester** brief 带 artifact + reviewer 的 checked/residualRisks + hostCheck，**不带评审结论**。tester 必须亲自执行 artifact 声明的每个 probe，提交 `TestRecord`：`probes`（id/command/exitCode|timedOut/tail）、`adversarial`、`hostCheckRef`、`notes`；空 probes、漏执行已声明 probe 都拒绝；record ≤ 24 KB。
+- **hostCheck 复用**：候选指纹未变时沿用上一次宿主基线，不重复跑整套；怀疑 flaky/环境差异才重跑并在 notes 说明。
+- **用户面板判定**是显式 human override：即使只传 `id` 也记录为用户归属的结构化 record，不冒充 tester 执行探针。
+
 ## verify
 
 - `verify` 可选，声明一个宿主在候选 checkout 里执行的 shell 命令。
