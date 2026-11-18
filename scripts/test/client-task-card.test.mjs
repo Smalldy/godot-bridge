@@ -59,4 +59,27 @@ const investigation = TaskCard({
 const investigationText = JSON.stringify(investigation)
 assert.ok(investigationText.includes('kindInvestigate'))
 
+// T-194: a cancelled card is terminal, not "blocked". Its state row must name
+// the cancelled state (neutral tertiary) and never borrow the red blocked one.
+// Blocked cards keep their own red blocked state.
+function cardOf(task) {
+  return TaskCard({
+    task: Object.assign({ priority: 0, attempts: 0, maxAttempts: 3, dependsOn: [], writeFiles: [], leaseUntil: null }, task),
+    t: t,
+    now: 1000,
+    selected: false,
+    onOpen: () => {},
+    onVerdict: () => {},
+  })
+}
+const cancelledText = JSON.stringify(cardOf({ id: 'T-3', title: 'Dropped plan', status: 'cancelled' }))
+assert.ok(cancelledText.includes('"data-state":"cancelled"'), 'a cancelled card carries the cancelled state')
+assert.ok(cancelledText.includes('stateCancelled'), 'the cancelled card names the cancelled state label')
+assert.ok(!cancelledText.includes('"data-state":"blocked"'), 'a cancelled card never renders the blocked state')
+assert.ok(!cancelledText.includes('stateBlocked'), 'a cancelled card never renders the blocked label')
+const blockedText = JSON.stringify(cardOf({ id: 'T-4', title: 'Stuck card', status: 'blocked' }))
+assert.ok(blockedText.includes('"data-state":"blocked"'), 'a blocked card keeps its blocked state')
+assert.ok(blockedText.includes('stateBlocked'), 'a blocked card keeps the blocked label')
+assert.ok(!blockedText.includes('stateCancelled'), 'a blocked card is never labelled cancelled')
+
 console.log('PASS  TaskCard is an independently testable view module')
