@@ -993,3 +993,80 @@ export function normaliseDispatch(raw) {
     worktree: normaliseWorktree(source.worktree),
   }
 }
+
+/**
+ * T-195 — durable host decision requests.
+ *
+ * A DecisionRequest is a HOST-initiated, non-blocking two-phase question: the
+ * host writes a pending request with a server deadline and (optionally) a
+ * default option, the panel answers it once, and the timeout sweep records the
+ * default when the deadline passes. The vocabulary and the bounds live here so
+ * the store (decisions.mjs), the actions and the panel cannot drift.
+ */
+export const DECISION_FILENAME = 'decisions.json'
+export const DECISION_VERSION = 1
+
+/** Every stored state of one request. 'pending' is the only actionable one. */
+export const DECISION_STATUSES = ['pending', 'answered', 'expired', 'cancelled']
+export const DECISION_PENDING = 'pending'
+export const DECISION_ANSWERED = 'answered'
+export const DECISION_EXPIRED = 'expired'
+export const DECISION_CANCELLED = 'cancelled'
+
+/** A corrupt decisions file is refused above this size, never parsed blindly. */
+export const MAX_DECISION_STORE_BYTES = 2 * 1024 * 1024
+/** Refuse a new request when this many are still pending (a host bug, not a queue). */
+export const MAX_DECISIONS = 200
+/** Resolved records are trimmed to the newest ones; pending requests never are. */
+export const MAX_RESOLVED_DECISIONS = 50
+/** A modal queue with more than eight choices is not a decision. */
+export const MAX_DECISION_OPTIONS = 8
+export const MAX_DECISION_TITLE = 200
+export const MAX_DECISION_BODY = 4000
+/** The free-text answer / note cap. */
+export const MAX_DECISION_TEXT = 2000
+/** The opaque structured payload (event context) cap, in bytes. */
+export const MAX_DECISION_PAYLOAD_BYTES = 8192
+/** Every ask event in the requirement packet defaults to 120s (dispatch: 300s). */
+export const DECISION_DEFAULT_TIMEOUT_MS = 120 * 1000
+export const DECISION_MIN_TIMEOUT_MS = 1000
+export const DECISION_MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000
+/** A destructive option is confirmed by typing this exact word. */
+export const DECISION_CONFIRM_WORD = 'DELETE'
+/** The option id a free-text-only answer is recorded under. */
+export const DECISION_TEXT_OPTION = 'custom'
+
+/** One option a decision offers. 'danger' marks a destructive choice: it never
+ * auto-runs on timeout and the panel requires the DELETE word before it. */
+export function normaliseDecisionOption(raw) {
+  if (raw === null || raw === undefined || typeof raw !== 'object') return null
+  const id = typeof raw.id === 'string' ? raw.id.trim() : ''
+  const label = typeof raw.label === 'string' ? raw.label.trim() : ''
+  if (id === '' || label === '') return null
+  const description = typeof raw.description === 'string' ? raw.description.trim() : ''
+  return {
+    id: id.slice(0, 64),
+    label: label.slice(0, 200),
+    description: description.slice(0, 500),
+    danger: raw.danger === true,
+    // A default option is marked here as well, so the panel can show "默认"
+    // without trusting a separate id comparison.
+    default: raw.default === true,
+  }
+}
+
+/** Normalise an option list; duplicate ids are refused (returns null). */
+export function normaliseDecisionOptions(raw) {
+  if (!Array.isArray(raw)) return []
+  if (raw.length > MAX_DECISION_OPTIONS) return null
+  const options = []
+  const seen = new Set()
+  for (const entry of raw) {
+    const option = normaliseDecisionOption(entry)
+    if (option === null) return null
+    if (seen.has(option.id)) return null
+    seen.add(option.id)
+    options.push(option)
+  }
+  return options
+}

@@ -53,7 +53,10 @@ const DESCRIPTION =
   // the scratch/probe rules and the panel rendering).
   'A card with kind investigate delivers a report instead of code (the skill has the full investigation chapter): finish it with action report; submit/review/test/merge refuse it. ' +
   'start only records a dispatch request for the scheduler until the user approves it in the task center panel (needs-consent is not a failure; it is dispatch-wide and does not take a taskId). ' +
-  'Dependencies: B.dependsOn=[A] means A must be done and merged before B runs.'
+  'Dependencies: B.dependsOn=[A] means A must be done and merged before B runs. ' +
+  // T-195: the host may ask a human a question and wait non-blockingly; the
+  // model reads the queue and can answer it, but every rule stays server-side.
+  'Decisions: decisionList reads the queue; decisionAnswer answers one with decisionId + option (or text); destructive options need "DELETE".'
 
 export function registerTaskTool(ctx, options) {
   const opts = options === undefined ? {} : options
@@ -235,6 +238,20 @@ export function registerTaskTool(ctx, options) {
       allowSpawn: { type: 'boolean', description: 'Whether the scheduler may spawn a WorkAgent (settings).' },
       status: { type: 'string', description: 'Filter for list.' },
       taskId: { type: 'string', description: 'Task id for actions that accept it.' },
+      // T-195: the decision surface. Only the panel normally answers, but the
+      // same actions are reachable from a session (and from HTTP as role user).
+      decisionId: { type: 'string', description: 'Decision id for decisionAnswer, e.g. DEC-3.' },
+      decisionStatus: {
+        type: 'string',
+        enum: ['pending', 'answered', 'expired', 'cancelled', 'all'],
+        description: 'Filter for decisionList (default: pending). "all" includes resolved requests.',
+      },
+      option: { type: 'string', description: 'The chosen option id (decisionAnswer).' },
+      text: { type: 'string', description: 'Free-text answer or note for decisionAnswer (used when no option is chosen, or as a note).' },
+      confirm: {
+        type: 'string',
+        description: 'High-risk confirmation for decisionAnswer: exactly "DELETE" to accept a destructive option.',
+      },
       project: { type: 'string', description: 'Project directory; defaults to the session workspace.' },
       force: { type: 'boolean', description: 'Delete a referenced task and detach its dependents.' },
       path: { type: 'string', description: 'Project directory for openProject.' },

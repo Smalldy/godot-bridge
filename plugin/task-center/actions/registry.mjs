@@ -56,6 +56,10 @@ const TABLE = [
   { name: 'worktreesCleanup', scope: 'user', readOnly: false, devOnly: false },
   { name: 'openProject', scope: 'agent', readOnly: false, devOnly: false },
   { name: 'onboard', scope: 'agent', readOnly: false, devOnly: false },
+  // T-195: host decision requests. The queue is a read; resolving one is a
+  // write that the host enforces as one-shot.
+  { name: 'decisionList', scope: 'agent', readOnly: true, devOnly: false },
+  { name: 'decisionAnswer', scope: 'agent', readOnly: false, devOnly: false },
 ]
 
 export const ACTION_TABLE = TABLE.map((entry) => Object.freeze(Object.assign({}, entry)))
@@ -80,7 +84,7 @@ const USER_ONLY_ORDER = [
   'skillsCatalog',
   'worktreesCleanup',
 ]
-const READ_ORDER = ['board', 'list', 'get', 'locks', 'harnessStatus', 'skillsCatalog']
+const READ_ORDER = ['board', 'list', 'get', 'locks', 'harnessStatus', 'skillsCatalog', 'decisionList']
 const BY_NAME = new Map(ACTION_TABLE.map((entry) => [entry.name, entry]))
 
 export const USER_ONLY_ACTIONS = USER_ONLY_ORDER.filter((name) => BY_NAME.get(name) !== undefined && BY_NAME.get(name).scope === 'user')
