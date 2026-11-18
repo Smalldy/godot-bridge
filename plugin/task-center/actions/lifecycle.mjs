@@ -22,7 +22,6 @@ export function createLifecycleActions(deps) {
   const writeByName = deps.writeByName
   const state = deps.state
   const ctx = deps.ctx
-  const interruptAssignee = deps.interruptAssignee
   const cleanupInvestigation = deps.cleanupInvestigation
   const failure = deps.failure
   const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
@@ -58,11 +57,7 @@ export function createLifecycleActions(deps) {
     if (result.ok === true) {
       const released = locks.releaseTask(state.memory.locks, id)
       if (released.ok === true) state.memory.locks = released.locks
-      if (priorTask !== undefined && priorTask !== null && priorTask.status === 'running') {
-        // Best-effort: a refusal (no Team, idle member) never fails the cancel.
-        await interruptAssignee(ctx, priorTask, { reason: 'cancelled' })
-      }
-      // T-183: dispose the worker/reviewer/tester, not just interrupt the worker.
+      // T-183: dispose the worker/reviewer/tester of the card as one set.
       await releaseStageRoster(priorTask, 'cancelled')
       // T-131: a cancelled investigation's scratch checkout and probes are
       // disposable — remove them with the card.
@@ -115,9 +110,6 @@ export function createLifecycleActions(deps) {
     if (result.ok === true) {
       const released = locks.releaseTask(state.memory.locks, id)
       if (released.ok === true) state.memory.locks = released.locks
-      if (priorTask !== undefined && priorTask !== null && priorTask.status === 'running') {
-        await interruptAssignee(ctx, priorTask, { reason: 'blocked' })
-      }
       // T-183: block can interrupt a card in reviewing/testing too; dispose every
       // stage child so no reviewer/tester keeps running behind a blocked card.
       await releaseStageRoster(priorTask, 'blocked')

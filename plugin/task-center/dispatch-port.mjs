@@ -6,11 +6,10 @@
  * caller is reaching into:
  *
  *   brief      render a task/role/test brief
- *   lead       resolve Leads and the caller's roster/registry
- *   roster     role names, slots and constants
- *   workspace  project/worktree/team/session facts
+ *   lead       session identity helpers
+ *   roster     the role-profile sample used by previews
+ *   workspace  project/worktree/session facts
  *   task       stage slots, phase activity, host checks
- *   dispatch   worker pool and interrupts
  */
 import * as dispatch from './dispatch.mjs'
 
@@ -28,50 +27,26 @@ export const dispatchPort = {
     testerBriefFor: dispatch.testerBriefFor,
   },
   lead: {
-    resolveLead: dispatch.resolveLead,
-    liveLeads: dispatch.liveLeads,
-    resolveAnyLead: dispatch.resolveAnyLead,
     agentSessionOf: dispatch.agentSessionOf,
-    leadInventory: dispatch.leadInventory,
-    leadInventoryText: dispatch.leadInventoryText,
-    servicesFor: dispatch.servicesFor,
+    sessionLastActiveAt: dispatch.sessionLastActiveAt,
   },
   roster: {
-    MERGER_NAME: dispatch.MERGER_NAME,
     ROLE_SAMPLE_TASK: dispatch.ROLE_SAMPLE_TASK,
-    roleShortName: dispatch.roleShortName,
-    roleSlotOf: dispatch.roleSlotOf,
-    roleKindOf: dispatch.roleKindOf,
   },
   workspace: {
     isTransientEnvironmentCode: dispatch.isTransientEnvironmentCode,
-    memberProjectOf: dispatch.memberProjectOf,
     cleanupInvestigationCheckouts: dispatch.cleanupInvestigationCheckouts,
     probeWorktree: dispatch.probeWorktree,
-    projectSlotKey: dispatch.projectSlotKey,
-    projectTeamState: dispatch.projectTeamState,
-    teamBootstrapStep: dispatch.teamBootstrapStep,
     sessionOwnsProject: dispatch.sessionOwnsProject,
     sessionWorkspaceOf: dispatch.sessionWorkspaceOf,
-    // T-153: session activity (DSH directory) and the executor liveness rule —
-    // both feed the handoff inventory through ONE definition.
-    sessionLastActiveAt: dispatch.sessionLastActiveAt,
-    livenessOfMember: dispatch.livenessOfMember,
   },
   task: {
     REVIEW_MAX_ROUNDS: dispatch.REVIEW_MAX_ROUNDS,
     hostCheckEvidence: dispatch.hostCheckEvidence,
     runHostCheck: dispatch.runHostCheck,
-    // T-156: the SAME verify fingerprint the dispatcher records at claim, so the
-    // submit/review audit baseline can never disagree with it.
     verifyFingerprintFor: dispatch.verifyFingerprintFor,
     recordPhaseActivity: dispatch.recordPhaseActivity,
     recordStageSlot: dispatch.recordStageSlot,
     stageSlotOf: dispatch.stageSlotOf,
-  },
-  dispatch: {
-    interruptAssignee: dispatch.interruptAssignee,
-    interruptMemberNamed: dispatch.interruptMemberNamed,
-    workerPool: dispatch.workerPool,
   },
 }

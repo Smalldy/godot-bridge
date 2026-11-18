@@ -1,14 +1,13 @@
 /**
  * Task Center's only edge to the DSH agent runtime.
  *
- * The old Agent Teams roster (lead/members/membership/spawnTeammate/send by
- * name) is deliberately absent. A task's executors are ephemeral subagents in
- * the root agent's tree: they are started for a role/stage, addressed by
- * durable Session id, and disposed when the stage no longer needs them.
+ * There is no roster layer: a task's executors are ephemeral subagents in the
+ * root agent's tree. They are started for a role/stage, addressed by durable
+ * Session id, and disposed when the stage no longer needs them.
  *
  * This module is the single place that knows the subagent API. Dispatch, the
  * API, the board and the UI must consume this module instead of reaching into
- * ctx.agentTeams or ctx.subagents directly.
+ * the host's services directly.
  */
 
 /** Stable failure codes callers can branch on without matching messages. */

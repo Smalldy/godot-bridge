@@ -1424,7 +1424,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				wtHead: 'Head',
 				wtTask: 'Task',
 				rolesUnavailable: 'The host did not report role profiles.',
-				rolesHint: 'Role profiles belong to the user: create/update/delete a profile, bind a stage, drain or replace instances, or reset the defaults.',
+				rolesHint: 'Role profiles belong to the user: create/update/delete a profile, bind a stage, or reset the built-in defaults. A profile is prompt/skills configuration; it never starts or replaces a child.',
 				roleStatus: 'Status',
 				roleInstances: 'Instances',
 				roleKindWorker: 'worker',
@@ -1475,7 +1475,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				roleEditorCreateBlank: 'Create blank profile',
 				roleEditorNoProfile: 'no role is available for this stage',
 				roleCurrentUse: 'Currently using',
-				roleApplyHint: 'Picking a profile binds this stage and replaces running instances.',
+				roleApplyHint: 'Picking a profile binds this stage; running children keep the prompt they started with.',
 				roleSectionRole: 'Role and stage',
 				rolePreviewGroupBuiltin: 'Built-in default prompt',
 				roleDraftName: 'Copy name',
@@ -3329,9 +3329,9 @@ const createTaskStore = (function () {
 				// No pin means NO ?project=: the Host resolves the session workspace and
 				// answers with the project, which is the whole point of T-90.
 				const pinned = tcPinnedProject()
-				// The v3 panel consumes agentTree/scope. ?legacy=0 keeps the first
-				// paint off the host-wide Team inventory it no longer renders.
-				let url = pinned === null ? TC_STATE_URL + '?legacy=0' : TC_STATE_URL + '?project=' + encodeURIComponent(pinned) + '&legacy=0'
+				// The v3 panel consumes agentTree/scope; the snapshot no longer carries
+				// any Team inventory, so there is no opt-out to ask for.
+				let url = pinned === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(pinned)
 				if (snapshot.seq !== null && snapshot.seq !== undefined) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'since=' + String(snapshot.seq)
 				if (activityCursor !== null) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'activitySince=' + encodeURIComponent(activityCursor)
 				url = tcWithSession(url)
@@ -5021,13 +5021,9 @@ function createRolesEditor(deps) {
 			// Keep the optimistic copy of a just-created profile so the editor can
 			// target it before the next host poll carries it.
 			if (roleEditorState.saved !== null && roleEditorState.saved.name !== name) roleEditorState.saved = null
-			const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === profileKind })
-			if (live.length === 0) {
-		roleEditorState.applySkipped = true
-		bump()
-		return true
-			}
-			await send('rolesReplace', { name: profileKind })
+			// A profile change is configuration only: live children keep the prompt
+			// they were started with, so there is nothing to drain or replace.
+			roleEditorState.applySkipped = true
 			bump()
 			return true
 		}
@@ -5097,14 +5093,11 @@ function createRolesEditor(deps) {
 		report('rolesUpdate', false, { code: 'builtin-profile-readonly' })
 		return
 			}
-			// Saving the profile that is currently in use applies it in the SAME click.
-			const isCurrent = selectedName === boundName
 			const outcome = await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills } })
 			if (outcome.ok !== true) return
 			// Keep the saved values visible until the host snapshot catches up.
 			roleEditorState.saved = { name: selectedName, profile: Object.assign({}, target === null ? {} : target, { prompt: template, skills: skills }) }
 			bump()
-			if (isCurrent) await send('rolesReplace', { name: kind })
 		}
 		/** Delete this copy; if it was in use, the built-in default takes over at once. */
 		async function remove() {

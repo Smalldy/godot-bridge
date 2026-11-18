@@ -7,9 +7,7 @@ const { registerTaskTool, agentLabel, projectPathOf } = await import('../../plug
 const { SKILL_NAME, buildSkillContent } = await import('../../plugin/task-center/skill.mjs')
 const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
 const { ONBOARD_NEXT_CODES } = await import('../../plugin/task-center/onboard.mjs')
-const { createRig, createTask, seedBoard } = await import('./support/fixtures.mjs')
-const { rememberMemberProject } = await import('../../plugin/task-center/dispatch.mjs')
-const { join } = await import('node:path')
+const { createRig, createTask, createFakeTaskAgents, seedBoard } = await import('./support/fixtures.mjs')
 
 let failures = 0
 function check(label, condition, detail) {
@@ -17,11 +15,7 @@ function check(label, condition, detail) {
   console.log((condition ? 'PASS' : 'FAIL') + '  ' + label + (condition || detail === undefined ? '' : '  -> ' + detail))
 }
 
-const rig = createRig({ allowSpawn: false })
-// T-120: an agent session resolves its own team through roster membership.
-rig.team.roster.push({ id: 'session-abcdef12', name: 'agent', role: 'teammate', status: 'running' })
-// T-127: the agent is working on another project, not merely a non-idle process.
-rememberMemberProject(rig.ctx, 'agent', join(rig.project, '..', 'other-project'))
+const rig = createRig({ allowSpawn: false, taskAgents: createFakeTaskAgents() })
 rig.ctx.tools = {
   register(tool) {
     rig.tool = tool
@@ -108,7 +102,7 @@ check(
 )
 check(
   'user-only role administration is hidden from the tool',
-  ['rolesList', 'rolesCreate', 'rolesUpdate', 'rolesDelete', 'rolesBind', 'rolesDrain', 'rolesReplace', 'rolesReset', 'skillsCatalog'].every((action) => actions.indexOf(action) < 0),
+  ['rolesList', 'rolesCreate', 'rolesUpdate', 'rolesDelete', 'rolesBind', 'rolesReset', 'skillsCatalog'].every((action) => actions.indexOf(action) < 0),
   actions.join(','),
 )
 {
@@ -178,10 +172,10 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
   await rig.api.perform('start', {}, rig.user)
   board = await call({ action: 'board' })
   const task = board.tasks.filter((entry) => entry.id === id)[0]
-  check('the user start dispatches the task', task.status === 'running' && task.assignee.name === 'fixer', JSON.stringify(task && task.assignee))
+  check('the user start dispatches the task', task.status === 'running' && task.assignee !== null && typeof task.assignee.session === 'string', JSON.stringify(task && task.assignee))
   const wrong = await call({ action: 'submit', id: id, evidence: 'mine' }, other)
   check('a different agent cannot submit it', wrong.error !== undefined && wrong.code === 'not-assignee', JSON.stringify(wrong))
-  const submitted = await call({ action: 'submit', id: id, evidence: 'tests pass' }, { id: 'session-idle' })
+  const submitted = await call({ action: 'submit', id: id, evidence: 'tests pass' }, { id: task.assignee.session })
   check('the assignee can submit it', submitted.ok === true && submitted.task.status === 'reviewing', JSON.stringify(submitted))
   check('the submission opens the first review round', submitted.task.review !== null && submitted.task.review.status === 'pending' && submitted.task.review.attempt === 1, JSON.stringify(submitted.task.review))
   check('and the evidence is stored', submitted.task.evidence === 'tests pass')
@@ -194,7 +188,6 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
 {
   const created = await call({ action: 'create', title: 'auto locked work', writeFiles: ['scripts/auto.gd'] })
   const id = created.task.id
-  rig.team.setStatus('fixer', 'inactive')
   await rig.api.perform('start', {}, rig.user)
   const board = await call({ action: 'board' })
   const runningTask = board.tasks.filter((task) => task.status === 'running')[0]
@@ -210,7 +203,7 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
   check('the unlock action is refused too', unlock.error !== undefined && unlock.code === 'unknown-action', JSON.stringify(unlock))
   const forced = await call({ action: 'forceUnlock', paths: ['scripts/extra.gd'] }, rig.user)
   check('forceUnlock is refused for the user as well', forced.error !== undefined && forced.code === 'unknown-action', JSON.stringify(forced))
-  await call({ action: 'submit', id: runningTask.id, evidence: 'done' }, { id: 'session-idle' })
+  await call({ action: 'submit', id: runningTask.id, evidence: 'done' }, { id: runningTask.assignee.session })
   const released = await call({ action: 'locks' })
   check('submit released the automatic lock of that task', released.locks.every((lock) => lock.taskId !== runningTask.id), JSON.stringify(released.locks))
   await call({ action: 'pause' })
@@ -221,18 +214,9 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
 check('board is concurrency safe', rig.tool.isConcurrencySafe({ action: 'board' }) === true)
 check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'create' }) === false)
 
-// ── the merger role at the tool boundary ───────────────────────────────────
+// ── the merge/verdict boundaries at the tool level (v3) ─────────────────────
 {
-  const mergeRig = createRig({
-    allowSpawn: false,
-    teamOptions: {
-      roster: [
-        { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
-        { id: 'session-merger', name: 'merger', role: 'teammate', status: 'inactive' },
-        { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'inactive' },
-      ],
-    },
-  })
+  const mergeRig = createRig({ allowSpawn: false, taskAgents: createFakeTaskAgents() })
   mergeRig.ctx.tools = {
     register(tool) {
       mergeRig.tool = tool
@@ -244,48 +228,33 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   const created = await toolCall({ action: 'create', title: 'tool MR' })
   const id = created.task.id
   await mergeRig.action('start')
-  await mergeRig.settle()
-  const submitted = await toolCall({ action: 'submit', id: id, evidence: 'done' }, { id: 'session-fixer' })
+  const board = await mergeRig.action('board')
+  const runningTask = board.tasks.filter((task) => task.id === id)[0]
+  check('the worker child is the card assignee', runningTask.status === 'running' && runningTask.assignee !== null && typeof runningTask.assignee.session === 'string', JSON.stringify(runningTask))
+  const worker = { id: runningTask.assignee.session }
+  const submitted = await toolCall({ action: 'submit', id: id, evidence: 'done' }, worker)
   check(
     'the assignee submits into an open merge request',
     submitted.ok === true && submitted.task.merge !== null && submitted.task.merge.status === 'open',
     JSON.stringify(submitted),
   )
-  const sends = mergeRig.team.calls.filter((call) => call.kind === 'send')
-  check('the submit notified the merger', sends.some((call) => call.target === 'merger' && call.text.indexOf(id) >= 0), JSON.stringify(sends))
+  const reviewTask = (await mergeRig.action('board')).tasks.filter((task) => task.id === id)[0]
+  check('submit started a reviewer child and recorded it', reviewTask.review !== null && reviewTask.review.deliveredTo !== null && typeof reviewTask.review.deliveredTo.id === 'string', JSON.stringify(reviewTask.review))
   const other = await toolCall({ action: 'mergeRequest', id: id }, { id: 'session-fixer' })
-  check('another agent cannot merge from the tool', other.error !== undefined && other.code === 'user-only', JSON.stringify(other))
-  const otherReject = await toolCall({ action: 'rejectMerge', id: id }, { id: 'session-fixer' })
-  check('and cannot reject either', otherReject.error !== undefined && otherReject.code === 'user-only', JSON.stringify(otherReject))
-  const merger = await toolCall({ action: 'mergeRequest', id: id }, { id: 'session-merger' })
-  check('a merger-named agent still cannot merge', merger.code === 'user-only', JSON.stringify(merger))
-  const refreshed = await toolCall({ action: 'refreshMerge', id: id }, { id: 'session-fixer' })
+  check('an agent cannot merge from the tool (user-only)', other.error !== undefined && other.code === 'user-only', JSON.stringify(other))
+  const selfReview = await toolCall({ action: 'approveReview', id: id }, worker)
+  check('the card worker cannot review its own card', selfReview.error !== undefined && selfReview.code === 'worker-cannot-self-review', JSON.stringify(selfReview))
+  const strangerReview = await toolCall({ action: 'approveReview', id: id }, { id: 'session-other' })
+  check('a stranger cannot decide the review round', strangerReview.error !== undefined && strangerReview.code === 'role-required', JSON.stringify(strangerReview))
+  const reviewer = { id: reviewTask.review.deliveredTo.id }
+  const approved = await toolCall({ action: 'approveReview', id: id }, reviewer)
   check(
-    'the owner can refresh the merge request from the tool',
-    refreshed.ok === true &&
-      refreshed.task.merge.status === 'open' &&
-      refreshed.task.merge.head === 'base-sha' &&
-      refreshed.task.merge.base === 'base-sha' &&
-      refreshed.task.commit === 'base-sha',
-    JSON.stringify(refreshed),
-  )
-  const strangerRefresh = await toolCall({ action: 'refreshMerge', id: id }, { id: 'session-other' })
-  check('another agent cannot refresh it', strangerRefresh.error !== undefined && strangerRefresh.code === 'not-assignee', JSON.stringify(strangerRefresh))
-  check('a refresh starts a new review round', refreshed.task.status === 'reviewing' && refreshed.task.review.attempt === 2, JSON.stringify(refreshed.task.review))
-  const approved = await toolCall({ action: 'approveReview', id: id }, { id: 'session-fixer' })
-  check(
-    'the tool approves a review into testing',
+    'the delivered reviewer approves into testing',
     approved.ok === true && approved.task.status === 'testing' && approved.task.review.status === 'approved',
     JSON.stringify(approved),
   )
-  const passed = await toolCall({ action: 'passTest', id: id }, { id: 'session-merger' })
-  check(
-    'the tool passes the test phase',
-    passed.ok === true && passed.task.status === 'testing' && passed.task.test.status === 'passed',
-    JSON.stringify(passed),
-  )
-  const refusedMerge = await toolCall({ action: 'mergeRequest', id: id }, { id: 'session-merger' })
-  check('a passed test still refuses an agent merge', refusedMerge.error !== undefined && refusedMerge.code === 'user-only', JSON.stringify(refusedMerge))
+  const passed = await mergeRig.action('passTest', { id: id })
+  check('the user passes the test phase', passed.ok === true && passed.task.test.status === 'passed', JSON.stringify(passed))
   mergeRig.scheduler.dispose()
 }
 
@@ -332,9 +301,6 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
 
 // ── T-131: investigation cards through the tool ────────────────────────────
 {
-  // The fixture starts with the agent remembered on another project; this block
-  // works on the rig's project, so move the memory first (submit/report check it).
-  rememberMemberProject(rig.ctx, 'agent', rig.project)
   const card = await call({ action: 'create', title: 'Why is the loader slow?', kind: 'investigate' })
   check('T-131 the tool creates an investigation', card.ok === true && card.task.kind === 'investigate', JSON.stringify(card.ok === true ? card.task.kind : card.code))
   const plain = await call({ action: 'create', title: 'Plain dev card' })

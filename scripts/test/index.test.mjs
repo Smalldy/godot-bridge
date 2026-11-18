@@ -341,12 +341,12 @@ check(
 }
 
 {
-  const { MERGER_NAME, createRoleManager, roleKindOf } = await import('../../plugin/task-center/dispatch.mjs')
-  check('the merger is a fixed role name', MERGER_NAME === 'merger', String(MERGER_NAME))
-  check('role names map to kinds', roleKindOf('reviewer-1') === 'reviewer' && roleKindOf('tester-12') === 'tester' && roleKindOf('work-T-1-1') === null)
-  const noService = createRoleManager({ get: () => undefined })
-  const refused = await noService.ensure('reviewer', {})
-  check('the role manager refuses readably without agent-team services', refused.ok === false && refused.code === 'no-team-service', JSON.stringify(refused))
+  const dispatchModule = await import('../../plugin/task-center/dispatch.mjs')
+  check(
+    'the retired Team roster helpers are gone',
+    dispatchModule.createRoleManager === undefined && dispatchModule.MERGER_NAME === undefined && dispatchModule.roleSlotOf === undefined && dispatchModule.workerPool === undefined,
+  )
+  check('the subagent edge survives as the dispatcher seam', typeof dispatchModule.createDispatcher === 'function' && typeof dispatchModule.probeDispatch === 'function')
 }
 
 {
@@ -363,11 +363,12 @@ check(
   }
   await stateRoute.handler({ url: STATE_PATH + '?project=' + encodeURIComponent(PROJECT), headers: {} }, res)
   check(
-    'the state route exposes agents, worktrees and activity',
-    payload !== null && payload.ok === true && payload.agents !== undefined && payload.worktrees !== undefined && payload.activity !== undefined,
+    'the state route exposes the agent tree, worktrees and activity',
+    payload !== null && payload.ok === true && payload.agentTree !== undefined && payload.worktrees !== undefined && payload.activity !== undefined,
     JSON.stringify(payload && Object.keys(payload)),
   )
-  check('without a Team the agents view degrades readably', payload.agents.lead === null && payload.agents.members.length === 0, JSON.stringify(payload.agents))
+  check('the snapshot has no legacy team blocks', payload.agents === undefined && payload.workers === undefined && payload.teams === undefined && payload.team === undefined)
+  check('without a root the agent tree degrades readably', payload.agentTree.available === false || payload.agentTree.root === null, JSON.stringify(payload.agentTree))
   check('without git the worktree view degrades readably', payload.worktrees.available === false && payload.worktrees.error === 'no-git-service', JSON.stringify(payload.worktrees))
   check(
     'the row wired one activity ring into the snapshot',

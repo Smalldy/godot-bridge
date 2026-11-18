@@ -2,8 +2,9 @@
  * Shared fixtures for the task-center tests.
  *
  * The fake filesystem has real FsVersion semantics, so a lost race can be
- * provoked. The fake team has a mutable roster, so a test can decide when a
- * WorkAgent becomes idle instead of hoping a real harness cooperates.
+ * provoked. The fake task-agent facade starts/sends/releases by Session id, so a
+ * test can decide when a child is alive instead of hoping a real harness
+ * cooperates.
  */
 
 import { join } from 'node:path'
@@ -125,56 +126,6 @@ export function boardText(fs, project) {
 export function boardJson(fs, project) {
   const text = boardText(fs, project)
   return text === null ? null : JSON.parse(text)
-}
-
-export function createTeam(options) {
-  const opts = options === undefined ? {} : options
-  const calls = []
-  const roster =
-    opts.roster === undefined
-      ? [
-          { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
-          { id: 'session-idle', name: 'fixer', role: 'teammate', status: 'inactive' },
-        ]
-      : opts.roster.map((member) => Object.assign({}, member))
-  const team = {
-    calls,
-    roster,
-    setStatus(name, status) {
-      const member = roster.filter((entry) => entry.name === name)[0]
-      if (member !== undefined) member.status = status
-    },
-    // The lead is identified by id; a multi-session rig names its own (T-106).
-    tryMembership(candidate) {
-      const leadId = opts.leadId === undefined ? 'session-lead' : opts.leadId
-      return { role: candidate.id === leadId ? 'lead' : 'teammate', name: candidate.id }
-    },
-    listMembers() {
-      return roster.map((member) => Object.assign({}, member))
-    },
-    async spawnTeammate(caller, request) {
-      calls.push({ kind: 'spawn', caller: caller.id, name: request.name, text: request.prompt.map((block) => block.text).join('\n') })
-      if (opts.spawnThrows === true) throw new Error('spawn refused')
-      const member = {
-        id: 'session-' + request.name,
-        name: request.name,
-        role: 'teammate',
-        status: opts.spawnedStatus === undefined ? 'running' : opts.spawnedStatus,
-      }
-      roster.push(member)
-      return { member: member }
-    },
-    async sendMessage(caller, request) {
-      calls.push({ kind: 'send', caller: caller.id, target: request.target, text: request.content[0].text })
-      if (opts.sendThrows === true) throw new Error('mailbox full')
-      if (opts.markRunningOnSend !== false) {
-        const member = roster.filter((entry) => entry.name === request.target)[0]
-        if (member !== undefined) member.status = 'running'
-      }
-      return { status: 'accepted', messageId: 'message-' + String(calls.length) }
-    },
-  }
-  return team
 }
 
 /**
@@ -345,7 +296,6 @@ export function createRig(options) {
   fs.dirs.add(project)
   fs.dirs.add(join(project, '.git'))
   fs.dirs.add(join(project, '.agents'))
-  const team = opts.team === undefined ? createTeam(opts.teamOptions) : opts.team
   const agents = opts.agents === undefined ? { list: () => [{ id: 'session-lead' }] } : opts.agents
   const subagents = { list: () => ['spawn'] }
   // T-104: the fixture ctx is Cordis-shaped and STRICT: reading a service that
@@ -357,7 +307,6 @@ export function createRig(options) {
       sandboxPolicy: { resolve: () => ({ workspaceRoot: project }) },
       get(key) {
         if (key === 'agents') return agents
-        if (key === 'agentTeams') return team
         if (key === 'subagents') return subagents
         return undefined
       },
@@ -377,10 +326,8 @@ export function createRig(options) {
   })
   // A rig is one session on one project: the resolver's session workspace is
   // this project unless a test clears it to exercise no-project-bound.
-  // Every rig is one session; tests pass ?session=<rig lead id> on HTTP calls so
-  // team resolution is session-scoped like the real panel.
-  const rigLead = team !== null && team !== undefined && Array.isArray(team.roster) ? team.roster.filter((member) => member.role === 'lead')[0] : undefined
-  state.setSessionRoot(rigLead === undefined ? 'session-lead' : String(rigLead.id), project)
+  // Every rig is one session; tests pass ?session=session-lead on HTTP calls.
+  state.setSessionRoot('session-lead', project)
   // Worktrees are mandatory, so a rig that does not name a git facade gets a
   // working fake one; pass { git: null } (or a broken createFakeGit) to test
   // the refusal path.
@@ -402,7 +349,6 @@ export function createRig(options) {
     scheduler: scheduler,
     git: git,
     now: opts.now,
-    roles: opts.roles === undefined ? null : opts.roles,
     merger: opts.merger,
     taskAgents: opts.taskAgents,
     // T-131: report files need the parent directory; the rig mirrors the row.
@@ -410,14 +356,14 @@ export function createRig(options) {
   })
   // T-117: the panel carries its session; a team-gate read without one is a
   // no-session-context refusal by design, so the rig models the real panel.
-  const user = { projectPath: project, by: '@user', role: 'user', agent: null, sessionId: rigLead === undefined ? 'session-lead' : String(rigLead.id) }
+  const user = { projectPath: project, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' }
   async function action(name, body) {
     return api.perform(name, body === undefined ? {} : body, user)
   }
   async function settle() {
     return scheduler.settle(project)
   }
-  return { project, fs, team, ctx, state, scheduler, api, git, user, action, settle }
+  return { project, fs, ctx, state, scheduler, api, git, user, action, settle }
 }
 
 export async function createTask(rig, input) {
@@ -432,4 +378,75 @@ export async function submitAsUser(rig, id, evidence) {
 
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+/**
+ * A fake task-agent facade: the ONLY execution edge dispatch has in v3. It
+ * records start/send/release calls and reports a mutable set of live child ids,
+ * so a test can decide when a child is alive.
+ */
+export function createFakeTaskAgents(options) {
+  const opts = options === undefined ? {} : options
+  const calls = []
+  const live = new Set(opts.live === undefined ? [] : opts.live)
+  let counter = 0
+  const agents = {
+    available: true,
+    root: { id: 'session-lead', name: 'lead' },
+    rootId: 'session-lead',
+    runtime: null,
+    calls,
+    live,
+    async listAgentsFor(rootId) {
+      return Array.from(live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'running' }))
+    },
+    rootFor(rootId) {
+      return rootId === 'session-lead' ? { id: 'session-lead', name: 'lead' } : null
+    },
+    async listFor(rootId) {
+      if (typeof rootId !== 'string' || rootId === '') return []
+      return Array.from(live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'running', parentId: rootId }))
+    },
+    async startWorker(task, prompt) {
+      const agentId = 'worker-' + String(task.id) + '-' + String(++counter)
+      if (opts.startThrows !== true) live.add(agentId)
+      calls.push({ kind: 'startWorker', taskId: String(task.id), agentId: agentId, text: prompt })
+      if (opts.startThrows === true) throw new Error('spawn refused')
+      return { agentId: agentId, name: 'worker-' + String(task.id) }
+    },
+    async startReviewer(task, prompt) {
+      const agentId = 'reviewer-' + String(task.id) + '-' + String(++counter)
+      live.add(agentId)
+      calls.push({ kind: 'startReviewer', taskId: String(task.id), agentId: agentId, text: prompt })
+      return { agentId: agentId, name: 'reviewer-' + String(task.id) }
+    },
+    async startTester(task, prompt) {
+      const agentId = 'tester-' + String(task.id) + '-' + String(++counter)
+      live.add(agentId)
+      calls.push({ kind: 'startTester', taskId: String(task.id), agentId: agentId, text: prompt })
+      return { agentId: agentId, name: 'tester-' + String(task.id) }
+    },
+    async send(agentId, text) {
+      calls.push({ kind: 'send', agentId: agentId, text: text })
+      return { ok: true }
+    },
+    async release(agentId) {
+      calls.push({ kind: 'release', agentId: agentId })
+      return live.delete(String(agentId))
+    },
+    async releaseTask(task, releaseOptions) {
+      const roles = releaseOptions !== undefined && releaseOptions !== null && Array.isArray(releaseOptions.roles) ? releaseOptions.roles : ['worker', 'reviewer', 'tester']
+      const ids = []
+      if (roles.indexOf('worker') >= 0 && task !== null && task !== undefined && task.assignee !== null && task.assignee !== undefined && task.assignee.session !== null) ids.push(task.assignee.session)
+      if (roles.indexOf('reviewer') >= 0 && task !== null && task !== undefined && task.review !== null && task.review !== undefined && task.review.deliveredTo !== null && task.review.deliveredTo !== undefined) ids.push(task.review.deliveredTo.id)
+      if (roles.indexOf('tester') >= 0 && task !== null && task !== undefined && task.test !== null && task.test !== undefined && task.test.deliveredTo !== null && task.test.deliveredTo !== undefined) ids.push(task.test.deliveredTo.id)
+      for (const entry of task !== null && task !== undefined && Array.isArray(task.executors) ? task.executors : []) {
+        if (entry !== null && entry !== undefined && entry.retiredAt === null && typeof entry.session === 'string' && ids.indexOf(entry.session) < 0) ids.push(entry.session)
+      }
+      const released = []
+      for (const id of ids) if (typeof id === 'string' && id !== '' && live.delete(id)) released.push({ agentId: id })
+      calls.push({ kind: 'releaseTask', taskId: task === null || task === undefined ? null : String(task.id), released: released })
+      return { ok: true, released: released, interrupted: [], unresolved: [], failed: [], deferred: [] }
+    },
+  }
+  return agents
 }

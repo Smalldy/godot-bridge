@@ -66,33 +66,18 @@ const {
     testerBriefFor,
   },
   lead: {
-    resolveLead,
-    liveLeads,
-    resolveAnyLead,
     agentSessionOf,
-    leadInventory,
-    leadInventoryText,
-    servicesFor,
+    sessionLastActiveAt,
   },
   roster: {
-    MERGER_NAME,
     ROLE_SAMPLE_TASK,
-    roleShortName,
-    roleSlotOf,
-    roleKindOf,
   },
   workspace: {
     isTransientEnvironmentCode,
-    memberProjectOf,
     cleanupInvestigationCheckouts,
     probeWorktree,
-    projectSlotKey,
-    projectTeamState,
-    teamBootstrapStep,
     sessionOwnsProject,
     sessionWorkspaceOf,
-    sessionLastActiveAt,
-    livenessOfMember,
   },
   task: {
     REVIEW_MAX_ROUNDS,
@@ -102,11 +87,6 @@ const {
     recordPhaseActivity,
     recordStageSlot,
     stageSlotOf,
-  },
-  dispatch: {
-    interruptAssignee,
-    interruptMemberNamed,
-    workerPool,
   },
 } = dispatchPort
 import {
@@ -144,7 +124,6 @@ import {
   resolveOnboardRoot,
   selectOnboardNext,
   summariseBoard,
-  teamLabelOf,
 } from './onboard.mjs'
 import { writePolicyFor } from './state.mjs'
 
@@ -242,10 +221,9 @@ function emptyWorktrees(error) {
  *   worktree cannot be committed.
  * @param options.merger - the merge queue (merge.mjs). Merge actions refuse
  *   readably when it is absent; nothing else depends on it.
- * @param options.roles - the role registry/provisioner (createRoleManager). When
- *   present, review/test verdicts are role-gated and stage transitions provision
- *   the reviewer/tester role; absent keeps the legacy permissive surface used by
- *   direct API callers.
+ * @param options.taskAgents - the per-root subagent facade. Stage transitions
+ *   start a reviewer/tester child and record its Session id on the card; absent
+ *   refuses those transitions with the typed agent-runtime-unavailable code.
  * @param options.autoMerge - true enables the host-driven merge sweep
  *   (autoMergePending): a ready open request is merged without any model
  *   action. Off by default so direct API users stay explicit.
@@ -256,9 +234,6 @@ function emptyWorktrees(error) {
  *   smoke checks; absent refuses readably.
  * @param options.activity - the host activity ring (createActivity). The snapshot
  *   exposes its recent entries; absent means the panel simply has no history.
- * @param options.drainTimeoutMs - how long rolesReplace waits for a drained
- *   instance's in-flight work to finish before spawning its replacement.
- * @param options.drainIntervalMs - the poll interval of that wait.
  * @param options.sleep - wait function, for tests.
  * @param options.now - clock, for tests.
  */
@@ -268,16 +243,15 @@ export function createApi(ctx, options) {
   const scheduler = opts.scheduler === undefined ? null : opts.scheduler
   const git = opts.git === undefined ? null : opts.git
   const merger = opts.merger === undefined ? null : opts.merger
-  const roles = opts.roles === undefined ? null : opts.roles
-  // v3: when the row supplies the task-agent runtime, preflight checks it instead
-  // of the removed Agent Teams roster. Existing direct API callers (tests) keep
-  // the old board-only path until the Team surface is deleted.
+  // The execution edge: the card root's subagent tree. Without it, stage actions
+  // refuse with the typed code agent-runtime-unavailable instead of reaching for
+  // a removed Agent Teams roster.
   const taskAgents = opts.taskAgents === undefined || opts.taskAgents === null ? null : opts.taskAgents
   const stageAgents = taskAgents === null ? null : createStageService({ taskAgents: taskAgents })
   const autoMerge = opts.autoMerge === true
   // The independent tester workflow (candidate checkout + host auto-merge) is
-  // active when the production row wires the role registry and merge queue.
-  const candidateWorkflow = roles !== null && merger !== null && typeof merger.createCandidate === 'function'
+  // active when the production row wires the merge queue.
+  const candidateWorkflow = merger !== null && typeof merger.createCandidate === 'function'
   const godotPath = typeof opts.godotPath === 'string' && opts.godotPath.length > 0 ? opts.godotPath : null
   const harness = opts.harness === undefined ? null : opts.harness
   const activity = opts.activity === undefined || opts.activity === null ? null : opts.activity
@@ -285,8 +259,6 @@ export function createApi(ctx, options) {
   // (state.mjs and board.mjs both do it explicitly), so any nested write the API
   // owns — today the investigation report under .agents/reports — must ask for it.
   const ensureDir = typeof opts.ensureDir === 'function' ? opts.ensureDir : null
-  const drainTimeoutMs = Number.isFinite(opts.drainTimeoutMs) ? Math.max(0, Math.floor(opts.drainTimeoutMs)) : 30 * 1000
-  const drainIntervalMs = Number.isFinite(opts.drainIntervalMs) ? Math.max(1, Math.floor(opts.drainIntervalMs)) : 250
   // Host bounds: one async host action (candidate build/merge, queue turn, role
   // ensure, notification) must not hold the action or the serialised queue.
   const actionTimeoutMs = Number.isFinite(opts.actionTimeoutMs) ? Math.max(1, Math.floor(opts.actionTimeoutMs)) : HOST_ACTION_TIMEOUT_MS
@@ -308,19 +280,59 @@ export function createApi(ctx, options) {
     ok: ok,
     failure: failure,
   })
-  const callerHelpers = createCallerHelpers({ roleKindOf: roleKindOf })
+  /** The role a spawned child's name encodes (a worker, reviewer or tester prefix). */
+  function roleKindOfAgentName(value) {
+    if (typeof value !== 'string' || value === '') return null
+    const name = value.charAt(0) === '@' ? value.slice(1) : value
+    const match = /^(worker|reviewer|tester)(?:-|$)/.exec(name)
+    return match === null ? null : match[1]
+  }
+  /** Send one notice to a live child by its durable Session id. Best effort. */
+  async function notifyAgent(rootId, agentId, text) {
+    if (taskAgents === null || typeof taskAgents.send !== 'function') return false
+    if (typeof agentId !== 'string' || agentId === '') return false
+    try {
+      await taskAgents.send(agentId, text, rootId === null || rootId === undefined ? undefined : { rootId: String(rootId) })
+      return true
+    } catch (error) {
+      return false
+    }
+  }
+  /** Tell the merge owner what an outcome needs from them. Best effort. */
+  async function notifyMergeOutcome(projectPath, task) {
+    if (task === null || task === undefined) return
+    const merge = task.merge
+    if (merge === null || merge === undefined || typeof merge !== 'object') return
+    const ownerId = task.assignee === null || task.assignee === undefined || typeof task.assignee.session !== 'string' ? null : task.assignee.session
+    if (ownerId === null) return
+    if (merge.status === 'merged') {
+      const commit = merge.mergeCommit === null || merge.mergeCommit === undefined ? '' : ' as ' + String(merge.mergeCommit)
+      const target = merge.target === null || merge.target === undefined ? '' : String(merge.target)
+      await notifyAgent(task.ownerSession, ownerId, 'Merge request ' + task.id + ' (' + task.title + ') was merged into ' + target + commit + '.')
+      return
+    }
+    if (merge.status !== 'conflict' && merge.status !== 'failed') return
+    const detail =
+      merge.status === 'conflict'
+        ? 'conflict: ' + String(merge.conflict === null || merge.conflict === undefined ? 'unknown conflicted files' : merge.conflict)
+        : 'verification output:\n' + String(merge.output === null || merge.output === undefined ? '' : merge.output)
+    await notifyAgent(
+      task.ownerSession,
+      ownerId,
+      'Merge request ' + task.id + ' (' + task.title + ') needs repair (' + merge.status + ').\n' +
+        '  project: ' + String(projectPath) + '\n' +
+        '  branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch) + '\n' +
+        '  ' + detail + '\n' +
+        'Fix it in your task worktree (' + String(task.worktree === null || task.worktree === undefined ? '' : task.worktree) + '), then refresh the merge request with task_center { action: "refreshMerge", id: "' + task.id + '" }.',
+    )
+  }
+  const callerHelpers = createCallerHelpers({ roleKindOfAgentName: roleKindOfAgentName })
   const callerIdentifiers = callerHelpers.callerIdentifiers
   const callerRoleKindOf = callerHelpers.callerRoleKindOf
-  const rosterSummary = callerHelpers.rosterSummary
   const isAssignee = callerHelpers.isAssignee
   const callerLookupState = createCallerLookup({
     callerIdentifiers: callerIdentifiers,
-    callerRoleKindOf: callerRoleKindOf,
-    servicesFor: servicesFor,
-    ctx: ctx,
-    liveLeads: liveLeads,
-    resolveAnyLead: resolveAnyLead,
-    roleKindOf: roleKindOf,
+    roleKindOfAgentName: roleKindOfAgentName,
   })
   const callerLookup = callerLookupState.callerLookup
   const callerMemberOf = callerLookupState.callerMemberOf
@@ -328,30 +340,15 @@ export function createApi(ctx, options) {
   const ownerOf = callerLookupState.ownerOf
   const assigneeMatches = callerLookupState.assigneeMatches
   const gates = createGates({
-    callerMemberOf: callerMemberOf,
     callerRole: callerRole,
-    roles: roles,
-    MERGER_NAME: MERGER_NAME,
-    memberProjectOf: memberProjectOf,
-    roleSlotOf: roleSlotOf,
-    projectSlotKey: projectSlotKey,
-    projectIdOf: projectIdOf,
-    ctx: ctx,
     failure: failure,
   })
   const roleAdminRefusal = gates.roleAdminRefusal
   const mergeRefusal = gates.mergeRefusal
   const harnessRefusal = gates.harnessRefusal
-  const wrongProjectRefusal = gates.wrongProjectRefusal
   const verdictGate = createVerdictGate({
-    roles: roles,
-    callerLookup: callerLookup,
     callerIdentifiers: callerIdentifiers,
-    roleKindOf: roleKindOf,
-    callerRoleKindOf: callerRoleKindOf,
-    agentSessionOf: agentSessionOf,
     isAssignee: isAssignee,
-    rosterSummary: rosterSummary,
     failure: failure,
   })
   const verdictRefusal = verdictGate.verdictRefusal
@@ -373,7 +370,6 @@ export function createApi(ctx, options) {
     writeByName: writeByName,
     state: state,
     ctx: ctx,
-    interruptAssignee: interruptAssignee,
     cleanupInvestigation: cleanupInvestigation,
     failure: failure,
     // T-183: cancel/block/reopen/retry dispose the card's stage children, not
@@ -397,38 +393,25 @@ export function createApi(ctx, options) {
     ownerOf: ownerOf,
     assigneeMatches: assigneeMatches,
     callerMemberOf: callerMemberOf,
-    MERGER_NAME: MERGER_NAME,
     readTargetHead: readTargetHead,
     readBranchHead: readBranchHead,
     git: git,
     messageOf: messageOf,
-    provisionRole: provisionRole,
-    provisionFailedHard: provisionFailedHard,
-    provisionReasonOf: provisionReasonOf,
     stageAgents: stageAgents,
     markWaiting: markWaiting,
     clearWaiting: clearWaiting,
-    roleSlotNameOf: roleSlotNameOf,
-    assignStageSlot: assignStageSlot,
-    notifyMember: notifyMember,
     reviewBriefFor: reviewBriefFor,
     recordDeliveredTo: recordDeliveredTo,
     ok: ok,
     failure: failure,
   })
   const submitActions = createSubmitAction({
-    wrongProjectRefusal: wrongProjectRefusal,
-    roles: roles,
-    callerRole: callerRole,
     readBoardOrFail: readBoardOrFail,
     taskForContext: taskForContext,
     model: model,
     clock: clock,
     prepareMergeRequest: prepareMergeRequest,
     REVIEW_MAX_ROUNDS: REVIEW_MAX_ROUNDS,
-    provisionRole: provisionRole,
-    provisionFailedHard: provisionFailedHard,
-    provisionReasonOf: provisionReasonOf,
     stageAgents: stageAgents,
     markWaiting: markWaiting,
     writeTask: writeTask,
@@ -438,13 +421,9 @@ export function createApi(ctx, options) {
     ctx: ctx,
     locks: locks,
     state: state,
-    notifyMergerOpened: notifyMergerOpened,
     enforceReviewRoundLimit: enforceReviewRoundLimit,
     releaseTaskLocks: releaseTaskLocks,
     emitActivity: emitActivity,
-    roleSlotNameOf: roleSlotNameOf,
-    assignStageSlot: assignStageSlot,
-    notifyMember: notifyMember,
     reviewBriefFor: reviewBriefFor,
     recordDeliveredTo: recordDeliveredTo,
     ok: ok,
@@ -458,12 +437,9 @@ export function createApi(ctx, options) {
     writeTask: writeTask,
     clock: clock,
     writeByName: writeByName,
-    promoteStageSlots: promoteStageSlots,
-    roleSlotNameOf: roleSlotNameOf,
     state: state,
     testerBriefFor: testerBriefFor,
     godotInfoFor: godotInfoFor,
-    notifyMember: notifyMember,
     recordDeliveredTo: recordDeliveredTo,
     emitActivity: emitActivity,
     recordStageSlot: recordStageSlot,
@@ -508,19 +484,12 @@ export function createApi(ctx, options) {
     recordCandidate: recordCandidate,
     emitActivity: emitActivity,
     clearStageSlots: clearStageSlots,
-    notifyMember: notifyMember,
     reworkBriefFor: reworkBriefFor,
-    provisionRole: provisionRole,
-    provisionFailedHard: provisionFailedHard,
-    provisionReasonOf: provisionReasonOf,
     stageAgents: stageAgents,
     state: state,
-    roleSlotNameOf: roleSlotNameOf,
-    assignStageSlot: assignStageSlot,
     testerBriefFor: testerBriefFor,
     godotInfoFor: godotInfoFor,
     recordDeliveredTo: recordDeliveredTo,
-    promoteStageSlots: promoteStageSlots,
     reviewBriefFor: reviewBriefFor,
     ok: ok,
     failure: failure,
@@ -530,7 +499,6 @@ export function createApi(ctx, options) {
     fs: ctx.fs,
     sessionIdOf: sessionIdOf,
     preflightProject: preflightProject,
-    projectTeamFor: projectTeamFor,
     remember: remember,
     snapshot: snapshot,
     resolveProjectRoot: resolveProjectRoot,
@@ -548,7 +516,6 @@ export function createApi(ctx, options) {
     renderProjectLine: renderProjectLine,
     ONBOARD_VERSION: ONBOARD_VERSION,
     onboardProjectSummary: onboardProjectSummary,
-    onboardTeamSummary: onboardTeamSummary,
     onboardDispatchSummary: onboardDispatchSummary,
     needsUserFor: needsUserFor,
     decideOnboardStage: decideOnboardStage,
@@ -560,16 +527,12 @@ export function createApi(ctx, options) {
     sessionOwnsProject: sessionOwnsProject,
     remember: remember,
     git: git,
-    roles: roles,
-    bootstrapTeamFor: bootstrapTeamFor,
-    projectTeamFor: projectTeamFor,
     summariseBoard: summariseBoard,
     boardSizeOf: boardSizeOf,
     environmentSnapshot: environmentSnapshot,
     messageOf: messageOf,
     renderTaskLine: renderTaskLine,
     blockedSuffixOf: blockedSuffixOf,
-    teamLabelOf: teamLabelOf,
     // T-153: handoff inventory + the two decisions the user can make.
     handoffFor: handoffOf,
     performTakeover: performTakeoverDecision,
@@ -594,12 +557,9 @@ export function createApi(ctx, options) {
     readBoardOrFail: readBoardOrFail,
     worktreesCleanup: worktreesCleanup,
     callerSessionId: callerSessionId,
-    bootstrapTeamFor: bootstrapTeamFor,
-    teamBootstrapStep: teamBootstrapStep,
     ok: ok,
   })
   const taskAdminActions = createTaskAdminActions({
-    projectTeamFor: projectTeamFor,
     callerSessionId: callerSessionId,
     taskInput: taskInput,
     checkTarget: checkTarget,
@@ -617,13 +577,12 @@ export function createApi(ctx, options) {
     readBoardOrFail: readBoardOrFail,
     worktreeRefusal: worktreeRefusal,
     scheduler: scheduler,
-    interruptAssignee: interruptAssignee,
+    stageAgents: stageAgents,
     ctx: ctx,
     ok: ok,
     failure: failure,
   })
   const reportActions = createReportAction({
-    wrongProjectRefusal: wrongProjectRefusal,
     readBoardOrFail: readBoardOrFail,
     taskForContext: taskForContext,
     probeCommitsOf: probeCommitsOf,
@@ -644,21 +603,11 @@ export function createApi(ctx, options) {
     readRoleConfig: readRoleConfig,
     fs: ctx.fs,
     callerSessionId: callerSessionId,
-    roleInstanceList: roleInstanceList,
     rolePreviewFor: rolePreviewFor,
     persistRoles: persistRoles,
     emitActivity: emitActivity,
-    roles: roles,
     sessionIdOf: sessionIdOf,
-    roleKindOf: roleKindOf,
-    roleMemberNamed: roleMemberNamed,
-    liveRoleNames: liveRoleNames,
-    ensureRoleBounded: ensureRoleBounded,
-    emitRoleProvision: emitRoleProvision,
     clock: clock,
-    sleep: sleep,
-    drainTimeoutMs: drainTimeoutMs,
-    drainIntervalMs: drainIntervalMs,
     ok: ok,
     failure: failure,
   })
@@ -946,16 +895,16 @@ export function createApi(ctx, options) {
       if (retestFailed) {
         await discardRebuilt()
         emitActivity(null, 'host-check', 'retest mechanical verification failed (' + String(retestCheck.timedOut === true ? 'timed out' : 'exit ' + String(retestCheck.exitCode)) + '); back to running', id, 'host')
-        const ownerName = recorded.task !== null && recorded.task !== undefined && recorded.task.assignee !== null && recorded.task.assignee !== undefined && typeof recorded.task.assignee.name === 'string' ? recorded.task.assignee.name : null
-        if (ownerName !== null) await notifyMember(ownerName, 'Host mechanical verification FAILED for ' + id + ' (' + String(recorded.task.title) + ').\n\n' + hostCheckEvidence(retestCheck), recorded.task.ownerSession, projectPath)
+        await notifyMergeOutcome(projectPath, recorded.task)
         return recorded
       }
       recorded.candidate = rebuilt
-      const provisioned = await provisionRole('tester', projectPath, recorded.task)
-      if (provisioned !== null) recorded.provisioned = provisioned
-      const tester = roleSlotNameOf('tester', recorded.task.ownerSession)
-      if (tester !== null) {
-        await notifyMember(tester, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck }), recorded.task.ownerSession, projectPath)
+      if (stageAgents !== null) {
+        const started = await stageAgents.startTester(recorded.task, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck }))
+        if (started.ok === true) {
+          await recordDeliveredTo(projectPath, recorded.task.id, 'tester', { name: started.name, id: started.agentId })
+          recorded.provisioned = started
+        }
       }
       return recorded
     }
@@ -994,20 +943,6 @@ export function createApi(ctx, options) {
     return { task: ROLE_SAMPLE_TASK, real: false }
   }
 
-  /** The Team Lead's name for the previewed brief, or null without a live Team. */
-  function previewLeadName(sessionId) {
-    try {
-      const scoped = typeof sessionId === 'string' && sessionId !== '' ? sessionId : null
-      // T-130: the preview speaks as the PANEL session's team.
-      const lead = scoped === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: scoped })
-      if (lead === null || lead === undefined) return null
-      if (typeof lead.name === 'string' && lead.name !== '') return lead.name
-      return lead.id === undefined || lead.id === null ? null : String(lead.id)
-    } catch (error) {
-      return null
-    }
-  }
-
   /**
    * The injected text the host really sends a role teammate, for the panel's
    * read-only preview. It NEVER composes copy of its own: text and sections come
@@ -1044,7 +979,9 @@ export function createApi(ctx, options) {
     const picked = await previewTaskFor(projectPath, input.taskId)
     if (picked.failed !== undefined) return picked.failed
     const task = picked.task
-    const leadName = previewLeadName(typeof input.session === 'string' ? input.session : typeof input.sessionId === 'string' ? input.sessionId : null)
+    // v3: the preview speaks as the card's root Agent, which is the dispatcher's
+    // only "lead" name; a role profile is configuration, not a Team slot.
+    const leadName = typeof input.session === 'string' && input.session !== '' ? input.session : null
     const briefOptions = { projectPath: projectPath, leadName: leadName }
     const worker = kind === 'worker'
     // One generation path per kind: the exact function the dispatch path calls.
@@ -1169,25 +1106,9 @@ export function createApi(ctx, options) {
     return { delivered: delivered, queued: queued }
   }
 
-  /** Give a task a slot now, or a 1-based queue position when the slot is full. */
-  async function assignStageSlot(projectPath, task, kind) {
-    const read = await readBoardOrFail(projectPath)
-    if (read.failed !== undefined) return { delivered: true, position: null }
-    const capacity = await stageCapacity(kind, projectPath)
-    const state = stageQueueState(read.board, kind)
-    const others = state.delivered.filter((entry) => entry.id !== task.id)
-    if (others.length < capacity) {
-      recordStageSlot(ctx, task.id, kind, clock(), null)
-      return { delivered: true, position: null }
-    }
-    const position = state.queued.length + 1
-    recordStageSlot(ctx, task.id, kind, null, position)
-    return { delivered: false, position: position }
-  }
 
   /** T-116: remember WHO a stage brief was handed to, on the card itself, so the
-   * verdict gate still recognises that member after a drain/replace removed it
-   * from the Lead's roster. */
+   * verdict gate still recognises that child without any roster. */
   async function recordDeliveredTo(projectPath, taskId, kind, member) {
     if (member === null || member === undefined || typeof member !== 'object') return
     const name = typeof member.name === 'string' && member.name !== '' ? member.name : null
@@ -1219,68 +1140,7 @@ export function createApi(ctx, options) {
     recordStageSlot(ctx, taskId, 'tester', null, null)
   }
 
-  /** Hand the next queued task(s) their slot after a verdict frees one. */
-  async function promoteStageSlots(projectPath, kind) {
-    const read = await readBoardOrFail(projectPath)
-    if (read.failed !== undefined) return []
-    const capacity = await stageCapacity(kind, projectPath)
-    const state = stageQueueState(read.board, kind)
-    // Never let a restarted board's legacy no-slot rounds push the count below 0.
-    let free = Math.max(0, capacity - state.delivered.length)
-    const promoted = []
-    const remaining = []
-    for (const entry of state.queued) {
-      if (free <= 0) {
-        remaining.push(entry.task)
-        continue
-      }
-      recordStageSlot(ctx, entry.task.id, kind, clock(), null)
-      promoted.push(entry.task)
-      free -= 1
-    }
-    // Renumber what is still waiting so positions stay dense and truthful.
-    remaining.forEach((task, index) => recordStageSlot(ctx, task.id, kind, null, index + 1))
-    return promoted
-  }
 
-  /** Best-effort host provisioning for one stage role. Never blocks the action. */  /** Best-effort host provisioning for one stage role. Never blocks the action. */
-  async function provisionRole(kind, projectPath, task) {
-    if (roles === null || typeof roles.ensure !== 'function') return null
-    const config = await roleConfigFor(projectPath)
-    try {
-      const ensured = await ensureRoleBounded(kind, {
-        config: config === null ? undefined : config,
-        projectPath: projectPath,
-        task: task,
-        now: clock(),
-        // T-106: the role must belong to the CARD's session team (null = legacy
-        // ownerless card, which keeps the old first-lead behaviour).
-        sessionId: task !== null && task !== undefined && typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null,
-      })
-      emitRoleProvision(ensured)
-      // A slot owned by another project is never reused (its session workspace is
-      // that project): the card keeps a history row saying so.
-      if (
-        ensured !== null &&
-        ensured !== undefined &&
-        Array.isArray(ensured.refused) &&
-        ensured.refused.length > 0 &&
-        task !== null &&
-        task !== undefined
-      ) {
-        const systemContext = { projectPath: projectPath, by: 'system', role: 'user', agent: null }
-        await writeTask(
-          projectPath,
-          task.id,
-          (board) => model.noteReuseRefused(board, task.id, clock(), ensured.refused, 'role slot belongs to another project'),
-          systemContext,
-        )
-      }
-      return ensured
-    } catch (error) {
-      return { ok: false, code: 'role-ensure-failed', message: messageOf(error) }
-    }
-  }
 
   /**
    * Merge actions belong to the user, or to the Team member named exactly
@@ -1356,198 +1216,8 @@ export function createApi(ctx, options) {
    * Best-effort message to one Team member by name. Every failure — no team
    * service, no lead, no such member, a refused mailbox — is swallowed: a
    * notification must never fail a submit or a merge.
-   */
-  async function notifyMember(target, text, sessionId, projectPath) {
-    const name = typeof target === 'string' ? target.trim() : ''
-    if (name === '' || typeof text !== 'string' || text === '') return null
-    try {
-      const { agentTeams } = servicesFor(ctx)
-      if (agentTeams === undefined || agentTeams === null) return null
-      // T-123: a brief has no meaning without the session that owns the card.
-      // Falling back to "any Lead" is exactly how another project's card reached a
-      // same-named slot in THIS team; skip and record instead of guessing.
-      if (typeof sessionId !== 'string' || sessionId === '') {
-        emitActivity(null, 'notify-skipped', 'no session context for ' + name + '; brief not sent', null, 'system')
-        return null
-      }
-      const lead = resolveLead(ctx, { sessionId: sessionId })
-      if (lead === null) {
-        emitActivity(null, 'notify-skipped', 'no live Lead for session ' + sessionId + '; brief for ' + name + ' not sent', null, 'system')
-        return null
-      }
-      let members = []
-      try {
-        members = agentTeams.listMembers(lead)
-      } catch (error) {
-        return null
-      }
-      if (!Array.isArray(members)) return null
-      let member = members.filter((entry) => entry !== null && typeof entry === 'object' && entry.name === name)[0]
-      // A pre-upgrade team carries the legacy slot name (reviewer-1) instead of the
-      // project-named one (reviewer-p<key>-1). The alias is resolved INSIDE this
-      // same team only: the session's own legacy slot may take over its work.
-      if (member === undefined) {
-        const legacy = legacySlotAliasOf(name)
-        if (legacy !== null) member = members.filter((entry) => entry !== null && typeof entry === 'object' && entry.name === legacy)[0]
-      }
-      if (member === undefined) {
-        emitActivity(null, 'notify-skipped', 'no member ' + name + ' in the session ' + sessionId + ' team', null, 'system')
-        return null
-      }
-      // T-123: a name hit is not enough — the team the member belongs to must run
-      // in the card's project. A slot of another project's team never receives it.
-      const ownedProject = typeof projectPath === 'string' && projectPath !== '' ? projectPath : null
-      if (ownedProject !== null) {
-        let owns = null
-        try {
-          owns = await sessionOwnsProject(state, sessionId, ownedProject)
-        } catch (error) {
-          owns = null
-        }
-        if (owns === false) {
-          let workspace = null
-          try {
-            workspace = await sessionWorkspaceOf(state, sessionId)
-          } catch (error) {
-            workspace = null
-          }
-          emitActivity(
-            null,
-            'notify-refused',
-            'project-mismatch: ' + name + ' is in ' + String(workspace === null ? 'another project' : workspace) + ' but the card is in ' + ownedProject,
-            null,
-            'system',
-          )
-          return null
-        }
-      }
-      // T-123: the brief names its project so a receiver can self-check and reply
-      // wrong-project instead of doing a wasted round in the wrong repository.
-      const body =
-        ownedProject === null || text.indexOf('project: ' + ownedProject) === 0
-          ? text
-          : 'project: ' + ownedProject + '\nIf you are not working in this project, reply wrong-project and stop.\n\n' + text
-      const request = { target: name, content: [{ type: 'text', text: body }] }
-      if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-        request.signal = AbortSignal.timeout(notifyTimeoutMs)
-      }
-      const sent = await boundedAwait(() => agentTeams.sendMessage(lead, request), notifyTimeoutMs)
-      if (sent.timedOut === true) {
-        emitActivity(null, 'host-action-timeout', 'notification to ' + name + ' exceeded ' + String(notifyTimeoutMs) + 'ms', null, 'system')
-        return null
-      }
-      if (sent.value !== null && typeof sent.value === 'object' && sent.value.ok === false && sent.value.code === 'action-failed') return null
-      return member
-    } catch (error) {
-      return null
-    }
-  }
 
-  /** The legacy (project-less) name of a project-named role slot, or null. */
-  function legacySlotAliasOf(name) {
-    const parsed = roleSlotOf(name)
-    if (parsed === null || parsed.project === null) return null
-    return parsed.kind + '-' + String(parsed.index)
-  }
 
-  /** Tell the merger a merge request is open. No merger is a normal outcome. */
-  async function notifyMergerOpened(projectPath, task) {
-    if (task === null || task === undefined) return
-    const merge = task.merge
-    if (merge === null || merge === undefined || typeof merge !== 'object' || merge.status !== 'open') return
-    const owner =
-      task.assignee === null || task.assignee === undefined || task.assignee.name === null || task.assignee.name === undefined
-        ? 'the task owner'
-        : String(task.assignee.name)
-    const lines = [
-      'Merge request ' + task.id + ' (' + task.title + ') is open and entering review.',
-      '  branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch),
-      '  target: ' + String(merge.target === null || merge.target === undefined ? '' : merge.target),
-      '  project: ' + String(projectPath),
-      '  owner: ' + owner,
-      '',
-      'Track it with task_center { action: "board" } or { action: "get", id: "' + task.id + '" }.',
-      'It becomes mergeable once its review is approved and its test phase passes; the host merges it automatically.',
-      'mergeRequest stays available as a manual entry (merger-only) and rejectMerge can close the request.',
-      'Do not push. If it conflicts or verification fails, leave the repair to the task owner.',
-    ]
-    await notifyMember(MERGER_NAME, lines.join('\n'), task.ownerSession, projectPath)
-  }
-
-  /** Tell the owner what a merge outcome needs from them; skipped without an owner or a team. */
-  async function notifyMergeOutcome(projectPath, task) {
-    if (task === null || task === undefined) return
-    const merge = task.merge
-    if (merge === null || merge === undefined || typeof merge !== 'object') return
-    const status = merge.status
-    const owner =
-      task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' || task.assignee.name === ''
-        ? null
-        : task.assignee.name
-    if (status === 'merged') {
-      if (owner === null) return
-      const commit = merge.mergeCommit === null || merge.mergeCommit === undefined ? '' : ' as ' + String(merge.mergeCommit)
-      const target = merge.target === null || merge.target === undefined ? '' : String(merge.target)
-      await notifyMember(owner, 'Merge request ' + task.id + ' (' + task.title + ') was merged into ' + target + commit + '.', task.ownerSession, projectPath)
-      return
-    }
-    if ((status !== 'conflict' && status !== 'failed') || owner === null) return
-    const detail =
-      status === 'conflict'
-        ? 'conflict: ' + String(merge.conflict === null || merge.conflict === undefined ? 'unknown conflicted files' : merge.conflict)
-        : 'verification output:\n' + String(merge.output === null || merge.output === undefined ? '' : merge.output)
-    await notifyMember(
-      owner,
-      'Merge request ' + task.id + ' (' + task.title + ') needs repair (' + status + ').\n' +
-        '  project: ' + String(projectPath) + '\n' +
-        '  branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch) + '\n' +
-        '  ' + detail + '\n' +
-        'Fix it in your task worktree (' +
-        String(task.worktree === null || task.worktree === undefined ? '' : task.worktree) +
-        '), then refresh the merge request with task_center { action: "refreshMerge", id: "' +
-        task.id +
-        '" } and tell the Lead so it can be retried.',
-      task.ownerSession,
-      projectPath,
-    )
-  }
-
-  /** Names the role manager has drained; they must no longer receive briefs. */
-  function drainedRoleNames() {
-    if (roles === null || typeof roles.status !== 'function') return []
-    try {
-      const status = roles.status()
-      return Array.isArray(status.drained) ? status.drained.map(String) : []
-    } catch (error) {
-      return []
-    }
-  }
-
-  /** The live member of a role kind (reviewer, tester, worker), or null. Drained
-   * and failed instances are skipped, so a replaced slot receives the work. */
-  function roleSlotNameOf(kind, sessionId) {
-    const { agentTeams } = servicesFor(ctx)
-    if (agentTeams === undefined || agentTeams === null) return null
-    const lead = typeof sessionId === 'string' && sessionId !== '' ? resolveLead(ctx, { sessionId: sessionId }) : resolveAnyLead(ctx)
-    if (lead === null) return null
-    let members = []
-    try {
-      members = agentTeams.listMembers(lead)
-    } catch (error) {
-      return null
-    }
-    if (!Array.isArray(members)) return null
-    const drained = drainedRoleNames()
-    const member = members.filter(
-      (entry) =>
-        entry !== null &&
-        typeof entry === 'object' &&
-        roleKindOf(entry.name) === kind &&
-        entry.status !== 'failed' &&
-        drained.indexOf(String(entry.name)) < 0,
-    )[0]
-    return member === undefined ? null : String(member.name)
-  }
 
   /**
    * Host policy: a task that keeps coming back from review is blocked for
@@ -1574,29 +1244,9 @@ export function createApi(ctx, options) {
       } catch (error) {}
     }
     emitActivity(null, 'error', 'review round limit reached; task blocked', task.id, 'system')
-    // The reviewer slot no longer has work: interrupt it when it is still running.
-    const reviewer = roleSlotNameOf('reviewer', task.ownerSession)
-    if (reviewer !== null) {
-      await interruptMemberNamed(ctx, {
-        name: reviewer,
-        key: String(task.id) + '@blocked@' + reviewer,
-        // T-130: interrupt the reviewer of the CARD's team, never a same-named
-        // member of another session's team.
-        sessionId: typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null,
-        message: 'Task ' + String(task.id) + ' is blocked (review round limit). Stop working on it now and discard uncommitted changes.',
-      })
-    }
-    const owner =
-      task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' || task.assignee.name === ''
-        ? null
-        : task.assignee.name
-    if (owner !== null) {
-      await notifyMember(
-        owner,
-        'Task ' + task.id + ' was blocked after ' + String(REVIEW_MAX_ROUNDS) + ' review rounds without approval. Read the review reasons on the board and ask the Lead for triage.',
-        task.ownerSession,
-        projectPath,
-      )
+    const ownerId = task.assignee === null || task.assignee === undefined ? null : task.assignee.session
+    if (typeof ownerId === 'string' && ownerId !== '') {
+      await notifyAgent(task.ownerSession, ownerId, 'Task ' + task.id + ' was blocked after ' + String(REVIEW_MAX_ROUNDS) + ' review rounds without approval. Read the review reasons on the board and ask the Lead for triage.')
     }
     return blocked
   }
@@ -1667,25 +1317,6 @@ export function createApi(ctx, options) {
    * (a restart, a hand-spawned teammate) is not refused: there is nothing to
    * compare, and the project-scoped slot names still keep projects apart.
    */
-/** Role provisioning with a bound: a hung ensure must not hold the action. */
-  async function ensureRoleBounded(kind, request) {
-    const startedAt = Date.now()
-    const bounded = await boundedAwait(() => roles.ensure(kind, request), actionTimeoutMs)
-    if (bounded.timedOut) {
-      actionTimeoutFailure('role ensure ' + kind, request !== undefined && request !== null && request.task ? request.task.id : null, startedAt)
-      return { ok: false, code: 'action-timeout', message: 'role ' + String(kind) + ' provisioning timed out' }
-    }
-    return bounded.value
-  }
-
-  /** Role provisioning is a SYSTEM event. */
-  function emitRoleProvision(result) {
-    if (result === null || result === undefined) return
-    const created = Array.isArray(result.created) ? result.created.map((entry) => entry.name) : []
-    const replaced = Array.isArray(result.replaced) ? result.replaced.map((entry) => String(entry.name) + (entry.reason === undefined ? '' : ' (' + String(entry.reason) + ')')) : []
-    if (created.length > 0) emitActivity(null, 'role-provision', String(result.kind) + ' ' + created.join(', '), null, 'system')
-    if (replaced.length > 0) emitActivity(null, 'role-replace', String(result.kind) + ' ' + replaced.join(', '), null, 'system')
-  }
 
   /**
    * The git worktree inventory for the status panel, classified as
@@ -2157,227 +1788,6 @@ export function createApi(ctx, options) {
     return Object.assign({ available: true }, activity.snapshot())
   }
 
-  /** The Team inventory for the snapshot (T-109), plus members with their slot
-   * project and whether that project matches the Lead's session (T-118). */
-  /** T-122: every host agent with its session, display-only; never mixed into
-   * the session-scoped member table. */
-  function agentInventoryRows(sessionId) {
-    const { agents, agentTeams } = servicesFor(ctx)
-    if (agents === undefined || agents === null) return []
-    let all = []
-    try {
-      all = agents.list()
-    } catch (error) {
-      return []
-    }
-    return (Array.isArray(all) ? all : []).map((candidate) => {
-      let membership = null
-      try {
-        membership = agentTeams === undefined || agentTeams === null ? null : agentTeams.tryMembership(candidate)
-      } catch (error) {
-        membership = null
-      }
-      const session = candidate !== null && candidate !== undefined && candidate.id !== undefined && candidate.id !== null ? String(candidate.id) : null
-      const remembered = session === null ? null : memberProjectOf(ctx, session)
-      return {
-        id: session,
-        name: candidate !== null && candidate !== undefined && typeof candidate.name === 'string' && candidate.name !== '' ? candidate.name : null,
-        role: membership !== null && membership !== undefined && typeof membership.role === 'string' ? membership.role : null,
-        session: session,
-        project: remembered === null ? null : remembered.key,
-        matchesSession: sessionId !== null && sessionId !== undefined && session === sessionId,
-      }
-    })
-  }
-
-  /** T-124: the requester's project, resolved through the full chain (memory ->
-   * DSH session directory -> none) and RECORDED so later reads agree. */
-  async function requesterRootOf(sessionId) {
-    if (sessionId === null || sessionId === undefined || sessionId === '') return { root: null, error: 'no-session' }
-    let root = null
-    try {
-      root = state.sessionRootOf(sessionId)
-    } catch (error) {
-      root = null
-    }
-    if (typeof root !== 'string' || root === '') {
-      try {
-        root = await sessionWorkspaceOf(state, sessionId)
-      } catch (error) {
-        root = null
-      }
-    }
-    if (typeof root === 'string' && root !== '') {
-      try {
-        state.setSessionRoot(sessionId, root)
-      } catch (error) {}
-      return { root: root, error: null }
-    }
-    return { root: null, error: 'session-workspace-unknown' }
-  }
-
-  async function teamsSnapshot(sessionId) {
-    try {
-      const inventory = leadInventory(ctx)
-      // T-122/T-124: matchesSession is relative to the REQUESTING session's
-      // project, resolved through the full chain (not just the memory map).
-      const requester = await requesterRootOf(sessionId)
-      const requesterRoot = requester.root
-      const requesterKey = typeof requesterRoot === 'string' && requesterRoot !== '' ? projectSlotKey(requesterRoot) : null
-      if (inventory.available !== true) return inventory
-      const { agents, agentTeams } = servicesFor(ctx)
-      if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return Object.assign({}, inventory, { members: [] })
-      let all = []
-      try {
-        const listed = agents.list()
-        all = Array.isArray(listed) ? listed : []
-      } catch (error) {
-        return Object.assign({}, inventory, { members: [] })
-      }
-      const members = []
-      for (const lead of all) {
-        let membership = null
-        try {
-          membership = agentTeams.tryMembership(lead)
-        } catch (error) {
-          membership = null
-        }
-        if (membership === null || membership === undefined || membership.role !== 'lead') continue
-        const leadSession = agentSessionOf(lead)
-        let leadRoot = null
-        try {
-          leadRoot = leadSession === null ? null : state.sessionRootOf(leadSession)
-        } catch (error) {
-          leadRoot = null
-        }
-        const leadKey = typeof leadRoot === 'string' && leadRoot !== '' ? projectSlotKey(leadRoot) : null
-        let roster = []
-        try {
-          const listed = agentTeams.listMembers(lead)
-          roster = Array.isArray(listed) ? listed : []
-        } catch (error) {
-          roster = []
-        }
-        for (const member of roster) {
-          if (member === null || typeof member !== 'object' || typeof member.name !== 'string') continue
-          const slot = roleSlotOf(member.name)
-          const project = slot === null || slot.project === null ? null : slot.project
-          const seen = memberProjectOf(ctx, member.name)
-          members.push({
-            name: String(member.name),
-            role: typeof member.role === 'string' ? member.role : null,
-            session: leadSession,
-            project: project,
-            projectRoot: seen !== null && seen !== undefined && typeof seen.root === 'string' ? seen.root : null,
-            matchesSession: project === null || requesterKey === null ? null : project === requesterKey,
-          })
-        }
-      }
-      return Object.assign({}, inventory, { members: members, requesterRoot: requesterRoot, requesterError: requester.error })
-    } catch (error) {
-      return { available: false, error: messageOf(error), scanned: 0, nonLeads: 0, leads: [], members: [] }
-    }
-  }
-
-  /**
-   * Live role-slot instances (worker-N/reviewer-N/tester-N) for the role panel.
-   * T-130: the roster is the PANEL SESSION's team. The any-Lead scan survives only
-   * for a caller without a session (legacy), never as panel authority.
-   */
-  function roleInstanceList(options) {
-    const opts = options === undefined || options === null ? {} : options
-    const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-    const { agentTeams } = servicesFor(ctx)
-    if (agentTeams === undefined || agentTeams === null) return { available: false, error: 'no-team-service', instances: [], manager: null }
-    const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
-    if (lead === null) return { available: false, error: sessionId === null ? 'no-lead' : 'no-lead-for-project', sessionId: sessionId, instances: [], manager: null }
-    let roster = []
-    try {
-      roster = agentTeams.listMembers(lead)
-    } catch (error) {
-      return { available: false, error: 'roster-unreadable', instances: [], manager: null }
-    }
-    const instances = (Array.isArray(roster) ? roster : [])
-      .filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string' && roleKindOf(member.name) !== null)
-      .map((member) => {
-        const slot = roleSlotOf(member.name)
-        const remembered = memberProjectOf(ctx, String(member.name))
-        return {
-          name: String(member.name),
-          // The panel shows the short, project-free name; the long name is the
-          // internal key (it carries the project so two projects never collide).
-          shortName: roleShortName(String(member.name)),
-          project: slot === null ? null : slot.project,
-          projectRoot: remembered === null ? null : remembered.root,
-          kind: roleKindOf(member.name),
-          id: member.id === undefined || member.id === null ? null : String(member.id),
-          status: String(member.status === undefined || member.status === null ? 'unknown' : member.status),
-          description: typeof member.description === 'string' ? member.description : null,
-        }
-      })
-    return { available: true, error: null, sessionId: sessionId, instances: instances, manager: roles === null ? null : roles.status() }
-  }
-
-  /** The live Team roster of ONE session, or a readable failure (T-130). */
-  function roleRoster(options) {
-    const opts = options === undefined || options === null ? {} : options
-    const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-    const { agentTeams } = servicesFor(ctx)
-    if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
-    const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
-    if (lead === null) {
-      return sessionId === null
-        ? { ok: false, code: 'no-lead', message: 'no live Team root' }
-        : { ok: false, code: 'no-lead-for-project', message: 'session ' + sessionId + ' has no live Team Lead; the panel never borrows another session’s roster' }
-    }
-    let members = []
-    try {
-      members = agentTeams.listMembers(lead)
-    } catch (error) {
-      return { ok: false, code: 'roster-unreadable', message: messageOf(error) }
-    }
-    if (!Array.isArray(members)) return { ok: false, code: 'roster-unreadable', message: 'the roster is not a list' }
-    return { ok: true, lead: lead, members: members }
-  }
-
-  /** Live instance names of one role kind (failed ones excluded), one session. */
-  function liveRoleNames(kind, options) {
-    const roster = roleRoster(options)
-    if (roster.ok !== true) return roster
-    const names = roster.members
-      .filter((member) => member !== null && typeof member === 'object' && roleKindOf(member.name) === kind && member.status !== 'failed')
-      .map((member) => String(member.name))
-    return { ok: true, names: names }
-  }
-
-  /** One role instance by name, or a readable failure. Failed instances are
-   * returned only when the caller can replace them (replace skips the drain). */
-  function roleMemberNamed(name, options) {
-    const opts = options === undefined ? {} : options
-    const roster = roleRoster({ sessionId: opts.sessionId })
-    if (roster.ok !== true) return roster
-    const exact = roster.members.filter((entry) => entry !== null && typeof entry === 'object' && String(entry.name) === name)[0]
-    // The panel (and a person) name a slot SHORT: reviewer-1. Resolve that to the
-    // project-scoped live instance (reviewer-p<key>-1) of the same kind, because
-    // the long name is an internal key, not something anyone types.
-    const member =
-      exact !== undefined
-        ? exact
-        : roster.members.filter(
-            (entry) =>
-              entry !== null &&
-              typeof entry === 'object' &&
-              roleSlotOf(entry.name) !== null &&
-              roleShortName(String(entry.name)) === name &&
-              (opts.allowFailed === true || entry.status !== 'failed'),
-          )[0]
-    if (member === undefined) return { ok: false, code: 'unknown-role-instance', message: 'no live role instance named ' + name }
-    if (member.status === 'failed' && opts.allowFailed !== true) {
-      return { ok: false, code: 'not-live', message: name + ' has failed; the host auto-provisioning will replace it (or replace the role kind)' }
-    }
-    return { ok: true, member: member }
-  }
-
   async function persistRoles(projectPath, config) {
     const written = await writeRoleConfig(
       { fs: ctx.fs },
@@ -2447,22 +1857,6 @@ export function createApi(ctx, options) {
    * file another owner holds, a full concurrency budget). Dispatch never reads
    * it back, so it cannot change what runs — only explain what did not.
    */
-  /** Why provisioning failed, as a stable waiting reason. */
-  function provisionFailedHard(provisioned) {
-    if (provisioned === null || provisioned === undefined || provisioned.ok !== false) return false
-    if (provisioned.__timedOut === true) return false
-    const code = String(provisioned.code === undefined || provisioned.code === null ? '' : provisioned.code)
-    return code.indexOf('timeout') < 0 && code !== 'provision-timeout'
-  }
-
-  function provisionReasonOf(provisioned) {
-    if (provisioned === null || provisioned === undefined || provisioned.ok !== false) return null
-    const code = String(provisioned.code === undefined || provisioned.code === null ? '' : provisioned.code)
-    if (code === 'no-lead') return 'no-lead'
-    if (code === 'no-team-service') return 'no-team-service'
-    if (code === 'spawn-refused' || code === 'spawn-failed') return 'spawn-refused'
-    return code === '' ? 'role-unavailable' : code
-  }
 
   /** Record that a phase is waiting for an executor (no advance happened). */
   async function markWaiting(projectPath, id, reason, detail, context) {
@@ -2520,18 +1914,7 @@ export function createApi(ctx, options) {
     return Object.assign(base, {
       waitingReason: waitingReasonOf(board, task),
       waitingDetail: typeof task.waitingDetail === 'string' && task.waitingDetail !== '' ? task.waitingDetail : null,
-      // Live executors carry the project each was dispatched for, so a reader can
-      // see that a member belongs to this board (a cross-project borrow would be
-      // visible instead of silent). model.detail only reports their count.
-      liveExecutors: model.liveExecutors(task).map(function (entry) {
-        const slot = roleSlotOf(entry.name)
-        const remembered = memberProjectOf(ctx, entry.name)
-        return Object.assign({}, entry, {
-          displayName: roleShortName(entry.name),
-          project: remembered !== null ? remembered.key : slot === null ? null : slot.project,
-          projectRoot: remembered !== null ? remembered.root : null,
-        })
-      }),
+      liveExecutors: model.liveExecutors(task),
     })
   }
 
@@ -2945,27 +2328,30 @@ export function createApi(ctx, options) {
    * T-153: what the handoff inventory needs to know about ONE card's executors.
    *
    * The worker claim (executor ledger + a running card's assignee) and the stage
-   * executor the brief was actually delivered to (review/test) are both listed,
-   * each judged by the dispatcher's own roster rule (livenessOfMember). 'alive'
-   * is what blocks a takeover: the host must never steal a lock from a live turn.
+   * executor the brief was actually delivered to (review/test) are both listed.
+   * This snapshot has no live agent-tree read, so liveness is UNKNOWN here; a
+   * takeover that needs proof of death is judged by handoff's own rules (the
+   * owner session's staleness) and the dispatcher's live-tree guard.
    */
-  function executorStatesOf(task) {
+  function executorStatesOf(task, aliveIds) {
     const rows = []
     if (task === null || task === undefined) return rows
-    const cardSession = cardOwnerSessionOf(task)
+    const known = aliveIds instanceof Set
+    const livenessOf = (session) => {
+      const id = typeof session === 'string' && session !== '' ? session : null
+      if (id === null) return { alive: false, known: known, status: known ? 'gone' : null }
+      if (!known) return { alive: false, known: false, status: null }
+      return aliveIds.has(id) ? { alive: true, known: true, status: 'running' } : { alive: false, known: true, status: 'gone' }
+    }
     for (const entry of model.liveExecutors(task)) {
-      const identity = {
+      const live = livenessOf(entry.session)
+      rows.push({
         name: typeof entry.name === 'string' ? entry.name : null,
         session: typeof entry.session === 'string' ? entry.session : null,
-      }
-      const liveness = livenessOfMember(ctx, identity, { sessionId: cardSession })
-      rows.push({
-        name: identity.name,
-        session: identity.session,
         phase: 'worker',
-        alive: liveness.alive === true,
-        known: liveness.known === true,
-        status: liveness.status === undefined ? null : liveness.status,
+        alive: live.alive,
+        known: live.known,
+        status: live.status,
         at: entry.at === undefined ? null : entry.at,
       })
     }
@@ -2975,18 +2361,14 @@ export function createApi(ctx, options) {
         ? stage.record.deliveredTo
         : null
     if (delivered !== null) {
-      const identity = {
+      const live = livenessOf(delivered.id)
+      rows.push({
         name: typeof delivered.name === 'string' ? delivered.name : null,
         session: typeof delivered.id === 'string' ? delivered.id : null,
-      }
-      const liveness = livenessOfMember(ctx, identity, { sessionId: cardSession })
-      rows.push({
-        name: identity.name,
-        session: identity.session,
         phase: stage.phase,
-        alive: liveness.alive === true,
-        known: liveness.known === true,
-        status: liveness.status === undefined ? null : liveness.status,
+        alive: live.alive,
+        known: live.known,
+        status: live.status,
         at: typeof delivered.at === 'string' ? delivered.at : null,
       })
     }
@@ -2999,7 +2381,29 @@ export function createApi(ctx, options) {
    * owners); a caller that already read it passes it in so one snapshot reads it
    * once. Also feeds sessionSummaries, so liveness has ONE definition.
    */
-  function handoffOf(projectPath, board, sessionId, sessions) {
+  /** Live child Session ids per root, for the cards on this board. */
+  async function aliveIdsByRoot(board) {
+    const byRoot = new Map()
+    for (const task of board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []) {
+      const rootId = typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
+      if (rootId === null || byRoot.has(rootId)) continue
+      byRoot.set(rootId, null)
+      if (taskAgents === null || typeof taskAgents.listFor !== 'function') continue
+      try {
+        const rows = await taskAgents.listFor(rootId)
+        if (!Array.isArray(rows)) continue
+        const ids = new Set()
+        for (const row of rows) {
+          if (row === null || row === undefined || row.kind !== 'child') continue
+          ids.add(String(row.id))
+        }
+        byRoot.set(rootId, ids)
+      } catch (error) {}
+    }
+    return byRoot
+  }
+
+  async function handoffOf(projectPath, board, sessionId, sessions) {
     const read =
       sessions === undefined || sessions === null
         ? typeof state.projectSessionsFor === 'function'
@@ -3011,6 +2415,7 @@ export function createApi(ctx, options) {
       board !== null && board !== undefined && board.handoff !== null && board.handoff !== undefined && board.handoff.sessions !== null && typeof board.handoff.sessions === 'object'
         ? board.handoff.sessions
         : {}
+    const aliveByRoot = await aliveIdsByRoot(board)
     return buildHandoff({
       board: board,
       sessions: list,
@@ -3018,9 +2423,7 @@ export function createApi(ctx, options) {
       decisions: decisions,
       now: clock(),
       sessionActiveAtOf: (id) => (typeof sessionLastActiveAt === 'function' ? sessionLastActiveAt(id) : null),
-      // v3: handoff only needs session liveness/ownership; there is no Team to read.
-      teamOf: () => null,
-      executorStatesOf: executorStatesOf,
+      executorStatesOf: (task) => executorStatesOf(task, aliveByRoot.get(task !== null && task !== undefined ? task.ownerSession : null)),
     })
   }
 
@@ -3047,8 +2450,8 @@ export function createApi(ctx, options) {
       let sessionProject = null
       if (resolveProject) {
         try {
-          const requester = await requesterRootOf(sessionId)
-          sessionProject = requester.root
+          const workspace = await sessionWorkspaceOf(state, sessionId)
+          sessionProject = typeof workspace === 'string' && workspace !== '' ? workspace : null
         } catch (error) {
           sessionProject = null
         }
@@ -3118,15 +2521,15 @@ export function createApi(ctx, options) {
     let currentSessionProject = null
     if (panelSession !== null) {
       try {
-        const requester = await requesterRootOf(panelSession)
-        currentSessionProject = requester.root
+        const workspace = await sessionWorkspaceOf(state, panelSession)
+        currentSessionProject = typeof workspace === 'string' && workspace !== '' ? workspace : null
       } catch (error) {
         currentSessionProject = null
       }
     }
     // One handoff pass for the whole answer: /state is polled every few seconds,
     // and the inventory is the only place liveness is derived.
-    const handoff = handoffOf(projectPath, board, panelSession, sessions)
+    const handoff = await handoffOf(projectPath, board, panelSession, sessions)
     return {
       boardProject: { id: ref.id, root: ref.root },
       panelSession: panelSession,
@@ -3198,7 +2601,7 @@ export function createApi(ctx, options) {
    * project's bootstrap-team instruction — that instruction was how another
    * session's team silently became "the project team".
    */
-  function nextStepForScope(scope, teamNextStep) {
+  function nextStepForScope(scope) {
     const participants = scope.projectSessions.map((entry) => entry.sessionId)
     if (scope.panelSession === null) {
       return {
@@ -3237,7 +2640,7 @@ export function createApi(ctx, options) {
       )
     }
     // Participating, but the session's OWN workspace decides whether a project
-    // next step is even executable for it: bootstrapTeam refuses another project.
+    // next step is even executable for it: project actions belong to its own project.
     const ownsBoard = scope.currentSessionProject === null ? null : projectIdOf(scope.currentSessionProject) === scope.boardProject.id
     if (ownsBoard === null) {
       return handoff(
@@ -3255,7 +2658,7 @@ export function createApi(ctx, options) {
       // team, create a card or start dispatch.
       const code = handoffNextCode(scope.handoff)
       if (code !== null) return handoffNextStepFor(scope, code)
-      return teamNextStep === undefined ? null : teamNextStep
+      return null
     }
     if (ownsBoard !== true) {
       return handoff(
@@ -3271,7 +2674,7 @@ export function createApi(ctx, options) {
           ', and never bootstrap this project’s team from a foreign session.',
       )
     }
-    return teamNextStep === undefined ? null : teamNextStep
+    return null
   }
 
   /**
@@ -3287,8 +2690,7 @@ export function createApi(ctx, options) {
     if (read.failed !== undefined) return null
     const board = read.board
     const scope = await projectScopeOf(projectPath, board, sessionId, { summaries: false })
-    const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath })
-    const nextStep = nextStepForScope(scope, teamBootstrapStep(team))
+    const nextStep = nextStepForScope(scope)
     const handoff = scope.handoff
     const decision = handoff === null || handoff === undefined || handoff.decision === undefined ? null : handoff.decision
     return {
@@ -3310,50 +2712,34 @@ export function createApi(ctx, options) {
   async function redeliverStage(kind, projectPath, board, task) {
     const outcome = { kind: kind, taskId: String(task.id), provisioned: false, delivered: false, position: null, error: null }
     try {
-      const ensured = await provisionRole(kind, projectPath, task)
-      outcome.provisioned = ensured !== null && ensured !== undefined && ensured.ok === true
-    } catch (error) {
-      outcome.error = messageOf(error)
-    }
-    try {
       // Only an OPEN round gets a second brief. An approved review / passed test
       // is a verdict: the takeover keeps it and must not manufacture another turn.
       const record = kind === 'reviewer' ? task.review : task.test
       const open = record !== null && record !== undefined && record.status === 'pending'
-      if (!open) {
-        outcome.delivered = false
+      if (!open) return outcome
+      if (stageAgents === null) {
+        outcome.error = 'agent-runtime-unavailable'
         return outcome
       }
-      const slot = await assignStageSlot(projectPath, task, kind)
-      outcome.position = slot.position === undefined ? null : slot.position
-      const member = roleSlotNameOf(kind, task.ownerSession)
-      if (slot.delivered === true && member !== null) {
-        const candidate = kind === 'tester' ? candidateOf(projectPath, board, task) : null
-        const text =
-          kind === 'reviewer'
-            ? reviewBriefFor(task, projectPath)
-            : testerBriefFor(task, projectPath, candidate, { godot: await godotInfoFor(projectPath, candidate === null ? null : candidate.path) })
-        const sentTo = await notifyMember(member, text, task.ownerSession, projectPath)
-        outcome.delivered = true
-        await recordDeliveredTo(projectPath, task.id, kind, sentTo !== null && sentTo !== undefined ? sentTo : { name: member, id: null })
+      const candidate = kind === 'tester' ? candidateOf(projectPath, board, task) : null
+      const text =
+        kind === 'reviewer'
+          ? reviewBriefFor(task, projectPath)
+          : testerBriefFor(task, projectPath, candidate, { godot: await godotInfoFor(projectPath, candidate === null ? null : candidate.path) })
+      const started = kind === 'reviewer' ? await stageAgents.startReviewer(task, text) : await stageAgents.startTester(task, text)
+      if (started.ok !== true) {
+        outcome.error = String(started.code === undefined ? 'start-failed' : started.code)
+        return outcome
       }
+      outcome.provisioned = true
+      outcome.delivered = true
+      await recordDeliveredTo(projectPath, task.id, kind, { name: started.name, id: started.agentId })
     } catch (error) {
       outcome.error = messageOf(error)
     }
     return outcome
   }
 
-  /** T-153: stop a live executor only after the user asked for it explicitly. */
-  async function interruptHandoffExecutor(task, entry, toSession) {
-    const name = entry !== null && entry !== undefined && typeof entry.name === 'string' && entry.name !== '' ? entry.name : null
-    if (name === null) return { ok: false, code: 'no-name' }
-    return interruptMemberNamed(ctx, {
-      name: name,
-      key: 'handoff@' + String(task.id) + '@' + name,
-      sessionId: cardOwnerSessionOf(task),
-      message: 'Task ' + String(task.id) + ' (' + String(task.title) + ') is being taken over by session ' + toSession + ' after the user confirmed it. Stop now and do not submit.',
-    })
-  }
 
   /**
    * T-153: the takeover decision. Only cards whose owner is stale/unknown AND
@@ -3373,20 +2759,20 @@ export function createApi(ctx, options) {
     }
     if (source.confirm !== true) {
       const read = await readBoardOrFail(projectPath)
-      const handoff = read.failed === undefined ? handoffOf(projectPath, read.board, sessionId) : null
+      const handoff = read.failed === undefined ? await handoffOf(projectPath, read.board, sessionId) : null
       const scope = read.failed === undefined ? await projectScopeOf(projectPath, read.board, sessionId, { summaries: false }) : null
       return failure('handoff-confirmation-required', 'takeover changes card ownership; ask the user to confirm it explicitly (confirm: true)', {
         handoff: handoff,
-        nextStep: scope === null ? null : nextStepForScope(scope, null),
+        nextStep: scope === null ? null : nextStepForScope(scope),
       })
     }
     let interruptedOnce = false
     for (let attempt = 0; attempt < 3; attempt++) {
       const read = await readBoardOrFail(projectPath)
       if (read.failed !== undefined) return read.failed
-      const handoff = handoffOf(projectPath, read.board, sessionId)
+      const handoff = await handoffOf(projectPath, read.board, sessionId)
       const scope = await projectScopeOf(projectPath, read.board, sessionId, { summaries: false })
-      const refuse = (code, message) => failure(code, message, { handoff: handoff, nextStep: nextStepForScope(scope, null) })
+      const refuse = (code, message) => failure(code, message, { handoff: handoff, nextStep: nextStepForScope(scope) })
       if (handoff.required !== true) return refuse('no-handoff-required', 'no in-progress card is owned by another session')
       // Candidates = the requested cards that are foreign and in progress. A
       // blocked card is still a CANDIDATE: it is why the takeover is refused, so
@@ -3411,17 +2797,25 @@ export function createApi(ctx, options) {
         interruptedOnce = true
         for (const entry of alive) {
           const task = model.findTask(read.board, entry.taskId)
-          // egress blockers name the executor in 'executor' (they also carry the
-          // card id and phase), which is what the interrupt path consumes.
-          if (task !== undefined) await interruptHandoffExecutor(task, { name: entry.executor }, sessionId)
+          // The user asked to stop the executor: dispose the card's live stage
+          // children, then re-read the handoff state on the next loop turn.
+          if (task !== undefined && stageAgents !== null && typeof stageAgents.releaseTask === 'function') {
+            try {
+              await stageAgents.releaseTask(task, { roles: ['worker', 'reviewer', 'tester'], reason: 'handoff interrupt requested' })
+            } catch (error) {}
+          }
         }
         continue
       }
+      // Re-read once more before the write: the user's interrupt pass may have
+      // changed the eligibility, and a takeover must not proceed on a stale one.
+      const freshRead = await readBoardOrFail(projectPath)
+      if (freshRead.failed !== undefined) return freshRead.failed
+      const fresh = await handoffOf(projectPath, freshRead.board, sessionId)
+      const freshBlockers = (Array.isArray(fresh.eligibility.takeover.blockedBy) ? fresh.eligibility.takeover.blockedBy : []).filter((entry) => targets.indexOf(entry.taskId) >= 0)
       const applied = await state.apply(
         projectPath,
         (current) => {
-          const fresh = handoffOf(projectPath, current, sessionId)
-          const freshBlockers = (Array.isArray(fresh.eligibility.takeover.blockedBy) ? fresh.eligibility.takeover.blockedBy : []).filter((entry) => targets.indexOf(entry.taskId) >= 0)
           if (freshBlockers.length > 0) return { ok: false, code: 'handoff-changed', message: 'the handoff state changed while confirming; nothing was taken over' }
           const take = applyTakeover(current, { toSession: sessionId, taskIds: targets, by: by, byName: byName, now: clock(), reason: reason })
           if (take.ok !== true) return take
@@ -3455,7 +2849,7 @@ export function createApi(ctx, options) {
       emitActivity(context, 'handoff', 'took over ' + String(movedIds.size) + ' card(s) from a stale session', movedIds.size === 1 ? Array.from(movedIds)[0] : null, 'host')
       return ok({
         board: applied.board,
-        handoff: handoffOf(projectPath, applied.board, sessionId),
+        handoff: await handoffOf(projectPath, applied.board, sessionId),
         takeover: {
           taskIds: Array.from(movedIds),
           releasedLocks: releasedLocks.sort(),
@@ -3474,7 +2868,7 @@ export function createApi(ctx, options) {
     if (sessionId === null || sessionId === undefined || sessionId === '') return failure('no-session-context', 'joining read-only needs the session identity')
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
-    const handoff = handoffOf(projectPath, read.board, sessionId)
+    const handoff = await handoffOf(projectPath, read.board, sessionId)
     if (handoff.required !== true) return ok({ board: read.board, handoff: handoff, recorded: false })
     const by = context !== undefined && context !== null && typeof context.by === 'string' && context.by !== '' ? context.by : '@user'
     const applied = await state.apply(
@@ -3494,7 +2888,7 @@ export function createApi(ctx, options) {
     )
     if (applied.failed !== null) return applied.failed
     emitActivity(context, 'handoff', 'joined the project read-only; the old cards stay with their owning session', null, 'user')
-    return ok({ board: applied.board, handoff: handoffOf(projectPath, applied.board, sessionId), recorded: true })
+    return ok({ board: applied.board, handoff: await handoffOf(projectPath, applied.board, sessionId), recorded: true })
   }
 
   /**
@@ -3611,39 +3005,6 @@ export function createApi(ctx, options) {
     const roleRead = core
       ? { config: null }
       : await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
-    // T-152: the pool is resolved for the PANEL SESSION only. With no session at
-    // all this is the documented LEGACY single-team fallback — it is labelled as
-    // such below and never presented as the project's team.
-    // Legacy Team/worker inventory is not read by the v3 panel. The /state path
-    // opts out of it: the state poll is the hot path and these blocks require a
-    // host-wide Lead scan plus per-Lead roster reads on every answer.
-    const includeLegacyInventory = core !== true && opts.legacy !== false
-    let workersView = null
-    if (includeLegacyInventory) {
-      const workers = workerPool(ctx, board, { roleConfig: roleRead.config, sessionId: panelSession })
-      // T-139: make the executor team's project EXPLICIT. The member table is still
-      // the request session's Team (T-122/T-130). This only says which project that
-      // team lives in, and whether it is the project this snapshot is for — so the
-      // panel can stop presenting another project's Team as if it were this one.
-      const workersTeamSession =
-        workers.leadInfo !== null && workers.leadInfo !== undefined && typeof workers.leadInfo.session === 'string' && workers.leadInfo.session !== ''
-          ? workers.leadInfo.session
-          : typeof workers.session === 'string' && workers.session !== ''
-            ? workers.session
-            : null
-      let workersTeamProject = null
-      if (workersTeamSession !== null) {
-        try {
-          const teamRoot = await requesterRootOf(workersTeamSession)
-          workersTeamProject = typeof teamRoot.root === 'string' && teamRoot.root !== '' ? teamRoot.root : null
-        } catch (error) {
-          workersTeamProject = null
-        }
-      }
-      const workersTeamProjectMatch = workersTeamProject === null ? null : projectIdOf(workersTeamProject) === projectIdOf(projectPath)
-      workersView = Object.assign({}, workers, { project: workersTeamProject, projectMatch: workersTeamProjectMatch })
-    }
-    const snapshotTeamView = null
     const worktrees = core
       ? { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] }
       : await worktreeSnapshot(projectPath, board)
@@ -3759,18 +3120,6 @@ export function createApi(ctx, options) {
           '); the panel and that session point at different projects — open the board from the session that works on it'
         : null
     const registryConsistent = projectWarning === null
-    // Every legacy "team-ish" block below speaks for the PANEL SESSION only.
-    // T-152: these fields are how a reader can tell that from a project team
-    // instead of silently borrowing the current session's team as "the" team.
-    const sessionScopeFields = {
-      // 'panel-session' when a session asked; with NO session identity the only
-      // thing these blocks can describe is the legacy single-team view, which is
-      // labelled as such instead of being passed off as the project's team.
-      scope: panelSession === null ? 'legacy-single-team' : 'panel-session',
-      participatesInBoardProject: scope === null ? null : scope.panelSessionParticipates,
-      boardProject: scope === null ? projectRef.root : scope.boardProject.root,
-      panelSession: panelSession,
-    }
     return ok({
       project: projectPath,
       projectId: projectRef.id,
@@ -3795,32 +3144,6 @@ export function createApi(ctx, options) {
       dispatch: board.dispatch,
       roles: core ? null : roleRead.config,
       rolePreviews: core ? null : rolePreviewsFor(projectPath, roleRead.config),
-      // T-152: the pool is the PANEL SESSION's pool; the project's board is the
-      // project's. The fields say which is which instead of implying one team.
-      // v3 keeps these fields for old direct-API readers only. /state opts out:
-      // the panel uses agentTree + scope instead, and the host-wide Team scan is
-      // what made the first paint pay for data no v3 view renders.
-      workers: includeLegacyInventory ? Object.assign({}, workersView, sessionScopeFields) : null,
-      // T-109/T-152: legacy whole-host Team inventory, only when a direct API
-      // caller asked for the full snapshot.
-      teams: includeLegacyInventory ? Object.assign({}, await teamsSnapshot(panelSession), { scope: 'host-inventory', panelSession: panelSession }) : null,
-      // Agents are the live Team members (lead + teammates), with their kind,
-      // session and current task. System/host work is NOT listed here.
-      agents: includeLegacyInventory
-        ? Object.assign(
-            {
-              lead: workersView === null ? null : workersView.leadInfo,
-              members: workersView === null ? [] : workersView.members,
-              kinds: workersView === null ? [] : workersView.kinds,
-              roles: workersView === null ? [] : workersView.roles,
-              // T-122: the whole-host inventory is a separate field; the member table
-              // above is only this session's team. T-152: the block carries its scope
-              // and never stands in for the project's team.
-              inventory: agentInventoryRows(panelSession),
-            },
-            sessionScopeFields,
-          )
-        : null,
       worktrees: worktrees,
       activity: activitySnapshot(),
       // T-111: the status timeline is DERIVED from the board (task history + merge
@@ -3863,12 +3186,6 @@ export function createApi(ctx, options) {
       agentTree: core
         ? { available: false, root: null, members: [], count: 0, error: 'deferred' }
         : await agentTreeSnapshot(panelSession, board),
-      // T-110/T-152: the PANEL SESSION's team (ok/lead/source/members), annotated
-      // with its scope; sessionSummaries is where every project session's team
-      // lives. nextStep is the panel session's own next step, never the project's.
-      // v3: the panel reads agentTree, not the retired Team roster. Keep the
-      // field null so an old client cannot mistake a stale team for execution.
-      team: null,
       nextStep: core ? null : nextStepForScope(scope, null),
       serverTime: new Date(now).toISOString(),
     })
@@ -4805,11 +4122,16 @@ export function createApi(ctx, options) {
       // A needs-rebase card waits for a HUMAN: provisioning must not clear that
       // marker (which would hand it straight back to the rebuild loop).
       if (task.waitingReason === 'needs-rebase') continue
-      let provisioned = null
-      if (task.status === 'running' || task.status === 'reviewing') provisioned = await provisionRole('reviewer', projectPath, task)
-      else if (task.status === 'testing') provisioned = await provisionRole('tester', projectPath, task)
-      else continue
-      if (provisioned !== null && provisioned !== undefined && provisioned.ok === true) {
+      // v3: only an OPEN stage round can be retried; the stage child is started
+      // again and its Session id re-recorded on the card.
+      const kind = task.status === 'reviewing' ? 'reviewer' : task.status === 'testing' ? 'tester' : null
+      if (kind === null || stageAgents === null) continue
+      const record = kind === 'reviewer' ? task.review : task.test
+      if (record === null || record === undefined || record.status !== 'pending') continue
+      const text = kind === 'reviewer' ? reviewBriefFor(task, projectPath) : testerBriefFor(task, projectPath, candidateOf(projectPath, board, task), {})
+      const started = kind === 'reviewer' ? await stageAgents.startReviewer(task, text) : await stageAgents.startTester(task, text)
+      if (started.ok === true) {
+        await recordDeliveredTo(projectPath, task.id, kind, { name: started.name, id: started.agentId })
         await clearWaiting(projectPath, task.id, context)
         recovered.push(task.id)
       }
@@ -4977,69 +4299,6 @@ export function createApi(ctx, options) {
     return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null
   }
 
-  /** The project's Team + the structured next step when it does not exist yet. */
-  async function projectTeamFor(projectPath, sessionId) {
-    const requester = await requesterRootOf(sessionId)
-    const team = Object.assign({}, projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath, sessionRoot: requester.root }), {
-      requesterRoot: requester.root,
-      requesterError: requester.error,
-      requesterReason: requester.root === null ? '无法确定该会话的项目（内存无绑定，DSH 会话目录也未命中）；members[].matchesSession 为 null' : null,
-    })
-    return { team: team, nextStep: teamBootstrapStep(team) }
-  }
-
-  /**
-   * Provision the minimum roster inside the caller's OWN session/project.
-   *
-   * Shared by the `bootstrapTeam` action (T-121) and by onboarding's automatic
-   * team step (T-129): one definition of "build a team", so the two can never
-   * disagree about who may create it or what the minimum is. Returns a success
-   * payload or the same readable refusals the action answers with.
-   */
-  async function bootstrapTeamFor(projectPath, sessionId) {
-    if (sessionId === null || sessionId === undefined || sessionId === '') {
-      return failure('no-lead-for-project', 'bootstrapTeam needs the caller session; no session context was provided, so no team can be created for it')
-    }
-    const lead = resolveLead(ctx, { sessionId: sessionId })
-    if (lead === null) {
-      return failure('no-lead-for-project', 'session ' + sessionId + ' has no own Team Lead, so bootstrapTeam cannot create a team here; open the project from the session that owns it')
-    }
-    const owns = await sessionOwnsProject(state, sessionId, projectPath)
-    if (owns !== true) {
-      return failure('project-mismatch', 'session ' + sessionId + ' does not run in project ' + projectPath + ', so bootstrapTeam refuses to create a team for another project')
-    }
-    if (roles === null || typeof roles.ensure !== 'function') {
-      return failure('no-role-manager', 'this profile has no role manager, so the minimum roster cannot be provisioned')
-    }
-    const config = await roleConfigFor(projectPath)
-    // T-129 §14: bootstrap creates the WORKER slot only. Reviewer and tester are
-    // provisioned later by their own stage (review on submit, test on entering
-    // testing), so a project never pays for three agents before a card exists —
-    // and the worker is NOT handed a fake "bootstrap-team" card to chase.
-    const provisioned = []
-    for (const kind of ['worker']) {
-      let ensured = null
-      try {
-        // T-138: bootstrap provisions exactly ONE worker. The rest of the pool
-        // is grown by the dispatcher as ready cards arrive, up to the dispatch cap.
-        ensured = await ensureRoleBounded(kind, { config: config === null ? undefined : config, projectPath: projectPath, task: null, now: clock(), sessionId: sessionId, count: 1 })
-      } catch (error) {
-        ensured = null
-      }
-      emitRoleProvision(ensured)
-      provisioned.push({ kind: kind, ok: ensured !== null && ensured !== undefined && ensured.ok === true, created: ensured === null || ensured === undefined || !Array.isArray(ensured.created) ? [] : ensured.created.map((entry) => entry.name), reused: ensured === null || ensured === undefined || !Array.isArray(ensured.reused) ? [] : ensured.reused, refused: ensured === null || ensured === undefined || !Array.isArray(ensured.refused) ? [] : ensured.refused })
-    }
-    const team = projectTeamState(ctx, { sessionId: sessionId, projectPath: projectPath })
-    return ok({
-      lead: typeof lead.name === 'string' && lead.name !== '' ? lead.name : String(lead.id),
-      session: sessionId,
-      roles: provisioned,
-      // Explicit: the other two slots are NOT missing, they are deferred to their
-      // stage (the phase gate provisions them with the real card's brief).
-      deferred: ['reviewer', 'tester'],
-      team: team,
-    })
-  }
 
   async function perform(action, input, context) {
     const source = input === undefined || input === null ? {} : input
@@ -5296,11 +4555,8 @@ export function createApi(ctx, options) {
       return null
     }
     const missing = preflight.failed.map((check) => check.label + (check.detail === null ? '' : ' (' + check.detail + ')')).join('; ')
-    const teamMissing = preflight.failed.filter((check) => check.id === 'team').length > 0
-    // T-110: when the ONLY thing missing is the Team, say so with the code the model
-    // (and the panel) can act on, and carry the instruction.
-    const code = teamMissing && preflight.failed.length === 1 ? 'no-team-for-project' : 'not-ready'
-    const message = code === 'no-team-for-project' ? 'Cannot start dispatch: this project has no Team (' + missing + ')' : 'Cannot start dispatch: ' + missing
+    const code = 'not-ready'
+    const message = 'Cannot start dispatch: ' + missing
     try {
       await state.apply(
         projectPath,
@@ -5322,14 +4578,7 @@ export function createApi(ctx, options) {
     } catch (error) {}
     const refused = failure(code, message)
     refused.preflight = preflight
-    if (teamMissing) {
-      const teamRead = await projectTeamFor(projectPath, opts.sessionId)
-      refused.team = teamRead.team
-      // T-152/T-153: the caller passes the SESSION-AWARE next step (the same one
-      // /state answers); the project team's bootstrap instruction is only right
-      // when this session actually owns the board and has no unresolved handoff.
-      refused.nextStep = opts.nextStep === undefined ? teamRead.nextStep : opts.nextStep
-    }
+    if (opts.nextStep !== undefined) refused.nextStep = opts.nextStep
     return refused
   }
 
@@ -5379,24 +4628,6 @@ export function createApi(ctx, options) {
     }
   }
 
-  /** The public team summary: names only, never full member rows. */
-  function onboardTeamSummary(team, bootstrapped, roles) {
-    const t = team === null || team === undefined ? {} : team
-    return {
-      available: t.available === true,
-      ok: t.ok === true,
-      lead: typeof t.lead === 'string' && t.lead !== '' ? t.lead : null,
-      members: Array.isArray(t.members)
-        ? t.members
-            .map((member) => String(member !== null && member !== undefined && typeof member === 'object' ? member.name : member))
-            .filter((name) => name !== '')
-        : [],
-      missingRoles: Array.isArray(t.missingRoles) ? t.missingRoles.slice() : [],
-      error: t.error === undefined || t.error === null ? null : String(t.error),
-      bootstrapped: bootstrapped === true,
-      roles: Array.isArray(roles) ? roles : null,
-    }
-  }
 
   /** The public dispatch summary: state plus the request the user must decide. */
   function onboardDispatchSummary(dispatch) {

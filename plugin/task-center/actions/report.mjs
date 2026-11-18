@@ -5,7 +5,6 @@
  * cleanup/warnings semantics; only the routing moved.
  */
 export function createReportAction(deps) {
-  const wrongProjectRefusal = deps.wrongProjectRefusal
   const readBoardOrFail = deps.readBoardOrFail
   const taskForContext = deps.taskForContext
   const probeCommitsOf = deps.probeCommitsOf
@@ -24,8 +23,6 @@ export function createReportAction(deps) {
   async function report(source, context, projectPath) {
     const id = String(source.id === undefined ? '' : source.id)
     if (id === '') return failure('missing-id', 'report needs a task id')
-    const wrongProject = wrongProjectRefusal(context, projectPath)
-    if (wrongProject !== null) return wrongProject
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const checked = taskForContext(read.board, id, context)

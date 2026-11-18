@@ -20,21 +20,13 @@ export function createMergeActions(deps) {
   const refreshMergeRequest = deps.refreshMergeRequest
   const ownerOf = deps.ownerOf
   const assigneeMatches = deps.assigneeMatches
-  const callerMemberOf = deps.callerMemberOf
-  const mergerName = deps.MERGER_NAME
   const readTargetHead = deps.readTargetHead
   const readBranchHead = deps.readBranchHead
   const git = deps.git
   const messageOf = deps.messageOf
-  const provisionRole = deps.provisionRole
   const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
-  const provisionFailedHard = deps.provisionFailedHard
-  const provisionReasonOf = deps.provisionReasonOf
   const markWaiting = deps.markWaiting
   const clearWaiting = deps.clearWaiting
-  const roleSlotNameOf = deps.roleSlotNameOf
-  const assignStageSlot = deps.assignStageSlot
-  const notifyMember = deps.notifyMember
   const reviewBriefFor = deps.reviewBriefFor
   const recordDeliveredTo = deps.recordDeliveredTo
   const ok = deps.ok
@@ -143,15 +135,16 @@ export function createMergeActions(deps) {
       }
       // A new head/base starts a fresh review round: the previous decisions
       // were taken on a different tree, so refreshMergeRequest resets the
-      // phases and the queue waits for review + tests again. Ensure the
-      // reviewer before the write so the scheduler's stage pass cannot race.
-      const provisioned = stageAgents !== null
-        ? await stageAgents.startReviewer(task, reviewBriefFor(task, projectPath))
-        : await provisionRole('reviewer', projectPath, task)
-      if (provisionFailedHard(provisioned)) {
-        const reason = provisionReasonOf(provisioned)
-        await markWaiting(projectPath, id, reason, provisioned.message, context)
-        return failure('reviewer-unavailable', 'no reviewer could be provisioned for ' + id + ' (' + reason + '); the merge request was not refreshed')
+      // phases and the queue waits for review + tests again. Start the reviewer
+      // before the write so the scheduler's stage pass cannot race.
+      if (stageAgents === null) {
+        await markWaiting(projectPath, id, 'agent-runtime-unavailable', 'no subagent runtime to start a reviewer', context)
+        return failure('reviewer-unavailable', 'no reviewer could be started for ' + id + ' (agent-runtime-unavailable); the merge request was not refreshed')
+      }
+      const provisioned = stageAgents === null ? null : await stageAgents.startReviewer(task, reviewBriefFor(task, projectPath))
+      if (provisioned !== null && provisioned.ok !== true) {
+        await markWaiting(projectPath, id, 'reviewer-unavailable', String(provisioned.message), context)
+        return failure('reviewer-unavailable', 'no reviewer could be started for ' + id + ' (' + String(provisioned.message) + '); the merge request was not refreshed')
       }
       const recorded = await writeTask(
         projectPath,
@@ -166,19 +159,10 @@ export function createMergeActions(deps) {
       if (recorded.task !== null && recorded.task !== undefined && recorded.task.status === 'reviewing') {
         const round = recorded.task.review === null || recorded.task.review === undefined ? 1 : recorded.task.review.attempt
         emitActivity(context, 'review-start', 'merge request refreshed; review round ' + String(round), id)
-        if (stageAgents !== null) {
-          if (provisioned !== null && provisioned.ok === true) {
-            await recordDeliveredTo(projectPath, recorded.task.id, 'reviewer', { name: provisioned.name, id: provisioned.agentId })
-          }
-          return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned })
+        if (provisioned !== null && provisioned.ok === true) {
+          await recordDeliveredTo(projectPath, recorded.task.id, 'reviewer', { name: provisioned.name, id: provisioned.agentId })
         }
-        const reviewer = roleSlotNameOf('reviewer', recorded.task.ownerSession)
-        const slot = await assignStageSlot(projectPath, recorded.task, 'reviewer')
-        if (slot.delivered === true && reviewer !== null) {
-          const sentTo = await notifyMember(reviewer, reviewBriefFor(recorded.task, projectPath), recorded.task.ownerSession, projectPath)
-          await recordDeliveredTo(projectPath, recorded.task.id, 'reviewer', sentTo)
-        }
-        return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned, queuePosition: slot.position })
+        return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned })
       }
       return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
     })

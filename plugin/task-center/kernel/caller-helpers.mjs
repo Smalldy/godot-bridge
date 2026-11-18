@@ -1,11 +1,11 @@
 /**
- * Caller identifier/roster helpers (kernel seam).
+ * Caller identifier helpers (kernel seam).
  *
- * callerLookup stays in api.mjs (it walks every Lead roster and the agent
- * registry); these four pure helpers are shared by it and the verdict gate.
+ * A caller is the Agent the tool layer hands over. Its role kind comes from the
+ * spawned child's name (worker-/reviewer-/tester-), never from a Team roster.
  */
 export function createCallerHelpers(deps) {
-  const roleKindOf = deps.roleKindOf
+  const roleKindOfAgentName = deps.roleKindOfAgentName
 
   function callerIdentifiers(context) {
     const agent = context !== undefined && context !== null && context.agent !== undefined && context.agent !== null ? context.agent : null
@@ -27,39 +27,7 @@ export function createCallerHelpers(deps) {
   function callerRoleKindOf(value) {
     if (typeof value !== 'string' || value === '') return null
     const trimmed = value.charAt(0) === '@' ? value.slice(1) : value
-    const kind = roleKindOf(trimmed)
-    if (kind !== null) return kind
-    // A durable member name may be plain 'tester-1' while the project slot is
-    // tester-p<key>-1; strip the session prefix to compare logically.
-    const short = trimmed.replace(/^session-/, '')
-    return roleKindOf(short)
-  }
-
-  function rosterSummary(rosters, rosterErrors, leads) {
-    const lines = []
-    const readable = Array.isArray(rosters) ? rosters : []
-    const errors = Array.isArray(rosterErrors) ? rosterErrors : []
-    for (const entry of readable) {
-      const lead = entry.lead === null || entry.lead === undefined ? null : entry.lead
-      const leadName = lead === null ? '?' : String(lead.name === undefined || lead.name === null ? lead.id : lead.name)
-      const leadId = lead === null || lead.id === undefined || lead.id === null ? '?' : String(lead.id)
-      const roles = entry.members
-        .filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string')
-        .map((member) => callerRoleKindOf(member.name) || member.name)
-        .filter((value, index, all) => all.indexOf(value) === index)
-      lines.push(leadName + ' (' + leadId + ') -> ' + (roles.length === 0 ? '(roster is empty)' : roles.join(', ')))
-    }
-    for (const entry of errors) {
-      const lead = entry.lead === null || entry.lead === undefined ? null : entry.lead
-      const leadId = lead === null || lead.id === undefined || lead.id === null ? '?' : String(lead.id)
-      const leadName = lead === null || lead.name === undefined || lead.name === null ? leadId : String(lead.name)
-      lines.push(leadName + ' (' + leadId + ') -> roster unavailable: ' + String(entry.error))
-    }
-    if (lines.length === 0) {
-      const count = Array.isArray(leads) ? leads.length : 0
-      return count === 0 ? 'no live Lead is visible to this host' : 'no Lead roster could be read (' + String(count) + ' Lead(s) listed)'
-    }
-    return lines.join('; ')
+    return roleKindOfAgentName(trimmed)
   }
 
   function isAssignee(task, member) {
@@ -72,7 +40,6 @@ export function createCallerHelpers(deps) {
   return {
     callerIdentifiers: callerIdentifiers,
     callerRoleKindOf: callerRoleKindOf,
-    rosterSummary: rosterSummary,
     isAssignee: isAssignee,
   }
 }

@@ -12,11 +12,10 @@ assert.equal(api.includes('brief: {'), true, 'the API destructures capability gr
 const port = (await import('../../plugin/task-center/dispatch-port.mjs')).dispatchPort
 const groups = {
   brief: ['briefFor', 'briefPartsFor', 'reviewBriefFor', 'reworkBriefFor', 'roleBriefFor', 'roleBriefPartsFor', 'roleContextPreview', 'roleTemplateValuesFor', 'testFailureBriefFor', 'testerBriefFor'],
-  lead: ['resolveLead', 'liveLeads', 'resolveAnyLead', 'agentSessionOf', 'leadInventory', 'leadInventoryText', 'servicesFor'],
-  roster: ['MERGER_NAME', 'ROLE_SAMPLE_TASK', 'roleShortName', 'roleSlotOf', 'roleKindOf'],
-  workspace: ['isTransientEnvironmentCode', 'memberProjectOf', 'cleanupInvestigationCheckouts', 'probeWorktree', 'projectSlotKey', 'projectTeamState', 'teamBootstrapStep', 'sessionOwnsProject', 'sessionWorkspaceOf'],
-  task: ['REVIEW_MAX_ROUNDS', 'hostCheckEvidence', 'runHostCheck', 'recordPhaseActivity', 'recordStageSlot', 'stageSlotOf'],
-  dispatch: ['interruptAssignee', 'interruptMemberNamed', 'workerPool'],
+  lead: ['agentSessionOf', 'sessionLastActiveAt'],
+  roster: ['ROLE_SAMPLE_TASK'],
+  workspace: ['isTransientEnvironmentCode', 'cleanupInvestigationCheckouts', 'probeWorktree', 'sessionOwnsProject', 'sessionWorkspaceOf'],
+  task: ['REVIEW_MAX_ROUNDS', 'hostCheckEvidence', 'runHostCheck', 'verifyFingerprintFor', 'recordPhaseActivity', 'recordStageSlot', 'stageSlotOf'],
 }
 assert.deepEqual(Object.keys(port).sort(), Object.keys(groups).sort())
 for (const [group, names] of Object.entries(groups)) {
@@ -26,4 +25,6 @@ for (const [group, names] of Object.entries(groups)) {
 }
 assert.equal(port.briefFor, undefined, 'the flat briefFor export is gone')
 assert.equal(port.resolveLead, undefined, 'the flat resolveLead export is gone')
+assert.equal(port.dispatch, undefined, 'the retired worker-pool dispatch group is gone')
+assert.equal(port.roster.roleSlotOf, undefined, 'the retired role-slot helper is gone')
 console.log('PASS  the API depends on the dispatcher through grouped capabilities')

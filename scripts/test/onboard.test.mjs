@@ -1,10 +1,11 @@
 // T-129: the one-call onboarding.
 //
-// Eleven contract scenarios over a fake fs / fake team: an empty board, a board
-// waiting for the user (request + blocked), blocked only, a project without git,
-// a workspace without any project, a missing team that must bootstrap exactly
-// once, a project the session does not own, a profile without team services, a
-// hard-broken checkout, the brief's forbidden vocabulary, and the response size.
+// Contract scenarios over a fake fs: an empty board, a board waiting for the
+// user (request + blocked), blocked only, a project without git, a workspace
+// without any project, a project the session does not own, a host without the
+// subagent runtime, a hard-broken checkout, the brief's forbidden vocabulary, the
+// response size, and the T-153 handoff inventory. Onboarding never builds
+// execution capacity: the root Agent's subagent tree is the only executor.
 
 import { join } from 'node:path'
 import {
@@ -14,14 +15,13 @@ import {
   createFakeFs,
   createFakeGit,
   createStrictCtx,
-  createTeam,
+  createFakeTaskAgents,
 } from './support/fixtures.mjs'
 import { acquire as acquireLocks, emptyLocks } from '../../plugin/task-center/locks.mjs'
 import { sessionLivenessFrom, staleMsOf } from '../../plugin/task-center/handoff.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
 import { createApi, ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from '../../plugin/task-center/api.mjs'
 import { buildSkillContent } from '../../plugin/task-center/skill.mjs'
-import { createRoleManager } from '../../plugin/task-center/dispatch.mjs'
 import { boardPath, projectIdOf } from '../../plugin/task-center/board.mjs'
 import {
   ONBOARD_NEXT_CODES,
@@ -113,7 +113,8 @@ function onboardRig(options) {
     for (const entry of opts.files) fs.files.set(entry.path, { text: entry.text, version: 'seed' })
   }
   fs.dirs.add(join(project, '..', 'fake-home'))
-  const team = opts.team === undefined ? createTeam() : opts.team
+  // Inert call recorder: the API never receives a Team service in v3.
+  const team = { calls: [] }
   // T-153: a handoff test needs a second session in the host's agent list.
   const agents = opts.agents === undefined ? { list: () => [{ id: 'session-lead' }] } : opts.agents
   const ctx = createStrictCtx(
@@ -122,7 +123,6 @@ function onboardRig(options) {
       sandboxPolicy: { resolve: () => ({ workspaceRoot: project }) },
       get(key) {
         if (key === 'agents') return agents
-        if (key === 'agentTeams') return opts.teamService === false ? null : team
         if (key === 'subagents') return { list: () => ['spawn'] }
         return undefined
       },
@@ -135,9 +135,7 @@ function onboardRig(options) {
   state.setSessionRoot(sessionId, opts.sessionRoot === undefined ? project : opts.sessionRoot)
   const git = opts.git === undefined ? createFakeGit(Object.assign({ project: project, fs: fs }, opts.gitOptions === undefined ? {} : opts.gitOptions)) : opts.git
   const scheduler = opts.scheduler === undefined ? stubScheduler(opts.environment) : opts.scheduler
-  let roles = opts.roles === undefined ? null : opts.roles
-  if (roles === 'auto') roles = createRoleManager(ctx, { state: state })
-  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, roles: roles })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, taskAgents: opts.taskAgents === undefined ? null : opts.taskAgents })
   const context = {
     projectPath: opts.contextProject === undefined ? project : opts.contextProject,
     by: '@lead',
@@ -147,7 +145,7 @@ function onboardRig(options) {
   async function onboard(body) {
     return api.perform('onboard', body === undefined ? {} : body, context)
   }
-  return { project: project, fs: fs, team: team, ctx: ctx, state: state, git: git, scheduler: scheduler, roles: roles, api: api, onboard: onboard, sessionId: sessionId, context: context }
+  return { project: project, fs: fs, team: team, ctx: ctx, state: state, git: git, scheduler: scheduler, api: api, onboard: onboard, sessionId: sessionId, context: context }
 }
 
 function stageLineCount(brief) {
@@ -250,8 +248,7 @@ function spawnCalls(team) {
 
 // ── 6) a missing team is bootstrapped exactly once ────────────────────────
 {
-  const leadOnly = createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] })
-  const rig = onboardRig({ board: boardOf({}), team: leadOnly, roles: 'auto' })
+  const rig = onboardRig({ board: boardOf({}) })
   const first = (await rig.onboard()).onboard
   const afterFirst = spawnCalls(rig.team).length
   check('6 onboarding never bootstraps a team', first.team === null, JSON.stringify(first.team))
@@ -272,8 +269,7 @@ function spawnCalls(team) {
 // ── 7) a session that does not own the project gets no team ───────────────
 {
   const other = join(PROJECT, '..', 'onboard-other-project')
-  const leadOnly = createTeam({ roster: [{ id: 'session-lead', name: 'lead', role: 'lead', status: 'running' }] })
-  const rig = onboardRig({ board: boardOf({}), team: leadOnly, roles: 'auto', sessionRoot: other })
+  const rig = onboardRig({ board: boardOf({}), sessionRoot: other })
   const o = (await rig.onboard()).onboard
   check('7 a foreign project is not bootstrapped', spawnCalls(rig.team).length === 0, JSON.stringify(rig.team.calls))
   check('7 a project mismatch is not a team failure', o.setup.failed.length === 0, JSON.stringify(o.setup))
@@ -284,7 +280,7 @@ function spawnCalls(team) {
 
 // ── 8) a profile without team services stays usable ───────────────────────
 {
-  const rig = onboardRig({ board: boardOf({}), teamService: false })
+  const rig = onboardRig({ board: boardOf({}) })
   const o = (await rig.onboard()).onboard
   check('8 no team services is not the setup stage', o.stage !== 'setup', o.stage)
   check('8 no Team warning is fabricated', !o.warnings.some((warning) => warning.indexOf('团队服务') >= 0), JSON.stringify(o.warnings))
@@ -438,7 +434,7 @@ function spawnCalls(team) {
   }
 
   function leadOnlyTeam() {
-    return createTeam({ roster: [{ id: NEW, name: 'lead', role: 'lead', status: 'running' }] })
+    return { calls: [] }
   }
 
   function runningCard(overrides) {
@@ -504,8 +500,8 @@ function spawnCalls(team) {
 
   // 3) STALE owner + ALIVE executor: no lock stealing; read-only fallback.
   {
-    const team = twoSessionTeam()
-    const rig = onboardRig({ board: boardOf({ tasks: [runningCard()] }), team: team, agents: bothAgents, roles: 'auto' })
+    const taskAgents = createFakeTaskAgents({ live: ['session-old-worker'] })
+    const rig = onboardRig({ board: boardOf({ tasks: [runningCard()] }), agents: bothAgents, taskAgents: taskAgents })
     markSession(rig, OLD, OLD_STALE)
     const seededLock = acquireLocks(emptyLocks(), ['scripts/live.gd'], { taskId: 'T-6' }, NOW_MS, 60 * 60 * 1000)
     rig.state.memory.locks = seededLock.locks
@@ -513,29 +509,28 @@ function spawnCalls(team) {
     check('T-153 a live executor blocks takeover and onboarding answers read-only join', first.stage === 'handoff' && first.next.code === 'join-project-read-only' && first.handoff.eligibility.takeover.ok === false && first.handoff.eligibility.takeover.blockedBy.some((entry) => entry.taskId === 'T-6' && entry.reason === 'executor-alive'), JSON.stringify({ next: first.next && first.next.code, blocked: first.handoff && first.handoff.eligibility }))
     const refused = await rig.api.perform('onboard', { handoff: { decision: 'takeover', confirm: true } }, rig.context)
     check('T-153 takeover is refused while the old executor is alive', refused.ok === false && refused.code === 'executor-alive' && refused.nextStep !== null && refused.nextStep.code !== 'bootstrap-team', JSON.stringify({ code: refused.code, next: refused.nextStep && refused.nextStep.code }))
-    const interruptRefused = await rig.api.perform('onboard', { handoff: { decision: 'takeover', confirm: true, interrupt: true } }, rig.context)
-    const interrupts = team.calls.filter((call) => call.kind === 'interrupt').length
-    const after = boardJson(rig.fs, rig.project).tasks.filter((task) => task.id === 'T-6')[0]
-    const held = Object.values(rig.state.memory.locks).filter((lock) => String(lock.taskId) === 'T-6')
-    check('T-153 an explicit interrupt is attempted, but a still-live executor keeps the card and its lock', interruptRefused.ok === false && interrupts >= 1 && after.ownerSession === OLD && after.status === 'running' && held.length === 1, JSON.stringify({ code: interruptRefused.code, interrupts: interrupts, owner: after.ownerSession, locks: held.length }))
+    const interrupted = await rig.api.perform('onboard', { handoff: { decision: 'takeover', confirm: true, interrupt: true } }, rig.context)
+    const interruptedCalls = taskAgents.calls.filter((call) => call.kind === 'releaseTask' || call.kind === 'release').length
+    const afterInterrupt = boardJson(rig.fs, rig.project).tasks.filter((task) => task.id === 'T-6')[0]
+    check('T-153 an explicit interrupt disposes the live child and the takeover then succeeds', interrupted.ok === true && interruptedCalls >= 1 && afterInterrupt.ownerSession === NEW && afterInterrupt.assignee === null, JSON.stringify({ code: interrupted.ok === true ? null : interrupted.code, interruptedCalls: interruptedCalls, owner: afterInterrupt.ownerSession }))
   }
 
   // 4) REVIEWING/TESTING takeover: live stage records kept, roles re-provisioned.
   {
     const reviewing = taskOf({ id: 'T-7', title: 'Waiting review', status: 'reviewing', ownerSession: OLD, attempts: 1, writeFiles: [], review: { status: 'pending', by: 'worker', at: new Date(NOW_MS - 20 * 60 * 1000).toISOString(), reasons: null, attempt: 2, deliveredTo: { name: 'old-reviewer', id: 'session-old-reviewer', at: new Date(NOW_MS - 20 * 60 * 1000).toISOString() } }, merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-7', mergeCommit: null } })
     const testing = taskOf({ id: 'T-8', title: 'Testing card', status: 'testing', ownerSession: OLD, attempts: 1, writeFiles: [], test: { status: 'passed', by: 'tester', at: new Date(NOW_MS - 20 * 60 * 1000).toISOString(), evidence: 'suite green', attempt: 1, deliveredTo: { name: 'old-tester', id: 'session-old-tester', at: new Date(NOW_MS - 20 * 60 * 1000).toISOString() } }, merge: { status: 'open', base: 'base-sha', target: 'main', head: 'head-8', mergeCommit: 'candidate-8' } })
-    const team = twoSessionTeam()
-    const rig = onboardRig({ board: boardOf({ tasks: [reviewing, testing] }), team: team, agents: bothAgents, roles: 'auto' })
+    const taskAgents = createFakeTaskAgents()
+    const rig = onboardRig({ board: boardOf({ tasks: [reviewing, testing] }), agents: bothAgents, taskAgents: taskAgents })
     markSession(rig, OLD, OLD_STALE)
     const taken = await rig.api.perform('onboard', { handoff: { decision: 'takeover', confirm: true } }, rig.context)
     const tasks = boardJson(rig.fs, rig.project).tasks
     const reviewed = tasks.filter((task) => task.id === 'T-7')[0]
     const tested = tasks.filter((task) => task.id === 'T-8')[0]
-    const spawns = team.calls.filter((call) => call.kind === 'spawn')
+    const starts = taskAgents.calls.filter((call) => call.kind === 'startReviewer' || call.kind === 'startTester')
     check('T-153 stage cards hold no write lock, so the takeover reports none released', taken.ok === true && taken.onboard.takeover !== null && taken.onboard.takeover.releasedLocks.length === 0, JSON.stringify(taken.onboard && taken.onboard.takeover && taken.onboard.takeover.releasedLocks))
     check('T-153 reviewing takeover keeps the round + an approved record and re-queues the reviewer', taken.ok === true && reviewed.ownerSession === NEW && reviewed.status === 'reviewing' && reviewed.review.attempt === 2 && reviewed.review.status === 'pending' && reviewed.review.deliveredTo !== null && String(reviewed.review.deliveredTo.name).indexOf('reviewer') === 0 && reviewed.merge !== null && reviewed.merge.status === 'open', JSON.stringify({ owner: reviewed.ownerSession, status: reviewed.status, review: reviewed.review }))
     check('T-153 testing takeover keeps the candidate + passed test and does not re-run a passed round', tested.ownerSession === NEW && tested.status === 'testing' && tested.test.status === 'passed' && tested.test.evidence === 'suite green' && tested.merge !== null && tested.merge.mergeCommit === 'candidate-8' && tested.test.deliveredTo !== null && tested.test.deliveredTo.id === 'session-old-tester', JSON.stringify({ owner: tested.ownerSession, test: tested.test, merge: tested.merge }))
-    check('T-153 the takeover session re-provisions a reviewer and a tester for the moved cards', spawns.some((call) => call.caller === NEW && String(call.name).indexOf('reviewer') === 0) && spawns.some((call) => call.caller === NEW && String(call.name).indexOf('tester') === 0), JSON.stringify(spawns))
+    check('T-153 the takeover session starts a reviewer for the open round only (a passed test is kept)', starts.some((call) => call.kind === 'startReviewer') && !starts.some((call) => call.kind === 'startTester'), JSON.stringify(starts.map((call) => call.kind)))
     check(
       'T-153 the takeover audit records the per-phase executor action (re-queue vs kept verdict)',
       [reviewed, tested].every((task) =>

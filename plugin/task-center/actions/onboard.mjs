@@ -2,8 +2,9 @@
  * Onboarding action.
  *
  * Moved out of api.mjs with the function body unchanged. It resolves the
- * project, binds it, reuses/bootstraps the Team, reads the board and renders
- * the short brief plus one next step.
+ * project, binds it, reads the board and renders the short brief plus one next
+ * step. Onboarding never creates execution capacity: the root Agent's subagent
+ * tree is the only executor.
  */
 export function createOnboardAction(deps) {
   const callerSessionId = deps.callerSessionId
@@ -16,7 +17,6 @@ export function createOnboardAction(deps) {
   const renderProjectLine = deps.renderProjectLine
   const ONBOARD_VERSION = deps.ONBOARD_VERSION
   const onboardProjectSummary = deps.onboardProjectSummary
-  const onboardTeamSummary = deps.onboardTeamSummary
   const onboardDispatchSummary = deps.onboardDispatchSummary
   const needsUserFor = deps.needsUserFor
   const decideOnboardStage = deps.decideOnboardStage
@@ -28,29 +28,18 @@ export function createOnboardAction(deps) {
   const sessionOwnsProject = deps.sessionOwnsProject
   const remember = deps.remember
   const git = deps.git
-  const roles = deps.roles
-  const bootstrapTeamFor = deps.bootstrapTeamFor
-  const projectTeamFor = deps.projectTeamFor
   const summariseBoard = deps.summariseBoard
   const boardSizeOf = deps.boardSizeOf
   const environmentSnapshot = deps.environmentSnapshot
   const messageOf = deps.messageOf
   const renderTaskLine = deps.renderTaskLine
   const blockedSuffixOf = deps.blockedSuffixOf
-  const teamLabelOf = deps.teamLabelOf
   // T-153: the handoff inventory and the two user decisions it offers.
   const handoffFor = deps.handoffFor
   const performTakeover = deps.performTakeover
   const recordJoin = deps.recordJoin
   const ok = deps.ok
   const failure = deps.failure
-
-  /** T-154: dispatch readiness (Lead + worker). Missing stage roles are not a
-   * bootstrap reason — reviewer/tester are provisioned by their own stages. */
-  function teamDispatchReadyOf(team) {
-    if (team === null || team === undefined) return false
-    return team.dispatchReady === undefined ? team.ok === true : team.dispatchReady === true
-  }
 
   async function onboard(input, context) {
     const source = input === undefined || input === null ? {} : input
@@ -125,7 +114,7 @@ export function createOnboardAction(deps) {
           stage: stage,
           brief: brief,
           project: onboardProjectSummary(facts),
-          team: onboardTeamSummary(null, false, null),
+          team: null,
           dispatch: onboardDispatchSummary(null),
           environment: null,
           setup: setup,
@@ -224,7 +213,7 @@ export function createOnboardAction(deps) {
       return shortOnboard('unusable', '看板读不出来：' + String(read.failed.message === undefined ? read.failed.code : read.failed.message), selectOnboardNext(facts), root)
     }
     let board = read.board
-    let handoff = handoffFor(root, board, sessionId)
+    let handoff = await handoffFor(root, board, sessionId)
     let takeoverResult = null
     const decisionInput = source.handoff !== undefined && source.handoff !== null && typeof source.handoff === 'object' ? source.handoff : null
     if (decisionInput !== null) {
@@ -235,13 +224,13 @@ export function createOnboardAction(deps) {
         board = outcome.board
         takeoverResult = outcome.takeover
         setup.did.push({ step: 'handoff-takeover', ok: true, detail: outcome.takeover.taskIds.join('、') })
-        handoff = handoffFor(root, board, sessionId)
+        handoff = await handoffFor(root, board, sessionId)
       } else if (decision === 'join-read-only') {
         const outcome = await recordJoin(root, sessionId, decisionInput, context)
         if (outcome.ok !== true) return outcome
         board = outcome.board
         setup.did.push({ step: 'handoff-join', ok: true, detail: '只读加入' })
-        handoff = handoffFor(root, board, sessionId)
+        handoff = await handoffFor(root, board, sessionId)
       } else {
         return failure('bad-handoff-decision', 'handoff.decision must be "takeover" or "join-read-only"')
       }

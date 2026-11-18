@@ -8,7 +8,7 @@
 - `pause` 暂停/恢复**派发器**（同面板开关），不是单张卡；`start` 是申请。`tick` 立即跑一轮 settle，排查“为什么没派发”。
 - 归属：`submit`、`refreshMerge` 仅 assignee / 用户。
 - 仅评审：`approveReview`、`requestChanges`；仅测试：`passTest`、`failTest`、`harnessStart`、`harnessStop`、`harnessRestart`、`harnessStatus`、`harnessSmoke`。
-- 仅用户（工具不暴露，agent 调用报 `user-only`）：`settings`、`rolesList`、`rolesPreview`、`rolesCreate`、`rolesUpdate`、`rolesDelete`、`rolesBind`、`rolesDrain`、`rolesReplace`、`rolesPrune`、`rolesReset`、`skillsCatalog`、`approveStart`、`rejectStart`、`worktreesCleanup`。
+- 仅用户（工具不暴露，agent 调用报 `user-only`）：`settings`、`rolesList`、`rolesPreview`、`rolesCreate`、`rolesUpdate`、`rolesDelete`、`rolesBind`、`rolesReset`、`skillsCatalog`、`approveStart`、`rejectStart`、`worktreesCleanup`。
 
 ## 拒绝码（可读失败，不是崩溃）
 
