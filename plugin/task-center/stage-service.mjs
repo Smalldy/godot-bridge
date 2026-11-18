@@ -63,8 +63,63 @@ export function createStageService(options) {
       markCallerReturned() { return false },
     }
   }
+  /** The stage child a card's round recorded, or null. */
+  function deliveredChildOf(task, kind) {
+    if (task === null || task === undefined) return null
+    const record = kind === 'reviewer' ? task.review : task.test
+    const delivered = record === null || record === undefined ? null : record.deliveredTo
+    if (delivered === null || delivered === undefined) return null
+    if (typeof delivered.id !== 'string' || delivered.id === '') return null
+    return { id: delivered.id, name: typeof delivered.name === 'string' ? delivered.name : null }
+  }
+
+  /** Live children of a card's root, or null when the facade cannot tell. */
+  async function liveChildIds(task) {
+    if (agents === null || agents === undefined) return null
+    const rootId = task !== null && task !== undefined && typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
+    if (rootId === null) return null
+    let rows = null
+    try {
+      if (typeof agents.listAgentsFor === 'function') rows = await agents.listAgentsFor(rootId)
+      else if (typeof agents.listFor === 'function') rows = await agents.listFor(rootId)
+    } catch (error) {
+      rows = null
+    }
+    if (Array.isArray(rows) === false) return null
+    const ids = new Set()
+    for (const row of rows) {
+      if (row === null || row === undefined) continue
+      ids.add(String(row.id))
+    }
+    return ids
+  }
+
+  /**
+   * T-197: a card has at most ONE live stage child per role. A re-delivery
+   * (refreshMerge opens a new review round, a takeover re-sends the brief)
+   * disposes the previous child FIRST; if it cannot be disposed, a second one is
+   * never started behind it.
+   */
+  async function disposePriorChild(kind, task) {
+    const prior = deliveredChildOf(task, kind)
+    if (prior === null) return { ok: true, replaced: null }
+    const disposed = await releaseTaskImpl(task, { roles: [kind], reason: 'replacing the previous ' + kind })
+    const live = await liveChildIds(task)
+    if (live !== null && live.has(prior.id)) {
+      return {
+        ok: false,
+        code: 'stage-child-still-live',
+        message: 'the previous ' + kind + ' (' + prior.id + ') is still running; refusing to start a second one',
+        replaced: { agentId: prior.id, released: false },
+      }
+    }
+    return { ok: true, replaced: { agentId: prior.id, released: disposed !== null && disposed.ok === true } }
+  }
+
   async function start(kind, task, brief) {
     try {
+      const prior = await disposePriorChild(kind, task)
+      if (prior.ok !== true) return prior
       const started = kind === 'reviewer'
         ? await agents.startReviewer(task, brief)
         : await agents.startTester(task, brief)
@@ -76,6 +131,7 @@ export function createStageService(options) {
         created: [{ name: started.name, id: started.agentId, kind: kind }],
         reused: [],
         refused: [],
+        replaced: prior.replaced,
         kind: kind,
       }
     } catch (error) {
@@ -93,6 +149,72 @@ export function createStageService(options) {
     } catch (error) {
       return null
     }
+  }
+
+  /**
+   * Release every stage child of one card by role, including children whose handle
+   * map was lost. T-197: the one-live-stage-child rule reuses this before a
+   * replacement starts, so a card is never worked by two reviewers/testers.
+   */
+  async function releaseTaskImpl(task, options) {
+    const releaseOptions = options === undefined || options === null ? {} : options
+    const roles = rolesOf(releaseOptions)
+    const taskId = task !== null && task !== undefined && task.id !== undefined ? String(task.id) : null
+    // T-185: a verdict action runs inside its caller's turn; the caller must
+    // never be disposed before the tool result reaches it.
+    const callerAgentId = callerAgentIdOf(releaseOptions)
+    const instance = instanceFor(task)
+    if (instance !== null && typeof instance.releaseTask === 'function') {
+      try {
+        const result = await instance.releaseTask(task, { roles: roles, reason: releaseOptions.reason, signal: releaseOptions.signal, callerAgentId: callerAgentId })
+        if (result !== null && result !== undefined && typeof result === 'object') {
+          const released = Array.isArray(result.released) ? result.released : []
+          const failed = Array.isArray(result.failed) ? result.failed : []
+          const unresolved = Array.isArray(result.unresolved) ? result.unresolved : []
+          const deferred = Array.isArray(result.deferred) ? result.deferred : []
+          if (result.ok === true || released.length > 0 || failed.length > 0 || unresolved.length > 0 || deferred.length > 0) {
+            return Object.assign({}, result, { deferred: deferred })
+          }
+        }
+      } catch (error) {}
+    }
+    // Fallback: only the ids the board itself recorded. This is the path for
+    // a facade that cannot resolve the root (or an older task-agent set).
+    const released = []
+    const unresolved = []
+    const deferred = []
+    for (const id of recordedIdsOf(task, roles)) {
+      if (callerAgentId !== null && id === callerAgentId) {
+        // Queue the self-release; the process-wide reconciler retires it after
+        // the caller's turn ends. Never disposed from inside the action.
+        const entry = deferReleaseAgent(id, {
+          taskId: taskId,
+          rootId: task === null || task === undefined || typeof task.ownerSession !== 'string' ? null : task.ownerSession,
+          reason: releaseOptions.reason,
+        })
+        deferred.push({ agentId: id, name: null, role: null, sources: ['record'], queued: entry !== null })
+        continue
+      }
+      let ok = false
+      try {
+        ok = await agents.release(id, { callerAgentId: callerAgentId })
+      } catch (error) {
+        ok = false
+      }
+      if (!ok) {
+        // The root may no longer resolve at all; the process-wide receipt is
+        // still enough to dispose this exact child after a reload.
+        try {
+          ok = await releaseAgent(id)
+        } catch (error) {
+          ok = false
+        }
+      }
+      if (ok) released.push({ agentId: id, name: null, role: null, sources: ['record'] })
+      else unresolved.push({ agentId: id, name: null, role: null, sources: ['record'] })
+    }
+    return { ok: unresolved.length === 0, taskId: taskId, roles: roles, released: released, interrupted: [], unresolved: unresolved, failed: [], deferred: deferred }
+
   }
 
   return {
@@ -124,64 +246,8 @@ export function createStageService(options) {
      * handle map was lost. Prefers the root's task-agent set (which can also scan
      * the live agent tree by name); falls back to the ids the board recorded.
      */
-    async releaseTask(task, options) {
-      const releaseOptions = options === undefined || options === null ? {} : options
-      const roles = rolesOf(releaseOptions)
-      const taskId = task !== null && task !== undefined && task.id !== undefined ? String(task.id) : null
-      // T-185: a verdict action runs inside its caller's turn; the caller must
-      // never be disposed before the tool result reaches it.
-      const callerAgentId = callerAgentIdOf(releaseOptions)
-      const instance = instanceFor(task)
-      if (instance !== null && typeof instance.releaseTask === 'function') {
-        try {
-          const result = await instance.releaseTask(task, { roles: roles, reason: releaseOptions.reason, signal: releaseOptions.signal, callerAgentId: callerAgentId })
-          if (result !== null && result !== undefined && typeof result === 'object') {
-            const released = Array.isArray(result.released) ? result.released : []
-            const failed = Array.isArray(result.failed) ? result.failed : []
-            const unresolved = Array.isArray(result.unresolved) ? result.unresolved : []
-            const deferred = Array.isArray(result.deferred) ? result.deferred : []
-            if (result.ok === true || released.length > 0 || failed.length > 0 || unresolved.length > 0 || deferred.length > 0) {
-              return Object.assign({}, result, { deferred: deferred })
-            }
-          }
-        } catch (error) {}
-      }
-      // Fallback: only the ids the board itself recorded. This is the path for
-      // a facade that cannot resolve the root (or an older task-agent set).
-      const released = []
-      const unresolved = []
-      const deferred = []
-      for (const id of recordedIdsOf(task, roles)) {
-        if (callerAgentId !== null && id === callerAgentId) {
-          // Queue the self-release; the process-wide reconciler retires it after
-          // the caller's turn ends. Never disposed from inside the action.
-          const entry = deferReleaseAgent(id, {
-            taskId: taskId,
-            rootId: task === null || task === undefined || typeof task.ownerSession !== 'string' ? null : task.ownerSession,
-            reason: releaseOptions.reason,
-          })
-          deferred.push({ agentId: id, name: null, role: null, sources: ['record'], queued: entry !== null })
-          continue
-        }
-        let ok = false
-        try {
-          ok = await agents.release(id, { callerAgentId: callerAgentId })
-        } catch (error) {
-          ok = false
-        }
-        if (!ok) {
-          // The root may no longer resolve at all; the process-wide receipt is
-          // still enough to dispose this exact child after a reload.
-          try {
-            ok = await releaseAgent(id)
-          } catch (error) {
-            ok = false
-          }
-        }
-        if (ok) released.push({ agentId: id, name: null, role: null, sources: ['record'] })
-        else unresolved.push({ agentId: id, name: null, role: null, sources: ['record'] })
-      }
-      return { ok: unresolved.length === 0, taskId: taskId, roles: roles, released: released, interrupted: [], unresolved: unresolved, failed: [], deferred: deferred }
+    releaseTask(task, options) {
+      return releaseTaskImpl(task, options)
     },
     /**
      * T-185: the verdict action has computed its result. Only now may the

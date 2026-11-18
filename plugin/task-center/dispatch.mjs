@@ -114,9 +114,184 @@ export function createActivity(options) {
   return { push: push, list: list, snapshot: snapshot, clear: clear, limit: limit }
 }
 
-/** Review policy: a review that sits undecided for this long is reminded once,
- * then blocked on the next sweep so a silent reviewer cannot strand a task. */
+/** Review policy: a review that sits undecided for this long is reminded once.
+ * Since T-197 a silent round asks the human instead of blocking directly, so a
+ * slow-but-working reviewer can never strand or lose a card. */
 export const REVIEW_TIMEOUT_MS = 10 * 60 * 1000
+
+// ── T-197: stage events, budgets and notify-by-default recovery ─────────────
+// The stage safety net is measured in SILENCE, not in elapsed time: a role that
+// keeps producing identifiable activity is working, and the watchdog must never
+// mistake one long probe for a stuck stage.
+export const STAGE_BUDGET_MS = 20 * 60 * 1000
+/** One "continue" buys exactly one more slice of the SAME stage. */
+export const STAGE_CONTINUE_MS = 20 * 60 * 1000
+/** Three CONSECUTIVE default-continues auto-block the card; it is not asked again. */
+export const STAGE_CONTINUE_LIMIT = 3
+/** Failed auto-recoveries of ONE event before it escalates from notify to ask. */
+export const STAGE_RECOVERY_LIMIT = 2
+/** The panel deadline on a stage question (requirement packet §5). */
+export const STAGE_DECISION_TIMEOUT_MS = 120 * 1000
+/** The timeout question's default option (packet §5). */
+export const STAGE_DEFAULT_OPTION = 'continue'
+/** Downstream cards listed in a dev-timeout question before it is summarised. */
+export const STAGE_DOWNSTREAM_LINES = 8
+
+/** Every event the stage engine can raise (event 10's five keys included). */
+export const STAGE_EVENTS = Object.freeze({
+  devTimeout: 'dev-timeout',
+  reviewTimeout: 'review-timeout',
+  testTimeout: 'test-timeout',
+  hostVerifyFail: 'host-verify-fail',
+  mergeConflict: 'merge-conflict',
+  workerLost: 'worker-lost',
+  targetDrift: 'target-drift',
+  reviewRounds: 'review-rounds-exhausted',
+})
+
+/** The panel's event labels (packet §3.1–§3.10 copy). */
+export const STAGE_EVENT_LABELS = Object.freeze({
+  'dev-timeout': '开发超时',
+  'review-timeout': '评审超时',
+  'test-timeout': '测试超时',
+  'host-verify-fail': 'Host 验证失败',
+  'merge-conflict': '合并冲突',
+  'worker-lost': '执行者丢失',
+  'target-drift': 'Target drift',
+  'review-rounds-exhausted': '评审轮次用尽',
+})
+
+/** Event 10's automatic action, in the packet's words. */
+export const STAGE_EVENT_ACTIONS = Object.freeze({
+  'host-verify-fail': '退回开发并附上验证证据',
+  'merge-conflict': '退回开发并附上冲突文件',
+  'worker-lost': '重新派发',
+  'target-drift': '重建候选并重测',
+  'review-rounds-exhausted': '阻塞任务并通知 Lead',
+})
+
+/** The stage an event/round belongs to, or null. */
+export function stageOfTask(task) {
+  if (task === null || task === undefined) return null
+  // A card waiting for an executor/environment is not silent: it is waiting on
+  // the host, so its stage clock is paused exactly like the old watchdogs did.
+  if (typeof task.waitingReason === 'string' && task.waitingReason !== '') return null
+  if (task.status === 'running') return 'dev'
+  if (task.status === 'reviewing' && task.review !== null && task.review !== undefined && task.review.status === 'pending') return 'review'
+  if (task.status === 'testing' && task.test !== null && task.test !== undefined && task.test.status === 'pending') return 'test'
+  return null
+}
+
+/** The decision id of ONE timeout question: stable per round AND per slice. */
+export function stageDecisionId(taskId, event, roundAt, continues) {
+  const round = Number.isFinite(roundAt) ? String(Math.floor(roundAt)) : '0'
+  return 'stage-' + String(taskId) + '-' + String(event) + '-' + round + '-' + String(Math.max(0, Math.floor(continues)))
+}
+
+/** The panel options of a stage timeout question (packet §3.3–§3.5). */
+export function stageTimeoutOptions(stage) {
+  if (stage === 'dev') {
+    return [
+      { id: STAGE_DEFAULT_OPTION, label: '继续等待 20 分钟', description: '保留当前工作树，只延长本轮开发；不重启 worker', default: true },
+      { id: 'retry-dev', label: '重试开发', description: '丢弃当前未提交修改，从目标分支重新开始（输入 DELETE 确认）', danger: true },
+      { id: 'cancel', label: '取消任务', description: '停止开发；下游卡片进入阻塞/需重新评估' },
+      { id: 'cancel-tree', label: '取消并删除依赖树', description: '删除本卡与全部链式下游，不可恢复', danger: true },
+    ]
+  }
+  const role = stage === 'review' ? 'reviewer' : 'tester'
+  const label = stage === 'review' ? '评审' : '测试'
+  return [
+    { id: STAGE_DEFAULT_OPTION, label: '继续' + label + ' 20 分钟', description: '只延长当前阶段预算；不重启 worker，保留 worktree 与候选', default: true },
+    { id: 'replace', label: '更换 ' + role, description: '先释放当前 ' + role + '，再另起一轮独立' + label },
+    { id: 'block', label: '阻塞任务', description: '保留工作树与候选，等待人工处理' },
+    { id: 'cancel', label: '取消任务', description: '下游卡片需重新评估' },
+  ]
+}
+
+/**
+ * Every LIVE card that depends on `id`, depth-first: the packet's "递归展示下游"
+ * (a cancel leaves those cards blocked / needing re-evaluation). Closed cards are
+ * not "affected" and are never listed.
+ */
+export function stageDownstreamOf(board, id) {
+  const rows = []
+  const closed = ['done', 'cancelled']
+  const tasks = Array.isArray(board === null || board === undefined ? null : board.tasks) ? board.tasks : []
+  const seen = new Set([String(id)])
+  const childrenOf = (parentId) =>
+    tasks.filter((task) => {
+      if (task === null || task === undefined) return false
+      if (closed.indexOf(task.status) >= 0) return false
+      if (Array.isArray(task.dependsOn) === false) return false
+      if (seen.has(String(task.id))) return false
+      return task.dependsOn.map(String).indexOf(String(parentId)) >= 0
+    })
+  const walk = (parentId, prefix, depth) => {
+    const children = childrenOf(parentId)
+    children.forEach((task, index) => {
+      const last = index === children.length - 1
+      seen.add(String(task.id))
+      rows.push({
+        id: String(task.id),
+        title: typeof task.title === 'string' ? task.title : '',
+        status: String(task.status),
+        depth: depth,
+        line: prefix + (last ? '└─ ' : '├─ ') + String(task.id),
+      })
+      walk(task.id, prefix + (last ? '   ' : '│  '), depth + 1)
+    })
+  }
+  walk(String(id), '', 0)
+  return rows
+}
+
+/** The timeout question's body (packet §3.3–§3.5), one fact per line. */
+export function stageTimeoutBody(input) {
+  const row = input === undefined || input === null ? {} : input
+  const stage = row.stage === 'review' ? '评审' : row.stage === 'test' ? '测试' : '开发'
+  const minutes = (value) => String(Math.max(0, Math.round(Number(value) / 60000)))
+  const lines = [
+    '当前阶段：' + stage,
+    '已等待：' + minutes(row.waitedMs) + ' 分钟无活动',
+    '最后活动：' + (typeof row.lastActivity === 'string' && row.lastActivity !== '' ? row.lastActivity : '未知'),
+    '连续超时：' + String(Number.isFinite(row.defaults) ? row.defaults : 0) + '/' + String(STAGE_CONTINUE_LIMIT),
+  ]
+  if (typeof row.worktree === 'string' && row.worktree !== '') lines.push('工作树：' + row.worktree)
+  if (typeof row.candidate === 'string' && row.candidate !== '') lines.push('候选：' + row.candidate)
+  if (typeof row.executor === 'string' && row.executor !== '') lines.push('执行者：' + row.executor)
+  const downstream = Array.isArray(row.downstream) ? row.downstream : []
+  if (downstream.length > 0) {
+    lines.push('下游：' + String(downstream.length) + ' 张卡需要重新评估')
+    for (const entry of downstream.slice(0, STAGE_DOWNSTREAM_LINES)) lines.push(entry.line)
+    if (downstream.length > STAGE_DOWNSTREAM_LINES) lines.push('…（还有 ' + String(downstream.length - STAGE_DOWNSTREAM_LINES) + ' 张）')
+  }
+  return lines.join('\n')
+}
+
+/**
+ * One-line reminder / grace notice (T-197 requirement 9).
+ *
+ * `untilMs` is the time LEFT in this budget slice. Deliberately NARROW: id,
+ * title, stage, waited, the verdict it needs and the deadline. The full brief is NEVER appended — a reminder is not a second
+ * prompt, and a message that already reached an Agent inbox cannot be recalled
+ * (a delivery-time revoke would be a DSH inbox API, investigated separately).
+ * The text says so, so a verdict delivered in the meantime is simply ignored.
+ */
+export function stageReminderText(input) {
+  const row = input === undefined || input === null ? {} : input
+  const id = typeof row.taskId === 'string' && row.taskId !== '' ? row.taskId : 'task'
+  const title = typeof row.title === 'string' && row.title !== '' ? ' "' + row.title + '"' : ''
+  const stage = row.stage === 'test' ? 'test' : 'review'
+  const need = stage === 'test' ? 'passTest or failTest' : 'approveReview or requestChanges'
+  const waited = String(Math.max(1, Math.round(Number(row.waitedMs) / 60000)))
+  const left = String(Math.max(0, Math.round(Number(row.untilMs) / 60000)))
+  const tail = ' Non-authoritative: if you already delivered this verdict, ignore this message.'
+  if (row.grace === true) {
+    return id + title + ' ' + stage + ': ' + waited + 'm without a verdict; still need ' + need + ' — the host asks the human in ' + left + 'm.' + tail
+  }
+  return id + title + ' ' + stage + ': ' + waited + 'm without a verdict; still need ' + need + ' within ' + left + 'm.' + tail
+}
+
 
 // ── phase activity clock ───────────────────────────────────────────────────
 // Silence is measured from the LAST identifiable activity of the role working
@@ -930,11 +1105,15 @@ async function adoptionCandidate(git, projectPath, task, attempt) {
 /** Force-remove one worktree, ignoring every failure: a cleanup path must never
  * fail a dispatch. Creation-time rollback is `rollbackWorktree` below. */
 async function removeWorktree(git, projectPath, path) {
-  if (git === undefined || git === null || typeof path !== 'string' || path === '') return
-  if (typeof git.worktreeRemove !== 'function') return
+  if (git === undefined || git === null || typeof path !== 'string' || path === '') return false
+  if (typeof git.worktreeRemove !== 'function') return false
   try {
-    await git.worktreeRemove(projectPath, path, { force: true })
-  } catch (error) {}
+    const outcome = await git.worktreeRemove(projectPath, path, { force: true })
+    // A refusal is reported, never thrown: callers use it for their note only.
+    return outcome === undefined || outcome === null ? true : outcome.ok !== false
+  } catch (error) {
+    return false
+  }
 }
 
 /**
@@ -2096,18 +2275,24 @@ export function createDispatcher(ctx, options) {
     lastResults: [],
     lastCapacity: null,
     ticks: 0,
-    // One reminder per review round: key id@review.at -> when the reminder went out.
-    reviewReminders: new Map(),
-    // One reminder per test round: key id@test.at -> when the reminder went out.
-    testReminders: new Map(),
-    // One 'about to block' notice per phase round: key id@phase.at -> sent.
-    reviewGrace: new Map(),
-    testGrace: new Map(),
+    // T-197: one reminder and one grace notice per stage budget slice. The key is
+    // "<id>@<stage>@<round>@<continues>", so a new round (or a continue) allows a
+    // fresh nudge while a replayed tick can never send a second one.
+    stageReminders: new Map(),
+    stageGrace: new Map(),
     // The last environment probe (is the main tree clean, when was it checked) and
     // the per-card streak of TRANSIENT failures, so a momentary dirty window skips
     // one card instead of pausing the project (T-108).
     environment: null,
     environmentDirty: new Map(),
+    // T-197: per card+stage timeout state, keyed "<taskId>@<stage>" and reset by
+    // the stage ROUND (a new review/test round starts with a full budget).
+    // { round, continues, defaults, decisionId, decisionAt }
+    stageEvents: new Map(),
+    // T-197 event 10: consecutive failed auto-recoveries per card+event, keyed
+    // "<taskId>@<event>". The entry carries the incident epoch it was counted
+    // against, so a card that made progress in between starts a new streak.
+    stageRecoveries: new Map(),
   }
   // undefined means "ask the context"; null means "this host has no git runner",
   // which now means dispatch cannot start at all. Resolved lazily and cached for
@@ -2476,6 +2661,19 @@ export function createDispatcher(ctx, options) {
               'host restart interrupted the attempt; attempt refunded (attempts ' + String(after.attempts) +
               '/' + String(after.maxAttempts) + ', interruptions ' + String(after.interruptions) + '/' + String(model.INTERRUPTION_LIMIT) + ')',
           })
+          // T-197 event 10: worker lost / host restart is NOTIFY by default. The
+          // requeue above IS the automatic recovery, so this only records it and
+          // escalates to an ask after STAGE_RECOVERY_LIMIT failed recoveries.
+          if (after.status === 'pending') {
+            const notified = await notifyStageEvent(projectPath, {
+              taskId: after.id,
+              event: STAGE_EVENTS.workerLost,
+              detail: 'host restart requeued the attempt (attempt refunded)',
+            })
+            if (notified.ok === true && notified.escalate === true) {
+              await requestStageRecoveryAsk(projectPath, after, STAGE_EVENTS.workerLost, notified.count)
+            }
+          }
           if (after.status === 'blocked') {
             emit('error', 'system', {
               taskId: task.id,
@@ -2594,233 +2792,575 @@ export function createDispatcher(ctx, options) {
     }
   }
 
-  /**
-   * The review timeout policy, driven by the host tick. Silence is measured from
-   * the reviewer child's last activity (review.at or a recorded task_center call):
-   * REVIEW_TIMEOUT_MS of silence sends one reminder; two full timeouts of silence
-   * send one 'about to block' notice; blocking happens only after the
-   * PHASE_BLOCK_GRACE_MS grace window, so a slow-but-working reviewer is never
-   * judged dead. Never blocks a dispatch pass.
-   */
-  async function sweepReviewTimeouts(projectPath, board, now) {
-    const pending = board.tasks.filter(
-      (task) =>
-        task.status === 'reviewing' &&
-        (task.waitingReason === null || task.waitingReason === undefined || task.waitingReason === '') &&
-        task.review !== null &&
-        task.review !== undefined &&
-        task.review.status === 'pending' &&
-        typeof task.review.at === 'string',
-    )
-    if (pending.length === 0) return { reminded: [], blocked: [], board: null }
-    const pendingKeys = new Set(pending.map((task) => String(task.id) + '@' + String(task.review.at)))
-    const reminded = []
-    const blocked = []
-    let nextBoard = null
-    for (const task of pending) {
-      const executor = stageExecutorOf(task, 'review')
-      const slot = stageSlotOf(ctx, task.id, 'reviewer')
-      // A task waiting for its role slot has no delivery time yet: its silence
-      // clock is paused so the watchdog cannot remind/block it out of turn.
-      if (slot !== null && slot.position !== null) continue
-      const startedAt = slot !== null && Number.isFinite(slot.at) ? slot.at : Date.parse(task.review.at)
-      if (!Number.isFinite(startedAt)) continue
-      const identities = executor === null || executor.id === null ? [] : [executor.id]
-      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, identities))
-      const silence = now - lastAt
-      const key = String(task.id) + '@' + String(task.review.at)
-      if (silence >= reviewTimeoutMs * 2 + phaseGraceMs) {
-        const applied = await applyReap(projectPath, (value) => {
-          const fresh = model.findTask(value, task.id)
-          if (
-            fresh === undefined ||
-            fresh === null ||
-            fresh.status !== 'reviewing' ||
-            fresh.review === null ||
-            fresh.review === undefined ||
-            fresh.review.status !== 'pending' ||
-            String(fresh.review.at) !== String(task.review.at)
-          ) {
-            return value
-          }
-          const freshSlot = stageSlotOf(ctx, fresh.id, 'reviewer')
-          const freshStart = freshSlot !== null && Number.isFinite(freshSlot.at) ? freshSlot.at : Date.parse(fresh.review.at)
-          const freshIdentities = executor === null || executor.id === null ? [] : [executor.id]
-          const freshSilence = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, freshIdentities))) / 60000)
-          const result = model.blockTask(value, fresh.id, now, 'system', 'review timed out: no reviewer verdict after ' + String(freshSilence) + 'min of silence')
-          return result.ok === true ? result.board : value
-        })
-        if (applied === null) continue
-        nextBoard = applied
-        memory.reviewReminders.delete(key)
-        memory.reviewGrace.delete(key)
-        blocked.push(task.id)
-        await releaseBlockedStageChildren(task, 'review timed out')
-        emit('error', 'system', { taskId: task.id, detail: 'review timed out; task blocked for triage' })
-        // The stalled reviewer is disposed: the task left reviewing, so its turn
-        // must not keep running.
-        if (executor !== null && executor.id !== null) await stopAgent(executor.id)
-        const ownerId = task.assignee === null || task.assignee === undefined ? null : task.assignee.session
-        const notice =
-          'Review for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
-          '  project: ' + String(projectPath) + '\n' +
-          '  branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch) + '\n' +
-          '  worktree: ' + String(task.worktree === null || task.worktree === undefined ? '' : task.worktree)
-        if (typeof ownerId === 'string' && ownerId !== '') await sendToAgent(task.ownerSession, ownerId, notice)
-        continue
-      }
-      if (silence >= reviewTimeoutMs * 2) {
-        if (memory.reviewGrace.has(key)) continue
-        if (executor === null || executor.id === null) continue
-        const sent = await sendToAgent(task.ownerSession, executor.id, 'The review round is about to be blocked for inactivity. Record approveReview or requestChanges now; the task will be blocked after the grace window.\n\n' + reviewBriefFor(task, projectPath))
-        if (sent === true) {
-          memory.reviewGrace.set(key, now)
-          emit('review-grace', 'system', { taskId: task.id, detail: 'review about to be blocked; grace window started' })
-        }
-        continue
-      }
-      if (silence >= reviewTimeoutMs && memory.reviewReminders.has(key) === false) {
-        if (executor === null || executor.id === null) continue
-        const sent = await sendToAgent(task.ownerSession, executor.id, 'Reminder — review is still waiting.\n\n' + reviewBriefFor(task, projectPath))
-        if (sent === true) {
-          memory.reviewReminders.set(key, now)
-          reminded.push(task.id)
-          emit('review-reminder', 'system', { taskId: task.id, detail: 'review still pending; reminded the reviewer' })
-        }
-      }
+  // ── T-197: the stage engine ────────────────────────────────────────────────
+  // Silence, not elapsed time, is what times a stage out: a role that keeps
+  // producing identifiable activity is working. A timeout ASKS the human before
+  // anything stops, and a continue only extends the budget of the SAME stage —
+  // the worker is never restarted and the worktree/candidate stay untouched.
+  let stageHost = null
+
+  /** Attach the API's decision/notification bridge (idempotent). */
+  function attachStageHost(host) {
+    if (host === null || host === undefined || typeof host.request !== 'function') return false
+    stageHost = host
+    return true
+  }
+
+  /** The executor of the OPEN stage round: a worker by assignee, a child by record. */
+  function stageExecutorOfRun(task, stage) {
+    if (stage === 'dev') {
+      const holder = task.assignee
+      if (holder === null || holder === undefined) return null
+      const id = typeof holder.session === 'string' && holder.session !== '' ? holder.session : null
+      const name = typeof holder.name === 'string' && holder.name !== '' ? holder.name : null
+      return id === null && name === null ? null : { id: id, name: name }
     }
-    for (const key of Array.from(memory.reviewReminders.keys())) {
-      if (!pendingKeys.has(key)) memory.reviewReminders.delete(key)
-    }
-    for (const key of Array.from(memory.reviewGrace.keys())) {
-      if (!pendingKeys.has(key)) memory.reviewGrace.delete(key)
-    }
-    return { reminded: reminded, blocked: blocked, board: nextBoard }
+    return stageExecutorOf(task, stage)
+  }
+
+  /** When the CURRENT stage round started (ms), or null when the stage is closed. */
+  function stageRoundAt(task, stage) {
+    if (stage === 'dev') return model.attemptStartedAt(task)
+    const record = stage === 'review' ? task.review : task.test
+    if (record === null || record === undefined || typeof record.at !== 'string') return null
+    const at = Date.parse(record.at)
+    return Number.isFinite(at) ? at : null
+  }
+
+  /** The timeout state of one card+stage. A NEW round resets every counter. */
+  function stageStateOf(task, stage, roundAt) {
+    const key = String(task.id) + '@' + String(stage)
+    const existing = memory.stageEvents.get(key)
+    if (existing !== undefined && existing.round === roundAt) return existing
+    // `since` is the floor of the CURRENT budget slice: a continue restarts the
+    // slice clock at the moment it is applied, so extending a stage that is
+    // already hours late does not immediately ask again.
+    const fresh = { round: roundAt, continues: 0, defaults: 0, since: 0, decisionId: null, decisionAt: 0 }
+    memory.stageEvents.set(key, fresh)
+    return fresh
   }
 
   /**
-   * The TEST phase bounds, driven by the host tick. Silence is measured from
-   * test.at or the tester child's last recorded task_center call: testReminderMs
-   * of silence sends one reminder, testTimeoutMs sends one 'about to block'
-   * notice, and only testTimeoutMs + phaseGraceMs of silence blocks the task for
-   * triage. A tester that keeps calling get/passTest is never judged dead, and a
-   * verdict inside the grace window is still recorded.
+   * How much silence one budget slice may reach before it is a timeout. A slice
+   * is always STAGE_BUDGET_MS long and a continue starts a NEW slice at the
+   * moment it is applied (budget.since), which is what "extend by 20 minutes"
+   * means for a stage that was already late.
    */
-  async function sweepTestTimeouts(projectPath, board, now) {
-    const pending = board.tasks.filter(
-      (task) =>
-        task.status === 'testing' &&
-        (task.waitingReason === null || task.waitingReason === undefined || task.waitingReason === '') &&
-        task.test !== null &&
-        task.test !== undefined &&
-        task.test.status === 'pending' &&
-        typeof task.test.at === 'string',
-    )
-    if (pending.length === 0) return { reminded: [], blocked: [], board: null }
-    const pendingKeys = new Set(pending.map((task) => String(task.id) + '@' + String(task.test.at)))
-    const reminded = []
-    const blocked = []
-    let nextBoard = null
-    for (const task of pending) {
-      const executor = stageExecutorOf(task, 'test')
-      const slot = stageSlotOf(ctx, task.id, 'tester')
-      if (slot !== null && slot.position !== null) continue
-      const startedAt = slot !== null && Number.isFinite(slot.at) ? slot.at : Date.parse(task.test.at)
-      if (!Number.isFinite(startedAt)) continue
-      const identities = executor === null || executor.id === null ? [] : [executor.id]
-      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, identities))
-      const silence = now - lastAt
-      const key = String(task.id) + '@' + String(task.test.at)
-      const candidate =
-        task.merge !== null && task.merge !== undefined && typeof task.merge.mergeCommit === 'string' && task.merge.mergeCommit !== ''
-          ? 'candidate ' + String(task.merge.mergeCommit)
-          : 'no candidate recorded'
-      if (silence >= testTimeoutMs + phaseGraceMs) {
-        const tester = executor !== null && executor.name !== null ? executor.name : 'the tester'
-        let blockNote = null
-        const applied = await applyReap(projectPath, (value) => {
-          const fresh = model.findTask(value, task.id)
-          if (
-            fresh === undefined ||
-            fresh === null ||
-            fresh.status !== 'testing' ||
-            fresh.test === null ||
-            fresh.test === undefined ||
-            fresh.test.status !== 'pending' ||
-            String(fresh.test.at) !== String(task.test.at)
-          ) {
-            return value
-          }
-          const freshCandidate =
-            fresh.merge !== null && fresh.merge !== undefined && typeof fresh.merge.mergeCommit === 'string' && fresh.merge.mergeCommit !== ''
-              ? 'candidate ' + String(fresh.merge.mergeCommit)
-              : 'no candidate recorded'
-          const freshSlot = stageSlotOf(ctx, fresh.id, 'tester')
-          const freshStart = freshSlot !== null && Number.isFinite(freshSlot.at) ? freshSlot.at : Date.parse(fresh.test.at)
-          const freshMinutes = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, identities))) / 60000)
-          blockNote = 'test timeout: no verdict after ' + String(freshMinutes) + 'min of silence (' + tester + '; ' + freshCandidate + ')'
-          const result = model.blockTask(value, fresh.id, now, 'system', blockNote + '; blocked for triage')
-          return result.ok === true ? result.board : value
-        })
-        if (applied === null) continue
-        const appliedTask = model.findTask(applied, task.id)
-        if (appliedTask === undefined || appliedTask === null || appliedTask.status !== 'blocked') continue
-        nextBoard = applied
-        memory.testReminders.delete(key)
-        memory.testGrace.delete(key)
-        blocked.push(task.id)
-        await releaseBlockedStageChildren(task, 'test timed out')
-        emit('error', 'system', { taskId: task.id, detail: (blockNote === null ? 'test timeout' : blockNote) + '; task blocked for triage' })
-        // The stalled tester is disposed for the same reason as the reviewer.
-        if (executor !== null && executor.id !== null) await stopAgent(executor.id)
-        const ownerId = task.assignee === null || task.assignee === undefined ? null : task.assignee.session
-        const notice =
-          'Test for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
-          '  project: ' + String(projectPath) + '\n' +
-          '  ' + (blockNote === null ? 'tester: ' + String(tester) : blockNote)
-        if (typeof ownerId === 'string' && ownerId !== '') await sendToAgent(task.ownerSession, ownerId, notice)
-        continue
-      }
-      if (silence >= testTimeoutMs) {
-        if (memory.testGrace.has(key)) continue
-        if (executor === null || executor.id === null) continue
-        const sent = await sendToAgent(
-          task.ownerSession,
-          executor.id,
-          'The test round is about to be blocked for inactivity.\n' +
-            '  task: ' + String(task.id) + ' ' + String(task.title) + '\n' +
-            '  ' + candidate + '\n' +
-            'Record passTest or failTest now; after the grace window the task is blocked for triage.',
-        )
-        if (sent === true) {
-          memory.testGrace.set(key, now)
-          emit('test-grace', 'system', { taskId: task.id, detail: 'test phase about to be blocked; grace window started' })
-        }
-        continue
-      }
-      if (silence >= testReminderMs && memory.testReminders.has(key) === false) {
-        if (executor === null || executor.id === null) continue
-        const text =
-          'Reminder — the test phase is still waiting for a verdict.\n' +
-          '  task: ' + String(task.id) + ' ' + String(task.title) + '\n' +
-          '  ' + candidate + '\n' +
-          'Record passTest or failTest with task_center; do not leave the round pending.'
-        const sent = await sendToAgent(task.ownerSession, executor.id, text)
-        if (sent === true) {
-          memory.testReminders.set(key, now)
-          reminded.push(task.id)
-          emit('test-reminder', 'system', { taskId: task.id, detail: 'test phase still pending; reminded the tester' })
-        }
-      }
-    }
-    for (const key of Array.from(memory.testReminders.keys())) {
-      if (!pendingKeys.has(key)) memory.testReminders.delete(key)
-    }
-    for (const key of Array.from(memory.testGrace.keys())) {
-      if (!pendingKeys.has(key)) memory.testGrace.delete(key)
-    }
-    return { reminded: reminded, blocked: blocked, board: nextBoard }
+  function stageUntilOf() {
+    return STAGE_BUDGET_MS
   }
+
+  function stageIdentitiesOf(executor) {
+    const ids = []
+    if (executor === null || executor === undefined) return ids
+    if (typeof executor.id === 'string' && executor.id !== '') ids.push(executor.id)
+    if (typeof executor.name === 'string' && executor.name !== '') ids.push(executor.name)
+    return ids
+  }
+
+  /**
+   * T-197 requirement 7: ANY identifiable stage activity renews the watchdog, not
+   * only a task_center call. The host's subagent tree reports which children are
+   * EXECUTING a turn, so a tester inside one long pwsh/read/probe sequence is
+   * renewed here instead of being judged silent.
+   */
+  async function renewStageActivityFromTree(board, now) {
+    if (taskAgents === null || taskAgents === undefined || typeof taskAgents.listAgentsFor !== 'function') return 0
+    if (board === null || board === undefined || Array.isArray(board.tasks) === false) return 0
+    const byRoot = new Map()
+    for (const task of board.tasks) {
+      const stage = stageOfTask(task)
+      if (stage === null) continue
+      const rootId = typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
+      if (rootId === null) continue
+      if (byRoot.has(rootId) === false) byRoot.set(rootId, [])
+      byRoot.get(rootId).push(task)
+    }
+    let renewed = 0
+    for (const [rootId, tasks] of byRoot) {
+      let rows = null
+      try {
+        rows = await taskAgents.listAgentsFor(rootId)
+      } catch (error) {
+        rows = null
+      }
+      if (Array.isArray(rows) === false) continue
+      const running = new Set()
+      for (const row of rows) {
+        if (row === null || row === undefined || row.kind !== 'child') continue
+        if (row.activity !== 'running') continue
+        running.add(String(row.id))
+      }
+      if (running.size === 0) continue
+      for (const task of tasks) {
+        const stage = stageOfTask(task)
+        if (stage === null) continue
+        const executor = stageExecutorOfRun(task, stage)
+        if (executor === null || executor.id === null || running.has(executor.id) === false) continue
+        recordPhaseActivity(ctx, String(task.id), executor.id, now, executor.id)
+        renewed += 1
+      }
+    }
+    return renewed
+  }
+
+  /** A durable one-line history row on the card. Never throws. */
+  async function appendStageHistory(projectPath, taskId, note) {
+    try {
+      const applied = await state.apply(
+        projectPath,
+        (board) => {
+          const task = model.findTask(board, taskId)
+          if (task === undefined || task === null) return null
+          const at = new Date(state.clock()).toISOString()
+          const tasks = board.tasks.map((row) => {
+            if (String(row.id) !== String(taskId)) return row
+            const history = Array.isArray(row.history) ? row.history : []
+            return Object.assign({}, row, {
+              history: history.concat([{ at: at, by: 'system', byName: null, from: row.status, to: row.status, note: String(note) }]),
+            })
+          })
+          return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+        },
+        writePolicyFor(projectPath),
+      )
+      return applied !== null && applied !== undefined && applied.failed === undefined
+    } catch (error) {
+      return false
+    }
+  }
+
+  /** The live children of one root, or null when this host cannot tell. */
+  async function liveStageChildIds(rootId) {
+    if (taskAgents === null || taskAgents === undefined) return null
+    let rows = null
+    try {
+      rows = typeof taskAgents.listAgentsFor === 'function' ? await taskAgents.listAgentsFor(rootId) : null
+    } catch (error) {
+      rows = null
+    }
+    if (Array.isArray(rows) === false) return null
+    const ids = new Set()
+    for (const row of rows) {
+      if (row === null || row === undefined || row.kind !== 'child') continue
+      ids.add(String(row.id))
+    }
+    return ids
+  }
+
+  /** Send one line to the child that owns an OPEN stage (never to the root). */
+  async function messageStageChild(task, stage, text) {
+    const executor = stageExecutorOfRun(task, stage)
+    if (executor === null || executor.id === null) return false
+    return await sendToAgent(task.ownerSession, executor.id, text)
+  }
+
+  /** The full question of one stage timeout (packet §3.3–§3.5). */
+  function stageQuestionOf(task, stage, budget, waitedMs, now, executor, downstream) {
+    const event = stage === 'dev' ? STAGE_EVENTS.devTimeout : stage === 'review' ? STAGE_EVENTS.reviewTimeout : STAGE_EVENTS.testTimeout
+    const label = STAGE_EVENT_LABELS[event]
+    const candidate =
+      task.merge !== null && task.merge !== undefined && typeof task.merge.mergeCommit === 'string' && task.merge.mergeCommit !== ''
+        ? 'candidate ' + String(task.merge.mergeCommit)
+        : null
+    return {
+      id: stageDecisionId(task.id, event, budget.round, budget.continues),
+      eventKey: event,
+      taskId: String(task.id),
+      eventLabel: label,
+      title: String(task.id) + ' ' + label,
+      body: stageTimeoutBody({
+        stage: stage,
+        waitedMs: waitedMs,
+        lastActivity: new Date(Math.max(0, now - waitedMs)).toISOString(),
+        worktree: typeof task.worktree === 'string' && task.worktree !== '' ? task.worktree : null,
+        candidate: candidate,
+        defaults: budget.defaults,
+        executor: stage === 'dev' ? null : String(stage === 'review' ? 'reviewer' : 'tester'),
+        // Only a dev timeout lists the dependency tree: review/test cards have
+        // no say over their downstream, and the tree belongs to the cancel option.
+        downstream: stage === 'dev' ? downstream : null,
+      }),
+      options: stageTimeoutOptions(stage),
+      defaultOption: STAGE_DEFAULT_OPTION,
+      timeoutMs: STAGE_DECISION_TIMEOUT_MS,
+      payload: {
+        action: 'stage-timeout',
+        stage: stage,
+        taskId: String(task.id),
+        round: budget.round,
+        continues: budget.continues,
+        // A dev retry destroys uncommitted work: the panel asks for the word.
+        confirmOption: stage === 'dev' ? 'retry-dev' : null,
+      },
+    }
+  }
+
+  /**
+   * Ask ONE timeout question for this round slice. The id is stable per round and
+   * slice, so a tick that sees the same stage again re-reads the SAME question
+   * instead of stacking a second modal.
+   */
+  async function requestStageTimeout(projectPath, task, stage, budget, now, waitedMs, executor, downstream) {
+    if (stageHost === null || typeof stageHost.request !== 'function') {
+      // A direct dispatcher user has no decision store. Never block silently:
+      // the card keeps its budget and the tick reports the same state.
+      return null
+    }
+    let requested = null
+    try {
+      requested = await stageHost.request(projectPath, stageQuestionOf(task, stage, budget, waitedMs, now, executor, downstream))
+    } catch (error) {
+      requested = { ok: false, code: 'request-failed', message: String((error && error.message) || error) }
+    }
+    if (requested === null || requested === undefined || requested.ok !== true) {
+      emit('stage-timeout-unasked', 'host', {
+        taskId: task.id,
+        detail: 'could not record the stage question: ' + String(requested === null || requested === undefined ? 'no-result' : requested.code || requested.message),
+      })
+      return null
+    }
+    const decision = requested.decision === null || requested.decision === undefined ? null : requested.decision
+    if (decision !== null && decision.status === 'pending') {
+      budget.decisionId = decision.id
+      budget.decisionAt = now
+      emit('stage-timeout-asked', 'host', {
+        taskId: task.id,
+        detail: stage + ' timed out; asked the human (decision ' + String(decision.id) + ', default continue in ' + String(Math.round(STAGE_DECISION_TIMEOUT_MS / 60000)) + 'm)',
+      })
+    }
+    return decision
+  }
+
+  /**
+   * Apply a "continue" to the budget of the stage round it belongs to. It never
+   * restarts the worker, never touches the worktree or the candidate: it buys one
+   * more slice of the SAME stage. The third CONSECUTIVE default-continue stops
+   * asking and blocks the card (packet §3.3).
+   */
+  async function applyStageContinue(projectPath, input) {
+    const row = input === undefined || input === null ? {} : input
+    const taskId = row.taskId === undefined || row.taskId === null ? '' : String(row.taskId)
+    const stage = row.stage === 'review' ? 'review' : row.stage === 'test' ? 'test' : 'dev'
+    if (taskId === '') return { ok: false, code: 'invalid-stage', message: 'a stage budget needs a task id' }
+    const read = await state.read(projectPath)
+    if (read.failed !== null) return { ok: false, code: read.failed.code === undefined ? 'board-unreadable' : String(read.failed.code), message: String(read.failed.message || 'the board could not be read') }
+    const task = model.findTask(read.board, taskId)
+    if (task === undefined || task === null) return { ok: false, code: 'unknown-task', message: 'no task with id ' + taskId }
+    if (stageOfTask(task) !== stage) return { ok: false, code: 'stage-closed', message: taskId + ' is no longer in its ' + stage + ' stage; nothing was extended' }
+    const roundAt = stageRoundAt(task, stage)
+    if (roundAt === null) return { ok: false, code: 'stage-closed', message: taskId + ' has no open ' + stage + ' round' }
+    const budget = stageStateOf(task, stage, roundAt)
+    const viaTimeout = row.viaTimeout === true
+    budget.decisionId = null
+    budget.decisionAt = 0
+    if (viaTimeout === true && budget.defaults + 1 >= STAGE_CONTINUE_LIMIT) {
+      budget.defaults += 1
+      const blocked = await applyReap(projectPath, (board) => {
+        const live = model.findTask(board, taskId)
+        if (live === undefined || live === null || stageOfTask(live) !== stage) return null
+        const result = model.blockTask(board, taskId, state.clock(), 'system', STAGE_CONTINUE_LIMIT + ' consecutive default-continues on the ' + stage + ' stage; blocked for triage')
+        return result.ok === true ? result.board : null
+      })
+      await appendStageHistory(projectPath, taskId, '连续 ' + STAGE_CONTINUE_LIMIT + ' 次阶段超时默认继续，已自动阻塞；不再提问（运行中的 stage agent 未被强制终止，由其自行结束本轮）')
+      emit('stage-timeout-blocked', 'system', { taskId: taskId, detail: 'continuous default-continues reached ' + String(STAGE_CONTINUE_LIMIT) + '; card blocked without another question' })
+      return { ok: blocked !== null, blocked: blocked !== null, count: budget.defaults, continues: budget.continues, limit: STAGE_CONTINUE_LIMIT, extendedMs: 0 }
+    }
+    budget.continues += 1
+    budget.since = state.clock()
+    if (viaTimeout === true) budget.defaults += 1
+    else budget.defaults = 0
+    const minutes = String(Math.round(STAGE_CONTINUE_MS / 60000))
+    const note =
+      viaTimeout === true
+        ? '阶段超时未回答，默认继续：' + stage + ' 预算延长 ' + minutes + ' 分钟（连续默认继续 ' + String(budget.defaults) + '/' + String(STAGE_CONTINUE_LIMIT) + '）'
+        : '人工选择继续：' + stage + ' 预算延长 ' + minutes + ' 分钟（连续默认继续计数清零）'
+    await appendStageHistory(projectPath, taskId, note)
+    emit('stage-timeout-continued', 'host', { taskId: taskId, detail: note })
+    await messageStageChild(task, stage, taskId + ' ' + stage + ': the host extended this stage by ' + minutes + 'm after a timeout decision. Keep going in the same worktree; nothing was restarted.')
+    return { ok: true, blocked: false, continues: budget.continues, defaults: budget.defaults, limit: STAGE_CONTINUE_LIMIT, extendedMs: STAGE_CONTINUE_MS }
+  }
+
+  /** A new stage round starts with a full budget (after a replace/retry). */
+  function resetStageBudget(taskId, stage) {
+    memory.stageEvents.delete(String(taskId) + '@' + String(stage))
+    return true
+  }
+
+  /**
+   * "Retry development" (packet §3.3): the uncommitted work in the attempt
+   * worktree is DISCARDED, the worker is stopped, and the card goes back to the
+   * queue so the next attempt is created from the target branch again.
+   */
+  async function retryDevelopment(projectPath, taskId) {
+    const read = await state.read(projectPath)
+    if (read.failed !== null) return { ok: false, code: 'board-unreadable', message: String(read.failed.message || 'the board could not be read') }
+    const task = model.findTask(read.board, String(taskId))
+    if (task === undefined || task === null) return { ok: false, code: 'unknown-task', message: 'no task with id ' + String(taskId) }
+    if (task.status !== 'running') return { ok: false, code: 'not-running', message: String(taskId) + ' is ' + task.status + ', not running' }
+    const holder = task.assignee === null || task.assignee === undefined ? null : task.assignee.session
+    const stopped = typeof holder === 'string' && holder !== '' ? await stopAgent(holder) : false
+    const worktree = typeof task.worktree === 'string' && task.worktree !== '' ? task.worktree : null
+    const removed = worktree !== null ? await removeWorktree(gitFacade(), projectPath, worktree) : null
+    releaseTaskLocks(String(taskId))
+    // state.apply's mutator contract is a { ok, board, events } ENVELOPE (unlike
+    // applyReap, which takes a bare board). The CAS re-check inside the write is
+    // what keeps a card that already left running (a submit landed while the
+    // worker was being stopped) from being overwritten with pending.
+    const applied = await state.apply(
+      projectPath,
+      (board) => {
+        const live = model.findTask(board, String(taskId))
+        if (live === undefined || live === null) {
+          return { ok: false, code: 'unknown-task', message: 'no task with id ' + String(taskId) }
+        }
+        if (live.status !== 'running') {
+          return { ok: false, code: 'not-running', message: String(taskId) + ' is ' + live.status + ' now; the retry was not applied' }
+        }
+        const at = new Date(state.clock()).toISOString()
+        const note =
+          worktree === null
+            ? 'dev timeout: retry development requeued the card; the next attempt starts from the target branch'
+            : removed === true
+              ? 'dev timeout: retry development discarded the uncommitted work and removed ' + worktree + '; the next attempt starts from the target branch'
+              : 'dev timeout: retry development stopped the worker but the worktree ' + worktree + ' could not be removed; its uncommitted changes were not discarded and the next attempt reuses or recreates it'
+        const tasks = board.tasks.map((row) => {
+          if (String(row.id) !== String(taskId)) return row
+          const history = Array.isArray(row.history) ? row.history : []
+          return Object.assign({}, row, {
+            status: 'pending',
+            assignee: null,
+            leaseUntil: null,
+            attempts: 0,
+            interruptions: 0,
+            dispatch: null,
+            history: history.concat([
+              { at: at, by: 'system', byName: null, from: 'running', to: 'pending', note: note },
+            ]),
+          })
+        })
+        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+      },
+      writePolicyFor(projectPath),
+    )
+    if (applied.failed !== null) return applied.failed
+    memory.stageEvents.delete(String(taskId) + '@dev')
+    emit('dev-retry', 'host', {
+      taskId: String(taskId),
+      detail:
+        worktree !== null && removed !== true
+          ? 'worker stopped; worktree removal failed, card requeued for a fresh attempt'
+          : 'uncommitted work discarded; card requeued for a fresh attempt',
+    })
+    return { ok: true, stopped: stopped, worktree: worktree, removed: removed }
+  }
+
+  /**
+   * Event 10 (packet §3.10): a host event that is NOTIFY by default. It writes
+   * the activity stream and a task history row, and messages the card's live
+   * Agent; it never opens a modal. The SAME event failing STAGE_RECOVERY_LIMIT
+   * times in a row escalates to an ask, decided by the caller (the API).
+   */
+  async function notifyStageEvent(projectPath, input) {
+    const row = input === undefined || input === null ? {} : input
+    const taskId = typeof row.taskId === 'string' && row.taskId !== '' ? row.taskId : null
+    const event = typeof row.event === 'string' && row.event !== '' ? row.event : null
+    if (taskId === null || event === null) return { ok: false, code: 'invalid-event', message: 'a stage event needs a task id and an event key' }
+    const key = taskId + '@' + event
+    // T-197 review fix: "consecutive" means the same INCIDENT, not the card's
+    // whole lifetime. The epoch is the card's current stage round (or status for
+    // a card with no open stage), so a card that made progress in between starts
+    // a fresh streak instead of escalating on the third unrelated incident.
+    const read = await state.read(projectPath)
+    const current = read.failed === null ? model.findTask(read.board, taskId) : null
+    const currentStage = current === undefined || current === null ? null : stageOfTask(current)
+    const currentRoundAt = currentStage === null ? null : stageRoundAt(current, currentStage)
+    const epoch =
+      (current === undefined || current === null ? 'missing' : String(current.status)) + '@' + String(currentStage) + '@' + String(currentRoundAt)
+    const previous = memory.stageRecoveries.get(key)
+    const count = (previous !== undefined && previous.epoch === epoch ? previous.count : 0) + 1
+    memory.stageRecoveries.set(key, { count: count, at: state.clock(), epoch: epoch })
+    const action = STAGE_EVENT_ACTIONS[event] === undefined ? '自动处置' : STAGE_EVENT_ACTIONS[event]
+    const detail = event + ' 已自动处置：' + action + '（连续 ' + String(count) + ' 次）' + (typeof row.detail === 'string' && row.detail !== '' ? ' — ' + row.detail : '')
+    emit('stage-event', 'host', { taskId: taskId, detail: detail })
+    await appendStageHistory(projectPath, taskId, detail)
+    // The owner Agent reads it on its next turn; the panel reads the activity ring.
+    if (current !== undefined && current !== null && currentStage !== null) {
+      await messageStageChild(current, currentStage, taskId + ': ' + detail + '. The host acted automatically; no answer is needed unless a decision appears.')
+    }
+    const escalate = count > STAGE_RECOVERY_LIMIT
+    if (escalate === true) {
+      emit('stage-event-escalated', 'host', { taskId: taskId, detail: event + ': ' + String(count) + ' consecutive failed auto-recoveries; escalating to an ask' })
+      await appendStageHistory(projectPath, taskId, event + ' 连续 ' + String(count) + ' 次自动恢复失败，升级为询问')
+    }
+    return { ok: true, count: count, escalate: escalate, action: action }
+  }
+
+  /**
+   * The ask an event escalates to after STAGE_RECOVERY_LIMIT failed
+   * auto-recoveries (packet §3.10). It is a normal DecisionRequest: the panel
+   * shows it, the 120s default keeps recovering, and only the human can stop it.
+   */
+  async function requestStageRecoveryAsk(projectPath, task, event, count) {
+    if (stageHost === null || typeof stageHost.request !== 'function') return null
+    const label = STAGE_EVENT_LABELS[event] === undefined ? String(event) : STAGE_EVENT_LABELS[event]
+    const action = STAGE_EVENT_ACTIONS[event] === undefined ? '自动处置' : STAGE_EVENT_ACTIONS[event]
+    const input = {
+      id: 'stage-ask-' + String(task.id) + '-' + String(event) + '-' + String(Math.floor(state.clock())),
+      eventKey: String(event),
+      taskId: String(task.id),
+      eventLabel: label,
+      title: String(task.id) + ' ' + label + '（连续自动恢复失败）',
+      body: '自动恢复已连续失败 ' + String(count) + ' 次（' + action + '），已升级为询问。',
+      options: [
+        { id: 'continue', label: '继续自动恢复', description: '再自动处置一次', default: true },
+        { id: 'block', label: '阻塞任务', description: '保留现场，等待人工处理' },
+        { id: 'cancel', label: '取消任务', description: '下游卡片需重新评估' },
+      ],
+      defaultOption: 'continue',
+      timeoutMs: STAGE_DECISION_TIMEOUT_MS,
+      payload: { action: 'stage-event-ask', event: String(event), taskId: String(task.id) },
+    }
+    let requested = null
+    try {
+      requested = await stageHost.request(projectPath, input)
+    } catch (error) {
+      requested = null
+    }
+    if (requested === null || requested === undefined || requested.ok !== true) return null
+    emit('stage-event-ask', 'host', { taskId: task.id, detail: String(event) + ': ' + String(count) + ' failed auto-recoveries; asked the human' })
+    return requested.decision === null || requested.decision === undefined ? null : requested.decision
+  }
+
+  /** Re-read the card right before a nudge: a landed verdict makes it obsolete. */
+  async function freshStageRound(projectPath, taskId, stage, roundAt) {
+    try {
+      const read = await state.read(projectPath)
+      if (read.failed !== null) return null
+      const task = model.findTask(read.board, String(taskId))
+      if (task === undefined || task === null) return null
+      if (stageOfTask(task) !== stage) return null
+      if (stageRoundAt(task, stage) !== roundAt) return null
+      return task
+    } catch (error) {
+      return null
+    }
+  }
+
+  /**
+   * One-line reminder / grace notice for an open review/test round. The board is
+   * re-read IMMEDIATELY before the send: a verdict (or a phase change) that landed
+   * since the snapshot means the nudge is not sent at all. The host cannot recall
+   * a message that already reached the Agent inbox — that needs a delivery-time
+   * inbox API (a separate DSH dependency, not implemented here) — so the text
+   * itself says it is non-authoritative.
+   */
+  async function sendStageNudge(projectPath, task, stage, budget, waitedMs, untilMs, grace) {
+    const executor = stageExecutorOfRun(task, stage)
+    if (executor === null || executor.id === null) return false
+    const fresh = await freshStageRound(projectPath, task.id, stage, budget.round)
+    if (fresh === null) return false
+    const freshExecutor = stageExecutorOfRun(fresh, stage)
+    if (freshExecutor === null || freshExecutor.id === null) return false
+    const remainingMs = Math.max(0, untilMs - waitedMs)
+    const text = stageReminderText({ taskId: String(fresh.id), title: typeof fresh.title === 'string' ? fresh.title : '', stage: stage, waitedMs: waitedMs, untilMs: remainingMs, grace: grace === true })
+    return await sendToAgent(fresh.ownerSession, freshExecutor.id, text)
+  }
+
+  /** Reminder and grace inside one budget slice; both are one line and idempotent. */
+  async function nudgeStage(projectPath, task, stage, budget, now, waitedMs, untilMs) {
+    if (stage === 'dev') return { reminded: false }
+    const roundKey = String(task.id) + '@' + stage + '@' + String(budget.round) + '@' + String(budget.continues)
+    const reminderAt = Math.max(1, Math.round(untilMs / 2))
+    const graceAt = Math.max(reminderAt + 1, untilMs - phaseGraceMs)
+    if (waitedMs >= graceAt && memory.stageGrace.has(roundKey) === false) {
+      const sent = await sendStageNudge(projectPath, task, stage, budget, waitedMs, untilMs, true)
+      if (sent === true) {
+        memory.stageGrace.set(roundKey, now)
+        emit('stage-grace', 'system', { taskId: task.id, detail: stage + ' about to time out; one-line grace notice sent' })
+      }
+      return { reminded: false, grace: sent === true }
+    }
+    if (waitedMs >= reminderAt && memory.stageReminders.has(roundKey) === false) {
+      const sent = await sendStageNudge(projectPath, task, stage, budget, waitedMs, untilMs, false)
+      if (sent === true) {
+        memory.stageReminders.set(roundKey, now)
+        emit('stage-reminder', 'system', { taskId: task.id, detail: stage + ' still pending; one-line reminder sent' })
+        return { reminded: true }
+      }
+    }
+    return { reminded: false }
+  }
+
+  /**
+   * The STAGE sweep, driven by the host tick: dev/review/test timeouts ask the
+   * human instead of blocking, and a continue extends the same stage's budget.
+   * The store's 120s deadline is swept here too, so the default applies even with
+   * no panel polling. Nothing in this path stops a live agent.
+   */
+  async function sweepStageTimeouts(projectPath, board, now) {
+    const result = { decisions: [], reminded: [], renewed: 0 }
+    if (stageHost !== null && typeof stageHost.sweep === 'function') {
+      try {
+        await stageHost.sweep(projectPath)
+      } catch (error) {}
+    }
+    result.renewed = await renewStageActivityFromTree(board, now)
+    const liveEvents = new Set()
+    const liveNudges = new Set()
+    for (const task of Array.isArray(board.tasks) ? board.tasks : []) {
+      const stage = stageOfTask(task)
+      if (stage === null) continue
+      const roundAt = stageRoundAt(task, stage)
+      if (roundAt === null) continue
+      const budget = stageStateOf(task, stage, roundAt)
+      liveEvents.add(String(task.id) + '@' + stage)
+      liveNudges.add(String(task.id) + '@' + stage + '@' + String(budget.round) + '@' + String(budget.continues))
+      const executor = stageExecutorOfRun(task, stage)
+      const lastAt = Math.max(roundAt, Number.isFinite(budget.since) ? budget.since : 0, phaseActivityAt(ctx, task.id, stageIdentitiesOf(executor)))
+      const waitedMs = Math.max(0, now - lastAt)
+      const untilMs = stageUntilOf()
+      if (waitedMs < untilMs) {
+        const nudged = await nudgeStage(projectPath, task, stage, budget, now, waitedMs, untilMs)
+        if (nudged.reminded === true) result.reminded.push(task.id)
+        continue
+      }
+      if (budget.decisionId !== null) continue
+      const downstream = stage === 'dev' ? stageDownstreamOf(board, task.id) : null
+      const decision = await requestStageTimeout(projectPath, task, stage, budget, now, waitedMs, executor, downstream)
+      if (decision !== null && decision.status === 'pending') result.decisions.push(task.id)
+    }
+    for (const key of Array.from(memory.stageEvents.keys())) {
+      if (liveEvents.has(key) === false) memory.stageEvents.delete(key)
+    }
+    for (const key of Array.from(memory.stageReminders.keys())) {
+      if (liveNudges.has(key) === false) memory.stageReminders.delete(key)
+    }
+    for (const key of Array.from(memory.stageGrace.keys())) {
+      if (liveNudges.has(key) === false) memory.stageGrace.delete(key)
+    }
+    // T-197 review fix: a closed card closes its recovery streak; a worker-lost
+    // streak whose card has since reached review/test counts as a SUCCESSFUL
+    // recovery, so a later incident starts over instead of escalating.
+    for (const key of Array.from(memory.stageRecoveries.keys())) {
+      const at = key.lastIndexOf('@')
+      const taskId = at < 0 ? key : key.slice(0, at)
+      const event = at < 0 ? '' : key.slice(at + 1)
+      const task = model.findTask(board, taskId)
+      // A task that is not on THIS board may live in another project: this sweep
+      // may not judge (or clear) that streak.
+      if (task === undefined || task === null) continue
+      const closed = task.status === 'done' || task.status === 'cancelled'
+      const workerProgressed =
+        event === STAGE_EVENTS.workerLost &&
+        task.status !== 'running' &&
+        task.status !== 'pending' &&
+        task.status !== 'blocked'
+      if (closed || workerProgressed) memory.stageRecoveries.delete(key)
+    }
+    return result
+  }
+
   /** Record why a card could not be handed to its own team, without borrowing. */
   async function markExecutorMissing(project, taskId, reason, detail) {
     try {
@@ -2992,14 +3532,12 @@ export function createDispatcher(ctx, options) {
       // reaped merely because its worker produced no tool calls for a while.
       let current = await applyHeartbeat(project, read.board, now)
       current = await reap(project, current, now)
-      const reviewSweep = await sweepReviewTimeouts(project, current, now)
-      if (reviewSweep.board !== null) current = reviewSweep.board
-      for (const id of reviewSweep.reminded) results.push({ id: id, review: 'reminded' })
-      for (const id of reviewSweep.blocked) results.push({ id: id, review: 'timed-out' })
-      const testSweep = await sweepTestTimeouts(project, current, now)
-      if (testSweep.board !== null) current = testSweep.board
-      for (const id of testSweep.reminded) results.push({ id: id, test: 'reminded' })
-      for (const id of testSweep.blocked) results.push({ id: id, test: 'timed-out' })
+      // T-197: dev/review/test timeouts ASK before anything stops. A question is
+      // never a block, a continue never restarts the worker, and no path here
+      // disposes a live stage child.
+      const stageSweep = await sweepStageTimeouts(project, current, now)
+      for (const id of stageSweep.reminded) results.push({ id: id, stage: 'reminded' })
+      for (const id of stageSweep.decisions) results.push({ id: id, stage: 'asked' })
       const dispatch = current.dispatch
       if (dispatch.state !== 'running') {
         return { ok: true, state: 'paused', tasks: current.tasks.length, results: results }
@@ -3095,7 +3633,23 @@ export function createDispatcher(ctx, options) {
     void leaseGate.releaseAll()
   }
 
-  return { kick: kick, tick: tick, settle: settle, status: status, dispose: dispose, memory: memory, boot: boot }
+  return {
+    kick: kick,
+    tick: tick,
+    settle: settle,
+    status: status,
+    dispose: dispose,
+    memory: memory,
+    boot: boot,
+    // T-197: the stage engine's seams. The API attaches its decision store here
+    // and applies the answers through these methods; nothing else reaches in.
+    attachStageHost: attachStageHost,
+    applyStageContinue: applyStageContinue,
+    resetStageBudget: resetStageBudget,
+    retryDevelopment: retryDevelopment,
+    notifyStageEvent: notifyStageEvent,
+    requestStageRecoveryAsk: requestStageRecoveryAsk,
+  }
 }
 /** What the execution edge looks like right now. Read-only. */
 export function probeDispatch(ctx) {

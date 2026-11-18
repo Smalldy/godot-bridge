@@ -7,7 +7,21 @@ import { readRoleConfig } from '../../plugin/task-center/board.mjs'
 import { updateBoard } from '../../plugin/task-center/board.mjs'
 import { writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
-import { briefFor, createActivity, createDispatcher, probeDispatch, recordStageSlot, stageSlotOf, testerBriefFor } from '../../plugin/task-center/dispatch.mjs'
+import {
+  STAGE_BUDGET_MS,
+  STAGE_CONTINUE_LIMIT,
+  STAGE_EVENTS,
+  briefFor,
+  createActivity,
+  createDispatcher,
+  probeDispatch,
+  recordStageSlot,
+  stageDecisionId,
+  stageReminderText,
+  stageSlotOf,
+  stageTimeoutOptions,
+  testerBriefFor,
+} from '../../plugin/task-center/dispatch.mjs'
 import { createApi, readGodotProjectInfo } from '../../plugin/task-center/api.mjs'
 import { createFakeFs, createFakeTaskAgents, createRig, createTask, sleep, PROJECT } from './support/fixtures.mjs'
 
@@ -61,7 +75,7 @@ async function boardOf(rig) {
   const snap = await boardOf(rig)
   const pending = snap.tasks.filter((entry) => entry.id === task.id)[0]
   check('without the subagent runtime the card stays pending', pending.status === 'pending', pending.status)
-  const tick = await rig.scheduler.tick(rig.project)
+  const tick = await rig.settle()
   check('and the tick says why, with a typed code', Array.isArray(tick.results) && tick.results.some((entry) => entry.skipped === 'agent-runtime-unavailable'), JSON.stringify(tick.results))
 }
 
@@ -79,7 +93,7 @@ async function boardOf(rig) {
   await patchTask(rig, task.id, (entry) => {
     entry.leaseUntil = new Date(before + 1000).toISOString()
   })
-  await rig.scheduler.tick(rig.project)
+  await rig.settle()
   let after = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
   check('a live child keeps its lease', Date.parse(after.leaseUntil) > before + 5000, after.leaseUntil)
   // Drop the child from the live tree: the same window now lapses into a handover.
@@ -88,31 +102,196 @@ async function boardOf(rig) {
   await patchTask(rig, task.id, (entry) => {
     entry.leaseUntil = new Date(Date.now() - 1000).toISOString()
   })
-  await rig.scheduler.tick(rig.project)
+  await rig.settle()
   after = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
   check('a gone child lapses into a requeue', after.status === 'pending' && after.assignee === null, JSON.stringify(after))
   check('the handover disposed the stale child', taskAgents.calls.some((call) => call.kind === 'release' && call.agentId === agentId) || taskAgents.calls.some((call) => call.kind === 'releaseTask'), JSON.stringify(taskAgents.calls))
 }
 
-// ── the review watchdog blocks a silent round and disposes the reviewer ────
+// ── T-197: a silent review ASKS the human; nothing is blocked or killed ──────
 {
+  let clockNow = Date.parse('2026-11-19T00:00:00.000Z')
   const taskAgents = createFakeTaskAgents()
-  const rig = createRig({ taskAgents: taskAgents })
+  const rig = createRig({ taskAgents: taskAgents, now: () => clockNow })
   const task = await createTask(rig, { title: 'D' })
   await rig.action('start')
   const submitted = await rig.action('submit', { id: task.id, evidence: 'ready' })
   check('submit starts the reviewer child', submitted.ok === true && taskAgents.calls.some((call) => call.kind === 'startReviewer'), JSON.stringify(submitted))
-  const snap = await boardOf(rig)
-  const reviewing = snap.tasks.filter((entry) => entry.id === task.id)[0]
-  check('the card records the reviewer Session id', reviewing.review !== null && reviewing.review.deliveredTo !== null && typeof reviewing.review.deliveredTo.id === 'string', JSON.stringify(reviewing.review))
+  const reviewing = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
   const reviewerId = String(reviewing.review.deliveredTo.id)
+  const workersStarted = () => taskAgents.calls.filter((call) => call.kind === 'startWorker').length
+
+  // The reviewer is still EXECUTING a turn (a long pwsh/read/probe run): the
+  // tree says "running", so the clock is renewed and an old round timestamp is
+  // never mistaken for silence (T-197 requirement 7 — not only task_center calls).
+  clockNow += 60 * 60 * 1000
+  await rig.settle()
+  let pending = await rig.api.decisions.pending(rig.project)
+  check('a reviewer that is executing a turn renews the watchdog clock', pending.ok === true && pending.pending.length === 0, JSON.stringify(pending.pending))
+
+  // The turn ended (the child is inactive) and the round has been silent since.
+  taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
   await patchTask(rig, task.id, (entry) => {
-    entry.review.at = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+    entry.review.at = new Date(clockNow - 25 * 60 * 1000).toISOString()
   })
-  await rig.scheduler.tick(rig.project)
-  const blocked = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
-  check('a silent review is blocked for triage', blocked.status === 'blocked', blocked.status + ' ' + blocked.waitingReason)
-  check('the stalled reviewer is disposed', taskAgents.calls.some((call) => call.kind === 'releaseTask' || (call.kind === 'release' && call.agentId === reviewerId)), JSON.stringify(taskAgents.calls))
+  const roundAt = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0].review.at
+  clockNow += 26 * 60 * 1000
+  await rig.settle()
+  pending = await rig.api.decisions.pending(rig.project)
+  const asked = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === STAGE_EVENTS.reviewTimeout)[0] : undefined
+  check('a silent review asks the human instead of blocking', asked !== undefined && asked.status === 'pending', JSON.stringify(pending.pending))
+  check('the question defaults to continue', asked !== undefined && asked.defaultOption === 'continue', JSON.stringify(asked === undefined ? null : asked.defaultOption))
+  check('the question offers continue/replace/block/cancel', asked !== undefined && asked.options.map((option) => option.id).join(',') === 'continue,replace,block,cancel', JSON.stringify(asked === undefined ? null : asked.options.map((option) => option.id)))
+  const afterAsk = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
+  check('the card stays in review while the question is pending', afterAsk.status === 'reviewing', String(afterAsk.status))
+  check('the timeout never disposes the live reviewer', taskAgents.calls.every((call) => !(call.kind === 'releaseTask' || call.kind === 'release') || String(call.agentId === undefined ? '' : call.agentId) !== reviewerId), JSON.stringify(taskAgents.calls.filter((call) => call.kind === 'release' || call.kind === 'releaseTask')))
+  await rig.settle()
+  const again = await rig.api.decisions.pending(rig.project)
+  check('a second tick never stacks a second question', again.ok === true && again.pending.filter((decision) => decision.eventKey === STAGE_EVENTS.reviewTimeout).length === 1)
+
+  // The 120s deadline applies the safe default on the HOST TICK alone: no panel
+  // has to be polling for the timeout to default to continue.
+  clockNow += 121 * 1000
+  await rig.settle()
+  const resolved = await rig.api.decisions.list(rig.project, { status: 'all' })
+  const expired = resolved.ok === true ? resolved.decisions.filter((decision) => decision.eventKey === STAGE_EVENTS.reviewTimeout && decision.status === 'expired')[0] : undefined
+  check('the host tick expires the question through its default', expired !== undefined && expired.resolution.option === 'continue', JSON.stringify(resolved.decisions.map((decision) => ({ event: decision.eventKey, status: decision.status }))))
+  const afterContinue = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
+  check('continue keeps the card in the same review round', afterContinue.status === 'reviewing' && afterContinue.review.at === roundAt, JSON.stringify({ status: afterContinue.status, at: afterContinue.review.at }))
+  check('continue keeps the worktree and never restarts the worker', afterContinue.worktree === reviewing.worktree && workersStarted() === 1, JSON.stringify({ worktree: afterContinue.worktree, workers: workersStarted() }))
+  check('the continue is written to the task history', afterContinue.history.some((row) => String(row.note).indexOf('默认继续') >= 0), JSON.stringify(afterContinue.history.map((row) => row.note)))
+  await rig.settle()
+  const immediate = await rig.api.decisions.pending(rig.project)
+  check('the extended slice waits for FRESH silence, not the old total', immediate.ok === true && immediate.pending.filter((decision) => decision.eventKey === STAGE_EVENTS.reviewTimeout).length === 0, JSON.stringify(immediate.pending.map((decision) => decision.eventKey)))
+  clockNow += 21 * 60 * 1000
+  await rig.settle()
+  const second = await rig.api.decisions.pending(rig.project)
+  check('the next slice asks again after 20 more silent minutes', second.ok === true && second.pending.filter((decision) => decision.eventKey === STAGE_EVENTS.reviewTimeout).length === 1)
+}
+
+// ── T-197: three consecutive DEFAULT continues auto-block, and never re-ask ──
+{
+  let clockNow = Date.parse('2026-11-19T02:00:00.000Z')
+  const taskAgents = createFakeTaskAgents()
+  const rig = createRig({ taskAgents: taskAgents, now: () => clockNow })
+  const task = await createTask(rig, { title: 'L' })
+  await rig.action('start')
+  taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
+  // Let one full slice of silence pass from the last recorded activity.
+  clockNow += 26 * 60 * 1000
+  const blockedNotes = []
+  for (let round = 1; round <= STAGE_CONTINUE_LIMIT; round += 1) {
+    await rig.settle()
+    const asked = await rig.api.decisions.pending(rig.project)
+    const question = asked.ok === true ? asked.pending.filter((decision) => decision.eventKey === STAGE_EVENTS.devTimeout)[0] : undefined
+    check('round ' + String(round) + ': the dev timeout asks instead of blocking', question !== undefined && question.options.map((option) => option.id).join(',') === 'continue,retry-dev,cancel,cancel-tree', JSON.stringify(asked.pending.map((decision) => decision.eventKey)))
+    clockNow += 121 * 1000
+    const listed = await rig.action('decisionList', {})
+    check('round ' + String(round) + ': the unanswered question defaults to continue', listed.ok === true && listed.expired.length === 1, JSON.stringify(listed.expired))
+    const row = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
+    if (round < STAGE_CONTINUE_LIMIT) {
+      check('round ' + String(round) + ': the card keeps running with the same worker', row.status === 'running' && row.assignee !== null && taskAgents.calls.filter((call) => call.kind === 'startWorker').length === 1, String(row.status))
+      clockNow += 21 * 60 * 1000
+    } else {
+      blockedNotes.push(...row.history.map((entry) => String(entry.note)))
+    }
+  }
+  const finalRow = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
+  check('the third consecutive default continue auto-blocks the card', finalRow.status === 'blocked', String(finalRow.status))
+  check('the auto-block is written to the history', blockedNotes.some((note) => note.indexOf('连续 ' + String(STAGE_CONTINUE_LIMIT) + ' 次') >= 0), JSON.stringify(blockedNotes))
+  await rig.settle()
+  const afterBlock = await rig.api.decisions.pending(rig.project)
+  check('a blocked card is not asked again', afterBlock.ok === true && afterBlock.pending.filter((decision) => decision.eventKey === STAGE_EVENTS.devTimeout).length === 0, JSON.stringify(afterBlock.pending.map((decision) => decision.eventKey)))
+}
+
+// ── T-197: reminder/grace are one line and re-read the board before sending ──
+{
+  let clockNow = Date.parse('2026-11-19T04:00:00.000Z')
+  const taskAgents = createFakeTaskAgents()
+  const rig = createRig({ taskAgents: taskAgents, now: () => clockNow })
+  const task = await createTask(rig, { title: 'E' })
+  await rig.action('start')
+  await rig.action('submit', { id: task.id, evidence: 'ready' })
+  taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
+  const reviewAt = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0].review.at
+  clockNow = Date.parse(reviewAt) + 11 * 60 * 1000
+  await rig.settle()
+  const sends = taskAgents.calls.filter((call) => call.kind === 'send')
+  check('eleven silent minutes sends exactly one reminder', sends.length === 1, JSON.stringify(sends))
+  const text = sends.length === 0 ? '' : String(sends[0].text)
+  check('the reminder is ONE line', text.indexOf('\n') < 0, JSON.stringify(text))
+  check('the reminder names id/title/stage/waited/verdict/deadline', text.indexOf(task.id) >= 0 && text.indexOf('E') >= 0 && text.indexOf('review') >= 0 && text.indexOf('11m') >= 0 && text.indexOf('approveReview or requestChanges') >= 0 && text.indexOf('9m') >= 0, text)
+  check('the reminder is explicitly non-authoritative', text.indexOf('Non-authoritative') >= 0 && text.indexOf('ignore this message') >= 0, text)
+  check('the reminder never carries the reviewer brief', text.indexOf('Stage contract') < 0 && text.indexOf('Candidate artifact') < 0 && text.indexOf('Review round') < 0 && text.length < 400, text)
+
+  // A verdict lands between the sweep's snapshot and the send: the host re-reads
+  // the board and sends nothing at all.
+  const before = taskAgents.calls.filter((call) => call.kind === 'send').length
+  taskAgents.listAgentsFor = async () => {
+    await updateBoard(
+      { fs: rig.fs },
+      {
+        projectPath: rig.project,
+        mutate: (board) => {
+          const row = findTask(board, task.id)
+          if (row.status === 'reviewing' && row.review !== null && row.review.status === 'pending') {
+            row.status = 'testing'
+            row.review = Object.assign({}, row.review, { status: 'approved' })
+            row.test = { status: 'pending', by: null, byName: null, at: new Date(clockNow).toISOString(), evidence: null, attempt: 1 }
+          }
+          return board
+        },
+        sandboxPolicy: writePolicyFor(rig.project),
+      },
+    )
+    return Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
+  }
+  clockNow += 7 * 60 * 1000
+  await rig.settle()
+  check('a verdict that landed before the send suppresses the nudge', taskAgents.calls.filter((call) => call.kind === 'send').length === before, JSON.stringify(taskAgents.calls.filter((call) => call.kind === 'send')))
+}
+
+// ── T-197 event 10: worker lost is notify-only, then escalates to an ask ─────
+{
+  const taskAgents = createFakeTaskAgents()
+  const rig = createRig({ taskAgents: taskAgents })
+  const task = await createTask(rig, { title: 'G' })
+  const loseWorker = async () => {
+    await rig.action('start')
+    await patchTask(rig, task.id, (entry) => {
+      entry.dispatch = Object.assign({}, entry.dispatch, { host: 'another-boot' })
+    })
+    await rig.settle()
+  }
+  await loseWorker()
+  let row = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
+  let pending = await rig.api.decisions.pending(rig.project)
+  check('a host restart is re-dispatched WITHOUT a modal', row.status === 'running' && pending.pending.length === 0, JSON.stringify({ status: row.status, pending: pending.pending.map((decision) => decision.eventKey) }))
+  check('the automatic recovery is written to the task history', row.history.some((entry) => String(entry.note).indexOf('已自动处置') >= 0), JSON.stringify(row.history.map((entry) => entry.note)))
+  check('the recovery names the event it auto-handled', row.history.some((entry) => String(entry.note).indexOf('worker-lost') >= 0), JSON.stringify(row.history.map((entry) => entry.note)))
+  await loseWorker()
+  row = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
+  pending = await rig.api.decisions.pending(rig.project)
+  check('the second recovery is still notify-only', row.status === 'running' && pending.pending.length === 0, JSON.stringify(pending.pending.map((decision) => decision.eventKey)))
+  await loseWorker()
+  pending = await rig.api.decisions.pending(rig.project)
+  const escalated = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === STAGE_EVENTS.workerLost)[0] : undefined
+  check('a third failed auto-recovery escalates to an ask', escalated !== undefined, JSON.stringify(pending.pending.map((decision) => decision.eventKey)))
+  check('the escalation asks the human with a safe default', escalated !== undefined && escalated.defaultOption === 'continue', JSON.stringify(escalated === undefined ? null : escalated.defaultOption))
+}
+
+// ── T-197: the pure copy helpers stay one line and bounded ──────────────────
+{
+  const reminder = stageReminderText({ taskId: 'T-9', title: 'copy', stage: 'test', waitedMs: 12 * 60 * 1000, untilMs: 8 * 60 * 1000, grace: false })
+  check('the reminder text is a single bounded line', reminder.indexOf('\n') < 0 && reminder.length < 400, reminder)
+  check('the reminder names the test verdict it needs', reminder.indexOf('passTest or failTest') >= 0 && reminder.indexOf('Non-authoritative') >= 0, reminder)
+  const grace = stageReminderText({ taskId: 'T-9', title: 'copy', stage: 'review', waitedMs: 18 * 60 * 1000, untilMs: 2 * 60 * 1000, grace: true })
+  check('the grace text asks for a verdict before the deadline', grace.indexOf('host asks the human in 2m') >= 0, grace)
+  const devOptions = stageTimeoutOptions('dev')
+  check('the dev question marks the retry as destructive', devOptions.filter((option) => option.id === 'retry-dev')[0].danger === true)
+  check('the review question defaults to continue', stageTimeoutOptions('review').filter((option) => option.default === true)[0].id === 'continue')
+  check('the decision id is stable per round and slice', stageDecisionId('T-9', STAGE_EVENTS.testTimeout, 1000, 2) === 'stage-T-9-test-timeout-1000-2')
+  check('the stage budget is the packet 20 minutes', STAGE_BUDGET_MS === 20 * 60 * 1000)
 }
 
 // ── stage slots and briefs remain pure bookkeeping ────────────────────────
@@ -149,7 +328,7 @@ async function boardOf(rig) {
   await patchTask(rig, task.id, (entry) => {
     entry.dispatch = Object.assign({}, entry.dispatch, { host: 'another-boot' })
   })
-  await rig.scheduler.tick(rig.project)
+  await rig.settle()
   const after = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
   check('a claim from another host process is requeued', after.status === 'pending', after.status)
   check('its attempt is refunded', after.attempts <= 1, String(after.attempts))
