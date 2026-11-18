@@ -1,11 +1,12 @@
 # 卡片状态机审计与目标状态机（T-200）
 
-> 状态：v4（2026-11-19，review round 3 修订） · 审计基线：分支 `task/T-200-1`，提交 `e2d5d4d`
-> 修订：见附录 E（v2/v3/v4 逐条回应评审意见）
+> 状态：v5（2026-11-19，重开任务 review round 1 修订） · 审计基线：提交 `e2d5d4d`（分支 `task/T-200-1` 的原始工作基线）
+> 修订：见附录 E（v2/v3/v4/v5 逐条回应评审意见）
 > 范围：只审计当前实现并给出目标状态机与实现拆分；**本文件不含实现改动**。
 > 验证基线：源码逐函数核对 + `npm test` 73/73 通过（仅新增本文档）。
+> 候选树说明：交付提交的父提交为 `67065ec`（`feat/task-center-v2`）。`e2d5d4d..67065ec` 只改 tester brief 的 Godot 主场景探测（`api.mjs` `readGodotProjectInfo`/`godotInfoFor`、`dispatch.mjs` `testerBriefFor`），不涉及任何卡片状态转移，本文的现状转移与函数名引用对该区间仍然成立。
 > 关联文档：`docs/refactor/STAGE-CONTRACT.md`（阶段契约 v4）、`docs/refactor/ARCHITECTURE.md`（模块边界）、`docs/refactor/TESTING.md`（测试金字塔）。
-> 行号说明：行号取自上述提交；函数名与文件路径比行号稳定，引用时两者都给。
+> 行号说明：行号取自 `e2d5d4d`；函数名与文件路径比行号稳定，引用时两者都给。候选树 `67065ec` 中 `api.mjs` 行号约 +69~+78、`dispatch.mjs` 在 `testerBriefFor` 之后约 +16（其他文件未变），实现/评审请按函数名定位并重锚行号。
 
 ---
 
@@ -28,13 +29,15 @@
 
 | status | 当前含义 | 谁写入（当前） | 进入自 | 离开到 | 终态 |
 | --- | --- | --- | --- | --- | --- |
-| `pending` | 未派发；“就绪”由依赖图派生，不落盘 | `createTask`、`interruptDispatch`、`expireLeases`、`reopenTask`、`retryTask`、`failDispatch`（无人调用）、`handoff.applyTakeover`、读盘迁移 | 创建、租约过期、中断、撤回、重开 | running（claim）、blocked、cancelled、∅（delete） | 否 |
-| `running` | 被 worker 持有，带 60 分钟租约；claim 本身就是互斥锁（`service.mjs:559-562`） | 仅 `claimTask` | pending | reviewing、pending、blocked、cancelled | 否 |
-| `reviewing` | 已提交，评审轮开放；实际评审者记录在 `review.deliveredTo` | `submitTask`、`refreshMergeRequest` | running、testing（refresh）、reviewing（refresh） | testing、running、blocked、cancelled | 否 |
-| `testing` | **双义**：测试轮开放（`test.pending`）或测试通过等待合并（`test.passed` + `merge.open`） | `approveReview`、`recordCandidate(retest)` | reviewing、testing（仅 retest） | done（合并成功）、running（测试失败）、blocked、cancelled | 否 |
-| `done` | 合并成功（dev）或已交报告（investigate）；满足依赖 | `recordMergeResult`、`reportTask` | testing、running（investigate） | pending（reopen）、∅（delete） | 是 |
-| `blocked` | 需要人处理：手动 block、死 worker、尝试耗尽、超时、评审轮数上限、合并失败 | `blockTask`（手工/系统） | 任意非终态 | pending（unblock/retry/reopen） | 否（可恢复） |
-| `cancelled` | 放弃 | `cancelTask` | 任意非终态 | pending（reopen）、∅（delete） | 是 |
+| `pending` | 未派发；“就绪”由依赖图派生，不落盘 | `createTask`、`interruptDispatch`、`expireLeases`、`reopenTask`（`unblockTask` 委托它）、`retryTask`、`failDispatch`（无人调用）、`handoff.applyTakeover`、读盘迁移 | ∅（create）、running（interrupt/租约过期/handoff）、done/cancelled/blocked（reopen）、pending/blocked（retry） | running（claim）、blocked（block/watchdog）、cancelled、∅（delete） | 否 |
+| `running` | 被 worker 持有，带 60 分钟租约；claim 本身就是互斥锁（`service.mjs:559-562`） | `claimTask`、`requestChanges`、`failTest`（含 `approveReview` 的 hostCheck 失败复合路径） | pending（claim）、reviewing（requestChanges）、testing（failTest） | reviewing（submit）、pending（interrupt/租约过期/handoff）、blocked、cancelled、done（investigate 的 report） | 否 |
+| `reviewing` | 已提交，评审轮开放；实际评审者记录在 `review.deliveredTo` | `submitTask`、`refreshMergeRequest` | running（submit）、testing（refresh）、reviewing（refresh 自环） | testing（approveReview）、running（requestChanges；approveReview+hostCheck 失败复合写的最终值）、reviewing（refresh 自环）、blocked、cancelled、∅（delete） | 否 |
+| `testing` | **双义**：测试轮开放（`test.pending`）或测试通过等待合并（`test.passed` + `merge.open`）；写入只发生在开轮时，`passTest` 不改 status | `approveReview`、`recordCandidate(retest)`（`merge.mjs:921`） | reviewing（approveReview）、testing（retest 自环） | done（合并成功）、running（failTest）、reviewing（refreshMerge/目标漂移）、testing（retest 自环；passTest 与 base-only 重建不写 status）、blocked、cancelled、∅（delete） | 否 |
+| `done` | 合并成功（dev）或已交报告（investigate）；满足依赖 | `recordMergeResult`、`reportTask` | testing（合并）、running（investigate 的 report） | pending（reopen）、∅（delete） | 是 |
+| `blocked` | 需要人处理：手动 block、死 worker、尝试耗尽、超时、评审轮数上限、合并失败 | `blockTask`（手工/系统 watchdog/轮数上限） | pending/running/reviewing/testing（任意非 done/cancelled/blocked） | pending（unblock/retry/reopen）、cancelled（cancel）、∅（delete） | 否（可恢复） |
+| `cancelled` | 放弃 | `cancelTask` | pending/running/reviewing/testing/blocked（任意非 cancelled/done） | pending（reopen）、∅（delete） | 是 |
+
+> 本表是审计摘要：写入点与复合路径以 1.4 与 §2 为准（例如 `approveReview` 的 hostCheck 失败在同一 action 内先写 testing、再由 `failTest` 写 running）；“离开到”包含 cancel/delete 与 refresh/retest 自环。
 
 补充事实：
 
@@ -308,7 +311,7 @@
 
 | status | 定义 | 进入/恢复路径（摘要） | closed | 备注 |
 | --- | --- | --- | --- | --- |
-| `pending` | 未认领；就绪由依赖图派生 | 新建 T01；回池 T03/T04/T05；恢复 T06/T28（blockedFrom=pending/running）；重试 T29；重开 T30 | 否 | 不再承载任何“阶段轮次开放”的记录 |
+| `pending` | 未认领；就绪由依赖图派生 | 新建 T01；回池 T03/T04/T05；**无 implementer 的返工 T13/T16/T19**；恢复 T06/T28（blockedFrom=pending/running）；重试 T29；重开 T30 | 否 | 不再承载任何“阶段轮次开放”的记录 |
 | `running` | 实现阶段开放，恰好 1 个活执行者，持有租约与文件锁 | 新 claim T02；返工 T13/T16/T19（无 implementer 时先回 pending） | 否 | 新 attempt 的唯一产生者：`claim`；返工由三个阶段回退，不新增 attempt |
 | `reviewing` | 评审轮开放（`review.status='pending'`），有一个投递对象，或由 user 直接裁决 | 新轮 T07 submit、T26 contentDrift、T27 refreshMerge；恢复 T06/T28（暂停的同一轮） | 否 | 新评审轮产生者：T07/T26/T27；恢复不增加 review.attempt |
 | `testing` | 测试轮开放（`test.status='pending'`） | 新轮 T12 approveReview；恢复 T06/T28（暂停的同一轮） | 否 | 新测试轮产生者：T12；恢复不增加 test.attempt |
@@ -371,7 +374,7 @@ stage = status === 'running'   ? 'implement'
 | T03 | interrupt | running → pending 或 blocked | status=running；dispatch.host 不等于 boot | scheduler | attempts−1、interruptions+1、retire executors、清 lease/assignee、dispatch interrupted；达到 5 次且无 commit 则 blocked（blockedFrom=running、blockedReason=interruptions-exhausted） | `not-running` |
 | T04 | leaseExpired | running → pending 或 blocked | lease 过期；holder 不 alive 或超过 4h 上限 | scheduler | 清 lease/assignee、dispatch lease-expired；attempts 达 max 则 blocked（blockedFrom=running、blockedReason=attempts-exhausted） | 只处理 running |
 | T05 | handoffTakeover | running → pending；reviewing/testing/merging 不变 | owner 陈旧且无活 executor | user | 换 ownerSession；running 清 claim 并 retire；open round 清 deliveredTo；attempts 不变 | `no-takeover-targets` |
-| T06 | autoResume | blocked → blockedFrom（reviewing/testing/merging）或 pending（blockedFrom=pending/running） | blockedReason.auto=true 且条件消失；目标为 reviewing/testing/merging 时 merge.status 必须为 open | host | 清 blockedReason、重排执行者；目标 pending 时清 claim | 条件未消失则等待 |
+| T06 | autoResume | blocked → blockedFrom（reviewing/testing/merging）或 pending（blockedFrom=pending/running） | blockedReason.auto=true 且条件消失；目标阶段记录必须匹配（reviewing → review.status=pending；testing → review.status=approved && test.status=pending；merging → review.status=approved && test.status=passed），且目标为三个阶段时 merge.status 必须为 open | host | 清 blockedReason、重排执行者；目标 pending 时清 claim | 条件未消失则等待 |
 
 #### B 实现 → 评审
 
@@ -418,7 +421,7 @@ stage = status === 'running'   ? 'implement'
 
 | ID | 事件 | from → to | guard | actor | 副作用 | 重复 |
 | --- | --- | --- | --- | --- | --- | --- |
-| T28 | unblock | blocked → blockedFrom（reviewing/testing/merging）或 pending（blockedFrom=pending/running） | blockedReason 可解除；blockedFrom ∈ {pending,running} 时目标为 pending；目标为 reviewing/testing/merging 时 merge.status 必须为 open（conflict/failed/rejected 只能 T27，`merge-unresolved`）；review-round-limit 只能 reopen | user/owner | 清 blockedReason；目标为阶段时重排执行者并保持 merge open；目标 pending 时清 claim/merge；不重置轮次与 attempts | `not-blocked` / `merge-unresolved` |
+| T28 | unblock | blocked → blockedFrom（reviewing/testing/merging）或 pending（blockedFrom=pending/running） | blockedReason 可解除；blockedFrom ∈ {pending,running} 时目标为 pending；目标为 reviewing/testing/merging 时除 merge.status 必须为 open（conflict/failed/rejected 只能 T27，`merge-unresolved`）外，目标阶段记录还必须匹配（同 T06：reviewing → review.pending；testing → review.approved && test.pending；merging → review.approved && test.passed，否则 `phase-record-mismatch`）；review-round-limit 只能 reopen | user/owner | 清 blockedReason；目标为阶段时重排执行者并保持 merge open；目标 pending 时清 claim/merge；不重置轮次与 attempts | `not-blocked` / `merge-unresolved` / `phase-record-mismatch` |
 | T29 | retry | blocked → pending | blockedFrom ∈ {pending,running}；**review-round-limit 禁止** | user/owner | attempts=0、interruptions=0、executors=[]、dispatch=null、assignee=null、blockedReason=null、**merge=null**（请求作废）；保留 review/test 终局记录 | `not-retryable` |
 | T30 | reopen | done/cancelled/blocked → pending | 状态为 closed（done/cancelled）或 blocked | user | 新世代：review/test/report=null；merge 清空；若 merge 曾 merged 则清 branch/worktree/commit/base；attempts/interruptions=0、assignee=null、dispatch=null、blockedReason=null | `not-closed` |
 | T31 | report | running → done | kind=investigate；assignee；summary 合法 | assignee | report 记录 + 文件；清 lease/executor；assignee 转 lastAssignee 后清空；dispatch=null；释放锁；清理 scratch | `not-running` |
@@ -430,10 +433,12 @@ stage = status === 'running'   ? 'implement'
 | ID | 事件 | from → to | guard | actor | 副作用 | 重复 |
 | --- | --- | --- | --- | --- | --- | --- |
 | T32 | heartbeat | running → running | lease 在窗口内；holder alive；未过 4h 上限 | system | 续租、续锁 | 幂等 |
-| T33 | recoverWaiting | blocked → blockedFrom（reviewing/testing/merging）或 pending（blockedFrom=pending/running） | 同 T06（含目标阶段要求 merge.status=open） | host | 同 T06 | 条件未变则等待 |
+| T33 | recoverWaiting | blocked → blockedFrom（reviewing/testing/merging）或 pending（blockedFrom=pending/running） | 同 T06（含目标阶段记录匹配与 merge.status=open） | host | 同 T06 | 条件未变则等待 |
 | T34 | mergeSweep | merging → merging/done/blocked | 见 T21-T24；瞬态失败在预算内不转移 | host | 瞬态失败：merge.status 保持 open、`merge.retry.attempts+1`，不写 failed、不转移；达到 MERGE_RETRY_LIMIT 时按 T23（retry-exhausted）转 blocked；确定性结果按 T21-T24 | 每轮次最多一次重建 |
 
 ### 4.4 禁止转移（目标）
+
+X01–X11 是 (from, event) 层面的转移行；X12–X22 是写入口/读取/不变量层面的规则，不构成额外的 (from, event) 转移行（口径见 4.4.1 与附录 D）。
 
 | ID | 禁止的转移 | 理由 / 拒绝码 |
 | --- | --- | --- |
@@ -448,7 +453,7 @@ stage = status === 'running'   ? 'implement'
 | X09 | done → 除 reopen 之外的任何目标（含 refreshMerge） | `done` / `closed` |
 | X10 | cancelled → 除 reopen/delete 之外的任何目标 | `cancelled` |
 | X11 | 任何状态 → cancelled 若已是 done（先 reopen） | `done` |
-| X12 | 生产代码直接写 `task.status`（service.mjs 之外） | 静态断言 / `illegal-writer` |
+| X12 | 生产代码直接写 `task.status`（只允许 `service.mjs` 的 `transition()` 与 `board.mjs` 的迁移/读盘规范化写入） | 静态断言 / `illegal-writer`（与附录 D#2、SM-1 acceptance 同一口径） |
 | X13 | 读盘时把未知状态静默改成 pending | 拒绝装载 + `unknown-status`（迁移脚本负责已知旧值） |
 | X14 | 阶段记录与状态不一致（如 running + review.pending） | 修复或 `invalid-phase-record` |
 | X15 | merge.status 非枚举值持续存在 | 读盘时拒绝/修复；`invalid-merge-status` |
@@ -462,7 +467,7 @@ stage = status === 'running'   ? 'implement'
 
 **4.4.1 与合法转移表的一致性**
 
-禁止表只否定“合法表中不存在的 (from, event)”；凡引用例外的 X 行，都在下表列出对应 T 行。X05/X06/X07/X18/X19/X20 是 **guard 失败码**（与同名 T 行共享事件但 guard 互斥），不是额外的禁止事件；因此“无交集”的口径是：**guard 通过的允许转移** 与 **guard 失败的禁止转移** 不重叠，且下表列出的例外覆盖所有同 (from, event) 的 T/X 组合。
+**X01–X11** 是 (from, event) 层面的转移行：禁止表只否定“合法表中不存在的 (from, event)”，凡引用例外的 X 行都在下表列出对应 T 行。**X12–X22** 是写入口/读取/不变量层面的规则（X12 静态写入口、X13–X15 读盘规范化、X16–X22 不变量或 guard），不构成额外的 (from, event) 转移行，由附录 D 的静态/不变量断言校验。X05/X06/X07/X16/X18/X19/X20 是 **guard 失败码**（与同名 T 行共享事件但 guard 互斥），不是额外的禁止事件；因此“无交集”的口径是：**guard 通过的允许转移** 与 **guard 失败的禁止转移** 不重叠，且下表列出的例外覆盖所有同 (from, event) 的 T/X 组合。
 
 | X 行 | 例外 T 行 | 说明 |
 | --- | --- | --- |
@@ -474,6 +479,8 @@ stage = status === 'running'   ? 'implement'
 | X11 | 无 | T10 的 guard 已排除 done |
 | X19 | 无 | T15/T28/T29 的 guard 一致禁止 retry/unblock |
 | X18、X20 | T27、T34 | 它们是 guard 失败码（no-change / no-open-merge），不是额外事件 |
+
+> X16（submit 时发现第二个活执行者）与 T07 同事件，是 T07 的 guard 失败码 `already-dispatched`，不是在 T07 之外新增的禁止转移。
 
 > 4.11 图必须画出上表所有例外边；新增 T 行时同步本表与图，否则视为文档缺陷。
 
@@ -487,9 +494,9 @@ stage = status === 'running'   ? 'implement'
 - **INV-testing**：`test.status==='pending'`、`review.status==='approved'`、`merge.status==='open'`、无租约。
 - **INV-merging**：`test.status==='passed'`、`merge.status==='open'`、`review.status==='approved'`、无租约、无任务锁。
 - **INV-done**：dev: `merge.status==='merged'`；investigate: `report!==null`；无租约、无活 executor、dispatch 为关闭值或 null。
-- **INV-blocked**：`blockedReason!==null`、`blockedFrom` 属于 {pending, running, reviewing, testing, merging}、assignee/lease=null、executors 全 retired、无任务锁、`merge.status` 属于 {open, conflict, failed, rejected, null}；`blockedFrom=reviewing/testing` 时对应阶段记录可以是暂停的 `pending` 轮。`blockedFrom=pending/running` 时 merge 必须为 null。
+- **INV-blocked**：`blockedReason!==null`、`blockedFrom` 属于 {pending, running, reviewing, testing, merging}、assignee/lease=null、executors 全 retired、无任务锁、`merge.status` 属于 {open, conflict, failed, rejected, null}；`blockedFrom=reviewing` 要求 `review.status==='pending'`；`blockedFrom=testing` 要求 `review.status==='approved'` 且 `test.status==='pending'`；`blockedFrom=merging` 要求 `review.status==='approved'` 且 `test.status==='passed'`（合并结果只可能出现在测试通过之后）；`blockedFrom=pending/running` 时 merge 必须为 null。暂停轮的阶段记录只能是 `pending`。
 - **INV-cancelled**：assignee/lease=null、executors 全 retired、无任务锁；阶段记录只作审计。
-- **全局**：`ownerSession` 非空；`kind` 永不改变；`history` 至少含创建行；`blockedReason` 只在 blocked 存在；`open` merge 只在 reviewing/testing/merging/blocked（暂停，不可入队）；cancelled 的保留值只是审计。
+- **全局**：`ownerSession` 非空；`kind` 永不改变；`history` 至少含创建行；`blockedReason` 只在 blocked 存在；**活跃（可入队）的 `open` merge** 只在 reviewing/testing/merging 与 blocked（暂停，不可入队），done 不得有 open merge；cancelled 保留的最后 merge 值只作审计，不参与任何 gate 或队列。
 
 ### 4.6 幂等要求
 
@@ -588,11 +595,11 @@ stage = status === 'running'   ? 'implement'
 | 旧板（v2）组合 | 新状态 | 迁移动作 |
 | --- | --- | --- |
 | `testing` + `test.status==='passed'` + `merge.status==='open'` | `merging` | 原样保留 review/test/merge 记录 |
-| `testing` + `merge.status` 属于 {conflict,failed,rejected} | `blocked` | `blockedFrom='merging'`，`blockedReason.code=merge-*`，auto 见 4.8 |
-| `reviewing` + `merge.status==='rejected'` | `blocked` | `blockedFrom='reviewing'`，reason=merge-rejected |
+| `testing` + `merge.status` 属于 {conflict,failed,rejected} | `blocked` | 若 `test.status==='passed'` 且 `review.status==='approved'`：`blockedFrom='merging'`、`blockedReason.code=merge-*`（auto 见 4.8），三项记录保持原值；否则先按 R3 修复/作废该轮，再按下方 ①–⑥ 派生 |
+| `reviewing` + `merge.status==='rejected'` | `blocked` | `blockedFrom='reviewing'`，reason=merge-rejected；`review.status` 保持 pending（暂停轮） |
 | 非 closed、非 blocked + `waitingReason!==null` | `blocked` | `blockedFrom=旧 status`（可为 `pending`），reason 映射（needs-rebase→needs-rebase；candidate-stale→candidate-stale(auto)；agent-*-unavailable→executor-unavailable(auto)；dirty-worktree→dirty-worktree(auto)） |
-| 已 `blocked` + `waitingReason!==null` | 保持 `blocked` | 保留原状态；`blockedFrom` 无历史值时按 merge 记录回退：`merge.status` 属于 {open,conflict,failed,rejected} → `merging`，否则 `running`；记 history（`blockedFrom unknown -> <fallback>`），reason 同上映射 |
-| `blocked` 且无 `waitingReason`/`blockedFrom`（普通 blockTask 遗留） | 保持 `blocked` | 派生 `blockedFrom`：merge.status 属于 {open,conflict,failed,rejected} → merging；test.status=pending → testing；review.status=pending → reviewing；lastAssignee/executors 非空 → running；否则 pending。派生 `blockedReason.code`：由 dispatch.error/status 与最后一条 history note 映射（review-round-limit/review-timeout/test-timeout/interruptions-exhausted/attempts-exhausted/manual-block），auto=false，detail=note；写 history（`blockedFrom/reason derived`） |
+| 已 `blocked` + `waitingReason!==null` | 保持 `blocked` | 保留原状态；`blockedFrom` 无历史值时按下一行的 ①–⑥ 顺序派生（开放轮/测试结论优先，`merge.status==='open'` 不单独作为 merging 依据）；记 history（`blockedFrom unknown -> <fallback>`），reason 同上映射 |
+| `blocked` 且无 `waitingReason`/`blockedFrom`（普通 blockTask 遗留） | 保持 `blocked` | 按序派生 `blockedFrom`：① `test.status==='passed'` 且 `review.status==='approved'` → merging；② `test.status==='pending'` 且 `review.status==='approved'` → testing；③ `review.status==='pending'` → reviewing；④ `merge.status` 属于 {conflict,failed,rejected} 且 `test.status==='passed'` 且 `review.status==='approved'` → merging（合并结果信号）；⑤ lastAssignee/executors 非空 → running；⑥ 否则 pending。**`merge.status==='open'` 本身不是阶段信号**（submit 即创建，reviewing/testing 都会携带），不得据此判 merging。派生 `blockedReason.code`：由 dispatch.error/status 与最后一条 history note 映射（review-round-limit/review-timeout/test-timeout/interruptions-exhausted/attempts-exhausted/manual-block），auto=false，detail=note；写 history（`blockedFrom/reason derived`） |
 | `pending`/`running` + `merge!==null`；或 `blocked` + `merge.status==='merged'`（reopen/handoff/旧板遗留） | 保持状态 | `merge=null`，保留 dispatch 历史；写 history（`stale merge cleared (migration)`），满足 X21/4.9 |
 | 未知 status | 拒绝装载 | 返回 `unknown-status`，提示运行 repair（不再静默 pending） |
 | 旧 `'review'` 状态 | `done` | 保留现有迁移行为（`board.mjs:678`） |
@@ -601,8 +608,8 @@ stage = status === 'running'   ? 'implement'
 - 新板读入 v2 时执行上表迁移并写一行 `history`（`by='migration'`）。
 - `merge.status` 规范化：未知值让该卡进入 blocked(invalid-merge-status)，不丢原值（放在 `blockedReason.detail`）。
 - 迁移产生的 blocked 卡：`blockedFrom=pending` 的经 T06/T28/T29/T30 回 pending；`blockedFrom=running` 的经 T29/T30 回 pending；`merge.status` 非 open 的（conflict/failed/rejected）只能经 T27 回 reviewing，T28 必须返回 `merge-unresolved`。
-- 迁移顺序：先按 merge 结果/阶段映射到 blocked（上表前几行），再清理 pending/running 的 merge 残留，最后为普通 blocked 卡派生 `blockedFrom`/`blockedReason`；每一步写 history。
-- 迁移后必须通过 4.5 的全部不变量；不通过的字段按本表修复，不静默丢弃。普通 blocked 的 blockedFrom 派生是 best-effort：若阶段记录与状态不一致（X14），先按 R3 修复该轮再派生。
+- 迁移顺序：① 清理 stale merge（`pending`/`running` 携带 `merge!==null`、`blocked` + `merge.status==='merged'`）；② 按阶段轮/测试结论把非 blocked 卡映射到 blocked（上表前几行）；③ 为普通 blocked 卡按 ①–⑥ 派生 `blockedFrom`/`blockedReason`。每一步写 history，迁移结果必须通过 INV-blocked（含 `blockedFrom=merging` 的 test/review 断言，以及 `blockedFrom=pending/running` 的 merge=null）。
+- 迁移后必须通过 4.5 的全部不变量；不通过的字段按本表修复，不静默丢弃。普通 blocked 的 blockedFrom 派生是 best-effort：若阶段记录与状态不一致（X14），先按 R3 修复该轮再派生。派生 `blockedFrom=merging` 时额外断言 `test.status==='passed'` 且 `review.status==='approved'`；不满足则不得派生 merging，继续按 ⑤/⑥ 回退并写 history。
 
 ### 4.11 目标转移图（主路径示意；全集见 4.3）
 
@@ -681,7 +688,7 @@ stateDiagram-v2
 
 - **目标**：`STATUSES` 加 `merging`；新增 `TRANSITIONS`/`TERMINAL_STATUSES`/`transition()`；`board.mjs` 拒绝未知状态并执行 v2→v3 迁移；所有现有 model 转移改经 `transition()`（行为不变，merging 暂不产出）。
 - **生产文件**：`plugin/task-center/schema.mjs`、`plugin/task-center/service.mjs`、`plugin/task-center/board.mjs`、`docs/refactor/TASK-STATE-MACHINE.md`（状态说明回填）。
-- **测试**：新增 `scripts/test/state-machine.test.mjs`（表驱动：4.3 每条合法转移可达、4.4 每条禁止转移被拒、4.5 不变量、4.6 幂等、4.10 迁移，含 blocked 无 waitingReason、pending/running 携带 stale merge、done/cancelled 不受影响）；更新 `scripts/test/board.test.mjs`、`scripts/test/service.test.mjs`。
+- **测试**：新增 `scripts/test/state-machine.test.mjs`（表驱动：4.3 每条合法转移可达、4.4 每条禁止转移被拒（X01–X11 转移行 + X12–X22 不变量）、4.5 不变量、4.6 幂等、4.10 迁移，含普通 blocked 按 ①–⑥ 派生（`merge.status=open` 不判 merging）、`blockedFrom=merging` 的 test/review 断言、pending/running 携带 stale merge、done/cancelled 不受影响）；更新 `scripts/test/board.test.mjs`、`scripts/test/service.test.mjs`。
 - **acceptance**：`state-machine` 全绿；未知状态装载返回 `unknown-status`；v2 板迁移到 v3 后 `testing+passed` 变 `merging`，迁移后 4.5 不变量全过（含普通 blocked 派生、stale merge 清空）；`npm test` 全绿；生产代码中除 `service.mjs` 与 `board.mjs` 的迁移/读盘赋值外无直接 status 赋值（附录 D#2）。
 - **probes**：`node --test scripts/test/state-machine.test.mjs`；`node scripts/test/service.test.mjs`。
 
@@ -829,7 +836,7 @@ stateDiagram-v2
 4. **merge 不变量**：`pending/running => merge === null`；`reviewing/testing/merging => merge.status === 'open'`；`blocked => merge.status ∈ {open, conflict, failed, rejected, null}`；`done && dev => merged`；`done && investigate => null`。
 5. **合并结果**：`merged` 只能 `merging -> done`；`conflict/failed/rejected` 只能 `merging -> blocked`；瞬态失败在 `MERGE_RETRY_LIMIT` 内不改变 status 且 `merge.status` 保持 open，达到上限后 T23 写 failed 并 blocked。
 6. **阶段记录**：`reviewing => review.status === 'pending'`；`testing => test.status === 'pending' && review.status === 'approved'`；`merging => test.status === 'passed'`。
-7. **恢复语义**：`retry` 只接受 blockedFrom ∈ {pending,running}；`unblock` 按 blockedFrom 映射（阶段来源→原阶段，pending/running→pending），目标为阶段时要求 merge.status=open（否则 `merge-unresolved`）；blockedFrom ∈ {pending,running,reviewing,testing,merging}；review-round-limit 的 blocked 卡只能 `reopen`；`refreshMerge` 在 (base,head,outcome) 未变时返回 `no-change`。
+7. **恢复语义**：`retry` 只接受 blockedFrom ∈ {pending,running}；`unblock` 按 blockedFrom 映射（阶段来源→原阶段，pending/running→pending），目标为阶段时要求 merge.status=open（否则 `merge-unresolved`）且目标阶段记录匹配（reviewing → review.pending；testing → review.approved+test.pending；merging → review.approved+test.passed，否则 `phase-record-mismatch`；T06/T28/T33 同）；blockedFrom ∈ {pending,running,reviewing,testing,merging}；`blockedFrom=merging` 还要求 test passed + review approved；review-round-limit 的 blocked 卡只能 `reopen`；`refreshMerge` 在 (base,head,outcome) 未变时返回 `no-change`。
 8. **actor 权限**：4.7 矩阵的每个 (事件, actor) 组合至少一条允许/拒绝断言；空 assignee 不得放行任何 agent 动作。
 
 ## 附录 E：修订记录
@@ -854,3 +861,9 @@ stateDiagram-v2
   2. T06/T33 的目标映射改为“阶段来源→原阶段，pending/running→pending”，消除 blocked→running 的二义性；T28 说明与附录 D#7 同步。
   3. 4.10 新增两行迁移：普通 blocked 卡派生 blockedFrom/blockedReason；pending/running 携带 stale merge 时清空并写 history；补充迁移顺序与不变量校验，SM-1 迁移测试覆盖。
   4. 非阻塞：4.7 的 unblock/retry 行移除 host 授权；4.1 blocked 行补 T03/T04 入口。
+- **v5**（2026-11-19，重开任务 review round 1）：
+  1. 1.1 现状表改为精确的写入/进入/离开集合：running 的写入者补 `requestChanges`/`failTest`，来源补 reviewing/testing，离开补 done（investigate 的 report）；reviewing/testing/blocked/cancelled 补 refresh/retest 自环、cancel 与 delete；标注为审计摘要、完整转移以 1.4/§2 为准。
+  2. 4.10 迁移改为“开放轮/测试结论优先”的 ①–⑥ 派生：`merge.status='open'` 不再单独判 merging；`blockedFrom=merging` 增加 test.passed + review.approved 断言；T06/T28/T33 增加目标阶段记录校验与 `phase-record-mismatch`；INV-blocked 同步。
+  3. X12 与附录 D#2/SM-1 acceptance 统一口径（只允许 `transition()` 与 board.mjs 迁移/规范化写入）；4.4.1 区分 X01–X11 转移行与 X12–X22 读取/不变量规则，并把 X16 补进 guard 失败码说明。
+  4. 4.1 pending 补无 implementer 的返工入口 T13/T16/T19；4.5 全局不变量把 open merge 限定为“活跃（可入队）”，cancelled 保留值明确只作审计。
+  5. 非阻塞：补候选树基线说明（67065ec 的 api.mjs/dispatch.mjs 行号漂移，函数名为稳定锚点）。
