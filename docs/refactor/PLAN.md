@@ -2,6 +2,7 @@
 
 > 本文件是重构期间的**唯一协调源**。重构不依赖任务中心；任务中心 149/149 done，已冻结。
 > 架构依据：[docs/architecture-review.md](../architecture-review.md)。
+> 阶段契约 v4：[STAGE-CONTRACT.md](STAGE-CONTRACT.md)（降低任务耗时，不保留 legacy Team 兼容层）。
 > 基线：代码 b486562；备份分支 backup/task-center-v2-pre-refactor-2026-11-07；标签 pre-refactor-2026-11-07；bundle .git/backups/pre-refactor-2026-11-07.bundle。
 > 工作树：.worktrees/refactor-arch（分支 merge/task-center-refactor）；主工作树 feat/task-center-v2 保持稳定，运行中的宿主继续加载旧代码。
 
