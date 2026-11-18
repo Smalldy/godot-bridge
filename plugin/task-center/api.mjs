@@ -3646,6 +3646,15 @@ export function createApi(ctx, options) {
     return lines.join('\n')
   }
 
+  /** Do two id lists name exactly the same card set? (order-insensitive) */
+  function sameDecisionIds(left, right) {
+    const a = (Array.isArray(left) ? left : []).map(String).sort()
+    const b = (Array.isArray(right) ? right : []).map(String).sort()
+    if (a.length !== b.length) return false
+    for (let index = 0; index < a.length; index += 1) if (a[index] !== b[index]) return false
+    return true
+  }
+
   /**
    * The server's timeout policy for one request, exposed so the panel never
    * promises an automatic choice the host would refuse: a danger default is
@@ -4026,21 +4035,32 @@ export function createApi(ctx, options) {
     return await notifyAgent(null, sessionId, text)
   }
 
-  /** The second stage: the destructive dependency-tree confirmation. */
+  /**
+   * The second stage: the destructive dependency-tree confirmation.
+   *
+   * The question is recomputed from the LIVE board every time. A pending
+   * question is reused ONLY while it still names exactly this tree; a stale one
+   * is cancelled (host-side) so a human can never confirm a tree that no longer
+   * exists — the purge re-checks the id set anyway, but two competing bodies in
+   * the queue would be its own hazard.
+   */
   async function requestDeleteTreeDecision(projectPath, payload, by) {
     const id = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : ''
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
+    if (id !== '' && model.findTask(read.board, id) === undefined) return failure('unknown-task', 'no task with id ' + id)
     const rows = id === '' ? [] : decisionDownstreamOf(read.board, id)
-    const total = rows.length + 1
+    const ids = id === '' ? [] : [id].concat(rows.map((row) => row.id))
+    const total = ids.length
     const requester = payload.requester === null || payload.requester === undefined ? null : payload.requester
     const pending = await decisionStore.pending(projectPath)
     if (pending.ok !== true) return pending
-    const existing = pending.pending.filter((decision) => {
+    for (const decision of pending.pending) {
       const body = decision.payload
-      return body !== null && body !== undefined && body.action === 'delete-tree' && String(body.taskId) === String(id)
-    })[0]
-    if (existing !== undefined) return { ok: true, decision: withDecisionPolicy(existing), created: false }
+      if (body === null || body === undefined || body.action !== 'delete-tree' || String(body.taskId) !== String(id)) continue
+      if (sameDecisionIds(body.ids, ids) && body.total === total) return { ok: true, decision: withDecisionPolicy(decision), created: false }
+      await decisionStore.cancel(projectPath, { id: decision.id, note: 'the dependency tree changed; superseded by a fresh confirmation' }, { by: by })
+    }
     const requested = await decisionStore.request(
       projectPath,
       {
@@ -4061,7 +4081,7 @@ export function createApi(ctx, options) {
           key: 'delete-tree:' + id,
           taskId: id,
           total: total,
-          ids: [id].concat(rows.map((row) => row.id)),
+          ids: ids,
           requester: requester,
         },
       },
@@ -4071,7 +4091,14 @@ export function createApi(ctx, options) {
     return { ok: true, decision: withDecisionPolicy(requested.decision), created: requested.created === true }
   }
 
-  /** Permanently remove the root and every chained downstream card. */
+  /**
+   * Permanently remove EXACTLY the cards the human confirmed.
+   *
+   * The live tree is compared with the confirmation's ids/total FIRST. A card
+   * that appeared after the panel was shown must never be destroyed by that
+   * confirmation: on any difference nothing is deleted and a FRESH DELETE-gated
+   * question goes up. Only when the sets are identical are those cards removed.
+   */
   async function purgeDecisionTree(projectPath, payload, execContext) {
     const rootId = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : ''
     if (rootId === '') return failure('missing-id', 'delete-tree needs a task id')
@@ -4081,6 +4108,24 @@ export function createApi(ctx, options) {
     if (root === undefined) return failure('unknown-task', 'no task with id ' + rootId)
     const rows = decisionDownstreamOf(read.board, rootId)
     const ids = [rootId].concat(rows.map((row) => row.id))
+    const confirmedIds = Array.isArray(payload.ids) ? payload.ids.map(String) : []
+    const confirmedTotal = Number.isFinite(payload.total) ? payload.total : null
+    const unchanged = confirmedIds.length > 0 && confirmedTotal === ids.length && sameDecisionIds(confirmedIds, ids)
+    if (unchanged !== true) {
+      const refreshed = await requestDeleteTreeDecision(
+        projectPath,
+        { taskId: rootId, requester: payload.requester === undefined ? null : payload.requester },
+        execContext.by,
+      )
+      const fresh = refreshed.ok === true && refreshed.decision !== undefined ? refreshed.decision : null
+      const freshTotal = fresh !== null && fresh.payload !== null && fresh.payload !== undefined && Number.isFinite(fresh.payload.total) ? fresh.payload.total : ids.length
+      return failure(
+        'dependency-tree-changed',
+        'the dependency tree changed after the confirmation was shown; NOTHING was deleted.' +
+          (fresh === null ? ' Ask again for a fresh confirmation.' : ' The fresh confirmation ' + String(fresh.id) + ' lists ' + String(freshTotal) + ' card(s).'),
+        fresh === null ? {} : { next: fresh },
+      )
+    }
     const tasksById = new Map(read.board.tasks.map((task) => [String(task.id), task]))
     // Stop every stage child and release every lock BEFORE the board forgets
     // the card, exactly like cancel/delete do one card at a time.
@@ -4287,7 +4332,11 @@ export function createApi(ctx, options) {
           summary = { deleted: deleted }
           text = decided + ': permanently deleted ' + String(deleted.length) + ' card(s) — ' + deleted.join(', ') + '.'
         } else {
-          text = decided + ', but the dependency tree could not be deleted: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+          // A changed tree refuses without deleting and puts a FRESH
+          // DELETE-gated question up; the panel banner and the queue both show it.
+          nextDecision = outcome.next === null || outcome.next === undefined ? null : outcome.next
+          if (nextDecision !== null) summary = { nextDecisionId: nextDecision.id }
+          text = decided + ', but nothing was deleted: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
         }
       } else {
         outcome = ok({ kept: true })

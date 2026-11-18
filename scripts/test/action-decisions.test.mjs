@@ -413,5 +413,66 @@ const messages = (agents) => agents.calls.filter((call) => call.kind === 'send')
   check('S9 the expired tree resolution is 返回', tree.status === 'expired' && tree.resolution.option === 'return' && tree.resolution.via === 'timeout', JSON.stringify(tree.resolution))
 }
 
+// ── S12: the purge deletes ONLY the tree the human confirmed ───────────────
+{
+  const { rig } = freshRig()
+  const root = await userCreate(rig, { title: 'Tree root' })
+  const child = await userCreate(rig, { title: 'Tree child', dependsOn: [root.id] })
+  const asked = await rig.api.perform('delete', { id: root.id }, agentContext(rig, 'tree'))
+  const choose = await rig.action('decisionAnswer', { decisionId: asked.decision.id, option: 'delete', confirm: 'DELETE' })
+  const tree = choose.applied.next
+  check(
+    'S12 the tree panel names exactly 2 cards',
+    tree !== null && tree.eventKey === 'delete-tree' && tree.body.indexOf('共 2 张') >= 0 && tree.options.filter((option) => option.id === 'purge')[0].label === '永久删除 2 张卡',
+    JSON.stringify(tree === null ? null : { body: tree.body, options: tree.options.map((option) => option.label) }),
+  )
+  // A NEW dependent appears while this confirmation is pending.
+  const late = await userCreate(rig, { title: 'Late grandchild', dependsOn: [child.id] })
+  const purged = await rig.action('decisionAnswer', { decisionId: tree.id, option: 'purge', confirm: 'DELETE' })
+  check(
+    'S12 the stale confirmation deletes NOTHING',
+    purged.ok === true && purged.applied.ok === false && purged.applied.code === 'dependency-tree-changed',
+    JSON.stringify(purged.applied),
+  )
+  const board = await rig.action('board')
+  check('S12 all three cards survive the stale answer', board.tasks.length === 3 && board.tasks.some((task) => task.id === late.id), JSON.stringify(board.tasks.map((task) => task.id)))
+  const fresh = purged.applied.next
+  check(
+    'S12 a fresh DELETE-gated panel lists the whole live tree',
+    fresh !== null && fresh.id !== tree.id && fresh.eventKey === 'delete-tree' && fresh.body.indexOf('共 3 张') >= 0 && fresh.options.filter((option) => option.id === 'purge')[0].danger === true,
+    JSON.stringify(fresh === null ? null : fresh.body),
+  )
+  const done = await rig.action('decisionAnswer', { decisionId: fresh.id, option: 'purge', confirm: 'DELETE' })
+  check('S12 the confirmed fresh panel deletes exactly 3', done.ok === true && done.applied.ok === true && done.applied.summary.deleted.length === 3, JSON.stringify(done.applied.summary))
+  check('S12 the board is empty afterwards', (await rig.action('board')).tasks.length === 0)
+  const again = await rig.action('decisionAnswer', { decisionId: tree.id, option: 'purge', confirm: 'DELETE' })
+  check('S12 the spent confirmation cannot run twice', again.ok === false && again.code === 'already-answered', JSON.stringify(again))
+}
+
+// ── S12b: a changed tree supersedes the pending confirmation, never reuses it ─
+{
+  const { rig } = freshRig()
+  const root = await userCreate(rig, { title: 'Supersede root' })
+  const child = await userCreate(rig, { title: 'Supersede child', dependsOn: [root.id] })
+  const first = await rig.api.perform('delete', { id: root.id }, agentContext(rig, 'superseder'))
+  const firstChoose = await rig.action('decisionAnswer', { decisionId: first.decision.id, option: 'delete', confirm: 'DELETE' })
+  const q1 = firstChoose.applied.next
+  check('S12b the first tree question lists 2', q1 !== null && q1.body.indexOf('共 2 张') >= 0)
+  const late = await userCreate(rig, { title: 'Supersede late', dependsOn: [child.id] })
+  const second = await rig.api.perform('delete', { id: root.id }, agentContext(rig, 'superseder'))
+  const secondChoose = await rig.action('decisionAnswer', { decisionId: second.decision.id, option: 'delete', confirm: 'DELETE' })
+  const q2 = secondChoose.applied.next
+  check('S12b a new confirmation supersedes the stale pending one', q2 !== null && q2.id !== q1.id && q2.body.indexOf('共 3 张') >= 0, JSON.stringify(q2 === null ? null : q2.body))
+  const all = await rig.action('decisionList', { decisionStatus: 'all' })
+  const staleRow = all.decisions.filter((decision) => decision.id === q1.id)[0]
+  check('S12b the stale question is cancelled on the host side', staleRow !== undefined && staleRow.status === 'cancelled', JSON.stringify(staleRow === undefined ? null : staleRow.status))
+  const staleAnswer = await rig.action('decisionAnswer', { decisionId: q1.id, option: 'purge', confirm: 'DELETE' })
+  check('S12b the cancelled question cannot be answered', staleAnswer.ok === false && staleAnswer.code === 'decision-cancelled', JSON.stringify(staleAnswer))
+  const board = await rig.action('board')
+  check('S12b nothing was deleted by the supersede', board.tasks.length === 3 && board.tasks.some((task) => task.id === late.id), JSON.stringify(board.tasks.map((task) => task.id)))
+  const purged = await rig.action('decisionAnswer', { decisionId: q2.id, option: 'purge', confirm: 'DELETE' })
+  check('S12b the fresh question deletes 3', purged.ok === true && purged.applied.summary.deleted.length === 3, JSON.stringify(purged.applied))
+}
+
 console.log(failures === 0 ? '\nPASS  every gated action asks the human, executes once, and messages the Agent' : '\nFAIL  ' + String(failures) + ' action-decision check(s)')
 process.exit(failures === 0 ? 0 : 1)
