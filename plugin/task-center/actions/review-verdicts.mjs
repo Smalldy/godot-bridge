@@ -32,20 +32,12 @@ export function createReviewVerdictActions(deps) {
   const recordCandidate = deps.recordCandidate
   const emitActivity = deps.emitActivity
   const clearStageSlots = deps.clearStageSlots
-  const notifyMember = deps.notifyMember
   const reworkBriefFor = deps.reworkBriefFor
-  const provisionRole = deps.provisionRole
   const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
-  const provisionFailedHard = deps.provisionFailedHard
-  const provisionReasonOf = deps.provisionReasonOf
   const state = deps.state
-  const roleSlotNameOf = deps.roleSlotNameOf
-  const assignStageSlot = deps.assignStageSlot
   const testerBriefFor = deps.testerBriefFor
   const godotInfoFor = deps.godotInfoFor
   const recordDeliveredTo = deps.recordDeliveredTo
-  const promoteStageSlots = deps.promoteStageSlots
-  const reviewBriefFor = deps.reviewBriefFor
   const ok = deps.ok
   const failure = deps.failure
 
@@ -231,36 +223,16 @@ export function createReviewVerdictActions(deps) {
       }
       // The worker owns the fix and may be idle, so it is told directly (the
       // board carries the same evidence).
-      const ownerName =
-        result.task !== null &&
-        result.task !== undefined &&
-        result.task.assignee !== null &&
-        result.task.assignee !== undefined &&
-        typeof result.task.assignee.name === 'string' &&
-        result.task.assignee.name !== ''
-          ? result.task.assignee.name
-          : null
-      if (ownerName !== null) {
-        await notifyMember(
-          ownerName,
-          'Host mechanical verification FAILED for ' + id + ' (' + String(result.task.title) + ').\n\n' + hostCheckEvidence(hostCheck),
-          result.task.ownerSession,
-          projectPath,
-        )
+      if (stageAgents !== null) {
+        await stageAgents.sendAssignee(result.task, 'Host mechanical verification FAILED for ' + id + ' (' + String(result.task.title) + ').\n\n' + hostCheckEvidence(hostCheck))
       }
       return ok({ task: result.task, events: result.events, hostCheck: hostCheck })
     }
     if (action === 'requestChanges' && result.task !== null && result.task !== undefined && result.task.status === 'running') {
       clearStageSlots(id)
       // Tell the worker what to fix and that it continues in its own worktree.
-      const owner =
-        result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
-          ? null
-          : result.task.assignee.name
       if (stageAgents !== null) {
         await stageAgents.sendAssignee(result.task, reworkBriefFor(result.task, projectPath))
-      } else if (owner !== null) {
-        await notifyMember(owner, reworkBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
       }
     }
     if (action === 'approveReview' && result.task !== null && result.task !== undefined && result.task.status === 'testing') {
@@ -268,53 +240,30 @@ export function createReviewVerdictActions(deps) {
       emitActivity(null, 'test-start', 'test candidate stage started', id, 'host')
       if (candidate !== null) emitActivity(null, 'worktree-create', 'test candidate ' + String(candidate.path), id, 'host')
       if (stageAgents === null) {
-        const provisioned = await provisionRole('tester', projectPath, result.task)
-        if (provisioned !== null) result.provisioned = provisioned
-        if (provisionFailedHard(provisioned)) {
-          const reason = provisionReasonOf(provisioned)
-          await markWaiting(projectPath, id, reason, provisioned.message, context)
-          return failure('tester-unavailable', 'no tester could be provisioned for ' + id + ' (' + reason + '); the task waits in testing with that reason and will be retried by the host')
-        }
+        await markWaiting(projectPath, id, 'agent-runtime-unavailable', 'no subagent runtime to start a tester', context)
+        return failure('tester-unavailable', 'no tester could be started for ' + id + ' (agent-runtime-unavailable); the task waits in testing with that reason and will be retried by the host')
       }
       if (candidate !== null) {
         result.candidate = candidate
         if (state.memory.testCandidates === undefined || state.memory.testCandidates === null) state.memory.testCandidates = {}
         state.memory.testCandidates[result.task.id] = { candidate: candidate, hostCheck: hostCheck }
-        if (stageAgents !== null) {
-          const started = await stageAgents.startTester(
-            result.task,
-            testerBriefFor(result.task, projectPath, candidate, {
-              godot: await godotInfoFor(projectPath, candidate.path),
-              hostCheck: hostCheck,
-            }),
-          )
-          if (!stageAgents.available || started.ok !== true) {
-            // The review round is over; do not leave its reviewer running behind
-            // a card that waits for a tester (T-183). The reviewer is this
-            // action's caller, so it is queued, not disposed in flight (T-185).
-            await releaseStageRoster(result.task, ['reviewer'], context)
-            await markWaiting(projectPath, id, 'tester-unavailable', started.message, context)
-            return failure('tester-unavailable', 'no tester could be started for ' + id + ' (' + String(started.message) + '); the task waits in testing')
-          }
-          result.provisioned = started
-          await recordDeliveredTo(projectPath, result.task.id, 'tester', { name: started.name, id: started.agentId })
-        } else {
-          const tester = roleSlotNameOf('tester', result.task.ownerSession)
-          const testSlot = await assignStageSlot(projectPath, result.task, 'tester')
-          result.queuePosition = testSlot.position
-          if (testSlot.delivered === true && tester !== null) {
-            const sentTo = await notifyMember(
-              tester,
-              testerBriefFor(result.task, projectPath, candidate, {
-                godot: await godotInfoFor(projectPath, candidate.path),
-                hostCheck: hostCheck,
-              }),
-              result.task.ownerSession,
-              projectPath,
-            )
-            await recordDeliveredTo(projectPath, result.task.id, 'tester', sentTo)
-          }
+        const started = await stageAgents.startTester(
+          result.task,
+          testerBriefFor(result.task, projectPath, candidate, {
+            godot: await godotInfoFor(projectPath, candidate.path),
+            hostCheck: hostCheck,
+          }),
+        )
+        if (!stageAgents.available || started.ok !== true) {
+          // The review round is over; do not leave its reviewer running behind
+          // a card that waits for a tester (T-183). The reviewer is this
+          // action's caller, so it is queued, not disposed in flight (T-185).
+          await releaseStageRoster(result.task, ['reviewer'], context)
+          await markWaiting(projectPath, id, 'tester-unavailable', started.message, context)
+          return failure('tester-unavailable', 'no tester could be started for ' + id + ' (' + String(started.message) + '); the task waits in testing')
         }
+        result.provisioned = started
+        await recordDeliveredTo(projectPath, result.task.id, 'tester', { name: started.name, id: started.agentId })
       }
     }
     if (stageAgents !== null && (action === 'approveReview' || action === 'requestChanges')) {
@@ -324,20 +273,6 @@ export function createReviewVerdictActions(deps) {
       // T-185: the caller of this verdict is only queued; only the other stage
       // children are disposed immediately.
       await releaseStageRoster(result.task, action === 'requestChanges' ? ['reviewer', 'tester'] : ['reviewer'], context)
-    }
-    // The delivery timestamp is KEPT on the stage slot so the snapshot can still
-    // report the finished round's duration; the verdict already means the task no
-    // longer occupies capacity (stageQueueState only counts pending rounds).
-    // The verdict frees this reviewer slot: hand it to the next queued round.
-    const promotedReview = await promoteStageSlots(projectPath, 'reviewer')
-    if (promotedReview.length > 0) {
-      const reviewerSlot = roleSlotNameOf('reviewer', result.task.ownerSession)
-      if (reviewerSlot !== null) {
-        for (const promoted of promotedReview) {
-          const sentTo = await notifyMember(reviewerSlot, reviewBriefFor(promoted, projectPath), promoted.ownerSession, projectPath)
-          await recordDeliveredTo(projectPath, promoted.id, 'reviewer', sentTo)
-        }
-      }
     }
     return ok({ task: result.task, events: result.events, provisioned: result.provisioned, candidate: result.candidate, hostCheck: hostCheck })
   }

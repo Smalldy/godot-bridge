@@ -11,7 +11,6 @@ export function createProjectActions(deps) {
   const fs = deps.fs
   const sessionIdOf = deps.sessionIdOf
   const preflightProject = deps.preflightProject
-  const projectTeamFor = deps.projectTeamFor
   const remember = deps.remember
   const snapshot = deps.snapshot
   const resolveProjectRoot = deps.resolveProjectRoot
@@ -35,7 +34,6 @@ export function createProjectActions(deps) {
     }
     const sessionId = sessionIdOf(context)
     const preflight = await preflightProject(absolute, { worktreeRoot: input.worktreeRoot, sessionId: sessionId })
-    // A missing Team is reported in `preflight` (and blocks start), but it never
     // closes the project: the panel must open it to show how to initialize.
     const openFailed = Array.isArray(preflight.openFailed) ? preflight.openFailed : preflight.failed
     if (openFailed.length > 0) {
@@ -43,12 +41,6 @@ export function createProjectActions(deps) {
       const code = first === undefined ? 'not-ready' : first.id === 'repository' ? 'not-a-repository' : first.id === 'exclude' ? 'cannot-exclude' : 'not-ready'
       const refused = failure(code, 'project is not ready: ' + openFailed.map((check) => check.label + (check.detail === null ? '' : ' (' + check.detail + ')')).join('; '))
       refused.preflight = preflight
-      const teamMissing = preflight.failed.filter((check) => check.id === 'team').length > 0
-      if (teamMissing) {
-        const teamRead = await projectTeamFor(absolute, sessionId)
-        refused.team = teamRead.team
-        refused.nextStep = teamRead.nextStep
-      }
       return refused
     }
     remember(absolute, sessionId)

@@ -235,13 +235,10 @@ function createRolesEditor(deps) {
 			// Keep the optimistic copy of a just-created profile so the editor can
 			// target it before the next host poll carries it.
 			if (roleEditorState.saved !== null && roleEditorState.saved.name !== name) roleEditorState.saved = null
-			const live = (Array.isArray(props.instances) ? props.instances : []).filter(function (entry) { return entry.kind === profileKind })
-			if (live.length === 0) {
-		roleEditorState.applySkipped = true
-		bump()
-		return true
-			}
-			await send('rolesReplace', { name: profileKind })
+			// A profile change is configuration only: live children keep the prompt
+			// they were started with, so there is nothing to drain or replace. Only
+			// show the "next dispatch" hint when there is no live instance to reset.
+			roleEditorState.applySkipped = runningNames.length === 0
 			bump()
 			return true
 		}
@@ -311,14 +308,11 @@ function createRolesEditor(deps) {
 		report('rolesUpdate', false, { code: 'builtin-profile-readonly' })
 		return
 			}
-			// Saving the profile that is currently in use applies it in the SAME click.
-			const isCurrent = selectedName === boundName
 			const outcome = await send('rolesUpdate', { name: selectedName, profile: { prompt: template, skills: skills } })
 			if (outcome.ok !== true) return
 			// Keep the saved values visible until the host snapshot catches up.
 			roleEditorState.saved = { name: selectedName, profile: Object.assign({}, target === null ? {} : target, { prompt: template, skills: skills }) }
 			bump()
-			if (isCurrent) await send('rolesReplace', { name: kind })
 		}
 		/** Delete this copy; if it was in use, the built-in default takes over at once. */
 		async function remove() {

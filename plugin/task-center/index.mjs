@@ -24,7 +24,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createSessionLookup } from './session-lookup.mjs'
 import { createState } from './state.mjs'
-import { bootId, createActivity, createDispatcher, createRoleManager, gitFor } from './dispatch.mjs'
+import { bootId, createActivity, createDispatcher, gitFor } from './dispatch.mjs'
 import { createAgentRegistry } from './agent-registry.mjs'
 import { createMerger } from './merge.mjs'
 import { createMergeJournal } from './merge-journal.mjs'
@@ -201,13 +201,6 @@ function applyRow(ctx) {
   // One facade is shared so the dispatcher (claim), the API (start preflight and
   // submit) and the merge-request record all use the same runner.
   const git = gitFor(ctx)
-  // The host-side role registry: worker/reviewer/tester profiles, one instance
-  // each by default, bound to implement/review/test. It provisions a missing
-  // reviewer/tester through the live Lead and replaces a dead or timed-out one,
-  // so no Lead prompt is required.
-  // T-118: the manager gets the shared state so it can judge whether the team's
-  // session actually runs in the slot's project before spawning a role instance.
-  const roles = createRoleManager(ctx, { state: state })
   // v3: the task center's execution edge is the root Agent's subagent tree.
   // The plugin row has no root at activation; every operation resolves the exact
   // root from the card's ownerSession (or the panel session for the tree view).
@@ -251,6 +244,7 @@ function applyRow(ctx) {
     rootFor(rootId) { return agentRegistry.rootFor(rootId) },
     taskAgentsFor(rootId) { return agentRegistry.taskAgentsFor(rootId) },
     listFor(rootId) { return agentRegistry.listFor(rootId) },
+    listAgentsFor(rootId) { return agentRegistry.listFor(rootId) },
     handleFor() { return null },
     handles() { return [] },
   }
@@ -277,11 +271,8 @@ function applyRow(ctx) {
     projectPath: function () {
       return state.memory.projectHint
     },
-    allowSpawn: true,
     git: git,
-    roles: roles,
     taskAgents: taskAgents,
-    requireTaskAgents: true,
     activity: activity,
     leases: leaseFor,
     reconcile: function (project) {
@@ -309,9 +300,7 @@ function applyRow(ctx) {
     scheduler: scheduler,
     git: git,
     merger: merger,
-    roles: roles,
     taskAgents: taskAgents,
-    requireTaskAgents: true,
     harness: harness,
     activity: activity,
     autoMerge: true,

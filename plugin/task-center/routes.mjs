@@ -201,9 +201,6 @@ export function registerTaskRoutes(ctx, options) {
       // for the SAME session the rest of its calls speak as.
       const snapshot = await api.snapshot(project, {
         full: false,
-        // Direct API callers still get the legacy Team inventory by default;
-        // the panel opts out with ?legacy=0 and renders agentTree/scope instead.
-        legacy: url === null || url.searchParams.get('legacy') !== '0',
         // Session cards are grouped from board owners; do not resolve every
         // participant's workspace on the hot state path.
         resolveSessionProjects: false,

@@ -4,7 +4,7 @@ import { createLifecycleActions } from '../../plugin/task-center/actions/lifecyc
 const task = { id: 'T-1', status: 'running', kind: 'dev' }
 const board = { tasks: [task] }
 const state = { memory: { locks: [] } }
-const events = { interrupted: [], cleaned: [] }
+const events = { released: [], cleaned: [] }
 const model = {
   findTask: (source, id) => source.tasks.filter((candidate) => candidate.id === id)[0],
   cancelTask: () => ({ ok: true, board: board, task: task, events: ['cancel'] }),
@@ -21,8 +21,11 @@ const actions = createLifecycleActions({
   writeByName: () => 'user',
   state: state,
   ctx: {},
-  interruptAssignee: async (ctx, prior, options) => {
-    events.interrupted.push({ id: prior.id, reason: options.reason })
+  stageAgents: {
+    async releaseTask(prior, options) {
+      events.released.push({ id: prior.id, roles: options.roles })
+      return { ok: true, released: [] }
+    },
   },
   cleanupInvestigation: async (project, prior) => {
     events.cleaned.push(prior.id)
@@ -32,7 +35,7 @@ const actions = createLifecycleActions({
 
 const cancelled = await actions.cancel({ id: 'T-1' }, { by: 'user' }, '/project')
 assert.equal(cancelled.ok, true)
-assert.deepEqual(events.interrupted, [{ id: 'T-1', reason: 'cancelled' }])
+assert.deepEqual(events.released[0], { id: 'T-1', roles: ['worker', 'reviewer', 'tester'] })
 assert.deepEqual(events.cleaned, ['T-1'])
 
 assert.equal((await actions.reopen({ id: 'T-1' }, { by: 'user' }, '/project')).ok, true)

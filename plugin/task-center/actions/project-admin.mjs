@@ -1,6 +1,6 @@
 /**
  * Project administration actions:
- * skillsCatalog / worktreesCleanup / bootstrapTeam.
+ * skillsCatalog / worktreesCleanup.
  *
  * Extracted from performResolved with the handlers unchanged.
  */
@@ -10,8 +10,6 @@ export function createProjectAdminActions(deps) {
   const readBoardOrFail = deps.readBoardOrFail
   const worktreesCleanup = deps.worktreesCleanup
   const callerSessionId = deps.callerSessionId
-  const bootstrapTeamFor = deps.bootstrapTeamFor
-  const teamBootstrapStep = deps.teamBootstrapStep
   const ok = deps.ok
 
   async function runSkillsCatalog(source, context, projectPath) {

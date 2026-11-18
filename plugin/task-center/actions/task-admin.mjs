@@ -5,7 +5,6 @@
  * Extracted from performResolved with the handlers unchanged.
  */
 export function createTaskAdminActions(deps) {
-  const projectTeamFor = deps.projectTeamFor
   const callerSessionId = deps.callerSessionId
   const taskInput = deps.taskInput
   const checkTarget = deps.checkTarget
@@ -24,7 +23,7 @@ export function createTaskAdminActions(deps) {
   const readBoardOrFail = deps.readBoardOrFail
   const worktreeRefusal = deps.worktreeRefusal
   const scheduler = deps.scheduler
-  const interruptAssignee = deps.interruptAssignee
+  const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
   const ctx = deps.ctx
   const ok = deps.ok
   const failure = deps.failure
@@ -45,8 +44,8 @@ export function createTaskAdminActions(deps) {
     // T-153: an unresolved handoff blocks new cards and answers with the SAME
     // session next step /state shows (never 'bootstrap-team' from a foreign
     // session). The decision is recorded by onboard({ handoff }).
-    // v3: the project board is shared; no Team and no handoff gate separates
-    // create from the scheduler. Ownership is carried by ownerSession.
+    // v3: the project board is shared; no handoff gate separates create from the
+    // scheduler. Ownership is carried by ownerSession.
     const built = taskInput(projectPath, source)
     if (built.ok !== true) return built
     if (built.input.target !== undefined) {
@@ -115,10 +114,8 @@ export function createTaskAdminActions(deps) {
       return failure('start-is-dispatch-only', 'start toggles the dispatch scheduler; it does not start a single card. Remove taskId and let the scheduler pick ready cards.')
     }
     const sessionId = callerSessionId(source, context)
-    // T-153: no dispatch pass while another session's in-progress cards are
-    // unresolved for THIS session. Same gate as create, same next step as /state.
-    // v3: start is dispatch-wide and does not depend on another session's
-    // handoff decision; the project board is shared.
+    // v3: start is dispatch-wide and does not depend on another session's handoff
+    // decision; the project board is shared.
     {
       // T-165: an already-running dispatcher answers with its current state
       // BEFORE any readiness gate. A failing preflight must never demote a
@@ -128,8 +125,6 @@ export function createTaskAdminActions(deps) {
       if (current.board.dispatch.state === 'running') return ok({ dispatch: current.board.dispatch, alreadyRunning: true })
     }
     {
-      // T-152 §8: the team-missing refusal answers with the session-aware next
-      // step, so a foreign session is never told to bootstrap this project team.
       const gate = await preflightRefusal(projectPath, { sessionId: sessionId })
       if (gate !== null) return gate
     }
@@ -213,10 +208,13 @@ export function createTaskAdminActions(deps) {
     )
     if (result.ok !== true) return result
     // A request normally exists while dispatch is paused, but if anything had
-    // already been dispatched, withdrawing the request stops it too.
+    // already been dispatched, withdrawing the request disposes its stage children.
     for (const task of result.board.tasks) {
       if (task.status !== 'running' || task.assignee === null || task.assignee === undefined) continue
-      await interruptAssignee(ctx, task, { reason: 'the dispatch start request was withdrawn' })
+      if (stageAgents === null || typeof stageAgents.releaseTask !== 'function') break
+      try {
+        await stageAgents.releaseTask(task, { roles: ['worker', 'reviewer', 'tester'], reason: 'the dispatch start request was withdrawn' })
+      } catch (error) {}
     }
     return ok({ dispatch: result.board.dispatch, events: result.events })
   }

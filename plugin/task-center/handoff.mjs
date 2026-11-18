@@ -5,9 +5,9 @@
  * The project owns the board; a Team (and therefore a worker, a reviewer, a
  * tester) belongs to a SESSION. When a user abandons an old session and starts a
  * new one, the board can still hold cards owned by the old session, some of them
- * in flight. Onboarding must NOT silently bootstrap a second team, re-own those
- * cards or start dispatch. It must first answer "who is still here, with which
- * cards, and is the old executor still alive?", then let the user choose:
+ * in flight. Onboarding must NOT re-own those cards or start dispatch. It must
+ * first answer "who is still here, with which cards, and is the old executor
+ * still alive?", then let the user choose:
  *
  *   resume-owning-session  — the owning session is live; go back to it
  *   join-project-read-only — work alongside, never touch the old cards
@@ -16,8 +16,8 @@
  *
  * This module is the pure half: liveness classification, the inventory, and the
  * board mutations for a decision. api.mjs injects the live host lookups (DSH
- * session activity, team state, executor liveness) so every rule here is
- * unit-testable without a host.
+ * session activity, executor liveness) so every rule here is unit-testable
+ * without a host.
  */
 
 
@@ -96,21 +96,6 @@ export function sessionLivenessFrom(options) {
   return now - newest <= staleMs ? 'live' : 'stale'
 }
 
-/** The compact team a session row carries: enough to answer "can it still run?". */
-function teamViewOf(team) {
-  const t = team === null || team === undefined ? {} : team
-  return {
-    available: t.available === true,
-    ok: t.ok === true,
-    lead: typeof t.lead === 'string' && t.lead !== '' ? t.lead : null,
-    leadId: typeof t.leadId === 'string' && t.leadId !== '' ? t.leadId : null,
-    leadSession: typeof t.leadSession === 'string' && t.leadSession !== '' ? t.leadSession : null,
-    memberCount: Array.isArray(t.members) ? t.members.length : 0,
-    missingRoles: Array.isArray(t.missingRoles) ? t.missingRoles.slice() : [],
-    error: t.error === undefined || t.error === null ? null : String(t.error),
-  }
-}
-
 /**
  * Build the handoff inventory for one project and one panel session.
  *
@@ -120,7 +105,6 @@ function teamViewOf(team) {
  * @param options.sessionId - the panel session asking (null when none).
  * @param options.decisions - board.handoff.sessions (recorded decisions).
  * @param options.sessionActiveAtOf - (sessionId) => epoch-ms|null (DSH directory).
- * @param options.teamOf - (sessionId) => projectTeamState(...) for that team.
  * @param options.executorStatesOf - (task) => [{name, session, alive, status, phase}]
  *   the live executor and stage executor liveness of ONE card.
  *
@@ -135,7 +119,6 @@ export function buildHandoff(options) {
   const board = o.board !== null && o.board !== undefined ? o.board : { tasks: [] }
   const sessionList = Array.isArray(o.sessions) ? o.sessions.filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.sessionId === 'string' && entry.sessionId !== '') : []
   const sessionActiveAtOf = typeof o.sessionActiveAtOf === 'function' ? o.sessionActiveAtOf : () => null
-  const teamOf = typeof o.teamOf === 'function' ? o.teamOf : () => null
   const executorStatesOf = typeof o.executorStatesOf === 'function' ? o.executorStatesOf : () => []
   const decisions = o.decisions !== null && typeof o.decisions === 'object' ? o.decisions : {}
   const tasks = Array.isArray(board.tasks) ? board.tasks : []
@@ -152,7 +135,6 @@ export function buildHandoff(options) {
     const leaseAt = leases.length === 0 ? null : Math.max.apply(null, leases)
     const lastActiveAt = sessionActiveAtOf(entry.sessionId)
     const status = sessionLivenessFrom({ lastSeenAt: entry.lastSeenAt, lastActiveAt: lastActiveAt, leaseAt: leaseAt, now: now, staleMs: staleMs })
-    const team = teamOf(entry.sessionId)
     const counts = { total: owned.length, active: owned.length, running: 0, reviewing: 0, testing: 0 }
     for (const task of owned) counts[task.status] += 1
     rows.push({
@@ -164,7 +146,6 @@ export function buildHandoff(options) {
       firstSeenAt: typeof entry.firstSeenAt === 'string' && entry.firstSeenAt !== '' ? entry.firstSeenAt : null,
       lastActiveAt: lastActiveAt === null ? null : iso(lastActiveAt),
       leaseAt: leaseAt === null ? null : iso(leaseAt),
-      team: teamViewOf(team),
       cards: counts,
     })
   }

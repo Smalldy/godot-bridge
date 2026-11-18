@@ -3,10 +3,10 @@
  *
  * Two independent things live here:
  *
- *   1. The target edge. A task is handed to an Agent Teams teammate through
- *      spawnTeammate (no idle member) or sendMessage (idle member). Both are
- *      optional services: a profile without them leaves tasks pending and says
- *      so, instead of failing the plugin.
+ *   1. The target edge. A task is handed to a fresh worker subagent of the
+ *      card's own root Agent (the subagent tree). The subagent service is
+ *      optional: a profile without it leaves tasks pending and says so, instead
+ *      of failing the plugin.
  *
  *   2. The scheduler. It runs when dispatch is started, after every board write,
  *      on agent status events and on a timer. One pass reaps dead leases, then
@@ -26,15 +26,12 @@
 
 import { join } from 'node:path'
 import { serialiseWorktreeCreate } from './git.mjs'
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { fingerprintVerify, verifyScriptPaths } from './merge.mjs'
-import { realpathSync } from 'node:fs'
 import { boardPath, projectIdOf, readRoleConfig } from './board.mjs'
 import { createSessionLookup } from './session-lookup.mjs'
 import { writePolicyFor } from './state.mjs'
 import {
-  ROLE_KINDS,
-  ROLE_PROVISION_TIMEOUT_MS,
   ROLE_STAGE,
   ROLE_TEMPLATE_VARIABLES,
   TASK_HEARTBEAT_MS,
@@ -47,7 +44,6 @@ import {
   VERIFY_COLLECT_BYTES,
   VERIFY_DEFAULT_TIMEOUT_MS,
   VERIFY_TAIL_BYTES,
-  defaultRoleConfig,
   normaliseVerify,
   profileForKind,
   renderRoleTemplate,
@@ -61,13 +57,6 @@ import { SKILL_NAME } from './skill.mjs'
 
 export const DEFAULT_MAX_WORK_AGENTS = 4
 export const DEFAULT_MAX_ATTEMPTS = 3
-export const SEND_TIMEOUT_MS = 60 * 1000
-
-/** The one teammate that merges merge requests. It is a FIXED ROLE, not a
- * switch: the Lead spawns a member with exactly this name, the scheduler never
- * hands it feature work, and the API accepts merge actions only from it (or the
- * user). A Team without one keeps merge requests open for the user to merge. */
-export const MERGER_NAME = 'merger'
 
 /** How many host activity entries the in-memory ring keeps by default. */
 export const ACTIVITY_LIMIT = 100
@@ -254,102 +243,7 @@ export const REVIEW_MAX_ROUNDS = 3
 
 const RERUN_DELAY_MS = 250
 
-/** A short, teammate-name-safe handle for one project: the first 10 hex chars
- * of sha1(projectIdOf(root)). A teammate name allows only [a-z0-9-], so a root
- * (which holds ':' and '/') cannot appear verbatim; the digest is the stable,
- * case-folded key used in slot names, the executor ledger and history. */
-export function projectSlotKey(root) {
-  const id = typeof root === 'string' && root !== '' ? projectIdOf(canonicalRoot(root)) : ''
-  return createHash('sha1').update(id).digest('hex').slice(0, 10)
-}
 
-/** One absolute root, symlinks resolved when the path exists. projectIdOf then
- * case-folds and normalizes separators, so the same project written in different
- * ways (trailing slash, drive-letter case, a symlinked path) hashes identically. */
-function canonicalRoot(root) {
-  const text = String(root)
-  try {
-    return realpathSync.native(text)
-  } catch (error) {
-    return text
-  }
-}
-
-/** Role slot names are fixed per kind, project and index. With a known project
- * the name is `reviewer-p<key>-1` (the slot KEY is `reviewer@<key>-1`, see
- * roleSlotKey); without one the legacy `reviewer-1` is kept verbatim, which is
- * also what a profile without a project still spawns. */
-export function roleSlotName(kind, index, projectRoot) {
-  const key = typeof projectRoot === 'string' && projectRoot !== '' ? projectSlotKey(projectRoot) : null
-  return String(kind) + (key === null ? '' : '-p' + key) + '-' + String(index)
-}
-
-/** Parse a slot name into { kind, project (key|null), index }, or null. Pool
- * workers are worker-p<key>-<n>, so they are matched explicitly. */
-export function roleSlotOf(name) {
-  if (typeof name !== 'string') return null
-  const match = /^(worker|reviewer|tester)(?:-p([0-9a-f]{6,}))?-(\d+)$/.exec(name)
-  if (match === null) return null
-  return { kind: match[1], project: match[2] === undefined ? null : match[2], index: Number(match[3]) }
-}
-
-/** The role kind of a teammate name, or null. */
-export function roleKindOf(name) {
-  const slot = roleSlotOf(name)
-  return slot === null ? null : slot.kind
-}
-
-/** The internal slot key: `reviewer@<projectKey>-1` when the slot carries a
- * project, the bare `reviewer-1` for a legacy slot. This is the identifier the
- * panel/ledger use; the teammate NAME is roleSlotName (name-safe form). */
-export function roleSlotKey(name) {
-  const slot = roleSlotOf(name)
-  if (slot === null) return null
-  return slot.kind + (slot.project === null ? '' : '@' + slot.project) + '-' + String(slot.index)
-}
-
-/** The short, model-facing name the panel shows: reviewer-p<key>-1 -> reviewer-1. */
-export function roleShortName(name) {
-  const slot = roleSlotOf(name)
-  return slot === null ? (typeof name === 'string' ? name : '') : slot.kind + '-' + String(slot.index)
-}
-
-export function isRoleName(name) {
-  return roleKindOf(name) !== null
-}
-
-// ── which project a teammate works for ─────────────────────────────────────
-// The roster carries no session workspace, and a teammate spawned while one row
-// drove project A keeps A's workspace even when the row now drives B. So the
-// host records the project it dispatched a member FOR (role spawn or worker
-// brief) and checks that record before reusing the member or accepting its
-// submit. A member with no record (a restart, a hand-spawned teammate) is not
-// refused: liveness and the project-scoped slot name still keep projects apart.
-const MEMBER_PROJECTS = new WeakMap()
-
-function memberProjectsFor(ctx) {
-  let map = MEMBER_PROJECTS.get(ctx)
-  if (map === undefined) {
-    map = new Map()
-    MEMBER_PROJECTS.set(ctx, map)
-  }
-  return map
-}
-
-/** Record that `name` was dispatched for `root` (absolute project root). */
-export function rememberMemberProject(ctx, name, root) {
-  if (ctx === null || ctx === undefined || typeof name !== 'string' || name === '' || typeof root !== 'string' || root === '') return null
-  const entry = { key: projectSlotKey(root), root: root }
-  memberProjectsFor(ctx).set(name, entry)
-  return entry
-}
-
-/** The project a member was last dispatched for: { key, root } or null. */
-export function memberProjectOf(ctx, name) {
-  if (ctx === null || ctx === undefined || typeof name !== 'string') return null
-  const entry = memberProjectsFor(ctx).get(name)
-  return entry === undefined ? null : entry
-}
 
 /** A process-stable boot id. globalThis survives a plugin reload in the same
  * process, so a reload does not mistake live workers for dead ones; a real host
@@ -360,16 +254,6 @@ export function bootId() {
   return globalThis[BOOT_KEY]
 }
 
-export function servicesFor(ctx) {
-  const get = (key) => {
-    try {
-      return ctx.get(key)
-    } catch (error) {
-      return undefined
-    }
-  }
-  return { agents: get('agents'), agentTeams: get('agentTeams') }
-}
 
 /**
  * Read an OPTIONAL context property without tripping Cordis' activation guard.
@@ -418,317 +302,8 @@ export function agentSessionOf(agent) {
   return typeof agent.session === 'string' && agent.session !== '' ? agent.session : null
 }
 
-function membershipOrNull(agentTeams, agent) {
-  try {
-    const membership = agentTeams.tryMembership(agent)
-    return membership !== undefined && membership !== null ? membership : null
-  } catch (error) {
-    return null
-  }
-}
 
-/**
- * The Lead of the team this profile belongs to.
- *
- * With `sessionId` this is SESSION-SCOPED and never guesses: only an agent whose
- * own id is that session may answer (it IS the lead), otherwise its membership is
- * followed to the team's lead. A session with no Team root returns null — the
- * caller records `no-lead-for-project` — and it NEVER falls back to "the first
- * lead in the list", which is how every card used to land in one session.
- *
- * Without `sessionId` (a legacy profile with no session identity) the historical
- * behaviour is kept: the first live lead.
- */
-/** The old "first Lead" scan, now ONLY reachable through resolveAnyLead: display
- * and preflight surfaces. Never authority (dispatch/verdicts/merge). */
-function anyLeadOf(ctx) {
-  const { agents, agentTeams } = servicesFor(ctx)
-  if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return null
-  let all = []
-  try {
-    all = agents.list()
-  } catch (error) {
-    return null
-  }
-  for (const candidate of all) {
-    try {
-      const membership = agentTeams.tryMembership(candidate)
-      if (membership !== undefined && membership !== null && membership.role === 'lead') return candidate
-    } catch (error) {}
-  }
-  return null
-}
 
-/** Read-only global lookup: some display/preflight surface needs a Lead, any
- * Lead. NEVER use it for permissions or dispatch. */
-export function resolveAnyLead(ctx) {
-  return anyLeadOf(ctx)
-}
-
-export function resolveLead(ctx, options) {
-  // T-112: authority must name the session it resolves for. A missing sessionId
-  // returns null (the caller decides); it must never silently mean "the first
-  // Lead", and the static guard keeps new bare authority calls out of the code.
-  const opts = options !== null && typeof options === 'object' ? options : {}
-  const { agents, agentTeams } = servicesFor(ctx)
-  if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) return null
-  let all = []
-  try {
-    const listed = agents.list()
-    all = Array.isArray(listed) ? listed : []
-  } catch (error) {
-    return null
-  }
-  const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-  if (opts.anyLead === true) {
-    // Explicit read-only escape hatch (display / preflight only).
-    return anyLeadOf(ctx)
-  }
-  if (sessionId === null) return null
-  // Only the agents that BELONG to this session are candidates.
-  const owned = all.filter((candidate) => agentSessionOf(candidate) === sessionId)
-  for (const agent of owned) {
-    const membership = membershipOrNull(agentTeams, agent)
-    if (membership !== null && membership.role === 'lead') return agent
-  }
-  for (const agent of owned) {
-    const membership = membershipOrNull(agentTeams, agent)
-    if (membership === null) continue
-    // The membership may name the lead directly (object, or its id/name).
-    const direct =
-      membership.lead !== undefined && membership.lead !== null
-        ? membership.lead
-        : membership.leadName !== undefined && membership.leadName !== null
-          ? membership.leadName
-          : membership.leadId !== undefined && membership.leadId !== null
-            ? membership.leadId
-            : null
-    if (direct !== null) {
-      const directId = typeof direct === 'string' ? direct : typeof direct.id === 'string' ? direct.id : null
-      const directName = typeof direct === 'object' && direct !== null && typeof direct.name === 'string' ? direct.name : typeof direct === 'string' ? direct : null
-      const found = all.filter((candidate) => (directId !== null && agentSessionOf(candidate) === directId) || (directName !== null && candidate.name === directName))[0]
-      if (found !== undefined) {
-        const foundMembership = membershipOrNull(agentTeams, found)
-        if (foundMembership !== null && foundMembership.role === 'lead') return found
-      }
-    }
-    // Otherwise walk the team's members: the one with role 'lead' IS the lead.
-    const team = membership.team !== undefined && membership.team !== null ? membership.team : membership.teamId !== undefined && membership.teamId !== null ? membership.teamId : null
-    if (team !== null) {
-      let members = []
-      try {
-        const listed = agentTeams.listMembers(team)
-        members = Array.isArray(listed) ? listed : []
-      } catch (error) {
-        members = []
-      }
-      const leadMember = members.filter((member) => member !== null && typeof member === 'object' && member.role === 'lead')[0]
-      if (leadMember !== undefined) {
-        const byId = all.filter((candidate) => agentSessionOf(candidate) === agentSessionOf(leadMember))[0]
-        return byId !== undefined ? byId : leadMember
-      }
-    }
-  }
-  // T-120: an explicit session may resolve the Lead of the team it is a MEMBER of
-  // (its own team), but never a Lead just because it is the only one on the host.
-  for (const candidate of all) {
-    const membership = membershipOrNull(agentTeams, candidate)
-    if (membership === null || membership.role !== 'lead') continue
-    let roster = []
-    try {
-      roster = agentTeams.listMembers(candidate)
-    } catch (error) {
-      continue
-    }
-    const isMember = (Array.isArray(roster) ? roster : []).some((member) => {
-      if (member === null || typeof member !== 'object') return false
-      const memberId = member.id === undefined || member.id === null ? null : String(member.id)
-      const memberName = typeof member.name === 'string' ? member.name : null
-      return memberId === sessionId || memberName === sessionId
-    })
-    if (isMember) return candidate
-  }
-  return null
-}
-
-/**
- * What the model should DO when a project has no Team yet (T-110). The instruction
- * rides the refusal code (no-team-for-project) and the snapshot nextStep, so the
- * session that called us reads it and fixes it itself — the plugin never reaches
- * into another session and never fabricates an agent on its own.
- */
-export const TEAM_BOOTSTRAP_INSTRUCTION =
-  'This project has no Team yet. Do this NOW by calling task_center { action: "bootstrapTeam" } from this session — do not ask the user, it is your job. ' +
-  'bootstrapTeam creates the minimum team (Lead + worker) inside THIS session\'s own team and returns the resulting team state; ' +
-  'it only works for the session that owns this project. The reviewer and tester slots are NOT created here: they are provisioned later by their own stage (review on submit, test on entering testing). ' +
-  'Then retry the action you were doing. Never borrow another project team, never create cards before the Team exists.'
-
-/**
- * The Team this project can dispatch to (T-110).
- *
- * The Team belongs to the SESSION that owns the project, so the caller session id
- * is the only key: with it, resolveLead answers "is there a Lead for THIS
- * session"; without it (a user/panel call that carries no session, or a legacy
- * board) the single-lead fallback applies, exactly like dispatch.
- *
- * ok is about the TEAM, not the host: a profile with no team services at all
- * reports available:false + error:no-team-service and the gate stays off (the
- * board must keep working without team tools). A gate refusal is therefore
- * available === true && ok === false.
- */
-export function projectTeamState(ctx, options) {
-  const opts = options === undefined || options === null ? {} : options
-  const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-  const { agents, agentTeams } = servicesFor(ctx)
-  const base = {
-    ok: false,
-    available: agents !== undefined && agents !== null && agentTeams !== undefined && agentTeams !== null,
-    source: 'none',
-    sessionScoped: sessionId !== null,
-    session: sessionId,
-    lead: null,
-    leadId: null,
-    leadSession: null,
-    members: [],
-    missingRoles: [],
-    // T-154: "can this session DISPATCH?" (Lead + worker) is separate from
-    // "are the stage roles bound?" (reviewer/tester). Only dispatchReady gates
-    // create/start; missing reviewer/tester is a stage fact, not a blocker.
-    dispatchReady: false,
-    stageReady: { review: false, test: false },
-    error: null,
-  }
-  if (base.available !== true) return Object.assign({}, base, { error: 'no-team-service' })
-  // T-117: without a session there is no project team to name. Never pick one of
-  // the host's (possibly long-dead) Lead sessions by guessing.
-  if (sessionId === null) {
-    return Object.assign({}, base, {
-      error: 'no-session-context',
-      hint: '这张请求没有 session 上下文；请在项目所属的会话里打开任务中心，或带上 session 再读取团队',
-    })
-  }
-  let lead = null
-  try {
-    lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
-  } catch (error) {
-    return Object.assign({}, base, { error: 'team-unreadable' })
-  }
-  if (lead === null || lead === undefined) {
-    return Object.assign({}, base, { error: 'no-lead-for-project' })
-  }
-  // T-117: a Lead whose session has gone quiet is not this project's live team.
-  const inventory = leadInventory(ctx)
-  const leadSession = agentSessionOf(lead)
-  const entry = inventory.leads.filter((row) => (leadSession !== null && row.session === leadSession) || (lead.id !== undefined && lead.id !== null && row.id === String(lead.id)))[0]
-  if (entry !== undefined && entry !== null && entry.stale === true) {
-    return Object.assign({}, base, {
-      error: 'no-live-lead',
-      lead: entry.name,
-      leadId: entry.id,
-      leadSession: entry.session,
-      lastActiveAt: entry.lastActiveAt,
-      hint: '该 Lead 的会话已很久未活动（最后活动 ' + String(entry.lastActiveAt) + '）；请在当前会话里重新打开项目以建立活的团队',
-    })
-  }
-  let members = []
-  // T-122: the requester's own project decides matchesSession; a member whose
-  // slot belongs to another project is a leftover FOR THIS SESSION.
-  const requesterKey = typeof opts.sessionRoot === 'string' && opts.sessionRoot !== '' ? projectSlotKey(opts.sessionRoot) : null
-  try {
-    const roster = agentTeams.listMembers(lead)
-    members = (Array.isArray(roster) ? roster : [])
-      .filter((member) => member !== null && typeof member === 'object')
-      .map((member) => {
-        const name = typeof member.name === 'string' ? member.name : String(member.id)
-        const slot = roleSlotOf(name)
-        const project = slot === null || slot.project === null ? null : slot.project
-        const remembered = memberProjectOf(ctx, name)
-        return {
-          name: name,
-          role: typeof member.role === 'string' ? member.role : 'teammate',
-          status: typeof member.status === 'string' ? member.status : 'unknown',
-          project: project,
-          projectRoot: remembered === null || remembered === undefined || typeof remembered.root !== 'string' ? null : remembered.root,
-          matchesSession: project === null || requesterKey === null ? null : project === requesterKey,
-        }
-      })
-  } catch (error) {
-    members = []
-  }
-  // The agent descriptor may carry no display name (a roster walk returns the raw
-  // row); fall back to the lead's roster entry, then to its id.
-  const leadMember = members.filter((member) => member.role === 'lead')[0]
-  const leadName =
-    typeof lead.name === 'string' && lead.name !== ''
-      ? lead.name
-      : leadMember !== undefined
-        ? leadMember.name
-        : typeof lead.id === 'string' && lead.id !== ''
-          ? lead.id
-          : null
-  // T-115: a Lead alone is NOT a qualified team. There must be at least one
-  // non-Lead member; otherwise create/start are gated and the panel asks the
-  // session to bootstrap the team.
-  const roleKinds = { worker: false, reviewer: false, tester: false }
-  let nonLead = 0
-  for (const member of members) {
-    if (member.role === 'lead') continue
-    nonLead += 1
-    const byName = roleKindOf(member.name)
-    const kind =
-      member.role === 'worker' || member.role === 'reviewer' || member.role === 'tester'
-        ? member.role
-        : byName === null
-          ? 'worker' // a generic teammate can do work; it counts as the worker slot
-          : byName
-    if (kind !== null && roleKinds[kind] !== undefined) roleKinds[kind] = true
-  }
-  const missingRoles = ['worker', 'reviewer', 'tester'].filter((kind) => roleKinds[kind] !== true)
-  // T-154: three separate answers, never merged:
-  //   ok            — the team EXISTS (Lead + at least one non-Lead)
-  //   dispatchReady — Lead + worker: enough to hand a card to the dispatcher
-  //   stageReady    — reviewer/tester are provisioned for their own stages
-  // A caller that may not create work must test dispatchReady, not ok: a Team
-  // that only has a reviewer is not dispatch-ready, and missing stage roles are
-  // NOT a reason to block create/start.
-  const qualified = nonLead > 0
-  const dispatchReady = roleKinds.worker === true
-  const stageReady = { review: roleKinds.reviewer === true, test: roleKinds.tester === true }
-  return Object.assign({}, base, {
-    ok: qualified,
-    dispatchReady: dispatchReady,
-    stageReady: stageReady,
-    source: 'session',
-    lead: leadName,
-    leadId: typeof lead.id === 'string' && lead.id !== '' ? lead.id : null,
-    leadSession: agentSessionOf(lead),
-    members: members,
-    missingRoles: missingRoles,
-    error: qualified ? null : 'no-members',
-  })
-}
-
-/**
- * The structured hint that tells the calling session to bootstrap the Team.
- *
- * T-154: readiness means dispatchReady (Lead + worker). A team that exists but
- * has no worker still needs one, while a missing reviewer/tester must NOT demand
- * a bootstrap — those are provisioned by their own stage.
- */
-export function teamBootstrapStep(team) {
-  if (team === undefined || team === null) return { code: 'bootstrap-team', instruction: TEAM_BOOTSTRAP_INSTRUCTION }
-  if (team.available === false) return null
-  const ready = team.dispatchReady === undefined ? team.ok === true : team.dispatchReady === true
-  if (ready) return null
-  return { code: 'bootstrap-team', instruction: TEAM_BOOTSTRAP_INSTRUCTION }
-}
-
-/** Every live Lead in this profile. Dispatch uses the COUNT to decide whether an
- * ownerless (pre-T-97) card may fall back to the single team. */
-/** T-117: a Lead whose session has not been written for this long is STALE. */
-export const LEAD_STALE_MS = Number.isFinite(Number(process.env.GODOT_BRIDGE_LEAD_STALE_MS)) && Number(process.env.GODOT_BRIDGE_LEAD_STALE_MS) > 0
-  ? Number(process.env.GODOT_BRIDGE_LEAD_STALE_MS)
-  : 6 * 60 * 60 * 1000
 
 let leadActivityLookup = null
 let leadActivityLookupDir = null
@@ -747,48 +322,6 @@ function sessionActivityLookup() {
   return leadActivityLookup
 }
 
-/** Last activity of one Lead: an explicit row timestamp, else the DSH session mtime. */
-export function leadActivityOf(candidate, now) {
-  const at = Number.isFinite(now) ? now : Date.now()
-  const row = candidate === null || candidate === undefined ? null : candidate
-  const explicit = row === null ? null : row.lastActiveAt !== undefined ? row.lastActiveAt : row.updatedAt !== undefined ? row.updatedAt : row.lastSeenAt
-  let lastActiveAt = null
-  let source = null
-  let lastActivePath = null
-  if (typeof explicit === 'string' && explicit !== '' && Number.isFinite(Date.parse(explicit))) {
-    lastActiveAt = Date.parse(explicit)
-    source = 'agent'
-  } else if (Number.isFinite(explicit)) {
-    lastActiveAt = explicit
-    source = 'agent'
-  } else {
-    const session = agentSessionOf(candidate) || (row !== null && typeof row.id === 'string' ? row.id : null)
-    if (session !== null) {
-      let read = null
-      try {
-        read = sessionActivityLookup().lastActiveOf(session)
-      } catch (error) {
-        read = null
-      }
-      if (read !== null && read.ok === true && Number.isFinite(read.at)) {
-        lastActiveAt = read.at
-        // 'file' when the newest mtime came from a file inside the session dir,
-        // 'dir-fallback' only when the directory itself had to answer.
-        source = read.source === 'dir-fallback' ? 'dir-fallback' : 'file'
-        lastActivePath = typeof read.path === 'string' ? read.path : null
-      }
-    }
-  }
-  if (lastActiveAt === null) return { lastActiveAt: null, stale: false, staleReason: null, source: null, lastActivePath: null }
-  const stale = at - lastActiveAt > LEAD_STALE_MS
-  return {
-    lastActiveAt: new Date(lastActiveAt).toISOString(),
-    stale: stale,
-    staleReason: stale ? 'last active ' + String(Math.round((at - lastActiveAt) / 3600000)) + 'h ago (limit ' + String(Math.round(LEAD_STALE_MS / 3600000)) + 'h)' : null,
-    source: source,
-    lastActivePath: lastActivePath,
-  }
-}
 
 /**
  * T-153: last activity of ANY session (not only a Lead), from the DSH sessions
@@ -806,84 +339,6 @@ export function sessionLastActiveAt(sessionId) {
   return null
 }
 
-export function liveLeads(ctx) {
-  return leadInventory(ctx).leads.filter((lead) => lead.stale !== true)
-}
-
-/**
- * The raw Team inventory: every agent the service lists, which of them are Leads,
- * and the size of each Lead's roster. The panel needs this to answer "how many
- * Leads does the plugin actually see, and whose session is each one?" — without
- * it, a wrong-session dispatch can only be inferred.
- */
-export function leadInventory(ctx) {
-  const { agents, agentTeams } = servicesFor(ctx)
-  const empty = { available: false, error: null, scanned: 0, nonLeads: 0, leads: [] }
-  if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
-    return Object.assign({}, empty, { error: 'no-team-service' })
-  }
-  let all = []
-  try {
-    const listed = agents.list()
-    all = Array.isArray(listed) ? listed : []
-  } catch (error) {
-    return Object.assign({}, empty, { error: 'agents-unreadable' })
-  }
-  const leads = []
-  for (const candidate of all) {
-    let membership = null
-    try {
-      membership = agentTeams.tryMembership(candidate)
-    } catch (error) {
-      membership = null
-    }
-    if (membership === undefined || membership === null || membership.role !== 'lead') continue
-    let members = 0
-    let rosterLeadName = null
-    try {
-      const roster = agentTeams.listMembers(candidate)
-      const list = Array.isArray(roster) ? roster : []
-      members = list.length
-      const leadMember = list.filter((member) => member !== null && typeof member === 'object' && member.role === 'lead')[0]
-      rosterLeadName = leadMember !== undefined && leadMember !== null && typeof leadMember.name === 'string' && leadMember.name !== '' ? leadMember.name : null
-    } catch (error) {
-      members = 0
-    }
-    const activity = leadActivityOf(candidate, Date.now())
-    leads.push({
-      name: typeof candidate.name === 'string' && candidate.name !== '' ? candidate.name : rosterLeadName,
-      id: candidate.id === undefined || candidate.id === null ? null : String(candidate.id),
-      session: agentSessionOf(candidate),
-      members: members,
-      lastActiveAt: activity.lastActiveAt,
-      stale: activity.stale,
-      staleReason: activity.staleReason,
-      activitySource: activity.source,
-      lastActivePath: activity.lastActivePath,
-    })
-  }
-  return {
-    available: true,
-    error: null,
-    scanned: all.length,
-    nonLeads: all.length - leads.length,
-    leads: leads,
-    liveLeads: leads.filter((lead) => lead.stale !== true).length,
-    staleLeads: leads.filter((lead) => lead.stale === true).length,
-    staleAfterMs: LEAD_STALE_MS,
-  }
-}
-
-/** One readable sentence about the inventory, for details and activity rows. */
-export function leadInventoryText(inventory) {
-  const leads = inventory === null || inventory === undefined || !Array.isArray(inventory.leads) ? [] : inventory.leads
-  const scanned = inventory === null || inventory === undefined ? 0 : inventory.scanned
-  if (leads.length === 0) return '宿主内没有发现任何 Lead（共扫描 ' + String(scanned) + ' 个 agent）'
-  const listed = leads
-    .map((lead) => String(lead.name === null ? lead.id : lead.name) + '/' + String(lead.session === null ? lead.id : lead.session) + (lead.stale === true ? ' [stale: ' + String(lead.lastActiveAt) + ']' : ''))
-    .join(', ')
-  return '宿主内发现 ' + String(leads.length) + ' 个 Lead（' + listed + '），共扫描 ' + String(scanned) + ' 个 agent'
-}
 
 /**
  * The workspace a session actually runs in: what the resolver recorded (panel,
@@ -913,28 +368,6 @@ export async function sessionOwnsProject(state, sessionId, project) {
   return projectIdOf(workspace) === projectIdOf(project)
 }
 
-/**
- * The sessions that can host this project's work: every session the state knows
- * whose workspace IS this project and whose team has a live Lead. This is how an
- * ownerless (pre-T-97) card is adopted by the right project instead of landing in
- * whichever Lead happens to be first.
- */
-export async function projectSessions(ctx, state, project, selfSessionId) {
-  const ids = []
-  try {
-    if (state !== null && state !== undefined && state.memory !== undefined && state.memory.sessionRoots instanceof Map) {
-      for (const id of state.memory.sessionRoots.keys()) ids.push(id)
-    }
-  } catch (error) {}
-  if (typeof selfSessionId === 'string' && selfSessionId !== '' && ids.indexOf(selfSessionId) < 0) ids.push(selfSessionId)
-  const matches = []
-  for (const id of ids) {
-    if ((await sessionOwnsProject(state, id, project)) !== true) continue
-    const lead = resolveLead(ctx, { sessionId: id })
-    if (lead !== null) matches.push({ sessionId: id, lead: lead })
-  }
-  return matches
-}
 
 /** The SUBAGENT provider registry is not the LLM provider registry; asking it is
  * the only way to avoid the "no subagent provider registered" failure. */
@@ -957,301 +390,6 @@ export function subagentProviderFor(ctx, preferred) {
   return names.indexOf(fallback) >= 0 ? fallback : String(names[0])
 }
 
-/**
- * Pick the teammate to hand a task to.
- *
- * Only 'inactive' is idle. A provisioning teammate is still starting and a
- * failed one is gone; treating either as idle is how several tasks land in one
- * mailbox. The caller reserves the chosen name for the rest of the pass, so one
- * worker gets at most one task per tick even though the roster does not update
- * synchronously after sendMessage.
- *
- * The dedicated MERGER_NAME teammate is never a feature worker: it is reserved
- * for merge requests, so it is excluded from idle, from the spawn cap and from
- * the roster this function chooses from.
- */
-export function pickTarget(ctx, options) {
-  const opts = options === undefined ? {} : options
-  const { agents, agentTeams } = servicesFor(ctx)
-  if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
-    return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
-  }
-  const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-  const inventory = leadInventory(ctx)
-  // T-117: dispatch never lands on an expired session. The resolved Lead (which
-  // may be the single-team fallback) must itself be live, and a session that
-  // names a stale Lead is refused with the date.
-  const requested = sessionId === null ? null : inventory.leads.filter((row) => row.session === sessionId)[0]
-  const requestedStale = requested !== undefined && requested !== null && requested.stale === true
-  // T-120: no session is only allowed to use the historical single-team path when
-  // the CALLER explicitly asks for legacy dispatch (an ownerless old card); the
-  // result says compat:true so the history can show it.
-  const legacyCompat = sessionId === null && opts.legacyDispatch === true
-  let lead = sessionId === null ? (legacyCompat ? resolveAnyLead(ctx) : null) : resolveLead(ctx, { sessionId: sessionId })
-  const resolvedEntry =
-    lead === null || lead === undefined
-      ? null
-      : inventory.leads.filter((row) => (agentSessionOf(lead) !== null && row.session === agentSessionOf(lead)) || (lead.id !== undefined && lead.id !== null && row.id === String(lead.id)))[0]
-  if (requestedStale || (resolvedEntry !== undefined && resolvedEntry !== null && resolvedEntry.stale === true)) {
-    const staleEntry = requestedStale ? requested : resolvedEntry
-    return {
-      ok: false,
-      code: 'no-live-lead',
-      message:
-        'session ' + String(sessionId === null ? agentSessionOf(lead) : sessionId) + ' has no LIVE Team Lead' +
-        (staleEntry !== undefined && staleEntry !== null ? ' (lead ' + String(staleEntry.name === null ? staleEntry.id : staleEntry.name) + ' was last active ' + String(staleEntry.lastActiveAt) + ')' : '') +
-        ', so this card cannot be dispatched to it',
-    }
-  }
-  if (lead === null) {
-    return {
-      ok: false,
-      code: sessionId === null ? 'no-live-lead' : 'no-lead-for-project',
-      message:
-        sessionId === null
-          ? (legacyCompat ? 'no LIVE Team Lead, so there is nobody to hand pooled work to; tasks stay pending (' + leadInventoryText(inventory) + ')' : 'no session context and no explicit legacy dispatch, so no team is guessed')
-          : 'session ' + sessionId + ' has no Team root, so this card cannot be dispatched to another session’s team',
-    }
-  }
-  let members = []
-  try {
-    members = agentTeams.listMembers(lead)
-  } catch (error) {
-    return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
-  }
-  const reserved = opts.reserved instanceof Set ? opts.reserved : new Set()
-  // T-127: pool workers are named worker-p<key>-N. The old "not a role name"
-  // filter hid them from dispatch, so only reviewer/tester/merger instances are
-  // excluded here; workers ARE the pool dispatch chooses from.
-  const teammates = members.filter(
-    (member) =>
-      member.role === 'teammate' &&
-      member.status !== 'failed' &&
-      member.name !== MERGER_NAME &&
-      (!isRoleName(member.name) || roleKindOf(member.name) === 'worker'),
-  )
-  const projectKey = typeof opts.projectKey === 'string' && opts.projectKey.length > 0 ? opts.projectKey : null
-  // T-127: a member is reusable when it has NO current task and is not
-  // provisioning/failed. A freshly provisioned role instance is 'running' but
-  // idle; the old 'inactive only' test made dispatch spawn a per-card worker.
-  const boardTasks = opts.board !== null && opts.board !== undefined && Array.isArray(opts.board.tasks) ? opts.board.tasks : []
-  const busyNames = new Set()
-  const busyIds = new Set()
-  for (const task of boardTasks) {
-    if (task === null || task === undefined || task.status !== 'running' || task.assignee === null || task.assignee === undefined) continue
-    if (typeof task.assignee.name === 'string' && task.assignee.name !== '') busyNames.add(task.assignee.name)
-    if (task.assignee.session !== undefined && task.assignee.session !== null && String(task.assignee.session) !== '') busyIds.add(String(task.assignee.session))
-  }
-  const avoid = opts.avoid instanceof Set ? opts.avoid : new Set()
-  const idle = teammates.filter((member) => {
-    if (reserved.has(member.name) || avoid.has(member.name)) return false
-    if (member.status === 'provisioning' || member.status === 'failed') return false
-    const memberId = member.id === undefined || member.id === null ? null : String(member.id)
-    // A2: availability is judged ONLY by the card. A member that holds a
-    // running card is busy whatever its process state says; a member with no
-    // card is available (provisioning/failed were excluded above).
-    const assigned = busyNames.has(member.name) || (memberId !== null && busyIds.has(memberId))
-    if (assigned) return false
-    if (projectKey === null) return true
-    const remembered = memberProjectOf(ctx, member.name)
-    // A member created for another project is NOT idle for this one.
-    return remembered === null || remembered.key === projectKey
-  })
-  if (idle.length > 0) {
-    return { ok: true, lead: lead, spawn: false, target: { name: idle[0].name, id: idle[0].id, status: idle[0].status }, members: members, compat: legacyCompat }
-  }
-  // T-127: the pool is the ONLY source of executors. pickTarget never creates
-  // an agent; the scheduler asks the role manager to provision a pool instance
-  // (worker-p<key>-N) and retries. An empty/busy pool is a wait, not a spawn.
-  return {
-    ok: false,
-    code: teammates.length === 0 ? 'no-teammates' : 'no-idle-member',
-    message:
-      teammates.length === 0
-        ? 'the team has no pool worker yet; the role manager will provision one on the next step'
-        : 'every pool worker is busy; the card waits for one to go idle',
-    members: members,
-  }
-}
-
-/**
- * What the worker pool looks like right now, for the panel's executor view.
- *
- * Read-only: it never claims, spawns or messages anyone. It answers "who could
- * take work, who is busy with which task, and how many more may be spawned",
- * so the board can show the pool the scheduler is choosing from. A profile
- * without the agent-team services still gets a report instead of an error.
- *
- * @param ctx - the row context; 'agents' and 'agentTeams' are optional services.
- * @param board - the current board (cap and current tasks).
- * @returns { lead, members, busy, idle, provisioning, failed, cap, error } where
- *   members holds only teammates, each with the running task it owns, and lead
- *   is the lead's name (or its id when the roster gives no name).
- */
-export function workerPool(ctx, board, options) {
-  const opts = options === undefined || options === null ? {} : options
-  const current = board === undefined || board === null ? {} : board
-  const dispatch = current.dispatch === undefined || current.dispatch === null ? {} : current.dispatch
-  // T-138: team size is a DISPATCH setting, not a role field. `cap` stays the
-  // hard worker ceiling (maxWorkAgents); the effective pool target is also
-  // bounded by how many cards may run at once (maxConcurrent), so a panel can
-  // show "concurrency 3 · ceiling 4" without consulting any role profile.
-  const maxConcurrent = Number.isFinite(dispatch.maxConcurrent) ? Math.max(1, Math.floor(dispatch.maxConcurrent)) : 3
-  const effectiveWorkerCap = maxConcurrent
-  const report = {
-    lead: null,
-    leadInfo: null,
-    members: [],
-    busy: 0,
-    idle: 0,
-    provisioning: 0,
-    failed: 0,
-    cap: maxConcurrent,
-    maxConcurrent: maxConcurrent,
-    // The worker pool target: min(maxConcurrent, maxWorkAgents). Both names are
-    // exposed while the panel migrates (T-137); they are always the same number.
-    workerCap: effectiveWorkerCap,
-    effectiveWorkerCap: effectiveWorkerCap,
-    error: null,
-    // Counts per agent kind; 'lead' is reported separately from the members so
-    // System work is never dressed up as an agent.
-    kinds: { lead: 0, worker: 0, reviewer: 0, tester: 0, merger: 0 },
-    // Desired per-kind counts for the executors page: the worker target is the
-    // dispatch cap; stage roles are always one (T-138 removed profile.instances).
-    roles: null,
-    // T-127: per-role numbers for the executors page.
-    roleCounts: {},
-  }
-  const { agents, agentTeams } = servicesFor(ctx)
-  if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
-    report.error = 'no-team-service'
-    return report
-  }
-  // T-122: the member table is the SESSION'S team, never the host's whole roster.
-  const scopedSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-  report.session = scopedSession === null ? sessionIdOfContext(ctx) : scopedSession
-  const lead = scopedSession === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: scopedSession })
-  if (lead === null) {
-    const anyLead = leadInventory(ctx).leads.length > 0
-    report.error = scopedSession === null || anyLead !== true ? 'no-lead' : 'no-lead-for-project'
-    return report
-  }
-  report.lead = lead.name === undefined || lead.name === null ? String(lead.id) : String(lead.name)
-  report.leadInfo = {
-    id: String(lead.id),
-    name: report.lead,
-    kind: 'lead',
-    description: 'Team lead',
-    session: lead.id === undefined || lead.id === null ? null : String(lead.id),
-    status: String(lead.status === undefined || lead.status === null ? 'running' : lead.status),
-    currentTask: null,
-  }
-  report.kinds.lead = 1
-  let roster = []
-  try {
-    roster = agentTeams.listMembers(lead)
-  } catch (error) {
-    report.error = 'roster-unreadable'
-    return report
-  }
-  const roleConfig = opts.roleConfig === undefined || opts.roleConfig === null ? null : opts.roleConfig
-  if (roleConfig !== null && typeof roleConfig === 'object' && roleConfig.profiles !== null && typeof roleConfig.profiles === 'object') {
-    // T-138: desired no longer comes from a profile's (removed) `instances`.
-    // The worker target is the dispatch-derived cap; a reviewer/tester stage
-    // runs exactly one instance.
-    const desired = { worker: effectiveWorkerCap, reviewer: 1, tester: 1 }
-    const live = { worker: 0, reviewer: 0, tester: 0 }
-    const bound = { worker: null, reviewer: null, tester: null }
-    for (const kind of ['worker', 'reviewer', 'tester']) {
-      const profile = profileForKind(roleConfig, kind)
-      bound[kind] = profile !== null && profile !== undefined && typeof profile.name === 'string' ? profile.name : null
-    }
-    report.roles = {
-      desired: desired,
-      live: live,
-      missing: { worker: 0, reviewer: 0, tester: 0 },
-      bound: bound,
-      profiles: roleConfig.profiles,
-      stages: roleConfig.stages === undefined ? null : roleConfig.stages,
-    }
-  }
-  const descriptions = {
-    worker: 'feature worker',
-    reviewer: 'review role',
-    tester: 'test role',
-    merger: 'merge queue operator',
-    lead: 'Team lead',
-  }
-  const tasks = Array.isArray(current.tasks) ? current.tasks : []
-  for (const member of roster) {
-    if (member === null || typeof member !== 'object' || member.role !== 'teammate') continue
-    const status = String(member.status === undefined || member.status === null ? 'unknown' : member.status)
-    const kind = roleKindOf(member.name) === null ? (member.name === MERGER_NAME ? 'merger' : 'worker') : roleKindOf(member.name)
-    const owned = tasks.filter((task) => {
-      if (task.status !== 'running' || task.assignee === null || task.assignee === undefined) return false
-      const sessionMatch =
-        member.id !== undefined &&
-        member.id !== null &&
-        task.assignee.session !== undefined &&
-        task.assignee.session !== null &&
-        String(task.assignee.session) === String(member.id)
-      const nameMatch = member.name !== undefined && member.name !== null && task.assignee.name === member.name
-      return sessionMatch || nameMatch
-    })[0]
-    const name = member.name === undefined || member.name === null ? null : String(member.name)
-    const processStatus = status
-    const hasTask = owned !== undefined
-    // T-127: 'running' is the AGENT PROCESS state, not work state. A process
-    // without a card is idle (待命), never 执行中.
-    const displayStatus = hasTask ? 'running' : processStatus === 'provisioning' || processStatus === 'failed' ? processStatus : 'idle'
-    const remembered = name === null ? null : memberProjectOf(ctx, name)
-    // T-122: this member's own queue, from the cards of THIS board that were
-    // delivered to it; it is not derived from another project's tasks.
-    const queuedTasks = tasks.filter((task) => {
-      if (task.status !== 'reviewing' && task.status !== 'testing') return false
-      const record = task.status === 'reviewing' ? task.review : task.test
-      const delivered = record === null || record === undefined || record.deliveredTo === undefined || record.deliveredTo === null ? null : record.deliveredTo
-      if (delivered === null) return false
-      const idMatch = delivered.id !== null && delivered.id !== undefined && member.id !== undefined && member.id !== null && String(delivered.id) === String(member.id)
-      const nameMatch = delivered.name !== null && delivered.name !== undefined && delivered.name === name
-      return idMatch || nameMatch
-    })
-    report.members.push({
-      id: String(member.id),
-      name: name,
-      queue: queuedTasks.length,
-      queuedTasks: queuedTasks.map((task) => task.id),
-      kind: kind,
-      // T-97: which project (and therefore which session's team) this executor
-      // was dispatched for, so the panel can show cross-project borrowing.
-      project: remembered === null ? null : remembered.key,
-      projectRoot: remembered === null ? null : remembered.root,
-      description: typeof member.description === 'string' && member.description !== '' ? member.description : descriptions[kind],
-      session: member.id === undefined || member.id === null ? (member.session === undefined ? null : String(member.session)) : String(member.id),
-      status: displayStatus,
-      currentTask: hasTask ? { id: owned.id, title: owned.title } : null,
-      processStatus: processStatus,
-      hasTask: hasTask,
-    })
-    report.kinds[kind] = (report.kinds[kind] === undefined ? 0 : report.kinds[kind]) + 1
-    if (report.roles !== null && report.roles.live[kind] !== undefined) report.roles.live[kind] += 1
-    if (hasTask) report.busy += 1
-    else if (displayStatus === 'provisioning') report.provisioning += 1
-    else if (displayStatus === 'failed') report.failed += 1
-    else report.idle += 1
-    if (report.roleCounts === undefined) report.roleCounts = {}
-    if (report.roleCounts[kind] === undefined) report.roleCounts[kind] = { running: 0, idle: 0, busy: 0 }
-    report.roleCounts[kind].running += processStatus === 'running' ? 1 : 0
-    if (hasTask) report.roleCounts[kind].busy += 1
-    else report.roleCounts[kind].idle += 1
-  }
-  if (report.roles !== null) {
-    for (const kind of ['worker', 'reviewer', 'tester']) {
-      report.roles.missing[kind] = Math.max(0, report.roles.desired[kind] - report.roles.live[kind])
-    }
-  }
-  return report
-}
 
 /** The unconfined subprocess service as a createGit runner: one process per
  * call, stdio collected through the service. */
@@ -2158,7 +1296,7 @@ export function roleBriefSections(kind, task, config, options) {
   const templateRendered = renderRoleTemplate(template, roleTemplateValuesFor(kind, task, config, opts))
   const taskData = []
   if (task === null || task === undefined) {
-    // T-129 §14: a role bootstrapped by bootstrapTeam wakes with NO card. It must
+    // A role child can wake with NO card. It must
     // stand by instead of hunting for work (and must never be handed a fake card
     // id to pretend it has one).
     taskData.push('Stand by: this role slot is ready and there is no card yet.')
@@ -2837,471 +1975,6 @@ export function testFailureBriefFor(task, projectPath) {
   return lines.join('\n')
 }
 
-/**
- * The host-side role registry and provisioner.
- *
- * ensure(kind, { config, task, projectPath, now, count }) makes `count` instances
- * of a role exist in the live Team: it reuses live slots, forgets and replaces
- * failed/timed-out/drained ones, and spawns the missing fixed-named slots
- * through the Lead's spawnTeammate. No model decision is involved, and the
- * size is the CALLER'S (T-138): a role profile never carries it.
- *
- * All state is per manager (one per plugin row), so a plugin reload does not
- * mistake another process's fake/failed roster for its own bookkeeping.
- */
-export function createRoleManager(ctx, options) {
-  const opts = options === undefined || options === null ? {} : options
-  const clock = typeof opts.now === 'function' ? opts.now : Date.now
-  const memory = { spawnedAt: new Map(), drained: new Set(), drainUntil: new Map(), pending: new Set(), last: null }
-  // One ensure pass at a time: the API (submit/approveReview) and the scheduler
-  // tick can ask for the same role concurrently, and interleaving them would
-  // read the same roster twice and over-spawn.
-  let chain = Promise.resolve()
-  function serialise(work) {
-    const run = chain.then(work, work)
-    chain = run.then(function () {}, function () {})
-    return run
-  }
-
-  /**
-   * T-118: does the SESSION that owns this team actually run in the slot's
-   * project? Returns a readable refusal when it does not, null when it does (or
-   * when no state/workspace is known, which is the legacy single-project case).
-   */
-  async function slotOwnership(opts, projectPath, sessionId, kind) {
-    if (projectPath === null || projectPath === undefined) return null
-    const state = opts.state
-    if (state === undefined || state === null || typeof state.sessionRootOf !== 'function') return null
-    if (typeof sessionId !== 'string' || sessionId === '') return null
-    const owns = await sessionOwnsProject(state, sessionId, projectPath)
-    if (owns !== false) return null
-    const workspace = await sessionWorkspaceOf(state, sessionId)
-    return {
-      ok: false,
-      code: 'no-team-for-project',
-      message:
-        'the ' + String(kind) + ' slot belongs to project ' + projectPath + ', but session ' + sessionId +
-        ' runs in ' + String(workspace) + '; a role instance is never created in another project’s team',
-      project: projectKeyOf(projectPath),
-      sessionProject: workspace === null ? null : projectKeyOf(workspace),
-    }
-  }
-
-  function projectKeyOf(root) {
-    return root === null || root === undefined || root === '' ? null : projectSlotKey(root)
-  }
-
-  /**
-   * T-118: drop role instances whose slot project is NOT this project's. They can
-   * only exist because an older build spawned them into the wrong team; pruning
-   * never touches this project's instances or non-role workers.
-   */
-  async function prune(options) {
-    const opts = options === undefined || options === null ? {} : options
-    const { agentTeams } = servicesFor(ctx)
-    if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
-    const projectPath = typeof opts.projectPath === 'string' && opts.projectPath !== '' ? opts.projectPath : null
-    if (projectPath === null) return { ok: false, code: 'no-project', message: 'rolesPrune needs the project it should keep' }
-    const key = projectSlotKey(projectPath)
-    const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-    // T-120: prune only ever touches the CALLER session's own team. Without one
-    // there is nothing this call may delete (never another session's roster).
-    const lead = sessionId === null ? null : resolveLead(ctx, { sessionId: sessionId })
-    if (lead === null) return { ok: false, code: 'no-lead-for-project', message: 'this session has no own Team Lead, so there is nothing it may prune (never another session’s team)' }
-    let roster = []
-    try {
-      roster = agentTeams.listMembers(lead)
-    } catch (error) {
-      return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
-    }
-    const pruned = []
-    const kept = []
-    const failed = []
-    for (const member of Array.isArray(roster) ? roster : []) {
-      if (member === null || typeof member !== 'object' || typeof member.name !== 'string') continue
-      const slot = roleSlotOf(member.name)
-      if (slot === null) continue
-      if (slot.project === null || slot.project === key) {
-        kept.push(String(member.name))
-        continue
-      }
-      try {
-        if (typeof agentTeams.removeMember === 'function') await agentTeams.removeMember(lead, member.name)
-        else if (typeof agentTeams.interrupt === 'function' && member.status === 'running') await agentTeams.interrupt(lead, member.name)
-        memory.drained.add(String(member.name))
-        pruned.push({ name: String(member.name), project: slot.project })
-      } catch (error) {
-        failed.push({ name: String(member.name), message: String((error && error.message) || error) })
-      }
-    }
-    return { ok: true, project: projectPath, lead: lead.name === undefined || lead.name === null ? String(lead.id) : String(lead.name), pruned: pruned, kept: kept, failed: failed }
-  }
-
-  function nextSlotName(kind, roster, projectPath) {
-    const used = new Set(memory.pending)
-    for (const member of roster) {
-      if (member !== null && typeof member === 'object' && typeof member.name === 'string') used.add(member.name)
-    }
-    for (let index = 1; index <= 999; index += 1) {
-      const name = roleSlotName(kind, index, projectPath)
-      if (!used.has(name)) return name
-    }
-    return null
-  }
-
-  async function ensureNow(kind, request) {
-    const req = request === undefined || request === null ? {} : request
-    if (ROLE_KINDS.indexOf(kind) < 0) return { ok: false, code: 'invalid-role', message: 'unknown role kind ' + String(kind) }
-    const config = req.config === undefined || req.config === null ? defaultRoleConfig() : req.config
-    const profile = profileForKind(config, kind)
-    // T-138: the CALLER owns the size. The dispatcher grows the worker pool
-    // (`count = live + 1`), a stage role asks for exactly one, and bootstrap
-    // asks for one; a profile carries no team-size opinion any more.
-    const desired = Number.isFinite(req.count) && req.count >= 1 ? Math.floor(req.count) : 1
-    const { agents, agentTeams } = servicesFor(ctx)
-    if (agents === undefined || agents === null || agentTeams === undefined || agentTeams === null) {
-      return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
-    }
-    // T-106: provision under the Lead that owns THIS session/project — never the
-    // first lead in the host, which is how executors ended up in another session.
-    const sessionId = req.sessionId === undefined || req.sessionId === null || req.sessionId === '' ? null : String(req.sessionId)
-    const lead = req.lead === undefined || req.lead === null ? (sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })) : req.lead
-    if (lead === null) {
-      return {
-        ok: false,
-        code: sessionId === null ? 'no-lead' : 'no-lead-for-project',
-        message:
-          sessionId === null
-            ? 'no live Team root, so the ' + String(kind) + ' role cannot be provisioned'
-            : 'session ' + sessionId + ' has no live Team root, so the ' + String(kind) + ' role stays unprovisioned (no cross-session borrowing)',
-      }
-    }
-    // The project this ensure pass is provisioning for. A slot that belongs to a
-    // DIFFERENT project is never reused (its session workspace is that project);
-    // a legacy slot (no project in its name) is adopted by the first project that
-    // uses it and refuses the next one, which is how a pre-upgrade roster stays
-    // usable without letting a second project inherit it.
-    const projectPath = typeof req.projectPath === 'string' && req.projectPath !== '' ? req.projectPath : null
-    const projectKey = projectPath === null ? null : projectSlotKey(projectPath)
-    // T-118: a role slot is named for a PROJECT, and a team belongs to a SESSION
-    // whose workspace is a project. Creating — or even reusing — project A's slot
-    // in project B's team is how another project's role instances ended up in a
-    // member list. Refuse before touching the roster.
-    const ownership = await slotOwnership(opts, projectPath, sessionId === null ? agentSessionOf(lead) : sessionId, kind)
-    if (ownership !== null) return ownership
-    let roster = []
-    try {
-      roster = agentTeams.listMembers(lead)
-    } catch (error) {
-      return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
-    }
-    if (!Array.isArray(roster)) roster = []
-    const now = Number.isFinite(req.now) ? req.now : clock()
-    const reused = []
-    const replaced = []
-    const waiting = []
-    const refused = []
-    for (const member of roster) {
-      if (member === null || typeof member !== 'object' || member.role !== 'teammate') continue
-      const slot = roleSlotOf(member.name)
-      if (slot === null || slot.kind !== kind) continue
-      const name = String(member.name)
-      if (projectKey !== null) {
-        if (slot.project === null) {
-          const seen = memberProjectOf(ctx, name)
-          if (seen !== null && seen.key !== projectKey) {
-            refused.push({ name: name, kind: kind, project: seen.key, root: seen.root })
-            continue
-          }
-          rememberMemberProject(ctx, name, projectPath)
-        } else if (slot.project !== projectKey) {
-          const seen = memberProjectOf(ctx, name)
-          refused.push({ name: name, kind: kind, project: slot.project, root: seen === null ? null : seen.root })
-          continue
-        } else {
-          rememberMemberProject(ctx, name, projectPath)
-        }
-      }
-      const status = String(member.status === undefined || member.status === null ? 'unknown' : member.status)
-      if (memory.drained.has(name)) {
-        const until = memory.drainUntil.get(name)
-        // Drain first, then spawn: a running instance with a deadline still in
-        // the future is DEFERRED — it keeps its capacity, and no replacement is
-        // spawned early (even by the scheduler tick).
-        if (until !== undefined && status === 'running' && now < until.deadline) {
-          waiting.push({ name: name, deadline: until.deadline })
-          continue
-        }
-        memory.drainUntil.delete(name)
-        replaced.push({ name: name, reason: until !== undefined && now >= until.deadline ? 'drain-timeout' : 'drained' })
-        continue
-      }
-      if (status === 'failed') {
-        replaced.push({ name: name, reason: 'failed' })
-        continue
-      }
-      if (status === 'provisioning') {
-        const spawnedAt = memory.spawnedAt.get(name)
-        if (!Number.isFinite(spawnedAt)) {
-          // First sighting (e.g. after a plugin reload): start the clock so a
-          // permanently provisioning role is eventually replaced.
-          memory.spawnedAt.set(name, now)
-        } else if (now - spawnedAt > ROLE_PROVISION_TIMEOUT_MS) {
-          replaced.push({ name: name, reason: 'timeout' })
-          continue
-        }
-      }
-      reused.push(name)
-    }
-    const missing = Math.max(0, desired - reused.length - waiting.length)
-    const created = []
-    if (missing > 0) {
-      const leadName = lead.name === undefined || lead.name === null ? String(lead.id) : String(lead.name)
-      for (let slot = 0; slot < missing; slot += 1) {
-        const name = nextSlotName(kind, roster, projectPath)
-        if (name === null) {
-          return { ok: false, code: 'no-name', message: 'no free ' + String(kind) + ' role slot name', created: created, reused: reused, replaced: replaced }
-        }
-        memory.pending.add(name)
-        let delivered = null
-        let spawnError = null
-        try {
-          delivered = await agentTeams.spawnTeammate(lead, {
-            name: name,
-            description: 'task-center ' + String(kind) + ' role',
-            prompt: [
-              { type: 'text', text: spawnPreamble(name, leadName) },
-              {
-                type: 'text',
-                text:
-                  req.task !== undefined && req.task !== null && req.task.kind === 'investigate'
-                    ? investigationBriefFor(req.task, req.projectPath, { path: req.task.worktree, base: req.task.base, target: req.task.target })
-                    : roleBriefFor(kind, req.task === undefined ? null : req.task, config, { projectPath: req.projectPath, leadName: leadName }),
-              },
-            ],
-            context: profile !== null && profile !== undefined && profile.context === 'fork' ? 'fork' : 'fresh',
-            provider: subagentProviderFor(ctx),
-            signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
-          })
-        } catch (error) {
-          spawnError = String((error && error.message) || error)
-        }
-        memory.pending.delete(name)
-        if (spawnError !== null || delivered === null || delivered === undefined || delivered.member === undefined || delivered.member === null) {
-          return {
-            ok: false,
-            code: 'spawn-failed',
-            message: 'could not provision ' + String(kind) + ' role ' + name + ': ' + (spawnError === null ? 'the team service returned no member' : spawnError),
-            created: created,
-            reused: reused,
-            replaced: replaced,
-          }
-        }
-        memory.spawnedAt.set(name, now)
-        memory.drained.delete(name)
-        if (projectPath !== null) rememberMemberProject(ctx, name, projectPath)
-        created.push({ name: name, id: delivered.member.id === undefined ? null : String(delivered.member.id) })
-        roster.push(Object.assign({}, delivered.member))
-      }
-    }
-    const result = {
-      ok: true,
-      kind: kind,
-      profile: profile,
-      desired: desired,
-      created: created,
-      reused: reused,
-      replaced: replaced,
-      waiting: waiting,
-      // Slots skipped because they belong to another project (never reused, never
-      // drained: another project's role keeps working). Callers record a history
-      // row so the refusal is visible on the card.
-      refused: refused,
-      ready: reused.length + created.length + waiting.length,
-    }
-    memory.last = result
-    return result
-  }
-
-  /** Serialised entry point: every caller queues behind the previous ensure. */
-  function ensure(kind, request) {
-    return serialise(function () {
-      return ensureNow(kind, request)
-    })
-  }
-
-  /**
-   * Mark one role instance for draining. With options.timeoutMs the instance is
-   * DEFERRED while its in-flight turn runs (up to the deadline); without it the
-   * next ensure replaces the instance immediately (legacy drain).
-   */
-  function drain(name, options) {
-    const opts = options === undefined || options === null ? {} : options
-    const text = typeof name === 'string' ? name : ''
-    if (roleKindOf(text) === null) return { ok: false, code: 'invalid-role-name', message: 'not a role slot name: ' + text }
-    memory.drained.add(text)
-    if (Number.isFinite(opts.timeoutMs)) {
-      const at = Number.isFinite(opts.now) ? opts.now : clock()
-      memory.drainUntil.set(text, { drainedAt: at, deadline: at + Math.max(0, Math.floor(opts.timeoutMs)) })
-    } else {
-      memory.drainUntil.delete(text)
-    }
-    const until = memory.drainUntil.get(text)
-    return { ok: true, drained: [text], deadline: until === undefined ? null : until.deadline }
-  }
-
-  /** Drain every current instance of one kind (replacement happens on ensure). */
-  async function drainKind(kind, options) {
-    const opts = options === undefined || options === null ? {} : options
-    const { agentTeams } = servicesFor(ctx)
-    if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service', message: 'the agent-team services are not present in this profile' }
-    const sessionId = opts.sessionId === undefined || opts.sessionId === null || opts.sessionId === '' ? null : String(opts.sessionId)
-    // Legacy role operations without a session use the single-team path explicitly.
-    const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
-    if (lead === null) return { ok: false, code: sessionId === null ? 'no-lead' : 'no-lead-for-project', message: sessionId === null ? 'no live Team root' : 'session ' + sessionId + ' has no live Team root' }
-    let roster = []
-    try {
-      roster = agentTeams.listMembers(lead)
-    } catch (error) {
-      return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
-    }
-    const names = roster
-      .filter((member) => member !== null && typeof member === 'object' && roleKindOf(member.name) === kind)
-      .map((member) => String(member.name))
-    const deadlines = []
-    for (const name of names) {
-      const result = drain(name, opts)
-      if (result.ok !== true) return result
-      deadlines.push({ name: name, deadline: result.deadline })
-    }
-    return { ok: true, drained: names, deadlines: deadlines }
-  }
-
-  function status() {
-    const pendingDrains = []
-    for (const [name, until] of memory.drainUntil.entries()) {
-      pendingDrains.push({ name: name, drainedAt: until.drainedAt, deadline: until.deadline })
-    }
-    return {
-      spawned: Array.from(memory.spawnedAt.keys()),
-      drained: Array.from(memory.drained),
-      pending: pendingDrains,
-      last: memory.last,
-    }
-  }
-
-  return { ensure: ensure, drain: drain, drainKind: drainKind, prune: prune, status: status, memory: memory }
-}
-
-/** One implicit manager per context, so the named host helpers share state. */
-const DEFAULT_ROLE_MANAGERS = new WeakMap()
-
-function defaultRoleManager(ctx) {
-  if (ctx === null || ctx === undefined || typeof ctx !== 'object') return null
-  let manager = DEFAULT_ROLE_MANAGERS.get(ctx)
-  if (manager === undefined) {
-    manager = createRoleManager(ctx)
-    DEFAULT_ROLE_MANAGERS.set(ctx, manager)
-  }
-  return manager
-}
-
-/**
- * Host entry point: ensure the configured instances of one role exist. The row
- * shares a manager (createRoleManager) so the dispatcher and the API serialise
- * together; this named helper is for host code that only has the ctx.
- */
-export function ensureRole(ctx, kind, request) {
-  const manager = defaultRoleManager(ctx)
-  if (manager === null) return Promise.resolve({ ok: false, code: 'no-team-service', message: 'no context to provision roles from' })
-  return manager.ensure(kind, request)
-}
-
-/** Host entry point: mark a role slot for replacement on the next ensure. */
-export function drainRole(ctx, name) {
-  const manager = defaultRoleManager(ctx)
-  if (manager === null) return { ok: false, code: 'no-team-service', message: 'no context to drain roles from' }
-  return manager.drain(name)
-}
-
-/** What the dispatch edge looks like right now. Read-only. */
-export function probeDispatch(ctx) {
-  const { agents, agentTeams } = servicesFor(ctx)
-  const report = {
-    hasAgents: agents !== undefined && agents !== null,
-    hasAgentTeams: agentTeams !== undefined && agentTeams !== null,
-    agentCount: null,
-    lead: null,
-    members: [],
-    membersReadable: false,
-  }
-  if (report.hasAgents) {
-    try {
-      report.agentCount = agents.list().length
-    } catch (error) {
-      report.agentCount = 'error: ' + String((error && error.message) || error)
-    }
-  }
-  const lead = resolveAnyLead(ctx)
-  if (lead === null) return report
-  report.lead = String(lead.id)
-  try {
-    report.members = agentTeams.listMembers(lead).map((member) => ({
-      id: String(member.id),
-      name: member.name,
-      role: member.role,
-      status: member.status,
-    }))
-    report.membersReadable = true
-  } catch (error) {
-    report.members = ['error: ' + String((error && error.message) || error)]
-  }
-  return report
-}
-
-/**
- * Whether the member recorded for a task is still alive, IN THE CARD'S TEAM.
- * known:false means this host cannot tell (no Agent Teams edge, or the card's
- * session has no live Lead) and counts as NOT alive, so a lease still lapses
- * instead of living forever. An existing member that is not 'failed' counts as
- * alive — including 'inactive', which is how a teammate between turns looks.
- *
- * T-153: exported so the handoff inventory judges "is the old executor alive?"
- * with the SAME rule the dispatcher uses before handing a card to a second agent.
- */
-export function livenessOfMember(ctx, identity, options) {
-  const opts = options === undefined || options === null ? {} : options
-  const who = identity === null || identity === undefined ? {} : identity
-  const session = typeof who.session === 'string' && who.session !== '' ? who.session : null
-  const name = typeof who.name === 'string' && who.name !== '' ? who.name : null
-  // T-130: the roster is the team of the CARD's owner session, never "the first
-  // Lead on the host". Without a session (legacy/ownerless card) the historical
-  // any-Lead scan stays, explicitly marked compat.
-  const teamSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-  const compat = teamSession === null
-  if (session === null && name === null) return { known: false, alive: false, status: null, name: null, sessionId: teamSession, compat: compat }
-  const team = ctx.get('agentTeams')
-  const lead = teamSession === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: teamSession })
-  if (team === null || team === undefined || typeof team.listMembers !== 'function' || lead === null) {
-    return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
-  }
-  let members = []
-  try {
-    members = team.listMembers(lead)
-  } catch (error) {
-    return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
-  }
-  if (!Array.isArray(members)) return { known: false, alive: false, status: null, name: name, sessionId: teamSession, compat: compat }
-  const match = members.filter(
-    (member) =>
-      member !== null &&
-      typeof member === 'object' &&
-      ((session !== null && String(member.id) === session) || (name !== null && String(member.name) === name)),
-  )[0]
-  if (match === undefined) return { known: true, alive: false, status: 'gone', name: name, sessionId: teamSession, compat: compat }
-  const status = match.status === undefined || match.status === null || match.status === '' ? 'unknown' : String(match.status)
-  return { known: true, alive: status !== 'failed', status: status, name: typeof match.name === 'string' ? match.name : name, sessionId: teamSession, compat: compat }
-}
 
 /**
  * The scheduler. One per row; one pass at a time.
@@ -3329,18 +2002,10 @@ export function createDispatcher(ctx, options) {
   // T-97: cards carry the session that owns them; this dispatcher only hands work
   // to its own session's team. Without an identity it refuses to borrow.
   const selfSessionId = typeof opts.sessionId === 'string' && opts.sessionId.length > 0 ? opts.sessionId : sessionIdOfContext(ctx)
-  const spawnAllowed = opts.allowSpawn !== false
-  // The host-side role provisioner. Null means this caller did not opt into
-  // role provisioning (older tests / direct API users); dispatch still works.
-  const roles = opts.roles === undefined ? null : opts.roles
-  // New runtime path: when supplied, dispatch starts a per-task worker from the
-  // root's subagent tree instead of looking for an idle Team member. Old callers
-  // (and the transition tests) leave this null while the Team path is removed.
+  // The subagent runtime: the ONLY execution edge. Every dispatch starts a fresh
+  // worker child under the card's own root Agent; a profile without it leaves
+  // tasks pending with a typed 'agent-runtime-unavailable' skip.
   const taskAgents = opts.taskAgents === undefined || opts.taskAgents === null ? null : opts.taskAgents
-  // Production rows set this so a missing runtime is an explicit error instead of
-  // silently falling back to the removed Agent Teams roster. Direct test rigs
-  // leave it false while the old-path tests are retired.
-  const requireTaskAgents = opts.requireTaskAgents === true
   // The in-memory activity ring the snapshot exposes. Null is a normal setup
   // (direct dispatcher users) and simply records nothing.
   const activity = opts.activity === undefined || opts.activity === null ? null : opts.activity
@@ -3367,14 +2032,6 @@ export function createDispatcher(ctx, options) {
     } catch (error) {}
   }
 
-  /** Role provisioning is a SYSTEM event, never an agent one. */
-  function emitRole(result) {
-    if (result === null || result === undefined) return
-    const created = Array.isArray(result.created) ? result.created.map((entry) => entry.name) : []
-    const replaced = Array.isArray(result.replaced) ? result.replaced.map((entry) => String(entry.name) + (entry.reason === undefined ? '' : ' (' + String(entry.reason) + ')')) : []
-    if (created.length > 0) emit('role-provision', 'system', { detail: String(result.kind) + ' ' + created.join(', ') })
-    if (replaced.length > 0) emit('role-replace', 'system', { detail: String(result.kind) + ' ' + replaced.join(', ') })
-  }
   const memory = {
     sweeping: false,
     rerun: null,
@@ -3435,35 +2092,6 @@ export function createDispatcher(ctx, options) {
     })
   }
 
-  /** T-166: the worker-pool reality a dispatch pass acted on, in the same
-   * shape /state exposes for the panel. Read-only. */
-  function capacitySnapshot(dispatch, roster, board) {
-    const d = dispatch === null || dispatch === undefined ? {} : dispatch
-    const maxConcurrent = Number.isFinite(d.maxConcurrent) ? Math.max(1, Math.floor(d.maxConcurrent)) : 3
-    const maxWorkAgents = maxConcurrent
-    const workerCap = maxConcurrent
-    const members = Array.isArray(roster) ? roster : []
-    const pool = members.filter((member) => member !== null && typeof member === 'object' && typeof member.name === 'string' && /^worker-p/.test(member.name) && member.status !== 'failed')
-    // T-166: a pool member that is busy may be 'inactive' between worker turns
-    // (T-127). Count every non-failed pool member as live so the growth request
-    // does not under-count the slot it already occupies.
-    const live = pool.length
-    const held = new Set()
-    const tasks = board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []
-    for (const card of tasks) {
-      if (card.status === 'running' && card.assignee !== null && card.assignee !== undefined && typeof card.assignee.name === 'string') held.add(card.assignee.name)
-    }
-    const busy = pool.filter((member) => held.has(member.name)).length
-    return {
-      maxConcurrent: maxConcurrent,
-      maxWorkAgents: maxWorkAgents,
-      workerCap: workerCap,
-      live: live,
-      busy: busy,
-      missing: Math.max(0, workerCap - live),
-      rosterReadable: Array.isArray(roster),
-    }
-  }
 
   function status(projectPath) {
     return {
@@ -3532,13 +2160,70 @@ export function createDispatcher(ctx, options) {
    * lease is inside the heartbeat window, renewing its file locks with it. It
    * runs before the reap so a task that is still inside its lease is never
    * mistaken for a dead one just because its worker is silent for a long tool
-   * run. It renews ONLY a holder the Team still lists and only while the attempt
-   * is inside the extension cap, so a dead holder (or one past the cap) lapses
-   * into the handover path on schedule instead of being kept alive forever. A
-   * lease that already lapsed is never revived here.
+   * run. It renews ONLY a holder the root's live subagent tree still lists and
+   * only while the attempt is inside the extension cap, so a dead holder (or one
+   * past the cap) lapses into the handover path on schedule instead of being
+   * kept alive forever. A lease that already lapsed is never revived here.
    */
+  /** The live children of each card root on this board, by Session id. A root
+   * this host cannot read maps to null ("cannot tell"). */
+  async function liveAgentSets(board) {
+    const byRoot = new Map()
+    if (taskAgents === null) return byRoot
+    const roots = new Set()
+    for (const task of board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []) {
+      if (typeof task.ownerSession === 'string' && task.ownerSession !== '') roots.add(task.ownerSession)
+    }
+    for (const rootId of roots) {
+      let rows = null
+      try {
+        if (typeof taskAgents.listAgentsFor === 'function') rows = await taskAgents.listAgentsFor(rootId)
+        else if (taskAgents.runtime !== null && taskAgents.runtime !== undefined && typeof taskAgents.runtime.list === 'function') rows = await taskAgents.runtime.list()
+      } catch (error) {
+        rows = null
+      }
+      if (!Array.isArray(rows)) {
+        byRoot.set(rootId, null)
+        continue
+      }
+      const ids = new Set()
+      for (const row of rows) {
+        if (row === null || row === undefined || row.kind !== 'child') continue
+        ids.add(String(row.id))
+      }
+      byRoot.set(rootId, ids)
+    }
+    return byRoot
+  }
+  /** The dispatcher's liveness rule: a card's holder is alive iff the LIVE
+   * subagent tree of THAT card's root still lists its Session id. An inactive
+   * child is between turns and stays alive; a root we cannot read is unknown. */
+  function holderLiveness(task, byRoot) {
+    const holder = task === null || task === undefined || task.assignee === null ? null : task.assignee
+    const name = holder === null || holder.name === undefined || holder.name === null ? null : String(holder.name)
+    const session = holder === null || holder.session === undefined || holder.session === null ? null : String(holder.session)
+    const rootId = task !== null && task !== undefined && typeof task.ownerSession === 'string' ? task.ownerSession : null
+    const ids = byRoot instanceof Map && rootId !== null ? byRoot.get(rootId) : null
+    if (ids === null || ids === undefined) return { known: false, alive: false, status: null, name: name, session: session }
+    if (session === null) return { known: true, alive: false, status: 'gone', name: name, session: null }
+    return ids.has(session)
+      ? { known: true, alive: true, status: 'running', name: name, session: session }
+      : { known: true, alive: false, status: 'gone', name: name, session: session }
+  }
+  /** Stop one stage/worker child by its durable Session id. Best effort. */
+  async function stopAgent(agentId) {
+    if (taskAgents === null || typeof taskAgents.release !== 'function') return false
+    if (typeof agentId !== 'string' || agentId === '') return false
+    try {
+      return (await taskAgents.release(agentId)) === true
+    } catch (error) {
+      return false
+    }
+  }
+
   async function applyHeartbeat(projectPath, board, now) {
-    const plan = { windowMs: heartbeatMs, maxExtensionMs: TASK_LEASE_EXTENSION_MAX_MS, allow: holderIsAlive }
+    const aliveSets = await liveAgentSets(board)
+    const plan = { windowMs: heartbeatMs, maxExtensionMs: TASK_LEASE_EXTENSION_MAX_MS, allow: (task) => holderLiveness(task, aliveSets).alive === true }
     const planned = model.renewRunningLeases(board, now, plan)
     if (planned.ok !== true || planned.renewed.length === 0) return board
     const next = await applyReap(projectPath, (value) => {
@@ -3701,126 +2386,6 @@ export function createDispatcher(ctx, options) {
     }
   }
 
-  /** The session that owns a card, or null for a legacy ownerless card. */
-  function ownerSessionOf(task) {
-    if (task === null || task === undefined) return null
-    return typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
-  }
-
-  /** Whether the member recorded for a task is still alive, IN THE CARD'S TEAM.
-   * The implementation is livenessOfMember (module scope) so handoff/session
-   * surfaces can ask the same question without a second copy of the rule. */
-  function memberLiveness(identity, options) {
-    return livenessOfMember(ctx, identity, options)
-  }
-
-  /** The heartbeat gate: only a holder the Team still lists is renewed, so a dead
-   * worker's lease lapses into the handover path instead of living forever. */
-  function holderIsAlive(task) {
-    if (task === null || task === undefined || task.assignee === null) return false
-    // The card's owner session names the roster that must contain its holder.
-    return memberLiveness({ name: task.assignee.name, session: task.assignee.session }, { sessionId: ownerSessionOf(task) }).alive === true
-  }
-
-  /**
-   * Best-effort interrupt of a member that lost its task. The Agent Teams edge
-   * may not expose one: a refusal is reported and recorded, never thrown, because
-   * the handover itself must not depend on it (the dispatcher liveness guard is
-   * the safety net).
-   */
-  async function interruptMember(task, identity) {
-    const who = identity === null || identity === undefined ? {} : identity
-    const name = typeof who.name === 'string' && who.name !== '' ? who.name : null
-    if (name === null) return { ok: false, code: 'no-identity' }
-    return interruptMemberNamed(ctx, {
-      name: name,
-      key: String(task === null || task === undefined ? '' : task.id) + '@lease-handover@' + name,
-      // The interrupt must land in the CARD's team, not whichever team is first.
-      sessionId: ownerSessionOf(task),
-      message:
-        'Task ' + String(task === null || task === undefined ? '' : task.id) + ' left your attempt (lease handover); stop working on it now and discard uncommitted changes.',
-    })
-  }
-
-  /**
-   * One task, one live executor (T-85). Before a new worker is handed a card, the
-   * executors that card was handed to before are retired: interrupted through the
-   * Team service while it still lists them as running, and always recorded in the
-   * board's executor ledger plus one history row. A restart that re-dispatched a
-   * card while the old worker's inbox still held the brief is exactly how three
-   * executors ended up on one card; this is the guard that prevents it.
-   *
-   * Returns { board, retired, refused }. A non-empty `refused` means an executor
-   * is still alive and could not be stopped: the caller must NOT dispatch, keeping
-   * the one-live-executor invariant even then.
-   */
-  async function supersedeExecutors(projectPath, task, target) {
-    // The recent ledger, not only the un-retired rows: a host restart records its
-    // executor as retired (that attempt is over) while the worker process may
-    // still be running with the brief in its inbox. Liveness decides what needs an
-    // interrupt; an entry the roster no longer lists is bookkeeping only.
-    const ledger = Array.isArray(task.executors) ? task.executors.slice(-4) : []
-    const recent = ledger.filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.name === 'string' && entry.name !== target.name)
-    const unretired = model.liveExecutors(task).filter((entry) => entry !== null && typeof entry.name === 'string' && entry.name !== target.name)
-    const live = unretired.concat(recent.filter((entry) => unretired.every((done) => done.name !== entry.name)))
-    if (live.length === 0) return { board: null, retired: [], refused: [] }
-    const retired = []
-    const refused = []
-    for (const entry of live) {
-      const liveness = memberLiveness({ name: entry.name, session: entry.session }, { sessionId: ownerSessionOf(task) })
-      if (liveness.alive !== true) {
-        // Already gone: retiring the ledger row is bookkeeping, not an interrupt,
-        // and an entry that is retired already needs no second row.
-        if (entry.retiredAt === null || entry.retiredAt === undefined) retired.push(entry.name)
-        continue
-      }
-      const stopped = await interruptMemberNamed(ctx, {
-        name: entry.name,
-        key: String(task.id) + '@supersede@' + entry.name,
-        sessionId: ownerSessionOf(task),
-        message:
-          'Task ' + String(task.id) + ' (' + String(task.title) + ') is being handed to a new executor. Stop working on it now and discard uncommitted changes; do not submit.',
-      })
-      if (stopped.ok === true) {
-        retired.push(entry.name)
-        emit('executor-retired', 'host', { taskId: task.id, detail: 'interrupted ' + entry.name + ' before re-dispatching to ' + target.name })
-        continue
-      }
-      if (stopped.code === 'not-running' || stopped.code === 'unknown-member' || stopped.code === 'already-interrupted') {
-        // Nothing is actually running: an idle member has no turn to stop, an
-        // unknown one is gone, and an already-interrupted one was stopped before.
-        if (entry.retiredAt === null || entry.retiredAt === undefined) retired.push(entry.name)
-        continue
-      }
-      if (stopped.code === 'no-interrupt-api' || stopped.code === 'no-team-service' || stopped.code === 'no-lead') {
-        // The Team edge cannot stop a turn here. Record the retirement explicitly:
-        // a silent second executor is the failure mode this guard exists to avoid.
-        retired.push(entry.name)
-        emit('executor-retired', 'system', {
-          taskId: task.id,
-          detail: 'no way to interrupt ' + entry.name + ' (' + String(stopped.code) + '); recorded it as retired before re-dispatching to ' + target.name,
-        })
-        continue
-      }
-      // Alive and the interrupt was refused: refuse the second executor instead.
-      refused.push(entry.name)
-      emit('error', 'system', {
-        taskId: task.id,
-        detail: 'could not retire ' + entry.name + ' (' + String(stopped.code) + '); refusing a second executor for ' + String(task.id),
-      })
-    }
-    let board = null
-    if (retired.length > 0) {
-      const applied = await state.apply(
-        projectPath,
-        (value) => model.retireExecutors(value, task.id, retired, state.clock(), 'superseded by a re-dispatch to ' + target.name),
-        writePolicyFor(projectPath),
-      )
-      if (applied.failed === null) board = applied.board
-    }
-    return { board: board, retired: retired, refused: refused }
-  }
-
   async function reap(projectPath, board, now) {
     let current = board
     const limit = current.dispatch.maxAttempts
@@ -3876,9 +2441,10 @@ export function createDispatcher(ctx, options) {
       (task) => task.status === 'running' && (task.leaseUntil === null || Date.parse(task.leaseUntil) <= now),
     )
     const handover = []
+    const lapsedAlive = await liveAgentSets(current)
     for (const task of lapsed) {
       const holder = task.assignee === null ? null : { name: task.assignee.name, session: task.assignee.session }
-      const live = memberLiveness(holder, { sessionId: ownerSessionOf(task) })
+      const live = holderLiveness(task, lapsedAlive)
       const startedAt = model.attemptStartedAt(task)
       const capped = startedAt !== null && now - startedAt >= TASK_LEASE_EXTENSION_MAX_MS
       if (live.alive === true && capped !== true) {
@@ -3921,14 +2487,12 @@ export function createDispatcher(ctx, options) {
         current = next
         for (const entry of handover) {
           releaseTaskLocks(entry.id)
-          const interrupted = await interruptMember(entry, entry.holder)
+          const stopped = entry.holder === null || entry.holder.session === undefined || entry.holder.session === null ? false : await stopAgent(String(entry.holder.session))
           emit('lease-handover', 'host', {
             taskId: entry.id,
             detail:
               (entry.capped === true ? 'liveness cap reached' : 'assignee ' + String(entry.live.status)) +
-              '; requeued for a fresh attempt (' +
-              (interrupted.ok === true ? 'old agent interrupted via ' + String(interrupted.via) : 'interrupt ' + String(interrupted.code)) +
-              ')',
+              '; requeued for a fresh attempt (' + (stopped === true ? 'old agent disposed' : 'old agent already gone') + ')',
           })
         }
       }
@@ -3936,168 +2500,6 @@ export function createDispatcher(ctx, options) {
     return current
   }
 
-  /**
-   * Keep a live instance of every role a current stage needs. This is what
-   * replaces a reviewer/tester that died or timed out, without a Lead prompt.
-   * Best effort: a provisioning failure never blocks the dispatch pass.
-   */
-  async function ensureStageRoles(projectPath, board, now) {
-    if (roles === null || typeof roles.ensure !== 'function') return []
-    // T-130: group by (role kind, card owner session). This used to be per kind
-    // only and passed NO sessionId, so roles.ensure fell back to resolveAnyLead
-    // and a card could be handed to whatever team happened to be first. Two
-    // sessions with cards in the same stage now each get their own instance.
-    const groups = []
-    const seen = new Set()
-    for (const task of board.tasks) {
-      const kind = task.status === 'reviewing' ? 'reviewer' : task.status === 'testing' ? 'tester' : null
-      if (kind === null) continue
-      const owner = ownerSessionOf(task)
-      const key = kind + '@' + (owner === null ? 'legacy' : owner)
-      if (seen.has(key)) continue
-      seen.add(key)
-      groups.push({ kind: kind, ownerSession: owner, task: task })
-    }
-    if (groups.length === 0) return []
-    let config = null
-    try {
-      const fs = ctx.fs
-      if (fs !== undefined && fs !== null) config = (await readRoleConfig({ fs: fs }, { projectPath: projectPath })).config
-    } catch (error) {
-      config = null
-    }
-    const results = []
-    for (const group of groups) {
-      let sessionId = group.ownerSession
-      if (sessionId === null) {
-        // Legacy ownerless card: NEVER "the first Lead". A UNIQUE live Lead that
-        // actually runs in this project may adopt it (the session evidence the
-        // dispatcher itself uses); 0 or >1 is reported and skipped. With no
-        // session identity at all (legacy profile) the explicit single-lead
-        // compatibility of pickTarget is mirrored — exactly ONE live Lead.
-        const owners = await projectSessions(ctx, state, projectPath, selfSessionId)
-        let adopted = owners.length === 1 ? owners[0] : null
-        if (adopted === null && selfSessionId === null) {
-          const leads = liveLeads(ctx)
-          if (leads.length === 1) adopted = { sessionId: agentSessionOf(leads[0]), lead: leads[0] }
-        }
-        if (adopted === null || adopted.sessionId === null || adopted.sessionId === undefined) {
-          const detail =
-            'legacy card ' + String(group.task.id) + ' needs a ' + String(group.kind) +
-            ', but ' + (owners.length === 0 ? 'no live Lead' : String(owners.length) + ' live Lead(s)') +
-            ' own this project; stage role NOT provisioned (no any-Lead guess)'
-          results.push({ ok: false, code: 'legacy-owner-ambiguous', kind: group.kind, taskId: group.task.id, candidates: owners.length })
-          emit('error', 'system', { taskId: group.task.id, detail: detail })
-          continue
-        }
-        sessionId = String(adopted.sessionId)
-      }
-      try {
-        const ensured = await roles.ensure(group.kind, {
-          config: config === null ? undefined : config,
-          projectPath: projectPath,
-          task: group.task,
-          now: now,
-          // THE fix: the role belongs to the card owner's team.
-          sessionId: sessionId,
-          // T-138: a stage (review/test) is served by exactly ONE instance.
-          count: 1,
-        })
-        results.push(ensured)
-        emitRole(ensured)
-      } catch (error) {
-        const failed = { ok: false, code: 'role-ensure-failed', message: String((error && error.message) || error) }
-        results.push(failed)
-        emit('error', 'system', { detail: 'role ' + String(group.kind) + ' ensure failed: ' + failed.message })
-      }
-    }
-    return results
-  }
-
-  /** Send one plain message to a Team member; a refusal is not an error. */
-  async function sendMemberMessage(lead, name, text) {
-    const team = ctx.get('agentTeams')
-    if (team === undefined || team === null || lead === null) return false
-    try {
-      const request = { target: name, content: [{ type: 'text', text: text }] }
-      if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-        request.signal = AbortSignal.timeout(SEND_TIMEOUT_MS)
-      }
-      await team.sendMessage(lead, request)
-      return true
-    } catch (error) {
-      return false
-    }
-  }
-
-  /**
-   * Live role-slot names of one kind (reviewer-1, ...), inside ONE team.
-   * T-130: the roster is the CARD OWNER SESSION's team. The any-Lead scan only
-   * remains for a card with no session at all (legacy ownerless), never as
-   * authority for an owned card.
-   */
-  function roleSlotNamesOf(kind, sessionId) {
-    const { agentTeams } = servicesFor(ctx)
-    if (agentTeams === undefined || agentTeams === null) return []
-    const teamSession = typeof sessionId === 'string' && sessionId !== '' ? sessionId : null
-    const lead = teamSession === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: teamSession })
-    if (lead === null) return []
-    let roster = []
-    try {
-      roster = agentTeams.listMembers(lead)
-    } catch (error) {
-      return []
-    }
-    if (!Array.isArray(roster)) return []
-    let drained = []
-    if (roles !== null && typeof roles.status === 'function') {
-      try {
-        const status = roles.status()
-        drained = Array.isArray(status.drained) ? status.drained.map(String) : []
-      } catch (error) {
-        drained = []
-      }
-    }
-    return roster
-      .filter(
-        (member) =>
-          member !== null &&
-          typeof member === 'object' &&
-          roleKindOf(member.name) === kind &&
-          member.status !== 'failed' &&
-          drained.indexOf(String(member.name)) < 0,
-      )
-      .map((member) => String(member.name))
-  }
-
-  function reviewerNames(sessionId) {
-    return roleSlotNamesOf('reviewer', sessionId)
-  }
-
-  function testerNames(sessionId) {
-    return roleSlotNamesOf('tester', sessionId)
-  }
-
-  /** Role slot names plus the member ids/sessions that belong to those slots. */
-  function roleIdentities(names, sessionId) {
-    const out = names.slice()
-    if (names.length === 0) return out
-    const { agentTeams } = servicesFor(ctx)
-    const teamSession = typeof sessionId === 'string' && sessionId !== '' ? sessionId : null
-    const lead = teamSession === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: teamSession })
-    if (agentTeams === undefined || agentTeams === null || lead === null) return out
-    try {
-      const roster = agentTeams.listMembers(lead)
-      if (!Array.isArray(roster)) return out
-      for (const member of roster) {
-        if (member === null || member === undefined || names.indexOf(String(member.name)) < 0) continue
-        if (typeof member.id === 'string' && member.id !== '' && out.indexOf(member.id) < 0) out.push(member.id)
-        const session = member.session !== undefined ? member.session : member.sessionId
-        if (typeof session === 'string' && session !== '' && out.indexOf(session) < 0) out.push(session)
-      }
-    } catch (error) {}
-    return out
-  }
 
   /**
    * T-183: a system block (review/test timeout) is still a block. Dispose the
@@ -4115,11 +2517,33 @@ export function createDispatcher(ctx, options) {
     }
   }
 
+  /** The child a card's current review/test stage was delivered to, or null. */
+  function stageExecutorOf(task, stage) {
+    const record = stage === 'review' ? task.review : task.test
+    const delivered = record === null || record === undefined || record.deliveredTo === undefined || record.deliveredTo === null ? null : record.deliveredTo
+    if (delivered === null) return null
+    const id = typeof delivered.id === 'string' && delivered.id !== '' ? delivered.id : null
+    const name = typeof delivered.name === 'string' && delivered.name !== '' ? delivered.name : null
+    return id === null && name === null ? null : { id: id, name: name }
+  }
+
+  /** Send one notice to an executor by its durable Session id. */
+  async function sendToAgent(rootId, agentId, text) {
+    if (taskAgents === null || typeof taskAgents.send !== 'function') return false
+    if (typeof agentId !== 'string' || agentId === '') return false
+    try {
+      await taskAgents.send(agentId, text, rootId === null || rootId === undefined ? undefined : { rootId: String(rootId) })
+      return true
+    } catch (error) {
+      return false
+    }
+  }
+
   /**
    * The review timeout policy, driven by the host tick. Silence is measured from
-   * the reviewer's last activity (review.at or a recorded task_center call):
-   * REVIEW_TIMEOUT_MS of silence sends one reminder; two full timeouts of
-   * silence send one 'about to block' notice; blocking happens only after the
+   * the reviewer child's last activity (review.at or a recorded task_center call):
+   * REVIEW_TIMEOUT_MS of silence sends one reminder; two full timeouts of silence
+   * send one 'about to block' notice; blocking happens only after the
    * PHASE_BLOCK_GRACE_MS grace window, so a slow-but-working reviewer is never
    * judged dead. Never blocks a dispatch pass.
    */
@@ -4135,39 +2559,19 @@ export function createDispatcher(ctx, options) {
     )
     if (pending.length === 0) return { reminded: [], blocked: [], board: null }
     const pendingKeys = new Set(pending.map((task) => String(task.id) + '@' + String(task.review.at)))
-    // T-130: judge each card against ITS OWN team. The roster, the Lead that gets
-    // the notices and the identities the silence clock counts are resolved once
-    // per owner session per pass — never once for the whole host.
-    const scopeCache = new Map()
-    function reviewScopeOf(task) {
-      const sessionId = ownerSessionOf(task)
-      const key = sessionId === null ? 'legacy' : sessionId
-      let scope = scopeCache.get(key)
-      if (scope !== undefined) return scope
-      const names = reviewerNames(sessionId)
-      scope = {
-        sessionId: sessionId,
-        names: names,
-        lead: sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId }),
-        identities: roleIdentities(names, sessionId),
-      }
-      scopeCache.set(key, scope)
-      return scope
-    }
     const reminded = []
     const blocked = []
     let nextBoard = null
     for (const task of pending) {
-      const scope = reviewScopeOf(task)
-      const names = scope.names
-      const lead = scope.lead
+      const executor = stageExecutorOf(task, 'review')
       const slot = stageSlotOf(ctx, task.id, 'reviewer')
       // A task waiting for its role slot has no delivery time yet: its silence
       // clock is paused so the watchdog cannot remind/block it out of turn.
       if (slot !== null && slot.position !== null) continue
       const startedAt = slot !== null && Number.isFinite(slot.at) ? slot.at : Date.parse(task.review.at)
       if (!Number.isFinite(startedAt)) continue
-      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, scope.identities))
+      const identities = executor === null || executor.id === null ? [] : [executor.id]
+      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, identities))
       const silence = now - lastAt
       const key = String(task.id) + '@' + String(task.review.at)
       if (silence >= reviewTimeoutMs * 2 + phaseGraceMs) {
@@ -4186,7 +2590,8 @@ export function createDispatcher(ctx, options) {
           }
           const freshSlot = stageSlotOf(ctx, fresh.id, 'reviewer')
           const freshStart = freshSlot !== null && Number.isFinite(freshSlot.at) ? freshSlot.at : Date.parse(fresh.review.at)
-          const freshSilence = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, scope.identities))) / 60000)
+          const freshIdentities = executor === null || executor.id === null ? [] : [executor.id]
+          const freshSilence = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, freshIdentities))) / 60000)
           const result = model.blockTask(value, fresh.id, now, 'system', 'review timed out: no reviewer verdict after ' + String(freshSilence) + 'min of silence')
           return result.ok === true ? result.board : value
         })
@@ -4197,32 +2602,22 @@ export function createDispatcher(ctx, options) {
         blocked.push(task.id)
         await releaseBlockedStageChildren(task, 'review timed out')
         emit('error', 'system', { taskId: task.id, detail: 'review timed out; task blocked for triage' })
-        // The stalled reviewer is interrupted too: the task left reviewing, so
-        // its turn must not keep running (interrupt lands at the next boundary).
-        if (names.length > 0) {
-          await interruptMemberNamed(ctx, {
-            name: names[0],
-            key: String(task.id) + '@blocked@' + names[0],
-            // The timed-out reviewer is in the CARD's team.
-            sessionId: scope.sessionId,
-            message:
-              'Task ' + String(task.id) + ' is blocked (review timed out with no verdict). Stop working on it now and discard uncommitted changes.',
-          })
-        }
-        const owner = task.assignee === null || task.assignee === undefined ? null : task.assignee.name
+        // The stalled reviewer is disposed: the task left reviewing, so its turn
+        // must not keep running.
+        if (executor !== null && executor.id !== null) await stopAgent(executor.id)
+        const ownerId = task.assignee === null || task.assignee === undefined ? null : task.assignee.session
         const notice =
           'Review for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
           '  project: ' + String(projectPath) + '\n' +
           '  branch: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch) + '\n' +
           '  worktree: ' + String(task.worktree === null || task.worktree === undefined ? '' : task.worktree)
-        if (typeof owner === 'string' && owner !== '') await sendMemberMessage(lead, owner, notice)
-        if (lead !== null && typeof lead.name === 'string' && lead.name !== '') await sendMemberMessage(lead, lead.name, notice)
+        if (typeof ownerId === 'string' && ownerId !== '') await sendToAgent(task.ownerSession, ownerId, notice)
         continue
       }
       if (silence >= reviewTimeoutMs * 2) {
         if (memory.reviewGrace.has(key)) continue
-        if (names.length === 0 || lead === null) continue
-        const sent = await sendMemberMessage(lead, names[0], 'The review round is about to be blocked for inactivity. Record approveReview or requestChanges now; the task will be blocked after the grace window.\n\n' + reviewBriefFor(task, projectPath))
+        if (executor === null || executor.id === null) continue
+        const sent = await sendToAgent(task.ownerSession, executor.id, 'The review round is about to be blocked for inactivity. Record approveReview or requestChanges now; the task will be blocked after the grace window.\n\n' + reviewBriefFor(task, projectPath))
         if (sent === true) {
           memory.reviewGrace.set(key, now)
           emit('review-grace', 'system', { taskId: task.id, detail: 'review about to be blocked; grace window started' })
@@ -4230,12 +2625,12 @@ export function createDispatcher(ctx, options) {
         continue
       }
       if (silence >= reviewTimeoutMs && memory.reviewReminders.has(key) === false) {
-        if (names.length === 0 || lead === null) continue
-        const sent = await sendMemberMessage(lead, names[0], 'Reminder — review is still waiting.\n\n' + reviewBriefFor(task, projectPath))
+        if (executor === null || executor.id === null) continue
+        const sent = await sendToAgent(task.ownerSession, executor.id, 'Reminder — review is still waiting.\n\n' + reviewBriefFor(task, projectPath))
         if (sent === true) {
           memory.reviewReminders.set(key, now)
           reminded.push(task.id)
-          emit('review-reminder', 'system', { taskId: task.id, detail: 'review still pending; reminded ' + names[0] })
+          emit('review-reminder', 'system', { taskId: task.id, detail: 'review still pending; reminded the reviewer' })
         }
       }
     }
@@ -4247,13 +2642,14 @@ export function createDispatcher(ctx, options) {
     }
     return { reminded: reminded, blocked: blocked, board: nextBoard }
   }
+
   /**
    * The TEST phase bounds, driven by the host tick. Silence is measured from
-   * test.at or the tester's last recorded task_center call: testReminderMs of
-   * silence sends one reminder, testTimeoutMs sends one 'about to block' notice,
-   * and only testTimeoutMs + phaseGraceMs of silence blocks the task for triage.
-   * A tester that keeps calling get/passTest is never judged dead, and a verdict
-   * inside the grace window is still recorded.
+   * test.at or the tester child's last recorded task_center call: testReminderMs
+   * of silence sends one reminder, testTimeoutMs sends one 'about to block'
+   * notice, and only testTimeoutMs + phaseGraceMs of silence blocks the task for
+   * triage. A tester that keeps calling get/passTest is never judged dead, and a
+   * verdict inside the grace window is still recorded.
    */
   async function sweepTestTimeouts(projectPath, board, now) {
     const pending = board.tasks.filter(
@@ -4267,36 +2663,17 @@ export function createDispatcher(ctx, options) {
     )
     if (pending.length === 0) return { reminded: [], blocked: [], board: null }
     const pendingKeys = new Set(pending.map((task) => String(task.id) + '@' + String(task.test.at)))
-    // T-130: same rule as the review sweep — each card is judged against the
-    // tester roster of ITS owner session, resolved once per session per pass.
-    const scopeCache = new Map()
-    function testScopeOf(task) {
-      const sessionId = ownerSessionOf(task)
-      const key = sessionId === null ? 'legacy' : sessionId
-      let scope = scopeCache.get(key)
-      if (scope !== undefined) return scope
-      const names = testerNames(sessionId)
-      scope = {
-        sessionId: sessionId,
-        names: names,
-        lead: sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId }),
-        identities: roleIdentities(names, sessionId),
-      }
-      scopeCache.set(key, scope)
-      return scope
-    }
     const reminded = []
     const blocked = []
     let nextBoard = null
     for (const task of pending) {
-      const scope = testScopeOf(task)
-      const names = scope.names
-      const lead = scope.lead
+      const executor = stageExecutorOf(task, 'test')
       const slot = stageSlotOf(ctx, task.id, 'tester')
       if (slot !== null && slot.position !== null) continue
       const startedAt = slot !== null && Number.isFinite(slot.at) ? slot.at : Date.parse(task.test.at)
       if (!Number.isFinite(startedAt)) continue
-      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, scope.identities))
+      const identities = executor === null || executor.id === null ? [] : [executor.id]
+      const lastAt = Math.max(startedAt, phaseActivityAt(ctx, task.id, identities))
       const silence = now - lastAt
       const key = String(task.id) + '@' + String(task.test.at)
       const candidate =
@@ -4304,7 +2681,7 @@ export function createDispatcher(ctx, options) {
           ? 'candidate ' + String(task.merge.mergeCommit)
           : 'no candidate recorded'
       if (silence >= testTimeoutMs + phaseGraceMs) {
-        const tester = names.length > 0 ? names[0] : 'the tester'
+        const tester = executor !== null && executor.name !== null ? executor.name : 'the tester'
         let blockNote = null
         const applied = await applyReap(projectPath, (value) => {
           const fresh = model.findTask(value, task.id)
@@ -4325,7 +2702,7 @@ export function createDispatcher(ctx, options) {
               : 'no candidate recorded'
           const freshSlot = stageSlotOf(ctx, fresh.id, 'tester')
           const freshStart = freshSlot !== null && Number.isFinite(freshSlot.at) ? freshSlot.at : Date.parse(fresh.test.at)
-          const freshMinutes = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, scope.identities))) / 60000)
+          const freshMinutes = Math.round((now - Math.max(freshStart, phaseActivityAt(ctx, fresh.id, identities))) / 60000)
           blockNote = 'test timeout: no verdict after ' + String(freshMinutes) + 'min of silence (' + tester + '; ' + freshCandidate + ')'
           const result = model.blockTask(value, fresh.id, now, 'system', blockNote + '; blocked for triage')
           return result.ok === true ? result.board : value
@@ -4339,34 +2716,22 @@ export function createDispatcher(ctx, options) {
         blocked.push(task.id)
         await releaseBlockedStageChildren(task, 'test timed out')
         emit('error', 'system', { taskId: task.id, detail: (blockNote === null ? 'test timeout' : blockNote) + '; task blocked for triage' })
-        // The stalled tester is interrupted for the same reason as the reviewer.
-        const stalledTester = typeof tester === 'string' && tester !== '' ? tester : null
-        if (stalledTester !== null) {
-          await interruptMemberNamed(ctx, {
-            name: stalledTester,
-            key: String(task.id) + '@blocked@' + stalledTester,
-            // The timed-out tester is in the CARD's team.
-            sessionId: scope.sessionId,
-            message:
-              'Task ' + String(task.id) + ' is blocked (test timed out with no verdict). Stop working on it now and discard uncommitted changes.',
-          })
-        }
-        const owner = task.assignee === null || task.assignee === undefined || typeof task.assignee.name !== 'string' ? null : task.assignee.name
+        // The stalled tester is disposed for the same reason as the reviewer.
+        if (executor !== null && executor.id !== null) await stopAgent(executor.id)
+        const ownerId = task.assignee === null || task.assignee === undefined ? null : task.assignee.session
         const notice =
           'Test for ' + String(task.id) + ' (' + String(task.title) + ') timed out with no verdict; the task is blocked for triage.\n' +
           '  project: ' + String(projectPath) + '\n' +
           '  ' + (blockNote === null ? 'tester: ' + String(tester) : blockNote)
-        if (owner !== null && owner !== '') await sendMemberMessage(lead, owner, notice)
-        if (lead !== null && typeof lead.name === 'string' && lead.name !== '') await sendMemberMessage(lead, lead.name, notice)
+        if (typeof ownerId === 'string' && ownerId !== '') await sendToAgent(task.ownerSession, ownerId, notice)
         continue
       }
       if (silence >= testTimeoutMs) {
         if (memory.testGrace.has(key)) continue
-        if (names.length === 0 || lead === null) continue
-        const tester = names[0]
-        const sent = await sendMemberMessage(
-          lead,
-          tester,
+        if (executor === null || executor.id === null) continue
+        const sent = await sendToAgent(
+          task.ownerSession,
+          executor.id,
           'The test round is about to be blocked for inactivity.\n' +
             '  task: ' + String(task.id) + ' ' + String(task.title) + '\n' +
             '  ' + candidate + '\n' +
@@ -4379,18 +2744,17 @@ export function createDispatcher(ctx, options) {
         continue
       }
       if (silence >= testReminderMs && memory.testReminders.has(key) === false) {
-        if (names.length === 0 || lead === null) continue
-        const tester = names[0]
+        if (executor === null || executor.id === null) continue
         const text =
           'Reminder — the test phase is still waiting for a verdict.\n' +
           '  task: ' + String(task.id) + ' ' + String(task.title) + '\n' +
           '  ' + candidate + '\n' +
           'Record passTest or failTest with task_center; do not leave the round pending.'
-        const sent = await sendMemberMessage(lead, tester, text)
+        const sent = await sendToAgent(task.ownerSession, executor.id, text)
         if (sent === true) {
           memory.testReminders.set(key, now)
           reminded.push(task.id)
-          emit('test-reminder', 'system', { taskId: task.id, detail: 'test phase still pending; reminded ' + tester })
+          emit('test-reminder', 'system', { taskId: task.id, detail: 'test phase still pending; reminded the tester' })
         }
       }
     }
@@ -4538,8 +2902,6 @@ export function createDispatcher(ctx, options) {
     memory.sweeping = true
     const now = state.clock()
     const results = []
-    // T-166: the capacity this pass actually saw / grew, exposed with the results.
-    let capacity = null
     let paused = false
     try {
       // One project has one leader. A refused claim means another live host owns
@@ -4575,9 +2937,6 @@ export function createDispatcher(ctx, options) {
       // reaped merely because its worker produced no tool calls for a while.
       let current = await applyHeartbeat(project, read.board, now)
       current = await reap(project, current, now)
-      // Roles are kept for tasks already in a review/test stage even while
-      // dispatch is paused: a dead reviewer/tester must not strand a task.
-      const roleResults = await ensureStageRoles(project, current, now)
       const reviewSweep = await sweepReviewTimeouts(project, current, now)
       if (reviewSweep.board !== null) current = reviewSweep.board
       for (const id of reviewSweep.reminded) results.push({ id: id, review: 'reminded' })
@@ -4630,498 +2989,13 @@ export function createDispatcher(ctx, options) {
           results.push({ id: task.id, skipped: 'other-session', message: detail })
           continue
         }
-        // T-109: the session whose team will do the work. An owned card uses its
-        // OWNER's session; an ownerless card is adopted by a session that runs in
-        // THIS project, never by whichever Lead is first.
-        let dispatchSession = ownerSession === null ? null : ownerSession
-        let ownerCompat = false
-        let compatDetail = null
-        if (ownerSession !== null) {
-          // Cross-project is decided by the OWNER session's workspace (the real
-          // executor), not by the row's sandbox policy (which spans every project).
-          const owns = await sessionOwnsProject(state, ownerSession, project)
-          if (owns === false) {
-            const workspace = await sessionWorkspaceOf(state, ownerSession)
-            const detail =
-              '这张卡属于项目 ' + project + '，但所属会话 ' + ownerSession + ' 的 workspace 是 ' + String(workspace) +
-              '；跨项目派发会让 worker 无法写入或跑验证，请在该项目的会话里派发'
-            await markExecutorMissing(project, task.id, 'wrong-session', detail)
-            results.push({ id: task.id, skipped: 'wrong-session', message: detail })
-            continue
-          }
-          if (owns === null && selfSessionId !== null) {
-            // The owner session is unknown to the state: fall back to THIS
-            // dispatcher's workspace, which is the only one we can vouch for.
-            const dispatcherOwns = await sessionOwnsProject(state, selfSessionId, project)
-            if (dispatcherOwns === false) {
-              const workspace = await sessionWorkspaceOf(state, selfSessionId)
-              const detail =
-                '这张卡属于项目 ' + project + '，而派发会话 ' + selfSessionId + ' 的 workspace 是 ' + String(workspace) +
-                '；跨项目派发会让 worker 无法写入或跑验证，请在该项目的会话里派发'
-              await markExecutorMissing(project, task.id, 'wrong-session', detail)
-              results.push({ id: task.id, skipped: 'wrong-session', message: detail })
-              continue
-            }
-          }
-        } else if (selfSessionId !== null) {
-          // Ownerless (pre-T-97) card: adopt it in a session that RUNS in this
-          // project. Never hand it to another project's Lead, even when the host
-          // has exactly one team.
-          const candidates = await projectSessions(ctx, state, project, selfSessionId)
-          if (candidates.length > 0) {
-            // A real session of THIS project adopted the card: that is a normal
-            // dispatch, not the compatibility path.
-            dispatchSession = candidates[0].sessionId
-            ownerCompat = false
-          } else {
-            const leads = liveLeads(ctx)
-            const leadSession = leads.length === 1 ? agentSessionOf(leads[0]) : null
-            const dispatcherOwns = await sessionOwnsProject(state, selfSessionId, project)
-            const leadOwns = leadSession === null ? null : await sessionOwnsProject(state, leadSession, project)
-            if (dispatcherOwns === false || leadOwns === false) {
-              // Some session involved is KNOWN to run in another project: refuse
-              // instead of quietly handing the card to that project's Lead.
-              const workspace = dispatcherOwns === false ? await sessionWorkspaceOf(state, selfSessionId) : await sessionWorkspaceOf(state, leadSession)
-              const detail =
-                '这张卡属于项目 ' + project + '，而派发会话 ' + String(dispatcherOwns === false ? selfSessionId : leadSession) +
-                ' 的 workspace 是 ' + String(workspace) + '；跨项目派发会让 worker 无法写入或跑验证，请在卡片所属项目的会话里派发'
-              await markExecutorMissing(project, task.id, 'wrong-session', detail)
-              results.push({ id: task.id, skipped: 'wrong-session', message: detail })
-              continue
-            }
-            if (leads.length === 1) {
-              // Single-team host with no session evidence either way: the legacy
-              // profile shape. Still limited to a same-project session.
-              dispatchSession = leadSession === null ? selfSessionId : leadSession
-              ownerCompat = true
-              const inventory = leadInventory(ctx)
-              compatDetail =
-                leadInventoryText(inventory) + '；按「同项目单团队」兼容路径派发（卡片没有 ownerSession）'
-              emit('warn', 'host', { taskId: task.id, detail: compatDetail })
-            } else {
-              const detail =
-                '这张卡没有所属会话（ownerSession 为空），且项目 ' + project +
-                ' 没有可用的会话团队（' + leadInventoryText(leadInventory(ctx)) + '）；请在它所属的项目会话里 reopen 一次以认领，或在该项目会话启用 Agent Teams。宿主不会把它派给别的项目的 Lead'
-              await markExecutorMissing(project, task.id, 'no-team-for-project', detail)
-              results.push({ id: task.id, skipped: 'no-team-for-project', message: detail })
-              continue
-            }
-          }
-        }
-        if (task.dispatch !== null && task.dispatch.status === 'lease-expired' && task.dispatch.error !== TASK_LEASE_CAP_ERROR) {
-          const previous = memberLiveness({ name: task.dispatch.target, session: task.dispatch.targetId }, { sessionId: ownerSessionOf(task) })
-          if (previous.alive === true) {
-            results.push({ id: task.id, skipped: 'previous-assignee-active', previous: task.dispatch.target })
-            continue
-          }
-        }
-        if (task.writeFiles.length > 0) {
-          const conflicts = locks.conflictsFor(state.memory.locks, task.writeFiles, 'task:' + task.id)
-          if (conflicts.length > 0) {
-            results.push({ id: task.id, skipped: 'files-busy', conflicts: conflicts })
-            continue
-          }
-        }
-        if (taskAgents === null && requireTaskAgents === true) {
+        if (taskAgents === null || taskAgents.available !== true) {
           results.push({ id: task.id, skipped: 'agent-runtime-unavailable', message: 'the root Agent subagent runtime is not available; the task stays pending' })
           continue
         }
-        if (taskAgents !== null) {
-          const v3 = await dispatchWithAgent(task, project, dispatch, reserved, workerConfig)
-          results.push(v3)
-          if (v3.ok === true) slots -= 1
-          continue
-        }
-        const projectKey = projectSlotKey(project)
-        let picked = pickTarget(ctx, {
-          reserved: reserved,
-          spawn: dispatch.allowSpawn === true && spawnAllowed,
-          maxWorkAgents: dispatch.maxConcurrent,
-          projectKey: projectKey,
-          // The LEAD that creates the executor is the one this card BELONGS to
-          // (owned card) or the project session that adopted it (ownerless card).
-          sessionId: dispatchSession,
-          board: current,
-          // T-127: a worker left over from a PREVIOUS host must not be reused
-          // (its inbox may still hold the old brief); supersede interrupts it.
-          legacyDispatch: dispatchSession === null,
-        })
-        let pickedNow = picked
-        // T-166: the capacity/growth of THIS card's worker-pool attempt, surfaced
-        // in the tick result instead of being swallowed.
-        let growth = null
-        if (pickedNow.ok !== true && (pickedNow.code === 'no-teammates' || pickedNow.code === 'no-idle-member') && dispatch.allowSpawn === true && spawnAllowed) {
-          // T-138: the worker pool target comes from the DISPATCH settings, not
-          // from a role profile: workerCap = min(maxConcurrent, maxWorkAgents).
-          // Count the pool workers and the cards they hold before growing it.
-          const workerCap = Math.max(1, Math.min(
-            Number.isFinite(dispatch.maxConcurrent) ? Math.floor(dispatch.maxConcurrent) : 3,
-          ))
-          // T-166: pickTarget already read the roster with the Lead credential;
-          // that read is the one the host accepts. The old call without a caller
-          // agent threw TEAM_NOT_MEMBER, was swallowed as [], and always asked
-          // for count=1, so the pool could never grow past its first worker.
-          const rosterNow = Array.isArray(picked.members) ? picked.members : []
-          capacity = capacitySnapshot(dispatch, rosterNow, current)
-          const livePool = capacity.live
-          const busyPool = capacity.busy
-          if (livePool >= workerCap) {
-            if (busyPool >= workerCap) {
-              await markExecutorMissing(project, task.id, '角色已满', 'every worker slot is busy (cap ' + String(workerCap) + ', live ' + String(livePool) + ', busy ' + String(busyPool) + ')')
-              results.push({ id: task.id, skipped: 'role-full', reason: '角色已满', capacity: capacity })
-              continue
-            }
-            // The cap is reached and none of the live workers is idle for this card.
-            results.push({ id: task.id, skipped: 'role-cap', message: 'worker cap reached (cap ' + String(workerCap) + ', live ' + String(livePool) + ', busy ' + String(busyPool) + '); refusing to create another worker', capacity: capacity })
-            continue
-          }
-          // Below the cap: grow the pool by exactly ONE slot through the role
-          // manager (worker-p<key>-N), then retry the same pick. Never spawn a
-          // per-card agent here, and never jump past live+1.
-          let ensured = null
-          try {
-            ensured = await ensureRole(ctx, 'worker', {
-              config: workerConfig === null ? undefined : workerConfig,
-              projectPath: project,
-              task: task,
-              now: state.clock(),
-              sessionId: dispatchSession,
-              count: livePool + 1,
-            })
-          } catch (error) {
-            ensured = { ok: false, code: 'provision-error', message: String((error && error.message) || error) }
-          }
-          const created = ensured !== null && ensured.ok === true && Array.isArray(ensured.created) ? ensured.created.length : 0
-          const spawnFailed = ensured === null || ensured.ok !== true
-          growth = {
-            workerCap: workerCap,
-            live: livePool,
-            busy: busyPool,
-            requested: livePool + 1,
-            created: created,
-            reused: ensured !== null && ensured.ok === true && Array.isArray(ensured.reused) ? ensured.reused.length : 0,
-            spawnFailed: spawnFailed,
-            code: ensured === null ? 'spawn-failed' : ensured.code === undefined || ensured.code === null ? null : String(ensured.code),
-            message: spawnFailed
-              ? (ensured === null ? 'the role manager returned no result' : String(ensured.message === undefined || ensured.message === null ? 'worker provisioning failed' : ensured.message))
-              : null,
-          }
-          pickedNow = pickTarget(ctx, {
-            reserved: reserved,
-            spawn: false,
-            maxWorkAgents: dispatch.maxConcurrent,
-            projectKey: projectKey,
-            sessionId: dispatchSession,
-            board: current,
-            legacyDispatch: dispatchSession === null,
-          })
-          if (Array.isArray(pickedNow.members)) capacity = capacitySnapshot(dispatch, pickedNow.members, current)
-        }
-        if (pickedNow.ok !== true) {
-          if (capacity === null && Array.isArray(picked.members)) capacity = capacitySnapshot(dispatch, picked.members, current)
-          const reason =
-            pickedNow.code === 'no-live-lead'
-              ? 'no-live-lead'
-              : picked.code === 'no-lead' || picked.code === 'no-lead-for-project' || picked.code === 'no-team-service' || picked.code === 'roster-unreadable'
-                ? 'no-lead-for-project'
-                : picked.code === 'no-teammates'
-                  ? 'no-roster'
-                  : null
-          // T-166: a per-card shortage (no idle worker / empty roster) must only
-          // skip THIS card. Breaking here is what let one busy worker starve every
-          // other ready card on the board.
-          const perCard = pickedNow.code === 'no-idle-member' || pickedNow.code === 'no-teammates'
-          const skipped = perCard
-            ? growth !== null && growth.spawnFailed
-              ? 'spawn-failed'
-              : pickedNow.code === 'no-teammates'
-                ? 'no-roster'
-                : 'no-idle-member'
-            : reason !== null
-              ? reason
-              : pickedNow.code
-          const entry = {
-            id: task.id,
-            skipped: skipped,
-            message:
-              growth !== null
-                ? 'worker capacity live=' + String(capacity === null ? '?' : capacity.live) + ' cap=' + String(capacity === null ? '?' : capacity.workerCap) + ' (maxWorkAgents ' + String(capacity === null ? '?' : capacity.maxWorkAgents) + ')' + (growth.message === null ? '' : '; ' + growth.message)
-                : pickedNow.message,
-          }
-          if (capacity !== null) entry.capacity = capacity
-          if (growth !== null) entry.growth = growth
-          if (!perCard && reason !== null && ownerSession !== null) {
-            // Only a session-owned card records this reason; legacy/ownerless
-            // cards keep the historical "stays pending, no waiting reason".
-            await markExecutorMissing(project, task.id, reason, pickedNow.message)
-          }
-          results.push(entry)
-          if (!perCard) break
-          continue
-        }
-        picked = pickedNow
-        if (capacity === null && Array.isArray(picked.members)) capacity = capacitySnapshot(dispatch, picked.members, current)
-        reserved.add(picked.target.name)
-        // Retire whoever held this card before, THEN claim. A re-dispatch after a
-        // host restart must not leave the old worker running beside the new one.
-        const superseded = await supersedeExecutors(project, task, picked.target)
-        if (superseded.board !== null) current = superseded.board
-        if (superseded.refused.length > 0) {
-          reserved.delete(picked.target.name)
-          const noted = await state.apply(
-            project,
-            (value) => model.noteDispatchRefused(value, task.id, state.clock(), superseded.refused, 'the previous executor could not be interrupted'),
-            writePolicyFor(project),
-          )
-          if (noted.failed === null) current = noted.board
-          results.push({ id: task.id, skipped: 'already-dispatched', alive: superseded.refused })
-          continue
-        }
-        let lockPaths = []
-        // T-131: an investigation's scratch checkout is private and disposable;
-        // it must not hold another card's writeFiles while it merely reads code.
-        if (task.kind !== 'investigate' && task.writeFiles.length > 0) {
-          const acquired = locks.acquire(
-            state.memory.locks,
-            task.writeFiles,
-            { taskId: task.id, agent: picked.target.name },
-            state.clock(),
-            TASK_LEASE_MS,
-          )
-          if (acquired.ok !== true || acquired.granted !== true) {
-            results.push({ id: task.id, skipped: 'files-busy', conflicts: acquired.conflicts === undefined ? [] : acquired.conflicts })
-            continue
-          }
-          state.memory.locks = acquired.locks
-          lockPaths = acquired.paths
-        }
-        // The worktree is prepared before the claim so the brief can describe
-        // it, and so the fields land on the task in the same write that makes it
-        // running. There is no shared-tree fallback: a project that cannot host
-        // a worktree cannot run the task.
-        let worktree
-        try {
-          worktree = await prepareWorktree(gitFacade(), project, task, dispatch, model.attemptSlot(task), worktreeDeadlineMs)
-        } catch (error) {
-          worktree = worktreeFallback('worktree-error', String((error && error.message) || error))
-        }
-        if (worktree.error !== null) {
-          // Release what this attempt reserved before deciding what to do with it.
-          releaseTaskLocks(task.id)
-          reserved.delete(picked.target.name)
-          if (isTransientEnvironmentCode(worktree.code)) {
-            // The merge pipeline works in the MAIN checkout, so "the main tree is
-            // clean" is briefly false while it runs. That is not a broken
-            // environment: skip THIS card, keep dispatch running and retry it next
-            // pass. Only a sustained streak escalates to a human (T-108).
-            const entry = noteEnvironmentFailure(project, task.id, worktree.code, worktree.message, state.clock())
-            const detail = String(worktree.code) + ': ' + String(worktree.message)
-            if (entry.escalated === true) {
-              const marked = await markEnvironmentWaiting(project, task.id, detail)
-              if (marked !== null) current = marked
-            }
-            emit(entry.escalated === true ? 'environment-dirty-sustained' : 'environment-dirty', entry.escalated === true ? 'system' : 'host', {
-              taskId: task.id,
-              detail:
-                'transient environment failure (' + detail + '); card skipped this pass, dispatch keeps running' +
-                (entry.escalated === true
-                  ? ' — retried ' + String(entry.count) + ' times, needs a clean main tree (commit or stash)'
-                  : ''),
-            })
-            results.push({
-              id: task.id,
-              skipped: 'environment-dirty',
-              reason: String(worktree.code),
-              detail: String(worktree.message),
-              retries: entry.count,
-              escalated: entry.escalated === true,
-            })
-            continue
-          }
-          // A real setup problem (no git runner, not a repository, an add that
-          // keeps failing): pausing is the backoff, and the panel says so.
-          const message =
-            'worktree refused for ' + task.id + ' (' + worktree.error + '); dispatch paused for this project until the git environment can host a task worktree'
-          emit('error', 'system', { taskId: task.id, detail: 'worktree refused: ' + String(worktree.error) })
-          await pauseForWorktree(project, task.id, worktree.error, message)
-          results.push({ id: task.id, error: message, code: 'worktree-unavailable' })
-          paused = true
-          break
-        }
-        // The window passed for this card: forget its streak and its marker so the
-        // claim cannot inherit a stale "waiting for a clean tree".
-        clearEnvironmentFailure(project, task.id)
-        if (task.waitingReason === 'dirty-worktree') {
-          const cleared = await clearEnvironmentWaiting(project, task.id)
-          if (cleared !== null) current = cleared
-        }
-        if (worktree.retried === true) {
-          // The add failed once, was rolled back and succeeded on the retry in the
-          // same tick: worth a panel entry, because it means the git environment is
-          // slow or contended even though this attempt recovered.
-          const summary = worktree.cleanup === null || worktree.cleanup === undefined ? 'no cleanup' : worktree.cleanup.summary
-          emit('worktree-retry', 'host', {
-            taskId: task.id,
-            detail: 'worktree add for ' + String(worktree.path) + ' succeeded on retry (' + String(worktree.elapsedMs) + 'ms; cleanup: ' + summary + ')',
-          })
-        }
-        // T-156: pin WHAT this attempt was told to satisfy (target head + verify
-        // declaration) before the claim writes the card into running.
-        const dispatchVerifyPrint = await verifyFingerprintFor(ctx, project, task.verify)
-        const claimed = await state.apply(
-          project,
-          (board) =>
-            model.claimTask(
-              board,
-              task.id,
-              {
-                name: picked.target.name,
-                session: picked.target.id,
-                via: 'message',
-                host: boot,
-                lead: picked.lead !== undefined && picked.lead !== null && picked.lead.name !== undefined ? String(picked.lead.name) : null,
-                leadSession: agentSessionOf(picked.lead),
-                // NOTE: `session` is the WORKER's identity (assignee.session); the
-                // card's own session travels as cardSession.
-                cardSession: dispatchSession === null ? selfSessionId : dispatchSession,
-                ownerCompat: ownerCompat,
-                compat: picked.compat === true,
-                compatDetail: compatDetail,
-                project: project,
-                worktree: worktree,
-                targetBase: typeof worktree.base === 'string' ? worktree.base : null,
-                verifyFingerprint: dispatchVerifyPrint,
-                adopt:
-                  worktree.adopted === true
-                    ? { fromAttempt: worktree.fromAttempt, branch: worktree.branch, head: worktree.head === undefined ? null : worktree.head }
-                    : null,
-              },
-              state.clock(),
-            ),
-          writePolicyFor(project),
-        )
-        // Requirement: if the lead we resolved does not belong to the card's own
-        // session, say so loudly instead of shipping work into another team.
-        const resolvedLeadSession = agentSessionOf(picked.lead)
-        const cardSession = ownerSession
-        if (cardSession !== null && resolvedLeadSession !== null && resolvedLeadSession !== cardSession) {
-          emit('warn', 'host', {
-            taskId: task.id,
-            detail: 'dispatch used Lead ' + String(picked.lead.name === undefined ? picked.lead.id : picked.lead.name) + ' of session ' + resolvedLeadSession + ' for a card owned by session ' + cardSession,
-          })
-        }
-        if (claimed.failed !== null) {
-          releaseTaskLocks(task.id)
-          // The claim lost: a worktree made for a task that never started must
-          // not be left behind.
-          await removeWorktree(gitFacade(), project, worktree.path)
-          emit('worktree-remove', 'host', { taskId: task.id, detail: 'worktree removed after a lost claim' })
-          results.push({ id: task.id, error: claimed.failed.message, code: claimed.failed.code })
-          continue
-        }
-        current = claimed.board
-        rememberMemberProject(ctx, picked.target.name, project)
-        // Claimed: the waiting marker (if any) no longer applies.
-        const cleared = await state.apply(
-          project,
-          (board) => {
-            const tasks = board.tasks.map((entry) =>
-              String(entry.id) === String(task.id) ? Object.assign({}, entry, { waitingReason: null, waitingDetail: null }) : entry,
-            )
-            return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
-          },
-          writePolicyFor(project),
-        )
-        if (cleared.failed === null) current = cleared.board
-        if (worktree.adopted === true) {
-          emit('attempt-adopt', 'host', {
-            taskId: task.id,
-            detail:
-              'adopted ' + String(worktree.branch) + (worktree.head === null || worktree.head === undefined ? '' : ' @ ' + String(worktree.head).slice(0, 10)) +
-              ' from attempt ' + String(worktree.fromAttempt) + ' instead of a fresh checkout',
-          })
-        } else {
-          emit('worktree-create', 'host', { taskId: task.id, detail: 'task worktree ' + String(worktree.path) })
-        }
-        const claimedTask = model.findTask(current, task.id)
-        const leadName = picked.lead !== undefined && picked.lead !== null && picked.lead.name !== undefined ? picked.lead.name : 'lead'
-        // ONE brief for both delivery paths: a spawned teammate and a reused
-        // teammate handed the task by sendMessage receive the same text, prompt
-        // and skills included.
-        // T-131: an investigation brief is host-fixed (report boundaries), not the
-        // implement brief: a role profile cannot turn it into "submit code".
-        const brief =
-          claimedTask !== null && claimedTask.kind === 'investigate'
-            ? investigationBriefFor(claimedTask, project, { path: worktree.path, base: worktree.base, target: worktree.target })
-            : briefFor(claimedTask, project, leadName, workerConfig)
-        let delivered = null
-        let sendError = null
-        try {
-          const signal = AbortSignal.timeout(SEND_TIMEOUT_MS)
-          const team = ctx.get('agentTeams')
-          // T-127: the only delivery path is a pool instance created by the role
-          // manager; per-card agents are never spawned here.
-          delivered = await team.sendMessage(picked.lead, {
-            target: picked.target.name,
-            content: [{ type: 'text', text: brief }],
-            signal: signal,
-          })
-        } catch (error) {
-          sendError = String((error && error.message) || error)
-        }
-        if (sendError !== null || delivered === null) {
-          const failed = await state.apply(
-            project,
-            (board) =>
-              model.failDispatch(
-                board,
-                task.id,
-                sendError === null ? 'the team service returned no result' : sendError,
-                state.clock(),
-                dispatch.maxAttempts,
-              ),
-            writePolicyFor(project),
-          )
-          if (failed.failed === null) current = failed.board
-          releaseTaskLocks(task.id)
-          memory.lastError = sendError === null ? 'the team service returned no result' : sendError
-          emit('error', 'system', { taskId: task.id, detail: 'dispatch delivery failed: ' + memory.lastError })
-          results.push({ id: task.id, error: memory.lastError })
-          continue
-        }
-        // The member now works for THIS project; a later submit from it is only
-        // accepted here (a worker handed another project's card cannot slip in).
-        rememberMemberProject(ctx, picked.target.name, project)
-        const recorded = await state.apply(
-          project,
-          (board) =>
-            model.recordDispatch(
-              board,
-              task.id,
-              {
-                status: delivered.status === 'queued' ? 'queued' : 'sent',
-                at: new Date(state.clock()).toISOString(),
-              },
-              state.clock(),
-            ),
-          writePolicyFor(project),
-        )
-        if (recorded.failed === null) current = recorded.board
-        slots -= 1
-        const dispatchedResult = {
-          id: task.id,
-          ok: true,
-          target: picked.target.name,
-          spawned: false,
-          files: lockPaths,
-          worktree: worktree.path,
-          worktreeError: worktree.error,
-        }
-        // T-166: keep the growth attempt on the successful card too, so a tick
-        // says "grew one worker, then dispatched" instead of hiding the attempt.
-        if (growth !== null) dispatchedResult.growth = growth
-        if (capacity !== null) dispatchedResult.capacity = capacity
-        results.push(dispatchedResult)
+        const outcome = await dispatchWithAgent(task, project, dispatch, reserved, workerConfig)
+        results.push(outcome)
+        if (outcome.ok === true) slots -= 1
       }
       return {
         ok: true,
@@ -5129,8 +3003,6 @@ export function createDispatcher(ctx, options) {
         paused: paused === true,
         dispatched: results.filter((entry) => entry.ok === true).length,
         results: results,
-        roles: roleResults,
-        capacity: capacity,
       }
     } catch (error) {
       memory.lastError = String((error && error.message) || error)
@@ -5140,7 +3012,6 @@ export function createDispatcher(ctx, options) {
       memory.lastTickAt = state.clock()
       memory.ticks += 1
       memory.lastResults = results
-      memory.lastCapacity = capacity
       if (memory.rerun !== null) {
         const project = memory.rerun
         memory.rerun = null
@@ -5171,111 +3042,24 @@ export function createDispatcher(ctx, options) {
 
   return { kick: kick, tick: tick, settle: settle, status: status, dispose: dispose, memory: memory, boot: boot }
 }
-
-// ── host-side interruption of a worker that no longer owns the task ─────────
-
-// One WeakMap per row: the memory dies with the row, so a reload starts clean.
-const interruptMemory = new WeakMap()
-
-/**
- * Interrupt one teammate turn because the task it served is no longer running.
- *
- * DSH's interrupt takes effect at the NEXT step boundary: it stops the teammate
- * before it starts another step, so it is "stop as soon as possible", never
- * "stop the current tool call". The call goes through the Team Lead (the Team
- * edge's caller) and one (task, status, member) triple is interrupted at most
- * once per row, so a repeated cancel cannot spam the worker. After the hard
- * interrupt a best-effort inbox note tells the worker why it must stop.
- *
- * @param ctx - the row context (needs the optional agentTeams service).
- * @param options.name - the durable teammate name.
- * @param options.key - idempotency key; defaults to the name.
- * @param options.message - the inbox note; a default is used when absent.
- * @returns { ok: true, previousStatus } or a readable refusal (never throws).
- */
-export async function interruptMemberNamed(ctx, options) {
-  const opts = options === undefined || options === null ? {} : options
-  const name = typeof opts.name === 'string' && opts.name !== '' ? opts.name : null
-  if (name === null) return { ok: false, code: 'no-name' }
-  const { agentTeams } = servicesFor(ctx)
-  if (agentTeams === undefined || agentTeams === null) return { ok: false, code: 'no-team-service' }
-  // T-130: an interrupt names the CARD's owner session. The any-Lead scan only
-  // survives for a legacy card with no session at all — it is never authority.
-  const sessionId = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
-  const lead = sessionId === null ? resolveAnyLead(ctx) : resolveLead(ctx, { sessionId: sessionId })
-  if (lead === null) {
-    return sessionId === null
-      ? { ok: false, code: 'no-lead' }
-      : { ok: false, code: 'no-lead-for-project', message: 'session ' + sessionId + ' has no live Team Lead, so its member ' + name + ' cannot be interrupted (never another team)' }
-  }
-  let members = []
+/** What the execution edge looks like right now. Read-only. */
+export function probeDispatch(ctx) {
+  let subagents = undefined
   try {
-    members = agentTeams.listMembers(lead)
+    subagents = ctx.get('subagents')
   } catch (error) {
-    return { ok: false, code: 'roster-unreadable', message: String((error && error.message) || error) }
+    subagents = undefined
   }
-  const member = (Array.isArray(members) ? members : []).filter(
-    (entry) => entry !== null && typeof entry === 'object' && entry.name === name,
-  )[0]
-  if (member === undefined) return { ok: false, code: 'unknown-member' }
-  // Only a member that is actually running is interrupted: an idle member has
-  // no turn to stop, and a fresh inbox entry would become the NEXT step's work.
-  if (member.status !== 'running') return { ok: false, code: 'not-running' }
-  const key = typeof opts.key === 'string' && opts.key !== '' ? opts.key : name
-  let memo = interruptMemory.get(ctx)
-  if (memo === undefined) {
-    memo = new Set()
-    interruptMemory.set(ctx, memo)
+  const report = { available: subagents !== undefined && subagents !== null, subagentProviders: [], error: null }
+  if (report.available !== true) {
+    report.error = 'no-subagent-service'
+    return report
   }
-  if (memo.has(key)) return { ok: false, code: 'already-interrupted' }
-  if (memo.size > 500) memo.clear()
-  if (typeof agentTeams.interrupt !== 'function') return { ok: false, code: 'no-interrupt-api' }
-  memo.add(key)
-  let previousStatus = null
   try {
-    const outcome = await agentTeams.interrupt(lead, name)
-    if (outcome !== null && outcome !== undefined && typeof outcome === 'object' && typeof outcome.previousStatus === 'string') {
-      previousStatus = outcome.previousStatus
-    }
+    const names = typeof subagents.list === 'function' ? subagents.list() : []
+    report.subagentProviders = Array.isArray(names) ? names.map((name) => String(name)) : []
   } catch (error) {
-    memo.delete(key)
-    return { ok: false, code: 'interrupt-failed', message: String((error && error.message) || error) }
+    report.error = String((error && error.message) || error)
   }
-  // The inbox note is the soft half: the interrupt lands at a step boundary, so
-  // the worker is told why to stop. A refused mailbox never fails the caller.
-  const text =
-    typeof opts.message === 'string' && opts.message !== ''
-      ? opts.message
-      : 'Your task is no longer running; stop working on it now and discard uncommitted changes.'
-  try {
-    const request = { target: name, content: [{ type: 'text', text: text }] }
-    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-      request.signal = AbortSignal.timeout(SEND_TIMEOUT_MS)
-    }
-    await agentTeams.sendMessage(lead, request)
-  } catch (error) {}
-  return { ok: true, previousStatus: previousStatus }
-}
-
-/**
- * Interrupt the assignee of a task that just left `running` (cancelled, blocked,
- * or a withdrawn start request). The caller passes the task as it was BEFORE the
- * transition: that record still names the worker, and its status is the reason
- * baked into the idempotency key.
- */
-export async function interruptAssignee(ctx, task, options) {
-  const opts = options === undefined || options === null ? {} : options
-  const assignee = task === null || task === undefined ? null : task.assignee
-  const name = assignee !== null && assignee !== undefined && typeof assignee.name === 'string' ? assignee.name : null
-  if (name === null || name === '') return { ok: false, code: 'no-assignee' }
-  const reason = typeof opts.reason === 'string' && opts.reason !== '' ? opts.reason : 'no longer running'
-  const state = typeof opts.state === 'string' && opts.state !== '' ? opts.state : String(task.status)
-  return interruptMemberNamed(ctx, {
-    name: name,
-    key: String(task.id) + '@' + state + '@' + name,
-    sessionId: typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null,
-    message:
-      'Task ' + String(task.id) + ' (' + String(task.title) + ') is ' + reason +
-      '. Stop working on it now and discard uncommitted changes; do not submit.',
-  })
+  return report
 }

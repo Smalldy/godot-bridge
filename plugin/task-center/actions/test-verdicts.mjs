@@ -11,13 +11,7 @@ export function createTestVerdictActions(deps) {
   const writeTask = deps.writeTask
   const clock = deps.clock
   const writeByName = deps.writeByName
-  const promoteStageSlots = deps.promoteStageSlots
   const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
-  const roleSlotNameOf = deps.roleSlotNameOf
-  const state = deps.state
-  const testerBriefFor = deps.testerBriefFor
-  const godotInfoFor = deps.godotInfoFor
-  const notifyMember = deps.notifyMember
   const recordDeliveredTo = deps.recordDeliveredTo
   const emitActivity = deps.emitActivity
   const recordStageSlot = deps.recordStageSlot
@@ -115,31 +109,6 @@ export function createTestVerdictActions(deps) {
         if (typeof testerId === 'string' && testerId !== '') await stageAgents.release(testerId, { callerAgentId: callerAgentId })
       }
     }
-    // Keep the tester delivery timestamp for the finished round's duration.
-    const promotedTest = stageAgents !== null ? [] : await promoteStageSlots(projectPath, 'tester')
-    if (promotedTest.length > 0) {
-      const testerSlot = roleSlotNameOf('tester', result.task.ownerSession)
-      if (testerSlot !== null) {
-        for (const promoted of promotedTest) {
-          const stored = state.memory.testCandidates === undefined || state.memory.testCandidates === null ? null : state.memory.testCandidates[promoted.id]
-          const storedCandidate = stored !== null && stored !== undefined && stored.candidate !== undefined ? stored.candidate : null
-          const storedHostCheck = stored !== null && stored !== undefined && stored.hostCheck !== undefined ? stored.hostCheck : null
-          const fallbackPath = stored !== null && stored !== undefined && typeof stored === 'string' ? stored : null
-          const candidateForBrief = storedCandidate !== null ? storedCandidate : fallbackPath === null ? null : { path: fallbackPath }
-          if (candidateForBrief === null || typeof candidateForBrief.path !== 'string' || candidateForBrief.path === '') continue
-          const sentTo = await notifyMember(
-            testerSlot,
-            testerBriefFor(promoted, projectPath, candidateForBrief, {
-              godot: await godotInfoFor(projectPath, candidateForBrief.path),
-              hostCheck: storedHostCheck,
-            }),
-            promoted.ownerSession,
-            projectPath,
-          )
-          await recordDeliveredTo(projectPath, promoted.id, 'tester', sentTo)
-        }
-      }
-    }
     if (action === 'passTest') emitActivity(context, 'test-end', 'passed', id)
     if (action === 'failTest') emitActivity(context, 'test-end', 'failed', id)
     // failTest returns the card to running and passTest ends the stage: the
@@ -173,15 +142,7 @@ export function createTestVerdictActions(deps) {
       )
       if (boundedDiscard.timedOut === true) actionTimeoutFailure('failTest discard candidate', id, discardStarted)
       emitActivity(null, 'worktree-remove', 'test candidate discarded after a failed test', id, 'host')
-      if (stageAgents !== null) {
-        await stageAgents.sendAssignee(result.task, testFailureBriefFor(result.task, projectPath))
-      } else {
-        const owner =
-          result.task.assignee === null || result.task.assignee === undefined || typeof result.task.assignee.name !== 'string'
-            ? null
-            : result.task.assignee.name
-        if (owner !== null) await notifyMember(owner, testFailureBriefFor(result.task, projectPath), result.task.ownerSession, projectPath)
-      }
+      if (stageAgents !== null) await stageAgents.sendAssignee(result.task, testFailureBriefFor(result.task, projectPath))
     }
     return ok({ task: result.task, events: result.events })
   }

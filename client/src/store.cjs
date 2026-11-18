@@ -76,9 +76,9 @@
 				// No pin means NO ?project=: the Host resolves the session workspace and
 				// answers with the project, which is the whole point of T-90.
 				const pinned = tcPinnedProject()
-				// The v3 panel consumes agentTree/scope. ?legacy=0 keeps the first
-				// paint off the host-wide Team inventory it no longer renders.
-				let url = pinned === null ? TC_STATE_URL + '?legacy=0' : TC_STATE_URL + '?project=' + encodeURIComponent(pinned) + '&legacy=0'
+				// The v3 panel consumes agentTree/scope; the snapshot no longer carries
+				// any Team inventory, so there is no opt-out to ask for.
+				let url = pinned === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(pinned)
 				if (snapshot.seq !== null && snapshot.seq !== undefined) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'since=' + String(snapshot.seq)
 				if (activityCursor !== null) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'activitySince=' + encodeURIComponent(activityCursor)
 				url = tcWithSession(url)

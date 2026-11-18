@@ -20,8 +20,7 @@ import {
   tokenUrl,
 } from '../../plugin/task-center/harness.mjs'
 import { createApi } from '../../plugin/task-center/api.mjs'
-import { createRoleManager } from '../../plugin/task-center/dispatch.mjs'
-import { createRig, createTeam } from './support/fixtures.mjs'
+import { createRig } from './support/fixtures.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -607,16 +606,7 @@ check(
 // ── host actions: only the tester (or the user) drives the harness ────────
 function harnessRig(options) {
   const opts = options === undefined ? {} : options
-  const team = createTeam({
-    roster: [
-      { id: 'session-lead', name: 'lead', role: 'lead', status: 'running' },
-      { id: 'session-tester-1', name: 'tester-1', role: 'teammate', status: 'inactive' },
-      { id: 'session-reviewer-1', name: 'reviewer-1', role: 'teammate', status: 'inactive' },
-      { id: 'session-fixer', name: 'fixer', role: 'teammate', status: 'running' },
-    ],
-  })
-  const rig = createRig({ team })
-  const roles = createRoleManager(rig.ctx)
+  const rig = createRig()
   const calls = []
   const fake = {
     start: async (project) => {
@@ -644,12 +634,11 @@ function harnessRig(options) {
   const api = createApi(rig.ctx, {
     state: rig.state,
     scheduler: rig.scheduler,
-    roles: roles,
     harness: opts.harness === undefined ? fake : opts.harness,
   })
-  const tester = { projectPath: rig.project, by: '@tester-1', role: 'agent', agent: { id: 'session-tester-1' } }
-  const fixer = { projectPath: rig.project, by: '@fixer', role: 'agent', agent: { id: 'session-fixer' } }
-  const reviewer = { projectPath: rig.project, by: '@reviewer-1', role: 'agent', agent: { id: 'session-reviewer-1' } }
+  const tester = { projectPath: rig.project, by: '@tester-1', role: 'agent', agent: { id: 'session-tester-1', name: 'tester-1' } }
+  const fixer = { projectPath: rig.project, by: '@fixer', role: 'agent', agent: { id: 'session-fixer', name: 'fixer' } }
+  const reviewer = { projectPath: rig.project, by: '@reviewer-1', role: 'agent', agent: { id: 'session-reviewer-1', name: 'reviewer-1' } }
   const user = { projectPath: rig.project, by: '@user', role: 'user', agent: null }
   return { rig: rig, api: api, calls: calls, tester: tester, fixer: fixer, reviewer: reviewer, user: user }
 }
