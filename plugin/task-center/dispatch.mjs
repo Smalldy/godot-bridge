@@ -50,6 +50,7 @@ import {
   roleTemplateVariables,
 } from './schema.mjs'
 import * as model from './service.mjs'
+import { buildCandidateArtifact, renderReviewBrief, renderTesterBrief } from './stage-contract.mjs'
 import * as locks from './locks.mjs'
 import { DEFAULT_WORKTREE_TIMEOUT_MS, createGit } from './git.mjs'
 import { createLeaseGate } from './lease-gate.mjs'
@@ -1350,9 +1351,9 @@ export function roleBriefSections(kind, task, config, options) {
       '- The only task actions you may call are approveReview and requestChanges.',
       '- A worker can never review its own task; you are the independent reviewer.',
       '',
-      'Verdict schema:',
-      '  task_center { action: "approveReview", id: "<task>" }',
-      '  task_center { action: "requestChanges", id: "<task>", reasons: "concrete, actionable reasons (files/lines)" }',
+      'Verdict schema (structured ReviewRecord; free-text-only verdicts are refused):',
+      '  task_center { action: "approveReview", id: "<task>", checked: [{ criterion, method, result }], findings: [{ severity: "non-blocking", file, line, text }], residualRisks: [text] }',
+      '  task_center { action: "requestChanges", id: "<task>", findings: [{ severity: "blocking", file, line, text }], checked: [], residualRisks: [text] }',
     )
   } else if (kind === 'tester') {
     fixed.push(
@@ -1361,9 +1362,10 @@ export function roleBriefSections(kind, task, config, options) {
       '- The only task actions you may call are passTest and failTest.',
       '- A worker can never test its own task; you are the independent tester.',
       '',
-      'Verdict schema:',
-      '  task_center { action: "passTest", id: "<task>", evidence: "commands/logs that passed" }',
-      '  task_center { action: "failTest", id: "<task>", evidence: "the failing command and its tail output" }',
+      'Verdict schema (structured TestRecord; an empty probe list is refused):',
+      '  task_center { action: "passTest", id: "<task>", probes: [{ id, command, exitCode, tail }], adversarial: [{ id, command, exitCode, tail }], hostCheckRef, notes }',
+      '  task_center { action: "failTest", id: "<task>", probes: [{ id, command, exitCode, tail }] }',
+      'Every probe id the CandidateArtifact declares must appear in probes: the tester executes them in the candidate checkout.',
     )
   } else {
     fixed.push('Duties: follow the task center board for this role.')
@@ -1778,7 +1780,26 @@ function hostCheckSummaryLines(check) {
   return lines
 }
 
-export function reviewBriefFor(task, projectPath) {
+/**
+ * T-191: the board's own view of the candidate, for a brief that has no live
+ * artifact in hand (recovery/re-delivery). The full artifact is built by the
+ * host from git at submit and at review approval; this is the same shape with
+ * whatever the board recorded.
+ */
+export function boardArtifactFor(task, hostCheck) {
+  const merge = task.merge === null || task.merge === undefined ? {} : task.merge
+  return buildCandidateArtifact(
+    task,
+    {
+      base: typeof task.base === 'string' && task.base !== '' ? task.base : merge.base,
+      head: typeof merge.head === 'string' && merge.head !== '' ? merge.head : task.commit,
+      actualFiles: Array.isArray(task.actualFiles) ? task.actualFiles : [],
+    },
+    hostCheck === undefined ? (task.test === null || task.test === undefined ? null : task.test.hostCheck) : hostCheck,
+  )
+}
+
+export function reviewBriefFor(task, projectPath, artifact) {
   const review = task.review === null || task.review === undefined ? {} : task.review
   const merge = task.merge === null || task.merge === undefined ? {} : task.merge
   const declared = Array.isArray(task.writeFiles) ? task.writeFiles : []
@@ -1839,6 +1860,10 @@ export function reviewBriefFor(task, projectPath) {
     lines.push(...hostCheckSummaryLines(hostCheck))
   }
   if (typeof review.reasons === 'string' && review.reasons !== '') lines.push('', 'Previous review reasons:', review.reasons)
+  // T-191: the structured hand-off. The artifact is built by the host from git;
+  // a recovery/re-delivery path falls back to the board's summary facts.
+  const contractArtifact = artifact === undefined || artifact === null ? boardArtifactFor(task) : artifact
+  lines.push(...renderReviewBrief(task, contractArtifact, { requiresProbes: true }))
   lines.push(
     '',
     'Review against the project conventions: keep the change consistent with the surrounding code and architecture, avoid unrelated rewrites and never restyle files the task did not touch.',
@@ -1851,9 +1876,9 @@ export function reviewBriefFor(task, projectPath) {
     '- Error handling and naming follow the code around it.',
     '',
     'You are READ-ONLY on implementation: do not edit files, commit, merge or push.',
-    'Record the verdict with task_center:',
-    '  { action: "approveReview", id: "' + task.id + '" }',
-    '  { action: "requestChanges", id: "' + task.id + '", reasons: "concrete, actionable reasons (files/lines)" }',
+    'Record the verdict with task_center (the structured shapes above; free-text reasons are refused):',
+    '  { action: "approveReview", id: "' + task.id + '", checked: [...], findings: [...], residualRisks: [...] }',
+    '  { action: "requestChanges", id: "' + task.id + '", findings: [{ severity: "blocking", file, line, text }], checked: [...], residualRisks: [...] }',
   )
   return lines.join('\n')
 }
@@ -1904,22 +1929,36 @@ export function testerBriefFor(task, projectPath, candidate, options) {
   if (typeof task.spec === 'string' && task.spec !== '') lines.push('', 'What it involves:', task.spec)
   if (typeof task.acceptance === 'string' && task.acceptance !== '') lines.push('', 'Acceptance:', task.acceptance)
   lines.push('', 'Worker self-test evidence (do NOT just repeat it — test independently):', typeof task.evidence === 'string' && task.evidence !== '' ? task.evidence : '(none recorded)')
-  if (hostCheck !== null) {
-    lines.push(
-      '',
-      'Host mechanical check (the host ALREADY ran this in the candidate — see task.test.hostCheck):',
-      ...hostCheckSummaryLines(hostCheck),
-      '',
-      'What this means for your verdict:',
-      '1) The host check is the BASELINE SUITE result, NOT your verdict. It proves only that the declared command exits 0 in this candidate.',
-      '2) You MUST still design and run your own probes for what the suite does not encode: edge cases, actual behaviour, and conformance to the acceptance criteria. Your evidence must separate 【宿主基线】 (what the host ran and returned) from 【我的探针】 (what you ran, what came back, and why it proves the criterion).',
-      '3) Re-running the same command is allowed when you suspect flakiness or an environment difference (say why), and you may run any other suite. The host run is a floor, not a ceiling.',
-    )
-  } else if (normaliseVerify(task.verify) !== null) {
+  // T-191: the host baseline is stated ONCE, in the contract section below (the
+  // artifact line carries its command, exit code and output tail). Do not repeat
+  // it here: the whole point of the hand-off is not re-reading the same context.
+  if (hostCheck === null && normaliseVerify(task.verify) !== null) {
     // A retest after the target moved rebuilds the candidate; the host has no
     // check for the new tree, so the tester runs the declared command this round.
     lines.push('', 'This task declares verify: "' + String(normaliseVerify(task.verify).command) + '" but the host has no check for this round (the candidate was rebuilt); run that command yourself before judging.')
   }
+  // T-191: the structured hand-off. The tester receives the CandidateArtifact,
+  // the scope the REVIEWER already covered and the host baseline — never the
+  // review verdict (a scope hand-off is not a conclusion).
+  const contractArtifact =
+    opts.artifact !== undefined && opts.artifact !== null
+      ? opts.artifact
+      : buildCandidateArtifact(
+          task,
+          {
+            base: candidate === null || candidate === undefined ? null : candidate.base,
+            head: candidate === null || candidate === undefined ? null : candidate.head,
+            actualFiles:
+              candidate !== null && candidate !== undefined && Array.isArray(candidate.actualFiles)
+                ? candidate.actualFiles
+                : Array.isArray(task.actualFiles)
+                  ? task.actualFiles
+                  : [],
+          },
+          hostCheck,
+        )
+  const reviewRecord = task.review === null || task.review === undefined ? null : task.review.record
+  lines.push(...renderTesterBrief(task, contractArtifact, reviewRecord, hostCheck, { hostCheckReused: opts.hostCheckReused === true }))
   lines.push(
     '',
     'Test plan / runbook:',
@@ -1950,9 +1989,9 @@ export function testerBriefFor(task, projectPath, candidate, options) {
     '- screenshot paths for visual checks;',
     '- relevant Godot output (startup errors, scene load, crash lines).',
     '',
-    'Permission boundary (hard): the candidate is READ-ONLY implementation; you may only record the verdict:',
-    '  task_center { action: "passTest", id: "' + task.id + '", evidence: "commands/logs that passed" }',
-    '  task_center { action: "failTest", id: "' + task.id + '", evidence: "the failing command and its tail output" }',
+    'Permission boundary (hard): the candidate is READ-ONLY implementation; you may only record the verdict in the structured TestRecord shape above:',
+    '  task_center { action: "passTest", id: "' + task.id + '", probes: [{ id, command, exitCode, tail }], adversarial: [...], hostCheckRef, notes }',
+    '  task_center { action: "failTest", id: "' + task.id + '", probes: [ ...the same shape... ] }',
     '',
     'You are an independent, FRESH context: the worker self-test does not count as your verdict.',
   )

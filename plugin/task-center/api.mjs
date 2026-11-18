@@ -126,6 +126,16 @@ import {
   summariseBoard,
 } from './onboard.mjs'
 import { writePolicyFor } from './state.mjs'
+import {
+  buildCandidateArtifact,
+  parseKeyHunks,
+  parseNumstat,
+  renderReviewReasons,
+  renderTestRecordEvidence,
+  summariseArtifact,
+  validateReviewRecord,
+  validateTestRecord,
+} from './stage-contract.mjs'
 
 /** How long one main-checkout cleanliness read is trusted by the panel payload. */
 const ENVIRONMENT_CACHE_MS = 4000
@@ -286,6 +296,45 @@ export function createApi(ctx, options) {
   const notifyTimeoutMs = Number.isFinite(opts.notifyTimeoutMs) ? Math.max(1, Math.floor(opts.notifyTimeoutMs)) : 15 * 1000
   const sleep = typeof opts.sleep === 'function' ? opts.sleep : (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
+
+  /**
+   * T-191: the git facts of one candidate range (diffstat + first hunk per
+   * file). Best effort on purpose: a diff that cannot be read degrades the
+   * artifact, it never refuses a stage transition.
+   */
+  async function diffFactsFor(cwd, from, to) {
+    const facts = { diffstat: null, keyHunks: [] }
+    if (git === null || typeof git.raw !== 'function') return facts
+    if (typeof cwd !== 'string' || cwd === '' || typeof from !== 'string' || from === '' || typeof to !== 'string' || to === '') return facts
+    try {
+      const numstat = await git.raw(cwd, ['diff', '--numstat', from, to])
+      if (numstat !== null && numstat !== undefined && numstat.ok === true) facts.diffstat = parseNumstat(numstat.stdout)
+    } catch (error) {}
+    try {
+      const diff = await git.raw(cwd, ['diff', '-U1', '--no-color', from, to])
+      if (diff !== null && diff !== undefined && diff.ok === true) facts.keyHunks = parseKeyHunks(diff.stdout)
+    } catch (error) {}
+    return facts
+  }
+
+  /** T-191: build one CandidateArtifact from git for a task candidate. */
+  async function buildArtifactFor(task, candidate, hostCheck) {
+    const source = task === null || task === undefined ? {} : task
+    const target = candidate === null || candidate === undefined ? {} : candidate
+    const base = typeof target.base === 'string' && target.base !== '' ? target.base : typeof source.base === 'string' ? source.base : null
+    const head =
+      typeof target.head === 'string' && target.head !== ''
+        ? target.head
+        : typeof target.commit === 'string' && target.commit !== ''
+          ? target.commit
+          : typeof source.commit === 'string'
+            ? source.commit
+            : null
+    const cwd = typeof target.path === 'string' && target.path !== '' ? target.path : typeof source.worktree === 'string' ? source.worktree : ''
+    const facts = await diffFactsFor(cwd, base, head)
+    const changedFiles = Array.isArray(target.actualFiles) ? target.actualFiles : Array.isArray(source.actualFiles) ? source.actualFiles : []
+    return buildCandidateArtifact(source, { base: base, head: head, changedFiles: changedFiles, diffstat: facts.diffstat, keyHunks: facts.keyHunks }, hostCheck)
+  }
   // Read-side handlers live in actions/read.mjs; this factory receives the API
   // helpers so board/list/get/locks keep their exact semantics.
   const readActions = createReadActions({
@@ -476,6 +525,9 @@ export function createApi(ctx, options) {
     worktreeRootOf: worktreeRootOf,
     serialised: serialised,
     testFailureBriefFor: testFailureBriefFor,
+    validateTestRecord: validateTestRecord,
+    buildCandidateArtifact: buildCandidateArtifact,
+    renderTestRecordEvidence: renderTestRecordEvidence,
     ok: ok,
     failure: failure,
   })
@@ -512,6 +564,11 @@ export function createApi(ctx, options) {
     godotInfoFor: godotInfoFor,
     recordDeliveredTo: recordDeliveredTo,
     reviewBriefFor: reviewBriefFor,
+    validateReviewRecord: validateReviewRecord,
+    renderReviewReasons: renderReviewReasons,
+    buildCandidateArtifact: buildCandidateArtifact,
+    summariseArtifact: summariseArtifact,
+    buildArtifactFor: buildArtifactFor,
     ok: ok,
     failure: failure,
   })
@@ -852,14 +909,31 @@ export function createApi(ctx, options) {
       // default), which is longer than one action bound. The check is bounded by
       // runHostCheck itself; the surrounding action only has to outwait it.
       const retestBudgetMs = declaredRetestVerify !== null && Number.isFinite(declaredRetestVerify.timeoutMs) ? declaredRetestVerify.timeoutMs : VERIFY_DEFAULT_TIMEOUT_MS
+      // T-191: the rebuilt candidate's artifact is the retest round's hand-off.
+      const rebuiltArtifactBase = await buildArtifactFor(latestTask, rebuilt, null)
       let retestCheck = null
       let retestFailed = false
       if (declaredRetestVerify !== null) {
         const checked = await runHostCheck(ctx, { verify: declaredRetestVerify, cwd: rebuilt.path, now: () => clock() })
         if (checked.ok !== true) return failure(checked.code, checked.message)
-        retestCheck = checked.check
+        // The check is fingerprinted by the candidate it ran against.
+        retestCheck = Object.assign({}, checked.check, { fingerprint: rebuiltArtifactBase.hash })
         retestFailed = retestCheck.timedOut === true || retestCheck.exitCode !== 0
       }
+      const rebuiltArtifact =
+        retestCheck === null
+          ? rebuiltArtifactBase
+          : buildCandidateArtifact(
+              latestTask,
+              {
+                base: rebuiltArtifactBase.base,
+                head: rebuiltArtifactBase.head,
+                changedFiles: rebuiltArtifactBase.changedFiles,
+                diffstat: rebuiltArtifactBase.diffstat,
+                keyHunks: rebuiltArtifactBase.keyHunks,
+              },
+              retestCheck,
+            )
       // The check can outlive the caller's bound (verify.timeoutMs is often
       // longer than actionTimeoutMs). Never write from an abandoned or expired
       // turn: discard the rebuilt candidate and report the timeout instead.
@@ -888,6 +962,11 @@ export function createApi(ctx, options) {
           // on the failed round exactly like the first-build path.
           const candidateRecorded = recordCandidate(board, id, rebuilt, clock(), { retest: true, by: by, verifyFingerprint: retestVerifyPrint })
           if (candidateRecorded.ok !== true) return candidateRecorded
+          // T-191: the rebuilt candidate replaces the board's artifact summary.
+          const rebuiltTask = model.findTask(candidateRecorded.board, id)
+          if (rebuiltTask !== null && rebuiltTask !== undefined && rebuiltTask.merge !== null && rebuiltTask.merge !== undefined) {
+            rebuiltTask.merge.artifact = summariseArtifact(rebuiltArtifact)
+          }
           if (!retestFailed) {
             const checkedTask = model.findTask(candidateRecorded.board, id)
             if (checkedTask !== null && checkedTask !== undefined && checkedTask.test !== null && checkedTask.test !== undefined) {
@@ -923,7 +1002,7 @@ export function createApi(ctx, options) {
       }
       recorded.candidate = rebuilt
       if (stageAgents !== null) {
-        const started = await stageAgents.startTester(recorded.task, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck }))
+        const started = await stageAgents.startTester(recorded.task, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck, artifact: rebuiltArtifact }))
         if (started.ok === true) {
           await recordDeliveredTo(projectPath, recorded.task.id, 'tester', { name: started.name, id: started.agentId })
           recorded.provisioned = started
@@ -3424,7 +3503,7 @@ export function createApi(ctx, options) {
     const files = canonicalFiles(projectPath, source.writeFiles)
     if (files.ok !== true) return files
     const result = {}
-    for (const key of ['title', 'spec', 'acceptance', 'priority', 'maxAttempts', 'dependsOn', 'note', 'verify', 'target', 'kind']) {
+    for (const key of ['title', 'spec', 'acceptance', 'priority', 'maxAttempts', 'dependsOn', 'note', 'verify', 'verification', 'target', 'kind']) {
       if (source[key] !== undefined) result[key] = source[key]
     }
     if (files.files !== undefined) result.writeFiles = files.files
@@ -3756,6 +3835,10 @@ export function createApi(ctx, options) {
       if (targetRead.ok === true) targetBase = targetRead.head
     }
     const verifyFingerprint = baseProject === null ? null : await verifyFingerprintFor(ctx, baseProject, task.verify)
+    // T-191: the host derives the CandidateArtifact from git. The reviewer brief
+    // carries it; the board keeps only the summary (merge.artifact).
+    const diffFacts = await diffFactsFor(task.worktree, base, head)
+    const artifact = buildCandidateArtifact(task, { base: base, head: head, changedFiles: actualFiles, diffstat: diffFacts.diffstat, keyHunks: diffFacts.keyHunks }, null)
     return {
       ok: true,
       mr: {
@@ -3763,6 +3846,7 @@ export function createApi(ctx, options) {
         targetBase: targetBase,
         verifyFingerprint: verifyFingerprint,
         actualFiles: actualFiles,
+        artifact: artifact,
         commitScope: committed !== null && committed !== undefined && committed.commitScope !== undefined ? committed.commitScope : { skipped: [], notCommitted: [] },
         merge: {
           status: 'open',
@@ -3771,6 +3855,7 @@ export function createApi(ctx, options) {
           head: head,
           declaredFiles: Array.isArray(task.writeFiles) ? task.writeFiles.slice() : [],
           actualFiles: actualFiles,
+          artifact: summariseArtifact(artifact),
           tests: evidence !== '' ? evidence : note !== '' ? note : null,
           reviewer: null,
           conflict: null,

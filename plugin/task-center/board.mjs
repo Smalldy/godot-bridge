@@ -37,6 +37,7 @@ import {
   legacyRoleFields,
   normaliseRoleConfig,
   normaliseTest,
+  normaliseVerification,
   normaliseVerify,
 } from './schema.mjs'
 
@@ -776,6 +777,8 @@ function normaliseTask(raw, index, now) {
       // The optional mechanical-verification declaration. Absent (null) keeps the
       // historical flow where the tester runs the suite itself.
       verify: normaliseVerify(raw.verify),
+      // T-191: the executable probes the stage contract hands to the tester.
+      verification: normaliseVerification(raw.verification),
       base: typeof raw.base === 'string' ? raw.base : null,
       // T-156: the target head as recorded at dispatch/submit, plus the verify
       // declaration's fingerprint at that moment (the audit baseline).

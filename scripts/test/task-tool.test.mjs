@@ -63,7 +63,12 @@ check(
   check('the tool says dependencies must be merged, not just done', description.indexOf('done and merged') >= 0, description.slice(0, 300))
   check('the tool routes the FIRST move to onboard (T-129)', description.indexOf('Start with action onboard') >= 0 && description.indexOf('one next step') >= 0, description.slice(0, 320))
   check('the tool description keeps the start-consent routing', description.indexOf('needs-consent') >= 0 && description.indexOf('panel') >= 0, description.slice(-260))
-  check('requestChanges carries explicit reasons', rig.tool.parameters.reasons !== undefined, JSON.stringify(rig.tool.parameters.reasons))
+  check(
+    'the structured verdict parameters are exposed',
+    rig.tool.parameters.checked !== undefined && rig.tool.parameters.findings !== undefined && rig.tool.parameters.residualRisks !== undefined && rig.tool.parameters.probes !== undefined,
+    JSON.stringify(Object.keys(rig.tool.parameters)),
+  )
+  check('the free-text reasons parameter is gone', rig.tool.parameters.reasons === undefined)
   check('the tool no longer describes a host verification gate', description.indexOf('after verification') < 0, description.slice(0, 1400))
   check('the enum is the registry, not a second list', actions.join(',') === AGENT_ACTIONS.join(','), actions.join(','))
 }
@@ -247,13 +252,13 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   const strangerReview = await toolCall({ action: 'approveReview', id: id }, { id: 'session-other' })
   check('a stranger cannot decide the review round', strangerReview.error !== undefined && strangerReview.code === 'role-required', JSON.stringify(strangerReview))
   const reviewer = { id: reviewTask.review.deliveredTo.id }
-  const approved = await toolCall({ action: 'approveReview', id: id }, reviewer)
+  const approved = await toolCall({ action: 'approveReview', id: id, checked: [{ criterion: 'stage moves', method: 'read result', result: 'pass' }] }, reviewer)
   check(
     'the delivered reviewer approves into testing',
     approved.ok === true && approved.task.status === 'testing' && approved.task.review.status === 'approved',
     JSON.stringify(approved),
   )
-  const passed = await mergeRig.action('passTest', { id: id })
+  const passed = await mergeRig.action('passTest', { id: id, probes: [{ id: 'suite', command: 'node --test', exitCode: 0, tail: 'PASS' }] })
   check('the user passes the test phase', passed.ok === true && passed.task.test.status === 'passed', JSON.stringify(passed))
   mergeRig.scheduler.dispose()
 }

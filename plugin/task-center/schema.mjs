@@ -7,6 +7,12 @@
  * to write.
  */
 
+import { normaliseReviewRecord, normaliseTestRecord } from './stage-contract.mjs'
+
+// The record size caps live with the contract module that enforces them; they
+// are re-exported here because the schema is the documented boundary.
+export { REVIEW_RECORD_MAX_BYTES, TEST_RECORD_MAX_BYTES } from './stage-contract.mjs'
+
 export const BOARD_DIRECTORY = '.agents'
 export const BOARD_FILENAME = 'tasks.json'
 
@@ -122,12 +128,13 @@ export const DEFAULT_ROLE_PROMPTS = {
     'Duties: review the submitted tree (the diff from its base to its head, the declared vs actual files, and the worker evidence), then approve it or request concrete changes.',
     'Review against the project conventions: keep the change consistent with the surrounding code and architecture, avoid unrelated rewrites and never restyle files the task did not touch.',
     'Review checklist:\n- The diff matches the spec and the acceptance criteria, and nothing unrelated changed.\n- Declared vs actual files match (or the extras are justified).\n- No secrets, debug leftovers, dead code or commented-out blocks.\n- The evidence plausibly matches the change (you do NOT need to run the full test suite; the test stage does that).\n- Error handling and naming follow the code around it.',
-    'Decide: approve the review, or ask for changes with concrete, actionable reasons naming the files and lines.',
+    'Decide with a structured ReviewRecord: checked (the checks you actually ran: criterion/method/result), findings (severity blocking|non-blocking, file, line, text) and residualRisks. approveReview needs at least one checked entry; requestChanges needs at least one blocking finding and the reasons are rendered from it. Free-text-only verdicts are refused.',
   ].join('\n\n'),
   tester: [
     'Duties: independently test the candidate tree for the task and record a pass or a failure with evidence.',
     'Test against the acceptance criteria in the candidate checkout: run the project test commands there and record the exact command and exit code, then exercise the acceptance check itself. A green unit suite is not a substitute for the acceptance check.',
-    'Report evidence another person could replay: what you ran, what came back, and why it proves the criterion. Decide pass or fail; on a failure give the failing command and its tail output.',
+    'Execute every probe the CandidateArtifact declares; the TestRecord must contain each probe id (an empty probe list is refused).',
+    'Report evidence another person could replay in a structured TestRecord: probes/adversarial rows of { id, command, exitCode, tail } plus notes. Report pass or fail; a failure must carry the failing command and its tail output.',
   ].join('\n\n'),
 }
 
@@ -276,6 +283,99 @@ export function validateVerify(raw) {
   return { ok: true, verify: out }
 }
 
+/** Bounds of one task's executable probes (TC-191). */
+export const VERIFICATION_LIMITS = Object.freeze({
+  probes: 8,
+  id: 80,
+  command: 500,
+  timeoutMs: 30 * 60 * 1000,
+})
+
+function normaliseProbe(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const command = typeof raw.command === 'string' ? raw.command.trim() : ''
+  if (command === '') return null
+  const id = typeof raw.id === 'string' && raw.id.trim() !== '' ? raw.id.trim() : null
+  const out = { id: id, command: command }
+  if (Number.isFinite(raw.timeoutMs) && raw.timeoutMs > 0) out.timeoutMs = Math.floor(raw.timeoutMs)
+  return out
+}
+
+/**
+ * The task's executable probes, read leniently: an old board has no verification
+ * field and simply declares none.
+ */
+export function normaliseVerification(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { probes: [] }
+  const probes = []
+  if (Array.isArray(raw.probes)) {
+    for (const entry of raw.probes) {
+      const probe = normaliseProbe(entry)
+      if (probe === null) continue
+      if (probe.id === null) probe.id = 'probe-' + String(probes.length + 1)
+      if (probes.some((other) => other.id === probe.id)) continue
+      probes.push(probe)
+      if (probes.length >= VERIFICATION_LIMITS.probes) break
+    }
+  }
+  return { probes: probes }
+}
+
+/**
+ * Strict form of normaliseVerification for WRITES: a malformed probe list is
+ * refused as a typed error instead of being silently dropped, because a tester
+ * who cannot see the task's probes cannot execute the contract.
+ */
+export function validateVerification(raw) {
+  if (raw === undefined) return { ok: true, verification: undefined }
+  if (raw === null) return { ok: true, verification: { probes: [] } }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, code: 'invalid-verification', message: 'verification must be { probes: [...] } or null' }
+  }
+  const source = Array.isArray(raw.probes) ? raw.probes : []
+  if (source.length > VERIFICATION_LIMITS.probes) {
+    return {
+      ok: false,
+      code: 'too-many-probes',
+      message: 'at most ' + String(VERIFICATION_LIMITS.probes) + ' probes per task; split the card',
+    }
+  }
+  const probes = []
+  for (const entry of source) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      return { ok: false, code: 'invalid-verification', message: 'every probe must be an object { id, command, timeoutMs? }' }
+    }
+    const command = typeof entry.command === 'string' ? entry.command.trim() : ''
+    if (command === '') {
+      return { ok: false, code: 'invalid-verification', message: 'probe.command must be a non-empty shell command' }
+    }
+    if (command.length > VERIFICATION_LIMITS.command) {
+      return { ok: false, code: 'invalid-verification', message: 'probe.command is longer than ' + String(VERIFICATION_LIMITS.command) + ' characters' }
+    }
+    const rawId = entry.id === undefined || entry.id === null ? '' : String(entry.id).trim()
+    if (rawId.length > VERIFICATION_LIMITS.id) {
+      return { ok: false, code: 'invalid-verification', message: 'probe.id is longer than ' + String(VERIFICATION_LIMITS.id) + ' characters' }
+    }
+    const id = rawId === '' ? 'probe-' + String(probes.length + 1) : rawId
+    if (probes.some((probe) => probe.id === id)) {
+      return { ok: false, code: 'invalid-verification', message: 'duplicate probe id ' + JSON.stringify(id) }
+    }
+    const probe = { id: id, command: command }
+    if (entry.timeoutMs !== undefined && entry.timeoutMs !== null) {
+      if (!Number.isFinite(entry.timeoutMs) || entry.timeoutMs <= 0 || entry.timeoutMs > VERIFICATION_LIMITS.timeoutMs) {
+        return {
+          ok: false,
+          code: 'invalid-verification',
+          message: 'probe.timeoutMs must be a positive number no larger than ' + String(VERIFICATION_LIMITS.timeoutMs),
+        }
+      }
+      probe.timeoutMs = Math.floor(entry.timeoutMs)
+    }
+    probes.push(probe)
+  }
+  return { ok: true, verification: { probes: probes } }
+}
+
 /**
  * The host's record of one mechanical-verification run, or null.
  *
@@ -294,6 +394,9 @@ export function normaliseHostCheck(raw) {
     durationMs: Number.isFinite(raw.durationMs) ? Math.max(0, Math.floor(raw.durationMs)) : null,
     tail: typeof raw.tail === 'string' ? raw.tail : '',
     at: typeof raw.at === 'string' ? raw.at : null,
+    // T-191: the CandidateArtifact fingerprint the check ran against, so an
+    // unchanged candidate reuses the baseline instead of paying for it twice.
+    fingerprint: typeof raw.fingerprint === 'string' && raw.fingerprint !== '' ? raw.fingerprint : null,
   }
 }
 
@@ -746,6 +849,9 @@ export function normaliseReview(raw) {
     byName: typeof raw.byName === 'string' && raw.byName !== '' ? raw.byName : null,
     at: typeof raw.at === 'string' ? raw.at : null,
     reasons: typeof raw.reasons === 'string' ? raw.reasons : null,
+    // T-191: the structured ReviewRecord (checked/findings/residualRisks). Read
+    // leniently so a hand-written board never breaks the board load.
+    record: normaliseReviewRecord(raw.record),
     attempt: phaseAttempt(raw.attempt),
     // T-116: who the host actually handed this review round to. The verdict gate
     // trusts it even when the role member has since left the Lead's roster.
@@ -763,6 +869,8 @@ export function normaliseTest(raw) {
     byName: typeof raw.byName === 'string' && raw.byName !== '' ? raw.byName : null,
     at: typeof raw.at === 'string' ? raw.at : null,
     evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
+    // T-191: the structured TestRecord (executed probes/adversarial/notes).
+    record: normaliseTestRecord(raw.record),
     attempt: phaseAttempt(raw.attempt),
     deliveredTo: normaliseDeliveredTo(raw.deliveredTo),
     // The host's own mechanical check of this round (see runHostCheck). Optional:
@@ -787,6 +895,32 @@ function normaliseVerifyFingerprints(raw) {
   const to = typeof raw.to === 'string' && raw.to !== '' ? raw.to : null
   if (from === null || to === null) return null
   return { from: from, to: to }
+}
+
+/** T-191: the compact CandidateArtifact summary the board keeps. */
+function normaliseArtifactSummary(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const hash = typeof raw.hash === 'string' && raw.hash !== '' ? raw.hash : null
+  const base = typeof raw.base === 'string' && raw.base !== '' ? raw.base : null
+  const head = typeof raw.head === 'string' && raw.head !== '' ? raw.head : null
+  if (hash === null && base === null && head === null) return null
+  const changedFiles = mergeStringList(raw.changedFiles)
+  return {
+    hash: hash,
+    base: base,
+    head: head,
+    changedFiles: changedFiles,
+    diffstat:
+      raw.diffstat !== null && typeof raw.diffstat === 'object' && !Array.isArray(raw.diffstat) && Number.isFinite(raw.diffstat.files)
+        ? {
+            files: Math.max(0, Math.floor(raw.diffstat.files)),
+            insertions: Number.isFinite(raw.diffstat.insertions) ? Math.max(0, Math.floor(raw.diffstat.insertions)) : 0,
+            deletions: Number.isFinite(raw.diffstat.deletions) ? Math.max(0, Math.floor(raw.diffstat.deletions)) : 0,
+          }
+        : null,
+    probeIds: mergeStringList(raw.probeIds),
+    hostCheckFingerprint: typeof raw.hostCheckFingerprint === 'string' && raw.hostCheckFingerprint !== '' ? raw.hostCheckFingerprint : null,
+  }
 }
 
 /**
@@ -819,6 +953,9 @@ export function normaliseMerge(raw) {
     targetDrift: normaliseTargetDrift(raw.targetDrift),
     verifyChanged: raw.verifyChanged === true,
     verifyFingerprints: normaliseVerifyFingerprints(raw.verifyFingerprints),
+    // T-191: the board-sized CandidateArtifact summary (hash/base/head/files),
+    // never the artifact body.
+    artifact: normaliseArtifactSummary(raw.artifact),
   }
 }
 

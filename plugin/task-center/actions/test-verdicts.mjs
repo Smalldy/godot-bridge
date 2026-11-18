@@ -27,6 +27,10 @@ export function createTestVerdictActions(deps) {
   const worktreeRootOf = deps.worktreeRootOf
   const serialised = deps.serialised
   const testFailureBriefFor = deps.testFailureBriefFor
+  // T-191: the structured test contract.
+  const validateTestRecord = deps.validateTestRecord
+  const buildCandidateArtifact = deps.buildCandidateArtifact
+  const renderTestRecordEvidence = deps.renderTestRecordEvidence
   const ok = deps.ok
   const failure = deps.failure
 
@@ -57,6 +61,33 @@ export function createTestVerdictActions(deps) {
     }
   }
 
+  /**
+   * The explicit record the panel's human override stands for (T-113 + T-191).
+   * The contract's probe-execution rules bind the TESTER; a human decision is
+   * recorded as a human decision (by/role on the board), not as fake probe
+   * output masquerading as a tester run.
+   */
+  function userOverrideTestRecord(action, source) {
+    const text = typeof source.evidence === 'string' ? source.evidence.trim() : ''
+    const fallback =
+      action === 'passTest'
+        ? 'the user accepted the candidate in the task center panel'
+        : 'the user rejected the candidate in the task center panel'
+    return {
+      verdict: action === 'passTest' ? 'passed' : 'failed',
+      probes: [
+        {
+          id: 'human-override',
+          command: 'human verdict from the task center panel',
+          exitCode: action === 'passTest' ? 0 : 1,
+          tail: text === '' ? fallback : text,
+        },
+      ],
+      adversarial: [],
+      notes: text === '' ? fallback : text,
+    }
+  }
+
   async function execute(action, source, context, projectPath) {
     const id = String(source.id === undefined ? '' : source.id)
     if (id === '') return failure('missing-id', action + ' needs a task id')
@@ -66,20 +97,54 @@ export function createTestVerdictActions(deps) {
     if (testTask === undefined) return failure('unknown-task', 'no task with id ' + id)
     const testRefused = verdictRefusal(context, testTask, 'tester')
     if (testRefused !== null) return testRefused
+    // T-191: which candidate is this verdict about? The board records the test
+    // candidate's base/head, so the artifact (and its probes) is derivable here
+    // without trusting anything the tester pasted.
+    const merge = testTask.merge === null || testTask.merge === undefined ? {} : testTask.merge
+    const artifact = buildCandidateArtifact(
+      testTask,
+      {
+        base: typeof merge.base === 'string' && merge.base !== '' ? merge.base : testTask.base,
+        head:
+          typeof merge.mergeCommit === 'string' && merge.mergeCommit !== ''
+            ? merge.mergeCommit
+            : typeof merge.head === 'string' && merge.head !== ''
+              ? merge.head
+              : testTask.commit,
+        actualFiles: Array.isArray(testTask.actualFiles) ? testTask.actualFiles : [],
+      },
+      testTask.test === null || testTask.test === undefined ? null : testTask.test.hostCheck,
+    )
+    // The record is validated BEFORE the board moves: a refusal leaves the test
+    // round open, exactly like a malformed review verdict. The USER's panel
+    // verdict is the explicit human override: a structured record from the panel
+    // is accepted, a bare {id, evidence} from an older bundle is attributed here
+    // (and is not held to the TESTER's probe-execution rule).
+    const userCaller = context !== undefined && context !== null && context.role === 'user'
+    const structuredTest = Array.isArray(source.probes) || (source.record !== undefined && source.record !== null)
+    const testInput = userCaller && !structuredTest ? userOverrideTestRecord(action, source) : source
+    const checkedRecord = validateTestRecord(testInput, {
+      verdict: action === 'passTest' ? 'passed' : 'failed',
+      requiredProbes: userCaller ? [] : artifact.probes,
+    })
+    if (checkedRecord.ok !== true) return failure(checkedRecord.code, checkedRecord.message)
+    const testRecord = checkedRecord.record
+    const explicitEvidence = source.evidence === undefined || source.evidence === null ? '' : String(source.evidence).trim()
+    const recordEvidence = renderTestRecordEvidence(testRecord)
+    const evidence = explicitEvidence !== '' ? explicitEvidence + (recordEvidence === '' ? '' : '\n' + recordEvidence) : recordEvidence
     const result = await writeTask(
       projectPath,
       id,
       (board) => {
         const decided =
           action === 'passTest'
-            ? model.passTest(board, id, clock(), context.by, writeByName(context))
-            : model.failTest(board, id, source.evidence, clock(), context.by, writeByName(context))
+            ? model.passTest(board, id, clock(), context.by, writeByName(context), testRecord)
+            : model.failTest(board, id, evidence, clock(), context.by, writeByName(context), testRecord)
         if (decided.ok !== true) return decided
-        if (action === 'passTest' && source.evidence !== undefined && source.evidence !== null) {
-          const text = String(source.evidence).trim()
+        if (action === 'passTest' && evidence !== '') {
           const task = model.findTask(decided.board, id)
-          if (task !== null && task !== undefined && task.test !== null && task.test !== undefined && text !== '') {
-            task.test.evidence = text
+          if (task !== null && task !== undefined && task.test !== null && task.test !== undefined) {
+            task.test.evidence = evidence
           }
         }
         return decided

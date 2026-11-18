@@ -47,6 +47,10 @@ export function createSubmitAction(deps) {
     const submittedAt = clock()
     const prepared = checked.task.status === 'running' ? await prepareMergeRequest(checked.task, source, submittedAt, projectPath) : { ok: true, mr: null }
     if (prepared.ok !== true) return prepared
+    // T-191: the host built the CandidateArtifact from git while preparing the
+    // merge request; the reviewer brief carries it. It is NOT written to the
+    // board in full — merge.artifact keeps the summary.
+    const candidateArtifact = prepared.mr === null || prepared.mr === undefined ? null : prepared.mr.artifact
     const willReview = checked.task.status === 'running'
     const nextReviewAttempt =
       checked.task.review === null || checked.task.review === undefined ? 1 : checked.task.review.attempt + 1
@@ -97,7 +101,7 @@ export function createSubmitAction(deps) {
         emitActivity(context, 'review-start', 'submitted for review round ' + String(round), id)
         // v3: start the reviewer only after the board says reviewing, so its
         // first turn always sees the stage it is reviewing.
-        const started = await stageAgents.startReviewer(result.task, reviewBriefFor(result.task, projectPath))
+        const started = await stageAgents.startReviewer(result.task, reviewBriefFor(result.task, projectPath, candidateArtifact))
         if (started.ok !== true) {
           await markWaiting(projectPath, id, 'reviewer-unavailable', String(started.message), context)
           return failure('reviewer-unavailable', 'no reviewer could be started for ' + id + ' (' + String(started.message) + '); the task waits in review')

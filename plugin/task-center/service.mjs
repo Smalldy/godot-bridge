@@ -32,8 +32,10 @@ import {
   normaliseMerge,
   truncateBytes,
 
+  validateVerification,
   validateVerify,
 } from './schema.mjs'
+import { normaliseReviewRecord, normaliseTestRecord } from './stage-contract.mjs'
 
 const iso = (now) => new Date(now).toISOString()
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -206,6 +208,10 @@ export function createTask(board, input, now, by) {
     )
   }
   const declaredVerify = input.verify === undefined ? null : checkedVerify.verify
+  // T-191: the task's executable probes. An absent declaration is an empty list
+  // (TC-191 does not yet require probes at create; TC-192 does).
+  const checkedVerification = validateVerification(input.verification)
+  if (checkedVerification.ok !== true) return fail(checkedVerification.code, checkedVerification.message)
   const checked = validateDepends(board, undefined, input.dependsOn, normaliseTarget(input.target))
   if (checked.ok !== true) return checked
   const next = clone(board)
@@ -223,6 +229,7 @@ export function createTask(board, input, now, by) {
     dependsOn: checked.dependsOn,
     writeFiles: normaliseList(input.writeFiles),
     verify: declaredVerify,
+    verification: checkedVerification.verification === undefined ? { probes: [] } : checkedVerification.verification,
     base: null,
     target: normaliseTarget(input.target),
     branch: null,
@@ -297,6 +304,10 @@ export function updateTask(board, id, input, now, by) {
     if (checked.ok !== true) return checked
   }
   if (input.title !== undefined && String(input.title).trim() === '') return fail('missing-title', 'a task needs a title')
+  const updatedVerification = input.verification === undefined ? undefined : validateVerification(input.verification)
+  if (updatedVerification !== undefined && updatedVerification.ok !== true) {
+    return fail(updatedVerification.code, updatedVerification.message)
+  }
   const updatedVerify = input.verify === undefined ? undefined : validateVerify(input.verify)
   if (updatedVerify !== undefined && updatedVerify.ok !== true) {
     return fail(
@@ -331,6 +342,10 @@ export function updateTask(board, id, input, now, by) {
   if (input.verify !== undefined) {
     target.verify = updatedVerify.verify
     notes.push('verify: ' + (target.verify === null ? 'none' : target.verify.command))
+  }
+  if (input.verification !== undefined) {
+    target.verification = updatedVerification.verification === null ? { probes: [] } : updatedVerification.verification
+    notes.push('probes: ' + String(target.verification.probes.length))
   }
   touch(target, now)
   pushHistory(target, {
@@ -930,8 +945,16 @@ export function submitTask(board, id, input, now, by, byName) {
 /**
  * The review phase: a reviewer approves the submission (-> testing) or asks for
  * changes (-> running, back to the same worker).
+ *
+ * T-191 CONTRACT NOTE: the structured record is validated and persisted by the
+ * ACTION layer (actions/review-verdicts.mjs), which refuses an empty checked
+ * list / a changes request without a blocking finding BEFORE any side effect.
+ * These pure model functions only store a valid record and deliberately degrade
+ * a missing/invalid one to "no record" so host-internal calls (e.g. the host
+ * failTest in review-verdicts) and old boards can never throw here. A future
+ * direct caller of the model is NOT allowed to skip the action layer.
  */
-export function approveReview(board, id, now, by, byName) {
+export function approveReview(board, id, now, by, byName, record) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no review phase (finish it with report)')
@@ -940,6 +963,9 @@ export function approveReview(board, id, now, by, byName) {
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   target.review = Object.assign({}, target.review, { status: 'approved', by: by, byName: byName === undefined ? null : byName, at: iso(now) })
+  // T-191: the validated ReviewRecord is the durable hand-off to the tester.
+  const reviewRecord = normaliseReviewRecord(record)
+  if (reviewRecord !== null) target.review.record = reviewRecord
   target.test = {
     status: 'pending',
     by: null,
@@ -961,7 +987,8 @@ export function approveReview(board, id, now, by, byName) {
   return done(next, [{ kind: 'review-approved', id: id, who: by }], { task: target })
 }
 
-export function requestChanges(board, id, reasons, now, by, byName) {
+/** Same T-191 contract note as approveReview: record validation lives in the action layer. */
+export function requestChanges(board, id, reasons, now, by, byName, record) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no review phase (finish it with report)')
@@ -972,6 +999,10 @@ export function requestChanges(board, id, reasons, now, by, byName) {
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   target.review = Object.assign({}, target.review, { status: 'changes-requested', by: by, byName: byName === undefined ? null : byName, at: iso(now), reasons: text })
+  // T-191: the findings ARE the reasons; the record keeps them structured so the
+  // next round and the board can show what was requested, not just a blob.
+  const changesRecord = normaliseReviewRecord(record)
+  if (changesRecord !== null) target.review.record = changesRecord
   target.status = 'running'
   target.leaseUntil = iso(now + TASK_LEASE_MS)
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, { status: 'changes-requested', at: iso(now) })
@@ -990,8 +1021,14 @@ export function requestChanges(board, id, reasons, now, by, byName) {
 /**
  * The test phase: a tester's pass makes the request merge-eligible (the queue
  * turns the task DONE after the merge), a failure sends it back to running.
+ *
+ * T-191 CONTRACT NOTE: the TestRecord (executed probes) is validated by the
+ * ACTION layer (actions/test-verdicts.mjs) — an empty probe list is refused
+ * there, before the board moves. The model stores a valid record and degrades an
+ * invalid/missing one to "no record" so the host's own failTest paths stay
+ * usable. A future direct caller is NOT allowed to skip the action layer.
  */
-export function passTest(board, id, now, by, byName) {
+export function passTest(board, id, now, by, byName, record) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no test phase (finish it with report)')
@@ -1000,6 +1037,9 @@ export function passTest(board, id, now, by, byName) {
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   target.test = Object.assign({}, target.test, { status: 'passed', by: by, byName: byName === undefined ? null : byName, at: iso(now) })
+  // T-191: the executed probes are the verdict's durable evidence.
+  const passedRecord = normaliseTestRecord(record)
+  if (passedRecord !== null) target.test.record = passedRecord
   touch(target, now)
   pushHistory(target, {
     at: iso(now),
@@ -1012,7 +1052,8 @@ export function passTest(board, id, now, by, byName) {
   return done(next, [{ kind: 'test-passed', id: id, who: by }], { task: target })
 }
 
-export function failTest(board, id, evidence, now, by, byName) {
+/** Same T-191 contract note as passTest: record validation lives in the action layer. */
+export function failTest(board, id, evidence, now, by, byName, record) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no test phase (finish it with report)')
@@ -1023,6 +1064,8 @@ export function failTest(board, id, evidence, now, by, byName) {
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   target.test = Object.assign({}, target.test, { status: 'failed', by: by, byName: byName === undefined ? null : byName, at: iso(now), evidence: text })
+  const failedRecord = normaliseTestRecord(record)
+  if (failedRecord !== null) target.test.record = failedRecord
   target.status = 'running'
   target.leaseUntil = iso(now + TASK_LEASE_MS)
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, { status: 'test-failed', at: iso(now) })
@@ -1359,6 +1402,8 @@ export function summary(board, task, now) {
     dependency: dependency,
     writeFiles: task.writeFiles,
     verify: task.verify,
+    // T-191: the executable probes the test stage receives.
+    verification: task.verification === undefined ? { probes: [] } : task.verification,
     worktree: task.worktree,
     worktreeError: task.worktreeError,
     branch: task.branch,

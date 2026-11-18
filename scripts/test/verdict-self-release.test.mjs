@@ -194,7 +194,7 @@ await check('approveReview returns to its reviewer before the reconciler retires
   const reading = await submitCard(card)
   const reviewerId = reading.review.deliveredTo.id
   state.activity.set(reviewerId, 'running')
-  const verdict = await rig.api.perform('approveReview', { id: card.id }, callerContext(reviewerId, reading.review.deliveredTo.name))
+  const verdict = await rig.api.perform('approveReview', { id: card.id, checked: [{ criterion: 'the card moves through the stage', method: 'read the board result', result: 'pass' }] }, callerContext(reviewerId, reading.review.deliveredTo.name))
   assert.equal(verdict.ok, true, 'approveReview: ' + JSON.stringify(verdict).slice(0, 900))
   assert.equal(verdict.task.status, 'testing', 'the board still moves to testing')
   const after = await taskById(card.id)
@@ -208,7 +208,7 @@ await check('approveReview returns to its reviewer before the reconciler retires
 await check('passTest returns to its tester before the reconciler retires it', async () => {
   const testerId = passCard.testerId
   state.activity.set(testerId, 'running')
-  const verdict = await rig.api.perform('passTest', { id: passCard.id, evidence: 'checks pass' }, callerContext(testerId, 'tester-1'))
+  const verdict = await rig.api.perform('passTest', { id: passCard.id, evidence: 'checks pass', probes: [{ id: 'suite', command: 'node --test', exitCode: 0, tail: 'PASS 12/12' }] }, callerContext(testerId, 'tester-1'))
   assert.equal(verdict.ok, true, 'passTest: ' + JSON.stringify(verdict).slice(0, 900))
   const after = await taskById(passCard.id)
   assert.equal(after.test.status, 'passed', 'the tester verdict is still recorded')
@@ -224,7 +224,7 @@ await check('requestChanges returns to its reviewer before the reconciler retire
   state.activity.set(reviewerId, 'running')
   const verdict = await rig.api.perform(
     'requestChanges',
-    { id: card.id, reasons: 'rename the helper in scripts/a.gd:12' },
+    { id: card.id, checked: [], findings: [{ severity: 'blocking', file: 'scripts/a.gd', line: 12, text: 'rename the helper' }], residualRisks: [] },
     callerContext(reviewerId, reading.review.deliveredTo.name),
   )
   assert.equal(verdict.ok, true, 'requestChanges: ' + JSON.stringify(verdict).slice(0, 900))
@@ -240,13 +240,13 @@ await check('requestChanges returns to its reviewer before the reconciler retire
 await check('failTest returns to its tester before the reconciler retires it', async () => {
   const card = await makeCard('fail me')
   await submitCard(card)
-  const approved = await rig.action('approveReview', { id: card.id })
+  const approved = await rig.action('approveReview', { id: card.id, checked: [{ criterion: 'the card moves through the stage', method: 'read the board result', result: 'pass' }] })
   assert.equal(approved.ok, true, 'approveReview as user: ' + JSON.stringify(approved).slice(0, 700))
   const testing = await taskById(card.id)
   assert.equal(testing.status, 'testing')
   const testerId = testing.test.deliveredTo.id
   state.activity.set(testerId, 'running')
-  const verdict = await rig.api.perform('failTest', { id: card.id, evidence: 'FAIL  npm test' }, callerContext(testerId, 'tester-2'))
+  const verdict = await rig.api.perform('failTest', { id: card.id, evidence: 'FAIL  npm test', probes: [{ id: 'suite', command: 'npm test', exitCode: 1, tail: 'FAIL  one suite' }] }, callerContext(testerId, 'tester-2'))
   assert.equal(verdict.ok, true, 'failTest: ' + JSON.stringify(verdict).slice(0, 900))
   assert.equal(verdict.task.status, 'running', 'the board still returns to running')
   const after = await taskById(card.id)
@@ -259,7 +259,7 @@ await check('failTest returns to its tester before the reconciler retires it', a
 await check('a verdict action that outlives the whole timeout budget is never reaped in flight', async () => {
   const card = await makeCard('slow pass')
   await submitCard(card)
-  const approved = await rig.action('approveReview', { id: card.id })
+  const approved = await rig.action('approveReview', { id: card.id, checked: [{ criterion: 'the card moves through the stage', method: 'read the board result', result: 'pass' }] })
   assert.equal(approved.ok, true, 'approveReview as user: ' + JSON.stringify(approved).slice(0, 700))
   const testing = await taskById(card.id)
   const testerId = testing.test.deliveredTo.id
@@ -270,7 +270,7 @@ await check('a verdict action that outlives the whole timeout budget is never re
     ready: ready,
     result: (task) => ({ ok: true, status: 'merged', mergeCommit: 'slow-' + String(task.id), candidateRemoved: false, taskWorktreeRemoved: false }),
   }
-  const pending = rig.api.perform('passTest', { id: card.id, evidence: 'slow checks' }, callerContext(testerId, 'tester-3'))
+  const pending = rig.api.perform('passTest', { id: card.id, evidence: 'slow checks', probes: [{ id: 'suite', command: 'node --test', exitCode: 0, tail: 'PASS' }] }, callerContext(testerId, 'tester-3'))
   // Wait until passTest queued the tester self-release and parked in its merge.
   for (let attempt = 0; attempt < 600 && deferredReleaseIds().indexOf(testerId) < 0; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5))

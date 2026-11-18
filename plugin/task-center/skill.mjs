@@ -176,7 +176,7 @@ export function buildInitContent(options) {
     '',
     '这些文件在 resourceBase 目录下。需要时用 read 读取，不要一次全读：',
     '',
-    '- 按需读 `cards.md`（写卡/拆卡/verify/调查卡）、`run.md`（派发/worktree/执行树）、`gates.md`（评审/测试/合并/drift）、`reference.md`（动作矩阵/拒绝码/面板）。',
+    '- 按需读 `cards.md`（写卡/拆卡/阶段契约/verify/调查卡）、`run.md`（派发/worktree/执行树）、`gates.md`（评审/测试/合并/drift）、`reference.md`（动作矩阵/拒绝码/面板）。',
     '',
     '当前可写动作：' + names(writable) + '。',
     '只读动作：' + names(readOnly) + '。',

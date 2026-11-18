@@ -109,7 +109,93 @@ export function registerTaskTool(ctx, options) {
           'Investigation report artifacts (report): project-relative paths you created or kept, e.g. the probe-<id>-* checkouts. Paths only, never file contents; the host removes those checkouts when the report lands.',
         items: { type: 'string' },
       },
-      reasons: { type: 'string', description: 'What must change before the review can pass (requestChanges).' },
+      // T-191: review/test verdicts are STRUCTURED. The record is the only
+      // channel a reviewer/tester has; a free-text-only verdict is refused.
+      checked: {
+        type: 'array',
+        description:
+          'ReviewRecord.checked (approveReview/requestChanges): the checks YOU ran, each { criterion, method, result }. approveReview refuses an empty list.',
+        items: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            criterion: { type: 'string', description: 'What was verified.' },
+            method: { type: 'string', description: 'How it was verified (command, file read).' },
+            result: { type: 'string', description: 'What came back (pass, fail, not-checked).' },
+          },
+        },
+      },
+      findings: {
+        type: 'array',
+        description:
+          'ReviewRecord.findings (approveReview/requestChanges): { severity: "blocking"|"non-blocking", file, line, text }. requestChanges refuses a record without at least one blocking finding.',
+        items: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            severity: { type: 'string', enum: ['blocking', 'non-blocking'] },
+            file: { type: 'string', description: 'Project-relative file (optional).' },
+            line: { type: 'number', description: 'Line in that file (optional).' },
+            text: { type: 'string', description: 'What is wrong / what to fix.' },
+          },
+        },
+      },
+      residualRisks: {
+        type: 'array',
+        description: 'ReviewRecord.residualRisks: what the reviewer could not close; the tester sees this as review scope.',
+        items: { type: 'string' },
+      },
+      probes: {
+        type: 'array',
+        description:
+          'TestRecord.probes (passTest/failTest): the commands YOU executed in the candidate, each { id, command, exitCode, tail }. An empty list is refused; every task-declared probe id must be present.',
+        items: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            id: { type: 'string', description: 'Probe id (matches the artifact probe id it executes).' },
+            command: { type: 'string', description: 'The command that ran.' },
+            exitCode: { type: 'number', description: 'Its exit code (omit when it never finished).' },
+            timedOut: { type: 'boolean', description: 'True when the command timed out instead of exiting.' },
+            tail: { type: 'string', description: 'The output tail that explains the result.' },
+          },
+        },
+      },
+      adversarial: {
+        type: 'array',
+        description: 'TestRecord.adversarial: probes aimed at what the suite does not encode (same shape as probes).',
+        items: { type: 'object', additionalProperties: true },
+      },
+      hostCheckRef: {
+        type: 'string',
+        description: 'TestRecord.hostCheckRef: the candidate fingerprint of the host baseline the tester used.',
+      },
+      notes: { type: 'string', description: 'TestRecord.notes: why the verdict, and why any host baseline was re-run.' },
+      verification: {
+        description:
+          'Executable probes the task declares (create/update): { probes: [{ id, command, timeoutMs? }] }. The tester must execute each one and the TestRecord must contain its id.',
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+              probes: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  additionalProperties: true,
+                  properties: {
+                    id: { type: 'string', description: 'Stable probe id, e.g. "modern-team-service".' },
+                    command: { type: 'string', description: 'Shell command to run, e.g. "node --test scripts/test/x.test.mjs".' },
+                    timeoutMs: { type: 'number', description: 'Upper bound in milliseconds.' },
+                  },
+                },
+              },
+            },
+          },
+          { type: 'null', description: 'Clear the declared probes.' },
+        ],
+      },
       note: { type: 'string', description: 'A line for the task history.' },
       dependsOn: {
         type: 'array',
