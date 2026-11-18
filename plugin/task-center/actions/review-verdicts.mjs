@@ -38,6 +38,12 @@ export function createReviewVerdictActions(deps) {
   const testerBriefFor = deps.testerBriefFor
   const godotInfoFor = deps.godotInfoFor
   const recordDeliveredTo = deps.recordDeliveredTo
+  // T-191: the structured review contract.
+  const validateReviewRecord = deps.validateReviewRecord
+  const renderReviewReasons = deps.renderReviewReasons
+  const buildCandidateArtifact = deps.buildCandidateArtifact
+  const summariseArtifact = deps.summariseArtifact
+  const buildArtifactFor = deps.buildArtifactFor
   const ok = deps.ok
   const failure = deps.failure
 
@@ -97,6 +103,17 @@ export function createReviewVerdictActions(deps) {
     if (reviewTask === undefined) return failure('unknown-task', 'no task with id ' + id)
     const reviewRefused = verdictRefusal(context, reviewTask, 'reviewer')
     if (reviewRefused !== null) return reviewRefused
+    // T-191: the reviewer's hand-off is a ReviewRecord, never free text. Validate
+    // it BEFORE any candidate work, so a malformed verdict cannot build, run or
+    // discard a candidate as a side effect of being refused.
+    const validated = validateReviewRecord(source, {
+      verdict: action === 'approveReview' ? 'approved' : 'changes-requested',
+    })
+    if (validated.ok !== true) return failure(validated.code, validated.message)
+    const reviewRecord = validated.record
+    // The reasons are RENDERED from the blocking findings; they are not a second
+    // free-text channel the reviewer has to maintain.
+    const changeReasons = action === 'requestChanges' ? renderReviewReasons(reviewRecord) : ''
     // Build the independent test candidate BEFORE the phase moves: a conflict
     // is a readable refusal and the task stays in review for a changes request.
     let candidate = null
@@ -136,26 +153,71 @@ export function createReviewVerdictActions(deps) {
         )
       }
     }
+    // T-191: the host builds the CandidateArtifact from git BEFORE the mechanical
+    // check, so the check's fingerprint is the candidate's own identity.
+    let artifact = null
+    if (action === 'approveReview' && candidate !== null) {
+      const artifactStarted = Date.now()
+      const boundedArtifact = await boundedAwait(() => buildArtifactFor(reviewTask, candidate, null), actionTimeoutMs)
+      if (boundedArtifact.timedOut === true) {
+        return actionTimeoutFailure('approveReview build candidate artifact', id, artifactStarted)
+      }
+      if (boundedArtifact.value !== null && boundedArtifact.value !== undefined) artifact = boundedArtifact.value
+    }
     // The declared mechanical verification is a HOST action: it runs in the
     // candidate the review just built, BEFORE any tester exists. A command
     // that exits non-zero is not a judgement call, so it must not consume a
     // tester round (or its watchdog).
     let hostCheck = null
+    let hostCheckReused = false
     let hostCheckFailed = false
     const declaredVerify = normaliseVerify(reviewTask.verify)
     if (action === 'approveReview' && declaredVerify !== null) {
       if (candidate === null) {
         emitActivity(null, 'host-check', 'skipped: no test candidate in this profile', id, 'host')
       } else {
-        const checked = await runHostCheck(ctx, { verify: declaredVerify, cwd: candidate.path, now: () => clock() })
-        if (checked.ok !== true) {
-          // The declaration cannot be honoured: refuse readably instead of
-          // pretending it passed. Nothing is written, so the review stays open.
-          return failure(checked.code, checked.message)
+        // T-191: an unchanged candidate fingerprint reuses the baseline instead of
+        // paying for the same suite twice (re-submit without a new commit, or a
+        // review round on the same tree).
+        const previous = reviewTask.test === null || reviewTask.test === undefined ? null : reviewTask.test.hostCheck
+        const reusable =
+          artifact !== null &&
+          previous !== null &&
+          previous !== undefined &&
+          previous.command === declaredVerify.command &&
+          previous.fingerprint === artifact.hash &&
+          previous.timedOut !== true &&
+          previous.exitCode === 0
+        if (reusable) {
+          hostCheck = previous
+          hostCheckReused = true
+          emitActivity(null, 'host-check', 'reused: the candidate fingerprint did not change (' + String(artifact.hash) + ')', id, 'host')
+        } else {
+          const checked = await runHostCheck(ctx, { verify: declaredVerify, cwd: candidate.path, now: () => clock() })
+          if (checked.ok !== true) {
+            // The declaration cannot be honoured: refuse readably instead of
+            // pretending it passed. Nothing is written, so the review stays open.
+            return failure(checked.code, checked.message)
+          }
+          hostCheck = Object.assign({}, checked.check, { fingerprint: artifact === null ? null : artifact.hash })
+          hostCheckFailed = hostCheck.timedOut === true || hostCheck.exitCode !== 0
         }
-        hostCheck = checked.check
-        hostCheckFailed = hostCheck.timedOut === true || hostCheck.exitCode !== 0
       }
+    }
+    // Re-shape the artifact with the check it actually carries (the hash does not
+    // depend on the hostCheck, so the reuse decision above stays valid).
+    if (artifact !== null && hostCheck !== null) {
+      artifact = buildCandidateArtifact(
+        reviewTask,
+        {
+          base: artifact.base,
+          head: artifact.head,
+          changedFiles: artifact.changedFiles,
+          diffstat: artifact.diffstat,
+          keyHunks: artifact.keyHunks,
+        },
+        hostCheck,
+      )
     }
     // T-156: the candidate was just built from the target's CURRENT head and the
     // declaration may have changed since dispatch/submit. Compute the fingerprint
@@ -167,8 +229,8 @@ export function createReviewVerdictActions(deps) {
       (board) => {
         const transitioned =
           action === 'approveReview'
-            ? model.approveReview(board, id, clock(), context.by, writeByName(context))
-            : model.requestChanges(board, id, source.reasons, clock(), context.by, writeByName(context))
+            ? model.approveReview(board, id, clock(), context.by, writeByName(context), reviewRecord)
+            : model.requestChanges(board, id, changeReasons, clock(), context.by, writeByName(context), reviewRecord)
         if (transitioned.ok !== true) return transitioned
         let next = transitioned
         if (hostCheckFailed) {
@@ -189,13 +251,21 @@ export function createReviewVerdictActions(deps) {
             checkedTask.test.hostCheck = hostCheck
           }
         }
+        // T-191: the board keeps only the artifact SUMMARY (hash, range, files),
+        // never the artifact body or the diff.
+        if (artifact !== null) {
+          const artifactTask = model.findTask(next.board, id)
+          if (artifactTask !== null && artifactTask !== undefined && artifactTask.merge !== null && artifactTask.merge !== undefined) {
+            artifactTask.merge.artifact = summariseArtifact(artifact)
+          }
+        }
         return next
       },
       context,
     )
     if (result.ok !== true) return result
     if (action === 'requestChanges') {
-      emitActivity(context, 'review-end', 'changes requested: ' + String(source.reasons || '').slice(0, 200), id)
+      emitActivity(context, 'review-end', 'changes requested: ' + String(changeReasons).slice(0, 200), id)
     }
     if (action === 'approveReview' && hostCheckFailed) {
       // The review round is over even though the card returns to running: the
@@ -252,6 +322,10 @@ export function createReviewVerdictActions(deps) {
           testerBriefFor(result.task, projectPath, candidate, {
             godot: await godotInfoFor(projectPath, candidate.path),
             hostCheck: hostCheck,
+            hostCheckReused: hostCheckReused,
+            // T-191: the tester receives the artifact + the review scope, never a
+            // review verdict: the brief renders checked/residualRisks only.
+            artifact: artifact,
           }),
         )
         if (!stageAgents.available || started.ok !== true) {

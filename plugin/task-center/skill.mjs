@@ -165,6 +165,7 @@ export function buildInitContent(options) {
     '3. `board`/`get` —— 看阶段、轮次、证据、waitingReason。',
     '4. `submit` —— 本地验证通过并提交后带 evidence。',
     '5. 宿主接管：reviewer 评审 → 候选跑 `verify` → tester 测试 → 通过且 target 未动即自动合并；打回在同一 worktree 修完再 submit。',
+    '6. 结构化交接：reviewer 交 `checked/findings/residualRisks`，tester 执行 `probes` 交 `TestRecord`；空 checked/空 probes 拒绝，hostCheck 指纹未变即复用。',
     '',
     '## 拆卡与并行',
     '',

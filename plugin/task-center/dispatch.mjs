@@ -50,6 +50,7 @@ import {
   roleTemplateVariables,
 } from './schema.mjs'
 import * as model from './service.mjs'
+import { buildCandidateArtifact, renderReviewBrief, renderTesterBrief } from './stage-contract.mjs'
 import * as locks from './locks.mjs'
 import { DEFAULT_WORKTREE_TIMEOUT_MS, createGit } from './git.mjs'
 import { createLeaseGate } from './lease-gate.mjs'
@@ -1778,7 +1779,26 @@ function hostCheckSummaryLines(check) {
   return lines
 }
 
-export function reviewBriefFor(task, projectPath) {
+/**
+ * T-191: the board's own view of the candidate, for a brief that has no live
+ * artifact in hand (recovery/re-delivery). The full artifact is built by the
+ * host from git at submit and at review approval; this is the same shape with
+ * whatever the board recorded.
+ */
+export function boardArtifactFor(task, hostCheck) {
+  const merge = task.merge === null || task.merge === undefined ? {} : task.merge
+  return buildCandidateArtifact(
+    task,
+    {
+      base: typeof task.base === 'string' && task.base !== '' ? task.base : merge.base,
+      head: typeof merge.head === 'string' && merge.head !== '' ? merge.head : task.commit,
+      actualFiles: Array.isArray(task.actualFiles) ? task.actualFiles : [],
+    },
+    hostCheck === undefined ? (task.test === null || task.test === undefined ? null : task.test.hostCheck) : hostCheck,
+  )
+}
+
+export function reviewBriefFor(task, projectPath, artifact) {
   const review = task.review === null || task.review === undefined ? {} : task.review
   const merge = task.merge === null || task.merge === undefined ? {} : task.merge
   const declared = Array.isArray(task.writeFiles) ? task.writeFiles : []
@@ -1839,6 +1859,10 @@ export function reviewBriefFor(task, projectPath) {
     lines.push(...hostCheckSummaryLines(hostCheck))
   }
   if (typeof review.reasons === 'string' && review.reasons !== '') lines.push('', 'Previous review reasons:', review.reasons)
+  // T-191: the structured hand-off. The artifact is built by the host from git;
+  // a recovery/re-delivery path falls back to the board's summary facts.
+  const contractArtifact = artifact === undefined || artifact === null ? boardArtifactFor(task) : artifact
+  lines.push(...renderReviewBrief(task, contractArtifact, { requiresProbes: true }))
   lines.push(
     '',
     'Review against the project conventions: keep the change consistent with the surrounding code and architecture, avoid unrelated rewrites and never restyle files the task did not touch.',
@@ -1851,9 +1875,9 @@ export function reviewBriefFor(task, projectPath) {
     '- Error handling and naming follow the code around it.',
     '',
     'You are READ-ONLY on implementation: do not edit files, commit, merge or push.',
-    'Record the verdict with task_center:',
-    '  { action: "approveReview", id: "' + task.id + '" }',
-    '  { action: "requestChanges", id: "' + task.id + '", reasons: "concrete, actionable reasons (files/lines)" }',
+    'Record the verdict with task_center (the structured shapes above; free-text reasons are refused):',
+    '  { action: "approveReview", id: "' + task.id + '", checked: [...], findings: [...], residualRisks: [...] }',
+    '  { action: "requestChanges", id: "' + task.id + '", findings: [{ severity: "blocking", file, line, text }], checked: [...], residualRisks: [...] }',
   )
   return lines.join('\n')
 }
@@ -1920,6 +1944,28 @@ export function testerBriefFor(task, projectPath, candidate, options) {
     // check for the new tree, so the tester runs the declared command this round.
     lines.push('', 'This task declares verify: "' + String(normaliseVerify(task.verify).command) + '" but the host has no check for this round (the candidate was rebuilt); run that command yourself before judging.')
   }
+  // T-191: the structured hand-off. The tester receives the CandidateArtifact,
+  // the scope the REVIEWER already covered and the host baseline — never the
+  // review verdict (a scope hand-off is not a conclusion).
+  const contractArtifact =
+    opts.artifact !== undefined && opts.artifact !== null
+      ? opts.artifact
+      : buildCandidateArtifact(
+          task,
+          {
+            base: candidate === null || candidate === undefined ? null : candidate.base,
+            head: candidate === null || candidate === undefined ? null : candidate.head,
+            actualFiles:
+              candidate !== null && candidate !== undefined && Array.isArray(candidate.actualFiles)
+                ? candidate.actualFiles
+                : Array.isArray(task.actualFiles)
+                  ? task.actualFiles
+                  : [],
+          },
+          hostCheck,
+        )
+  const reviewRecord = task.review === null || task.review === undefined ? null : task.review.record
+  lines.push(...renderTesterBrief(task, contractArtifact, reviewRecord, hostCheck, { hostCheckReused: opts.hostCheckReused === true }))
   lines.push(
     '',
     'Test plan / runbook:',
@@ -1950,9 +1996,9 @@ export function testerBriefFor(task, projectPath, candidate, options) {
     '- screenshot paths for visual checks;',
     '- relevant Godot output (startup errors, scene load, crash lines).',
     '',
-    'Permission boundary (hard): the candidate is READ-ONLY implementation; you may only record the verdict:',
-    '  task_center { action: "passTest", id: "' + task.id + '", evidence: "commands/logs that passed" }',
-    '  task_center { action: "failTest", id: "' + task.id + '", evidence: "the failing command and its tail output" }',
+    'Permission boundary (hard): the candidate is READ-ONLY implementation; you may only record the verdict in the structured TestRecord shape above:',
+    '  task_center { action: "passTest", id: "' + task.id + '", probes: [{ id, command, exitCode, tail }], adversarial: [...], hostCheckRef, notes }',
+    '  task_center { action: "failTest", id: "' + task.id + '", probes: [ ...the same shape... ] }',
     '',
     'You are an independent, FRESH context: the worker self-test does not count as your verdict.',
   )

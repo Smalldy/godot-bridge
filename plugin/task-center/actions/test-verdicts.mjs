@@ -27,6 +27,10 @@ export function createTestVerdictActions(deps) {
   const worktreeRootOf = deps.worktreeRootOf
   const serialised = deps.serialised
   const testFailureBriefFor = deps.testFailureBriefFor
+  // T-191: the structured test contract.
+  const validateTestRecord = deps.validateTestRecord
+  const buildCandidateArtifact = deps.buildCandidateArtifact
+  const renderTestRecordEvidence = deps.renderTestRecordEvidence
   const ok = deps.ok
   const failure = deps.failure
 
@@ -66,20 +70,48 @@ export function createTestVerdictActions(deps) {
     if (testTask === undefined) return failure('unknown-task', 'no task with id ' + id)
     const testRefused = verdictRefusal(context, testTask, 'tester')
     if (testRefused !== null) return testRefused
+    // T-191: which candidate is this verdict about? The board records the test
+    // candidate's base/head, so the artifact (and its probes) is derivable here
+    // without trusting anything the tester pasted.
+    const merge = testTask.merge === null || testTask.merge === undefined ? {} : testTask.merge
+    const artifact = buildCandidateArtifact(
+      testTask,
+      {
+        base: typeof merge.base === 'string' && merge.base !== '' ? merge.base : testTask.base,
+        head:
+          typeof merge.mergeCommit === 'string' && merge.mergeCommit !== ''
+            ? merge.mergeCommit
+            : typeof merge.head === 'string' && merge.head !== ''
+              ? merge.head
+              : testTask.commit,
+        actualFiles: Array.isArray(testTask.actualFiles) ? testTask.actualFiles : [],
+      },
+      testTask.test === null || testTask.test === undefined ? null : testTask.test.hostCheck,
+    )
+    // The record is validated BEFORE the board moves: a refusal leaves the test
+    // round open, exactly like a malformed review verdict.
+    const checkedRecord = validateTestRecord(source, {
+      verdict: action === 'passTest' ? 'passed' : 'failed',
+      requiredProbes: artifact.probes,
+    })
+    if (checkedRecord.ok !== true) return failure(checkedRecord.code, checkedRecord.message)
+    const testRecord = checkedRecord.record
+    const explicitEvidence = source.evidence === undefined || source.evidence === null ? '' : String(source.evidence).trim()
+    const recordEvidence = renderTestRecordEvidence(testRecord)
+    const evidence = explicitEvidence !== '' ? explicitEvidence + (recordEvidence === '' ? '' : '\n' + recordEvidence) : recordEvidence
     const result = await writeTask(
       projectPath,
       id,
       (board) => {
         const decided =
           action === 'passTest'
-            ? model.passTest(board, id, clock(), context.by, writeByName(context))
-            : model.failTest(board, id, source.evidence, clock(), context.by, writeByName(context))
+            ? model.passTest(board, id, clock(), context.by, writeByName(context), testRecord)
+            : model.failTest(board, id, evidence, clock(), context.by, writeByName(context), testRecord)
         if (decided.ok !== true) return decided
-        if (action === 'passTest' && source.evidence !== undefined && source.evidence !== null) {
-          const text = String(source.evidence).trim()
+        if (action === 'passTest' && evidence !== '') {
           const task = model.findTask(decided.board, id)
-          if (task !== null && task !== undefined && task.test !== null && task.test !== undefined && text !== '') {
-            task.test.evidence = text
+          if (task !== null && task !== undefined && task.test !== null && task.test !== undefined) {
+            task.test.evidence = evidence
           }
         }
         return decided

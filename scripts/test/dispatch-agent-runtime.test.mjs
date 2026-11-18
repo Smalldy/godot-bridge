@@ -64,7 +64,7 @@ check('the reviewer delivery is recorded by id', task !== undefined && task.revi
 const treeSnap = await rig.api.snapshot(rig.project, { sessionId: 'session-lead' })
 check('the snapshot exposes the root Agent and live children', treeSnap.agentTree !== null && treeSnap.agentTree.root.id === 'session-lead' && treeSnap.agentTree.members.some((member) => member.id === 'agent-worker') && treeSnap.agentTree.members.some((member) => member.id === 'agent-reviewer'), JSON.stringify(treeSnap.agentTree))
 
-const approved = await rig.action('approveReview', { id: created.id })
+const approved = await rig.action('approveReview', { id: created.id, checked: [{ criterion: 'the card moves through the stage', method: 'read the board result', result: 'pass' }] })
 check('approveReview starts a tester child', approved.ok === true && stageSpawns.some((entry) => entry.kind === 'tester' && entry.taskId === created.id), JSON.stringify(approved).slice(0, 900))
 read = await rig.state.read(rig.project)
 task = read.board.tasks.filter((entry) => entry.id === created.id)[0]
