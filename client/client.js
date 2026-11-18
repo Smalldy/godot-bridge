@@ -845,6 +845,11 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				decisionSubtitleFallback: '关键事件',
 				decisionCountdown: '{seconds}s 后自动选择「{defaultLabel}」',
 				decisionNoCountdown: '不会自动选择',
+				// T-196: the server never auto-runs a danger default, so the countdown
+				// says so instead of promising an automatic choice it would refuse.
+				decisionCountdownProtected: '{seconds}s 后超时，不会自动执行「{defaultLabel}」（该选项需人工确认）',
+				decisionCountdownProtectedNoDefault: '{seconds}s 后超时，不会自动选择',
+				decisionCreateTextPlaceholder: '修改建议（可选）',
 				decisionQueue: '还有 {n} 个待决策',
 				decisionDefaultBadge: '默认',
 				decisionTextLabel: '自定义文本',
@@ -1562,6 +1567,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				decisionSubtitleFallback: 'Key event',
 				decisionCountdown: '{seconds}s until the default “{defaultLabel}” is chosen',
 				decisionNoCountdown: 'No automatic choice',
+				decisionCountdownProtected: '{seconds}s until it expires; “{defaultLabel}” is protected and will not run automatically',
+				decisionCountdownProtectedNoDefault: '{seconds}s until it expires; nothing is auto-selected',
+				decisionCreateTextPlaceholder: 'Revision note (optional)',
 				decisionQueue: '{n} more decisions queued',
 				decisionDefaultBadge: 'Default',
 				decisionTextLabel: 'Custom answer',
@@ -8094,19 +8102,47 @@ function createDecisionModal(deps) {
 		return taskId === null ? label : taskId + ' · ' + label
 	}
 
-	/** The label of the option flagged as the default (the timeout choice). */
-	function decisionDefaultLabel(decision) {
+	/** The option object flagged as the default (the timeout choice). */
+	function decisionDefaultOption(decision) {
 		if (decision === null || decision === undefined || !Array.isArray(decision.options)) return null
 		const wanted = typeof decision.defaultOption === 'string' ? decision.defaultOption : null
 		const chosen = decision.options.filter((option) => option.default === true || (wanted !== null && option.id === wanted))[0]
-		return chosen === undefined ? null : chosen.label
+		return chosen === undefined ? null : chosen
 	}
 
-	/** The countdown sentence, or null when the host set no deadline. */
+	/** The label of the option flagged as the default (the timeout choice). */
+	function decisionDefaultLabel(decision) {
+		const chosen = decisionDefaultOption(decision)
+		return chosen === null ? null : chosen.label
+	}
+
+	/**
+	 * Would the SERVER auto-select the default at the deadline?
+	 *
+	 * The host refuses to auto-run a dangerous option (it expires the request
+	 * "requires-manual"), so the countdown must not promise it. The server sends
+	 * the policy as autoRunAllowed; a decision without that field is judged from
+	 * its own default option (an older host or a test fixture).
+	 */
+	function decisionAutoRunAllowed(decision) {
+		if (decision === null || decision === undefined) return false
+		if (decision.autoRunAllowed === true) return true
+		if (decision.autoRunAllowed === false) return false
+		const chosen = decisionDefaultOption(decision)
+		const hasDeadline = typeof decision.timeoutAt === 'string' && decision.timeoutAt !== ''
+		return hasDeadline && chosen !== null && chosen.danger !== true
+	}
+
+	/** The countdown sentence, or the protected/no-deadline sentence. */
 	function decisionCountdownText(decision, receivedAt, now, t) {
 		const seconds = decisionRemainingSeconds(decision, receivedAt, now)
-		const defaultLabel = decisionDefaultLabel(decision)
 		if (seconds === null) return t('decisionNoCountdown')
+		if (decisionAutoRunAllowed(decision) !== true) {
+			const protectedLabel = decisionDefaultLabel(decision)
+			if (protectedLabel === null) return t('decisionCountdownProtectedNoDefault').replace('{seconds}', String(seconds))
+			return t('decisionCountdownProtected').replace('{seconds}', String(seconds)).replace('{defaultLabel}', protectedLabel)
+		}
+		const defaultLabel = decisionDefaultLabel(decision)
 		if (defaultLabel === null) return t('decisionNoCountdown')
 		return t('decisionCountdown').replace('{seconds}', String(seconds)).replace('{defaultLabel}', defaultLabel)
 	}
@@ -8218,7 +8254,7 @@ function createDecisionModal(deps) {
 						className: 'gbt-input gbt-editorarea',
 						style: { minHeight: '56px' },
 						value: text,
-						placeholder: t('decisionTextPlaceholder'),
+						placeholder: current.eventKey === 'create' ? t('decisionCreateTextPlaceholder') : t('decisionTextPlaceholder'),
 						'data-decision-text': 'true',
 						disabled: submitting,
 						onChange: function (event) { setText(String(event.target.value)) },
@@ -8277,6 +8313,8 @@ function createDecisionModal(deps) {
 	DecisionModal.decisionInitialOption = decisionInitialOption
 	DecisionModal.decisionCanConfirm = decisionCanConfirm
 	DecisionModal.decisionCountdownText = decisionCountdownText
+	DecisionModal.decisionDefaultOption = decisionDefaultOption
+	DecisionModal.decisionAutoRunAllowed = decisionAutoRunAllowed
 	DecisionModal.CONFIRM_WORD = CONFIRM_WORD
 	return DecisionModal
 }

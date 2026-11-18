@@ -845,6 +845,11 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				decisionSubtitleFallback: '关键事件',
 				decisionCountdown: '{seconds}s 后自动选择「{defaultLabel}」',
 				decisionNoCountdown: '不会自动选择',
+				// T-196: the server never auto-runs a danger default, so the countdown
+				// says so instead of promising an automatic choice it would refuse.
+				decisionCountdownProtected: '{seconds}s 后超时，不会自动执行「{defaultLabel}」（该选项需人工确认）',
+				decisionCountdownProtectedNoDefault: '{seconds}s 后超时，不会自动选择',
+				decisionCreateTextPlaceholder: '修改建议（可选）',
 				decisionQueue: '还有 {n} 个待决策',
 				decisionDefaultBadge: '默认',
 				decisionTextLabel: '自定义文本',
@@ -1562,6 +1567,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				decisionSubtitleFallback: 'Key event',
 				decisionCountdown: '{seconds}s until the default “{defaultLabel}” is chosen',
 				decisionNoCountdown: 'No automatic choice',
+				decisionCountdownProtected: '{seconds}s until it expires; “{defaultLabel}” is protected and will not run automatically',
+				decisionCountdownProtectedNoDefault: '{seconds}s until it expires; nothing is auto-selected',
+				decisionCreateTextPlaceholder: 'Revision note (optional)',
 				decisionQueue: '{n} more decisions queued',
 				decisionDefaultBadge: 'Default',
 				decisionTextLabel: 'Custom answer',
