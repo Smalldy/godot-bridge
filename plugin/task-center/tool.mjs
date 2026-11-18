@@ -9,6 +9,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { AGENT_ACTIONS, READ_ACTIONS } from './api.mjs'
 import { SKILL_NAME } from './skill.mjs'
+import { CARD_MODEL_LIMITS } from './schema.mjs'
 
 /** A stable display label from the only identity the tool layer exposes. */
 export function agentLabel(agent) {
@@ -75,7 +76,11 @@ export function registerTaskTool(ctx, options) {
       id: { type: 'string', description: 'Task id, e.g. T-12.' },
       title: { type: 'string', description: 'Task title (create, update).' },
       spec: { type: 'string', description: 'What the task involves (create, update).' },
-      acceptance: { type: 'string', description: 'How completion is judged (create, update).' },
+      acceptance: {
+        type: 'string',
+        description:
+          'How completion is judged (create, update). A dev card is budgeted at ' + String(CARD_MODEL_LIMITS.acceptance) + ' criteria (one per line); split the card at design time instead of growing it.',
+      },
       // T-131: 'report' needs structured evidence rows while submit/failTest take
       // a text summary, so the ONE parameter accepts both shapes.
       evidence: {
@@ -176,7 +181,9 @@ export function registerTaskTool(ctx, options) {
       notes: { type: 'string', description: 'TestRecord.notes: why the verdict, and why any host baseline was re-run.' },
       verification: {
         description:
-          'Executable probes the task declares (create/update): { probes: [{ id, command, timeoutMs? }] }. The tester must execute each one and the TestRecord must contain its id.',
+          'Executable probes the task declares (create/update): { probes: [{ id, command, timeoutMs? }] }. The tester must execute each one and the TestRecord must contain its id. ' +
+          'A NEW dev card must declare at least one: create refuses a dev card without probes (an investigation card needs none), and update cannot clear the last one. At most ' +
+          String(CARD_MODEL_LIMITS.probes) + ' probes per card.',
         oneOf: [
           {
             type: 'object',
@@ -207,7 +214,9 @@ export function registerTaskTool(ctx, options) {
       },
       writeFiles: {
         type: 'array',
-        description: 'Project-relative files this task will write; the scheduler locks them before dispatch.',
+        description:
+          'Project-relative files this task will write; the scheduler locks them before dispatch. ' +
+          'A dev card is budgeted at ' + String(CARD_MODEL_LIMITS.files) + ' production files (tests and the generated client/client.js do not count); split the card at design time instead of growing it.',
         items: { type: 'string' },
       },
       verify: {

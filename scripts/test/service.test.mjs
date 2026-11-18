@@ -46,7 +46,15 @@ function check(label, condition, detail) {
 const T0 = Date.parse('2026-01-01T00:00:00.000Z')
 const at = (offset) => T0 + (offset === undefined ? 0 : offset)
 const base = () => emptyBoard(T0)
-const make = (board, title, input) => createTask(board, Object.assign({ title }, input), T0, '@me')
+// T-192: a NEW dev card must declare an executable probe; these model tests are
+// about transitions, not about which probe a card carries, so the helper states
+// one (an investigation card is exempt and keeps whatever the caller passes).
+const make = (board, title, input) => {
+  const probe = { verification: { probes: [{ id: 'suite', command: 'npm test' }] } }
+  const merged = Object.assign(probe, { title }, input)
+  if (merged.kind === 'investigate') delete merged.verification
+  return createTask(board, merged, T0, '@me')
+}
 const finish = (board, id, offset) => {
   const start = offset === undefined ? 10 : offset
   const claimed = claimTask(board, id, { name: 'worker' }, at(start))
@@ -656,7 +664,7 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('T-131 failTest refuses an investigation', failTest(claimed.board, 'T-1', 'x', at(7), 'tester').code === 'not-a-dev-task')
   check('T-131 report needs a summary', reportTask(claimed.board, 'T-1', {}, at(8), 'worker').code === 'missing-summary')
   check('T-131 report refuses a summary over 4 KB', reportTask(claimed.board, 'T-1', { summary: 'x'.repeat(5000) }, at(8), 'worker').code === 'invalid-report')
-  check('T-131 a dev card cannot report', reportTask(createTask(base(), { title: 'd' }, T0, 'me').board, 'T-1', { summary: 'x' }, at(1), 'me').code === 'not-an-investigation')
+  check('T-131 a dev card cannot report', reportTask(make(base(), 'd').board, 'T-1', { summary: 'x' }, at(1), 'me').code === 'not-an-investigation')
   const rows = [{ command: 'npm test', exitCode: 1, outputTail: 'z'.repeat(5000) }]
   for (let index = 0; index < 25; index += 1) rows.push({ command: 'step ' + String(index), exitCode: 0, outputTail: '' })
   const reported = reportTask(claimed.board, 'T-1', { summary: 'The cache key ignores the branch.', body: 'y'.repeat(70000), evidence: rows, artifacts: ['.worktrees/probe-T-1-a', ''] }, at(9), 'worker', 'worker-p')
@@ -694,13 +702,13 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('T-131 counts investigating separately from running', counts(running.board).investigating === 1 && counts(running.board).running === 1, JSON.stringify(counts(running.board)))
 
   // Dependencies: investigating done is enough; dev work still needs the merge.
-  const dependentOnInvestigation = createTask(reported.board, { title: 'consumer', dependsOn: ['T-1'] }, at(12), 'me')
+  const dependentOnInvestigation = make(reported.board, 'consumer', { dependsOn: ['T-1'] })
   check(
     'T-131 a done investigation satisfies a dependent',
     dependencyInfo(dependentOnInvestigation.board, findTask(dependentOnInvestigation.board, 'T-2')).state === 'ready',
     JSON.stringify(dependencyInfo(dependentOnInvestigation.board, findTask(dependentOnInvestigation.board, 'T-2'))),
   )
-  const devMade = createTask(base(), { title: 'dev dep' }, T0, 'me')
+  const devMade = make(base(), 'dev dep')
   const devClaimed = claimTask(devMade.board, 'T-1', { name: 'worker' }, at(5))
   const devSubmitted = submitTask(
     devClaimed.board,
@@ -711,7 +719,7 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   )
   const devApproved = approveReview(devSubmitted.board, 'T-1', at(7), 'reviewer')
   const devTested = passTest(devApproved.board, 'T-1', at(8), 'tester')
-  const devDependent = createTask(devTested.board, { title: 'blocks on merge', dependsOn: ['T-1'] }, at(9), 'me')
+  const devDependent = make(devTested.board, 'blocks on merge', { dependsOn: ['T-1'] })
   check(
     'T-131 a dev dependency still waits for the merge',
     dependencyInfo(devDependent.board, findTask(devDependent.board, 'T-2')).state === 'waiting',

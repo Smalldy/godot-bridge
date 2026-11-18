@@ -27,6 +27,9 @@ check('the tool registers', rig.tool !== undefined && rig.tool.name === 'task_ce
 
 const agent = { id: 'session-abcdef12' }
 const other = { id: 'session-other' }
+// T-192: every NEW dev card declares an executable probe; these tool tests are
+// about the tool surface, so they state one shared probe.
+const PROBES = { probes: [{ id: 'suite', command: 'npm test' }] }
 async function call(args, who) {
   return rig.tool.execute(args, { agent: who === undefined ? agent : who })
 }
@@ -136,12 +139,12 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
 
 // create + board
 {
-  const result = await call({ action: 'create', title: 'from the model', dependsOn: [], writeFiles: ['scripts/a.gd'] })
+  const result = await call({ action: 'create', title: 'from the model', dependsOn: [], writeFiles: ['scripts/a.gd'], verification: PROBES })
   check('the tool creates a task', result.ok === true && result.task.title === 'from the model', JSON.stringify(result))
   check('a created task is pending', result.task.status === 'pending')
   const board = await call({ action: 'board' })
   check('the tool reads the board', board.ok === true && board.tasks.length === 1 && board.counts.pending === 1, JSON.stringify(board.counts))
-  const bad = await call({ action: 'create', title: 'bad dependency', dependsOn: ['T-99'] })
+  const bad = await call({ action: 'create', title: 'bad dependency', dependsOn: ['T-99'], verification: PROBES })
   check('a refused create is a readable error', bad.error !== undefined && bad.code === 'unknown-dependency', JSON.stringify(bad))
 }
 
@@ -166,7 +169,7 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
 
 // start / dispatch / submit ownership
 {
-  const created = await call({ action: 'create', title: 'pool work', priority: 99 })
+  const created = await call({ action: 'create', title: 'pool work', priority: 99, verification: PROBES })
   const id = created.task.id
   const requested = await call({ action: 'start' })
   check('an agent start is a request, not a start', requested.error !== undefined && requested.code === 'needs-consent' && requested.request !== null, JSON.stringify(requested))
@@ -191,7 +194,7 @@ check('the removed review actions are gone', actions.indexOf('accept') < 0 && ac
 // automatic locks only: dispatch locks writeFiles, submit releases them, the
 // manual lock/unlock/forceUnlock actions are refusals now.
 {
-  const created = await call({ action: 'create', title: 'auto locked work', writeFiles: ['scripts/auto.gd'] })
+  const created = await call({ action: 'create', title: 'auto locked work', writeFiles: ['scripts/auto.gd'], verification: PROBES })
   const id = created.task.id
   await rig.api.perform('start', {}, rig.user)
   const board = await call({ action: 'board' })
@@ -230,7 +233,7 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   }
   registerTaskTool(mergeRig.ctx, { api: mergeRig.api })
   const toolCall = (args, who) => mergeRig.tool.execute(args, { agent: who === undefined ? { id: 'session-lead' } : who })
-  const created = await toolCall({ action: 'create', title: 'tool MR' })
+  const created = await toolCall({ action: 'create', title: 'tool MR', verification: PROBES })
   const id = created.task.id
   await mergeRig.action('start')
   const board = await mergeRig.action('board')
@@ -290,7 +293,7 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
 }
 
 {
-  const created = await call({ action: 'create', title: 'verify card', verify: { command: 'npm run verify && npm run e2e', timeoutMs: 120000 } })
+  const created = await call({ action: 'create', title: 'verify card', verify: { command: 'npm run verify && npm run e2e', timeoutMs: 120000 }, verification: PROBES })
   check(
     'create carries the verify declaration through the tool',
     created.ok === true &&
@@ -308,7 +311,7 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
 {
   const card = await call({ action: 'create', title: 'Why is the loader slow?', kind: 'investigate' })
   check('T-131 the tool creates an investigation', card.ok === true && card.task.kind === 'investigate', JSON.stringify(card.ok === true ? card.task.kind : card.code))
-  const plain = await call({ action: 'create', title: 'Plain dev card' })
+  const plain = await call({ action: 'create', title: 'Plain dev card', verification: PROBES })
   check('T-131 create defaults to dev', plain.ok === true && plain.task.kind === 'dev', JSON.stringify(plain.ok === true ? plain.task.kind : plain.code))
   const changed = await call({ action: 'update', id: card.task.id, kind: 'dev' })
   check('T-131 the tool refuses a kind change', changed.ok !== true && changed.code === 'kind-immutable', JSON.stringify(changed.code))

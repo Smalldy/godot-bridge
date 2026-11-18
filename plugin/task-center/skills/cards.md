@@ -5,6 +5,7 @@
 - spec 自包含：目标 / 背景代码 / 要求 / 测试方法 / 验收；按真实源码写，不猜接口。
 - acceptance 必须可判定：命令、退出码、断言、截图说明；不要写“看起来正常”。
 - writeFiles 就是锁：派发前原子加锁，漏写会互踩；文件路径相对项目根。锁只负责串行，不表达先后。
+- 卡模型（宿主强制）：新 dev 卡必须声明 `verification.probes`（至少一条可执行命令，tester 会逐条执行）；生产文件 ≤ 5、生产改动 ≤ 250 行、acceptance ≤ 6 条、probes ≤ 8 条。测试文件与生成物 `client/client.js` 不计入生产预算；超限返回 typed error，须在设计阶段拆卡。调查卡（kind=investigate）不受此限；已存在的旧卡不会被静默改写，只有 update 显式声明的字段才校验。
 - priority 只在 ready 卡之间比较；maxAttempts 用尽会 blocked。
 - 每张卡有 `ownerSession`（创建它的会话）：看板按项目共享，但卡只由该根 Agent 的 worker 执行、阶段子代理评审/测试；不要替别的会话改卡或换 owner。
 - 改卡用 `update`；不要手改 `.agents/tasks.json`。

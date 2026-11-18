@@ -466,7 +466,7 @@ function spawnCalls(team) {
     const row = (o.handoff.sessions || []).filter((entry) => entry.sessionId === OLD)[0]
     check('T-153 handoff payload names sessions, liveness, cards and eligibility', row !== undefined && row.status === 'live' && row.cards.active === 1 && o.handoff.cards.length === 1 && o.handoff.cards[0].id === 'T-6' && o.handoff.cards[0].ownerSession === OLD && Array.isArray(o.handoff.cards[0].liveExecutors) && o.handoff.cards[0].lease.until !== null && o.handoff.eligibility.takeover.ok === false && o.handoff.eligibility.resume.ok === true, JSON.stringify({ row: row, cards: o.handoff.cards }))
     check('T-153 a live owner is never taken over and no second team is built', spawnCalls(rig.team).length === 0 && o.team === null, JSON.stringify({ spawns: spawnCalls(rig.team).length, team: o.team }))
-    const created = await rig.api.perform('create', { title: 'new work' }, rig.context)
+    const created = await rig.api.perform('create', { title: 'new work', verification: { probes: [{ id: 'suite', command: 'npm test' }] } }, rig.context)
     check('v3 create is not blocked by another session\'s handoff', created.ok === true, JSON.stringify({ code: created.code }))
     const started = await rig.api.perform('start', {}, rig.context)
     check('v3 start is not blocked by another session\'s handoff', started.ok === true || started.code === 'needs-consent', JSON.stringify({ code: started.code }))
@@ -566,12 +566,12 @@ function spawnCalls(team) {
   {
     const rig = onboardRig({ board: boardOf({ tasks: [runningCard()] }), team: leadOnlyTeam(), roles: 'auto' })
     markSession(rig, OLD, OLD_STALE)
-    const blocked = await rig.api.perform('create', { title: 'blocked card' }, rig.context)
+    const blocked = await rig.api.perform('create', { title: 'blocked card', verification: { probes: [{ id: 'suite', command: 'npm test' }] } }, rig.context)
     check('v3 create is allowed before another session\'s handoff decision', blocked.ok === true, JSON.stringify({ code: blocked.code }))
     const joined = await rig.api.perform('onboard', { handoff: { decision: 'join-read-only' } }, rig.context)
     const after = boardJson(rig.fs, rig.project).tasks.filter((task) => task.id === 'T-6')[0]
     check('T-153 join read-only records the decision and leaves the old card with its owner', joined.ok === true && joined.onboard.handoff.decision !== null && joined.onboard.handoff.decision.mode === 'join-read-only' && after.ownerSession === OLD && after.status === 'running' && joined.onboard.setup.did.some((step) => step.step === 'handoff-join'), JSON.stringify({ decision: joined.onboard.handoff && joined.onboard.handoff.decision, owner: after.ownerSession }))
-    const created = await rig.api.perform('create', { title: 'own card now' }, rig.context)
+    const created = await rig.api.perform('create', { title: 'own card now', verification: { probes: [{ id: 'suite', command: 'npm test' }] } }, rig.context)
     check('T-153 after joining read-only the session may create its OWN cards', created.ok === true && created.task.ownerSession === NEW, JSON.stringify({ ok: created.ok, code: created.code }))
   }
 
@@ -609,7 +609,7 @@ function spawnCalls(team) {
         joined.onboard.handoff.decision.mode === 'join-read-only',
       JSON.stringify({ code: joined.code, keys: keys.length, decision: persistedSessions[NEW], oldestSeedKept: keys.indexOf('session-history-' + String(SEED - 1)) }),
     )
-    const created = await rig.api.perform('create', { title: 'after cap join' }, rig.context)
+    const created = await rig.api.perform('create', { title: 'after cap join', verification: { probes: [{ id: 'suite', command: 'npm test' }] } }, rig.context)
     check('T-153 the persisted decision still unblocks create', created.ok === true, JSON.stringify({ ok: created.ok, code: created.code }))
   }
 }
