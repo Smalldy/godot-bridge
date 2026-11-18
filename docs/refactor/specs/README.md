@@ -1,10 +1,18 @@
 # Requirement Packets
 
-> A Requirement Packet is the durable source of truth between "we aligned in chat" and "we split implementation cards". No UI/interaction card without one.
+> A Requirement Packet is the durable source of truth between "we aligned in chat" and "we split implementation cards".
+> It is a general requirements baseline, not a UI copy template.
 
 ## When required
 
-Any card that changes user-visible interaction, copy, defaults, or state policy must reference a packet. Pure refactors/API-only cards can skip it.
+Use a packet when work is:
+
+- split across multiple cards
+- introducing a new cross-card contract/schema/state model
+- ambiguous enough that card writers would otherwise guess
+- likely to change during implementation
+
+A single small card can stay self-contained in `spec/acceptance`; do not add a packet just to satisfy a template.
 
 ## Location and versioning
 
@@ -19,51 +27,73 @@ Header:
 > Supersedes: v0 / none
 ```
 
-## Required sections
+## Minimal required sections
 
-1. Product decisions already aligned
-2. Scenarios / event catalog
-3. Common panel structure (if any)
-4. Per-event copy: title, body, options, descriptions, default, timeout
-5. Defaults table
-6. Acceptance test requirements
-7. Change control
+1. **Goal and success** — what outcome is correct
+2. **Scope / non-goals** — what is included and explicitly excluded
+3. **Decisions and constraints** — already aligned, non-negotiable choices
+4. **Scenarios** — stable IDs (`S1`, `S2`, ...) with acceptance criteria
+5. **Open questions** — unresolved items that block card creation
+6. **Change control** — how amendments are versioned
 
-## Card contract
+Optional sections, only when relevant:
 
-Every implementation card starts with:
+- interfaces / API / data model
+- state machine / events
+- UI structure and copy
+- defaults / timeouts / limits
+- migration / rollback
+- security / high-risk confirmation
+
+Do not add empty sections.
+
+## Scenario IDs
+
+Every acceptance claim maps to a scenario:
+
+```text
+S1 create a card
+S2 reject creation
+S3 timeout continuation
+```
+
+Cards reference the scenarios they own:
 
 ```text
 Spec: docs/refactor/specs/<topic>.md
-Scenarios: <section ids this card owns>
+Scenarios: S1, S2
 ```
 
-The card holds only:
+Tests should name the scenario ID so coverage is traceable.
 
-- the subset of scenarios it implements
-- writeFiles/dependsOn/verify
+## Card contract
+
+A card contains only:
+
+- packet reference + scenario IDs
+- its own writeFiles/dependsOn/verify
 - acceptance/probes
-- open questions
+- open questions not already resolved
 
-The card must not duplicate long copy. It may quote short labels for tests.
+Long copy, schemas, event tables stay in the packet or a linked annex.
 
 ## Definition of Ready
 
 Before creating cards:
 
-- [ ] packet exists and is reviewed
-- [ ] every scenario has copy/default/timeout
-- [ ] high-risk actions have explicit confirmation
-- [ ] acceptance includes copy-key/snapshot assertions
+- [ ] goal and non-goals are explicit
+- [ ] every scenario has acceptance
+- [ ] decisions are dated and versioned
+- [ ] open questions are closed or assigned
 - [ ] dependencies are logical, not just file overlap
 - [ ] card split has one invariant per card
 
 ## Change control
 
-- Copy change: edit packet, bump version, update i18n/tests in the same change.
-- Card change: update packet reference, not a stale copy.
-- A card that discovers an unstated decision must stop and update the packet first.
+- Change requirement: edit packet, bump version, update affected cards/tests.
+- Do not patch requirements only in chat or in a card spec.
+- A card that discovers an unstated decision stops and updates the packet first.
 
 ## Example
 
-[`decision-requests.md`](decision-requests.md) is the v1 reference implementation of this format.
+[`decision-requests.md`](decision-requests.md) is a **UI-specific instance** of this format. Its copy table is an optional annex, not part of the general standard.
