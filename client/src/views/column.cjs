@@ -19,7 +19,9 @@ function createColumn(deps) {
 		const skeleton = props.skeleton === true
 		// T-159: an empty lane only becomes a narrow rail for 待派发 / 阻塞. The three
 		// active lanes and 完成 keep their full share so a wide window is filled.
-		const narrowable = group.key === 'dispatch' || group.key === 'blocked'
+		// T-194: 已取消 is a terminal rail like 阻塞, so an empty cancelled lane narrows
+		// too instead of stretching a lane that has nothing to show.
+		const narrowable = group.key === 'dispatch' || group.key === 'blocked' || group.key === 'cancelled'
 		const empty = skeleton !== true && narrowable && visible.length === 0 && (props.summary === undefined || props.summary === null)
 		const subcounts = props.subcounts === undefined || props.subcounts === null ? null : props.subcounts
 		const head = h(

@@ -1,11 +1,16 @@
 /**
  * Board view module.
  *
- * T-158 (夜航作战板): six lanes instead of seven. ready + waiting collapse into
- * one 待派发 lane whose head carries BOTH counts; the done lane always shows the
- * newest cards plus the archive entry point, and an empty lane narrows instead of
+ * T-158 (夜航作战板): six active lanes. ready + waiting collapse into one 待派发
+ * lane whose head carries BOTH counts; the done lane always shows the newest
+ * cards plus the archive entry point, and an empty lane narrows instead of
  * stretching. The kind filter lives in the panel toolbar now, so the board only
  * reads props.kind.
+ *
+ * T-194: cancelled is a terminal state, not a variety of "blocked". It gets its
+ * own 已取消 lane AFTER 阻塞, so terminal cards stay visible instead of
+ * masquerading as blocked, while 阻塞 holds only really blocked cards. The lane
+ * order is dispatch / running / reviewing / testing / done / blocked / cancelled.
  */
 function createBoard(deps) {
 	const React = deps.React
@@ -21,7 +26,8 @@ function createBoard(deps) {
 
 	function Board(props) {
 		// T-135: the board is its own scrollport and parks on the first lane with
-		// cards; T-158 keeps that behaviour for the six-lane layout.
+		// cards; T-158 keeps that behaviour and T-194 extends it to the seven-lane
+		// layout.
 		const boardRef = React.useRef(null)
 		const t = props.t
 		const tasks = props.snapshot.tasks
@@ -41,8 +47,9 @@ function createBoard(deps) {
 		const pending = filtered.filter(function (task) { return task.status === 'pending' })
 		const readyTasks = pending.filter(function (task) { return task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready' })
 		const waitingTasks = pending.filter(function (task) { return !(task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready') })
-		// T-158: six lanes. 待派发 covers BOTH ready and waiting cards; its head
-		// shows the two numbers so the split stays readable without a seventh lane.
+		// T-158: six active lanes. 待派发 covers BOTH ready and waiting cards; its
+		// head shows the two numbers so the split stays readable without a second
+		// dispatch lane. T-194 appends 已取消 as the seventh, TERMINAL lane.
 		// T-159: every lane is always emitted (even when empty); the width policy is
 		// decided in the column/ CSS, not by dropping lanes from the board.
 		const groups = [
@@ -51,7 +58,11 @@ function createBoard(deps) {
 			{ key: 'reviewing', label: t('reviewingCol'), tasks: filtered.filter(function (task) { return task.status === 'reviewing' }) },
 			{ key: 'testing', label: t('testingCol'), tasks: filtered.filter(function (task) { return task.status === 'testing' }) },
 			{ key: 'done', label: t('doneCol'), tasks: visibleDone },
-			{ key: 'blocked', label: t('blockedCol'), tasks: filtered.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst) },
+			// T-194: cancelled is TERMINAL and never "blocked": the 阻塞 lane holds only
+			// cards that are really blocked, and the 已取消 lane below keeps the terminal
+			// cards visible (still queryable through board/list as well).
+			{ key: 'blocked', label: t('blockedCol'), tasks: filtered.filter(function (task) { return task.status === 'blocked' }).slice().sort(recentFirst) },
+			{ key: 'cancelled', label: t('cancelledCol'), tasks: filtered.filter(function (task) { return task.status === 'cancelled' }).slice().sort(recentFirst) },
 		]
 		const scrollTarget = tcFirstNonEmptyColumn(groups)
 		React.useEffect(function () {

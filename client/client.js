@@ -275,6 +275,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				collapseColumn: '收起',
 				expandColumn: '展开',
 				blockedCol: '阻塞',
+				cancelledCol: '已取消',
 				emptyBoard: '还没有任务。点“新建任务”开始。',
 				emptyQueue: '没有可派发的任务。',
 				emptyHistory: '没有历史记录。',
@@ -448,6 +449,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				stateTesting: '测试中',
 				stateDone: '已完成',
 				stateBlocked: '阻塞',
+				stateCancelled: '已取消',
 				depCount: '依赖 {n}',
 				dependencyNone: '无依赖',
 				lastScan: '上次扫描 {ago}',
@@ -990,6 +992,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				collapseColumn: 'Collapse',
 				expandColumn: 'Expand',
 				blockedCol: 'Blocked',
+				cancelledCol: 'Cancelled',
 				emptyBoard: 'No tasks yet. Use “New task” to start.',
 				emptyQueue: 'Nothing is ready to dispatch.',
 				emptyHistory: 'No history yet.',
@@ -1145,7 +1148,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				copySessionId: 'Copy session ID',
 				ownerSession: 'Owning session',
 				ownerSessionHint: 'This card belongs to that session',
-				// T-158 night-watch board: two-row header, six lanes, compact cards.
+				// T-158 night-watch board: two-row header, compact cards. T-194 makes it
+				// seven lanes by adding the 已取消 terminal rail after 阻塞.
 				sharedBoard: 'shared board',
 				sessionsPill: '{n} sessions',
 				sessionsPopoverTitle: 'Participating sessions',
@@ -1163,6 +1167,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				stateTesting: 'In test',
 				stateDone: 'Done',
 				stateBlocked: 'Blocked',
+				stateCancelled: 'Cancelled',
 				depCount: '{n} deps',
 				dependencyNone: 'no dependencies',
 				lastScan: 'Last scan {ago}',
@@ -2429,6 +2434,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 .gbt-cardstate[data-state="reviewing"]{color:var(--dsw-alias-state-business-primary)}
 .gbt-cardstate[data-state="testing"]{color:var(--dsw-alias-state-warn-label)}
 .gbt-cardstate[data-state="blocked"]{color:var(--dsw-alias-state-error-primary)}
+/* T-194: cancelled is terminal, not an error — neutral tertiary like the cancelled pill. */
+.gbt-cardstate[data-state="cancelled"]{color:var(--dsw-alias-label-tertiary)}
 .gbt-cardtime{font-size:9.5px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex:none}
 .gbt-context .gbt-workspacebar{flex:0 1 auto;margin:0;padding:0 8px;height:28px;gap:6px;border-radius:8px;font-size:10.5px;max-width:min(430px,42vw);overflow:hidden}
 .gbt-context .gbt-workspacebar .gbt-workspacestate{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
@@ -2440,8 +2447,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 @media (max-width:1360px){.gbt-colsubcount .gbt-sublabel{display:none}.gbt-colsubcount .gbt-subnum{margin-left:0}
 .gbt-colsubcount::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block;margin-right:3px}}
 @media (max-width:1200px){.gbt-sessionschip{padding:0 7px;gap:5px}.gbt-context{gap:5px}.gbt-toprow{gap:8px}.gbt-board{overflow-x:auto}.gbt-col{min-width:150px}.gbt-col[data-empty="true"]{min-width:132px}}
-/* T-160 narrow panels stack the six lanes vertically instead of scrolling
-   sideways. Only the desktop grid rules above change here. */
+/* T-160 narrow panels stack the lanes vertically instead of scrolling sideways.
+   T-194 that is seven lanes. Only the desktop grid rules above change here. */
 @media (max-width:860px){
   .gbt-root{max-width:100%;overflow-x:hidden}
   .gbt-main,.gbt-content,.gbt-view{max-width:100%;min-width:0}
@@ -3957,9 +3964,14 @@ function createTaskCard(deps) {
 		} else if (task.status === 'done') {
 			stateKey = 'done'
 			stateLabel = t('stateDone')
-		} else if (task.status === 'blocked' || task.status === 'cancelled') {
+		} else if (task.status === 'blocked') {
 			stateKey = 'blocked'
 			stateLabel = t('stateBlocked')
+		} else if (task.status === 'cancelled') {
+			// T-194: cancelled is its own terminal state, never a red "blocked" — the
+			// card in the 已取消 lane names the state it is actually in.
+			stateKey = 'cancelled'
+			stateLabel = t('stateCancelled')
 		} else if (task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready') {
 			stateKey = 'ready'
 			stateLabel = t('stateReady')
@@ -4148,7 +4160,9 @@ function createColumn(deps) {
 		const skeleton = props.skeleton === true
 		// T-159: an empty lane only becomes a narrow rail for 待派发 / 阻塞. The three
 		// active lanes and 完成 keep their full share so a wide window is filled.
-		const narrowable = group.key === 'dispatch' || group.key === 'blocked'
+		// T-194: 已取消 is a terminal rail like 阻塞, so an empty cancelled lane narrows
+		// too instead of stretching a lane that has nothing to show.
+		const narrowable = group.key === 'dispatch' || group.key === 'blocked' || group.key === 'cancelled'
 		const empty = skeleton !== true && narrowable && visible.length === 0 && (props.summary === undefined || props.summary === null)
 		const subcounts = props.subcounts === undefined || props.subcounts === null ? null : props.subcounts
 		const head = h(
@@ -4235,11 +4249,16 @@ module.exports = { createColumn }
 /**
  * Board view module.
  *
- * T-158 (夜航作战板): six lanes instead of seven. ready + waiting collapse into
- * one 待派发 lane whose head carries BOTH counts; the done lane always shows the
- * newest cards plus the archive entry point, and an empty lane narrows instead of
+ * T-158 (夜航作战板): six active lanes. ready + waiting collapse into one 待派发
+ * lane whose head carries BOTH counts; the done lane always shows the newest
+ * cards plus the archive entry point, and an empty lane narrows instead of
  * stretching. The kind filter lives in the panel toolbar now, so the board only
  * reads props.kind.
+ *
+ * T-194: cancelled is a terminal state, not a variety of "blocked". It gets its
+ * own 已取消 lane AFTER 阻塞, so terminal cards stay visible instead of
+ * masquerading as blocked, while 阻塞 holds only really blocked cards. The lane
+ * order is dispatch / running / reviewing / testing / done / blocked / cancelled.
  */
 function createBoard(deps) {
 	const React = deps.React
@@ -4255,7 +4274,8 @@ function createBoard(deps) {
 
 	function Board(props) {
 		// T-135: the board is its own scrollport and parks on the first lane with
-		// cards; T-158 keeps that behaviour for the six-lane layout.
+		// cards; T-158 keeps that behaviour and T-194 extends it to the seven-lane
+		// layout.
 		const boardRef = React.useRef(null)
 		const t = props.t
 		const tasks = props.snapshot.tasks
@@ -4275,8 +4295,9 @@ function createBoard(deps) {
 		const pending = filtered.filter(function (task) { return task.status === 'pending' })
 		const readyTasks = pending.filter(function (task) { return task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready' })
 		const waitingTasks = pending.filter(function (task) { return !(task.dependency !== undefined && task.dependency !== null && task.dependency.state === 'ready') })
-		// T-158: six lanes. 待派发 covers BOTH ready and waiting cards; its head
-		// shows the two numbers so the split stays readable without a seventh lane.
+		// T-158: six active lanes. 待派发 covers BOTH ready and waiting cards; its
+		// head shows the two numbers so the split stays readable without a second
+		// dispatch lane. T-194 appends 已取消 as the seventh, TERMINAL lane.
 		// T-159: every lane is always emitted (even when empty); the width policy is
 		// decided in the column/ CSS, not by dropping lanes from the board.
 		const groups = [
@@ -4285,7 +4306,11 @@ function createBoard(deps) {
 			{ key: 'reviewing', label: t('reviewingCol'), tasks: filtered.filter(function (task) { return task.status === 'reviewing' }) },
 			{ key: 'testing', label: t('testingCol'), tasks: filtered.filter(function (task) { return task.status === 'testing' }) },
 			{ key: 'done', label: t('doneCol'), tasks: visibleDone },
-			{ key: 'blocked', label: t('blockedCol'), tasks: filtered.filter(function (task) { return task.status === 'blocked' || task.status === 'cancelled' }).slice().sort(recentFirst) },
+			// T-194: cancelled is TERMINAL and never "blocked": the 阻塞 lane holds only
+			// cards that are really blocked, and the 已取消 lane below keeps the terminal
+			// cards visible (still queryable through board/list as well).
+			{ key: 'blocked', label: t('blockedCol'), tasks: filtered.filter(function (task) { return task.status === 'blocked' }).slice().sort(recentFirst) },
+			{ key: 'cancelled', label: t('cancelledCol'), tasks: filtered.filter(function (task) { return task.status === 'cancelled' }).slice().sort(recentFirst) },
 		]
 		const scrollTarget = tcFirstNonEmptyColumn(groups)
 		React.useEffect(function () {
