@@ -111,7 +111,7 @@ check(
 
 // create, start, pause, get, board through the action route
 {
-  let res = await post({ action: 'create', title: 'A', dependsOn: [] })
+  let res = await post({ action: 'create', title: 'A', dependsOn: [], verification: { probes: [{ id: 'suite', command: 'npm test' }] } })
   let payload = res.json()
   check('the route creates a task', payload.ok === true && payload.task.title === 'A', res.text)
   check('the response carries the board snapshot', payload.snapshot !== undefined && payload.snapshot.tasks.length === 1)
@@ -173,6 +173,33 @@ check(
   check('diagnostics carries the scheduler block', payload.scheduler !== null && typeof payload.scheduler === 'object' && typeof payload.scheduler.ticks === 'number')
   check('the dispatch probe has no roster fields', payload.dispatch !== undefined && payload.dispatch.members === undefined && payload.dispatch.membersReadable === undefined && payload.dispatch.hasAgentTeams === undefined, JSON.stringify(payload.dispatch))
   check('the dispatch probe reports the subagent service', payload.dispatch.available === true && Array.isArray(payload.dispatch.subagentProviders))
+}
+
+// ── T-192: the card model is enforced through the SAME route ───────────────
+{
+  const probe = { probes: [{ id: 'suite', command: 'npm test' }] }
+  let res = await post({ action: 'create', title: 'no probes' })
+  check('a new dev card without probes is a typed refusal', res.json().ok === false && res.json().code === 'missing-probes', res.text)
+  res = await post({ action: 'create', title: 'six files', verification: probe, writeFiles: ['a.mjs', 'b.mjs', 'c.mjs', 'd.mjs', 'e.mjs', 'f.mjs'] })
+  check('more than five production files is a typed refusal', res.json().ok === false && res.json().code === 'too-many-files', res.text)
+  res = await post({
+    action: 'create',
+    title: 'generated bundle does not count',
+    verification: probe,
+    writeFiles: ['a.mjs', 'b.mjs', 'c.mjs', 'd.mjs', 'e.mjs', 'client/client.js', 'scripts/test/extra.test.mjs'],
+  })
+  const generatedCard = res.json()
+  check('the generated bundle and test files are outside the file budget', generatedCard.ok === true, res.text)
+  res = await post({ action: 'create', title: 'seven criteria', verification: probe, acceptance: '1 a\n2 b\n3 c\n4 d\n5 e\n6 f\n7 g' })
+  check('more than six acceptance criteria is a typed refusal', res.json().ok === false && res.json().code === 'too-many-acceptance', res.text)
+  res = await post({ action: 'create', title: 'nine probes', verification: { probes: Array.from({ length: 9 }, (_, index) => ({ id: 'p' + String(index), command: 'npm test' })) } })
+  check('more than eight probes is a typed refusal', res.json().ok === false && res.json().code === 'too-many-probes', res.text)
+  res = await post({ action: 'create', title: 'an investigation needs no probe', kind: 'investigate' })
+  check('an investigation card is exempt from the card model', res.json().ok === true && res.json().task.kind === 'investigate', res.text)
+  res = await post({ action: 'update', id: generatedCard.ok === true ? generatedCard.task.id : 'T-1', verification: null })
+  check('a dev card cannot be updated back to no probes', res.json().ok === false && res.json().code === 'missing-probes', res.text)
+  res = await post({ action: 'update', id: generatedCard.ok === true ? generatedCard.task.id : 'T-1', acceptance: 'a\nb\nc\nd\ne\nf\ng' })
+  check('an update cannot grow a card past six criteria', res.json().ok === false && res.json().code === 'too-many-acceptance', res.text)
 }
 
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')

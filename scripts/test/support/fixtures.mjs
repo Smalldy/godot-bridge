@@ -367,7 +367,12 @@ export function createRig(options) {
 }
 
 export async function createTask(rig, input) {
-  const result = await rig.action('create', input)
+  // T-192: a NEW dev card must declare an executable probe. Suites about
+  // dispatch/review/test do not care which probe it is, so the shared rig
+  // states one once here instead of in every call site.
+  const body = Object.assign({}, input)
+  if (body.verification === undefined && body.kind !== 'investigate') body.verification = { probes: [{ id: 'suite', command: 'npm test' }] }
+  const result = await rig.action('create', body)
   if (result.ok !== true) throw new Error('create failed: ' + JSON.stringify(result))
   return result.task
 }

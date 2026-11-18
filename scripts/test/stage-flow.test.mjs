@@ -63,13 +63,17 @@ async function boardTask(id) {
 }
 
 async function startCard(title, verification) {
-  const created = await createTask(rig, {
+  const input = {
     title: title,
     writeFiles: [],
     acceptance: '- the contract suite passes\n- every declared probe ran',
-    verification: { probes: verification },
     verify: { command: 'npm test', timeoutMs: 5000 },
-  })
+  }
+  // T-192: a NEW dev card must declare an executable probe. A caller that does
+  // not care which probe the card carries gets the rig's default one instead of
+  // an empty (now refused) list.
+  if (Array.isArray(verification) && verification.length > 0) input.verification = { probes: verification }
+  const created = await createTask(rig, input)
   const started = await rig.action('start')
   assert.equal(started.ok, true, JSON.stringify(started).slice(0, 400))
   await rig.settle()

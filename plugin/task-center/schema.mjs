@@ -7,7 +7,7 @@
  * to write.
  */
 
-import { normaliseReviewRecord, normaliseTestRecord } from './stage-contract.mjs'
+import { acceptanceItemsOf as contractAcceptanceItems, normaliseReviewRecord, normaliseTestRecord } from './stage-contract.mjs'
 
 // The record size caps live with the contract module that enforces them; they
 // are re-exported here because the schema is the documented boundary.
@@ -374,6 +374,193 @@ export function validateVerification(raw) {
     probes.push(probe)
   }
   return { ok: true, verification: { probes: probes } }
+}
+
+// ── the card model (STAGE-CONTRACT §5) ──────────────────────────────────────
+
+/**
+ * The design-stage budget of ONE dev card: a card that cannot fit it must be
+ * SPLIT WHILE IT IS BEING DESIGNED, not explained away in review or blamed on
+ * the tester. Two kinds of paths are outside the production budget: generated
+ * artifacts (`client/client.js` is rebuilt from `client/src` on every UI change,
+ * so counting it would reject every UI card) and tests (a test file is the
+ * consequence of a change, not the scope being designed).
+ */
+export const CARD_MODEL_LIMITS = Object.freeze({
+  files: 5,
+  changedLines: 250,
+  acceptance: 6,
+  probes: VERIFICATION_LIMITS.probes,
+})
+
+/** Paths BUILT from sources; never counted as card scope (STAGE-CONTRACT §5). */
+export const GENERATED_PATHS = Object.freeze(['client/client.js'])
+
+/** One repo-relative path, normalised for comparison (git uses "/"). */
+export function normaliseCardPath(value) {
+  return String(value === undefined || value === null ? '' : value)
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+}
+
+/** True for a generated artifact (the built bundle, or its source map). */
+export function isGeneratedPath(value) {
+  const path = normaliseCardPath(value)
+  return path !== '' && GENERATED_PATHS.some((generated) => path === generated || path === generated + '.map')
+}
+
+/** True for a test path: test files are never production scope. */
+export function isTestPath(value) {
+  const path = normaliseCardPath(value)
+  if (path === '') return false
+  if (path.indexOf('scripts/test/') === 0) return true
+  if (/(^|\/)tests?\//.test(path)) return true
+  return /\.test\.(mjs|cjs|js)$/.test(path)
+}
+
+/** True when a changed/declared path counts toward the card's production budget. */
+export function isProductionPath(value) {
+  const path = normaliseCardPath(value)
+  return path !== '' && isGeneratedPath(path) === false && isTestPath(path) === false
+}
+
+/** The production files of a path list: normalised, deduplicated, in order. */
+export function productionFiles(list) {
+  const out = []
+  if (Array.isArray(list) === false) return out
+  for (const entry of list) {
+    const path = normaliseCardPath(entry)
+    if (isProductionPath(path) === false) continue
+    if (out.indexOf(path) >= 0) continue
+    out.push(path)
+  }
+  return out
+}
+
+function normaliseChange(entry) {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null
+  const path = normaliseCardPath(entry.path)
+  if (path === '') return null
+  return {
+    path: path,
+    insertions: Number.isFinite(entry.insertions) ? Math.max(0, Math.floor(entry.insertions)) : 0,
+    deletions: Number.isFinite(entry.deletions) ? Math.max(0, Math.floor(entry.deletions)) : 0,
+  }
+}
+
+/** Production changed lines of a per-file list, or null when none was supplied (unknown is not zero). */
+export function productionChangeLines(changes) {
+  if (Array.isArray(changes) === false) return null
+  let lines = 0
+  for (const entry of changes) {
+    const change = normaliseChange(entry)
+    if (change === null || isProductionPath(change.path) === false) continue
+    lines += change.insertions + change.deletions
+  }
+  return lines
+}
+
+/**
+ * The production line budget of one SUBMITTED candidate, or null when it cannot
+ * be attributed. The board keeps only the artifact SUMMARY (one aggregate
+ * diffstat plus the changed-file list), so lines are attributable only when
+ * EVERY changed file is production: a candidate that also touches tests or the
+ * generated bundle is left unchecked instead of blaming the rebuilt bundle's
+ * lines on the card. A candidate with NO production file has a known budget of
+ * 0.
+ */
+export function productionLinesOfArtifact(artifact) {
+  if (artifact === null || typeof artifact !== 'object' || Array.isArray(artifact)) return null
+  if (Array.isArray(artifact.changedFiles) === false) return null
+  const changed = artifact.changedFiles.map(normaliseCardPath).filter((path) => path !== '')
+  if (changed.length === 0) return null
+  const production = changed.filter(isProductionPath).length
+  if (production === 0) return 0
+  if (production !== changed.length) return null
+  const stat = artifact.diffstat
+  if (stat === null || typeof stat !== 'object' || Array.isArray(stat)) return null
+  const insertions = Number.isFinite(stat.insertions) ? Math.max(0, Math.floor(stat.insertions)) : 0
+  const deletions = Number.isFinite(stat.deletions) ? Math.max(0, Math.floor(stat.deletions)) : 0
+  return insertions + deletions
+}
+
+function cardRefusal(code, message) {
+  return { ok: false, code: code, message: message }
+}
+
+/**
+ * Validate ONE card against the card model (STAGE-CONTRACT §5).
+ *
+ * input: { kind, acceptance, writeFiles, verification, changes? } — `changes` is
+ * an optional per-file list; without it the line budget cannot be judged.
+ * options: { requireProbes, limits }.
+ *
+ * Investigation cards are EXEMPT (a report, never a candidate). Returns
+ * { ok: true, kind, exempt, files, acceptance, probes, lines } or a typed
+ * refusal; never throws.
+ */
+export function validateCardModel(input, options) {
+  const source = input === null || typeof input !== 'object' || Array.isArray(input) ? {} : input
+  const opts = options === null || typeof options !== 'object' || Array.isArray(options) ? {} : options
+  const overrides = opts.limits !== null && typeof opts.limits === 'object' && Array.isArray(opts.limits) === false ? opts.limits : {}
+  const limits = Object.assign({}, CARD_MODEL_LIMITS, overrides)
+  const kind = normaliseKind(source.kind)
+  const resolvedKind = kind === null ? DEV_KIND : kind
+  const shapes = {
+    ok: true,
+    kind: resolvedKind,
+    exempt: true,
+    files: 0,
+    acceptance: 0,
+    probes: 0,
+    lines: null,
+  }
+  // Only a dev card owns a candidate; an investigation card is out of scope.
+  if (resolvedKind !== DEV_KIND) return shapes
+  const acceptance = contractAcceptanceItems({ acceptance: source.acceptance }).length
+  if (acceptance > limits.acceptance) {
+    return cardRefusal(
+      'too-many-acceptance',
+      'a dev card carries at most ' + String(limits.acceptance) + ' acceptance criteria; this one has ' + String(acceptance) + ' — split the card at design time',
+    )
+  }
+  const files = productionFiles(source.writeFiles)
+  if (files.length > limits.files) {
+    return cardRefusal(
+      'too-many-files',
+      'a dev card touches at most ' + String(limits.files) + ' production files; this one declares ' + String(files.length) + ' (tests and the generated client/client.js do not count) — split the card at design time',
+    )
+  }
+  const probes = normaliseVerification(source.verification).probes.length
+  if (probes > limits.probes) {
+    return cardRefusal(
+      'too-many-probes',
+      'a dev card declares at most ' + String(limits.probes) + ' probes; this one declares ' + String(probes) + ' — split the card at design time',
+    )
+  }
+  if (opts.requireProbes === true && probes === 0) {
+    return cardRefusal(
+      'missing-probes',
+      'a dev card needs at least one executable probe in verification.probes ({ id, command }): the host or the tester runs it to prove the card. An investigation card (kind "investigate") needs none.',
+    )
+  }
+  const lines = productionChangeLines(source.changes)
+  if (lines !== null && lines > limits.changedLines) {
+    return cardRefusal(
+      'too-many-changes',
+      'the candidate changes ' + String(lines) + ' production lines; a dev card is limited to ' + String(limits.changedLines) + ' (tests and the generated client/client.js do not count) — split the card at design time',
+    )
+  }
+  return {
+    ok: true,
+    kind: DEV_KIND,
+    exempt: false,
+    files: files.length,
+    acceptance: acceptance,
+    probes: probes,
+    lines: lines,
+  }
 }
 
 /**

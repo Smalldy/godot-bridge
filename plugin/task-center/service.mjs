@@ -34,6 +34,9 @@ import {
 
   validateVerification,
   validateVerify,
+  CARD_MODEL_LIMITS,
+  productionLinesOfArtifact,
+  validateCardModel,
 } from './schema.mjs'
 import { normaliseReviewRecord, normaliseTestRecord } from './stage-contract.mjs'
 
@@ -208,10 +211,19 @@ export function createTask(board, input, now, by) {
     )
   }
   const declaredVerify = input.verify === undefined ? null : checkedVerify.verify
-  // T-191: the task's executable probes. An absent declaration is an empty list
-  // (TC-191 does not yet require probes at create; TC-192 does).
+  // T-191: the task's executable probes, validated strictly on write.
   const checkedVerification = validateVerification(input.verification)
   if (checkedVerification.ok !== true) return fail(checkedVerification.code, checkedVerification.message)
+  const declaredVerification = checkedVerification.verification === undefined ? { probes: [] } : checkedVerification.verification
+  // T-192 (STAGE-CONTRACT §5): a NEW dev card must fit the card model before it
+  // exists — at least one executable probe, and the design-stage size budget.
+  // An oversized or probe-less design is refused HERE, while it can still be
+  // split; investigation cards are exempt (they deliver a report, no candidate).
+  const card = validateCardModel(
+    { kind: kind, acceptance: input.acceptance, writeFiles: input.writeFiles, verification: declaredVerification },
+    { requireProbes: true },
+  )
+  if (card.ok !== true) return fail(card.code, card.message)
   const checked = validateDepends(board, undefined, input.dependsOn, normaliseTarget(input.target))
   if (checked.ok !== true) return checked
   const next = clone(board)
@@ -229,7 +241,7 @@ export function createTask(board, input, now, by) {
     dependsOn: checked.dependsOn,
     writeFiles: normaliseList(input.writeFiles),
     verify: declaredVerify,
-    verification: checkedVerification.verification === undefined ? { probes: [] } : checkedVerification.verification,
+    verification: declaredVerification,
     base: null,
     target: normaliseTarget(input.target),
     branch: null,
@@ -307,6 +319,19 @@ export function updateTask(board, id, input, now, by) {
   const updatedVerification = input.verification === undefined ? undefined : validateVerification(input.verification)
   if (updatedVerification !== undefined && updatedVerification.ok !== true) {
     return fail(updatedVerification.code, updatedVerification.message)
+  }
+  // T-192 (STAGE-CONTRACT §5): an update may not shrink a dev card out of the
+  // card model. Only the fields THIS update supplies are validated, so a LEGACY
+  // card written before the rule existed keeps running: an unrelated edit
+  // (priority, note, dependencies) never retroactively rewrites or rejects it.
+  // Supplying verification is a scope decision, and it must keep a probe.
+  const cardPatch = {}
+  if (input.acceptance !== undefined) cardPatch.acceptance = input.acceptance
+  if (input.writeFiles !== undefined) cardPatch.writeFiles = normaliseList(input.writeFiles)
+  if (updatedVerification !== undefined) cardPatch.verification = updatedVerification.verification
+  if (Object.keys(cardPatch).length > 0) {
+    const card = validateCardModel(Object.assign({ kind: task.kind }, cardPatch), { requireProbes: updatedVerification !== undefined })
+    if (card.ok !== true) return fail(card.code, card.message)
   }
   const updatedVerify = input.verify === undefined ? undefined : validateVerify(input.verify)
   if (updatedVerify !== undefined && updatedVerify.ok !== true) {
@@ -892,6 +917,19 @@ export function submitTask(board, id, input, now, by, byName) {
     return fail('investigation-report-only', id + ' is an investigation card: finish it with task_center { action: "report", id, summary, body, evidence? }, not submit')
   }
   if (task.status !== 'running') return fail('not-running', id + ' is ' + task.status + ', not running')
+  // T-192 (STAGE-CONTRACT §5): the design-stage size budget is checked against
+  // the candidate the host just derived. It fires only when EVERY changed file
+  // is production, because the board keeps one aggregate diffstat: a candidate
+  // that also touches tests or the generated client/client.js cannot attribute
+  // its lines, and blaming the rebuilt bundle on the card would be wrong.
+  const submittedArtifact = input !== undefined && input.merge !== null && typeof input.merge === 'object' && Array.isArray(input.merge) === false ? input.merge.artifact : null
+  const productionLines = productionLinesOfArtifact(submittedArtifact)
+  if (productionLines !== null && productionLines > CARD_MODEL_LIMITS.changedLines) {
+    return fail(
+      'too-many-changes',
+      id + ' changes ' + String(productionLines) + ' production lines; the card model allows ' + String(CARD_MODEL_LIMITS.changedLines) + ' (tests and the generated client/client.js do not count). Report this to the Lead and split the card at design time instead of explaining it in review or test.',
+    )
+  }
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   if (input !== undefined && input.evidence !== undefined) target.evidence = String(input.evidence)
