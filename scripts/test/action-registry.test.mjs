@@ -47,6 +47,8 @@ const EXPECTED_ACTIONS = [
   'worktreesCleanup',
   'openProject',
   'onboard',
+  'decisionList',
+  'decisionAnswer',
 ]
 const EXPECTED_DEV_ONLY = ['approveReview', 'requestChanges', 'passTest', 'failTest', 'mergeRequest', 'refreshMerge', 'rejectMerge']
 const EXPECTED_USER_ONLY = [
@@ -63,7 +65,7 @@ const EXPECTED_USER_ONLY = [
   'skillsCatalog',
   'worktreesCleanup',
 ]
-const EXPECTED_READ = ['board', 'list', 'get', 'locks', 'harnessStatus', 'skillsCatalog']
+const EXPECTED_READ = ['board', 'list', 'get', 'locks', 'harnessStatus', 'skillsCatalog', 'decisionList']
 
 assert.deepEqual(ACTIONS, EXPECTED_ACTIONS, 'the action order is the public contract')
 assert.deepEqual(DEV_ONLY_ACTIONS, EXPECTED_DEV_ONLY)

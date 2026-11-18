@@ -32,6 +32,8 @@ import * as model from './service.mjs'
 import * as locks from './locks.mjs'
 import { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from './actions/registry.mjs'
 import { createReadActions } from './actions/read.mjs'
+import { createDecisionActions } from './actions/decisions.mjs'
+import { createDecisionStore } from './decisions.mjs'
 import { createHarnessActions } from './actions/harness.mjs'
 import { createControlActions } from './actions/control.mjs'
 import { createLifecycleActions } from './actions/lifecycle.mjs'
@@ -688,6 +690,23 @@ export function createApi(ctx, options) {
     clock: clock,
     ok: ok,
     failure: failure,
+  })
+  // T-195: host decision requests persist beside the board. The store is the
+  // primitive the create/timeout/lifecycle paths call; decisionList and
+  // decisionAnswer are only its two transport actions. The panel role reaches
+  // the same actions through the route (role 'user').
+  const decisionStore = createDecisionStore({ fs: ctx.fs }, {
+    now: clock,
+    ensureDir: ensureDir,
+    sandboxPolicyFor: writePolicyFor,
+  })
+  const decisionActions = createDecisionActions({
+    decisions: decisionStore,
+    ok: ok,
+    failure: failure,
+    byOf: function (context) {
+      return context !== null && context !== undefined && typeof context.by === 'string' && context.by !== '' ? context.by : '@unknown'
+    },
   })
   // A task can be merged by both the tester's passTest and the host sweep. The
   // second caller must not take the stale branch and rebuild a candidate for a
@@ -3156,6 +3175,18 @@ export function createApi(ctx, options) {
       tasks = allTasks.filter((task) => task.status !== 'done' || keepDone.has(String(task.id)))
     }
     const boardSize = await boardSizeOf(projectPath, board)
+    // T-195: the modal queue. The sweep runs on every snapshot so a SERVER
+    // deadline is real even when no panel is polling; it only writes when a
+    // deadline actually passed, so a 2.5s poll does not churn the file.
+    let pendingDecisions = []
+    let decisionsError = null
+    try {
+      const swept = await decisionStore.sweep(projectPath)
+      if (swept.ok === true) pendingDecisions = swept.pending
+      else decisionsError = swept.code === undefined ? 'unreadable' : swept.code
+    } catch (error) {
+      decisionsError = 'unreadable'
+    }
     const registryStatus = typeof state.registryStatus === 'function' ? state.registryStatus() : null
     const projectRef = projectRefOf(projectPath)
     // T-152: the project/session scopes are an EXPLICIT source, not something the
@@ -3233,6 +3264,10 @@ export function createApi(ctx, options) {
       // T-154: the REAL merge queue, read from the merger that owns it. A host
       // without a merger answers null — never a fabricated zero.
       mergeQueue: mergerQueueStatus(),
+      // T-195: pending host decisions (one-shot, server deadline). Resolved
+      // history is served by decisionList, not by the polling snapshot.
+      decisions: pendingDecisions,
+      decisionsError: decisionsError,
       tasks: tasks,
       locks: locks.view(state.memory.locks, board, now).map((lock) =>
         Object.assign({}, lock, { waiters: lockWaiters(board, lock) }),
@@ -4409,6 +4444,8 @@ export function createApi(ctx, options) {
 
     const readHandler = readActions[action]
     if (readHandler !== undefined) return readHandler(source, context, projectPath, now)
+    const decisionHandler = decisionActions[action]
+    if (decisionHandler !== undefined) return decisionHandler(source, context, projectPath, now)
     const taskAdminHandler = taskAdminActions[action]
     if (taskAdminHandler !== undefined) return taskAdminHandler(source, context, projectPath)
     const controlHandler = controlActions[action]
@@ -4734,5 +4771,24 @@ export function createApi(ctx, options) {
     }
   }
 
-  return { perform: perform, snapshot: snapshot, worktrees: worktreesProbe, taskDetail: taskDetail, taskList: taskList, autoMergePending: autoMergePending, reapStageReleases: reapStageReleases, actions: ACTIONS, readActions: READ_ACTIONS }
+  return {
+    perform: perform,
+    snapshot: snapshot,
+    worktrees: worktreesProbe,
+    taskDetail: taskDetail,
+    taskList: taskList,
+    autoMergePending: autoMergePending,
+    reapStageReleases: reapStageReleases,
+    actions: ACTIONS,
+    readActions: READ_ACTIONS,
+    // T-195: the decision primitives other cards call from create/timeout/
+    // lifecycle paths. They are not actions; decisionList/decisionAnswer are.
+    decisions: decisionStore,
+    requestDecision: function (projectPath, input, context) {
+      return decisionStore.request(projectPath, input, context)
+    },
+    expireDecisions: function (projectPath) {
+      return decisionStore.sweep(projectPath)
+    },
+  }
 }

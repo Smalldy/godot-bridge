@@ -342,6 +342,16 @@ const projectFormWrapper =
   '\t\t\t\t\ttcErrorMessage: tcErrorMessage,\n' +
   '\t\t\t\t})\n' +
   '\t\t\t})()\n'
+const decisionModal = read('views/decision-modal.cjs')
+const decisionModalWrapper =
+  '\t\t\tconst DecisionModal = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  decisionModal +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createDecisionModal\n' +
+  '\t\t\t\treturn factory({ React: React, h: h })\n' +
+  '\t\t\t})()\n'
 const glyph = read('views/glyph.cjs')
 const glyphWrapper =
   '\t\t\tconst Glyph = (function () {\n' +
@@ -373,6 +383,7 @@ const taskCenterWrapper =
   '\t\t\t\t\tTaskForm: TaskForm,\n' +
   '\t\t\t\t\tSettingsForm: SettingsForm,\n' +
   '\t\t\t\t\tProjectForm: ProjectForm,\n' +
+  '\t\t\t\t\tDecisionModal: DecisionModal,\n' +
   '\t\t\t\t\tuseTranslate: useTranslate,\n' +
   '\t\t\t\t\tuseSnapshot: useSnapshot,\n' +
   '\t\t\t\t\tuseNow: useNow,\n' +

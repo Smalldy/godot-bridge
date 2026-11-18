@@ -23,6 +23,11 @@
 				tasks: [],
 				counts: {},
 			}, 'loading', '')
+			// T-195: the host's pending decisions and the local arrival time of the
+			// snapshot they came with. The modal counts down from the SERVER's
+			// remainingMs, corrected by this receipt time.
+			snapshot.decisions = []
+			snapshot.receivedAt = Date.now()
 			// T-111: the Host answers the activity timeline incrementally. Keep what we
 			// already have and ask only for events after the last one we saw.
 			let activityCursor = null
@@ -66,6 +71,22 @@
 				emit(snapshot)
 			}
 
+			/**
+			 * T-195: carry the pending decision queue onto a snapshot. The server
+			 * sends each request's remainingMs, so the countdown is measured from
+			 * the server deadline; receivedAt turns it into a local elapsed time.
+			 */
+			function withDecisions(next, payload) {
+				const host =
+					payload !== null && payload !== undefined && payload.snapshot !== undefined && payload.snapshot !== null
+						? payload.snapshot
+						: payload
+				if (host !== null && host !== undefined && Array.isArray(host.decisions)) next.decisions = host.decisions
+				else if (!Array.isArray(next.decisions)) next.decisions = []
+				next.receivedAt = Date.now()
+				return next
+			}
+
 			async function fetchJson(url, options) {
 				const response = await fetch(url, options)
 				return await response.json()
@@ -96,7 +117,7 @@
 								// a zero-task delta/edge answer is not useful as first paint.
 								const total = corePayload.counts !== null && corePayload.counts !== undefined && Number.isFinite(corePayload.counts.total) ? corePayload.counts.total : 0
 								if (corePayload.tasks.length === 0 && total > 0) return
-								emit(tcSnapshot(corePayload, 'host', ''))
+								emit(withDecisions(tcSnapshot(corePayload, 'host', ''), corePayload))
 							}
 						} catch (error) {
 							/* the full request below is the fallback */
@@ -111,6 +132,7 @@
 							// the view renders its open-project entry points, say nothing, and
 							// leave no message behind for the binding to inherit.
 							const unbound = tcSnapshot(Object.assign({}, payload, { ok: true, project: null, projectRoot: null, tasks: [] }), 'setup', '')
+							withDecisions(unbound, payload)
 							unbound.actionResult = snapshot.actionResult
 							unbound.actionError = snapshot.actionError
 							messageKind = null
@@ -120,7 +142,7 @@
 							// switch pins a project, so "follow the session" stays the default.
 							// Only an ACTION's outcome survives a routine poll (see below); what
 							// refreshes here is the board data.
-							const next = tcMergeSnapshot(snapshot, payload)
+							const next = withDecisions(tcMergeSnapshot(snapshot, payload), payload)
 							// T-111: accumulate the incremental activity page. A project switch
 							// starts a new log (the old project's events no longer apply).
 							if (next.project !== snapshot.project) {
@@ -150,6 +172,8 @@
 							emit(next)
 						} else {
 							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
+							failed.decisions = snapshot.decisions
+							failed.receivedAt = snapshot.receivedAt
 							failed.actionResult = snapshot.actionResult
 							failed.actionError = snapshot.actionError
 							messageKind = 'state'
@@ -157,6 +181,8 @@
 						}
 					} catch (error) {
 						const offline = tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error))
+						offline.decisions = snapshot.decisions
+						offline.receivedAt = snapshot.receivedAt
 						offline.actionResult = snapshot.actionResult
 						offline.actionError = snapshot.actionError
 						messageKind = 'state'
@@ -192,7 +218,7 @@
 					if (payload && payload.ok === true) {
 						const host = payload.snapshot !== undefined && payload.snapshot !== null ? payload.snapshot : payload
 						if (host && Array.isArray(host.tasks)) {
-							const next = tcSnapshot(host, 'host', '', payload)
+							const next = withDecisions(tcSnapshot(host, 'host', '', payload), host)
 							if (quiet) {
 								next.actionResult = snapshot.actionResult
 								next.actionError = snapshot.actionError
