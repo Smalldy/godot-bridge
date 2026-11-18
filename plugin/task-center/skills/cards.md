@@ -4,11 +4,20 @@
 
 - spec 自包含：目标 / 背景代码 / 要求 / 测试方法 / 验收；按真实源码写，不猜接口。
 - acceptance 必须可判定：命令、退出码、断言、截图说明；不要写“看起来正常”。
-- writeFiles 就是锁：派发前原子加锁，漏写会互踩；文件路径相对项目根。
-- dependsOn 表示前序必须 **done + merged**；不要依赖一张只是 running/reviewing 的卡。
+- writeFiles 就是锁：派发前原子加锁，漏写会互踩；文件路径相对项目根。锁只负责串行，不表达先后。
 - priority 只在 ready 卡之间比较；maxAttempts 用尽会 blocked。
 - 每张卡有 `ownerSession`（创建它的会话）：看板按项目共享，但卡只由该根 Agent 的 worker 执行、阶段子代理评审/测试；不要替别的会话改卡或换 owner。
 - 改卡用 `update`；不要手改 `.agents/tasks.json`。
+
+## 拆卡与并行
+
+拆卡按**不变量/契约**，不按文件数，也不按阶段机械切；一张卡交付一个可独立验收的产物。
+
+1. **dependsOn 只表示逻辑前序**：B 在运行期消费 A 的 schema / 接口 / 产物。宿主等到前序 done + merged 才把 B 置为 ready；它不负责文件串行。
+2. **文件重叠交给 writeFiles 锁**：只是改了同一批文件、没有逻辑先后，就**不要**加 dependsOn，让锁排队即可。
+3. **大面积同文件重叠要合并或分层**：合成一张卡；或拆成**纯模块卡**（契约 / 数据结构，如 `stage-contract.mjs`：没有调用方接线，可先并行）+ **集成卡**（路由 / 动作 / 接线，`dependsOn` 模块卡，等它 done + merged 再接）。
+4. **单卡可验收**：每张卡的 acceptance/probes 都能在该卡自己的 worktree 内执行完，不依赖同批另一张卡尚未落地的行为。
+5. 不要把“等它合完我再改同一文件”写成 dependsOn —— 那是 writeFiles 的排队，不是逻辑依赖。
 
 ## verify
 
