@@ -378,6 +378,16 @@ export function createApi(ctx, options) {
   const notifyTimeoutMs = Number.isFinite(opts.notifyTimeoutMs) ? Math.max(1, Math.floor(opts.notifyTimeoutMs)) : 15 * 1000
   const sleep = typeof opts.sleep === 'function' ? opts.sleep : (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
+  // T-197: the STABLE event keys of the requirement packet (§3.10). The API names
+  // them; the scheduler owns their policy, labels and auto actions, and /state
+  // reports the decision it wrote, so the two sides share the key, not the rules.
+  const STAGE_EVENT_KEYS = Object.freeze({
+    hostVerifyFail: 'host-verify-fail',
+    mergeConflict: 'merge-conflict',
+    workerLost: 'worker-lost',
+    targetDrift: 'target-drift',
+    reviewRounds: 'review-rounds-exhausted',
+  })
 
   /**
    * T-191: the git facts of one candidate range (diffstat + first hunk per
@@ -794,6 +804,27 @@ export function createApi(ctx, options) {
       return context !== null && context !== undefined && typeof context.by === 'string' && context.by !== '' ? context.by : '@unknown'
     },
   })
+  // T-197: the scheduler detects stage timeouts and event-10 recoveries, but it
+  // never owns a question. This is the ONLY bridge: a request is written here
+  // (idempotent by id) and the tick sweeps the same store, so the 120s default
+  // applies even when no panel is polling.
+  if (scheduler !== null && scheduler !== undefined && typeof scheduler.attachStageHost === 'function') {
+    try {
+      scheduler.attachStageHost({
+        request: function (projectPath, input) {
+          return decisionStore.request(projectPath, input, { by: 'host' })
+        },
+        sweep: async function (projectPath) {
+          const swept = await decisionStore.sweep(projectPath)
+          if (swept.ok !== true) return swept
+          const applied = Array.isArray(swept.expired) && swept.expired.length > 0 ? await applyExpiredDecisions(projectPath, swept.expired) : []
+          return { ok: true, expired: swept.expired, applied: applied }
+        },
+      })
+    } catch (error) {
+      // A host without the seam simply never asks; the card keeps its budget.
+    }
+  }
   // A task can be merged by both the tester's passTest and the host sweep. The
   // second caller must not take the stale branch and rebuild a candidate for a
   // task that is already done; one in-process claim per task makes merging idempotent.
@@ -987,6 +1018,9 @@ export function createApi(ctx, options) {
       if (rebuilt !== null && rebuilt !== undefined && rebuilt.ok === true) {
         emitActivity(null, 'worktree-create', 'rebuilt test candidate', id, 'system')
         emitActivity(null, 'test-start', 'target moved; retest required', id, 'host')
+        // T-197 event 10: target drift is NOTIFY by default. The host already
+        // rebuilt the candidate from the new target and reset the test round.
+        await notifyStageRecovery(projectPath, latestTask, STAGE_EVENT_KEYS.targetDrift, 'the target moved; rebuilt the candidate on ' + String(rebuilt.base === undefined || rebuilt.base === null ? 'the new target head' : rebuilt.base) + ' and reset the test round')
       }
       if (rebuilt === null || rebuilt === undefined || rebuilt.ok !== true) {
         return failure(
@@ -1094,6 +1128,15 @@ export function createApi(ctx, options) {
         // The card is back in running: tell the live worker in its own session,
         // not the merge-outcome mailbox (merge.status is still open here).
         await notifyRetestFailure(stageAgents, recorded.task, id, retestCheck)
+        // T-197 event 10: a host verify failure is NOTIFY by default. The host has
+        // already returned the card to running; this records the recovery on the
+        // activity stream and in the card's history, and escalates after repeats.
+        await notifyStageRecovery(
+          projectPath,
+          recorded.task,
+          STAGE_EVENT_KEYS.hostVerifyFail,
+          'the retest mechanical verification failed (' + String(retestCheck.timedOut === true ? 'timed out' : 'exit ' + String(retestCheck.exitCode)) + ')',
+        )
         return recorded
       }
       recorded.candidate = rebuilt
@@ -1407,6 +1450,9 @@ export function createApi(ctx, options) {
     if (typeof ownerId === 'string' && ownerId !== '') {
       await notifyAgent(task.ownerSession, ownerId, 'Task ' + task.id + ' was blocked after ' + String(REVIEW_MAX_ROUNDS) + ' review rounds without approval. Read the review reasons on the board and ask the Lead for triage.')
     }
+    // T-197 event 10: review rounds exhausted is notify + block (never an
+    // automatic approval). Recorded on the activity stream and the card history.
+    await notifyStageRecovery(projectPath, blocked.task === null || blocked.task === undefined ? task : blocked.task, STAGE_EVENT_KEYS.reviewRounds, String(REVIEW_MAX_ROUNDS) + ' review rounds without approval; blocked for triage')
     return blocked
   }
 
@@ -4392,6 +4438,34 @@ export function createApi(ctx, options) {
         outcome = ok({ kept: true })
         text = decided + ': ' + String(id) + ' was kept; nothing was deleted.'
       }
+    } else if (action === 'stage-timeout') {
+      // T-197: a dev/review/test timeout answer. The scheduler owns the budget;
+      // the API owns the host actions (replace/cancel/block/retry).
+      const staged = await executeStageTimeoutAction(projectPath, decision, payload, option, { viaTimeout: viaTimeout, by: execContext.by })
+      outcome = staged.outcome
+      executed = staged.executed === true
+      summary = staged.summary === undefined || staged.summary === null ? {} : staged.summary
+      nextDecision = staged.next === undefined ? null : staged.next
+      text = staged.text
+    } else if (action === 'stage-event-ask') {
+      // T-197 event 10: the ask an event escalates to after repeated failed
+      // auto-recoveries. "continue" keeps the notify path; only a human can veto
+      // it with block/cancel.
+      const askedId = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : null
+      const eventLabel = typeof payload.event === 'string' && payload.event !== '' ? payload.event : 'event'
+      summary = { taskId: askedId, event: eventLabel }
+      if (option === 'block') {
+        executed = true
+        outcome = askedId === null ? failure('invalid-decision', 'the escalation names no card') : await lifecycleActions.block({ id: askedId, note: 'blocked by event-10 escalation decision ' + String(decision.id) }, execContext, projectPath)
+        text = outcome !== null && outcome.ok === true ? decided + ': ' + String(askedId) + ' is blocked for triage; automatic recovery stops here.' : decided + ', but the block failed: ' + String(decisionOutcomeCode(outcome))
+      } else if (option === 'cancel') {
+        executed = true
+        outcome = askedId === null ? failure('invalid-decision', 'the escalation names no card') : await lifecycleActions.cancel({ id: askedId, note: 'cancelled by event-10 escalation decision ' + String(decision.id) }, execContext, projectPath)
+        text = outcome !== null && outcome.ok === true ? decided + ': ' + String(askedId) + ' is cancelled.' : decided + ', but the cancel failed: ' + String(decisionOutcomeCode(outcome))
+      } else {
+        outcome = ok({ continued: true })
+        text = decided + ': keep auto-recovering ' + String(eventLabel) + '; the next occurrence is handled automatically again.'
+      }
     } else if (action === 'delete-tree') {
       if (option === 'purge') {
         executed = true
@@ -4426,6 +4500,256 @@ export function createApi(ctx, options) {
       notified: delivered,
       message: text,
     }
+  }
+
+  // ── T-197: stage-timeout / event-10 decision execution ────────────────────
+  // The scheduler owns the stage budget and the timeout detection; the API owns
+  // what the packet calls a host action: replacing a stage child, the lifecycle
+  // cancel/block and the DELETE-gated dependency tree. A continue NEVER restarts
+  // the worker and never touches the worktree or the candidate.
+
+  /** Live child ids of one root, or null when the tree cannot be read. */
+  async function liveChildIdsOf(rootId) {
+    if (taskAgents === null || taskAgents === undefined || typeof taskAgents.listFor !== 'function') return null
+    if (typeof rootId !== 'string' || rootId === '') return null
+    try {
+      const rows = await taskAgents.listFor(rootId)
+      if (Array.isArray(rows) === false) return null
+      const ids = new Set()
+      for (const row of rows) {
+        if (row === null || row === undefined || row.kind !== 'child') continue
+        ids.add(String(row.id))
+      }
+      return ids
+    } catch (error) {
+      return null
+    }
+  }
+
+  /**
+   * Replace the reviewer/tester of an OPEN round: release the OLD child first,
+   * prove it is gone, then start exactly ONE fresh child on the same candidate.
+   * A card may never be worked by two live stage agents, and a new round starts
+   * with a full budget (the scheduler's counter resets).
+   */
+  async function executeStageReplace(projectPath, taskId, stage, decision, execContext) {
+    const decided = 'Decision ' + String(decision.id) + (decision.resolution !== null && decision.resolution !== undefined && decision.resolution.via === 'timeout' ? ' timed out; its safe default applied' : ' answered')
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) {
+      return { outcome: read.failed, executed: false, summary: {}, text: decided + ', but the board could not be read: ' + String(decisionOutcomeCode(read.failed)) }
+    }
+    const task = model.findTask(read.board, taskId)
+    if (task === undefined || task === null) {
+      return { outcome: failure('unknown-task', 'no task with id ' + String(taskId)), executed: false, summary: {}, text: decided + ', but ' + String(taskId) + ' no longer exists.' }
+    }
+    const kind = stage === 'review' ? 'reviewer' : 'tester'
+    const openStatus = stage === 'review' ? 'reviewing' : 'testing'
+    const record = stage === 'review' ? task.review : task.test
+    const open = task.status === openStatus && record !== null && record !== undefined && record.status === 'pending'
+    if (open === false) {
+      return { outcome: failure('stage-closed', String(taskId) + ' is no longer in its ' + String(stage) + ' stage'), executed: false, summary: {}, text: decided + ', but ' + String(taskId) + ' left its ' + String(stage) + ' stage meanwhile; nothing was replaced.' }
+    }
+    const old = record.deliveredTo === null || record.deliveredTo === undefined ? null : record.deliveredTo
+    if (stageAgents !== null && old !== null && typeof old.id === 'string' && old.id !== '') {
+      try {
+        await stageAgents.releaseTask(task, { roles: [kind], reason: 'replaced by a stage decision' })
+      } catch (error) {}
+    }
+    if (old !== null && typeof old.id === 'string' && old.id !== '') {
+      const live = await liveChildIdsOf(task.ownerSession)
+      if (live !== null && live.has(old.id)) {
+        return {
+          outcome: failure('stage-agent-still-live', 'the old ' + kind + ' (' + String(old.id) + ') is still running; refusing to start a second one'),
+          executed: false,
+          summary: { taskId: String(taskId), old: String(old.id) },
+          text: decided + ', but the old ' + kind + ' is still running; the card keeps its current round instead of starting a second ' + kind + '.',
+        }
+      }
+    }
+    const at = clock()
+    const written = await writeTask(
+      projectPath,
+      String(taskId),
+      (board) => {
+        const tasks = board.tasks.map((row) => {
+          if (String(row.id) !== String(taskId)) return row
+          const key = stage === 'review' ? 'review' : 'test'
+          const previous = row[key] === null || row[key] === undefined ? {} : row[key]
+          const history = Array.isArray(row.history) ? row.history : []
+          const attempt = (Number.isFinite(previous.attempt) ? previous.attempt : 1) + 1
+          const fresh = Object.assign({}, previous, {
+            status: 'pending',
+            by: null,
+            byName: null,
+            at: new Date(at).toISOString(),
+            reasons: null,
+            attempt: attempt,
+            deliveredTo: null,
+          })
+          return Object.assign({}, row, {
+            [key]: fresh,
+            history: history.concat([
+              { at: new Date(at).toISOString(), by: 'system', byName: null, from: row.status, to: row.status, note: 'stage timeout: replaced the ' + kind + ' after decision ' + String(decision.id) + ' (round ' + String(attempt) + ')' },
+            ]),
+          })
+        })
+        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+      },
+      execContext,
+    )
+    if (written.ok !== true) {
+      return { outcome: written, executed: false, summary: {}, text: decided + ', but the new ' + kind + ' round could not be recorded: ' + String(decisionOutcomeCode(written)) }
+    }
+    if (scheduler !== null && scheduler !== undefined && typeof scheduler.resetStageBudget === 'function') {
+      try {
+        scheduler.resetStageBudget(String(taskId), stage)
+      } catch (error) {}
+    }
+    if (stageAgents === null) {
+      return { outcome: failure('agent-runtime-unavailable', 'no subagent runtime is attached'), executed: true, summary: { taskId: String(taskId) }, text: decided + ': the round was reset but no ' + kind + ' could be started (no subagent runtime).' }
+    }
+    const freshRead = await readBoardOrFail(projectPath)
+    const freshTask = freshRead.failed === undefined ? model.findTask(freshRead.board, String(taskId)) : undefined
+    if (freshTask === undefined || freshTask === null) {
+      return { outcome: failure('unknown-task', 'the card disappeared before the replacement started'), executed: true, summary: {}, text: decided + ': the round was reset but the card disappeared before the new ' + kind + ' started.' }
+    }
+    const candidate = kind === 'tester' ? candidateOf(projectPath, freshRead.board, freshTask) : null
+    const brief =
+      kind === 'reviewer'
+        ? reviewBriefFor(freshTask, projectPath)
+        : testerBriefFor(freshTask, projectPath, candidate, { godot: await godotInfoFor(projectPath, candidate === null ? null : candidate.path) })
+    const started = kind === 'reviewer' ? await stageAgents.startReviewer(freshTask, brief) : await stageAgents.startTester(freshTask, brief)
+    if (started.ok !== true) {
+      const code = started.code === undefined ? 'start-failed' : String(started.code)
+      emitActivity(null, 'error', 'the replacement ' + kind + ' could not be started (' + code + ')', String(taskId), 'system')
+      return {
+        outcome: failure(code, String(started.message === undefined ? 'the replacement failed to start' : started.message)),
+        executed: true,
+        summary: { taskId: String(taskId) },
+        text: decided + ': the old ' + kind + ' was released and the round reset, but the new ' + kind + ' could not be started (' + code + '); the card waits for triage.',
+      }
+    }
+    await recordDeliveredTo(projectPath, String(taskId), kind, { name: started.name, id: started.agentId })
+    emitActivity(null, 'stage-replace', 'released the old ' + kind + ' and started ' + String(started.name) + ' on the same candidate', String(taskId), 'system')
+    return {
+      outcome: ok({ taskId: String(taskId), agentId: started.agentId, name: started.name }),
+      executed: true,
+      summary: { taskId: String(taskId), agentId: started.agentId, name: started.name },
+      text: decided + ': the old ' + kind + ' was released and ' + String(started.name) + ' started a fresh ' + String(stage) + ' round on the same candidate. The worker was not restarted.',
+    }
+  }
+
+  /** Execute one stage-timeout option; the caller stores the returned text. */
+  async function executeStageTimeoutAction(projectPath, decision, payload, option, context) {
+    const stage = payload.stage === 'review' ? 'review' : payload.stage === 'test' ? 'test' : 'dev'
+    const taskId = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : null
+    const decided = 'Decision ' + String(decision.id) + (context.viaTimeout === true ? ' timed out; its safe default applied' : ' answered')
+    if (taskId === null) return { outcome: failure('invalid-decision', 'the stage question carries no task id'), executed: false, summary: {}, text: decided + ', but it names no card; nothing was changed.' }
+    const execContext = { projectPath: projectPath, by: context.by, role: 'user', agent: null, sessionId: null }
+    if (option === 'cancel') {
+      const outcome = await lifecycleActions.cancel({ id: taskId, note: 'cancelled by stage decision ' + String(decision.id) }, execContext, projectPath)
+      const text =
+        outcome.ok === true
+          ? decided + ': ' + taskId + ' is cancelled; its stage children were stopped.'
+          : decided + ', but ' + taskId + ' could not be cancelled: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+      return { outcome: outcome, executed: outcome.ok === true, summary: { taskId: taskId, status: 'cancelled' }, text: text }
+    }
+    if (option === 'cancel-tree') {
+      const read = await readBoardOrFail(projectPath)
+      if (read.failed !== undefined) {
+        return { outcome: read.failed, executed: false, summary: {}, text: decided + ', but the board could not be read: ' + String(decisionOutcomeCode(read.failed)) }
+      }
+      const rows = decisionDownstreamOf(read.board, taskId)
+      if (rows.length === 0) {
+        const outcome = await lifecycleActions.cancel({ id: taskId, note: 'cancelled (no downstream) by stage decision ' + String(decision.id) }, execContext, projectPath)
+        return {
+          outcome: outcome,
+          executed: outcome.ok === true,
+          summary: { taskId: taskId },
+          text: decided + ': no downstream card exists, so ' + taskId + (outcome.ok === true ? ' is cancelled.' : ' could not be cancelled.'),
+        }
+      }
+      const requested = await requestDeleteTreeDecision(projectPath, { taskId: taskId, requester: null }, String(context.by === undefined || context.by === null ? '@user' : context.by))
+      if (requested.ok !== true) {
+        return { outcome: requested, executed: false, summary: {}, text: decided + ', but the dependency-tree confirmation could not be opened: ' + String(decisionOutcomeCode(requested)) }
+      }
+      const total =
+        requested.decision !== null && requested.decision !== undefined && requested.decision.payload !== null && requested.decision.payload !== undefined && Number.isFinite(requested.decision.payload.total)
+          ? requested.decision.payload.total
+          : rows.length + 1
+      return {
+        outcome: ok({ next: requested.decision }),
+        executed: false,
+        summary: { nextDecisionId: requested.decision.id, total: total },
+        next: requested.decision,
+        text: decided + ': ' + String(rows.length) + ' live downstream card(s) need the high-risk dependency-tree confirmation (decision ' + String(requested.decision.id) + ', ' + String(total) + ' cards). Nothing has been deleted yet.',
+      }
+    }
+    if (option === 'block') {
+      const outcome = await lifecycleActions.block({ id: taskId, note: 'blocked by stage decision ' + String(decision.id) }, execContext, projectPath)
+      const text =
+        outcome.ok === true
+          ? decided + ': ' + taskId + ' is blocked; the worktree and candidate are kept for triage.'
+          : decided + ', but ' + taskId + ' could not be blocked: ' + String(decisionOutcomeCode(outcome))
+      return { outcome: outcome, executed: outcome.ok === true, summary: { taskId: taskId, status: 'blocked' }, text: text }
+    }
+    if (option === 'retry-dev') {
+      const outcome = scheduler === null || typeof scheduler.retryDevelopment !== 'function' ? failure('no-scheduler', 'no dispatcher is attached') : await scheduler.retryDevelopment(projectPath, taskId)
+      const text =
+        outcome.ok === true
+          ? decided + ': the uncommitted work was discarded, the worker was stopped, and ' + taskId + ' is back in the todo queue for a fresh attempt from the target branch.'
+          : decided + ', but the development retry failed: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+      return { outcome: outcome, executed: outcome.ok === true, summary: { taskId: taskId, status: outcome.ok === true ? 'pending' : null }, text: text }
+    }
+    if (option === 'replace') {
+      return await executeStageReplace(projectPath, taskId, stage, decision, execContext)
+    }
+    // The default (and the only safe timeout default): continue.
+    const applied = scheduler === null || typeof scheduler.applyStageContinue !== 'function' ? null : await scheduler.applyStageContinue(projectPath, { taskId: taskId, stage: stage, viaTimeout: context.viaTimeout === true })
+    if (applied === null) {
+      return { outcome: failure('no-scheduler', 'no dispatcher is attached'), executed: false, summary: {}, text: decided + ', but no scheduler can extend the stage.' }
+    }
+    if (applied.ok !== true) {
+      return { outcome: applied, executed: false, summary: { taskId: taskId }, text: decided + ', but the stage budget was not extended: ' + String(decisionOutcomeCode(applied)) + (decisionOutcomeMessage(applied) === null ? '' : ' — ' + decisionOutcomeMessage(applied)) }
+    }
+    if (applied.blocked === true) {
+      emitActivity(null, 'stage-timeout', 'continuous default-continues reached ' + String(applied.count) + '; card blocked', taskId, 'system')
+      return {
+        outcome: ok({ blocked: true }),
+        executed: true,
+        summary: { taskId: taskId, status: 'blocked', count: applied.count },
+        text: decided + ' — this was consecutive default-continue ' + String(applied.count) + '/' + String(applied.limit) + ', so ' + taskId + ' is now blocked for triage and will not be asked again.',
+      }
+    }
+    const minutes = String(Math.max(1, Math.round((Number.isFinite(applied.extendedMs) ? applied.extendedMs : 0) / 60000)))
+    emitActivity(null, 'stage-timeout', 'stage budget extended by ' + minutes + 'm (continue ' + String(applied.continues) + ')', taskId, 'host')
+    return {
+      outcome: ok({ continues: applied.continues, defaults: applied.defaults }),
+      executed: true,
+      summary: { taskId: taskId, continues: applied.continues, defaults: applied.defaults },
+      text:
+        decided + ': the ' + stage + ' stage budget was extended by ' + minutes + 'm (continue ' + String(applied.continues) + ', consecutive defaults ' + String(applied.defaults) + '/' + String(applied.limit) + '). The worker was not restarted; the worktree and candidate are unchanged.',
+    }
+  }
+
+  /**
+   * T-197 event 10: record a notify-by-default recovery and escalate to an ask
+   * once the SAME event has failed its auto-recovery STAGE_RECOVERY_LIMIT times.
+   * It never opens a modal by default; the activity stream and the card's
+   * history always say what the host did.
+   */
+  async function notifyStageRecovery(projectPath, task, event, detail) {
+    if (task === null || task === undefined) return null
+    if (scheduler === null || scheduler === undefined || typeof scheduler.notifyStageEvent !== 'function') {
+      emitActivity(null, 'stage-event', String(event) + ' auto-recovery (no dispatcher to record it)', String(task.id), 'system')
+      return null
+    }
+    const notified = await scheduler.notifyStageEvent(projectPath, { taskId: String(task.id), event: String(event), detail: detail === undefined || detail === null ? null : String(detail) })
+    if (notified !== null && notified !== undefined && notified.ok === true && notified.escalate === true && typeof scheduler.requestStageRecoveryAsk === 'function') {
+      const asked = await scheduler.requestStageRecoveryAsk(projectPath, task, String(event), notified.count)
+      if (asked !== null && asked !== undefined) emitActivity(null, 'stage-event', String(event) + ': escalated to decision ' + String(asked.id), String(task.id), 'system')
+    }
+    return notified
   }
 
   /** Apply every timeout default that needs a board action (create/reopen). */
@@ -4986,9 +5310,13 @@ export function createApi(ctx, options) {
               ? rebaseDetail(task, ancestry, files)
               : 'the candidate still conflicts after ' + String(nextAttempts) + ' automatic rebuilds (' + files + '); rebase the branch and refresh the merge request'
           await markWaiting(projectPath, id, 'needs-rebase', detail, context)
+          // T-197 event 10: a merge conflict is NOTIFY by default. The payload is
+          // the conflicting files, the auto action is "back to development".
+          await notifyStageRecovery(projectPath, task, STAGE_EVENT_KEYS.mergeConflict, 'the candidate conflicts with the target (' + files + '); waiting for a manual rebase')
           return failure('needs-rebase', detail)
         }
         await markWaiting(projectPath, id, 'candidate-stale', conflictsPrefix(conflicted) + files + ' (automatic rebuild ' + String(nextAttempts) + '/' + String(REBUILD_ATTEMPT_LIMIT) + ')', context)
+        await notifyStageRecovery(projectPath, task, STAGE_EVENT_KEYS.mergeConflict, 'the candidate rebuild conflicts (' + files + '); automatic rebuild ' + String(nextAttempts) + '/' + String(REBUILD_ATTEMPT_LIMIT))
         return failure('candidate-stale', 'the candidate rebuild conflicts: ' + files)
       }
       await markWaiting(projectPath, id, 'candidate-stale', conflictsPrefix(false) + files, context)

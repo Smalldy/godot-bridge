@@ -215,6 +215,63 @@ await check('a failing stage release never fails the lifecycle action', async ()
   assert.equal(reopened.ok, true)
 })
 
+// ── T-197: a re-delivery replaces the previous stage child, one live only ───
+await check('a re-delivered reviewer disposes the previous one FIRST', async () => {
+  const calls = []
+  const live = new Set(['reviewer-old'])
+  const facade = {
+    async startReviewer() { calls.push('start'); live.add('reviewer-new'); return { agentId: 'reviewer-new', name: 'reviewer-t-7' } },
+    async startTester() { throw new Error('unused') },
+    async release(id) { calls.push('release:' + String(id)); return live.delete(String(id)) },
+    async listAgentsFor() { return Array.from(live).map((id) => ({ kind: 'child', id: id })) },
+    async send() { return 'm' },
+    async taskAgentsFor() { return null },
+  }
+  const service = createStageService({ taskAgents: facade })
+  const started = await service.startReviewer({ id: 'T-7', ownerSession: 'root', review: { status: 'pending', deliveredTo: { id: 'reviewer-old', name: 'reviewer-old' } } }, 'brief')
+  assert.equal(started.ok, true)
+  assert.equal(started.replaced.agentId, 'reviewer-old')
+  assert.deepEqual(calls, ['release:reviewer-old', 'start'])
+  assert.equal(live.has('reviewer-old'), false)
+  assert.equal(live.size, 1)
+})
+
+await check('a stage child that cannot be disposed blocks the replacement', async () => {
+  const calls = []
+  const live = new Set(['tester-old'])
+  const facade = {
+    async startReviewer() { throw new Error('unused') },
+    async startTester() { calls.push('start'); live.add('tester-new'); return { agentId: 'tester-new', name: 'tester-t-8' } },
+    async release() { return false },
+    async listAgentsFor() { return Array.from(live).map((id) => ({ kind: 'child', id: id })) },
+    async send() { return 'm' },
+    async taskAgentsFor() { return null },
+  }
+  const service = createStageService({ taskAgents: facade })
+  const started = await service.startTester({ id: 'T-8', ownerSession: 'root', test: { status: 'pending', deliveredTo: { id: 'tester-old' } } }, 'brief')
+  assert.equal(started.ok, false)
+  assert.equal(started.code, 'stage-child-still-live')
+  assert.deepEqual(calls, [])
+  assert.equal(live.size, 1)
+})
+
+await check('a first delivery never releases anything', async () => {
+  const calls = []
+  const facade = {
+    async startReviewer() { calls.push('start'); return { agentId: 'reviewer-fresh', name: 'reviewer-t-9' } },
+    async startTester() { throw new Error('unused') },
+    async release(id) { calls.push('release:' + String(id)); return true },
+    async listAgentsFor() { return [] },
+    async send() { return 'm' },
+    async taskAgentsFor() { return null },
+  }
+  const service = createStageService({ taskAgents: facade })
+  const started = await service.startReviewer({ id: 'T-9', ownerSession: 'root', review: null }, 'brief')
+  assert.equal(started.ok, true)
+  assert.equal(started.replaced, null)
+  assert.deepEqual(calls, ['start'])
+})
+
 const failed = checks.filter((row) => !row.ok)
 for (const row of checks) console.log((row.ok ? 'PASS' : 'FAIL') + '  ' + row.name + (row.ok ? '' : '\n  ' + String(row.error && row.error.stack ? row.error.stack : row.error)))
 console.log(String(checks.length - failed.length) + '/' + String(checks.length) + ' checks passed')
