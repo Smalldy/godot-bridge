@@ -91,7 +91,6 @@
 					if (Array.isArray(payload.replaced) && payload.replaced.length > 0) parts.push(t('roleReplaced') + ': ' + payload.replaced.map(function (entry) { return typeof entry === 'string' ? entry : String(entry.name) }).join(', '))
 					if (Array.isArray(payload.reused) && payload.reused.length > 0) parts.push(t('roleReused') + ': ' + payload.reused.join(', '))
 					if (typeof payload.source === 'string') parts.push(t('roleSource') + ': ' + payload.source)
-					if (Array.isArray(payload.instances)) parts.push(t('roleInstances') + ': ' + String(payload.instances.length))
 					const waited = payload.waited === undefined || payload.waited === null ? null : payload.waited
 					if (waited !== null) {
 						parts.push(t('roleWaited') + ': ' + String(waited.waitedMs) + 'ms')

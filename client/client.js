@@ -4679,7 +4679,6 @@ module.exports = { createRoleCreateForm }
 					if (Array.isArray(payload.replaced) && payload.replaced.length > 0) parts.push(t('roleReplaced') + ': ' + payload.replaced.map(function (entry) { return typeof entry === 'string' ? entry : String(entry.name) }).join(', '))
 					if (Array.isArray(payload.reused) && payload.reused.length > 0) parts.push(t('roleReused') + ': ' + payload.reused.join(', '))
 					if (typeof payload.source === 'string') parts.push(t('roleSource') + ': ' + payload.source)
-					if (Array.isArray(payload.instances)) parts.push(t('roleInstances') + ': ' + String(payload.instances.length))
 					const waited = payload.waited === undefined || payload.waited === null ? null : payload.waited
 					if (waited !== null) {
 						parts.push(t('roleWaited') + ': ' + String(waited.waitedMs) + 'ms')
@@ -5022,8 +5021,9 @@ function createRolesEditor(deps) {
 			// target it before the next host poll carries it.
 			if (roleEditorState.saved !== null && roleEditorState.saved.name !== name) roleEditorState.saved = null
 			// A profile change is configuration only: live children keep the prompt
-			// they were started with, so there is nothing to drain or replace.
-			roleEditorState.applySkipped = true
+			// they were started with, so there is nothing to drain or replace. Only
+			// show the "next dispatch" hint when there is no live instance to reset.
+			roleEditorState.applySkipped = runningNames.length === 0
 			bump()
 			return true
 		}

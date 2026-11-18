@@ -236,8 +236,9 @@ function createRolesEditor(deps) {
 			// target it before the next host poll carries it.
 			if (roleEditorState.saved !== null && roleEditorState.saved.name !== name) roleEditorState.saved = null
 			// A profile change is configuration only: live children keep the prompt
-			// they were started with, so there is nothing to drain or replace.
-			roleEditorState.applySkipped = true
+			// they were started with, so there is nothing to drain or replace. Only
+			// show the "next dispatch" hint when there is no live instance to reset.
+			roleEditorState.applySkipped = runningNames.length === 0
 			bump()
 			return true
 		}

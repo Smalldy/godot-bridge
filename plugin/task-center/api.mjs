@@ -237,6 +237,27 @@ function emptyWorktrees(error) {
  * @param options.sleep - wait function, for tests.
  * @param options.now - clock, for tests.
  */
+/**
+ * Tell the live assignee that the rebuilt test candidate failed the host check.
+ * This is a worker resumption notice, not a merge-outcome notice: merge.status
+ * is still open at this point.
+ */
+export async function notifyRetestFailure(stageAgents, task, id, check) {
+  if (stageAgents === null || stageAgents === undefined || typeof stageAgents.sendAssignee !== 'function') {
+    return { ok: false, code: 'agent-runtime-unavailable', message: 'no stage agent runtime' }
+  }
+  try {
+    return await stageAgents.sendAssignee(
+      task,
+      'Host mechanical verification FAILED for ' + String(id) + ' after the target moved and the test candidate was rebuilt.\n\n' +
+        hostCheckEvidence(check) +
+        '\n\nFix it in the SAME worktree/branch and submit again.',
+    )
+  } catch (error) {
+    return { ok: false, code: 'send-failed', message: String((error && error.message) || error) }
+  }
+}
+
 export function createApi(ctx, options) {
   const opts = options === undefined ? {} : options
   const state = opts.state
@@ -895,7 +916,9 @@ export function createApi(ctx, options) {
       if (retestFailed) {
         await discardRebuilt()
         emitActivity(null, 'host-check', 'retest mechanical verification failed (' + String(retestCheck.timedOut === true ? 'timed out' : 'exit ' + String(retestCheck.exitCode)) + '); back to running', id, 'host')
-        await notifyMergeOutcome(projectPath, recorded.task)
+        // The card is back in running: tell the live worker in its own session,
+        // not the merge-outcome mailbox (merge.status is still open here).
+        await notifyRetestFailure(stageAgents, recorded.task, id, retestCheck)
         return recorded
       }
       recorded.candidate = rebuilt
@@ -1066,45 +1089,6 @@ export function createApi(ctx, options) {
     }
   }
 
-  /**
-   * How many instances a stage role has (queue capacity).
-   *
-   * T-138: review and test are served by exactly ONE instance per session/team.
-   * Team size is a dispatch setting now — a role profile carries no `instances`,
-   * so a reviewer/tester queue slot can never be widened through roles.json.
-   */
-  async function stageCapacity(kind, projectPath) {
-    return 1
-  }
-
-  function stageStatusOf(kind) {
-    return kind === 'reviewer' ? 'reviewing' : 'testing'
-  }
-
-  /** Delivered + queued tasks of one stage, from the in-memory slot state. */
-  function stageQueueState(board, kind) {
-    const status = stageStatusOf(kind)
-    // A task whose round already has a verdict no longer occupies the slot, even
-    // while it stays in the stage (e.g. testing waits for the merge).
-    const tasks = board.tasks.filter((task) => {
-      if (task.status !== status) return false
-      const record = kind === 'reviewer' ? task.review : task.test
-      return record !== null && record !== undefined && record.status === 'pending'
-    })
-    const delivered = []
-    const queued = []
-    for (const task of tasks) {
-      const slot = stageSlotOf(ctx, task.id, kind)
-      if (slot === null) {
-        delivered.push(task)
-        continue
-      }
-      if (slot.position !== null) queued.push({ task: task, position: slot.position })
-      else delivered.push(task)
-    }
-    queued.sort((left, right) => left.position - right.position)
-    return { delivered: delivered, queued: queued }
-  }
 
 
   /** T-116: remember WHO a stage brief was handed to, on the card itself, so the

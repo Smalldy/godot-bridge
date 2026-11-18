@@ -245,7 +245,6 @@ function applyRow(ctx) {
     taskAgentsFor(rootId) { return agentRegistry.taskAgentsFor(rootId) },
     listFor(rootId) { return agentRegistry.listFor(rootId) },
     listAgentsFor(rootId) { return agentRegistry.listFor(rootId) },
-    listAgentsFor(rootId) { return agentRegistry.listFor(rootId) },
     handleFor() { return null },
     handles() { return [] },
   }
