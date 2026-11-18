@@ -4549,6 +4549,10 @@ export function createApi(ctx, options) {
     if (open === false) {
       return { outcome: failure('stage-closed', String(taskId) + ' is no longer in its ' + String(stage) + ' stage'), executed: false, summary: {}, text: decided + ', but ' + String(taskId) + ' left its ' + String(stage) + ' stage meanwhile; nothing was replaced.' }
     }
+    // The round identity the decision was answered against. The write below
+    // re-checks it under the board CAS: a verdict that lands while the old child
+    // is being released must win over a replacement prepared from stale state.
+    const roundAt = typeof record.at === 'string' && record.at !== '' ? record.at : null
     const old = record.deliveredTo === null || record.deliveredTo === undefined ? null : record.deliveredTo
     if (stageAgents !== null && old !== null && typeof old.id === 'string' && old.id !== '') {
       try {
@@ -4571,9 +4575,27 @@ export function createApi(ctx, options) {
       projectPath,
       String(taskId),
       (board) => {
+        const key = stage === 'review' ? 'review' : 'test'
+        // TOCTOU guard: the old child was being released while this write was
+        // prepared. If a verdict (or a replacement) landed in that window, the
+        // card already left the round the decision was answered against: refuse
+        // instead of overwriting the landed verdict and starting a second child.
+        const live = model.findTask(board, String(taskId))
+        const liveRecord = live === null || live === undefined ? null : live[key]
+        const liveAt = liveRecord !== null && liveRecord !== undefined && typeof liveRecord.at === 'string' ? liveRecord.at : null
+        if (
+          live === null ||
+          live === undefined ||
+          live.status !== openStatus ||
+          liveRecord === null ||
+          liveRecord === undefined ||
+          liveRecord.status !== 'pending' ||
+          (roundAt !== null && liveAt !== roundAt)
+        ) {
+          return failure('stage-closed', String(taskId) + ' left its ' + stage + ' round while the replacement was being prepared; the landed state wins')
+        }
         const tasks = board.tasks.map((row) => {
           if (String(row.id) !== String(taskId)) return row
-          const key = stage === 'review' ? 'review' : 'test'
           const previous = row[key] === null || row[key] === undefined ? {} : row[key]
           const history = Array.isArray(row.history) ? row.history : []
           const attempt = (Number.isFinite(previous.attempt) ? previous.attempt : 1) + 1
@@ -4598,7 +4620,12 @@ export function createApi(ctx, options) {
       execContext,
     )
     if (written.ok !== true) {
-      return { outcome: written, executed: false, summary: {}, text: decided + ', but the new ' + kind + ' round could not be recorded: ' + String(decisionOutcomeCode(written)) }
+      const code = decisionOutcomeCode(written)
+      const text =
+        code === 'stage-closed'
+          ? decided + ', but ' + String(taskId) + ' left its ' + String(stage) + ' stage while the old ' + kind + ' was being released; the new state wins and nothing was replaced.'
+          : decided + ', but the new ' + kind + ' round could not be recorded: ' + String(code)
+      return { outcome: written, executed: false, summary: {}, text: text }
     }
     if (scheduler !== null && scheduler !== undefined && typeof scheduler.resetStageBudget === 'function') {
       try {
@@ -4695,10 +4722,19 @@ export function createApi(ctx, options) {
     }
     if (option === 'retry-dev') {
       const outcome = scheduler === null || typeof scheduler.retryDevelopment !== 'function' ? failure('no-scheduler', 'no dispatcher is attached') : await scheduler.retryDevelopment(projectPath, taskId)
-      const text =
-        outcome.ok === true
-          ? decided + ': the uncommitted work was discarded, the worker was stopped, and ' + taskId + ' is back in the todo queue for a fresh attempt from the target branch.'
-          : decided + ', but the development retry failed: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+      // The text must match what actually happened: a failed worktree removal
+      // means the uncommitted work was NOT discarded, and the next attempt may
+      // reuse or recreate that checkout.
+      let text
+      if (outcome.ok !== true) {
+        text = decided + ', but the development retry failed: ' + String(decisionOutcomeCode(outcome)) + (decisionOutcomeMessage(outcome) === null ? '' : ' — ' + decisionOutcomeMessage(outcome))
+      } else if (typeof outcome.worktree !== 'string' || outcome.worktree === '') {
+        text = decided + ': the worker was stopped and ' + taskId + ' is back in the todo queue for a fresh attempt from the target branch.'
+      } else if (outcome.removed === true) {
+        text = decided + ': the uncommitted work was discarded (the attempt worktree was removed), the worker was stopped, and ' + taskId + ' is back in the todo queue for a fresh attempt from the target branch.'
+      } else {
+        text = decided + ': the worker was stopped and ' + taskId + ' is back in the todo queue, but the attempt worktree ' + String(outcome.worktree) + ' could not be removed — its uncommitted changes were NOT discarded and the next attempt may reuse or recreate it.'
+      }
       return { outcome: outcome, executed: outcome.ok === true, summary: { taskId: taskId, status: outcome.ok === true ? 'pending' : null }, text: text }
     }
     if (option === 'replace') {

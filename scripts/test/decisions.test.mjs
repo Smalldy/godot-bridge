@@ -11,7 +11,7 @@
 // before starting exactly one new one, and the escalated event ask can block.
 
 import assert from 'node:assert/strict'
-import { createFakeTaskAgents, createRig, createTask, PROJECT } from './support/fixtures.mjs'
+import { createFakeGit, createFakeTaskAgents, createRig, createTask, PROJECT } from './support/fixtures.mjs'
 import { createDecisionStore, decisionsPath } from '../../plugin/task-center/decisions.mjs'
 import { updateBoard } from '../../plugin/task-center/board.mjs'
 import { writePolicyFor } from '../../plugin/task-center/state.mjs'
@@ -385,6 +385,110 @@ function check(label, condition, detail) {
   const row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
   check('the escalation block puts the card in triage', row.status === 'blocked', String(row.status))
   check('the block reason is on the history', row.history.some((entry) => String(entry.note).indexOf('escalation decision') >= 0), JSON.stringify(row.history.map((entry) => entry.note)))
+}
+
+
+// ── T-197 review fix: retry-dev really requeues the card (state.apply shape) ─
+{
+  const stageClock = Date.parse('2026-11-19T14:00:00.000Z')
+  let tick = stageClock
+  const taskAgents = createFakeTaskAgents()
+  const git = createFakeGit()
+  const rig = createRig({ now: () => tick, taskAgents: taskAgents, git: git })
+  const task = await createTask(rig, { title: 'retry-dev executes', writeFiles: [] })
+  await rig.action('start')
+  const running = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const workerId = String(running.assignee.session)
+  taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
+  tick += 26 * 60 * 1000
+  await rig.settle()
+  const pending = await rig.api.decisions.pending(PROJECT)
+  const question = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === 'dev-timeout')[0] : undefined
+  check('a dev timeout asks before retry-dev (setup)', question !== undefined, JSON.stringify(pending.pending.map((decision) => decision.eventKey)))
+  const answered = await rig.action('decisionAnswer', { decisionId: question.id, option: 'retry-dev', confirm: 'DELETE' })
+  const after = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  check('retry-dev is executed', answered.ok === true && answered.applied !== null && answered.applied.executed === true && answered.applied.ok !== false, JSON.stringify(answered.applied))
+  check('retry-dev puts the card back in the todo queue', after.status === 'pending' && after.assignee === null, JSON.stringify({ status: after.status, assignee: after.assignee }))
+  check('retry-dev stops the old worker', taskAgents.live.has(workerId) === false, JSON.stringify(Array.from(taskAgents.live)))
+  check('retry-dev removes the attempt worktree', git.calls.some((call) => call.name === 'worktreeRemove' && call.detail === running.worktree), JSON.stringify(git.calls.filter((call) => call.name === 'worktreeRemove')))
+  check('retry-dev records the discard in history', after.history.some((entry) => String(entry.note).indexOf('retry development') >= 0), JSON.stringify(after.history.map((entry) => entry.note)))
+}
+
+// ── T-197 review fix: a failed worktree removal is reported, never claimed ──
+{
+  const stageClock = Date.parse('2026-11-19T15:00:00.000Z')
+  let tick = stageClock
+  const taskAgents = createFakeTaskAgents()
+  const git = createFakeGit()
+  git.worktreeRemove = async () => ({ ok: false, code: 'worktree-remove-failed', message: 'fatal: cannot remove a locked worktree' })
+  const rig = createRig({ now: () => tick, taskAgents: taskAgents, git: git })
+  const task = await createTask(rig, { title: 'retry-dev removal fails', writeFiles: [] })
+  await rig.action('start')
+  taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
+  tick += 26 * 60 * 1000
+  await rig.settle()
+  const pending = await rig.api.decisions.pending(PROJECT)
+  const question = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === 'dev-timeout')[0] : undefined
+  const answered = await rig.action('decisionAnswer', { decisionId: question.id, option: 'retry-dev', confirm: 'DELETE' })
+  const after = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const message = String(answered.applied === null || answered.applied === undefined ? '' : answered.applied.message)
+  check('retry-dev still requeues the card when removal failed', after.status === 'pending' && after.assignee === null, JSON.stringify({ status: after.status, assignee: after.assignee }))
+  check('retry-dev reports the retry as executed', answered.ok === true && answered.applied.executed === true, JSON.stringify(answered.applied && answered.applied.executed))
+  check('the decision text never claims the work was discarded', message.indexOf('uncommitted work was discarded') < 0, message)
+  check('the decision text reports the un-removed worktree', message.indexOf('could not be removed') >= 0, message)
+  check('the history records the failed worktree removal', after.history.some((entry) => String(entry.note).indexOf('could not be removed') >= 0), JSON.stringify(after.history.map((entry) => entry.note)))
+}
+
+// ── T-197 review fix: a verdict landing during replace is never overwritten ─
+{
+  const stageClock = Date.parse('2026-11-19T16:00:00.000Z')
+  let tick = stageClock
+  const taskAgents = createFakeTaskAgents()
+  const rig = createRig({ now: () => tick, taskAgents: taskAgents })
+  const task = await createTask(rig, { title: 'replace race' })
+  await rig.action('start')
+  await rig.action('submit', { id: task.id, evidence: 'ready' })
+  const reviewing = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  const oldReviewer = String(reviewing.review.deliveredTo.id)
+  const startsBefore = taskAgents.calls.filter((call) => call.kind === 'startReviewer').length
+  taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
+  tick += 26 * 60 * 1000
+  await rig.settle()
+  const pending = await rig.api.decisions.pending(PROJECT)
+  const question = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === 'review-timeout')[0] : undefined
+  // Interleave: the old reviewer's verdict lands while the replacement is
+  // releasing it — the exact window between the open-state read and the write.
+  const realRelease = taskAgents.release
+  let verdictLanded = false
+  taskAgents.release = async function (agentId) {
+    if (String(agentId) === oldReviewer && verdictLanded === false) {
+      verdictLanded = true
+      await updateBoard(
+        { fs: rig.fs },
+        {
+          projectPath: PROJECT,
+          mutate: (board) => {
+            const live = board.tasks.filter((entry) => entry.id === task.id)[0]
+            const at = new Date(tick).toISOString()
+            live.status = 'testing'
+            live.review = Object.assign({}, live.review, { status: 'approved', by: '@reviewer', byName: 'reviewer', at: at, reasons: null })
+            live.test = { status: 'pending', by: null, byName: null, at: at, evidence: null, attempt: 1, deliveredTo: null }
+            return board
+          },
+          sandboxPolicy: writePolicyFor(PROJECT),
+        },
+      )
+    }
+    return await realRelease.call(taskAgents, agentId)
+  }
+  const answered = await rig.action('decisionAnswer', { decisionId: question.id, option: 'replace' })
+  const after = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  check('the late verdict really lands in the race window (setup)', verdictLanded === true, JSON.stringify(answered.applied))
+  check('replace refuses after the verdict landed (stage-closed)', answered.ok === true && answered.applied.executed === false && answered.applied.code === 'stage-closed', JSON.stringify(answered.applied))
+  check('the approved review verdict survives the refused replace', after.review !== null && after.review.status === 'approved', JSON.stringify(after.review))
+  check('the card keeps the testing phase the verdict set', after.status === 'testing', after.status)
+  check('no new reviewer is started after the verdict', taskAgents.calls.filter((call) => call.kind === 'startReviewer').length === startsBefore, String(taskAgents.calls.filter((call) => call.kind === 'startReviewer').length))
+  check('the testing card has no live reviewer', Array.from(taskAgents.live).filter((id) => String(id).indexOf('reviewer-') === 0).length === 0, JSON.stringify(Array.from(taskAgents.live)))
 }
 
 console.log(failures === 0 ? '\nPASS  decision requests persist, answer once, and honour the timeout rules' : '\nFAIL  ' + String(failures) + ' decision check(s)')

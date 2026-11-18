@@ -2289,11 +2289,10 @@ export function createDispatcher(ctx, options) {
     // the stage ROUND (a new review/test round starts with a full budget).
     // { round, continues, defaults, decisionId, decisionAt }
     stageEvents: new Map(),
-    // T-197 event 10: consecutive failed auto-recoveries per card+event.
+    // T-197 event 10: consecutive failed auto-recoveries per card+event, keyed
+    // "<taskId>@<event>". The entry carries the incident epoch it was counted
+    // against, so a card that made progress in between starts a new streak.
     stageRecoveries: new Map(),
-    // T-197: decisions the host already executed, so a replay can never extend a
-    // budget or replace a child twice.
-    appliedStageDecisions: new Set(),
   }
   // undefined means "ask the context"; null means "this host has no git runner",
   // which now means dispatch cannot start at all. Resolved lazily and cached for
@@ -3104,41 +3103,56 @@ export function createDispatcher(ctx, options) {
     const worktree = typeof task.worktree === 'string' && task.worktree !== '' ? task.worktree : null
     const removed = worktree !== null ? await removeWorktree(gitFacade(), projectPath, worktree) : null
     releaseTaskLocks(String(taskId))
-    const applied = await applyReap(projectPath, (board) => {
-      const live = model.findTask(board, String(taskId))
-      if (live === undefined || live === null) return null
-      const at = new Date(state.clock()).toISOString()
-      const tasks = board.tasks.map((row) => {
-        if (String(row.id) !== String(taskId)) return row
-        const history = Array.isArray(row.history) ? row.history : []
-        return Object.assign({}, row, {
-          status: 'pending',
-          assignee: null,
-          leaseUntil: null,
-          attempts: 0,
-          interruptions: 0,
-          dispatch: null,
-          history: history.concat([
-            {
-              at: at,
-              by: 'system',
-              byName: null,
-              from: 'running',
-              to: 'pending',
-              note:
-                'dev timeout: retry development chose to discard the uncommitted work' +
-                (worktree === null ? '' : removed === true ? ' and removed ' + worktree : ' (the worktree ' + worktree + ' could not be removed; the next attempt reuses or recreates it)') +
-                '; the next attempt starts from the target branch',
-            },
-          ]),
+    // state.apply's mutator contract is a { ok, board, events } ENVELOPE (unlike
+    // applyReap, which takes a bare board). The CAS re-check inside the write is
+    // what keeps a card that already left running (a submit landed while the
+    // worker was being stopped) from being overwritten with pending.
+    const applied = await state.apply(
+      projectPath,
+      (board) => {
+        const live = model.findTask(board, String(taskId))
+        if (live === undefined || live === null) {
+          return { ok: false, code: 'unknown-task', message: 'no task with id ' + String(taskId) }
+        }
+        if (live.status !== 'running') {
+          return { ok: false, code: 'not-running', message: String(taskId) + ' is ' + live.status + ' now; the retry was not applied' }
+        }
+        const at = new Date(state.clock()).toISOString()
+        const note =
+          worktree === null
+            ? 'dev timeout: retry development requeued the card; the next attempt starts from the target branch'
+            : removed === true
+              ? 'dev timeout: retry development discarded the uncommitted work and removed ' + worktree + '; the next attempt starts from the target branch'
+              : 'dev timeout: retry development stopped the worker but the worktree ' + worktree + ' could not be removed; its uncommitted changes were not discarded and the next attempt reuses or recreates it'
+        const tasks = board.tasks.map((row) => {
+          if (String(row.id) !== String(taskId)) return row
+          const history = Array.isArray(row.history) ? row.history : []
+          return Object.assign({}, row, {
+            status: 'pending',
+            assignee: null,
+            leaseUntil: null,
+            attempts: 0,
+            interruptions: 0,
+            dispatch: null,
+            history: history.concat([
+              { at: at, by: 'system', byName: null, from: 'running', to: 'pending', note: note },
+            ]),
+          })
         })
-      })
-      return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
-    })
-    if (applied === null) return { ok: false, code: 'retry-refused', message: 'the card left the running state before the retry landed' }
+        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+      },
+      writePolicyFor(projectPath),
+    )
+    if (applied.failed !== null) return applied.failed
     memory.stageEvents.delete(String(taskId) + '@dev')
-    emit('dev-retry', 'host', { taskId: String(taskId), detail: 'uncommitted work discarded; card requeued for a fresh attempt' })
-    return { ok: true, stopped: stopped, worktree: worktree }
+    emit('dev-retry', 'host', {
+      taskId: String(taskId),
+      detail:
+        worktree !== null && removed !== true
+          ? 'worker stopped; worktree removal failed, card requeued for a fresh attempt'
+          : 'uncommitted work discarded; card requeued for a fresh attempt',
+    })
+    return { ok: true, stopped: stopped, worktree: worktree, removed: removed }
   }
 
   /**
@@ -3153,21 +3167,26 @@ export function createDispatcher(ctx, options) {
     const event = typeof row.event === 'string' && row.event !== '' ? row.event : null
     if (taskId === null || event === null) return { ok: false, code: 'invalid-event', message: 'a stage event needs a task id and an event key' }
     const key = taskId + '@' + event
+    // T-197 review fix: "consecutive" means the same INCIDENT, not the card's
+    // whole lifetime. The epoch is the card's current stage round (or status for
+    // a card with no open stage), so a card that made progress in between starts
+    // a fresh streak instead of escalating on the third unrelated incident.
+    const read = await state.read(projectPath)
+    const current = read.failed === null ? model.findTask(read.board, taskId) : null
+    const currentStage = current === undefined || current === null ? null : stageOfTask(current)
+    const currentRoundAt = currentStage === null ? null : stageRoundAt(current, currentStage)
+    const epoch =
+      (current === undefined || current === null ? 'missing' : String(current.status)) + '@' + String(currentStage) + '@' + String(currentRoundAt)
     const previous = memory.stageRecoveries.get(key)
-    const count = (previous === undefined ? 0 : previous.count) + 1
-    memory.stageRecoveries.set(key, { count: count, at: state.clock() })
+    const count = (previous !== undefined && previous.epoch === epoch ? previous.count : 0) + 1
+    memory.stageRecoveries.set(key, { count: count, at: state.clock(), epoch: epoch })
     const action = STAGE_EVENT_ACTIONS[event] === undefined ? '自动处置' : STAGE_EVENT_ACTIONS[event]
     const detail = event + ' 已自动处置：' + action + '（连续 ' + String(count) + ' 次）' + (typeof row.detail === 'string' && row.detail !== '' ? ' — ' + row.detail : '')
     emit('stage-event', 'host', { taskId: taskId, detail: detail })
     await appendStageHistory(projectPath, taskId, detail)
     // The owner Agent reads it on its next turn; the panel reads the activity ring.
-    const read = await state.read(projectPath)
-    if (read.failed === null) {
-      const task = model.findTask(read.board, taskId)
-      const stage = task === undefined || task === null ? null : stageOfTask(task)
-      if (task !== undefined && task !== null && stage !== null) {
-        await messageStageChild(task, stage, taskId + ': ' + detail + '. The host acted automatically; no answer is needed unless a decision appears.')
-      }
+    if (current !== undefined && current !== null && currentStage !== null) {
+      await messageStageChild(current, currentStage, taskId + ': ' + detail + '. The host acted automatically; no answer is needed unless a decision appears.')
     }
     const escalate = count > STAGE_RECOVERY_LIMIT
     if (escalate === true) {
@@ -3319,6 +3338,25 @@ export function createDispatcher(ctx, options) {
     }
     for (const key of Array.from(memory.stageGrace.keys())) {
       if (liveNudges.has(key) === false) memory.stageGrace.delete(key)
+    }
+    // T-197 review fix: a closed card closes its recovery streak; a worker-lost
+    // streak whose card has since reached review/test counts as a SUCCESSFUL
+    // recovery, so a later incident starts over instead of escalating.
+    for (const key of Array.from(memory.stageRecoveries.keys())) {
+      const at = key.lastIndexOf('@')
+      const taskId = at < 0 ? key : key.slice(0, at)
+      const event = at < 0 ? '' : key.slice(at + 1)
+      const task = model.findTask(board, taskId)
+      // A task that is not on THIS board may live in another project: this sweep
+      // may not judge (or clear) that streak.
+      if (task === undefined || task === null) continue
+      const closed = task.status === 'done' || task.status === 'cancelled'
+      const workerProgressed =
+        event === STAGE_EVENTS.workerLost &&
+        task.status !== 'running' &&
+        task.status !== 'pending' &&
+        task.status !== 'blocked'
+      if (closed || workerProgressed) memory.stageRecoveries.delete(key)
     }
     return result
   }
