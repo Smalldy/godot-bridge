@@ -270,6 +270,84 @@ export async function notifyRetestFailure(stageAgents, task, id, check) {
   }
 }
 
+/**
+ * The [application] run/main_scene value of a project.godot text, or null.
+ *
+ * Godot refuses to run a project without one ("Can not run project: no main
+ * scene defined"), so the tester brief has to know this BEFORE it points Godot
+ * at the project. The file is Godot's own fixed-key config format: ';' starts a
+ * comment, [section] switches the section and key=value carries the data. A
+ * run/main_scene value is normally a quoted "res://..." path or a uid://
+ * reference; an absent, empty or "null" value means there is no main scene.
+ */
+function projectMainSceneOf(text) {
+  const rows = String(text === undefined || text === null ? '' : text).split(/\r?\n/)
+  let section = ''
+  let mainScene = null
+  for (const raw of rows) {
+    const line = raw.trim()
+    if (line === '' || line.startsWith(';')) continue
+    if (line.startsWith('[') && line.endsWith(']')) {
+      section = line.slice(1, -1).trim()
+      continue
+    }
+    if (section !== 'application') continue
+    const equals = line.indexOf('=')
+    if (equals < 1 || line.slice(0, equals).trim() !== 'run/main_scene') continue
+    let value = line.slice(equals + 1).trim()
+    if (value.startsWith('"')) {
+      const close = value.indexOf('"', 1)
+      value = close > 0 ? value.slice(1, close) : value.slice(1)
+    } else {
+      const comment = value.indexOf(';')
+      if (comment >= 0) value = value.slice(0, comment).trim()
+    }
+    value = value.trim()
+    mainScene = value === '' || value === 'null' || value === 'nil' ? null : value
+  }
+  return mainScene
+}
+
+/**
+ * Describe the Godot project a tester brief is about: which project.godot was
+ * found (the candidate checkout first, the project root second) and whether it
+ * declares a main scene. Module-level so the brief tests can exercise the real
+ * file scan against a fake filesystem.
+ */
+export async function readGodotProjectInfo(fs, enginePath, projectPath, candidatePath) {
+  if (fs === undefined || fs === null || typeof fs.resolve !== 'function' || typeof fs.stat !== 'function') return { project: false }
+  const files = []
+  if (typeof candidatePath === 'string' && candidatePath.length > 0) files.push(join(candidatePath, 'project.godot'))
+  if (typeof projectPath === 'string' && projectPath.length > 0) files.push(join(projectPath, 'project.godot'))
+  for (const file of files) {
+    try {
+      const target = await fs.resolve(file, { cwd: projectPath })
+      const info = await fs.stat(target)
+      if (info === undefined || info === null) continue
+      let mainScene = null
+      if (typeof fs.readText === 'function') {
+        try {
+          mainScene = projectMainSceneOf(await fs.readText(target))
+        } catch (error) {
+          // The file exists but cannot be read: report "no main scene" rather
+          // than telling the tester to start the project blindly.
+          mainScene = null
+        }
+      }
+      return {
+        project: true,
+        projectFile: file,
+        enginePath: enginePath === undefined ? null : enginePath,
+        mainScene: mainScene,
+        hasMainScene: mainScene !== null,
+      }
+    } catch (error) {
+      // Not there; try the next location.
+    }
+  }
+  return { project: false }
+}
+
 export function createApi(ctx, options) {
   const opts = options === undefined ? {} : options
   const state = opts.state
@@ -789,22 +867,13 @@ export function createApi(ctx, options) {
     return { path: candidate.path, branch: candidate.branch, base: typeof task.base === 'string' ? task.base : null, head: merge.mergeCommit }
   }
 
-  /** Is the project (or its candidate checkout) a Godot project? Used by the tester brief. */
+  /**
+   * Is the project (or its candidate checkout) a Godot project, and does it
+   * declare a main scene? Used by the tester brief: a project WITHOUT
+   * [application] run/main_scene must never be launched as a project.
+   */
   async function godotInfoFor(projectPath, candidatePath) {
-    const files = []
-    if (typeof candidatePath === 'string' && candidatePath.length > 0) files.push(join(candidatePath, 'project.godot'))
-    if (typeof projectPath === 'string' && projectPath.length > 0) files.push(join(projectPath, 'project.godot'))
-    if (ctx === undefined || ctx === null || ctx.fs === undefined || ctx.fs === null) return { project: false }
-    for (const file of files) {
-      try {
-        const target = await ctx.fs.resolve(file, { cwd: projectPath })
-        const info = await ctx.fs.stat(target)
-        if (info !== undefined) return { project: true, projectFile: file, enginePath: godotPath }
-      } catch (error) {
-        // Not there; try the next location.
-      }
-    }
-    return { project: false }
+    return readGodotProjectInfo(ctx === undefined || ctx === null ? null : ctx.fs, godotPath, projectPath, candidatePath)
   }
 
   /**
@@ -4232,7 +4301,13 @@ export function createApi(ctx, options) {
       if (kind === null || stageAgents === null) continue
       const record = kind === 'reviewer' ? task.review : task.test
       if (record === null || record === undefined || record.status !== 'pending') continue
-      const text = kind === 'reviewer' ? reviewBriefFor(task, projectPath) : testerBriefFor(task, projectPath, candidateOf(projectPath, board, task), {})
+      const candidate = kind === 'tester' ? candidateOf(projectPath, board, task) : null
+      const text =
+        kind === 'reviewer'
+          ? reviewBriefFor(task, projectPath)
+          : testerBriefFor(task, projectPath, candidate, {
+              godot: await godotInfoFor(projectPath, candidate === null || candidate === undefined ? null : candidate.path),
+            })
       const started = kind === 'reviewer' ? await stageAgents.startReviewer(task, text) : await stageAgents.startTester(task, text)
       if (started.ok === true) {
         await recordDeliveredTo(projectPath, task.id, kind, { name: started.name, id: started.agentId })

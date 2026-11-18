@@ -1967,18 +1967,34 @@ export function testerBriefFor(task, projectPath, candidate, options) {
     '- Exercise the acceptance criteria directly; a green unit suite is not a substitute for the acceptance check.',
   )
   if (godot !== null && godot !== undefined && godot.project === true) {
-    lines.push(
-      '- This is a Godot project (' + String(godot.projectFile) + ').',
-      '  Engine path: ' + String(godot.enginePath === undefined || godot.enginePath === null || godot.enginePath === '' ? 'the godot-bridge godotPath setting (Godot engine path card) or the godot command on PATH' : godot.enginePath) + '.',
-      '  Headless smoke test from the candidate:',
-      '    godot_run_headless({ project_path: "' + String(candidate.path) + '", quit_after: 120 })',
-      '  Interactive smoke test from the candidate:',
-      '    godot_run_project({ project_path: "' + String(candidate.path) + '" })',
-      '  Never launch Godot through pwsh/bash (the file sandbox kills it). Stop with godot_stop_project and read godot_get_debug_output for logs.',
-    )
+    const mainScene = typeof godot.mainScene === 'string' && godot.mainScene.trim() !== '' ? godot.mainScene.trim() : null
+    const hasMainScene = godot.hasMainScene === true && mainScene !== null
+    if (hasMainScene) {
+      lines.push(
+        '- This is a Godot project (' + String(godot.projectFile) + ').',
+        '  Main scene ([application] run/main_scene): ' + mainScene,
+        '  Engine path: ' + String(godot.enginePath === undefined || godot.enginePath === null || godot.enginePath === '' ? 'the godot-bridge godotPath setting (Godot engine path card) or the godot command on PATH' : godot.enginePath) + '.',
+        '  Headless smoke test from the candidate:',
+        '    godot_run_headless({ project_path: "' + String(candidate.path) + '", quit_after: 120 })',
+        '  Interactive smoke test from the candidate:',
+        '    godot_run_project({ project_path: "' + String(candidate.path) + '" })',
+        '  Never launch Godot through pwsh/bash (the file sandbox kills it). Stop with godot_stop_project and read godot_get_debug_output for logs.',
+      )
+    } else {
+      lines.push(
+        '- This is a Godot project (' + String(godot.projectFile) + '), but its project.godot declares NO [application] run/main_scene.',
+        '  Do NOT start the project: Godot would only raise its native error "Can not run project: no main scene defined", which can leave the run hanging and is not a candidate failure.',
+        '  Run a concrete scene or script instead, and only when the task names one (spec, acceptance or worker evidence):',
+        '    godot_run_headless({ project_path: "' + String(candidate.path) + '", scene: "<the task scene, e.g. res://scenes/main.tscn>" })',
+        '    godot_run_headless({ project_path: "' + String(candidate.path) + '", script: "<the task script, e.g. res://scripts/test/smoke.gd>" })',
+        '  If the task names no concrete scene/script, skip the Godot launch and prove the change with the commands the task declares.',
+        '  Record the real output of whatever you run: keep Godot errors visible instead of swallowing them into a passing verdict.',
+        '  Never launch Godot through pwsh/bash (the file sandbox kills it). Stop with godot_stop_project and read godot_get_debug_output for logs.',
+      )
+    }
   } else {
     lines.push(
-      '- If this is a Godot project, launch the CANDIDATE with godot_run_headless / godot_run_project using project_path="' + String(candidate.path) + '"; never through pwsh/bash.',
+      '- If this is a Godot project: read its project.godot [application] run/main_scene first, and start the project (godot_run_project / project-level godot_run_headless) only when a main scene is declared. With no main scene, run only a concrete scene/script named by the task (godot_run_headless with scene: or script:), otherwise skip the Godot launch. Never through pwsh/bash.',
     )
   }
   lines.push(
