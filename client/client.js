@@ -850,6 +850,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				decisionCountdownProtected: '{seconds}s 后超时，不会自动执行「{defaultLabel}」（该选项需人工确认）',
 				decisionCountdownProtectedNoDefault: '{seconds}s 后超时，不会自动选择',
 				decisionCreateTextPlaceholder: '修改建议（可选）',
+				decisionAppliedFailed: '你的答复已记录，但宿主执行该动作失败；请查看卡片状态并重试。',
 				decisionQueue: '还有 {n} 个待决策',
 				decisionDefaultBadge: '默认',
 				decisionTextLabel: '自定义文本',
@@ -1570,6 +1571,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				decisionCountdownProtected: '{seconds}s until it expires; “{defaultLabel}” is protected and will not run automatically',
 				decisionCountdownProtectedNoDefault: '{seconds}s until it expires; nothing is auto-selected',
 				decisionCreateTextPlaceholder: 'Revision note (optional)',
+				decisionAppliedFailed: 'Your answer was recorded, but the host could not perform the action; check the card and try again.',
 				decisionQueue: '{n} more decisions queued',
 				decisionDefaultBadge: 'Default',
 				decisionTextLabel: 'Custom answer',
@@ -3567,10 +3569,22 @@ const createTaskStore = (function () {
 						const host = payload.snapshot !== undefined && payload.snapshot !== null ? payload.snapshot : payload
 						if (host && Array.isArray(host.tasks)) {
 							const next = withDecisions(tcSnapshot(host, 'host', '', payload), host)
+							// T-196 review: the ANSWER landed but the host action it stood for
+							// failed (the board moved on, the card is not deletable, ...). The
+							// modal disappears with the decision, so the SAME banner a failed
+							// action uses must explain that nothing happened. An intentional
+							// 取消创建 is not a failure.
+							const applied = payload.applied !== undefined && payload.applied !== null && typeof payload.applied === 'object' ? payload.applied : null
+							const appliedFailed = applied !== null && applied.ok === false && applied.code !== 'decision-rejected'
 							if (quiet) {
 								next.actionResult = snapshot.actionResult
 								next.actionError = snapshot.actionError
 								next.message = snapshot.message
+							} else if (appliedFailed) {
+								messageKind = 'action'
+								next.message = typeof applied.message === 'string' && applied.message !== '' ? applied.message : t('decisionAppliedFailed')
+								next.actionResult = null
+								next.actionError = applied
 							} else {
 								// A real action answered: whatever the banner said is no longer current.
 								messageKind = null

@@ -93,10 +93,15 @@ const messages = (agents) => agents.calls.filter((call) => call.kind === 'send')
   const first = await rig.api.perform('create', { title: 'Card dev', kind: 'dev', dependsOn: [], writeFiles: ['scripts/dev.gd'], acceptance: 'npm test is green' }, agentContext(rig, 'dev'))
   check('S1 a retried create returns the SAME pending question', first.decision.id === 'DEC-1', JSON.stringify({ asked: first.decision.id }))
   const queued = await rig.action('decisionList', {})
+  const devQuestion = queued.decisions.filter((decision) => decision.id === 'DEC-1')[0]
   check(
-    'S1 only one dev question is queued (the investigate one is separate)',
-    queued.decisions.filter((decision) => decision.payload !== null && decision.payload !== undefined && decision.payload.input !== null && decision.payload.input !== undefined && decision.payload.input.title === 'Card dev').length === 1,
-    JSON.stringify(queued.decisions.map((decision) => decision.title)),
+    'S1 the question keeps a compact input reference, not the card text',
+    devQuestion !== undefined &&
+      devQuestion.payload.input === undefined &&
+      typeof devQuestion.payload.inputRef === 'string' &&
+      devQuestion.payload.inputRef.indexOf('.agents/decision-inputs/') === 0 &&
+      Number.isFinite(devQuestion.payload.inputBytes),
+    JSON.stringify(devQuestion === undefined ? null : devQuestion.payload),
   )
 
   // Cancel with a revision note: the board stays empty, the Agent is told why.
@@ -121,6 +126,29 @@ const messages = (agents) => agents.calls.filter((call) => call.kind === 'send')
   check('S1 the Agent receives the created id as a message', messages(agents).some((text) => text.indexOf('created ' + String(created.task.id)) >= 0), JSON.stringify(messages(agents)))
   const stored = JSON.parse(rig.fs.files.get(decisionsPath(PROJECT)).text)
   check('S1 the decision store records both answers', stored.requests.filter((record) => record.status === 'answered').length === 2, JSON.stringify(stored.requests.map((record) => record.status)))
+}
+
+// ── S1b: a huge card input still asks (the decision payload stays small) ────
+{
+  const { rig } = freshRig()
+  const bigSpec = '背景：'.repeat(800) + 'x'.repeat(12000) // ~20 KB of UTF-8
+  const bigAcceptance = '验收标准：' + 'npm test 全绿；'.repeat(200)
+  const asked = await rig.api.perform(
+    'create',
+    { title: 'Big card', kind: 'dev', spec: bigSpec, acceptance: bigAcceptance, writeFiles: ['scripts/big.gd'], dependsOn: [] },
+    agentContext(rig, 'big'),
+  )
+  check('S1b a large create still yields a pending decision', asked.ok === false && asked.code === 'needs-decision' && asked.decision !== undefined, JSON.stringify(asked).slice(0, 500))
+  check(
+    'S1b its payload is the compact reference (the store cap is not hit)',
+    asked.decision.payload.input === undefined && typeof asked.decision.payload.inputRef === 'string' && Number.isFinite(asked.decision.payload.inputBytes) && asked.decision.payload.inputBytes > 18000,
+    JSON.stringify({ payload: asked.decision.payload, bytes: asked.decision.payload.inputBytes }),
+  )
+  check('S1b the body shows the aligned fields and clips the huge acceptance', asked.decision.body.indexOf('任务：Big card') >= 0 && asked.decision.body.indexOf('写入文件：scripts/big.gd') >= 0 && asked.decision.body.indexOf('…') >= 0 && asked.decision.body.length <= 4000, String(asked.decision.body.length))
+  const approved = await rig.action('decisionAnswer', { decisionId: asked.decision.id, option: 'create' })
+  check('S1b answering creates exactly that card', approved.ok === true && approved.applied.executed === true && typeof approved.applied.summary.taskId === 'string', JSON.stringify(approved.applied))
+  const created = await rig.action('get', { id: approved.applied.summary.taskId })
+  check('S1b the created card keeps the FULL spec and acceptance', created.ok === true && created.task.spec === bigSpec && created.task.acceptance === bigAcceptance, JSON.stringify({ spec: created.task.spec.length, acceptance: created.task.acceptance.length }))
 }
 
 // ── S2: the create timeout default creates after 120s ──────────────────────
@@ -192,6 +220,17 @@ const messages = (agents) => agents.calls.filter((call) => call.kind === 'send')
   const open = await rig.action('get', { id: card.id })
   check('S4 the reopened card has no review/test left', open.task.status === 'pending' && open.task.review === null && open.task.test === null, JSON.stringify(open.task))
   check('S4 the Agent is messaged', messages(agents).some((text) => text.indexOf('back in the todo queue') >= 0), JSON.stringify(messages(agents)))
+  // T-196 review: the note the Agent supplied is not lost when the panel typed
+  // no note of its own.
+  await userCancel(rig, card.id)
+  const noted = await rig.api.perform('reopen', { id: card.id, note: 'retry after the fix' }, agentContext(rig, 'reopener'))
+  await rig.action('decisionAnswer', { decisionId: noted.decision.id, option: 'reopen' })
+  const history = (await rig.action('get', { id: card.id })).task.history
+  check(
+    'S4 the Agent note reaches the history when the panel typed none',
+    history.some((row) => typeof row.note === 'string' && row.note.indexOf('retry after the fix') >= 0),
+    JSON.stringify(history.slice(-3)),
+  )
 }
 
 // ── S5: delete shows the recursive tree and the purge needs DELETE twice ────
@@ -275,6 +314,76 @@ const messages = (agents) => agents.calls.filter((call) => call.kind === 'send')
   check('S8 an invalid create refuses instead of asking', bad.ok === false && bad.code === 'unknown-dependency' && bad.decision === undefined, JSON.stringify(bad))
   const badReopen = await rig.api.perform('reopen', { id: 'T-404' }, agentContext(rig, 'bad'))
   check('S8 an unknown reopen target refuses instead of asking', badReopen.ok === false && badReopen.code === 'unknown-task', JSON.stringify(badReopen))
+}
+
+// ── S10: the delete answer is re-checked against the LIVE board ────────────
+{
+  const { createRig: makeRig, createFakeTaskAgents: makeAgents, seedBoard } = await import('./support/fixtures.mjs')
+  const agents = makeAgents()
+  const rig = makeRig({ allowSpawn: false, taskAgents: agents })
+  const ctx = (name) => ({ projectPath: rig.project, by: '@' + name, role: 'agent', agent: { id: 'session-' + name, name: name } })
+  const root = await userCreate(rig, { title: 'Live root' })
+  const asked = await rig.api.perform('delete', { id: root.id }, ctx('live'))
+  check(
+    'S10 the question was asked with no dependents',
+    asked.ok === false && asked.decision.body.indexOf('被依赖：0 张卡') >= 0 && asked.decision.options.filter((option) => option.id === 'delete')[0].danger === false,
+    asked.decision.body,
+  )
+  // A dependent appears while the question waits.
+  const late = await userCreate(rig, { title: 'Late dependent', dependsOn: [root.id] })
+  const answered = await rig.action('decisionAnswer', { decisionId: asked.decision.id, option: 'delete' })
+  check(
+    'S10 answering 删除 does NOT delete directly; the second panel opens',
+    answered.ok === true && answered.applied.next !== null && answered.applied.next.eventKey === 'delete-tree' && answered.applied.summary.nextDecisionId === answered.applied.next.id,
+    JSON.stringify(answered.applied),
+  )
+  check('S10 the second panel uses the FRESH count and is DELETE-gated', answered.applied.next.body.indexOf('共 2 张') >= 0 && answered.applied.next.options.filter((option) => option.id === 'purge')[0].danger === true, answered.applied.next.body)
+  const mid = await rig.action('board')
+  check('S10 nothing was deleted before the second confirmation', mid.tasks.length === 2, JSON.stringify(mid.tasks.map((task) => task.id)))
+  const child = await rig.action('get', { id: late.id })
+  check('S10 the dependent keeps its dependency', child.task.dependsOn.join(',') === root.id, JSON.stringify(child.task.dependsOn))
+  const purge = await rig.action('decisionAnswer', { decisionId: answered.applied.next.id, option: 'purge', confirm: 'DELETE' })
+  check('S10 the confirmed purge removes both cards', purge.ok === true && purge.applied.summary.deleted.length === 2, JSON.stringify(purge.applied.summary))
+  check('S10 the board is empty afterwards', (await rig.action('board')).tasks.length === 0)
+}
+
+// ── S11: a card that starts running while the question waits is not deleted ─
+{
+  const { createRig: makeRig, createFakeTaskAgents: makeAgents, seedBoard } = await import('./support/fixtures.mjs')
+  const rig = makeRig({ allowSpawn: false, taskAgents: makeAgents() })
+  const ctx = { projectPath: rig.project, by: '@runner', role: 'agent', agent: { id: 'session-runner', name: 'runner' } }
+  const root = await userCreate(rig, { title: 'Will start' })
+  const asked = await rig.api.perform('delete', { id: root.id }, ctx)
+  // The card is dispatched while the question is pending.
+  seedBoard(
+    rig.fs,
+    rig.project,
+    JSON.stringify({
+      version: 2,
+      seq: 2,
+      tasks: [
+        {
+          id: root.id,
+          title: 'Will start',
+          status: 'running',
+          kind: 'dev',
+          attempts: 1,
+          assignee: { name: 'worker', session: 'session-worker' },
+          dependsOn: [],
+          writeFiles: [],
+          history: [{ at: '2026-11-19T00:00:00.000Z', by: 'scheduler', from: 'pending', to: 'running', note: 'dispatched' }],
+        },
+      ],
+    }),
+  )
+  const answered = await rig.action('decisionAnswer', { decisionId: asked.decision.id, option: 'delete' })
+  check(
+    'S11 the answer refuses to delete a card that is now running',
+    answered.ok === true && answered.applied.ok === false && answered.applied.code === 'running' && answered.applied.executed === false,
+    JSON.stringify(answered.applied),
+  )
+  const board = await rig.action('board')
+  check('S11 nothing was deleted', board.tasks.length === 1 && board.tasks[0].status === 'running', JSON.stringify(board.tasks.map((task) => [task.id, task.status])))
 }
 
 // ── S9: the destructive panels never delete on timeout ─────────────────────

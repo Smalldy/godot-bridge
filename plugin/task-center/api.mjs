@@ -11,6 +11,7 @@
  * never throws; the caller turns it into a tool error or an HTTP body.
  */
 
+import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import {
   CLOSED_STATUSES,
@@ -3599,7 +3600,14 @@ export function createApi(ctx, options) {
   const ACTION_DECISION_LABELS = { create: '创建任务', start: '派发批准', reopen: '重新打开', delete: '删除任务', cancel: '取消任务' }
   const ACTION_DECISION_TREE_LIMIT = 40
 
-  /** Every live card that (transitively) depends on `id`, in DFS order. */
+  /**
+   * Every LIVE card that (transitively) depends on `id`, in DFS order.
+   *
+   * Closed (done/cancelled) dependents are excluded: they are not "affected" by
+   * a cancel, and listing them in a purge would suggest deleting history. Note
+   * that model.deleteTask still unlinks them; that pre-existing behaviour is
+   * outside this panel's impact count on purpose.
+   */
   function decisionDownstreamOf(board, id) {
     const rows = []
     const seen = new Set([String(id)])
@@ -3673,6 +3681,77 @@ export function createApi(ctx, options) {
   }
 
   /**
+   * T-196 review: the decision PAYLOAD is capped at 8 KB, but a card's spec and
+   * acceptance are legitimately much larger. The gated action's input therefore
+   * lives in a content-addressed file beside the board
+   * (.agents/decision-inputs/<sha256>.json) and the decision payload carries the
+   * compact reference. Content addressing makes retries reuse one file.
+   */
+  const DECISION_INPUT_DIR = '.agents/decision-inputs'
+  const DECISION_INPUT_REF = /^\.agents\/decision-inputs\/[a-f0-9]{32}\.json$/
+
+  function decisionInputHash(text) {
+    return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32)
+  }
+
+  /** Clip one DISPLAY field so a huge card cannot overflow the 4000-char body. */
+  function decisionClip(value, limit) {
+    const text = typeof value === 'string' ? value.trim() : ''
+    if (text === '') return ''
+    return text.length <= limit ? text : text.slice(0, limit) + '…'
+  }
+
+  /** Persist an action input and return its project-relative reference. */
+  async function writeDecisionInput(projectPath, input) {
+    const text = JSON.stringify(input === undefined || input === null ? {} : input)
+    const hash = decisionInputHash(text)
+    const ref = DECISION_INPUT_DIR + '/' + hash + '.json'
+    const targetPath = join(projectPath, '.agents', 'decision-inputs', hash + '.json')
+    try {
+      if (ensureDir !== null) await Promise.resolve(ensureDir(join(projectPath, '.agents', 'decision-inputs')))
+      const target = await ctx.fs.resolve(targetPath, { cwd: projectPath })
+      const existing = await ctx.fs.stat(target)
+      if (existing !== undefined) return { ok: true, ref: ref, hash: hash, bytes: Buffer.byteLength(text, 'utf8') }
+      try {
+        await ctx.fs.writeText(target, text + '\n', { kind: 'createIfAbsent' }, undefined, writePolicyFor(projectPath))
+      } catch (error) {
+        // A concurrent identical write (same content-addressed name) is a win.
+        const raced = await ctx.fs.stat(target)
+        if (raced === undefined) return failure('decision-input-unwritable', 'could not store the decision input: ' + messageOf(error))
+      }
+      return { ok: true, ref: ref, hash: hash, bytes: Buffer.byteLength(text, 'utf8') }
+    } catch (error) {
+      return failure('decision-input-unwritable', 'could not store the decision input: ' + messageOf(error))
+    }
+  }
+
+  /** Read one stored action input back by reference (validated, no traversal). */
+  async function readDecisionInput(projectPath, ref) {
+    if (typeof ref !== 'string' || DECISION_INPUT_REF.test(ref) !== true) {
+      return failure('decision-input-invalid', 'the decision input reference ' + JSON.stringify(ref) + ' is not a stored decision input')
+    }
+    try {
+      const target = await ctx.fs.resolve(join(projectPath, ref), { cwd: projectPath })
+      const info = await ctx.fs.stat(target)
+      if (info === undefined) return failure('decision-input-missing', 'the stored decision input ' + ref + ' is gone; ask again')
+      const text = await ctx.fs.readText(target)
+      const parsed = JSON.parse(text)
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return failure('decision-input-invalid', 'the stored decision input is not an object')
+      return { ok: true, input: parsed }
+    } catch (error) {
+      return failure('decision-input-unreadable', 'the stored decision input ' + ref + ' could not be read: ' + messageOf(error))
+    }
+  }
+
+  /** The input a stored ACTION decision executes with (legacy inline or ref). */
+  async function decisionInputOf(projectPath, payload) {
+    if (payload === null || payload === undefined) return failure('decision-input-missing', 'the decision carries no action input')
+    if (payload.input !== undefined && payload.input !== null) return { ok: true, input: payload.input }
+    if (typeof payload.inputRef === 'string' && payload.inputRef !== '') return await readDecisionInput(projectPath, payload.inputRef)
+    return failure('decision-input-missing', 'the decision carries no action input')
+  }
+
+  /**
    * Validate the action against the live board and build its question. A null
    * plan means "nothing to ask" (a running dispatcher). A refusal is returned
    * BEFORE the question, so the human is never asked to confirm the impossible.
@@ -3691,22 +3770,27 @@ export function createApi(ctx, options) {
       const preview = model.createTask(board, built.input, now, context.by)
       if (preview.ok !== true) return preview
       const task = preview.task
-      const deps = (Array.isArray(task.dependsOn) ? task.dependsOn : []).join(', ')
-      const files = (Array.isArray(task.writeFiles) ? task.writeFiles : []).join(', ')
-      const acceptance = typeof task.acceptance === 'string' ? task.acceptance.trim() : ''
+      const inputText = JSON.stringify(built.input)
+      const deps = decisionClip((Array.isArray(task.dependsOn) ? task.dependsOn : []).join(', '), 300)
+      const files = decisionClip((Array.isArray(task.writeFiles) ? task.writeFiles : []).join(', '), 300)
+      const acceptance = decisionClip(typeof task.acceptance === 'string' ? task.acceptance : '', 600)
+      // The body is DISPLAY, so a huge card is clipped here; the full input lives
+      // in the content-addressed file (see writeDecisionInput) and is what the
+      // answer executes.
+      const body = [
+        '任务：' + decisionClip(task.title, 160),
+        '类型：' + String(task.kind),
+        '目标：' + (task.target === null || task.target === undefined ? '默认' : String(task.target)),
+        '依赖：' + (deps === '' ? '无' : deps),
+        '写入文件：' + (files === '' ? '无' : files),
+        '验收：' + (acceptance === '' ? '未填写' : acceptance),
+      ].join('\n')
       return {
         ok: true,
         action: action,
-        key: 'create:' + JSON.stringify(built.input),
+        key: 'create:' + decisionInputHash(inputText),
         title: '创建任务 ' + String(task.id) + '？',
-        body: [
-          '任务：' + String(task.title),
-          '类型：' + String(task.kind),
-          '目标：' + (task.target === null || task.target === undefined ? '默认' : String(task.target)),
-          '依赖：' + (deps === '' ? '无' : deps),
-          '写入文件：' + (files === '' ? '无' : files),
-          '验收：' + (acceptance === '' ? '未填写' : acceptance),
-        ].join('\n'),
+        body: body.length > 3900 ? body.slice(0, 3900) + '…' : body,
         options: [
           { id: 'create', label: '创建任务', description: '写入任务板并加入待办队列', default: true },
           { id: 'cancel', label: '取消创建', description: '不写入任务板，向 Agent 返回修改建议' },
@@ -3766,6 +3850,9 @@ export function createApi(ctx, options) {
         key: 'reopen:' + id,
         title: '重新打开 ' + id + '？',
         body: '当前状态：' + String(task.status) + '。重新打开会回到待办、清空 review/test 现场并由 scheduler 重新派发',
+        // Default: 重新打开, exactly as the T-196 card copy and packet §3.6 say.
+        // Packet §5's summary table lists 保持关闭 for the same event; the detailed
+        // panel copy wins here until the lead resolves that inconsistency.
         options: [
           { id: 'reopen', label: '重新打开', description: '回到待办，清空 review/test 后重新派发', default: true },
           { id: 'keep', label: '保持关闭', description: '不改动这张卡' },
@@ -3851,6 +3938,26 @@ export function createApi(ctx, options) {
         plan.title = '创建任务 T-' + String(board.seq + queued) + '？'
       }
     }
+    const payload = Object.assign(
+      {
+        action: plan.action,
+        key: plan.key,
+        // The executor addresses the card through the payload; the request's
+        // own taskId is only the panel's subtitle/shortcut.
+        taskId: plan.taskId === null || plan.taskId === undefined ? null : String(plan.taskId),
+        requester: decisionRequester(context),
+      },
+      plan.payload,
+    )
+    // The create input (spec/acceptance/verify/...) is far larger than a payload
+    // may be; store it beside the board and keep a compact reference instead.
+    if (plan.action === 'create') {
+      const stored = await writeDecisionInput(projectPath, payload.input)
+      if (stored.ok !== true) return stored
+      delete payload.input
+      payload.inputRef = stored.ref
+      payload.inputBytes = stored.bytes
+    }
     const requested = await decisionStore.request(
       projectPath,
       {
@@ -3863,17 +3970,7 @@ export function createApi(ctx, options) {
         defaultOption: plan.defaultOption,
         highRisk: plan.highRisk === true,
         timeoutMs: ACTION_DECISION_TIMEOUT_MS[plan.action],
-        payload: Object.assign(
-          {
-            action: plan.action,
-            key: plan.key,
-            // The executor addresses the card through the payload; the request's
-            // own taskId is only the panel's subtitle/shortcut.
-            taskId: plan.taskId === null || plan.taskId === undefined ? null : String(plan.taskId),
-            requester: decisionRequester(context),
-          },
-          plan.payload,
-        ),
+        payload: payload,
       },
       { by: context.by },
     )
@@ -4044,7 +4141,12 @@ export function createApi(ctx, options) {
     if (action === null) return { ok: true, executed: false, code: 'no-action' }
     const resolution = decision.resolution === null || decision.resolution === undefined ? null : decision.resolution
     const option = resolution === null ? null : resolution.option
-    const note = resolution === null || resolution.text === null || resolution.text === undefined ? null : String(resolution.text)
+    const panelNote = resolution === null || resolution.text === null || resolution.text === undefined ? null : String(resolution.text)
+    // The note the Agent supplied with the request still applies when the panel
+    // did not type one.
+    const carriedNote =
+      payload.input !== null && payload.input !== undefined && typeof payload.input.note === 'string' && payload.input.note.trim() !== '' ? payload.input.note.trim() : null
+    const note = panelNote === null ? carriedNote : panelNote
     const viaTimeout = resolution !== null && resolution.via === 'timeout'
     const requester = payload.requester === null || payload.requester === undefined ? {} : payload.requester
     const id = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : null
@@ -4071,7 +4173,13 @@ export function createApi(ctx, options) {
           '. Do not retry unless the user asks; apply the note and ask again.'
       } else {
         executed = true
-        outcome = await taskAdminActions.create(payload.input === undefined || payload.input === null ? {} : payload.input, execContext, projectPath)
+        const loaded = await decisionInputOf(projectPath, payload)
+        if (loaded.ok !== true) {
+          outcome = loaded
+          text = decided + ', but its stored card input could not be loaded (' + String(loaded.code) + '): ' + String(loaded.message)
+        } else {
+          outcome = await taskAdminActions.create(loaded.input, execContext, projectPath)
+        }
         if (outcome.ok === true) {
           const created = outcome.task === null || outcome.task === undefined ? null : String(outcome.task.id)
           summary = { taskId: created }
@@ -4127,20 +4235,40 @@ export function createApi(ctx, options) {
       }
     } else if (action === 'delete') {
       if (option === 'delete') {
-        const downstream = Array.isArray(payload.downstream) ? payload.downstream : []
-        if (downstream.length > 0) {
-          const requested = await requestDeleteTreeDecision(projectPath, payload, execContext.by)
+        // T-196 review: the question captured the board when it was asked. The
+        // ANSWER must be checked against the board NOW, or a dependent created
+        // while the panel waited is silently unlinked instead of getting the
+        // DELETE-gated dependency-tree stage.
+        const fresh = await readBoardOrFail(projectPath)
+        const live = fresh.failed === undefined && id !== null ? model.findTask(fresh.board, id) : undefined
+        let rows = []
+        if (fresh.failed !== undefined) {
+          outcome = fresh.failed
+          text = decided + ', but the board could not be read: ' + String(decisionOutcomeCode(fresh.failed))
+        } else if (live === undefined) {
+          outcome = failure('unknown-task', 'no task with id ' + String(id) + '; it no longer exists')
+          text = decided + ', but ' + String(id) + ' no longer exists on the board; nothing was deleted.'
+        } else if (live.status === 'running') {
+          outcome = failure('running', String(id) + ' is running; cancel it first')
+          text = decided + ', but ' + String(id) + ' started running while the question waited; cancel it first. Nothing was deleted.'
+        } else {
+          rows = decisionDownstreamOf(fresh.board, id)
+        }
+        if (outcome === null && rows.length > 0) {
+          // The stored input/downstream is stale; the second stage recomputes the
+          // tree from the live board and is still DELETE-gated.
+          const requested = await requestDeleteTreeDecision(projectPath, Object.assign({}, payload, { taskId: id }), execContext.by)
           if (requested.ok !== true) {
             outcome = requested
             text = decided + ', but the dependency-tree confirmation could not be opened: ' + String(decisionOutcomeCode(requested))
           } else {
             nextDecision = requested.decision
             outcome = ok({ next: nextDecision })
-            const total = nextDecision.payload !== null && nextDecision.payload !== undefined && Number.isFinite(nextDecision.payload.total) ? nextDecision.payload.total : downstream.length + 1
+            const total = nextDecision.payload !== null && nextDecision.payload !== undefined && Number.isFinite(nextDecision.payload.total) ? nextDecision.payload.total : rows.length + 1
             summary = { nextDecisionId: nextDecision.id, total: total }
-            text = decided + ': delete needs the high-risk dependency-tree confirmation (decision ' + String(nextDecision.id) + ', ' + String(summary.total) + ' cards). Nothing has been deleted yet.'
+            text = decided + ': ' + String(id) + ' is depended on by ' + String(rows.length) + ' live card(s), so it needs the high-risk dependency-tree confirmation (decision ' + String(nextDecision.id) + ', ' + String(total) + ' cards). Nothing has been deleted yet.'
           }
-        } else {
+        } else if (outcome === null) {
           executed = true
           outcome = await taskAdminActions.delete({ id: id, force: true }, execContext, projectPath)
           summary = { taskId: id, deleted: outcome.ok === true }
