@@ -338,6 +338,87 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				settingsRetryHint: '一张卡连续失败多少次后进入阻塞。',
 				invalidMaxAttempts: '最大尝试次数必须是 1–10 的整数',
 				invalidConcurrency: '并发必须是 1–8 的整数',
+				// T-198: decision policy editor (settings → 关键决策设置).
+				decisionSettingsTitle: '关键决策设置',
+				decisionSettingsHint: '每个事件选择由谁决定：ask 弹窗询问你；notify 自动处置并通知；silent 自动处置，只写审计。',
+				decisionScope: '作用域',
+				decisionScopeGlobal: '全局默认',
+				decisionScopeProject: '项目覆盖',
+				decisionScopeHint: '项目覆盖逐字段回退到全局默认；「恢复默认」只清除当前作用域里该事件的覆盖。',
+				decisionEventColumn: '事件',
+				decisionModeLabel: '提问模式',
+				decisionDefaultLabel: '默认选项',
+				decisionTimeoutLabel: '回答超时（秒）',
+				decisionLimitLabel: '连续上限',
+				decisionAutoRecoverLabel: '连续自动恢复上限',
+				decisionResetEvent: '恢复默认',
+				decisionResetAll: '全部恢复默认',
+				decisionGuardsTitle: '固定高危保护',
+				decisionGuardDeleteWord: '删除依赖树：始终要求输入 DELETE',
+				decisionGuardTimeoutDelete: '超时不允许自动删除',
+				decisionGuardHint: '固定保护不可关闭，也不会被事件策略绕过。',
+				decisionPolicyWorkspaceNote: '全局默认保存在项目内（用户目录不可写）。',
+				err_invalid_policy_scope: '作用域必须是 global 或 project。',
+				err_invalid_policy_event: '未知的事件。',
+				err_invalid_policy_events: '事件策略格式不正确。',
+				err_invalid_policy_mode: '提问模式必须是 ask / notify / silent。',
+				err_invalid_policy_option: '默认选项不能是删除等高危动作。',
+				err_invalid_policy_timeout: '回答超时必须是 0–86400 的整数秒。',
+				err_invalid_policy_limit: '连续上限必须是 0–10 的整数。',
+				err_invalid_policy_auto_recover: '连续自动恢复上限必须是 0–10 的整数。',
+				err_policy_unwritable: '决策策略无法保存：文件不可写。',
+				err_policy_unreadable: '决策策略无法读取。',
+				err_user_only: '该设置只属于用户，Agent 不能修改。',
+				decisionEvent_create: '创建卡片',
+				decisionEvent_dispatch: '派发批准',
+				decisionEvent_dev_timeout: '开发超时',
+				decisionEvent_review_timeout: 'Review 超时',
+				decisionEvent_test_timeout: 'Test 超时',
+				decisionEvent_reopen: 'Reopen',
+				decisionEvent_delete: 'Delete',
+				decisionEvent_cancel: 'Cancel',
+				decisionEvent_host_verify_fail: 'Host 验证失败',
+				decisionEvent_merge_conflict: '合并冲突',
+				decisionEvent_worker_lost: '执行者丢失',
+				decisionEvent_target_drift: 'Target drift',
+				decisionEvent_review_rounds_exhausted: '评审轮次用尽',
+				decisionOpt_create_create: '创建任务',
+				decisionOpt_create_cancel: '取消创建',
+				decisionOpt_dispatch_approve: '批准派发',
+				decisionOpt_dispatch_hold: '暂不派发',
+				decisionOpt_dispatch_withdraw: '取消申请',
+				decisionOpt_dev_timeout_continue: '继续等待 20 分钟',
+				decisionOpt_dev_timeout_retry_dev: '重试开发',
+				decisionOpt_dev_timeout_cancel: '取消任务',
+				decisionOpt_dev_timeout_cancel_tree: '取消并删除依赖树',
+				decisionOpt_review_timeout_continue: '继续评审 20 分钟',
+				decisionOpt_review_timeout_replace: '更换 reviewer',
+				decisionOpt_review_timeout_block: '阻塞任务',
+				decisionOpt_review_timeout_cancel: '取消任务',
+				decisionOpt_test_timeout_continue: '继续测试 20 分钟',
+				decisionOpt_test_timeout_replace: '更换 tester',
+				decisionOpt_test_timeout_block: '阻塞任务',
+				decisionOpt_test_timeout_cancel: '取消任务',
+				decisionOpt_reopen_reopen: '重新打开',
+				decisionOpt_reopen_keep: '保持关闭',
+				decisionOpt_delete_keep: '保留',
+				decisionOpt_delete_delete: '删除',
+				decisionOpt_cancel_return: '返回',
+				decisionOpt_cancel_confirm: '确认取消',
+				decisionOpt_host_verify_fail_return_dev: '退回开发',
+				decisionOpt_host_verify_fail_block: '阻塞任务',
+				decisionOpt_host_verify_fail_cancel: '取消任务',
+				decisionOpt_merge_conflict_return_dev: '退回开发',
+				decisionOpt_merge_conflict_block: '阻塞任务',
+				decisionOpt_merge_conflict_cancel: '取消任务',
+				decisionOpt_worker_lost_redispatch: '重新派发',
+				decisionOpt_worker_lost_block: '阻塞任务',
+				decisionOpt_worker_lost_cancel: '取消任务',
+				decisionOpt_target_drift_rebuild_retest: '重建并重测',
+				decisionOpt_target_drift_block: '阻塞任务',
+				decisionOpt_target_drift_cancel: '取消任务',
+				decisionOpt_review_rounds_exhausted_block: '阻塞',
+				decisionOpt_review_rounds_exhausted_cancel: '取消任务',
 				apply: '应用',
 				leaseLeft: '剩余',
 				leaseExpired: '已过期',
@@ -1061,6 +1142,87 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				settingsRetryHint: 'How many consecutive failures block a card.',
 				invalidMaxAttempts: 'Maximum attempts must be an integer from 1 to 10',
 				invalidConcurrency: 'Concurrency must be an integer from 1 to 8',
+				// T-198: decision policy editor (settings → key decisions).
+				decisionSettingsTitle: 'Key decision settings',
+				decisionSettingsHint: 'Choose who decides each event: ask opens the modal, notify acts and tells you, silent acts and only audits.',
+				decisionScope: 'Scope',
+				decisionScopeGlobal: 'Global default',
+				decisionScopeProject: 'Project override',
+				decisionScopeHint: 'A project override falls back to the global default per field; reset only clears the override in this scope.',
+				decisionEventColumn: 'Event',
+				decisionModeLabel: 'Mode',
+				decisionDefaultLabel: 'Default option',
+				decisionTimeoutLabel: 'Answer timeout (s)',
+				decisionLimitLabel: 'Consecutive limit',
+				decisionAutoRecoverLabel: 'Auto-recovery limit',
+				decisionResetEvent: 'Reset',
+				decisionResetAll: 'Reset all',
+				decisionGuardsTitle: 'Fixed high-risk guards',
+				decisionGuardDeleteWord: 'Delete dependency tree: DELETE must always be typed',
+				decisionGuardTimeoutDelete: 'A timeout never deletes',
+				decisionGuardHint: 'The guards cannot be turned off and no event policy can bypass them.',
+				decisionPolicyWorkspaceNote: 'The global default is stored inside the project (the user directory is not writable).',
+				err_invalid_policy_scope: 'The scope must be global or project.',
+				err_invalid_policy_event: 'Unknown event.',
+				err_invalid_policy_events: 'The event policy is malformed.',
+				err_invalid_policy_mode: 'The mode must be ask, notify or silent.',
+				err_invalid_policy_option: 'A destructive action cannot be the default option.',
+				err_invalid_policy_timeout: 'The answer timeout must be 0–86400 whole seconds.',
+				err_invalid_policy_limit: 'The consecutive limit must be 0–10.',
+				err_invalid_policy_auto_recover: 'The auto-recovery limit must be 0–10.',
+				err_policy_unwritable: 'The decision policy could not be saved: the file is not writable.',
+				err_policy_unreadable: 'The decision policy could not be read.',
+				err_user_only: 'This setting belongs to the user; an Agent cannot change it.',
+				decisionEvent_create: 'Create card',
+				decisionEvent_dispatch: 'Dispatch approval',
+				decisionEvent_dev_timeout: 'Dev timeout',
+				decisionEvent_review_timeout: 'Review timeout',
+				decisionEvent_test_timeout: 'Test timeout',
+				decisionEvent_reopen: 'Reopen',
+				decisionEvent_delete: 'Delete',
+				decisionEvent_cancel: 'Cancel',
+				decisionEvent_host_verify_fail: 'Host verify failed',
+				decisionEvent_merge_conflict: 'Merge conflict',
+				decisionEvent_worker_lost: 'Worker lost',
+				decisionEvent_target_drift: 'Target drift',
+				decisionEvent_review_rounds_exhausted: 'Review rounds exhausted',
+				decisionOpt_create_create: 'Create task',
+				decisionOpt_create_cancel: 'Cancel creation',
+				decisionOpt_dispatch_approve: 'Approve dispatch',
+				decisionOpt_dispatch_hold: 'Hold dispatch',
+				decisionOpt_dispatch_withdraw: 'Withdraw request',
+				decisionOpt_dev_timeout_continue: 'Wait another 20 minutes',
+				decisionOpt_dev_timeout_retry_dev: 'Retry development',
+				decisionOpt_dev_timeout_cancel: 'Cancel task',
+				decisionOpt_dev_timeout_cancel_tree: 'Cancel and delete dependency tree',
+				decisionOpt_review_timeout_continue: 'Continue review 20 minutes',
+				decisionOpt_review_timeout_replace: 'Replace reviewer',
+				decisionOpt_review_timeout_block: 'Block task',
+				decisionOpt_review_timeout_cancel: 'Cancel task',
+				decisionOpt_test_timeout_continue: 'Continue testing 20 minutes',
+				decisionOpt_test_timeout_replace: 'Replace tester',
+				decisionOpt_test_timeout_block: 'Block task',
+				decisionOpt_test_timeout_cancel: 'Cancel task',
+				decisionOpt_reopen_reopen: 'Reopen',
+				decisionOpt_reopen_keep: 'Keep closed',
+				decisionOpt_delete_keep: 'Keep',
+				decisionOpt_delete_delete: 'Delete',
+				decisionOpt_cancel_return: 'Return',
+				decisionOpt_cancel_confirm: 'Confirm cancel',
+				decisionOpt_host_verify_fail_return_dev: 'Return to development',
+				decisionOpt_host_verify_fail_block: 'Block task',
+				decisionOpt_host_verify_fail_cancel: 'Cancel task',
+				decisionOpt_merge_conflict_return_dev: 'Return to development',
+				decisionOpt_merge_conflict_block: 'Block task',
+				decisionOpt_merge_conflict_cancel: 'Cancel task',
+				decisionOpt_worker_lost_redispatch: 'Redispatch',
+				decisionOpt_worker_lost_block: 'Block task',
+				decisionOpt_worker_lost_cancel: 'Cancel task',
+				decisionOpt_target_drift_rebuild_retest: 'Rebuild and retest',
+				decisionOpt_target_drift_block: 'Block task',
+				decisionOpt_target_drift_cancel: 'Cancel task',
+				decisionOpt_review_rounds_exhausted_block: 'Block',
+				decisionOpt_review_rounds_exhausted_cancel: 'Cancel task',
 				apply: 'Apply',
 				leaseLeft: 'left',
 				leaseExpired: 'expired',
@@ -2274,6 +2436,19 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-settingscapacity b{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}',
 '.gbt-settingswarning{margin:0;font-size:10.5px;line-height:1.55;color:var(--dsw-alias-state-warn-label)}',
 '.gbt-settingswarning[data-settings-warning="spawn-failed"],.gbt-settingswarning[data-settings-warning="workers-unavailable"]{color:var(--dsw-alias-state-error-primary)}',
+// T-198: the decision policy editor (compact table inside the settings modal).
+'.gbt-policyscopes{display:flex;gap:6px;flex-wrap:wrap;align-items:center}',
+'.gbt-policyscope{appearance:none;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);height:26px;padding:0 10px;border-radius:7px;font:inherit;font-size:11px;cursor:pointer}',
+'.gbt-policyscope[data-active="true"]{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l3,var(--dsw-alias-border-l4));font-weight:600}',
+'.gbt-policytable{width:100%;border-collapse:collapse;font-size:11px}',
+'.gbt-policytable th,.gbt-policytable td{padding:3px 4px;text-align:left;vertical-align:middle;border-top:0.5px solid var(--dsw-alias-border-l4)}',
+'.gbt-policytable thead th{font-size:10.5px;font-weight:600;color:var(--dsw-alias-label-tertiary);white-space:nowrap;border-top:0}',
+'.gbt-policytable th[scope="row"]{font-weight:500;color:var(--dsw-alias-label-primary);white-space:nowrap}',
+'.gbt-policytable .gbt-input{height:24px;min-width:56px;font-size:11px;padding:0 4px;box-sizing:border-box}',
+'.gbt-policytable select.gbt-input{min-width:74px}',
+'.gbt-policytable .gbt-btn{height:22px;padding:0 7px;font-size:10px;white-space:nowrap}',
+'.gbt-policyguard{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--dsw-alias-label-secondary)}',
+'.gbt-policyguard input[type="checkbox"]{margin:0}',
 '@media (max-width:720px){.gbt-settingsgroup,.gbt-settingscapacity{padding:8px 10px}.gbt-settingsinline .gbt-btn{width:100%}}',
 			'.gbt-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:500;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}',
 			'.gbt-pill[data-status="running"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-success-primary)}',
@@ -3377,6 +3552,9 @@ const createTaskStore = (function () {
 			// snapshot they came with. The modal counts down from the SERVER's
 			// remainingMs, corrected by this receipt time.
 			snapshot.decisions = []
+			// T-198: the resolved decision policy (settings page). Carried exactly
+			// like the decision queue: server-owned, never derived in the browser.
+			snapshot.decisionPolicy = null
 			snapshot.receivedAt = Date.now()
 			// T-111: the Host answers the activity timeline incrementally. Keep what we
 			// already have and ask only for events after the last one we saw.
@@ -3433,6 +3611,11 @@ const createTaskStore = (function () {
 						: payload
 				if (host !== null && host !== undefined && Array.isArray(host.decisions)) next.decisions = host.decisions
 				else if (!Array.isArray(next.decisions)) next.decisions = []
+				// T-198: the policy rides the same snapshot; a payload without one (a
+				// delta, or an older Host) keeps the last known policy instead of
+				// blanking the settings page.
+				if (host !== null && host !== undefined && host.decisionPolicy !== undefined && host.decisionPolicy !== null) next.decisionPolicy = host.decisionPolicy
+				else if (next.decisionPolicy === undefined) next.decisionPolicy = null
 				next.receivedAt = Date.now()
 				return next
 			}
@@ -3523,6 +3706,7 @@ const createTaskStore = (function () {
 						} else {
 							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
 							failed.decisions = snapshot.decisions
+							failed.decisionPolicy = snapshot.decisionPolicy
 							failed.receivedAt = snapshot.receivedAt
 							failed.actionResult = snapshot.actionResult
 							failed.actionError = snapshot.actionError
@@ -3532,6 +3716,7 @@ const createTaskStore = (function () {
 					} catch (error) {
 						const offline = tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error))
 						offline.decisions = snapshot.decisions
+						offline.decisionPolicy = snapshot.decisionPolicy
 						offline.receivedAt = snapshot.receivedAt
 						offline.actionResult = snapshot.actionResult
 						offline.actionError = snapshot.actionError
@@ -7489,6 +7674,16 @@ module.exports = { createTaskForm }
  *
  * Dispatch has ONE capacity knob: maxConcurrent. A card's executor is started
  * for the card and released afterwards; there is no persistent worker ceiling.
+ *
+ * T-198 adds the DECISION POLICY editor (关键决策设置): one row per host event with
+ * its mode (ask / notify / silent), default option, answer timeout, consecutive
+ * limit and auto-recovery limit. The scope tabs switch between the user-wide
+ * global default and this project's override; "恢复默认" clears the override in
+ * the current scope. The fixed high-risk guards are rendered as disabled
+ * checkboxes: the server enforces them, the panel only states them.
+ *
+ * The event list below mirrors plugin/task-center/schema.mjs DECISION_EVENT_CATALOG;
+ * client-settings-form.test.mjs compares the two so they cannot drift.
  */
 function createSettingsForm(deps) {
 	const React = deps.React
@@ -7496,16 +7691,209 @@ function createSettingsForm(deps) {
 	const Modal = deps.Modal
 	const store = deps.store
 
+	const DECISION_MODES = ['ask', 'notify', 'silent']
+
+	// One entry per host event, in the aligned copy order (packet §5).
+	const DECISION_EVENT_VIEWS = [
+		{ key: 'create', labelKey: 'decisionEvent_create', options: [{ id: 'create', labelKey: 'decisionOpt_create_create' }, { id: 'cancel', labelKey: 'decisionOpt_create_cancel' }] },
+		{
+			key: 'dispatch',
+			labelKey: 'decisionEvent_dispatch',
+			options: [
+				{ id: 'approve', labelKey: 'decisionOpt_dispatch_approve' },
+				{ id: 'hold', labelKey: 'decisionOpt_dispatch_hold' },
+				{ id: 'withdraw', labelKey: 'decisionOpt_dispatch_withdraw' },
+			],
+		},
+		{
+			key: 'dev-timeout',
+			labelKey: 'decisionEvent_dev_timeout',
+			options: [
+				{ id: 'continue', labelKey: 'decisionOpt_dev_timeout_continue' },
+				// Destructive options are NEVER a policy default (the server refuses
+				// them); the row still shows them so the option list mirrors the modal.
+				{ id: 'retry-dev', labelKey: 'decisionOpt_dev_timeout_retry_dev', noDefault: true },
+				{ id: 'cancel', labelKey: 'decisionOpt_dev_timeout_cancel' },
+				{ id: 'cancel-tree', labelKey: 'decisionOpt_dev_timeout_cancel_tree', noDefault: true },
+			],
+		},
+		{
+			key: 'review-timeout',
+			labelKey: 'decisionEvent_review_timeout',
+			options: [
+				{ id: 'continue', labelKey: 'decisionOpt_review_timeout_continue' },
+				{ id: 'replace', labelKey: 'decisionOpt_review_timeout_replace' },
+				{ id: 'block', labelKey: 'decisionOpt_review_timeout_block' },
+				{ id: 'cancel', labelKey: 'decisionOpt_review_timeout_cancel' },
+			],
+		},
+		{
+			key: 'test-timeout',
+			labelKey: 'decisionEvent_test_timeout',
+			options: [
+				{ id: 'continue', labelKey: 'decisionOpt_test_timeout_continue' },
+				{ id: 'replace', labelKey: 'decisionOpt_test_timeout_replace' },
+				{ id: 'block', labelKey: 'decisionOpt_test_timeout_block' },
+				{ id: 'cancel', labelKey: 'decisionOpt_test_timeout_cancel' },
+			],
+		},
+		{
+			key: 'reopen',
+			labelKey: 'decisionEvent_reopen',
+			options: [
+				{ id: 'reopen', labelKey: 'decisionOpt_reopen_reopen' },
+				{ id: 'keep', labelKey: 'decisionOpt_reopen_keep' },
+			],
+		},
+		{
+			key: 'delete',
+			labelKey: 'decisionEvent_delete',
+			// The delete guard: the mode is fixed to ask (the server refuses to store
+			// anything else), so the select is disabled but still shows the truth.
+			fixedMode: 'ask',
+			options: [
+				{ id: 'keep', labelKey: 'decisionOpt_delete_keep' },
+				{ id: 'delete', labelKey: 'decisionOpt_delete_delete', noDefault: true },
+			],
+		},
+		{
+			key: 'cancel',
+			labelKey: 'decisionEvent_cancel',
+			options: [
+				{ id: 'return', labelKey: 'decisionOpt_cancel_return' },
+				{ id: 'confirm', labelKey: 'decisionOpt_cancel_confirm' },
+			],
+		},
+		{
+			key: 'host-verify-fail',
+			labelKey: 'decisionEvent_host_verify_fail',
+			options: [
+				{ id: 'return-dev', labelKey: 'decisionOpt_host_verify_fail_return_dev' },
+				{ id: 'block', labelKey: 'decisionOpt_host_verify_fail_block' },
+				{ id: 'cancel', labelKey: 'decisionOpt_host_verify_fail_cancel' },
+			],
+		},
+		{
+			key: 'merge-conflict',
+			labelKey: 'decisionEvent_merge_conflict',
+			options: [
+				{ id: 'return-dev', labelKey: 'decisionOpt_merge_conflict_return_dev' },
+				{ id: 'block', labelKey: 'decisionOpt_merge_conflict_block' },
+				{ id: 'cancel', labelKey: 'decisionOpt_merge_conflict_cancel' },
+			],
+		},
+		{
+			key: 'worker-lost',
+			labelKey: 'decisionEvent_worker_lost',
+			options: [
+				{ id: 'redispatch', labelKey: 'decisionOpt_worker_lost_redispatch' },
+				{ id: 'block', labelKey: 'decisionOpt_worker_lost_block' },
+				{ id: 'cancel', labelKey: 'decisionOpt_worker_lost_cancel' },
+			],
+		},
+		{
+			key: 'target-drift',
+			labelKey: 'decisionEvent_target_drift',
+			options: [
+				{ id: 'rebuild-retest', labelKey: 'decisionOpt_target_drift_rebuild_retest' },
+				{ id: 'block', labelKey: 'decisionOpt_target_drift_block' },
+				{ id: 'cancel', labelKey: 'decisionOpt_target_drift_cancel' },
+			],
+		},
+		{
+			key: 'review-rounds-exhausted',
+			labelKey: 'decisionEvent_review_rounds_exhausted',
+			options: [
+				{ id: 'block', labelKey: 'decisionOpt_review_rounds_exhausted_block' },
+				{ id: 'cancel', labelKey: 'decisionOpt_review_rounds_exhausted_cancel' },
+			],
+		},
+	]
+
+	// Module-scoped drafts: one per scope, reset only when the SAVED policy
+	// changes (a poll carrying the same overrides never wipes typing).
+	const policyState = {
+		signature: null,
+		scope: 'project',
+		drafts: { global: null, project: null },
+		baseline: { global: null, project: null },
+		resets: { global: {}, project: {} },
+		error: '',
+	}
+
+	function rowOf(policy, scope, key) {
+		const bucket = policy === null || policy === undefined ? null : scope === 'global' ? policy.global : policy.project
+		const row = bucket !== null && bucket !== undefined ? bucket[key] : undefined
+		if (row === undefined || row === null) return { mode: 'ask', defaultOption: '', timeoutSeconds: 120, limit: null, autoRecover: null }
+		return row
+	}
+
+	function rowCopy(row) {
+		return {
+			mode: row.mode,
+			defaultOption: row.defaultOption,
+			// null = "the built-in fallback" (a notify event shows an empty field, as
+			// the packet's "—"); 0 keeps its meaning: no deadline.
+			timeoutSeconds: Number.isFinite(row.timeoutSeconds) ? row.timeoutSeconds : null,
+			limit: row.limit === undefined ? null : row.limit,
+			autoRecover: row.autoRecover === undefined ? null : row.autoRecover,
+		}
+	}
+
+	function policySignature(policy) {
+		if (policy === null || policy === undefined || typeof policy !== 'object') return 'none'
+		return JSON.stringify({ global: policy.overrides === undefined ? null : policy.overrides.global, project: policy.overrides === undefined ? null : policy.overrides.project })
+	}
+
+	function ensureState(policy) {
+		const signature = policySignature(policy)
+		if (policyState.signature === signature && policyState.drafts.project !== null) return
+		policyState.signature = signature
+		policyState.drafts = { global: {}, project: {} }
+		policyState.baseline = { global: {}, project: {} }
+		policyState.resets = { global: {}, project: {} }
+		policyState.error = ''
+		for (const scope of ['global', 'project']) {
+			for (const view of DECISION_EVENT_VIEWS) {
+				const copy = rowCopy(rowOf(policy, scope, view.key))
+				policyState.drafts[scope][view.key] = copy
+				policyState.baseline[scope][view.key] = Object.assign({}, copy)
+			}
+		}
+	}
+
+	/** What this scope inherits once its own override is cleared. */
+	function inheritedRow(policy, scope, key) {
+		if (scope === 'project') return rowCopy(rowOf(policy, 'global', key))
+		const defaults = policy !== null && policy !== undefined && policy.defaults !== undefined && policy.defaults !== null ? policy.defaults[key] : null
+		return defaults === undefined || defaults === null ? rowCopy(rowOf(policy, 'global', key)) : rowCopy(defaults)
+	}
+
 	function SettingsForm(props) {
 		const t = props.t
 		const dispatch = props.dispatch !== null && props.dispatch !== undefined ? props.dispatch : {}
+		const policy = props.policy !== null && props.policy !== undefined ? props.policy : null
 		const theme = props.theme === 'console' ? 'console' : 'dsh'
 		const concurrent = React.useRef(null)
 		const attempts = React.useRef(null)
 		const defaultTarget = React.useRef(null)
-		const [error, setError] = React.useState('')
+		const [tick, setTick] = React.useState(0)
+		// The failure text lives in the module state (like the drafts), so a modal
+		// that stays open keeps it and a test render can read it back.
+		const error = policyState.error
 		const currentConcurrent = Number.isFinite(dispatch.maxConcurrent) ? Math.max(1, Math.floor(dispatch.maxConcurrent)) : 3
 		const currentAttempts = Number.isFinite(dispatch.maxAttempts) ? Math.max(1, Math.floor(dispatch.maxAttempts)) : 3
+		ensureState(policy)
+		const scope = policyState.scope
+
+		function rerender() {
+			setTick(tick + 1)
+		}
+
+		function setError(next) {
+			policyState.error = next
+			rerender()
+		}
 
 		function numberFrom(ref, fallback) {
 			if (ref !== null && ref !== undefined && ref.current !== null && ref.current !== undefined && ref.current.value !== undefined) {
@@ -7515,7 +7903,62 @@ function createSettingsForm(deps) {
 			return fallback
 		}
 
+		function overridesOf(targetScope, key) {
+			const overrides = policy === null || policy === undefined || policy.overrides === undefined ? null : policy.overrides[targetScope]
+			return overrides !== null && overrides !== undefined && overrides[key] !== undefined
+		}
+
+		function resetEvent(targetScope, key) {
+			// Remember what the scope inherits: a PURE reset sends no patch (the
+			// override disappears); an edit after the reset is sent against this
+			// inherited row, so the new value is explicit.
+			const inherited = inheritedRow(policy, targetScope, key)
+			policyState.resets[targetScope][key] = Object.assign({}, inherited)
+			policyState.drafts[targetScope][key] = Object.assign({}, inherited)
+			rerender()
+		}
+
+		function resetAll() {
+			for (const view of DECISION_EVENT_VIEWS) resetEvent(policyState.scope, view.key)
+		}
+
+		function setScope(next) {
+			policyState.scope = next === 'global' ? 'global' : 'project'
+			rerender()
+		}
+
+		/** The sparse patch the server should store for the current scope. */
+		function policyChanges() {
+			const current = policyState.scope
+			const events = {}
+			for (const view of DECISION_EVENT_VIEWS) {
+				const draft = policyState.drafts[current][view.key]
+				const resetSnapshot = policyState.resets[current][view.key]
+				const base = resetSnapshot === undefined ? policyState.baseline[current][view.key] : resetSnapshot
+				const patch = {}
+				if (draft.mode !== base.mode) patch.mode = draft.mode
+				if (draft.defaultOption !== base.defaultOption) patch.defaultOption = draft.defaultOption
+				if (draft.timeoutSeconds !== base.timeoutSeconds) patch.timeoutSeconds = draft.timeoutSeconds
+				if (draft.limit !== base.limit) patch.limit = draft.limit
+				if (draft.autoRecover !== base.autoRecover) patch.autoRecover = draft.autoRecover
+				if (Object.keys(patch).length > 0) events[view.key] = patch
+			}
+			const reset = Object.keys(policyState.resets[current])
+			return { scope: current, events: events, reset: reset }
+		}
+
+		function policyErrorText(result) {
+			const code = result !== null && result !== undefined && typeof result.code === 'string' ? result.code : ''
+			if (code !== '') {
+				const key = 'err_' + code.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()
+				const localized = t(key)
+				if (typeof localized === 'string' && localized !== '' && localized !== key) return localized
+			}
+			return t('error')
+		}
+
 		function save() {
+			policyState.error = ''
 			const concurrency = numberFrom(concurrent, currentConcurrent)
 			const maxAttempts = numberFrom(attempts, currentAttempts)
 			if (concurrency < 1 || concurrency > 8) {
@@ -7526,16 +7969,149 @@ function createSettingsForm(deps) {
 				setError(t('invalidMaxAttempts'))
 				return
 			}
+			const changes = policyChanges()
+			for (const key of Object.keys(changes.events)) {
+				const patch = changes.events[key]
+				if (
+					patch.timeoutSeconds !== undefined &&
+					patch.timeoutSeconds !== null &&
+					(!Number.isFinite(patch.timeoutSeconds) || patch.timeoutSeconds < 0 || patch.timeoutSeconds > 86400)
+				) {
+					setError(t('err_invalid_policy_timeout'))
+					return
+				}
+				for (const field of ['limit', 'autoRecover']) {
+					const value = patch[field]
+					if (value === undefined || value === null) continue
+					if (!Number.isFinite(value) || value < 0 || value > 10) {
+						setError(field === 'limit' ? t('err_invalid_policy_limit') : t('err_invalid_policy_auto_recover'))
+						return
+					}
+				}
+			}
 			const targetValue = defaultTarget.current === null || defaultTarget.current === undefined ? '' : String(defaultTarget.current.value === undefined || defaultTarget.current.value === null ? '' : defaultTarget.current.value).trim()
 			void store.send('settings', {
 				maxConcurrent: concurrency,
 				maxAttempts: maxAttempts,
 				defaultTarget: targetValue,
 			}).then(function (result) {
-				if (result.ok === true) props.onClose()
-				else setError(t('error'))
+				if (result.ok !== true) {
+					setError(t('error'))
+					return
+				}
+				const changed = Object.keys(changes.events).length > 0 || changes.reset.length > 0
+				if (changed !== true) {
+					props.onClose()
+					return
+				}
+				void store.send('decisionPolicy', changes).then(function (policyResult) {
+					if (policyResult.ok === true) props.onClose()
+					else setError(policyErrorText(policyResult.payload))
+				})
 			})
 		}
+
+		function fieldInput(view, field, options) {
+			const draft = policyState.drafts[scope][view.key]
+			const value = draft[field]
+			if (options.kind === 'select') {
+				return h(
+					'select',
+					{
+						className: 'gbt-input',
+						'data-policy-field': options.name,
+						'data-policy-event': view.key,
+						value: value === undefined || value === null ? '' : String(value),
+						disabled: options.disabled === true,
+						title: options.title,
+						onChange: function (event) {
+							draft[field] = String(event.target.value)
+							rerender()
+						},
+					},
+					options.choices.map(function (choice) {
+						return h('option', { key: choice.value, value: choice.value }, choice.label)
+					}),
+				)
+			}
+			const nullable = options.nullable === true
+			return h('input', {
+				className: 'gbt-input',
+				type: 'number',
+				min: options.min,
+				max: options.max,
+				step: 1,
+				'data-policy-field': options.name,
+				'data-policy-event': view.key,
+				value: value === null || value === undefined ? '' : String(value),
+				onChange: function (event) {
+					const raw = String(event.target.value === undefined || event.target.value === null ? '' : event.target.value).trim()
+					if (raw === '') {
+						if (nullable === true) draft[field] = null
+						else draft[field] = 0
+						rerender()
+						return
+					}
+					const parsed = Number(raw)
+					if (Number.isFinite(parsed)) {
+						draft[field] = Math.floor(parsed)
+						rerender()
+					}
+				},
+			})
+		}
+
+		function eventRow(view) {
+			const draft = policyState.drafts[scope][view.key]
+			const fixed = view.fixedMode !== undefined
+			const resetDisabled = overridesOf(scope, view.key) !== true && policyState.resets[scope][view.key] === undefined
+			return h(
+				'tr',
+				{ key: view.key, 'data-policy-event': view.key },
+				h('th', { scope: 'row' }, t(view.labelKey)),
+				h('td', null, fieldInput(view, 'mode', {
+					kind: 'select',
+					name: 'mode',
+					disabled: fixed,
+					title: fixed ? t('decisionGuardDeleteWord') : undefined,
+					choices: DECISION_MODES.map(function (mode) { return { value: mode, label: mode } }),
+				})),
+				h('td', null, fieldInput(view, 'defaultOption', {
+					kind: 'select',
+					name: 'default',
+					choices: (function () {
+						// Only a safe option can be a default. If the current value is not
+						// in that list (an older file) it is still shown, never blank.
+						const selectable = view.options.filter(function (option) { return option.noDefault !== true })
+						const shown = selectable.some(function (option) { return option.id === draft.defaultOption }) ? selectable : view.options
+						return shown.map(function (option) { return { value: option.id, label: t(option.labelKey) } })
+					})(),
+				})),
+				h('td', null, fieldInput(view, 'timeoutSeconds', { name: 'timeout', min: 0, max: 86400, nullable: true })),
+				h('td', null, fieldInput(view, 'limit', { name: 'limit', min: 0, max: 10, nullable: true })),
+				h('td', null, fieldInput(view, 'autoRecover', { name: 'auto-recover', min: 0, max: 10, nullable: true })),
+				h(
+					'td',
+					null,
+					h(
+						'button',
+						{
+							type: 'button',
+							className: 'gbt-btn',
+							'data-policy-reset': view.key,
+							disabled: resetDisabled,
+							onClick: function () {
+								resetEvent(scope, view.key)
+							},
+						},
+						t('decisionResetEvent'),
+					),
+				),
+			)
+		}
+
+		const storage = policy !== null && policy !== undefined && policy.storage !== undefined && policy.storage !== null ? policy.storage : null
+		const policyErrors = policy !== null && policy !== undefined && Array.isArray(policy.errors) ? policy.errors : []
 
 		return h(
 			Modal,
@@ -7551,18 +8127,21 @@ function createSettingsForm(deps) {
 						'div',
 						{ className: 'gbt-field' },
 						h('label', null, t('settingsTheme')),
-						h('select', {
-							className: 'gbt-input',
-							'data-field': 'ui-theme',
-							'data-tc-theme-select': 'true',
-							value: theme,
-							onChange: function (event) {
-								const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'dsh'
-								if (typeof props.onThemeChange === 'function') props.onThemeChange(next)
+						h(
+							'select',
+							{
+								className: 'gbt-input',
+								'data-field': 'ui-theme',
+								'data-tc-theme-select': 'true',
+								value: theme,
+								onChange: function (event) {
+									const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'dsh'
+									if (typeof props.onThemeChange === 'function') props.onThemeChange(next)
+								},
 							},
-						},
-						h('option', { value: 'dsh' }, t('settingsThemeDsh')),
-						h('option', { value: 'console' }, t('settingsThemeConsole'))),
+							h('option', { value: 'dsh' }, t('settingsThemeDsh')),
+							h('option', { value: 'console' }, t('settingsThemeConsole')),
+						),
 					),
 					h('p', { className: 'gbt-settingsnote' }, t('settingsThemeHint')),
 				),
@@ -7611,6 +8190,99 @@ function createSettingsForm(deps) {
 						placeholder: t('defaultTargetHint'),
 					}),
 				),
+				h(
+					'div',
+					{ className: 'gbt-settingsgroup', 'data-settings-group': 'decisions' },
+					h('div', { className: 'gbt-settingsgrouphead' }, t('decisionSettingsTitle')),
+					h('p', { className: 'gbt-settingsnote' }, t('decisionSettingsHint')),
+					h(
+						'div',
+						{ className: 'gbt-settingsinline' },
+						h('span', null, t('decisionScope')),
+						h(
+							'div',
+							{ className: 'gbt-policyscopes' },
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'gbt-policyscope',
+									'data-policy-scope': 'global',
+									'data-active': scope === 'global' ? 'true' : 'false',
+									onClick: function () {
+										setScope('global')
+									},
+								},
+								t('decisionScopeGlobal'),
+							),
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'gbt-policyscope',
+									'data-policy-scope': 'project',
+									'data-active': scope === 'project' ? 'true' : 'false',
+									onClick: function () {
+										setScope('project')
+									},
+								},
+								t('decisionScopeProject'),
+							),
+						),
+						h(
+							'button',
+							{ type: 'button', className: 'gbt-btn', 'data-policy-reset-all': scope, onClick: resetAll },
+							t('decisionResetAll'),
+						),
+					),
+					h('p', { className: 'gbt-settingsnote' }, t('decisionScopeHint')),
+					storage !== null && storage.global === 'workspace' ? h('p', { className: 'gbt-settingsnote', 'data-policy-storage': 'workspace' }, t('decisionPolicyWorkspaceNote')) : null,
+					policyErrors.length > 0
+						? h(
+								'p',
+								{ className: 'gbt-settingsnote', 'data-policy-errors': 'true' },
+								policyErrors.map(function (entry) { return String(entry.scope) + ': ' + String(entry.code) }).join(', '),
+							)
+						: null,
+					h('div', { className: 'gbt-tablewrap' }, h(
+						'table',
+						{ className: 'gbt-policytable', 'data-decision-policy-table': 'true' },
+						h(
+							'thead',
+							null,
+							h(
+								'tr',
+								null,
+								h('th', null, t('decisionEventColumn')),
+								h('th', null, t('decisionModeLabel')),
+								h('th', null, t('decisionDefaultLabel')),
+								h('th', null, t('decisionTimeoutLabel')),
+								h('th', null, t('decisionLimitLabel')),
+								h('th', null, t('decisionAutoRecoverLabel')),
+								h('th', null, ''),
+							),
+						),
+						h('tbody', null, DECISION_EVENT_VIEWS.map(eventRow)),
+					)),
+					h(
+						'div',
+						{ 'data-policy-guards': 'true' },
+						h('div', { className: 'gbt-settingsgrouphead' }, t('decisionGuardsTitle')),
+						h(
+							'label',
+							{ className: 'gbt-policyguard' },
+							h('input', { type: 'checkbox', checked: true, disabled: true, readOnly: true, 'data-policy-guard': 'delete-word' }),
+							t('decisionGuardDeleteWord'),
+						),
+						h(
+							'label',
+							{ className: 'gbt-policyguard' },
+							h('input', { type: 'checkbox', checked: true, disabled: true, readOnly: true, 'data-policy-guard': 'timeout-no-delete' }),
+							t('decisionGuardTimeoutDelete'),
+						),
+						h('p', { className: 'gbt-settingsnote' }, t('decisionGuardHint')),
+					),
+				),
 				error === '' ? null : h('p', { className: 'gbt-settingsnote', style: { color: 'var(--dsw-alias-state-error-primary)' } }, error),
 				h(
 					'div',
@@ -7622,6 +8294,9 @@ function createSettingsForm(deps) {
 		)
 	}
 
+	// The catalog is part of the component's contract: the drift test compares it
+	// with the server's DECISION_EVENT_CATALOG (keys, option ids and defaults).
+	SettingsForm.decisionEvents = DECISION_EVENT_VIEWS
 	return SettingsForm
 }
 
@@ -9253,7 +9928,17 @@ function createTaskCenter(deps) {
 		onClose: function () { setEditing(null) },
 		onSaved: function () { setEditing(null) },
 			}),
-			settingsOpen ? h(SettingsForm, { t: t, dispatch: dispatch, theme: theme, onThemeChange: setTheme, onClose: function () { setSettingsOpen(false) } }) : null,
+			settingsOpen
+				? h(SettingsForm, {
+						t: t,
+						dispatch: dispatch,
+						// T-198: the resolved decision policy the settings page edits.
+						policy: snapshot.decisionPolicy === undefined ? null : snapshot.decisionPolicy,
+						theme: theme,
+						onThemeChange: setTheme,
+						onClose: function () { setSettingsOpen(false) },
+					})
+				: null,
 			// T-181: the ONE project dialog. It is mounted only after the user asks for
 			// it — an empty project state never auto-opens it, and closing it unmounts.
 			projectOpen && snapshot.source !== 'loading' ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,

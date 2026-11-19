@@ -17,6 +17,8 @@ import {
   CLOSED_STATUSES,
   HOST_ACTION_TIMEOUT_MS,
   ROLE_KINDS,
+  defaultDecisionEventPolicy,
+  resolveDecisionPolicy,
   ROLE_STAGE,
   ROLE_TEMPLATE_VARIABLES,
   TASK_LEASE_MS,
@@ -35,7 +37,7 @@ import * as locks from './locks.mjs'
 import { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from './actions/registry.mjs'
 import { createReadActions } from './actions/read.mjs'
 import { createDecisionActions } from './actions/decisions.mjs'
-import { createDecisionStore } from './decisions.mjs'
+import { createDecisionStore, decisionPolicyView, fallbackDecisionPolicyView } from './decisions.mjs'
 import { createHarnessActions } from './actions/harness.mjs'
 import { createControlActions } from './actions/control.mjs'
 import { createLifecycleActions } from './actions/lifecycle.mjs'
@@ -789,11 +791,21 @@ export function createApi(ctx, options) {
     now: clock,
     ensureDir: ensureDir,
     sandboxPolicyFor: writePolicyFor,
+    // T-198: the global default lives beside the project registry (user-wide),
+    // with the workspace copy as the sandbox-denied fallback.
+    homeDir: opts.homeDir,
   })
   const decisionActions = createDecisionActions({
     decisions: decisionStore,
     ok: ok,
     failure: failure,
+    // T-198: the answer carries the freshly resolved policy view, so the panel
+    // re-renders the saved values without a second round trip.
+    policyView: function (read) {
+      return read === null || read === undefined
+        ? fallbackDecisionPolicyView('unreadable', 'the decision policy could not be read')
+        : decisionPolicyView(read)
+    },
     // T-196: the panel must be told the server's timeout policy (a protected
     // danger default never auto-runs), and an answered/expired ACTION decision
     // is executed here, once, before the answer is returned.
@@ -812,6 +824,8 @@ export function createApi(ctx, options) {
     try {
       scheduler.attachStageHost({
         request: function (projectPath, input) {
+          // T-198: the caller (dispatch) already resolved the event policy into
+          // this question; the store is the only place that writes it.
           return decisionStore.request(projectPath, input, { by: 'host' })
         },
         sweep: async function (projectPath) {
@@ -820,11 +834,61 @@ export function createApi(ctx, options) {
           const applied = Array.isArray(swept.expired) && swept.expired.length > 0 ? await applyExpiredDecisions(projectPath, swept.expired) : []
           return { ok: true, expired: swept.expired, applied: applied }
         },
+        // T-198: the policy ('ask'/'notify'/'silent' + defaults) is resolved by the
+        // API, which owns the files; the scheduler only consumes it.
+        policyFor: async function (projectPath) {
+          return await effectiveDecisionEvents(projectPath)
+        },
+        // T-198: a notify/silent stage timeout applies the configured default
+        // option with the configured consecutive limit, without a modal.
+        applyOption: async function (projectPath, input) {
+          return await applyStagePolicyOption(projectPath, input)
+        },
+        // T-198: event-10 recoveries raised by the scheduler (worker lost) go
+        // through the same policy as the ones the API raises itself.
+        recover: async function (projectPath, input) {
+          return await recoverStageEvent(projectPath, input)
+        },
       })
     } catch (error) {
       // A host without the seam simply never asks; the card keeps its budget.
     }
   }
+
+  // ── T-198: the effective decision policy ──────────────────────────────────
+  // One resolver for the whole API: the fixed guards live in the schema, so this
+  // only reads the two files and shapes the answer.
+
+  /** Both scopes, or the built-in defaults when the store itself is broken. */
+  async function readDecisionPolicy(projectPath) {
+    try {
+      return await decisionStore.readPolicy(projectPath)
+    } catch (error) {
+      return { ok: false, code: 'policy-unreadable', message: messageOf(error) }
+    }
+  }
+
+  /** { eventKey: { mode, defaultOption, timeoutSeconds, limit, autoRecover } }. */
+  async function effectiveDecisionEvents(projectPath) {
+    const read = await readDecisionPolicy(projectPath)
+    if (read.ok !== true) return resolveDecisionPolicy({}, {})
+    return resolveDecisionPolicy(read.global.events, read.project.events)
+  }
+
+  /** One event's effective policy, with the built-in fallback. */
+  async function effectiveDecisionEvent(projectPath, eventKey) {
+    const events = await effectiveDecisionEvents(projectPath)
+    const resolved = events[eventKey]
+    return resolved === undefined ? defaultDecisionEventPolicy(eventKey) : resolved
+  }
+
+  /** The panel-facing policy view; never throws. */
+  async function currentDecisionPolicyView(projectPath) {
+    const read = await readDecisionPolicy(projectPath)
+    if (read.ok !== true) return fallbackDecisionPolicyView(read.code, read.message)
+    return decisionPolicyView(read)
+  }
+
   // A task can be merged by both the tester's passTest and the host sweep. The
   // second caller must not take the stale branch and rebuild a candidate for a
   // task that is already done; one in-process claim per task makes merging idempotent.
@@ -3398,6 +3462,9 @@ export function createApi(ctx, options) {
       // history is served by decisionList, not by the polling snapshot.
       decisions: pendingDecisions,
       decisionsError: decisionsError,
+      // T-198: the resolved decision policy (global default + project override)
+      // the settings page edits. Deferred from the core first paint like roles.
+      decisionPolicy: core ? null : await currentDecisionPolicyView(projectPath),
       tasks: tasks,
       locks: locks.view(state.memory.locks, board, now).map((lock) =>
         Object.assign({}, lock, { waiters: lockWaiters(board, lock) }),
@@ -3712,6 +3779,12 @@ export function createApi(ctx, options) {
   // asking Agent as a message.
   const ACTION_DECISION_GATED = ['create', 'start', 'reopen', 'delete', 'cancel']
   const ACTION_DECISION_TIMEOUT_MS = { create: 120000, start: 300000, reopen: 120000, delete: 120000, cancel: 120000 }
+  // T-198: which policy event each gated action belongs to, and which option
+  // means "let the action run". In notify/silent mode the host applies the
+  // configured default: the proceed option runs the action, anything else
+  // declines it — a policy is never allowed to turn a decline into a deletion.
+  const ACTION_DECISION_EVENTS = { create: 'create', start: 'dispatch', reopen: 'reopen', delete: 'delete', cancel: 'cancel' }
+  const ACTION_DECISION_PROCEED = { create: 'create', start: 'approve', reopen: 'reopen', delete: 'delete', cancel: 'confirm' }
   const ACTION_DECISION_LABELS = { create: '创建任务', start: '派发批准', reopen: '重新打开', delete: '删除任务', cancel: '取消任务' }
   const ACTION_DECISION_TREE_LIMIT = 40
 
@@ -3785,7 +3858,8 @@ export function createApi(ctx, options) {
       typeof view.timeoutAt === 'string' &&
       view.timeoutAt !== '' &&
       chosen !== undefined &&
-      chosen.danger !== true
+      chosen.danger !== true &&
+      chosen.auto !== false
     return Object.assign({}, view, { autoRunAllowed: autoRunAllowed })
   }
 
@@ -3974,9 +4048,9 @@ export function createApi(ctx, options) {
         key: 'reopen:' + id,
         title: '重新打开 ' + id + '？',
         body: '当前状态：' + String(task.status) + '。重新打开会回到待办、清空 review/test 现场并由 scheduler 重新派发',
-        // Default: 重新打开, exactly as the T-196 card copy and packet §3.6 say.
-        // Packet §5's summary table lists 保持关闭 for the same event; the detailed
-        // panel copy wins here until the lead resolves that inconsistency.
+        // Default: 重新打开 — packet §3.6 is the ruling; the §5 summary table's
+        // 保持关闭 entry was stale and is being corrected. The decision policy
+        // can still override this default per event.
         options: [
           { id: 'reopen', label: '重新打开', description: '回到待办，清空 review/test 后重新派发', default: true },
           { id: 'keep', label: '保持关闭', description: '不改动这张卡' },
@@ -4002,7 +4076,10 @@ export function createApi(ctx, options) {
         body: ['任务：' + String(task.title), '状态：' + String(task.status), '被依赖：' + String(rows.length) + ' 张卡', '下游：', decisionTreeText(id, rows)].join('\n'),
         options: [
           { id: 'keep', label: '保留', description: '不做任何改动', default: true },
-          { id: 'delete', label: '删除', description: '从任务板移除；下游卡的依赖会被解除', danger: rows.length > 0 },
+          // T-198 fixed guard: a timeout NEVER deletes. `auto:false` is independent
+          // of `danger` (which also asks for the DELETE word when downstream
+          // cards exist), so even a policy default could not auto-delete.
+          { id: 'delete', label: '删除', description: '从任务板移除；下游卡的依赖会被解除', danger: rows.length > 0, auto: false },
         ],
         defaultOption: 'keep',
         highRisk: rows.length > 0,
@@ -4093,7 +4170,7 @@ export function createApi(ctx, options) {
         options: plan.options,
         defaultOption: plan.defaultOption,
         highRisk: plan.highRisk === true,
-        timeoutMs: ACTION_DECISION_TIMEOUT_MS[plan.action],
+        timeoutMs: Number.isFinite(plan.timeoutMs) ? plan.timeoutMs : ACTION_DECISION_TIMEOUT_MS[plan.action],
         payload: payload,
       },
       { by: context.by },
@@ -4108,6 +4185,41 @@ export function createApi(ctx, options) {
    * carries the pending DecisionRequest. start keeps its historical
    * 'needs-consent' code so existing sessions keep handling it as "wait".
    */
+  /**
+   * T-198: apply the configured default WITHOUT a modal (notify/silent).
+   * Returns null when the action may run, or a typed \`policy-default\` refusal
+   * when the configured default declines it. A destructive option is never a
+   * policy default (the schema refuses it) and a fixed-ask event never gets here.
+   */
+  async function policyActionDefault(action, plan, policy, eventKey) {
+    const options = Array.isArray(plan.options) ? plan.options : []
+    const configured = options.filter((option) => option.id === policy.defaultOption)[0]
+    const fallback = options.filter((option) => option.id === plan.defaultOption)[0]
+    const chosen = configured !== undefined && configured.danger !== true && configured.auto !== false ? configured : fallback
+    const optionId = chosen === undefined ? String(policy.defaultOption) : chosen.id
+    const label = chosen === undefined ? String(policy.defaultOption) : chosen.label
+    const proceed = ACTION_DECISION_PROCEED[action] === optionId
+    const taskId = plan.taskId === null || plan.taskId === undefined ? null : String(plan.taskId)
+    // notify writes a policy notice; silent writes the AUDIT row only. Both are
+    // truthful records of what the host did without asking.
+    if (policy.mode === 'notify' || policy.mode === 'silent') {
+      emitActivity(
+        null,
+        policy.mode === 'notify' ? 'decision-policy' : 'decision-audit',
+        '按策略自动处置（' + eventKey + ' / ' + policy.mode + '）：' + label + (proceed === true ? '；已执行' : '；未执行'),
+        taskId,
+        'host',
+      )
+    }
+    if (proceed === true) return null
+    const refusal = failure(
+      'policy-default',
+      '决策策略（' + eventKey + '）按默认选项「' + label + '」自动处置，本次 ' + action + ' 未执行。Ask the user to change it in 关键决策设置 if it should run.',
+    )
+    refusal.policy = { event: eventKey, mode: policy.mode, option: optionId }
+    return refusal
+  }
+
   async function actionDecisionGate(action, source, context, projectPath, now) {
     if (ACTION_DECISION_GATED.indexOf(action) < 0) return null
     if (context === undefined || context === null || context.role !== 'agent') return null
@@ -4116,6 +4228,17 @@ export function createApi(ctx, options) {
     const plan = await planActionDecision(action, source, context, projectPath, read.board, now)
     if (plan === null) return null
     if (plan.ok !== true) return plan
+    // T-198: the event policy decides whether this action asks at all, and which
+    // default/timeout the question carries.
+    const eventKey = ACTION_DECISION_EVENTS[action]
+    const policy = eventKey === undefined ? undefined : await effectiveDecisionEvent(projectPath, eventKey)
+    if (policy !== undefined && policy.mode !== 'ask') {
+      return await policyActionDefault(action, plan, policy, eventKey)
+    }
+    if (policy !== undefined) {
+      if (Array.isArray(plan.options) && plan.options.some((option) => option.id === policy.defaultOption)) plan.defaultOption = policy.defaultOption
+      if (Number.isFinite(policy.timeoutSeconds)) plan.timeoutMs = policy.timeoutSeconds * 1000
+    }
     const requested = await requestActionDecision(projectPath, plan, context, read.board)
     if (requested.ok !== true) return requested
     const decision = requested.decision
@@ -4441,7 +4564,21 @@ export function createApi(ctx, options) {
     } else if (action === 'stage-timeout') {
       // T-197: a dev/review/test timeout answer. The scheduler owns the budget;
       // the API owns the host actions (replace/cancel/block/retry).
-      const staged = await executeStageTimeoutAction(projectPath, decision, payload, option, { viaTimeout: viaTimeout, by: execContext.by })
+      // T-198: the question carries the event policy it was asked under. An
+      // EXPIRED question applies that limit instead of the hardcoded default; a
+      // request stored before the policy existed resolves the live policy here.
+      let stageLimit = Number.isFinite(payload.policyLimit) ? Math.floor(payload.policyLimit) : null
+      if (stageLimit === null) {
+        const stageEvent = payload.stage === 'review' ? 'review-timeout' : payload.stage === 'test' ? 'test-timeout' : 'dev-timeout'
+        const stagePolicy = await effectiveDecisionEvent(projectPath, stageEvent)
+        stageLimit = stagePolicy !== undefined && Number.isFinite(stagePolicy.limit) ? Math.floor(stagePolicy.limit) : null
+      }
+      const staged = await executeStageTimeoutAction(projectPath, decision, payload, option, {
+        viaTimeout: viaTimeout,
+        by: execContext.by,
+        limit: stageLimit,
+        source: 'decision',
+      })
       outcome = staged.outcome
       executed = staged.executed === true
       summary = staged.summary === undefined || staged.summary === null ? {} : staged.summary
@@ -4533,7 +4670,11 @@ export function createApi(ctx, options) {
    * with a full budget (the scheduler's counter resets).
    */
   async function executeStageReplace(projectPath, taskId, stage, decision, execContext) {
-    const decided = 'Decision ' + String(decision.id) + (decision.resolution !== null && decision.resolution !== undefined && decision.resolution.via === 'timeout' ? ' timed out; its safe default applied' : ' answered')
+    const via = decision.resolution === null || decision.resolution === undefined ? null : decision.resolution.via
+    const decided =
+      via === 'policy'
+        ? '决策策略自动处置（' + stage + '）'
+        : 'Decision ' + String(decision.id) + (via === 'timeout' ? ' timed out; its safe default applied' : ' answered')
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) {
       return { outcome: read.failed, executed: false, summary: {}, text: decided + ', but the board could not be read: ' + String(decisionOutcomeCode(read.failed)) }
@@ -4670,7 +4811,12 @@ export function createApi(ctx, options) {
   async function executeStageTimeoutAction(projectPath, decision, payload, option, context) {
     const stage = payload.stage === 'review' ? 'review' : payload.stage === 'test' ? 'test' : 'dev'
     const taskId = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : null
-    const decided = 'Decision ' + String(decision.id) + (context.viaTimeout === true ? ' timed out; its safe default applied' : ' answered')
+    // T-198: a notify/silent policy applies the default WITHOUT a decision; the
+    // text must say that instead of pretending a human answered or timed out.
+    const decided =
+      context.source === 'policy'
+        ? '决策策略自动处置（' + stage + ' ' + (context.mode === 'silent' ? 'silent' : 'notify') + '）'
+        : 'Decision ' + String(decision.id) + (context.viaTimeout === true ? ' timed out; its safe default applied' : ' answered')
     if (taskId === null) return { outcome: failure('invalid-decision', 'the stage question carries no task id'), executed: false, summary: {}, text: decided + ', but it names no card; nothing was changed.' }
     const execContext = { projectPath: projectPath, by: context.by, role: 'user', agent: null, sessionId: null }
     if (option === 'cancel') {
@@ -4740,8 +4886,20 @@ export function createApi(ctx, options) {
     if (option === 'replace') {
       return await executeStageReplace(projectPath, taskId, stage, decision, execContext)
     }
-    // The default (and the only safe timeout default): continue.
-    const applied = scheduler === null || typeof scheduler.applyStageContinue !== 'function' ? null : await scheduler.applyStageContinue(projectPath, { taskId: taskId, stage: stage, viaTimeout: context.viaTimeout === true })
+    // The default (and the only safe timeout default): continue. T-198 passes the
+    // configured consecutive limit and lets 'silent' suppress the notices.
+    const applied =
+      scheduler === null || typeof scheduler.applyStageContinue !== 'function'
+        ? null
+        : await scheduler.applyStageContinue(projectPath, {
+            taskId: taskId,
+            stage: stage,
+            viaTimeout: context.viaTimeout === true,
+            limit: context.limit === undefined || context.limit === null ? null : context.limit,
+            silent: context.silent === true,
+            source: context.source === 'policy' ? 'policy' : 'decision',
+            mode: context.mode === undefined || context.mode === null ? null : context.mode,
+          })
     if (applied === null) {
       return { outcome: failure('no-scheduler', 'no dispatcher is attached'), executed: false, summary: {}, text: decided + ', but no scheduler can extend the stage.' }
     }
@@ -4749,7 +4907,7 @@ export function createApi(ctx, options) {
       return { outcome: applied, executed: false, summary: { taskId: taskId }, text: decided + ', but the stage budget was not extended: ' + String(decisionOutcomeCode(applied)) + (decisionOutcomeMessage(applied) === null ? '' : ' — ' + decisionOutcomeMessage(applied)) }
     }
     if (applied.blocked === true) {
-      emitActivity(null, 'stage-timeout', 'continuous default-continues reached ' + String(applied.count) + '; card blocked', taskId, 'system')
+      if (context.silent !== true) emitActivity(null, 'stage-timeout', 'continuous default-continues reached ' + String(applied.count) + '; card blocked', taskId, 'system')
       return {
         outcome: ok({ blocked: true }),
         executed: true,
@@ -4758,7 +4916,7 @@ export function createApi(ctx, options) {
       }
     }
     const minutes = String(Math.max(1, Math.round((Number.isFinite(applied.extendedMs) ? applied.extendedMs : 0) / 60000)))
-    emitActivity(null, 'stage-timeout', 'stage budget extended by ' + minutes + 'm (continue ' + String(applied.continues) + ')', taskId, 'host')
+    if (context.silent !== true) emitActivity(null, 'stage-timeout', 'stage budget extended by ' + minutes + 'm (continue ' + String(applied.continues) + ')', taskId, 'host')
     return {
       outcome: ok({ continues: applied.continues, defaults: applied.defaults }),
       executed: true,
@@ -4769,23 +4927,102 @@ export function createApi(ctx, options) {
   }
 
   /**
-   * T-197 event 10: record a notify-by-default recovery and escalate to an ask
-   * once the SAME event has failed its auto-recovery STAGE_RECOVERY_LIMIT times.
-   * It never opens a modal by default; the activity stream and the card's
-   * history always say what the host did.
+   * T-197 event 10: record a recovery and escalate to an ask once the SAME event
+   * has failed its auto-recovery limit.
+   *
+   * T-198: the limit, the escalation and whether the user is told at all come
+   * from the event policy. The host's auto action IS the recovery the event
+   * names (packet §3.10), so 'ask' means the panel confirms whether to KEEP
+   * auto-recovering (continue/block/cancel) — it is not a pre-approval of an
+   * incident that has already been handled:
+   *   ask    — record, then ask the human at the first occurrence (never silent);
+   *   notify — record, tell the user (activity + card history), escalate after
+   *            the configured consecutive auto-recoveries;
+   *   silent — card history only: no activity entry, no agent message, no ask.
    */
   async function notifyStageRecovery(projectPath, task, event, detail) {
     if (task === null || task === undefined) return null
+    const eventKey = String(event)
+    const policy = await effectiveDecisionEvent(projectPath, eventKey)
+    const mode = policy !== undefined && policy.mode !== undefined ? policy.mode : 'notify'
+    const silent = mode === 'silent'
     if (scheduler === null || scheduler === undefined || typeof scheduler.notifyStageEvent !== 'function') {
-      emitActivity(null, 'stage-event', String(event) + ' auto-recovery (no dispatcher to record it)', String(task.id), 'system')
+      if (silent !== true) emitActivity(null, 'stage-event', eventKey + ' auto-recovery (no dispatcher to record it)', String(task.id), 'system')
       return null
     }
-    const notified = await scheduler.notifyStageEvent(projectPath, { taskId: String(task.id), event: String(event), detail: detail === undefined || detail === null ? null : String(detail) })
-    if (notified !== null && notified !== undefined && notified.ok === true && notified.escalate === true && typeof scheduler.requestStageRecoveryAsk === 'function') {
-      const asked = await scheduler.requestStageRecoveryAsk(projectPath, task, String(event), notified.count)
-      if (asked !== null && asked !== undefined) emitActivity(null, 'stage-event', String(event) + ': escalated to decision ' + String(asked.id), String(task.id), 'system')
+    const limit = policy === undefined || policy.autoRecover === undefined ? null : policy.autoRecover
+    const notified = await scheduler.notifyStageEvent(projectPath, {
+      taskId: String(task.id),
+      event: eventKey,
+      detail: detail === undefined || detail === null ? null : String(detail),
+      limit: limit,
+      silent: silent,
+    })
+    if (notified === null || notified === undefined || notified.ok !== true) return notified
+    if (typeof scheduler.requestStageRecoveryAsk !== 'function') return notified
+    // 'ask' asks at the FIRST occurrence; 'notify' only after the configured
+    // number of consecutive failed auto-recoveries.
+    const mustAsk = mode === 'ask' || (mode === 'notify' && notified.escalate === true)
+    if (mustAsk !== true) return notified
+    const asked = await scheduler.requestStageRecoveryAsk(projectPath, task, eventKey, notified.count, {
+      defaultOption: policy === undefined ? null : policy.defaultOption,
+      timeoutMs: policy !== undefined && Number.isFinite(policy.timeoutSeconds) ? policy.timeoutSeconds * 1000 : null,
+      limit: limit,
+    })
+    if (asked !== null && asked !== undefined && silent !== true) {
+      emitActivity(null, 'stage-event', eventKey + ': asked the human (decision ' + String(asked.id) + ')', String(task.id), 'system')
     }
     return notified
+  }
+
+  /**
+   * T-198: the scheduler's event-10 recovery (worker lost / host restart), routed
+   * through the same policy. Reads the card itself so the scheduler does not have
+   * to reach into the board.
+   */
+  async function recoverStageEvent(projectPath, input) {
+    const row = input === undefined || input === null ? {} : input
+    const taskId = typeof row.taskId === 'string' && row.taskId !== '' ? row.taskId : null
+    if (taskId === null) return null
+    const event = typeof row.event === 'string' && row.event !== '' ? row.event : null
+    if (event === null) return null
+    const read = await readBoardOrFail(projectPath)
+    const task = read.failed === undefined ? model.findTask(read.board, taskId) : undefined
+    if (task === undefined || task === null) return null
+    return await notifyStageRecovery(projectPath, task, event, row.detail === undefined || row.detail === null ? null : String(row.detail))
+  }
+
+  /**
+   * T-198: apply one stage timeout's default option for a notify/silent policy —
+   * no modal, no new decision. The option is re-validated by the caller's policy
+   * resolution; a destructive default can never reach here (the schema refuses
+   * it), and a non-continue option runs the same host action an answer would.
+   */
+  async function applyStagePolicyOption(projectPath, input) {
+    const row = input === undefined || input === null ? {} : input
+    const taskId = typeof row.taskId === 'string' && row.taskId !== '' ? row.taskId : null
+    const stage = row.stage === 'review' ? 'review' : row.stage === 'test' ? 'test' : 'dev'
+    if (taskId === null) return { ok: false, code: 'invalid-stage', message: 'a stage policy action needs a task id' }
+    const option = typeof row.option === 'string' && row.option !== '' ? row.option : 'continue'
+    const policy = await effectiveDecisionEvent(projectPath, stage === 'dev' ? 'dev-timeout' : stage === 'review' ? 'review-timeout' : 'test-timeout')
+    if (policy !== undefined && policy.mode === 'ask') {
+      // The policy changed between the scheduler's read and this call: ask.
+      return { ok: false, code: 'policy-ask', message: 'the ' + stage + ' event is configured to ask; no automatic option was applied' }
+    }
+    const decision = {
+      id: 'policy-' + stage + '-' + taskId,
+      resolution: { option: option, text: null, by: '@policy', via: 'policy', at: new Date(clock()).toISOString() },
+      payload: { action: 'stage-timeout', stage: stage, taskId: taskId },
+    }
+    const executed = await executeStageTimeoutAction(projectPath, decision, { stage: stage, taskId: taskId }, option, {
+      viaTimeout: true,
+      by: '@policy',
+      source: 'policy',
+      mode: policy === undefined ? 'notify' : policy.mode,
+      limit: policy === undefined ? null : policy.limit,
+      silent: policy !== undefined && policy.mode === 'silent',
+    })
+    return { ok: executed.outcome === null || executed.outcome.ok !== false, option: option, executed: executed.executed === true, message: executed.text }
   }
 
   /** Apply every timeout default that needs a board action (create/reopen). */

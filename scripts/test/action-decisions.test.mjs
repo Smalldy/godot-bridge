@@ -216,7 +216,15 @@ const messages = (agents) => agents.calls.filter((call) => call.kind === 'send')
   await userCancel(rig, card.id)
   const asked = await rig.api.perform('reopen', { id: card.id }, agentContext(rig, 'reopener'))
   check('S4 reopen asks with the current state', asked.ok === false && asked.code === 'needs-decision' && asked.decision.body.indexOf('当前状态：cancelled') >= 0, JSON.stringify(asked))
-  check('S4 the reopen options are 重新打开 (default) / 保持关闭', asked.decision.options.map((option) => option.label).join(',') === '重新打开,保持关闭' && asked.decision.defaultOption === 'reopen', JSON.stringify(asked.decision.options))
+  // T-198: packet §3.6 is the ruling — 重新打开 stays the default (the §5 summary
+  // table's 保持关闭 entry was stale and is being corrected).
+  check(
+    'S4 the reopen options are 重新打开 (default) / 保持关闭',
+    asked.decision.options.map((option) => option.label).join(',') === '重新打开,保持关闭' &&
+      asked.decision.defaultOption === 'reopen' &&
+      asked.decision.options.filter((option) => option.default === true).map((option) => option.label).join(',') === '重新打开',
+    JSON.stringify(asked.decision.options),
+  )
   check('S4 the body names the cleared review/test', asked.decision.body.indexOf('清空 review/test') >= 0, asked.decision.body)
   const kept = await rig.action('decisionAnswer', { decisionId: asked.decision.id, option: 'keep' })
   check('S4 保持关闭 changes nothing', kept.ok === true && (await rig.action('get', { id: card.id })).task.status === 'cancelled', JSON.stringify(kept.applied))

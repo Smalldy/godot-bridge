@@ -273,5 +273,40 @@ check(
   await rig.action('pause')
 }
 
+
+// T-198: the decision policy is edited through the same user route, and /state
+// carries the resolved policy so the settings page never guesses.
+{
+  let res = await post({ action: 'decisionPolicy', scope: 'project', events: { 'dev-timeout': { timeoutSeconds: 240 } } })
+  let payload = res.json()
+  check(
+    'T-198 the route saves a project policy override',
+    payload.ok === true && payload.saved.scope === 'project' && payload.saved.location === 'project' && payload.decisionPolicy.project['dev-timeout'].timeoutSeconds === 240,
+    res.text.substring(0, 600),
+  )
+  res = await call(surface, STATE_PATH, {})
+  payload = res.json()
+  check(
+    'T-198 /state carries the resolved decision policy and the sparse overrides',
+    payload.decisionPolicy !== null &&
+      payload.decisionPolicy.project['dev-timeout'].timeoutSeconds === 240 &&
+      payload.decisionPolicy.overrides.project['dev-timeout'].timeoutSeconds === 240 &&
+      payload.decisionPolicy.guards.timeoutNeverDeletes === true,
+    JSON.stringify(payload.decisionPolicy === null ? null : payload.decisionPolicy.overrides),
+  )
+  res = await post({ action: 'decisionPolicy', scope: 'project', events: { delete: { mode: 'notify' } } })
+  payload = res.json()
+  check(
+    'T-198 the delete guard survives the route',
+    payload.ok === true && payload.decisionPolicy.project['delete'].mode === 'ask',
+    res.text.substring(0, 400),
+  )
+  res = await post({ action: 'decisionPolicy', scope: 'project', reset: true })
+  payload = res.json()
+  check('T-198 reset=true clears the scope', payload.ok === true && Object.keys(payload.decisionPolicy.overrides.project).length === 0, JSON.stringify(payload.decisionPolicy.overrides.project))
+  res = await post({ action: 'decisionPolicy', scope: 'nope', events: {} })
+  check('T-198 a bad scope is refused by code through the route', res.json().ok === false && res.json().code === 'invalid-policy-scope', res.text.substring(0, 300))
+}
+
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')
 process.exit(failures === 0 ? 0 : 1)

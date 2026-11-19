@@ -49,6 +49,7 @@ const EXPECTED_ACTIONS = [
   'onboard',
   'decisionList',
   'decisionAnswer',
+  'decisionPolicy',
 ]
 const EXPECTED_DEV_ONLY = ['approveReview', 'requestChanges', 'passTest', 'failTest', 'mergeRequest', 'refreshMerge', 'rejectMerge']
 const EXPECTED_USER_ONLY = [
@@ -64,6 +65,7 @@ const EXPECTED_USER_ONLY = [
   'rolesReset',
   'skillsCatalog',
   'worktreesCleanup',
+  'decisionPolicy',
 ]
 const EXPECTED_READ = ['board', 'list', 'get', 'locks', 'harnessStatus', 'skillsCatalog', 'decisionList']
 
