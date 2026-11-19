@@ -9,8 +9,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { emptyBoard } from '../../plugin/task-center/board.mjs'
+import { boardPath, emptyBoard, readBoard } from '../../plugin/task-center/board.mjs'
 import { STATUSES, CLOSED_STATUSES } from '../../plugin/task-center/schema.mjs'
+import { applyTakeover } from '../../plugin/task-center/handoff.mjs'
+import { createFakeFs } from './support/fixtures.mjs'
 import {
   BLOCKED_REASON_CODES,
   CARD_STATES,
@@ -32,6 +34,7 @@ import {
   cancelTask,
   claimTask,
   createTask,
+  failDispatch,
   failTest,
   findTask,
   interruptDispatch,
@@ -453,6 +456,18 @@ console.log('\n# reopen vs retry')
   )
 }
 {
+  // T28/X21: returning to the pool clears a stale merge request; a stage restore
+  // keeps it (checked by the review-timeout unblock above).
+  const task = makeTask('blocked', { blockedReason: { code: 'manual-block', detail: null, from: 'running', auto: false, at: iso(0) }, merge: { status: 'open', base: 'b', head: 'h' } })
+  const unblocked = unblockTask({ version: 2, seq: 2, tasks: [task] }, 'T-1', at(10), '@me')
+  const unblockedRow = unblocked.ok === true ? findTask(unblocked.board, 'T-1') : null
+  check(
+    'T28 restoring to the pool clears a stale merge request (X21)',
+    unblocked.ok === true && unblockedRow.status === 'pending' && unblockedRow.merge === null,
+    JSON.stringify(unblocked.ok === true ? { status: unblockedRow.status, merge: unblockedRow.merge } : unblocked),
+  )
+}
+{
   const done = makeTask('done', { branch: 'task/T-1-1', worktree: '/wt1', commit: 'c1', base: 'b1' })
   const board = { version: 2, seq: 2, tasks: [done] }
   const reopened = reopenTask(board, 'T-1', at(10), '@me')
@@ -491,23 +506,157 @@ console.log('\n# views')
   check('summary exposes the typed blocked reason on a blocked card', blockedView.state === 'blocked' && blockedView.phase === null && blockedView.blockedReason.code === 'manual-block' && blockedView.blockedReason.from === 'testing', JSON.stringify(blockedView.blockedReason))
 }
 
-// ── 11. one status writer in the production code ──────────────────────────
+// ── 11. model-boundary guards the action layer used to own ────────────
+console.log('\n# model-boundary guards')
+{
+  // T27 from blocked: only a merge-outcome pause may be refreshed away.
+  const made = createTask(emptyBoard(T0), { title: 'timeout block', verification: { probes: [{ id: 'p', command: 'npm test' }] } }, T0, '@me')
+  let board = claimTask(made.board, 'T-1', { name: 'w', session: 's' }, at(1)).board
+  board = submitTask(board, 'T-1', { merge: { status: 'open', base: 'base-1', target: 'main', head: 'head-1' } }, at(2), 'w').board
+  const blocked = blockTask(board, 'T-1', at(3), 'system', 'review went silent', null, { reason: { code: 'review-timeout' }, actor: 'host' })
+  const before = JSON.stringify(findTask(blocked.board, 'T-1').blockedReason)
+  const refused = refreshMergeRequest(blocked.board, 'T-1', 'base-2', 'head-2', [], at(4), '@user')
+  check(
+    'T27 refuses a refresh of a card paused by review-timeout (merge-unresolved)',
+    refused.ok !== true && refused.code === 'merge-unresolved' && findTask(blocked.board, 'T-1').status === 'blocked' && JSON.stringify(findTask(blocked.board, 'T-1').blockedReason) === before,
+    JSON.stringify({ refused: refused, status: findTask(blocked.board, 'T-1').status }),
+  )
+}
+{
+  // T27 positive: a merge-conflict block is exactly what a refresh resolves.
+  const conflicted = recordMergeResult(flowBoard(), 'T-1', { status: 'conflict', conflict: 'a.gd' }, at(6), 'system')
+  const blockedTask = conflicted.ok === true ? findTask(conflicted.board, 'T-1') : null
+  const refreshed = refreshMergeRequest(conflicted.board, 'T-1', 'base-2', 'head-2', [], at(7), '@user')
+  const next = refreshed.ok === true ? findTask(refreshed.board, 'T-1') : null
+  check(
+    'T27 refreshes a merge-conflict block back into review',
+    blockedTask !== null && blockedTask.status === 'blocked' && refreshed.ok === true && next.status === 'reviewing' && next.blockedReason === null && next.merge.status === 'open' && next.test === null,
+    JSON.stringify(refreshed.ok === true ? { status: next.status, merge: next.merge.status, reason: next.blockedReason } : refreshed),
+  )
+}
+{
+  // T21 idempotency: repeating a merged result is a typed answer, not a phase error.
+  const merged = recordMergeResult(flowBoard(), 'T-1', { status: 'merged', mergeCommit: 'm1' }, at(6), 'system').board
+  const again = recordMergeResult(merged, 'T-1', { status: 'merged', mergeCommit: 'm2' }, at(7), 'system')
+  check('T21 a repeated merge answers already-merged', again.ok !== true && again.code === 'already-merged', JSON.stringify(again))
+  const level = transition('mergeMerged', 'done', { task: makeTask('done'), actor: 'host' })
+  check('T21 the table refuses a merge from done with already-merged', level.ok !== true && level.code === 'already-merged', JSON.stringify(level))
+}
+{
+  // A legacy board may hold testing + a resolved merge request: the drift
+  // transition must answer a typed code so the caller can report it.
+  const legacy = makeTask('testing', {
+    merge: { status: 'conflict', base: 'b', head: 'h' },
+    test: { status: 'passed', attempt: 1 },
+    review: { status: 'approved', attempt: 1 },
+  })
+  const decided = transition('baseOnlyDrift', 'testing', { task: legacy, actor: 'host' })
+  check('a base-only drift on a resolved merge request is refused (no-open-merge)', decided.ok !== true && decided.code === 'no-open-merge', JSON.stringify(decided))
+}
+{
+  // T05: both handoff branches go through the table; the running audit keeps the
+  // takeover session, and reviewing/testing re-queue their open round.
+  const running = { id: 'T-1', status: 'running', kind: 'dev', ownerSession: 'old', assignee: { name: 'w', session: 's' }, leaseUntil: iso(60 * 60 * 1000), executors: [{ name: 'w', session: 's', at: iso(0), retiredAt: null, retiredReason: null }], history: [], merge: null, review: null, test: null }
+  const reviewing = { id: 'T-2', status: 'reviewing', kind: 'dev', ownerSession: 'old', review: { status: 'pending', deliveredTo: { id: 'r1', name: 'r' }, at: iso(0) }, test: null, merge: { status: 'open' }, history: [], executors: [] }
+  const testing = { id: 'T-3', status: 'testing', kind: 'dev', ownerSession: 'old', review: { status: 'approved', attempt: 1 }, test: { status: 'pending', deliveredTo: { id: 't1', name: 't' }, at: iso(0) }, merge: { status: 'open' }, history: [], executors: [] }
+  const taken = applyTakeover({ tasks: [running, reviewing, testing], handoff: null }, { toSession: 'new', by: 'user', now: T0 })
+  const takenRunning = taken.ok === true ? taken.board.tasks[0] : null
+  const takenReviewing = taken.ok === true ? taken.board.tasks[1] : null
+  const takenTesting = taken.ok === true ? taken.board.tasks[2] : null
+  check(
+    'T05 a running takeover releases the claim and keeps the session in the retire audit',
+    taken.ok === true && takenRunning.status === 'pending' && takenRunning.assignee === null && takenRunning.executors[0].retiredAt !== null && String(takenRunning.executors[0].retiredReason).indexOf('handoff to new') >= 0,
+    JSON.stringify(taken.ok === true ? takenRunning.executors : taken),
+  )
+  check(
+    'T05 reviewing/testing takeovers keep their state and re-queue the open round',
+    taken.ok === true && takenReviewing.status === 'reviewing' && takenReviewing.review.deliveredTo === null && takenTesting.status === 'testing' && takenTesting.test.deliveredTo === null,
+    JSON.stringify(taken.ok === true ? { review: takenReviewing.review, test: takenTesting.test } : taken),
+  )
+}
+{
+  // board persistence: the typed reason must survive a reload.
+  const fakeFs = createFakeFs()
+  const project = 'C:/proj-t201-blocked'
+  fakeFs.dirs.add(project)
+  fakeFs.files.set(boardPath(project), {
+    text: JSON.stringify({
+      version: 2,
+      seq: 2,
+      tasks: [{ id: 'T-1', title: 'blocked', status: 'blocked', blockedReason: { code: 'merge-conflict', detail: 'a.gd', from: 'testing', auto: false, at: iso(0) }, history: [] }],
+    }),
+    version: 'v1',
+  })
+  const read = await readBoard({ fs: fakeFs }, { projectPath: project, now: T0 })
+  check(
+    'blockedReason survives the board normalisation',
+    read.ok === true && read.board.tasks[0].blockedReason.code === 'merge-conflict' && blockedReasonOf(read.board.tasks[0]).from === 'testing',
+    JSON.stringify(read.ok === true ? read.board.tasks[0].blockedReason : read),
+  )
+}
+{
+  // T03b: the exported dispatch-failure helper writes through the table too.
+  const made = createTask(emptyBoard(T0), { title: 'fail dispatch', verification: { probes: [{ id: 'p', command: 'npm test' }] } }, T0, '@me')
+  const claimed = claimTask(made.board, 'T-1', { name: 'w', session: 's' }, at(1)).board
+  const retryable = failDispatch(claimed, 'T-1', 'spawn failed', at(2), 3)
+  const retryRow = findTask(retryable.board, 'T-1')
+  const exhausted = failDispatch(claimed, 'T-1', 'spawn failed', at(2), 1)
+  const exhaustedRow = findTask(exhausted.board, 'T-1')
+  check(
+    'T03b a failed dispatch returns to pending, and blocks when the budget is gone',
+    retryable.ok === true && retryRow.status === 'pending' && retryRow.assignee === null && exhausted.ok === true && exhaustedRow.status === 'blocked' && blockedReasonOf(exhaustedRow).code === 'attempts-exhausted' && blockedReasonOf(exhaustedRow).from === 'running',
+    JSON.stringify({ pending: retryable.ok === true ? retryRow.status : retryable, blocked: exhausted.ok === true ? exhaustedRow.blockedReason : exhausted }),
+  )
+}
+
+// ── 12. one status writer in the production code ────────────────────
 console.log('\n# single writer')
 {
-  const directory = fileURLToPath(new URL('../../plugin/task-center/', import.meta.url))
-  const files = ['service.mjs', 'merge.mjs', 'api.mjs', 'handoff.mjs', 'dispatch.mjs']
-  for (const name of readdirSync(directory + 'actions')) if (name.endsWith('.mjs')) files.push('actions/' + name)
-  const assignment = /\.status = '(pending|running|reviewing|testing|done|blocked|cancelled)'/
-  const offenders = []
-  for (const name of files) {
-    const text = readFileSync(directory + name, 'utf8')
-    const lines = text.split('\n')
-    for (let index = 0; index < lines.length; index += 1) if (assignment.test(lines[index])) offenders.push(name + ':' + String(index + 1) + ' ' + lines[index].trim())
+  // Any assignment to a card status, not only a literal RHS: the first version of
+  // this assertion missed target.status = exhausted ? 'blocked' : 'pending'.
+  // A dispatch record (or a decision record) is not a card status.
+  function statusAssignmentOffenders(source, name) {
+    const offenders = []
+    const lines = source.split('\n')
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]
+      const trimmed = line.trim()
+      // A comment that spells out an assignment is documentation, not a writer.
+      if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) continue
+      if (/\.status\s*=(?!=)/.test(line) !== true) continue
+      if (/\.dispatch\.status\s*=(?!=)/.test(line)) continue
+      if (name === 'state-machine.mjs' && /^  task\.status = decided\.to$/.test(line)) continue
+      offenders.push(name + ':' + String(index + 1) + ' ' + line.trim())
+    }
+    return offenders
   }
+  check('the writer assertion catches a literal assignment', statusAssignmentOffenders("  target.status = 'running'", 'sample.mjs').length === 1)
+  check('the writer assertion catches a ternary assignment', statusAssignmentOffenders("  target.status = exhausted ? 'blocked' : 'pending'", 'sample.mjs').length === 1)
+  check('the writer assertion catches a tasks[i] assignment', statusAssignmentOffenders("  next.tasks[3].status = 'done'", 'sample.mjs').length === 1)
+  check('the writer assertion ignores a dispatch-record status', statusAssignmentOffenders("  target.dispatch.status = 'spawned'", 'sample.mjs').length === 0)
+  check('the writer assertion ignores comparisons', statusAssignmentOffenders("  if (task.status === 'running') {", 'sample.mjs').length === 0)
+
+  const directory = fileURLToPath(new URL('../../plugin/task-center/', import.meta.url))
+  // board.mjs is the one documented exception: it may rewrite a status while
+  // migrating a v1 board or normalising a board it could not understand.
+  const files = ['service.mjs', 'merge.mjs', 'api.mjs', 'handoff.mjs', 'dispatch.mjs', 'state-machine.mjs']
+  for (const name of readdirSync(directory + 'actions')) if (name.endsWith('.mjs')) files.push('actions/' + name)
+  const offenders = []
+  for (const name of files) for (const row of statusAssignmentOffenders(readFileSync(directory + name, 'utf8'), name)) offenders.push(row)
   check('no module outside the state machine assigns a card status', offenders.length === 0, offenders.join(' | '))
-  const machine = readFileSync(directory + 'state-machine.mjs', 'utf8')
-  const writes = machine.split('\n').filter((line) => /^  task\.status = decided\.to$/.test(line))
-  check('the state machine has exactly one status assignment', writes.length === 1, String(writes.length))
+  const machineLines = readFileSync(directory + 'state-machine.mjs', 'utf8').split('\n')
+  check('the state machine has exactly one status assignment', machineLines.filter((line) => /^  task\.status = decided\.to$/.test(line)).length === 1)
+  const tampered = statusAssignmentOffenders(readFileSync(directory + 'service.mjs', 'utf8') + "\n  target.status = exhausted ? 'blocked' : 'pending'\n", 'service.mjs')
+  check('reintroducing a hand-written status write makes the assertion red', tampered.length === 1, tampered.join(' | '))
+
+  // A refusal returned from inside board.tasks.map() becomes a task element and
+  // dies as invalid-task; it must leave the writeTask mutator as { ok:false }.
+  const apiSource = readFileSync(directory + 'api.mjs', 'utf8')
+  check(
+    'the base-only drift refusal leaves the mutator as a typed refusal',
+    apiSource.indexOf('return { ok: false, code: driftEvent.code, message: driftEvent.message }') >= 0 && apiSource.indexOf('return driftEvent') < 0,
+    apiSource.indexOf('return driftEvent') < 0 ? 'mutator shape ok' : 'a refusal is returned from the map',
+  )
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

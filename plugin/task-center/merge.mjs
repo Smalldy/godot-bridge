@@ -963,6 +963,9 @@ export function recordMergeResult(board, id, outcome, now, by, byName, actor) {
   if (task.merge === null || typeof task.merge !== 'object' || Array.isArray(task.merge)) {
     return failure('no-merge-request', id + ' has no merge request to record')
   }
+  // T21 idempotency (document 4.6): a repeated merged result on an already-merged
+  // request answers already-merged instead of blaming the phase.
+  if (task.merge.status === 'merged') return failure('already-merged', id + ' already records a merged request')
   const status = outcome === null || outcome === undefined ? null : outcome.status
   // T-201: only the four real outcomes are board states. 'stale' is a queue
   // answer that must go through targetDriftRetest/baseOnlyDrift instead.

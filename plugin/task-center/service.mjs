@@ -835,18 +835,29 @@ export function noteReuseRefused(board, id, now, refused, reason) {
 export function failDispatch(board, id, error, now, maxAttempts) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status !== 'running') return fail('not-running', id + ' is ' + task.status + ', not running')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   const limit = Number.isFinite(maxAttempts) ? maxAttempts : target.maxAttempts
   const exhausted = target.attempts >= limit
-  target.status = exhausted ? 'blocked' : 'pending'
-  target.lastAssignee = target.assignee === null || target.assignee === undefined ? target.lastAssignee : Object.assign({}, target.assignee)
+  // T-201 (T03b): running -> pending, or blocked once the attempt budget is gone.
+  // The function has no production caller today (document G10); it stays exported,
+  // so its write is declared in the table instead of being a second writer.
+  const entered = enterState(
+    target,
+    'dispatchFailed',
+    {
+      task: target,
+      actor: 'scheduler',
+      to: exhausted ? 'blocked' : 'pending',
+      blockedDetail: error === null || error === undefined ? 'dispatch failed' : String(error),
+    },
+    now,
+  )
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   // A REAL failure is not an interruption: the streak restarts, so five host
   // restarts can never be charged against a worker that actually broke something.
   target.interruptions = 0
-  retireExecutorsIn(target, now, 'dispatch failed')
-  target.assignee = null
-  target.leaseUntil = null
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
     status: exhausted ? 'exhausted' : 'failed',
     error: error === null || error === undefined ? 'dispatch failed' : String(error),

@@ -300,6 +300,14 @@ function guardMergeOpenForPhase(ctx) {
   return 'merge-unresolved'
 }
 
+/** T27 from blocked: only a merge-outcome pause may be refreshed away (4.3/4.8). */
+function guardMergeBlockedReason(ctx, entry) {
+  if (entry === undefined || entry.from !== 'blocked') return true
+  const reason = blockedReasonOf(ctx.task)
+  if (reason !== null && isMergeReason(reason.code) === true) return true
+  return 'merge-unresolved'
+}
+
 function guardRetryable(ctx) {
   const task = ctx.task
   if (task === null || task === undefined) return true
@@ -328,6 +336,7 @@ const GUARDS = Object.freeze({
   'merge-exists': guardMergeExists,
   'merge-open': guardMergeOpen,
   'merge-eligible': guardMergeEligible,
+  'merge-blocked-reason': guardMergeBlockedReason,
   'merge-change': guardMergeChange,
   'restore-target': guardRestoreTarget,
   'phase-record-match': guardPhaseRecordMatch,
@@ -390,7 +399,13 @@ function applyEffect(task, effect, info) {
       task.leaseUntil = null
       return
     case 'retire-executors':
-      retireExecutors(task, now, info.row.id + ' ' + info.row.event)
+      // A caller that owns the readable audit reason (handoff names the takeover
+      // session) supplies it; otherwise the row names itself.
+      retireExecutors(
+        task,
+        now,
+        typeof info.context.retireReason === 'string' && info.context.retireReason !== '' ? info.context.retireReason : info.row.id + ' ' + info.row.event,
+      )
       return
     case 'clear-executors':
       task.executors = []
@@ -461,6 +476,14 @@ function applyEntry(task, row, info) {
 // board outcome through the rows it really executes — approveReview then failTest,
 // block with the typed review-timeout/test-timeout reason, refreshMerge — and
 // their rows are declared and table-tested so the vocabulary cannot drift.
+//
+// Document-row mapping where this code deliberately differs (see the 7-vs-8-state
+// note above): the document's 'merging' -> testing + test.passed + merge.open;
+// T25/T26 drift -> T25 baseOnlyDrift and T25b targetDriftRetest (content drift is
+// detected by the host and explicitly refreshed, so it is the T27 row, no
+// separate contentDrift row); G10 dispatch failure -> T03b dispatchFailed (the
+// function is still exported); T33/T34 scan rows -> the same refreshMerge /
+// mergeMerged rows the sweeps call, so no extra rows are declared.
 
 export const TRANSITIONS = Object.freeze([
   {
@@ -493,6 +516,20 @@ export const TRANSITIONS = Object.freeze([
     effects: Object.freeze(['attempts-refund', 'interruptions+1', 'clear-claim', 'retire-executors']),
     refusal: 'not-running',
     blockedCode: 'interruptions-exhausted',
+  },
+  {
+    // Not a document 4.3 row: G10 records that a dispatch failure is not a
+    // reachable transition. The function is still exported, so its status write
+    // is declared here rather than left as a hand-written branch.
+    id: 'T03b',
+    event: 'dispatchFailed',
+    from: Object.freeze(['running']),
+    to: (ctx) => (ctx.to === 'blocked' ? 'blocked' : 'pending'),
+    actor: Object.freeze(['scheduler', 'host']),
+    guards: Object.freeze([]),
+    effects: Object.freeze(['clear-claim', 'retire-executors']),
+    refusal: 'not-running',
+    blockedCode: 'attempts-exhausted',
   },
   {
     id: 'T04',
@@ -672,6 +709,9 @@ export const TRANSITIONS = Object.freeze([
     guards: Object.freeze(['merge-open', 'merge-eligible']),
     effects: Object.freeze(['clear-lease']),
     refusal: 'not-testing',
+    // Idempotency key of the document's T21: a card already merged answers
+    // already-merged instead of blaming its phase.
+    refusals: { done: 'already-merged' },
   },
   {
     id: 'T22',
@@ -707,7 +747,9 @@ export const TRANSITIONS = Object.freeze([
     blockedCode: 'merge-rejected',
   },
   {
-    id: 'T25',
+    // Extension row (no document number; the document's T25 is the rebuild the
+    // host performs as a retest when the TESTED branch head did not move).
+    id: 'T25b',
     event: 'targetDriftRetest',
     from: Object.freeze(['testing']),
     to: 'testing',
@@ -717,7 +759,7 @@ export const TRANSITIONS = Object.freeze([
     refusal: 'not-testing',
   },
   {
-    id: 'T26',
+    id: 'T25',
     event: 'baseOnlyDrift',
     from: Object.freeze(['testing']),
     to: 'testing',
@@ -732,7 +774,10 @@ export const TRANSITIONS = Object.freeze([
     from: Object.freeze(['reviewing', 'testing', 'blocked']),
     to: 'reviewing',
     actor: Object.freeze(['user', 'worker', 'host', 'agent']),
-    guards: Object.freeze(['merge-exists', 'merge-change']),
+    // The document accepts blocked(merge-*) only: a card paused by a timeout or a
+    // manual block must not escape through a refresh. The guard is enforced at the
+    // MODEL boundary, not only in the action.
+    guards: Object.freeze(['merge-exists', 'merge-blocked-reason', 'merge-change']),
     effects: Object.freeze(['clear-lease']),
     refusal: 'not-mergeable-phase',
     refusals: { done: 'closed', cancelled: 'closed' },
@@ -747,7 +792,9 @@ export const TRANSITIONS = Object.freeze([
     // not a round-record mismatch.
     guards: Object.freeze(['unblockable', 'restore-target', 'merge-open-for-phase', 'phase-record-match']),
     actor: Object.freeze(['user', 'worker', 'agent']),
-    effects: Object.freeze(['clear-claim']),
+    // Document T28/X21: returning to the pool clears the request; a stage restore
+    // keeps it (the paused round resumes on the same candidate).
+    effects: (ctx, entry) => (entry.to === 'pending' ? ['clear-claim', 'clear-merge'] : ['clear-claim']),
     refusal: 'not-blocked',
   },
   {

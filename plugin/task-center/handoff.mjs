@@ -262,16 +262,17 @@ export function applyTakeover(board, options) {
     const fromSession = ownerSessionOf(task)
     if (fromSession === toSession) continue
     const fromStatus = task.status
+    // T-201 T05: EVERY takeover branch goes through the table. For a running card
+    // that releases the stale claim and retires the ledger; for reviewing/testing it
+    // is a harmless same-state write whose declared effect re-queues the open
+    // round's deliveredTo. The takeover session stays in the retire audit reason.
+    const entered = enterState(task, 'handoffTakeover', { task: task, actor: 'user', retireReason: 'handoff to ' + toSession }, now)
+    if (entered.ok !== true) return { ok: false, code: entered.code, message: entered.message }
     let executorAction = null
     let lockAction = null
-    if (task.status === 'running') {
-      // Release the stale claim completely. The EXECUTOR ledger is retired so a
-      // later roster check can never call it live; the worktree fields stay, so
-      // the next attempt adopts the same checkout (attempt slot still > 1).
-      // T-201 T05: running -> pending through the state machine (it retires the
-      // ledger, keeps the last owner and clears the claim).
-      const entered = enterState(task, 'handoffTakeover', { task: task, actor: 'user' }, now)
-      if (entered.ok !== true) return { ok: false, code: entered.code, message: entered.message }
+    if (fromStatus === 'running') {
+      // The worktree fields stay, so the next attempt adopts the same checkout
+      // (attempt slot still > 1).
       task.dispatch = Object.assign({}, task.dispatch === null || task.dispatch === undefined ? {} : task.dispatch, {
         status: 'handoff',
         error: null,
@@ -280,18 +281,16 @@ export function applyTakeover(board, options) {
       executorAction = 'released stale lease; retired the old executor; worktree/branch/commit kept for the next attempt'
       lockAction = 'write locks released'
       released.push(String(task.id))
-    } else if (task.status === 'reviewing') {
+    } else if (fromStatus === 'reviewing') {
       // An APPROVED round is a verdict, not work: keep it and never re-deliver a
-      // second review brief. Only an open round goes back in the queue.
+      // second review brief. Only an open round was re-queued by the effect.
       const pending = task.review !== null && task.review !== undefined && task.review.status === 'pending'
-      if (pending) task.review = Object.assign({}, task.review, { deliveredTo: null })
       executorAction = pending
         ? 'open review round re-queued for the takeover session; approved rounds are kept'
         : 'approved review record kept (no second review brief); reviewer re-provisioned for the owner'
       lockAction = 'no write lock held in review'
     } else {
       const pending = task.test !== null && task.test !== undefined && task.test.status === 'pending'
-      if (pending) task.test = Object.assign({}, task.test, { deliveredTo: null })
       executorAction = pending
         ? 'open test round re-queued for the takeover session; the candidate checkout is kept'
         : 'passed test record kept (no re-test brief); tester re-provisioned for the owner'

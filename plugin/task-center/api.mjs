@@ -5641,8 +5641,13 @@ export function createApi(ctx, options) {
       projectPath,
       id,
       (board) => {
-        const tasks = board.tasks.map((entry) => {
-          if (String(entry.id) !== String(id) || entry.merge === null || entry.merge === undefined) return entry
+        // A refusal must leave the mutator as { ok:false, code, message }: returning
+        // it from inside a map() turns it into a task element and the real typed code
+        // dies in board normalisation (invalid-task).
+        const tasks = board.tasks.slice()
+        for (let index = 0; index < tasks.length; index += 1) {
+          const entry = tasks[index]
+          if (String(entry.id) !== String(id) || entry.merge === null || entry.merge === undefined) continue
           const evidence = String(entry.evidence === undefined || entry.evidence === null ? '' : entry.evidence)
           const at = new Date(clock()).toISOString()
           const previousBase = typeof entry.merge.base === 'string' && entry.merge.base !== '' ? entry.merge.base : null
@@ -5653,12 +5658,14 @@ export function createApi(ctx, options) {
             'base-only drift：已在 ' + String(built.base) + ' 上重建候选并复跑验证（' + String(verifySpec.command) + '，通过），diff 与已验证提交等价，不新增评审轮次。' +
             (drift === null ? '' : ' target drift ' + drift.from + ' -> ' + drift.to + '。') +
             (verifyChanged ? ' verify fingerprint ' + previousPrint + ' -> ' + rebuildVerifyPrint + '。' : '')
-          // T-201 T26: base-only drift is a transition of the SAME testing state
-          // (no new review/test round); routing it through the table proves the
-          // merge request is still open and records the audit event.
+          // T-201 baseOnlyDrift (table T25, document T25): a transition of the SAME
+          // testing state (no new review/test round); routing it through the table
+          // proves the merge request is still open and records the audit event.
+          // A legacy card with testing + a resolved merge refuses here with
+          // no-open-merge, and the caller must see that code.
           const driftEvent = enterState(entry, 'baseOnlyDrift', { task: entry, actor: 'host' }, clock())
-          if (driftEvent.ok !== true) return driftEvent
-          return Object.assign({}, entry, {
+          if (driftEvent.ok !== true) return { ok: false, code: driftEvent.code, message: driftEvent.message }
+          tasks[index] = Object.assign({}, entry, {
             waitingReason: null,
             waitingDetail: null,
             base: built.base,
@@ -5684,7 +5691,7 @@ export function createApi(ctx, options) {
               },
             ]),
           })
-        })
+        }
         return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
       },
       context,
