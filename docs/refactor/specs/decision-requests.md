@@ -315,7 +315,7 @@ Fixed high-risk protection:
 | dev timeout | ask | 继续 20m | 120s | 3 |
 | review timeout | ask | 继续 20m | 120s | 3 |
 | test timeout | ask | 继续 20m | 120s | 3 |
-| reopen | ask | 保持关闭 | 120s | — |
+| reopen | ask | 重新打开 | 120s | — |
 | delete | ask | 保留 | 120s | — |
 | cancel | ask | 返回 | 120s | — |
 | host verify fail | notify | 退回开发 | — | 2 |
