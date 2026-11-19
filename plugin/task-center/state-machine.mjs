@@ -228,8 +228,14 @@ export function pausedPhaseOf(task) {
     const merge = task.merge
     const approved = review !== null && review !== undefined && review.status === 'approved'
     const passed = test !== null && test !== undefined && test.status === 'passed'
-    const open = merge !== null && merge !== undefined && merge.status === 'open'
-    return approved && passed && open ? 'merge' : 'test'
+    // The merge phase is a TESTED card whose request reached the queue. Its
+    // OUTCOME (conflict/failed/rejected) is recorded ON the request, so a card
+    // paused by that outcome is still a MERGE-phase pause — requiring
+    // merge.status==='open' here would report phase 'test' for exactly the
+    // merge-* blocks the state machine introduces.
+    const mergeStatus = merge === null || merge === undefined ? null : merge.status
+    const inMerge = mergeStatus === 'open' || mergeStatus === 'conflict' || mergeStatus === 'failed' || mergeStatus === 'rejected'
+    return approved === true && passed === true && inMerge === true ? 'merge' : 'test'
   }
   return null
 }

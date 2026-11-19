@@ -543,6 +543,79 @@ check('a bare legacy panel approveReview is still attributed as the human overri
   conflictRig.scheduler.dispose()
 }
 
+// ── T-201 round 3: a candidate merge conflict/failed is a RECORDED merge
+//    outcome (T22/T23), not an opaque failure the sweep retries forever ───────
+for (const outcome of ['conflict', 'failed']) {
+  const candidateAgents = createFakeTaskAgents()
+  const candidateRig = createRig({
+    taskAgents: candidateAgents,
+    merger: {
+      async createCandidate(task) {
+        return { ok: true, path: '/demo-project/.worktrees/test-' + task.id, base: 'base-candidate', head: 'candidate-head-1', target: 'main', actualFiles: [] }
+      },
+      async mergeCandidate() {
+        return {
+          ok: true,
+          status: outcome,
+          conflict: outcome === 'conflict' ? 'a.gd' : null,
+          output: outcome === 'failed' ? 'the verification command failed' : null,
+          mergeCommit: null,
+        }
+      },
+      async discardCandidate() {
+        return { ok: true }
+      },
+    },
+  })
+  async function candidateBoardTask(id) {
+    const snap = await candidateRig.action('board')
+    assert.equal(snap.ok, true, JSON.stringify(snap).slice(0, 400))
+    return snap.tasks.filter((entry) => entry.id === id)[0]
+  }
+  const candidateCard = await createTask(candidateRig, {
+    title: 'candidate merge ' + outcome,
+    writeFiles: [],
+    acceptance: '- the candidate is accepted',
+    verification: { probes: [{ id: 'probe-candidate', command: 'node --test scripts/a.test.mjs' }] },
+  })
+  const candidateStarted = await candidateRig.action('start')
+  assert.equal(candidateStarted.ok, true, JSON.stringify(candidateStarted).slice(0, 500))
+  await candidateRig.settle()
+  const candidateSubmitted = await candidateRig.action('submit', { id: candidateCard.id, evidence: 'ready' })
+  assert.equal(candidateSubmitted.ok, true, JSON.stringify(candidateSubmitted).slice(0, 700))
+  const candidateApproved = await candidateRig.action('approveReview', { id: candidateCard.id })
+  assert.equal(candidateApproved.ok, true, JSON.stringify(candidateApproved).slice(0, 700))
+  const beforePass = await candidateBoardTask(candidateCard.id)
+  const candidateImplementer = beforePass.assignee
+  assert.ok(candidateImplementer !== null && typeof candidateImplementer.session === 'string', 'the candidate card has no implementer')
+  const candidatePassed = await candidateRig.action('passTest', { id: candidateCard.id })
+  const candidateBlocked = await candidateBoardTask(candidateCard.id)
+  check('a candidate merge ' + outcome + ' is recorded as a merge-* block', () => {
+    assert.equal(candidatePassed.ok, true, JSON.stringify(candidatePassed).slice(0, 900))
+    assert.equal(candidateBlocked.status, 'blocked')
+    assert.equal(candidateBlocked.blockedReason.code, 'merge-' + outcome)
+    assert.equal(candidateBlocked.blockedReason.from, 'testing')
+    assert.equal(candidateBlocked.blockedReason.phase, 'merge')
+    assert.equal(candidateBlocked.assignee, null, 'the blocked card still has a live claim')
+    assert.ok(candidateBlocked.lastAssignee !== null && candidateBlocked.lastAssignee !== undefined, 'the implementer identity was discarded')
+    assert.equal(candidateBlocked.lastAssignee.session, candidateImplementer.session)
+    assert.equal(candidateBlocked.merge.status, outcome)
+    assert.equal(candidateBlocked.test.status, 'passed')
+    assert.equal(candidateBlocked.phase, null)
+  })
+  check('the candidate ' + outcome + ' notifies the implementer to repair the request', () => {
+    const notice = candidateAgents.calls.filter((entry) => entry.kind === 'send' && entry.agentId === candidateImplementer.session).pop()
+    assert.ok(notice, 'the implementer was never told about the merge outcome')
+    assert.match(notice.text, /refreshMerge/)
+  })
+  const retried = await candidateRig.action('mergeRequest', { id: candidateCard.id })
+  check('the sweep cannot retry a candidate ' + outcome + ' as if the card were still eligible', () => {
+    assert.equal(retried.ok, false)
+    assert.equal(retried.code, 'no-open-merge')
+  })
+  candidateRig.scheduler.dispose()
+}
+
 const failedChecks = checks.filter((row) => !row.ok)
 for (const row of checks) {
   console.log((row.ok ? 'PASS' : 'FAIL') + '  ' + row.name + (row.ok ? '' : '\n  ' + String(row.error && row.error.stack ? row.error.stack : row.error)))

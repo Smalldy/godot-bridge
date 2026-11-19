@@ -484,6 +484,19 @@ for (const outcome of ['conflict', 'failed']) {
       task.lastAssignee.session === 's',
     JSON.stringify(task === null ? null : { assignee: task.assignee, lease: task.leaseUntil, live: liveExecutors.length, last: task.lastAssignee }),
   )
+  // The outcome is recorded ON the request, so the pause is a MERGE-phase pause,
+  // not a test round: blockedReason.phase is what detail/snapshot expose.
+  check(
+    'T22/T23 ' + outcome + ' exposes the paused phase as merge (not test)',
+    reason !== null && reason.phase === 'merge' && phaseOf(task) === null && task.merge.status === outcome,
+    JSON.stringify({ reason: reason, merge: task === null ? null : task.merge.status }),
+  )
+  const surfaced = summary(recorded.ok === true ? recorded.board : board, task, at(6))
+  check(
+    'T22/T23 ' + outcome + ' summary carries the merge-phase blocked reason',
+    surfaced.state === 'blocked' && surfaced.blockedReason !== null && surfaced.blockedReason.phase === 'merge' && surfaced.blockedReason.code === 'merge-' + outcome,
+    JSON.stringify(surfaced.blockedReason),
+  )
 }
 {
   const made = createTask(emptyBoard(T0), { title: 'rej', verification: { probes: [{ id: 'p', command: 'npm test' }] } }, T0, '@me')
@@ -494,6 +507,28 @@ for (const outcome of ['conflict', 'failed']) {
   const reason = task === null ? null : blockedReasonOf(task)
   check('T24 rejected moves reviewing -> blocked with merge-rejected', rejected.ok === true && task.status === 'blocked' && reason !== null && reason.code === 'merge-rejected' && reason.from === 'reviewing', JSON.stringify(rejected.ok === true ? { status: task.status, reason: reason } : rejected))
   check('the rejected merge record keeps its outcome', task.merge.status === 'rejected', JSON.stringify(task.merge))
+}
+{
+  // T24 on a TESTED card is a merge-phase rejection: the request now records
+  // 'rejected', but the pause is still the merge phase, never a test round.
+  const board = flowBoard()
+  const rejected = recordMergeResult(board, 'T-1', { status: 'rejected' }, at(6), '@user', null, 'user')
+  const task = rejected.ok === true ? findTask(rejected.board, 'T-1') : null
+  const reason = task === null ? null : blockedReasonOf(task)
+  const view = summary(rejected.ok === true ? rejected.board : board, task, at(7))
+  check(
+    'T24 rejected on a tested card pauses in the merge phase',
+    rejected.ok === true &&
+      task.status === 'blocked' &&
+      reason !== null &&
+      reason.code === 'merge-rejected' &&
+      reason.phase === 'merge' &&
+      task.assignee === null &&
+      task.lastAssignee !== null &&
+      view.blockedReason !== null &&
+      view.blockedReason.phase === 'merge',
+    JSON.stringify({ reason: reason, view: view.blockedReason }),
+  )
   check(
     'T24 rejected clears the claim but keeps the implementer (INV-blocked)',
     task.assignee === null && task.leaseUntil === null && task.lastAssignee !== null && task.lastAssignee !== undefined && task.lastAssignee.session === 's',
@@ -738,6 +773,27 @@ console.log('\n# model-boundary guards')
     blockedReasonOf(task).phase === 'merge' && blockedReasonOf(testPhase).phase === 'test',
     JSON.stringify({ merge: blockedReasonOf(task).phase, test: blockedReasonOf(testPhase).phase }),
   )
+  // A merge-* pause records the OUTCOME on the request; the phase is still merge.
+  for (const settled of ['conflict', 'failed', 'rejected']) {
+    const paused = makeTask('blocked', {
+      blockedReason: { code: 'merge-' + settled, detail: null, from: 'testing', auto: false, at: iso(0) },
+      review: { status: 'approved', attempt: 1 },
+      test: { status: 'passed', attempt: 1 },
+      merge: { status: settled, base: 'b', head: 'h' },
+    })
+    check(
+      'a merge-' + settled + ' pause exposes the merge phase despite the settled request',
+      blockedReasonOf(paused).phase === 'merge',
+      JSON.stringify(blockedReasonOf(paused)),
+    )
+  }
+  const noRecords = makeTask('blocked', {
+    blockedReason: { code: 'manual-block', detail: null, from: 'testing', auto: false, at: iso(0) },
+    review: null,
+    test: null,
+    merge: null,
+  })
+  check('a testing pause with no phase records is not mistaken for a merge', blockedReasonOf(noRecords).phase === 'test', JSON.stringify(blockedReasonOf(noRecords)))
 }
 {
   // T21 idempotency: repeating a merged result is a typed answer, not a phase error.

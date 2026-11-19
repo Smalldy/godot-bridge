@@ -1222,6 +1222,43 @@ export function createApi(ctx, options) {
       }
       return recorded
     }
+    // T22/T23: a candidate merge that conflicts or fails is a MERGE OUTCOME, not
+    // an opaque failure. Record it through the state machine so the card leaves
+    // testing (blocked + typed merge-* reason), its claim is cleared with the
+    // implementer kept as lastAssignee, and the worker the host must notify is
+    // told to repair the branch. Returning a bare failure left the card
+    // testing + test.passed + merge.open (still eligible), so the sweep retried
+    // the same conflict forever and nobody was ever asked to fix it.
+    if (outcome.status === 'conflict' || outcome.status === 'failed') {
+      if (isAbandoned()) return failure('action-abandoned', 'the merge queue turn for ' + id + ' was abandoned after its bound; nothing was recorded')
+      if (Date.now() > deadlineAt) return actionTimeoutFailure('mergeTestedCandidate record ' + String(outcome.status), id, startedAt)
+      const recorded = await writeTask(
+        projectPath,
+        id,
+        (board) =>
+          recordMergeResult(
+            board,
+            id,
+            {
+              status: outcome.status,
+              mergeCommit: null,
+              conflict: outcome.conflict === undefined ? null : outcome.conflict,
+              output: outcome.output === undefined ? null : outcome.output,
+            },
+            clock(),
+            by,
+            writeByName(context),
+            'host',
+          ),
+        context,
+      )
+      if (recorded.ok !== true) return recorded
+      await notifyMergeOutcome(projectPath, recorded.task)
+      emitActivity(null, 'merge', String(outcome.status) + ' on the test candidate; the implementer repairs it', id, 'host')
+      recorded.merged = false
+      recorded.retest = false
+      return recorded
+    }
     return failure('merge-failed', 'the candidate merge returned an unexpected status ' + String(outcome.status))
     } finally {
       mergingCandidates.delete(id)
@@ -5713,6 +5750,12 @@ export function createApi(ctx, options) {
     )
     if (recorded.ok !== true) return recorded
     const merged = await mergeTestedCandidate(projectPath, id, 'system', context, { inQueue: false })
+    // A conflict/failed candidate merge is RECORDED on the card (T22/T23) and
+    // returns ok with merged=false; the fast path must not report it as merged.
+    if (merged.ok === true && merged.merged !== true && merged.task !== null && merged.task !== undefined && merged.task.status === 'blocked') {
+      const reason = merged.task.blockedReason === null || merged.task.blockedReason === undefined ? 'merge failed' : String(merged.task.blockedReason.code)
+      return failure(reason, 'the rebuilt candidate could not be merged (' + reason + '); the card is blocked for its implementer')
+    }
     if (merged.ok === true) return { ok: true, code: 'merged', merged: merged }
     await markWaiting(projectPath, id, 'candidate-stale', 'rebuilt candidate could not be merged: ' + String(merged.message || merged.code || ''), context)
     return failure('candidate-stale', 'the rebuilt candidate could not be merged: ' + String(merged.message || merged.code || ''))
