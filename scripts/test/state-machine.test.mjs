@@ -664,9 +664,16 @@ console.log('\n# single writer')
   // Any assignment to a card status, not only a literal RHS: the first version of
   // this assertion missed target.status = exhausted ? 'blocked' : 'pending'.
   // A dispatch record (or a decision record) is not a card status.
+  // A host candidate is checked out with core.autocrlf=true on Windows, so the
+  // source text here has CRLF endings. Normalise before any line-anchored match:
+  // the first version of this assertion failed only in the candidate for that
+  // reason (the machine's canonical single write was invisible to /^...$/).
+  function normaliseSource(text) {
+    return String(text).replace(/\r\n/g, '\n')
+  }
   function statusAssignmentOffenders(source, name) {
     const offenders = []
-    const lines = source.split('\n')
+    const lines = normaliseSource(source).split('\n')
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index]
       const trimmed = line.trim()
@@ -693,8 +700,18 @@ console.log('\n# single writer')
   const offenders = []
   for (const name of files) for (const row of statusAssignmentOffenders(readFileSync(directory + name, 'utf8'), name)) offenders.push(row)
   check('no module outside the state machine assigns a card status', offenders.length === 0, offenders.join(' | '))
-  const machineLines = readFileSync(directory + 'state-machine.mjs', 'utf8').split('\n')
+  const machineText = readFileSync(directory + 'state-machine.mjs', 'utf8')
+  const machineLines = normaliseSource(machineText).split('\n')
   check('the state machine has exactly one status assignment', machineLines.filter((line) => /^  task\.status = decided\.to$/.test(line)).length === 1)
+  // Regression for the host candidate: the SAME scan on CRLF text must reach the
+  // same verdict (this failed when the assertion assumed LF line endings).
+  const crlfMachine = machineText.replace(/\r?\n/g, '\r\n')
+  check(
+    'the writer scan is line-ending agnostic (CRLF candidate checkout)',
+    statusAssignmentOffenders(crlfMachine, 'state-machine.mjs').length === 0 &&
+      statusAssignmentOffenders("  target.status = exhausted ? 'blocked' : 'pending'\r\n", 'service.mjs').length === 1,
+    'CRLF text bypassed the scan',
+  )
   const tampered = statusAssignmentOffenders(readFileSync(directory + 'service.mjs', 'utf8') + "\n  target.status = exhausted ? 'blocked' : 'pending'\n", 'service.mjs')
   check('reintroducing a hand-written status write makes the assertion red', tampered.length === 1, tampered.join(' | '))
 
