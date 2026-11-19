@@ -909,7 +909,17 @@ function createTaskCenter(deps) {
 		onClose: function () { setEditing(null) },
 		onSaved: function () { setEditing(null) },
 			}),
-			settingsOpen ? h(SettingsForm, { t: t, dispatch: dispatch, theme: theme, onThemeChange: setTheme, onClose: function () { setSettingsOpen(false) } }) : null,
+			settingsOpen
+				? h(SettingsForm, {
+						t: t,
+						dispatch: dispatch,
+						// T-198: the resolved decision policy the settings page edits.
+						policy: snapshot.decisionPolicy === undefined ? null : snapshot.decisionPolicy,
+						theme: theme,
+						onThemeChange: setTheme,
+						onClose: function () { setSettingsOpen(false) },
+					})
+				: null,
 			// T-181: the ONE project dialog. It is mounted only after the user asks for
 			// it — an empty project state never auto-opens it, and closing it unmounts.
 			projectOpen && snapshot.source !== 'loading' ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,

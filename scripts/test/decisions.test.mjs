@@ -9,14 +9,27 @@
 // T-197 adds the stage questions: a dev/review timeout ASKS first, the expired
 // question continues the SAME stage, "replace" releases the old stage child
 // before starting exactly one new one, and the escalated event ask can block.
+//
+// T-198 adds the event POLICY: the 13-event catalog with the aligned defaults,
+// global default + project override persistence with per-field fallback, the
+// ask/notify/silent split (a modal, an announced auto-default, an audit-only
+// action), the configurable limits, and the fixed high-risk guards that no
+// stored setting can bypass.
 
 import assert from 'node:assert/strict'
 import { createFakeGit, createFakeTaskAgents, createRig, createTask, PROJECT } from './support/fixtures.mjs'
-import { createDecisionStore, decisionsPath } from '../../plugin/task-center/decisions.mjs'
+import { createDecisionStore, decisionPolicyPath, decisionPolicyView, decisionsPath, globalDecisionPolicyPath } from '../../plugin/task-center/decisions.mjs'
 import { updateBoard } from '../../plugin/task-center/board.mjs'
 import { writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
-import { DECISION_CONFIRM_WORD, MAX_RESOLVED_DECISIONS } from '../../plugin/task-center/schema.mjs'
+import {
+  DECISION_CONFIRM_WORD,
+  DECISION_EVENT_CATALOG,
+  DECISION_FIXED_GUARDS,
+  MAX_RESOLVED_DECISIONS,
+  normaliseDecisionPolicyEvent,
+  resolveDecisionPolicy,
+} from '../../plugin/task-center/schema.mjs'
 
 const START = Date.parse('2026-11-19T00:00:00.000Z')
 let clockNow = START
@@ -491,5 +504,428 @@ function check(label, condition, detail) {
   check('the testing card has no live reviewer', Array.from(taskAgents.live).filter((id) => String(id).indexOf('reviewer-') === 0).length === 0, JSON.stringify(Array.from(taskAgents.live)))
 }
 
-console.log(failures === 0 ? '\nPASS  decision requests persist, answer once, and honour the timeout rules' : '\nFAIL  ' + String(failures) + ' decision check(s)')
+
+// ════════════════════════════════════════════════════════════════════════════
+// T-198 — the decision POLICY (ask / notify / silent, global + project scope)
+// ════════════════════════════════════════════════════════════════════════════
+
+const PROBES = { probes: [{ id: 'suite', command: 'npm test' }] }
+
+function agentContext(name) {
+  return { projectPath: PROJECT, by: '@' + String(name === undefined ? 'agent' : name), role: 'agent', agent: null }
+}
+
+async function patchTaskRow(rig, id, mutate) {
+  await updateBoard(
+    { fs: rig.fs },
+    {
+      projectPath: PROJECT,
+      mutate: (board) => {
+        const row = board.tasks.filter((entry) => String(entry.id) === String(id))[0]
+        if (row !== undefined) mutate(row)
+        return board
+      },
+      sandboxPolicy: writePolicyFor(PROJECT),
+    },
+  )
+}
+
+// ── T-198: the catalog and the aligned defaults ─────────────────────────────
+{
+  const expected = [
+    ['create', 'ask', 'create', 120, null],
+    ['dispatch', 'ask', 'hold', 300, null],
+    ['dev-timeout', 'ask', 'continue', 120, 3],
+    ['review-timeout', 'ask', 'continue', 120, 3],
+    ['test-timeout', 'ask', 'continue', 120, 3],
+    ['reopen', 'ask', 'keep', 120, null],
+    ['delete', 'ask', 'keep', 120, null],
+    ['cancel', 'ask', 'return', 120, null],
+    ['host-verify-fail', 'notify', 'return-dev', 120, null],
+    ['merge-conflict', 'notify', 'return-dev', 120, null],
+    ['worker-lost', 'notify', 'redispatch', 120, null],
+    ['target-drift', 'notify', 'rebuild-retest', 120, null],
+    ['review-rounds-exhausted', 'notify', 'block', 120, null],
+  ]
+  check(
+    'T-198 the catalog lists the aligned 13 events in order',
+    DECISION_EVENT_CATALOG.map((entry) => entry.key).join(',') === expected.map((entry) => entry[0]).join(','),
+    DECISION_EVENT_CATALOG.map((entry) => entry.key).join(','),
+  )
+  const resolved = resolveDecisionPolicy({}, {})
+  for (const entry of expected) {
+    const [key, mode, defaultOption, timeoutSeconds, limit] = entry
+    const row = resolved[key]
+    check(
+      'T-198 ' + key + ' defaults to ' + mode + '/' + defaultOption + '/' + String(timeoutSeconds) + 's/' + String(limit),
+      row.mode === mode && row.defaultOption === defaultOption && row.timeoutSeconds === timeoutSeconds && row.limit === limit,
+      JSON.stringify(row),
+    )
+  }
+  check(
+    'T-198 event-10 defaults keep the auto-recovery limit of 2 (review rounds: none)',
+    resolved['host-verify-fail'].autoRecover === 2 &&
+      resolved['merge-conflict'].autoRecover === 2 &&
+      resolved['worker-lost'].autoRecover === 2 &&
+      resolved['target-drift'].autoRecover === 2 &&
+      resolved['review-rounds-exhausted'].autoRecover === null,
+    JSON.stringify({
+      hv: resolved['host-verify-fail'].autoRecover,
+      rr: resolved['review-rounds-exhausted'].autoRecover,
+    }),
+  )
+  check(
+    'T-198 the fixed high-risk guards are on',
+    DECISION_FIXED_GUARDS.deleteDependencyTreeRequiresWord === true && DECISION_FIXED_GUARDS.timeoutNeverDeletes === true,
+  )
+  const deleteMode = normaliseDecisionPolicyEvent('delete', { mode: 'notify', defaultOption: 'delete' })
+  check('T-198 a destructive default option is refused', deleteMode.ok === false && deleteMode.code === 'invalid-policy-option', JSON.stringify(deleteMode))
+  const forced = normaliseDecisionPolicyEvent('delete', { mode: 'notify' })
+  check('T-198 the delete event can never leave ask', forced.ok === true && forced.patch.mode === 'ask', JSON.stringify(forced))
+}
+
+// ── T-198: persistence, scope fallback, reset, validation ──────────────────
+{
+  const rig = freshRig()
+  const read0 = await rig.api.decisions.readPolicy(PROJECT)
+  check(
+    'T-198 an empty policy resolves to the built-in defaults',
+    read0.ok === true && decisionPolicyView(read0).project['dev-timeout'].timeoutSeconds === 120 && decisionPolicyView(read0).storage.global === null,
+    JSON.stringify(read0.ok ? read0.storage : read0),
+  )
+
+  const savedProject = await rig.action('decisionPolicy', { scope: 'project', events: { 'dev-timeout': { timeoutSeconds: 400 } } })
+  const projectFile = JSON.parse(rig.fs.files.get(decisionPolicyPath(PROJECT)).text)
+  check(
+    'T-198 a project override persists as a sparse patch',
+    savedProject.ok === true && savedProject.saved.location === 'project' && JSON.stringify(projectFile.events) === '{"dev-timeout":{"timeoutSeconds":400}}',
+    JSON.stringify(savedProject.saved),
+  )
+
+  const savedGlobal = await rig.action('decisionPolicy', { scope: 'global', events: { 'worker-lost': { mode: 'silent' } } })
+  check(
+    'T-198 the global default persists beside the user-wide registry',
+    savedGlobal.ok === true && savedGlobal.saved.location === 'home' && rig.fs.files.has(globalDecisionPolicyPath()) === true,
+    JSON.stringify(savedGlobal.saved),
+  )
+
+  const view1 = decisionPolicyView(await rig.api.decisions.readPolicy(PROJECT))
+  check(
+    'T-198 the project fallback applies per FIELD, not per event',
+    view1.project['dev-timeout'].timeoutSeconds === 400 &&
+      view1.project['dev-timeout'].mode === 'ask' &&
+      view1.project['worker-lost'].mode === 'silent' &&
+      view1.project['worker-lost'].defaultOption === 'redispatch',
+    JSON.stringify({ dev: view1.project['dev-timeout'], lost: view1.project['worker-lost'] }),
+  )
+  check(
+    'T-198 the global scope shows the global values only',
+    view1.global['dev-timeout'].timeoutSeconds === 120 && view1.global['worker-lost'].mode === 'silent',
+    JSON.stringify(view1.global['dev-timeout']),
+  )
+
+  const restarted = createDecisionStore({ fs: rig.fs }, { now: now })
+  const view2 = decisionPolicyView(await restarted.readPolicy(PROJECT))
+  check(
+    'T-198 the policy survives a host restart',
+    view2.project['worker-lost'].mode === 'silent' && view2.project['dev-timeout'].timeoutSeconds === 400,
+    JSON.stringify(view2.project['worker-lost']),
+  )
+
+  const reset = await rig.action('decisionPolicy', { scope: 'project', reset: ['dev-timeout'] })
+  const read3 = await rig.api.decisions.readPolicy(PROJECT)
+  const view3 = decisionPolicyView(read3)
+  check(
+    'T-198 reset clears only the current scope, which falls back to global/built-in',
+    reset.ok === true && read3.project.events['dev-timeout'] === undefined && view3.project['dev-timeout'].timeoutSeconds === 120 && view3.project['worker-lost'].mode === 'silent',
+    JSON.stringify(reset.saved),
+  )
+
+  const badScope = await rig.action('decisionPolicy', { scope: 'everyone', events: {} })
+  check('T-198 an invalid scope is refused', badScope.ok === false && badScope.code === 'invalid-policy-scope', JSON.stringify(badScope))
+  const badEvent = await rig.action('decisionPolicy', { scope: 'project', events: { nope: { mode: 'ask' } } })
+  check('T-198 an unknown event is refused', badEvent.ok === false && badEvent.code === 'invalid-policy-event', JSON.stringify(badEvent))
+  const badMode = await rig.action('decisionPolicy', { scope: 'project', events: { create: { mode: 'auto' } } })
+  check('T-198 an invalid mode is refused', badMode.ok === false && badMode.code === 'invalid-policy-mode', JSON.stringify(badMode))
+  const badTimeout = await rig.action('decisionPolicy', { scope: 'project', events: { create: { timeoutSeconds: 99999 } } })
+  check('T-198 an out-of-bounds timeout is refused', badTimeout.ok === false && badTimeout.code === 'invalid-policy-timeout', JSON.stringify(badTimeout))
+  const badLimit = await rig.action('decisionPolicy', { scope: 'project', events: { 'dev-timeout': { limit: 99 } } })
+  check('T-198 an out-of-bounds limit is refused', badLimit.ok === false && badLimit.code === 'invalid-policy-limit', JSON.stringify(badLimit))
+  const badRecover = await rig.action('decisionPolicy', { scope: 'project', events: { 'worker-lost': { autoRecover: -1 } } })
+  check('T-198 an out-of-bounds auto-recovery limit is refused', badRecover.ok === false && badRecover.code === 'invalid-policy-auto-recover', JSON.stringify(badRecover))
+  const destructiveDefault = await rig.action('decisionPolicy', { scope: 'project', events: { 'dev-timeout': { defaultOption: 'retry-dev' } } })
+  check('T-198 a destructive stage default is refused', destructiveDefault.ok === false && destructiveDefault.code === 'invalid-policy-option', JSON.stringify(destructiveDefault))
+
+  const agentTry = await rig.api.perform('decisionPolicy', { scope: 'project', events: { create: { mode: 'notify' } } }, agentContext('sneaky'))
+  check('T-198 an Agent cannot change the decision policy', agentTry.ok === false && agentTry.code === 'user-only', JSON.stringify(agentTry))
+
+  const deleteFixed = await rig.action('decisionPolicy', { scope: 'project', events: { delete: { mode: 'notify' } } })
+  const view4 = decisionPolicyView(await rig.api.decisions.readPolicy(PROJECT))
+  check(
+    'T-198 the delete event cannot be automated by a stored setting',
+    deleteFixed.ok === true && view4.project['delete'].mode === 'ask' && view4.overrides.project['delete'].mode === 'ask',
+    JSON.stringify(view4.project['delete']),
+  )
+
+  const snapshot = await rig.api.snapshot(PROJECT, { full: false })
+  check(
+    'T-198 the panel snapshot carries the resolved policy and its overrides',
+    snapshot.decisionPolicy !== null &&
+      snapshot.decisionPolicy.project['delete'].mode === 'ask' &&
+      snapshot.decisionPolicy.overrides.project['delete'].mode === 'ask' &&
+      snapshot.decisionPolicy.defaults['create'].timeoutSeconds === 120,
+    JSON.stringify(snapshot.decisionPolicy === null ? null : snapshot.decisionPolicy.overrides),
+  )
+}
+
+// ── T-198: ask / notify / silent on the action gate ────────────────────────
+{
+  const rig = freshRig()
+  await rig.action('decisionPolicy', { scope: 'project', events: { create: { mode: 'notify' } } })
+  const created = await rig.api.perform('create', { title: 'auto card', verification: PROBES }, agentContext('auto'))
+  const pendingAfterNotify = await rig.api.decisions.pending(PROJECT)
+  check(
+    'T-198 notify creates the card itself, with NO modal',
+    created.ok === true && typeof created.task.id === 'string' && pendingAfterNotify.pending.length === 0,
+    JSON.stringify({ ok: created.ok, pending: pendingAfterNotify.pending.length }),
+  )
+
+  await rig.action('decisionPolicy', { scope: 'project', events: { create: { defaultOption: 'cancel' } } })
+  const before = (await rig.action('board')).tasks.length
+  const declined = await rig.api.perform('create', { title: 'declined card', verification: PROBES }, agentContext('auto'))
+  const after = (await rig.action('board')).tasks.length
+  check(
+    'T-198 a notify default of 取消创建 declines the action instead of creating',
+    declined.ok === false && declined.code === 'policy-default' && declined.policy.option === 'cancel' && declined.policy.mode === 'notify',
+    JSON.stringify(declined),
+  )
+  check('T-198 the declined create wrote nothing', after === before, String(after - before))
+
+  await rig.action('decisionPolicy', { scope: 'project', events: { create: { mode: 'silent' } } })
+  const silentDeclined = await rig.api.perform('create', { title: 'silent card', verification: PROBES }, agentContext('auto'))
+  check(
+    'T-198 silent applies the same default and names its mode',
+    silentDeclined.ok === false && silentDeclined.code === 'policy-default' && silentDeclined.policy.mode === 'silent',
+    JSON.stringify(silentDeclined),
+  )
+
+  await rig.action('decisionPolicy', { scope: 'project', reset: ['create'] })
+  const asked = await rig.api.perform('create', { title: 'asked card', verification: PROBES }, agentContext('auto'))
+  check(
+    'T-198 the default ask still opens the decision',
+    asked.ok === false && asked.code === 'needs-decision' && asked.decision.defaultOption === 'create' && asked.decision.remainingMs === 120000,
+    JSON.stringify(asked.decision === undefined ? asked : asked.decision.defaultOption),
+  )
+
+  // The policy's default option and deadline replace the plan's own.
+  const task = await rig.action('create', { title: 'reopen me', verification: PROBES })
+  await rig.action('cancel', { id: task.task.id })
+  await rig.action('decisionPolicy', { scope: 'project', events: { reopen: { defaultOption: 'reopen', timeoutSeconds: 30 } } })
+  const reopenAsked = await rig.api.perform('reopen', { id: task.task.id }, agentContext('reopener'))
+  check(
+    'T-198 the configured default option and deadline drive the question',
+    reopenAsked.ok === false && reopenAsked.decision.defaultOption === 'reopen' && reopenAsked.decision.remainingMs === 30000,
+    JSON.stringify(reopenAsked.decision === undefined ? reopenAsked : { option: reopenAsked.decision.defaultOption, remaining: reopenAsked.decision.remainingMs }),
+  )
+}
+
+// ── T-198: a stage timeout in notify mode auto-continues without a modal ────
+{
+  const stageClock = Date.parse('2026-11-19T18:00:00.000Z')
+  let tick = stageClock
+  const taskAgents = createFakeTaskAgents()
+  const rig = createRig({ now: () => tick, taskAgents: taskAgents, ensureDir: function () {} })
+  const task = await createTask(rig, { title: 'policy notify stage' })
+  await rig.action('start')
+  await rig.action('decisionPolicy', { scope: 'project', events: { 'dev-timeout': { mode: 'notify', limit: 2 } } })
+  taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
+  tick += 26 * 60 * 1000
+  await rig.settle()
+  let pending = await rig.api.decisions.pending(PROJECT)
+  let row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  check(
+    'T-198 notify applies the timeout default without a modal',
+    pending.ok === true && pending.pending.filter((decision) => decision.eventKey === 'dev-timeout').length === 0 && row.status === 'running',
+    JSON.stringify({ pending: pending.pending.map((decision) => decision.eventKey), status: row.status }),
+  )
+  check(
+    'T-198 the auto-continue is announced as a policy action in the history',
+    row.history.some((entry) => String(entry.note).indexOf('按策略自动继续（notify）') >= 0),
+    JSON.stringify(row.history.slice(-2).map((entry) => entry.note)),
+  )
+  const sends = taskAgents.calls.filter((call) => call.kind === 'send')
+  check('T-198 notify tells the stage child the budget was extended', sends.length >= 1, JSON.stringify(sends.map((call) => call.text)))
+  // The configured limit (2) blocks on the SECOND consecutive default-continue.
+  tick += 26 * 60 * 1000
+  await rig.settle()
+  row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  check(
+    'T-198 the configured consecutive limit blocks the card',
+    row.status === 'blocked' && row.history.some((entry) => String(entry.note).indexOf('连续 2 次阶段超时默认继续') >= 0),
+    JSON.stringify({ status: row.status, notes: row.history.map((entry) => entry.note).slice(-3) }),
+  )
+}
+
+// ── T-198: silent writes the audit row and tells nobody ────────────────────
+{
+  const stageClock = Date.parse('2026-11-19T20:00:00.000Z')
+  let tick = stageClock
+  const taskAgents = createFakeTaskAgents()
+  const rig = createRig({ now: () => tick, taskAgents: taskAgents, ensureDir: function () {} })
+  const task = await createTask(rig, { title: 'policy silent stage' })
+  await rig.action('start')
+  await rig.action('decisionPolicy', { scope: 'project', events: { 'dev-timeout': { mode: 'silent' } } })
+  taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
+  tick += 26 * 60 * 1000
+  await rig.settle()
+  const pending = await rig.api.decisions.pending(PROJECT)
+  const row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  check(
+    'T-198 silent applies the default without a modal',
+    pending.ok === true && pending.pending.length === 0 && row.status === 'running',
+    JSON.stringify({ pending: pending.pending.map((decision) => decision.eventKey), status: row.status }),
+  )
+  check(
+    'T-198 silent records the audit row and marks it',
+    row.history.some((entry) => String(entry.note).indexOf('silent') >= 0 && String(entry.note).indexOf('按策略自动继续') >= 0),
+    JSON.stringify(row.history.slice(-2).map((entry) => entry.note)),
+  )
+  check(
+    'T-198 silent never messages the stage child',
+    taskAgents.calls.filter((call) => call.kind === 'send').length === 0,
+    JSON.stringify(taskAgents.calls.filter((call) => call.kind === 'send')),
+  )
+}
+
+// ── T-198: ask with a 0-second timeout opens a question with no deadline ───
+{
+  const stageClock = Date.parse('2026-11-19T22:00:00.000Z')
+  let tick = stageClock
+  const taskAgents = createFakeTaskAgents()
+  const rig = createRig({ now: () => tick, taskAgents: taskAgents, ensureDir: function () {} })
+  const task = await createTask(rig, { title: 'policy no deadline' })
+  await rig.action('start')
+  await rig.action('decisionPolicy', { scope: 'project', events: { 'dev-timeout': { timeoutSeconds: 0 } } })
+  taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
+  tick += 26 * 60 * 1000
+  await rig.settle()
+  const pending = await rig.api.decisions.pending(PROJECT)
+  const question = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === 'dev-timeout')[0] : undefined
+  check(
+    'T-198 answer-timeout 0 means "no deadline", never an instant default',
+    question !== undefined && question.timeoutAt === null && question.remainingMs === null && question.defaultOption === 'continue',
+    JSON.stringify(question === undefined ? null : { at: question.timeoutAt, remaining: question.remainingMs }),
+  )
+}
+
+// ── T-198: event-10 ask asks at the first occurrence; silent only audits ────
+{
+  const lostClock = Date.parse('2026-11-19T23:00:00.000Z')
+  let tick = lostClock
+  const taskAgents = createFakeTaskAgents()
+  const rig = createRig({ now: () => tick, taskAgents: taskAgents, ensureDir: function () {} })
+  const task = await createTask(rig, { title: 'policy worker lost' })
+  await rig.action('decisionPolicy', { scope: 'project', events: { 'worker-lost': { mode: 'ask' } } })
+  await rig.action('start')
+  await patchTaskRow(rig, task.id, (entry) => {
+    entry.dispatch = Object.assign({}, entry.dispatch, { host: 'another-boot' })
+  })
+  await rig.settle()
+  const pending = await rig.api.decisions.pending(PROJECT)
+  const asked = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === 'worker-lost')[0] : undefined
+  check(
+    'T-198 an ask-mode event asks at the FIRST occurrence',
+    asked !== undefined && asked.options.map((option) => option.id).join(',') === 'continue,block,cancel' && asked.defaultOption === 'continue',
+    JSON.stringify(pending.ok ? pending.pending.map((decision) => decision.eventKey) : pending),
+  )
+
+}
+
+// Silent: the same incident is audited on the card and never asks.
+{
+  const lostClock = Date.parse('2026-11-19T23:30:00.000Z')
+  let tick = lostClock
+  const taskAgents = createFakeTaskAgents()
+  const rig = createRig({ now: () => tick, taskAgents: taskAgents, ensureDir: function () {} })
+  const task2 = await createTask(rig, { title: 'policy worker lost silent' })
+  await rig.action('decisionPolicy', { scope: 'project', events: { 'worker-lost': { mode: 'silent' } } })
+  await rig.action('start')
+  await patchTaskRow(rig, task2.id, (entry) => {
+    entry.dispatch = Object.assign({}, entry.dispatch, { host: 'another-boot' })
+  })
+  await rig.settle()
+  const pending2 = await rig.api.decisions.pending(PROJECT)
+  const row2 = (await rig.action('board')).tasks.filter((entry) => entry.id === task2.id)[0]
+  check(
+    'T-198 a silent event never asks',
+    pending2.ok === true && pending2.pending.filter((decision) => decision.eventKey === 'worker-lost' && decision.taskId === task2.id).length === 0,
+    JSON.stringify(pending2.pending.map((decision) => decision.eventKey + ':' + String(decision.taskId))),
+  )
+  check(
+    'T-198 a silent event still writes the audit row',
+    row2.history.some((entry) => String(entry.note).indexOf('silent：仅审计') >= 0),
+    JSON.stringify(row2.history.map((entry) => entry.note).slice(-3)),
+  )
+}
+
+// ── T-198: the configured auto-recovery limit drives the escalation ─────────
+{
+  const lostClock = Date.parse('2026-11-19T23:45:00.000Z')
+  const rig = createRig({ now: () => lostClock, taskAgents: createFakeTaskAgents(), ensureDir: function () {} })
+  const task = await createTask(rig, { title: 'policy auto-recover limit' })
+  // notify mode with a limit of 0: the FIRST failed auto-recovery already asks.
+  await rig.action('decisionPolicy', { scope: 'project', events: { 'worker-lost': { mode: 'notify', autoRecover: 0 } } })
+  await rig.action('start')
+  await patchTaskRow(rig, task.id, (entry) => {
+    entry.dispatch = Object.assign({}, entry.dispatch, { host: 'another-boot' })
+  })
+  await rig.settle()
+  const pending = await rig.api.decisions.pending(PROJECT)
+  const escalated = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === 'worker-lost')[0] : undefined
+  check(
+    'T-198 a configured auto-recovery limit of 0 escalates at the first incident',
+    escalated !== undefined && escalated.defaultOption === 'continue',
+    JSON.stringify(pending.ok ? pending.pending.map((decision) => decision.eventKey) : pending),
+  )
+}
+
+// ── T-198: a deadline never applies a destructive default ──────────────────
+{
+  const rig = freshRig()
+  await rig.api.decisions.request(
+    PROJECT,
+    {
+      id: 'DEC-DEL',
+      eventKey: 'delete',
+      title: '删除 T-1？',
+      timeoutMs: 1000,
+      options: [
+        { id: 'keep', label: '保留', default: true },
+        { id: 'delete', label: '删除', auto: false },
+      ],
+      defaultOption: 'delete',
+    },
+    { by: 'host' },
+  )
+  clockNow = START + 5000
+  const swept = await rig.api.decisions.sweep(PROJECT)
+  check(
+    'T-198 a timeout never applies a destructive default (fixed guard)',
+    swept.ok === true &&
+      swept.expired.length === 1 &&
+      swept.expired[0].resolution === null &&
+      swept.expired[0].outcome === 'requires-manual' &&
+      swept.expired[0].options.filter((option) => option.id === 'delete')[0].auto === false,
+    JSON.stringify(swept.expired),
+  )
+  const listed = await rig.action('decisionList', { decisionStatus: 'all' })
+  const stored = listed.decisions.filter((decision) => decision.id === 'DEC-DEL')[0]
+  check(
+    'T-198 the panel is told the default is not auto-runnable',
+    stored !== undefined && stored.autoRunAllowed === false,
+    JSON.stringify(stored === undefined ? null : stored.autoRunAllowed),
+  )
+}
+
+console.log(failures === 0 ? '\nPASS  decision requests persist, answer once, and honour the timeout and policy rules' : '\nFAIL  ' + String(failures) + ' decision check(s)')
 process.exit(failures === 0 ? 0 : 1)

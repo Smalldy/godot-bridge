@@ -1236,6 +1236,11 @@ export function normaliseDecisionOption(raw) {
     label: label.slice(0, 200),
     description: description.slice(0, 500),
     danger: raw.danger === true,
+    // T-198: `auto:false` marks an option that a POLICY default must never apply
+    // automatically (a destructive purge can only be picked by a human). It is a
+    // separate flag from `danger` so the panel's DELETE confirmation and the
+    // "never auto-run" rule stay independently testable.
+    auto: raw.auto !== false,
     // A default option is marked here as well, so the panel can show "默认"
     // without trusting a separate id comparison.
     default: raw.default === true,
@@ -1257,3 +1262,345 @@ export function normaliseDecisionOptions(raw) {
   }
   return options
 }
+
+/**
+ * T-198 — the decision POLICY.
+ *
+ * Every host question belongs to one event (the requirement packet §5 catalog).
+ * A policy answers three things per event: WHO decides (mode), what the default
+ * choice is, and how a timeout/recovery escalates. Two layers are stored: a
+ * user-wide GLOBAL file and a per-project override that falls back to it per
+ * field, so changing one event's timeout never rewrites the others.
+ *
+ * The fixed protections live here too, not in the panel: a destructive option
+ * can never be a policy default, and the delete event can never leave 'ask'. A
+ * hand-edited file therefore cannot turn "always ask before deleting" off.
+ */
+export const DECISION_POLICY_FILENAME = 'decision-policy.json'
+export const DECISION_POLICY_GLOBAL_FILENAME = 'decision-policy.global.json'
+export const DECISION_POLICY_VERSION = 1
+
+/** ask = a modal; notify = the host acts and says so; silent = audit only. */
+export const DECISION_MODES = ['ask', 'notify', 'silent']
+
+/** The editable numeric bounds. 0 seconds = no deadline; 0 limit = block at once. */
+export const DECISION_POLICY_BOUNDS = Object.freeze({
+  timeoutSeconds: { min: 0, max: 86400 },
+  limit: { min: 0, max: 10 },
+  autoRecover: { min: 0, max: 10 },
+})
+
+/** A corrupt policy file is refused above this size (one line per event). */
+export const MAX_DECISION_POLICY_BYTES = 256 * 1024
+
+/** The two protections the settings page shows as fixed (packet §4). */
+export const DECISION_FIXED_GUARDS = Object.freeze({
+  deleteDependencyTreeRequiresWord: true,
+  timeoutNeverDeletes: true,
+})
+
+/** Events that must always ASK: a destructive action is never automated. */
+export const DECISION_FIXED_ASK_EVENTS = Object.freeze(['delete'])
+
+/**
+ * The catalog, in the packet §5 order. Each entry carries its built-in defaults
+ * AND the option ids a default may name; the panel renders labels from i18n and
+ * the tests compare this table against the aligned copy.
+ */
+export const DECISION_EVENT_CATALOG = Object.freeze([
+  {
+    key: 'create',
+    kind: 'action',
+    label: '创建卡片',
+    defaults: { mode: 'ask', defaultOption: 'create', timeoutSeconds: 120, limit: null, autoRecover: null },
+    options: [
+      { id: 'create', label: '创建任务' },
+      { id: 'cancel', label: '取消创建' },
+    ],
+  },
+  {
+    key: 'dispatch',
+    kind: 'action',
+    label: '派发批准',
+    defaults: { mode: 'ask', defaultOption: 'hold', timeoutSeconds: 300, limit: null, autoRecover: null },
+    options: [
+      { id: 'approve', label: '批准派发' },
+      { id: 'hold', label: '暂不派发' },
+      { id: 'withdraw', label: '取消申请' },
+    ],
+  },
+  {
+    key: 'dev-timeout',
+    kind: 'stage',
+    label: '开发超时',
+    defaults: { mode: 'ask', defaultOption: 'continue', timeoutSeconds: 120, limit: 3, autoRecover: null },
+    options: [
+      { id: 'continue', label: '继续等待 20 分钟' },
+      { id: 'retry-dev', label: '重试开发', danger: true, auto: false },
+      { id: 'cancel', label: '取消任务' },
+      { id: 'cancel-tree', label: '取消并删除依赖树', danger: true, auto: false },
+    ],
+  },
+  {
+    key: 'review-timeout',
+    kind: 'stage',
+    label: 'Review 超时',
+    defaults: { mode: 'ask', defaultOption: 'continue', timeoutSeconds: 120, limit: 3, autoRecover: null },
+    options: [
+      { id: 'continue', label: '继续评审 20 分钟' },
+      { id: 'replace', label: '更换 reviewer' },
+      { id: 'block', label: '阻塞任务' },
+      { id: 'cancel', label: '取消任务' },
+    ],
+  },
+  {
+    key: 'test-timeout',
+    kind: 'stage',
+    label: 'Test 超时',
+    defaults: { mode: 'ask', defaultOption: 'continue', timeoutSeconds: 120, limit: 3, autoRecover: null },
+    options: [
+      { id: 'continue', label: '继续测试 20 分钟' },
+      { id: 'replace', label: '更换 tester' },
+      { id: 'block', label: '阻塞任务' },
+      { id: 'cancel', label: '取消任务' },
+    ],
+  },
+  {
+    key: 'reopen',
+    kind: 'action',
+    label: 'Reopen',
+    defaults: { mode: 'ask', defaultOption: 'keep', timeoutSeconds: 120, limit: null, autoRecover: null },
+    options: [
+      { id: 'reopen', label: '重新打开' },
+      { id: 'keep', label: '保持关闭' },
+    ],
+  },
+  {
+    key: 'delete',
+    kind: 'action',
+    label: 'Delete',
+    defaults: { mode: 'ask', defaultOption: 'keep', timeoutSeconds: 120, limit: null, autoRecover: null },
+    options: [
+      { id: 'keep', label: '保留' },
+      { id: 'delete', label: '删除', danger: true, auto: false },
+    ],
+  },
+  {
+    key: 'cancel',
+    kind: 'action',
+    label: 'Cancel',
+    defaults: { mode: 'ask', defaultOption: 'return', timeoutSeconds: 120, limit: null, autoRecover: null },
+    options: [
+      { id: 'return', label: '返回' },
+      { id: 'confirm', label: '确认取消' },
+    ],
+  },
+  {
+    key: 'host-verify-fail',
+    kind: 'event',
+    label: 'Host 验证失败',
+    defaults: { mode: 'notify', defaultOption: 'return-dev', timeoutSeconds: 120, limit: null, autoRecover: 2 },
+    options: [
+      { id: 'return-dev', label: '退回开发' },
+      { id: 'block', label: '阻塞任务' },
+      { id: 'cancel', label: '取消任务' },
+    ],
+  },
+  {
+    key: 'merge-conflict',
+    kind: 'event',
+    label: '合并冲突',
+    defaults: { mode: 'notify', defaultOption: 'return-dev', timeoutSeconds: 120, limit: null, autoRecover: 2 },
+    options: [
+      { id: 'return-dev', label: '退回开发' },
+      { id: 'block', label: '阻塞任务' },
+      { id: 'cancel', label: '取消任务' },
+    ],
+  },
+  {
+    key: 'worker-lost',
+    kind: 'event',
+    label: '执行者丢失',
+    defaults: { mode: 'notify', defaultOption: 'redispatch', timeoutSeconds: 120, limit: null, autoRecover: 2 },
+    options: [
+      { id: 'redispatch', label: '重新派发' },
+      { id: 'block', label: '阻塞任务' },
+      { id: 'cancel', label: '取消任务' },
+    ],
+  },
+  {
+    key: 'target-drift',
+    kind: 'event',
+    label: 'Target drift',
+    defaults: { mode: 'notify', defaultOption: 'rebuild-retest', timeoutSeconds: 120, limit: null, autoRecover: 2 },
+    options: [
+      { id: 'rebuild-retest', label: '重建并重测' },
+      { id: 'block', label: '阻塞任务' },
+      { id: 'cancel', label: '取消任务' },
+    ],
+  },
+  {
+    key: 'review-rounds-exhausted',
+    kind: 'event',
+    label: '评审轮次用尽',
+    defaults: { mode: 'notify', defaultOption: 'block', timeoutSeconds: 120, limit: null, autoRecover: null },
+    options: [
+      { id: 'block', label: '阻塞' },
+      { id: 'cancel', label: '取消任务' },
+    ],
+  },
+])
+
+export const DECISION_EVENT_KEYS = Object.freeze(DECISION_EVENT_CATALOG.map((entry) => entry.key))
+
+/** The catalog entry for one event key, or undefined. */
+export function decisionEventOf(eventKey) {
+  const key = typeof eventKey === 'string' ? eventKey : ''
+  return DECISION_EVENT_CATALOG.filter((entry) => entry.key === key)[0]
+}
+
+/** One option of one event's catalog, or undefined. */
+export function decisionEventOption(eventKey, optionId) {
+  const entry = decisionEventOf(eventKey)
+  if (entry === undefined) return undefined
+  return entry.options.filter((option) => option.id === optionId)[0]
+}
+
+/** Is this event's mode fixed to ask (the high-risk delete guard)? */
+export function isDecisionEventFixedAsk(eventKey) {
+  return DECISION_FIXED_ASK_EVENTS.indexOf(String(eventKey)) >= 0
+}
+
+function decisionPolicyFailure(code, message) {
+  return { ok: false, code: code, message: message }
+}
+
+/** The built-in policy of one event, with the fixed guards already applied. */
+export function defaultDecisionEventPolicy(eventKey) {
+  const entry = decisionEventOf(eventKey)
+  if (entry === undefined) return undefined
+  const defaults = entry.defaults
+  return {
+    // A fixed-ask event is ALWAYS ask, whatever the file says.
+    mode: isDecisionEventFixedAsk(entry.key) === true ? 'ask' : defaults.mode,
+    defaultOption: defaults.defaultOption,
+    timeoutSeconds: defaults.timeoutSeconds,
+    limit: defaults.limit,
+    autoRecover: defaults.autoRecover,
+  }
+}
+
+/** May a policy name this option as its default? A destructive one never may. */
+export function isDecisionDefaultOptionAllowed(eventKey, optionId) {
+  const option = decisionEventOption(eventKey, optionId)
+  if (option === undefined) return false
+  if (option.danger === true || option.auto === false) return false
+  return true
+}
+
+/**
+ * Validate ONE event's policy patch. Only the fields present are returned, so a
+ * project override can change a single field and inherit the rest.
+ *
+ * Rules (packet §4/§5, plus the fixed guards):
+ *   - mode in ask/notify/silent; a fixed-ask event ignores a non-ask request;
+ *   - defaultOption must be a catalog option a default may name;
+ *   - timeoutSeconds 0..86400; limit / autoRecover null or 0..10.
+ */
+export function normaliseDecisionPolicyEvent(eventKey, raw) {
+  const entry = decisionEventOf(eventKey)
+  if (entry === undefined) return decisionPolicyFailure('invalid-policy-event', 'unknown decision event ' + JSON.stringify(String(eventKey)))
+  if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) {
+    return decisionPolicyFailure('invalid-policy-event', 'the policy of ' + entry.key + ' must be an object')
+  }
+  const patch = {}
+  if (raw.mode !== undefined) {
+    if (DECISION_MODES.indexOf(raw.mode) < 0) {
+      return decisionPolicyFailure('invalid-policy-mode', 'mode must be one of ' + DECISION_MODES.join('/') + ', got ' + JSON.stringify(String(raw.mode)))
+    }
+    patch.mode = isDecisionEventFixedAsk(entry.key) === true ? 'ask' : raw.mode
+  }
+  if (raw.defaultOption !== undefined) {
+    const optionId = typeof raw.defaultOption === 'string' ? raw.defaultOption : ''
+    if (isDecisionDefaultOptionAllowed(entry.key, optionId) !== true) {
+      return decisionPolicyFailure('invalid-policy-option', 'defaultOption ' + JSON.stringify(optionId) + ' is not an allowed default for ' + entry.key)
+    }
+    patch.defaultOption = optionId
+  }
+  if (raw.timeoutSeconds !== undefined) {
+    const seconds = raw.timeoutSeconds
+    const bounds = DECISION_POLICY_BOUNDS.timeoutSeconds
+    if (!Number.isFinite(seconds) || Math.floor(seconds) !== seconds || seconds < bounds.min || seconds > bounds.max) {
+      return decisionPolicyFailure('invalid-policy-timeout', 'timeoutSeconds must be an integer between ' + String(bounds.min) + ' and ' + String(bounds.max))
+    }
+    patch.timeoutSeconds = seconds
+  }
+  for (const field of ['limit', 'autoRecover']) {
+    if (raw[field] === undefined) continue
+    if (raw[field] === null) {
+      patch[field] = null
+      continue
+    }
+    const bounds = DECISION_POLICY_BOUNDS[field]
+    const value = raw[field]
+    if (!Number.isFinite(value) || Math.floor(value) !== value || value < bounds.min || value > bounds.max) {
+      return decisionPolicyFailure(
+        field === 'limit' ? 'invalid-policy-limit' : 'invalid-policy-auto-recover',
+        field + ' must be null or an integer between ' + String(bounds.min) + ' and ' + String(bounds.max),
+      )
+    }
+    patch[field] = value
+  }
+  return { ok: true, event: entry.key, patch: patch }
+}
+
+/** Validate a whole { eventKey: patch } map (the settings page sends one). */
+export function normaliseDecisionPolicyEvents(raw) {
+  if (raw === null || raw === undefined) return { ok: true, events: {} }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return decisionPolicyFailure('invalid-policy-events', 'events must be an object keyed by event name')
+  const keys = Object.keys(raw)
+  if (keys.length > DECISION_EVENT_CATALOG.length) return decisionPolicyFailure('invalid-policy-events', 'too many events in one policy update')
+  const events = {}
+  for (const key of keys) {
+    const normalised = normaliseDecisionPolicyEvent(key, raw[key])
+    if (normalised.ok !== true) return normalised
+    events[normalised.event] = normalised.patch
+  }
+  return { ok: true, events: events }
+}
+
+/**
+ * Resolve one event's effective policy: built-in defaults, then the global
+ * patch, then the project patch — PER FIELD, so an override that only changes
+ * the timeout keeps the global mode. Stored patches are re-validated here, so a
+ * hand-edited (or older) file can never smuggle in a forbidden default.
+ */
+export function resolveDecisionEventPolicy(eventKey, globalEvents, projectEvents) {
+  const builtin = defaultDecisionEventPolicy(eventKey)
+  if (builtin === undefined) return undefined
+  const sources = [
+    globalEvents === undefined || globalEvents === null ? {} : globalEvents,
+    projectEvents === undefined || projectEvents === null ? {} : projectEvents,
+  ]
+  const resolved = Object.assign({}, builtin)
+  for (const source of sources) {
+    const raw = source[eventKey]
+    if (raw === undefined || raw === null || typeof raw !== 'object') continue
+    const normalised = normaliseDecisionPolicyEvent(eventKey, raw)
+    if (normalised.ok !== true) continue
+    for (const key of Object.keys(normalised.patch)) resolved[key] = normalised.patch[key]
+  }
+  // Re-apply the fixed guards after merging: a stored 'notify' on a fixed-ask
+  // event is corrected, never honoured.
+  if (isDecisionEventFixedAsk(eventKey) === true) resolved.mode = 'ask'
+  if (isDecisionDefaultOptionAllowed(eventKey, resolved.defaultOption) !== true) resolved.defaultOption = builtin.defaultOption
+  return resolved
+}
+
+/** Resolve every event: { eventKey: { mode, defaultOption, timeoutSeconds, limit, autoRecover } }. */
+export function resolveDecisionPolicy(globalEvents, projectEvents) {
+  const events = {}
+  for (const entry of DECISION_EVENT_CATALOG) events[entry.key] = resolveDecisionEventPolicy(entry.key, globalEvents, projectEvents)
+  return events
+}
+

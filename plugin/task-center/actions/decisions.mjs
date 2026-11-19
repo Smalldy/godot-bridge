@@ -19,6 +19,10 @@ export function createDecisionActions(deps) {
   const ok = deps.ok
   const failure = deps.failure
   const byOf = deps.byOf
+  // T-198: the settings page saves the decision policy through this action. The
+  // store validates every field and applies the fixed high-risk guards, so the
+  // panel can never talk the host into automating a deletion.
+  const policyView = typeof deps.policyView === 'function' ? deps.policyView : null
   const decorate = typeof deps.decorate === 'function' ? deps.decorate : function (decision) { return decision }
   const applyAnswered = typeof deps.applyAnswered === 'function' ? deps.applyAnswered : null
   const applyExpired = typeof deps.applyExpired === 'function' ? deps.applyExpired : null
@@ -84,5 +88,28 @@ export function createDecisionActions(deps) {
     return ok({ decision: decorate(result.decision), applied: applied, serverTime: new Date(now).toISOString() })
   }
 
-  return { decisionList: decisionList, decisionAnswer: decisionAnswer }
+  /**
+   * The policy settings (T-198). User-only: an Agent must never change how
+   * questions are answered — that is exactly the pre-action gate it would dodge.
+   *
+   * Input: { scope: 'global'|'project', events: { eventKey: patch }, reset: [eventKey] | true }
+   * Answer: the saved scope summary plus the freshly resolved policy view.
+   */
+  async function decisionPolicy(source, context, projectPath) {
+    const role = context === undefined || context === null ? null : context.role
+    if (role !== 'user') {
+      return failure('user-only', 'Decision policy belongs to the user; change it from the task center settings page.')
+    }
+    if (decisions === null || decisions === undefined || typeof decisions.writePolicy !== 'function') {
+      return failure('policy-unavailable', 'the decision policy store is not available')
+    }
+    const input = source === undefined || source === null ? {} : source
+    const saved = await decisions.writePolicy(projectPath, { scope: input.scope, events: input.events, reset: input.reset }, { by: byOf(context) })
+    if (saved.ok !== true) return saved
+    const read = await decisions.readPolicy(projectPath)
+    const view = policyView === null ? null : policyView(read.ok === true ? read : null)
+    return ok({ saved: saved, decisionPolicy: view })
+  }
+
+  return { decisionList: decisionList, decisionAnswer: decisionAnswer, decisionPolicy: decisionPolicy }
 }

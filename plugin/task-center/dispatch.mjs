@@ -250,11 +250,14 @@ export function stageTimeoutBody(input) {
   const row = input === undefined || input === null ? {} : input
   const stage = row.stage === 'review' ? '评审' : row.stage === 'test' ? '测试' : '开发'
   const minutes = (value) => String(Math.max(0, Math.round(Number(value) / 60000)))
+  // T-198: the consecutive limit is configurable per event, so the body shows the
+  // configured one instead of the built-in constant.
+  const limit = Number.isFinite(row.limit) && row.limit >= 0 ? Math.floor(row.limit) : STAGE_CONTINUE_LIMIT
   const lines = [
     '当前阶段：' + stage,
     '已等待：' + minutes(row.waitedMs) + ' 分钟无活动',
     '最后活动：' + (typeof row.lastActivity === 'string' && row.lastActivity !== '' ? row.lastActivity : '未知'),
-    '连续超时：' + String(Number.isFinite(row.defaults) ? row.defaults : 0) + '/' + String(STAGE_CONTINUE_LIMIT),
+    '连续超时：' + String(Number.isFinite(row.defaults) ? row.defaults : 0) + '/' + String(limit),
   ]
   if (typeof row.worktree === 'string' && row.worktree !== '') lines.push('工作树：' + row.worktree)
   if (typeof row.candidate === 'string' && row.candidate !== '') lines.push('候选：' + row.candidate)
@@ -2662,16 +2665,28 @@ export function createDispatcher(ctx, options) {
               '/' + String(after.maxAttempts) + ', interruptions ' + String(after.interruptions) + '/' + String(model.INTERRUPTION_LIMIT) + ')',
           })
           // T-197 event 10: worker lost / host restart is NOTIFY by default. The
-          // requeue above IS the automatic recovery, so this only records it and
-          // escalates to an ask after STAGE_RECOVERY_LIMIT failed recoveries.
+          // requeue above IS the automatic recovery, so this only records it.
+          // T-198: the bridge applies the event policy (notify/silent/ask + the
+          // consecutive auto-recovery limit); a direct dispatcher user keeps the
+          // built-in notify path.
           if (after.status === 'pending') {
-            const notified = await notifyStageEvent(projectPath, {
-              taskId: after.id,
-              event: STAGE_EVENTS.workerLost,
-              detail: 'host restart requeued the attempt (attempt refunded)',
-            })
-            if (notified.ok === true && notified.escalate === true) {
-              await requestStageRecoveryAsk(projectPath, after, STAGE_EVENTS.workerLost, notified.count)
+            if (stageHost !== null && typeof stageHost.recover === 'function') {
+              try {
+                await stageHost.recover(projectPath, {
+                  taskId: after.id,
+                  event: STAGE_EVENTS.workerLost,
+                  detail: 'host restart requeued the attempt (attempt refunded)',
+                })
+              } catch (error) {}
+            } else {
+              const notified = await notifyStageEvent(projectPath, {
+                taskId: after.id,
+                event: STAGE_EVENTS.workerLost,
+                detail: 'host restart requeued the attempt (attempt refunded)',
+              })
+              if (notified.ok === true && notified.escalate === true) {
+                await requestStageRecoveryAsk(projectPath, after, STAGE_EVENTS.workerLost, notified.count)
+              }
             }
           }
           if (after.status === 'blocked') {
@@ -2956,13 +2971,24 @@ export function createDispatcher(ctx, options) {
   }
 
   /** The full question of one stage timeout (packet §3.3–§3.5). */
-  function stageQuestionOf(task, stage, budget, waitedMs, now, executor, downstream) {
+  function stageQuestionOf(task, stage, budget, waitedMs, now, executor, downstream, policy) {
     const event = stage === 'dev' ? STAGE_EVENTS.devTimeout : stage === 'review' ? STAGE_EVENTS.reviewTimeout : STAGE_EVENTS.testTimeout
     const label = STAGE_EVENT_LABELS[event]
     const candidate =
       task.merge !== null && task.merge !== undefined && typeof task.merge.mergeCommit === 'string' && task.merge.mergeCommit !== ''
         ? 'candidate ' + String(task.merge.mergeCommit)
         : null
+    // T-198: the configured default option and answer deadline replace the
+    // built-in ones — only when they name an option this question really offers.
+    const options = stageTimeoutOptions(stage)
+    const configured = policy === null || policy === undefined ? null : policy
+    const defaultOption =
+      configured !== null && typeof configured.defaultOption === 'string' && options.some((option) => option.id === configured.defaultOption)
+        ? configured.defaultOption
+        : STAGE_DEFAULT_OPTION
+    const timeoutMs =
+      configured !== null && Number.isFinite(configured.timeoutSeconds) ? configured.timeoutSeconds * 1000 : STAGE_DECISION_TIMEOUT_MS
+    const limit = configured !== null && Number.isFinite(configured.limit) && configured.limit >= 0 ? Math.floor(configured.limit) : STAGE_CONTINUE_LIMIT
     return {
       id: stageDecisionId(task.id, event, budget.round, budget.continues),
       eventKey: event,
@@ -2976,14 +3002,15 @@ export function createDispatcher(ctx, options) {
         worktree: typeof task.worktree === 'string' && task.worktree !== '' ? task.worktree : null,
         candidate: candidate,
         defaults: budget.defaults,
+        limit: limit,
         executor: stage === 'dev' ? null : String(stage === 'review' ? 'reviewer' : 'tester'),
         // Only a dev timeout lists the dependency tree: review/test cards have
         // no say over their downstream, and the tree belongs to the cancel option.
         downstream: stage === 'dev' ? downstream : null,
       }),
-      options: stageTimeoutOptions(stage),
-      defaultOption: STAGE_DEFAULT_OPTION,
-      timeoutMs: STAGE_DECISION_TIMEOUT_MS,
+      options: options,
+      defaultOption: defaultOption,
+      timeoutMs: timeoutMs,
       payload: {
         action: 'stage-timeout',
         stage: stage,
@@ -3001,7 +3028,7 @@ export function createDispatcher(ctx, options) {
    * slice, so a tick that sees the same stage again re-reads the SAME question
    * instead of stacking a second modal.
    */
-  async function requestStageTimeout(projectPath, task, stage, budget, now, waitedMs, executor, downstream) {
+  async function requestStageTimeout(projectPath, task, stage, budget, now, waitedMs, executor, downstream, policy) {
     if (stageHost === null || typeof stageHost.request !== 'function') {
       // A direct dispatcher user has no decision store. Never block silently:
       // the card keeps its budget and the tick reports the same state.
@@ -3009,7 +3036,7 @@ export function createDispatcher(ctx, options) {
     }
     let requested = null
     try {
-      requested = await stageHost.request(projectPath, stageQuestionOf(task, stage, budget, waitedMs, now, executor, downstream))
+      requested = await stageHost.request(projectPath, stageQuestionOf(task, stage, budget, waitedMs, now, executor, downstream, policy))
     } catch (error) {
       requested = { ok: false, code: 'request-failed', message: String((error && error.message) || error) }
     }
@@ -3026,7 +3053,15 @@ export function createDispatcher(ctx, options) {
       budget.decisionAt = now
       emit('stage-timeout-asked', 'host', {
         taskId: task.id,
-        detail: stage + ' timed out; asked the human (decision ' + String(decision.id) + ', default continue in ' + String(Math.round(STAGE_DECISION_TIMEOUT_MS / 60000)) + 'm)',
+        detail:
+          stage +
+          ' timed out; asked the human (decision ' +
+          String(decision.id) +
+          ', default ' +
+          String(decision.defaultOption) +
+          ' in ' +
+          String(Math.round((Number.isFinite(decision.remainingMs) ? decision.remainingMs : 0) / 60000)) +
+          'm)',
       })
     }
     return decision
@@ -3042,6 +3077,10 @@ export function createDispatcher(ctx, options) {
     const row = input === undefined || input === null ? {} : input
     const taskId = row.taskId === undefined || row.taskId === null ? '' : String(row.taskId)
     const stage = row.stage === 'review' ? 'review' : row.stage === 'test' ? 'test' : 'dev'
+    // T-198: the policy owns the consecutive limit and the announcement.
+    const continueLimit = Number.isFinite(row.limit) && row.limit >= 0 ? Math.floor(row.limit) : STAGE_CONTINUE_LIMIT
+    const silent = row.silent === true
+    const policyApplied = row.source === 'policy'
     if (taskId === '') return { ok: false, code: 'invalid-stage', message: 'a stage budget needs a task id' }
     const read = await state.read(projectPath)
     if (read.failed !== null) return { ok: false, code: read.failed.code === undefined ? 'board-unreadable' : String(read.failed.code), message: String(read.failed.message || 'the board could not be read') }
@@ -3054,17 +3093,19 @@ export function createDispatcher(ctx, options) {
     const viaTimeout = row.viaTimeout === true
     budget.decisionId = null
     budget.decisionAt = 0
-    if (viaTimeout === true && budget.defaults + 1 >= STAGE_CONTINUE_LIMIT) {
+    if (viaTimeout === true && budget.defaults + 1 >= continueLimit) {
       budget.defaults += 1
       const blocked = await applyReap(projectPath, (board) => {
         const live = model.findTask(board, taskId)
         if (live === undefined || live === null || stageOfTask(live) !== stage) return null
-        const result = model.blockTask(board, taskId, state.clock(), 'system', STAGE_CONTINUE_LIMIT + ' consecutive default-continues on the ' + stage + ' stage; blocked for triage')
+        const result = model.blockTask(board, taskId, state.clock(), 'system', continueLimit + ' consecutive default-continues on the ' + stage + ' stage; blocked for triage')
         return result.ok === true ? result.board : null
       })
-      await appendStageHistory(projectPath, taskId, '连续 ' + STAGE_CONTINUE_LIMIT + ' 次阶段超时默认继续，已自动阻塞；不再提问（运行中的 stage agent 未被强制终止，由其自行结束本轮）')
-      emit('stage-timeout-blocked', 'system', { taskId: taskId, detail: 'continuous default-continues reached ' + String(STAGE_CONTINUE_LIMIT) + '; card blocked without another question' })
-      return { ok: blocked !== null, blocked: blocked !== null, count: budget.defaults, continues: budget.continues, limit: STAGE_CONTINUE_LIMIT, extendedMs: 0 }
+      await appendStageHistory(projectPath, taskId, '连续 ' + continueLimit + ' 次阶段超时默认继续，已自动阻塞；不再提问（运行中的 stage agent 未被强制终止，由其自行结束本轮）')
+      if (silent !== true) {
+        emit('stage-timeout-blocked', 'system', { taskId: taskId, detail: 'continuous default-continues reached ' + String(continueLimit) + '; card blocked without another question' })
+      }
+      return { ok: blocked !== null, blocked: blocked !== null, count: budget.defaults, continues: budget.continues, limit: continueLimit, extendedMs: 0 }
     }
     budget.continues += 1
     budget.since = state.clock()
@@ -3073,12 +3114,14 @@ export function createDispatcher(ctx, options) {
     const minutes = String(Math.round(STAGE_CONTINUE_MS / 60000))
     const note =
       viaTimeout === true
-        ? '阶段超时未回答，默认继续：' + stage + ' 预算延长 ' + minutes + ' 分钟（连续默认继续 ' + String(budget.defaults) + '/' + String(STAGE_CONTINUE_LIMIT) + '）'
+        ? policyApplied === true
+          ? '阶段超时按策略自动继续（' + String(row.mode === 'silent' ? 'silent' : 'notify') + '）：' + stage + ' 预算延长 ' + minutes + ' 分钟（连续默认继续 ' + String(budget.defaults) + '/' + String(continueLimit) + '）'
+          : '阶段超时未回答，默认继续：' + stage + ' 预算延长 ' + minutes + ' 分钟（连续默认继续 ' + String(budget.defaults) + '/' + String(continueLimit) + '）'
         : '人工选择继续：' + stage + ' 预算延长 ' + minutes + ' 分钟（连续默认继续计数清零）'
     await appendStageHistory(projectPath, taskId, note)
-    emit('stage-timeout-continued', 'host', { taskId: taskId, detail: note })
-    await messageStageChild(task, stage, taskId + ' ' + stage + ': the host extended this stage by ' + minutes + 'm after a timeout decision. Keep going in the same worktree; nothing was restarted.')
-    return { ok: true, blocked: false, continues: budget.continues, defaults: budget.defaults, limit: STAGE_CONTINUE_LIMIT, extendedMs: STAGE_CONTINUE_MS }
+    if (silent !== true) emit('stage-timeout-continued', 'host', { taskId: taskId, detail: note })
+    if (silent !== true) await messageStageChild(task, stage, taskId + ' ' + stage + ': the host extended this stage by ' + minutes + 'm after a timeout decision. Keep going in the same worktree; nothing was restarted.')
+    return { ok: true, blocked: false, continues: budget.continues, defaults: budget.defaults, limit: continueLimit, extendedMs: STAGE_CONTINUE_MS }
   }
 
   /** A new stage round starts with a full budget (after a replace/retry). */
@@ -3182,18 +3225,24 @@ export function createDispatcher(ctx, options) {
     memory.stageRecoveries.set(key, { count: count, at: state.clock(), epoch: epoch })
     const action = STAGE_EVENT_ACTIONS[event] === undefined ? '自动处置' : STAGE_EVENT_ACTIONS[event]
     const detail = event + ' 已自动处置：' + action + '（连续 ' + String(count) + ' 次）' + (typeof row.detail === 'string' && row.detail !== '' ? ' — ' + row.detail : '')
-    emit('stage-event', 'host', { taskId: taskId, detail: detail })
-    await appendStageHistory(projectPath, taskId, detail)
-    // The owner Agent reads it on its next turn; the panel reads the activity ring.
-    if (current !== undefined && current !== null && currentStage !== null) {
+    // T-198: the event policy decides whether the user is TOLD and how many
+    // consecutive auto-recoveries may fail before the ask.
+    const silent = row.silent === true
+    const limit = row.limit === null ? null : Number.isFinite(row.limit) ? Math.max(0, Math.floor(row.limit)) : STAGE_RECOVERY_LIMIT
+    if (silent !== true) emit('stage-event', 'host', { taskId: taskId, detail: detail })
+    // The card history is the AUDIT record: it is written in every mode. A
+    // silent event says so, so the audit trail states the host told nobody.
+    await appendStageHistory(projectPath, taskId, silent === true ? detail + '（silent：仅审计，未通知）' : detail)
+    // The owner Agent reads it on its next turn; a silent event never messages.
+    if (silent !== true && current !== undefined && current !== null && currentStage !== null) {
       await messageStageChild(current, currentStage, taskId + ': ' + detail + '. The host acted automatically; no answer is needed unless a decision appears.')
     }
-    const escalate = count > STAGE_RECOVERY_LIMIT
+    const escalate = silent !== true && limit !== null && count > limit
     if (escalate === true) {
       emit('stage-event-escalated', 'host', { taskId: taskId, detail: event + ': ' + String(count) + ' consecutive failed auto-recoveries; escalating to an ask' })
       await appendStageHistory(projectPath, taskId, event + ' 连续 ' + String(count) + ' 次自动恢复失败，升级为询问')
     }
-    return { ok: true, count: count, escalate: escalate, action: action }
+    return { ok: true, count: count, escalate: escalate, action: action, limit: limit, silent: silent }
   }
 
   /**
@@ -3201,24 +3250,29 @@ export function createDispatcher(ctx, options) {
    * auto-recoveries (packet §3.10). It is a normal DecisionRequest: the panel
    * shows it, the 120s default keeps recovering, and only the human can stop it.
    */
-  async function requestStageRecoveryAsk(projectPath, task, event, count) {
+  async function requestStageRecoveryAsk(projectPath, task, event, count, options) {
     if (stageHost === null || typeof stageHost.request !== 'function') return null
     const label = STAGE_EVENT_LABELS[event] === undefined ? String(event) : STAGE_EVENT_LABELS[event]
     const action = STAGE_EVENT_ACTIONS[event] === undefined ? '自动处置' : STAGE_EVENT_ACTIONS[event]
+    // T-198: the event policy's default ('block'/'cancel' map to their own
+    // option; anything else means "keep auto-recovering") and answer deadline.
+    const configured = options === undefined || options === null ? {} : options
+    const defaultOption = configured.defaultOption === 'block' ? 'block' : configured.defaultOption === 'cancel' ? 'cancel' : 'continue'
+    const timeoutMs = Number.isFinite(configured.timeoutMs) && configured.timeoutMs > 0 ? Math.floor(configured.timeoutMs) : STAGE_DECISION_TIMEOUT_MS
     const input = {
       id: 'stage-ask-' + String(task.id) + '-' + String(event) + '-' + String(Math.floor(state.clock())),
       eventKey: String(event),
       taskId: String(task.id),
       eventLabel: label,
       title: String(task.id) + ' ' + label + '（连续自动恢复失败）',
-      body: '自动恢复已连续失败 ' + String(count) + ' 次（' + action + '），已升级为询问。',
+      body: '自动恢复已连续失败 ' + String(count) + ' 次（' + action + '），' + (defaultOption === 'continue' ? '已升级为询问。' : '按策略询问是否停止自动恢复。'),
       options: [
-        { id: 'continue', label: '继续自动恢复', description: '再自动处置一次', default: true },
-        { id: 'block', label: '阻塞任务', description: '保留现场，等待人工处理' },
-        { id: 'cancel', label: '取消任务', description: '下游卡片需重新评估' },
+        { id: 'continue', label: '继续自动恢复', description: '再自动处置一次', default: defaultOption === 'continue' },
+        { id: 'block', label: '阻塞任务', description: '保留现场，等待人工处理', default: defaultOption === 'block' },
+        { id: 'cancel', label: '取消任务', description: '下游卡片需重新评估', default: defaultOption === 'cancel' },
       ],
-      defaultOption: 'continue',
-      timeoutMs: STAGE_DECISION_TIMEOUT_MS,
+      defaultOption: defaultOption,
+      timeoutMs: timeoutMs,
       payload: { action: 'stage-event-ask', event: String(event), taskId: String(task.id) },
     }
     let requested = null
@@ -3299,11 +3353,21 @@ export function createDispatcher(ctx, options) {
    * no panel polling. Nothing in this path stops a live agent.
    */
   async function sweepStageTimeouts(projectPath, board, now) {
-    const result = { decisions: [], reminded: [], renewed: 0 }
+    const result = { decisions: [], reminded: [], renewed: 0, autoApplied: [] }
     if (stageHost !== null && typeof stageHost.sweep === 'function') {
       try {
         await stageHost.sweep(projectPath)
       } catch (error) {}
+    }
+    // T-198: ONE policy read per tick feeds every stage event. Without a policy
+    // host (a direct dispatcher user) the built-in ask behaviour stays.
+    let stagePolicy = null
+    if (stageHost !== null && typeof stageHost.policyFor === 'function') {
+      try {
+        stagePolicy = await stageHost.policyFor(projectPath)
+      } catch (error) {
+        stagePolicy = null
+      }
     }
     result.renewed = await renewStageActivityFromTree(board, now)
     const liveEvents = new Set()
@@ -3326,8 +3390,34 @@ export function createDispatcher(ctx, options) {
         continue
       }
       if (budget.decisionId !== null) continue
+      const event = stage === 'dev' ? STAGE_EVENTS.devTimeout : stage === 'review' ? STAGE_EVENTS.reviewTimeout : STAGE_EVENTS.testTimeout
+      const policy = stagePolicy === null || stagePolicy[event] === undefined ? null : stagePolicy[event]
+      // T-198 notify/silent: no modal. The configured default option is applied
+      // and the continue counts against the configured consecutive limit.
+      if (policy !== null && policy.mode !== 'ask') {
+        const applied =
+          stageHost !== null && typeof stageHost.applyOption === 'function'
+            ? await stageHost.applyOption(projectPath, {
+                taskId: task.id,
+                stage: stage,
+                option: policy.defaultOption,
+                limit: policy.limit,
+                silent: policy.mode === 'silent',
+                mode: policy.mode,
+              })
+            : null
+        if (applied !== null && applied !== undefined) {
+          result.autoApplied.push({ taskId: String(task.id), stage: stage, option: String(policy.defaultOption), mode: policy.mode, ok: applied.ok === true })
+          if (applied.ok === true) continue
+        }
+        emit('stage-timeout-unasked', 'host', {
+          taskId: task.id,
+          detail: 'the ' + event + ' policy could not apply ' + String(policy.defaultOption) + '; no question was opened',
+        })
+        continue
+      }
       const downstream = stage === 'dev' ? stageDownstreamOf(board, task.id) : null
-      const decision = await requestStageTimeout(projectPath, task, stage, budget, now, waitedMs, executor, downstream)
+      const decision = await requestStageTimeout(projectPath, task, stage, budget, now, waitedMs, executor, downstream, policy)
       if (decision !== null && decision.status === 'pending') result.decisions.push(task.id)
     }
     for (const key of Array.from(memory.stageEvents.keys())) {

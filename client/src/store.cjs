@@ -27,6 +27,9 @@
 			// snapshot they came with. The modal counts down from the SERVER's
 			// remainingMs, corrected by this receipt time.
 			snapshot.decisions = []
+			// T-198: the resolved decision policy (settings page). Carried exactly
+			// like the decision queue: server-owned, never derived in the browser.
+			snapshot.decisionPolicy = null
 			snapshot.receivedAt = Date.now()
 			// T-111: the Host answers the activity timeline incrementally. Keep what we
 			// already have and ask only for events after the last one we saw.
@@ -83,6 +86,11 @@
 						: payload
 				if (host !== null && host !== undefined && Array.isArray(host.decisions)) next.decisions = host.decisions
 				else if (!Array.isArray(next.decisions)) next.decisions = []
+				// T-198: the policy rides the same snapshot; a payload without one (a
+				// delta, or an older Host) keeps the last known policy instead of
+				// blanking the settings page.
+				if (host !== null && host !== undefined && host.decisionPolicy !== undefined && host.decisionPolicy !== null) next.decisionPolicy = host.decisionPolicy
+				else if (next.decisionPolicy === undefined) next.decisionPolicy = null
 				next.receivedAt = Date.now()
 				return next
 			}
@@ -173,6 +181,7 @@
 						} else {
 							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
 							failed.decisions = snapshot.decisions
+							failed.decisionPolicy = snapshot.decisionPolicy
 							failed.receivedAt = snapshot.receivedAt
 							failed.actionResult = snapshot.actionResult
 							failed.actionError = snapshot.actionError
@@ -182,6 +191,7 @@
 					} catch (error) {
 						const offline = tcSnapshot(Object.assign({}, snapshot, { tasks: [] }), 'error', String((error && error.message) || error))
 						offline.decisions = snapshot.decisions
+						offline.decisionPolicy = snapshot.decisionPolicy
 						offline.receivedAt = snapshot.receivedAt
 						offline.actionResult = snapshot.actionResult
 						offline.actionError = snapshot.actionError
