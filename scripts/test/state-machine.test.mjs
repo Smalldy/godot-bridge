@@ -107,8 +107,8 @@ function makeTask(status, over) {
 }
 
 /** The context one table row needs for its declared guards. */
-function contextFor(row, over) {
-  const from = row.from.length === 0 ? null : row.from[0]
+function contextFor(row, fromOverride, over) {
+  const from = fromOverride !== undefined ? fromOverride : row.from.length === 0 ? null : row.from[0]
   let task = makeTask(from === null ? 'pending' : from)
   if (row.event === 'report') task = makeTask('running', { kind: 'investigate', report: null })
   if (row.event === 'mergeMerged') task = makeTask('testing', { test: { status: 'passed', by: 't', at: iso(0), evidence: null, attempt: 1 } })
@@ -185,17 +185,28 @@ check(
 
 // ── 2. every legal transition is reachable ─────────────────────────────────
 console.log('\n# legal transitions')
+let legalPairs = 0
 for (const row of TRANSITIONS) {
-  const built = contextFor(row)
-  const fromState = row.from.length === 0 ? null : built.task.status
-  const decided = transition(row.event, fromState, built.ctx)
-  const label = row.id + ' ' + row.event + ' from ' + (fromState === null ? 'nothing' : fromState)
-  if (decided.ok !== true) {
-    check(label, false, JSON.stringify(decided))
-    continue
+  // EVERY declared from, not just the first: multi-from rows (block/cancel/update/
+  // handoff/mergeRejected/refreshMerge/retry/reopen) are legal pairs too.
+  const froms = row.from.length === 0 ? [null] : row.from.slice()
+  for (const fromState of froms) {
+    const built = contextFor(row, fromState)
+    const decided = transition(row.event, fromState, built.ctx)
+    const label = row.id + ' ' + row.event + ' from ' + (fromState === null ? 'nothing' : fromState)
+    if (decided.ok !== true) {
+      check(label, false, JSON.stringify(decided))
+      continue
+    }
+    legalPairs += 1
+    check(label + ' -> ' + decided.to, CARD_STATES.indexOf(decided.to) >= 0, decided.to)
   }
-  check(label + ' -> ' + decided.to, CARD_STATES.indexOf(decided.to) >= 0, decided.to)
 }
+check(
+  'every declared (from, event) pair was exercised',
+  legalPairs === TRANSITIONS.reduce((total, row) => total + (row.from.length === 0 ? 1 : row.from.length), 0),
+  String(legalPairs),
+)
 // The two-target rows: the rework/recovery targets are context-dependent.
 {
   const changes = contextFor(TRANSITIONS.find((row) => row.event === 'requestChanges'))
@@ -260,10 +271,10 @@ refuses(
   'merge-unresolved',
 )
 refuses(
-  'unblock refuses a paused round that no longer matches',
+  'unblock refuses a testing pause whose recorded round no longer matches',
   'unblock',
   'blocked',
-  { task: makeTask('blocked', { blockedReason: { code: 'test-timeout', from: 'testing', auto: false }, review: { status: 'approved', attempt: 1 }, test: { status: 'passed', attempt: 1 }, merge: { status: 'open' } }), actor: 'user' },
+  { task: makeTask('blocked', { blockedReason: { code: 'test-timeout', from: 'testing', auto: false }, review: { status: 'approved', attempt: 1 }, test: { status: 'failed', attempt: 1 }, merge: { status: 'open' } }), actor: 'user' },
   'phase-record-mismatch',
 )
 check('at least 8 illegal transitions are covered', illegal.filter((row) => row.ok).length >= 8, illegal.filter((row) => row.ok).length)
@@ -274,6 +285,8 @@ refuses('claim is scheduler-only', 'claim', 'pending', { task: makeTask('pending
 refuses('approveReview is not a worker event', 'approveReview', 'reviewing', { task: makeTask('reviewing'), actor: 'worker' }, 'forbidden')
 refuses('mergeRejected is user-only', 'mergeRejected', 'testing', { task: makeTask('testing'), actor: 'host' }, 'forbidden')
 refuses('passTest is not a reviewer event', 'passTest', 'testing', { task: makeTask('testing'), actor: 'reviewer' }, 'forbidden')
+refuses('refreshMerge is user/implementer only, not host', 'refreshMerge', 'reviewing', { task: makeTask('reviewing', { merge: { status: 'open', base: 'b', head: 'h' } }), change: { base: true }, actor: 'host' }, 'forbidden')
+refuses('refreshMerge is user/implementer only, not a generic agent', 'refreshMerge', 'reviewing', { task: makeTask('reviewing', { merge: { status: 'open', base: 'b', head: 'h' } }), change: { base: true }, actor: 'agent' }, 'forbidden')
 refuses('reopen is not a scheduler event', 'reopen', 'done', { task: makeTask('done'), actor: 'scheduler' }, 'forbidden')
 check('the documented actor is accepted for each event', transition('claim', 'pending', { task: makeTask('pending'), actor: 'scheduler' }).ok === true && transition('approveReview', 'reviewing', { task: makeTask('reviewing'), actor: 'reviewer' }).ok === true && transition('passTest', 'testing', { task: makeTask('testing'), actor: 'tester' }).ok === true)
 
@@ -532,6 +545,42 @@ console.log('\n# model-boundary guards')
     'T27 refreshes a merge-conflict block back into review',
     blockedTask !== null && blockedTask.status === 'blocked' && refreshed.ok === true && next.status === 'reviewing' && next.blockedReason === null && next.merge.status === 'open' && next.test === null,
     JSON.stringify(refreshed.ok === true ? { status: next.status, merge: next.merge.status, reason: next.blockedReason } : refreshed),
+  )
+}
+{
+  // T28: a manual block on a TESTED card is a MERGE-phase pause (the 7-state
+  // projection stores it as testing + test.passed + merge.open). Unblocking must
+  // resume that round instead of demanding an open test round it no longer has.
+  const board = flowBoard()
+  const blocked = blockTask(board, 'T-1', at(8), 'system', 'held for triage', null, { reason: { code: 'manual-block' }, actor: 'host' })
+  const blockedTask = findTask(blocked.board, 'T-1')
+  const reason = blockedReasonOf(blockedTask)
+  const unblocked = unblockTask(blocked.board, 'T-1', at(9), '@user')
+  const resumed = unblocked.ok === true ? findTask(unblocked.board, 'T-1') : null
+  check(
+    'T28 a tested card unblocks to testing with its merge phase intact',
+    blocked.ok === true && reason.phase === 'merge' && unblocked.ok === true && resumed.status === 'testing' && resumed.test.status === 'passed' && resumed.merge.status === 'open' && resumed.blockedReason === null && phaseOf(resumed) === 'merge',
+    JSON.stringify({ reason: reason, status: resumed === null ? null : resumed.status, unblocked: unblocked.ok === true ? 'ok' : unblocked }),
+  )
+}
+{
+  // The paused phase is exposed for consumers that only have blockedFrom (a STATUS).
+  const task = makeTask('blocked', {
+    blockedReason: { code: 'test-timeout', detail: null, from: 'testing', auto: false, at: iso(0) },
+    review: { status: 'approved', attempt: 1 },
+    test: { status: 'passed', attempt: 1 },
+    merge: { status: 'open', base: 'b', head: 'h' },
+  })
+  const testPhase = makeTask('blocked', {
+    blockedReason: { code: 'test-timeout', detail: null, from: 'testing', auto: false, at: iso(0) },
+    review: { status: 'approved', attempt: 1 },
+    test: { status: 'pending', attempt: 1 },
+    merge: { status: 'open', base: 'b', head: 'h' },
+  })
+  check(
+    'the blocked reason exposes the paused phase (merge vs test behind the same status)',
+    blockedReasonOf(task).phase === 'merge' && blockedReasonOf(testPhase).phase === 'test',
+    JSON.stringify({ merge: blockedReasonOf(task).phase, test: blockedReasonOf(testPhase).phase }),
   )
 }
 {

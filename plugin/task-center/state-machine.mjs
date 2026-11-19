@@ -136,6 +136,29 @@ export function blockedFromOf(task) {
 }
 
 /**
+ * The phase a BLOCKED card paused in, derived from its records. blockedFrom is
+ * the persisted STATUS ('testing' for both an open test round and the document's
+ * merge phase — the projection has no 'merging'), so every consumer that needs
+ * the phase must read this, not just the status.
+ */
+export function pausedPhaseOf(task) {
+  if (task === null || task === undefined || task.status !== 'blocked') return null
+  const from = blockedFromOf(task)
+  if (from === 'running') return 'implement'
+  if (from === 'reviewing') return 'review'
+  if (from === 'testing') {
+    const review = task.review
+    const test = task.test
+    const merge = task.merge
+    const approved = review !== null && review !== undefined && review.status === 'approved'
+    const passed = test !== null && test !== undefined && test.status === 'passed'
+    const open = merge !== null && merge !== undefined && merge.status === 'open'
+    return approved && passed && open ? 'merge' : 'test'
+  }
+  return null
+}
+
+/**
  * The structured reason a card is blocked, or null. Reads the persisted
  * blockedReason; a legacy blocked card (written before T-201) derives a readable
  * one from waitingReason + history rather than pretending it has no reason.
@@ -148,6 +171,8 @@ export function blockedReasonOf(task) {
       code: raw.code,
       detail: typeof raw.detail === 'string' && raw.detail !== '' ? raw.detail : null,
       from: blockedFromOf(task),
+      // The phase the card paused in: 'merge' when the projection was tested+open.
+      phase: pausedPhaseOf(task),
       auto: raw.auto === true,
       at: typeof raw.at === 'string' ? raw.at : null,
     }
@@ -157,6 +182,7 @@ export function blockedReasonOf(task) {
     code: code,
     detail: typeof task.waitingDetail === 'string' && task.waitingDetail !== '' ? task.waitingDetail : null,
     from: blockedFromOf(task),
+    phase: pausedPhaseOf(task),
     auto: false,
     at: null,
   }
@@ -282,9 +308,15 @@ function guardPhaseRecordMatch(ctx) {
   if (target === 'testing') {
     const review = task.review
     const test = task.test
+    const merge = task.merge
     const approved = review !== null && review !== undefined && review.status === 'approved'
-    const open = test !== null && test !== undefined && test.status === 'pending'
-    return approved && open ? true : 'phase-record-mismatch'
+    if (approved !== true) return 'phase-record-mismatch'
+    // TWO legitimate testing-state rounds restore here: the open test round
+    // (test.pending) and the document's merge phase, which the 7-state projection
+    // stores as test.passed + merge.open. A genuinely mismatched round still fails.
+    const openRound = test !== null && test !== undefined && test.status === 'pending'
+    const mergePhase = test !== null && test !== undefined && test.status === 'passed' && merge !== null && merge !== undefined && merge.status === 'open'
+    return openRound || mergePhase ? true : 'phase-record-mismatch'
   }
   return true
 }
@@ -484,6 +516,23 @@ function applyEntry(task, row, info) {
 // separate contentDrift row); G10 dispatch failure -> T03b dispatchFailed (the
 // function is still exported); T33/T34 scan rows -> the same refreshMerge /
 // mergeMerged rows the sweeps call, so no extra rows are declared.
+//
+// KNOWN LIMITS (explicit, so the next card owns them instead of rediscovering):
+// 1. Lifecycle actors are broader than document 4.7 for T08 update (null: the
+//    same-state content event is gated by the action layer's ownership check) and
+//    T30 reopen (also accepts worker/agent because the API may execute a reopen on
+//    behalf of an agent through its decision gate). T27 is tightened to
+//    user/worker; SM-3 owns the owner/user gate for update/reopen/block/cancel.
+// 2. Rows T06/T13/T14/T15/T17/T20 are declared from the document but the current
+//    host pipeline expresses the same board outcome as approveReview+failTest, a
+//    block with a typed reason, or refreshMerge. They are table-tested only until
+//    the watchdog/auto-resume wiring (SM-4) executes them directly.
+// 3. A merge that completes in git while the card leaves testing cannot be
+//    recorded by recordMergeResult (not-eligible); the merge journal keeps the
+//    intent pending and merge-reconcile cannot repair a card a user blocked
+//    mid-flight. SM-2/merge-journal owns that serialisation.
+// 4. blockedFrom is a STATUS: when both the test round and the merge phase can sit
+//    behind 'testing', read pausedPhaseOf(task) (exposed as blockedReason.phase).
 
 export const TRANSITIONS = Object.freeze([
   {
@@ -773,7 +822,9 @@ export const TRANSITIONS = Object.freeze([
     event: 'refreshMerge',
     from: Object.freeze(['reviewing', 'testing', 'blocked']),
     to: 'reviewing',
-    actor: Object.freeze(['user', 'worker', 'host', 'agent']),
+    // Document 4.7: user or the card's implementer. The action layer supplies
+    // 'worker' for the implementer; 'host'/'agent' are deliberately NOT allowed.
+    actor: Object.freeze(['user', 'worker']),
     // The document accepts blocked(merge-*) only: a card paused by a timeout or a
     // manual block must not escape through a refresh. The guard is enforced at the
     // MODEL boundary, not only in the action.

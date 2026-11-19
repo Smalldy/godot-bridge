@@ -140,10 +140,14 @@ assert.equal((await actions.reopen({}, { by: 'user' }, '/project')).code, 'missi
   await forwarding.cancel({ id: 'T-1' }, { by: '@user', role: 'user' }, '/project')
   await forwarding.reopen({ id: 'T-1' }, { by: '@user', role: 'user' }, '/project')
   await forwarding.retry({ id: 'T-1' }, { by: '@w', role: 'agent' }, '/project')
+  // T-201: the broader reopen caller is supplied BY THIS ACTION LAYER (the model
+  // row only lists actor to prove the role), never inferred by the state machine.
+  await forwarding.reopen({ id: 'T-1' }, { by: '@agent-x', role: 'agent' }, '/project')
   assert.deepEqual(seen[0].args[6], { actor: 'worker', reason: { code: 'merge-conflict' } })
   assert.deepEqual(seen[1].args[6], { actor: 'user' })
   assert.deepEqual(seen[2].args[6], { actor: 'user' })
   assert.deepEqual(seen[3].args[6], { actor: 'worker' })
+  assert.deepEqual(seen[4].args[6], { actor: 'worker' })
   console.log('PASS  lifecycle actions forward the actor and the typed block reason to the model')
 }
 
