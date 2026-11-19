@@ -32,6 +32,10 @@ export function createMergeActions(deps) {
   const git = deps.git
   const messageOf = deps.messageOf
   const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
+  // T-204: RUNNING stage children of one root, or null when the tree cannot tell.
+  // Running-only on purpose: DSH's catalog keeps disposed children as inactive
+  // rows, so catalog membership is not proof that a child is still executing.
+  const liveStageIds = deps.liveStageIds === undefined ? null : deps.liveStageIds
   const markWaiting = deps.markWaiting
   const clearWaiting = deps.clearWaiting
   const reviewBriefFor = deps.reviewBriefFor
@@ -113,6 +117,98 @@ export function createMergeActions(deps) {
       emitActivity(context, 'merge', 'rejected', id)
       return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
     })
+  }
+
+  /** The stage children the card's records currently name (reviewer + tester). */
+  function recordedStageIds(task) {
+    const ids = []
+    const push = function (delivered) {
+      if (delivered === null || delivered === undefined) return
+      if (typeof delivered.id !== 'string' || delivered.id === '') return
+      if (ids.indexOf(delivered.id) < 0) ids.push(delivered.id)
+    }
+    push(task.review === null || task.review === undefined ? null : task.review.deliveredTo)
+    push(task.test === null || task.test === undefined ? null : task.test.deliveredTo)
+    return ids
+  }
+
+  /** Live child Session ids of a card's root, or null when the tree cannot tell. */
+  async function liveChildIdsOf(task) {
+    if (typeof liveStageIds !== 'function') return null
+    const rootId = task !== null && task !== undefined && typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
+    if (rootId === null) return null
+    try {
+      const ids = await liveStageIds(rootId)
+      return ids instanceof Set ? ids : null
+    } catch (error) {
+      return null
+    }
+  }
+
+  /**
+   * T-204: a refresh opens a NEW review round, so it replaces the round's
+   * reviewer and tester. Release the previous stage children FIRST (the board
+   * record names them, and the release also finds children the record no longer
+   * names by their agent-tree name) and then prove they are gone. A second live
+   * reviewer/tester must never be started behind the previous one.
+   */
+  async function releaseReplacedStage(task) {
+    const recorded = recordedStageIds(task)
+    if (stageAgents === null || typeof stageAgents.releaseTask !== 'function') return { ok: true, released: [], stillLive: [] }
+    let released = null
+    let releaseThrew = false
+    try {
+      released = await stageAgents.releaseTask(task, { roles: ['reviewer', 'tester'], reason: 'refreshMerge replaces the review round' })
+    } catch (error) {
+      releaseThrew = true
+    }
+    const stillLive = []
+    // A thrown release never proved anything, and an id whose dispose FAILED is
+    // proof the child is still there.
+    if (releaseThrew === true) stillLive.push('release-failed')
+    const failed = released === null || released === undefined ? null : released.failed
+    for (const entry of Array.isArray(failed) ? failed : []) {
+      if (entry !== null && entry !== undefined && typeof entry.agentId === 'string' && entry.agentId !== '' && stillLive.indexOf(entry.agentId) < 0) stillLive.push(entry.agentId)
+    }
+    // The live tree answers for the recorded ids, but only rows that are actually
+    // RUNNING: the catalog keeps disposed children as inactive rows.
+    const live = await liveChildIdsOf(task)
+    if (live !== null) {
+      for (const id of recorded) if (live.has(id) && stillLive.indexOf(id) < 0) stillLive.push(id)
+    }
+    // An UNRESOLVED release could not confirm a teardown. The stage service's
+    // record-only fallback also reports an already-gone recorded id this way, so
+    // it only blocks when the tree is unavailable and cannot prove the child is
+    // gone; with the tree in reach, a non-running child is simply already gone.
+    const unresolved = released === null || released === undefined ? null : released.unresolved
+    for (const entry of Array.isArray(unresolved) ? unresolved : []) {
+      if (entry === null || entry === undefined) continue
+      const id = typeof entry.agentId === 'string' && entry.agentId !== '' ? entry.agentId : null
+      if (id === null || stillLive.indexOf(id) >= 0) continue
+      if (live === null) stillLive.push(id)
+    }
+    if (stillLive.length > 0) {
+      return {
+        ok: false,
+        code: 'stage-child-still-live',
+        message: 'the previous stage child (' + stillLive.join(', ') + ') is still running; refusing to start a second reviewer behind it',
+        released: released,
+        stillLive: stillLive,
+      }
+    }
+    return { ok: true, released: released, stillLive: [] }
+  }
+
+  /** Dispose one reviewer this action just started (a rollback, never a stage end). */
+  async function releaseStarted(provisioned) {
+    if (provisioned === null || provisioned === undefined || provisioned.ok !== true) return false
+    const agentId = typeof provisioned.agentId === 'string' && provisioned.agentId !== '' ? provisioned.agentId : null
+    if (agentId === null || stageAgents === null || typeof stageAgents.release !== 'function') return false
+    try {
+      return (await stageAgents.release(agentId)) === true
+    } catch (error) {
+      return false
+    }
   }
 
   async function refreshMerge(source, context, projectPath) {
@@ -197,6 +293,13 @@ export function createMergeActions(deps) {
         await markWaiting(projectPath, id, 'agent-runtime-unavailable', 'no subagent runtime to start a reviewer', context)
         return failure('reviewer-unavailable', 'no reviewer could be started for ' + id + ' (agent-runtime-unavailable); the merge request was not refreshed')
       }
+      // T-204: the new round REPLACES the previous reviewer/tester; release them
+      // first and refuse to start behind a child that is still running.
+      const cleared = await releaseReplacedStage(task)
+      if (cleared.ok !== true) {
+        await markWaiting(projectPath, id, String(cleared.code), String(cleared.message), context)
+        return failure(String(cleared.code), String(cleared.message) + '; the merge request was not refreshed')
+      }
       const provisioned = stageAgents === null ? null : await stageAgents.startReviewer(task, reviewBriefFor(task, projectPath))
       if (provisioned !== null && provisioned.ok !== true) {
         await markWaiting(projectPath, id, 'reviewer-unavailable', String(provisioned.message), context)
@@ -209,7 +312,12 @@ export function createMergeActions(deps) {
           refreshMergeRequest(board, id, base, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by, writeByName(context), context !== undefined && context !== null && context.role === 'user' ? 'user' : 'worker'),
         context,
       )
-      if (recorded.ok !== true) return recorded
+      if (recorded.ok !== true) {
+        // T-204: the reviewer was started before the write; a write that did not
+        // land must not leave it running unrecorded.
+        await releaseStarted(provisioned)
+        return recorded
+      }
       await clearWaiting(projectPath, id, context)
       // A refreshed head starts a fresh review round: ensure the reviewer and
       // send it the new brief, exactly like a submit would.
@@ -221,6 +329,9 @@ export function createMergeActions(deps) {
         }
         return ok({ task: recorded.task, events: recorded.events, merge: recorded.task.merge, provisioned: provisioned })
       }
+      // A refreshed card that is not in review has no round for the new child:
+      // stop it instead of leaving an unrecorded reviewer behind.
+      await releaseStarted(provisioned)
       return ok({ task: recorded.task, events: recorded.events, merge: recorded.task === null ? null : recorded.task.merge })
     })
   }

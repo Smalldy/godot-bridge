@@ -73,7 +73,16 @@ export function createStageService(options) {
     return { id: delivered.id, name: typeof delivered.name === 'string' ? delivered.name : null }
   }
 
-  /** Live children of a card's root, or null when the facade cannot tell. */
+  /**
+   * RUNNING children of a card's root, or null when the facade cannot tell.
+   *
+   * T-204 review: DSH's subagent catalog is append-only — a disposed child stays
+   * a row with activity:'inactive' (the same note api.mjs / task-agents carry).
+   * Catalog membership is therefore NOT proof that a child is still executing;
+   * counting it made every replacement refuse after a successful dispose. A row
+   * whose activity is missing is kept (a facade that cannot tell is treated as
+   * "still running", never as proof of a release).
+   */
   async function liveChildIds(task) {
     if (agents === null || agents === undefined) return null
     const rootId = task !== null && task !== undefined && typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
@@ -89,6 +98,7 @@ export function createStageService(options) {
     const ids = new Set()
     for (const row of rows) {
       if (row === null || row === undefined) continue
+      if (row.activity === 'inactive') continue
       ids.add(String(row.id))
     }
     return ids

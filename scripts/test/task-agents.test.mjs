@@ -395,6 +395,58 @@ await check('a deferred dispose failure keeps the entry and is retried', async (
   assert.equal(deferredReleaseIds().indexOf(worker.agentId), -1)
 })
 
+// ── T-204: one live reviewer/tester per card, enforced at the spawn edge ────
+await check('a new stage child releases the previous one of the same role first', async () => {
+  const first = await agents.startReviewer({ id: 'T-30' }, 'review')
+  const second = await agents.startReviewer({ id: 'T-30' }, 'review again')
+  assert.notEqual(second.agentId, first.agentId)
+  assert.equal(state.live.has(first.agentId), false, 'the previous reviewer is still live during the replacement')
+  assert.ok(state.disposed.indexOf(first.agentId) >= 0, 'the previous reviewer was not disposed')
+  assert.equal(state.live.has(second.agentId), true)
+  const firstTester = await agents.startTester({ id: 'T-30' }, 'test')
+  const secondTester = await agents.startTester({ id: 'T-30' }, 'test again')
+  assert.equal(state.live.has(firstTester.agentId), false, 'two testers of one card stayed alive')
+  assert.equal(state.live.has(secondTester.agentId), true)
+  assert.equal(Array.from(state.live.values()).filter((name) => String(name).indexOf('reviewer-t-30-') === 0).length, 1)
+  await agents.release(second.agentId)
+  await agents.release(secondTester.agentId)
+})
+
+await check('a leaked stage child that only the tree names is stopped before the replacement', async () => {
+  // A child started outside this registry (an older process, a replaced
+  // deliveredTo): no receipt here, but its name still claims the card's role.
+  const strayName = agentNameFor('reviewer', 'T-30', 'abc12345')
+  state.live.set('stray-30', strayName)
+  const started = await agents.startReviewer({ id: 'T-30', ownerSession: 'root' }, 'review')
+  assert.ok(state.interrupted.indexOf('stray-30') >= 0, 'the tree-only orphan was never interrupted')
+  assert.equal(state.disposed.indexOf('stray-30'), -1, 'without a receipt the child is interrupted, never reported released')
+  assert.equal(state.live.has(started.agentId), true, 'the replacement reviewer did not start')
+  state.live.delete('stray-30')
+  await agents.release(started.agentId)
+})
+
+await check('a stage child that cannot be stopped blocks the next spawn', async () => {
+  const first = await agents.startReviewer({ id: 'T-31' }, 'review')
+  state.disposeFailuresLeft = 1
+  await assert.rejects(agents.startReviewer({ id: 'T-31' }, 'again'), (error) => error.code === 'stage-child-still-live' && error.agentIds.indexOf(first.agentId) >= 0)
+  const reviewers = Array.from(state.live.values()).filter((name) => String(name).indexOf('reviewer-t-31-') === 0)
+  assert.equal(reviewers.length, 1, 'two reviewers of one card were left alive')
+  await agents.release(first.agentId)
+})
+
+await check('the spawn-edge sweep is limited to the reviewer/tester roles', async () => {
+  // The worker slot belongs to the dispatcher's claim/lease machinery; a worker
+  // spawn must not start disposing it behind the scheduler's back.
+  const first = await agents.startWorker({ id: 'T-32' }, 'implement')
+  const second = await agents.startWorker({ id: 'T-32' }, 'implement again')
+  assert.equal(state.live.has(first.agentId), true, 'the worker spawn swept a dispatcher-owned slot')
+  assert.equal(state.live.has(second.agentId), true)
+  const released = await agents.releaseTask({ id: 'T-32' }, { roles: ['worker'] })
+  assert.equal(released.ok, true)
+  assert.equal(state.live.has(first.agentId), false)
+  assert.equal(state.live.has(second.agentId), false)
+})
+
 const failed = checks.filter((row) => !row.ok)
 for (const row of checks) console.log((row.ok ? 'PASS' : 'FAIL') + '  ' + row.name + (row.ok ? '' : '\n  ' + String(row.error && row.error.stack ? row.error.stack : row.error)))
 console.log(String(checks.length - failed.length) + '/' + String(checks.length) + ' checks passed')
