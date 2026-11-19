@@ -164,7 +164,9 @@ function createSettingsForm(deps) {
 		return {
 			mode: row.mode,
 			defaultOption: row.defaultOption,
-			timeoutSeconds: Number.isFinite(row.timeoutSeconds) ? row.timeoutSeconds : 0,
+			// null = "the built-in fallback" (a notify event shows an empty field, as
+			// the packet's "—"); 0 keeps its meaning: no deadline.
+			timeoutSeconds: Number.isFinite(row.timeoutSeconds) ? row.timeoutSeconds : null,
 			limit: row.limit === undefined ? null : row.limit,
 			autoRecover: row.autoRecover === undefined ? null : row.autoRecover,
 		}
@@ -302,7 +304,11 @@ function createSettingsForm(deps) {
 			const changes = policyChanges()
 			for (const key of Object.keys(changes.events)) {
 				const patch = changes.events[key]
-				if (patch.timeoutSeconds !== undefined && (!Number.isFinite(patch.timeoutSeconds) || patch.timeoutSeconds < 0 || patch.timeoutSeconds > 86400)) {
+				if (
+					patch.timeoutSeconds !== undefined &&
+					patch.timeoutSeconds !== null &&
+					(!Number.isFinite(patch.timeoutSeconds) || patch.timeoutSeconds < 0 || patch.timeoutSeconds > 86400)
+				) {
 					setError(t('err_invalid_policy_timeout'))
 					return
 				}
@@ -413,7 +419,7 @@ function createSettingsForm(deps) {
 						return shown.map(function (option) { return { value: option.id, label: t(option.labelKey) } })
 					})(),
 				})),
-				h('td', null, fieldInput(view, 'timeoutSeconds', { name: 'timeout', min: 0, max: 86400 })),
+				h('td', null, fieldInput(view, 'timeoutSeconds', { name: 'timeout', min: 0, max: 86400, nullable: true })),
 				h('td', null, fieldInput(view, 'limit', { name: 'limit', min: 0, max: 10, nullable: true })),
 				h('td', null, fieldInput(view, 'autoRecover', { name: 'auto-recover', min: 0, max: 10, nullable: true })),
 				h(

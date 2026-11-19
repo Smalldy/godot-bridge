@@ -4048,14 +4048,15 @@ export function createApi(ctx, options) {
         key: 'reopen:' + id,
         title: '重新打开 ' + id + '？',
         body: '当前状态：' + String(task.status) + '。重新打开会回到待办、清空 review/test 现场并由 scheduler 重新派发',
-        // Default: 重新打开, exactly as the T-196 card copy and packet §3.6 say.
-        // Packet §5's summary table lists 保持关闭 for the same event; the detailed
-        // panel copy wins here until the lead resolves that inconsistency.
+        // T-198: the aligned decision-policy catalog resolves the old §3.6 vs §5
+        // inconsistency in favour of 保持关闭 — a timeout or Enter must never
+        // resurrect a card by accident. The policy gate still overrides this with
+        // the configured default, but the plan itself already states the aligned one.
         options: [
-          { id: 'reopen', label: '重新打开', description: '回到待办，清空 review/test 后重新派发', default: true },
-          { id: 'keep', label: '保持关闭', description: '不改动这张卡' },
+          { id: 'reopen', label: '重新打开', description: '回到待办，清空 review/test 后重新派发' },
+          { id: 'keep', label: '保持关闭', description: '不改动这张卡', default: true },
         ],
-        defaultOption: 'reopen',
+        defaultOption: 'keep',
         highRisk: false,
         taskId: id,
         payload: { input: note === null ? {} : { note: note } },
@@ -4564,7 +4565,21 @@ export function createApi(ctx, options) {
     } else if (action === 'stage-timeout') {
       // T-197: a dev/review/test timeout answer. The scheduler owns the budget;
       // the API owns the host actions (replace/cancel/block/retry).
-      const staged = await executeStageTimeoutAction(projectPath, decision, payload, option, { viaTimeout: viaTimeout, by: execContext.by })
+      // T-198: the question carries the event policy it was asked under. An
+      // EXPIRED question applies that limit instead of the hardcoded default; a
+      // request stored before the policy existed resolves the live policy here.
+      let stageLimit = Number.isFinite(payload.policyLimit) ? Math.floor(payload.policyLimit) : null
+      if (stageLimit === null) {
+        const stageEvent = payload.stage === 'review' ? 'review-timeout' : payload.stage === 'test' ? 'test-timeout' : 'dev-timeout'
+        const stagePolicy = await effectiveDecisionEvent(projectPath, stageEvent)
+        stageLimit = stagePolicy !== undefined && Number.isFinite(stagePolicy.limit) ? Math.floor(stagePolicy.limit) : null
+      }
+      const staged = await executeStageTimeoutAction(projectPath, decision, payload, option, {
+        viaTimeout: viaTimeout,
+        by: execContext.by,
+        limit: stageLimit,
+        source: 'decision',
+      })
       outcome = staged.outcome
       executed = staged.executed === true
       summary = staged.summary === undefined || staged.summary === null ? {} : staged.summary
@@ -4917,7 +4932,10 @@ export function createApi(ctx, options) {
    * has failed its auto-recovery limit.
    *
    * T-198: the limit, the escalation and whether the user is told at all come
-   * from the event policy:
+   * from the event policy. The host's auto action IS the recovery the event
+   * names (packet §3.10), so 'ask' means the panel confirms whether to KEEP
+   * auto-recovering (continue/block/cancel) — it is not a pre-approval of an
+   * incident that has already been handled:
    *   ask    — record, then ask the human at the first occurrence (never silent);
    *   notify — record, tell the user (activity + card history), escalate after
    *            the configured consecutive auto-recoveries;

@@ -3019,6 +3019,10 @@ export function createDispatcher(ctx, options) {
         continues: budget.continues,
         // A dev retry destroys uncommitted work: the panel asks for the word.
         confirmOption: stage === 'dev' ? 'retry-dev' : null,
+        // T-198: the consecutive limit this question was asked UNDER. An expired
+        // question applies this limit, so the automatic default agrees with the
+        // modal body (a question showing 连续超时 0/5 must not block at 3).
+        policyLimit: limit,
       },
     }
   }
@@ -3256,9 +3260,11 @@ export function createDispatcher(ctx, options) {
     const action = STAGE_EVENT_ACTIONS[event] === undefined ? '自动处置' : STAGE_EVENT_ACTIONS[event]
     // T-198: the event policy's default ('block'/'cancel' map to their own
     // option; anything else means "keep auto-recovering") and answer deadline.
+    // A finite 0 is a real value: NO deadline (the same meaning stage timeouts
+    // give it). Only an absent/null deadline falls back to the built-in 120s.
     const configured = options === undefined || options === null ? {} : options
     const defaultOption = configured.defaultOption === 'block' ? 'block' : configured.defaultOption === 'cancel' ? 'cancel' : 'continue'
-    const timeoutMs = Number.isFinite(configured.timeoutMs) && configured.timeoutMs > 0 ? Math.floor(configured.timeoutMs) : STAGE_DECISION_TIMEOUT_MS
+    const timeoutMs = Number.isFinite(configured.timeoutMs) ? Math.floor(configured.timeoutMs) : STAGE_DECISION_TIMEOUT_MS
     const input = {
       id: 'stage-ask-' + String(task.id) + '-' + String(event) + '-' + String(Math.floor(state.clock())),
       eventKey: String(event),

@@ -154,6 +154,8 @@ assert.equal(deleteMode.props.disabled, true, 'the delete mode cannot be switche
 assert.equal(fieldOf(table.get('dev-timeout'), 'timeout').props.value, '400', 'the project scope shows the effective timeout')
 assert.equal(fieldOf(table.get('dev-timeout'), 'mode').props.value, 'notify', 'the project override mode is shown')
 assert.equal(fieldOf(table.get('create'), 'mode').props.value, 'ask', 'an unconfigured event shows the built-in mode')
+// A notify event has no deadline (packet §5 "—"): the field is EMPTY, never a fake 120.
+assert.equal(fieldOf(table.get('worker-lost'), 'timeout').props.value, '', 'a notify event shows the built-in fallback as empty')
 
 // ── applying with no policy edit sends only the dispatch settings ──────────
 {
@@ -174,8 +176,11 @@ assert.equal(fieldOf(table.get('create'), 'mode').props.value, 'ask', 'an unconf
   const form = newForm()
   let view = form(props)
   fieldOf(rows(view).get('reopen'), 'mode').props.onChange({ target: { value: 'silent' } })
+  // 0 is a real answer deadline (no deadline at all): it is sent as 0, not null.
+  fieldOf(rows(view).get('worker-lost'), 'timeout').props.onChange({ target: { value: '0' } })
   view = form(props)
   assert.equal(fieldOf(rows(view).get('reopen'), 'mode').props.value, 'silent', 'the edit survives a re-render')
+  assert.equal(fieldOf(rows(view).get('worker-lost'), 'timeout').props.value, '0', 'an explicit 0 stays distinguishable from the empty fallback')
   posts.length = 0
   closed = 0
   applyButton(view).props.onClick()
@@ -184,7 +189,7 @@ assert.equal(fieldOf(table.get('create'), 'mode').props.value, 'ask', 'an unconf
   assert.equal(posts[0].action, 'settings')
   assert.equal(posts[1].action, 'decisionPolicy')
   assert.equal(posts[1].body.scope, 'project')
-  assert.deepEqual(posts[1].body.events, { reopen: { mode: 'silent' } })
+  assert.deepEqual(posts[1].body.events, { reopen: { mode: 'silent' }, 'worker-lost': { timeoutSeconds: 0 } })
   assert.deepEqual(posts[1].body.reset, [])
   assert.equal(closed, 1, 'the modal closes once the policy is saved')
 }

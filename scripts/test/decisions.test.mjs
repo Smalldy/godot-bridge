@@ -18,7 +18,14 @@
 
 import assert from 'node:assert/strict'
 import { createFakeGit, createFakeTaskAgents, createRig, createTask, PROJECT } from './support/fixtures.mjs'
-import { createDecisionStore, decisionPolicyPath, decisionPolicyView, decisionsPath, globalDecisionPolicyPath } from '../../plugin/task-center/decisions.mjs'
+import {
+  createDecisionStore,
+  decisionPolicyPath,
+  decisionPolicyView,
+  decisionsPath,
+  globalDecisionPolicyPath,
+  workspaceGlobalDecisionPolicyPath,
+} from '../../plugin/task-center/decisions.mjs'
 import { updateBoard } from '../../plugin/task-center/board.mjs'
 import { writePolicyFor } from '../../plugin/task-center/state.mjs'
 import { findTask } from '../../plugin/task-center/service.mjs'
@@ -541,11 +548,13 @@ async function patchTaskRow(rig, id, mutate) {
     ['reopen', 'ask', 'keep', 120, null],
     ['delete', 'ask', 'keep', 120, null],
     ['cancel', 'ask', 'return', 120, null],
-    ['host-verify-fail', 'notify', 'return-dev', 120, null],
-    ['merge-conflict', 'notify', 'return-dev', 120, null],
-    ['worker-lost', 'notify', 'redispatch', 120, null],
-    ['target-drift', 'notify', 'rebuild-retest', 120, null],
-    ['review-rounds-exhausted', 'notify', 'block', 120, null],
+    // Event-10 rows have NO deadline while notify (packet §5 "—"); switching one
+    // to ask falls back to the common 120s, which the escalation test asserts.
+    ['host-verify-fail', 'notify', 'return-dev', null, null],
+    ['merge-conflict', 'notify', 'return-dev', null, null],
+    ['worker-lost', 'notify', 'redispatch', null, null],
+    ['target-drift', 'notify', 'rebuild-retest', null, null],
+    ['review-rounds-exhausted', 'notify', 'block', null, null],
   ]
   check(
     'T-198 the catalog lists the aligned 13 events in order',
@@ -924,6 +933,106 @@ async function patchTaskRow(rig, id, mutate) {
     'T-198 the panel is told the default is not auto-runnable',
     stored !== undefined && stored.autoRunAllowed === false,
     JSON.stringify(stored === undefined ? null : stored.autoRunAllowed),
+  )
+}
+
+
+// ── T-198: an ASK timeout that EXPIRES obeys the configured limit ──────────
+// The question body shows 连续超时 0/5; the automatic default that applies when
+// it expires must use THAT limit, not the hardcoded 3.
+{
+  const stageClock = Date.parse('2026-11-20T00:30:00.000Z')
+  let tick = stageClock
+  const taskAgents = createFakeTaskAgents()
+  const rig = createRig({ now: () => tick, taskAgents: taskAgents, ensureDir: function () {} })
+  const task = await createTask(rig, { title: 'policy ask expiry limit' })
+  await rig.action('start')
+  await rig.action('decisionPolicy', { scope: 'project', events: { 'dev-timeout': { mode: 'ask', timeoutSeconds: 120, limit: 5 } } })
+  taskAgents.listAgentsFor = async () => Array.from(taskAgents.live).map((id) => ({ kind: 'child', id: id, name: id, activity: 'inactive' }))
+  let firstQuestion = null
+  for (let round = 0; round < 5; round += 1) {
+    tick += 26 * 60 * 1000
+    await rig.settle()
+    if (firstQuestion === null) {
+      const pending = await rig.api.decisions.pending(PROJECT)
+      firstQuestion = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === 'dev-timeout')[0] : undefined
+    }
+    tick += 121 * 1000
+    await rig.settle()
+  }
+  const row = (await rig.action('board')).tasks.filter((entry) => entry.id === task.id)[0]
+  check(
+    'T-198 the ask question body shows the configured limit',
+    firstQuestion !== undefined && firstQuestion.body.indexOf('连续超时：0/5') >= 0,
+    JSON.stringify(firstQuestion === undefined ? null : firstQuestion.body),
+  )
+  check(
+    'T-198 five ask-mode expiries block the card at the configured limit',
+    row.status === 'blocked',
+    row.status,
+  )
+  check(
+    'T-198 the expired default records the configured limit, not the built-in 3',
+    row.history.some((entry) => String(entry.note).indexOf('连续默认继续 4/5') >= 0) &&
+      row.history.some((entry) => String(entry.note).indexOf('连续 5 次阶段超时默认继续，已自动阻塞') >= 0) &&
+      !row.history.some((entry) => String(entry.note).indexOf('连续 3 次阶段超时默认继续，已自动阻塞') >= 0),
+    JSON.stringify(row.history.map((entry) => entry.note).slice(-8)),
+  )
+}
+
+// ── T-198: a denied home write falls back to the workspace global policy ────
+{
+  const rig = freshRig()
+  const realWrite = rig.fs.writeText.bind(rig.fs)
+  rig.fs.writeText = async function (target, content, expected) {
+    // The real facade denies ~/.dsh under a workspace-write policy; model that.
+    if (/[\\/]\.dsh[\\/]/.test(String(target.targetKey))) {
+      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    }
+    return await realWrite(target, content, expected)
+  }
+  const saved = await rig.action('decisionPolicy', { scope: 'global', events: { create: { mode: 'silent' } } })
+  const read = await rig.api.decisions.readPolicy(PROJECT)
+  const view = decisionPolicyView(read)
+  check(
+    'T-198 a denied home write persists the global default in the workspace fallback',
+    saved.ok === true && saved.saved.location === 'workspace' && rig.fs.files.has(workspaceGlobalDecisionPolicyPath(PROJECT)) === true,
+    JSON.stringify(saved.saved),
+  )
+  check(
+    'T-198 the workspace fallback is read back as the global default',
+    view.global['create'].mode === 'silent' && view.storage.global === 'workspace' && view.project['create'].mode === 'silent',
+    JSON.stringify({ global: view.global['create'], storage: view.storage }),
+  )
+}
+
+// ── T-198: an event-10 ask with timeout 0 has NO deadline ───────────────────
+{
+  const lostClock = Date.parse('2026-11-20T01:00:00.000Z')
+  const rig = createRig({ now: () => lostClock, taskAgents: createFakeTaskAgents(), ensureDir: function () {} })
+  const task = await createTask(rig, { title: 'policy event ask no deadline' })
+  await rig.action('decisionPolicy', { scope: 'project', events: { 'worker-lost': { mode: 'ask', timeoutSeconds: 0 } } })
+  await rig.action('start')
+  await patchTaskRow(rig, task.id, (entry) => {
+    entry.dispatch = Object.assign({}, entry.dispatch, { host: 'another-boot' })
+  })
+  await rig.settle()
+  const pending = await rig.api.decisions.pending(PROJECT)
+  const asked = pending.ok === true ? pending.pending.filter((decision) => decision.eventKey === 'worker-lost')[0] : undefined
+  check(
+    'T-198 an event-10 ask with timeout 0 has no deadline (same 0 semantics)',
+    asked !== undefined && asked.timeoutAt === null && asked.remainingMs === null && asked.defaultOption === 'continue',
+    JSON.stringify(asked === undefined ? null : { at: asked.timeoutAt, remaining: asked.remainingMs, option: asked.defaultOption }),
+  )
+  // An event-10 ask with NO configured timeout keeps the built-in 120s fallback.
+  const rig2 = createRig({ now: () => lostClock, taskAgents: createFakeTaskAgents(), ensureDir: function () {} })
+  const task2 = await createTask(rig2, { title: 'policy event ask fallback' })
+  await rig2.action('decisionPolicy', { scope: 'project', events: { 'merge-conflict': { mode: 'ask' } } })
+  const fallbackView = decisionPolicyView(await rig2.api.decisions.readPolicy(PROJECT))
+  check(
+    'T-198 an unset event-10 deadline resolves to null (ask falls back to 120s)',
+    fallbackView.project['merge-conflict'].timeoutSeconds === null && fallbackView.defaults['merge-conflict'].timeoutSeconds === null,
+    JSON.stringify(fallbackView.project['merge-conflict']),
   )
 }
 

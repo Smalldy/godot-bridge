@@ -1306,6 +1306,10 @@ export const DECISION_FIXED_ASK_EVENTS = Object.freeze(['delete'])
  * The catalog, in the packet §5 order. Each entry carries its built-in defaults
  * AND the option ids a default may name; the panel renders labels from i18n and
  * the tests compare this table against the aligned copy.
+ *
+ * Event-10 rows carry `timeoutSeconds: null`: the packet lists "—" because a notify
+ * event has no modal, and switching one to ask falls back to the common 120s
+ * deadline. 0 keeps its own meaning: NO deadline at all.
  */
 export const DECISION_EVENT_CATALOG = Object.freeze([
   {
@@ -1399,7 +1403,7 @@ export const DECISION_EVENT_CATALOG = Object.freeze([
     key: 'host-verify-fail',
     kind: 'event',
     label: 'Host 验证失败',
-    defaults: { mode: 'notify', defaultOption: 'return-dev', timeoutSeconds: 120, limit: null, autoRecover: 2 },
+    defaults: { mode: 'notify', defaultOption: 'return-dev', timeoutSeconds: null, limit: null, autoRecover: 2 },
     options: [
       { id: 'return-dev', label: '退回开发' },
       { id: 'block', label: '阻塞任务' },
@@ -1410,7 +1414,7 @@ export const DECISION_EVENT_CATALOG = Object.freeze([
     key: 'merge-conflict',
     kind: 'event',
     label: '合并冲突',
-    defaults: { mode: 'notify', defaultOption: 'return-dev', timeoutSeconds: 120, limit: null, autoRecover: 2 },
+    defaults: { mode: 'notify', defaultOption: 'return-dev', timeoutSeconds: null, limit: null, autoRecover: 2 },
     options: [
       { id: 'return-dev', label: '退回开发' },
       { id: 'block', label: '阻塞任务' },
@@ -1421,7 +1425,7 @@ export const DECISION_EVENT_CATALOG = Object.freeze([
     key: 'worker-lost',
     kind: 'event',
     label: '执行者丢失',
-    defaults: { mode: 'notify', defaultOption: 'redispatch', timeoutSeconds: 120, limit: null, autoRecover: 2 },
+    defaults: { mode: 'notify', defaultOption: 'redispatch', timeoutSeconds: null, limit: null, autoRecover: 2 },
     options: [
       { id: 'redispatch', label: '重新派发' },
       { id: 'block', label: '阻塞任务' },
@@ -1432,7 +1436,7 @@ export const DECISION_EVENT_CATALOG = Object.freeze([
     key: 'target-drift',
     kind: 'event',
     label: 'Target drift',
-    defaults: { mode: 'notify', defaultOption: 'rebuild-retest', timeoutSeconds: 120, limit: null, autoRecover: 2 },
+    defaults: { mode: 'notify', defaultOption: 'rebuild-retest', timeoutSeconds: null, limit: null, autoRecover: 2 },
     options: [
       { id: 'rebuild-retest', label: '重建并重测' },
       { id: 'block', label: '阻塞任务' },
@@ -1443,7 +1447,7 @@ export const DECISION_EVENT_CATALOG = Object.freeze([
     key: 'review-rounds-exhausted',
     kind: 'event',
     label: '评审轮次用尽',
-    defaults: { mode: 'notify', defaultOption: 'block', timeoutSeconds: 120, limit: null, autoRecover: null },
+    defaults: { mode: 'notify', defaultOption: 'block', timeoutSeconds: null, limit: null, autoRecover: null },
     options: [
       { id: 'block', label: '阻塞' },
       { id: 'cancel', label: '取消任务' },
@@ -1528,12 +1532,17 @@ export function normaliseDecisionPolicyEvent(eventKey, raw) {
     patch.defaultOption = optionId
   }
   if (raw.timeoutSeconds !== undefined) {
-    const seconds = raw.timeoutSeconds
-    const bounds = DECISION_POLICY_BOUNDS.timeoutSeconds
-    if (!Number.isFinite(seconds) || Math.floor(seconds) !== seconds || seconds < bounds.min || seconds > bounds.max) {
-      return decisionPolicyFailure('invalid-policy-timeout', 'timeoutSeconds must be an integer between ' + String(bounds.min) + ' and ' + String(bounds.max))
+    // null clears the per-event deadline: the built-in ask fallback applies again.
+    if (raw.timeoutSeconds === null) {
+      patch.timeoutSeconds = null
+    } else {
+      const seconds = raw.timeoutSeconds
+      const bounds = DECISION_POLICY_BOUNDS.timeoutSeconds
+      if (!Number.isFinite(seconds) || Math.floor(seconds) !== seconds || seconds < bounds.min || seconds > bounds.max) {
+        return decisionPolicyFailure('invalid-policy-timeout', 'timeoutSeconds must be null or an integer between ' + String(bounds.min) + ' and ' + String(bounds.max))
+      }
+      patch.timeoutSeconds = seconds
     }
-    patch.timeoutSeconds = seconds
   }
   for (const field of ['limit', 'autoRecover']) {
     if (raw[field] === undefined) continue
