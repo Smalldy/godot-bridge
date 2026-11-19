@@ -31,6 +31,7 @@ import {
   profileForKind,
   validateRoleBinding,
   validateRoleProfile,
+  waitsForHuman,
 } from './schema.mjs'
 import * as model from './service.mjs'
 // T-201: the sole card-status write entry (base-only drift is a transition too).
@@ -2181,20 +2182,154 @@ export function createApi(ctx, options) {
 
   /** Record that a phase is waiting for an executor (no advance happened). */
   async function markWaiting(projectPath, id, reason, detail, context) {
+    const text = detail === undefined || detail === null ? null : String(detail)
+    let changed = false
     // state.apply, not writeTask: recording a waiting reason must not kick the
     // scheduler (which could requeue the still-running card and lose its lease).
-    return state.apply(
+    const written = await state.apply(
       projectPath,
       (board) => {
         const task = model.findTask(board, id)
         if (task === undefined) return null
+        // T-202: only a REASON/INFO change is announced. A retry of the same
+        // action must not page the same person with the same sentence again.
+        changed = task.waitingReason !== reason || (task.waitingDetail === null ? text !== null : task.waitingDetail !== text)
         const tasks = board.tasks.map((entry) =>
-          String(entry.id) === String(id) ? Object.assign({}, entry, { waitingReason: reason, waitingDetail: detail === undefined || detail === null ? null : String(detail) }) : entry,
+          String(entry.id) === String(id) ? Object.assign({}, entry, { waitingReason: reason, waitingDetail: text }) : entry,
         )
         return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
       },
       writePolicyFor(projectPath),
     )
+    if (written === null || written === undefined || written.failed !== null && written.failed !== undefined) return written
+    // T-202: a wait no sweep can clear must be ANNOUNCED, never silently
+    // persisted. This is the ONE place the rule lives, so the approveReview
+    // candidate-conflict path and the auto-merge rebuild path cannot diverge.
+    if (waitsForHuman(reason) && changed === true) await announceWaitingHuman(projectPath, id, reason, text, context)
+    return written
+  }
+
+  /** The short notice a needs-human wait carries: task id, reason, detail, next. */
+  function waitingHumanNotice(task, reason, detail) {
+    const id = String(task.id)
+    const title = typeof task.title === 'string' && task.title !== '' ? ' (' + task.title + ')' : ''
+    const branch = typeof task.branch === 'string' && task.branch !== '' ? task.branch : '(no branch)'
+    const target = typeof task.target === 'string' && task.target !== '' ? task.target : 'the target'
+    const next =
+      reason === 'needs-rebase'
+        ? '下一步：在任务 worktree 里把 ' + branch + ' rebase 到 ' + target + ' 的最新 head，解决冲突后提交并推送；然后 task_center { action: "refreshMerge", id: "' + id + '" } 重开评审。'
+        : '下一步：处理后在任务中心刷新该卡。'
+    return 'Task ' + id + title + ' 需要人工处理：' + String(reason) + '\n' + String(detail) + '\n' + next
+  }
+
+  /**
+   * T-202: announce ONE waiting reason that only a person can clear.
+   *
+   * The card was already written by markWaiting; this helper makes the wait
+   * visible on three channels:
+   *   1. an activity entry for the panel (always);
+   *   2. a short notice — task id, reason, detail, next step — to the card's
+   *      implementer and to its owning root Session / Lead (best effort: a
+   *      delivery failure never turns the wait into an exception);
+   *   3. the T-198 merge-conflict event, whose policy decides the rest: notify
+   *      by default, 'ask' opens a real DecisionRequest, 'silent' writes only
+   *      the card history row.
+   * The rebase itself is NEVER performed here; only its visibility is guaranteed.
+   */
+  async function announceWaitingHuman(projectPath, id, reason, detail, context) {
+    let task = null
+    try {
+      const read = await state.read(projectPath)
+      task = read.failed === null ? model.findTask(read.board, id) : null
+    } catch (error) {
+      task = null
+    }
+    if (task === null || task === undefined) return null
+    emitActivity(context, 'needs-human', String(reason) + ': ' + String(detail), String(task.id))
+    const notice = waitingHumanNotice(task, reason, detail)
+    // The implementer owns the branch and IS a deliverable target (a child of the
+    // owner's tree); sendAssignee supplies the owning root scope the facade needs.
+    if (stageAgents !== null && typeof stageAgents.sendAssignee === 'function') {
+      try {
+        await stageAgents.sendAssignee(task, notice)
+      } catch (error) {}
+    }
+    // The owning root Session itself is NOT a deliverable target: the plugin
+    // facade refuses a send without options.rootId, and the DSH subagent service
+    // refuses a message whose target is the sender (the plugin always sends AS
+    // that root). Try it with the owning root scope (a non-root owner can be a
+    // real target) and remember whether it actually landed.
+    const ownerRoot = typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
+    let ownerDelivered = false
+    if (ownerRoot !== null) ownerDelivered = await notifyAgent(ownerRoot, ownerRoot, notice)
+    // The T-198 policy event still records the incident (and may ask on its own).
+    await notifyStageRecovery(projectPath, task, STAGE_EVENT_KEYS.mergeConflict, detail)
+    // When the direct Session notice cannot land — the normal case for a
+    // root-owned card — the owner channel is a real DecisionRequest. It is the
+    // documented host->human channel: persisted beside the board, shown in the
+    // panel queue, readable with decisionList, and it never auto-resolves.
+    if (ownerDelivered !== true && ownerRoot !== null) await ensureWaitingHumanDecision(projectPath, task, reason, detail)
+    return task
+  }
+
+  /** A distinct id per incident: the clock keeps a NEW rebase wait from colliding
+   * with an already-answered question. ensureWaitingHumanDecision additionally
+   * dedupes against any OPEN question for the same card. */
+  function waitingHumanDecisionId(task, reason) {
+    return 'waiting-' + String(task.id) + '-' + String(reason) + '-' + String(Math.floor(clock()))
+  }
+
+  /**
+   * T-202: the owner notice that works in production.
+   *
+   * The panel/decision queue is the only host->owner push channel that does not
+   * go through the subagent tree (which cannot message its own root). The
+   * question carries the same id/reason/detail/next-step text as the implementer
+   * notice, has NO deadline (a human wait never auto-resolves), and is answered
+   * by the user in the panel: 'ack' keeps the card parked exactly as it is,
+   * 'block' parks it for triage. When the event policy is 'silent' the project
+   * has asked for audit-only, so no question is opened (activity + onboard
+   * attention still record the wait).
+   */
+  async function ensureWaitingHumanDecision(projectPath, task, reason, detail) {
+    try {
+      const policy = await effectiveDecisionEvent(projectPath, STAGE_EVENT_KEYS.mergeConflict)
+      if (policy !== undefined && policy.mode === 'silent') return null
+      const pending = await decisionStore.pending(projectPath)
+      if (pending.ok === true) {
+        const sameCard = pending.pending.filter((decision) => String(decision.taskId) === String(task.id))[0]
+        // One open owner question per card is enough: an earlier needs-rebase
+        // question or the policy's own merge-conflict ask already puts it in the
+        // owner queue; a second one would be noise on the same incident.
+        if (sameCard !== undefined && (sameCard.eventKey === 'needs-rebase' || sameCard.eventKey === STAGE_EVENT_KEYS.mergeConflict)) return sameCard
+      }
+      const requested = await decisionStore.request(
+        projectPath,
+        {
+          id: waitingHumanDecisionId(task, reason),
+          eventKey: 'needs-rebase',
+          taskId: String(task.id),
+          eventLabel: '需要人工 rebase',
+          title: String(task.id) + ' 等待人工 rebase',
+          body: waitingHumanNotice(task, reason, detail),
+          options: [
+            { id: 'ack', label: '继续等待', description: '保持卡片现状；rebase 后执行 refreshMerge 重开评审', default: true },
+            { id: 'block', label: '阻塞任务', description: '保留现场，等待人工处理' },
+          ],
+          defaultOption: 'ack',
+          // No deadline: a card parked on a human must never auto-resolve.
+          timeoutMs: 0,
+          payload: { action: 'needs-rebase', taskId: String(task.id), reason: String(reason) },
+        },
+        { by: 'host' },
+      )
+      if (requested === null || requested === undefined || requested.ok !== true) return null
+      const decision = requested.decision === undefined || requested.decision === null ? null : requested.decision
+      if (decision !== null) emitActivity(null, 'needs-human', String(reason) + ': decision ' + String(decision.id) + ' asks the owner', String(task.id), 'host')
+      return decision
+    } catch (error) {
+      return null
+    }
   }
 
   /** The executor showed up: forget the waiting marker. */
@@ -4668,6 +4803,23 @@ export function createApi(ctx, options) {
         outcome = ok({ continued: true })
         text = decided + ': keep auto-recovering ' + String(eventLabel) + '; the next occurrence is handled automatically again.'
       }
+    } else if (action === 'needs-rebase') {
+      // T-202: the owner-facing "you must rebase" ticket. Acknowledging keeps the
+      // card parked exactly where it is (the rebase is manual); blocking parks it
+      // for triage. The question has no deadline, so it never answers itself.
+      const waitingId = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : null
+      summary = { taskId: waitingId, reason: typeof payload.reason === 'string' && payload.reason !== '' ? payload.reason : 'needs-rebase' }
+      if (option === 'block') {
+        executed = true
+        outcome =
+          waitingId === null
+            ? failure('invalid-decision', 'the needs-rebase decision names no card')
+            : await lifecycleActions.block({ id: waitingId, note: 'blocked by the needs-rebase decision ' + String(decision.id) }, execContext, projectPath)
+        text = outcome !== null && outcome.ok === true ? decided + ': ' + String(waitingId) + ' is blocked for triage.' : decided + ', but the block failed: ' + String(decisionOutcomeCode(outcome))
+      } else {
+        outcome = ok({ acknowledged: true })
+        text = decided + ': ' + String(waitingId) + ' stays parked; rebase the branch, then refresh the merge request.'
+      }
     } else if (action === 'delete-tree') {
       if (option === 'purge') {
         executed = true
@@ -5686,10 +5838,10 @@ export function createApi(ctx, options) {
             ancestry.behind === true
               ? rebaseDetail(task, ancestry, files)
               : 'the candidate still conflicts after ' + String(nextAttempts) + ' automatic rebuilds (' + files + '); rebase the branch and refresh the merge request'
+          // T-202: markWaiting owns the "needs a person" announcement (activity +
+          // owner/Lead message + the T-198 merge-conflict event), so this path and
+          // the approveReview candidate-conflict path share one helper.
           await markWaiting(projectPath, id, 'needs-rebase', detail, context)
-          // T-197 event 10: a merge conflict is NOTIFY by default. The payload is
-          // the conflicting files, the auto action is "back to development".
-          await notifyStageRecovery(projectPath, task, STAGE_EVENT_KEYS.mergeConflict, 'the candidate conflicts with the target (' + files + '); waiting for a manual rebase')
           return failure('needs-rebase', detail)
         }
         await markWaiting(projectPath, id, 'candidate-stale', conflictsPrefix(conflicted) + files + ' (automatic rebuild ' + String(nextAttempts) + '/' + String(REBUILD_ATTEMPT_LIMIT) + ')', context)

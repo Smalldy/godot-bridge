@@ -21,6 +21,7 @@
 
 import { basename, dirname, join, resolve } from 'node:path'
 import { resolveProjectRoot } from './board.mjs'
+import { waitsForHuman } from './schema.mjs'
 import * as model from './service.mjs'
 // T-153: the handoff inventory decides the next step; the pure module owns the
 // rule so /state, create/start and onboard cannot drift apart.
@@ -242,6 +243,16 @@ export function summariseBoard(board) {
     .filter((task) => task.status === 'running' || task.status === 'reviewing' || task.status === 'testing')
     .slice(0, 3)
     .map((task) => ({ id: stringOf(task.id), title: stringOf(task.title), status: stringOf(task.status) }))
+  // T-202: a card waiting on a PERSON (needs-rebase) is not blocked, but no host
+  // sweep can clear it either — onboarding must surface it instead of leaving it
+  // discoverable only through a manual get.
+  const humanWaiting = tasks.filter((task) => waitsForHuman(task.waitingReason))
+  const waitingHuman = humanWaiting.slice(0, 3).map((task) => ({
+    id: stringOf(task.id),
+    title: stringOf(task.title),
+    reason: stringOf(task.waitingReason),
+    detail: stringOf(task.waitingDetail),
+  }))
   const dispatch = board === undefined || board === null ? null : board.dispatch
   const activeTotal = tasks.filter((task) => task.status === 'running' || task.status === 'reviewing' || task.status === 'testing').length
   return {
@@ -250,6 +261,8 @@ export function summariseBoard(board) {
     blocked: blocked,
     active: active,
     activeTotal: activeTotal,
+    waitingHuman: waitingHuman,
+    waitingHumanCount: humanWaiting.length,
     dispatch: dispatch === undefined || dispatch === null ? null : dispatch,
   }
 }
@@ -291,10 +304,20 @@ export function decideOnboardStage(facts) {
   if (Number(counts.blocked) > 0 || f.request !== null && f.request !== undefined) return 'attention'
   if (f.hardDirty === true) return 'attention'
   if (f.boardWarning !== null && f.boardWarning !== undefined) return 'attention'
+  // T-202: a card parked on a human (needs-rebase) is attention even though its
+  // status is still reviewing/testing; no sweep will ever move it on its own.
+  if (waitingHumanCountOf(f) > 0) return 'attention'
   if (Number(activeCount) > 0) return 'active'
   if (Number(readyCount) > 0 && f.dispatchState === 'running') return 'active'
   if (Number(counts.total) === 0) return 'empty'
   return 'idle'
+}
+
+/** How many cards wait on a human, from the count or the list. */
+export function waitingHumanCountOf(facts) {
+  const f = facts === undefined || facts === null ? {} : facts
+  if (Number.isFinite(f.waitingHumanCount)) return Math.max(0, Math.floor(f.waitingHumanCount))
+  return listOf(f.waitingHuman).length
 }
 
 /** The handoff block of the facts with every field present (never null). */
@@ -565,6 +588,11 @@ export function needsUserFor(next, facts) {
   else if (code === 'fix-environment') add('决定保留还是清理主检出的未提交改动', 'host')
   else if (code === 'prune-board') add('归档已完成的卡，给看板腾空间', 'panel')
   else if (code === 'start-dispatch') add('在面板里批准我发起的派发', 'panel')
+  // T-202: a card parked on needs-rebase needs a person even when no card is
+  // blocked; the brief says so instead of silently suggesting "nothing to do".
+  if (facts !== null && facts !== undefined && waitingHumanCountOf(facts) > 0) {
+    out.push({ code: 'needs-rebase', message: '让 worker 在任务 worktree 里 rebase 分支并 refreshMerge（卡在等人工）', where: 'session' })
+  }
   return out
 }
 

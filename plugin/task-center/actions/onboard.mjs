@@ -78,6 +78,9 @@ export function createOnboardAction(deps) {
       readyCount: 0,
       blocked: [],
       blockedCount: 0,
+      // T-202: cards parked on a person (needs-rebase) — visible, not blocked.
+      waitingHuman: [],
+      waitingHumanCount: 0,
       active: [],
       activeCount: 0,
       dispatchState: null,
@@ -264,6 +267,10 @@ export function createOnboardAction(deps) {
     facts.readyCount = summary.ready
     facts.blocked = summary.blocked
     facts.blockedCount = summary.counts.blocked
+    // T-202: a needs-rebase card is not blocked, so it needs its own fact and
+    // attention entry; otherwise only a manual get could discover it.
+    facts.waitingHuman = summary.waitingHuman
+    facts.waitingHumanCount = summary.waitingHumanCount
     facts.active = summary.active
     facts.activeCount = Number(summary.counts.running) + Number(summary.counts.reviewing) + Number(summary.counts.testing)
     facts.dispatchState = dispatchState
@@ -292,6 +299,16 @@ export function createOnboardAction(deps) {
     // ── attention (what the user should see) ────────────────────────────────
     for (const task of summary.blocked) {
       attention.push({ code: 'blocked', level: 'warn', message: task.id + ' 卡住：' + task.reason, taskId: task.id })
+    }
+    // T-202: a wait that only a human can clear is an attention item on its own,
+    // with the task id, the reason and the detail the panel/Lead must act on.
+    for (const task of summary.waitingHuman) {
+      attention.push({
+        code: 'needs-rebase',
+        level: 'warn',
+        message: task.id + ' 需要人工处理（' + task.reason + '）：' + (task.detail === '' ? task.reason : task.detail),
+        taskId: task.id,
+      })
     }
     if (request !== null) {
       attention.push({ code: 'approval', level: 'info', message: '有 1 个派发申请等用户批准', requestId: typeof request.id === 'string' ? request.id : null })
