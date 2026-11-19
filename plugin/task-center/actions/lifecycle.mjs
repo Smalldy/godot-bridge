@@ -25,6 +25,9 @@ export function createLifecycleActions(deps) {
   const cleanupInvestigation = deps.cleanupInvestigation
   const failure = deps.failure
   const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
+  // T-201: the takeover's stage provisioning, reused to resume an unblocked
+  // reviewing/testing card. Optional so a unit harness can omit it.
+  const redeliverStage = deps.redeliverStage === undefined ? null : deps.redeliverStage
 
   /**
    * Dispose every worker/reviewer/tester the card still owns, by board record and
@@ -71,6 +74,26 @@ export function createLifecycleActions(deps) {
     return result
   }
 
+  /**
+   * T-201 T28: a stage-paused card resumes the round it paused in. block already
+   * disposed the old reviewer/tester and T28 clears the claim, so without a
+   * fresh delivery the restored round has a pending record and no executor —
+   * no agent could ever deliver its verdict. Provision it exactly like a
+   * takeover re-delivers an open round (the structured record is untouched).
+   */
+  async function reprovisionRestoredStage(id, projectPath, outcome) {
+    if (redeliverStage === null || outcome.task === null || outcome.task === undefined) return null
+    const kind = outcome.task.status === 'reviewing' ? 'reviewer' : outcome.task.status === 'testing' ? 'tester' : null
+    if (kind === null) return null
+    const after = await readBoardOrFail(projectPath)
+    if (after.failed !== undefined) return null
+    const task = model.findTask(after.board, id)
+    if (task === undefined || task === null) return null
+    const stage = await redeliverStage(kind, projectPath, after.board, task)
+    if (stage !== null && stage !== undefined) outcome.stage = stage
+    return stage
+  }
+
   async function transition(action, source, context, projectPath) {
     const id = String(source.id === undefined ? '' : source.id)
     if (id === '') return failure('missing-id', action + ' needs a task id')
@@ -92,6 +115,9 @@ export function createLifecycleActions(deps) {
       // T-183: a reopen/retry starts a new generation; the previous worker,
       // reviewer and tester must not survive into it.
       await releaseStageRoster(priorTask, action === 'reopen' ? 'reopened' : action === 'unblock' ? 'unblocked' : 'retried')
+      // T-201: unblock resumes the paused round, so it must be handed to a live
+      // reviewer/tester again (reopen/retry go back to the pool and do not).
+      if (action === 'unblock') await reprovisionRestoredStage(id, projectPath, outcome)
       // T-131: reopening/retrying an investigation starts over; its old scratch
       // checkout and probe-<id>-* siblings are discarded with the old report.
       if (outcome.task !== null && outcome.task !== undefined && outcome.task.kind === 'investigate') {

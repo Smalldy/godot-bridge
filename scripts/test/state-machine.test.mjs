@@ -183,6 +183,20 @@ check(
   blockCodes.every((code) => typeof code === 'string' && BLOCKED_REASON_CODES.indexOf(code) >= 0),
   JSON.stringify(blockCodes),
 )
+// INV-blocked is declared by the ROWS, not only defended by guards: every row
+// that can land on blocked (a static target or a typed blocked branch) clears
+// the claim and retires the executors.
+const blockingRows = TRANSITIONS.filter((row) => row.to === 'blocked' || row.blockedCode !== undefined)
+const blockingDetail = blockingRows.map((row) => {
+  const effects = typeof row.effects === 'function' ? [] : row.effects
+  return row.id + ':' + effects.join('|')
+})
+let blockingOk = true
+for (const row of blockingRows) {
+  const effects = typeof row.effects === 'function' ? [] : row.effects
+  if (effects.indexOf('clear-claim') < 0 || effects.indexOf('retire-executors') < 0) blockingOk = false
+}
+check('every row that can land on blocked declares the INV-blocked claim/executor cleanup', blockingOk, blockingDetail.join(', '))
 
 // ── 2. every legal transition is reachable ─────────────────────────────────
 console.log('\n# legal transitions')
@@ -455,6 +469,21 @@ for (const outcome of ['conflict', 'failed']) {
     recorded.ok === true && task.status === 'blocked' && reason !== null && reason.code === 'merge-' + outcome && reason.from === 'testing',
     JSON.stringify(recorded.ok === true ? { status: task.status, reason: reason } : recorded),
   )
+  // INV-blocked: no live claim/lease behind a paused card, every executor
+  // retired, and the implementer retained as lastAssignee for the T27 repair.
+  const liveExecutors = task === null ? [] : (Array.isArray(task.executors) ? task.executors : []).filter((entry) => entry.retiredAt === null || entry.retiredAt === undefined)
+  check(
+    'T22/T23 ' + outcome + ' clears the claim and retires the executors (INV-blocked)',
+    task !== null &&
+      task.assignee === null &&
+      task.leaseUntil === null &&
+      liveExecutors.length === 0 &&
+      task.lastAssignee !== null &&
+      task.lastAssignee !== undefined &&
+      task.lastAssignee.name === 'w' &&
+      task.lastAssignee.session === 's',
+    JSON.stringify(task === null ? null : { assignee: task.assignee, lease: task.leaseUntil, live: liveExecutors.length, last: task.lastAssignee }),
+  )
 }
 {
   const made = createTask(emptyBoard(T0), { title: 'rej', verification: { probes: [{ id: 'p', command: 'npm test' }] } }, T0, '@me')
@@ -465,6 +494,11 @@ for (const outcome of ['conflict', 'failed']) {
   const reason = task === null ? null : blockedReasonOf(task)
   check('T24 rejected moves reviewing -> blocked with merge-rejected', rejected.ok === true && task.status === 'blocked' && reason !== null && reason.code === 'merge-rejected' && reason.from === 'reviewing', JSON.stringify(rejected.ok === true ? { status: task.status, reason: reason } : rejected))
   check('the rejected merge record keeps its outcome', task.merge.status === 'rejected', JSON.stringify(task.merge))
+  check(
+    'T24 rejected clears the claim but keeps the implementer (INV-blocked)',
+    task.assignee === null && task.leaseUntil === null && task.lastAssignee !== null && task.lastAssignee !== undefined && task.lastAssignee.session === 's',
+    JSON.stringify({ assignee: task.assignee, last: task.lastAssignee }),
+  )
 }
 {
   const board = flowBoard()
@@ -652,6 +686,22 @@ console.log('\n# model-boundary guards')
     blockedTask !== null && blockedTask.status === 'blocked' && refreshed.ok === true && next.status === 'reviewing' && next.blockedReason === null && next.merge.status === 'open' && next.test === null,
     JSON.stringify(refreshed.ok === true ? { status: next.status, merge: next.merge.status, reason: next.blockedReason } : refreshed),
   )
+  // The host tells the IMPLEMENTER to fix the branch and refresh; T27 must accept
+  // that worker, not only the panel user. The claim is gone (INV-blocked), so the
+  // ownership proof is the retained lastAssignee.
+  const byWorker = refreshMergeRequest(conflicted.board, 'T-1', 'base-2', 'head-2', [], at(8), 'w', 'worker-t-1', 'worker')
+  const workerNext = byWorker.ok === true ? findTask(byWorker.board, 'T-1') : null
+  check(
+    'T27 accepts the implementer (worker) refresh of its merge-conflict block',
+    byWorker.ok === true && workerNext.status === 'reviewing' && workerNext.blockedReason === null && workerNext.merge.status === 'open',
+    JSON.stringify(byWorker.ok === true ? { status: workerNext.status, merge: workerNext.merge.status } : byWorker),
+  )
+  const byHost = transition('refreshMerge', 'blocked', {
+    task: blockedTask,
+    actor: 'host',
+    change: { base: true, head: false, outcome: false },
+  })
+  check('T27 keeps host/agent callers out (only user or the implementer repairs)', byHost.ok !== true && byHost.code === 'forbidden', JSON.stringify(byHost))
 }
 {
   // T28: a manual block on a TESTED card is a MERGE-phase pause (the 7-state

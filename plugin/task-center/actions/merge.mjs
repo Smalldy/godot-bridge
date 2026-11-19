@@ -39,6 +39,37 @@ export function createMergeActions(deps) {
   const ok = deps.ok
   const failure = deps.failure
 
+  /** One identity compared by session first, then by display name. */
+  function identityMatches(candidate, owner) {
+    if (candidate === null || candidate === undefined || owner === null || owner === undefined) return false
+    const sessionMatch =
+      typeof candidate.session === 'string' &&
+      candidate.session !== '' &&
+      owner.session !== null &&
+      owner.session !== undefined &&
+      candidate.session === owner.session
+    const nameMatch =
+      typeof candidate.name === 'string' &&
+      candidate.name !== '' &&
+      owner.name !== null &&
+      owner.name !== undefined &&
+      candidate.name === owner.name
+    return sessionMatch || nameMatch
+  }
+
+  /**
+   * T-201: the "own card" identity refreshMerge accepts. A merge-* block clears
+   * the live claim (INV-blocked), so the implementer the host notified is the
+   * card's lastAssignee; an open claim still wins when one exists. A legacy card
+   * with neither falls back to the kernel's assignee rule.
+   */
+  function implementerMatches(task, owner) {
+    if (owner === null || owner === undefined) return false
+    if (task.assignee !== null && task.assignee !== undefined) return assigneeMatches(task, owner)
+    if (task.lastAssignee !== null && task.lastAssignee !== undefined) return identityMatches(task.lastAssignee, owner)
+    return assigneeMatches(task, owner)
+  }
+
   async function mergeRequest(source, context, projectPath) {
     const denied = mergeRefusal(context)
     if (denied !== null) return denied
@@ -114,7 +145,7 @@ export function createMergeActions(deps) {
       }
       const owner = ownerOf(context)
       const asUser = context !== undefined && context !== null && context.role === 'user'
-      const asOwner = owner !== null && task.assignee !== null && task.assignee !== undefined && assigneeMatches(task, owner)
+      const asOwner = implementerMatches(task, owner)
       if (!asUser && !asOwner) {
         return failure(
           'not-assignee',

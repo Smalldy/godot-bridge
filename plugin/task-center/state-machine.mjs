@@ -25,6 +25,12 @@
  *                                          typed blockedReason (merge-*), never
  *                                          hidden behind status='testing'
  *
+ * A merge-* block is an INV-blocked state like every other block: T22/T23/T24
+ * clear the claim (assignee/lease=null) so the panel never shows a live-looking
+ * worker behind a paused card, and KEEP the implementer as lastAssignee — that
+ * identity is what refreshMerge (T27) accepts when the host asks the worker to
+ * repair the branch.
+ *
  * Actor values are the document's vocabulary: user, scheduler, host, worker,
  * reviewer, tester (plus 'agent' for a generic caller). A row whose actor is
  * null accepts any caller; a row with an array refuses an unlisted actor with
@@ -658,7 +664,9 @@ export const TRANSITIONS = Object.freeze([
     to: (ctx) => (ctx.to === 'blocked' ? 'blocked' : 'pending'),
     actor: Object.freeze(['scheduler', 'host']),
     guards: Object.freeze([]),
-    effects: Object.freeze(['clear-claim']),
+    // INV-blocked on the attempts-exhausted branch: the lapsed claim's executor
+    // is retired with the claim instead of staying live behind a blocked card.
+    effects: Object.freeze(['clear-claim', 'retire-executors']),
     refusal: 'not-running',
     blockedCode: 'attempts-exhausted',
   },
@@ -840,7 +848,9 @@ export const TRANSITIONS = Object.freeze([
     to: 'blocked',
     actor: Object.freeze(['host']),
     guards: Object.freeze(['merge-open']),
-    effects: Object.freeze(['retire-executors']),
+    // INV-blocked: no live claim behind a paused card; lastAssignee keeps the
+    // implementer refreshMerge (T27) accepts.
+    effects: Object.freeze(['clear-claim', 'retire-executors']),
     refusal: 'no-open-merge',
     blockedCode: 'merge-conflict',
   },
@@ -851,7 +861,7 @@ export const TRANSITIONS = Object.freeze([
     to: 'blocked',
     actor: Object.freeze(['host']),
     guards: Object.freeze(['merge-open']),
-    effects: Object.freeze(['retire-executors']),
+    effects: Object.freeze(['clear-claim', 'retire-executors']),
     refusal: 'no-open-merge',
     blockedCode: 'merge-failed',
   },
@@ -862,7 +872,7 @@ export const TRANSITIONS = Object.freeze([
     to: 'blocked',
     actor: Object.freeze(['user']),
     guards: Object.freeze(['merge-open']),
-    effects: Object.freeze(['retire-executors']),
+    effects: Object.freeze(['clear-claim', 'retire-executors']),
     refusal: 'no-open-merge',
     blockedCode: 'merge-rejected',
   },

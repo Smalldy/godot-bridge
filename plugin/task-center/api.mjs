@@ -34,7 +34,7 @@ import {
 } from './schema.mjs'
 import * as model from './service.mjs'
 // T-201: the sole card-status write entry (base-only drift is a transition too).
-import { enterState } from './state-machine.mjs'
+import { blockedReasonOf, enterState, isMergeReason } from './state-machine.mjs'
 import * as locks from './locks.mjs'
 import { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from './actions/registry.mjs'
 import { createReadActions } from './actions/read.mjs'
@@ -469,7 +469,11 @@ export function createApi(ctx, options) {
     if (task === null || task === undefined) return
     const merge = task.merge
     if (merge === null || merge === undefined || typeof merge !== 'object') return
-    const ownerId = task.assignee === null || task.assignee === undefined || typeof task.assignee.session !== 'string' ? null : task.assignee.session
+    // T-201: a merge-* block clears the claim (INV-blocked) and keeps the
+    // implementer as lastAssignee; the repair notice must reach that worker, not
+    // be dropped because the live assignee is correctly gone.
+    const claimed = task.assignee === null || task.assignee === undefined ? (task.lastAssignee === null || task.lastAssignee === undefined ? null : task.lastAssignee) : task.assignee
+    const ownerId = claimed === null || typeof claimed.session !== 'string' ? null : claimed.session
     if (ownerId === null) return
     if (merge.status === 'merged') {
       const commit = merge.mergeCommit === null || merge.mergeCommit === undefined ? '' : ' as ' + String(merge.mergeCommit)
@@ -541,6 +545,9 @@ export function createApi(ctx, options) {
     // T-183: cancel/block/reopen/retry dispose the card's stage children, not
     // only interrupt its worker.
     stageAgents: stageAgents,
+    // T-201: unblocking a reviewing/testing card restores the paused round; the
+    // same provisioning a takeover uses starts a live reviewer/tester for it.
+    redeliverStage: redeliverStage,
   })
   const mergeActions = createMergeActions({
     mergeRefusal: mergeRefusal,
@@ -3678,6 +3685,14 @@ export function createApi(ctx, options) {
           ? matchesMember(previous, member)
           : owner !== null && owner !== undefined && typeof previous.name === 'string' && previous.name === owner.name))
     if (mine !== true) return null
+    // T-201: a merge-* block is repaired by its implementer through refreshMerge
+    // (T27 allows user/implementer; the host notifies that worker). The soft
+    // "stop working" guard must not refuse the exact action the worker was told
+    // to run; the merge action re-checks ownership and the merge request itself.
+    if (action === 'refreshMerge' && task.status === 'blocked') {
+      const reason = blockedReasonOf(task)
+      if (reason !== null && isMergeReason(reason.code) === true) return null
+    }
     const code = task.status === 'cancelled' ? 'task-cancelled' : 'task-blocked'
     return failure(
       code,

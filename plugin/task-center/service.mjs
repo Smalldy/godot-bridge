@@ -99,12 +99,6 @@ function executorOf(assignee, now) {
   }
 }
 
-/** Mark every live executor entry retired (the caller replaces them). */
-function retireExecutorsIn(target, now, reason) {
-  const list = Array.isArray(target.executors) ? target.executors : []
-  target.executors = list.map((entry) => (entry.retiredAt !== null && entry.retiredAt !== undefined ? entry : Object.assign({}, entry, { retiredAt: iso(now), retiredReason: String(reason) })))
-}
-
 /** Append the executor this claim hands the task to, keeping the list bounded. */
 function pushExecutor(target, assignee, now) {
   const list = Array.isArray(target.executors) ? target.executors.slice() : []
