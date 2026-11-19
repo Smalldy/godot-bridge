@@ -31,6 +31,7 @@ import {
   profileForKind,
   validateRoleBinding,
   validateRoleProfile,
+  waitsForHuman,
 } from './schema.mjs'
 import * as model from './service.mjs'
 // T-201: the sole card-status write entry (base-only drift is a transition too).
@@ -2178,20 +2179,84 @@ export function createApi(ctx, options) {
 
   /** Record that a phase is waiting for an executor (no advance happened). */
   async function markWaiting(projectPath, id, reason, detail, context) {
+    const text = detail === undefined || detail === null ? null : String(detail)
+    let changed = false
     // state.apply, not writeTask: recording a waiting reason must not kick the
     // scheduler (which could requeue the still-running card and lose its lease).
-    return state.apply(
+    const written = await state.apply(
       projectPath,
       (board) => {
         const task = model.findTask(board, id)
         if (task === undefined) return null
+        // T-202: only a REASON/INFO change is announced. A retry of the same
+        // action must not page the same person with the same sentence again.
+        changed = task.waitingReason !== reason || (task.waitingDetail === null ? text !== null : task.waitingDetail !== text)
         const tasks = board.tasks.map((entry) =>
-          String(entry.id) === String(id) ? Object.assign({}, entry, { waitingReason: reason, waitingDetail: detail === undefined || detail === null ? null : String(detail) }) : entry,
+          String(entry.id) === String(id) ? Object.assign({}, entry, { waitingReason: reason, waitingDetail: text }) : entry,
         )
         return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
       },
       writePolicyFor(projectPath),
     )
+    if (written === null || written === undefined || written.failed !== null && written.failed !== undefined) return written
+    // T-202: a wait no sweep can clear must be ANNOUNCED, never silently
+    // persisted. This is the ONE place the rule lives, so the approveReview
+    // candidate-conflict path and the auto-merge rebuild path cannot diverge.
+    if (waitsForHuman(reason) && changed === true) await announceWaitingHuman(projectPath, id, reason, text, context)
+    return written
+  }
+
+  /** The short notice a needs-human wait carries: task id, reason, detail, next. */
+  function waitingHumanNotice(task, reason, detail) {
+    const id = String(task.id)
+    const title = typeof task.title === 'string' && task.title !== '' ? ' (' + task.title + ')' : ''
+    const branch = typeof task.branch === 'string' && task.branch !== '' ? task.branch : '(no branch)'
+    const target = typeof task.target === 'string' && task.target !== '' ? task.target : 'the target'
+    const next =
+      reason === 'needs-rebase'
+        ? '下一步：在任务 worktree 里把 ' + branch + ' rebase 到 ' + target + ' 的最新 head，解决冲突后提交并推送；然后 task_center { action: "refreshMerge", id: "' + id + '" } 重开评审。'
+        : '下一步：处理后在任务中心刷新该卡。'
+    return 'Task ' + id + title + ' 需要人工处理：' + String(reason) + '\n' + String(detail) + '\n' + next
+  }
+
+  /**
+   * T-202: announce ONE waiting reason that only a person can clear.
+   *
+   * The card was already written by markWaiting; this helper makes the wait
+   * visible on three channels:
+   *   1. an activity entry for the panel (always);
+   *   2. a short notice — task id, reason, detail, next step — to the card's
+   *      implementer and to its owning root Session / Lead (best effort: a
+   *      delivery failure never turns the wait into an exception);
+   *   3. the T-198 merge-conflict event, whose policy decides the rest: notify
+   *      by default, 'ask' opens a real DecisionRequest, 'silent' writes only
+   *      the card history row.
+   * The rebase itself is NEVER performed here; only its visibility is guaranteed.
+   */
+  async function announceWaitingHuman(projectPath, id, reason, detail, context) {
+    let task = null
+    try {
+      const read = await state.read(projectPath)
+      task = read.failed === null ? model.findTask(read.board, id) : null
+    } catch (error) {
+      task = null
+    }
+    if (task === null || task === undefined) return null
+    emitActivity(context, 'needs-human', String(reason) + ': ' + String(detail), String(task.id))
+    const notice = waitingHumanNotice(task, reason, detail)
+    if (stageAgents !== null && typeof stageAgents.sendAssignee === 'function') {
+      try {
+        await stageAgents.sendAssignee(task, notice)
+      } catch (error) {}
+    }
+    // The owning root Session / Lead reads the same notice on its next turn.
+    // Delivery to a Session by durable id is the documented channel (the same one
+    // deliverDecisionResult uses); the local implementer above is the other.
+    if (typeof task.ownerSession === 'string' && task.ownerSession !== '') {
+      await notifyAgent(null, task.ownerSession, notice)
+    }
+    await notifyStageRecovery(projectPath, task, STAGE_EVENT_KEYS.mergeConflict, detail)
+    return task
   }
 
   /** The executor showed up: forget the waiting marker. */
@@ -5644,10 +5709,10 @@ export function createApi(ctx, options) {
             ancestry.behind === true
               ? rebaseDetail(task, ancestry, files)
               : 'the candidate still conflicts after ' + String(nextAttempts) + ' automatic rebuilds (' + files + '); rebase the branch and refresh the merge request'
+          // T-202: markWaiting owns the "needs a person" announcement (activity +
+          // owner/Lead message + the T-198 merge-conflict event), so this path and
+          // the approveReview candidate-conflict path share one helper.
           await markWaiting(projectPath, id, 'needs-rebase', detail, context)
-          // T-197 event 10: a merge conflict is NOTIFY by default. The payload is
-          // the conflicting files, the auto action is "back to development".
-          await notifyStageRecovery(projectPath, task, STAGE_EVENT_KEYS.mergeConflict, 'the candidate conflicts with the target (' + files + '); waiting for a manual rebase')
           return failure('needs-rebase', detail)
         }
         await markWaiting(projectPath, id, 'candidate-stale', conflictsPrefix(conflicted) + files + ' (automatic rebuild ' + String(nextAttempts) + '/' + String(REBUILD_ATTEMPT_LIMIT) + ')', context)

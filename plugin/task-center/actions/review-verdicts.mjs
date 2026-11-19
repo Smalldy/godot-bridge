@@ -174,6 +174,10 @@ export function createReviewVerdictActions(deps) {
           const ancestry = await branchBehind(projectPath, reviewTask)
           if (ancestry.behind === true) {
             const detail = rebaseDetail(reviewTask, ancestry, files)
+            // T-202: markWaiting owns the "needs a person" announcement for this
+            // reason — activity entry, implementer + owner/Lead notice and the
+            // T-198 merge-conflict event — and the auto-merge rebuild path calls
+            // the same helper, so a needs-rebase is never a silent field write.
             await markWaiting(projectPath, id, 'needs-rebase', detail, context)
             return failure('needs-rebase', detail)
           }

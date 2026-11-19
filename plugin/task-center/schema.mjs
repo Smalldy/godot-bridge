@@ -53,6 +53,22 @@ export const STATUSES = ['pending', 'running', 'reviewing', 'testing', 'done', '
 /** Statuses that no longer occupy a worker or a file lock. */
 export const CLOSED_STATUSES = ['done', 'cancelled']
 
+/**
+ * T-202: the waiting reasons NO host sweep can clear.
+ *
+ * Every other waitingReason (candidate-stale, agent/reviewer/tester-unavailable,
+ * dirty-worktree) is retried by recoverWaiting and therefore needs no human. The
+ * reasons here are skipped by that sweep and by the auto-merge queue, so a card
+ * carrying one is parked until a PERSON acts — it must be announced (activity +
+ * owner message + attention), never silently persisted.
+ */
+export const WAITING_NEEDS_HUMAN = Object.freeze(['needs-rebase'])
+
+/** True when a waiting reason waits for a human, not for a host retry. */
+export function waitsForHuman(reason) {
+  return typeof reason === 'string' && WAITING_NEEDS_HUMAN.indexOf(reason) >= 0
+}
+
 /** How long a claimed task stays owned by a worker before the scheduler may
  * take it back. Any activity by the assignee renews it UNCONDITIONALLY (no
  * "half spent" gate), so this bounds a worker that vanished, not one that is
