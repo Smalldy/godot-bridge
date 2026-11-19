@@ -29,6 +29,7 @@ import {
   STATUSES,
   TASK_KINDS,
   defaultRoleConfig,
+  normaliseBlockedReason,
   normaliseDispatch,
   normaliseKind,
   normaliseMerge,
@@ -794,6 +795,10 @@ function normaliseTask(raw, index, now) {
       merge: merge,
       review: review,
       test: test,
+      // T-201: the typed reason a blocked card is paused for. Absent on every
+      // pre-T-201 board; blockedReasonOf() derives a readable one from history
+      // for those, so a legacy card never reads back as "blocked for no reason".
+      blockedReason: normaliseBlockedReason(raw.blockedReason),
       assignee: assignee,
       lastAssignee: lastAssignee,
       attempts: attempts,

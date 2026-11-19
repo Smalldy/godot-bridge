@@ -196,6 +196,134 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
   )
   const legacy = normaliseMerge({ status: 'open' })
   check('T-156 a legacy/unchanged merge record has no drift noise', legacy.targetDrift === null && legacy.verifyChanged === false && legacy.verifyFingerprints === null, JSON.stringify(legacy))
+
+  // ── T-201: refreshMerge is a transition with an idempotency key ──
+  const unchanged = boardOf(makeTask({ merge: { status: 'open', base: 'base-1', head: 'head-1', target: 'main' } }))
+  const sameRefresh = refreshMergeRequest(unchanged, 'T-9', 'base-1', 'head-1', [], now, 'w')
+  check('T-201 an unchanged refresh is a typed no-change and does not spend a review round', sameRefresh.ok !== true && sameRefresh.code === 'no-change' && (unchanged.tasks[0].review === null || unchanged.tasks[0].review === undefined), JSON.stringify(sameRefresh))
+  const closedTask = makeTask({ status: 'done', merge: { status: 'merged', base: 'base-1', head: 'head-1', target: 'main', mergeCommit: 'merge-1' } })
+  const closedBoard = boardOf(closedTask)
+  const closedRefresh = refreshMergeRequest(closedBoard, 'T-9', 'base-2', 'head-2', [], now, 'w')
+  check('T-201 refreshMerge refuses a closed card and leaves its merge record intact', closedRefresh.ok !== true && closedRefresh.code === 'closed' && closedBoard.tasks[0].merge.status === 'merged', JSON.stringify(closedRefresh))
+}
+
+
+// ── T-201 round 2: a merge-* block clears the claim (INV-blocked) and keeps the
+//    implementer as lastAssignee; refreshMerge must accept THAT worker, and only
+//    that worker or the user, for a merge-outcome pause ─────────────────────
+{
+  const check = (label, condition, detail) => {
+    assert.ok(condition, label + (detail === undefined ? '' : ' -> ' + String(detail).slice(0, 700)))
+    console.log('PASS  ' + label)
+  }
+  const { refreshMergeRequest: refresh } = await import('../../plugin/task-center/merge.mjs')
+  const mergedAt = Date.parse('2026-11-20T00:00:00.000Z')
+  const makeBlocked = (over) =>
+    Object.assign(
+      {
+        id: 'T-5',
+        title: 'repair',
+        kind: 'dev',
+        status: 'blocked',
+        base: 'base-1',
+        target: 'main',
+        branch: 'task/T-5',
+        worktree: '/wt/T-5',
+        merge: { status: 'conflict', base: 'base-1', head: 'head-1', target: 'main' },
+        review: { status: 'approved', attempt: 1 },
+        test: { status: 'passed', attempt: 1 },
+        assignee: null,
+        lastAssignee: { name: 'worker-t-5', session: 'agent-w' },
+        blockedReason: { code: 'merge-conflict', detail: 'a.gd', from: 'testing', auto: false, at: new Date(mergedAt).toISOString() },
+        leaseUntil: null,
+        executors: [],
+        history: [],
+        updatedAt: new Date(mergedAt).toISOString(),
+      },
+      over === undefined ? {} : over,
+    )
+  const kernelAssigneeMatches = (task, owner) => {
+    if (owner === null) return true
+    if (task.assignee === null || task.assignee === undefined) return true
+    if (owner.session !== null && owner.session !== undefined && task.assignee.session === owner.session) return true
+    if (owner.name !== null && owner.name !== undefined && task.assignee.name === owner.name) return true
+    return task.assignee.session === null || task.assignee.session === undefined
+  }
+  function refreshHarness(task) {
+    const board = { tasks: [task] }
+    const seen = { started: [], delivered: [] }
+    const actions = createMergeActions({
+      mergeRefusal: () => null,
+      mergeQueueKey: async () => 'main',
+      serialised: async (work) => work({ aborted: false }),
+      mergeOne: async () => ({ ok: true }),
+      notifyMergeOutcome: async () => {},
+      readBoardOrFail: async () => ({ board: board }),
+      model: { findTask: (source, id) => source.tasks.filter((entry) => entry.id === id)[0] },
+      writeTask: async (project, id, mutator) => {
+        const applied = mutator(board)
+        if (applied.ok !== true) return applied
+        return { ok: true, task: applied.board.tasks.filter((entry) => entry.id === id)[0], events: applied.events }
+      },
+      recordMergeResult: () => ({ ok: true }),
+      clock: () => mergedAt,
+      writeByName: () => 'worker-t-5',
+      emitActivity: () => {},
+      refreshMergeRequest: refresh,
+      ownerOf: (context) => (context.role === 'user' ? null : { session: context.agent.id, name: context.by }),
+      assigneeMatches: kernelAssigneeMatches,
+      readTargetHead: async () => ({ ok: true, head: 'base-2' }),
+      readBranchHead: async () => ({ ok: true, head: 'head-2' }),
+      git: { diffNameOnly: async () => ({ ok: true, files: ['a.gd'] }) },
+      messageOf: (error) => String(error && error.message ? error.message : error),
+      stageAgents: {
+        async startReviewer(entry) {
+          seen.started.push(entry.id)
+          return { ok: true, agentId: 'reviewer-T-5-2', name: 'reviewer-t-5' }
+        },
+      },
+      markWaiting: async () => {},
+      clearWaiting: async () => {},
+      reviewBriefFor: () => 'review brief',
+      recordDeliveredTo: async (project, id, kind, member) => {
+        seen.delivered.push({ id: id, kind: kind, member: member })
+      },
+      ok: (payload) => Object.assign({ ok: true }, payload),
+      failure: (code, message) => ({ ok: false, code: code, message: message }),
+    })
+    return { actions: actions, seen: seen }
+  }
+  const implementer = { role: 'agent', by: '@worker-t-5', agent: { id: 'agent-w', name: 'worker-t-5' } }
+  {
+    const rig = refreshHarness(makeBlocked())
+    const out = await rig.actions.refreshMerge({ id: 'T-5' }, implementer, '/project')
+    check(
+      'T27 the implementer kept as lastAssignee reaches refreshMerge after a merge-* block',
+      out.ok === true && out.task.status === 'reviewing' && out.task.blockedReason === null && out.task.merge.status === 'open' && out.task.review.attempt === 2,
+      JSON.stringify(out.ok === true ? { status: out.task.status, merge: out.task.merge.status, attempt: out.task.review.attempt } : out),
+    )
+    check(
+      'the refreshed round gets a live reviewer and its deliveredTo',
+      rig.seen.started.length === 1 && rig.seen.started[0] === 'T-5' && rig.seen.delivered.length === 1 && rig.seen.delivered[0].kind === 'reviewer' && rig.seen.delivered[0].member.id === 'reviewer-T-5-2',
+      JSON.stringify(rig.seen),
+    )
+  }
+  {
+    const rig = refreshHarness(makeBlocked())
+    const stranger = { role: 'agent', by: '@worker-x', agent: { id: 'agent-x', name: 'worker-x' } }
+    const out = await rig.actions.refreshMerge({ id: 'T-5' }, stranger, '/project')
+    check('another worker still cannot refresh the card', out.ok !== true && out.code === 'not-assignee' && rig.seen.started.length === 0, JSON.stringify(out))
+  }
+  {
+    const rig = refreshHarness(makeBlocked({ blockedReason: { code: 'review-timeout', detail: null, from: 'reviewing', auto: true, at: new Date(mergedAt).toISOString() } }))
+    const out = await rig.actions.refreshMerge({ id: 'T-5' }, implementer, '/project')
+    check('a NON-merge block is not refreshed away by its implementer either', out.ok !== true && out.code === 'not-mergeable-phase', JSON.stringify(out))
+  }
+  {
+    const rig = refreshHarness(makeBlocked({ assignee: { name: 'worker-live', session: 'agent-live' } }))
+    const out = await rig.actions.refreshMerge({ id: 'T-5' }, implementer, '/project')
+    check('an open claim wins over lastAssignee when the two disagree', out.ok !== true && out.code === 'not-assignee', JSON.stringify(out))
+  }
 }
 
 console.log('PASS  merge actions preserve queue/notify/reject/refusal paths')

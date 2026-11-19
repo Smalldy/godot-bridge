@@ -92,6 +92,33 @@ export const REVIEW_STATUSES = ['pending', 'approved', 'changes-requested']
 /** Test-phase outcomes. 'pending' means the phase is open. */
 export const TEST_STATUSES = ['pending', 'passed', 'failed']
 
+/**
+ * T-201: the merge-request outcomes the board may persist. 'stale' is a queue
+ * answer and never lands on the board; a merge conflict/failed/rejected moves
+ * the CARD to blocked with a typed blockedReason instead of hiding behind
+ * status='testing'.
+ */
+export const MERGE_STATUSES = ['open', 'merged', 'conflict', 'failed', 'rejected']
+
+/**
+ * T-201: the typed reason a card is blocked for. Only a blocked card carries
+ * one; leaving blocked clears it. The code vocabulary lives in
+ * state-machine.mjs (BLOCKED_REASON_CODES); this normaliser only guarantees the
+ * shape so an unknown future code survives a reload instead of being dropped.
+ */
+export function normaliseBlockedReason(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const code = typeof raw.code === 'string' && raw.code.trim() !== '' ? raw.code.trim() : ''
+  if (code === '') return null
+  return {
+    code: code,
+    detail: typeof raw.detail === 'string' && raw.detail !== '' ? raw.detail : null,
+    from: typeof raw.from === 'string' && raw.from !== '' ? raw.from : null,
+    auto: raw.auto === true,
+    at: typeof raw.at === 'string' && raw.at !== '' ? raw.at : null,
+  }
+}
+
 
 /** The three role kinds the host provisions, and the stage each one owns. */
 export const ROLE_KINDS = ['worker', 'reviewer', 'tester']

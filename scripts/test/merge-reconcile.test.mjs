@@ -13,6 +13,11 @@ let board = {
     {
       id: 'T-1',
       status: 'testing',
+      // T-201: a card can only reach done from 'testing' when the review/test
+      // phase records prove it was eligible (the merge queue never merges an
+      // untested card, so a recovery fixture must carry the same records).
+      review: { status: 'approved' },
+      test: { status: 'passed' },
       merge: { status: 'open', base: 'base-1', head: 'head-1' },
       history: [],
       updatedAt: null,

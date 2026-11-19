@@ -263,17 +263,20 @@ export function createReviewVerdictActions(deps) {
       projectPath,
       id,
       (board) => {
+        // T-201: the verdict's actor is the delivery role (or the user override),
+        // so the state machine can prove the review matrix entry.
+        const actor = context !== undefined && context !== null && context.role === 'user' ? 'user' : 'reviewer'
         const transitioned =
           action === 'approveReview'
-            ? model.approveReview(board, id, clock(), context.by, writeByName(context), reviewRecord)
-            : model.requestChanges(board, id, changeReasons, clock(), context.by, writeByName(context), reviewRecord)
+            ? model.approveReview(board, id, clock(), context.by, writeByName(context), reviewRecord, actor)
+            : model.requestChanges(board, id, changeReasons, clock(), context.by, writeByName(context), reviewRecord, actor)
         if (transitioned.ok !== true) return transitioned
         let next = transitioned
         if (hostCheckFailed) {
           // The host records a FAILED test itself (by = host): the task goes
           // straight back to running with the command, the exit code and the
           // output tail, and no tester round is opened.
-          const failed = model.failTest(transitioned.board, id, hostCheckEvidence(hostCheck), clock(), 'host', 'host')
+          const failed = model.failTest(transitioned.board, id, hostCheckEvidence(hostCheck), clock(), 'host', 'host', undefined, { actor: 'host' })
           if (failed.ok !== true) return failed
           next = failed
         } else if (candidate !== null) {

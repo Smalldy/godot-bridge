@@ -31,6 +31,7 @@ import { fingerprintVerify, verifyScriptPaths } from './merge.mjs'
 import { boardPath, projectIdOf, readRoleConfig } from './board.mjs'
 import { createSessionLookup } from './session-lookup.mjs'
 import { writePolicyFor } from './state.mjs'
+import { enterState } from './state-machine.mjs'
 import {
   ROLE_STAGE,
   ROLE_TEMPLATE_VARIABLES,
@@ -3102,7 +3103,13 @@ export function createDispatcher(ctx, options) {
       const blocked = await applyReap(projectPath, (board) => {
         const live = model.findTask(board, taskId)
         if (live === undefined || live === null || stageOfTask(live) !== stage) return null
-        const result = model.blockTask(board, taskId, state.clock(), 'system', continueLimit + ' consecutive default-continues on the ' + stage + ' stage; blocked for triage')
+        // T-198 sizes the streak from the decision policy; T-201 keeps the typed
+        // blocked reason + host actor the state machine needs for the same block.
+        const result = model.blockTask(board, taskId, state.clock(), 'system', continueLimit + ' consecutive default-continues on the ' + stage + ' stage; blocked for triage', null, {
+          reason: { code: 'stage-continue-limit', detail: String(continueLimit) + ' consecutive default-continues on the ' + stage + ' stage' },
+          auto: false,
+          actor: 'host',
+        })
         return result.ok === true ? result.board : null
       })
       await appendStageHistory(projectPath, taskId, '连续 ' + continueLimit + ' 次阶段超时默认继续，已自动阻塞；不再提问（运行中的 stage agent 未被强制终止，由其自行结束本轮）')
@@ -3171,22 +3178,20 @@ export function createDispatcher(ctx, options) {
             : removed === true
               ? 'dev timeout: retry development discarded the uncommitted work and removed ' + worktree + '; the next attempt starts from the target branch'
               : 'dev timeout: retry development stopped the worker but the worktree ' + worktree + ' could not be removed; its uncommitted changes were not discarded and the next attempt reuses or recreates it'
-        const tasks = board.tasks.map((row) => {
-          if (String(row.id) !== String(taskId)) return row
-          const history = Array.isArray(row.history) ? row.history : []
-          return Object.assign({}, row, {
-            status: 'pending',
-            assignee: null,
-            leaseUntil: null,
-            attempts: 0,
-            interruptions: 0,
-            dispatch: null,
-            history: history.concat([
-              { at: at, by: 'system', byName: null, from: 'running', to: 'pending', note: note },
-            ]),
-          })
-        })
-        return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
+        // T-201: the requeue is a DECLARED transition (T35 devRetry), not a
+        // hand-written status literal. enterState re-checks from=running and
+        // applies the row's effects (attempts/interruptions reset, dispatch and
+        // claim cleared); the history note is the caller payload, as it is for
+        // every other transition.
+        const entered = enterState(live, 'devRetry', { task: live, actor: 'host' }, state.clock())
+        if (entered.ok !== true) {
+          return { ok: false, code: entered.code, message: entered.message }
+        }
+        const history = Array.isArray(live.history) ? live.history : []
+        live.history = history.concat([
+          { at: at, by: 'system', byName: null, from: entered.from, to: entered.to, note: note },
+        ])
+        return { ok: true, board: Object.assign({}, board, { tasks: board.tasks }), events: [] }
       },
       writePolicyFor(projectPath),
     )

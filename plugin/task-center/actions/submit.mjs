@@ -73,7 +73,8 @@ export function createSubmitAction(deps) {
     const result = await writeTask(
       projectPath,
       id,
-      (board) => model.submitTask(board, id, input, clock(), context.by, writeByName(context)),
+      (board) =>
+        model.submitTask(board, id, input, clock(), context.by, writeByName(context), context !== undefined && context !== null && context.role === 'user' ? 'user' : 'worker'),
       context,
     )
     if (result.ok === true && prepared.mr !== null && prepared.mr !== undefined && prepared.mr.commitScope !== undefined) {

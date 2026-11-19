@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { createFakeTaskAgents, createRig, createTask, PROJECT } from './support/fixtures.mjs'
+import { createFakeGit, createFakeTaskAgents, createRig, createTask, PROJECT } from './support/fixtures.mjs'
 
 const require = createRequire(import.meta.url)
 const { createTaskCard } = require('../../client/src/views/task-card.cjs')
@@ -138,6 +138,11 @@ check('approveReview persists the structured ReviewRecord', () => {
 })
 
 const afterApprove = await boardTask(main.id)
+check('the board exposes state + the test phase after the approval', () => {
+  assert.equal(afterApprove.status, 'testing')
+  assert.equal(afterApprove.state, 'testing')
+  assert.equal(afterApprove.phase, 'test')
+})
 check('the board keeps the artifact summary and the host check fingerprint', () => {
   assert.ok(afterApprove.merge.artifact !== null && afterApprove.merge.artifact !== undefined)
   assert.match(afterApprove.merge.artifact.hash, /^sha256:/)
@@ -187,6 +192,7 @@ const failedFirst = await performAs(testerId, 'tester-x', 'failTest', Object.ass
 check('failTest persists the TestRecord and returns the card to running', () => {
   assert.equal(failedFirst.ok, true, JSON.stringify(failedFirst).slice(0, 900))
   assert.equal(failedFirst.task.status, 'running')
+  assert.equal(failedFirst.task.state, 'running')
   assert.equal(failedFirst.task.test.record.verdict, 'failed')
   assert.equal(failedFirst.task.test.record.probes.length, 1)
 })
@@ -244,6 +250,7 @@ const afterChanges = await boardTask(changesCard.id)
 check('requestChanges persists the record and renders the reasons from findings', () => {
   assert.equal(changes.ok, true, JSON.stringify(changes).slice(0, 900))
   assert.equal(afterChanges.status, 'running')
+  assert.equal(afterChanges.phase, 'implement')
   assert.equal(afterChanges.review.record.findings[0].severity, 'blocking')
   assert.match(afterChanges.review.reasons, /a\.mjs:9/)
   assert.match(afterChanges.review.reasons, /drop the silent catch/)
@@ -413,6 +420,201 @@ check('a bare legacy panel approveReview is still attributed as the human overri
   assert.equal(legacyApproved.ok, true, JSON.stringify(legacyApproved).slice(0, 900))
   assert.equal(legacyApproved.task.review.record.checked[0].criterion, 'human override from the task center panel')
 })
+
+
+// ── T-201 round 2: unblocking a stage-paused card re-provisions its round ────
+{
+  const reviewCard = await startCard('unblock restores the reviewer', PROBE_SUITE)
+  const beforeBlock = await boardTask(reviewCard.id)
+  const oldReviewer = beforeBlock.review.deliveredTo.id
+  const blocked = await rig.action('block', { id: reviewCard.id })
+  const unblocked = await rig.action('unblock', { id: reviewCard.id })
+  const restored = await boardTask(reviewCard.id)
+  check('unblock re-provisions the restored review round with a live reviewer', () => {
+    assert.equal(blocked.ok, true, JSON.stringify(blocked).slice(0, 500))
+    assert.equal(unblocked.ok, true, JSON.stringify(unblocked).slice(0, 800))
+    assert.equal(restored.status, 'reviewing')
+    assert.ok(restored.review.deliveredTo !== null && restored.review.deliveredTo !== undefined, 'no reviewer deliveredTo after unblock')
+    assert.notEqual(restored.review.deliveredTo.id, oldReviewer)
+    assert.equal(taskAgents.live.has(restored.review.deliveredTo.id), true, 'the re-provisioned reviewer is not live')
+    const startedAgain = taskAgents.calls.filter((entry) => entry.kind === 'startReviewer' && entry.taskId === reviewCard.id).pop()
+    assert.equal(startedAgain.agentId, restored.review.deliveredTo.id)
+  })
+
+  const testCard = await startCard('unblock restores the tester', PROBE_SUITE)
+  const approvedTestCard = await rig.action('approveReview', { id: testCard.id })
+  assert.equal(approvedTestCard.ok, true, JSON.stringify(approvedTestCard).slice(0, 800))
+  const beforeTestBlock = await boardTask(testCard.id)
+  const oldTester = beforeTestBlock.test.deliveredTo.id
+  const blockedTest = await rig.action('block', { id: testCard.id })
+  const unblockedTest = await rig.action('unblock', { id: testCard.id })
+  const restoredTest = await boardTask(testCard.id)
+  check('unblock re-provisions the restored open test round with a live tester', () => {
+    assert.equal(blockedTest.ok, true, JSON.stringify(blockedTest).slice(0, 500))
+    assert.equal(unblockedTest.ok, true, JSON.stringify(unblockedTest).slice(0, 800))
+    assert.equal(restoredTest.status, 'testing')
+    assert.ok(restoredTest.test.deliveredTo !== null && restoredTest.test.deliveredTo !== undefined, 'no tester deliveredTo after unblock')
+    assert.notEqual(restoredTest.test.deliveredTo.id, oldTester)
+    assert.equal(taskAgents.live.has(restoredTest.test.deliveredTo.id), true, 'the re-provisioned tester is not live')
+    const startedAgain = taskAgents.calls.filter((entry) => entry.kind === 'startTester' && entry.taskId === testCard.id).pop()
+    assert.equal(startedAgain.agentId, restoredTest.test.deliveredTo.id)
+  })
+}
+
+// ── T-201 round 2: a merge-* block clears the claim (INV-blocked), the host
+//    notifies the implementer, and THAT worker can refresh the request. A
+//    non-merge block or a stranger is still refused ───────────────────────────
+{
+  const conflictAgents = createFakeTaskAgents()
+  const conflictHeads = {}
+  const conflictGit = createFakeGit({ heads: conflictHeads })
+  const conflictRig = createRig({
+    git: conflictGit,
+    taskAgents: conflictAgents,
+    merger: {
+      async mergeRequest() {
+        return { ok: true, status: 'conflict', conflict: 'a.gd', output: null }
+      },
+    },
+  })
+  async function conflictBoardTask(id) {
+    const snap = await conflictRig.action('board')
+    assert.equal(snap.ok, true, JSON.stringify(snap).slice(0, 400))
+    return snap.tasks.filter((entry) => entry.id === id)[0]
+  }
+  function performOn(rigInstance, agentId, name, action, payload) {
+    return rigInstance.api.perform(action, payload, { projectPath: rigInstance.project, by: '@' + name, role: 'agent', agent: { id: agentId, name: name } })
+  }
+  const conflictTask = await createTask(conflictRig, {
+    title: 'merge conflict repair',
+    writeFiles: [],
+    acceptance: '- the conflicted file is repaired',
+    verification: { probes: [{ id: 'probe-conflict', command: 'node --test scripts/a.test.mjs' }] },
+  })
+  const conflictStarted = await conflictRig.action('start')
+  assert.equal(conflictStarted.ok, true, JSON.stringify(conflictStarted).slice(0, 500))
+  await conflictRig.settle()
+  const conflictSubmitted = await conflictRig.action('submit', { id: conflictTask.id, evidence: 'ready for review' })
+  assert.equal(conflictSubmitted.ok, true, JSON.stringify(conflictSubmitted).slice(0, 700))
+  const afterSubmit = await conflictBoardTask(conflictTask.id)
+  const conflictWorker = afterSubmit.assignee
+  assert.ok(conflictWorker !== null && typeof conflictWorker.session === 'string', 'the card has no implementer claim')
+  const approvedConflict = await conflictRig.action('approveReview', { id: conflictTask.id })
+  assert.equal(approvedConflict.ok, true, JSON.stringify(approvedConflict).slice(0, 700))
+  const passedConflict = await conflictRig.action('passTest', { id: conflictTask.id })
+  assert.equal(passedConflict.ok, true, JSON.stringify(passedConflict).slice(0, 700))
+  const readyToMerge = await conflictBoardTask(conflictTask.id)
+  assert.equal(readyToMerge.phase, 'merge', JSON.stringify(readyToMerge).slice(0, 400))
+  // The queue verifies the exact tested head; the fake branch head is that same
+  // commit, and the conflict is reported by the merge service.
+  conflictHeads[readyToMerge.worktree] = readyToMerge.merge.head
+  const conflicted = await conflictRig.action('mergeRequest', { id: conflictTask.id })
+  const blockedCard = await conflictBoardTask(conflictTask.id)
+  check('a merge conflict blocks the card and keeps the implementer as lastAssignee only', () => {
+    assert.equal(conflicted.ok, true, JSON.stringify(conflicted).slice(0, 900))
+    assert.equal(blockedCard.status, 'blocked')
+    assert.equal(blockedCard.blockedReason.code, 'merge-conflict')
+    assert.equal(blockedCard.assignee, null, 'a blocked card still shows a live claim')
+    assert.ok(blockedCard.lastAssignee !== null && blockedCard.lastAssignee !== undefined, 'the implementer identity was discarded')
+    assert.equal(blockedCard.lastAssignee.session, conflictWorker.session)
+    const notice = conflictAgents.calls.filter((entry) => entry.kind === 'send' && entry.agentId === conflictWorker.session).pop()
+    assert.ok(notice, 'the implementer was never told to repair the merge request')
+    assert.match(notice.text, /refreshMerge/)
+  })
+  // The worker repairs the branch and refreshes: T27 accepts the retained
+  // implementer even though the blocked card has no live claim.
+  conflictHeads[readyToMerge.worktree] = 'repaired-head'
+  const refreshedByWorker = await performOn(conflictRig, conflictWorker.session, conflictWorker.name, 'refreshMerge', { id: conflictTask.id })
+  const afterRefresh = await conflictBoardTask(conflictTask.id)
+  check('the notified implementer can refresh a merge-* block into review', () => {
+    assert.equal(refreshedByWorker.ok, true, JSON.stringify(refreshedByWorker).slice(0, 900))
+    assert.equal(afterRefresh.status, 'reviewing')
+    assert.equal(afterRefresh.blockedReason, null)
+    assert.equal(afterRefresh.merge.status, 'open')
+    assert.equal(afterRefresh.merge.head, 'repaired-head')
+    assert.ok(afterRefresh.review.deliveredTo !== null && afterRefresh.review.deliveredTo !== undefined, 'the refreshed round has no reviewer')
+    assert.equal(conflictAgents.live.has(afterRefresh.review.deliveredTo.id), true, 'the refreshed reviewer is not live')
+  })
+  const stranger = await performOn(conflictRig, 'agent-stranger', 'worker-stranger', 'refreshMerge', { id: conflictTask.id })
+  check('a stranger still cannot refresh the card', () => {
+    assert.equal(stranger.ok, false)
+    assert.equal(stranger.code, 'not-assignee')
+  })
+  conflictRig.scheduler.dispose()
+}
+
+// ── T-201 round 3: a candidate merge conflict/failed is a RECORDED merge
+//    outcome (T22/T23), not an opaque failure the sweep retries forever ───────
+for (const outcome of ['conflict', 'failed']) {
+  const candidateAgents = createFakeTaskAgents()
+  const candidateRig = createRig({
+    taskAgents: candidateAgents,
+    merger: {
+      async createCandidate(task) {
+        return { ok: true, path: '/demo-project/.worktrees/test-' + task.id, base: 'base-candidate', head: 'candidate-head-1', target: 'main', actualFiles: [] }
+      },
+      async mergeCandidate() {
+        return {
+          ok: true,
+          status: outcome,
+          conflict: outcome === 'conflict' ? 'a.gd' : null,
+          output: outcome === 'failed' ? 'the verification command failed' : null,
+          mergeCommit: null,
+        }
+      },
+      async discardCandidate() {
+        return { ok: true }
+      },
+    },
+  })
+  async function candidateBoardTask(id) {
+    const snap = await candidateRig.action('board')
+    assert.equal(snap.ok, true, JSON.stringify(snap).slice(0, 400))
+    return snap.tasks.filter((entry) => entry.id === id)[0]
+  }
+  const candidateCard = await createTask(candidateRig, {
+    title: 'candidate merge ' + outcome,
+    writeFiles: [],
+    acceptance: '- the candidate is accepted',
+    verification: { probes: [{ id: 'probe-candidate', command: 'node --test scripts/a.test.mjs' }] },
+  })
+  const candidateStarted = await candidateRig.action('start')
+  assert.equal(candidateStarted.ok, true, JSON.stringify(candidateStarted).slice(0, 500))
+  await candidateRig.settle()
+  const candidateSubmitted = await candidateRig.action('submit', { id: candidateCard.id, evidence: 'ready' })
+  assert.equal(candidateSubmitted.ok, true, JSON.stringify(candidateSubmitted).slice(0, 700))
+  const candidateApproved = await candidateRig.action('approveReview', { id: candidateCard.id })
+  assert.equal(candidateApproved.ok, true, JSON.stringify(candidateApproved).slice(0, 700))
+  const beforePass = await candidateBoardTask(candidateCard.id)
+  const candidateImplementer = beforePass.assignee
+  assert.ok(candidateImplementer !== null && typeof candidateImplementer.session === 'string', 'the candidate card has no implementer')
+  const candidatePassed = await candidateRig.action('passTest', { id: candidateCard.id })
+  const candidateBlocked = await candidateBoardTask(candidateCard.id)
+  check('a candidate merge ' + outcome + ' is recorded as a merge-* block', () => {
+    assert.equal(candidatePassed.ok, true, JSON.stringify(candidatePassed).slice(0, 900))
+    assert.equal(candidateBlocked.status, 'blocked')
+    assert.equal(candidateBlocked.blockedReason.code, 'merge-' + outcome)
+    assert.equal(candidateBlocked.blockedReason.from, 'testing')
+    assert.equal(candidateBlocked.blockedReason.phase, 'merge')
+    assert.equal(candidateBlocked.assignee, null, 'the blocked card still has a live claim')
+    assert.ok(candidateBlocked.lastAssignee !== null && candidateBlocked.lastAssignee !== undefined, 'the implementer identity was discarded')
+    assert.equal(candidateBlocked.lastAssignee.session, candidateImplementer.session)
+    assert.equal(candidateBlocked.merge.status, outcome)
+    assert.equal(candidateBlocked.test.status, 'passed')
+    assert.equal(candidateBlocked.phase, null)
+  })
+  check('the candidate ' + outcome + ' notifies the implementer to repair the request', () => {
+    const notice = candidateAgents.calls.filter((entry) => entry.kind === 'send' && entry.agentId === candidateImplementer.session).pop()
+    assert.ok(notice, 'the implementer was never told about the merge outcome')
+    assert.match(notice.text, /refreshMerge/)
+  })
+  const retried = await candidateRig.action('mergeRequest', { id: candidateCard.id })
+  check('the sweep cannot retry a candidate ' + outcome + ' as if the card were still eligible', () => {
+    assert.equal(retried.ok, false)
+    assert.equal(retried.code, 'no-open-merge')
+  })
+  candidateRig.scheduler.dispose()
+}
 
 const failedChecks = checks.filter((row) => !row.ok)
 for (const row of checks) {

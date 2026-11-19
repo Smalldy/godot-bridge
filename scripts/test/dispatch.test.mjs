@@ -198,6 +198,12 @@ async function boardOf(rig) {
   }
   const finalRow = (await boardOf(rig)).tasks.filter((entry) => entry.id === task.id)[0]
   check('the third consecutive default continue auto-blocks the card', finalRow.status === 'blocked', String(finalRow.status))
+  // T-201: the block is a typed state-machine entry, not a bare status.
+  check(
+    'the auto-block carries the T-201 typed reason',
+    finalRow.blockedReason !== null && finalRow.blockedReason !== undefined && finalRow.blockedReason.code === 'stage-continue-limit' && finalRow.blockedReason.from === 'running' && finalRow.blockedReason.auto === false,
+    JSON.stringify(finalRow.blockedReason),
+  )
   check('the auto-block is written to the history', blockedNotes.some((note) => note.indexOf('连续 ' + String(STAGE_CONTINUE_LIMIT) + ' 次') >= 0), JSON.stringify(blockedNotes))
   await rig.settle()
   const afterBlock = await rig.api.decisions.pending(rig.project)

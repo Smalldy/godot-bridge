@@ -7,11 +7,14 @@
  * scheduler all call these same functions, which keeps the three surfaces from
  * inventing their own rules.
  *
- * Statuses:
+ * Statuses (T-201): the state set and every legal move live in state-machine.mjs.
+ * This module never decides a transition itself: it asks enterState() for it.
  *   pending    not dispatched; readiness is DERIVED from dependsOn
  *   running    owned by a worker, with a lease
+ *   reviewing  submitted; a review round is open
+ *   testing    a test round is open (test.passed + merge.open projects phase 'merge')
  *   done       finished; satisfies dependents
- *   blocked    needs a human: manual block, dead worker or exhausted attempts
+ *   blocked    paused for a typed reason (blockedReason), waiting for a human
  *   cancelled  abandoned
  *
  * Dependencies point from a task to its prerequisites: B.dependsOn = [A] means
@@ -39,6 +42,8 @@ import {
   validateCardModel,
 } from './schema.mjs'
 import { normaliseReviewRecord, normaliseTestRecord } from './stage-contract.mjs'
+// T-201: every card status write goes through the state machine (one table).
+import { blockedReasonOf, enterState, phaseOf, restoreTargetOf, transition } from './state-machine.mjs'
 
 const iso = (now) => new Date(now).toISOString()
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -92,12 +97,6 @@ function executorOf(assignee, now) {
     retiredAt: null,
     retiredReason: null,
   }
-}
-
-/** Mark every live executor entry retired (the caller replaces them). */
-function retireExecutorsIn(target, now, reason) {
-  const list = Array.isArray(target.executors) ? target.executors : []
-  target.executors = list.map((entry) => (entry.retiredAt !== null && entry.retiredAt !== undefined ? entry : Object.assign({}, entry, { retiredAt: iso(now), retiredReason: String(reason) })))
 }
 
 /** Append the executor this claim hands the task to, keeping the list bounded. */
@@ -234,7 +233,9 @@ export function createTask(board, input, now, by) {
     title: title,
     spec: String(input.spec === undefined ? '' : input.spec),
     acceptance: String(input.acceptance === undefined ? '' : input.acceptance),
-    status: 'pending',
+    // T-201: filled by the state machine below (create -> pending); a literal
+    // here would be a second status writer.
+    status: null,
     kind: kind,
     report: null,
     priority: Number.isFinite(input.priority) ? Math.floor(input.priority) : 0,
@@ -272,6 +273,9 @@ export function createTask(board, input, now, by) {
       },
     ],
   }
+  // T-201: the ONE status write of a create.
+  const created = enterState(task, 'create', { task: task, actor: 'agent' }, now)
+  if (created.ok !== true) return fail(created.code, created.message)
   next.tasks.push(task)
   return done(next, [{ kind: 'created', id: id, who: by }], { task: task })
 }
@@ -340,6 +344,9 @@ export function updateTask(board, id, input, now, by) {
       'verify must be { command: "a shell command", timeoutMs?: number } or null; got ' + JSON.stringify(input.verify),
     )
   }
+  // T-201 T08: an update is a declared same-state event; it may never move a card.
+  const stays = transition('update', task.status, { task: task })
+  if (stays.ok !== true) return fail(stays.code, stays.message)
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   const notes = []
@@ -576,17 +583,17 @@ export function claimTask(board, id, worker, now) {
   // worktree, so those fields are cleared and only the reason remains.
   const worktree = worker.worktree === undefined || worker.worktree === null ? {} : worker.worktree
   const adopted = worker.adopt === undefined || worker.adopt === null ? null : worker.adopt
-  target.status = 'running'
+  // T-201: pending -> running through the table (the claim is still the mutex).
+  const entered = enterState(target, 'claim', { task: target, actor: 'scheduler', dependency: dependency }, now)
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   target.lastAssignee = null
   target.assignee = {
     name: worker.name === undefined ? '@worker' : String(worker.name),
     session: worker.session === undefined || worker.session === null ? null : String(worker.session),
   }
   target.leaseUntil = iso(now + TASK_LEASE_MS)
-  target.attempts = target.attempts + 1
-  // One live executor per task: everything handed this card before is retired by
-  // this claim, so "live executors" is always 1 for a healthy running task.
-  retireExecutorsIn(target, now, 'superseded by ' + target.assignee.name)
+  // One live executor per task: the claim effect already retired everything this
+  // card was handed before, so the ledger always has exactly one live entry.
   pushExecutor(target, target.assignee, now)
   target.base = typeof worktree.base === 'string' ? worktree.base : null
   // T-156: the audit baseline for this attempt. The dispatcher passes the SAME
@@ -701,16 +708,18 @@ export function interruptDispatch(board, id, error, now, options) {
   const target = findTaskIn(next.tasks, id)
   const limit = Number.isFinite(opts.maxInterruptions) && opts.maxInterruptions >= 1 ? Math.floor(opts.maxInterruptions) : INTERRUPTION_LIMIT
   const reason = error === null || error === undefined || String(error) === '' ? 'worker lost (host restart)' : String(error)
-  // The claim charged one attempt; the worker never ran, so give it back.
-  target.attempts = Math.max(0, target.attempts - 1)
-  target.interruptions = (Number.isFinite(target.interruptions) ? target.interruptions : 0) + 1
+  // The claim charged one attempt; the worker never ran, so the transition refunds
+  // it. Five consecutive interruptions with nothing committed stop the loop.
   const committed = typeof target.commit === 'string' && target.commit !== ''
-  const tooMany = target.interruptions >= limit && committed !== true
-  target.status = tooMany ? 'blocked' : 'pending'
-  target.lastAssignee = target.assignee === null || target.assignee === undefined ? target.lastAssignee : Object.assign({}, target.assignee)
-  retireExecutorsIn(target, now, 'interrupted: ' + reason)
-  target.assignee = null
-  target.leaseUntil = null
+  const nextInterruptions = (Number.isFinite(target.interruptions) ? target.interruptions : 0) + 1
+  const tooMany = nextInterruptions >= limit && committed !== true
+  const entered = enterState(
+    target,
+    'interrupt',
+    { task: target, actor: 'scheduler', to: tooMany ? 'blocked' : 'pending', blockedDetail: reason },
+    now,
+  )
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
     status: tooMany ? 'exhausted' : 'interrupted',
     error: tooMany ? 'interrupted-too-often' : reason,
@@ -820,18 +829,29 @@ export function noteReuseRefused(board, id, now, refused, reason) {
 export function failDispatch(board, id, error, now, maxAttempts) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
+  if (task.status !== 'running') return fail('not-running', id + ' is ' + task.status + ', not running')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
   const limit = Number.isFinite(maxAttempts) ? maxAttempts : target.maxAttempts
   const exhausted = target.attempts >= limit
-  target.status = exhausted ? 'blocked' : 'pending'
-  target.lastAssignee = target.assignee === null || target.assignee === undefined ? target.lastAssignee : Object.assign({}, target.assignee)
+  // T-201 (T03b): running -> pending, or blocked once the attempt budget is gone.
+  // The function has no production caller today (document G10); it stays exported,
+  // so its write is declared in the table instead of being a second writer.
+  const entered = enterState(
+    target,
+    'dispatchFailed',
+    {
+      task: target,
+      actor: 'scheduler',
+      to: exhausted ? 'blocked' : 'pending',
+      blockedDetail: error === null || error === undefined ? 'dispatch failed' : String(error),
+    },
+    now,
+  )
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   // A REAL failure is not an interruption: the streak restarts, so five host
   // restarts can never be charged against a worker that actually broke something.
   target.interruptions = 0
-  retireExecutorsIn(target, now, 'dispatch failed')
-  target.assignee = null
-  target.leaseUntil = null
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
     status: exhausted ? 'exhausted' : 'failed',
     error: error === null || error === undefined ? 'dispatch failed' : String(error),
@@ -872,10 +892,19 @@ export function expireLeases(board, now, maxAttempts, options) {
     const limit = Number.isFinite(maxAttempts) ? maxAttempts : target.maxAttempts
     const exhausted = target.attempts >= limit
     const who = target.assignee === null ? 'unknown' : target.assignee.name
-    target.status = exhausted ? 'blocked' : 'pending'
-    target.lastAssignee = target.assignee === null || target.assignee === undefined ? target.lastAssignee : Object.assign({}, target.assignee)
-    target.assignee = null
-    target.leaseUntil = null
+    // T-201: running -> pending (or blocked when the attempt budget is spent).
+    const entered = enterState(
+      target,
+      'leaseExpired',
+      {
+        task: target,
+        actor: 'scheduler',
+        to: exhausted ? 'blocked' : 'pending',
+        blockedDetail: typeof opts.reason === 'string' && opts.reason !== '' ? opts.reason : 'lease expired',
+      },
+      now,
+    )
+    if (entered.ok !== true) return fail(entered.code, entered.message)
     target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, {
       status: exhausted ? 'exhausted' : 'lease-expired',
       error: typeof opts.error === 'string' && opts.error !== '' ? opts.error : 'lease expired',
@@ -908,7 +937,7 @@ export function expireLeases(board, now, maxAttempts, options) {
  * test record is kept for context; it is not a decision on this head, and the
  * merge gate only accepts the testing phase with a passed test.
  */
-export function submitTask(board, id, input, now, by, byName) {
+export function submitTask(board, id, input, now, by, byName, actor) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   // T-131: an investigation never merges code; its one completion action is a
@@ -954,8 +983,9 @@ export function submitTask(board, id, input, now, by, byName) {
   // A submission is proof the worker ran: the infrastructure-interruption streak
   // (and the attempt refunds that came with it) starts over.
   target.interruptions = 0
-  target.status = 'reviewing'
-  target.leaseUntil = null
+  // T-201: running -> reviewing through the table (it clears the lease).
+  const entered = enterState(target, 'submit', { task: target, actor: actor === undefined ? 'worker' : actor }, now)
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   target.review = {
     status: 'pending',
     by: by,
@@ -992,7 +1022,7 @@ export function submitTask(board, id, input, now, by, byName) {
  * failTest in review-verdicts) and old boards can never throw here. A future
  * direct caller of the model is NOT allowed to skip the action layer.
  */
-export function approveReview(board, id, now, by, byName, record) {
+export function approveReview(board, id, now, by, byName, record, actor) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no review phase (finish it with report)')
@@ -1000,6 +1030,10 @@ export function approveReview(board, id, now, by, byName, record) {
   if (task.review === null || task.review.status !== 'pending') return fail('no-pending-review', id + ' has no review decision to approve')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
+  // T-201: reviewing -> testing through the table (the review round must still be
+  // open, which is checked before the record is closed below).
+  const entered = enterState(target, 'approveReview', { task: target, actor: actor === undefined ? 'reviewer' : actor }, now)
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   target.review = Object.assign({}, target.review, { status: 'approved', by: by, byName: byName === undefined ? null : byName, at: iso(now) })
   // T-191: the validated ReviewRecord is the durable hand-off to the tester.
   const reviewRecord = normaliseReviewRecord(record)
@@ -1012,7 +1046,6 @@ export function approveReview(board, id, now, by, byName, record) {
     evidence: null,
     attempt: (target.test === null ? 0 : target.test.attempt) + 1,
   }
-  target.status = 'testing'
   touch(target, now)
   pushHistory(target, {
     at: iso(now),
@@ -1026,7 +1059,7 @@ export function approveReview(board, id, now, by, byName, record) {
 }
 
 /** Same T-191 contract note as approveReview: record validation lives in the action layer. */
-export function requestChanges(board, id, reasons, now, by, byName, record) {
+export function requestChanges(board, id, reasons, now, by, byName, record, actor) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no review phase (finish it with report)')
@@ -1036,13 +1069,20 @@ export function requestChanges(board, id, reasons, now, by, byName, record) {
   if (text === '') return fail('missing-reasons', 'requestChanges needs reasons the worker can act on')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
+  // T-201: reviewing -> running (or pending with no implementer) through the
+  // table; the open review round must still be the one being decided.
+  const entered = enterState(
+    target,
+    'requestChanges',
+    { task: target, actor: actor === undefined ? 'reviewer' : actor, hasImplementer: target.assignee !== null && target.assignee !== undefined },
+    now,
+  )
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   target.review = Object.assign({}, target.review, { status: 'changes-requested', by: by, byName: byName === undefined ? null : byName, at: iso(now), reasons: text })
   // T-191: the findings ARE the reasons; the record keeps them structured so the
   // next round and the board can show what was requested, not just a blob.
   const changesRecord = normaliseReviewRecord(record)
   if (changesRecord !== null) target.review.record = changesRecord
-  target.status = 'running'
-  target.leaseUntil = iso(now + TASK_LEASE_MS)
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, { status: 'changes-requested', at: iso(now) })
   touch(target, now)
   pushHistory(target, {
@@ -1066,7 +1106,7 @@ export function requestChanges(board, id, reasons, now, by, byName, record) {
  * invalid/missing one to "no record" so the host's own failTest paths stay
  * usable. A future direct caller is NOT allowed to skip the action layer.
  */
-export function passTest(board, id, now, by, byName, record) {
+export function passTest(board, id, now, by, byName, record, actor) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no test phase (finish it with report)')
@@ -1074,6 +1114,10 @@ export function passTest(board, id, now, by, byName, record) {
   if (task.test === null || task.test.status !== 'pending') return fail('no-pending-test', id + ' has no test decision to pass')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
+  // T-201: the pass is a transition of the SAME testing state; the projection
+  // (phase 'merge') and the merge gate are derived from test.status + merge.status.
+  const entered = enterState(target, 'passTest', { task: target, actor: actor === undefined ? 'tester' : actor }, now)
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   target.test = Object.assign({}, target.test, { status: 'passed', by: by, byName: byName === undefined ? null : byName, at: iso(now) })
   // T-191: the executed probes are the verdict's durable evidence.
   const passedRecord = normaliseTestRecord(record)
@@ -1091,7 +1135,7 @@ export function passTest(board, id, now, by, byName, record) {
 }
 
 /** Same T-191 contract note as passTest: record validation lives in the action layer. */
-export function failTest(board, id, evidence, now, by, byName, record) {
+export function failTest(board, id, evidence, now, by, byName, record, options) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.kind === INVESTIGATE_KIND) return fail('not-a-dev-task', id + ' is an investigation card; it has no test phase (finish it with report)')
@@ -1101,11 +1145,19 @@ export function failTest(board, id, evidence, now, by, byName, record) {
   if (text === '') return fail('missing-evidence', 'failTest needs the evidence the worker can act on')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
+  // T-201: testing -> running (or pending with no implementer) through the table;
+  // the failed round is a final record, and the merge request is voided.
+  const opts = options === undefined || options === null ? {} : options
+  const entered = enterState(
+    target,
+    'failTest',
+    { task: target, actor: opts.actor === undefined ? (by === 'host' || by === 'system' ? 'host' : 'tester') : opts.actor, hasImplementer: target.assignee !== null && target.assignee !== undefined },
+    now,
+  )
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   target.test = Object.assign({}, target.test, { status: 'failed', by: by, byName: byName === undefined ? null : byName, at: iso(now), evidence: text })
   const failedRecord = normaliseTestRecord(record)
   if (failedRecord !== null) target.test.record = failedRecord
-  target.status = 'running'
-  target.leaseUntil = iso(now + TASK_LEASE_MS)
   target.dispatch = Object.assign({}, target.dispatch === null ? {} : target.dispatch, { status: 'test-failed', at: iso(now) })
   touch(target, now)
   pushHistory(target, {
@@ -1119,20 +1171,17 @@ export function failTest(board, id, evidence, now, by, byName, record) {
   return done(next, [{ kind: 'test-failed', id: id, who: by }], { task: target })
 }
 
-export function cancelTask(board, id, now, by, note, byName) {
+export function cancelTask(board, id, now, by, note, byName, options) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status === 'cancelled') return fail('already-cancelled', id + ' is already cancelled')
   if (task.status === 'done') return fail('done', id + ' is done; reopen it before cancelling')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
-  target.status = 'cancelled'
-  // Keep the last owner: the assignee is cleared here, but the soft refusal has
-  // to recognise this worker if it calls again on the cancelled task.
-  target.lastAssignee = target.assignee === null || target.assignee === undefined ? null : Object.assign({}, target.assignee)
-  retireExecutorsIn(target, now, 'task cancelled')
-  target.assignee = null
-  target.leaseUntil = null
+  // T-201: <any live state> -> cancelled through the table (it keeps the last
+  // owner so the soft refusal still recognises the worker that was cancelled).
+  const entered = enterState(target, 'cancel', { task: target, actor: (options === undefined || options === null ? {} : options).actor, blockedDetail: note }, now)
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   touch(target, now)
   pushHistory(target, { at: iso(now), by: by, byName: byName === undefined ? null : byName, from: task.status, to: 'cancelled', note: note === undefined ? 'cancelled' : String(note) })
   return done(next, [{ kind: 'cancelled', id: id, who: by }], { task: target })
@@ -1184,6 +1233,9 @@ export function reportTask(board, id, input, now, by, byName) {
   }
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
+  // T-201: running -> done through the table (investigation report only).
+  const entered = enterState(target, 'report', { task: target, actor: by === 'user' || by === '@user' ? 'user' : 'worker' }, now)
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   target.report = {
     summary: summary,
     body: truncateBytes(bodyText, REPORT_LIMITS.bodyBytes),
@@ -1194,12 +1246,7 @@ export function reportTask(board, id, input, now, by, byName) {
     by: by === undefined || by === null ? null : String(by),
     byName: byName === undefined || byName === null || byName === '' ? null : String(byName),
   }
-  target.status = 'done'
-  target.lastAssignee = target.assignee === null || target.assignee === undefined ? null : Object.assign({}, target.assignee)
-  target.assignee = null
-  target.leaseUntil = null
   // No merge request, ever: target only served as the scratch base.
-  target.dispatch = null
   touch(target, now)
   pushHistory(target, {
     at: iso(now),
@@ -1212,7 +1259,7 @@ export function reportTask(board, id, input, now, by, byName) {
   return done(next, [{ kind: 'reported', id: id, who: by }], { task: target })
 }
 
-export function reopenTask(board, id, now, by, note, byName) {
+export function reopenTask(board, id, now, by, note, byName, options) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'blocked') {
@@ -1220,22 +1267,13 @@ export function reopenTask(board, id, now, by, note, byName) {
   }
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
-  target.status = 'pending'
-  target.assignee = null
-  target.leaseUntil = null
-  target.attempts = 0
-  // A reopened task starts over: the interruption streak and the executor ledger
-  // are history too, otherwise a triaged card would block again on the next restart.
-  target.interruptions = 0
-  target.executors = []
-  target.dispatch = null
-  // A reopened task starts the phase machine from scratch.
-  target.review = null
-  target.test = null
   // T-131: an investigation's previous report is history, not current state; the
   // reopened card must be investigated again before it can be reported.
   const hadReport = target.report !== null && target.report !== undefined
-  target.report = null
+  // T-201: a new generation through the table: every phase record and the merge
+  // request are cleared, and a merged candidate's git identity is dropped with it.
+  const entered = enterState(target, 'reopen', { task: target, actor: (options === undefined || options === null ? null : options.actor) }, now)
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   touch(target, now)
   const reopenNote = note === undefined ? 'reopened' : String(note)
   pushHistory(target, {
@@ -1249,31 +1287,77 @@ export function reopenTask(board, id, now, by, note, byName) {
   return done(next, [{ kind: 'reopened', id: id, who: by }], { task: target })
 }
 
-export function blockTask(board, id, now, by, note, byName) {
+export function blockTask(board, id, now, by, note, byName, options) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status === 'done' || task.status === 'cancelled') return fail('closed', id + ' is ' + task.status)
   if (task.status === 'blocked') return fail('already-blocked', id + ' is already blocked')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
-  target.status = 'blocked'
-  target.lastAssignee = target.assignee === null || target.assignee === undefined ? null : Object.assign({}, target.assignee)
-  retireExecutorsIn(target, now, 'task blocked')
-  target.assignee = null
-  target.leaseUntil = null
+  // T-201: every non-closed, non-blocked state -> blocked through the table, with
+  // a TYPED reason (merge-conflict/merge-failed/.../manual-block). This is what
+  // stops a merge result from hiding behind status='testing'.
+  const opts = options === undefined || options === null ? {} : options
+  const reason = opts.reason === undefined || opts.reason === null ? null : typeof opts.reason === 'string' ? { code: opts.reason } : opts.reason
+  const entered = enterState(
+    target,
+    'block',
+    {
+      task: target,
+      actor: (options === undefined || options === null ? null : options.actor),
+      blockedCode: reason !== null && typeof reason.code === 'string' ? reason.code : undefined,
+      blockedDetail: reason !== null && typeof reason.detail === 'string' && reason.detail !== '' ? reason.detail : note,
+      auto: opts.auto === true,
+    },
+    now,
+  )
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   touch(target, now)
   pushHistory(target, { at: iso(now), by: by, byName: byName === undefined ? null : byName, from: task.status, to: 'blocked', note: note === undefined ? 'blocked' : String(note) })
   return done(next, [{ kind: 'blocked', id: id, who: by }], { task: target })
 }
 
-export function unblockTask(board, id, now, by, note, byName) {
+/**
+ * T-201 T28: resume a paused card WITHOUT discarding the round it paused in.
+ * blockedFrom=reviewing/testing restores the same phase and is refused when the
+ * merge request was resolved (merge-unresolved: only refreshMerge) or the paused
+ * round is no longer the recorded one (phase-record-mismatch). blockedFrom
+ * pending/running returns to the pool. Unlike retry/reopen this resets neither
+ * attempts nor the round counters.
+ */
+export function unblockTask(board, id, now, by, note, byName, options) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'blocked') return fail('not-blocked', id + ' is ' + task.status + ', not blocked')
-  return reopenTask(board, id, now, by, note === undefined ? 'unblocked' : note, byName)
+  const next = clone(board)
+  const target = findTaskIn(next.tasks, id)
+  const restoreTo = restoreTargetOf(target)
+  const entered = enterState(
+    target,
+    'unblock',
+    { task: target, actor: (options === undefined || options === null ? null : options.actor), restoreTo: restoreTo },
+    now,
+  )
+  if (entered.ok !== true) return fail(entered.code, entered.message)
+  touch(target, now)
+  pushHistory(target, {
+    at: iso(now),
+    by: by,
+    byName: byName === undefined ? null : byName,
+    from: 'blocked',
+    to: target.status,
+    note: (note === undefined ? 'unblocked' : String(note)) + ' (restored to ' + target.status + ')',
+  })
+  return done(next, [{ kind: 'unblocked', id: id, who: by, restoredTo: restoreTo }], { task: target, restoredTo: restoreTo })
 }
 
-export function retryTask(board, id, now, by, note, byName) {
+/**
+ * T-201 T29: retry a paused card from blockedFrom pending/running. It resets the
+ * attempt/interruption budget and voids the merge request but KEEPS the review/
+ * test round records (the next submit opens a new round); a review-round-limit
+ * block is refused (only reopen escapes it).
+ */
+export function retryTask(board, id, now, by, note, byName, options) {
   const task = findTask(board, id)
   if (task === undefined) return fail('unknown-task', 'no task with id ' + String(id))
   if (task.status !== 'blocked' && task.status !== 'pending') {
@@ -1281,15 +1365,8 @@ export function retryTask(board, id, now, by, note, byName) {
   }
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
-  target.status = 'pending'
-  target.assignee = null
-  target.leaseUntil = null
-  target.attempts = 0
-  // Retrying is an explicit human decision: the interruption streak and the
-  // executor ledger are cleared so the card cannot block on old history.
-  target.interruptions = 0
-  target.executors = []
-  target.dispatch = null
+  const entered = enterState(target, 'retry', { task: target, actor: (options === undefined || options === null ? null : options.actor) }, now)
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   touch(target, now)
   pushHistory(target, { at: iso(now), by: by, byName: byName === undefined ? null : byName, from: task.status, to: 'pending', note: note === undefined ? 'retry requested' : String(note) })
   return done(next, [{ kind: 'retried', id: id, who: by }], { task: target })
@@ -1305,7 +1382,9 @@ export function renewLeases(board, owner, now) {
     const sessionMatch = owner.session !== undefined && owner.session !== null && target.assignee.session === owner.session
     const nameMatch = owner.name !== undefined && owner.name !== null && target.assignee.name === owner.name
     if (!sessionMatch && !nameMatch) continue
-    target.leaseUntil = iso(now + TASK_LEASE_MS)
+    // T-201 T32: worker activity is a heartbeat of the same running card.
+    const entered = enterState(target, 'heartbeat', { task: target, actor: 'scheduler' }, now)
+    if (entered.ok !== true) continue
     touch(target, now)
     renewed += 1
   }
@@ -1333,7 +1412,9 @@ export function extendLease(board, id, now, options) {
   if (task.status !== 'running') return fail('not-running', id + ' is ' + task.status + ', not running')
   const next = clone(board)
   const target = findTaskIn(next.tasks, id)
-  target.leaseUntil = iso(now + TASK_LEASE_MS)
+  // T-201 T32: the heartbeat is a declared running -> running transition.
+  const entered = enterState(target, 'heartbeat', { task: target, actor: 'scheduler' }, now)
+  if (entered.ok !== true) return fail(entered.code, entered.message)
   touch(target, now)
   pushHistory(target, {
     at: iso(now),
@@ -1377,7 +1458,10 @@ export function renewRunningLeases(board, now, options) {
     const startedAt = attemptStartedAt(target)
     if (startedAt !== null && now - startedAt >= maxExtensionMs) continue
     if (allow !== null && allow(target) !== true) continue
-    target.leaseUntil = iso(now + TASK_LEASE_MS)
+    // T-201 T32: the bulk heartbeat uses the same running -> running row as the
+    // single extension, so the lease write has one declared owner too.
+    const entered = enterState(target, 'heartbeat', { task: target, actor: 'host' }, now)
+    if (entered.ok !== true) continue
     touch(target, now)
     renewed.push(target.id)
   }
@@ -1418,7 +1502,12 @@ export function summary(board, task, now) {
   return {
     id: task.id,
     title: task.title,
+    // T-201: state is the persisted authority; phase is the derived stage
+    // projection (a tested card waiting for its merge reads phase 'merge').
     status: task.status,
+    state: task.status,
+    phase: phaseOf(task),
+    blockedReason: blockedReasonOf(task),
     kind: task.kind === undefined ? 'dev' : task.kind,
     // The summary poll carries only the report HEADLINE; the body/evidence ride on
     // /task (detail) and the full markdown lives in .agents/reports/<id>.md.

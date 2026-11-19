@@ -136,10 +136,12 @@ export function createTestVerdictActions(deps) {
       projectPath,
       id,
       (board) => {
+        // T-201: the verdict's actor is the delivery role (or the user override).
+        const actor = context !== undefined && context !== null && context.role === 'user' ? 'user' : 'tester'
         const decided =
           action === 'passTest'
-            ? model.passTest(board, id, clock(), context.by, writeByName(context), testRecord)
-            : model.failTest(board, id, evidence, clock(), context.by, writeByName(context), testRecord)
+            ? model.passTest(board, id, clock(), context.by, writeByName(context), testRecord, actor)
+            : model.failTest(board, id, evidence, clock(), context.by, writeByName(context), testRecord, { actor: actor })
         if (decided.ok !== true) return decided
         if (action === 'passTest' && evidence !== '') {
           const task = model.findTask(decided.board, id)

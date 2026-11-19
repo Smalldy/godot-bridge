@@ -33,6 +33,8 @@ import {
   validateRoleProfile,
 } from './schema.mjs'
 import * as model from './service.mjs'
+// T-201: the sole card-status write entry (base-only drift is a transition too).
+import { blockedReasonOf, enterState, isMergeReason } from './state-machine.mjs'
 import * as locks from './locks.mjs'
 import { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from './actions/registry.mjs'
 import { createReadActions } from './actions/read.mjs'
@@ -467,7 +469,11 @@ export function createApi(ctx, options) {
     if (task === null || task === undefined) return
     const merge = task.merge
     if (merge === null || merge === undefined || typeof merge !== 'object') return
-    const ownerId = task.assignee === null || task.assignee === undefined || typeof task.assignee.session !== 'string' ? null : task.assignee.session
+    // T-201: a merge-* block clears the claim (INV-blocked) and keeps the
+    // implementer as lastAssignee; the repair notice must reach that worker, not
+    // be dropped because the live assignee is correctly gone.
+    const claimed = task.assignee === null || task.assignee === undefined ? (task.lastAssignee === null || task.lastAssignee === undefined ? null : task.lastAssignee) : task.assignee
+    const ownerId = claimed === null || typeof claimed.session !== 'string' ? null : claimed.session
     if (ownerId === null) return
     if (merge.status === 'merged') {
       const commit = merge.mergeCommit === null || merge.mergeCommit === undefined ? '' : ' as ' + String(merge.mergeCommit)
@@ -539,6 +545,9 @@ export function createApi(ctx, options) {
     // T-183: cancel/block/reopen/retry dispose the card's stage children, not
     // only interrupt its worker.
     stageAgents: stageAgents,
+    // T-201: unblocking a reviewing/testing card restores the paused round; the
+    // same provisioning a takeover uses starts a live reviewer/tester for it.
+    redeliverStage: redeliverStage,
   })
   const mergeActions = createMergeActions({
     mergeRefusal: mergeRefusal,
@@ -1213,6 +1222,43 @@ export function createApi(ctx, options) {
       }
       return recorded
     }
+    // T22/T23: a candidate merge that conflicts or fails is a MERGE OUTCOME, not
+    // an opaque failure. Record it through the state machine so the card leaves
+    // testing (blocked + typed merge-* reason), its claim is cleared with the
+    // implementer kept as lastAssignee, and the worker the host must notify is
+    // told to repair the branch. Returning a bare failure left the card
+    // testing + test.passed + merge.open (still eligible), so the sweep retried
+    // the same conflict forever and nobody was ever asked to fix it.
+    if (outcome.status === 'conflict' || outcome.status === 'failed') {
+      if (isAbandoned()) return failure('action-abandoned', 'the merge queue turn for ' + id + ' was abandoned after its bound; nothing was recorded')
+      if (Date.now() > deadlineAt) return actionTimeoutFailure('mergeTestedCandidate record ' + String(outcome.status), id, startedAt)
+      const recorded = await writeTask(
+        projectPath,
+        id,
+        (board) =>
+          recordMergeResult(
+            board,
+            id,
+            {
+              status: outcome.status,
+              mergeCommit: null,
+              conflict: outcome.conflict === undefined ? null : outcome.conflict,
+              output: outcome.output === undefined ? null : outcome.output,
+            },
+            clock(),
+            by,
+            writeByName(context),
+            'host',
+          ),
+        context,
+      )
+      if (recorded.ok !== true) return recorded
+      await notifyMergeOutcome(projectPath, recorded.task)
+      emitActivity(null, 'merge', String(outcome.status) + ' on the test candidate; the implementer repairs it', id, 'host')
+      recorded.merged = false
+      recorded.retest = false
+      return recorded
+    }
     return failure('merge-failed', 'the candidate merge returned an unexpected status ' + String(outcome.status))
     } finally {
       mergingCandidates.delete(id)
@@ -1498,7 +1544,10 @@ export function createApi(ctx, options) {
       projectPath,
       task.id,
       (board) =>
-        model.blockTask(board, task.id, clock(), 'system', 'review round limit reached (' + String(REVIEW_MAX_ROUNDS) + '); blocked for triage'),
+        model.blockTask(board, task.id, clock(), 'system', 'review round limit reached (' + String(REVIEW_MAX_ROUNDS) + '); blocked for triage', null, {
+          reason: { code: 'review-round-limit', detail: 'review round limit reached (' + String(REVIEW_MAX_ROUNDS) + '); only reopen escapes this block' },
+          actor: 'host',
+        }),
       systemContext,
     )
     if (blocked.ok !== true) return null
@@ -2248,6 +2297,11 @@ export function createApi(ctx, options) {
       id: detail.id,
       title: detail.title,
       status: detail.status,
+      // T-201: detail/snapshot expose the state + phase projection without
+      // changing any existing field the panel already reads.
+      state: detail.state,
+      phase: detail.phase,
+      blockedReason: detail.blockedReason === undefined ? null : detail.blockedReason,
       // T-131: the panel needs the kind to render an investigation and the
       // headline to show its report without fetching detail; the full report stays
       // behind /task.
@@ -3668,6 +3722,14 @@ export function createApi(ctx, options) {
           ? matchesMember(previous, member)
           : owner !== null && owner !== undefined && typeof previous.name === 'string' && previous.name === owner.name))
     if (mine !== true) return null
+    // T-201: a merge-* block is repaired by its implementer through refreshMerge
+    // (T27 allows user/implementer; the host notifies that worker). The soft
+    // "stop working" guard must not refuse the exact action the worker was told
+    // to run; the merge action re-checks ownership and the merge request itself.
+    if (action === 'refreshMerge' && task.status === 'blocked') {
+      const reason = blockedReasonOf(task)
+      if (reason !== null && isMergeReason(reason.code) === true) return null
+    }
     const code = task.status === 'cancelled' ? 'task-cancelled' : 'task-blocked'
     return failure(
       code,
@@ -5631,8 +5693,13 @@ export function createApi(ctx, options) {
       projectPath,
       id,
       (board) => {
-        const tasks = board.tasks.map((entry) => {
-          if (String(entry.id) !== String(id) || entry.merge === null || entry.merge === undefined) return entry
+        // A refusal must leave the mutator as { ok:false, code, message }: returning
+        // it from inside a map() turns it into a task element and the real typed code
+        // dies in board normalisation (invalid-task).
+        const tasks = board.tasks.slice()
+        for (let index = 0; index < tasks.length; index += 1) {
+          const entry = tasks[index]
+          if (String(entry.id) !== String(id) || entry.merge === null || entry.merge === undefined) continue
           const evidence = String(entry.evidence === undefined || entry.evidence === null ? '' : entry.evidence)
           const at = new Date(clock()).toISOString()
           const previousBase = typeof entry.merge.base === 'string' && entry.merge.base !== '' ? entry.merge.base : null
@@ -5643,7 +5710,14 @@ export function createApi(ctx, options) {
             'base-only drift：已在 ' + String(built.base) + ' 上重建候选并复跑验证（' + String(verifySpec.command) + '，通过），diff 与已验证提交等价，不新增评审轮次。' +
             (drift === null ? '' : ' target drift ' + drift.from + ' -> ' + drift.to + '。') +
             (verifyChanged ? ' verify fingerprint ' + previousPrint + ' -> ' + rebuildVerifyPrint + '。' : '')
-          return Object.assign({}, entry, {
+          // T-201 baseOnlyDrift (table T25, document T25): a transition of the SAME
+          // testing state (no new review/test round); routing it through the table
+          // proves the merge request is still open and records the audit event.
+          // A legacy card with testing + a resolved merge refuses here with
+          // no-open-merge, and the caller must see that code.
+          const driftEvent = enterState(entry, 'baseOnlyDrift', { task: entry, actor: 'host' }, clock())
+          if (driftEvent.ok !== true) return { ok: false, code: driftEvent.code, message: driftEvent.message }
+          tasks[index] = Object.assign({}, entry, {
             waitingReason: null,
             waitingDetail: null,
             base: built.base,
@@ -5669,13 +5743,19 @@ export function createApi(ctx, options) {
               },
             ]),
           })
-        })
+        }
         return { ok: true, board: Object.assign({}, board, { tasks: tasks }), events: [] }
       },
       context,
     )
     if (recorded.ok !== true) return recorded
     const merged = await mergeTestedCandidate(projectPath, id, 'system', context, { inQueue: false })
+    // A conflict/failed candidate merge is RECORDED on the card (T22/T23) and
+    // returns ok with merged=false; the fast path must not report it as merged.
+    if (merged.ok === true && merged.merged !== true && merged.task !== null && merged.task !== undefined && merged.task.status === 'blocked') {
+      const reason = merged.task.blockedReason === null || merged.task.blockedReason === undefined ? 'merge failed' : String(merged.task.blockedReason.code)
+      return failure(reason, 'the rebuilt candidate could not be merged (' + reason + '); the card is blocked for its implementer')
+    }
     if (merged.ok === true) return { ok: true, code: 'merged', merged: merged }
     await markWaiting(projectPath, id, 'candidate-stale', 'rebuilt candidate could not be merged: ' + String(merged.message || merged.code || ''), context)
     return failure('candidate-stale', 'the rebuilt candidate could not be merged: ' + String(merged.message || merged.code || ''))
