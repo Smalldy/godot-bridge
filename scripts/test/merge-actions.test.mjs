@@ -326,4 +326,179 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
   }
 }
 
+// ── T-204: a refresh REPLACES the round's reviewer; the previous one stops
+//    before the next one starts, and a failed write never leaves a child behind
+{
+  const check = (label, condition, detail) => {
+    assert.ok(condition, label + (detail === undefined ? '' : ' -> ' + String(detail).slice(0, 700)))
+    console.log('PASS  ' + label)
+  }
+  const { refreshMergeRequest: refreshRound } = await import('../../plugin/task-center/merge.mjs')
+  const at = Date.parse('2026-11-21T00:00:00.000Z')
+  function roundTask(over) {
+    return Object.assign(
+      {
+        id: 'T-9',
+        title: 'refresh rounds',
+        kind: 'dev',
+        status: 'reviewing',
+        ownerSession: 'root',
+        base: 'base-1',
+        target: 'main',
+        branch: 'task/T-9',
+        worktree: '/wt/T-9',
+        commit: 'head-1',
+        merge: { status: 'open', base: 'base-1', head: 'head-1', target: 'main' },
+        review: { status: 'pending', by: '@worker-t-9', at: new Date(at).toISOString(), attempt: 1, deliveredTo: { name: 'reviewer-t-9-old', id: 'reviewer-old' } },
+        test: null,
+        assignee: { name: 'worker-t-9', session: 'worker-9' },
+        lastAssignee: null,
+        blockedReason: null,
+        leaseUntil: null,
+        executors: [],
+        history: [],
+        updatedAt: new Date(at).toISOString(),
+      },
+      over === undefined ? {} : over,
+    )
+  }
+  function roundHarness(task) {
+    const board = { tasks: [task] }
+    const delivered = task.review !== null && task.review !== undefined && task.review.deliveredTo !== null && task.review.deliveredTo !== undefined ? task.review.deliveredTo.id : null
+    const live = new Set(delivered === null ? [] : [delivered])
+    const calls = []
+    const head = { value: 'head-2' }
+    const flags = { failWrite: false, keepOldLive: false }
+    let sequence = 0
+    function recordedIds(entry) {
+      const ids = []
+      for (const record of [entry.review, entry.test]) {
+        if (record === null || record === undefined || record.deliveredTo === null || record.deliveredTo === undefined) continue
+        if (typeof record.deliveredTo.id === 'string' && record.deliveredTo.id !== '') ids.push(record.deliveredTo.id)
+      }
+      return ids
+    }
+    const actions = createMergeActions({
+      mergeRefusal: () => null,
+      mergeQueueKey: async () => 'main',
+      serialised: async (work) => work({ aborted: false }),
+      mergeOne: async () => ({ ok: true }),
+      notifyMergeOutcome: async () => {},
+      readBoardOrFail: async () => ({ board: board }),
+      model: { findTask: (source, id) => source.tasks.filter((entry) => entry.id === id)[0] },
+      writeTask: async (project, id, mutator) => {
+        if (flags.failWrite) return { ok: false, code: 'write-conflict', message: 'the board moved under the refresh' }
+        const applied = mutator(board)
+        if (applied.ok !== true) return applied
+        // The real CAS writes the returned board back; mirror it for the next read.
+        board.tasks = applied.board.tasks
+        return { ok: true, task: applied.board.tasks.filter((entry) => entry.id === id)[0], events: applied.events }
+      },
+      recordMergeResult: () => ({ ok: true }),
+      clock: () => at,
+      writeByName: () => 'worker-t-9',
+      emitActivity: () => {},
+      refreshMergeRequest: refreshRound,
+      ownerOf: () => ({ name: 'worker-t-9', session: 'worker-9' }),
+      assigneeMatches: () => true,
+      readTargetHead: async () => ({ ok: true, head: 'base-1' }),
+      readBranchHead: async () => ({ ok: true, head: head.value }),
+      git: { diffNameOnly: async () => ({ ok: true, files: ['a.gd'] }) },
+      messageOf: (error) => String(error && error.message ? error.message : error),
+      stageAgents: {
+        async releaseTask(entry, options) {
+          const ids = recordedIds(entry)
+          calls.push({ kind: 'releaseTask', ids: ids, roles: options.roles })
+          const released = []
+          for (const id of ids) {
+            if (flags.keepOldLive) continue
+            if (live.delete(id)) released.push({ agentId: id })
+          }
+          return { ok: true, released: released, failed: [], unresolved: [], interrupted: [], kept: [], deferred: [] }
+        },
+        async startReviewer() {
+          sequence += 1
+          const agentId = 'reviewer-new-' + String(sequence)
+          calls.push({ kind: 'startReviewer', agentId: agentId })
+          live.add(agentId)
+          return { ok: true, agentId: agentId, name: 'reviewer-t-9-' + String(sequence) }
+        },
+        async release(agentId) {
+          calls.push({ kind: 'release', agentId: String(agentId) })
+          return live.delete(String(agentId))
+        },
+      },
+      liveStageIds: async () => new Set(live),
+      markWaiting: async () => {},
+      clearWaiting: async () => {},
+      reviewBriefFor: () => 'review brief',
+      recordDeliveredTo: async (project, id, kind, member) => {
+        const entry = board.tasks.filter((row) => row.id === id)[0]
+        entry.review = Object.assign({}, entry.review, { deliveredTo: { name: member.name, id: member.id } })
+      },
+      ok: (payload) => Object.assign({ ok: true }, payload),
+      failure: (code, message) => ({ ok: false, code: code, message: message }),
+    })
+    return { actions: actions, board: board, live: live, calls: calls, head: head, flags: flags }
+  }
+  const worker = { by: '@worker-t-9', role: 'agent', agent: { id: 'worker-9', name: 'worker-t-9' } }
+
+  {
+    const rig = roundHarness(roundTask())
+    const first = await rig.actions.refreshMerge({ id: 'T-9' }, worker, '/project')
+    check(
+      'a refresh releases the previous reviewer BEFORE starting the next one',
+      first.ok === true && rig.calls.map((call) => call.kind).join(',') === 'releaseTask,startReviewer' && rig.live.size === 1 && rig.live.has('reviewer-new-1'),
+      JSON.stringify({ calls: rig.calls, live: Array.from(rig.live) }),
+    )
+    rig.head.value = 'head-3'
+    const second = await rig.actions.refreshMerge({ id: 'T-9' }, worker, '/project')
+    const secondRelease = rig.calls.filter((call) => call.kind === 'releaseTask').slice(-1)[0]
+    check(
+      'two consecutive refreshes leave exactly ONE live reviewer (the last one)',
+      second.ok === true &&
+        rig.calls.map((call) => call.kind).join(',') === 'releaseTask,startReviewer,releaseTask,startReviewer' &&
+        rig.live.size === 1 &&
+        rig.live.has('reviewer-new-2') &&
+        rig.live.has('reviewer-new-1') === false &&
+        secondRelease.ids.join(',') === 'reviewer-new-1',
+      JSON.stringify({ calls: rig.calls, live: Array.from(rig.live), release: secondRelease }),
+    )
+    check(
+      'the refreshed round records the reviewer it matches its live child',
+      rig.board.tasks[0].review.deliveredTo.id === 'reviewer-new-2' && rig.board.tasks[0].merge.head === 'head-3',
+      JSON.stringify(rig.board.tasks[0].review),
+    )
+  }
+
+  {
+    const rig = roundHarness(roundTask())
+    rig.flags.keepOldLive = true
+    const refused = await rig.actions.refreshMerge({ id: 'T-9' }, worker, '/project')
+    check(
+      'a reviewer that cannot be stopped refuses the refresh instead of starting a second one',
+      refused.ok !== true &&
+        refused.code === 'stage-child-still-live' &&
+        rig.calls.filter((call) => call.kind === 'startReviewer').length === 0 &&
+        rig.board.tasks[0].merge.head === 'head-1' &&
+        rig.board.tasks[0].review.deliveredTo.id === 'reviewer-old',
+      JSON.stringify({ refused: refused, calls: rig.calls }),
+    )
+  }
+
+  {
+    const rig = roundHarness(roundTask())
+    rig.flags.failWrite = true
+    const failedWrite = await rig.actions.refreshMerge({ id: 'T-9' }, worker, '/project')
+    check(
+      'a refresh whose board write fails releases the reviewer it just started',
+      failedWrite.ok !== true &&
+        failedWrite.code === 'write-conflict' &&
+        rig.calls.some((call) => call.kind === 'release' && call.agentId === 'reviewer-new-1') &&
+        rig.live.size === 0,
+      JSON.stringify({ calls: rig.calls, live: Array.from(rig.live) }),
+    )
+  }
+}
+
 console.log('PASS  merge actions preserve queue/notify/reject/refusal paths')

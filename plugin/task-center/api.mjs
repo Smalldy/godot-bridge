@@ -571,6 +571,9 @@ export function createApi(ctx, options) {
     git: git,
     messageOf: messageOf,
     stageAgents: stageAgents,
+    // T-204: refreshMerge must prove the previous reviewer/tester is gone before
+    // it starts the next one, so it reads the same live tree the panel does.
+    liveStageIds: liveChildIdsOf,
     markWaiting: markWaiting,
     clearWaiting: clearWaiting,
     reviewBriefFor: reviewBriefFor,
