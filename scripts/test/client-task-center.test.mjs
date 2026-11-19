@@ -296,7 +296,10 @@ function storeSnapshot(payload, source, message) {
     message: message === undefined ? '' : message,
     project: typeof payload.project === 'string' ? payload.project : null,
     projectRoot: typeof payload.project === 'string' ? payload.project : null,
-    sessionProject: null,
+    // T-203: where the Host said the project came from (session / panel /
+    // explicit / unbound). The setup snapshot must carry it too.
+    resolvedFrom: typeof payload.resolvedFrom === 'string' ? payload.resolvedFrom : null,
+    sessionProject: typeof payload.sessionProject === 'string' ? payload.sessionProject : null,
     tasks: Array.isArray(payload.tasks) ? payload.tasks : [],
     counts: payload.counts === undefined ? {} : payload.counts,
     details: {},
@@ -339,6 +342,9 @@ await boundStore.load()
 assert.equal(boundStore.getSnapshot().source, 'setup', 'no-project-bound is a setup state')
 assert.equal(boundStore.getSnapshot().project, null, 'the setup snapshot has no project')
 assert.equal(boundStore.getSnapshot().message, '', 'the setup snapshot carries no failure text')
+// T-203: "nothing is bound" NAMES its source, even when an older Host omits it.
+assert.equal(boundStore.getSnapshot().resolvedFrom, 'unbound', 'the setup snapshot names its source as unbound')
+assert.equal(boundStore.getSnapshot().sessionProject, null, 'the setup snapshot never inherits a session project')
 console.log('PASS  the store maps no-project-bound to the setup state, not to an error')
 
 answers.push({ ok: true, full: true, project: '/repo', tasks: [], counts: {} })
@@ -422,3 +428,83 @@ const enBlock = headSource.slice(enStart)
 assert.ok(zhBlock.includes("err_no_project_bound: '尚未选择项目"), 'the zh copy names the missing project')
 assert.ok(enBlock.includes('err_no_project_bound:'), 'the en copy exists')
 console.log('PASS  no-project-bound has explicit copy in both locales')
+
+// ── T-203: the foreground carries its session and NAMES the project source ──
+// (1) Every foreground request carries the session the panel acts as. A request
+// without one is what let the Host fall back to "some project that was active
+// last" and paint that board under a different conversation.
+{
+  const calls = []
+  globalThis.fetch = async (url, options) => {
+    calls.push({
+      url: String(url),
+      body:
+        options !== undefined && options !== null && typeof options.body === 'string'
+          ? JSON.parse(options.body)
+          : null,
+    })
+    return { json: async () => ({ ok: true, full: true, project: '/repo', projectRoot: '/repo', resolvedFrom: 'session', sessionProject: '/repo', tasks: [], counts: {} }) }
+  }
+  const sessionDeps = Object.assign({}, storeDeps, {
+    tcWithSession: (url) => url + (url.indexOf('?') >= 0 ? '&' : '?') + 'session=session-test',
+  })
+  const sessionStore = createTaskStore((key) => key, sessionDeps)
+  await sessionStore.load()
+  assert.ok(calls[0].url.indexOf('/state') === 0 && calls[0].url.indexOf('session=session-test') > 0, 'the /state request carries the session: ' + calls[0].url)
+  await sessionStore.send('pause', {})
+  assert.equal(calls[1].url, '/action?session=session-test', 'the action URL carries the session')
+  assert.equal(calls[1].body.session, 'session-test', 'the action body carries the session')
+  await sessionStore.listTasks({ status: 'done' })
+  assert.ok(calls[2].url.indexOf('/list') === 0 && calls[2].url.indexOf('session=session-test') > 0, 'the list request carries the session')
+  await sessionStore.loadWorktrees(['/repo/.worktrees/T-1-1'])
+  assert.ok(calls[3].url.indexOf('/worktrees') === 0 && calls[3].url.indexOf('session=session-test') > 0, 'the worktrees request carries the session')
+  console.log('PASS  T-203 every foreground request carries its session id')
+}
+
+// (2) The panel SHOWS where the project came from.
+{
+  // The DSH session-directory lookup IS this session's own workspace: it has to
+  // read as the session source (the legacy map only knew 'session').
+  const lookupSnapshot = Object.assign({}, deps.useSnapshot(), {
+    resolvedFrom: 'session-lookup',
+    project: '/repo',
+    projectRoot: '/repo',
+    sessionProject: '/repo',
+  })
+  const lookupJson = JSON.stringify(createTaskCenter(Object.assign({}, deps, { useSnapshot: () => lookupSnapshot }))({}))
+  assert.ok(lookupJson.includes('"data-project-source":"session"'), 'a session-directory lookup shows the session source')
+  assert.ok(lookupJson.includes('projectSourceSession'), 'and its localized label')
+
+  // A Host that still names the next-to-useless 'last-active' source must not be
+  // painted as this session's workspace source.
+  const legacyJson = JSON.stringify(
+    createTaskCenter(Object.assign({}, deps, { useSnapshot: () => Object.assign({}, lookupSnapshot, { resolvedFrom: 'last-active' }) }))({}),
+  )
+  assert.ok(!legacyJson.includes('"data-project-source":"last-active"'), 'a last-active source is never displayed as a source')
+  assert.ok(!legacyJson.includes('"data-workspace-source":"last-active"'), 'and the scope bar never repeats it')
+
+  // A panel pin against another session project: the scope bar names the PIN and
+  // the mismatch instead of pretending the two workspaces are the same.
+  const pinSnapshot = Object.assign({}, deps.useSnapshot(), {
+    resolvedFrom: 'panel',
+    project: '/pinned',
+    projectRoot: '/pinned',
+    sessionProject: '/session',
+  })
+  const pinJson = JSON.stringify(
+    createTaskCenter(Object.assign({}, deps, { useSnapshot: () => pinSnapshot, projectMismatchOf: () => '/session' }))({}),
+  )
+  assert.ok(pinJson.includes('"data-workspace-scope":"true"'), 'the pin opens the workspace scope bar')
+  assert.ok(pinJson.includes('"data-workspace-state":"switching"'), 'the bar reports the mismatch it is following')
+  assert.ok(pinJson.includes('"data-workspace-source":"panel"'), 'the bar names the panel as the source')
+  assert.ok(pinJson.includes('projectSourceManual'), 'the bar shows the pin label')
+
+  // An unbound setup snapshot says plainly that the source is unbound.
+  const setupJson = JSON.stringify(
+    createTaskCenter(Object.assign({}, deps, { useSnapshot: () => Object.assign({}, unboundSnapshot, { resolvedFrom: 'unbound' }) }))({}),
+  )
+  assert.ok(setupJson.includes('"data-project-source":"unbound"'), 'the empty state names its source as unbound')
+  assert.ok(setupJson.includes('"data-unbound":"true"'), 'and stays the setup state')
+  assert.ok(!setupJson.includes('last-active'), 'the empty state never names a last-active project')
+  console.log('PASS  T-203 the panel names session / panel / unbound instead of guessing')
+}

@@ -139,7 +139,11 @@
 							// No project yet — the expected pre-setup answer. Keep project null so
 							// the view renders its open-project entry points, say nothing, and
 							// leave no message behind for the binding to inherit.
-							const unbound = tcSnapshot(Object.assign({}, payload, { ok: true, project: null, projectRoot: null, tasks: [] }), 'setup', '')
+							// T-203: the setup snapshot NAMES its source. 'unbound' is not a
+							// project: it is "this session resolves to nothing", so the panel
+							// never shows a last-active project as if the session owned it. An
+							// older Host that omits the field is read the same way.
+							const unbound = tcSnapshot(Object.assign({}, payload, { ok: true, project: null, projectRoot: null, tasks: [], resolvedFrom: 'unbound', sessionProject: null }), 'setup', '')
 							withDecisions(unbound, payload)
 							unbound.actionResult = snapshot.actionResult
 							unbound.actionError = snapshot.actionError

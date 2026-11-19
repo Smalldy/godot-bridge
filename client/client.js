@@ -3664,7 +3664,11 @@ const createTaskStore = (function () {
 							// No project yet — the expected pre-setup answer. Keep project null so
 							// the view renders its open-project entry points, say nothing, and
 							// leave no message behind for the binding to inherit.
-							const unbound = tcSnapshot(Object.assign({}, payload, { ok: true, project: null, projectRoot: null, tasks: [] }), 'setup', '')
+							// T-203: the setup snapshot NAMES its source. 'unbound' is not a
+							// project: it is "this session resolves to nothing", so the panel
+							// never shows a last-active project as if the session owned it. An
+							// older Host that omits the field is read the same way.
+							const unbound = tcSnapshot(Object.assign({}, payload, { ok: true, project: null, projectRoot: null, tasks: [], resolvedFrom: 'unbound', sessionProject: null }), 'setup', '')
 							withDecisions(unbound, payload)
 							unbound.actionResult = snapshot.actionResult
 							unbound.actionError = snapshot.actionError
@@ -9045,8 +9049,6 @@ function createTaskCenter(deps) {
 	const projectFormState = deps.projectFormState
 	const doneAllReset = deps.doneAllReset
 	const projectMismatchOf = deps.projectMismatchOf
-	const projectSourceKey = deps.projectSourceKey
-	const projectSourceLabel = deps.projectSourceLabel
 	const tcAgo = deps.tcAgo
 	const tcAgentTreeOf = deps.tcAgentTreeOf
 	const tcAgentStatusKey = deps.tcAgentStatusKey
@@ -9059,6 +9061,40 @@ function createTaskCenter(deps) {
 	// T-158: the board kind filter now lives in the toolbar row (not inside the
 	// board scrollport), so its state belongs to the panel shell.
 	const panelBoardUi = { kind: 'all' }
+
+	/**
+	 * T-203: WHERE the board's project came from, exactly as the Host named it.
+	 *
+	 *   'session'  this chat's own workspace (a recorded binding or the DSH session
+	 *              directory lookup — the same source to the human);
+	 *   'panel'    an explicit pin made from this panel;
+	 *   'explicit' a path the caller passed;
+	 *   'registry' a project the registry already knew;
+	 *   'unbound'  nothing is bound — a SETUP state, never a last-active project.
+	 *
+	 * Keeping the raw value on the DOM (data-project-source / data-workspace-source)
+	 * is what stops the panel from re-deriving "whose project is this" from a path
+	 * comparison that cannot tell a pin from the chat's workspace.
+	 */
+	function boardSourceOf(snapshot) {
+		if (snapshot === null || snapshot === undefined) return null
+		const value = typeof snapshot.resolvedFrom === 'string' ? snapshot.resolvedFrom : null
+		if (value === 'session' || value === 'session-lookup') return 'session'
+		if (value === 'panel' || value === 'explicit' || value === 'registry' || value === 'unbound') return value
+		// A setup snapshot on an older Host has no source field: "no project" is
+		// still unbound, never an inherited last-active project.
+		if (snapshot.source === 'setup' || snapshot.project === null || snapshot.project === undefined) return 'unbound'
+		return null
+	}
+
+	/** The dictionary label for a source, or null when there is nothing to say. */
+	function boardSourceLabelOf(source, t) {
+		if (source === 'session') return t('projectSourceSession')
+		if (source === 'panel' || source === 'explicit') return t('projectSourceManual')
+		if (source === 'registry') return t('projectSourceRegistry')
+		// 'unbound' has no project to describe; the empty state's own wording says it.
+		return null
+	}
 
 	function TaskCenter(props) {
 		const t = useTranslate()
@@ -9243,6 +9279,10 @@ function createTaskCenter(deps) {
 		// project, keeps the old board on failure, and shows a setup card (not a
 		// switch) when the chat workspace is not onboarded yet.
 		const boardWorkspace = typeof snapshot.projectRoot === 'string' && snapshot.projectRoot !== '' ? snapshot.projectRoot : typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : null
+		// T-203: the source of the board workspace, shown next to it. It is what
+		// makes "board ≠ chat" readable instead of a mystery.
+		const boardSource = boardSourceOf(snapshot)
+		const boardSourceLabel = boardSourceLabelOf(boardSource, t)
 		const chatWorkspace = scope !== null && typeof scope.currentSessionProject === 'string' && scope.currentSessionProject !== '' ? scope.currentSessionProject : typeof snapshot.sessionProject === 'string' && snapshot.sessionProject !== '' ? snapshot.sessionProject : null
 		const samePath = function (left, right) {
 			if (typeof left !== 'string' || typeof right !== 'string') return false
@@ -9372,8 +9412,24 @@ function createTaskCenter(deps) {
 						'data-reduce-motion': reduceMotion ? 'true' : 'false',
 						'data-board-workspace': boardWorkspace === null ? '' : boardWorkspace,
 						'data-chat-workspace': chatWorkspace === null ? '' : chatWorkspace,
+						'data-workspace-source': boardSource === null ? 'unknown' : boardSource,
 					},
 					h('span', { key: 'board', className: 'gbt-workspace', 'data-workspace': 'board' }, h('span', { className: 'gbt-workspacelabel' }, t('workspaceBoard')), h('b', { title: boardWorkspace === null ? '' : boardWorkspace }, baseNameOf(boardWorkspace) === null ? '—' : baseNameOf(boardWorkspace))),
+					// T-203: the bar repeats the Host's source, so a board that came from a
+					// panel pin reads as a pin and never as the chat's own workspace.
+					h(
+						'span',
+						{
+							key: 'source',
+							// Reuse the header's source pill styling (no new CSS): same wording,
+							// same colour language, so "会话" reads the same in both places.
+							className: 'gbt-projectsource gbt-workspacesource',
+							'data-project-source': boardSource === null ? 'unknown' : boardSource,
+							'data-workspace-source': boardSource === null ? 'unknown' : boardSource,
+							title: t('projectSourceHint'),
+						},
+						boardSourceLabel === null ? '—' : boardSourceLabel,
+					),
 					h('span', { key: 'arrow', className: 'gbt-workspacearrow', 'aria-hidden': 'true' }, '→'),
 					h('span', { key: 'chat', className: 'gbt-workspace', 'data-workspace': 'chat' }, h('span', { className: 'gbt-workspacelabel' }, t('workspaceChat')), h('b', { title: chatWorkspace === null ? '' : chatWorkspace }, baseNameOf(chatWorkspace) === null ? '—' : baseNameOf(chatWorkspace))),
 					h('span', { key: 'state', className: 'gbt-workspacestate', 'data-workspace-tone': workspaceState === 'failed' ? 'error' : workspaceState === 'setup' || workspaceState === 'unknown' ? 'warn' : undefined }, workspaceStateText()),
@@ -9405,9 +9461,9 @@ function createTaskCenter(deps) {
 				: t('agentsPillNone')
 		const dispatchCap = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
 		const sourceBadge =
-			projectSourceLabel(projectSourceKey(snapshot), t) === null
+			boardSourceLabel === null
 				? null
-				: h('span', { className: 'gbt-projectsource', 'data-project-source': projectSourceKey(snapshot), title: snapshot.projectWarning === null ? t('projectSourceHint') : snapshot.projectWarning }, projectSourceLabel(projectSourceKey(snapshot), t))
+				: h('span', { className: 'gbt-projectsource', 'data-project-source': boardSource, title: snapshot.projectWarning === null ? t('projectSourceHint') : snapshot.projectWarning }, boardSourceLabel)
 		const brand = h(
 			'div',
 			{ className: 'gbt-brand', 'data-brand': 'true' },
@@ -9876,7 +9932,7 @@ function createTaskCenter(deps) {
 				)
 			: h(
 					'div',
-					{ 'data-not-activated': 'true', 'data-unbound': snapshot.source === 'setup' ? 'true' : undefined },
+					{ 'data-not-activated': 'true', 'data-unbound': snapshot.source === 'setup' ? 'true' : undefined, 'data-project-source': snapshot.source === 'setup' ? 'unbound' : undefined },
 					// T-182: the host's "nothing bound" answer is worded as what the user has
 					// to do ("尚未选择项目"), not as a host state ("未激活任何项目").
 					h('p', { className: 'gbt-footnote', 'data-not-activated-title': 'true' }, snapshot.source === 'setup' ? t('projectUnknown') : t('notActivatedTitle')),

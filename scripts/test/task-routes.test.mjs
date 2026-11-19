@@ -3,7 +3,7 @@
 // teams / agents / team) must not come back; the panel reads agentTree + scope.
 
 import { registerTaskRoutes, STATE_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, DIAGNOSTICS_PATH } from '../../plugin/task-center/routes.mjs'
-import { createFakeTaskAgents, createRig, createTask, PROJECT } from './support/fixtures.mjs'
+import { createFakeTaskAgents, createRig, createTask, PROJECT, seedBoard } from './support/fixtures.mjs'
 
 let failures = 0
 function check(label, condition, detail) {
@@ -63,6 +63,13 @@ async function call(surface, url, options) {
   const res = response()
   const withSession = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'session=' + encodeURIComponent(TEST_SESSION)
   await surface.byPath.get(url.split('?')[0]).handler(request(withSession, options), res)
+  return res
+}
+
+/** A request that carries NO session at all (the plugin home page case). */
+async function callRaw(surface, url, options) {
+  const res = response()
+  await surface.byPath.get(url.split('?')[0]).handler(request(url, options), res)
   return res
 }
 const post = (body, headers) =>
@@ -306,6 +313,79 @@ check(
   check('T-198 reset=true clears the scope', payload.ok === true && Object.keys(payload.decisionPolicy.overrides.project).length === 0, JSON.stringify(payload.decisionPolicy.overrides.project))
   res = await post({ action: 'decisionPolicy', scope: 'nope', events: {} })
   check('T-198 a bad scope is refused by code through the route', res.json().ok === false && res.json().code === 'invalid-policy-scope', res.text.substring(0, 300))
+}
+
+// ── T-203: the foreground never resolves "the project that was active last" ──
+// The plugin home page has no chat session. It used to fall back to the single
+// project the host drove last, so a `todo` board could appear under a
+// `godot-bridge` conversation. A foreground request now reads "nothing bound"
+// (the setup state) unless the caller pins a project itself; the last-active
+// fallback survives for the background (scheduler/startup) only.
+{
+  const LAST_ACTIVE = PROJECT + '-last-active'
+  // A REAL board project: the old fallback WOULD have resolved it, so the checks
+  // below prove the fallback is gone rather than merely unreachable.
+  seedBoard(rig.fs, LAST_ACTIVE, JSON.stringify({ version: 1, tasks: [] }))
+  rig.state.touchProject(LAST_ACTIVE, null)
+
+  let res = await callRaw(surface, STATE_PATH, {})
+  let payload = res.json()
+  check(
+    'T-203 no session => nothing is bound (never the last-active project)',
+    res.status === 200 && payload.ok === false && payload.code === 'no-project-bound' && payload.project === undefined && payload.tasks === undefined,
+    res.text,
+  )
+  check('T-203 the unbound answer names its source', payload.resolvedFrom === 'unbound', JSON.stringify(payload))
+
+  res = await callRaw(surface, STATE_PATH + '?session=' + encodeURIComponent('web-unknown-session'), {})
+  payload = res.json()
+  check(
+    'T-203 an unknown session id is no session context either',
+    payload.ok === false && payload.code === 'no-project-bound' && payload.resolvedFrom === 'unbound',
+    res.text,
+  )
+
+  // A foreground caller cannot opt into the fallback; the background still can.
+  const foreground = await rig.state.resolveProject({ allowLastActive: true })
+  check('T-203 allowLastActive is refused to a foreground caller', foreground.ok === false && foreground.resolvedFrom === 'unbound', JSON.stringify(foreground))
+  const background = await rig.state.resolveProject({ allowLastActive: true, background: true })
+  check(
+    'T-203 the background may still resolve the last-active project',
+    background.ok === true && background.resolvedFrom === 'last-active' && background.project.root === LAST_ACTIVE,
+    JSON.stringify(background),
+  )
+
+  // The same request WITH this session's id answers this session's workspace.
+  res = await call(surface, STATE_PATH, {})
+  payload = res.json()
+  check(
+    'T-203 a godot-bridge session resolves its own board',
+    payload.ok === true && payload.project === PROJECT && payload.projectRoot === PROJECT && payload.resolvedFrom === 'session',
+    res.text.substring(0, 300),
+  )
+  check(
+    'T-203 board and chat workspace agree for that session',
+    payload.sessionProject === PROJECT && payload.scope !== null && payload.scope.currentSessionProject === PROJECT && payload.projectWarning === null,
+    JSON.stringify({ sessionProject: payload.sessionProject, current: payload.scope === null ? null : payload.scope.currentSessionProject, warning: payload.projectWarning }),
+  )
+
+  // An explicit pin is the ONE way a panel may leave the session's workspace,
+  // and the answer names it (panel) plus the mismatch it creates.
+  res = await call(surface, STATE_PATH + '?project=' + encodeURIComponent(LAST_ACTIVE), {})
+  payload = res.json()
+  check(
+    'T-203 an explicit pin is named as the panel source',
+    payload.ok === true && payload.project === LAST_ACTIVE && payload.resolvedFrom === 'panel',
+    res.text.substring(0, 300),
+  )
+  check(
+    'T-203 the pin keeps the session project visible as the mismatch',
+    payload.sessionProject === PROJECT && payload.projectWarning !== null,
+    JSON.stringify({ sessionProject: payload.sessionProject, warning: payload.projectWarning }),
+  )
+  res = await post({ action: 'openProject', path: LAST_ACTIVE })
+  payload = res.json()
+  check('T-203 an openProject through the route reports the panel source', payload.ok === true && payload.resolvedFrom === 'panel', res.text.substring(0, 300))
 }
 
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')
