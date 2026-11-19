@@ -4048,15 +4048,14 @@ export function createApi(ctx, options) {
         key: 'reopen:' + id,
         title: '重新打开 ' + id + '？',
         body: '当前状态：' + String(task.status) + '。重新打开会回到待办、清空 review/test 现场并由 scheduler 重新派发',
-        // T-198: the aligned decision-policy catalog resolves the old §3.6 vs §5
-        // inconsistency in favour of 保持关闭 — a timeout or Enter must never
-        // resurrect a card by accident. The policy gate still overrides this with
-        // the configured default, but the plan itself already states the aligned one.
+        // Default: 重新打开 — packet §3.6 is the ruling; the §5 summary table's
+        // 保持关闭 entry was stale and is being corrected. The decision policy
+        // can still override this default per event.
         options: [
-          { id: 'reopen', label: '重新打开', description: '回到待办，清空 review/test 后重新派发' },
-          { id: 'keep', label: '保持关闭', description: '不改动这张卡', default: true },
+          { id: 'reopen', label: '重新打开', description: '回到待办，清空 review/test 后重新派发', default: true },
+          { id: 'keep', label: '保持关闭', description: '不改动这张卡' },
         ],
-        defaultOption: 'keep',
+        defaultOption: 'reopen',
         highRisk: false,
         taskId: id,
         payload: { input: note === null ? {} : { note: note } },

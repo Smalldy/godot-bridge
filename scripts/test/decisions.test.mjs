@@ -545,7 +545,7 @@ async function patchTaskRow(rig, id, mutate) {
     ['dev-timeout', 'ask', 'continue', 120, 3],
     ['review-timeout', 'ask', 'continue', 120, 3],
     ['test-timeout', 'ask', 'continue', 120, 3],
-    ['reopen', 'ask', 'keep', 120, null],
+    ['reopen', 'ask', 'reopen', 120, null],
     ['delete', 'ask', 'keep', 120, null],
     ['cancel', 'ask', 'return', 120, null],
     // Event-10 rows have NO deadline while notify (packet §5 "—"); switching one
@@ -726,14 +726,16 @@ async function patchTaskRow(rig, id, mutate) {
     JSON.stringify(asked.decision === undefined ? asked : asked.decision.defaultOption),
   )
 
-  // The policy's default option and deadline replace the plan's own.
+  // The policy's default option and deadline replace the plan's own. The plan
+  // defaults to 重新打开 (packet §3.6 is the ruling), so an override to 保持关闭
+  // proves the policy — not the plan — decides the default.
   const task = await rig.action('create', { title: 'reopen me', verification: PROBES })
   await rig.action('cancel', { id: task.task.id })
-  await rig.action('decisionPolicy', { scope: 'project', events: { reopen: { defaultOption: 'reopen', timeoutSeconds: 30 } } })
+  await rig.action('decisionPolicy', { scope: 'project', events: { reopen: { defaultOption: 'keep', timeoutSeconds: 30 } } })
   const reopenAsked = await rig.api.perform('reopen', { id: task.task.id }, agentContext('reopener'))
   check(
     'T-198 the configured default option and deadline drive the question',
-    reopenAsked.ok === false && reopenAsked.decision.defaultOption === 'reopen' && reopenAsked.decision.remainingMs === 30000,
+    reopenAsked.ok === false && reopenAsked.decision.defaultOption === 'keep' && reopenAsked.decision.remainingMs === 30000,
     JSON.stringify(reopenAsked.decision === undefined ? reopenAsked : { option: reopenAsked.decision.defaultOption, remaining: reopenAsked.decision.remainingMs }),
   )
 }

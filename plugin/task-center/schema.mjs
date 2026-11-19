@@ -1373,7 +1373,9 @@ export const DECISION_EVENT_CATALOG = Object.freeze([
     key: 'reopen',
     kind: 'action',
     label: 'Reopen',
-    defaults: { mode: 'ask', defaultOption: 'keep', timeoutSeconds: 120, limit: null, autoRecover: null },
+    // Packet §3.6 wins: reopening defaults to 重新打开; the §5 table's 保持关闭 was
+    // stale (it is being corrected), so it is NOT the built-in default.
+    defaults: { mode: 'ask', defaultOption: 'reopen', timeoutSeconds: 120, limit: null, autoRecover: null },
     options: [
       { id: 'reopen', label: '重新打开' },
       { id: 'keep', label: '保持关闭' },
