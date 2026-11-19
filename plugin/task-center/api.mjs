@@ -2244,19 +2244,89 @@ export function createApi(ctx, options) {
     if (task === null || task === undefined) return null
     emitActivity(context, 'needs-human', String(reason) + ': ' + String(detail), String(task.id))
     const notice = waitingHumanNotice(task, reason, detail)
+    // The implementer owns the branch and IS a deliverable target (a child of the
+    // owner's tree); sendAssignee supplies the owning root scope the facade needs.
     if (stageAgents !== null && typeof stageAgents.sendAssignee === 'function') {
       try {
         await stageAgents.sendAssignee(task, notice)
       } catch (error) {}
     }
-    // The owning root Session / Lead reads the same notice on its next turn.
-    // Delivery to a Session by durable id is the documented channel (the same one
-    // deliverDecisionResult uses); the local implementer above is the other.
-    if (typeof task.ownerSession === 'string' && task.ownerSession !== '') {
-      await notifyAgent(null, task.ownerSession, notice)
-    }
+    // The owning root Session itself is NOT a deliverable target: the plugin
+    // facade refuses a send without options.rootId, and the DSH subagent service
+    // refuses a message whose target is the sender (the plugin always sends AS
+    // that root). Try it with the owning root scope (a non-root owner can be a
+    // real target) and remember whether it actually landed.
+    const ownerRoot = typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
+    let ownerDelivered = false
+    if (ownerRoot !== null) ownerDelivered = await notifyAgent(ownerRoot, ownerRoot, notice)
+    // The T-198 policy event still records the incident (and may ask on its own).
     await notifyStageRecovery(projectPath, task, STAGE_EVENT_KEYS.mergeConflict, detail)
+    // When the direct Session notice cannot land — the normal case for a
+    // root-owned card — the owner channel is a real DecisionRequest. It is the
+    // documented host->human channel: persisted beside the board, shown in the
+    // panel queue, readable with decisionList, and it never auto-resolves.
+    if (ownerDelivered !== true && ownerRoot !== null) await ensureWaitingHumanDecision(projectPath, task, reason, detail)
     return task
+  }
+
+  /** A distinct id per incident: the clock keeps a NEW rebase wait from colliding
+   * with an already-answered question. ensureWaitingHumanDecision additionally
+   * dedupes against any OPEN question for the same card. */
+  function waitingHumanDecisionId(task, reason) {
+    return 'waiting-' + String(task.id) + '-' + String(reason) + '-' + String(Math.floor(clock()))
+  }
+
+  /**
+   * T-202: the owner notice that works in production.
+   *
+   * The panel/decision queue is the only host->owner push channel that does not
+   * go through the subagent tree (which cannot message its own root). The
+   * question carries the same id/reason/detail/next-step text as the implementer
+   * notice, has NO deadline (a human wait never auto-resolves), and is answered
+   * by the user in the panel: 'ack' keeps the card parked exactly as it is,
+   * 'block' parks it for triage. When the event policy is 'silent' the project
+   * has asked for audit-only, so no question is opened (activity + onboard
+   * attention still record the wait).
+   */
+  async function ensureWaitingHumanDecision(projectPath, task, reason, detail) {
+    try {
+      const policy = await effectiveDecisionEvent(projectPath, STAGE_EVENT_KEYS.mergeConflict)
+      if (policy !== undefined && policy.mode === 'silent') return null
+      const pending = await decisionStore.pending(projectPath)
+      if (pending.ok === true) {
+        const sameCard = pending.pending.filter((decision) => String(decision.taskId) === String(task.id))[0]
+        // One open owner question per card is enough: an earlier needs-rebase
+        // question or the policy's own merge-conflict ask already puts it in the
+        // owner queue; a second one would be noise on the same incident.
+        if (sameCard !== undefined && (sameCard.eventKey === 'needs-rebase' || sameCard.eventKey === STAGE_EVENT_KEYS.mergeConflict)) return sameCard
+      }
+      const requested = await decisionStore.request(
+        projectPath,
+        {
+          id: waitingHumanDecisionId(task, reason),
+          eventKey: 'needs-rebase',
+          taskId: String(task.id),
+          eventLabel: '需要人工 rebase',
+          title: String(task.id) + ' 等待人工 rebase',
+          body: waitingHumanNotice(task, reason, detail),
+          options: [
+            { id: 'ack', label: '继续等待', description: '保持卡片现状；rebase 后执行 refreshMerge 重开评审', default: true },
+            { id: 'block', label: '阻塞任务', description: '保留现场，等待人工处理' },
+          ],
+          defaultOption: 'ack',
+          // No deadline: a card parked on a human must never auto-resolve.
+          timeoutMs: 0,
+          payload: { action: 'needs-rebase', taskId: String(task.id), reason: String(reason) },
+        },
+        { by: 'host' },
+      )
+      if (requested === null || requested === undefined || requested.ok !== true) return null
+      const decision = requested.decision === undefined || requested.decision === null ? null : requested.decision
+      if (decision !== null) emitActivity(null, 'needs-human', String(reason) + ': decision ' + String(decision.id) + ' asks the owner', String(task.id), 'host')
+      return decision
+    } catch (error) {
+      return null
+    }
   }
 
   /** The executor showed up: forget the waiting marker. */
@@ -4729,6 +4799,23 @@ export function createApi(ctx, options) {
       } else {
         outcome = ok({ continued: true })
         text = decided + ': keep auto-recovering ' + String(eventLabel) + '; the next occurrence is handled automatically again.'
+      }
+    } else if (action === 'needs-rebase') {
+      // T-202: the owner-facing "you must rebase" ticket. Acknowledging keeps the
+      // card parked exactly where it is (the rebase is manual); blocking parks it
+      // for triage. The question has no deadline, so it never answers itself.
+      const waitingId = typeof payload.taskId === 'string' && payload.taskId !== '' ? payload.taskId : null
+      summary = { taskId: waitingId, reason: typeof payload.reason === 'string' && payload.reason !== '' ? payload.reason : 'needs-rebase' }
+      if (option === 'block') {
+        executed = true
+        outcome =
+          waitingId === null
+            ? failure('invalid-decision', 'the needs-rebase decision names no card')
+            : await lifecycleActions.block({ id: waitingId, note: 'blocked by the needs-rebase decision ' + String(decision.id) }, execContext, projectPath)
+        text = outcome !== null && outcome.ok === true ? decided + ': ' + String(waitingId) + ' is blocked for triage.' : decided + ', but the block failed: ' + String(decisionOutcomeCode(outcome))
+      } else {
+        outcome = ok({ acknowledged: true })
+        text = decided + ': ' + String(waitingId) + ' stays parked; rebase the branch, then refresh the merge request.'
       }
     } else if (action === 'delete-tree') {
       if (option === 'purge') {

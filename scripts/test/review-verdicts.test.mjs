@@ -1,11 +1,13 @@
 // T-202: a needs-rebase wait must never be a silent board-field write.
 //
-// The approveReview candidate-conflict path and the auto-merge rebuild path
-// share markWaiting's "needs a person" announcement: an activity entry, a short
-// notice to the implementer and the owning root Session (task id, reason, detail,
-// next step), the T-198 merge-conflict event (ask -> a real DecisionRequest) and
-// an onboard attention item. An automatically rebuilt candidate-stale stays
-// silent: it is recovered by the host sweep and must not page a person.
+// The approveReview candidate-conflict path and the auto-merge rebuild path share
+// markWaiting's 'needs a person' announcement: an activity entry, a notice to the
+// implementer AND to the owning root Session / Lead, the T-198 merge-conflict
+// event, and an onboard attention item. The owner notice is exercised through a
+// FACADE-FAITHFUL fake: plugin/task-center/index.mjs refuses a send without
+// options.rootId, and the DSH subagent service refuses a message whose target is
+// the sender itself - so a plain 'it recorded a call' fake would have hidden the
+// T-202 defect. An automatically rebuilt candidate-stale stays silent.
 
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
@@ -30,11 +32,36 @@ function checkEqual(actual, expected, label) {
 const STAMP = '2026-11-20T00:00:00.000Z'
 const ROOT = 'session-lead'
 const HEX = (char) => char.repeat(40)
-
 /**
- * One session on one project, with the activity ring and the merge sweep the
- * shared fixtures rig does not expose. Everything else mirrors createRig.
+ * The production Agent facade, reduced to its two hard rules:
+ *   - plugin/task-center/index.mjs:217-221 requires options.rootId, otherwise it
+ *     throws agent-runtime-unavailable before the service is reached;
+ *   - the DSH subagent service refuses sender.id === targetId
+ *     ('send_message requires another agent in the subagent tree'), and the plugin
+ *     always sends AS the card owner's root.
+ * Every delivery attempt is recorded, so a test can prove the attempt carried the
+ * owning root scope even when the service then refuses the self-target.
  */
+function createFacadeFaithfulAgents() {
+  const agents = createFakeTaskAgents()
+  const attempts = []
+  const deliverableRoots = new Set([ROOT])
+  agents.attempts = attempts
+  agents.send = async function (agentId, text, sendOptions) {
+    const rootId = sendOptions !== undefined && sendOptions !== null && typeof sendOptions.rootId === 'string' ? sendOptions.rootId : null
+    attempts.push({ agentId: String(agentId), rootId: rootId, text: text })
+    if (rootId === null || deliverableRoots.has(rootId) !== true) {
+      throw Object.assign(new Error('no root Agent for send target ' + String(agentId)), { code: 'agent-runtime-unavailable' })
+    }
+    if (String(agentId) === rootId) {
+      throw Object.assign(new Error('send_message requires another agent in the subagent tree'), { code: 'UNAUTHORIZED' })
+    }
+    agents.calls.push({ kind: 'send', agentId: String(agentId), text: text })
+    return { ok: true }
+  }
+  return agents
+}
+
 function createRig(options) {
   const opts = options === undefined ? {} : options
   const project = PROJECT
@@ -43,7 +70,7 @@ function createRig(options) {
   fs.dirs.add(join(project, '.git'))
   fs.dirs.add(join(project, '.agents'))
   fs.dirs.add(join(project, '.worktrees'))
-  const taskAgents = opts.taskAgents === undefined ? createFakeTaskAgents() : opts.taskAgents
+  const taskAgents = opts.taskAgents === undefined ? createFacadeFaithfulAgents() : opts.taskAgents
   const git = opts.git === undefined ? createFakeGit() : opts.git
   const activity = createActivity({})
   const ctx = createStrictCtx(
@@ -99,6 +126,9 @@ function createRig(options) {
         return snap.tasks.filter((entry) => entry.id === id)[0]
       })
     },
+    pendingDecisions() {
+      return api.decisions.pending(project).then((pending) => (pending.ok === true ? pending.pending : []))
+    },
   }
   if (opts.board !== undefined && opts.board !== null) seedBoard(fs, project, JSON.stringify(opts.board))
   return rig
@@ -108,16 +138,21 @@ function performAs(rig, agentId, name, action, payload) {
   return rig.api.perform(action, payload, { projectPath: rig.project, by: '@' + name, role: 'agent', agent: { id: agentId, name: name } })
 }
 
-function sendsTo(rig, agentId) {
-  return rig.taskAgents.calls.filter((call) => call.kind === 'send' && call.agentId === agentId)
-}
-
 function activityEntries(rig) {
   return rig.activity.snapshot().entries
 }
 
 function hasActivity(rig, kind, taskId) {
   return activityEntries(rig).some((entry) => entry.kind === kind && entry.taskId === taskId)
+}
+
+function ownerAttempts(rig) {
+  const attempts = Array.isArray(rig.taskAgents.attempts) ? rig.taskAgents.attempts : []
+  return attempts.filter((entry) => entry.agentId === ROOT)
+}
+
+function implementerSends(rig, sessionId) {
+  return rig.taskAgents.calls.filter((call) => call.kind === 'send' && call.agentId === sessionId)
 }
 
 /** The review record an approving reviewer hands over (T-191). */
@@ -149,14 +184,9 @@ async function reviewReadyCard(rig, title) {
   return { id: id, card: card, reviewerId: reviewerId }
 }
 
-// ── 1. approveReview: candidate conflict on a branch behind the target ──────
-{
-  const taskAgents = createFakeTaskAgents()
-  const git = createFakeGit()
-  // The branch does NOT contain the target head: an automatic rebuild can never
-  // succeed, so the host must say "rebase" on the FIRST conflict.
-  git.isAncestor = async () => ({ ok: true, ancestor: false })
-  const merger = {
+/** A merger that always reports a candidate conflict (the needs-rebase trigger). */
+function conflictMerger() {
+  return {
     async createCandidate() {
       return { ok: false, code: 'candidate-conflict', message: 'conflict while rebuilding', conflict: 'a.gd' }
     },
@@ -164,13 +194,21 @@ async function reviewReadyCard(rig, title) {
       return { ok: true }
     },
   }
-  const rig = createRig({ taskAgents: taskAgents, git: git, merger: merger })
+}
+
+// 1. approveReview: candidate conflict on a branch behind the target
+{
+  const taskAgents = createFacadeFaithfulAgents()
+  const git = createFakeGit()
+  // The branch does NOT contain the target head: an automatic rebuild can never
+  // succeed, so the host must say 'rebase' on the FIRST conflict.
+  git.isAncestor = async () => ({ ok: true, ancestor: false })
+  const rig = createRig({ taskAgents: taskAgents, git: git, merger: conflictMerger() })
   const ready = await reviewReadyCard(rig, 'needs rebase')
-  // T-198: this project wants a real question for a merge conflict.
-  const policy = await rig.action('decisionPolicy', { scope: 'project', events: { 'merge-conflict': { mode: 'ask' } } })
-  assert.equal(policy.ok, true, JSON.stringify(policy).slice(0, 500))
   const approved = await performAs(rig, ready.reviewerId, 'reviewer-x', 'approveReview', Object.assign({ id: ready.id }, reviewRecord()))
   const card = await rig.boardTask(ready.id)
+  const pending = await rig.pendingDecisions()
+  const ownerQuestion = pending.filter((decision) => decision.eventKey === 'needs-rebase' && decision.taskId === ready.id)[0]
 
   check('approveReview refuses needs-rebase instead of approving a behind branch', () => {
     checkEqual(approved.ok, false, 'approveReview outcome')
@@ -180,20 +218,29 @@ async function reviewReadyCard(rig, title) {
     assert.match(String(approved.message), /rebase/, 'the refusal names the rebase')
   })
 
-  check('the owner/root Session receives the needs-rebase notice (id, reason, detail, next step)', () => {
-    const notices = sendsTo(rig, ROOT)
-    assert.ok(notices.length >= 1, 'no message reached the owning root Session')
-    const text = notices[notices.length - 1].text
-    assert.ok(text.indexOf(ready.id) >= 0, 'the notice does not name the task id: ' + text)
-    assert.match(text, /needs-rebase/)
-    assert.match(text, /a\.gd/, 'the notice does not carry the conflict detail')
-    assert.match(text, /refreshMerge/, 'the notice does not carry the next step')
+  check('the owner/root attempt carries the owning root scope the facade requires', () => {
+    const attempts = ownerAttempts(rig)
+    assert.ok(attempts.length >= 1, 'no send to the owning root Session was attempted')
+    checkEqual(attempts[attempts.length - 1].rootId, ROOT, 'the owner send carried rootId')
   })
 
-  check('the implementer that owns the branch is told the same thing', () => {
+  check('the owning root Session/Lead receives a real needs-rebase question', () => {
+    assert.ok(ownerQuestion !== undefined, 'no needs-rebase decision was queued: ' + JSON.stringify(pending.map((decision) => decision.eventKey)))
+    assert.match(ownerQuestion.id, /^waiting-/)
+    checkEqual(ownerQuestion.taskId, ready.id)
+    checkEqual(ownerQuestion.status, 'pending')
+    // No deadline: a human wait must never resolve itself after 120s.
+    checkEqual(ownerQuestion.timeoutAt, null, 'the owner question auto-resolves')
+    assert.deepEqual(ownerQuestion.options.map((option) => option.id), ['ack', 'block'])
+    assert.match(ownerQuestion.body, new RegExp(ready.id))
+    assert.match(ownerQuestion.body, /needs-rebase/)
+    assert.match(ownerQuestion.body, /refreshMerge/)
+  })
+
+  check('the implementer that owns the branch is told to rebase', () => {
     const worker = card.assignee
     assert.ok(worker !== null && worker !== undefined && typeof worker.session === 'string', 'the reviewing card lost its implementer')
-    const notices = sendsTo(rig, worker.session)
+    const notices = implementerSends(rig, worker.session)
     assert.ok(notices.length >= 1, 'the implementer was never told to rebase')
     assert.match(notices[notices.length - 1].text, /refreshMerge/)
   })
@@ -202,19 +249,19 @@ async function reviewReadyCard(rig, title) {
     assert.ok(hasActivity(rig, 'needs-human', ready.id), JSON.stringify(activityEntries(rig).filter((entry) => entry.taskId === ready.id)))
   })
 
-  const pending = await rig.api.decisions.pending(PROJECT)
-  check('the merge-conflict question is persisted in the decision queue', () => {
-    assert.equal(pending.ok, true, JSON.stringify(pending).slice(0, 600))
-    const question = pending.pending.filter((decision) => decision.eventKey === 'merge-conflict' && decision.taskId === ready.id)[0]
-    assert.ok(question !== undefined, JSON.stringify(pending.pending.map((decision) => decision.eventKey)))
+  // The panel owns the answer path: acknowledging keeps the card parked exactly
+  // as it was (the rebase is a human action, never an automatic transition).
+  const answered = await rig.action('decisionAnswer', { decisionId: ownerQuestion.id, option: 'ack' })
+  const afterAnswer = await rig.boardTask(ready.id)
+  check('answering the owner question acknowledges the wait without moving the card', () => {
+    assert.equal(answered.ok, true, JSON.stringify(answered).slice(0, 600))
+    checkEqual(answered.applied.action, 'needs-rebase')
+    checkEqual(answered.applied.executed, false, 'ack executed a transition')
+    checkEqual(afterAnswer.status, 'reviewing', 'the card status')
+    checkEqual(afterAnswer.waitingReason, 'needs-rebase', 'waitingReason after ack')
   })
 
-  // Onboard: a needs-rebase card is an attention item even though it is not blocked.
-  const onboard = await rig.api.perform(
-    'onboard',
-    {},
-    { projectPath: rig.project, by: '@' + ROOT, role: 'agent', agent: { id: ROOT } },
-  )
+  const onboard = await rig.api.perform('onboard', {}, { projectPath: rig.project, by: '@' + ROOT, role: 'agent', agent: { id: ROOT } })
   check('onboard surfaces the needs-rebase card as attention (not blocked)', () => {
     assert.equal(onboard.ok, true, JSON.stringify(onboard).slice(0, 800))
     const attention = Array.isArray(onboard.onboard.attention) ? onboard.onboard.attention : []
@@ -226,24 +273,54 @@ async function reviewReadyCard(rig, title) {
   rig.scheduler.dispose()
 }
 
-// ── 2. approveReview: an automatic candidate-stale rebuild stays silent ─────
+// 2. the T-198 ask policy already owns the queue: no second question
 {
-  const taskAgents = createFakeTaskAgents()
+  const taskAgents = createFacadeFaithfulAgents()
+  const git = createFakeGit()
+  git.isAncestor = async () => ({ ok: true, ancestor: false })
+  const rig = createRig({ taskAgents: taskAgents, git: git, merger: conflictMerger() })
+  const ready = await reviewReadyCard(rig, 'policy ask')
+  const policy = await rig.action('decisionPolicy', { scope: 'project', events: { 'merge-conflict': { mode: 'ask' } } })
+  assert.equal(policy.ok, true, JSON.stringify(policy).slice(0, 500))
+  await performAs(rig, ready.reviewerId, 'reviewer-x', 'approveReview', Object.assign({ id: ready.id }, reviewRecord()))
+  const pending = await rig.pendingDecisions()
+  const conflicts = pending.filter((decision) => decision.eventKey === 'merge-conflict' && decision.taskId === ready.id)
+  const duplicate = pending.filter((decision) => decision.eventKey === 'needs-rebase' && decision.taskId === ready.id)
+  check('T-198 ask creates the merge-conflict question and no duplicate owner question', () => {
+    checkEqual(conflicts.length, 1, 'merge-conflict questions')
+    checkEqual(duplicate.length, 0, 'duplicate needs-rebase questions')
+  })
+  rig.scheduler.dispose()
+}
+
+// 3. a silent project policy keeps the owner queue quiet (audit + attention remain)
+{
+  const taskAgents = createFacadeFaithfulAgents()
+  const git = createFakeGit()
+  git.isAncestor = async () => ({ ok: true, ancestor: false })
+  const rig = createRig({ taskAgents: taskAgents, git: git, merger: conflictMerger() })
+  const ready = await reviewReadyCard(rig, 'policy silent')
+  await rig.action('decisionPolicy', { scope: 'project', events: { 'merge-conflict': { mode: 'silent' } } })
+  await performAs(rig, ready.reviewerId, 'reviewer-x', 'approveReview', Object.assign({ id: ready.id }, reviewRecord()))
+  const pending = await rig.pendingDecisions()
+  check('a silent policy opens no owner question but still records the wait', () => {
+    checkEqual(pending.filter((decision) => decision.taskId === ready.id).length, 0, 'questions for the card')
+    assert.ok(hasActivity(rig, 'needs-human', ready.id), 'the needs-human activity entry is missing')
+  })
+  rig.scheduler.dispose()
+}
+
+// 4. approveReview: an automatic candidate-stale rebuild stays silent
+{
+  const taskAgents = createFacadeFaithfulAgents()
   const git = createFakeGit()
   // The branch DOES contain the target head, so the conflict is only stale-base.
   git.isAncestor = async () => ({ ok: true, ancestor: true })
-  const merger = {
-    async createCandidate() {
-      return { ok: false, code: 'candidate-conflict', message: 'conflict while rebuilding', conflict: 'a.gd' }
-    },
-    async discardCandidate() {
-      return { ok: true }
-    },
-  }
-  const rig = createRig({ taskAgents: taskAgents, git: git, merger: merger })
+  const rig = createRig({ taskAgents: taskAgents, git: git, merger: conflictMerger() })
   const ready = await reviewReadyCard(rig, 'auto stale')
   const approved = await performAs(rig, ready.reviewerId, 'reviewer-x', 'approveReview', Object.assign({ id: ready.id }, reviewRecord()))
   const card = await rig.boardTask(ready.id)
+  const pending = await rig.pendingDecisions()
 
   check('a stale candidate on an up-to-date branch is recorded as candidate-stale', () => {
     checkEqual(approved.ok, false, 'approveReview outcome')
@@ -252,8 +329,9 @@ async function reviewReadyCard(rig, title) {
     checkEqual(card.merge.rebuildAttempts, 1, 'the rebuild attempt is counted')
   })
 
-  check('an automatic candidate-stale rebuild does NOT page the owner/root', () => {
-    assert.equal(sendsTo(rig, ROOT).length, 0, JSON.stringify(sendsTo(rig, ROOT)))
+  check('an automatic candidate-stale rebuild pages nobody', () => {
+    checkEqual(ownerAttempts(rig).length, 0, 'owner send attempts')
+    checkEqual(pending.filter((decision) => decision.taskId === ready.id).length, 0, 'owner questions')
     assert.equal(hasActivity(rig, 'needs-human', ready.id), false, JSON.stringify(activityEntries(rig).filter((entry) => entry.taskId === ready.id)))
   })
 
@@ -266,7 +344,7 @@ async function reviewReadyCard(rig, title) {
   rig.scheduler.dispose()
 }
 
-// ── 3. the auto-merge rebuild path uses the SAME announcement ──────────────
+// 5. the auto-merge rebuild path uses the SAME owner channel
 {
   const worktree = join(PROJECT, '.worktrees', 'T-9-1')
   const board = {
@@ -296,68 +374,55 @@ async function reviewReadyCard(rig, title) {
       },
     ],
   }
-  const taskAgents = createFakeTaskAgents()
+  const taskAgents = createFacadeFaithfulAgents()
   const git = createFakeGit({ base: HEX('b') })
   // The target moved (hex base -> new hex head) and the branch is behind.
   git.revParse = async () => ({ ok: true, hash: HEX('c') })
   git.isAncestor = async () => ({ ok: true, ancestor: false })
-  const merger = {
-    async createCandidate() {
-      return { ok: false, code: 'candidate-conflict', message: 'conflict while rebuilding', conflict: 'b.gd' }
-    },
-    async discardCandidate() {
-      return { ok: true }
-    },
-  }
-  const rig = createRig({ taskAgents: taskAgents, git: git, merger: merger, autoMerge: true, board: undefined })
+  const rig = createRig({ taskAgents: taskAgents, git: git, merger: conflictMerger(), autoMerge: true })
   seedBoard(rig.fs, rig.project, JSON.stringify(board))
   const swept = await rig.api.autoMergePending(rig.project)
   const card = await rig.boardTask('T-9')
+  const pending = await rig.pendingDecisions()
 
   check('the auto-merge rebuild records needs-rebase on a behind branch', () => {
     assert.equal(swept.ok, true, JSON.stringify(swept).slice(0, 800))
     checkEqual(card.waitingReason, 'needs-rebase', 'waitingReason')
   })
 
-  check('the auto-merge rebuild announces the same owner notice and activity', () => {
-    const notices = sendsTo(rig, ROOT)
-    assert.ok(notices.length >= 1, 'the rebuild path notified nobody')
-    const text = notices[notices.length - 1].text
-    assert.ok(text.indexOf('T-9') >= 0, 'the notice does not name the task id: ' + text)
-    assert.match(text, /needs-rebase/)
-    assert.match(text, /refreshMerge/)
+  check('the auto-merge rebuild opens the same owner question and activity', () => {
+    const question = pending.filter((decision) => decision.eventKey === 'needs-rebase' && decision.taskId === 'T-9')[0]
+    assert.ok(question !== undefined, JSON.stringify(pending.map((decision) => decision.eventKey)))
+    assert.match(question.body, /T-9/)
+    assert.match(question.body, /refreshMerge/)
     assert.ok(hasActivity(rig, 'needs-human', 'T-9'), JSON.stringify(activityEntries(rig).filter((entry) => entry.taskId === 'T-9')))
+    const attempts = ownerAttempts(rig)
+    assert.ok(attempts.length >= 1 && attempts[attempts.length - 1].rootId === ROOT, JSON.stringify(attempts))
   })
   rig.scheduler.dispose()
 }
 
-// ── 4. the same item is announced once, not on every repeated action ───────
+// 6. the same item is announced once, not on every repeated action
 {
-  const taskAgents = createFakeTaskAgents()
+  const taskAgents = createFacadeFaithfulAgents()
   const git = createFakeGit()
   git.isAncestor = async () => ({ ok: true, ancestor: false })
-  const merger = {
-    async createCandidate() {
-      return { ok: false, code: 'candidate-conflict', message: 'conflict while rebuilding', conflict: 'a.gd' }
-    },
-    async discardCandidate() {
-      return { ok: true }
-    },
-  }
-  const rig = createRig({ taskAgents: taskAgents, git: git, merger: merger })
+  const rig = createRig({ taskAgents: taskAgents, git: git, merger: conflictMerger() })
   const ready = await reviewReadyCard(rig, 'repeat rebase')
   await performAs(rig, ready.reviewerId, 'reviewer-x', 'approveReview', Object.assign({ id: ready.id }, reviewRecord()))
-  const before = sendsTo(rig, ROOT).length
+  const attemptsAfterFirst = ownerAttempts(rig).length
   await performAs(rig, ready.reviewerId, 'reviewer-x', 'approveReview', Object.assign({ id: ready.id }, reviewRecord()))
-  check('a repeated needs-rebase does not page the owner twice with the same sentence', () => {
-    checkEqual(sendsTo(rig, ROOT).length, before, 'owner notices after the second attempt')
+  const pending = await rig.pendingDecisions()
+  check('a repeated needs-rebase neither re-pages the owner nor stacks questions', () => {
+    checkEqual(ownerAttempts(rig).length, attemptsAfterFirst, 'owner send attempts after the second attempt')
+    checkEqual(pending.filter((decision) => decision.taskId === ready.id).length, 1, 'owner questions after the second attempt')
   })
   rig.scheduler.dispose()
 }
 
 const failed = checks.filter((row) => row.ok !== true)
 for (const row of checks) {
-  console.log((row.ok ? 'PASS' : 'FAIL') + '  ' + row.name + (row.ok ? '' : '\n  ' + String(row.error && row.error.stack ? row.error.stack : row.error)))
+  console.log((row.ok ? 'PASS' : 'FAIL') + '  ' + row.name + (row.ok ? '' : '  ' + String(row.error && row.error.stack ? row.error.stack : row.error)))
 }
 console.log(String(checks.length - failed.length) + '/' + String(checks.length) + ' checks passed')
 process.exit(failed.length === 0 ? 0 : 1)
