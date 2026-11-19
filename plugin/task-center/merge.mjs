@@ -22,6 +22,8 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { serialiseWorktreeCreate } from './git.mjs'
 import { HOST_ACTION_TIMEOUT_MS, normaliseVerify } from './schema.mjs'
+// T-201: merge results are card transitions, not merge-record writes.
+import { MERGE_OUTCOMES, enterState, isMergeEligible, transition } from './state-machine.mjs'
 
 export const DEFAULT_VERIFY_COMMAND = 'npm run verify'
 
@@ -910,6 +912,11 @@ export function recordCandidate(board, id, candidate, now, options) {
     task.merge.actualFiles = candidateFiles.slice()
   }
   if (opts.retest === true) {
+    // T-201 T25: a target drift retest is a transition of the testing state. The
+    // table checks the card really is a testing card with an open request; a
+    // wrong call is a typed refusal instead of a silent forced status.
+    const entered = enterState(task, 'targetDriftRetest', { task: task, actor: 'host' }, now)
+    if (entered.ok !== true) return failure(entered.code, entered.message)
     const previous = task.test === null || task.test === undefined ? null : task.test
     task.test = {
       status: 'pending',
@@ -918,7 +925,6 @@ export function recordCandidate(board, id, candidate, now, options) {
       evidence: null,
       attempt: (previous === null || !Number.isFinite(previous.attempt) ? 0 : previous.attempt) + 1,
     }
-    task.status = 'testing'
   }
   task.updatedAt = at
   task.history.push({
@@ -950,16 +956,38 @@ function mergeNote(outcome) {
  * `conflict`, `output`, `reviewer`, `at`) are replaced; candidate/base/head and
  * the declared/actual file lists are left as the submission recorded them.
  */
-export function recordMergeResult(board, id, outcome, now, by, byName) {
+export function recordMergeResult(board, id, outcome, now, by, byName, actor) {
   const next = JSON.parse(JSON.stringify(board))
   const task = next.tasks.filter((candidate) => candidate.id === id)[0]
   if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
   if (task.merge === null || typeof task.merge !== 'object' || Array.isArray(task.merge)) {
     return failure('no-merge-request', id + ' has no merge request to record')
   }
+  const status = outcome === null || outcome === undefined ? null : outcome.status
+  // T-201: only the four real outcomes are board states. 'stale' is a queue
+  // answer that must go through targetDriftRetest/baseOnlyDrift instead.
+  if (MERGE_OUTCOMES.indexOf(status) < 0) {
+    return failure('invalid-merge-outcome', 'the merge queue returned ' + JSON.stringify(status) + '; only ' + MERGE_OUTCOMES.join('/') + ' may be recorded on a card')
+  }
   const at = new Date(now).toISOString()
+  const from = task.status
+  const event = status === 'merged' ? 'mergeMerged' : status === 'conflict' ? 'mergeConflict' : status === 'failed' ? 'mergeFailed' : 'mergeRejected'
+  // The blocked reason is the typed merge outcome; a conflict/failed/rejected
+  // request never leaves the card sitting in testing with a non-open request.
+  const detail =
+    status === 'conflict'
+      ? 'the test candidate conflicted with the target' + (typeof outcome.conflict === 'string' && outcome.conflict !== '' ? ': ' + outcome.conflict : '')
+      : status === 'failed'
+        ? 'the merge failed' + (typeof outcome.output === 'string' && outcome.output !== '' ? ': ' + String(outcome.output).slice(0, 400) : '')
+        : status === 'rejected'
+          ? 'the merge request was rejected'
+          : null
+  // T21/T22/T23 are host queue events; T24 is the user-only rejection.
+  const fallbackActor = status === 'rejected' ? 'user' : 'host'
+  const entered = enterState(task, event, { task: task, actor: actor === undefined || actor === null ? fallbackActor : actor, blockedDetail: detail }, now)
+  if (entered.ok !== true) return failure(entered.code, entered.message)
   const merge = Object.assign({}, task.merge, {
-    status: outcome.status,
+    status: status,
     reviewer: by,
     at: at,
   })
@@ -967,10 +995,6 @@ export function recordMergeResult(board, id, outcome, now, by, byName) {
   if (outcome.conflict !== undefined) merge.conflict = outcome.conflict
   if (outcome.output !== undefined) merge.output = outcome.output
   task.merge = merge
-  const from = task.status
-  // The merge happens BEFORE done: a green merge is what completes a task that
-  // passed its test phase.
-  if (outcome.status === 'merged' && task.status === 'testing') task.status = 'done'
   task.updatedAt = at
   task.history.push({
     at: at,
@@ -980,7 +1004,7 @@ export function recordMergeResult(board, id, outcome, now, by, byName) {
     to: task.status,
     note: mergeNote(outcome),
   })
-  return { ok: true, board: next, events: [{ kind: 'merge', id: id, status: outcome.status }] }
+  return { ok: true, board: next, events: [{ kind: 'merge', id: id, status: status }] }
 }
 
 /**
@@ -990,18 +1014,9 @@ export function recordMergeResult(board, id, outcome, now, by, byName) {
  * queue re-validates when it actually merges.
  */
 export function mergeEligible(task) {
-  if (task === null || task === undefined) return false
-  // T-131: an investigation delivers a report, never a branch — there is nothing
-  // to integrate, and its scratch checkout is discarded with the card.
-  if (task.kind === 'investigate') return false
-  if (task.status !== 'testing') return false
-  if (task.review === null || task.review === undefined || typeof task.review !== 'object') return false
-  if (task.review.status !== 'approved') return false
-  if (task.test === null || task.test === undefined || typeof task.test !== 'object') return false
-  if (task.test.status !== 'passed') return false
-  const merge = task.merge
-  if (merge === null || merge === undefined || typeof merge !== 'object' || Array.isArray(merge)) return false
-  return merge.status === 'open'
+  // T-201: ONE definition, shared with the mergeMerged transition in
+  // state-machine.mjs, so the queue gate and the table can never drift apart.
+  return isMergeEligible(task)
 }
 
 /**
@@ -1023,7 +1038,7 @@ export function mergeEligible(task) {
  * task returns to the REVIEW phase with a fresh round; the test record is
  * cleared and is created again when the review is approved.
  */
-export function refreshMergeRequest(board, id, base, head, actualFiles, now, by, byName) {
+export function refreshMergeRequest(board, id, base, head, actualFiles, now, by, byName, actor) {
   const next = JSON.parse(JSON.stringify(board))
   const task = next.tasks.filter((candidate) => candidate.id === id)[0]
   if (task === undefined) return failure('unknown-task', 'no task with id ' + String(id))
@@ -1036,6 +1051,16 @@ export function refreshMergeRequest(board, id, base, head, actualFiles, now, by,
   const files = Array.isArray(actualFiles) ? actualFiles.slice() : []
   const previousBase = typeof task.merge.base === 'string' ? task.merge.base : null
   const previousHead = typeof task.merge.head === 'string' ? task.merge.head : null
+  // T-201 T27: a refresh is only a transition when the request actually changed
+  // (base, head or outcome); otherwise it is a typed no-change and the review
+  // round budget is NOT spent. closed cards are refused before any write.
+  const change = {
+    base: String(previousBase) !== String(base),
+    head: String(previousHead) !== String(head),
+    outcome: task.merge.status !== 'open',
+  }
+  const decided = transition('refreshMerge', task.status, { task: task, actor: actor === undefined || actor === null ? undefined : actor, change: change })
+  if (decided.ok !== true) return failure(decided.code, decided.message)
   task.commit = head
   task.actualFiles = files.slice()
   // T-156 review: the refresh changes WHICH base the request is against, so the
@@ -1063,7 +1088,9 @@ export function refreshMergeRequest(board, id, base, head, actualFiles, now, by,
   }
   const previousReview = task.review
   const from = task.status
-  task.status = 'reviewing'
+  // T-201 T27: reviewing/testing -> reviewing (a new review round on the new head).
+  const entered = enterState(task, 'refreshMerge', { task: task, actor: actor === undefined || actor === null ? undefined : actor, change: change }, now)
+  if (entered.ok !== true) return failure(entered.code, entered.message)
   task.review = {
     status: 'pending',
     by: by,

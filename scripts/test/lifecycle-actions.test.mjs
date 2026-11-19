@@ -106,4 +106,45 @@ assert.equal((await actions.reopen({}, { by: 'user' }, '/project')).code, 'missi
   console.log('PASS  the decision answers execute reopen/cancel/delete and message the Agent')
 }
 
+// ── T-201: the lifecycle handler tells the state machine WHO acts and WHY ──
+//
+// The model is the single status writer; the action only forwards the actor (so
+// the documented actor matrix can be enforced) and the typed block reason.
+{
+  const seen = []
+  const target = { id: 'T-1', status: 'running', kind: 'dev' }
+  const fakeBoard = { tasks: [target] }
+  const done = (event) => (...args) => {
+    seen.push({ event: event, args: args })
+    return { ok: true, board: fakeBoard, task: target, events: [] }
+  }
+  const forwarding = createLifecycleActions({
+    readBoardOrFail: async () => ({ board: fakeBoard }),
+    model: {
+      findTask: () => target,
+      blockTask: done('block'),
+      cancelTask: done('cancel'),
+      reopenTask: done('reopen'),
+      unblockTask: done('unblock'),
+      retryTask: done('retry'),
+    },
+    writeTask: async (project, id, mutator) => mutator(fakeBoard),
+    clock: () => 1000,
+    writeByName: () => 'user',
+    state: { memory: { locks: [] } },
+    ctx: {},
+    cleanupInvestigation: async () => {},
+    failure: (code, message) => ({ ok: false, code: code, message: message }),
+  })
+  await forwarding.block({ id: 'T-1', note: 'merge conflict', reason: { code: 'merge-conflict' } }, { by: '@w', role: 'agent' }, '/project')
+  await forwarding.cancel({ id: 'T-1' }, { by: '@user', role: 'user' }, '/project')
+  await forwarding.reopen({ id: 'T-1' }, { by: '@user', role: 'user' }, '/project')
+  await forwarding.retry({ id: 'T-1' }, { by: '@w', role: 'agent' }, '/project')
+  assert.deepEqual(seen[0].args[6], { actor: 'worker', reason: { code: 'merge-conflict' } })
+  assert.deepEqual(seen[1].args[6], { actor: 'user' })
+  assert.deepEqual(seen[2].args[6], { actor: 'user' })
+  assert.deepEqual(seen[3].args[6], { actor: 'worker' })
+  console.log('PASS  lifecycle actions forward the actor and the typed block reason to the model')
+}
+
 console.log('PASS  lifecycle actions preserve cancel/block cleanup and transition routing')

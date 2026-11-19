@@ -33,6 +33,8 @@ import {
   validateRoleProfile,
 } from './schema.mjs'
 import * as model from './service.mjs'
+// T-201: the sole card-status write entry (base-only drift is a transition too).
+import { enterState } from './state-machine.mjs'
 import * as locks from './locks.mjs'
 import { ACTIONS, AGENT_ACTIONS, DEV_ONLY_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } from './actions/registry.mjs'
 import { createReadActions } from './actions/read.mjs'
@@ -1498,7 +1500,10 @@ export function createApi(ctx, options) {
       projectPath,
       task.id,
       (board) =>
-        model.blockTask(board, task.id, clock(), 'system', 'review round limit reached (' + String(REVIEW_MAX_ROUNDS) + '); blocked for triage'),
+        model.blockTask(board, task.id, clock(), 'system', 'review round limit reached (' + String(REVIEW_MAX_ROUNDS) + '); blocked for triage', null, {
+          reason: { code: 'review-round-limit', detail: 'review round limit reached (' + String(REVIEW_MAX_ROUNDS) + '); only reopen escapes this block' },
+          actor: 'host',
+        }),
       systemContext,
     )
     if (blocked.ok !== true) return null
@@ -2248,6 +2253,11 @@ export function createApi(ctx, options) {
       id: detail.id,
       title: detail.title,
       status: detail.status,
+      // T-201: detail/snapshot expose the state + phase projection without
+      // changing any existing field the panel already reads.
+      state: detail.state,
+      phase: detail.phase,
+      blockedReason: detail.blockedReason === undefined ? null : detail.blockedReason,
       // T-131: the panel needs the kind to render an investigation and the
       // headline to show its report without fetching detail; the full report stays
       // behind /task.
@@ -5643,6 +5653,11 @@ export function createApi(ctx, options) {
             'base-only drift：已在 ' + String(built.base) + ' 上重建候选并复跑验证（' + String(verifySpec.command) + '，通过），diff 与已验证提交等价，不新增评审轮次。' +
             (drift === null ? '' : ' target drift ' + drift.from + ' -> ' + drift.to + '。') +
             (verifyChanged ? ' verify fingerprint ' + previousPrint + ' -> ' + rebuildVerifyPrint + '。' : '')
+          // T-201 T26: base-only drift is a transition of the SAME testing state
+          // (no new review/test round); routing it through the table proves the
+          // merge request is still open and records the audit event.
+          const driftEvent = enterState(entry, 'baseOnlyDrift', { task: entry, actor: 'host' }, clock())
+          if (driftEvent.ok !== true) return driftEvent
           return Object.assign({}, entry, {
             waitingReason: null,
             waitingDetail: null,

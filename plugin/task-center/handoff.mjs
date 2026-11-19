@@ -20,6 +20,8 @@
  * without a host.
  */
 
+import { enterState } from './state-machine.mjs'
+
 
 
 /** A card in one of these statuses is "in progress" for handoff purposes. */
@@ -266,16 +268,10 @@ export function applyTakeover(board, options) {
       // Release the stale claim completely. The EXECUTOR ledger is retired so a
       // later roster check can never call it live; the worktree fields stay, so
       // the next attempt adopts the same checkout (attempt slot still > 1).
-      task.lastAssignee = task.assignee === null || task.assignee === undefined ? task.lastAssignee || null : Object.assign({}, task.assignee)
-      task.assignee = null
-      task.leaseUntil = null
-      task.status = 'pending'
-      const executors = Array.isArray(task.executors) ? task.executors : []
-      task.executors = executors.map((entry) =>
-        entry !== null && typeof entry === 'object' && (entry.retiredAt === null || entry.retiredAt === undefined)
-          ? Object.assign({}, entry, { retiredAt: iso(now), retiredReason: 'handoff to ' + toSession })
-          : entry,
-      )
+      // T-201 T05: running -> pending through the state machine (it retires the
+      // ledger, keeps the last owner and clears the claim).
+      const entered = enterState(task, 'handoffTakeover', { task: task, actor: 'user' }, now)
+      if (entered.ok !== true) return { ok: false, code: entered.code, message: entered.message }
       task.dispatch = Object.assign({}, task.dispatch === null || task.dispatch === undefined ? {} : task.dispatch, {
         status: 'handoff',
         error: null,

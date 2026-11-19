@@ -138,6 +138,11 @@ check('approveReview persists the structured ReviewRecord', () => {
 })
 
 const afterApprove = await boardTask(main.id)
+check('the board exposes state + the test phase after the approval', () => {
+  assert.equal(afterApprove.status, 'testing')
+  assert.equal(afterApprove.state, 'testing')
+  assert.equal(afterApprove.phase, 'test')
+})
 check('the board keeps the artifact summary and the host check fingerprint', () => {
   assert.ok(afterApprove.merge.artifact !== null && afterApprove.merge.artifact !== undefined)
   assert.match(afterApprove.merge.artifact.hash, /^sha256:/)
@@ -187,6 +192,7 @@ const failedFirst = await performAs(testerId, 'tester-x', 'failTest', Object.ass
 check('failTest persists the TestRecord and returns the card to running', () => {
   assert.equal(failedFirst.ok, true, JSON.stringify(failedFirst).slice(0, 900))
   assert.equal(failedFirst.task.status, 'running')
+  assert.equal(failedFirst.task.state, 'running')
   assert.equal(failedFirst.task.test.record.verdict, 'failed')
   assert.equal(failedFirst.task.test.record.probes.length, 1)
 })
@@ -244,6 +250,7 @@ const afterChanges = await boardTask(changesCard.id)
 check('requestChanges persists the record and renders the reasons from findings', () => {
   assert.equal(changes.ok, true, JSON.stringify(changes).slice(0, 900))
   assert.equal(afterChanges.status, 'running')
+  assert.equal(afterChanges.phase, 'implement')
   assert.equal(afterChanges.review.record.findings[0].severity, 'blocking')
   assert.match(afterChanges.review.reasons, /a\.mjs:9/)
   assert.match(afterChanges.review.reasons, /drop the silent catch/)

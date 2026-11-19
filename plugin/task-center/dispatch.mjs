@@ -3102,7 +3102,13 @@ export function createDispatcher(ctx, options) {
       const blocked = await applyReap(projectPath, (board) => {
         const live = model.findTask(board, taskId)
         if (live === undefined || live === null || stageOfTask(live) !== stage) return null
-        const result = model.blockTask(board, taskId, state.clock(), 'system', continueLimit + ' consecutive default-continues on the ' + stage + ' stage; blocked for triage')
+        // T-198 sizes the streak from the decision policy; T-201 keeps the typed
+        // blocked reason + host actor the state machine needs for the same block.
+        const result = model.blockTask(board, taskId, state.clock(), 'system', continueLimit + ' consecutive default-continues on the ' + stage + ' stage; blocked for triage', null, {
+          reason: { code: 'stage-continue-limit', detail: String(continueLimit) + ' consecutive default-continues on the ' + stage + ' stage' },
+          auto: false,
+          actor: 'host',
+        })
         return result.ok === true ? result.board : null
       })
       await appendStageHistory(projectPath, taskId, '连续 ' + continueLimit + ' 次阶段超时默认继续，已自动阻塞；不再提问（运行中的 stage agent 未被强制终止，由其自行结束本轮）')

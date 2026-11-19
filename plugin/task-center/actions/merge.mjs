@@ -3,7 +3,14 @@
  *
  * refreshMerge keeps the branch/diff/reviewer orchestration; it is extracted
  * after the queue/record half so the whole merge domain has one owner.
+ *
+ * T-201: refreshMerge is a state-machine transition (state-machine.mjs T27), so
+ * this action refuses closed cards, accepts only a review/test/merge request or a
+ * card blocked by a merge outcome, and returns "no-change" WITHOUT spending a
+ * review round when the request is already current.
  */
+import { blockedReasonOf, isMergeReason } from '../state-machine.mjs'
+
 export function createMergeActions(deps) {
   const mergeRefusal = deps.mergeRefusal
   const mergeQueueKey = deps.mergeQueueKey
@@ -68,7 +75,7 @@ export function createMergeActions(deps) {
       const recorded = await writeTask(
         projectPath,
         id,
-        (board) => recordMergeResult(board, id, { status: 'rejected' }, clock(), context.by, writeByName(context)),
+        (board) => recordMergeResult(board, id, { status: 'rejected' }, clock(), context.by, writeByName(context), 'user'),
         context,
       )
       if (recorded.ok !== true) return recorded
@@ -87,12 +94,23 @@ export function createMergeActions(deps) {
       if (read.failed !== undefined) return read.failed
       const task = model.findTask(read.board, id)
       if (task === undefined) return failure('unknown-task', 'no task with id ' + id)
-      if (task.status === 'pending' || task.status === 'running' || task.status === 'blocked' || task.status === 'cancelled') {
+      // T-201 T27: closed cards are final until reopen; a blocked card may only
+      // be refreshed when it was paused BY a merge outcome (merge-unresolved).
+      if (task.status === 'done' || task.status === 'cancelled') {
+        return failure('closed', id + ' is ' + task.status + '; a closed card has no open merge request. Reopen it first.')
+      }
+      if (task.status === 'pending' || task.status === 'running') {
         return failure('not-mergeable-phase', id + ' is ' + task.status + '; only a submitted task has a merge request to refresh')
       }
       const merge = task.merge
       if (merge === null || merge === undefined || typeof merge !== 'object' || Array.isArray(merge)) {
         return failure('no-merge-request', id + ' has no merge request to refresh')
+      }
+      if (task.status === 'blocked') {
+        const reason = blockedReasonOf(task)
+        if (reason === null || isMergeReason(reason.code) !== true) {
+          return failure('not-mergeable-phase', id + ' is blocked for ' + (reason === null ? 'an unknown reason' : reason.code) + '; only a merge-outcome block is resolved by refreshing the request')
+        }
       }
       const owner = ownerOf(context)
       const asUser = context !== undefined && context !== null && context.role === 'user'
@@ -133,6 +151,13 @@ export function createMergeActions(deps) {
         const detail = diff === null || diff === undefined ? 'git returned no result' : String(diff.message)
         return failure(code, 'could not list the files ' + id + ' changed: ' + detail)
       }
+      // T-201 T27 idempotency: (base, head, outcome) unchanged is a no-change, not
+      // a new review round. Refuse BEFORE any reviewer is provisioned.
+      const sameBase = typeof merge.base === 'string' && merge.base === base
+      const sameHead = typeof merge.head === 'string' && merge.head === current.head
+      if (sameBase && sameHead && merge.status === 'open') {
+        return failure('no-change', id + ' is already refreshed on base ' + String(base) + ' and head ' + String(current.head) + '; nothing changed, so no review round was started')
+      }
       // A new head/base starts a fresh review round: the previous decisions
       // were taken on a different tree, so refreshMergeRequest resets the
       // phases and the queue waits for review + tests again. Start the reviewer
@@ -149,7 +174,8 @@ export function createMergeActions(deps) {
       const recorded = await writeTask(
         projectPath,
         id,
-        (board) => refreshMergeRequest(board, id, base, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by, writeByName(context)),
+        (board) =>
+          refreshMergeRequest(board, id, base, current.head, Array.isArray(diff.files) ? diff.files : [], clock(), context.by, writeByName(context), context !== undefined && context !== null && context.role === 'user' ? 'user' : 'worker'),
         context,
       )
       if (recorded.ok !== true) return recorded

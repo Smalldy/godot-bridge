@@ -738,5 +738,35 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
   check('T-131 an unknown kind on the board is refused', badRead.ok !== true && badRead.code === 'invalid-kind', JSON.stringify(badRead.code))
 }
 
+// ── T-201: state + phase projection, typed blocked reason, retry/reopen ──
+{
+  let board = make(base(), 'A').board
+  board = claimTask(board, 'T-1', { name: 'w', session: 's' }, T0).board
+  board = submitTask(board, 'T-1', { merge: { status: 'open', base: 'b', target: 'main', head: 'h' } }, T0 + 1, 'w').board
+  check('T-201 the summary exposes the review phase', taskSummary(board, findTask(board, 'T-1'), T0 + 2).phase === 'review')
+  board = approveReview(board, 'T-1', T0 + 2, 'r').board
+  const testing = taskSummary(board, findTask(board, 'T-1'), T0 + 3)
+  check('T-201 the summary exposes state + the test phase', testing.state === 'testing' && testing.phase === 'test', JSON.stringify({ state: testing.state, phase: testing.phase }))
+  board = passTest(board, 'T-1', T0 + 3, 't').board
+  check('T-201 a passed test projects the merge phase', taskSummary(board, findTask(board, 'T-1'), T0 + 4).phase === 'merge')
+  const blocked = blockTask(board, 'T-1', T0 + 4, 'system', 'merge conflicted', null, { reason: { code: 'merge-conflict' } })
+  const blockedTask = findTask(blocked.board, 'T-1')
+  check(
+    'T-201 a merge outcome blocks the card with a typed reason',
+    blocked.ok === true && blockedTask.status === 'blocked' && blockedTask.blockedReason.code === 'merge-conflict' && blockedTask.blockedReason.from === 'testing',
+    JSON.stringify(blocked.ok === true ? blockedTask.blockedReason : blocked),
+  )
+  check('T-201 the summary exposes the typed reason', taskSummary(blocked.board, blockedTask, T0 + 5).blockedReason.code === 'merge-conflict')
+  const retried = retryTask(blocked.board, 'T-1', T0 + 6, '@me')
+  check('T-201 retry refuses a card paused by a testing-phase outcome', retried.ok !== true && retried.code === 'not-retryable', JSON.stringify(retried))
+  const reopened = reopenTask(blocked.board, 'T-1', T0 + 6, '@me')
+  const reopenedTask = findTask(reopened.board, 'T-1')
+  check(
+    'T-201 reopen clears the merge request and the blocked reason',
+    reopened.ok === true && reopenedTask.status === 'pending' && reopenedTask.merge === null && reopenedTask.blockedReason === null,
+    JSON.stringify(reopened.ok === true ? { merge: reopenedTask.merge, reason: reopenedTask.blockedReason } : reopened),
+  )
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')
 process.exit(failures === 0 ? 0 : 1)

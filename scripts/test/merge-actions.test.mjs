@@ -196,6 +196,15 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
   )
   const legacy = normaliseMerge({ status: 'open' })
   check('T-156 a legacy/unchanged merge record has no drift noise', legacy.targetDrift === null && legacy.verifyChanged === false && legacy.verifyFingerprints === null, JSON.stringify(legacy))
+
+  // ── T-201: refreshMerge is a transition with an idempotency key ──
+  const unchanged = boardOf(makeTask({ merge: { status: 'open', base: 'base-1', head: 'head-1', target: 'main' } }))
+  const sameRefresh = refreshMergeRequest(unchanged, 'T-9', 'base-1', 'head-1', [], now, 'w')
+  check('T-201 an unchanged refresh is a typed no-change and does not spend a review round', sameRefresh.ok !== true && sameRefresh.code === 'no-change' && (unchanged.tasks[0].review === null || unchanged.tasks[0].review === undefined), JSON.stringify(sameRefresh))
+  const closedTask = makeTask({ status: 'done', merge: { status: 'merged', base: 'base-1', head: 'head-1', target: 'main', mergeCommit: 'merge-1' } })
+  const closedBoard = boardOf(closedTask)
+  const closedRefresh = refreshMergeRequest(closedBoard, 'T-9', 'base-2', 'head-2', [], now, 'w')
+  check('T-201 refreshMerge refuses a closed card and leaves its merge record intact', closedRefresh.ok !== true && closedRefresh.code === 'closed' && closedBoard.tasks[0].merge.status === 'merged', JSON.stringify(closedRefresh))
 }
 
 console.log('PASS  merge actions preserve queue/notify/reject/refusal paths')

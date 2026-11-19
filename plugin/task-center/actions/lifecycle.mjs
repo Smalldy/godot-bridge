@@ -31,6 +31,11 @@ export function createLifecycleActions(deps) {
    * by the name the agent tree reports. Best-effort on purpose: a missing agent
    * runtime must never turn a lifecycle transition into a failure.
    */
+  /** T-201: the actor the state machine proves for a lifecycle transition. */
+  function actorOf(context) {
+    return context !== undefined && context !== null && context.role === 'user' ? 'user' : 'worker'
+  }
+
   async function releaseStageRoster(task, reason) {
     if (stageAgents === null || task === null || task === undefined) return null
     if (typeof stageAgents.releaseTask !== 'function') return null
@@ -51,7 +56,7 @@ export function createLifecycleActions(deps) {
     const result = await writeTask(
       projectPath,
       id,
-      (board) => model.cancelTask(board, id, clock(), context.by, source.note, writeByName(context)),
+      (board) => model.cancelTask(board, id, clock(), context.by, source.note, writeByName(context), { actor: actorOf(context) }),
       context,
     )
     if (result.ok === true) {
@@ -77,9 +82,9 @@ export function createLifecycleActions(deps) {
       projectPath,
       id,
       (board) => {
-        if (action === 'reopen') return model.reopenTask(board, id, clock(), context.by, source.note, writeByName(context))
-        if (action === 'unblock') return model.unblockTask(board, id, clock(), context.by, source.note, writeByName(context))
-        return model.retryTask(board, id, clock(), context.by, source.note, writeByName(context))
+        if (action === 'reopen') return model.reopenTask(board, id, clock(), context.by, source.note, writeByName(context), { actor: actorOf(context) })
+        if (action === 'unblock') return model.unblockTask(board, id, clock(), context.by, source.note, writeByName(context), { actor: actorOf(context) })
+        return model.retryTask(board, id, clock(), context.by, source.note, writeByName(context), { actor: actorOf(context) })
       },
       context,
     )
@@ -104,7 +109,11 @@ export function createLifecycleActions(deps) {
     const result = await writeTask(
       projectPath,
       id,
-      (board) => model.blockTask(board, id, clock(), context.by, source.note, writeByName(context)),
+      (board) =>
+        model.blockTask(board, id, clock(), context.by, source.note, writeByName(context), {
+          actor: actorOf(context),
+          reason: source.reason === undefined ? null : source.reason,
+        }),
       context,
     )
     if (result.ok === true) {
