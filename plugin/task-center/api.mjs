@@ -4710,7 +4710,36 @@ export function createApi(ctx, options) {
   // cancel/block and the DELETE-gated dependency tree. A continue NEVER restarts
   // the worker and never touches the worktree or the candidate.
 
-  /** Live child ids of one root, or null when the tree cannot be read. */
+  /**
+   * The ids a release sweep reported as NOT released (failed/unresolved), or a
+   * marker when the sweep itself threw. T-204 review: a teardown that failed is
+   * proof the child is still there, independent of what the catalog says.
+   */
+  function stageChildStillThere(released, threw) {
+    const ids = []
+    if (threw === true) {
+      ids.push('release-failed')
+      return ids
+    }
+    if (released === null || released === undefined || typeof released !== 'object') return ids
+    for (const bucket of [released.failed, released.unresolved]) {
+      if (Array.isArray(bucket) === false) continue
+      for (const entry of bucket) {
+        if (entry === null || entry === undefined) continue
+        if (typeof entry.agentId === 'string' && entry.agentId !== '' && ids.indexOf(entry.agentId) < 0) ids.push(entry.agentId)
+      }
+    }
+    return ids
+  }
+
+  /**
+   * RUNNING child ids of one root, or null when the tree cannot be read.
+   *
+   * T-204 review: the DSH catalog is append-only — a disposed child stays a
+   * kind:'child' row with activity:'inactive' (see the T-183 note above and
+   * task-agents' deferred-release reader). Catalog MEMBERSHIP is therefore not
+   * proof that a child is still executing; only activity:'running' is.
+   */
   async function liveChildIdsOf(rootId) {
     if (taskAgents === null || taskAgents === undefined || typeof taskAgents.listFor !== 'function') return null
     if (typeof rootId !== 'string' || rootId === '') return null
@@ -4720,6 +4749,7 @@ export function createApi(ctx, options) {
       const ids = new Set()
       for (const row of rows) {
         if (row === null || row === undefined || row.kind !== 'child') continue
+        if (row.activity !== 'running') continue
         ids.add(String(row.id))
       }
       return ids
@@ -4760,16 +4790,25 @@ export function createApi(ctx, options) {
     // is being released must win over a replacement prepared from stale state.
     const roundAt = typeof record.at === 'string' && record.at !== '' ? record.at : null
     const old = record.deliveredTo === null || record.deliveredTo === undefined ? null : record.deliveredTo
+    let oldRelease = null
+    let oldReleaseThrew = false
     if (stageAgents !== null && old !== null && typeof old.id === 'string' && old.id !== '') {
       try {
-        await stageAgents.releaseTask(task, { roles: [kind], reason: 'replaced by a stage decision' })
-      } catch (error) {}
+        oldRelease = await stageAgents.releaseTask(task, { roles: [kind], reason: 'replaced by a stage decision' })
+      } catch (error) {
+        oldReleaseThrew = true
+      }
     }
     if (old !== null && typeof old.id === 'string' && old.id !== '') {
+      // A child that could not be released (a thrown release, or ids the release
+      // reported as unresolved/failed) is still there; only a clean release plus
+      // no RUNNING row proves it is gone.
+      const stillThere = stageChildStillThere(oldRelease, oldReleaseThrew)
       const live = await liveChildIdsOf(task.ownerSession)
-      if (live !== null && live.has(old.id)) {
+      if (stillThere.length > 0 || (live !== null && live.has(old.id))) {
+        const detail = stillThere.length > 0 ? stillThere.join(', ') : String(old.id)
         return {
-          outcome: failure('stage-agent-still-live', 'the old ' + kind + ' (' + String(old.id) + ') is still running; refusing to start a second one'),
+          outcome: failure('stage-agent-still-live', 'the old ' + kind + ' (' + detail + ') is still running; refusing to start a second one'),
           executed: false,
           summary: { taskId: String(taskId), old: String(old.id) },
           text: decided + ', but the old ' + kind + ' is still running; the card keeps its current round instead of starting a second ' + kind + '.',

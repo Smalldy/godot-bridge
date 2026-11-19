@@ -368,7 +368,7 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
     const live = new Set(delivered === null ? [] : [delivered])
     const calls = []
     const head = { value: 'head-2' }
-    const flags = { failWrite: false, keepOldLive: false }
+    const flags = { failWrite: false, keepOldLive: false, throwRelease: false, unresolvedId: null, liveUnreadable: false }
     let sequence = 0
     function recordedIds(entry) {
       const ids = []
@@ -409,6 +409,16 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
         async releaseTask(entry, options) {
           const ids = recordedIds(entry)
           calls.push({ kind: 'releaseTask', ids: ids, roles: options.roles })
+          // A teardown that failed must refuse the replacement even when the
+          // append-only catalog already reports the child as inactive.
+          if (flags.throwRelease) {
+            live.clear()
+            throw new Error('the stage runtime refused the release')
+          }
+          if (flags.unresolvedId !== null) {
+            live.delete(flags.unresolvedId)
+            return { ok: false, released: [], failed: [], unresolved: [{ agentId: flags.unresolvedId }], interrupted: [], kept: [], deferred: [] }
+          }
           const released = []
           for (const id of ids) {
             if (flags.keepOldLive) continue
@@ -428,7 +438,9 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
           return live.delete(String(agentId))
         },
       },
-      liveStageIds: async () => new Set(live),
+      // Running ids only (the DSH catalog keeps disposed children as inactive
+      // rows); null models a facade that cannot read the tree at all.
+      liveStageIds: async () => (flags.liveUnreadable ? null : new Set(live)),
       markWaiting: async () => {},
       clearWaiting: async () => {},
       reviewBriefFor: () => 'review brief',
@@ -497,6 +509,49 @@ assert.equal((await denied.mergeRequest({ id: 'T-1' }, {}, '/project')).code, 'n
         rig.calls.some((call) => call.kind === 'release' && call.agentId === 'reviewer-new-1') &&
         rig.live.size === 0,
       JSON.stringify({ calls: rig.calls, live: Array.from(rig.live) }),
+    )
+  }
+
+  {
+    const rig = roundHarness(roundTask())
+    rig.flags.throwRelease = true
+    const refused = await rig.actions.refreshMerge({ id: 'T-9' }, worker, '/project')
+    check(
+      'a release that throws refuses the refresh instead of starting a second reviewer',
+      refused.ok !== true &&
+        refused.code === 'stage-child-still-live' &&
+        rig.calls.filter((call) => call.kind === 'startReviewer').length === 0 &&
+        rig.board.tasks[0].merge.head === 'head-1',
+      JSON.stringify({ refused: refused, calls: rig.calls }),
+    )
+  }
+
+  {
+    const rig = roundHarness(roundTask())
+    rig.flags.unresolvedId = 'reviewer-old'
+    rig.flags.liveUnreadable = true
+    const refused = await rig.actions.refreshMerge({ id: 'T-9' }, worker, '/project')
+    check(
+      'an unresolved release with an unreadable tree refuses the refresh',
+      refused.ok !== true &&
+        refused.code === 'stage-child-still-live' &&
+        String(refused.message).indexOf('reviewer-old') >= 0 &&
+        rig.calls.filter((call) => call.kind === 'startReviewer').length === 0,
+      JSON.stringify({ refused: refused, calls: rig.calls }),
+    )
+  }
+
+  {
+    const rig = roundHarness(roundTask())
+    // The record-only fallback reports an already-gone id as unresolved; the
+    // READABLE tree shows it is not running, so the refresh must still start.
+    rig.flags.unresolvedId = 'reviewer-old'
+    rig.flags.liveUnreadable = false
+    const refreshed = await rig.actions.refreshMerge({ id: 'T-9' }, worker, '/project')
+    check(
+      'an unresolved id the tree proves inactive does not block the replacement',
+      refreshed.ok === true && rig.live.has('reviewer-new-1') && rig.calls.filter((call) => call.kind === 'startReviewer').length === 1,
+      JSON.stringify({ refreshed: refreshed.ok, calls: rig.calls, live: Array.from(rig.live) }),
     )
   }
 }

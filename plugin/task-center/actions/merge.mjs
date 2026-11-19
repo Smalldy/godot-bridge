@@ -32,7 +32,9 @@ export function createMergeActions(deps) {
   const git = deps.git
   const messageOf = deps.messageOf
   const stageAgents = deps.stageAgents === undefined ? null : deps.stageAgents
-  // T-204: live stage children of one root, or null when the tree cannot tell.
+  // T-204: RUNNING stage children of one root, or null when the tree cannot tell.
+  // Running-only on purpose: DSH's catalog keeps disposed children as inactive
+  // rows, so catalog membership is not proof that a child is still executing.
   const liveStageIds = deps.liveStageIds === undefined ? null : deps.liveStageIds
   const markWaiting = deps.markWaiting
   const clearWaiting = deps.clearWaiting
@@ -154,23 +156,36 @@ export function createMergeActions(deps) {
     const recorded = recordedStageIds(task)
     if (stageAgents === null || typeof stageAgents.releaseTask !== 'function') return { ok: true, released: [], stillLive: [] }
     let released = null
+    let releaseThrew = false
     try {
       released = await stageAgents.releaseTask(task, { roles: ['reviewer', 'tester'], reason: 'refreshMerge replaces the review round' })
     } catch (error) {
-      released = null
+      releaseThrew = true
     }
-    // A failed teardown proves the child is still there; the live tree answers
-    // for the recorded ids as well (the release can succeed while the tree has
-    // not caught up yet).
-    const failed = released !== null && released !== undefined && Array.isArray(released.failed) ? released.failed : []
     const stillLive = []
-    for (const entry of failed) {
-      if (entry === null || entry === undefined) continue
-      if (typeof entry.agentId === 'string' && entry.agentId !== '' && stillLive.indexOf(entry.agentId) < 0) stillLive.push(entry.agentId)
+    // A thrown release never proved anything, and an id whose dispose FAILED is
+    // proof the child is still there.
+    if (releaseThrew === true) stillLive.push('release-failed')
+    const failed = released === null || released === undefined ? null : released.failed
+    for (const entry of Array.isArray(failed) ? failed : []) {
+      if (entry !== null && entry !== undefined && typeof entry.agentId === 'string' && entry.agentId !== '' && stillLive.indexOf(entry.agentId) < 0) stillLive.push(entry.agentId)
     }
+    // The live tree answers for the recorded ids, but only rows that are actually
+    // RUNNING: the catalog keeps disposed children as inactive rows.
     const live = await liveChildIdsOf(task)
     if (live !== null) {
       for (const id of recorded) if (live.has(id) && stillLive.indexOf(id) < 0) stillLive.push(id)
+    }
+    // An UNRESOLVED release could not confirm a teardown. The stage service's
+    // record-only fallback also reports an already-gone recorded id this way, so
+    // it only blocks when the tree is unavailable and cannot prove the child is
+    // gone; with the tree in reach, a non-running child is simply already gone.
+    const unresolved = released === null || released === undefined ? null : released.unresolved
+    for (const entry of Array.isArray(unresolved) ? unresolved : []) {
+      if (entry === null || entry === undefined) continue
+      const id = typeof entry.agentId === 'string' && entry.agentId !== '' ? entry.agentId : null
+      if (id === null || stillLive.indexOf(id) >= 0) continue
+      if (live === null) stillLive.push(id)
     }
     if (stillLive.length > 0) {
       return {

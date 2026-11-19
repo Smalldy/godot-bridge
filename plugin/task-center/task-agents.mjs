@@ -372,18 +372,25 @@ export function createTaskAgents(options) {
    * blocks the spawn: doubling up is never the fallback.
    */
   async function releaseRoleBeforeSpawn(role, task, options) {
+    // The invariant this module owns is the STAGE roster: one live reviewer and
+    // one live tester per card. A worker slot belongs to the dispatcher's
+    // claim/lease machinery, so a worker spawn must not sweep it.
+    if (role !== 'reviewer' && role !== 'tester') return null
     const spawnOptions = options === undefined || options === null ? {} : options
     const input = typeof task === 'string' ? { id: task } : task === undefined || task === null ? {} : task
+    const blocked = []
     let swept = null
     try {
       swept = await releaseTask(input, { roles: [role], reason: 'replacing the previous ' + role, signal: spawnOptions.signal })
     } catch (error) {
-      swept = null
+      // A sweep that could not run is not proof the previous child is gone:
+      // refuse the spawn instead of risking a second live stage child.
+      blocked.push('release-failed')
     }
-    if (swept === null) return null
-    const blocked = []
-    for (const entry of Array.isArray(swept.failed) ? swept.failed : []) blocked.push(String(entry.agentId))
-    for (const entry of Array.isArray(swept.unresolved) ? swept.unresolved : []) blocked.push(String(entry.agentId))
+    if (swept !== null) {
+      for (const entry of Array.isArray(swept.failed) ? swept.failed : []) blocked.push(String(entry.agentId))
+      for (const entry of Array.isArray(swept.unresolved) ? swept.unresolved : []) blocked.push(String(entry.agentId))
+    }
     if (blocked.length > 0) {
       const error = new Error('the previous ' + role + ' (' + blocked.join(', ') + ') could not be stopped; refusing to start a second one')
       error.code = 'stage-child-still-live'

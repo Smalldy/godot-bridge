@@ -434,6 +434,19 @@ await check('a stage child that cannot be stopped blocks the next spawn', async 
   await agents.release(first.agentId)
 })
 
+await check('the spawn-edge sweep is limited to the reviewer/tester roles', async () => {
+  // The worker slot belongs to the dispatcher's claim/lease machinery; a worker
+  // spawn must not start disposing it behind the scheduler's back.
+  const first = await agents.startWorker({ id: 'T-32' }, 'implement')
+  const second = await agents.startWorker({ id: 'T-32' }, 'implement again')
+  assert.equal(state.live.has(first.agentId), true, 'the worker spawn swept a dispatcher-owned slot')
+  assert.equal(state.live.has(second.agentId), true)
+  const released = await agents.releaseTask({ id: 'T-32' }, { roles: ['worker'] })
+  assert.equal(released.ok, true)
+  assert.equal(state.live.has(first.agentId), false)
+  assert.equal(state.live.has(second.agentId), false)
+})
+
 const failed = checks.filter((row) => !row.ok)
 for (const row of checks) console.log((row.ok ? 'PASS' : 'FAIL') + '  ' + row.name + (row.ok ? '' : '\n  ' + String(row.error && row.error.stack ? row.error.stack : row.error)))
 console.log(String(checks.length - failed.length) + '/' + String(checks.length) + ' checks passed')

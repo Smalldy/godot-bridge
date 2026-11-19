@@ -450,21 +450,25 @@ async function boardOf(rig) {
     // The card's ownerSession is the rig's panel session, so the root Agent id
     // is that session id — exactly how the production registry resolves it.
     const root = { id: 'session-lead', name: 'lead' }
-    const world = { live: new Map(), inactive: new Set(), disposed: [], interrupted: [], spawns: [] }
+    // T-204 review: DSH's subagent catalog is APPEND-ONLY — a disposed child stays
+    // a kind:'child' row with activity:'inactive'. The fake models that, so a test
+    // can never mistake catalog membership for a running child.
+    const world = { catalog: new Map(), running: new Set(), inactive: new Set(), disposed: [], interrupted: [], spawns: [] }
     let sequence = 0
     const subagents = {
       async startActivation(spec) {
         sequence += 1
         const id = 'child-' + String(sequence)
         world.spawns.push(spec)
-        world.live.set(id, spec.name)
+        world.catalog.set(id, spec.name)
+        world.running.add(id)
         return {
           childId: id,
           name: spec.name,
           result: Promise.resolve({ output: [] }),
           dispose: async () => {
             world.disposed.push(id)
-            world.live.delete(id)
+            world.running.delete(id)
             world.inactive.add(id)
           },
         }
@@ -475,16 +479,17 @@ async function boardOf(rig) {
       interrupt(id) {
         const key = String(id)
         world.interrupted.push(key)
+        world.running.delete(key)
         world.inactive.add(key)
       },
       async listDescendants() {
-        return Array.from(world.live.entries()).map(([id, name]) => ({
+        return Array.from(world.catalog.entries()).map(([id, name]) => ({
           kind: 'child',
           id: id,
           name: name,
           parentId: root.id,
           depth: 1,
-          activity: world.inactive.has(id) ? 'inactive' : 'running',
+          activity: world.running.has(id) ? 'running' : 'inactive',
           mode: 'continuable',
         }))
       },
@@ -535,8 +540,9 @@ async function boardOf(rig) {
       },
     }
   }
-  const reviewerRows = (world) =>
-    Array.from(world.live.entries()).filter(([, name]) => String(name).indexOf('reviewer-') === 0)
+  const isRunning = (world, id) => world.running.has(String(id))
+  const runningReviewers = (world) =>
+    Array.from(world.catalog.entries()).filter(([id, name]) => String(name).indexOf('reviewer-') === 0 && world.running.has(id))
 
   {
     const liveAgents = createLiveTaskAgents()
@@ -555,8 +561,8 @@ async function boardOf(rig) {
     const firstReviewer = String(afterSubmit.review.deliveredTo.id)
     check(
       'T-204 the reviewer started by submit is live',
-      submitted.ok === true && liveAgents.world.live.has(firstReviewer),
-      JSON.stringify({ ok: submitted.ok, live: Array.from(liveAgents.world.live.keys()) }),
+      submitted.ok === true && isRunning(liveAgents.world, firstReviewer),
+      JSON.stringify({ ok: submitted.ok, running: Array.from(liveAgents.world.running) }),
     )
     heads[afterSubmit.worktree] = 'head-2'
     const once = await rig.action('refreshMerge', { id: card.id })
@@ -566,19 +572,23 @@ async function boardOf(rig) {
     const twice = await rig.action('refreshMerge', { id: card.id })
     const afterSecond = await snapshot()
     const lastReviewer = String(afterSecond.review.deliveredTo.id)
-    const running = reviewerRows(liveAgents.world)
+    const running = runningReviewers(liveAgents.world)
     check(
       'T-204 two consecutive refreshMerge calls leave exactly ONE running reviewer',
       once.ok === true && twice.ok === true && lastReviewer !== firstReviewer && lastReviewer !== secondReviewer && running.length === 1 && running[0][0] === lastReviewer,
       JSON.stringify({ once: once.ok, twice: twice.ok, running: running, last: lastReviewer, first: firstReviewer, second: secondReviewer }),
     )
+    // The append-only catalog keeps every disposed child as an inactive row: the
+    // refresh must not read that residue as "still running" (the round-1 bug).
     check(
-      'T-204 the replaced reviewers are disposed (inactive), never left running',
-      liveAgents.world.disposed.indexOf(firstReviewer) >= 0 &&
-        liveAgents.world.disposed.indexOf(secondReviewer) >= 0 &&
-        liveAgents.world.live.has(firstReviewer) === false &&
-        liveAgents.world.live.has(secondReviewer) === false,
-      JSON.stringify({ disposed: liveAgents.world.disposed, interrupted: liveAgents.world.interrupted }),
+      'T-204 the disposed reviewers stay catalog rows but are NOT running',
+      liveAgents.world.catalog.has(firstReviewer) &&
+        liveAgents.world.catalog.has(secondReviewer) &&
+        liveAgents.world.inactive.has(firstReviewer) &&
+        liveAgents.world.inactive.has(secondReviewer) &&
+        isRunning(liveAgents.world, firstReviewer) === false &&
+        isRunning(liveAgents.world, secondReviewer) === false,
+      JSON.stringify({ disposed: liveAgents.world.disposed, interrupted: liveAgents.world.interrupted, catalog: Array.from(liveAgents.world.catalog.keys()) }),
     )
     // The old reviewer's late verdict is still refused by the role gate, even
     // though its child has been stopped.
@@ -615,21 +625,23 @@ async function boardOf(rig) {
     const stray = await liveAgents.runtime.spawn({ role: 'reviewer', taskId: card.id, name: strayName, prompt: 'stray review' })
     check(
       'T-204 the leaked reviewer is running before the reopen',
-      liveAgents.world.live.has(recorded) && liveAgents.world.live.has(String(stray.agentId)) && reviewerRows(liveAgents.world).length === 2,
-      JSON.stringify({ live: Array.from(liveAgents.world.live.entries()) }),
+      isRunning(liveAgents.world, recorded) && isRunning(liveAgents.world, stray.agentId) && runningReviewers(liveAgents.world).length === 2,
+      JSON.stringify({ running: Array.from(liveAgents.world.running), catalog: Array.from(liveAgents.world.catalog.keys()) }),
     )
     await patchTask(rig, card.id, (entry) => {
       entry.status = 'done'
     })
     const reopened = await rig.action('reopen', { id: card.id })
     const after = await snapshot()
-    const stillRunning = reviewerRows(liveAgents.world).filter(([id]) => liveAgents.world.inactive.has(id) === false)
+    const stillRunning = runningReviewers(liveAgents.world)
     check(
       'T-204 a reopen stops the old reviewer AND a leaked reviewer the record never named',
       reopened.ok === true &&
         liveAgents.world.disposed.indexOf(recorded) >= 0 &&
         liveAgents.world.interrupted.indexOf(String(stray.agentId)) >= 0 &&
         stillRunning.length === 0 &&
+        liveAgents.world.catalog.has(recorded) &&
+        liveAgents.world.catalog.has(String(stray.agentId)) &&
         after.status === 'pending',
       JSON.stringify({ reopened: reopened.ok, disposed: liveAgents.world.disposed, interrupted: liveAgents.world.interrupted, stillRunning: stillRunning, status: after.status }),
     )
