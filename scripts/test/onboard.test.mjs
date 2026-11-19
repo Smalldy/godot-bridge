@@ -264,6 +264,23 @@ function spawnCalls(team) {
   check('5 choosing never writes a board', rig.fs.files.size === 0, Array.from(rig.fs.files.keys()).join(','))
 }
 
+// ── 5b) T-203: onboarding never adopts the registry's last-active project ──
+{
+  // The host drove a REAL project last (the registry names it), but this request
+  // carries no session workspace. Onboarding must ask for a path: a board that
+  // merely happened to be active last is not "this session's project".
+  const other = join(PROJECT, '..', 'onboard-last-active')
+  const rig = onboardRig({ project: join(PROJECT, '..', 'onboard-unbound'), markers: { git: false, agents: false }, board: null, contextProject: '' })
+  addProject(rig.fs, other)
+  rig.fs.files.set(boardPath(other), { text: JSON.stringify(boardOf({})), version: 'seed' })
+  rig.state.touchProject(other, null)
+  const o = (await rig.onboard()).onboard
+  check('5b T-203 a last-active project is really on record for this fixture', rig.state.lastActiveProject() !== null && rig.state.lastActiveProject().root === other, JSON.stringify(rig.state.lastActiveProject()))
+  check('5b T-203 onboarding with no session workspace asks for a path', o.stage === 'choose' && o.next.code === 'choose-project', JSON.stringify({ stage: o.stage, next: o.next && o.next.code }))
+  check('5b T-203 the last-active project is not offered as the bound project', o.project.root === null && o.project.path !== other, JSON.stringify({ root: o.project.root, path: o.project.path }))
+  check('5b T-203 the session binding was not rewritten to the last-active project', rig.state.sessionRootOf(rig.sessionId) === rig.project, String(rig.state.sessionRootOf(rig.sessionId)))
+}
+
 // ── 6) a missing team is bootstrapped exactly once ────────────────────────
 {
   const rig = onboardRig({ board: boardOf({}) })

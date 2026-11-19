@@ -295,6 +295,20 @@ export function createState(ctx, options) {
    * The single resolution rule: explicit wins, then the SESSION LOOKUP (so a
    * panel that has not called a tool yet still knows its project), then the
    * workspace this session recorded, then a readable no-project-bound refusal.
+   *
+   * T-203: the "last active project" fallback is BACKGROUND-ONLY. The foreground
+   * (the panel's /state, the plugin home page, the tool call) must never be
+   * handed the project some OTHER session was driving last time as if it were
+   * this session's project: that is how a 'todo' board appeared under a
+   * 'godot-bridge' chat, and how the workspace bar read todo -> todo. A
+   * foreground caller without a session now gets the readable no-project-bound
+   * answer (the panel's setup state); only an explicit pin (the explicit branch
+   * above) or this session's own workspace can name a project. A background
+   * caller — the scheduler/startup path — opts in with background:true, which is
+   * the only way allowLastActive can still apply.
+   *
+   * Every failure names its source as 'unbound', so the panel can say "nothing
+   * is bound yet" instead of guessing from a project path.
    */
   async function resolveProject(options) {
     const o = options === undefined || options === null ? {} : options
@@ -318,17 +332,20 @@ export function createState(ctx, options) {
     const start = typeof o.sessionRoot === 'string' && o.sessionRoot.length > 0 ? o.sessionRoot : null
     const resolved = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: start })
     if (resolved.ok === true) return { ok: true, project: projectRefOf(resolved.root), resolvedFrom: resolved.resolvedFrom }
-    // LAST resort, only for the panel/startup path (o.allowLastActive): the single
-    // project the host activated last time. Absent => the readable unbound answer
-    // above (never "some recently active project").
-    if (o.allowLastActive === true) {
+    // LAST resort, BACKGROUND ONLY (T-203): the single project the host activated
+    // last time. The scheduler/startup path opts in with background:true; a
+    // foreground caller can never reach this branch, even if it passes
+    // allowLastActive, because "the project that was active last time" is not a
+    // scope source for the UI. Absent => the readable unbound answer below,
+    // never "some recently active project".
+    if (o.allowLastActive === true && o.background === true) {
       const lastActive = lastActiveProject()
       if (lastActive !== null) {
         const viaLast = await resolveProjectRoot({ fs: ctx.fs }, { explicit: null, sessionRoot: lastActive.root })
         if (viaLast.ok === true) return { ok: true, project: projectRefOf(viaLast.root), resolvedFrom: 'last-active' }
       }
     }
-    return resolved
+    return Object.assign({}, resolved, { resolvedFrom: 'unbound' })
   }
 
   /**

@@ -120,10 +120,11 @@ export function registerTaskRoutes(ctx, options) {
       // T-102: when this session never called a tool, its DSH session directory
       // still names the workspace, so the panel binds before the first tool call.
       sessionId: sessionId === null || sessionId === undefined ? null : sessionId,
-      // T-103: with no pin and no session answer, the panel falls back to the ONE
-      // project that was active when the host last ran (or reports "nothing
-      // activated" — never "some recently active project").
-      allowLastActive: true,
+      // T-203: this is the FOREGROUND surface (the GUI's own requests). It never
+      // asks for the last-active fallback: a request without a session context
+      // reads as "nothing is bound yet" (the setup state) instead of inheriting
+      // whatever project another session drove last. Only the scheduler/startup
+      // path may still resolve background:true with allowLastActive.
       explicitSource: explicit !== null ? 'panel' : undefined,
     })
     if (resolved.ok !== true) return { failed: resolved }
@@ -174,7 +175,9 @@ export function registerTaskRoutes(ctx, options) {
       const target = await resolveProject(req, null, sessionId)
       if (target.failed !== undefined) {
         // UI-facing: the panel localizes by code; no English sentence crosses the wire.
-        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
+        // T-203: the answer names its source — unbound is a SETUP state, never a
+        // last-active project wearing the session's name.
+        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {}, resolvedFrom: 'unbound' })
         return
       }
       const project = target.root
@@ -246,7 +249,7 @@ export function registerTaskRoutes(ctx, options) {
       // T-129: onboard answers when nothing is bound yet — resolving the
       // session's project is exactly its job, so the resolver may fail here.
       if (action !== 'openProject' && action !== 'onboard' && target.failed !== undefined) {
-        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {} })
+        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {}, resolvedFrom: 'unbound' })
         return
       }
       const project = target.failed !== undefined ? null : target.root
@@ -287,6 +290,10 @@ export function registerTaskRoutes(ctx, options) {
           state.setSessionRoot(sessionId, opened)
           sessionProject = opened
         }
+        // T-203: opening a project through this route IS the panel pinning it (the
+        // only way a panel may leave its session's workspace). The answer names
+        // that source instead of inheriting the snapshot's generic 'explicit'.
+        result.resolvedFrom = 'panel'
       }
       if (result.snapshot !== undefined && result.snapshot !== null) withSessionProject(result.snapshot, sessionProject)
       if (action === 'openProject' && result.ok === true) withSessionProject(result, sessionProject)
