@@ -14,6 +14,7 @@ import { STATUSES, CLOSED_STATUSES } from '../../plugin/task-center/schema.mjs'
 import { applyTakeover } from '../../plugin/task-center/handoff.mjs'
 import { createFakeFs } from './support/fixtures.mjs'
 import {
+  ACTOR_EXEMPTIONS,
   BLOCKED_REASON_CODES,
   CARD_STATES,
   CLOSED_STATES,
@@ -290,6 +291,80 @@ refuses('refreshMerge is user/implementer only, not a generic agent', 'refreshMe
 refuses('reopen is not a scheduler event', 'reopen', 'done', { task: makeTask('done'), actor: 'scheduler' }, 'forbidden')
 check('the documented actor is accepted for each event', transition('claim', 'pending', { task: makeTask('pending'), actor: 'scheduler' }).ok === true && transition('approveReview', 'reviewing', { task: makeTask('reviewing'), actor: 'reviewer' }).ok === true && transition('passTest', 'testing', { task: makeTask('testing'), actor: 'tester' }).ok === true)
 
+// The full document 4.7 matrix: the aligned rows are asserted EXACTLY; the rows
+// this card deliberately leaves looser live in ACTOR_EXEMPTIONS and are proved
+// BROADER (never narrower) than the document. Extension rows (no document number)
+// declare their own actor. Every row is in exactly one set, so a new row cannot
+// slip through under a "the matrix is tested" illusion.
+console.log('\n# actor matrix vs document 4.7')
+{
+  const sorted = (list) => (list === null ? null : list.slice().sort().join(','))
+  // 4.7 groups scheduler/host in one column, so the rows executed by the host
+  // name host/system/scheduler interchangeably for the same principal.
+  const DOC_ACTORS = {
+    T02: ['scheduler'],
+    T03: ['host', 'scheduler'],
+    T04: ['host', 'scheduler'],
+    T05: ['user'],
+    T06: ['host', 'scheduler'],
+    T07: ['user', 'worker'],
+    T12: ['reviewer', 'user'],
+    T14: ['host', 'system'],
+    T15: ['host', 'system'],
+    T16: ['reviewer', 'user'],
+    T17: ['host', 'system'],
+    T18: ['tester', 'user'],
+    T19: ['host', 'tester', 'user'],
+    T20: ['host', 'system'],
+    T21: ['host', 'user'],
+    T22: ['host'],
+    T23: ['host'],
+    T24: ['user'],
+    T25: ['host'],
+    T27: ['user', 'worker'],
+    T31: ['user', 'worker'],
+    T32: ['host', 'scheduler'],
+  }
+  // create is gated by the action layer's card-model/ownerSession check (4.7),
+  // so the row is actor-agnostic by design.
+  const ANY_ACTOR = ['T01']
+  // Rows with no document number: the declared actor IS their contract.
+  const EXTENSION_ACTORS = { T03b: ['host', 'scheduler'], T25b: ['host'], T35: ['host', 'scheduler'] }
+  const exemptIds = ACTOR_EXEMPTIONS.map((entry) => entry.id)
+  const declared = Object.keys(DOC_ACTORS).concat(ANY_ACTOR, Object.keys(EXTENSION_ACTORS), exemptIds)
+  const unaccounted = TRANSITIONS.map((row) => row.id).filter((id) => declared.indexOf(id) < 0)
+  check('every table row is either doc-aligned, an extension or a declared exemption', unaccounted.length === 0, unaccounted.join(','))
+  check('the three actor sets do not overlap', new Set(declared).size === declared.length && TRANSITIONS.every((row) => [DOC_ACTORS[row.id] !== undefined, ANY_ACTOR.indexOf(row.id) >= 0, EXTENSION_ACTORS[row.id] !== undefined, exemptIds.indexOf(row.id) >= 0].filter(Boolean).length <= 1))
+  let aligned = 0
+  for (const row of TRANSITIONS) {
+    if (DOC_ACTORS[row.id] === undefined) continue
+    aligned += 1
+    check('T ' + row.id + ' actor matches document 4.7', sorted(row.actor) === sorted(DOC_ACTORS[row.id]), String(row.actor) + ' vs ' + String(DOC_ACTORS[row.id]))
+  }
+  check('the aligned rows cover most of the table', aligned >= 20, String(aligned))
+  for (const id of ANY_ACTOR) {
+    const row = TRANSITIONS.find((entry) => entry.id === id)
+    check('T ' + id + ' is actor-agnostic by design', row !== undefined && row.actor === null)
+  }
+  for (const id of Object.keys(EXTENSION_ACTORS)) {
+    const row = TRANSITIONS.find((entry) => entry.id === id)
+    check('extension row ' + id + ' keeps its declared actor', row !== undefined && sorted(row.actor) === sorted(EXTENSION_ACTORS[id]), row === undefined ? 'missing' : String(row.actor))
+  }
+  check('every actor deviation from 4.7 is declared as an SM-3 exemption', ACTOR_EXEMPTIONS.length >= 7, String(ACTOR_EXEMPTIONS.length))
+  for (const exemption of ACTOR_EXEMPTIONS) {
+    const row = TRANSITIONS.find((entry) => entry.id === exemption.id)
+    const docSorted = sorted(exemption.docActors)
+    const rowSorted = sorted(exemption.rowActors)
+    const wider = row !== undefined && exemption.docActors.every((actor) => (exemption.rowActors === null ? true : exemption.rowActors.indexOf(actor) >= 0))
+    const deviates = row !== undefined && (exemption.rowActors === null || rowSorted !== docSorted)
+    check(
+      'exemption ' + exemption.id + ' names a real, broader deviation (SM-3)',
+      row !== undefined && row.event === exemption.event && sorted(row.actor) === rowSorted && wider && deviates && exemption.owner === 'SM-3' && String(exemption.reason).length > 0,
+      JSON.stringify({ row: row === undefined ? null : { event: row.event, actor: row.actor }, exemption: exemption }),
+    )
+  }
+}
+
 // ── 4. enterState is the only writer and applies the declared effects ──────
 console.log('\n# the single write entry')
 {
@@ -317,6 +392,37 @@ console.log('\n# the single write entry')
   const task = makeTask('blocked', { blockedReason: { code: 'manual-block', from: 'running', auto: false } })
   enterState(task, 'unblock', { task: task, actor: 'user', restoreTo: 'pending' }, at(10))
   check('leaving blocked clears the typed reason', task.status === 'pending' && task.blockedReason === null && task.waitingReason === null, JSON.stringify(task.blockedReason))
+}
+
+// ── 4b. dev-timeout retry: a declared row, not a hand-written status ──────
+console.log('\n# dev retry')
+{
+  const row = TRANSITIONS.find((entry) => entry.event === 'devRetry')
+  check(
+    'T35 devRetry is a declared running -> pending transition',
+    row !== undefined && row.id === 'T35' && row.from.join(',') === 'running' && row.to === 'pending',
+    JSON.stringify(row === undefined ? null : { id: row.id, from: row.from, to: row.to }),
+  )
+  check(
+    'T35 devRetry declares the requeue effects',
+    row !== undefined && ['reset-attempts', 'reset-interruptions', 'clear-dispatch', 'clear-assignee', 'clear-lease'].every((effect) => row.effects.indexOf(effect) >= 0),
+    JSON.stringify(row === undefined ? null : row.effects),
+  )
+  const task = makeTask('running', { attempts: 2, interruptions: 3, dispatch: { status: 'sent', at: iso(0) }, lastAssignee: { name: 'old', session: 's' } })
+  const decided = enterState(task, 'devRetry', { task: task, actor: 'host' }, at(10))
+  check(
+    'T35 enterState requeues the card with a fresh attempt budget and no claim',
+    decided.ok === true && task.status === 'pending' && task.attempts === 0 && task.interruptions === 0 && task.dispatch === null && task.assignee === null && task.leaseUntil === null && task.lastAssignee.name === 'old',
+    JSON.stringify({ decided: decided, status: task.status, attempts: task.attempts, interruptions: task.interruptions, dispatch: task.dispatch }),
+  )
+  const fromTesting = transition('devRetry', 'testing', { task: makeTask('testing'), actor: 'host' })
+  check('T35 devRetry only accepts a running card', fromTesting.ok !== true && fromTesting.code === 'not-running', JSON.stringify(fromTesting))
+  const fromUser = transition('devRetry', 'running', { task: makeTask('running'), actor: 'user' })
+  check('T35 devRetry is a host/scheduler event', fromUser.ok !== true && fromUser.code === 'forbidden', JSON.stringify(fromUser))
+  // The production path (api.mjs -> dispatcher.retryDevelopment) really calls this
+  // row; the writer scan below proves it builds no status literal by hand.
+  const dispatchSource = readFileSync(fileURLToPath(new URL('../../plugin/task-center/dispatch.mjs', import.meta.url)), 'utf8')
+  check('the dev-timeout retry calls the declared devRetry transition', dispatchSource.indexOf("enterState(live, 'devRetry'") >= 0)
 }
 
 // ── 5. model paths: merge outcomes ────────────────────────────────────────
@@ -686,11 +792,80 @@ console.log('\n# single writer')
     }
     return offenders
   }
+  // A card row can also be BUILT without an assignment:
+  //   return Object.assign({}, row, { status: 'pending', ... })
+  // dispatch.mjs retryDevelopment did exactly that, and the assignment-only scan
+  // said "no writer outside the state machine" while it WAS one. These patterns
+  // cover card-shape construction: Object.assign over a card row (new or in
+  // place), a spread of a card row, and a named task literal carrying id + status.
+  const CARD_IDENTIFIERS = 'row|task|live|target|entry|card|current|next|moved|found'
+  // Sample cards shown in role briefs are DATA, never written to a board; they
+  // are exempted by name rather than silently ignored.
+  const CARD_LITERAL_EXEMPTIONS = ['ROLE_SAMPLE_TASK', 'placeholder']
+  const CARD_STATE_LITERAL = "['\"](?:pending|running|reviewing|testing|blocked|done|cancelled)['\"]"
+  const CARD_LITERAL_PATTERNS = [
+    new RegExp('Object\\.assign\\(\\{\\},\\s*(?:' + CARD_IDENTIFIERS + ')\\s*,\\s*\\{[^{}]{0,700}?\\bstatus\\s*:'),
+    new RegExp('Object\\.assign\\(\\s*(?:' + CARD_IDENTIFIERS + ')\\s*,\\s*\\{[^{}]{0,700}?\\bstatus\\s*:'),
+    new RegExp('\\{\\s*\\.\\.\\.\\s*(?:' + CARD_IDENTIFIERS + ')\\b[^{}]{0,700}?\\bstatus\\s*:'),
+    new RegExp('(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*\\{[^{}]{0,700}?\\bid\\s*:[^{}]{0,700}?\\bstatus\\s*:\\s*' + CARD_STATE_LITERAL),
+  ]
+  function lineAtOffset(text, offset) {
+    let line = 1
+    for (let cursor = 0; cursor < offset && cursor < text.length; cursor += 1) if (text.charCodeAt(cursor) === 10) line += 1
+    return line
+  }
+  function firstLine(text) {
+    const breakAt = text.indexOf('\n')
+    return (breakAt < 0 ? text : text.slice(0, breakAt)).trim()
+  }
+  function cardLiteralOffenders(source, name) {
+    const text = normaliseSource(source)
+    const offenders = []
+    for (let index = 0; index < CARD_LITERAL_PATTERNS.length; index += 1) {
+      const pattern = new RegExp(CARD_LITERAL_PATTERNS[index].source, 'g')
+      let matched
+      while ((matched = pattern.exec(text)) !== null) {
+        const statusAt = matched[0].search(/\bstatus\s*:/)
+        const offset = matched.index + (statusAt < 0 ? 0 : statusAt)
+        const isNamedLiteral = index === CARD_LITERAL_PATTERNS.length - 1
+        if (isNamedLiteral && CARD_LITERAL_EXEMPTIONS.indexOf(matched[1]) >= 0) continue
+        offenders.push(name + ':' + String(lineAtOffset(text, offset)) + ' ' + firstLine(matched[0]))
+      }
+    }
+    return offenders
+  }
+  // The exact shape the review caught in dispatch.mjs:3134-3135.
+  const LEGACY_DEV_RETRY = [
+    'const tasks = board.tasks.map((row) => {',
+    '  if (String(row.id) !== String(taskId)) return row',
+    '  return Object.assign({}, row, {',
+    "    status: 'pending',",
+    '    assignee: null,',
+    '    leaseUntil: null,',
+    '    attempts: 0,',
+    '    interruptions: 0,',
+    '    dispatch: null,',
+    '  })',
+    '})',
+  ].join('\n')
+  const SAMPLE_CARD = [
+    'export const ROLE_SAMPLE_TASK = {',
+    "  id: 'T-42',",
+    "  title: 'Enemy patrol chases the player',",
+    "  status: 'running',",
+    '}',
+  ].join('\n')
   check('the writer assertion catches a literal assignment', statusAssignmentOffenders("  target.status = 'running'", 'sample.mjs').length === 1)
   check('the writer assertion catches a ternary assignment', statusAssignmentOffenders("  target.status = exhausted ? 'blocked' : 'pending'", 'sample.mjs').length === 1)
   check('the writer assertion catches a tasks[i] assignment', statusAssignmentOffenders("  next.tasks[3].status = 'done'", 'sample.mjs').length === 1)
   check('the writer assertion ignores a dispatch-record status', statusAssignmentOffenders("  target.dispatch.status = 'spawned'", 'sample.mjs').length === 0)
   check('the writer assertion ignores comparisons', statusAssignmentOffenders("  if (task.status === 'running') {", 'sample.mjs').length === 0)
+  check('the writer scan catches a card status built into a row', cardLiteralOffenders("return Object.assign({}, row, { status: 'pending' })", 'sample.mjs').length === 1)
+  const legacyHits = cardLiteralOffenders(LEGACY_DEV_RETRY, 'dispatch.mjs')
+  check('the writer scan catches the legacy retryDevelopment shape', legacyHits.length === 1, legacyHits.join(' | '))
+  check('the writer scan catches a named task literal', cardLiteralOffenders("const card = { id: 'T-1', title: 'x', status: 'pending' }", 'sample.mjs').length === 1)
+  check('the writer scan ignores a phase record built with Object.assign', cardLiteralOffenders("target.review = Object.assign({}, target.review, { status: 'approved' })", 'service.mjs').length === 0)
+  check('the writer scan ignores the named sample cards', cardLiteralOffenders(SAMPLE_CARD, 'dispatch.mjs').length === 0)
 
   const directory = fileURLToPath(new URL('../../plugin/task-center/', import.meta.url))
   // board.mjs is the one documented exception: it may rewrite a status while
@@ -698,8 +873,12 @@ console.log('\n# single writer')
   const files = ['service.mjs', 'merge.mjs', 'api.mjs', 'handoff.mjs', 'dispatch.mjs', 'state-machine.mjs']
   for (const name of readdirSync(directory + 'actions')) if (name.endsWith('.mjs')) files.push('actions/' + name)
   const offenders = []
-  for (const name of files) for (const row of statusAssignmentOffenders(readFileSync(directory + name, 'utf8'), name)) offenders.push(row)
-  check('no module outside the state machine assigns a card status', offenders.length === 0, offenders.join(' | '))
+  for (const name of files) {
+    const text = readFileSync(directory + name, 'utf8')
+    for (const row of statusAssignmentOffenders(text, name)) offenders.push(row)
+    for (const row of cardLiteralOffenders(text, name)) offenders.push(row)
+  }
+  check('no module outside the state machine writes a card status (assignment or card literal)', offenders.length === 0, offenders.join(' | '))
   const machineText = readFileSync(directory + 'state-machine.mjs', 'utf8')
   const machineLines = normaliseSource(machineText).split('\n')
   check('the state machine has exactly one status assignment', machineLines.filter((line) => /^  task\.status = decided\.to$/.test(line)).length === 1)
@@ -709,11 +888,14 @@ console.log('\n# single writer')
   check(
     'the writer scan is line-ending agnostic (CRLF candidate checkout)',
     statusAssignmentOffenders(crlfMachine, 'state-machine.mjs').length === 0 &&
-      statusAssignmentOffenders("  target.status = exhausted ? 'blocked' : 'pending'\r\n", 'service.mjs').length === 1,
+      statusAssignmentOffenders("  target.status = exhausted ? 'blocked' : 'pending'\r\n", 'service.mjs').length === 1 &&
+      cardLiteralOffenders(LEGACY_DEV_RETRY.replace(/\n/g, '\r\n'), 'dispatch.mjs').length === 1,
     'CRLF text bypassed the scan',
   )
   const tampered = statusAssignmentOffenders(readFileSync(directory + 'service.mjs', 'utf8') + "\n  target.status = exhausted ? 'blocked' : 'pending'\n", 'service.mjs')
   check('reintroducing a hand-written status write makes the assertion red', tampered.length === 1, tampered.join(' | '))
+  const tamperedCard = cardLiteralOffenders(readFileSync(directory + 'dispatch.mjs', 'utf8') + '\n' + LEGACY_DEV_RETRY, 'dispatch.mjs')
+  check('reintroducing the dev-retry card literal makes the writer assertion red', tamperedCard.length === 1, tamperedCard.join(' | '))
 
   // A refusal returned from inside board.tasks.map() becomes a task element and
   // dies as invalid-task; it must leave the writeTask mutator as { ok:false }.

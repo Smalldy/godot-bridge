@@ -80,6 +80,76 @@ export function isMergeReason(code) {
   return typeof code === 'string' && code.indexOf('merge-') === 0
 }
 
+/**
+ * Document 4.7 actor rows this card deliberately does NOT tighten yet.
+ *
+ * SM-3 owns the owner/"own card" gate; tightening these rows here would change
+ * the behaviour of an existing action (an Agent reopening its own card, the host
+ * running the review-timeout block, ...). EVERY deviation from 4.7 is declared
+ * here with the document's actor set, so the test can assert the aligned rows
+ * exactly, prove each exemption is BROADER (never narrower) than the document,
+ * and refuse a row that is neither aligned nor declared. Silence is not an option:
+ * a new row must appear in one of the three sets.
+ */
+export const ACTOR_EXEMPTIONS = Object.freeze([
+  Object.freeze({
+    id: 'T08',
+    event: 'update',
+    docActors: Object.freeze(['user', 'worker']),
+    rowActors: null,
+    owner: 'SM-3',
+    reason: 'a same-state content event; the action layer owns the ownership check, so the row is actor-agnostic (null)',
+  }),
+  Object.freeze({
+    id: 'T09',
+    event: 'block',
+    docActors: Object.freeze(['host', 'scheduler', 'user', 'worker']),
+    rowActors: Object.freeze(['agent', 'host', 'scheduler', 'user', 'worker']),
+    owner: 'SM-3',
+    reason: "the generic 'agent' caller may block through its decision gate today; the own-card check lives in the action layer",
+  }),
+  Object.freeze({
+    id: 'T10',
+    event: 'cancel',
+    docActors: Object.freeze(['user', 'worker']),
+    rowActors: Object.freeze(['agent', 'user', 'worker']),
+    owner: 'SM-3',
+    reason: "a generic 'agent' may cancel its own card through the action layer; the own-card check is not a table guard yet",
+  }),
+  Object.freeze({
+    id: 'T13',
+    event: 'approveReviewHostCheckFailed',
+    docActors: Object.freeze(['reviewer', 'user']),
+    rowActors: Object.freeze(['host', 'reviewer', 'user']),
+    owner: 'SM-3',
+    reason: 'the host executes the hostCheck-failure rework it observed; 4.7 attributes it to the delivered reviewer',
+  }),
+  Object.freeze({
+    id: 'T28',
+    event: 'unblock',
+    docActors: Object.freeze(['user', 'worker']),
+    rowActors: Object.freeze(['agent', 'user', 'worker']),
+    owner: 'SM-3',
+    reason: "a generic 'agent' may resume its own card through the action layer; the own-card check is not a table guard yet",
+  }),
+  Object.freeze({
+    id: 'T29',
+    event: 'retry',
+    docActors: Object.freeze(['user', 'worker']),
+    rowActors: Object.freeze(['agent', 'user', 'worker']),
+    owner: 'SM-3',
+    reason: "a generic 'agent' may retry its own card through the action layer; the own-card check is not a table guard yet",
+  }),
+  Object.freeze({
+    id: 'T30',
+    event: 'reopen',
+    docActors: Object.freeze(['user']),
+    rowActors: Object.freeze(['agent', 'user', 'worker']),
+    owner: 'SM-3',
+    reason: '4.7 makes reopen user-only; an Agent may reopen its own card today, so the row stays wider until SM-3',
+  }),
+])
+
 function refusal(code, message, extra) {
   return Object.assign({ ok: false, code: code, message: message }, extra === undefined ? {} : extra)
 }
@@ -518,11 +588,12 @@ function applyEntry(task, row, info) {
 // mergeMerged rows the sweeps call, so no extra rows are declared.
 //
 // KNOWN LIMITS (explicit, so the next card owns them instead of rediscovering):
-// 1. Lifecycle actors are broader than document 4.7 for T08 update (null: the
-//    same-state content event is gated by the action layer's ownership check) and
-//    T30 reopen (also accepts worker/agent because the API may execute a reopen on
-//    behalf of an agent through its decision gate). T27 is tightened to
-//    user/worker; SM-3 owns the owner/user gate for update/reopen/block/cancel.
+// 1. Lifecycle actors are broader than document 4.7 for exactly the rows declared
+//    in ACTOR_EXEMPTIONS (update/block/cancel/approveReviewHostCheckFailed/
+//    unblock/retry/reopen). SM-3 owns the owner/"own card" gate that tightens
+//    them; T27 is already tightened to user/worker. The test asserts the aligned
+//    rows exactly and proves each exemption is wider than 4.7, so "the matrix is
+//    covered" cannot be claimed by accident.
 // 2. Rows T06/T13/T14/T15/T17/T20 are declared from the document but the current
 //    host pipeline expresses the same board outcome as approveReview+failTest, a
 //    block with a typed reason, or refreshMerge. They are table-tested only until
@@ -887,6 +958,24 @@ export const TRANSITIONS = Object.freeze([
     actor: Object.freeze(['host', 'scheduler']),
     guards: Object.freeze([]),
     effects: Object.freeze(['renew-lease']),
+    refusal: 'not-running',
+  },
+  {
+    // Extension row (no document number): the dev-timeout "retry development"
+    // path (packet 3.3), api.mjs -> dispatcher.retryDevelopment. It is NOT T29
+    // retry: T29 recovers a BLOCKED card (user/owner), while this requeues a
+    // RUNNING card after the implement stage timed out and the attempt worktree
+    // was discarded. The effects are exactly the fields that path used to assign
+    // by hand: a fresh attempt budget, no interruption streak, no dispatch record
+    // and no lingering claim. The history row is caller payload, as for every
+    // other row.
+    id: 'T35',
+    event: 'devRetry',
+    from: Object.freeze(['running']),
+    to: 'pending',
+    actor: Object.freeze(['host', 'scheduler']),
+    guards: Object.freeze([]),
+    effects: Object.freeze(['reset-attempts', 'reset-interruptions', 'clear-dispatch', 'clear-assignee', 'clear-lease']),
     refusal: 'not-running',
   },
 ])
