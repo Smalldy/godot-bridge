@@ -447,6 +447,102 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   )
 }
 
+// ── T-207: the needs-decision contract survives the tool envelope ──────────
+{
+  const contractRig = createRig({ allowSpawn: false, taskAgents: createFakeTaskAgents() })
+  contractRig.ctx.tools = {
+    register(tool) {
+      contractRig.tool = tool
+      return tool
+    },
+  }
+  registerTaskTool(contractRig.ctx, { api: contractRig.api })
+  const who = { id: 'session-contract' }
+  const body = {
+    action: 'create',
+    title: 'Contract tool card',
+    kind: 'dev',
+    dependsOn: [],
+    writeFiles: ['scripts/contract.gd'],
+    acceptance: 'npm test is green',
+    verification: PROBES,
+  }
+  const asked = await contractRig.tool.execute(body, { agent: who })
+  check(
+    'T-207 a gated tool create answers the explicit wait contract',
+    asked.error !== undefined &&
+      asked.code === 'needs-decision' &&
+      asked.status === 'needs-decision' &&
+      asked.waitForUser === true &&
+      asked.retryable === false &&
+      typeof asked.decisionId === 'string' &&
+      asked.decision !== null &&
+      asked.decision !== undefined &&
+      asked.decisionId === String(asked.decision.id) &&
+      asked.next !== null &&
+      asked.next !== undefined &&
+      asked.next.code === 'await-decision' &&
+      asked.next.decisionId === asked.decisionId,
+    JSON.stringify(asked).slice(0, 600),
+  )
+  check(
+    'T-207 the tool wait answer is never an empty object',
+    Object.keys(asked).length > 8 && JSON.stringify(asked) !== '{}' && typeof asked.error === 'string' && asked.error !== '',
+    JSON.stringify(asked).slice(0, 300),
+  )
+  const repeated = await contractRig.tool.execute(body, { agent: who })
+  check('T-207 a repeated tool create reuses the SAME decision id', repeated.decisionId === asked.decisionId && repeated.next.decisionId === asked.decisionId, JSON.stringify({ first: asked.decisionId, repeated: repeated.decisionId }))
+  const pending = await contractRig.api.decisions.pending(contractRig.project)
+  check('T-207 the repeat queued no second decision', pending.ok === true && pending.pending.length === 1, JSON.stringify(pending.pending.map((decision) => decision.id)))
+  const boardBefore = await contractRig.action('board')
+  check('T-207 the repeat wrote no card', boardBefore.tasks.length === 0, JSON.stringify(boardBefore.tasks.map((task) => task.id)))
+  const startAsked = await contractRig.tool.execute({ action: 'start' }, { agent: who })
+  check(
+    'T-207 a gated tool start keeps needs-consent and the same wait contract',
+    startAsked.code === 'needs-consent' &&
+      startAsked.status === 'needs-decision' &&
+      startAsked.waitForUser === true &&
+      startAsked.retryable === false &&
+      typeof startAsked.decisionId === 'string' &&
+      startAsked.decision !== null &&
+      startAsked.next !== null &&
+      startAsked.next.code === 'await-decision',
+    JSON.stringify(startAsked).slice(0, 500),
+  )
+  const answered = await contractRig.action('decisionAnswer', { decisionId: asked.decisionId, option: 'create' })
+  const boardAfter = await contractRig.action('board')
+  check(
+    'T-207 the answered create makes exactly one card',
+    answered.ok === true && answered.applied.executed === true && boardAfter.tasks.filter((task) => task.title === 'Contract tool card').length === 1,
+    JSON.stringify(boardAfter.tasks.map((task) => task.title)),
+  )
+  const plain = await contractRig.tool.execute({ action: 'no-such-action' }, { agent: who })
+  check(
+    'T-207 a plain refusal is not dressed as a wait',
+    plain.code === 'unknown-action' && plain.waitForUser === false && plain.retryable === false && plain.decisionId === null && plain.next === null,
+    JSON.stringify(plain),
+  )
+
+  // Empty-object regression: an api that answers nothing must produce a typed
+  // refusal, never `{}` — a caller must not read `{}` as "maybe it worked".
+  const emptyRig = createRig({ allowSpawn: false, taskAgents: createFakeTaskAgents() })
+  emptyRig.ctx.tools = {
+    register(tool) {
+      emptyRig.tool = tool
+      return tool
+    },
+  }
+  registerTaskTool(emptyRig.ctx, { api: { perform: async () => ({}) } })
+  const empty = await emptyRig.tool.execute({ action: 'create', title: 'x' }, { agent: who })
+  check(
+    'T-207 an empty api result is a typed refusal, not an empty object',
+    Object.keys(empty).length > 8 && JSON.stringify(empty) !== '{}' && empty.code === 'empty-result' && empty.waitForUser === false && empty.retryable === false && empty.decisionId === null,
+    JSON.stringify(empty),
+  )
+  contractRig.scheduler.dispose()
+  emptyRig.scheduler.dispose()
+}
+
 if (typeof disposer === 'function') disposer()
 rig.scheduler.dispose()
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + String(failures) + ' CHECK(S) FAILED')

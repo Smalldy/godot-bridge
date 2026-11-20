@@ -4420,6 +4420,51 @@ export function createApi(ctx, options) {
     return refusal
   }
 
+  /**
+   * T-207: the ONE explicit "this action is waiting for the user" contract.
+   *
+   * create/start/reopen/delete/cancel are questions first. The asking Agent must
+   * never have to guess from an opaque error or an empty object: the answer names
+   * the pending decision, says the caller must STOP and wait, and marks itself
+   * not-retryable. `start` keeps its historical `needs-consent` code (existing
+   * sessions already handle it as "wait"), while `status` is the same
+   * `needs-decision` for all five actions.
+   */
+  function decisionWaitFailure(action, decision, extra) {
+    const view = withDecisionPolicy(decision)
+    const decisionId = view !== null && view !== undefined && view.id !== undefined && view.id !== null ? String(view.id) : null
+    const code = action === 'start' ? 'needs-consent' : 'needs-decision'
+    const label = view !== null && view !== undefined && typeof view.title === 'string' && view.title !== '' ? view.title : String(action)
+    const message =
+      'Waiting for the user: decision ' + String(decisionId) + ' "' + label + '" is pending in the task center panel. ' +
+      'Do not retry this ' + String(action) + '; a repeat returns this SAME pending decision and never creates a second card or decision. ' +
+      'The host executes the answer and sends you the result as a message.'
+    const next = {
+      code: 'await-decision',
+      action: action,
+      decisionId: decisionId,
+      waitForUser: true,
+      retryable: false,
+      message: 'Stop and wait for the user to answer decision ' + String(decisionId) + ' in the task center panel.',
+    }
+    return failure(
+      code,
+      message,
+      Object.assign(
+        {
+          status: 'needs-decision',
+          waitForUser: true,
+          retryable: false,
+          decisionId: decisionId,
+          decision: view,
+          decisions: view === null || view === undefined ? [] : [view],
+          next: next,
+        },
+        extra === undefined ? {} : extra,
+      ),
+    )
+  }
+
   async function actionDecisionGate(action, source, context, projectPath, now) {
     if (ACTION_DECISION_GATED.indexOf(action) < 0) return null
     if (context === undefined || context === null || context.role !== 'agent') return null
@@ -4441,16 +4486,12 @@ export function createApi(ctx, options) {
     }
     const requested = await requestActionDecision(projectPath, plan, context, read.board)
     if (requested.ok !== true) return requested
-    const decision = requested.decision
-    const code = action === 'start' ? 'needs-consent' : 'needs-decision'
-    const label = typeof decision.title === 'string' && decision.title !== '' ? decision.title : String(action)
-    const message =
-      'Waiting for the user: decision ' + String(decision.id) + ' "' + label + '" is pending in the task center panel. Do not retry; the host executes the answer and sends you the result as a message.'
-    const extra = { decision: decision, decisions: [decision] }
+    const extra = {}
     if (action === 'start') {
+      const decision = requested.decision
       extra.request = { id: decision.id, by: decision.createdBy, at: decision.createdAt, note: 'start needs the approval of the user' }
     }
-    return failure(code, message, extra)
+    return decisionWaitFailure(action, requested.decision, extra)
   }
 
   function decisionOutcomeCode(outcome) {
