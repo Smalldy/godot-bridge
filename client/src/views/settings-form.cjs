@@ -157,18 +157,24 @@ function createSettingsForm(deps) {
 
 	const SECTION_KEYS = ['general', 'dispatch', 'retry', 'decisions', 'engine']
 
-	// Module-scoped drafts: one per scope, reset only when the SAVED policy
-	// changes (a poll carrying the same overrides never wipes typing).
-	const policyState = {
-		signature: null,
-		scope: 'project',
-		drafts: { global: null, project: null },
-		baseline: { global: null, project: null },
-		resets: { global: {}, project: {} },
+	// One drafts/baseline/resets bundle PER MOUNTED FORM, keyed by React.useId().
+	// The page explicitly allows the panel page and the plugin card to be mounted
+	// in the same document, so a module-scoped bundle would let the unsaved drafts
+	// of one page leak into the other. The entry is dropped when the form unmounts.
+	const policyStates = new Map()
+
+	function policyStateOf(instanceId) {
+		let state = policyStates.get(instanceId)
+		if (state === undefined) {
+			state = { signature: null, scope: 'project', drafts: { global: null, project: null }, baseline: { global: null, project: null }, resets: { global: {}, project: {} } }
+			policyStates.set(instanceId, state)
+		}
+		return state
 	}
 
 	// The page's footer drives this: each render publishes the current save
-	// closure (it owns the input refs and the module-scoped drafts).
+	// closure (it owns the input refs and this instance's drafts). The page also
+	// passes its own actions object; this registry is the direct-test seam.
 	const formActions = { save: null }
 
 	function rowOf(policy, scope, key) {
@@ -195,18 +201,18 @@ function createSettingsForm(deps) {
 		return JSON.stringify({ global: policy.overrides === undefined ? null : policy.overrides.global, project: policy.overrides === undefined ? null : policy.overrides.project })
 	}
 
-	function ensureState(policy) {
+	function ensureState(state, policy) {
 		const signature = policySignature(policy)
-		if (policyState.signature === signature && policyState.drafts.project !== null) return
-		policyState.signature = signature
-		policyState.drafts = { global: {}, project: {} }
-		policyState.baseline = { global: {}, project: {} }
-		policyState.resets = { global: {}, project: {} }
+		if (state.signature === signature && state.drafts.project !== null) return
+		state.signature = signature
+		state.drafts = { global: {}, project: {} }
+		state.baseline = { global: {}, project: {} }
+		state.resets = { global: {}, project: {} }
 		for (const scope of ['global', 'project']) {
 			for (const view of DECISION_EVENT_VIEWS) {
 				const copy = rowCopy(rowOf(policy, scope, view.key))
-				policyState.drafts[scope][view.key] = copy
-				policyState.baseline[scope][view.key] = Object.assign({}, copy)
+				state.drafts[scope][view.key] = copy
+				state.baseline[scope][view.key] = Object.assign({}, copy)
 			}
 		}
 	}
@@ -230,6 +236,7 @@ function createSettingsForm(deps) {
 	function EngineSection(props) {
 		const t = props.t
 		const scope = props.scope === undefined ? null : props.scope
+		const inputId = typeof props.inputId === 'string' && props.inputId !== '' ? props.inputId : 'godot-bridge-engine-path'
 		const input = React.useRef(null)
 		const [busy, setBusy] = React.useState(false)
 		const [dirty, setDirty] = React.useState(false)
@@ -325,11 +332,11 @@ function createSettingsForm(deps) {
 				h(
 					'div',
 					{ className: 'gbt-settingsinline', style: { justifyContent: 'space-between' } },
-					h('label', { htmlFor: 'godot-bridge-engine-path' }, t('settingsEngineLabel')),
+					h('label', { htmlFor: inputId }, t('settingsEngineLabel')),
 					overridden ? h('span', { className: 'gbt-chip' }, t('settingsEngineOverridden')) : null,
 				),
 				h('input', {
-					id: 'godot-bridge-engine-path',
+					id: inputId,
 					className: 'gbt-input',
 					key: 'revision-' + String(revision),
 					ref: input,
@@ -388,6 +395,9 @@ function createSettingsForm(deps) {
 	}
 
 	function SettingsForm(props) {
+		// Hooks first: the id keys this instance's drafts AND the engine input id,
+		// so two mounted pages can neither share drafts nor duplicate a DOM id.
+		const instanceId = React.useId()
 		const t = props.t
 		const dispatch = props.dispatch !== null && props.dispatch !== undefined ? props.dispatch : {}
 		const policy = props.policy !== null && props.policy !== undefined ? props.policy : null
@@ -400,8 +410,14 @@ function createSettingsForm(deps) {
 		const active = typeof props.section === 'string' && SECTION_KEYS.indexOf(props.section) >= 0 ? props.section : 'general'
 		const currentConcurrent = Number.isFinite(dispatch.maxConcurrent) ? Math.max(1, Math.floor(dispatch.maxConcurrent)) : 3
 		const currentAttempts = Number.isFinite(dispatch.maxAttempts) ? Math.max(1, Math.floor(dispatch.maxAttempts)) : 3
-		ensureState(policy)
-		const scope = policyState.scope
+		const state = policyStateOf(instanceId)
+		React.useEffect(function () {
+			return function () {
+				policyStates.delete(instanceId)
+			}
+		}, [instanceId])
+		ensureState(state, policy)
+		const scope = state.scope
 
 		function rerender() {
 			setTick(tick + 1)
@@ -425,28 +441,28 @@ function createSettingsForm(deps) {
 			// override disappears); an edit after the reset is sent against this
 			// inherited row, so the new value is explicit.
 			const inherited = inheritedRow(policy, targetScope, key)
-			policyState.resets[targetScope][key] = Object.assign({}, inherited)
-			policyState.drafts[targetScope][key] = Object.assign({}, inherited)
+			state.resets[targetScope][key] = Object.assign({}, inherited)
+			state.drafts[targetScope][key] = Object.assign({}, inherited)
 			rerender()
 		}
 
 		function resetAll() {
-			for (const view of DECISION_EVENT_VIEWS) resetEvent(policyState.scope, view.key)
+			for (const view of DECISION_EVENT_VIEWS) resetEvent(state.scope, view.key)
 		}
 
 		function setScope(next) {
-			policyState.scope = next === 'global' ? 'global' : 'project'
+			state.scope = next === 'global' ? 'global' : 'project'
 			rerender()
 		}
 
 		/** The sparse patch the server should store for the current scope. */
 		function policyChanges() {
-			const current = policyState.scope
+			const current = state.scope
 			const events = {}
 			for (const view of DECISION_EVENT_VIEWS) {
-				const draft = policyState.drafts[current][view.key]
-				const resetSnapshot = policyState.resets[current][view.key]
-				const base = resetSnapshot === undefined ? policyState.baseline[current][view.key] : resetSnapshot
+				const draft = state.drafts[current][view.key]
+				const resetSnapshot = state.resets[current][view.key]
+				const base = resetSnapshot === undefined ? state.baseline[current][view.key] : resetSnapshot
 				const patch = {}
 				if (draft.mode !== base.mode) patch.mode = draft.mode
 				if (draft.defaultOption !== base.defaultOption) patch.defaultOption = draft.defaultOption
@@ -455,7 +471,7 @@ function createSettingsForm(deps) {
 				if (draft.autoRecover !== base.autoRecover) patch.autoRecover = draft.autoRecover
 				if (Object.keys(patch).length > 0) events[view.key] = patch
 			}
-			const reset = Object.keys(policyState.resets[current])
+			const reset = Object.keys(state.resets[current])
 			return { scope: current, events: events, reset: reset }
 		}
 
@@ -524,7 +540,7 @@ function createSettingsForm(deps) {
 		if (props.actions !== null && props.actions !== undefined && typeof props.actions === 'object') props.actions.save = save
 
 		function fieldInput(view, field, options) {
-			const draft = policyState.drafts[scope][view.key]
+			const draft = state.drafts[scope][view.key]
 			const value = draft[field]
 			if (options.kind === 'select') {
 				return h(
@@ -575,9 +591,9 @@ function createSettingsForm(deps) {
 		}
 
 		function eventRow(view) {
-			const draft = policyState.drafts[scope][view.key]
+			const draft = state.drafts[scope][view.key]
 			const fixed = view.fixedMode !== undefined
-			const resetDisabled = unbound === true || (overridesOf(scope, view.key) !== true && policyState.resets[scope][view.key] === undefined)
+			const resetDisabled = unbound === true || (overridesOf(scope, view.key) !== true && state.resets[scope][view.key] === undefined)
 			return h(
 				'tr',
 				{ key: view.key, 'data-policy-event': view.key },
@@ -830,7 +846,7 @@ function createSettingsForm(deps) {
 		])
 
 		const enginePanel = sectionPanel('engine', [
-			h('div', { className: 'gbt-settingsgroup', 'data-settings-group': 'engine' }, h(EngineSection, { t: t, scope: props.engineScope === undefined ? null : props.engineScope })),
+			h('div', { className: 'gbt-settingsgroup', 'data-settings-group': 'engine' }, h(EngineSection, { t: t, scope: props.engineScope === undefined ? null : props.engineScope, inputId: 'godot-bridge-engine-path-' + instanceId })),
 		])
 
 		return h(

@@ -10,9 +10,9 @@
  * the engine path, the theme preference), so the two entry points cannot drift.
  *
  * Data scope: the page always reflects the CURRENT task-center project from the
- * snapshot. There is no fallback to a last-active project: an unbound session
- * renders the "未绑定项目" banner and disables the project-scoped themes (派发 /
- * 重试 / 关键决策), while the engine path (a config-scope value) stays editable.
+ * snapshot (never a last-active one): an unbound session renders the
+ * "未绑定项目" banner and disables the project-scoped themes (派发 / 重试 /
+ * 关键决策), while the engine path (a config-scope value) stays editable.
  *
  * Every section stays MOUNTED inside the form; the page only changes which one
  * is visible, so a half-typed field survives a trip to another theme. The save
@@ -81,12 +81,7 @@ function createSettingsViews(deps) {
 		const store = props.store === undefined ? null : props.store
 		// The page never looks for a last-active project: the snapshot's project is
 		// the one the task center acts on, and null is the honest "unbound" state.
-		const project =
-			typeof props.project === 'string' && props.project !== ''
-				? props.project
-				: typeof snapshot.project === 'string' && snapshot.project !== ''
-					? snapshot.project
-					: null
+		const project = typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : null
 		const unbound = project === null
 		// A per-page actions slot: the mounted form publishes its save into THIS
 		// object, so a second mounted page (the plugin card) cannot hijack the
@@ -273,6 +268,9 @@ function createSettingsViews(deps) {
 			return h(SettingsPage, {
 				t: t,
 				mode: 'card',
+				// The bundle card has always configured the engine path, so it opens
+				// on that theme; the rest of the page stays one click away.
+				initialSection: 'engine',
 				snapshot: snapshot,
 				store: store,
 				engineScope: engineScope,
@@ -284,7 +282,7 @@ function createSettingsViews(deps) {
 		return SettingsCard
 	}
 
-	return { SettingsPage: SettingsPage, createSettingsCard: createSettingsCard, SETTINGS_SECTIONS: SECTIONS }
+	return { SettingsPage: SettingsPage, createSettingsCard: createSettingsCard }
 }
 
 module.exports = { createSettingsViews }

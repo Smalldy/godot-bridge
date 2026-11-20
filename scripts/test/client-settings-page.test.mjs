@@ -334,9 +334,36 @@ console.log('PASS  unbound: banner, disabled project themes/save, no last-active
   assert.equal(card.props.engineScope, scope, 'the card supplies the config scope')
   assert.equal(card.props.t('settingsPageTitle'), 'tc:settingsPageTitle', 'the card speaks the task center locale')
   assert.equal(loads, 1, 'opening the card asks the store for the current project')
-  assert.equal(card.props.project, undefined, 'the page resolves the project from the snapshot')
+  assert.equal(card.props.initialSection, 'engine', 'the card opens on the engine path its bundle has always configured')
 }
 console.log('PASS  plugins.bundle.config mounts the shared settings page in card mode')
+
+// ── 40-tail wires that card into the slot (source AND shipped bundle) ─────
+{
+  const TAIL = readFileSync(new URL('../../client/src/40-tail.part', import.meta.url), 'utf8')
+  const bundle = readFileSync(new URL('../../client/client.js', import.meta.url), 'utf8')
+  // A literal key is not enough: the component handed to the slot must be the
+  // shared card factory's product over the shared store/scope/locale.
+  assert.ok(/const SettingsCard = views\.createSettingsCard\(/.test(TAIL), 'the tail builds the card from the shared view')
+  assert.ok(
+    /ctx\.slots\.register\(\s*\{\s*name: 'plugins\.bundle\.config'[\s\S]*?\},\s*SettingsCard\s*,?\s*\)/.test(TAIL),
+    'the slot receives that exact card component',
+  )
+  assert.ok(TAIL.includes('locale: TC_NS'), 'the card declares the registered task-center locale')
+  assert.ok(!TAIL.includes('LOCALE_NS'), 'the dead standalone-form namespace is gone from the tail')
+  assert.ok(TAIL.includes('views.createSettingsCard({ store: store, engineScope: scope, locale: ctx.locale, ns: TC_NS })'), 'the card is built over the shared store, config scope and locale')
+  // 40-tail is inlined verbatim, so the shipped bundle carries the same wiring.
+  assert.ok(bundle.includes('const SettingsCard = views.createSettingsCard('), 'the bundle keeps the card factory wiring')
+  assert.ok(bundle.includes("name: 'plugins.bundle.config'"), 'the bundle registers the bundle config slot')
+  assert.ok(bundle.includes('views.createSettingsCard({ store: store, engineScope: scope, locale: ctx.locale, ns: TC_NS })'), 'the shipped bundle wires the same store/scope/locale into the card')
+  // The old standalone engine form must not survive in the shipped artifact:
+  // this also fails when client/client.js was not rebuilt from the parts.
+  assert.ok(!bundle.includes('godot-bridge-field'), 'the removed engine-form CSS is gone from the bundle')
+  assert.ok(!bundle.includes('buildEngineForm'), 'the removed engine-form JSDoc is gone from the bundle')
+  assert.ok(!bundle.includes("const FIELD = 'godotPath'"), 'the removed config-field constant is gone from the bundle')
+  assert.ok(!bundle.includes("const LOCALE_NS = 'godotBridge'"), 'the removed standalone-form locale namespace is gone from the bundle')
+}
+console.log('PASS  40-tail + the shipped bundle wire plugins.bundle.config to the shared page')
 
 // ── narrow screens fold the rail into a top tab row ───────────────────────
 {
@@ -349,6 +376,10 @@ console.log('PASS  plugins.bundle.config mounts the shared settings page in card
   // A class-level display beats the UA [hidden] rule: the page must hide the
   // non-selected sections explicitly or every theme would render at once.
   assert.ok(HEAD.includes('.gbt-settingssection[hidden]{display:none}'), 'hidden sections are really hidden')
+  // The footer save is project-scoped and says so: it does not include the
+  // engine path staged in the engine section (a config-scope value).
+  assert.ok(HEAD.includes("settingsSaved: '已保存派发与决策设置'"), 'the zh saved copy names the project scope')
+  assert.ok(HEAD.includes("settingsSaved: 'Saved dispatch and decision settings'"), 'the en saved copy names the project scope')
 }
 console.log('PASS  a narrow viewport folds the nav into top tabs');
 

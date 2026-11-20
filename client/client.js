@@ -1,25 +1,24 @@
 /**
  * godot-bridge — browser half (DSH web client).
  *
- * The host half declares `godotPath` as a `.volatile()` config field of its
- * `tool-godot-bridge` row, so DSH 0.2 projects it into the settings document.
- * A form for it exists only if a browser half registers one of the Plugins
- * page's configuration slots; this file registers the **bundle's** one,
- * `plugins.bundle.config` keyed by the package name, so the engine-path field
- * sits directly on the `godot-bridge` card's page, between its description and
- * its row list — one click from the plugin list, the same shape the shipped
- * configuration pages use. (The other slot, `plugins.row.config` keyed
- * `<package name>#<row id>`, would put the same form one level deeper, behind a
- * Configure control on the row; it is the right slot once a bundle has several
- * independently configurable rows, which this one does not.)
+ * Two surfaces:
+ *   - the task center panel (`main` slot `task-center` + a sidebar glyph): the
+ *     board/queue/roles/status/detail views and the T-205 settings page;
+ *   - the plugin bundle configuration card (`plugins.bundle.config`, keyed by
+ *     the package name): T-205 mounts the SAME settings page there, so the two
+ *     entry points cannot drift. The card only supplies the shared task store,
+ *     the engine path's config scope and the browser theme.
  *
- * The page hands `plugins.bundle.config` a `view` only — unlike
- * `plugins.row.config` it passes no `form` — so this bundle resolves the
- * engine path's config scope itself: `ctx.configForms.get(<row id>)`, whose
- * snapshot and writes are the same ones the host's own pages bind. A save ends
- * in `ctx.configEditor.edit(...)`, i.e. the profile `cordis.patch.yml` layer
- * the `godot_set_engine_path` tool writes, so the tool and the GUI agree and
- * the new path applies without a restart.
+ * The host half declares `godotPath` as a `.volatile()` config field of its
+ * `tool-godot-bridge` row, so DSH 0.2 projects it into the settings document;
+ * the page's engine-path section writes that scope through
+ * `ctx.configForms.get(<row id>)`.
+ *
+ * The card slot hands the page a `view` only — unlike `plugins.row.config`
+ * it passes no `form` — so this bundle resolves the config scope itself. A
+ * save ends in `ctx.configEditor.edit(...)`, i.e. the profile
+ * `cordis.patch.yml` layer the `godot_set_engine_path` tool writes, so the
+ * tool and the GUI agree and the new path applies without a restart.
  *
  * T-205: that config card no longer ships a lone engine-path field. Both it and
  * the task center's settings entry mount the SAME settings page (view module
@@ -28,10 +27,10 @@
  * above and the project themes writing the current task-center project.
  *
  * Version boundary: DSH 0.1.6–0.1.x declares these slots but has no
- * settings-form service, so the whole registration sits behind
- * `ctx.inject(['configForms'], ...)`: on those runtimes the card keeps exactly
- * the behaviour it has today (no engine-path field) instead of rendering a
- * form that could not save.
+ * settings-form service, so the registration sits behind
+ * `ctx.inject(['configForms'], ...)`: those runtimes keep their current
+ * behaviour (no configuration card) instead of rendering a page whose engine
+ * path could not save.
  *
  * Conventions this file must keep (dsh-client-modules):
  *   - loaded as a classic script through window.__ModuleLoader__.load();
@@ -40,7 +39,7 @@
  *     anything else would have to be declared in `dsh.client.external`, and
  *     DSH's own authoring rules ask plugins not to load Harness client
  *     packages at all — the controls below are ours, styled with the host's
- *     `--dsw-alias-*` tokens copied from the host's own settings form.
+ *     `--dsw-alias-*` tokens.
  */
 window.__ModuleLoader__.load({
 	id: 'godot-bridge',
@@ -48,88 +47,8 @@ window.__ModuleLoader__.load({
 		const React = require('react')
 		const h = React.createElement
 
-		/** Locale namespace this browser half owns. */
-		const LOCALE_NS = 'godotBridge'
 		/** Settings namespace of the row this bundle inserts: the row id itself. */
 		const ENTRY_NS = 'tool-godot-bridge'
-		/** The config field the form edits, as the host Config declares it. */
-		const FIELD = 'godotPath'
-
-		/** English copy. */
-		const en = {
-			label: 'Godot engine path',
-			hint:
-				'Full path to the real Godot executable (never a version-manager shim). Saving writes it to the tool-godot-bridge row of this profile’s cordis.patch.yml and it applies immediately; the path is used as typed, so make sure it exists.',
-			save: 'Save',
-			saving: 'Saving…',
-			saved: 'Saved. New godot_* calls use this path.',
-			failed: 'The deployment did not accept this value; the stored path is unchanged.',
-			reset: 'Reset to default',
-			overridden: 'Set in this profile',
-			readOnly: 'This deployment stores settings read-only.',
-			unavailable:
-				'This plugin is not loaded, so its configuration cannot be edited right now.',
-		}
-
-		/** Simplified Chinese copy. */
-		const zh = {
-			label: 'Godot 可执行文件路径',
-			hint:
-				'指向真实 Godot exe 的完整路径（不要用版本管理器 shim）。保存会写入本 profile 的 cordis.patch.yml 中 tool-godot-bridge 那一行并立即生效；该值按原样使用，请确认文件存在。',
-			save: '保存',
-			saving: '保存中…',
-			saved: '已保存。新的 godot_* 调用将使用该路径。',
-			failed: '本部署没有接受该值；已保存的路径未改变。',
-			reset: '恢复默认',
-			overridden: '本 profile 已设置',
-			readOnly: '本部署的设置为只读。',
-			unavailable: '该插件当前未加载，暂时无法编辑它的配置。',
-		}
-
-		/**
-		 * Controls copied from the host settings form (dsh-client-ui-primitives
-		 * `settings-form/*.module.css`, `Input.module.css`, `Button.module.css`)
-		 * under this plugin's own prefix, keeping only `--dsw-alias-*` token
-		 * references so a theme change degrades appearance, never rendering.
-		 */
-		const CSS = [
-			'.godot-bridge-field{display:flex;flex-direction:column;gap:6px;padding:12px 0}',
-			'.godot-bridge-head{display:flex;align-items:center;gap:8px}',
-			'.godot-bridge-label{font-size:13px;font-weight:500;line-height:1.5;color:var(--dsw-alias-label-primary)}',
-			'.godot-bridge-badge{font-size:11px;line-height:1.5;padding:1px 6px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}',
-			'.godot-bridge-input{height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-3);font:inherit;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-primary)}',
-			'.godot-bridge-input:focus-visible{outline:none;border-color:var(--dsw-alias-state-business-primary)}',
-			'.godot-bridge-input:disabled{color:var(--dsw-alias-label-tertiary);cursor:default}',
-			'.godot-bridge-hint{margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
-			'.godot-bridge-footer{display:flex;align-items:center;gap:8px;padding-top:16px}',
-			'.godot-bridge-save{appearance:none;border:1px solid transparent;border-radius:var(--dsw-radius-md);padding:5px 14px;font:inherit;font-size:13px;line-height:1.5;cursor:pointer;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}',
-			'.godot-bridge-save:disabled{opacity:.4;cursor:default}',
-			'.godot-bridge-save:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}',
-			'.godot-bridge-reset{border:none;background:none;padding:0;font:inherit;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary);cursor:pointer}',
-			'.godot-bridge-reset:hover:not(:disabled){color:var(--dsw-alias-label-primary)}',
-			'.godot-bridge-reset:disabled{cursor:default;opacity:.4}',
-			'.godot-bridge-message{flex:1;min-width:0;margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
-			'.godot-bridge-message[data-failed="true"]{color:var(--dsw-alias-state-error-primary)}',
-			'.godot-bridge-notice{margin:0 0 12px;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
-		].join('')
-
-		/** The one field's current text, tolerating any shape the host may project. */
-		function textOf(value) {
-			return typeof value === 'string' ? value : ''
-		}
-
-		/**
-		 * Build the engine-path form over one settings scope.
-		 *
-		 * The draft lives in the DOM (an uncontrolled input remounted whenever the
-		 * host revision moves), because only a save writes and leaving the card
-		 * drops staged edits — the contract the host's own settings form follows.
-		 *
-		 * @param scope - the settings scope of the `tool-godot-bridge` row, whose
-		 *   snapshot this component subscribes to and whose `set`/`unset` it writes
-		 *   through.
-		 * @returns the component the Plugins page renders for this bundle.
-		 */
 
 		/* ==================================================================
 		 * TASK CENTER
@@ -330,7 +249,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				starting: '启动中…',
 				pausing: '暂停中…',
 				rejectStart: '拒绝',
-				settingsTitle: '派发设置',
 				maxConcurrent: '最大并发',
 				concurrencyHint: '1–8。只决定同时运行的卡数，不直接决定 worker 数量。',
 				settingsConcurrencyGroup: '任务并发',
@@ -352,7 +270,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				settingsProjectScope: '当前项目',
 				settingsUnbound: '未绑定项目',
 				settingsUnboundHint: '当前任务中心没有绑定项目：派发、重试与关键决策暂时不可编辑；先在任务中心打开项目。引擎路径仍可在此保存。',
-				settingsSaved: '已保存',
+				settingsSaved: '已保存派发与决策设置',
 				settingsEngineLabel: 'Godot 可执行文件路径',
 				settingsEngineHint: '指向真实 Godot exe 的完整路径（不要用版本管理器 shim）。保存会写入本 profile 的 cordis.patch.yml 中 tool-godot-bridge 那一行并立即生效；该值按原样使用，请确认文件存在。',
 				settingsEngineSaving: '保存中…',
@@ -1157,7 +1075,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				starting: 'Starting…',
 				pausing: 'Pausing…',
 				rejectStart: 'Reject',
-				settingsTitle: 'Dispatch settings',
 				maxConcurrent: 'Maximum concurrency',
 				concurrencyHint: '1–8. Limits how many cards run at once; it does not decide the worker count by itself.',
 				settingsConcurrencyGroup: 'Task concurrency',
@@ -1177,7 +1094,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				settingsProjectScope: 'Current project',
 				settingsUnbound: 'No project bound',
 				settingsUnboundHint: 'The task center has no project bound: dispatch, retry and key decisions cannot be edited until you open one there. The engine path can still be saved here.',
-				settingsSaved: 'Saved',
+				settingsSaved: 'Saved dispatch and decision settings',
 				settingsEngineLabel: 'Godot engine path',
 				settingsEngineHint: 'Full path to the real Godot executable (never a version-manager shim). Saving writes it to the tool-godot-bridge row of this profile’s cordis.patch.yml and it applies immediately; the path is used as typed, so make sure it exists.',
 				settingsEngineSaving: 'Saving…',
@@ -7913,18 +7830,24 @@ function createSettingsForm(deps) {
 
 	const SECTION_KEYS = ['general', 'dispatch', 'retry', 'decisions', 'engine']
 
-	// Module-scoped drafts: one per scope, reset only when the SAVED policy
-	// changes (a poll carrying the same overrides never wipes typing).
-	const policyState = {
-		signature: null,
-		scope: 'project',
-		drafts: { global: null, project: null },
-		baseline: { global: null, project: null },
-		resets: { global: {}, project: {} },
+	// One drafts/baseline/resets bundle PER MOUNTED FORM, keyed by React.useId().
+	// The page explicitly allows the panel page and the plugin card to be mounted
+	// in the same document, so a module-scoped bundle would let the unsaved drafts
+	// of one page leak into the other. The entry is dropped when the form unmounts.
+	const policyStates = new Map()
+
+	function policyStateOf(instanceId) {
+		let state = policyStates.get(instanceId)
+		if (state === undefined) {
+			state = { signature: null, scope: 'project', drafts: { global: null, project: null }, baseline: { global: null, project: null }, resets: { global: {}, project: {} } }
+			policyStates.set(instanceId, state)
+		}
+		return state
 	}
 
 	// The page's footer drives this: each render publishes the current save
-	// closure (it owns the input refs and the module-scoped drafts).
+	// closure (it owns the input refs and this instance's drafts). The page also
+	// passes its own actions object; this registry is the direct-test seam.
 	const formActions = { save: null }
 
 	function rowOf(policy, scope, key) {
@@ -7951,18 +7874,18 @@ function createSettingsForm(deps) {
 		return JSON.stringify({ global: policy.overrides === undefined ? null : policy.overrides.global, project: policy.overrides === undefined ? null : policy.overrides.project })
 	}
 
-	function ensureState(policy) {
+	function ensureState(state, policy) {
 		const signature = policySignature(policy)
-		if (policyState.signature === signature && policyState.drafts.project !== null) return
-		policyState.signature = signature
-		policyState.drafts = { global: {}, project: {} }
-		policyState.baseline = { global: {}, project: {} }
-		policyState.resets = { global: {}, project: {} }
+		if (state.signature === signature && state.drafts.project !== null) return
+		state.signature = signature
+		state.drafts = { global: {}, project: {} }
+		state.baseline = { global: {}, project: {} }
+		state.resets = { global: {}, project: {} }
 		for (const scope of ['global', 'project']) {
 			for (const view of DECISION_EVENT_VIEWS) {
 				const copy = rowCopy(rowOf(policy, scope, view.key))
-				policyState.drafts[scope][view.key] = copy
-				policyState.baseline[scope][view.key] = Object.assign({}, copy)
+				state.drafts[scope][view.key] = copy
+				state.baseline[scope][view.key] = Object.assign({}, copy)
 			}
 		}
 	}
@@ -7986,6 +7909,7 @@ function createSettingsForm(deps) {
 	function EngineSection(props) {
 		const t = props.t
 		const scope = props.scope === undefined ? null : props.scope
+		const inputId = typeof props.inputId === 'string' && props.inputId !== '' ? props.inputId : 'godot-bridge-engine-path'
 		const input = React.useRef(null)
 		const [busy, setBusy] = React.useState(false)
 		const [dirty, setDirty] = React.useState(false)
@@ -8081,11 +8005,11 @@ function createSettingsForm(deps) {
 				h(
 					'div',
 					{ className: 'gbt-settingsinline', style: { justifyContent: 'space-between' } },
-					h('label', { htmlFor: 'godot-bridge-engine-path' }, t('settingsEngineLabel')),
+					h('label', { htmlFor: inputId }, t('settingsEngineLabel')),
 					overridden ? h('span', { className: 'gbt-chip' }, t('settingsEngineOverridden')) : null,
 				),
 				h('input', {
-					id: 'godot-bridge-engine-path',
+					id: inputId,
 					className: 'gbt-input',
 					key: 'revision-' + String(revision),
 					ref: input,
@@ -8144,6 +8068,9 @@ function createSettingsForm(deps) {
 	}
 
 	function SettingsForm(props) {
+		// Hooks first: the id keys this instance's drafts AND the engine input id,
+		// so two mounted pages can neither share drafts nor duplicate a DOM id.
+		const instanceId = React.useId()
 		const t = props.t
 		const dispatch = props.dispatch !== null && props.dispatch !== undefined ? props.dispatch : {}
 		const policy = props.policy !== null && props.policy !== undefined ? props.policy : null
@@ -8156,8 +8083,14 @@ function createSettingsForm(deps) {
 		const active = typeof props.section === 'string' && SECTION_KEYS.indexOf(props.section) >= 0 ? props.section : 'general'
 		const currentConcurrent = Number.isFinite(dispatch.maxConcurrent) ? Math.max(1, Math.floor(dispatch.maxConcurrent)) : 3
 		const currentAttempts = Number.isFinite(dispatch.maxAttempts) ? Math.max(1, Math.floor(dispatch.maxAttempts)) : 3
-		ensureState(policy)
-		const scope = policyState.scope
+		const state = policyStateOf(instanceId)
+		React.useEffect(function () {
+			return function () {
+				policyStates.delete(instanceId)
+			}
+		}, [instanceId])
+		ensureState(state, policy)
+		const scope = state.scope
 
 		function rerender() {
 			setTick(tick + 1)
@@ -8181,28 +8114,28 @@ function createSettingsForm(deps) {
 			// override disappears); an edit after the reset is sent against this
 			// inherited row, so the new value is explicit.
 			const inherited = inheritedRow(policy, targetScope, key)
-			policyState.resets[targetScope][key] = Object.assign({}, inherited)
-			policyState.drafts[targetScope][key] = Object.assign({}, inherited)
+			state.resets[targetScope][key] = Object.assign({}, inherited)
+			state.drafts[targetScope][key] = Object.assign({}, inherited)
 			rerender()
 		}
 
 		function resetAll() {
-			for (const view of DECISION_EVENT_VIEWS) resetEvent(policyState.scope, view.key)
+			for (const view of DECISION_EVENT_VIEWS) resetEvent(state.scope, view.key)
 		}
 
 		function setScope(next) {
-			policyState.scope = next === 'global' ? 'global' : 'project'
+			state.scope = next === 'global' ? 'global' : 'project'
 			rerender()
 		}
 
 		/** The sparse patch the server should store for the current scope. */
 		function policyChanges() {
-			const current = policyState.scope
+			const current = state.scope
 			const events = {}
 			for (const view of DECISION_EVENT_VIEWS) {
-				const draft = policyState.drafts[current][view.key]
-				const resetSnapshot = policyState.resets[current][view.key]
-				const base = resetSnapshot === undefined ? policyState.baseline[current][view.key] : resetSnapshot
+				const draft = state.drafts[current][view.key]
+				const resetSnapshot = state.resets[current][view.key]
+				const base = resetSnapshot === undefined ? state.baseline[current][view.key] : resetSnapshot
 				const patch = {}
 				if (draft.mode !== base.mode) patch.mode = draft.mode
 				if (draft.defaultOption !== base.defaultOption) patch.defaultOption = draft.defaultOption
@@ -8211,7 +8144,7 @@ function createSettingsForm(deps) {
 				if (draft.autoRecover !== base.autoRecover) patch.autoRecover = draft.autoRecover
 				if (Object.keys(patch).length > 0) events[view.key] = patch
 			}
-			const reset = Object.keys(policyState.resets[current])
+			const reset = Object.keys(state.resets[current])
 			return { scope: current, events: events, reset: reset }
 		}
 
@@ -8280,7 +8213,7 @@ function createSettingsForm(deps) {
 		if (props.actions !== null && props.actions !== undefined && typeof props.actions === 'object') props.actions.save = save
 
 		function fieldInput(view, field, options) {
-			const draft = policyState.drafts[scope][view.key]
+			const draft = state.drafts[scope][view.key]
 			const value = draft[field]
 			if (options.kind === 'select') {
 				return h(
@@ -8331,9 +8264,9 @@ function createSettingsForm(deps) {
 		}
 
 		function eventRow(view) {
-			const draft = policyState.drafts[scope][view.key]
+			const draft = state.drafts[scope][view.key]
 			const fixed = view.fixedMode !== undefined
-			const resetDisabled = unbound === true || (overridesOf(scope, view.key) !== true && policyState.resets[scope][view.key] === undefined)
+			const resetDisabled = unbound === true || (overridesOf(scope, view.key) !== true && state.resets[scope][view.key] === undefined)
 			return h(
 				'tr',
 				{ key: view.key, 'data-policy-event': view.key },
@@ -8586,7 +8519,7 @@ function createSettingsForm(deps) {
 		])
 
 		const enginePanel = sectionPanel('engine', [
-			h('div', { className: 'gbt-settingsgroup', 'data-settings-group': 'engine' }, h(EngineSection, { t: t, scope: props.engineScope === undefined ? null : props.engineScope })),
+			h('div', { className: 'gbt-settingsgroup', 'data-settings-group': 'engine' }, h(EngineSection, { t: t, scope: props.engineScope === undefined ? null : props.engineScope, inputId: 'godot-bridge-engine-path-' + instanceId })),
 		])
 
 		return h(
@@ -8635,9 +8568,9 @@ module.exports = { createSettingsForm }
  * the engine path, the theme preference), so the two entry points cannot drift.
  *
  * Data scope: the page always reflects the CURRENT task-center project from the
- * snapshot. There is no fallback to a last-active project: an unbound session
- * renders the "未绑定项目" banner and disables the project-scoped themes (派发 /
- * 重试 / 关键决策), while the engine path (a config-scope value) stays editable.
+ * snapshot (never a last-active one): an unbound session renders the
+ * "未绑定项目" banner and disables the project-scoped themes (派发 / 重试 /
+ * 关键决策), while the engine path (a config-scope value) stays editable.
  *
  * Every section stays MOUNTED inside the form; the page only changes which one
  * is visible, so a half-typed field survives a trip to another theme. The save
@@ -8706,12 +8639,7 @@ function createSettingsViews(deps) {
 		const store = props.store === undefined ? null : props.store
 		// The page never looks for a last-active project: the snapshot's project is
 		// the one the task center acts on, and null is the honest "unbound" state.
-		const project =
-			typeof props.project === 'string' && props.project !== ''
-				? props.project
-				: typeof snapshot.project === 'string' && snapshot.project !== ''
-					? snapshot.project
-					: null
+		const project = typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : null
 		const unbound = project === null
 		// A per-page actions slot: the mounted form publishes its save into THIS
 		// object, so a second mounted page (the plugin card) cannot hijack the
@@ -8898,6 +8826,9 @@ function createSettingsViews(deps) {
 			return h(SettingsPage, {
 				t: t,
 				mode: 'card',
+				// The bundle card has always configured the engine path, so it opens
+				// on that theme; the rest of the page stays one click away.
+				initialSection: 'engine',
 				snapshot: snapshot,
 				store: store,
 				engineScope: engineScope,
@@ -8909,7 +8840,7 @@ function createSettingsViews(deps) {
 		return SettingsCard
 	}
 
-	return { SettingsPage: SettingsPage, createSettingsCard: createSettingsCard, SETTINGS_SECTIONS: SECTIONS }
+	return { SettingsPage: SettingsPage, createSettingsCard: createSettingsCard }
 }
 
 module.exports = { createSettingsViews }
@@ -10711,19 +10642,16 @@ module.exports = { createTaskCenter }
 				// the same settings; neither resolves a project of its own.
 				const store = createTaskStore(ctx.locale.bind(TC_NS))
 				const views = createTaskCenterViews(ctx, store)
+				// The task center namespace is the ONLY locale this browser half ships:
+				// the panel and the shared settings page (including the bundle card)
+				// both speak it. Register it before the card slot is offered so the
+				// slot's declared locale always resolves.
 				ctx.effect(
-					() => ctx.locale.register(LOCALE_NS, { zh, en }),
-					'godot-bridge: dictionaries',
+					() => ctx.locale.register(TC_NS, TC_DICT),
+					'godot-bridge: task center dictionaries',
 				)
-				ctx.effect(() => {
-					const style = document.createElement('style')
-					style.setAttribute('data-plugin', 'godot-bridge')
-					style.textContent = CSS
-					document.head.appendChild(style)
-					return () => {
-						style.remove()
-					}
-				}, 'godot-bridge: form styles')
+				// The card opens on the engine path its bundle has always configured;
+				// the other themes are one click away in the same page.
 				ctx.inject(['configForms'], (forms) => {
 					const scope = forms.configForms.get(ENTRY_NS)
 					// T-205: one component for both entry points — the bundle card is
@@ -10731,16 +10659,11 @@ module.exports = { createTaskCenter }
 					const SettingsCard = views.createSettingsCard({ store: store, engineScope: scope, locale: ctx.locale, ns: TC_NS })
 					ctx.slots.inject('plugins.bundle.config', () =>
 						ctx.slots.register(
-							{ name: 'plugins.bundle.config', key: 'godot-bridge', locale: LOCALE_NS },
+							{ name: 'plugins.bundle.config', key: 'godot-bridge', locale: TC_NS },
 							SettingsCard,
 						),
 					)
 				})
-
-				ctx.effect(
-					() => ctx.locale.register(TC_NS, TC_DICT),
-					'godot-bridge: task center dictionaries',
-				)
 				ctx.effect(() => {
 					const style = document.createElement('style')
 					style.setAttribute('data-plugin', 'godot-bridge')

@@ -23,12 +23,21 @@ function h(type, props, ...children) {
   return { type, props: Object.assign({}, props, children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }) }
 }
 
+// Every harness is one form INSTANCE for React.useId(): a new harness means a
+// new mounted page, and its drafts must not be shared with a previous one.
+let harnessSeq = 0
+
 /** The smallest hook harness that survives manual re-renders (useState only). */
 function createHarness() {
   const states = []
   const harness = {
+    id: 'form-instance-' + String(++harnessSeq),
     cursor: 0,
     React: {
+      useId: function () {
+        return harness.id
+      },
+      useEffect: function () {},
       useRef: function () {
         return { current: null }
       },
@@ -420,6 +429,35 @@ console.log('PASS  the engine path section reads and writes the config scope')
   assert.ok(JSON.stringify(engineView).includes('settingsEngineUnavailable'))
 }
 console.log('PASS  the engine section explains a runtime without a config form')
+
+// ── two mounted pages cannot share drafts or DOM ids ──────────────────────
+{
+  const first = newForm()
+  const second = newForm()
+  let firstView = first.form(propsFor({ section: 'decisions' }))
+  fieldOf(rows(firstView).get('reopen'), 'mode').props.onChange({ target: { value: 'silent' } })
+  firstView = first.form(propsFor({ section: 'decisions' }))
+  assert.equal(fieldOf(rows(firstView).get('reopen'), 'mode').props.value, 'silent', 'the first page keeps its own draft')
+  const secondView = second.form(propsFor({ section: 'decisions' }))
+  assert.equal(fieldOf(rows(secondView).get('reopen'), 'mode').props.value, 'ask', 'a second page does not inherit the first page draft')
+
+  function engineInputOf(block) {
+    const view = block.form(propsFor({ section: 'engine' }))
+    const element = find(view, (node) => typeof node.type === 'function')
+    block.harness.cursor = block.harness.cursor
+    const engineView = element.type(element.props)
+    const input = find(engineView, (node) => node.props && node.props['data-settings-engine-input'] === 'true')
+    const label = find(engineView, (node) => node.type === 'label' && node.props && typeof node.props.htmlFor === 'string')
+    return { input: input, label: label }
+  }
+  const firstInput = engineInputOf(first).input
+  const secondInput = engineInputOf(second).input
+  assert.ok(typeof firstInput.props.id === 'string' && firstInput.props.id.length > 0, 'the engine input has an id')
+  assert.notEqual(firstInput.props.id, secondInput.props.id, 'two mounted forms cannot duplicate the engine input id')
+  const labelled = engineInputOf(first)
+  assert.equal(labelled.label.props.htmlFor, labelled.input.props.id, 'the label points at this instance\'s input')
+}
+console.log('PASS  two mounted settings pages keep separate drafts and engine input ids')
 
 // ── theme switching is handed to the owner immediately ────────────────────
 {

@@ -19,19 +19,16 @@
 				// the same settings; neither resolves a project of its own.
 				const store = createTaskStore(ctx.locale.bind(TC_NS))
 				const views = createTaskCenterViews(ctx, store)
+				// The task center namespace is the ONLY locale this browser half ships:
+				// the panel and the shared settings page (including the bundle card)
+				// both speak it. Register it before the card slot is offered so the
+				// slot's declared locale always resolves.
 				ctx.effect(
-					() => ctx.locale.register(LOCALE_NS, { zh, en }),
-					'godot-bridge: dictionaries',
+					() => ctx.locale.register(TC_NS, TC_DICT),
+					'godot-bridge: task center dictionaries',
 				)
-				ctx.effect(() => {
-					const style = document.createElement('style')
-					style.setAttribute('data-plugin', 'godot-bridge')
-					style.textContent = CSS
-					document.head.appendChild(style)
-					return () => {
-						style.remove()
-					}
-				}, 'godot-bridge: form styles')
+				// The card opens on the engine path its bundle has always configured;
+				// the other themes are one click away in the same page.
 				ctx.inject(['configForms'], (forms) => {
 					const scope = forms.configForms.get(ENTRY_NS)
 					// T-205: one component for both entry points — the bundle card is
@@ -39,16 +36,11 @@
 					const SettingsCard = views.createSettingsCard({ store: store, engineScope: scope, locale: ctx.locale, ns: TC_NS })
 					ctx.slots.inject('plugins.bundle.config', () =>
 						ctx.slots.register(
-							{ name: 'plugins.bundle.config', key: 'godot-bridge', locale: LOCALE_NS },
+							{ name: 'plugins.bundle.config', key: 'godot-bridge', locale: TC_NS },
 							SettingsCard,
 						),
 					)
 				})
-
-				ctx.effect(
-					() => ctx.locale.register(TC_NS, TC_DICT),
-					'godot-bridge: task center dictionaries',
-				)
 				ctx.effect(() => {
 					const style = document.createElement('style')
 					style.setAttribute('data-plugin', 'godot-bridge')
