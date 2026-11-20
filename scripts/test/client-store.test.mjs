@@ -90,6 +90,83 @@ assert.equal(store.getSnapshot().source, 'host')
   assert.equal(store.getSnapshot().message, '', 'an intentional rejection is not an error banner')
 }
 
+// ── T-208: the conversation overlay polls ONLY the decision queue ───────────
+{
+  const requests = []
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url: url, body: JSON.parse(options.body) })
+    return { json: async () => ({ ok: true, decisions: [{ id: 'DEC-1', status: 'pending', remainingMs: 9000 }], counts: { pending: 1 } }) }
+  }
+  const boardBefore = store.getSnapshot().tasks.length
+  const projectBefore = store.getSnapshot().project
+  const loaded = await store.loadDecisions()
+  assert.equal(loaded.ok, true)
+  assert.equal(requests.length, 1, 'one lightweight request')
+  assert.equal(requests[0].url, '/action')
+  assert.equal(requests[0].body.action, 'decisionList', 'the poll asks only for decisions')
+  assert.equal(requests[0].body.decisionStatus, 'pending')
+  assert.equal(store.getSnapshot().decisions.length, 1, 'the queue lands on the shared snapshot')
+  assert.equal(store.getSnapshot().decisions[0].id, 'DEC-1')
+  assert.ok(Number.isFinite(store.getSnapshot().receivedAt), 'the receipt time feeds the countdown')
+  assert.equal(store.getSnapshot().tasks.length, boardBefore, 'the board is untouched')
+  assert.equal(store.getSnapshot().project, projectBefore, 'the project is untouched')
+  assert.equal(store.getSnapshot().busy, null, 'a background poll never takes the action busy channel')
+}
+console.log('PASS  loadDecisions polls only the pending queue and leaves the board snapshot alone')
+
+// ── T-208: one decision answer, never two ───────────────────────────────────
+{
+  // Seed a queue the way the panel's /state poll would.
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      ok: true,
+      full: true,
+      project: '/p',
+      tasks: [],
+      counts: {},
+      decisions: [{ id: 'DEC-9', status: 'pending' }, { id: 'DEC-10', status: 'pending' }],
+    }),
+  })
+  await store.load()
+  assert.deepEqual(store.getSnapshot().decisions.map((entry) => entry.id), ['DEC-9', 'DEC-10'])
+
+  let posts = 0
+  let release = null
+  globalThis.fetch = () => {
+    posts += 1
+    return new Promise((resolve) => {
+      release = () => resolve({ json: async () => ({ ok: true, decision: { id: 'DEC-9' }, applied: null }) })
+    })
+  }
+  const first = store.send('decisionAnswer', { decisionId: 'DEC-9', option: 'go' })
+  const second = await store.send('decisionAnswer', { decisionId: 'DEC-9', option: 'go' })
+  assert.equal(second.ok, false)
+  assert.equal(second.duplicate, true, 'the second surface is told it is a duplicate')
+  assert.equal(posts, 1, 'the second surface never reaches the network')
+  release()
+  const landed = await first
+  assert.equal(landed.ok, true)
+  assert.deepEqual(store.getSnapshot().decisions.map((entry) => entry.id), ['DEC-10'], 'the answered request leaves the queue at once')
+  assert.equal(store.getSnapshot().busy, null, 'the answer releases the busy channel')
+  const third = await store.send('decisionAnswer', { decisionId: 'DEC-9', option: 'go' })
+  assert.equal(third.duplicate, true, 'an answered id is refused even after the response')
+  assert.equal(posts, 1, 'still exactly one POST')
+
+  // A transport failure must NOT burn the id: the user can retry.
+  let attempts = 0
+  globalThis.fetch = async () => {
+    attempts += 1
+    if (attempts === 1) throw new Error('offline')
+    return { json: async () => ({ ok: true, decision: { id: 'DEC-11' }, applied: null }) }
+  }
+  const failed = await store.send('decisionAnswer', { decisionId: 'DEC-11', option: 'go' })
+  assert.equal(failed.ok, false)
+  const retried = await store.send('decisionAnswer', { decisionId: 'DEC-11', option: 'go' })
+  assert.equal(retried.ok, true, 'a failed answer is retryable')
+  assert.equal(attempts, 2)
+}
+console.log('PASS  one shared store serializes decision answers (panel modal + shell overlay)')
+
 const poll = globalThis.setInterval
 let polls = 0
 globalThis.setInterval = (fn, ms) => {

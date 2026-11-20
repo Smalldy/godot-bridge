@@ -76,6 +76,10 @@ client/
     views/settings-page.cjs  SettingsPage + createSettingsCard, shared by the panel and the plugin card
                              (React + h + SettingsForm injected)
     views/project-form.cjs   ProjectForm (React + Modal + draft state + store + tcErrorMessage injected)
+    views/decision-modal.cjs    DecisionModal + DecisionCard: one answer form for the panel
+                                modal and the compact shell-overlay card (React + h injected)
+    views/decision-overlay.cjs  DecisionOverlay: the 'shell.overlay' pending-decision chip and
+                                docked card (React + h + DecisionModal + store + hooks injected)
     views/glyph.cjs       Glyph (h injected)
     views/task-center.cjs TaskCenter (React + all views/forms + hooks/state + project helpers injected)
     30-views-core.part    hooks, TaskCard, Column, Board, DoneAllDrawer
@@ -84,8 +88,8 @@ client/
     33-views-status.part  status + activity helpers
     34-views-detail.part  detail drawer/history
     35-views-forms.part   task/settings/project forms + SettingsPage module marker
-    36-views-shell.part   TaskCenter shell + Glyph
-    40-tail.part          apply wiring + factory return
+    36-views-shell.part   TaskCenter shell + Glyph + DecisionOverlay module marker
+    40-tail.part          apply wiring (main/sidebar/bundle card/shell.overlay) + factory return
   scripts/build-client.mjs  no-dependency concatenation; --check for CI
 ```
 

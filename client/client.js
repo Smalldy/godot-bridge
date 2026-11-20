@@ -1,9 +1,13 @@
 /**
  * godot-bridge — browser half (DSH web client).
  *
- * Two surfaces:
+ * Three surfaces:
  *   - the task center panel (`main` slot `task-center` + a sidebar glyph): the
- *     board/queue/roles/status/detail views and the T-205 settings page;
+ *     board/queue/roles/status/detail views, the T-205 settings page and the
+ *     decision modal that fronts the Host's pending questions;
+ *   - the conversation-page decision entry (`shell.overlay`, T-208): the same
+ *     answer form as a compact docked card, so a pending decision can be
+ *     answered without opening the panel;
  *   - the plugin bundle configuration card (`plugins.bundle.config`, keyed by
  *     the package name): T-205 mounts the SAME settings page there, so the two
  *     entry points cannot drift. The card only supplies the shared task store,
@@ -888,6 +892,10 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				decisionHighRiskLabel: '输入 DELETE 确认',
 				decisionHighRiskHint: '此操作不可恢复；输入 DELETE 后才能确认。',
 				decisionOpenTask: '查看卡片详情',
+				// T-208 — the conversation-page shell overlay entry.
+				decisionOverlayChip: '待决策 {n}',
+				decisionOverlayAria: '待处理的决策',
+				decisionOverlayCollapse: '收起待决策卡片',
 				err_already_answered: '该决策已经回答过，不能再次回答。',
 				err_decision_expired: '该决策已超时失效，回答不再生效。',
 				err_decision_cancelled: '该决策已取消。',
@@ -1710,6 +1718,10 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				decisionHighRiskLabel: 'Type DELETE to confirm',
 				decisionHighRiskHint: 'This cannot be undone; confirm only after typing DELETE.',
 				decisionOpenTask: 'View card',
+				// T-208 — the conversation-page shell overlay entry.
+				decisionOverlayChip: '{n} pending',
+				decisionOverlayAria: 'Pending decisions',
+				decisionOverlayCollapse: 'Collapse the pending decision',
 				err_already_answered: 'This decision was already answered and cannot be answered again.',
 				err_decision_expired: 'This decision timed out; the answer no longer applies.',
 				err_decision_cancelled: 'This decision was cancelled.',
@@ -1954,6 +1966,20 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-decisionhighriskin{margin:0;width:160px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}',
 			'.gbt-decisionfoot{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:14px 0 0;flex-wrap:wrap}',
 			'.gbt-decisionfoot .gbt-muted{flex:1 1 auto;min-width:0}',
+			// T-208: the conversation-page shell overlay. The chip anchors at the
+			// centre column's inline end; the docked card grows upwards and is
+			// capped by the measured max-height so it never leaves the viewport.
+			'.gbt-decisiondock{position:absolute;right:12px;bottom:16px;z-index:21;pointer-events:auto;display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:calc(100vw - 24px)}',
+			// Two classes on purpose: .gbt-chipbtn is declared later in this sheet, so
+			// the chip must out-rank it rather than rely on source order.
+			'.gbt-chipbtn.gbt-decisionchip{border-color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-warn-label);font-weight:600;height:30px}',
+			'.gbt-chipbtn.gbt-decisionchip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+			'.gbt-decisionchipdot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-warn-primary);flex:0 0 auto}',
+			'.gbt-decisiondockpanel{position:absolute;right:0;bottom:calc(100% + 8px);width:min(368px,calc(100vw - 24px));max-height:min(520px,72vh);overflow:auto;border-radius:14px;pointer-events:auto;overscroll-behavior:contain}',
+			'.gbt-decision.gbt-decisioncompact{width:100%;max-height:none;overflow:visible;padding:14px;box-shadow:var(--dsw-shadow-lv2)}',
+			'.gbt-decisionclose{appearance:none;border:0;background:none;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:16px;line-height:1;cursor:pointer;padding:2px 5px;border-radius:6px;flex:0 0 auto;margin-left:-2px}',
+			'.gbt-decisionclose:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+			'.gbt-decisionerror{margin:10px 0 0;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-state-error-primary);word-break:break-word}',
 			'.gbt-form{display:flex;flex-direction:column;gap:10px;margin-top:12px}',
 '.gbt-rhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}',
 '.gbt-rtitle{margin:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}',
@@ -3570,6 +3596,15 @@ const createTaskStore = (function () {
 			let loading = null
 			let timer = null
 			let busy = null
+			// T-208: a decision answer is one-shot and two surfaces can submit it
+			// (the panel's modal and the conversation-page overlay). One store backs
+			// both, so these two guards are what stop a double submit: an answer in
+			// flight refuses a second one, and an id whose answer already landed is
+			// refused even after the response. A FAILED send clears both, so a
+			// transport error can still be retried.
+			const answeringDecisions = new Set()
+			const answeredDecisions = new Set()
+			let decisionsLoading = null
 			// T-182: "no project is bound to this session" is the EXPECTED answer
 			// before the first project is opened. It is a SETUP state, not a failure:
 			// routing it into the error banner put "操作失败" over a panel that was
@@ -3686,6 +3721,9 @@ const createTaskStore = (function () {
 							if (next.project !== snapshot.project) {
 								activityLog = []
 								activityCursor = null
+								// T-208: decision ids are project-scoped; an id answered in project A
+								// must not block the same id in project B.
+								answeredDecisions.clear()
 							}
 							if (payload.activityEvents !== undefined && payload.activityEvents !== null && Array.isArray(payload.activityEvents.entries)) {
 								const known = new Set(activityLog.map(function (entry) { return entry.key }))
@@ -3743,6 +3781,18 @@ const createTaskStore = (function () {
 			async function send(action, body, options) {
 				const opts = options === undefined || options === null ? {} : options
 				const quiet = opts.quiet === true
+				// T-208: serialize decision answers per request id. The panel modal and
+				// the shell overlay both call this store; whichever submits second gets
+				// a duplicate result instead of a second POST.
+				const decisionId =
+					action === 'decisionAnswer' && body !== undefined && body !== null && typeof body.decisionId === 'string' && body.decisionId !== ''
+						? body.decisionId
+						: null
+				if (decisionId !== null) {
+					if (answeredDecisions.has(decisionId)) return { ok: false, duplicate: true, payload: { ok: false, code: 'already-answered' } }
+					if (answeringDecisions.has(decisionId)) return { ok: false, duplicate: true, payload: { ok: false, code: 'answer-in-flight' } }
+					answeringDecisions.add(decisionId)
+				}
 				const payloadBody = Object.assign({ action: action }, body === undefined ? {} : body)
 				payloadBody.session = tcSessionId()
 				const project = tcPinnedProject()
@@ -3779,7 +3829,18 @@ const createTaskStore = (function () {
 								// A real action answered: whatever the banner said is no longer current.
 								messageKind = null
 							}
+							if (decisionId !== null) answeredDecisions.add(decisionId)
 							emit(next)
+						} else if (decisionId !== null) {
+							// T-208: the answer response carries no snapshot. Drop the answered
+							// request from the queue right away so BOTH surfaces advance to the
+							// next decision without waiting for the next poll (which the caller
+							// still asks for to confirm the canonical list).
+							answeredDecisions.add(decisionId)
+							emit(Object.assign({}, snapshot, {
+								decisions: (Array.isArray(snapshot.decisions) ? snapshot.decisions : []).filter(function (entry) { return entry === null || entry === undefined || entry.id !== decisionId }),
+								receivedAt: Date.now(),
+							}))
 						}
 						return { ok: true, payload: payload }
 					}
@@ -3804,8 +3865,44 @@ const createTaskStore = (function () {
 					}
 					return { ok: false, error: error }
 				} finally {
+					if (decisionId !== null) answeringDecisions.delete(decisionId)
 					if (busy === token) setBusy(null)
 				}
+			}
+
+			/**
+			 * T-208: refresh ONLY the pending decision queue. The conversation-page
+			 * overlay polls this instead of /state, so a shell overlay never pulls the
+			 * whole board every few seconds. It reads and writes no other snapshot
+			 * field and never enters the action-result channel (a background poll must
+			 * not raise the task-center banner).
+			 */
+			async function loadDecisions() {
+				if (decisionsLoading !== null) return decisionsLoading
+				decisionsLoading = (async function () {
+					const body = { action: 'decisionList', decisionStatus: 'pending', session: tcSessionId() }
+					const project = tcPinnedProject()
+					if (project !== null) body.project = project
+					try {
+						const payload = await fetchJson(tcWithSession(TC_ACTION_URL), {
+							method: 'POST',
+							headers: { 'content-type': 'application/json' },
+							body: JSON.stringify(body),
+						})
+						if (payload !== null && payload !== undefined && payload.ok === true && Array.isArray(payload.decisions)) {
+							// withDecisions carries the queue and the receipt time the countdown
+							// needs; every other field (tasks, project, banner) stays as it is.
+							emit(withDecisions(Object.assign({}, snapshot), payload))
+							return { ok: true, decisions: payload.decisions }
+						}
+						return { ok: false, payload: payload === undefined ? null : payload }
+					} catch (error) {
+						return { ok: false, error: error }
+					} finally {
+						decisionsLoading = null
+					}
+				})()
+				return decisionsLoading
 			}
 
 			/** One page of the server-side completed list (T-82 /list route). */
@@ -3876,6 +3973,8 @@ const createTaskStore = (function () {
 				const result = await send('openProject', { path: next }, opts.quiet === true ? { quiet: true } : undefined)
 				if (result.ok !== true) return result
 				tcPinProject(next)
+				// T-208: decision ids are project-scoped (see load()).
+				answeredDecisions.clear()
 				// Binding ANSWERS the setup state, so the banner goes away with the project
 				// it asked for. An AUTOMATIC follow (quiet) must not clear the user's last
 				// real action outcome — that is the quiet contract.
@@ -3938,6 +4037,7 @@ const createTaskStore = (function () {
 					return snapshot
 				},
 				load: load,
+				loadDecisions: loadDecisions,
 				send: send,
 				loadWorktrees: loadWorktrees,
 				switchProject: switchProject,
@@ -9290,14 +9390,20 @@ module.exports = { createGlyph }
 				const module = { exports: {} }
 				;(function (module, exports) {
 /**
- * DecisionRequest modal view module (T-195).
+ * DecisionRequest modal + compact card view modules (T-195, T-208).
  *
- * The host may ask ONE critical question at a time and queue the rest. This view
- * renders that queue front-to-back: the common modal copy from the requirement
- * packet (title, task/event subtitle, server countdown, queue count, default
- * badge), the options, an optional free-text answer, and the DELETE confirmation
- * for a destructive option. Event-specific copy is supplied by the caller's
- * eventLabel/body/title — this module knows nothing about create/review/test.
+ * The host may ask ONE critical question at a time and queue the rest. This
+ * module renders that queue front-to-back: the common modal copy from the
+ * requirement packet (title, task/event subtitle, server countdown, queue
+ * count, default badge), the options, an optional free-text answer, and the
+ * DELETE confirmation for a destructive option. Event-specific copy is
+ * supplied by the caller's eventLabel/body/title — this module knows nothing
+ * about create/review/test.
+ *
+ * T-208: the answer form is ONE hook (useDecisionForm) rendered by two
+ * surfaces — the panel's full modal (DecisionModal) and the shell overlay's
+ * compact, docked card (DecisionCard). Both therefore show the same fields and
+ * submit the same body (decisionAnswerPayload); the surfaces cannot drift.
  *
  * Countdown: the host sends remainingMs from ITS clock. The panel stores the
  * snapshot receipt time, so the rendered seconds are the server deadline minus
@@ -9375,7 +9481,7 @@ function createDecisionModal(deps) {
 		return t('decisionCountdown').replace('{seconds}', String(seconds)).replace('{defaultLabel}', defaultLabel)
 	}
 
-	/** The option the modal starts on: the marked default, when there is one. */
+	/** The option the form starts on: the marked default, when there is one. */
 	function decisionInitialOption(decision) {
 		if (decision === null || decision === undefined) return null
 		const wanted = typeof decision.defaultOption === 'string' ? decision.defaultOption : null
@@ -9397,15 +9503,30 @@ function createDecisionModal(deps) {
 	}
 
 	/**
-	 * The generic plugin view: one foregrounded decision, the queued count and
-	 * the answer form. It never renders a close button — a question is resolved
-	 * by answering one of its options (a "return"/"keep" option is one of them).
+	 * The body the Host expects for one answer. Shared by the panel's modal and
+	 * the shell overlay, so both post exactly the same fields (T-208 §8).
 	 */
-	function DecisionModal(props) {
-		const t = props.t
-		const queue = Array.isArray(props.queue) ? props.queue : []
-		const current = queue.length === 0 ? null : queue[0]
-		// A one-second local tick keeps the server countdown live between polls.
+	function decisionAnswerPayload(decision, answer) {
+		const source = answer === undefined || answer === null ? {} : answer
+		const body = { decisionId: decision === null || decision === undefined ? '' : decision.id }
+		if (source.option !== undefined) body.option = source.option
+		if (typeof source.text === 'string' && source.text !== '') body.text = source.text
+		if (typeof source.confirm === 'string' && source.confirm !== '') body.confirm = source.confirm
+		return body
+	}
+
+	/**
+	 * The ONE answer form (T-208). A hook rather than a nested element: the
+	 * panel's modal root ('.gbt-decision') must stay the direct child of
+	 * '.gbt-decisionoverlay' — the shipped CSS and the T-195 selectors key on
+	 * that exact shape — while the overlay's compact card renders the same
+	 * fields inside its own docked root.
+	 *
+	 * Returns null when there is no decision; the hooks above it still run so
+	 * the count is stable between renders of the same mount.
+	 */
+	function useDecisionForm(current, t, props) {
+		const safe = props === undefined || props === null ? {} : props
 		const [tick, setTick] = React.useState(0)
 		React.useEffect(function () {
 			if (typeof setInterval !== 'function') return undefined
@@ -9417,16 +9538,15 @@ function createDecisionModal(deps) {
 		const [selected, setSelected] = React.useState(current === null ? null : decisionInitialOption(current))
 		const [text, setText] = React.useState('')
 		const [confirmText, setConfirmText] = React.useState('')
-		if (current === null) return null
-		// The one-second tick re-renders this component; read the clock then, so the
+		if (current === null || current === undefined) return null
+		// The one-second tick re-renders this form; read the clock then, so the
 		// countdown keeps moving even while the parent's polling snapshot is idle.
 		const now = Date.now()
 		const chosenId = selected === null || selected === undefined ? decisionInitialOption(current) : selected
 		const chosen = (Array.isArray(current.options) ? current.options : []).filter((option) => option.id === chosenId)[0] || null
 		const danger = chosen !== null && chosen.danger === true
 		const canConfirm = decisionCanConfirm(current, chosenId, text, confirmText)
-		const submitting = props.busy === true
-		const queueLeft = queue.length - 1
+		const submitting = safe.busy === true
 
 		const optionNodes = (Array.isArray(current.options) ? current.options : []).map(function (option) {
 			const isSelected = option.id === chosenId
@@ -9457,26 +9577,36 @@ function createDecisionModal(deps) {
 			)
 		})
 
-		return h(
-			'div',
-			{ className: 'gbt-decisionoverlay', 'data-decision-overlay': 'true' },
-			h(
-				'div',
-				{ className: 'gbt-decision', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'gbt-decision-title', 'data-decision-id': current.id },
-				h(
-					'div',
-					{ className: 'gbt-decisionhead' },
-					h('h2', { id: 'gbt-decision-title', 'data-decision-title': 'true' }, t('decisionTitle')),
-					h('span', { className: 'gbt-muted', 'data-decision-queue': 'true' }, queueLeft > 0 ? t('decisionQueue').replace('{n}', String(queueLeft)) : ''),
-				),
-				h('p', { className: 'gbt-decisionsub', 'data-decision-subtitle': 'true' }, decisionSubtitle(current, t)),
-				h('p', { className: 'gbt-decisioncountdown', 'data-decision-countdown': 'true' }, decisionCountdownText(current, props.receivedAt, now, t)),
-				current.title === '' ? null : h('p', { className: 'gbt-decisionbody', 'data-decision-headline': 'true' }, current.title),
-				current.body === '' ? null : h('p', { className: 'gbt-decisionbody', 'data-decision-body': 'true' }, current.body),
-				optionNodes.length === 0 ? null : h('div', { className: 'gbt-decisionoptions', 'data-decision-options': 'true' }, optionNodes),
+		const openTask =
+			typeof current.taskId === 'string' && current.taskId !== '' && typeof safe.onOpenTask === 'function'
+				? h(
+						'button',
+						{
+							type: 'button',
+							className: 'gbt-btn',
+							'data-decision-open-task': 'true',
+							onClick: function () { safe.onOpenTask(current.taskId) },
+						},
+						t('decisionOpenTask'),
+					)
+				: null
+
+		const error = typeof safe.error === 'string' && safe.error !== ''
+			? h('p', { className: 'gbt-decisionerror', 'data-decision-error': 'true', role: 'alert' }, safe.error)
+			: null
+
+		return {
+			canConfirm: canConfirm,
+			danger: danger,
+			nodes: [
+				h('p', { key: 'subtitle', className: 'gbt-decisionsub', 'data-decision-subtitle': 'true' }, decisionSubtitle(current, t)),
+				h('p', { key: 'countdown', className: 'gbt-decisioncountdown', 'data-decision-countdown': 'true' }, decisionCountdownText(current, safe.receivedAt, now, t)),
+				current.title === '' ? null : h('p', { key: 'headline', className: 'gbt-decisionbody', 'data-decision-headline': 'true' }, current.title),
+				current.body === '' ? null : h('p', { key: 'body', className: 'gbt-decisionbody', 'data-decision-body': 'true' }, current.body),
+				optionNodes.length === 0 ? null : h('div', { key: 'options', className: 'gbt-decisionoptions', 'data-decision-options': 'true' }, optionNodes),
 				h(
 					'label',
-					{ className: 'gbt-decisiontext' },
+					{ key: 'text', className: 'gbt-decisiontext' },
 					h('span', null, t('decisionTextLabel')),
 					h('textarea', {
 						className: 'gbt-input gbt-editorarea',
@@ -9490,31 +9620,25 @@ function createDecisionModal(deps) {
 				),
 				danger
 					? h(
-						'label',
-						{ className: 'gbt-decisionhighrisk', 'data-decision-highrisk': 'true' },
-						h('span', null, t('decisionHighRiskLabel')),
-						h('input', {
-							className: 'gbt-input gbt-decisionhighriskin',
-							value: confirmText,
-							placeholder: CONFIRM_WORD,
-							'data-decision-confirm': 'true',
-							disabled: submitting,
-							onChange: function (event) { setConfirmText(String(event.target.value)) },
-						}),
-						h('span', { className: 'gbt-footnote' }, t('decisionHighRiskHint')),
-					)
+							'label',
+							{ key: 'highrisk', className: 'gbt-decisionhighrisk', 'data-decision-highrisk': 'true' },
+							h('span', null, t('decisionHighRiskLabel')),
+							h('input', {
+								className: 'gbt-input gbt-decisionhighriskin',
+								value: confirmText,
+								placeholder: CONFIRM_WORD,
+								'data-decision-confirm': 'true',
+								disabled: submitting,
+								onChange: function (event) { setConfirmText(String(event.target.value)) },
+							}),
+							h('span', { className: 'gbt-footnote' }, t('decisionHighRiskHint')),
+						)
 					: null,
+				error,
 				h(
 					'div',
-					{ className: 'gbt-decisionfoot' },
-					typeof current.taskId === 'string' && current.taskId !== '' && typeof props.onOpenTask === 'function'
-						? h('button', {
-								type: 'button',
-								className: 'gbt-btn',
-								'data-decision-open-task': 'true',
-								onClick: function () { props.onOpenTask(current.taskId) },
-							}, t('decisionOpenTask'))
-						: null,
+					{ key: 'foot', className: 'gbt-decisionfoot' },
+					openTask,
 					h(
 						'button',
 						{
@@ -9525,14 +9649,87 @@ function createDecisionModal(deps) {
 							disabled: !canConfirm || submitting,
 							'data-decision-can-confirm': canConfirm ? 'true' : 'false',
 							onClick: function () {
-								if (!canConfirm || typeof props.onAnswer !== 'function') return
-								props.onAnswer(current, { option: chosenId, text: text, confirm: confirmText })
+								if (!canConfirm || typeof safe.onAnswer !== 'function') return
+								safe.onAnswer(current, { option: chosenId, text: text, confirm: confirmText })
 							},
 						},
 						submitting ? t('decisionAnswering') : t('decisionConfirm'),
 					),
 				),
+			],
+		}
+	}
+
+	/**
+	 * The panel's full modal: the generic plugin view with one foregrounded
+	 * decision, the queued count and the answer form. It never renders a close
+	 * button — a question is resolved by answering one of its options (a
+	 * "return"/"keep" option is one of them).
+	 */
+	function DecisionModal(props) {
+		const safe = props === undefined || props === null ? {} : props
+		const t = typeof safe.t === 'function' ? safe.t : function (key) { return key }
+		const queue = Array.isArray(safe.queue) ? safe.queue : []
+		const current = queue.length === 0 ? null : queue[0]
+		// The form's hooks run even for an empty queue (it returns null), keeping
+		// the hook order stable when the last decision is answered.
+		const form = useDecisionForm(current, t, safe)
+		if (current === null || form === null) return null
+		const queueLeft = queue.length - 1
+		return h(
+			'div',
+			{ className: 'gbt-decisionoverlay', 'data-decision-overlay': 'true' },
+			h(
+				'div',
+				{ className: 'gbt-decision', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'gbt-decision-title', 'data-decision-id': current.id },
+				h(
+					'div',
+					{ className: 'gbt-decisionhead' },
+					h('h2', { id: 'gbt-decision-title', 'data-decision-title': 'true' }, t('decisionTitle')),
+					h('span', { className: 'gbt-muted', 'data-decision-queue': 'true' }, queueLeft > 0 ? t('decisionQueue').replace('{n}', String(queueLeft)) : ''),
+				),
+				form.nodes,
 			),
+		)
+	}
+
+	/**
+	 * The shell overlay's compact card (T-208). Same form, same one-shot answer;
+	 * the collapse control is the only thing the modal does not have, because a
+	 * docked card may be put away without answering (the chip stays visible).
+	 */
+	function DecisionCard(props) {
+		const safe = props === undefined || props === null ? {} : props
+		const t = typeof safe.t === 'function' ? safe.t : function (key) { return key }
+		const decision = safe.decision === undefined ? null : safe.decision
+		const form = useDecisionForm(decision === undefined ? null : decision, t, safe)
+		if (decision === null || decision === undefined || form === null) return null
+		const queueLeft = Number.isFinite(safe.queueLeft) && safe.queueLeft > 0 ? Math.round(safe.queueLeft) : 0
+		const dismiss = typeof safe.onDismiss === 'function' ? safe.onDismiss : null
+		return h(
+			'div',
+			{ className: 'gbt-decision gbt-decisioncompact', role: 'dialog', 'aria-label': t('decisionTitle'), 'data-decision-card': 'true', 'data-decision-id': decision.id },
+			h(
+				'div',
+				{ className: 'gbt-decisionhead' },
+				h('h2', { 'data-decision-title': 'true' }, t('decisionTitle')),
+				queueLeft > 0 ? h('span', { className: 'gbt-muted', 'data-decision-queue': 'true' }, t('decisionQueue').replace('{n}', String(queueLeft))) : null,
+				dismiss === null
+					? null
+					: h(
+							'button',
+							{
+								type: 'button',
+								className: 'gbt-decisionclose',
+								'data-decision-collapse': 'true',
+								'aria-label': t('decisionOverlayCollapse'),
+								title: t('decisionOverlayCollapse'),
+								onClick: function () { dismiss() },
+							},
+							'×',
+						),
+			),
+			form.nodes,
 		)
 	}
 
@@ -9543,6 +9740,8 @@ function createDecisionModal(deps) {
 	DecisionModal.decisionCountdownText = decisionCountdownText
 	DecisionModal.decisionDefaultOption = decisionDefaultOption
 	DecisionModal.decisionAutoRunAllowed = decisionAutoRunAllowed
+	DecisionModal.decisionAnswerPayload = decisionAnswerPayload
+	DecisionModal.DecisionCard = DecisionCard
 	DecisionModal.CONFIRM_WORD = CONFIRM_WORD
 	return DecisionModal
 }
@@ -10618,9 +10817,400 @@ module.exports = { createTaskCenter }
 				})
 			})()
 
+			// T-208: the conversation-page decision entry is its own view module so
+			// it can be Node-tested without the panel; it is mounted from the
+			// 'shell.overlay' list slot by 40-tail.part.
+			const DecisionOverlay = (function () {
+				const module = { exports: {} }
+				;(function (module, exports) {
+/**
+ * DecisionOverlay (T-208): the conversation-page entry for the Host's pending
+ * decisions.
+ *
+ * Other plugins (dsh-plugin-opencode-usage) use the 'shell.overlay' list slot
+ * for a floating entry beside the session content. The task center only
+ * registered 'main' / 'sidebar.panellist' / 'plugins.bundle.config', so a
+ * pending decision was invisible until the user opened the panel. This view is
+ * registered into 'shell.overlay' by client/src/40-tail.part and renders:
+ *
+ *   - a "待决策 N" chip in the free corner of the session centre column,
+ *     visible ONLY while the queue is non-empty;
+ *   - on click, a compact docked card that reuses the decision modal's own
+ *     answer form (DecisionModal.DecisionCard): headline/body/options/server
+ *     countdown/free text/high-risk DELETE confirmation. ONE decision is shown
+ *     at a time; answering advances the queue automatically.
+ *
+ * The queue comes from the SHARED task store: the full snapshot already carries
+ * `decisions`, and store.loadDecisions() polls only the decision list, so the
+ * conversation page never pulls the whole board every few seconds. An answer
+ * goes through the same store.send('decisionAnswer') as the panel modal, and
+ * the store's one-shot guard is what stops the two surfaces from
+ * double-submitting the same request.
+ *
+ * Placement: like the existing shell overlays, the entry is anchored inside the
+ * AppFrame's overlay layer at the session centre column's inline end. It is
+ * lifted ABOVE the composer card ([data-composer-card]) whenever the
+ * conversation is docked, so a narrow viewport can never cover the input box.
+ * Without a measurable docked composer it falls back to the corner.
+ *
+ * Injected by the build: React, h, DecisionModal, store, useTranslate,
+ * useSnapshot and tcErrorMessage.
+ */
+function createDecisionOverlay(deps) {
+	const React = deps.React
+	const h = deps.h
+	const DecisionModal = deps.DecisionModal
+	const DecisionCard = DecisionModal.DecisionCard
+	const store = deps.store
+	const useTranslate = deps.useTranslate
+	const useSnapshot = deps.useSnapshot
+	const tcErrorMessage = deps.tcErrorMessage
+	// React.lazy/older runtimes may not expose useLayoutEffect in a test shim;
+	// measuring after a normal effect is still correct, just one paint late.
+	const useLayoutEffect = typeof React.useLayoutEffect === 'function' ? React.useLayoutEffect : React.useEffect
+
+	/** How often the conversation page asks for the decision list. */
+	const POLL_MS = 5000
+	const EDGE = 12
+	const CHIP_GAP = 8
+	const CHIP_HEIGHT = 30
+	const PANEL_MAX = 520
+
+	// Like the panel's module-backed state, the expanded flag survives a slot
+	// remount (the shell re-registers overlays when the layout changes).
+	const state = { open: false }
+
+	/** The pending queue, oldest first, exactly as the Host ordered it. */
+	function decisionQueueOf(snapshot) {
+		if (snapshot === null || snapshot === undefined || !Array.isArray(snapshot.decisions)) return []
+		return snapshot.decisions.filter(function (entry) {
+			if (entry === null || entry === undefined || typeof entry !== 'object') return false
+			if (typeof entry.id !== 'string' || entry.id === '') return false
+			if (typeof entry.status === 'string' && entry.status !== 'pending') return false
+			return true
+		})
+	}
+
+	/** The AppFrame overlay layer that owns this entry (data-shell-overlay). */
+	function overlayLayerOf(node) {
+		let current = node === null || node === undefined ? null : node.parentElement
+		while (current !== null && current !== undefined) {
+			if (typeof current.getAttribute === 'function' && current.getAttribute('data-shell-overlay') !== null) return current
+			current = current.parentElement
+		}
+		return null
+	}
+
+	/**
+	 * The session centre column inside the AppFrame. Walking up from the
+	 * composer (or the conversation's data-phase root) is robust in drawer mode,
+	 * where a mask element shifts the frame's children by one; the grid index
+	 * (sidebar | centre | rightbar) is only the fallback.
+	 */
+	function centerColumnOf(frame) {
+		if (frame === null || frame === undefined) return null
+		const globalDocument = typeof document === 'undefined' ? null : document
+		if (globalDocument !== null && typeof globalDocument.querySelector === 'function') {
+			const anchors = ['[data-composer-card]', '[data-phase]']
+			for (let index = 0; index < anchors.length; index += 1) {
+				let node = globalDocument.querySelector(anchors[index])
+				while (node !== null && node !== undefined && node.parentElement !== frame) node = node.parentElement
+				if (node !== null && node !== undefined && node.parentElement === frame) return node
+			}
+		}
+		if (frame.children === undefined || frame.children === null) return null
+		// Drawer mode inserts a mask before the sidebar, shifting the grid index.
+		let offset = 1
+		if (globalDocument !== null && typeof globalDocument.querySelector === 'function') {
+			const mask = globalDocument.querySelector('[data-sidebar-mask]')
+			if (mask !== null && frame.children[0] === mask) offset = 2
+		}
+		return frame.children[offset] === undefined ? null : frame.children[offset]
+	}
+
+	/** The conversation's composer card, when this page has one. */
+	function composerOf(center) {
+		if (center === null || center === undefined || typeof center.querySelector !== 'function') return null
+		try {
+			return center.querySelector('[data-composer-card]')
+		} catch (error) {
+			return null
+		}
+	}
+
+	/**
+	 * Is the composer DOCKED at the bottom of the conversation (rather than the
+	 * centred hero card)? The host marks the conversation phase; the geometric
+	 * fallback covers hosts that predate it.
+	 */
+	function composerIsDocked(composer, composerRect, centerRect) {
+		if (composer !== null && typeof composer.closest === 'function') {
+			const phaseNode = composer.closest('[data-phase]')
+			if (phaseNode !== null && typeof phaseNode.getAttribute === 'function') {
+				const phase = phaseNode.getAttribute('data-phase')
+				if (phase === 'hero') return false
+				if (phase === 'active') return true
+			}
+		}
+		if (centerRect === null || !(centerRect.height > 0) || composerRect === null) return true
+		return composerRect.top > centerRect.top + centerRect.height * 0.5
+	}
+
+	/**
+	 * Pixel placement of the chip inside the overlay layer, plus the height the
+	 * docked card may use before it would run off the top of the viewport.
+	 * Returns null when there is nothing measurable (tests, detached mounts).
+	 */
+	function computePlacement(root) {
+		if (root === null || root === undefined || typeof root.getBoundingClientRect !== 'function') return null
+		const layer = overlayLayerOf(root)
+		if (layer === null) return null
+		const layerRect = layer.getBoundingClientRect()
+		if (!(layerRect.height > 0) || !(layerRect.width > 0)) return null
+		const frame = layer.parentElement
+		const center = centerColumnOf(frame)
+		const centerRect = center !== null && center !== undefined && typeof center.getBoundingClientRect === 'function' ? center.getBoundingClientRect() : null
+		const composer = composerOf(center)
+		const composerRect = composer !== null && typeof composer.getBoundingClientRect === 'function' ? composer.getBoundingClientRect() : null
+		// Inline end of the session centre column, mirroring the existing shell
+		// overlays' bottom-left corner habit (this plugin takes the bottom-right
+		// so the two chips never sit on top of each other).
+		const anchorRight = centerRect === null || !(centerRect.width > 0) ? layerRect.right : Math.min(layerRect.right, centerRect.right)
+		const right = Math.max(EDGE, Math.round(layerRect.right - anchorRight + EDGE))
+		let bottom = EDGE + 4
+		if (composerRect !== null && composerRect.height > 0 && composerIsDocked(composer, composerRect, centerRect)) {
+			// 12px above the composer: the chip (and the card that opens upwards)
+			// never covers the input box, however narrow the viewport is.
+			bottom = Math.max(EDGE, Math.round(layerRect.bottom - composerRect.top + EDGE))
+		}
+		// A very tall composer must not push the chip into the middle of the page.
+		const ceiling = Math.max(EDGE, Math.round(layerRect.height * 0.6))
+		if (bottom > ceiling) bottom = ceiling
+		const panelMax = Math.max(160, Math.min(PANEL_MAX, Math.round(layerRect.height - bottom - CHIP_HEIGHT - CHIP_GAP - EDGE)))
+		return { right: right, bottom: bottom, maxHeight: panelMax }
+	}
+
+	/**
+	 * The shell overlay entry: the chip, and (when expanded) the docked card for
+	 * the oldest pending decision.
+	 */
+	function DecisionOverlay(props) {
+		const t = useTranslate()
+		const snapshot = useSnapshot()
+		const queue = decisionQueueOf(snapshot)
+		const count = queue.length
+		const currentId = count === 0 ? null : queue[0].id
+		const [open, setOpenState] = React.useState(function () {
+			if (state.open) return true
+			return props !== undefined && props !== null && props.initialOpen === true
+		})
+		const [error, setError] = React.useState('')
+		const [submitting, setSubmitting] = React.useState(false)
+		const [placement, setPlacement] = React.useState(null)
+		const rootRef = React.useRef(null)
+		const wasOpen = React.useRef(false)
+
+		function setOpen(next) {
+			state.open = next === true
+			setOpenState(next === true)
+		}
+
+		function measure() {
+			const next = computePlacement(rootRef.current)
+			if (next === null) return
+			setPlacement(function (previous) {
+				if (previous !== null && previous.right === next.right && previous.bottom === next.bottom && previous.maxHeight === next.maxHeight) return previous
+				return next
+			})
+		}
+
+		// Poll ONLY the decision list (never the board) while the conversation
+		// page is open: this is the lightweight queue refresh the task asks for.
+		React.useEffect(function () {
+			if (typeof store.loadDecisions === 'function') void store.loadDecisions()
+			if (typeof setInterval !== 'function') return undefined
+			const handle = setInterval(function () {
+				if (typeof store.loadDecisions === 'function') void store.loadDecisions()
+			}, POLL_MS)
+			return function () { clearInterval(handle) }
+		}, [])
+
+		// A different foregrounded decision starts without the previous answer's
+		// error; an empty queue collapses the card so a LATER decision does not
+		// pop it open by itself.
+		React.useEffect(function () {
+			if (error !== '') setError('')
+		}, [currentId])
+		React.useEffect(function () {
+			if (count > 0) return
+			if (state.open) setOpen(false)
+		}, [count])
+
+		// Measure after every render: opening the card, the queue advancing and a
+		// layout change all re-anchor the entry.
+		useLayoutEffect(function () {
+			measure()
+		})
+
+		React.useEffect(function () {
+			const globalWindow = typeof window === 'undefined' ? null : window
+			if (globalWindow === null) return undefined
+			function onResize() { measure() }
+			globalWindow.addEventListener('resize', onResize)
+			let observer = null
+			if (typeof ResizeObserver === 'function') {
+				observer = new ResizeObserver(function () { measure() })
+				const layer = overlayLayerOf(rootRef.current)
+				const frame = layer !== null ? layer.parentElement : null
+				const center = centerColumnOf(frame)
+				if (center !== null) observer.observe(center)
+				const composer = composerOf(center)
+				if (composer !== null) observer.observe(composer)
+			}
+			return function () {
+				globalWindow.removeEventListener('resize', onResize)
+				if (observer !== null) observer.disconnect()
+			}
+		}, [open])
+
+		// Move focus into the card on open and back to the chip on close, so a
+		// keyboard user does not have to shift-Tab behind the trigger (the card is
+		// rendered before the chip in DOM order).
+		React.useEffect(function () {
+			const root = rootRef.current
+			if (root !== null && root !== undefined && typeof root.querySelector === 'function') {
+				const target = open === true ? root.querySelector('[data-decision-collapse]') : wasOpen.current === true ? root.querySelector('[data-decision-chip]') : null
+				if (target !== null && target !== undefined && typeof target.focus === 'function') target.focus()
+			}
+			wasOpen.current = open === true
+		}, [open])
+
+		// Escape and an outside click collapse the docked card (the host's own
+		// popovers behave the same way).
+		React.useEffect(function () {
+			if (open !== true) return undefined
+			if (typeof document === 'undefined') return undefined
+			function onKey(event) {
+				if (event !== null && event.key === 'Escape') setOpen(false)
+			}
+			function onPointer(event) {
+				const root = rootRef.current
+				if (root === null || typeof root.contains !== 'function') return
+				if (event !== null && event.target !== null && root.contains(event.target) !== true) setOpen(false)
+			}
+			document.addEventListener('keydown', onKey)
+			document.addEventListener('pointerdown', onPointer)
+			return function () {
+				document.removeEventListener('keydown', onKey)
+				document.removeEventListener('pointerdown', onPointer)
+			}
+		}, [open])
+
+		/**
+		 * Answer the foregrounded decision through the SHARED store, then refresh
+		 * the queue immediately: the next decision is shown without waiting for
+		 * the poll. A duplicate (the panel modal answered first) is not an error —
+		 * the refresh is the only thing left to do.
+		 */
+		function answer(decision, formAnswer) {
+			if (decision === null || decision === undefined || submitting) return
+			setSubmitting(true)
+			setError('')
+			const payload = DecisionModal.decisionAnswerPayload(decision, formAnswer)
+			void store.send('decisionAnswer', payload).then(function (result) {
+				setSubmitting(false)
+				const ok = result !== null && result !== undefined && result.ok === true
+				const duplicate = result !== null && result !== undefined && result.duplicate === true
+				if (ok || duplicate) {
+					if (typeof store.loadDecisions === 'function') void store.loadDecisions()
+					return
+				}
+				const failed = result === null || result === undefined ? null : (result.payload === undefined ? null : result.payload)
+				setError(typeof tcErrorMessage === 'function' ? tcErrorMessage(failed, t) : t('error'))
+			})
+		}
+
+		if (count === 0) return null
+		const current = queue[0]
+		const storeBusy = snapshot.busy !== null && snapshot.busy !== undefined && snapshot.busy.action === 'decisionAnswer'
+		const chipStyle = placement === null ? undefined : { right: placement.right + 'px', bottom: placement.bottom + 'px' }
+		const panelStyle = placement === null ? undefined : { maxHeight: placement.maxHeight + 'px' }
+		const chipLabel = t('decisionOverlayChip').replace('{n}', String(count))
+		return h(
+			'div',
+			{
+				ref: rootRef,
+				className: 'gbt-decisiondock',
+				'data-decision-dock': 'true',
+				'data-decision-pending': String(count),
+				style: chipStyle,
+			},
+			open
+				? h(
+						'section',
+						{
+							className: 'gbt-decisiondockpanel',
+							'data-decision-dock-panel': 'true',
+							role: 'dialog',
+							'aria-label': t('decisionTitle'),
+							style: panelStyle,
+						},
+						h(DecisionCard, {
+							key: current.id,
+							decision: current,
+							queueLeft: count - 1,
+							receivedAt: snapshot.receivedAt,
+							t: t,
+							busy: submitting || storeBusy,
+							error: error,
+							onAnswer: answer,
+							onDismiss: function () { setOpen(false) },
+						}),
+					)
+				: null,
+			h(
+				'button',
+				{
+					type: 'button',
+					className: 'gbt-chipbtn gbt-decisionchip',
+					'data-decision-chip': 'true',
+					'aria-expanded': open ? 'true' : 'false',
+					'aria-haspopup': 'dialog',
+					'aria-label': chipLabel,
+					title: t('decisionOverlayAria'),
+					onClick: function () { setOpen(!open) },
+				},
+				h('span', { className: 'gbt-decisionchipdot', 'aria-hidden': 'true' }),
+				h('span', { 'data-decision-chip-label': 'true' }, chipLabel),
+			),
+		)
+	}
+
+	DecisionOverlay.state = state
+	DecisionOverlay.POLL_MS = POLL_MS
+	DecisionOverlay.decisionQueueOf = decisionQueueOf
+	DecisionOverlay.computePlacement = computePlacement
+	return DecisionOverlay
+}
+
+module.exports = { createDecisionOverlay }
+
+				})(module, module.exports)
+				const factory = module.exports.createDecisionOverlay
+				return factory({
+					React: React,
+					h: h,
+					DecisionModal: DecisionModal,
+					store: store,
+					useTranslate: useTranslate,
+					useSnapshot: useSnapshot,
+					tcErrorMessage: tcErrorMessage,
+				})
+			})()
+
 			// T-205: the settings page is shared by the task center panel and the plugin
 			// bundle card; the card factory exposes both so apply() can register it.
-			return { TaskCenter: TaskCenter, Glyph: Glyph, SettingsPage: SettingsPage, createSettingsCard: createSettingsCard }
+			return { TaskCenter: TaskCenter, Glyph: Glyph, SettingsPage: SettingsPage, createSettingsCard: createSettingsCard, DecisionOverlay: DecisionOverlay }
 		}
 
 		// T-205: the plugin settings card and the task center's settings entry both
@@ -10709,9 +11299,26 @@ module.exports = { createTaskCenter }
 					const dropPanel = ctx.slots.inject('main', () =>
 						ctx.slots.register({ name: 'main', key: 'task-center', locale: TC_NS }, views.TaskCenter),
 					)
+					// T-208: the conversation-page entry. 'shell.overlay' is a LIST slot
+					// (the usage overlay already occupies it), so this is a separate
+					// registration with its own id; order 120 sits after that plugin's
+					// 100 instead of colliding with it. The chip renders nothing while
+					// no decision is pending.
+					const dropOverlay = ctx.slots.inject('shell.overlay', () =>
+						ctx.slots.register(
+							{
+								name: 'shell.overlay',
+								id: 'godot-bridge-decisions',
+								order: 120,
+								locale: TC_NS,
+							},
+							views.DecisionOverlay,
+						),
+					)
 					return () => {
 						dropGlyph()
 						dropPanel()
+						dropOverlay()
 					}
 				}, 'godot-bridge: task center panel')
 			},

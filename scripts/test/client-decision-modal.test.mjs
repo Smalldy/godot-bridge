@@ -251,6 +251,65 @@ function decision(overrides) {
 }
 
 
+// ── T-208: the compact shell-overlay card is the SAME form ──────────────────
+{
+  assert.equal(typeof DecisionModal.DecisionCard, 'function', 'the compact card is exposed for the shell overlay')
+  const answers = []
+  const dismissals = []
+  const compact = DecisionModal.DecisionCard({
+    t: t,
+    decision: decision({ id: 'DEC-20', taskId: 'T-200', title: '创建任务 T-200？' }),
+    queueLeft: 2,
+    receivedAt: Date.now(),
+    onAnswer: (entry, answer) => answers.push({ id: entry.id, answer: answer }),
+    onDismiss: () => dismissals.push(1),
+  })
+  const text = textOf(compact)
+  assert.equal(compact.props['data-decision-card'], 'true')
+  assert.equal(compact.props['data-decision-id'], 'DEC-20')
+  assert.ok(text.includes('关键决策'), 'the card carries the common title')
+  assert.ok(text.includes('T-200 · 创建任务'), 'the card carries the task/event subtitle')
+  assert.ok(/\d+s 后自动选择「创建任务」/.test(text), 'the card carries the server countdown')
+  assert.ok(text.includes('还有 2 个待决策'), 'the card carries the queue count')
+  assert.ok(text.includes('创建任务 T-200？'), 'the card carries the headline')
+  assert.ok(text.includes('任务：Third card'), 'the card carries the body')
+  assert.equal(findAll(compact, (node) => node.props && node.props['data-decision-option'] !== undefined).length, 2)
+  assert.ok(text.includes('默认'), 'the default option is marked')
+  assert.equal(find(compact, (node) => node.props && node.props['data-decision-open-task'] !== undefined), null, 'the compact card does not push the user to the panel')
+  const collapse = find(compact, (node) => node.props && node.props['data-decision-collapse'] === 'true')
+  assert.ok(collapse !== null, 'the card can be put away without answering')
+  collapse.props.onClick()
+  assert.deepEqual(dismissals, [1])
+  const confirm = find(compact, (node) => node.props && node.props['data-decision-confirm-submit'] === 'true')
+  assert.equal(confirm.props.disabled, false)
+  confirm.props.onClick()
+  assert.deepEqual(answers, [{ id: 'DEC-20', answer: { option: 'create', text: '', confirm: '' } }])
+  const errorCard = DecisionModal.DecisionCard({ t: t, decision: decision(), onAnswer: () => {}, error: '网络错误' })
+  assert.ok(textOf(errorCard).includes('网络错误'), 'a failed answer is visible inside the card')
+  assert.ok(find(errorCard, (node) => node.props && node.props['data-decision-error'] === 'true') !== null)
+  const busyCard = DecisionModal.DecisionCard({ t: t, decision: decision(), onAnswer: () => {}, busy: true })
+  const busyConfirm = find(busyCard, (node) => node.props && node.props['data-decision-confirm-submit'] === 'true')
+  assert.equal(busyConfirm.props.disabled, true, 'a submission in flight cannot be repeated')
+  assert.ok(textOf(busyCard).includes('正在提交…'))
+  assert.equal(DecisionModal.DecisionCard({ t: t, decision: null }), null, 'no decision renders nothing')
+}
+console.log('PASS  the compact card reuses the modal form, answers once and can be collapsed')
+
+// ── T-208: the shared answer body ───────────────────────────────────────────
+{
+  assert.deepEqual(
+    DecisionModal.decisionAnswerPayload(decision({ id: 'DEC-30' }), { option: 'create', text: '', confirm: '' }),
+    { decisionId: 'DEC-30', option: 'create' },
+    'empty text/confirm fields are not posted',
+  )
+  assert.deepEqual(
+    DecisionModal.decisionAnswerPayload(decision({ id: 'DEC-31' }), { option: 'purge', text: 'why', confirm: 'DELETE' }),
+    { decisionId: 'DEC-31', option: 'purge', text: 'why', confirm: 'DELETE' },
+  )
+  assert.deepEqual(DecisionModal.decisionAnswerPayload(decision({ id: 'DEC-32' }), { option: null, text: 'do it' }), { decisionId: 'DEC-32', option: null, text: 'do it' }, 'a text-only answer keeps the null option')
+}
+console.log('PASS  the panel modal and the shell overlay post the same answer body')
+
 // ── the panel shell mounts the queue (integration) ──────────────────────────
 {
   const { createTaskCenter } = require('../../client/src/views/task-center.cjs')
