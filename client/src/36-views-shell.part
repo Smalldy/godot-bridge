@@ -1,5 +1,9 @@
 			/* GLYPH_MODULE */
 			/* TASK_CENTER_MODULE */
+			// T-208: the conversation-page decision entry is its own view module so
+			// it can be Node-tested without the panel; it is mounted from the
+			// 'shell.overlay' list slot by 40-tail.part.
+			/* DECISION_OVERLAY_MODULE */
 			// T-205: the settings page is shared by the task center panel and the plugin
 			// bundle card; the card factory exposes both so apply() can register it.
-			return { TaskCenter: TaskCenter, Glyph: Glyph, SettingsPage: SettingsPage, createSettingsCard: createSettingsCard }
+			return { TaskCenter: TaskCenter, Glyph: Glyph, SettingsPage: SettingsPage, createSettingsCard: createSettingsCard, DecisionOverlay: DecisionOverlay }

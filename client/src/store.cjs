@@ -44,6 +44,15 @@
 			let loading = null
 			let timer = null
 			let busy = null
+			// T-208: a decision answer is one-shot and two surfaces can submit it
+			// (the panel's modal and the conversation-page overlay). One store backs
+			// both, so these two guards are what stop a double submit: an answer in
+			// flight refuses a second one, and an id whose answer already landed is
+			// refused even after the response. A FAILED send clears both, so a
+			// transport error can still be retried.
+			const answeringDecisions = new Set()
+			const answeredDecisions = new Set()
+			let decisionsLoading = null
 			// T-182: "no project is bound to this session" is the EXPECTED answer
 			// before the first project is opened. It is a SETUP state, not a failure:
 			// routing it into the error banner put "操作失败" over a panel that was
@@ -160,6 +169,9 @@
 							if (next.project !== snapshot.project) {
 								activityLog = []
 								activityCursor = null
+								// T-208: decision ids are project-scoped; an id answered in project A
+								// must not block the same id in project B.
+								answeredDecisions.clear()
 							}
 							if (payload.activityEvents !== undefined && payload.activityEvents !== null && Array.isArray(payload.activityEvents.entries)) {
 								const known = new Set(activityLog.map(function (entry) { return entry.key }))
@@ -217,6 +229,18 @@
 			async function send(action, body, options) {
 				const opts = options === undefined || options === null ? {} : options
 				const quiet = opts.quiet === true
+				// T-208: serialize decision answers per request id. The panel modal and
+				// the shell overlay both call this store; whichever submits second gets
+				// a duplicate result instead of a second POST.
+				const decisionId =
+					action === 'decisionAnswer' && body !== undefined && body !== null && typeof body.decisionId === 'string' && body.decisionId !== ''
+						? body.decisionId
+						: null
+				if (decisionId !== null) {
+					if (answeredDecisions.has(decisionId)) return { ok: false, duplicate: true, payload: { ok: false, code: 'already-answered' } }
+					if (answeringDecisions.has(decisionId)) return { ok: false, duplicate: true, payload: { ok: false, code: 'answer-in-flight' } }
+					answeringDecisions.add(decisionId)
+				}
 				const payloadBody = Object.assign({ action: action }, body === undefined ? {} : body)
 				payloadBody.session = tcSessionId()
 				const project = tcPinnedProject()
@@ -253,7 +277,18 @@
 								// A real action answered: whatever the banner said is no longer current.
 								messageKind = null
 							}
+							if (decisionId !== null) answeredDecisions.add(decisionId)
 							emit(next)
+						} else if (decisionId !== null) {
+							// T-208: the answer response carries no snapshot. Drop the answered
+							// request from the queue right away so BOTH surfaces advance to the
+							// next decision without waiting for the next poll (which the caller
+							// still asks for to confirm the canonical list).
+							answeredDecisions.add(decisionId)
+							emit(Object.assign({}, snapshot, {
+								decisions: (Array.isArray(snapshot.decisions) ? snapshot.decisions : []).filter(function (entry) { return entry === null || entry === undefined || entry.id !== decisionId }),
+								receivedAt: Date.now(),
+							}))
 						}
 						return { ok: true, payload: payload }
 					}
@@ -278,8 +313,44 @@
 					}
 					return { ok: false, error: error }
 				} finally {
+					if (decisionId !== null) answeringDecisions.delete(decisionId)
 					if (busy === token) setBusy(null)
 				}
+			}
+
+			/**
+			 * T-208: refresh ONLY the pending decision queue. The conversation-page
+			 * overlay polls this instead of /state, so a shell overlay never pulls the
+			 * whole board every few seconds. It reads and writes no other snapshot
+			 * field and never enters the action-result channel (a background poll must
+			 * not raise the task-center banner).
+			 */
+			async function loadDecisions() {
+				if (decisionsLoading !== null) return decisionsLoading
+				decisionsLoading = (async function () {
+					const body = { action: 'decisionList', decisionStatus: 'pending', session: tcSessionId() }
+					const project = tcPinnedProject()
+					if (project !== null) body.project = project
+					try {
+						const payload = await fetchJson(tcWithSession(TC_ACTION_URL), {
+							method: 'POST',
+							headers: { 'content-type': 'application/json' },
+							body: JSON.stringify(body),
+						})
+						if (payload !== null && payload !== undefined && payload.ok === true && Array.isArray(payload.decisions)) {
+							// withDecisions carries the queue and the receipt time the countdown
+							// needs; every other field (tasks, project, banner) stays as it is.
+							emit(withDecisions(Object.assign({}, snapshot), payload))
+							return { ok: true, decisions: payload.decisions }
+						}
+						return { ok: false, payload: payload === undefined ? null : payload }
+					} catch (error) {
+						return { ok: false, error: error }
+					} finally {
+						decisionsLoading = null
+					}
+				})()
+				return decisionsLoading
 			}
 
 			/** One page of the server-side completed list (T-82 /list route). */
@@ -350,6 +421,8 @@
 				const result = await send('openProject', { path: next }, opts.quiet === true ? { quiet: true } : undefined)
 				if (result.ok !== true) return result
 				tcPinProject(next)
+				// T-208: decision ids are project-scoped (see load()).
+				answeredDecisions.clear()
 				// Binding ANSWERS the setup state, so the banner goes away with the project
 				// it asked for. An AUTOMATIC follow (quiet) must not clear the user's last
 				// real action outcome — that is the quiet contract.
@@ -412,6 +485,7 @@
 					return snapshot
 				},
 				load: load,
+				loadDecisions: loadDecisions,
 				send: send,
 				loadWorktrees: loadWorktrees,
 				switchProject: switchProject,

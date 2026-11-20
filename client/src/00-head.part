@@ -1,9 +1,13 @@
 /**
  * godot-bridge — browser half (DSH web client).
  *
- * Two surfaces:
+ * Three surfaces:
  *   - the task center panel (`main` slot `task-center` + a sidebar glyph): the
- *     board/queue/roles/status/detail views and the T-205 settings page;
+ *     board/queue/roles/status/detail views, the T-205 settings page and the
+ *     decision modal that fronts the Host's pending questions;
+ *   - the conversation-page decision entry (`shell.overlay`, T-208): the same
+ *     answer form as a compact docked card, so a pending decision can be
+ *     answered without opening the panel;
  *   - the plugin bundle configuration card (`plugins.bundle.config`, keyed by
  *     the package name): T-205 mounts the SAME settings page there, so the two
  *     entry points cannot drift. The card only supplies the shared task store,
@@ -888,6 +892,10 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				decisionHighRiskLabel: '输入 DELETE 确认',
 				decisionHighRiskHint: '此操作不可恢复；输入 DELETE 后才能确认。',
 				decisionOpenTask: '查看卡片详情',
+				// T-208 — the conversation-page shell overlay entry.
+				decisionOverlayChip: '待决策 {n}',
+				decisionOverlayAria: '待处理的决策',
+				decisionOverlayCollapse: '收起待决策卡片',
 				err_already_answered: '该决策已经回答过，不能再次回答。',
 				err_decision_expired: '该决策已超时失效，回答不再生效。',
 				err_decision_cancelled: '该决策已取消。',
@@ -1710,6 +1718,10 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				decisionHighRiskLabel: 'Type DELETE to confirm',
 				decisionHighRiskHint: 'This cannot be undone; confirm only after typing DELETE.',
 				decisionOpenTask: 'View card',
+				// T-208 — the conversation-page shell overlay entry.
+				decisionOverlayChip: '{n} pending',
+				decisionOverlayAria: 'Pending decisions',
+				decisionOverlayCollapse: 'Collapse the pending decision',
 				err_already_answered: 'This decision was already answered and cannot be answered again.',
 				err_decision_expired: 'This decision timed out; the answer no longer applies.',
 				err_decision_cancelled: 'This decision was cancelled.',
@@ -1954,6 +1966,20 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-decisionhighriskin{margin:0;width:160px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}',
 			'.gbt-decisionfoot{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:14px 0 0;flex-wrap:wrap}',
 			'.gbt-decisionfoot .gbt-muted{flex:1 1 auto;min-width:0}',
+			// T-208: the conversation-page shell overlay. The chip anchors at the
+			// centre column's inline end; the docked card grows upwards and is
+			// capped by the measured max-height so it never leaves the viewport.
+			'.gbt-decisiondock{position:absolute;right:12px;bottom:16px;z-index:21;pointer-events:auto;display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:calc(100vw - 24px)}',
+			// Two classes on purpose: .gbt-chipbtn is declared later in this sheet, so
+			// the chip must out-rank it rather than rely on source order.
+			'.gbt-chipbtn.gbt-decisionchip{border-color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-warn-label);font-weight:600;height:30px}',
+			'.gbt-chipbtn.gbt-decisionchip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+			'.gbt-decisionchipdot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-warn-primary);flex:0 0 auto}',
+			'.gbt-decisiondockpanel{position:absolute;right:0;bottom:calc(100% + 8px);width:min(368px,calc(100vw - 24px));max-height:min(520px,72vh);overflow:auto;border-radius:14px;pointer-events:auto;overscroll-behavior:contain}',
+			'.gbt-decision.gbt-decisioncompact{width:100%;max-height:none;overflow:visible;padding:14px;box-shadow:var(--dsw-shadow-lv2)}',
+			'.gbt-decisionclose{appearance:none;border:0;background:none;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:16px;line-height:1;cursor:pointer;padding:2px 5px;border-radius:6px;flex:0 0 auto;margin-left:-2px}',
+			'.gbt-decisionclose:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+			'.gbt-decisionerror{margin:10px 0 0;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-state-error-primary);word-break:break-word}',
 			'.gbt-form{display:flex;flex-direction:column;gap:10px;margin-top:12px}',
 '.gbt-rhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}',
 '.gbt-rtitle{margin:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}',

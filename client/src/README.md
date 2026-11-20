@@ -28,6 +28,8 @@ Order:
 | `views/settings-form.cjs` | SettingsForm, the sectioned page body (React + h + store injected; Node-testable) |
 | `views/settings-page.cjs` | SettingsPage + createSettingsCard, shared by the panel and the plugin card (React + h + SettingsForm injected; Node-testable) |
 | `views/project-form.cjs` | ProjectForm (React + Modal + draft state + store + tcErrorMessage injected; Node-testable) |
+| `views/decision-modal.cjs` | DecisionModal + DecisionCard: the ONE decision answer form, as the panel modal and the compact shell-overlay card (React + h injected; Node-testable) |
+| `views/decision-overlay.cjs` | DecisionOverlay: the `shell.overlay` "待决策 N" chip and docked card (React + h + DecisionModal + store + hooks/error helper injected; Node-testable) |
 | `views/glyph.cjs` | Glyph (h injected; Node-testable) |
 | `views/task-center.cjs` | TaskCenter (React + all views/forms + hooks/state + project helpers injected; Node-testable) |
 | `30-views-core.part` | hooks, Column, Board, DoneAllDrawer |
@@ -36,8 +38,8 @@ Order:
 | `33-views-status.part` | status view and activity helpers |
 | `34-views-detail.part` | detail drawer and history helpers |
 | `35-views-forms.part` | task/settings/project forms + SettingsPage module marker |
-| `36-views-shell.part` | TaskCenter shell and Glyph |
-| `40-tail.part` | apply wiring and the module factory return |
+| `36-views-shell.part` | TaskCenter shell, Glyph and the DecisionOverlay module marker |
+| `40-tail.part` | apply wiring (main/sidebar/bundle card/shell.overlay) and the module factory return |
 
 They are not standalone JS: a part may open or close a function body owned by
 another part. Do not run `node --check` on them directly; run

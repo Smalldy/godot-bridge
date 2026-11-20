@@ -362,6 +362,24 @@ const decisionModalWrapper =
   '\t\t\t\tconst factory = module.exports.createDecisionModal\n' +
   '\t\t\t\treturn factory({ React: React, h: h })\n' +
   '\t\t\t})()\n'
+const decisionOverlay = read('views/decision-overlay.cjs')
+const decisionOverlayWrapper =
+  '\t\t\tconst DecisionOverlay = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  decisionOverlay +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\tconst factory = module.exports.createDecisionOverlay\n' +
+  '\t\t\t\treturn factory({\n' +
+  '\t\t\t\t\tReact: React,\n' +
+  '\t\t\t\t\th: h,\n' +
+  '\t\t\t\t\tDecisionModal: DecisionModal,\n' +
+  '\t\t\t\t\tstore: store,\n' +
+  '\t\t\t\t\tuseTranslate: useTranslate,\n' +
+  '\t\t\t\t\tuseSnapshot: useSnapshot,\n' +
+  '\t\t\t\t\ttcErrorMessage: tcErrorMessage,\n' +
+  '\t\t\t\t})\n' +
+  '\t\t\t})()\n'
 const glyph = read('views/glyph.cjs')
 const glyphWrapper =
   '\t\t\tconst Glyph = (function () {\n' +
@@ -439,7 +457,7 @@ const bundle =
     if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_EDITOR_MODULE \*\//, rolesEditorWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper).replace(/\t+\/\* STATUS_VIEW_MODULE \*\//, statusViewWrapper)
     if (name === '34-views-detail.part') return read(name).replace(/\t+\/\* DETAIL_VIEW_MODULE \*\//, detailViewWrapper)
     if (name === '35-views-forms.part') return read(name).replace(/\t+\/\* TASK_FORM_MODULE \*\//, taskFormWrapper).replace(/\t+\/\* SETTINGS_FORM_MODULE \*\//, settingsFormWrapper).replace(/\t+\/\* SETTINGS_PAGE_MODULE \*\//, settingsPageWrapper).replace(/\t+\/\* PROJECT_FORM_MODULE \*\//, projectFormWrapper)
-    if (name === '36-views-shell.part') return read(name).replace(/\t+\/\* GLYPH_MODULE \*\//, glyphWrapper).replace(/\t+\/\* TASK_CENTER_MODULE \*\//, decisionModalWrapper + taskCenterWrapper)
+    if (name === '36-views-shell.part') return read(name).replace(/\t+\/\* GLYPH_MODULE \*\//, glyphWrapper).replace(/\t+\/\* TASK_CENTER_MODULE \*\//, decisionModalWrapper + taskCenterWrapper).replace(/\t+\/\* DECISION_OVERLAY_MODULE \*\//, decisionOverlayWrapper)
     return read(name)
   }).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* WORKERS_VIEW_MODULE \*\//, workersWrapper) +
   read('40-tail.part')

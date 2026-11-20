@@ -86,9 +86,26 @@
 					const dropPanel = ctx.slots.inject('main', () =>
 						ctx.slots.register({ name: 'main', key: 'task-center', locale: TC_NS }, views.TaskCenter),
 					)
+					// T-208: the conversation-page entry. 'shell.overlay' is a LIST slot
+					// (the usage overlay already occupies it), so this is a separate
+					// registration with its own id; order 120 sits after that plugin's
+					// 100 instead of colliding with it. The chip renders nothing while
+					// no decision is pending.
+					const dropOverlay = ctx.slots.inject('shell.overlay', () =>
+						ctx.slots.register(
+							{
+								name: 'shell.overlay',
+								id: 'godot-bridge-decisions',
+								order: 120,
+								locale: TC_NS,
+							},
+							views.DecisionOverlay,
+						),
+					)
 					return () => {
 						dropGlyph()
 						dropPanel()
+						dropOverlay()
 					}
 				}, 'godot-bridge: task center panel')
 			},
