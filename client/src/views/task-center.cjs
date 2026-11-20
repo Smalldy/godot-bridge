@@ -16,7 +16,11 @@ function createTaskCenter(deps) {
 	const DetailView = deps.DetailView
 	const DoneAllDrawer = deps.DoneAllDrawer
 	const TaskForm = deps.TaskForm
-	const SettingsForm = deps.SettingsForm
+	// T-205: the settings entry opens a PAGE, not a modal. SettingsPage is the same
+	// component the plugin bundle card mounts; engineScopeOf reads the config scope
+	// the engine-path section writes (null when this runtime has no config form).
+	const SettingsPage = deps.SettingsPage
+	const engineScopeOf = deps.engineScopeOf
 	const ProjectForm = deps.ProjectForm
 	const DecisionModal = deps.DecisionModal
 	const useTranslate = deps.useTranslate
@@ -101,7 +105,8 @@ function createTaskCenter(deps) {
 			panelState.selectedId = next
 			setSelectedIdState(next)
 		}
-		// Rendering tests may open the settings modal; the production slot passes no props.
+		// Rendering tests may land directly on the settings page; the production slot
+		// passes no props.
 		const initialSettingsOpen = props !== undefined && props !== null && props.initialSettingsOpen === true
 		const [settingsOpen, setSettingsOpen] = React.useState(initialSettingsOpen)
 		// T-174: theme is a browser preference, never a dispatch/server field.
@@ -868,6 +873,29 @@ function createTaskCenter(deps) {
 		onKindFilterChange: function () { setColumnTick(function (count) { return count + 1 }) },
 			})
 
+		// T-205: the settings entry is a PAGE takeover, not a modal over the board.
+		// It keeps the panel root (and therefore the theme tokens) but renders the
+		// shared page; 取消/× return to the board through onClose.
+		if (settingsOpen === true) {
+			return h(
+				'div',
+				{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center', 'data-tc-theme': theme, 'data-settings-open': 'true' },
+				h(SettingsPage, {
+					t: t,
+					mode: 'panel',
+					snapshot: snapshot,
+					store: store,
+					theme: theme,
+					onThemeChange: setTheme,
+					// The engine path writes the bundle's config scope; a runtime without
+					// the config-form service passes null and the section says so.
+					engineScope: typeof engineScopeOf === 'function' ? engineScopeOf() : null,
+					onClose: function () { setSettingsOpen(false) },
+					initialSection: props !== undefined && props !== null && typeof props.initialSettingsSection === 'string' ? props.initialSettingsSection : undefined,
+				}),
+			)
+		}
+
 		return h(
 			'div',
 			{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center', 'data-tc-theme': theme },
@@ -961,17 +989,8 @@ function createTaskCenter(deps) {
 		onClose: function () { setEditing(null) },
 		onSaved: function () { setEditing(null) },
 			}),
-			settingsOpen
-				? h(SettingsForm, {
-						t: t,
-						dispatch: dispatch,
-						// T-198: the resolved decision policy the settings page edits.
-						policy: snapshot.decisionPolicy === undefined ? null : snapshot.decisionPolicy,
-						theme: theme,
-						onThemeChange: setTheme,
-						onClose: function () { setSettingsOpen(false) },
-					})
-				: null,
+			// T-205: the dispatch-settings modal is gone; the page branch above owns
+			// the settings entry, so nothing is mounted over the board.
 			// T-181: the ONE project dialog. It is mounted only after the user asks for
 			// it — an empty project state never auto-opens it, and closing it unmounts.
 			projectOpen && snapshot.source !== 'loading' ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,

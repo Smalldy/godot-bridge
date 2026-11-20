@@ -1,5 +1,6 @@
 			/* TASK_FORM_MODULE */
 			/* SETTINGS_FORM_MODULE */
+			/* SETTINGS_PAGE_MODULE */
 			function projectSourceKey(snapshot) {
 				if (snapshot === null || snapshot === undefined) return null
 				const from = snapshot.resolvedFrom

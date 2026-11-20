@@ -14,12 +14,18 @@
  * independently configurable rows, which this one does not.)
  *
  * The page hands `plugins.bundle.config` a `view` only — unlike
- * `plugins.row.config` it passes no `form` — so the form comes from the
- * settings service this file injects: `ctx.configForms.get(<row id>)`, whose
+ * `plugins.row.config` it passes no `form` — so this bundle resolves the
+ * engine path's config scope itself: `ctx.configForms.get(<row id>)`, whose
  * snapshot and writes are the same ones the host's own pages bind. A save ends
  * in `ctx.configEditor.edit(...)`, i.e. the profile `cordis.patch.yml` layer
- * the `godot_set_engine_path` tool writes, so both entry points agree and the
- * new path applies without a restart.
+ * the `godot_set_engine_path` tool writes, so the tool and the GUI agree and
+ * the new path applies without a restart.
+ *
+ * T-205: that config card no longer ships a lone engine-path field. Both it and
+ * the task center's settings entry mount the SAME settings page (view module
+ * settings-page.cjs): title + left theme rail + scrolling right column + a
+ * save/cancel footer, with the engine-path section writing the config scope
+ * above and the project themes writing the current task-center project.
  *
  * Version boundary: DSH 0.1.6–0.1.x declares these slots but has no
  * settings-form service, so the whole registration sits behind
@@ -333,6 +339,29 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				settingsThemeDsh: '跟随 DSH',
 				settingsThemeConsole: '控制台暗色',
 				settingsThemeHint: '只保存在本浏览器，立即生效，不修改派发设置。',
+				// T-205: the settings entry is a page. Existing copy above is unchanged;
+				// these are the page title, its theme rail, the unbound state and the
+				// engine-path section that used to live alone in the plugin card.
+				settingsPageTitle: '设置',
+				settingsNavLabel: '设置分区',
+				settingsNavGeneral: '常规',
+				settingsNavDispatch: '派发',
+				settingsNavRetry: '重试',
+				settingsNavDecisions: '关键决策',
+				settingsNavEngine: 'Godot 引擎',
+				settingsProjectScope: '当前项目',
+				settingsUnbound: '未绑定项目',
+				settingsUnboundHint: '当前任务中心没有绑定项目：派发、重试与关键决策暂时不可编辑；先在任务中心打开项目。引擎路径仍可在此保存。',
+				settingsSaved: '已保存',
+				settingsEngineLabel: 'Godot 可执行文件路径',
+				settingsEngineHint: '指向真实 Godot exe 的完整路径（不要用版本管理器 shim）。保存会写入本 profile 的 cordis.patch.yml 中 tool-godot-bridge 那一行并立即生效；该值按原样使用，请确认文件存在。',
+				settingsEngineSaving: '保存中…',
+				settingsEngineSaved: '已保存。新的 godot_* 调用将使用该路径。',
+				settingsEngineFailed: '本部署没有接受该值；已保存的路径未改变。',
+				settingsEngineReset: '恢复默认',
+				settingsEngineOverridden: '本 profile 已设置',
+				settingsEngineReadOnly: '本部署的设置为只读。',
+				settingsEngineUnavailable: '该插件当前未加载，暂时无法编辑它的配置。',
 				settingsRetryGroup: '重试',
 				settingsMaxAttempts: '最大尝试次数',
 				settingsRetryHint: '一张卡连续失败多少次后进入阻塞。',
@@ -1137,6 +1166,27 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				settingsThemeDsh: 'Follow DSH',
 				settingsThemeConsole: 'Console dark',
 				settingsThemeHint: 'Stored in this browser only; applies immediately and never changes dispatch settings.',
+				// T-205: the settings entry is a page (see the zh block).
+				settingsPageTitle: 'Settings',
+				settingsNavLabel: 'Settings sections',
+				settingsNavGeneral: 'General',
+				settingsNavDispatch: 'Dispatch',
+				settingsNavRetry: 'Retry',
+				settingsNavDecisions: 'Key decisions',
+				settingsNavEngine: 'Godot engine',
+				settingsProjectScope: 'Current project',
+				settingsUnbound: 'No project bound',
+				settingsUnboundHint: 'The task center has no project bound: dispatch, retry and key decisions cannot be edited until you open one there. The engine path can still be saved here.',
+				settingsSaved: 'Saved',
+				settingsEngineLabel: 'Godot engine path',
+				settingsEngineHint: 'Full path to the real Godot executable (never a version-manager shim). Saving writes it to the tool-godot-bridge row of this profile’s cordis.patch.yml and it applies immediately; the path is used as typed, so make sure it exists.',
+				settingsEngineSaving: 'Saving…',
+				settingsEngineSaved: 'Saved. New godot_* calls use this path.',
+				settingsEngineFailed: 'The deployment did not accept this value; the stored path is unchanged.',
+				settingsEngineReset: 'Reset to default',
+				settingsEngineOverridden: 'Set in this profile',
+				settingsEngineReadOnly: 'This deployment stores settings read-only.',
+				settingsEngineUnavailable: 'This plugin is not loaded, so its configuration cannot be edited right now.',
 				settingsRetryGroup: 'Retries',
 				settingsMaxAttempts: 'Maximum attempts',
 				settingsRetryHint: 'How many consecutive failures block a card.',
@@ -2436,7 +2486,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-settingscapacity b{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}',
 '.gbt-settingswarning{margin:0;font-size:10.5px;line-height:1.55;color:var(--dsw-alias-state-warn-label)}',
 '.gbt-settingswarning[data-settings-warning="spawn-failed"],.gbt-settingswarning[data-settings-warning="workers-unavailable"]{color:var(--dsw-alias-state-error-primary)}',
-// T-198: the decision policy editor (compact table inside the settings modal).
+// T-198: the decision policy editor (compact table). T-205 moved it from the
+// settings modal into the settings page's 关键决策 section.
 '.gbt-policyscopes{display:flex;gap:6px;flex-wrap:wrap;align-items:center}',
 '.gbt-policyscope{appearance:none;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);height:26px;padding:0 10px;border-radius:7px;font:inherit;font-size:11px;cursor:pointer}',
 '.gbt-policyscope[data-active="true"]{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l3,var(--dsw-alias-border-l4));font-weight:600}',
@@ -2450,6 +2501,39 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-policyguard{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--dsw-alias-label-secondary)}',
 '.gbt-policyguard input[type="checkbox"]{margin:0}',
 '@media (max-width:720px){.gbt-settingsgroup,.gbt-settingscapacity{padding:8px 10px}.gbt-settingsinline .gbt-btn{width:100%}}',
+			// T-205: the settings PAGE — title, fixed left theme rail, an
+			// independently scrolling right column and a footer that holds save/cancel.
+			// Same DSH tokens and controls as the rest of the panel; nothing new.
+			'.gbt-settingspage{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;min-width:0;height:100%;box-sizing:border-box;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
+			'.gbt-settingspage[data-settings-mode="card"]{flex:0 0 auto;height:auto;min-height:420px;max-height:min(720px,78vh);border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1)}',
+			'.gbt-settingshead{display:flex;align-items:flex-start;gap:12px;flex:0 0 auto;padding:14px 20px 10px;border-bottom:0.5px solid var(--dsw-alias-border-l4)}',
+			'.gbt-settingsheadtext{flex:1;min-width:0}',
+			'.gbt-settingspagetitle{margin:0;font-size:16px;line-height:1.4;font-weight:600;color:var(--dsw-alias-label-primary)}',
+			'.gbt-settingssub{margin:3px 0 0;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere}',
+			'.gbt-settingssub .gbt-mono{font-size:11px;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-settingsunbound{flex:0 0 auto;margin:10px 20px 0;padding:8px 11px;border:0.5px solid var(--dsw-alias-state-warn-label,var(--dsw-alias-border-l4));border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:1.5}',
+			'.gbt-settingsunbound b{margin-right:2px;color:var(--dsw-alias-state-warn-label,var(--dsw-alias-label-primary));font-weight:600}',
+			'.gbt-settingsbody{display:flex;align-items:stretch;flex:1;min-height:0;min-width:0}',
+			'.gbt-settingsnav{display:flex;flex-direction:column;gap:2px;flex:0 0 200px;width:200px;padding:12px;box-sizing:border-box;border-right:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1);overflow-y:auto}',
+			'.gbt-settingsnavitem{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;line-height:1.4;text-align:left;padding:7px 10px;border-radius:7px;cursor:pointer;white-space:nowrap}',
+			'.gbt-settingsnavitem:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+			'.gbt-settingsnavitem[data-active="true"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-primary);font-weight:600}',
+			'.gbt-settingsnavitem:disabled{opacity:.45;cursor:not-allowed}',
+			// Disabled page actions (engine path unchanged, save while unbound) must
+			// read as disabled; the shared button has no dim rule in the dsh theme.
+			'.gbt-settingspage .gbt-btn:disabled{opacity:.5;cursor:not-allowed}',
+			'.gbt-settingspane{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}',
+			'.gbt-settingsscroll{flex:1;min-height:0;overflow:auto;padding:16px 20px 20px}',
+			'.gbt-settingssections{display:flex;flex-direction:column;gap:14px;width:100%;max-width:880px;margin:0 auto}',
+			'.gbt-settingssection{display:flex;flex-direction:column;gap:12px;min-width:0}',
+			// A class-level display beats the UA [hidden] rule, so the hidden
+			// section needs its own rule or every theme would render at once.
+			'.gbt-settingssection[hidden]{display:none}',
+			'.gbt-settingsfooter{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:0 0 auto;padding:10px 20px;border-top:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2)}',
+			'.gbt-settingsstatus{flex:1 1 auto;min-width:0;margin:0;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-settingsstatus[data-settings-status="saved"]{color:var(--dsw-alias-state-success-primary)}',
+			'.gbt-settingsstatus[data-settings-status="error"]{color:var(--dsw-alias-state-error-primary)}',
+			'@media (max-width:900px){.gbt-settingsbody{flex-direction:column}.gbt-settingsnav{flex-direction:row;width:auto;flex:0 0 auto;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:0.5px solid var(--dsw-alias-border-l4);padding:8px 10px;gap:4px}.gbt-settingsnavitem{padding:5px 10px}.gbt-settingsscroll{padding:12px 10px}.gbt-settingshead{padding:12px 10px 8px}.gbt-settingsunbound{margin:8px 10px 0}.gbt-settingsfooter{padding:8px 10px}}',
 			'.gbt-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:500;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}',
 			'.gbt-pill[data-status="running"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-success-primary)}',
 			'.gbt-pill[data-status="reviewing"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-warn-label)}',

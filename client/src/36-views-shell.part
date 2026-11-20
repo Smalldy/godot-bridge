@@ -1,3 +1,5 @@
 			/* GLYPH_MODULE */
 			/* TASK_CENTER_MODULE */
-			return { TaskCenter: TaskCenter, Glyph: Glyph }
+			// T-205: the settings page is shared by the task center panel and the plugin
+			// bundle card; the card factory exposes both so apply() can register it.
+			return { TaskCenter: TaskCenter, Glyph: Glyph, SettingsPage: SettingsPage, createSettingsCard: createSettingsCard }

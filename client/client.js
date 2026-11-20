@@ -14,12 +14,18 @@
  * independently configurable rows, which this one does not.)
  *
  * The page hands `plugins.bundle.config` a `view` only — unlike
- * `plugins.row.config` it passes no `form` — so the form comes from the
- * settings service this file injects: `ctx.configForms.get(<row id>)`, whose
+ * `plugins.row.config` it passes no `form` — so this bundle resolves the
+ * engine path's config scope itself: `ctx.configForms.get(<row id>)`, whose
  * snapshot and writes are the same ones the host's own pages bind. A save ends
  * in `ctx.configEditor.edit(...)`, i.e. the profile `cordis.patch.yml` layer
- * the `godot_set_engine_path` tool writes, so both entry points agree and the
- * new path applies without a restart.
+ * the `godot_set_engine_path` tool writes, so the tool and the GUI agree and
+ * the new path applies without a restart.
+ *
+ * T-205: that config card no longer ships a lone engine-path field. Both it and
+ * the task center's settings entry mount the SAME settings page (view module
+ * settings-page.cjs): title + left theme rail + scrolling right column + a
+ * save/cancel footer, with the engine-path section writing the config scope
+ * above and the project themes writing the current task-center project.
  *
  * Version boundary: DSH 0.1.6–0.1.x declares these slots but has no
  * settings-form service, so the whole registration sits behind
@@ -333,6 +339,29 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				settingsThemeDsh: '跟随 DSH',
 				settingsThemeConsole: '控制台暗色',
 				settingsThemeHint: '只保存在本浏览器，立即生效，不修改派发设置。',
+				// T-205: the settings entry is a page. Existing copy above is unchanged;
+				// these are the page title, its theme rail, the unbound state and the
+				// engine-path section that used to live alone in the plugin card.
+				settingsPageTitle: '设置',
+				settingsNavLabel: '设置分区',
+				settingsNavGeneral: '常规',
+				settingsNavDispatch: '派发',
+				settingsNavRetry: '重试',
+				settingsNavDecisions: '关键决策',
+				settingsNavEngine: 'Godot 引擎',
+				settingsProjectScope: '当前项目',
+				settingsUnbound: '未绑定项目',
+				settingsUnboundHint: '当前任务中心没有绑定项目：派发、重试与关键决策暂时不可编辑；先在任务中心打开项目。引擎路径仍可在此保存。',
+				settingsSaved: '已保存',
+				settingsEngineLabel: 'Godot 可执行文件路径',
+				settingsEngineHint: '指向真实 Godot exe 的完整路径（不要用版本管理器 shim）。保存会写入本 profile 的 cordis.patch.yml 中 tool-godot-bridge 那一行并立即生效；该值按原样使用，请确认文件存在。',
+				settingsEngineSaving: '保存中…',
+				settingsEngineSaved: '已保存。新的 godot_* 调用将使用该路径。',
+				settingsEngineFailed: '本部署没有接受该值；已保存的路径未改变。',
+				settingsEngineReset: '恢复默认',
+				settingsEngineOverridden: '本 profile 已设置',
+				settingsEngineReadOnly: '本部署的设置为只读。',
+				settingsEngineUnavailable: '该插件当前未加载，暂时无法编辑它的配置。',
 				settingsRetryGroup: '重试',
 				settingsMaxAttempts: '最大尝试次数',
 				settingsRetryHint: '一张卡连续失败多少次后进入阻塞。',
@@ -1137,6 +1166,27 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				settingsThemeDsh: 'Follow DSH',
 				settingsThemeConsole: 'Console dark',
 				settingsThemeHint: 'Stored in this browser only; applies immediately and never changes dispatch settings.',
+				// T-205: the settings entry is a page (see the zh block).
+				settingsPageTitle: 'Settings',
+				settingsNavLabel: 'Settings sections',
+				settingsNavGeneral: 'General',
+				settingsNavDispatch: 'Dispatch',
+				settingsNavRetry: 'Retry',
+				settingsNavDecisions: 'Key decisions',
+				settingsNavEngine: 'Godot engine',
+				settingsProjectScope: 'Current project',
+				settingsUnbound: 'No project bound',
+				settingsUnboundHint: 'The task center has no project bound: dispatch, retry and key decisions cannot be edited until you open one there. The engine path can still be saved here.',
+				settingsSaved: 'Saved',
+				settingsEngineLabel: 'Godot engine path',
+				settingsEngineHint: 'Full path to the real Godot executable (never a version-manager shim). Saving writes it to the tool-godot-bridge row of this profile’s cordis.patch.yml and it applies immediately; the path is used as typed, so make sure it exists.',
+				settingsEngineSaving: 'Saving…',
+				settingsEngineSaved: 'Saved. New godot_* calls use this path.',
+				settingsEngineFailed: 'The deployment did not accept this value; the stored path is unchanged.',
+				settingsEngineReset: 'Reset to default',
+				settingsEngineOverridden: 'Set in this profile',
+				settingsEngineReadOnly: 'This deployment stores settings read-only.',
+				settingsEngineUnavailable: 'This plugin is not loaded, so its configuration cannot be edited right now.',
 				settingsRetryGroup: 'Retries',
 				settingsMaxAttempts: 'Maximum attempts',
 				settingsRetryHint: 'How many consecutive failures block a card.',
@@ -2436,7 +2486,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-settingscapacity b{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}',
 '.gbt-settingswarning{margin:0;font-size:10.5px;line-height:1.55;color:var(--dsw-alias-state-warn-label)}',
 '.gbt-settingswarning[data-settings-warning="spawn-failed"],.gbt-settingswarning[data-settings-warning="workers-unavailable"]{color:var(--dsw-alias-state-error-primary)}',
-// T-198: the decision policy editor (compact table inside the settings modal).
+// T-198: the decision policy editor (compact table). T-205 moved it from the
+// settings modal into the settings page's 关键决策 section.
 '.gbt-policyscopes{display:flex;gap:6px;flex-wrap:wrap;align-items:center}',
 '.gbt-policyscope{appearance:none;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);height:26px;padding:0 10px;border-radius:7px;font:inherit;font-size:11px;cursor:pointer}',
 '.gbt-policyscope[data-active="true"]{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l3,var(--dsw-alias-border-l4));font-weight:600}',
@@ -2450,6 +2501,39 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-policyguard{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--dsw-alias-label-secondary)}',
 '.gbt-policyguard input[type="checkbox"]{margin:0}',
 '@media (max-width:720px){.gbt-settingsgroup,.gbt-settingscapacity{padding:8px 10px}.gbt-settingsinline .gbt-btn{width:100%}}',
+			// T-205: the settings PAGE — title, fixed left theme rail, an
+			// independently scrolling right column and a footer that holds save/cancel.
+			// Same DSH tokens and controls as the rest of the panel; nothing new.
+			'.gbt-settingspage{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;min-width:0;height:100%;box-sizing:border-box;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
+			'.gbt-settingspage[data-settings-mode="card"]{flex:0 0 auto;height:auto;min-height:420px;max-height:min(720px,78vh);border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1)}',
+			'.gbt-settingshead{display:flex;align-items:flex-start;gap:12px;flex:0 0 auto;padding:14px 20px 10px;border-bottom:0.5px solid var(--dsw-alias-border-l4)}',
+			'.gbt-settingsheadtext{flex:1;min-width:0}',
+			'.gbt-settingspagetitle{margin:0;font-size:16px;line-height:1.4;font-weight:600;color:var(--dsw-alias-label-primary)}',
+			'.gbt-settingssub{margin:3px 0 0;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere}',
+			'.gbt-settingssub .gbt-mono{font-size:11px;color:var(--dsw-alias-label-secondary)}',
+			'.gbt-settingsunbound{flex:0 0 auto;margin:10px 20px 0;padding:8px 11px;border:0.5px solid var(--dsw-alias-state-warn-label,var(--dsw-alias-border-l4));border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:1.5}',
+			'.gbt-settingsunbound b{margin-right:2px;color:var(--dsw-alias-state-warn-label,var(--dsw-alias-label-primary));font-weight:600}',
+			'.gbt-settingsbody{display:flex;align-items:stretch;flex:1;min-height:0;min-width:0}',
+			'.gbt-settingsnav{display:flex;flex-direction:column;gap:2px;flex:0 0 200px;width:200px;padding:12px;box-sizing:border-box;border-right:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1);overflow-y:auto}',
+			'.gbt-settingsnavitem{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;line-height:1.4;text-align:left;padding:7px 10px;border-radius:7px;cursor:pointer;white-space:nowrap}',
+			'.gbt-settingsnavitem:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+			'.gbt-settingsnavitem[data-active="true"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-primary);font-weight:600}',
+			'.gbt-settingsnavitem:disabled{opacity:.45;cursor:not-allowed}',
+			// Disabled page actions (engine path unchanged, save while unbound) must
+			// read as disabled; the shared button has no dim rule in the dsh theme.
+			'.gbt-settingspage .gbt-btn:disabled{opacity:.5;cursor:not-allowed}',
+			'.gbt-settingspane{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}',
+			'.gbt-settingsscroll{flex:1;min-height:0;overflow:auto;padding:16px 20px 20px}',
+			'.gbt-settingssections{display:flex;flex-direction:column;gap:14px;width:100%;max-width:880px;margin:0 auto}',
+			'.gbt-settingssection{display:flex;flex-direction:column;gap:12px;min-width:0}',
+			// A class-level display beats the UA [hidden] rule, so the hidden
+			// section needs its own rule or every theme would render at once.
+			'.gbt-settingssection[hidden]{display:none}',
+			'.gbt-settingsfooter{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:0 0 auto;padding:10px 20px;border-top:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-2)}',
+			'.gbt-settingsstatus{flex:1 1 auto;min-width:0;margin:0;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+			'.gbt-settingsstatus[data-settings-status="saved"]{color:var(--dsw-alias-state-success-primary)}',
+			'.gbt-settingsstatus[data-settings-status="error"]{color:var(--dsw-alias-state-error-primary)}',
+			'@media (max-width:900px){.gbt-settingsbody{flex-direction:column}.gbt-settingsnav{flex-direction:row;width:auto;flex:0 0 auto;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:0.5px solid var(--dsw-alias-border-l4);padding:8px 10px;gap:4px}.gbt-settingsnavitem{padding:5px 10px}.gbt-settingsscroll{padding:12px 10px}.gbt-settingshead{padding:12px 10px 8px}.gbt-settingsunbound{margin:8px 10px 0}.gbt-settingsfooter{padding:8px 10px}}',
 			'.gbt-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:500;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}',
 			'.gbt-pill[data-status="running"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-success-primary)}',
 			'.gbt-pill[data-status="reviewing"]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-warn-label)}',
@@ -7673,8 +7757,8 @@ module.exports = { createTaskForm }
 /**
  * Settings form view module.
  *
- * Extracted from the forms fragment; React, h, Modal and the panel store are
- * injected by the build.
+ * Extracted from the forms fragment; React, h and the panel store are injected
+ * by the build.
  *
  * Dispatch has ONE capacity knob: maxConcurrent. A card's executor is started
  * for the card and released afterwards; there is no persistent worker ceiling.
@@ -7686,14 +7770,27 @@ module.exports = { createTaskForm }
  * the current scope. The fixed high-risk guards are rendered as disabled
  * checkboxes: the server enforces them, the panel only states them.
  *
+ * T-205: this module no longer draws the modal shell. It renders the body of the
+ * settings PAGE as one hidden/shown section per theme (常规 / 派发 / 重试 /
+ * 关键决策 / Godot 引擎); the page owns the title, the left navigation, the
+ * scrolling right column and the save/cancel footer. Keeping every section
+ * MOUNTED (hidden, not unmounted) is deliberate: a half-typed field survives a
+ * trip to another theme.
+ *
+ * The save/cancel footer lives in the page, so the component publishes its
+ * save action on SettingsForm.actions. The action returns a promise resolving
+ * { ok, error? } instead of closing anything: a page stays where it is.
+ *
  * The event list below mirrors plugin/task-center/schema.mjs DECISION_EVENT_CATALOG;
  * client-settings-form.test.mjs compares the two so they cannot drift.
  */
 function createSettingsForm(deps) {
 	const React = deps.React
 	const h = deps.h
-	const Modal = deps.Modal
 	const store = deps.store
+
+	/** The config field the engine-path section edits, as the host Config declares it. */
+	const ENGINE_FIELD = 'godotPath'
 
 	const DECISION_MODES = ['ask', 'notify', 'silent']
 
@@ -7814,6 +7911,8 @@ function createSettingsForm(deps) {
 		},
 	]
 
+	const SECTION_KEYS = ['general', 'dispatch', 'retry', 'decisions', 'engine']
+
 	// Module-scoped drafts: one per scope, reset only when the SAVED policy
 	// changes (a poll carrying the same overrides never wipes typing).
 	const policyState = {
@@ -7822,8 +7921,11 @@ function createSettingsForm(deps) {
 		drafts: { global: null, project: null },
 		baseline: { global: null, project: null },
 		resets: { global: {}, project: {} },
-		error: '',
 	}
+
+	// The page's footer drives this: each render publishes the current save
+	// closure (it owns the input refs and the module-scoped drafts).
+	const formActions = { save: null }
 
 	function rowOf(policy, scope, key) {
 		const bucket = policy === null || policy === undefined ? null : scope === 'global' ? policy.global : policy.project
@@ -7856,7 +7958,6 @@ function createSettingsForm(deps) {
 		policyState.drafts = { global: {}, project: {} }
 		policyState.baseline = { global: {}, project: {} }
 		policyState.resets = { global: {}, project: {} }
-		policyState.error = ''
 		for (const scope of ['global', 'project']) {
 			for (const view of DECISION_EVENT_VIEWS) {
 				const copy = rowCopy(rowOf(policy, scope, view.key))
@@ -7873,6 +7974,175 @@ function createSettingsForm(deps) {
 		return defaults === undefined || defaults === null ? rowCopy(rowOf(policy, 'global', key)) : rowCopy(defaults)
 	}
 
+	/** The host's plain text for the value a config scope projects. */
+	function textOf(value) {
+		return typeof value === 'string' ? value : ''
+	}
+
+	/**
+	 * The engine-path section: the same config scope the plugin settings card
+	 * has always edited, rendered in the page instead of in the card's own form.
+	 */
+	function EngineSection(props) {
+		const t = props.t
+		const scope = props.scope === undefined ? null : props.scope
+		const input = React.useRef(null)
+		const [busy, setBusy] = React.useState(false)
+		const [dirty, setDirty] = React.useState(false)
+		const [outcome, setOutcome] = React.useState(null)
+		const [seenRevision, setSeenRevision] = React.useState(undefined)
+		// A save's own answer must survive the revision bump it causes: the host
+		// folds the new value in (moving revision) before this component reads
+		// the accepted flag back.
+		const keepOutcome = React.useRef(false)
+		const subscribe = React.useMemo(
+			function () {
+				return function (listener) {
+					if (scope === null || typeof scope.subscribe !== 'function') return function () {}
+					return scope.subscribe(listener)
+				}
+			},
+			[scope],
+		)
+		const read = React.useMemo(
+			function () {
+				return function () {
+					return scope === null || typeof scope.getSnapshot !== 'function' ? null : scope.getSnapshot()
+				}
+			},
+			[scope],
+		)
+		const state = React.useSyncExternalStore(subscribe, read, read)
+
+		if (scope === null || scope === undefined) {
+			return h('p', { className: 'gbt-settingsnote', 'data-settings-engine': 'unavailable', role: 'status' }, t('settingsEngineUnavailable'))
+		}
+		if (state === undefined || state === null || state.status === 'unavailable') {
+			return h('p', { className: 'gbt-settingsnote', 'data-settings-engine': 'unavailable', role: 'status' }, t('settingsEngineUnavailable'))
+		}
+		// The settings document has not arrived yet; showing "unavailable" here
+		// would be a lie, and the section fills in on its own.
+		if (state.status !== 'ready') return null
+
+		const revision = state.revision
+		// A host revision means the document moved under us: the staged draft is
+		// stale, so the next render starts from the stored value again.
+		if (seenRevision !== revision) {
+			setSeenRevision(revision)
+			setDirty(false)
+			if (keepOutcome.current) keepOutcome.current = false
+			else setOutcome(null)
+		}
+
+		const projected = state.value === undefined || state.value === null ? undefined : state.value[ENGINE_FIELD]
+		const value = textOf(projected)
+		const overridden = state.user !== undefined && state.user !== null && Object.hasOwn(state.user, ENGINE_FIELD)
+		const writable = state.writable === true
+
+		/** Queue one field write and report whether the host accepted it. */
+		function commit(write) {
+			setBusy(true)
+			setOutcome(null)
+			return Promise.resolve()
+				.then(function () {
+					return write()
+				})
+				.then(
+					function (accepted) {
+						const ok = accepted === true
+						if (ok) keepOutcome.current = true
+						setBusy(false)
+						setOutcome(ok ? 'saved' : 'failed')
+						return ok
+					},
+					function () {
+						setBusy(false)
+						setOutcome('failed')
+						return false
+					},
+				)
+		}
+
+		/** Store what the input holds; an empty draft clears the profile override. */
+		function save() {
+			const node = input.current
+			const next = node === null || node === undefined ? '' : String(node.value === undefined || node.value === null ? '' : node.value)
+			if (next === '') return commit(function () { return scope.unset(ENGINE_FIELD) })
+			return commit(function () { return scope.set(ENGINE_FIELD, next) })
+		}
+
+		return h(
+			'div',
+			{ 'data-settings-engine': 'ready', 'data-settings-engine-overridden': overridden ? 'true' : 'false' },
+			writable ? null : h('p', { className: 'gbt-settingsnote', role: 'status' }, t('settingsEngineReadOnly')),
+			h(
+				'div',
+				{ className: 'gbt-field' },
+				h(
+					'div',
+					{ className: 'gbt-settingsinline', style: { justifyContent: 'space-between' } },
+					h('label', { htmlFor: 'godot-bridge-engine-path' }, t('settingsEngineLabel')),
+					overridden ? h('span', { className: 'gbt-chip' }, t('settingsEngineOverridden')) : null,
+				),
+				h('input', {
+					id: 'godot-bridge-engine-path',
+					className: 'gbt-input',
+					key: 'revision-' + String(revision),
+					ref: input,
+					type: 'text',
+					defaultValue: value,
+					disabled: !writable || busy,
+					spellCheck: false,
+					autoComplete: 'off',
+					'data-settings-engine-input': 'true',
+					onInput: function () {
+						setDirty(true)
+						setOutcome(null)
+					},
+				}),
+				h('p', { className: 'gbt-settingsnote' }, t('settingsEngineHint')),
+			),
+			h(
+				'div',
+				{ className: 'gbt-settingsinline' },
+				h(
+					'button',
+					{
+						type: 'button',
+						className: 'gbt-btn',
+						'data-variant': 'primary',
+						'data-settings-engine-save': 'true',
+						disabled: !writable || busy || !dirty,
+						onClick: save,
+					},
+					busy ? t('settingsEngineSaving') : t('save'),
+				),
+				overridden
+					? h(
+							'button',
+							{
+								type: 'button',
+								className: 'gbt-btn',
+								'data-settings-engine-reset': 'true',
+								disabled: !writable || busy,
+								onClick: function () {
+									return commit(function () { return scope.unset(ENGINE_FIELD) })
+								},
+							},
+							t('settingsEngineReset'),
+						)
+					: null,
+				outcome === null
+					? null
+					: h(
+							'p',
+							{ className: 'gbt-settingsnote', 'data-settings-engine-status': outcome, role: 'status' },
+							outcome === 'saved' ? t('settingsEngineSaved') : t('settingsEngineFailed'),
+						),
+			),
+		)
+	}
+
 	function SettingsForm(props) {
 		const t = props.t
 		const dispatch = props.dispatch !== null && props.dispatch !== undefined ? props.dispatch : {}
@@ -7882,9 +8152,8 @@ function createSettingsForm(deps) {
 		const attempts = React.useRef(null)
 		const defaultTarget = React.useRef(null)
 		const [tick, setTick] = React.useState(0)
-		// The failure text lives in the module state (like the drafts), so a modal
-		// that stays open keeps it and a test render can read it back.
-		const error = policyState.error
+		const unbound = props.unbound === true
+		const active = typeof props.section === 'string' && SECTION_KEYS.indexOf(props.section) >= 0 ? props.section : 'general'
 		const currentConcurrent = Number.isFinite(dispatch.maxConcurrent) ? Math.max(1, Math.floor(dispatch.maxConcurrent)) : 3
 		const currentAttempts = Number.isFinite(dispatch.maxAttempts) ? Math.max(1, Math.floor(dispatch.maxAttempts)) : 3
 		ensureState(policy)
@@ -7892,11 +8161,6 @@ function createSettingsForm(deps) {
 
 		function rerender() {
 			setTick(tick + 1)
-		}
-
-		function setError(next) {
-			policyState.error = next
-			rerender()
 		}
 
 		function numberFrom(ref, fallback) {
@@ -7961,18 +8225,17 @@ function createSettingsForm(deps) {
 			return t('error')
 		}
 
+		/**
+		 * Save the project-scoped settings and, only when the policy was edited,
+		 * the decision policy. Resolves { ok, error? }: the page shows the outcome
+		 * in its footer and stays where it is (a page is not a modal).
+		 */
 		function save() {
-			policyState.error = ''
+			if (unbound === true) return Promise.resolve({ ok: false, error: t('settingsUnboundHint') })
 			const concurrency = numberFrom(concurrent, currentConcurrent)
 			const maxAttempts = numberFrom(attempts, currentAttempts)
-			if (concurrency < 1 || concurrency > 8) {
-				setError(t('invalidConcurrency'))
-				return
-			}
-			if (maxAttempts < 1 || maxAttempts > 10) {
-				setError(t('invalidMaxAttempts'))
-				return
-			}
+			if (concurrency < 1 || concurrency > 8) return Promise.resolve({ ok: false, error: t('invalidConcurrency') })
+			if (maxAttempts < 1 || maxAttempts > 10) return Promise.resolve({ ok: false, error: t('invalidMaxAttempts') })
 			const changes = policyChanges()
 			for (const key of Object.keys(changes.events)) {
 				const patch = changes.events[key]
@@ -7981,39 +8244,40 @@ function createSettingsForm(deps) {
 					patch.timeoutSeconds !== null &&
 					(!Number.isFinite(patch.timeoutSeconds) || patch.timeoutSeconds < 0 || patch.timeoutSeconds > 86400)
 				) {
-					setError(t('err_invalid_policy_timeout'))
-					return
+					return Promise.resolve({ ok: false, error: t('err_invalid_policy_timeout') })
 				}
 				for (const field of ['limit', 'autoRecover']) {
 					const value = patch[field]
 					if (value === undefined || value === null) continue
 					if (!Number.isFinite(value) || value < 0 || value > 10) {
-						setError(field === 'limit' ? t('err_invalid_policy_limit') : t('err_invalid_policy_auto_recover'))
-						return
+						return Promise.resolve({ ok: false, error: field === 'limit' ? t('err_invalid_policy_limit') : t('err_invalid_policy_auto_recover') })
 					}
 				}
 			}
 			const targetValue = defaultTarget.current === null || defaultTarget.current === undefined ? '' : String(defaultTarget.current.value === undefined || defaultTarget.current.value === null ? '' : defaultTarget.current.value).trim()
-			void store.send('settings', {
-				maxConcurrent: concurrency,
-				maxAttempts: maxAttempts,
-				defaultTarget: targetValue,
-			}).then(function (result) {
-				if (result.ok !== true) {
-					setError(t('error'))
-					return
-				}
-				const changed = Object.keys(changes.events).length > 0 || changes.reset.length > 0
-				if (changed !== true) {
-					props.onClose()
-					return
-				}
-				void store.send('decisionPolicy', changes).then(function (policyResult) {
-					if (policyResult.ok === true) props.onClose()
-					else setError(policyErrorText(policyResult.payload))
+			return store
+				.send('settings', {
+					maxConcurrent: concurrency,
+					maxAttempts: maxAttempts,
+					defaultTarget: targetValue,
 				})
-			})
+				.then(function (result) {
+					if (result.ok !== true) return { ok: false, error: t('error') }
+					const changed = Object.keys(changes.events).length > 0 || changes.reset.length > 0
+					if (changed !== true) return { ok: true }
+					return store.send('decisionPolicy', changes).then(function (policyResult) {
+						if (policyResult.ok === true) return { ok: true }
+						return { ok: false, error: policyErrorText(policyResult.payload) }
+					})
+				})
 		}
+
+		// Publish the save action twice: the module registry is what the form tests
+		// drive directly, while the page passes its OWN actions object so two
+		// mounted settings pages (panel + plugin card) can never call each other's
+		// save closure — and therefore never read each other's input refs.
+		formActions.save = save
+		if (props.actions !== null && props.actions !== undefined && typeof props.actions === 'object') props.actions.save = save
 
 		function fieldInput(view, field, options) {
 			const draft = policyState.drafts[scope][view.key]
@@ -8048,6 +8312,7 @@ function createSettingsForm(deps) {
 				'data-policy-field': options.name,
 				'data-policy-event': view.key,
 				value: value === null || value === undefined ? '' : String(value),
+				disabled: options.disabled === true,
 				onChange: function (event) {
 					const raw = String(event.target.value === undefined || event.target.value === null ? '' : event.target.value).trim()
 					if (raw === '') {
@@ -8068,7 +8333,7 @@ function createSettingsForm(deps) {
 		function eventRow(view) {
 			const draft = policyState.drafts[scope][view.key]
 			const fixed = view.fixedMode !== undefined
-			const resetDisabled = overridesOf(scope, view.key) !== true && policyState.resets[scope][view.key] === undefined
+			const resetDisabled = unbound === true || (overridesOf(scope, view.key) !== true && policyState.resets[scope][view.key] === undefined)
 			return h(
 				'tr',
 				{ key: view.key, 'data-policy-event': view.key },
@@ -8076,13 +8341,14 @@ function createSettingsForm(deps) {
 				h('td', null, fieldInput(view, 'mode', {
 					kind: 'select',
 					name: 'mode',
-					disabled: fixed,
+					disabled: fixed === true || unbound === true,
 					title: fixed ? t('decisionGuardDeleteWord') : undefined,
 					choices: DECISION_MODES.map(function (mode) { return { value: mode, label: mode } }),
 				})),
 				h('td', null, fieldInput(view, 'defaultOption', {
 					kind: 'select',
 					name: 'default',
+					disabled: unbound === true,
 					choices: (function () {
 						// Only a safe option can be a default. If the current value is not
 						// in that list (an older file) it is still shown, never blank.
@@ -8091,9 +8357,9 @@ function createSettingsForm(deps) {
 						return shown.map(function (option) { return { value: option.id, label: t(option.labelKey) } })
 					})(),
 				})),
-				h('td', null, fieldInput(view, 'timeoutSeconds', { name: 'timeout', min: 0, max: 86400, nullable: true })),
-				h('td', null, fieldInput(view, 'limit', { name: 'limit', min: 0, max: 10, nullable: true })),
-				h('td', null, fieldInput(view, 'autoRecover', { name: 'auto-recover', min: 0, max: 10, nullable: true })),
+				h('td', null, fieldInput(view, 'timeoutSeconds', { name: 'timeout', min: 0, max: 86400, nullable: true, disabled: unbound === true })),
+				h('td', null, fieldInput(view, 'limit', { name: 'limit', min: 0, max: 10, nullable: true, disabled: unbound === true })),
+				h('td', null, fieldInput(view, 'autoRecover', { name: 'auto-recover', min: 0, max: 10, nullable: true, disabled: unbound === true })),
 				h(
 					'td',
 					null,
@@ -8114,74 +8380,80 @@ function createSettingsForm(deps) {
 			)
 		}
 
+		/** One page section: mounted so drafts survive, hidden when not selected. */
+		function sectionPanel(key, children) {
+			const hidden = active !== 'all' && active !== key
+			return h(
+				'section',
+				{
+					key: key,
+					className: 'gbt-settingssection',
+					'data-settings-section': key,
+					hidden: hidden ? true : undefined,
+					'aria-hidden': hidden ? 'true' : undefined,
+				},
+				children,
+			)
+		}
+
 		const storage = policy !== null && policy !== undefined && policy.storage !== undefined && policy.storage !== null ? policy.storage : null
 		const policyErrors = policy !== null && policy !== undefined && Array.isArray(policy.errors) ? policy.errors : []
 
-		return h(
-			Modal,
-			{ title: t('settingsTitle'), onClose: props.onClose, t: t },
+		const themePanel = sectionPanel('general', [
 			h(
 				'div',
-				{ className: 'gbt-form gbt-settingsform' },
+				{ className: 'gbt-settingsgroup', 'data-settings-group': 'theme' },
+				h('div', { className: 'gbt-settingsgrouphead' }, t('settingsThemeGroup')),
 				h(
 					'div',
-					{ className: 'gbt-settingsgroup', 'data-settings-group': 'theme' },
-					h('div', { className: 'gbt-settingsgrouphead' }, t('settingsThemeGroup')),
+					{ className: 'gbt-field' },
+					h('label', null, t('settingsTheme')),
 					h(
-						'div',
-						{ className: 'gbt-field' },
-						h('label', null, t('settingsTheme')),
-						h(
-							'select',
-							{
-								className: 'gbt-input',
-								'data-field': 'ui-theme',
-								'data-tc-theme-select': 'true',
-								value: theme,
-								onChange: function (event) {
-									const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'dsh'
-									if (typeof props.onThemeChange === 'function') props.onThemeChange(next)
-								},
-							},
-							h('option', { value: 'dsh' }, t('settingsThemeDsh')),
-							h('option', { value: 'console' }, t('settingsThemeConsole')),
-						),
-					),
-					h('p', { className: 'gbt-settingsnote' }, t('settingsThemeHint')),
-				),
-				h(
-					'div',
-					{ className: 'gbt-settingsgroup', 'data-settings-group': 'concurrency' },
-					h('div', { className: 'gbt-settingsgrouphead' }, t('settingsConcurrencyGroup')),
-					h(
-						'div',
-						{ className: 'gbt-field' },
-						h('label', null, t('maxConcurrent')),
-						h('input', {
+						'select',
+						{
 							className: 'gbt-input',
-							type: 'number',
-							min: 1,
-							max: 8,
-							step: 1,
-							ref: concurrent,
-							defaultValue: String(currentConcurrent),
-							'data-field': 'max-concurrent',
-						}),
+							'data-field': 'ui-theme',
+							'data-tc-theme-select': 'true',
+							value: theme,
+							onChange: function (event) {
+								const next = event !== null && event !== undefined && event.target !== undefined ? String(event.target.value) : 'dsh'
+								if (typeof props.onThemeChange === 'function') props.onThemeChange(next)
+							},
+						},
+						h('option', { value: 'dsh' }, t('settingsThemeDsh')),
+						h('option', { value: 'console' }, t('settingsThemeConsole')),
 					),
-					h('p', { className: 'gbt-settingsnote' }, t('concurrencyHint')),
 				),
+				h('p', { className: 'gbt-settingsnote' }, t('settingsThemeHint')),
+			),
+		])
+
+		const dispatchPanel = sectionPanel('dispatch', [
+			h(
+				'div',
+				{ className: 'gbt-settingsgroup', 'data-settings-group': 'concurrency' },
+				h('div', { className: 'gbt-settingsgrouphead' }, t('settingsConcurrencyGroup')),
 				h(
 					'div',
-					{ className: 'gbt-settingsgroup', 'data-settings-group': 'retry' },
-					h('div', { className: 'gbt-settingsgrouphead' }, t('settingsRetryGroup')),
-					h(
-						'div',
-						{ className: 'gbt-field' },
-						h('label', null, t('settingsMaxAttempts')),
-						h('input', { className: 'gbt-input', type: 'number', min: 1, max: 10, step: 1, ref: attempts, defaultValue: String(currentAttempts), 'data-field': 'max-attempts' }),
-					),
-					h('p', { className: 'gbt-settingsnote' }, t('settingsRetryHint')),
+					{ className: 'gbt-field' },
+					h('label', null, t('maxConcurrent')),
+					h('input', {
+						className: 'gbt-input',
+						type: 'number',
+						min: 1,
+						max: 8,
+						step: 1,
+						ref: concurrent,
+						defaultValue: String(currentConcurrent),
+						'data-field': 'max-concurrent',
+						disabled: unbound === true,
+					}),
 				),
+				h('p', { className: 'gbt-settingsnote' }, t('concurrencyHint')),
+			),
+			h(
+				'div',
+				{ className: 'gbt-settingsgroup', 'data-settings-group': 'default-target' },
 				h(
 					'div',
 					{ className: 'gbt-field' },
@@ -8192,115 +8464,148 @@ function createSettingsForm(deps) {
 						ref: defaultTarget,
 						defaultValue: typeof dispatch.defaultTarget === 'string' ? dispatch.defaultTarget : '',
 						placeholder: t('defaultTargetHint'),
+						disabled: unbound === true,
 					}),
 				),
+			),
+		])
+
+		const retryPanel = sectionPanel('retry', [
+			h(
+				'div',
+				{ className: 'gbt-settingsgroup', 'data-settings-group': 'retry' },
+				h('div', { className: 'gbt-settingsgrouphead' }, t('settingsRetryGroup')),
 				h(
 					'div',
-					{ className: 'gbt-settingsgroup', 'data-settings-group': 'decisions' },
-					h('div', { className: 'gbt-settingsgrouphead' }, t('decisionSettingsTitle')),
-					h('p', { className: 'gbt-settingsnote' }, t('decisionSettingsHint')),
+					{ className: 'gbt-field' },
+					h('label', null, t('settingsMaxAttempts')),
+					h('input', { className: 'gbt-input', type: 'number', min: 1, max: 10, step: 1, ref: attempts, defaultValue: String(currentAttempts), 'data-field': 'max-attempts', disabled: unbound === true }),
+				),
+				h('p', { className: 'gbt-settingsnote' }, t('settingsRetryHint')),
+			),
+		])
+
+		const decisionsPanel = sectionPanel('decisions', [
+			h(
+				'div',
+				{ className: 'gbt-settingsgroup', 'data-settings-group': 'decisions' },
+				h('div', { className: 'gbt-settingsgrouphead' }, t('decisionSettingsTitle')),
+				h('p', { className: 'gbt-settingsnote' }, t('decisionSettingsHint')),
+				h(
+					'div',
+					{ className: 'gbt-settingsinline' },
+					h('span', null, t('decisionScope')),
 					h(
 						'div',
-						{ className: 'gbt-settingsinline' },
-						h('span', null, t('decisionScope')),
+						{ className: 'gbt-policyscopes' },
 						h(
-							'div',
-							{ className: 'gbt-policyscopes' },
-							h(
-								'button',
-								{
-									type: 'button',
-									className: 'gbt-policyscope',
-									'data-policy-scope': 'global',
-									'data-active': scope === 'global' ? 'true' : 'false',
-									onClick: function () {
-										setScope('global')
-									},
+							'button',
+							{
+								type: 'button',
+								className: 'gbt-policyscope',
+								'data-policy-scope': 'global',
+								'data-active': scope === 'global' ? 'true' : 'false',
+								disabled: unbound === true,
+								onClick: function () {
+									if (unbound === true) return
+									setScope('global')
 								},
-								t('decisionScopeGlobal'),
-							),
-							h(
-								'button',
-								{
-									type: 'button',
-									className: 'gbt-policyscope',
-									'data-policy-scope': 'project',
-									'data-active': scope === 'project' ? 'true' : 'false',
-									onClick: function () {
-										setScope('project')
-									},
-								},
-								t('decisionScopeProject'),
-							),
+							},
+							t('decisionScopeGlobal'),
 						),
 						h(
 							'button',
-							{ type: 'button', className: 'gbt-btn', 'data-policy-reset-all': scope, onClick: resetAll },
-							t('decisionResetAll'),
+							{
+								type: 'button',
+								className: 'gbt-policyscope',
+								'data-policy-scope': 'project',
+								'data-active': scope === 'project' ? 'true' : 'false',
+								disabled: unbound === true,
+								onClick: function () {
+									if (unbound === true) return
+									setScope('project')
+								},
+							},
+							t('decisionScopeProject'),
 						),
 					),
-					h('p', { className: 'gbt-settingsnote' }, t('decisionScopeHint')),
-					storage !== null && storage.global === 'workspace' ? h('p', { className: 'gbt-settingsnote', 'data-policy-storage': 'workspace' }, t('decisionPolicyWorkspaceNote')) : null,
-					policyErrors.length > 0
-						? h(
-								'p',
-								{ className: 'gbt-settingsnote', 'data-policy-errors': 'true' },
-								policyErrors.map(function (entry) { return String(entry.scope) + ': ' + String(entry.code) }).join(', '),
-							)
-						: null,
-					h('div', { className: 'gbt-tablewrap' }, h(
-						'table',
-						{ className: 'gbt-policytable', 'data-decision-policy-table': 'true' },
-						h(
-							'thead',
-							null,
-							h(
-								'tr',
-								null,
-								h('th', null, t('decisionEventColumn')),
-								h('th', null, t('decisionModeLabel')),
-								h('th', null, t('decisionDefaultLabel')),
-								h('th', null, t('decisionTimeoutLabel')),
-								h('th', null, t('decisionLimitLabel')),
-								h('th', null, t('decisionAutoRecoverLabel')),
-								h('th', null, ''),
-							),
-						),
-						h('tbody', null, DECISION_EVENT_VIEWS.map(eventRow)),
-					)),
 					h(
-						'div',
-						{ 'data-policy-guards': 'true' },
-						h('div', { className: 'gbt-settingsgrouphead' }, t('decisionGuardsTitle')),
-						h(
-							'label',
-							{ className: 'gbt-policyguard' },
-							h('input', { type: 'checkbox', checked: true, disabled: true, readOnly: true, 'data-policy-guard': 'delete-word' }),
-							t('decisionGuardDeleteWord'),
-						),
-						h(
-							'label',
-							{ className: 'gbt-policyguard' },
-							h('input', { type: 'checkbox', checked: true, disabled: true, readOnly: true, 'data-policy-guard': 'timeout-no-delete' }),
-							t('decisionGuardTimeoutDelete'),
-						),
-						h('p', { className: 'gbt-settingsnote' }, t('decisionGuardHint')),
+						'button',
+						{ type: 'button', className: 'gbt-btn', 'data-policy-reset-all': scope, disabled: unbound === true, onClick: resetAll },
+						t('decisionResetAll'),
 					),
 				),
-				error === '' ? null : h('p', { className: 'gbt-settingsnote', style: { color: 'var(--dsw-alias-state-error-primary)' } }, error),
+				h('p', { className: 'gbt-settingsnote' }, t('decisionScopeHint')),
+				storage !== null && storage.global === 'workspace' ? h('p', { className: 'gbt-settingsnote', 'data-policy-storage': 'workspace' }, t('decisionPolicyWorkspaceNote')) : null,
+				policyErrors.length > 0
+					? h(
+							'p',
+							{ className: 'gbt-settingsnote', 'data-policy-errors': 'true' },
+							policyErrors.map(function (entry) { return String(entry.scope) + ': ' + String(entry.code) }).join(', '),
+						)
+					: null,
+				h('div', { className: 'gbt-tablewrap' }, h(
+					'table',
+					{ className: 'gbt-policytable', 'data-decision-policy-table': 'true' },
+					h(
+						'thead',
+						null,
+						h(
+							'tr',
+							null,
+							h('th', null, t('decisionEventColumn')),
+							h('th', null, t('decisionModeLabel')),
+							h('th', null, t('decisionDefaultLabel')),
+							h('th', null, t('decisionTimeoutLabel')),
+							h('th', null, t('decisionLimitLabel')),
+							h('th', null, t('decisionAutoRecoverLabel')),
+							h('th', null, ''),
+						),
+					),
+					h('tbody', null, DECISION_EVENT_VIEWS.map(eventRow)),
+				)),
 				h(
 					'div',
-					{ className: 'gbt-actions' },
-					h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', onClick: save }, t('apply')),
-					h('button', { type: 'button', className: 'gbt-btn', onClick: props.onClose }, t('cancel')),
+					{ 'data-policy-guards': 'true' },
+					h('div', { className: 'gbt-settingsgrouphead' }, t('decisionGuardsTitle')),
+					h(
+						'label',
+						{ className: 'gbt-policyguard' },
+						h('input', { type: 'checkbox', checked: true, disabled: true, readOnly: true, 'data-policy-guard': 'delete-word' }),
+						t('decisionGuardDeleteWord'),
+					),
+					h(
+						'label',
+						{ className: 'gbt-policyguard' },
+						h('input', { type: 'checkbox', checked: true, disabled: true, readOnly: true, 'data-policy-guard': 'timeout-no-delete' }),
+						t('decisionGuardTimeoutDelete'),
+					),
+					h('p', { className: 'gbt-settingsnote' }, t('decisionGuardHint')),
 				),
 			),
+		])
+
+		const enginePanel = sectionPanel('engine', [
+			h('div', { className: 'gbt-settingsgroup', 'data-settings-group': 'engine' }, h(EngineSection, { t: t, scope: props.engineScope === undefined ? null : props.engineScope })),
+		])
+
+		return h(
+			'div',
+			{ className: 'gbt-settingssections', 'data-settings-sections': 'true', 'data-settings-active': active, 'data-settings-bound': unbound === true ? 'false' : 'true' },
+			themePanel,
+			dispatchPanel,
+			retryPanel,
+			decisionsPanel,
+			enginePanel,
 		)
 	}
 
 	// The catalog is part of the component's contract: the drift test compares it
 	// with the server's DECISION_EVENT_CATALOG (keys, option ids and defaults).
 	SettingsForm.decisionEvents = DECISION_EVENT_VIEWS
+	// The page's footer drives this; the form keeps the input refs and drafts.
+	SettingsForm.actions = formActions
+	SettingsForm.sections = SECTION_KEYS
 	return SettingsForm
 }
 
@@ -8311,10 +8616,309 @@ module.exports = { createSettingsForm }
 				return factory({
 					React: React,
 					h: h,
-					Modal: Modal,
 					store: store,
 				})
 			})()
+
+			const settingsViews = (function () {
+				const module = { exports: {} }
+				;(function (module, exports) {
+/**
+ * Settings page view module.
+ *
+ * T-205 turns the old "dispatch settings" modal into a real settings page: a
+ * page title (设置), a fixed left navigation (常规 / 派发 / 重试 / 关键决策 /
+ * Godot 引擎), an independently scrolling right column and a footer that holds
+ * the save/cancel actions. The task center's settings entry and the plugin
+ * bundle card (plugins.bundle.config) BOTH render this page - the card only
+ * supplies the data the page needs (the shared task store, the config scope for
+ * the engine path, the theme preference), so the two entry points cannot drift.
+ *
+ * Data scope: the page always reflects the CURRENT task-center project from the
+ * snapshot. There is no fallback to a last-active project: an unbound session
+ * renders the "未绑定项目" banner and disables the project-scoped themes (派发 /
+ * 重试 / 关键决策), while the engine path (a config-scope value) stays editable.
+ *
+ * Every section stays MOUNTED inside the form; the page only changes which one
+ * is visible, so a half-typed field survives a trip to another theme. The save
+ * action is owned by SettingsForm (it holds the input refs and the drafts); it
+ * publishes itself into a page-owned actions object on every render, so the
+ * footer always calls THIS page's save closure (a second mounted page cannot
+ * hijack it).
+ *
+ * Narrow layouts: CSS folds the left rail into a horizontal tab row above the
+ * content (see TC_CSS, max-width 900px); the DOM order already reads nav-first.
+ */
+function createSettingsViews(deps) {
+	const React = deps.React
+	const h = deps.h
+	const SettingsForm = deps.SettingsForm
+
+	// The theme rail, in reading order. projectScoped themes write into the task
+	// center project, so they are disabled while nothing is bound.
+	const SECTIONS = [
+		{ key: 'general', labelKey: 'settingsNavGeneral', projectScoped: false },
+		{ key: 'dispatch', labelKey: 'settingsNavDispatch', projectScoped: true },
+		{ key: 'retry', labelKey: 'settingsNavRetry', projectScoped: true },
+		{ key: 'decisions', labelKey: 'settingsNavDecisions', projectScoped: true },
+		{ key: 'engine', labelKey: 'settingsNavEngine', projectScoped: false },
+	]
+
+	const THEME_KEY = 'gbt-theme'
+
+	/** The browser theme preference; a storage denial still lets the page render. */
+	function readThemePreference() {
+		try {
+			const raw =
+				typeof window !== 'undefined' && window !== null && window.localStorage !== undefined && typeof window.localStorage.getItem === 'function'
+					? window.localStorage.getItem(THEME_KEY)
+					: null
+			return raw === 'console' ? 'console' : 'dsh'
+		} catch (error) {
+			return 'dsh'
+		}
+	}
+
+	function writeThemePreference(value) {
+		try {
+			if (typeof window !== 'undefined' && window !== null && window.localStorage !== undefined && typeof window.localStorage.setItem === 'function') {
+				window.localStorage.setItem(THEME_KEY, value)
+			}
+		} catch (error) {
+			/* the in-memory theme still applies */
+		}
+	}
+
+	function resolveSection(value) {
+		if (typeof value !== 'string') return 'general'
+		return SECTIONS.some(function (entry) { return entry.key === value }) ? value : 'general'
+	}
+
+	/**
+	 * The page. Every data input is a prop so the same component can be mounted
+	 * by the task center panel and by the plugin bundle card.
+	 */
+	function SettingsPage(props) {
+		const t = props.t
+		const snapshot = props.snapshot !== null && props.snapshot !== undefined && typeof props.snapshot === 'object' ? props.snapshot : {}
+		const mode = props.mode === 'card' ? 'card' : 'panel'
+		const theme = props.theme === 'console' ? 'console' : 'dsh'
+		const store = props.store === undefined ? null : props.store
+		// The page never looks for a last-active project: the snapshot's project is
+		// the one the task center acts on, and null is the honest "unbound" state.
+		const project =
+			typeof props.project === 'string' && props.project !== ''
+				? props.project
+				: typeof snapshot.project === 'string' && snapshot.project !== ''
+					? snapshot.project
+					: null
+		const unbound = project === null
+		// A per-page actions slot: the mounted form publishes its save into THIS
+		// object, so a second mounted page (the plugin card) cannot hijack the
+		// footer of the first one.
+		const actionsRef = React.useRef(null)
+		if (actionsRef.current === null || actionsRef.current === undefined) actionsRef.current = { save: null }
+		const [section, setSection] = React.useState(resolveSection(props.initialSection))
+		const [status, setStatus] = React.useState(null)
+		const active = resolveSection(section)
+		const dispatch = snapshot.dispatch === null || snapshot.dispatch === undefined ? {} : snapshot.dispatch
+		const policy = snapshot.decisionPolicy === undefined ? null : snapshot.decisionPolicy
+
+		function choose(next) {
+			const key = resolveSection(next)
+			const entry = SECTIONS.filter(function (candidate) { return candidate.key === key })[0]
+			if (unbound === true && entry !== undefined && entry.projectScoped === true) return
+			setSection(key)
+		}
+
+		function save() {
+			if (unbound === true) {
+				setStatus({ kind: 'error', text: t('settingsUnboundHint') })
+				return
+			}
+			const actions = actionsRef.current
+			if (actions === null || actions === undefined || typeof actions.save !== 'function') return
+			const pending = actions.save()
+			if (pending === null || pending === undefined || typeof pending.then !== 'function') return
+			pending.then(function (outcome) {
+				const ok = outcome !== null && outcome !== undefined && outcome.ok === true
+				if (ok) {
+					setStatus({ kind: 'saved' })
+					return
+				}
+				const text = outcome !== null && outcome !== undefined && typeof outcome.error === 'string' && outcome.error !== '' ? outcome.error : t('error')
+				setStatus({ kind: 'error', text: text })
+			})
+		}
+
+		const nav = h(
+			'nav',
+			{ className: 'gbt-settingsnav', 'data-settings-nav': 'true', role: 'navigation', 'aria-label': t('settingsNavLabel') },
+			SECTIONS.map(function (entry) {
+				const disabled = unbound === true && entry.projectScoped === true
+				return h(
+					'button',
+					{
+						key: entry.key,
+						type: 'button',
+						className: 'gbt-settingsnavitem',
+						'data-settings-nav': entry.key,
+						'data-active': active === entry.key ? 'true' : 'false',
+						'aria-current': active === entry.key ? 'page' : undefined,
+						disabled: disabled,
+						onClick: function () {
+							choose(entry.key)
+						},
+					},
+					t(entry.labelKey),
+				)
+			}),
+		)
+
+		const head = h(
+			'header',
+			{ className: 'gbt-settingshead', 'data-settings-head': 'true' },
+			h(
+				'div',
+				{ className: 'gbt-settingsheadtext' },
+				h('h1', { className: 'gbt-settingspagetitle', 'data-settings-title': 'true' }, t('settingsPageTitle')),
+				h(
+					'p',
+					{ className: 'gbt-settingssub' },
+					unbound === true
+						? t('settingsUnbound')
+						: h('span', null, t('settingsProjectScope'), ' · ', h('b', { className: 'gbt-mono', title: project }, project)),
+				),
+			),
+			mode === 'panel' && typeof props.onClose === 'function'
+				? h(
+						'button',
+						{ type: 'button', className: 'gbt-iconbtn', 'data-action': 'settings-back', title: t('close'), 'aria-label': t('close'), onClick: props.onClose },
+						'×',
+					)
+				: null,
+		)
+
+		const unboundBanner =
+			unbound === true
+				? h(
+						'div',
+						{ className: 'gbt-settingsunbound', 'data-settings-unbound': 'true', role: 'status' },
+						h('b', null, t('settingsUnbound')),
+						h('span', null, ' · ' + t('settingsUnboundHint')),
+					)
+				: null
+
+		const statusText = status === null ? '' : status.kind === 'saved' ? t('settingsSaved') : String(status.text)
+
+		const footer = h(
+			'footer',
+			{ className: 'gbt-settingsfooter', 'data-settings-footer': 'true' },
+			h('p', { className: 'gbt-settingsstatus', 'data-settings-status': status === null ? '' : status.kind, role: 'status', 'aria-live': 'polite' }, statusText),
+			h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-settings-save': 'true', disabled: unbound === true, onClick: save }, t('apply')),
+			typeof props.onClose === 'function'
+				? h('button', { type: 'button', className: 'gbt-btn', 'data-settings-cancel': 'true', onClick: props.onClose }, t('cancel'))
+				: null,
+		)
+
+		const form = h(SettingsForm, {
+			t: t,
+			actions: actionsRef.current,
+			dispatch: dispatch,
+			policy: policy,
+			theme: theme,
+			onThemeChange: props.onThemeChange,
+			section: active,
+			unbound: unbound,
+			engineScope: props.engineScope === undefined ? null : props.engineScope,
+			store: store,
+		})
+
+		return h(
+			'div',
+			{
+				className: 'gbt-settingspage' + (mode === 'card' ? ' gbt-root' : ''),
+				'data-settings-page': 'true',
+				'data-settings-mode': mode,
+				'data-settings-active': active,
+				'data-settings-bound': unbound === true ? 'false' : 'true',
+				'data-tc-theme': theme,
+			},
+			head,
+			unboundBanner,
+			h(
+				'div',
+				{ className: 'gbt-settingsbody' },
+				nav,
+				h(
+					'div',
+					{ className: 'gbt-settingspane' },
+					h('div', { className: 'gbt-settingsscroll', 'data-settings-scroll': 'true' }, form),
+					footer,
+				),
+			),
+		)
+	}
+
+	/**
+	 * The plugin bundle card: the SAME page, mounted from plugins.bundle.config.
+	 * It resolves the shared task store (the current project, no last-active
+	 * fallback) and the engine path's config scope, and keeps the browser theme
+	 * preference; nothing else is card-specific.
+	 */
+	function createSettingsCard(cardDeps) {
+		const opts = cardDeps === undefined || cardDeps === null ? {} : cardDeps
+		const store = opts.store
+		const engineScope = opts.engineScope === undefined ? null : opts.engineScope
+		const locale = opts.locale
+		const ns = typeof opts.ns === 'string' && opts.ns !== '' ? opts.ns : 'godotBridgeTaskCenter'
+
+		function useTranslate() {
+			const force = React.useReducer(function (count) { return count + 1 }, 0)[1]
+			React.useEffect(function () {
+				return locale.subscribe(force)
+			}, [])
+			return locale.bind(ns)
+		}
+
+		function SettingsCard() {
+			const t = useTranslate()
+			const snapshot = React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
+			const [theme, setTheme] = React.useState(readThemePreference)
+			// The host asks for one page load when the card opens; the panel keeps
+			// polling, the card does not subscribe to a timer of its own.
+			React.useEffect(function () {
+				void store.load()
+			}, [])
+			function onThemeChange(next) {
+				const value = next === 'console' ? 'console' : 'dsh'
+				writeThemePreference(value)
+				setTheme(value)
+			}
+			return h(SettingsPage, {
+				t: t,
+				mode: 'card',
+				snapshot: snapshot,
+				store: store,
+				engineScope: engineScope,
+				theme: theme,
+				onThemeChange: onThemeChange,
+			})
+		}
+
+		return SettingsCard
+	}
+
+	return { SettingsPage: SettingsPage, createSettingsCard: createSettingsCard, SETTINGS_SECTIONS: SECTIONS }
+}
+
+module.exports = { createSettingsViews }
+
+				})(module, module.exports)
+				return module.exports.createSettingsViews({ React: React, h: h, SettingsForm: SettingsForm })
+			})()
+			const SettingsPage = settingsViews.SettingsPage
+			const createSettingsCard = settingsViews.createSettingsCard
 
 			function projectSourceKey(snapshot) {
 				if (snapshot === null || snapshot === undefined) return null
@@ -9039,7 +9643,11 @@ function createTaskCenter(deps) {
 	const DetailView = deps.DetailView
 	const DoneAllDrawer = deps.DoneAllDrawer
 	const TaskForm = deps.TaskForm
-	const SettingsForm = deps.SettingsForm
+	// T-205: the settings entry opens a PAGE, not a modal. SettingsPage is the same
+	// component the plugin bundle card mounts; engineScopeOf reads the config scope
+	// the engine-path section writes (null when this runtime has no config form).
+	const SettingsPage = deps.SettingsPage
+	const engineScopeOf = deps.engineScopeOf
 	const ProjectForm = deps.ProjectForm
 	const DecisionModal = deps.DecisionModal
 	const useTranslate = deps.useTranslate
@@ -9124,7 +9732,8 @@ function createTaskCenter(deps) {
 			panelState.selectedId = next
 			setSelectedIdState(next)
 		}
-		// Rendering tests may open the settings modal; the production slot passes no props.
+		// Rendering tests may land directly on the settings page; the production slot
+		// passes no props.
 		const initialSettingsOpen = props !== undefined && props !== null && props.initialSettingsOpen === true
 		const [settingsOpen, setSettingsOpen] = React.useState(initialSettingsOpen)
 		// T-174: theme is a browser preference, never a dispatch/server field.
@@ -9891,6 +10500,29 @@ function createTaskCenter(deps) {
 		onKindFilterChange: function () { setColumnTick(function (count) { return count + 1 }) },
 			})
 
+		// T-205: the settings entry is a PAGE takeover, not a modal over the board.
+		// It keeps the panel root (and therefore the theme tokens) but renders the
+		// shared page; 取消/× return to the board through onClose.
+		if (settingsOpen === true) {
+			return h(
+				'div',
+				{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center', 'data-tc-theme': theme, 'data-settings-open': 'true' },
+				h(SettingsPage, {
+					t: t,
+					mode: 'panel',
+					snapshot: snapshot,
+					store: store,
+					theme: theme,
+					onThemeChange: setTheme,
+					// The engine path writes the bundle's config scope; a runtime without
+					// the config-form service passes null and the section says so.
+					engineScope: typeof engineScopeOf === 'function' ? engineScopeOf() : null,
+					onClose: function () { setSettingsOpen(false) },
+					initialSection: props !== undefined && props !== null && typeof props.initialSettingsSection === 'string' ? props.initialSettingsSection : undefined,
+				}),
+			)
+		}
+
 		return h(
 			'div',
 			{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center', 'data-tc-theme': theme },
@@ -9984,17 +10616,8 @@ function createTaskCenter(deps) {
 		onClose: function () { setEditing(null) },
 		onSaved: function () { setEditing(null) },
 			}),
-			settingsOpen
-				? h(SettingsForm, {
-						t: t,
-						dispatch: dispatch,
-						// T-198: the resolved decision policy the settings page edits.
-						policy: snapshot.decisionPolicy === undefined ? null : snapshot.decisionPolicy,
-						theme: theme,
-						onThemeChange: setTheme,
-						onClose: function () { setSettingsOpen(false) },
-					})
-				: null,
+			// T-205: the dispatch-settings modal is gone; the page branch above owns
+			// the settings entry, so nothing is mounted over the board.
 			// T-181: the ONE project dialog. It is mounted only after the user asks for
 			// it — an empty project state never auto-opens it, and closing it unmounts.
 			projectOpen && snapshot.source !== 'loading' ? h(ProjectForm, { t: t, project: snapshot.project, hostProject: snapshot.sessionProject, onClose: function () { setProjectOpen(false) } }) : null,
@@ -10033,7 +10656,17 @@ module.exports = { createTaskCenter }
 					DetailView: DetailView,
 					DoneAllDrawer: DoneAllDrawer,
 					TaskForm: TaskForm,
-					SettingsForm: SettingsForm,
+					SettingsPage: SettingsPage,
+					engineScopeOf: function () {
+						try {
+							const context = tcHostContext
+							const service = context !== null && context !== undefined && typeof context.get === 'function' ? context.get('configForms') : null
+							const forms = service !== null && service !== undefined && service.configForms !== undefined && service.configForms !== null ? service.configForms : service
+							return forms !== null && forms !== undefined && typeof forms.get === 'function' ? forms.get(ENTRY_NS) : null
+						} catch (error) {
+							return null
+						}
+					},
 					ProjectForm: ProjectForm,
 					DecisionModal: DecisionModal,
 					useTranslate: useTranslate,
@@ -10054,152 +10687,17 @@ module.exports = { createTaskCenter }
 				})
 			})()
 
-			return { TaskCenter: TaskCenter, Glyph: Glyph }
+			// T-205: the settings page is shared by the task center panel and the plugin
+			// bundle card; the card factory exposes both so apply() can register it.
+			return { TaskCenter: TaskCenter, Glyph: Glyph, SettingsPage: SettingsPage, createSettingsCard: createSettingsCard }
 		}
 
-
-		function formFor(scope) {
-			return function GodotEnginePathForm(props) {
-				const { t } = props
-				const [busy, setBusy] = React.useState(false)
-				const [dirty, setDirty] = React.useState(false)
-				const [outcome, setOutcome] = React.useState(null)
-				const [seenRevision, setSeenRevision] = React.useState(undefined)
-				const input = React.useRef(null)
-				// A save's own answer must survive the revision bump it causes: the host
-				// folds the new value in (moving `revision`) before this component reads
-				// the accepted flag back.
-				const keepOutcome = React.useRef(false)
-				// The scope is a plain observable: bind it once per scope so the
-				// subscription survives re-renders instead of resubscribing each time.
-				const subscribe = React.useMemo(() => (listener) => scope.subscribe(listener), [scope])
-				const read = React.useMemo(() => () => scope.getSnapshot(), [scope])
-				const state = React.useSyncExternalStore(subscribe, read, read)
-				const revision = state === undefined || state === null ? undefined : state.revision
-				// A host revision means the document moved under us: the staged draft is
-				// stale, so the next render starts from the stored value again.
-				if (seenRevision !== revision) {
-					setSeenRevision(revision)
-					setDirty(false)
-					if (keepOutcome.current) keepOutcome.current = false
-					else setOutcome(null)
-				}
-
-				if (state === undefined || state === null || state.status === 'unavailable') {
-					return h('p', { className: 'godot-bridge-notice', role: 'status' }, t('unavailable'))
-				}
-				// The settings document has not arrived yet; showing "unavailable" here
-				// would be a lie, and the card fills in on its own.
-				if (state.status !== 'ready') return null
-
-				const projected =
-					state.value === undefined || state.value === null ? undefined : state.value[FIELD]
-				const value = textOf(projected)
-				const overridden =
-					state.user !== undefined && state.user !== null && Object.hasOwn(state.user, FIELD)
-				const writable = state.writable === true
-				const fieldId = 'godot-bridge-engine-path'
-
-				/**
-				 * Queue one field write and report whether the host accepted it.
-				 * @param write - the scope call that performs the write.
-				 */
-				async function commit(write) {
-					setBusy(true)
-					setOutcome(null)
-					let accepted = false
-					try {
-						accepted = (await write()) === true
-					} catch (_rejected) {
-						accepted = false
-					}
-					if (accepted) keepOutcome.current = true
-					setBusy(false)
-					setOutcome(accepted ? 'saved' : 'failed')
-				}
-
-				/** Store what the input holds; an empty draft clears the profile override. */
-				function save() {
-					const node = input.current
-					const next = node === null || node === undefined ? '' : node.value
-					if (next === '') return commit(() => scope.unset(FIELD))
-					return commit(() => scope.set(FIELD, next))
-				}
-
-				return h(
-					'div',
-					null,
-					writable
-						? null
-						: h('p', { className: 'godot-bridge-notice', role: 'status' }, t('readOnly')),
-					h(
-						'div',
-						{ className: 'godot-bridge-field' },
-						h(
-							'div',
-							{ className: 'godot-bridge-head' },
-							h('label', { className: 'godot-bridge-label', htmlFor: fieldId }, t('label')),
-							overridden
-								? h('span', { className: 'godot-bridge-badge' }, t('overridden'))
-								: null,
-						),
-						h('input', {
-							id: fieldId,
-							className: 'godot-bridge-input',
-							key: 'revision-' + String(state.revision),
-							ref: input,
-							type: 'text',
-							defaultValue: value,
-							disabled: !writable || busy,
-							spellCheck: false,
-							autoComplete: 'off',
-							onInput: () => {
-								setDirty(true)
-								setOutcome(null)
-							},
-						}),
-						h('p', { className: 'godot-bridge-hint' }, t('hint')),
-					),
-					h(
-						'div',
-						{ className: 'godot-bridge-footer' },
-						h(
-							'button',
-							{
-								type: 'button',
-								className: 'godot-bridge-save',
-								disabled: !writable || busy || !dirty,
-								onClick: save,
-							},
-							busy ? t('saving') : t('save'),
-						),
-						overridden
-							? h(
-									'button',
-									{
-										type: 'button',
-										className: 'godot-bridge-reset',
-										disabled: !writable || busy,
-										onClick: () => commit(() => scope.unset(FIELD)),
-									},
-									t('reset'),
-								)
-							: null,
-						outcome === null
-							? null
-							: h(
-									'p',
-									{
-										className: 'godot-bridge-message',
-										'data-failed': outcome === 'failed' ? 'true' : 'false',
-										role: 'status',
-									},
-									outcome === 'saved' ? t('saved') : t('failed'),
-								),
-					),
-				)
-			}
-		}
+		// T-205: the plugin settings card and the task center's settings entry both
+		// mount the SAME page (the SettingsPage view). The card only supplies what
+		// the page needs: the shared task store (the CURRENT project, never a
+		// last-active fallback), the engine path's config scope and the browser
+		// theme preference. The page, its theme rail and its footer live in
+		// client/src/views/settings-page.cjs.
 
 		return {
 			/** Cordis services this browser half needs; slots is mandatory here. */
@@ -10208,6 +10706,11 @@ module.exports = { createTaskCenter }
 				// T-99: the session resolver asks this context for the Host's own
 				// services (uiWorkspace / uiSession) at request time.
 				tcHostContext = ctx
+				// T-205: ONE store and ONE views instance per activation. The panel
+				// and the plugin card therefore read and write the same project and
+				// the same settings; neither resolves a project of its own.
+				const store = createTaskStore(ctx.locale.bind(TC_NS))
+				const views = createTaskCenterViews(ctx, store)
 				ctx.effect(
 					() => ctx.locale.register(LOCALE_NS, { zh, en }),
 					'godot-bridge: dictionaries',
@@ -10223,10 +10726,13 @@ module.exports = { createTaskCenter }
 				}, 'godot-bridge: form styles')
 				ctx.inject(['configForms'], (forms) => {
 					const scope = forms.configForms.get(ENTRY_NS)
+					// T-205: one component for both entry points — the bundle card is
+					// the settings page in card mode, over the same store and scope.
+					const SettingsCard = views.createSettingsCard({ store: store, engineScope: scope, locale: ctx.locale, ns: TC_NS })
 					ctx.slots.inject('plugins.bundle.config', () =>
 						ctx.slots.register(
 							{ name: 'plugins.bundle.config', key: 'godot-bridge', locale: LOCALE_NS },
-							formFor(scope),
+							SettingsCard,
 						),
 					)
 				})
@@ -10246,8 +10752,6 @@ module.exports = { createTaskCenter }
 					}
 				}, 'godot-bridge: task center styles')
 				ctx.effect(() => {
-					const store = createTaskStore(ctx.locale.bind(TC_NS))
-					const views = createTaskCenterViews(ctx, store)
 					// T-99: when the Host switches the session it shows, follow it at once
 					// instead of waiting for the next poll. A shell without the service
 					// simply never fires this; the poll still picks the session up.

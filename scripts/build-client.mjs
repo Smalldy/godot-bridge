@@ -321,10 +321,20 @@ const settingsFormWrapper =
   '\t\t\t\treturn factory({\n' +
   '\t\t\t\t\tReact: React,\n' +
   '\t\t\t\t\th: h,\n' +
-  '\t\t\t\t\tModal: Modal,\n' +
   '\t\t\t\t\tstore: store,\n' +
   '\t\t\t\t})\n' +
   '\t\t\t})()\n'
+const settingsPage = read('views/settings-page.cjs')
+const settingsPageWrapper =
+  '\t\t\tconst settingsViews = (function () {\n' +
+  '\t\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t\t;(function (module, exports) {\n' +
+  settingsPage +
+  '\n\t\t\t\t})(module, module.exports)\n' +
+  '\t\t\t\treturn module.exports.createSettingsViews({ React: React, h: h, SettingsForm: SettingsForm })\n' +
+  '\t\t\t})()\n' +
+  '\t\t\tconst SettingsPage = settingsViews.SettingsPage\n' +
+  '\t\t\tconst createSettingsCard = settingsViews.createSettingsCard\n'
 const projectForm = read('views/project-form.cjs')
 const projectFormWrapper =
   '\t\t\tconst ProjectForm = (function () {\n' +
@@ -381,7 +391,20 @@ const taskCenterWrapper =
   '\t\t\t\t\tDetailView: DetailView,\n' +
   '\t\t\t\t\tDoneAllDrawer: DoneAllDrawer,\n' +
   '\t\t\t\t\tTaskForm: TaskForm,\n' +
-  '\t\t\t\t\tSettingsForm: SettingsForm,\n' +
+  '\t\t\t\t\tSettingsPage: SettingsPage,\n' +
+  // T-205: the engine-path section writes the bundle's config scope. apply()
+  // registers that scope through configForms; this reader is called at render
+  // time, so the panel page always sees the current service (null if absent).
+  '\t\t\t\t\tengineScopeOf: function () {\n' +
+  '\t\t\t\t\t\ttry {\n' +
+  '\t\t\t\t\t\t\tconst context = tcHostContext\n' +
+  '\t\t\t\t\t\t\tconst service = context !== null && context !== undefined && typeof context.get === \'function\' ? context.get(\'configForms\') : null\n' +
+  '\t\t\t\t\t\t\tconst forms = service !== null && service !== undefined && service.configForms !== undefined && service.configForms !== null ? service.configForms : service\n' +
+  '\t\t\t\t\t\t\treturn forms !== null && forms !== undefined && typeof forms.get === \'function\' ? forms.get(ENTRY_NS) : null\n' +
+  '\t\t\t\t\t\t} catch (error) {\n' +
+  '\t\t\t\t\t\t\treturn null\n' +
+  '\t\t\t\t\t\t}\n' +
+  '\t\t\t\t\t},\n' +
   '\t\t\t\t\tProjectForm: ProjectForm,\n' +
   '\t\t\t\t\tDecisionModal: DecisionModal,\n' +
   '\t\t\t\t\tuseTranslate: useTranslate,\n' +
@@ -415,7 +438,7 @@ const bundle =
     if (name === '30-views-core.part') return viewsCore
     if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_EDITOR_MODULE \*\//, rolesEditorWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper).replace(/\t+\/\* STATUS_VIEW_MODULE \*\//, statusViewWrapper)
     if (name === '34-views-detail.part') return read(name).replace(/\t+\/\* DETAIL_VIEW_MODULE \*\//, detailViewWrapper)
-    if (name === '35-views-forms.part') return read(name).replace(/\t+\/\* TASK_FORM_MODULE \*\//, taskFormWrapper).replace(/\t+\/\* SETTINGS_FORM_MODULE \*\//, settingsFormWrapper).replace(/\t+\/\* PROJECT_FORM_MODULE \*\//, projectFormWrapper)
+    if (name === '35-views-forms.part') return read(name).replace(/\t+\/\* TASK_FORM_MODULE \*\//, taskFormWrapper).replace(/\t+\/\* SETTINGS_FORM_MODULE \*\//, settingsFormWrapper).replace(/\t+\/\* SETTINGS_PAGE_MODULE \*\//, settingsPageWrapper).replace(/\t+\/\* PROJECT_FORM_MODULE \*\//, projectFormWrapper)
     if (name === '36-views-shell.part') return read(name).replace(/\t+\/\* GLYPH_MODULE \*\//, glyphWrapper).replace(/\t+\/\* TASK_CENTER_MODULE \*\//, decisionModalWrapper + taskCenterWrapper)
     return read(name)
   }).join('').replace(/\t+\/\* DONE_ALL_MODULE \*\//, doneAllWrapper).replace(/\t+\/\* QUEUE_VIEWS_MODULE \*\//, queueWrapper).replace(/\t+\/\* AGENT_ROW_MODULE \*\//, agentRowWrapper).replace(/\t+\/\* WORKERS_VIEW_MODULE \*\//, workersWrapper) +
