@@ -55,7 +55,7 @@ Dependency rules:
 client/
   client.js               generated bundle (the DSH loader reads this)
   src/
-    00-head.part          loader wrapper, constants, locales, CSS, settings form
+    00-head.part          loader wrapper, constants, task-center locale, CSS
     selectors.cjs         pure selectors (35 functions; Node-testable)
     15-client-state.part  session/project/column state helpers
     store.cjs             createTaskStore(t, deps) (Node-testable)
@@ -72,7 +72,9 @@ client/
     views/status-view.cjs  StatusView (React + status/worktree state + labels/helpers injected)
     views/detail-view.cjs  DetailView (React + detail state + actor/merge helpers + selectors injected)
     views/task-form.cjs    TaskForm (React + Modal + list/error helpers + store injected)
-    views/settings-form.cjs  SettingsForm (React + Modal + store injected)
+    views/settings-form.cjs  SettingsForm, the sectioned page body (React + h + store injected)
+    views/settings-page.cjs  SettingsPage + createSettingsCard, shared by the panel and the plugin card
+                             (React + h + SettingsForm injected)
     views/project-form.cjs   ProjectForm (React + Modal + draft state + store + tcErrorMessage injected)
     views/glyph.cjs       Glyph (h injected)
     views/task-center.cjs TaskCenter (React + all views/forms + hooks/state + project helpers injected)
@@ -81,7 +83,7 @@ client/
     32-views-roles.part   roles editor/team
     33-views-status.part  status + activity helpers
     34-views-detail.part  detail drawer/history
-    35-views-forms.part   task/settings/project forms
+    35-views-forms.part   task/settings/project forms + SettingsPage module marker
     36-views-shell.part   TaskCenter shell + Glyph
     40-tail.part          apply wiring + factory return
   scripts/build-client.mjs  no-dependency concatenation; --check for CI

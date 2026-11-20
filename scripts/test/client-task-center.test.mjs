@@ -30,7 +30,9 @@ const deps = {
   DetailView: view('detail'),
   DoneAllDrawer: view('done-all'),
   TaskForm: view('task-form'),
-  SettingsForm: view('settings-form'),
+  // T-205: the settings entry mounts this page (never a modal form).
+  SettingsPage: view('settings-page'),
+  engineScopeOf: () => null,
   ProjectForm: projectFormView,
   useTranslate: () => (key) => key,
   useSnapshot: () => ({
@@ -508,3 +510,64 @@ console.log('PASS  no-project-bound has explicit copy in both locales')
   assert.ok(!setupJson.includes('last-active'), 'the empty state never names a last-active project')
   console.log('PASS  T-203 the panel names session / panel / unbound instead of guessing')
 }
+
+// ── T-205: the settings entry opens a PAGE, not the dispatch-settings modal ──
+// The old flow mounted a tall modal over the board. The entry now replaces the
+// board with the shared SettingsPage (the same component the plugin bundle card
+// mounts); cancel/back returns to the board. No modal element is involved.
+{
+  function firstOf(tree, predicate) {
+    const found = []
+    collect(tree, predicate, found)
+    return found.length === 0 ? null : found[0]
+  }
+
+  const settingsHarness = createHookHarness()
+  const settingsPageView = view('settings-page')
+  const settingsDeps = Object.assign({}, deps, {
+    React: settingsHarness.React,
+    SettingsPage: settingsPageView,
+    engineScopeOf: () => 'config-scope',
+  })
+  const SettingsTaskCenter = createTaskCenter(settingsDeps)
+
+  let tree = renderAt(settingsHarness, SettingsTaskCenter, {})
+  assert.equal(firstOf(tree, (node) => node.props !== undefined && node.props['data-settings-open'] !== undefined), null, 'the board is the default, not the settings page')
+  assert.equal(firstOf(tree, (node) => node.type === settingsPageView), null, 'the settings page is not mounted up front')
+
+  const settingsEntry = firstOf(tree, (node) => node.type === 'button' && node.props !== undefined && node.props['data-action'] === 'settings')
+  assert.ok(settingsEntry !== null, 'the task center keeps its settings entry')
+  settingsEntry.props.onClick()
+  tree = renderAt(settingsHarness, SettingsTaskCenter, {})
+
+  const root = tree
+  assert.equal(root.props['data-settings-open'], 'true', 'the panel switches to the settings page')
+  const pageElement = firstOf(tree, (node) => node.type === settingsPageView)
+  assert.ok(pageElement !== null, 'the shared SettingsPage is mounted')
+  assert.equal(pageElement.props.mode, 'panel')
+  assert.equal(typeof pageElement.props.t, 'function')
+  assert.equal(pageElement.props.t('settingsPageTitle'), 'settingsPageTitle', 'the page speaks the task center locale')
+  assert.equal(pageElement.props.snapshot.project, '/repo', 'the page reads the current task-center project')
+  assert.equal(pageElement.props.engineScope, 'config-scope', 'the engine section receives the config scope')
+  assert.equal(pageElement.props.store, settingsDeps.store, 'the page saves through the panel store')
+  assert.equal(typeof pageElement.props.onClose, 'function', 'the page can return to the board')
+  assert.ok(!JSON.stringify(tree).includes('gbt-overlay'), 'no modal overlay is mounted')
+  assert.ok(!JSON.stringify(tree).includes('gbt-modal'), 'no modal shell is mounted over the board')
+
+  pageElement.props.onClose()
+  tree = renderAt(settingsHarness, SettingsTaskCenter, {})
+  assert.equal(firstOf(tree, (node) => node.type === settingsPageView), null, 'closing the page unmounts it')
+  assert.ok(JSON.stringify(tree).includes('gbt-tabs'), 'closing the page returns to the task center board')
+  console.log('PASS  T-205 the settings entry opens the shared page, cancel returns to the board')
+
+  // Rendering tests can also land directly on the page (the production slot
+  // passes no props; this is the documented seam, not a hidden default).
+  const directHarness = createHookHarness()
+  const DirectTaskCenter = createTaskCenter(Object.assign({}, deps, { React: directHarness.React, SettingsPage: settingsPageView, engineScopeOf: () => null }))
+  const directTree = renderAt(directHarness, DirectTaskCenter, { initialSettingsOpen: true })
+  const directPage = firstOf(directTree, (node) => node.type === settingsPageView)
+  assert.ok(directPage !== null, 'initialSettingsOpen lands on the page')
+  assert.equal(directPage.props.engineScope, null, 'a runtime without a config form passes null, not a guessed scope')
+  console.log('PASS  T-205 the settings page is reachable directly (and honestly unbound to a scope)')
+}
+

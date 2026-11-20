@@ -8,7 +8,7 @@ Order:
 
 | part | content |
 | --- | --- |
-| `00-head.part` | loader wrapper, constants, locales, CSS, settings form |
+| `00-head.part` | loader wrapper, constants, task-center locale, CSS |
 | `selectors.cjs` | pure task/board selectors and label helpers (testable CJS module) |
 | `15-client-state.part` | session/project/column state helpers that use head constants |
 | `store.cjs` | `createTaskStore` (Host-backed state, fetch, polling; testable CJS module) |
@@ -25,7 +25,8 @@ Order:
 | `views/status-view.cjs` | StatusView (React + status/worktree state + labels/helpers injected; Node-testable) |
 | `views/detail-view.cjs` | DetailView (React + detail state + actor/merge helpers + selectors injected; Node-testable) |
 | `views/task-form.cjs` | TaskForm (React + Modal + list/error helpers + store injected; Node-testable) |
-| `views/settings-form.cjs` | SettingsForm (React + Modal + store injected; Node-testable) |
+| `views/settings-form.cjs` | SettingsForm, the sectioned page body (React + h + store injected; Node-testable) |
+| `views/settings-page.cjs` | SettingsPage + createSettingsCard, shared by the panel and the plugin card (React + h + SettingsForm injected; Node-testable) |
 | `views/project-form.cjs` | ProjectForm (React + Modal + draft state + store + tcErrorMessage injected; Node-testable) |
 | `views/glyph.cjs` | Glyph (h injected; Node-testable) |
 | `views/task-center.cjs` | TaskCenter (React + all views/forms + hooks/state + project helpers injected; Node-testable) |
@@ -34,7 +35,7 @@ Order:
 | `32-views-roles.part` | roles editor and team views |
 | `33-views-status.part` | status view and activity helpers |
 | `34-views-detail.part` | detail drawer and history helpers |
-| `35-views-forms.part` | task/settings/project forms |
+| `35-views-forms.part` | task/settings/project forms + SettingsPage module marker |
 | `36-views-shell.part` | TaskCenter shell and Glyph |
 | `40-tail.part` | apply wiring and the module factory return |
 
