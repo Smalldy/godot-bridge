@@ -26,6 +26,49 @@ function createDetailView(deps) {
 	const tcStatusKey = deps.tcStatusKey
 	const tcTestLabel = deps.tcTestLabel
 	const tcTestOf = deps.tcTestOf
+	// T-209: the same optional sidebar handle the task card receives. Missing
+	// services mean null, which hides the entry instead of rendering a dead one.
+	const agentSidebar = deps.agentSidebar === null || deps.agentSidebar === undefined ? null : deps.agentSidebar
+
+	/** The REAL session recorded on the card, or null. Never minted here. */
+	function sidebarSessionOf(task) {
+		if (agentSidebar === null || typeof agentSidebar.sessionOf !== 'function') return null
+		try {
+			const session = agentSidebar.sessionOf(task)
+			return typeof session === 'string' && session !== '' ? session : null
+		} catch (error) {
+			return null
+		}
+	}
+
+	/** True only once the host really registered the tab (missing service = false). */
+	function sidebarAvailable() {
+		if (agentSidebar === null || typeof agentSidebar.available !== 'function') return false
+		try {
+			return agentSidebar.available() === true
+		} catch (error) {
+			return false
+		}
+	}
+
+	function openSidebar(sessionId) {
+		if (agentSidebar === null || typeof agentSidebar.open !== 'function') return false
+		try {
+			return agentSidebar.open(sessionId) === true
+		} catch (error) {
+			return false
+		}
+	}
+
+	function sidebarLabel(key) {
+		if (agentSidebar !== null && typeof agentSidebar.label === 'function') {
+			try {
+				const text = agentSidebar.label(key)
+				if (typeof text === 'string' && text !== '') return text
+			} catch (error) {}
+		}
+		return key
+	}
 
 	function DetailView(props) {
 		const task = props.task
@@ -103,6 +146,18 @@ function createDetailView(deps) {
 		}
 
 		const actions = []
+		// T-209: the agent entry is the FIRST action whenever the card names a real
+		// session and the host registered our right-sidebar tab.
+		const sidebarSession = sidebarAvailable() ? sidebarSessionOf(task) : null
+		if (sidebarSession !== null) {
+			actions.push(
+				h(
+					'button',
+					{ key: 'sidebar', type: 'button', className: 'gbt-btn', 'data-action': 'open-agent-sidebar', 'data-sidebar-session': sidebarSession, title: sidebarLabel('openInSidebarHint'), onClick: function () { openSidebar(sidebarSession) } },
+					'▤ ' + sidebarLabel('openInSidebar'),
+				),
+			)
+		}
 		if (task.status === 'pending') {
 			actions.push(h('button', { key: 'edit', type: 'button', className: 'gbt-btn', onClick: function () { props.onEdit(task) } }, t('edit')))
 			actions.push(h('button', { key: 'block', type: 'button', className: 'gbt-btn', onClick: function () { run('block', { id: task.id, note: noteValue() }) } }, t('block')))
