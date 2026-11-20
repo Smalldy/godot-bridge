@@ -13,8 +13,8 @@
 ## 拒绝码（可读失败，不是崩溃）
 
 - `unknown-project` / `missing-project` / `missing-path`：项目没绑定或路径不对 —— 先 `openProject`。
-- `needs-consent`：start 只是申请 —— 等用户批准，别重试。
-- `needs-decision`：create/start/reopen/delete/cancel 先问用户 —— 面板答复后宿主执行，别重试或绕行。
+- `needs-consent`：start 只是申请 —— 等用户批准，别重试、别自己开派发。
+- `needs-decision` / `status: "needs-decision"`：create/start/reopen/delete/cancel 先问用户。响应带 `waitForUser:true`、`retryable:false`、`decisionId`、`decision`、`next`（`start` 的 code 仍是 `needs-consent`，`status` 相同）：**必须停下等用户**，面板答复后宿主执行，别重试或绕行 —— 尤其绝不能重试 create，重复调用只会拿回同一个 pending decision，不会多建一张卡。
 - `wrong-role` / `role-required` / `worker-cannot-self-review` / `worker-cannot-self-test`：结论只属于对应角色 —— 交独立 reviewer / tester。
 - `user-only`：合并、拒绝合并与面板动作不属于 agent —— 报告现状。
 - `head-drift`：分支越过请求的 head —— `refreshMerge` 对齐。

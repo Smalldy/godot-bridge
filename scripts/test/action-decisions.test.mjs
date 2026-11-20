@@ -21,6 +21,7 @@
 import assert from 'node:assert/strict'
 import { createRig, createFakeTaskAgents, PROJECT } from './support/fixtures.mjs'
 import { decisionsPath } from '../../plugin/task-center/decisions.mjs'
+import { registerTaskRoutes, ACTION_PATH } from '../../plugin/task-center/routes.mjs'
 
 const START = Date.parse('2026-11-19T00:00:00.000Z')
 let clockNow = START
@@ -63,6 +64,53 @@ async function userCancel(rig, id) {
 }
 
 const messages = (agents) => agents.calls.filter((call) => call.kind === 'send').map((call) => call.text)
+
+/** T-207: install the REAL action route so its transport can be asserted. */
+function installHttpActionRoute(rigRef, apiOverride) {
+  const specs = []
+  const webCtx = Object.assign({}, rigRef.ctx, {
+    webServer: {
+      register(spec) {
+        specs.push(spec)
+        return () => {}
+      },
+    },
+  })
+  registerTaskRoutes(webCtx, { state: rigRef.state, api: apiOverride, scheduler: null })
+  return new Map(specs.map((spec) => [spec.path, spec]))
+}
+
+/** T-207: one POST through that route, with a JSON body and a fake response. */
+function postHttpAction(byPath, body) {
+  const chunks = [Buffer.from(JSON.stringify(body))]
+  const req = {
+    method: 'POST',
+    url: ACTION_PATH,
+    headers: { 'content-type': 'application/json' },
+    async *[Symbol.asyncIterator]() {
+      for (const chunk of chunks) yield chunk
+    },
+  }
+  const res = {
+    status: 0,
+    headers: null,
+    text: '',
+    writeHead(status, headers) {
+      this.status = status
+      this.headers = headers
+    },
+    end(text) {
+      this.text = String(text === undefined ? '' : text)
+    },
+    json() {
+      return JSON.parse(this.text)
+    },
+  }
+  return byPath
+    .get(ACTION_PATH)
+    .handler(req, res)
+    .then(() => res)
+}
 
 // ── S1: every create asks first; cancelling never writes the board ──────────
 {
@@ -486,6 +534,127 @@ const messages = (agents) => agents.calls.filter((call) => call.kind === 'send')
   check('S12b nothing was deleted by the supersede', board.tasks.length === 3 && board.tasks.some((task) => task.id === late.id), JSON.stringify(board.tasks.map((task) => task.id)))
   const purged = await rig.action('decisionAnswer', { decisionId: q2.id, option: 'purge', confirm: 'DELETE' })
   check('S12b the fresh question deletes 3', purged.ok === true && purged.applied.summary.deleted.length === 3, JSON.stringify(purged.applied))
+}
+
+// ── S13: the needs-decision answer is an explicit, stable contract ─────────
+// T-207: a caller must never infer "wait for the user" from an opaque error or
+// an empty object. Every gated action answers status needs-decision (start keeps
+// its historical needs-consent code) plus waitForUser, retryable:false,
+// decisionId, the decision view and a next step. A repeated identical call is
+// the SAME pending question: it never queues a second decision or a second card.
+{
+  const { rig } = freshRig()
+  const card = await userCreate(rig, { title: 'Contract card' })
+  const ctx = agentContext(rig, 'contract')
+
+  const createBody = { title: 'Contract create', kind: 'dev', dependsOn: [], writeFiles: ['scripts/contract.gd'], acceptance: 'npm test is green', verification: PROBES }
+  const askedCreate = await rig.api.perform('create', createBody, ctx)
+  const askedCancel = await rig.api.perform('cancel', { id: card.id }, ctx)
+  const askedDelete = await rig.api.perform('delete', { id: card.id }, ctx)
+  await userCancel(rig, card.id)
+  const askedReopen = await rig.api.perform('reopen', { id: card.id }, ctx)
+  const askedStart = await rig.api.perform('start', {}, ctx)
+
+  const cases = [
+    ['create', askedCreate],
+    ['start', askedStart],
+    ['reopen', askedReopen],
+    ['delete', askedDelete],
+    ['cancel', askedCancel],
+  ]
+  for (const entry of cases) {
+    const action = entry[0]
+    const asked = entry[1]
+    const expectedCode = action === 'start' ? 'needs-consent' : 'needs-decision'
+    const contract =
+      asked.ok === false &&
+      asked.code === expectedCode &&
+      asked.status === 'needs-decision' &&
+      asked.waitForUser === true &&
+      asked.retryable === false &&
+      typeof asked.decisionId === 'string' &&
+      asked.decision !== null &&
+      asked.decision !== undefined &&
+      String(asked.decision.id) === asked.decisionId &&
+      Array.isArray(asked.decisions) &&
+      asked.decisions.length === 1 &&
+      asked.next !== null &&
+      asked.next !== undefined &&
+      asked.next.code === 'await-decision' &&
+      asked.next.decisionId === asked.decisionId &&
+      asked.next.waitForUser === true &&
+      asked.next.retryable === false
+    check('S13 ' + action + ' answers the explicit wait contract', contract, JSON.stringify(asked).slice(0, 500))
+    check(
+      'S13 ' + action + ' names waitForUser + decisionId at the top level',
+      asked.waitForUser === true && typeof asked.decisionId === 'string' && asked.decisionId === String(asked.decision.id),
+      JSON.stringify({ waitForUser: asked.waitForUser, decisionId: asked.decisionId }),
+    )
+  }
+  check(
+    'S13 the wait answer is never an empty object or a bare task dump',
+    Object.keys(askedCreate).length > 8 && askedCreate.task === undefined && typeof askedCreate.message === 'string' && askedCreate.message.indexOf('Do not retry') >= 0,
+    JSON.stringify(askedCreate).slice(0, 500),
+  )
+
+  // A repeat of the identical create is the SAME question.
+  const repeated = await rig.api.perform('create', createBody, ctx)
+  check(
+    'S13 a repeated identical create returns the SAME decision',
+    repeated.ok === false && repeated.decisionId === askedCreate.decisionId && repeated.next.decisionId === askedCreate.decisionId,
+    JSON.stringify({ first: askedCreate.decisionId, repeated: repeated.decisionId }),
+  )
+  const pending = await rig.action('decisionList', { decisionStatus: 'pending' })
+  const pendingCreates = pending.decisions.filter((decision) => decision.eventKey === 'create')
+  check('S13 the repeat queued no second decision', pending.ok === true && pendingCreates.length === 1, JSON.stringify(pending.decisions.map((decision) => decision.eventKey)))
+  const boardBefore = await rig.action('board')
+  check(
+    'S13 the repeat wrote no card',
+    boardBefore.tasks.length === 1 && boardBefore.tasks.filter((task) => task.title === 'Contract create').length === 0,
+    JSON.stringify(boardBefore.tasks.map((task) => task.title)),
+  )
+  const answered = await rig.action('decisionAnswer', { decisionId: askedCreate.decisionId, option: 'create' })
+  const boardAfter = await rig.action('board')
+  check(
+    'S13 answering the single question creates exactly one card',
+    answered.ok === true && answered.applied.executed === true && boardAfter.tasks.filter((task) => task.title === 'Contract create').length === 1,
+    JSON.stringify(boardAfter.tasks.map((task) => task.title)),
+  )
+}
+
+// ── S14: the HTTP action entry forwards the wait contract untrimmed ────────
+// The panel route is role 'user' (the human), so a gate only exists for an Agent
+// call; routes.mjs sends the shared API's refusal to the client verbatim. This
+// drives the REAL route handler with the REAL contract object and proves the
+// HTTP entry does not trim waitForUser/decisionId/next (or turn it into {}).
+{
+  const { rig } = freshRig()
+  const asked = await rig.api.perform(
+    'create',
+    { title: 'HTTP contract card', kind: 'dev', verification: PROBES },
+    agentContext(rig, 'http'),
+  )
+  check('S14 the real API contract is what the route has to carry', asked.ok === false && asked.status === 'needs-decision' && typeof asked.decisionId === 'string', JSON.stringify(asked).slice(0, 400))
+  const surface = installHttpActionRoute(rig, { perform: async () => asked, snapshot: async () => ({ project: rig.project }) })
+  const res = await postHttpAction(surface, { action: 'create', title: 'HTTP contract card', session: 'session-lead' })
+  const payload = res.json()
+  check(
+    'S14 the HTTP action answer keeps status/waitForUser/retryable/decisionId/next',
+    res.status === 200 &&
+      payload.status === 'needs-decision' &&
+      payload.waitForUser === true &&
+      payload.retryable === false &&
+      payload.decisionId === asked.decisionId &&
+      payload.decision !== null &&
+      payload.decision !== undefined &&
+      String(payload.decision.id) === asked.decisionId &&
+      payload.next !== null &&
+      payload.next !== undefined &&
+      payload.next.code === 'await-decision' &&
+      payload.message === asked.message,
+    res.text.slice(0, 700),
+  )
+  check('S14 the HTTP wait answer is not an empty object', Object.keys(payload).length > 8 && JSON.stringify(payload) !== '{}', res.text.slice(0, 300))
 }
 
 console.log(failures === 0 ? '\nPASS  every gated action asks the human, executes once, and messages the Agent' : '\nFAIL  ' + String(failures) + ' action-decision check(s)')

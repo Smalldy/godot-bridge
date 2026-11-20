@@ -37,6 +37,88 @@ export function projectPathOf(ctx, agent) {
   return null
 }
 
+/** T-207: the refusal codes that mean "the host is waiting for the user". */
+const WAIT_FOR_USER_CODES = ['needs-decision', 'needs-consent']
+
+/**
+ * T-207: the pending decision id, whatever shape the refusal arrived in.
+ *
+ * The action API names it `decisionId`; a legacy dispatch-request refusal only
+ * carries `request.id`. Both are the same question to the caller, so the tool
+ * normalises them here instead of making the model dig through an object it did
+ * not design.
+ */
+function decisionIdOf(result) {
+  if (typeof result.decisionId === 'string' && result.decisionId !== '') return result.decisionId
+  const decision = result.decision
+  if (decision !== null && decision !== undefined && decision.id !== undefined && decision.id !== null) return String(decision.id)
+  const decisions = Array.isArray(result.decisions) ? result.decisions : []
+  const first = decisions[0]
+  if (first !== null && first !== undefined && first.id !== undefined && first.id !== null) return String(first.id)
+  const request = result.request
+  if (request !== null && request !== undefined && request.id !== undefined && request.id !== null) return String(request.id)
+  return null
+}
+
+/**
+ * T-207: the ONE refusal envelope the model sees.
+ *
+ * A wait-for-the-user answer is a stable contract: `status`, `waitForUser`,
+ * `retryable`, `decisionId`, `decision`, `decisions` and `next` always survive
+ * the tool layer, so the model never has to infer "stop and wait" from an
+ * opaque error string or, worse, from an empty object. `nextStep`/`team` keep
+ * their T-110 meaning for panel-scope refusals.
+ */
+function refusalEnvelope(result) {
+  const decisionId = decisionIdOf(result)
+  const waitForUser =
+    result.waitForUser === true || result.status === 'needs-decision' || WAIT_FOR_USER_CODES.indexOf(result.code) >= 0 || decisionId !== null
+  const next =
+    result.next === undefined || result.next === null
+      ? waitForUser
+        ? { code: 'await-decision', decisionId: decisionId, waitForUser: true, retryable: false }
+        : null
+      : result.next
+  return {
+    error: result.message,
+    code: result.code,
+    status: result.status === undefined ? (waitForUser ? 'needs-decision' : null) : result.status,
+    waitForUser: waitForUser,
+    retryable: waitForUser ? false : result.retryable === true,
+    decisionId: decisionId,
+    request: result.request === undefined ? null : result.request,
+    // T-196: the pending question must survive the tool envelope: the model
+    // reports it to the user (and the panel is already showing it).
+    decision: result.decision === undefined ? null : result.decision,
+    decisions: result.decisions === undefined ? null : result.decisions,
+    // T-207: `next` is the one recommended follow-up; `nextStep` keeps the
+    // panel-scope meaning T-110 gave it.
+    next: next,
+    // T-110: a refusal that tells the model what to DO must survive the tool
+    // envelope, otherwise the instruction is lost on the way to the session.
+    nextStep: result.nextStep === undefined ? null : result.nextStep,
+    team: result.team === undefined ? null : result.team,
+  }
+}
+
+/** T-207: an empty answer is a transport bug, never a silent success. */
+function emptyResultEnvelope(action) {
+  return {
+    error: 'the task center returned no result for action ' + String(action) + '; nothing was created or changed. Do not retry blindly - read the board first.',
+    code: 'empty-result',
+    status: null,
+    waitForUser: false,
+    retryable: false,
+    decisionId: null,
+    request: null,
+    decision: null,
+    decisions: null,
+    next: null,
+    nextStep: null,
+    team: null,
+  }
+}
+
 // The description is a ROUTER, not the manual: what this is, the action enum,
 // and where to read the rest. The workflow, the role matrix, the pipeline
 // details and the refusal codes live in the runtime skill (skill.mjs), whose
@@ -44,21 +126,24 @@ export function projectPathOf(ctx, agent) {
 // while the enum below stays because the model routes on it before loading
 // anything.
 const DESCRIPTION =
-  'Project task board with dependency-driven dispatch, file locks and a review/test/merge pipeline; every task runs in its own git worktree. ' +
+  'Project task board with dependency-driven dispatch, file locks and a review/test/merge pipeline; every task runs in its own worktree. ' +
   // T-129: onboarding is the FIRST move, so it is named before the manual.
-  'Start with action onboard: one call resolves and binds the project, bootstraps a missing team and returns a short brief plus one next step. ' +
-  'Read the skill "' + SKILL_NAME + '" first (skill tool): it carries the workflow, the action matrix, the write-card rules and the refusal codes. ' +
+  'Start with action onboard: resolves and binds the project, returns a brief plus one next step. ' +
+  'Read the skill "' + SKILL_NAME + '" first: workflow, actions, card rules, refusal codes. ' +
   'Actions: ' + AGENT_ACTIONS.join(', ') + '. ' +
   // T-131/T-132: the second lifecycle, named where the model routes; the skill
   // carries the full investigation chapter (when to use it, the report action,
   // the scratch/probe rules and the panel rendering).
-  'A card with kind investigate delivers a report instead of code (the skill has the full investigation chapter): finish it with action report; submit/review/test/merge refuse it. ' +
-  'create/start/reopen/delete/cancel ask the user in the panel first: the call answers needs-decision (start: needs-consent); do not retry — the host executes the answer and messages you. ' +
+  'A card with kind investigate delivers a report instead of code (the skill has its chapter): finish it with action report; submit/review/test/merge refuse it. ' +
+  // T-207: the pre-decision answer is a stable, explicit contract, not an
+  // opaque error. The model must STOP and wait for the user; retrying create
+  // can only return the SAME pending decision and never makes a second card.
+  'create/start/reopen/delete/cancel ask first: needs-decision + status needs-decision, waitForUser:true, retryable:false, decisionId, decision, next (start keeps needs-consent). STOP and wait for the panel: never retry create — a repeat returns the SAME decision, not a second card. The host executes the answer and messages you. ' +
   'Dependencies: B.dependsOn=[A] means A must be done and merged before B runs. ' +
   // T-195/T-196: the host may ask a human a question and wait non-blockingly.
   // The model reads the queue; a plain question may be answered here, while an
   // ACTION question (create/start/reopen/delete/cancel) is user-only.
-  'Decisions: decisionList reads the queue; decisionAnswer answers one with decisionId + option (or text); destructive options need "DELETE".'
+  'Decisions: decisionList reads the queue; decisionAnswer takes decisionId + option (or text); destructive need "DELETE".'
 
 export function registerTaskTool(ctx, options) {
   const opts = options === undefined ? {} : options
@@ -71,7 +156,8 @@ export function registerTaskTool(ctx, options) {
       action: {
         type: 'string',
         required: true,
-        description: 'What to do.',
+        description:
+          'What to do. create/start/reopen/delete/cancel answer needs-decision (status needs-decision, waitForUser:true, retryable:false, decisionId, decision, next; start keeps needs-consent): STOP and wait for the user, and NEVER retry create.',
         enum: AGENT_ACTIONS,
       },
       id: { type: 'string', description: 'Task id, e.g. T-12.' },
@@ -280,21 +366,13 @@ export function registerTaskTool(ctx, options) {
       const context = { projectPath: projectPath, by: me, role: 'agent', agent: agent }
       const input = Object.assign({}, args)
       const result = await api.perform(action, input, context)
-      if (result.ok !== true) {
-        return {
-          error: result.message,
-          code: result.code,
-          request: result.request === undefined ? null : result.request,
-          // T-196: the pending question must survive the tool envelope: the model
-          // reports it to the user (and the panel is already showing it).
-          decision: result.decision === undefined ? null : result.decision,
-          decisions: result.decisions === undefined ? null : result.decisions,
-          // T-110: a refusal that tells the model what to DO must survive the tool
-          // envelope, otherwise the instruction is lost on the way to the session.
-          nextStep: result.nextStep === undefined ? null : result.nextStep,
-          team: result.team === undefined ? null : result.team,
-        }
+      // T-207: never answer `{}`. An empty/absent result is a transport bug, and a
+      // caller that reads it as "nothing happened" is exactly how a blind retry
+      // starts. Name it instead.
+      if (result === null || result === undefined || typeof result !== 'object' || Array.isArray(result) || Object.keys(result).length === 0) {
+        return emptyResultEnvelope(action)
       }
+      if (result.ok !== true) return refusalEnvelope(result)
       if (result.board !== undefined) delete result.board
       return result
     },
