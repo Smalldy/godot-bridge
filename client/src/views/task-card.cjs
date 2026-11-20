@@ -96,6 +96,50 @@ function createTaskCard(deps) {
 	const tcTestTone = deps.tcTestTone
 	const toneForDependency = deps.toneForDependency
 	const waitingChip = deps.waitingChip
+	// T-209: the host's right-sidebar tab for the card's agent. The object is
+	// optional: a shell without the sidebar services passes null (or nothing),
+	// and the card simply renders no entry instead of a dead button.
+	const agentSidebar = deps.agentSidebar === null || deps.agentSidebar === undefined ? null : deps.agentSidebar
+
+	/** The REAL session recorded on the card, or null. Never minted here. */
+	function sidebarSessionOf(task) {
+		if (agentSidebar === null || typeof agentSidebar.sessionOf !== 'function') return null
+		try {
+			const session = agentSidebar.sessionOf(task)
+			return typeof session === 'string' && session !== '' ? session : null
+		} catch (error) {
+			return null
+		}
+	}
+
+	/** True only once the host really registered the tab (missing service = false). */
+	function sidebarAvailable() {
+		if (agentSidebar === null || typeof agentSidebar.available !== 'function') return false
+		try {
+			return agentSidebar.available() === true
+		} catch (error) {
+			return false
+		}
+	}
+
+	function openSidebar(sessionId) {
+		if (agentSidebar === null || typeof agentSidebar.open !== 'function') return false
+		try {
+			return agentSidebar.open(sessionId) === true
+		} catch (error) {
+			return false
+		}
+	}
+
+	function sidebarLabel(key) {
+		if (agentSidebar !== null && typeof agentSidebar.label === 'function') {
+			try {
+				const text = agentSidebar.label(key)
+				if (typeof text === 'string' && text !== '') return text
+			} catch (error) {}
+		}
+		return key
+	}
 
 	function TaskCard(props) {
 		const task = props.task
@@ -115,6 +159,10 @@ function createTaskCard(deps) {
 		const worktree = typeof task.worktree === 'string' ? task.worktree : ''
 		const [verdictOpen, setVerdictOpen] = React.useState(null)
 		const [verdictReason, setVerdictReason] = React.useState('')
+		// T-209: an entry opens the same agent in the native right sidebar. It is
+		// rendered only when the host registered our tab AND the card names a real
+		// session (the worker's, else the owning session).
+		const sidebarSession = sidebarAvailable() ? sidebarSessionOf(task) : null
 		const verdictKind = task.status === 'reviewing' ? 'review' : task.status === 'testing' ? 'test' : null
 		function recordVerdict(action, extra) {
 			if (typeof props.onVerdict !== 'function') return
@@ -202,6 +250,29 @@ function createTaskCard(deps) {
 				// same text walker the panel tests use, and a nested dot element would
 				// hide it. The dot is CSS ::before.
 				h('span', { className: 'gbt-cardstate', 'data-state': stateKey, 'data-running': stateKey === 'running' || stateKey === 'ready' ? 'true' : 'false' }, stateLabel),
+				// T-209: a link-button, not a second card action: it must not open the
+				// detail drawer, so both the click and Enter/Space stop at the card.
+				sidebarSession === null
+					? null
+					: h(
+						'button',
+						{
+							key: 'sidebar',
+							type: 'button',
+							className: 'gbt-linkbtn',
+							'data-action': 'open-agent-sidebar',
+							'data-sidebar-session': sidebarSession,
+							title: sidebarLabel('openInSidebarHint'),
+							onClick: function (event) {
+								if (event !== null && event !== undefined && typeof event.stopPropagation === 'function') event.stopPropagation()
+								openSidebar(sidebarSession)
+							},
+							onKeyDown: function (event) {
+								if (event !== null && event !== undefined && (event.key === 'Enter' || event.key === ' ')) event.stopPropagation()
+							},
+						},
+						'▤ ' + sidebarLabel('openInSidebar'),
+					),
 				h('span', { className: 'gbt-cardtime', title: typeof task.updatedAt === 'string' ? task.updatedAt : '' }, elapsedText(task, now)),
 			),
 		)

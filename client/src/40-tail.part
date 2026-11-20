@@ -19,10 +19,10 @@
 				// the same settings; neither resolves a project of its own.
 				const store = createTaskStore(ctx.locale.bind(TC_NS))
 				const views = createTaskCenterViews(ctx, store)
-				// The task center namespace is the ONLY locale this browser half ships:
-				// the panel and the shared settings page (including the bundle card)
-				// both speak it. Register it before the card slot is offered so the
-				// slot's declared locale always resolves.
+				// The panel and the shared settings page (including the bundle card)
+				// speak the task center namespace. Register it before the card slot is
+				// offered so the slot's declared locale always resolves. The agent tab
+				// below ships its own small namespace next to its component.
 				ctx.effect(
 					() => ctx.locale.register(TC_NS, TC_DICT),
 					'godot-bridge: task center dictionaries',
@@ -41,11 +41,27 @@
 						),
 					)
 				})
+				// T-209: the native right-sidebar agent tab. Both services are OPTIONAL:
+				// a shell without them never runs this callback, the card/detail entry
+				// stays hidden (the module handle reports unavailable), and a host that
+				// rejects the registration must not take the panel down with it.
+				ctx.effect(() => ctx.locale.register(AGENT_TAB_NS, AGENT_TAB_COPY), 'godot-bridge: agent tab copy')
+				ctx.inject(['sidebarRight', 'sidebarRightTabs'], (scoped) => {
+					const tab = createAgentSidebarView({
+						React: React,
+						h: h,
+						tcAgentTreeOf: tcAgentTreeOf,
+						tcPhaseLabel: tcPhaseLabel,
+						tcAgo: tcAgo,
+						tcAgentStatusKey: tcAgentStatusKey,
+					})
+					return tab.mount(scoped, { slots: ctx.slots, store: store, locale: ctx.locale, ns: AGENT_TAB_NS, taskNs: TC_NS })
+				})
 				ctx.effect(() => {
 					const style = document.createElement('style')
 					style.setAttribute('data-plugin', 'godot-bridge')
 					style.setAttribute('data-plugin-css', 'godot-bridge/task-center.css')
-					style.textContent = TC_CSS
+					style.textContent = TC_CSS + AGENT_TAB_CSS
 					document.head.appendChild(style)
 					return () => {
 						style.remove()

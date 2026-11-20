@@ -84,6 +84,28 @@ const storeWrapper =
   '\t}\n' +
   '})()\n'
 
+// T-209: the agent sidebar view is its own module because it owns the host's
+// optional sidebar services; the card/detail receive only the tiny handle below.
+const agentSidebarView = read('views/agent-sidebar.cjs')
+const agentSidebarWrapper =
+  '\n\t\tconst agentSidebarModule = (function () {\n' +
+  '\t\t\tconst module = { exports: {} }\n' +
+  '\t\t\t;(function (module, exports) {\n' +
+  agentSidebarView +
+  '\n\t\t\t})(module, module.exports)\n' +
+  '\t\t\treturn module.exports\n' +
+  '\t\t})()\n' +
+  '\t\tconst createAgentSidebarView = agentSidebarModule.createAgentSidebar\n' +
+  '\t\tconst AGENT_TAB_NS = agentSidebarModule.AGENT_TAB_NS\n' +
+  '\t\tconst AGENT_TAB_COPY = agentSidebarModule.AGENT_TAB_COPY\n' +
+  '\t\tconst AGENT_TAB_CSS = agentSidebarModule.AGENT_TAB_CSS\n' +
+  '\t\tconst agentSidebar = {\n' +
+  '\t\t\tsessionOf: agentSidebarModule.agentSessionOf,\n' +
+  '\t\t\tavailable: agentSidebarModule.available,\n' +
+  '\t\t\topen: agentSidebarModule.openIn,\n' +
+  '\t\t\tlabel: agentSidebarModule.label,\n' +
+  '\t\t}\n'
+
 const taskCard = read('views/task-card.cjs')
 const taskCardWrapper =
   '\t\t\tconst TaskCard = (function () {\n' +
@@ -114,6 +136,7 @@ const taskCardWrapper =
   '\t\t\t\t\ttcTestTone: tcTestTone,\n' +
   '\t\t\t\t\ttoneForDependency: toneForDependency,\n' +
   '\t\t\t\t\twaitingChip: waitingChip,\n' +
+  '\t\t\t\t\tagentSidebar: agentSidebar,\n' +
   '\t\t\t\t})\n' +
   '\t\t\t})()\n'
 const column = read('views/column.cjs')
@@ -290,6 +313,7 @@ const detailViewWrapper =
   '\t\t\t\t\ttcStatusKey: tcStatusKey,\n' +
   '\t\t\t\t\ttcTestLabel: tcTestLabel,\n' +
   '\t\t\t\t\ttcTestOf: tcTestOf,\n' +
+  '\t\t\t\t\tagentSidebar: agentSidebar,\n' +
   '\t\t\t\t})\n' +
   '\t\t\t})()\n'
 const taskForm = read('views/task-form.cjs')
@@ -452,6 +476,7 @@ const bundle =
   selectorWrapper +
   read('15-client-state.part') +
   storeWrapper +
+  agentSidebarWrapper +
   VIEW_PARTS.map((name) => {
     if (name === '30-views-core.part') return viewsCore
     if (name === '32-views-roles.part') return read(name).replace(/\t+\/\* ROLE_CREATE_FORM_MODULE \*\//, roleCreateFormWrapper).replace(/\t+\/\* ROLES_EDITOR_MODULE \*\//, rolesEditorWrapper).replace(/\t+\/\* ROLES_VIEW_MODULE \*\//, rolesViewWrapper).replace(/\t+\/\* STATUS_VIEW_MODULE \*\//, statusViewWrapper)
