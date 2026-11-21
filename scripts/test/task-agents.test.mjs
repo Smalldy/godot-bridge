@@ -126,6 +126,35 @@ await check('worker/reviewer/tester starts carry distinct generations', async ()
   assert.deepEqual(agents.handles(), [])
 })
 
+// ── T-214: every stage child starts in the directory it may write to ────────
+await check('worker/reviewer start in the task worktree; a tester only in an explicit candidate', async () => {
+  const worktree = 'C:/project/.worktrees/T-40-1'
+  const candidate = 'C:/project/.worktrees/test-T-40'
+  const before = state.spawns.length
+  const worker = await agents.startWorker({ id: 'T-40', worktree: worktree }, 'implement')
+  const reviewer = await agents.startReviewer({ id: 'T-40', worktree: worktree }, 'review')
+  const tester = await agents.startTester({ id: 'T-40', worktree: worktree }, 'test')
+  const testerWithCandidate = await agents.startTester({ id: 'T-40', worktree: worktree }, 'test again', { cwd: candidate })
+  const explicitWorker = await agents.startWorker({ id: 'T-40', worktree: worktree }, 'implement', { cwd: candidate })
+  const spawned = state.spawns.slice(before)
+  assert.equal(spawned[0].cwd, worktree, 'the worker starts in the card worktree')
+  assert.equal(spawned[1].cwd, worktree, 'the reviewer starts in the card worktree')
+  assert.equal(spawned[2].cwd, undefined, 'a tester NEVER falls back to the task worktree')
+  assert.equal(spawned[3].cwd, candidate, 'a tester starts in the candidate it was given')
+  assert.equal(spawned[4].cwd, candidate, 'an explicit cwd wins over the task worktree')
+  for (const child of [worker, reviewer, tester, testerWithCandidate, explicitWorker]) await agents.release(child.agentId)
+})
+
+await check('a missing stage path passes no cwd instead of guessing the main checkout', async () => {
+  const before = state.spawns.length
+  const worker = await agents.startWorker({ id: 'T-41' }, 'implement')
+  const reviewer = await agents.startReviewer({ id: 'T-41' }, 'review')
+  const tester = await agents.startTester({ id: 'T-41' }, 'test', { cwd: '   ' })
+  const spawned = state.spawns.slice(before)
+  for (const spec of spawned) assert.equal(Object.prototype.hasOwnProperty.call(spec, 'cwd'), false, 'a missing path must not become a cwd')
+  for (const child of [worker, reviewer, tester]) await agents.release(child.agentId)
+})
+
 await check('send uses the child id; release disposes exactly that handle', async () => {
   const worker = await agents.startWorker({ id: 'T-2' }, 'implement')
   await agents.send(worker.agentId, 'continue')

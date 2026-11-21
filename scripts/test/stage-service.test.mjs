@@ -9,8 +9,8 @@ async function check(name, fn) { try { await fn(); checks.push({ name, ok: true 
 
 const calls = []
 const taskAgents = {
-  async startReviewer(task, brief) { calls.push({ kind: 'reviewer', id: task.id, brief }); return { agentId: 'r-1', name: 'reviewer-t-1-g1', handle: {} } },
-  async startTester(task, brief) { calls.push({ kind: 'tester', id: task.id, brief }); return { agentId: 't-1', name: 'tester-t-1-g1', handle: {} } },
+  async startReviewer(task, brief, extra) { calls.push({ kind: 'reviewer', id: task.id, brief, extra }); return { agentId: 'r-1', name: 'reviewer-t-1-g1', handle: {} } },
+  async startTester(task, brief, extra) { calls.push({ kind: 'tester', id: task.id, brief, extra }); return { agentId: 't-1', name: 'tester-t-1-g1', handle: {} } },
   async send(id, text) { calls.push({ kind: 'send', id, text }); return 'm-1' },
   async release(id) { calls.push({ kind: 'release', id }); return id === 'r-1' || id === 'r-2' },
   taskAgentsFor(rootId) {
@@ -40,6 +40,23 @@ await check('stage delivery keeps the reviewer/tester/send semantics', () => {
   assert.deepEqual(calls.filter((entry) => ['reviewer', 'tester', 'send'].indexOf(entry.kind) >= 0).map((entry) => entry.kind), ['reviewer', 'tester', 'send'])
   assert.equal(calls[2].id, 'w-1')
   assert.equal(calls[2].text, 'fix this')
+})
+
+await check('an explicit stage cwd is forwarded to the child; a missing one is never invented', async () => {
+  const worktree = 'C:/project/.worktrees/T-5-1'
+  const candidate = 'C:/project/.worktrees/test-T-5'
+  await service.startReviewer({ id: 'T-5' }, 'review brief', { cwd: worktree })
+  let call = calls.filter((entry) => entry.kind === 'reviewer').slice(-1)[0]
+  assert.deepEqual(call.extra, { cwd: worktree }, 'the reviewer child is started in the given worktree')
+  await service.startTester({ id: 'T-5' }, 'test brief', { cwd: candidate })
+  call = calls.filter((entry) => entry.kind === 'tester').slice(-1)[0]
+  assert.deepEqual(call.extra, { cwd: candidate }, 'the tester child is started in the candidate')
+  await service.startTester({ id: 'T-5' }, 'test brief')
+  call = calls.filter((entry) => entry.kind === 'tester').slice(-1)[0]
+  assert.equal(call.extra, undefined, 'no path passes no cwd, not a guessed root')
+  await service.startTester({ id: 'T-5' }, 'test brief', { cwd: '   ' })
+  call = calls.filter((entry) => entry.kind === 'tester').slice(-1)[0]
+  assert.equal(call.extra, undefined, 'a blank path is missing, not a fallback')
 })
 
 await check('release falls through to the handle/registry when the facade cannot dispose', async () => {

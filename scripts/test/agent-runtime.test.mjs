@@ -45,6 +45,15 @@ await check('spawn uses the root parent, a text prompt, caller delivery, and a s
   assert.deepEqual(spawnSpec.prompt, [{ type: 'text', text: 'do it' }])
 })
 
+await check('spawn forwards an explicit cwd and never invents one', async () => {
+  spawnSpec = null
+  await runtime.spawn({ role: 'worker', taskId: 'T-2', prompt: 'do it', cwd: 'C:/project/.worktrees/T-2-1' })
+  assert.equal(spawnSpec.cwd, 'C:/project/.worktrees/T-2-1')
+  spawnSpec = null
+  await runtime.spawn({ role: 'worker', taskId: 'T-2', prompt: 'do it again' })
+  assert.equal(Object.prototype.hasOwnProperty.call(spawnSpec, 'cwd'), false, 'no path means no cwd')
+})
+
 await check('send addresses the child Session id, never a name', async () => {
   const id = await runtime.send('child-session', 'continue')
   assert.equal(id, 'message-1')

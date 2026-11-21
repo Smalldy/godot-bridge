@@ -124,6 +124,23 @@ function taskRoleOfAgentName(name, roles, taskId) {
   return null
 }
 
+/**
+ * T-214: the directory a stage child's shell must start in.
+ *
+ * A worker/reviewer owns the card's worktree, so an explicit `cwd` wins and the
+ * task's own `worktree` is the only fallback. A tester has no worktree of its
+ * own: its correct directory is the test CANDIDATE the caller built from the
+ * target head, so it NEVER falls back to the task worktree (and never to the
+ * main checkout). A missing path is not guessed: no `cwd` is passed at all.
+ */
+function spawnCwdFor(role, task, input) {
+  const requested = input === undefined || input === null ? {} : input
+  if (typeof requested.cwd === 'string' && requested.cwd.trim() !== '') return requested.cwd.trim()
+  if (role === 'tester') return null
+  const worktree = task !== null && task !== undefined && typeof task === 'object' ? task.worktree : undefined
+  return typeof worktree === 'string' && worktree.trim() !== '' ? worktree.trim() : null
+}
+
 /** A duplicate-name refusal as thrown by the DSH subagent manager. */
 function isDuplicateNameError(error) {
   let current = error
@@ -406,20 +423,25 @@ export function createTaskAgents(options) {
     // exists, so a card can never have two live reviewers (or testers).
     await releaseRoleBeforeSpawn(role, task, input)
     const taskId = task !== null && task !== undefined && task.id !== undefined ? task.id : 'task'
+    // T-214: launch the child in the directory its stage may write to. A missing
+    // path passes NO cwd (never the main project root as a guessed fallback).
+    const cwd = spawnCwdFor(role, task, input)
     let generation = nextGeneration()
     let name = agentNameFor(role, taskId, generation)
     let attempt = 0
     let handle = null
     while (handle === null) {
       try {
-        handle = await runtime.spawn({
+        const request = {
           role: role,
           taskId: taskId,
           name: name,
           label: role + ' ' + String(taskId),
           prompt: prompt,
           signal: input.signal,
-        })
+        }
+        if (cwd !== null) request.cwd = cwd
+        handle = await runtime.spawn(request)
       } catch (error) {
         attempt += 1
         // A name the host already reserved for this root (an older inactive

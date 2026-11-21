@@ -370,6 +370,8 @@ export function createReviewVerdictActions(deps) {
             // review verdict: the brief renders checked/residualRisks only.
             artifact: artifact,
           }),
+          // T-214: the tester's shell starts in the candidate it was built to test.
+          { cwd: candidate.path },
         )
         if (!stageAgents.available || started.ok !== true) {
           // The review round is over; do not leave its reviewer running behind

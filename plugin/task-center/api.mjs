@@ -1168,6 +1168,17 @@ export function createApi(ctx, options) {
   }
 
   /**
+   * T-214: the directory a tester's shell must start in.
+   *
+   * The tester belongs to the CANDIDATE checkout built from the target head,
+   * never to the task worktree and never to the main checkout. A candidate with
+   * no path yields null: no cwd is passed at all instead of guessing one.
+   */
+  function stageCwdFor(candidate) {
+    return candidate !== null && candidate !== undefined && typeof candidate.path === 'string' && candidate.path.trim() !== '' ? { cwd: candidate.path.trim() } : null
+  }
+
+  /**
    * Is the project (or its candidate checkout) a Godot project, and does it
    * declare a main scene? Used by the tester brief: a project WITHOUT
    * [application] run/main_scene must never be launched as a project.
@@ -1402,7 +1413,11 @@ export function createApi(ctx, options) {
       }
       recorded.candidate = rebuilt
       if (stageAgents !== null) {
-        const started = await stageAgents.startTester(recorded.task, testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck, artifact: rebuiltArtifact }))
+        const started = await stageAgents.startTester(
+          recorded.task,
+          testerBriefFor(recorded.task, projectPath, rebuilt, { godot: await godotInfoFor(projectPath, rebuilt.path), hostCheck: retestCheck, artifact: rebuiltArtifact }),
+          stageCwdFor(rebuilt),
+        )
         if (started.ok === true) {
           await recordDeliveredTo(projectPath, recorded.task.id, 'tester', { name: started.name, id: started.agentId })
           recorded.provisioned = started
@@ -3416,7 +3431,7 @@ export function createApi(ctx, options) {
         kind === 'reviewer'
           ? reviewBriefFor(task, projectPath)
           : testerBriefFor(task, projectPath, candidate, { godot: await godotInfoFor(projectPath, candidate === null ? null : candidate.path) })
-      const started = kind === 'reviewer' ? await stageAgents.startReviewer(task, text) : await stageAgents.startTester(task, text)
+      const started = kind === 'reviewer' ? await stageAgents.startReviewer(task, text) : await stageAgents.startTester(task, text, stageCwdFor(candidate))
       if (started.ok !== true) {
         outcome.error = String(started.code === undefined ? 'start-failed' : started.code)
         return outcome
@@ -5532,7 +5547,7 @@ export function createApi(ctx, options) {
       kind === 'reviewer'
         ? reviewBriefFor(freshTask, projectPath)
         : testerBriefFor(freshTask, projectPath, candidate, { godot: await godotInfoFor(projectPath, candidate === null ? null : candidate.path) })
-    const started = kind === 'reviewer' ? await stageAgents.startReviewer(freshTask, brief) : await stageAgents.startTester(freshTask, brief)
+    const started = kind === 'reviewer' ? await stageAgents.startReviewer(freshTask, brief) : await stageAgents.startTester(freshTask, brief, stageCwdFor(candidate))
     if (started.ok !== true) {
       const code = started.code === undefined ? 'start-failed' : String(started.code)
       emitActivity(null, 'error', 'the replacement ' + kind + ' could not be started (' + code + ')', String(taskId), 'system')
@@ -6475,7 +6490,7 @@ export function createApi(ctx, options) {
           : testerBriefFor(task, projectPath, candidate, {
               godot: await godotInfoFor(projectPath, candidate === null || candidate === undefined ? null : candidate.path),
             })
-      const started = kind === 'reviewer' ? await stageAgents.startReviewer(task, text) : await stageAgents.startTester(task, text)
+      const started = kind === 'reviewer' ? await stageAgents.startReviewer(task, text) : await stageAgents.startTester(task, text, stageCwdFor(candidate))
       if (started.ok === true) {
         await recordDeliveredTo(projectPath, task.id, kind, { name: started.name, id: started.agentId })
         await clearWaiting(projectPath, task.id, context)
