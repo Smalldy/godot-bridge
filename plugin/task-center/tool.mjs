@@ -37,6 +37,64 @@ export function projectPathOf(ctx, agent) {
   return null
 }
 
+/**
+ * T-220: rebuild a tool answer as lossless JSON.
+ *
+ * The host walks the value a tool RETURNS before `output.render` gets to run
+ * `JSON.stringify`, and refuses the entire call when it meets anything
+ * `JSON.stringify` would quietly rewrite ("value is not lossless JSON", with no
+ * field named). One stray value kills an otherwise valid answer: the board
+ * snapshot puts `timings: undefined` on every answer, which is why
+ * `openProject` and `board` died there while `get`/`list` — which never build
+ * a snapshot — were fine.
+ *
+ * This walker RETURNS a copy (the api result may be shared or reused, so it is
+ * never mutated) made of plain JSON data:
+ * - `undefined` object properties are DROPPED, exactly like JSON.stringify;
+ * - `undefined` array elements and array HOLES become `null` (positions survive);
+ * - `NaN`, `Infinity`, `-Infinity` and `-0` become `null`/`0` (JSON cannot carry
+ *   them, and the strict walker rejects every one);
+ * - a `Date` becomes its ISO string (what JSON.stringify produces through toJSON);
+ * - a `BigInt` becomes its decimal string instead of throwing;
+ * - functions and symbols are dropped from objects and become `null` in arrays.
+ * Everything that is ALREADY lossless round-trips unchanged, so a normal answer
+ * still renders exactly as before.
+ */
+export function lossless(value, ancestors) {
+  const seen = ancestors === undefined ? new Set() : ancestors
+  if (value === null || value === undefined) return null
+  const type = typeof value
+  if (type === 'string' || type === 'boolean') return value
+  if (type === 'number') return !Number.isFinite(value) ? null : Object.is(value, -0) ? 0 : value
+  if (type === 'bigint') return value.toString()
+  if (type === 'function' || type === 'symbol') return null
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString()
+  // A cycle has no JSON form (JSON.stringify throws on it); degrade the back
+  // reference instead of failing the whole call. Siblings that merely SHARE an
+  // object are not cycles: the path set is unwound on the way out.
+  if (seen.has(value)) return null
+  seen.add(value)
+  try {
+    if (Array.isArray(value)) {
+      const array = []
+      for (let index = 0; index < value.length; index++) array.push(index in value ? lossless(value[index], seen) : null)
+      return array
+    }
+    const entries = []
+    for (const key of Object.keys(value)) {
+      const field = value[key]
+      if (field === undefined || typeof field === 'function' || typeof field === 'symbol') continue
+      // fromEntries defines own DATA properties, so a literal "__proto__" key
+      // from hand-edited board JSON stays data instead of rewriting the new
+      // object's prototype (which the strict walker would reject as not plain).
+      entries.push([key, lossless(field, seen)])
+    }
+    return Object.fromEntries(entries)
+  } finally {
+    seen.delete(value)
+  }
+}
+
 /** T-207: the refusal codes that mean "the host is waiting for the user". */
 const WAIT_FOR_USER_CODES = ['needs-decision', 'needs-consent']
 
@@ -359,7 +417,7 @@ export function registerTaskTool(ctx, options) {
     },
     execute: async function (args, exec) {
       const action = String(args.action || '')
-      if (api === undefined || api === null) return { error: 'the task center API is not available' }
+      if (api === undefined || api === null) return lossless({ error: 'the task center API is not available' })
       const agent = exec === undefined ? undefined : exec.agent
       const me = agentLabel(agent)
       const projectPath = projectPathOf(ctx, agent)
@@ -369,12 +427,20 @@ export function registerTaskTool(ctx, options) {
       // T-207: never answer `{}`. An empty/absent result is a transport bug, and a
       // caller that reads it as "nothing happened" is exactly how a blind retry
       // starts. Name it instead.
+      let answer
       if (result === null || result === undefined || typeof result !== 'object' || Array.isArray(result) || Object.keys(result).length === 0) {
-        return emptyResultEnvelope(action)
+        answer = emptyResultEnvelope(action)
+      } else if (result.ok !== true) {
+        answer = refusalEnvelope(result)
+      } else {
+        if (result.board !== undefined) delete result.board
+        answer = result
       }
-      if (result.ok !== true) return refusalEnvelope(result)
-      if (result.board !== undefined) delete result.board
-      return result
+      // T-220: every egress — success, refusal, empty — leaves through the
+      // lossless walker. The host validates the return value BEFORE render's
+      // JSON.stringify runs, so one undefined/non-finite value in the result
+      // fails the whole tool call; render keeps serializing the cleaned answer.
+      return lossless(answer)
     },
   })
 

@@ -3,7 +3,7 @@
 import { register } from 'node:module'
 register('./stubs/hooks.mjs', import.meta.url)
 
-const { registerTaskTool, agentLabel, projectPathOf } = await import('../../plugin/task-center/tool.mjs')
+const { registerTaskTool, agentLabel, projectPathOf, lossless } = await import('../../plugin/task-center/tool.mjs')
 const { SKILL_NAME, buildSkillContent } = await import('../../plugin/task-center/skill.mjs')
 const { ACTIONS, AGENT_ACTIONS, READ_ACTIONS, USER_ONLY_ACTIONS } = await import('../../plugin/task-center/api.mjs')
 const { ONBOARD_NEXT_CODES } = await import('../../plugin/task-center/onboard.mjs')
@@ -541,6 +541,172 @@ check('create is not concurrency safe', rig.tool.isConcurrencySafe({ action: 'cr
   )
   contractRig.scheduler.dispose()
   emptyRig.scheduler.dispose()
+}
+
+// ── T-220: the tool answer is lossless JSON ────────────────────────────────
+// The host walks the value a tool RETURNS before output.render's JSON.stringify
+// and refuses the whole call on the first undefined / non-finite / -0 / hole /
+// Date / BigInt. The real snapshot carried `timings: undefined`, so openProject
+// and board failed while get/list were fine. These checks pin the walker AND
+// the funnel every answer now leaves through.
+{
+  /** Mirrors the host's strict walker: plain JSON data only, no holes. */
+  function losslessShape(value) {
+    if (value === null) return true
+    const type = typeof value
+    if (type === 'string' || type === 'boolean') return true
+    if (type === 'number') return Number.isFinite(value) && !Object.is(value, -0)
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) return false
+      for (let index = 0; index < value.length; index++) {
+        if (!(index in value)) return false
+        if (!losslessShape(value[index])) return false
+      }
+      return true
+    }
+    if (type === 'object') {
+      const prototype = Object.getPrototypeOf(value)
+      if (prototype !== Object.prototype && prototype !== null) return false
+      return Object.keys(value).every((key) => losslessShape(value[key]))
+    }
+    return false
+  }
+  const roundTrip = (value) => {
+    try {
+      return JSON.parse(JSON.stringify(value))
+    } catch (error) {
+      return null
+    }
+  }
+  const has = (value, key) => Object.prototype.hasOwnProperty.call(value, key)
+
+  // The walker, on a payload shaped like the T-218 failure.
+  const nested = {
+    ok: true,
+    project: '/fake/project',
+    timings: undefined,
+    preflight: { ok: false, detail: undefined, checkedAt: new Date('2026-01-02T03:04:05.000Z') },
+    tasks: [{ id: 'T-1', title: 'card', assignee: undefined, attempts: NaN, tags: [undefined, 'a', , 'b'] }],
+    counts: { pending: 1, running: Infinity, cancelled: -0 },
+  }
+  const cleaned = lossless(nested)
+  check(
+    'T-220 lossless drops undefined object properties (like JSON.stringify)',
+    !has(cleaned, 'timings') && !has(cleaned.preflight, 'detail') && !has(cleaned.tasks[0], 'assignee'),
+    JSON.stringify(cleaned).slice(0, 260),
+  )
+  check(
+    'T-220 lossless maps NaN/Infinity to null and -0 to 0',
+    cleaned.tasks[0].attempts === null && cleaned.counts.running === null && Object.is(cleaned.counts.cancelled, 0) && cleaned.counts.pending === 1,
+    JSON.stringify(cleaned.counts) + ' attempts=' + String(cleaned.tasks[0].attempts),
+  )
+  check(
+    'T-220 lossless keeps array length and fills undefined/holes with null',
+    cleaned.tasks[0].tags.length === 4 && cleaned.tasks[0].tags[0] === null && cleaned.tasks[0].tags[1] === 'a' && cleaned.tasks[0].tags[2] === null && cleaned.tasks[0].tags[3] === 'b',
+    JSON.stringify(cleaned.tasks[0].tags),
+  )
+  check(
+    'T-220 lossless writes a Date as ISO and a BigInt as a decimal string',
+    cleaned.preflight.checkedAt === '2026-01-02T03:04:05.000Z' && lossless(12n) === '12' && lossless(undefined) === null,
+    String(cleaned.preflight.checkedAt) + ' / ' + String(lossless(12n)),
+  )
+  const expectedCleaned = {
+    ok: true,
+    project: '/fake/project',
+    preflight: { ok: false, checkedAt: '2026-01-02T03:04:05.000Z' },
+    tasks: [{ id: 'T-1', title: 'card', attempts: null, tags: [null, 'a', null, 'b'] }],
+    counts: { pending: 1, running: null, cancelled: 0 },
+  }
+  check(
+    'T-220 the cleaned answer is strictly lossless and round-trips',
+    losslessShape(cleaned) && JSON.stringify(roundTrip(cleaned)) === JSON.stringify(expectedCleaned),
+    JSON.stringify(roundTrip(cleaned)),
+  )
+  check(
+    'T-220 lossless leaves the api result untouched',
+    has(nested, 'timings') && nested.tasks[0].assignee === undefined && Number.isNaN(nested.tasks[0].attempts) && nested.preflight.checkedAt instanceof Date,
+    Object.keys(nested).join(','),
+  )
+  check(
+    'T-220 an already-lossless answer comes back unchanged',
+    JSON.stringify(lossless({ ok: true, project: '/p', tasks: [{ id: 'T-1', attempts: 1, tags: ['a', null] }] })) ===
+      JSON.stringify({ ok: true, project: '/p', tasks: [{ id: 'T-1', attempts: 1, tags: ['a', null] }] }),
+  )
+  const hostile = JSON.parse('{"ok":true,"__proto__":{"polluted":true}}')
+  const sanitizedHostile = lossless(hostile)
+  check(
+    'T-220 a literal __proto__ key stays data and cannot pollute prototypes',
+    Object.getPrototypeOf(sanitizedHostile) === Object.prototype &&
+      has(sanitizedHostile, '__proto__') &&
+      {}.polluted === undefined &&
+      JSON.stringify(sanitizedHostile) === '{"ok":true,"__proto__":{"polluted":true}}',
+    JSON.stringify(sanitizedHostile),
+  )
+  const circular = { ok: true }
+  circular.self = circular
+  check('T-220 a circular value cannot throw or hang', lossless(circular).self === null && roundTrip(lossless(circular)) !== null, 'self=' + String(lossless(circular).self))
+
+  // The tool funnel: openProject and board both answer a snapshot-shaped
+  // payload (the real one carries `timings: undefined`).
+  const snapshotPayload = () => ({
+    ok: true,
+    project: '/fake/project',
+    seq: NaN,
+    timings: undefined,
+    tasks: [{ id: 'T-9', title: 'card', assignee: undefined, attempts: Infinity, tags: [undefined, 'a', , 'b'] }],
+    counts: { pending: 1, running: 0 },
+    boardSize: { percent: NaN, level: 'ok' },
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  })
+  const fakeApi = {
+    perform: async (action) => {
+      if (action === 'openProject') return Object.assign(snapshotPayload(), { preflight: { ok: true, openOk: true, openFailed: [], checkedAt: new Date('2026-01-02T03:04:05.000Z') } })
+      if (action === 'board') return snapshotPayload()
+      if (action === 'get') return { ok: true, task: { id: 'T-1', title: 'clean' }, locks: [] }
+      return { ok: false, code: 'unknown-action', message: 'no such action' }
+    },
+  }
+  const fakeTool = registerTaskTool(
+    { tools: { register: (tool) => tool }, sandboxPolicy: { resolve: () => ({ workspaceRoot: '/fake/project' }) } },
+    { api: fakeApi },
+  )
+  const opened = await fakeTool.execute({ action: 'openProject', path: '/fake/project' }, { agent })
+  check(
+    'T-220 the openProject answer is lossless and round-trips',
+    opened.ok === true && losslessShape(opened) && roundTrip(opened) !== null && roundTrip(opened).project === '/fake/project',
+    JSON.stringify(opened).slice(0, 320),
+  )
+  check('T-220 the openProject answer drops the undefined timings field', !has(opened, 'timings'), Object.keys(opened).join(','))
+  check(
+    'T-220 the openProject answer keeps every real field',
+    opened.tasks[0].title === 'card' && opened.tasks[0].tags[2] === null && opened.preflight.checkedAt === '2026-01-02T03:04:05.000Z' && opened.boardSize.percent === null && opened.seq === null,
+    JSON.stringify(opened.tasks[0]) + ' seq=' + String(opened.seq),
+  )
+  const boardAnswer = await fakeTool.execute({ action: 'board' }, { agent })
+  check(
+    'T-220 the board answer is lossless and round-trips',
+    boardAnswer.ok === true && losslessShape(boardAnswer) && roundTrip(boardAnswer) !== null && !has(boardAnswer, 'timings') && boardAnswer.tasks[0].attempts === null,
+    JSON.stringify(boardAnswer).slice(0, 320),
+  )
+  const clean = { ok: true, task: { id: 'T-1', title: 'clean' }, locks: [] }
+  const got = await fakeTool.execute({ action: 'get', id: 'T-1' }, { agent })
+  check('T-220 a normal answer passes through unchanged', JSON.stringify(got) === JSON.stringify(clean), JSON.stringify(got))
+  check('T-220 the tool answer does not alias the api result', got !== clean && got.task !== clean.task, got === clean ? 'same object' : 'copy')
+  const refused = await fakeTool.execute({ action: 'delete', id: 'T-1' }, { agent })
+  check(
+    'T-220 a refusal is lossless too',
+    refused.ok !== true && losslessShape(refused) && roundTrip(refused) !== null && refused.error === 'no such action' && refused.code === 'unknown-action',
+    JSON.stringify(refused).slice(0, 260),
+  )
+
+  // The production path: the REAL snapshot still builds `timings: undefined`,
+  // and board must now answer it without the host rejecting the call.
+  const liveBoard = await call({ action: 'board' })
+  check(
+    'T-220 the real board snapshot answers lossless JSON',
+    liveBoard.ok === true && !has(liveBoard, 'timings') && losslessShape(liveBoard) && roundTrip(liveBoard) !== null,
+    JSON.stringify(Object.keys(liveBoard).slice(0, 12)),
+  )
 }
 
 if (typeof disposer === 'function') disposer()
