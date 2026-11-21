@@ -93,6 +93,38 @@ assert.ok(!text.includes('teamPill'))
 assert.ok(!text.includes('workersTab'))
 console.log('PASS  TaskCenter renders the agent-tree pill and popover, never a team')
 
+// ── T-210: the header is ready from the LIGHT state, not from the inventory ──
+// The light /state carries the session scope while the agent tree is deferred to
+// /meta. The header must render (and the sessions pill must be usable) with the
+// cards; only the deferred agent pill may still say 'loading'. A FAILED
+// metadata request says so instead of spinning forever, and never blocks the
+// board or the header.
+{
+  const lightSnapshot = Object.assign({}, deps.useSnapshot(), {
+    agentTree: { available: false, root: null, members: [], count: 0, error: 'deferred' },
+    scope: { panelSession: 'session-test', currentSessionProject: '/repo', light: true, sessionSummaries: [{ sessionId: 'session-test', status: 'live', cards: { owned: 1, active: 0 } }] },
+    environment: null,
+    worktrees: { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] },
+    metadata: { status: 'loading', errors: {} },
+  })
+  const lightJson = JSON.stringify(createTaskCenter(Object.assign({}, deps, { useSnapshot: () => lightSnapshot }))({}))
+  assert.ok(lightJson.includes('"data-header-ready":"true"'), 'the header is ready before the inventory')
+  assert.ok(lightJson.includes('"data-metadata-state":"loading"'), 'the deferred blocks report their own state')
+  assert.ok(lightJson.includes('"data-sessions-count":"1"'), 'the sessions pill is usable from the light scope')
+  assert.ok(lightJson.includes('"data-sessions-pill":"true"') && !lightJson.includes('"data-sessions-count":"loading"'), 'the sessions pill is NOT waiting for the inventory')
+  assert.ok(lightJson.includes('"data-agent-pill":"loading"'), 'the deferred agent pill is the only thing loading')
+  assert.ok(lightJson.includes('gbt-tabs'), 'the board shell renders while the metadata is still out')
+  console.log('PASS  T-210 the header renders from the light state while the agent tree is deferred')
+
+  const degradedSnapshot = Object.assign({}, lightSnapshot, { metadata: { status: 'degraded', errors: { agentTree: 'host unavailable' } } })
+  const degradedJson = JSON.stringify(createTaskCenter(Object.assign({}, deps, { useSnapshot: () => degradedSnapshot }))({}))
+  assert.ok(degradedJson.includes('"data-header-ready":"true"'), 'a failed metadata request still leaves the header ready')
+  assert.ok(degradedJson.includes('"data-agent-degraded":"true"'), 'the failed deferred block is named as degraded')
+  assert.ok(degradedJson.includes('"data-agent-pill":"none"'), 'a degraded agent pill never reports a fake live count')
+  assert.ok(!degradedJson.includes('"data-agent-pill":"loading"'), 'a degraded agent pill stops spinning')
+  console.log('PASS  T-210 a failed metadata request degrades the agent pill instead of blocking the header')
+}
+
 // T-155: there is exactly ONE workspace switch — the scope bar.
 const mismatchSnapshot = Object.assign({}, deps.useSnapshot(), {
   project: '/repo',

@@ -383,6 +383,163 @@ export function createApi(ctx, options) {
   const notifyTimeoutMs = Number.isFinite(opts.notifyTimeoutMs) ? Math.max(1, Math.floor(opts.notifyTimeoutMs)) : 15 * 1000
   const sleep = typeof opts.sleep === 'function' ? opts.sleep : (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
+
+  // T-210: host-read caches, so one panel poll is not one host inventory.
+  // The full snapshot used to rebuild the SAME host state on every poll: one
+  // subagent listing per session the board mentions (twice when the panel
+  // session was also a card owner) and a DSH sessions-directory scan per
+  // participating session. Both reads are memoised for a short window and
+  // single-flighted, so:
+  //   - a poll inside the window reuses the answer (warm),
+  //   - concurrent requests share ONE host call instead of stacking,
+  //   - /meta can serve a warm answer in well under the 2 s budget.
+  // The window is deliberately short: liveness is stale at most that long.
+  const AGENT_ROWS_TTL_MS = 2500
+  // 30 s: the DSH directory scan is per participating session, so it is the
+  // one read that must not repeat on every metadata rebuild (the panel's own
+  // /state poll is 2.5 s and the metadata window is 10 s). Liveness for a
+  // TAKEOVER never rests on this cache: executor liveness is read fresh.
+  const SESSION_ACTIVE_TTL_MS = 30 * 1000
+  /** How long one /meta answer is reused (all heavy segments at once). */
+  const META_CACHE_TTL_MS = (() => {
+    const raw = Number(process.env.GODOT_BRIDGE_META_TTL_MS)
+    return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 10 * 1000
+  })()
+  const agentRowsCache = new Map()
+  const agentRowsFlights = new Map()
+  const sessionActiveCache = new Map()
+  const metaCache = new Map()
+  const metaFlights = new Map()
+  /** Counters for the timing evidence: a cached read is not a host call. */
+  const hostReads = { agentList: 0, agentListCached: 0, sessionActivity: 0, sessionActivityCached: 0 }
+
+  /**
+   * The subagent rows of ONE root session. One host call per root per window;
+   * a concurrent caller awaits the in-flight read instead of starting another.
+   * A failed read is NOT cached (a later poll may succeed).
+   */
+  async function agentRowsFor(rootId, options) {
+    const o = options === undefined || options === null ? {} : options
+    if (taskAgents === null || taskAgents === undefined) return []
+    const viaListFor = typeof taskAgents.listFor === 'function'
+    const viaRuntime = taskAgents.runtime !== null && taskAgents.runtime !== undefined && typeof taskAgents.runtime.list === 'function'
+    if (viaListFor !== true && viaRuntime !== true) return []
+    if (viaListFor === true && (typeof rootId !== 'string' || rootId === '')) return []
+    const key = typeof rootId === 'string' && rootId !== '' ? rootId : '*'
+    const at = Date.now()
+    const cached = agentRowsCache.get(key)
+    // T-210: a LIVENESS decision (handoff/takeover) reads fresh: a cached
+    // "alive" row must never outlive the child it describes. Display-only
+    // callers (the agent tree pill) use the short window.
+    if (o.fresh !== true && cached !== undefined && at - cached.at < AGENT_ROWS_TTL_MS) {
+      hostReads.agentListCached += 1
+      return cached.rows
+    }
+    const flight = agentRowsFlights.get(key)
+    if (flight !== undefined) {
+      hostReads.agentListCached += 1
+      return flight
+    }
+    hostReads.agentList += 1
+    const promise = (async function () {
+      try {
+        const rows = viaListFor === true ? await taskAgents.listFor(key) : await taskAgents.runtime.list()
+        const list = Array.isArray(rows) ? rows : []
+        agentRowsCache.set(key, { at: Date.now(), rows: list })
+        return list
+      } catch (error) {
+        return []
+      }
+    })()
+    agentRowsFlights.set(key, promise)
+    try {
+      return await promise
+    } finally {
+      if (agentRowsFlights.get(key) === promise) agentRowsFlights.delete(key)
+    }
+  }
+
+  /** The DSH last-activity of ONE session, memoised (the directory scan is O(dirs)). */
+  function sessionActiveCached(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId === '') return null
+    const at = Date.now()
+    const cached = sessionActiveCache.get(sessionId)
+    if (cached !== undefined && at - cached.at < SESSION_ACTIVE_TTL_MS) {
+      hostReads.sessionActivityCached += 1
+      return cached.value
+    }
+    hostReads.sessionActivity += 1
+    let value = null
+    try {
+      value = typeof sessionLastActiveAt === 'function' ? sessionLastActiveAt(sessionId) : null
+    } catch (error) {
+      value = null
+    }
+    sessionActiveCache.set(sessionId, { at: Date.now(), value: value })
+    return value
+  }
+
+  /**
+   * Per-request timing collector. `segments` is filled by guardedSegment() and
+   * measure(); finish() adds the host-call counters of THIS request, which is
+   * what tells a serial host call apart from a cache hit.
+   */
+  function createTiming() {
+    const segments = {}
+    const baseline = Object.assign({}, hostReads)
+    const startedAt = Date.now()
+    return {
+      segments: segments,
+      async measure(name, work) {
+        const started = Date.now()
+        try {
+          return await work()
+        } finally {
+          segments[name] = (segments[name] === undefined ? 0 : segments[name]) + (Date.now() - started)
+        }
+      },
+      note(name, ms) {
+        segments[name] = (segments[name] === undefined ? 0 : segments[name]) + ms
+      },
+      finish() {
+        return {
+          segments: Object.assign({}, segments),
+          counts: {
+            agentList: hostReads.agentList - baseline.agentList,
+            agentListCached: hostReads.agentListCached - baseline.agentListCached,
+            sessionActivity: hostReads.sessionActivity - baseline.sessionActivity,
+            sessionActivityCached: hostReads.sessionActivityCached - baseline.sessionActivityCached,
+          },
+          totalMs: Date.now() - startedAt,
+        }
+      },
+    }
+  }
+
+  /**
+   * One independent metadata segment. A failure is NAMED in errors and answered
+   * with its deferred/unavailable fallback, so a broken host read can never take
+   * the other segments (or the board) down with it.
+   */
+  async function guardedSegment(errors, segments, name, fallback, work) {
+    const started = Date.now()
+    try {
+      const value = await work()
+      return value === undefined ? fallback : value
+    } catch (error) {
+      errors[name] = messageOf(error)
+      return fallback
+    } finally {
+      if (segments !== null && segments !== undefined) segments[name] = (segments[name] === undefined ? 0 : segments[name]) + (Date.now() - started)
+    }
+  }
+
+  /** The deferred shapes every answer uses (they are part of the wire contract). */
+  const DEFERRED_AGENT_TREE = { available: false, root: null, members: [], count: 0, error: 'deferred' }
+  const DEFERRED_WORKTREES = { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] }
+  const DEFERRED_ARCHIVE = { archivedCount: null, archiveRange: null, archiveYears: [] }
+  const METADATA_FIELDS = ['scope', 'agentTree', 'worktrees', 'environment', 'activityEvents', 'roles', 'rolePreviews', 'decisionPolicy', 'archive', 'nextStep']
+
   // T-197: the STABLE event keys of the requirement packet (§3.10). The API names
   // them; the scheduler owns their policy, labels and auto actions, and /state
   // reports the decision it wrote, so the two sides share the key, not the rules.
@@ -2842,24 +2999,39 @@ export function createApi(ctx, options) {
    * owners); a caller that already read it passes it in so one snapshot reads it
    * once. Also feeds sessionSummaries, so liveness has ONE definition.
    */
-  /** Live child Session ids per root, for the cards on this board. */
+  /**
+   * Live child Session ids per root, for the cards on this board.
+   *
+   * T-210: the roots are read CONCURRENTLY. The old loop awaited one host
+   * listing per owner session one after another, which on a board with many
+   * owners turned the metadata build into a serial chain of host round-trips.
+   * The listings themselves are shared with the agent tree (agentRowsFor), so
+   * the panel session is not read twice in one answer.
+   */
   async function aliveIdsByRoot(board) {
-    const byRoot = new Map()
+    const roots = []
     for (const task of board !== null && board !== undefined && Array.isArray(board.tasks) ? board.tasks : []) {
       const rootId = typeof task.ownerSession === 'string' && task.ownerSession !== '' ? task.ownerSession : null
-      if (rootId === null || byRoot.has(rootId)) continue
-      byRoot.set(rootId, null)
-      if (taskAgents === null || typeof taskAgents.listFor !== 'function') continue
-      try {
-        const rows = await taskAgents.listFor(rootId)
-        if (!Array.isArray(rows)) continue
-        const ids = new Set()
-        for (const row of rows) {
-          if (row === null || row === undefined || row.kind !== 'child') continue
-          ids.add(String(row.id))
-        }
-        byRoot.set(rootId, ids)
-      } catch (error) {}
+      if (rootId === null || roots.indexOf(rootId) >= 0) continue
+      roots.push(rootId)
+    }
+    const byRoot = new Map()
+    if (roots.length === 0) return byRoot
+    // Fresh reads: this feeds the handoff/takeover eligibility, which must never act
+    // on a cached liveness answer.
+    const lists = await Promise.all(roots.map((rootId) => agentRowsFor(rootId, { fresh: true })))
+    for (let index = 0; index < roots.length; index += 1) {
+      const rows = lists[index]
+      if (!Array.isArray(rows)) {
+        byRoot.set(roots[index], null)
+        continue
+      }
+      const ids = new Set()
+      for (const row of rows) {
+        if (row === null || row === undefined || row.kind !== 'child') continue
+        ids.add(String(row.id))
+      }
+      byRoot.set(roots[index], ids)
     }
     return byRoot
   }
@@ -2883,7 +3055,9 @@ export function createApi(ctx, options) {
       sessionId: sessionId,
       decisions: decisions,
       now: clock(),
-      sessionActiveAtOf: (id) => (typeof sessionLastActiveAt === 'function' ? sessionLastActiveAt(id) : null),
+      // T-210: one memoised DSH activity read per session per window, not one
+      // uncached directory scan per participating session on every poll.
+      sessionActiveAtOf: (id) => sessionActiveCached(id),
       executorStatesOf: (task) => executorStatesOf(task, aliveByRoot.get(task !== null && task !== undefined ? task.ownerSession : null)),
     })
   }
@@ -2990,7 +3164,31 @@ export function createApi(ctx, options) {
     }
     // One handoff pass for the whole answer: /state is polled every few seconds,
     // and the inventory is the only place liveness is derived.
-    const handoff = await handoffOf(projectPath, board, panelSession, sessions)
+    //
+    // T-210 LIGHT scope: the first-paint answer never reads the host's agent tree
+    // (one subagent listing per owner session) and never scans the DSH sessions
+    // directory. Liveness falls back to the registry/lease evidence the polls
+    // refresh anyway, and eligibility stays UNEVALUATED (null): a partial
+    // inventory must never look like a takeover clearance. The full scope, with
+    // executor liveness and eligibility, is what /meta answers.
+    const light = o.light === true
+    const handoff = light
+      ? Object.assign(
+          buildHandoff({
+            board: board,
+            sessions: sessions,
+            sessionId: panelSession,
+            decisions:
+              board !== null && board !== undefined && board.handoff !== null && board.handoff !== undefined && board.handoff.sessions !== null && typeof board.handoff.sessions === 'object'
+                ? board.handoff.sessions
+                : {},
+            now: clock(),
+            sessionActiveAtOf: () => null,
+            executorStatesOf: () => [],
+          }),
+          { eligibility: null, partial: true },
+        )
+      : await handoffOf(projectPath, board, panelSession, sessions)
     return {
       boardProject: { id: ref.id, root: ref.root },
       panelSession: panelSession,
@@ -3002,6 +3200,10 @@ export function createApi(ctx, options) {
       // 'registry' | 'board-owners' | 'none' — where the participation set came from.
       projectSessionsSource: read.source,
       panelSessionParticipates: panelSessionParticipates,
+      // T-210: 'registry' means the status is registry/lease evidence only;
+      // 'host' means the DSH session directory was read too.
+      livenessSource: light ? 'registry' : 'host',
+      light: light,
       sessionSummaries: o.summaries === false ? [] : await sessionSummariesOf(projectPath, board, sessions, handoff.sessions, {
         // The panel renders each session's own project from the board root; the
         // per-session workspace lookup is only for direct API readers. On /state
@@ -3392,11 +3594,9 @@ export function createApi(ctx, options) {
       }
     }
     try {
-      const rows = typeof taskAgents.listFor === 'function'
-        ? await taskAgents.listFor(panelSession)
-        : taskAgents.runtime !== null && taskAgents.runtime !== undefined && typeof taskAgents.runtime.list === 'function'
-          ? await taskAgents.runtime.list()
-          : []
+      // T-210: the SAME cached listing the handoff inventory reads; the panel
+      // session's tree is therefore one host call per window, not one per answer.
+      const rows = await agentRowsFor(panelSession)
       const members = (Array.isArray(rows) ? rows : []).map((row) => {
         const id = row !== null && row !== undefined && row.id !== undefined
           ? String(row.id)
@@ -3440,6 +3640,169 @@ export function createApi(ctx, options) {
     }
   }
 
+  /**
+   * T-210: the dispatcher's panel block, or null when it cannot answer. The
+   * board's first paint must not depend on the scheduler being healthy.
+   */
+  function schedulerStatusOf(projectPath) {
+    if (scheduler === null || scheduler === undefined || typeof scheduler.status !== 'function') return null
+    try {
+      return scheduler.status(projectPath)
+    } catch (error) {
+      return null
+    }
+  }
+
+  /**
+   * T-210: the DEFERRED half of one snapshot — every block a first paint does
+   * not need. The segments are independent and read CONCURRENTLY; each failure
+   * is NAMED in `errors` and answered with its deferred fallback, so a broken
+   * host/fs/git read can never take the board (or another segment) down.
+   */
+  async function heavyMetadataOf(projectPath, board, now, options) {
+    const o = options === undefined || options === null ? {} : options
+    const panelSession = typeof o.sessionId === 'string' && o.sessionId !== '' ? o.sessionId : null
+    const segments = o.segments === undefined ? null : o.segments
+    const errors = o.errors === undefined || o.errors === null ? {} : o.errors
+    const resolveSessionProjects = o.resolveSessionProjects !== false
+    const outcomes = await Promise.all([
+      guardedSegment(errors, segments, 'scope', null, () =>
+        projectScopeOf(projectPath, board, panelSession, { resolveSessionProjects: resolveSessionProjects }),
+      ),
+      guardedSegment(errors, segments, 'agentTree', DEFERRED_AGENT_TREE, () => agentTreeSnapshot(panelSession, board)),
+      guardedSegment(errors, segments, 'worktreeSnapshot', DEFERRED_WORKTREES, () => worktreeSnapshot(projectPath, board)),
+      guardedSegment(errors, segments, 'environmentSnapshot', null, () => environmentSnapshot(projectPath, now, board)),
+      guardedSegment(errors, segments, 'roles', { config: null }, () => readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })),
+      guardedSegment(errors, segments, 'archive', DEFERRED_ARCHIVE, () => archiveInfo(projectPath, now)),
+      guardedSegment(errors, segments, 'decisionPolicy', null, () => currentDecisionPolicyView(projectPath)),
+    ])
+    const scope = outcomes[0]
+    const roleRead = outcomes[4]
+    let rolePreviews = null
+    try {
+      rolePreviews = roleRead === null || roleRead === undefined ? null : rolePreviewsFor(projectPath, roleRead.config)
+    } catch (error) {
+      errors.rolePreviews = messageOf(error)
+    }
+    let nextStep = null
+    try {
+      nextStep = scope === null ? null : nextStepForScope(scope, null)
+    } catch (error) {
+      errors.nextStep = messageOf(error)
+    }
+    return {
+      scope: scope,
+      agentTree: outcomes[1],
+      worktrees: outcomes[2],
+      environment: outcomes[3],
+      roles: roleRead === null || roleRead === undefined ? null : roleRead.config,
+      rolePreviews: rolePreviews,
+      archive: outcomes[5],
+      decisionPolicy: outcomes[6],
+      nextStep: nextStep,
+      errors: errors,
+    }
+  }
+
+  /**
+   * T-210: the /meta answer — the deferred half of the snapshot on its own.
+   *
+   *   - the heavy inventory never blocks the board or the header any more;
+   *   - a short TTL cache + ONE in-flight build per project+session: the 2.5 s
+   *     poll reads a warm answer instead of rebuilding a host inventory, and
+   *     two overlapping polls share a single build (`cache: 'shared'`);
+   *   - `timings=1` attributes the build per segment and counts host calls, so
+   *     a serial host read is visible instead of guessed at;
+   *   - a failing segment degrades only itself (`errors`), never the board.
+   * The activity timeline stays request-scoped because it carries a cursor.
+   */
+  async function metadata(projectPath, options) {
+    const opts = options === undefined || options === null ? {} : options
+    projectPath = resolve(projectPath)
+    const panelSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
+    const timer = opts.timings === true ? createTiming() : null
+    const segments = timer === null ? null : timer.segments
+    const readStarted = Date.now()
+    const read = await readBoardOrFail(projectPath)
+    if (read.failed !== undefined) return read.failed
+    const board = read.board
+    const now = clock()
+    if (segments !== null) segments.board = Date.now() - readStarted
+    const projectRef = projectRefOf(projectPath)
+    const key = projectRef.id + '|' + (panelSession === null ? '' : panelSession)
+    const fresh = opts.refresh === true
+    let cache = 'miss'
+    let value = null
+    const cached = metaCache.get(key)
+    if (fresh !== true && cached !== undefined && Date.now() - cached.at < META_CACHE_TTL_MS) {
+      value = cached.value
+      cache = 'hit'
+    }
+    if (value === null) {
+      const flight = metaFlights.get(key)
+      if (flight !== undefined) {
+        // Two polls overlap: the second waits for the SAME build instead of
+        // starting a second host inventory.
+        value = await flight
+        cache = 'shared'
+      } else {
+        const promise = heavyMetadataOf(projectPath, board, now, {
+          sessionId: panelSession,
+          resolveSessionProjects: opts.resolveSessionProjects !== false,
+          segments: segments,
+          errors: {},
+        })
+        metaFlights.set(key, promise)
+        try {
+          value = await promise
+          metaCache.set(key, { at: Date.now(), value: value })
+        } finally {
+          if (metaFlights.get(key) === promise) metaFlights.delete(key)
+        }
+      }
+    }
+    // A per-request copy: the cached build's errors must never absorb this
+    // request's activity failure.
+    const errors = Object.assign({}, value.errors)
+    const activity = await guardedSegment(
+      errors,
+      segments,
+      'activity',
+      { available: false, error: 'failed', source: 'board', limit: 0, count: 0, total: 0, truncated: false, cursor: null, entries: [] },
+      () =>
+        boardTimeline(board, {
+          since: typeof opts.activitySince === 'string' ? opts.activitySince : null,
+          limit: Number.isFinite(opts.activityLimit) ? opts.activityLimit : undefined,
+        }),
+    )
+    const archive = value.archive === null || value.archive === undefined ? DEFERRED_ARCHIVE : value.archive
+    const payload = {
+      project: projectPath,
+      projectId: projectRef.id,
+      projectRoot: projectRef.root,
+      resolvedFrom: opts.resolvedFrom === undefined ? 'explicit' : opts.resolvedFrom,
+      cache: cache,
+      meta: {
+        scope: value.scope,
+        agentTree: value.agentTree,
+        worktrees: value.worktrees,
+        environment: value.environment,
+        roles: value.roles,
+        rolePreviews: value.rolePreviews,
+        archivedCount: archive.archivedCount,
+        archiveRange: archive.archiveRange,
+        decisionPolicy: value.decisionPolicy,
+        activityEvents: activity,
+        nextStep: value.nextStep,
+      },
+      errors: errors,
+      metadata: { split: true, deferred: [], errors: errors },
+      serverTime: new Date(now).toISOString(),
+    }
+    if (timer !== null) payload.timings = timer.finish()
+    return ok(payload)
+  }
+
   async function snapshot(projectPath, options) {
     const opts = options === undefined || options === null ? {} : options
     // T-152: the panel session is resolved ONCE. Every block below either speaks
@@ -3447,12 +3810,25 @@ export function createApi(ctx, options) {
     const panelSession = typeof opts.sessionId === 'string' && opts.sessionId !== '' ? opts.sessionId : null
     const summaryOnly = opts.full === false
     // Core is the first-paint answer: board + counts + dispatch, no host-wide
-    // session/worktree/environment/agent inventory. The panel immediately renders
-    // it, then asks for the full snapshot in the background.
+    // session/worktree/environment/agent inventory.
     const core = opts.core === true
+    // T-210 LIGHT first paint: the board + counts + dispatch AND the light
+    // project/session scope, so the header is ready the moment the cards are.
+    // Everything that is a host inventory (agent tree, worktrees, environment,
+    // activity timeline, roles, decision policy, archive) is deferred to the
+    // /meta endpoint, which the panel loads independently and which cannot
+    // block the board.
+    const light = opts.light === true
+    const deferred = core === true || light === true
+    // T-210: opt-in per-segment timings (`/state?...&timings=1`), so a slow
+    // answer can be ATTRIBUTED instead of guessed at.
+    const timer = opts.timings === true ? createTiming() : null
+    const segments = timer === null ? null : timer.segments
     projectPath = resolve(projectPath)
+    const readStarted = Date.now()
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
+    if (segments !== null) segments.board = Date.now() - readStarted
     const board = read.board
     const now = clock()
     // Reconcile the in-memory locks against THIS board read before doing any
@@ -3460,15 +3836,6 @@ export function createApi(ctx, options) {
     // a pending task, and the stale board would then drop its locks.
     state.sweepLocks()
     reconcileLocks(board)
-    const archive = core
-      ? { archivedCount: null, archiveRange: null, archiveYears: [] }
-      : await archiveInfo(projectPath, now)
-    const roleRead = core
-      ? { config: null }
-      : await readRoleConfig({ fs: ctx.fs }, { projectPath: projectPath })
-    const worktrees = core
-      ? { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] }
-      : await worktreeSnapshot(projectPath, board)
     const isoOf = (slot) => (slot === null || slot.at === null ? null : new Date(slot.at).toISOString())
     const buildTask = (task) => {
       const view = summaryOnly
@@ -3487,6 +3854,7 @@ export function createApi(ctx, options) {
       if (view.test !== null && view.test !== undefined) view.test = Object.assign({}, view.test, { deliveredAt: isoOf(testSlot) })
       return view
     }
+    const tasksStarted = Date.now()
     const allTasks = board.tasks
       .slice()
       .sort((left, right) => {
@@ -3494,6 +3862,9 @@ export function createApi(ctx, options) {
         return rank !== 0 ? rank : left.id.localeCompare(right.id)
       })
       .map(buildTask)
+    if (segments !== null) segments.tasks = Date.now() - tasksStarted
+    // T-210: the decision sweep is a server deadline, so it stays on the light
+    // answer; its cost is measured apart from the board.
     let tasks = allTasks
     let removed = []
     let full = true
@@ -3553,12 +3924,15 @@ export function createApi(ctx, options) {
       // part of the panel contract (done before cancelled).
       tasks = allTasks.filter((task) => task.status !== 'done' || keepDone.has(String(task.id)))
     }
+    const boardSizeStarted = Date.now()
     const boardSize = await boardSizeOf(projectPath, board)
+    if (segments !== null) segments.boardSize = Date.now() - boardSizeStarted
     // T-195: the modal queue. The sweep runs on every snapshot so a SERVER
     // deadline is real even when no panel is polling; it only writes when a
     // deadline actually passed, so a 2.5s poll does not churn the file.
     let pendingDecisions = []
     let decisionsError = null
+    const decisionsStarted = Date.now()
     try {
       const swept = await decisionStore.sweep(projectPath)
       if (swept.ok === true) {
@@ -3573,14 +3947,35 @@ export function createApi(ctx, options) {
     } catch (error) {
       decisionsError = 'unreadable'
     }
+    if (segments !== null) segments.decisions = Date.now() - decisionsStarted
     const registryStatus = typeof state.registryStatus === 'function' ? state.registryStatus() : null
     const projectRef = projectRefOf(projectPath)
+    // T-210: the deferred half of the snapshot, built ONCE for both callers and
+    // — for a full snapshot — CONCURRENTLY (the segments share no state; the old
+    // serial chain only added their latencies together).
+    const heavyErrors = {}
+    let heavy = null
+    if (deferred !== true) {
+      heavy = await heavyMetadataOf(projectPath, board, now, {
+        sessionId: panelSession,
+        resolveSessionProjects: opts.resolveSessionProjects !== false,
+        segments: segments,
+        errors: heavyErrors,
+      })
+    }
     // T-152: the project/session scopes are an EXPLICIT source, not something the
     // panel has to infer from "the current team". The board belongs to the
     // project; each participating session owns its own team and its own cards.
-    const scope = core ? null : await projectScopeOf(projectPath, board, panelSession, {
-      resolveSessionProjects: opts.resolveSessionProjects !== false,
-    })
+    //
+    // T-210: the light answer reads the LIGHT scope (registry evidence, no host
+    // inventory); a failure degrades to null without taking the board down.
+    let scope = null
+    if (heavy !== null) scope = heavy.scope
+    else if (light === true) {
+      scope = await guardedSegment(heavyErrors, segments, 'scope', null, () =>
+        projectScopeOf(projectPath, board, panelSession, { light: true, resolveSessionProjects: opts.resolveSessionProjects !== false }),
+      )
+    }
     // T-152: consistency is about THIS board vs THIS panel session — never about
     // which project the host happened to drive last. activeProjects[0] is gone
     // from this decision: a host that recently drove another project is not a
@@ -3618,21 +4013,33 @@ export function createApi(ctx, options) {
       seq: seq,
       full: full,
       removed: removed,
-      archivedCount: archive.archivedCount,
-      archiveRange: archive.archiveRange,
+      // T-210: the archive index is part of the deferred metadata (the cards do
+      // not need it); a light answer names it as deferred instead of guessing 0.
+      archivedCount: heavy === null ? DEFERRED_ARCHIVE.archivedCount : heavy.archive.archivedCount,
+      archiveRange: heavy === null ? DEFERRED_ARCHIVE.archiveRange : heavy.archive.archiveRange,
       updatedAt: board.updatedAt,
       dispatch: board.dispatch,
-      roles: core ? null : roleRead.config,
-      rolePreviews: core ? null : rolePreviewsFor(projectPath, roleRead.config),
-      worktrees: worktrees,
+      roles: heavy === null ? null : heavy.roles,
+      rolePreviews: heavy === null ? null : heavy.rolePreviews,
+      worktrees: heavy === null ? DEFERRED_WORKTREES : heavy.worktrees,
       activity: activitySnapshot(),
       // T-111: the status timeline is DERIVED from the board (task history + merge
       // records) on every request, so it survives restarts and no heartbeat can
       // flush it. `since` makes the answer incremental.
-      activityEvents: core ? null : boardTimeline(board, {
-        since: typeof opts.activitySince === 'string' ? opts.activitySince : null,
-        limit: Number.isFinite(opts.activityLimit) ? opts.activityLimit : undefined,
-      }),
+      activityEvents:
+        deferred === true
+          ? null
+          : await (timer === null
+              ? boardTimeline(board, {
+                  since: typeof opts.activitySince === 'string' ? opts.activitySince : null,
+                  limit: Number.isFinite(opts.activityLimit) ? opts.activityLimit : undefined,
+                })
+              : timer.measure('activity', () =>
+                  boardTimeline(board, {
+                    since: typeof opts.activitySince === 'string' ? opts.activitySince : null,
+                    limit: Number.isFinite(opts.activityLimit) ? opts.activityLimit : undefined,
+                  }),
+                )),
       // Sweep telemetry (merged/skipped counts) — deliberately NOT an event.
       lastSweep: state !== null && state !== undefined && state.memory !== undefined && state.memory.lastSweep !== undefined ? state.memory.lastSweep : null,
       counts: model.counts(board),
@@ -3649,31 +4056,41 @@ export function createApi(ctx, options) {
       queue: model.readyTasks(board).map((task) => model.summary(board, task, now)),
       // T-154: the REAL merge queue, read from the merger that owns it. A host
       // without a merger answers null — never a fabricated zero.
-      mergeQueue: mergerQueueStatus(),
+      mergeQueue: timer === null ? mergerQueueStatus() : await timer.measure('mergeQueue', () => mergerQueueStatus()),
       // T-195: pending host decisions (one-shot, server deadline). Resolved
       // history is served by decisionList, not by the polling snapshot.
       decisions: pendingDecisions,
       decisionsError: decisionsError,
       // T-198: the resolved decision policy (global default + project override)
       // the settings page edits. Deferred from the core first paint like roles.
-      decisionPolicy: core ? null : await currentDecisionPolicyView(projectPath),
+      decisionPolicy: heavy === null ? null : heavy.decisionPolicy,
       tasks: tasks,
       locks: locks.view(state.memory.locks, board, now).map((lock) =>
         Object.assign({}, lock, { waiters: lockWaiters(board, lock) }),
       ),
       // T-130: the panel's scheduler block (including its environment) is scoped
       // to the project this snapshot is for.
-      scheduler: scheduler === null ? null : scheduler.status(projectPath),
+      // T-210: a dispatcher that throws is a MISSING block, never a dead board.
+      scheduler: schedulerStatusOf(projectPath),
       // T-108: "is the main tree clean, and when was that checked" — the panel uses
       // it to tell a merge-window blip from a really dirty checkout.
-      environment: core ? null : await environmentSnapshot(projectPath, now, board),
+      environment: heavy === null ? null : heavy.environment,
       // v3: the live execution tree is the root Agent plus every live descendant.
       // It is the only membership view the new panel uses; `team` below remains
       // for the old direct API surface until that surface is deleted.
-      agentTree: core
-        ? { available: false, root: null, members: [], count: 0, error: 'deferred' }
-        : await agentTreeSnapshot(panelSession, board),
-      nextStep: core ? null : nextStepForScope(scope, null),
+      agentTree: heavy === null ? DEFERRED_AGENT_TREE : heavy.agentTree,
+      nextStep: heavy === null ? null : heavy.nextStep,
+      // T-210: what this answer DEFERRED, and which deferred segment failed.
+      // `split` is the host capability the panel keys the /meta request on.
+      metadata: {
+        split: true,
+        light: light === true,
+        deferred: deferred === true ? METADATA_FIELDS.slice() : [],
+        errors: heavyErrors,
+      },
+      // Present only when the caller asked for timings (`&timings=1`); the
+      // unrequested payload must not grow.
+      timings: timer === null ? undefined : timer.finish(),
       serverTime: new Date(now).toISOString(),
     })
   }
@@ -6571,6 +6988,9 @@ export function createApi(ctx, options) {
   return {
     perform: perform,
     snapshot: snapshot,
+    // T-210: the deferred half of the snapshot, served independently so the
+    // first paint and the header never wait for a host inventory.
+    metadata: metadata,
     worktrees: worktreesProbe,
     taskDetail: taskDetail,
     taskList: taskList,

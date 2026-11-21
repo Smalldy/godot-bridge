@@ -3587,11 +3587,26 @@ const createTaskStore = (function () {
 			// already have and ask only for events after the last one we saw.
 			let activityCursor = null
 			let activityLog = []
-			// First paint: fire a core /state (board + counts, no host inventory)
-			// alongside the full snapshot. Whichever arrives first renders; the
-			// full answer then replaces/merges it. This keeps the panel usable
-			// while the scope/session metadata is still loading.
-			let coreTried = false
+			// T-210: the deferred metadata (agent tree, worktrees, environment, the
+			// activity timeline, roles, decision policy, archive) is its own request.
+			// `light=1` /state answers with the board AND the light session scope, so
+			// the cards and the header are ready immediately; the metadata is merged
+			// in when it arrives and NEVER blocks the board or the ready state.
+			//
+			// /meta is derived from /state so the two halves can never point at
+			// different routes (the bundle has no second constant to keep in sync).
+			const TC_META_URL = TC_STATE_URL.replace(/\/state\/?$/, '/meta')
+			// The host advertises the split on every answer (`metadata.split`). An
+			// older host that omits it is never asked for /meta: the full /state it
+			// answered already carries everything.
+			let metaSupported = false
+			let metaCache = null
+			let metaErrors = {}
+			// idle | loading | ready | degraded — the view reports it as
+			// data-metadata-state so 'header ready' never means 'inventory done'.
+			let metaStatus = 'idle'
+			let metaAt = 0
+			let metaFlight = null
 			const listeners = new Set()
 			let loading = null
 			let timer = null
@@ -3623,16 +3638,68 @@ const createTaskStore = (function () {
 			}
 
 			function emit(next) {
-				snapshot = Object.assign({}, next, { busy: busy })
+				snapshot = applyMetadata(Object.assign({}, next, { busy: busy }))
 				listeners.forEach(function (listener) {
 					listener()
 				})
+			}
+
+			/** Does this Host advertise the split (/state light + /meta deferred)? */
+			function isMetaSplit(payload) {
+				return (
+					payload !== null &&
+					typeof payload === 'object' &&
+					payload.metadata !== null &&
+					typeof payload.metadata === 'object' &&
+					payload.metadata.split === true
+				)
 			}
 
 			function setBusy(next) {
 				if (busy === next) return
 				busy = next
 				emit(snapshot)
+			}
+
+			/**
+			 * T-210: merge the last GOOD metadata answer onto a snapshot.
+			 *
+			 * A light /state answer carries the board and the light scope; the heavy
+			 * blocks come from /meta (or from an older Host's full answer). A full
+			 * rebuild drops the heavy fields, so this re-applies the cached ones
+			 * instead of flashing them to null. A FAILED metadata request changes
+			 * nothing here: the board keeps rendering and `metadata.status` says
+			 * 'degraded', so the view can word the affected pill instead of spinning.
+			 */
+			function applyMetadata(next) {
+				next.metadata = {
+					status: metaStatus,
+					errors: metaErrors,
+					receivedAt: metaAt === 0 ? null : metaAt,
+				}
+				if (metaCache === null) return next
+				if (metaCache.scope !== undefined && metaCache.scope !== null) next.scope = metaCache.scope
+				if (metaCache.agentTree !== undefined && metaCache.agentTree !== null) next.agentTree = metaCache.agentTree
+				if (metaCache.worktrees !== undefined && metaCache.worktrees !== null) next.worktrees = metaCache.worktrees
+				if (metaCache.environment !== undefined) next.environment = metaCache.environment
+				if (metaCache.roles !== undefined) next.roles = metaCache.roles
+				if (metaCache.rolePreviews !== undefined) next.rolePreviews = metaCache.rolePreviews
+				if (metaCache.decisionPolicy !== undefined && metaCache.decisionPolicy !== null) next.decisionPolicy = metaCache.decisionPolicy
+				if (metaCache.archivedCount !== undefined && metaCache.archivedCount !== null) next.archivedCount = metaCache.archivedCount
+				if (metaCache.archiveRange !== undefined && metaCache.archiveRange !== null) next.archiveRange = metaCache.archiveRange
+				if (metaCache.nextStep !== undefined) next.nextStep = metaCache.nextStep
+				if (activityLog.length > 0) {
+					next.activityEvents = {
+						available: true,
+						source: 'board',
+						entries: activityLog.slice(0, 50),
+						count: Math.min(activityLog.length, 50),
+						total: activityLog.length,
+						truncated: false,
+						cursor: activityCursor,
+					}
+				}
+				return next
 			}
 
 			/**
@@ -3661,6 +3728,83 @@ const createTaskStore = (function () {
 				return await response.json()
 			}
 
+			/** Accumulate the Host's incremental activity page (cursor + dedupe by key). */
+			function absorbActivity(events) {
+				if (events === null || events === undefined || !Array.isArray(events.entries)) return
+				const known = new Set(activityLog.map(function (entry) { return entry.key }))
+				events.entries.forEach(function (entry) {
+					if (entry !== null && typeof entry === 'object' && typeof entry.key === 'string' && !known.has(entry.key)) activityLog.push(entry)
+				})
+				activityLog.sort(function (left, right) { return new Date(right.at).getTime() - new Date(left.at).getTime() })
+				activityLog = activityLog.slice(0, 100)
+				if (typeof events.cursor === 'string' && events.cursor !== '') activityCursor = events.cursor
+			}
+
+			/** The /meta URL for the CURRENT project + session (the activity cursor rides it). */
+			function metaUrlFor() {
+				const pinned = tcPinnedProject()
+				let url = pinned === null ? TC_META_URL : TC_META_URL + '?project=' + encodeURIComponent(pinned)
+				if (activityCursor !== null) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'activitySince=' + encodeURIComponent(activityCursor)
+				return tcWithSession(url)
+			}
+
+			/** Drop the cached metadata when the panel starts describing another project. */
+			function resetMeta() {
+				metaCache = null
+				metaErrors = {}
+				metaStatus = 'idle'
+				metaAt = 0
+			}
+
+			/**
+			 * T-210: load the DEFERRED metadata. Single flight, never awaited by the
+			 * board's render path. A failure degrades only the deferred blocks: the
+			 * snapshot keeps its board, its light scope and its 'ready' state.
+			 */
+			async function loadMeta() {
+				if (metaSupported !== true) return null
+				if (snapshot.project === null || snapshot.project === undefined) return null
+				if (metaFlight !== null) return metaFlight
+				if (metaStatus === 'idle') {
+					metaStatus = 'loading'
+					emit(snapshot)
+				}
+				metaFlight = (async function () {
+					try {
+						const payload = await fetchJson(metaUrlFor(), { headers: { accept: 'application/json' } })
+						if (payload === null || payload === undefined || payload.ok !== true) {
+							metaStatus = 'degraded'
+							metaErrors =
+								payload !== null && payload !== undefined && payload.errors !== null && typeof payload.errors === 'object'
+									? payload.errors
+									: payload !== null && payload !== undefined && typeof payload.message === 'string' && payload.message !== ''
+										? { message: payload.message }
+										: {}
+							emit(snapshot)
+							return { ok: false, payload: payload === undefined ? null : payload }
+						}
+						if (isMetaSplit(payload)) metaSupported = true
+						const meta = payload.meta !== undefined && payload.meta !== null && typeof payload.meta === 'object' ? payload.meta : null
+						absorbActivity(meta === null ? null : meta.activityEvents)
+						metaCache = meta
+						metaErrors = payload.errors !== undefined && payload.errors !== null && typeof payload.errors === 'object' ? payload.errors : {}
+						metaAt = Date.now()
+						metaStatus = Object.keys(metaErrors).length > 0 ? 'degraded' : 'ready'
+						emit(snapshot)
+						return { ok: true, payload: payload }
+					} catch (error) {
+						// A transport failure is a DEGRADED metadata state, never a board error.
+						metaStatus = 'degraded'
+						metaErrors = { message: String((error && error.message) || error) }
+						emit(snapshot)
+						return { ok: false, error: error }
+					} finally {
+						metaFlight = null
+					}
+				})()
+				return metaFlight
+			}
+
 			async function load() {
 				if (loading !== null) return loading
 				// No pin means NO ?project=: the Host resolves the session workspace and
@@ -3669,30 +3813,13 @@ const createTaskStore = (function () {
 				// The v3 panel consumes agentTree/scope; the snapshot no longer carries
 				// any Team inventory, so there is no opt-out to ask for.
 				let url = pinned === null ? TC_STATE_URL : TC_STATE_URL + '?project=' + encodeURIComponent(pinned)
-				if (snapshot.seq !== null && snapshot.seq !== undefined) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'since=' + String(snapshot.seq)
-				if (activityCursor !== null) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'activitySince=' + encodeURIComponent(activityCursor)
+				// T-210: the light first paint. The heavy metadata (agent tree, worktrees,
+				// environment, activity timeline, roles, decision policy, archive) is a
+				// SEPARATE request, so this answer is never held up by a host inventory.
+				url += (url.indexOf('?') >= 0 ? '&' : '?') + 'light=1'
+				if (snapshot.seq !== null && snapshot.seq !== undefined) url += '&since=' + String(snapshot.seq)
 				url = tcWithSession(url)
-				// Core first paint runs in parallel with the full request. It only
-				// lands while the panel is still on its initial skeleton.
-				if (!coreTried && snapshot.source === 'loading' && typeof window !== 'undefined' && window !== null) {
-					coreTried = true
-					const coreUrl = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'core=1'
-					void (async function () {
-						try {
-							const corePayload = await fetchJson(coreUrl, { headers: { accept: 'application/json' } })
-							if (snapshot.source !== 'loading') return
-							if (corePayload && corePayload.ok === true && Array.isArray(corePayload.tasks)) {
-								// Never paint an empty core board over a known non-empty board:
-								// a zero-task delta/edge answer is not useful as first paint.
-								const total = corePayload.counts !== null && corePayload.counts !== undefined && Number.isFinite(corePayload.counts.total) ? corePayload.counts.total : 0
-								if (corePayload.tasks.length === 0 && total > 0) return
-								emit(withDecisions(tcSnapshot(corePayload, 'host', ''), corePayload))
-							}
-						} catch (error) {
-							/* the full request below is the fallback */
-						}
-					})()
-				}
+				// T-210: NO second first-paint request. `light=1` IS the first paint.
 				loading = (async function () {
 					try {
 						const payload = await fetchJson(url, { headers: { accept: 'application/json' } })
@@ -3709,6 +3836,11 @@ const createTaskStore = (function () {
 							unbound.actionResult = snapshot.actionResult
 							unbound.actionError = snapshot.actionError
 							messageKind = null
+							// T-210: no project means no metadata to show (and none from the
+							// project the panel was on before).
+							resetMeta()
+							activityLog = []
+							activityCursor = null
 							emit(unbound)
 						} else if (payload && payload.ok === true && (Array.isArray(payload.tasks) || payload.full === false)) {
 							// The Host's answer is NOT written to localStorage: only an explicit
@@ -3721,19 +3853,16 @@ const createTaskStore = (function () {
 							if (next.project !== snapshot.project) {
 								activityLog = []
 								activityCursor = null
+								// T-210: the deferred blocks describe the OLD project; drop them.
+								resetMeta()
 								// T-208: decision ids are project-scoped; an id answered in project A
 								// must not block the same id in project B.
 								answeredDecisions.clear()
 							}
-							if (payload.activityEvents !== undefined && payload.activityEvents !== null && Array.isArray(payload.activityEvents.entries)) {
-								const known = new Set(activityLog.map(function (entry) { return entry.key }))
-								payload.activityEvents.entries.forEach(function (entry) {
-									if (entry !== null && typeof entry === 'object' && typeof entry.key === 'string' && !known.has(entry.key)) activityLog.push(entry)
-								})
-								activityLog.sort(function (left, right) { return new Date(right.at).getTime() - new Date(left.at).getTime() })
-								activityLog = activityLog.slice(0, 100)
-								if (typeof payload.activityEvents.cursor === 'string' && payload.activityEvents.cursor !== '') activityCursor = payload.activityEvents.cursor
-							}
+							// An OLDER Host answers /state with the activity timeline itself; a
+							// split Host sends it from /meta (absorbed in loadMeta).
+							if (payload.activityEvents !== undefined && payload.activityEvents !== null) absorbActivity(payload.activityEvents)
+							if (isMetaSplit(payload)) metaSupported = true
 							if (next.activityEvents !== null && next.activityEvents !== undefined) {
 								next.activityEvents = Object.assign({}, next.activityEvents, { entries: activityLog.slice(0, 50) })
 							}
@@ -3746,6 +3875,10 @@ const createTaskStore = (function () {
 							next.message = messageKind === 'action' ? snapshot.message : ''
 							if (messageKind !== 'action') messageKind = null
 							emit(next)
+							// T-210: the board (and the header's base facts) are painted; the
+							// deferred metadata is refreshed in the BACKGROUND and can fail
+							// without touching the board or the ready state.
+							void loadMeta()
 						} else {
 							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
 							failed.decisions = snapshot.decisions
@@ -3830,7 +3963,15 @@ const createTaskStore = (function () {
 								messageKind = null
 							}
 							if (decisionId !== null) answeredDecisions.add(decisionId)
+							// An action's answer (or openProject's full snapshot) also advertises
+							// the split; learn it here so a panel that bound a project before its
+							// first poll still asks for the deferred half.
+							if (isMetaSplit(host) || isMetaSplit(payload)) metaSupported = true
 							emit(next)
+							// T-210: an action changes host state (worktrees, environment, roles).
+							// Refresh the deferred blocks in the background; the action answer
+							// itself only carried the light board.
+							void loadMeta()
 						} else if (decisionId !== null) {
 							// T-208: the answer response carries no snapshot. Drop the answered
 							// request from the queue right away so BOTH surfaces advance to the
@@ -3987,7 +4128,10 @@ const createTaskStore = (function () {
 					source: snapshot.source === 'setup' || snapshot.source === 'error' ? 'host' : snapshot.source,
 				})
 				if (explicit) bound.message = ''
+				// T-210: the metadata cache belongs to the OLD project.
+				resetMeta()
 				emit(bound)
+				void loadMeta()
 				return result
 			}
 
@@ -4037,6 +4181,9 @@ const createTaskStore = (function () {
 					return snapshot
 				},
 				load: load,
+				// T-210: the deferred metadata can also be refreshed on its own (the
+				// panel's refresh action calls load(), which polls both halves).
+				loadMeta: loadMeta,
 				loadDecisions: loadDecisions,
 				send: send,
 				loadWorktrees: loadWorktrees,
@@ -11016,15 +11163,26 @@ function createTaskCenter(deps) {
 		const projectLabel = projectName === null ? t('projectUnknown') : projectName
 		const panelSessionId = scopePanelSession
 		const copySessionValue = panelSessionId === null ? '' : panelSessionId
-		// The pill reports the live tree, not a team. While the core snapshot is
-		// still missing scope/agentTree it shows a spinner instead of a fake zero.
-		const metadataLoading = scope === null || agentTree.error === 'deferred'
-		const agentsState = metadataLoading ? 'loading' : agentTree.root !== null ? 'ready' : 'none'
-		const agentsPillLabel = metadataLoading
+		// T-210: the header no longer waits for the full /state. The light answer
+		// carries the session scope, so the sessions pill is ready with the cards;
+		// the agent tree arrives separately from /meta. While that deferred block
+		// is loading only ITS OWN pill spins — and if it fails it says so instead
+		// of spinning forever or reporting a fake zero.
+		const metadata = snapshot.metadata !== null && snapshot.metadata !== undefined && typeof snapshot.metadata === 'object' ? snapshot.metadata : null
+		const metadataStatus = metadata === null || typeof metadata.status !== 'string' ? 'unknown' : metadata.status
+		// 'deferred' is what a light /state answers for the heavy blocks.
+		const agentTreeDeferred = agentTree.error === 'deferred'
+		const sessionsLoading = scope === null
+		const agentsPending = agentTreeDeferred && (metadataStatus === 'idle' || metadataStatus === 'loading' || metadataStatus === 'unknown')
+		const agentsDegraded = agentTreeDeferred && (metadataStatus === 'degraded' || metadataStatus === 'failed')
+		const agentsState = agentsPending ? 'loading' : agentTree.root !== null ? 'ready' : 'none'
+		const agentsPillLabel = agentsPending
 			? t('loading')
-			: agentsState === 'ready'
-				? t('agentsPillRoot').replace('{n}', String(agentTree.members.length))
-				: t('agentsPillNone')
+			: agentsDegraded
+				? t('agentsPillNone')
+				: agentsState === 'ready'
+					? t('agentsPillRoot').replace('{n}', String(agentTree.members.length))
+					: t('agentsPillNone')
 		const dispatchCap = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
 		const sourceBadge =
 			boardSourceLabel === null
@@ -11054,16 +11212,16 @@ function createTaskCenter(deps) {
 				type: 'button',
 				className: 'gbt-chip gbt-chipbtn gbt-sessionschip',
 				'data-sessions-pill': 'true',
-				'data-sessions-count': metadataLoading ? 'loading' : String(scopeSessions.length),
-				'data-loading': metadataLoading ? 'true' : undefined,
-				'aria-busy': metadataLoading ? 'true' : undefined,
+				'data-sessions-count': sessionsLoading ? 'loading' : String(scopeSessions.length),
+				'data-loading': sessionsLoading ? 'true' : undefined,
+				'aria-busy': sessionsLoading ? 'true' : undefined,
 				'aria-haspopup': 'dialog',
 				'aria-expanded': sessionsOpen ? 'true' : 'false',
-				disabled: metadataLoading,
-				title: metadataLoading ? t('loading') : t('sessionsHint'),
+				disabled: sessionsLoading,
+				title: sessionsLoading ? t('loading') : t('sessionsHint'),
 				onClick: function () { setSessionsOpen(!sessionsOpen) },
 			},
-			metadataLoading
+			sessionsLoading
 				? [h('span', { key: 'spin', className: 'gbt-spinner', 'aria-hidden': 'true' }), h('span', { key: 'text' }, t('loading'))]
 				: [
 					scopeSessions.length === 0
@@ -11075,7 +11233,7 @@ function createTaskCenter(deps) {
 		)
 		const currentPill =
 			panelSessionId === null
-				? metadataLoading
+				? sessionsLoading
 					? h('span', { className: 'gbt-chip gbt-currentsession', 'data-current-session-loading': 'true', 'aria-busy': 'true' }, h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' }), h('span', null, t('loading')))
 					: null
 				: h('span', { className: 'gbt-chip gbt-currentsession', 'data-current-session': panelSessionId, title: panelSessionId }, h('span', { className: 'gbt-dot', 'data-running': 'true' }), h('b', { className: 'gbt-mono' }, sessionShortOf(panelSessionId)), h('span', { className: 'gbt-tag' }, t('sessionsCurrent')))
@@ -11101,17 +11259,21 @@ function createTaskCenter(deps) {
 				type: 'button',
 				className: 'gbt-chip gbt-chipbtn gbt-agentpill',
 				'data-agent-pill': agentsState,
+				// T-210: the deferred agent tree has its OWN progress/degraded markers;
+				// it never gates the sessions pill, the tabs or the board.
+				'data-agent-deferred': agentTreeDeferred ? 'true' : undefined,
+				'data-agent-degraded': agentsDegraded ? 'true' : undefined,
 				'data-agent-root': agentTree.root !== null && typeof agentTree.root.name === 'string' ? agentTree.root.name : '',
-				'data-agent-live': metadataLoading ? 'loading' : String(agentTree.members.length),
-				'data-loading': metadataLoading ? 'true' : undefined,
-				'aria-busy': metadataLoading ? 'true' : undefined,
+				'data-agent-live': agentsPending ? 'loading' : String(agentTree.members.length),
+				'data-loading': agentsPending ? 'true' : undefined,
+				'aria-busy': agentsPending ? 'true' : undefined,
 				'aria-haspopup': 'dialog',
 				'aria-expanded': agentsOpen ? 'true' : 'false',
-				disabled: metadataLoading,
-				title: metadataLoading ? t('loading') : t('agentsPopoverTitle'),
+				disabled: agentsPending,
+				title: agentsPending ? t('loading') : agentsDegraded ? t('agentsUnavailable') : t('agentsPopoverTitle'),
 				onClick: function () { setAgentsOpen(!agentsOpen) },
 			},
-			metadataLoading
+			agentsPending
 				? h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' })
 				: h('span', { className: 'gbt-dot', 'data-running': agentsState === 'ready' ? 'true' : 'false' }),
 			h('span', null, agentsPillLabel),
@@ -11283,7 +11445,15 @@ function createTaskCenter(deps) {
 			h('div', { className: 'gbt-topactions' }, newTaskButton, moreMenu),
 		)
 		const toolbarRow = h('div', { className: 'gbt-toolbar' }, tabsView, h('div', { className: 'gbt-toolbarright' }, refreshButton, kindFilterBar))
-		const header = h('header', { className: 'gbt-header gbt-headertwo', 'data-header-rows': '2' }, topRow, toolbarRow)
+		// T-210: `data-metadata-state` is the evidence that 'header ready' does not
+		// mean 'host inventory done': the header renders from the light /state, and
+		// the deferred blocks report idle/loading/ready/degraded independently.
+		const header = h(
+			'header',
+			{ className: 'gbt-header gbt-headertwo', 'data-header-rows': '2', 'data-metadata-state': metadataStatus, 'data-header-ready': sessionsLoading ? 'false' : 'true' },
+			topRow,
+			toolbarRow,
+		)
 		const footer = h(
 			'footer',
 			{ className: 'gbt-statusbar', 'data-panel-footer': 'true' },
@@ -11482,7 +11652,7 @@ function createTaskCenter(deps) {
 
 		return h(
 			'div',
-			{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center', 'data-tc-theme': theme },
+			{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center', 'data-tc-theme': theme, 'data-metadata-state': metadataStatus },
 			header,
 			environmentBar,
 			busyBar,
