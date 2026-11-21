@@ -320,6 +320,11 @@ export function registerTaskRoutes(ctx, options) {
         // is session-scoped instead of falling back to "some Lead".
         sessionId: sessionId,
         resolvedFrom: target.resolvedFrom,
+        // T-210 review: the PANEL's openProject answer is the LIGHT snapshot, so
+        // opening/switching a project paints the board + header without waiting
+        // for the host inventory; /meta supplies the deferred half. The tool path
+        // passes no flag and keeps its full answer.
+        snapshotDelivery: action === 'openProject' ? 'light' : undefined,
       })
       // T-129: the onboard answer is deliberately small (brief + next); the panel
       // must not be handed a whole board snapshot next to it.

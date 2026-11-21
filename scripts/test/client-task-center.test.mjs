@@ -101,6 +101,9 @@ console.log('PASS  TaskCenter renders the agent-tree pill and popover, never a t
 // board or the header.
 {
   const lightSnapshot = Object.assign({}, deps.useSnapshot(), {
+    // The board is already here while the deferred pill still loads.
+    counts: { total: 1, running: 1 },
+    tasks: [{ id: 'T-1', status: 'running', title: 'repo-card', ownerSession: 'session-test' }],
     agentTree: { available: false, root: null, members: [], count: 0, error: 'deferred' },
     scope: { panelSession: 'session-test', currentSessionProject: '/repo', light: true, sessionSummaries: [{ sessionId: 'session-test', status: 'live', cards: { owned: 1, active: 0 } }] },
     environment: null,
@@ -114,6 +117,7 @@ console.log('PASS  TaskCenter renders the agent-tree pill and popover, never a t
   assert.ok(lightJson.includes('"data-sessions-pill":"true"') && !lightJson.includes('"data-sessions-count":"loading"'), 'the sessions pill is NOT waiting for the inventory')
   assert.ok(lightJson.includes('"data-agent-pill":"loading"'), 'the deferred agent pill is the only thing loading')
   assert.ok(lightJson.includes('gbt-tabs'), 'the board shell renders while the metadata is still out')
+  assert.ok(lightJson.includes('repo-card'), 'the cards render while the deferred pill loads (no host inventory wait)')
   console.log('PASS  T-210 the header renders from the light state while the agent tree is deferred')
 
   const degradedSnapshot = Object.assign({}, lightSnapshot, { metadata: { status: 'degraded', errors: { agentTree: 'host unavailable' } } })

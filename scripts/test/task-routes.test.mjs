@@ -3,6 +3,7 @@
 // teams / agents / team) must not come back; the panel reads agentTree + scope.
 
 import { registerTaskRoutes, STATE_PATH, META_PATH, ACTION_PATH, TASK_PATH, LIST_PATH, WORKTREES_PATH, DIAGNOSTICS_PATH } from '../../plugin/task-center/routes.mjs'
+import { pruneBoundedCache } from '../../plugin/task-center/api.mjs'
 import { createFakeTaskAgents, createRig, createTask, PROJECT, seedBoard } from './support/fixtures.mjs'
 
 let failures = 0
@@ -451,6 +452,54 @@ const lightSurface = install(lightRig)
   check('T-210 /meta without a session is unbound, never a last-active project', unboundMeta.json().ok === false && unboundMeta.json().code === 'no-project-bound' && unboundMeta.json().resolvedFrom === 'unbound', unboundMeta.text)
   const unknownSession = await callRaw(lightSurface, META_PATH + '?session=' + encodeURIComponent('web-unknown-session'), {})
   check('T-210 /meta with an unknown session is unbound too', unknownSession.json().code === 'no-project-bound' && unknownSession.json().resolvedFrom === 'unbound', unknownSession.text)
+  // T-210 review: opening/switching a project must paint from the LIGHT answer.
+  // The panel's openProject used to carry the full snapshot (agent tree, worktrees,
+  // environment, roles...): the new board waited for the host inventory. The
+  // route now asks the action for the light delivery; preflight/registry stay.
+  {
+    const postLight = async (body) => {
+      const res = response()
+      await lightSurface.byPath.get(ACTION_PATH).handler(
+        request(ACTION_PATH + '?session=' + encodeURIComponent(TEST_SESSION), { method: 'POST', body: body, headers: { 'content-type': 'application/json' } }),
+        res,
+      )
+      return res
+    }
+    listForCalls = 0
+    const opened = await postLight({ action: 'openProject', path: lightRig.project })
+    const openedPayload = opened.json()
+    check('T-210 an openProject through the panel answers', openedPayload.ok === true && openedPayload.project === PROJECT, opened.text.substring(0, 300))
+    check(
+      'T-210 the openProject answer is the LIGHT snapshot',
+      openedPayload.agentTree.available === false && openedPayload.agentTree.error === 'deferred' && openedPayload.worktrees.error === 'deferred' && openedPayload.environment === null,
+      JSON.stringify({ agentTree: openedPayload.agentTree, worktrees: openedPayload.worktrees, environment: openedPayload.environment }),
+    )
+    check('T-210 the openProject answer keeps preflight and the registry', openedPayload.preflight !== null && typeof openedPayload.preflight === 'object' && typeof openedPayload.preflight.ok === 'boolean' && openedPayload.registry !== undefined, JSON.stringify(openedPayload.preflight).substring(0, 200))
+    check('T-210 opening a project reads NO host inventory', listForCalls === 0, String(listForCalls))
+    check('T-210 the openProject answer still carries the board and the header base', Array.isArray(openedPayload.tasks) && openedPayload.scope !== null && openedPayload.metadata.split === true, JSON.stringify(openedPayload.metadata))
+    const afterOpen = (await call(lightSurface, META_PATH + '?refresh=1', {})).json()
+    check('T-210 the deferred half is ONE /meta request away after opening', afterOpen.ok === true && afterOpen.meta.agentTree !== undefined && afterOpen.meta.scope !== null && listForCalls >= 1, JSON.stringify({ ok: afterOpen.ok, calls: listForCalls }))
+    console.log('PASS  T-210 opening a project paints the light board; /meta supplies the inventory')
+  }
+
+  // T-210 review: the memo caches are bounded (a long-lived host cycles projects).
+  {
+    const cache = new Map()
+    cache.set('expired', { at: 1000 })
+    cache.set('fresh', { at: 9000 })
+    const size = pruneBoundedCache(cache, { ttlMs: 5000, now: 10000, limit: 10 })
+    check('T-210 a memo cache drops expired entries', size === 1 && !cache.has('expired') && cache.has('fresh'), JSON.stringify(Array.from(cache.keys())))
+    const bounded = new Map()
+    for (let index = 0; index < 10; index += 1) bounded.set('k' + String(index), { at: 1000 + index })
+    pruneBoundedCache(bounded, { ttlMs: 60000, now: 2000, limit: 4 })
+    check(
+      'T-210 a memo cache keeps only the newest N entries',
+      bounded.size === 4 && bounded.has('k9') && bounded.has('k6') && !bounded.has('k5'),
+      JSON.stringify(Array.from(bounded.keys())),
+    )
+    console.log('PASS  T-210 the new memo caches are bounded')
+  }
+
   console.log('PASS  T-210 the metadata half keeps the T-203 rule (no session, no fallback)')
 }
 
@@ -459,27 +508,39 @@ const lightSurface = install(lightRig)
 // the board does not share. `metadata()` must still answer the rest (scope,
 // agent tree, worktrees, activity), name the failed segment in `errors`, and
 // leave the light /state path untouched.
+// A production-shaped 200-card board: full histories and realistic text, so the
+// budget below is measured on a board the size of the reported 4 MB one (the
+// entry/byte counts are printed so a regression is visible, not just a pass).
 function seedManyCards(rig, count) {
   const tasks = []
+  const detail = 'the work is done and proven by the suite; '
   for (let index = 1; index <= count; index += 1) {
     const status = index <= count - 40 ? 'done' : index <= count - 20 ? 'pending' : 'blocked'
+    const stamp = '2026-01-' + String((index % 9) + 1).padStart(2, '0') + 'T00:00:00.000Z'
     tasks.push({
       id: 'T-' + String(index),
-      title: 'Card ' + String(index),
+      title: 'Card ' + String(index) + ' ' + detail.repeat(4),
       kind: 'dev',
       status: status,
       priority: 30,
       createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-' + String((index % 9) + 1).padStart(2, '0') + 'T00:00:00.000Z',
+      updatedAt: stamp,
       history: [
         { at: '2026-01-02T00:00:00.000Z', from: null, to: 'pending', note: 'created' },
-        { at: '2026-01-03T00:00:00.000Z', from: 'pending', to: status, note: 'moved by the host' },
+        { at: '2026-01-03T00:00:00.000Z', from: 'pending', to: 'running', note: 'dispatched to a worker by the host' },
+        { at: '2026-01-04T00:00:00.000Z', from: 'running', to: 'reviewing', note: 'submitted with evidence ' + detail.repeat(8) },
+        { at: '2026-01-05T00:00:00.000Z', from: 'reviewing', to: 'testing', note: 'approved ' + detail.repeat(8) },
+        { at: '2026-01-06T00:00:00.000Z', from: 'testing', to: 'done', note: 'passed ' + detail.repeat(8) },
+        { at: '2026-01-07T00:00:00.000Z', from: 'done', to: status, note: 'final ' + detail.repeat(4) },
       ],
-      acceptance: 'the card is checked',
-      spec: 'do the work and prove it',
+      acceptance: 'the card is checked ' + detail.repeat(10),
+      spec: 'do the work and prove it ' + detail.repeat(14),
+      writeFiles: ['plugin/task-center/api.mjs'],
     })
   }
-  seedBoard(rig.fs, PROJECT, JSON.stringify({ version: 1, tasks }))
+  const text = JSON.stringify({ version: 1, tasks })
+  seedBoard(rig.fs, PROJECT, text)
+  return text.length
 }
 {
   const brokenRig = createRig({ taskAgents: createFakeTaskAgents() })
@@ -502,14 +563,16 @@ function seedManyCards(rig, count) {
 // 200-card board. Both are measured through the real route handlers.
 {
   const perfRig = createRig({ taskAgents: createFakeTaskAgents() })
-  seedManyCards(perfRig, 200)
+  const boardBytes = seedManyCards(perfRig, 200)
   const perfSurface = install(perfRig)
   const coreStarted = Date.now()
   const coreRes = await call(perfSurface, STATE_PATH + '?light=1&timings=1', {})
   const coreMs = Date.now() - coreStarted
   const corePayload = coreRes.json()
   check('T-210 the 200-card light answer is complete', corePayload.ok === true && corePayload.counts.total === 200, JSON.stringify(corePayload.counts))
+  const coreBytes = JSON.stringify(corePayload).length
   check('T-210 the 200-card core answer is under 200 ms', coreMs < 200, String(coreMs) + 'ms  segments=' + JSON.stringify(corePayload.timings === undefined ? null : corePayload.timings.segments))
+  check('T-210 the light answer stays a fraction of the board', corePayload.tasks.length <= 200 && coreBytes < boardBytes, 'payload=' + String(coreBytes) + 'B board=' + String(boardBytes) + 'B')
   // Cold metadata first (the cache is per project+session, the previous blocks
   // used another project), then the WARM answer the 2.5 s poll sees.
   await call(perfSurface, META_PATH, {})
@@ -519,7 +582,9 @@ function seedManyCards(rig, count) {
   const warmPayload = warmRes.json()
   check('T-210 the warm 200-card metadata is a cache hit', warmPayload.ok === true && warmPayload.cache === 'hit', warmPayload.cache)
   check('T-210 the warm 200-card metadata is under 2 s', warmMs < 2000, String(warmMs) + 'ms  segments=' + JSON.stringify(warmPayload.timings === undefined ? null : warmPayload.timings.segments))
-  console.log('PASS  T-210 200 cards: core ' + String(coreMs) + 'ms (<200), warm metadata ' + String(warmMs) + 'ms (<2000)')
+  console.log(
+    'PASS  T-210 200 cards: core ' + String(coreMs) + 'ms (<200, ' + String(coreBytes) + 'B), warm metadata ' + String(warmMs) + 'ms (<2000, ' + String(JSON.stringify(warmPayload).length) + 'B), board ' + String(boardBytes) + 'B',
+  )
 }
 
 console.log(failures === 0 ? '\nPASS  task routes (v3 snapshot)' : '\nFAIL  ' + String(failures) + ' route check(s)')

@@ -162,6 +162,33 @@ function failure(code, message, extra) {
   return Object.assign({ ok: false, code: code, message: message }, extra === undefined ? {} : extra)
 }
 
+/**
+ * T-210: keep one memo map bounded. Expired entries are dropped first, then the
+ * NEWEST `limit` entries survive (the caches are keyed by project|session, and a
+ * long-lived host that cycles projects must not grow them without bound).
+ * Exported so the bound is unit-testable without reaching into the closure.
+ */
+export function pruneBoundedCache(cache, options) {
+  const o = options === undefined || options === null ? {} : options
+  const now = Number.isFinite(o.now) ? o.now : Date.now()
+  const ttlMs = Number.isFinite(o.ttlMs) ? o.ttlMs : 0
+  const limit = Number.isFinite(o.limit) && o.limit > 0 ? Math.floor(o.limit) : 0
+  if (ttlMs > 0) {
+    for (const [key, entry] of cache) {
+      const at = entry !== null && entry !== undefined && Number.isFinite(entry.at) ? entry.at : 0
+      if (now - at > ttlMs) cache.delete(key)
+    }
+  }
+  if (limit > 0 && cache.size > limit) {
+    const entries = Array.from(cache.entries()).sort((left, right) => {
+      const leftAt = left[1] !== null && left[1] !== undefined && Number.isFinite(left[1].at) ? left[1].at : 0
+      const rightAt = right[1] !== null && right[1] !== undefined && Number.isFinite(right[1].at) ? right[1].at : 0
+      return leftAt - rightAt
+    })
+    for (const [key] of entries.slice(0, cache.size - limit)) cache.delete(key)
+  }
+  return cache.size
+}
 function ok(payload) {
   return Object.assign({ ok: true }, payload === undefined ? {} : payload)
 }
@@ -446,6 +473,7 @@ export function createApi(ctx, options) {
         const rows = viaListFor === true ? await taskAgents.listFor(key) : await taskAgents.runtime.list()
         const list = Array.isArray(rows) ? rows : []
         agentRowsCache.set(key, { at: Date.now(), rows: list })
+        pruneBoundedCache(agentRowsCache, { ttlMs: AGENT_ROWS_TTL_MS, limit: 256 })
         return list
       } catch (error) {
         return []
@@ -476,6 +504,7 @@ export function createApi(ctx, options) {
       value = null
     }
     sessionActiveCache.set(sessionId, { at: Date.now(), value: value })
+    pruneBoundedCache(sessionActiveCache, { ttlMs: SESSION_ACTIVE_TTL_MS, limit: 512 })
     return value
   }
 
@@ -498,9 +527,7 @@ export function createApi(ctx, options) {
           segments[name] = (segments[name] === undefined ? 0 : segments[name]) + (Date.now() - started)
         }
       },
-      note(name, ms) {
-        segments[name] = (segments[name] === undefined ? 0 : segments[name]) + ms
-      },
+
       finish() {
         return {
           segments: Object.assign({}, segments),
@@ -3733,6 +3760,10 @@ export function createApi(ctx, options) {
     const fresh = opts.refresh === true
     let cache = 'miss'
     let value = null
+    // T-210 review: an explicit refresh INVALIDATES the entry first, so a later
+    // poll cannot be served the pre-action build even if this request joins an
+    // in-flight build.
+    if (fresh === true) metaCache.delete(key)
     const cached = metaCache.get(key)
     if (fresh !== true && cached !== undefined && Date.now() - cached.at < META_CACHE_TTL_MS) {
       value = cached.value
@@ -3756,6 +3787,7 @@ export function createApi(ctx, options) {
         try {
           value = await promise
           metaCache.set(key, { at: Date.now(), value: value })
+          pruneBoundedCache(metaCache, { ttlMs: META_CACHE_TTL_MS, limit: 64 })
         } finally {
           if (metaFlights.get(key) === promise) metaFlights.delete(key)
         }

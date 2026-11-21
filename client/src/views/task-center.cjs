@@ -632,7 +632,7 @@ function createTaskCenter(deps) {
 		)
 		const newTaskButton = h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'new-task', disabled: snapshot.project === null, onClick: function () { startEdit(null) } }, '+ ' + t('newTask'))
 		const menuItems = [
-			['refresh', t('refresh'), function () { closePopovers(); void store.load() }],
+			['refresh', t('refresh'), function () { closePopovers(); void store.load({ refresh: true }) }],
 			['project', t('project'), function () { closePopovers(); openProjectDialog() }],
 			['settings', t('settings'), function () { closePopovers(); setSettingsOpen(true) }],
 			['copy-session-id', t('copySessionId'), function () { copySessionId(copySessionValue) }],
@@ -650,7 +650,9 @@ function createTaskCenter(deps) {
 				}),
 			),
 		)
-		const refreshButton = h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'refresh', title: t('refresh'), onClick: function () { void store.load() } }, '↻')
+		// T-210 review: the refresh action also forces the deferred metadata to be rebuilt
+		// (the host serves a short-TTL cached inventory to the routine poll).
+		const refreshButton = h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'refresh', title: t('refresh'), onClick: function () { void store.load({ refresh: true }) } }, '↻')
 		const kindFilterBar = h(
 			'div',
 			{ className: 'gbt-kindfilter', 'data-kind-filter': panelBoardUi.kind, title: t('kindFilterHint') },

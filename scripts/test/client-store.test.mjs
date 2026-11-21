@@ -278,6 +278,111 @@ console.log('PASS  one shared store serializes decision answers (panel modal + s
   console.log('PASS  T-210 the activity timeline stays incremental on its own endpoint')
 }
 
+// ── T-210 review: a project switch must never paint the old project's metadata ──
+// openProject answers with the NEW project's light board while the pin (and the
+// store's cached metadata) still describe the old one. The deferred blocks must
+// belong to the project on screen, and the NEW project's /meta must be requested.
+{
+  const routes = new Map()
+  const requests = []
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    const key = text.split('?')[0]
+    requests.push(text)
+    const handler = routes.get(key)
+    if (handler === undefined) throw new Error('unexpected request: ' + text)
+    return { json: async () => (typeof handler === 'function' ? handler(text) : handler) }
+  }
+  const light = (project) => ({
+    ok: true,
+    full: true,
+    project: project,
+    projectRoot: project,
+    resolvedFrom: 'session',
+    sessionProject: project,
+    counts: { total: 1 },
+    tasks: [{ id: 'T-1', status: 'running', title: 'card of ' + project }],
+    scope: { boardProject: { id: project, root: project }, panelSession: 'session-test', sessionSummaries: [{ sessionId: 'session-test', status: 'live' }], currentSessionProject: project, light: true },
+    agentTree: { available: false, root: null, members: [], count: 0, error: 'deferred' },
+    worktrees: { available: false, error: 'deferred', total: null, active: null, counts: null, worktrees: [] },
+    metadata: { split: true, light: true, deferred: ['agentTree', 'worktrees'] },
+  })
+  const metaFor = (project, agent) => ({
+    ok: true,
+    project: project,
+    cache: 'hit',
+    meta: {
+      scope: { boardProject: { id: project, root: project }, panelSession: 'session-test', sessionSummaries: [], currentSessionProject: project, light: false },
+      agentTree: { available: true, root: { id: 'session-test', name: agent }, members: [], count: 0, error: null },
+      worktrees: { available: true, error: null, total: 0, active: 0, counts: {}, worktrees: [] },
+      environment: { clean: true, project: project },
+      roles: { version: 1 },
+      archivedCount: 0,
+      activityEvents: { available: true, source: 'board', cursor: project + '|c', count: 0, entries: [] },
+      decisionPolicy: { version: 1 },
+    },
+    errors: {},
+    metadata: { split: true, deferred: [] },
+  })
+  function projectOf(url) {
+    const match = /[?&]project=([^&]+)/.exec(url)
+    return match === null ? null : decodeURIComponent(match[1])
+  }
+  routes.set('/state', () => light('/repo-a'))
+  routes.set('/meta', (url) => {
+    const project = projectOf(url)
+    return metaFor(project === null ? '/repo-a' : project, project === '/repo-b' ? 'agent-b' : 'agent-a')
+  })
+  routes.set('/action', () => ({ ok: true, snapshot: light('/repo-b') }))
+  const switchStore = createTaskStore((key) => key, deps)
+  await switchStore.load()
+  await switchStore.loadMeta()
+  assert.equal(switchStore.getSnapshot().agentTree.root.name, 'agent-a', 'the first project metadata lands')
+  assert.equal(switchStore.getSnapshot().environment.project, '/repo-a')
+
+  const switched = await switchStore.switchProject('/repo-b')
+  assert.equal(switched.ok, true)
+  const during = switchStore.getSnapshot()
+  assert.equal(during.project, '/repo-b', 'the switch shows the new project')
+  assert.ok(
+    during.agentTree === undefined || during.agentTree === null || during.agentTree.root === null || during.agentTree.root.name !== 'agent-a',
+    'project A\'s agent tree is never painted onto project B: ' + JSON.stringify(during.agentTree),
+  )
+  assert.equal(during.environment === null || during.environment === undefined, true, 'project A\'s environment is never painted onto project B')
+  const metaCalls = requests.filter((url) => url.indexOf('/meta') === 0)
+  assert.ok(
+    metaCalls.some((url) => projectOf(url) === '/repo-b'),
+    'the NEW project metadata is requested after the switch: ' + JSON.stringify(metaCalls),
+  )
+  assert.equal(
+    metaCalls.filter((url) => projectOf(url) === '/repo-a').length,
+    1,
+    'the old project metadata is never re-requested by the switch: ' + JSON.stringify(metaCalls),
+  )
+  await switchStore.loadMeta()
+  const settled = switchStore.getSnapshot()
+  assert.equal(settled.agentTree.root.name, 'agent-b', 'the new project\'s agent tree lands')
+  assert.equal(settled.environment.project, '/repo-b')
+  assert.equal(settled.metadata.status, 'ready')
+  assert.equal(JSON.stringify(settled.agentTree).indexOf('agent-a') < 0, true, 'no project A data survives the switch')
+  console.log('PASS  T-210 review: a project switch loads the NEW project metadata and never re-paints the old one')
+
+  // An ACTION forces the deferred metadata to be rebuilt (no pre-action 10 s cache).
+  requests.length = 0
+  routes.set('/action', () => ({ ok: true, snapshot: light('/repo-b') }))
+  await switchStore.send('pause', {})
+  const afterAction = requests.filter((url) => url.indexOf('/meta') === 0)
+  assert.ok(afterAction.length >= 1, 'an action refreshes the deferred metadata')
+  assert.ok(afterAction[afterAction.length - 1].indexOf('refresh=1') > 0, 'the action refresh bypasses the host cache: ' + afterAction[afterAction.length - 1])
+
+  // The panel's explicit refresh does the same through load({ refresh: true }).
+  requests.length = 0
+  await switchStore.load({ refresh: true })
+  const afterRefresh = requests.filter((url) => url.indexOf('/meta') === 0)
+  assert.ok(afterRefresh.length >= 1 && afterRefresh[afterRefresh.length - 1].indexOf('refresh=1') > 0, 'the explicit refresh forces a rebuild: ' + JSON.stringify(afterRefresh))
+  console.log('PASS  T-210 review: action and explicit refresh force a fresh metadata build')
+}
+
 const poll = globalThis.setInterval
 let polls = 0
 globalThis.setInterval = (fn, ms) => {

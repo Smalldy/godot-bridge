@@ -3606,7 +3606,15 @@ const createTaskStore = (function () {
 			// data-metadata-state so 'header ready' never means 'inventory done'.
 			let metaStatus = 'idle'
 			let metaAt = 0
+			// The project the cached answer DESCRIBES. A metadata answer is only ever
+			// merged onto a snapshot of the same project (a project switch must never
+			// paint project A's agent tree onto project B's board).
+			let metaProject = null
+			// { key, refresh, promise } — one metadata request per project.
 			let metaFlight = null
+			// The newest metadata request owns the snapshot; an older answer is
+			// discarded instead of overwriting it.
+			let metaSeq = 0
 			const listeners = new Set()
 			let loading = null
 			let timer = null
@@ -3672,12 +3680,15 @@ const createTaskStore = (function () {
 			 * 'degraded', so the view can word the affected pill instead of spinning.
 			 */
 			function applyMetadata(next) {
-				next.metadata = {
-					status: metaStatus,
-					errors: metaErrors,
-					receivedAt: metaAt === 0 ? null : metaAt,
-				}
-				if (metaCache === null) return next
+				// T-210 review: NEVER merge an answer that describes another project.
+				// The status is scoped the same way, so a switch shows "loading" for the
+				// new board instead of the old board's ready/degraded state.
+				const project = projectKeyOf(next.project)
+				const projectMatches = project !== null && metaProject !== null && project === metaProject
+				next.metadata = projectMatches
+					? { status: metaStatus, errors: metaErrors, receivedAt: metaAt === 0 ? null : metaAt }
+					: { status: 'idle', errors: {}, receivedAt: null }
+				if (metaCache === null || !projectMatches) return next
 				if (metaCache.scope !== undefined && metaCache.scope !== null) next.scope = metaCache.scope
 				if (metaCache.agentTree !== undefined && metaCache.agentTree !== null) next.agentTree = metaCache.agentTree
 				if (metaCache.worktrees !== undefined && metaCache.worktrees !== null) next.worktrees = metaCache.worktrees
@@ -3740,38 +3751,73 @@ const createTaskStore = (function () {
 				if (typeof events.cursor === 'string' && events.cursor !== '') activityCursor = events.cursor
 			}
 
-			/** The /meta URL for the CURRENT project + session (the activity cursor rides it). */
-			function metaUrlFor() {
-				const pinned = tcPinnedProject()
-				let url = pinned === null ? TC_META_URL : TC_META_URL + '?project=' + encodeURIComponent(pinned)
-				if (activityCursor !== null) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'activitySince=' + encodeURIComponent(activityCursor)
+			/** One project identity, however the two sides spell the path. */
+			function projectKeyOf(value) {
+				if (typeof value !== 'string' || value === '') return null
+				const text = String(value).replace(/\\/g, '/').replace(/\/+$/, '')
+				return /^[A-Za-z]:\//.test(text) ? text.toLowerCase() : text
+			}
+
+			/**
+			 * The /meta URL for the project the panel is SHOWING (not the pin alone:
+			 * during an openProject the pin still names the OLD project while the board
+			 * already shows the new one). `refresh` forces the host to rebuild.
+			 */
+			function metaUrlFor(project, refresh) {
+				let url = TC_META_URL + '?project=' + encodeURIComponent(project)
+				if (refresh === true) url += '&refresh=1'
+				if (activityCursor !== null) url += '&activitySince=' + encodeURIComponent(activityCursor)
 				return tcWithSession(url)
 			}
 
-			/** Drop the cached metadata when the panel starts describing another project. */
-			function resetMeta() {
+			/**
+			 * Drop the cached metadata when the panel starts describing another project.
+			 * The NEW project becomes the expected owner of the next answer.
+			 */
+			function resetMeta(project) {
 				metaCache = null
 				metaErrors = {}
 				metaStatus = 'idle'
 				metaAt = 0
+				metaProject = projectKeyOf(project)
 			}
 
 			/**
-			 * T-210: load the DEFERRED metadata. Single flight, never awaited by the
-			 * board's render path. A failure degrades only the deferred blocks: the
-			 * snapshot keeps its board, its light scope and its 'ready' state.
+			 * T-210: load the DEFERRED metadata. Single flight PER PROJECT, never
+			 * awaited by the board's render path. A failure degrades only the deferred
+			 * blocks: the snapshot keeps its board, its light scope and its 'ready'
+			 * state. `options.refresh` asks the host to rebuild (used after an action);
+			 * a forced refresh is never satisfied by a routine in-flight request.
 			 */
-			async function loadMeta() {
+			async function loadMeta(options) {
+				const o = options === undefined || options === null ? {} : options
 				if (metaSupported !== true) return null
-				if (snapshot.project === null || snapshot.project === undefined) return null
-				if (metaFlight !== null) return metaFlight
-				if (metaStatus === 'idle') {
+				const project = typeof snapshot.project === 'string' && snapshot.project !== '' ? snapshot.project : null
+				if (project === null) return null
+				const key = projectKeyOf(project)
+				const refresh = o.refresh === true
+				// A request for ANOTHER project invalidates the cached answer and the
+				// reported status BEFORE it lands: nothing of the old board may be shown
+				// as the new board's metadata.
+				if (metaProject !== key) {
+					metaCache = null
+					metaErrors = {}
+					metaAt = 0
+					metaProject = key
+					metaStatus = 'idle'
+				}
+				if (metaFlight !== null && metaFlight.key === key && (refresh !== true || metaFlight.refresh === true)) return metaFlight.promise
+				if (metaStatus === 'idle' || (refresh === true && metaStatus !== 'loading')) {
 					metaStatus = 'loading'
 					emit(snapshot)
 				}
-				metaFlight = (async function () {
+				const seq = ++metaSeq
+				const request = (async function () {
 					try {
-						const payload = await fetchJson(metaUrlFor(), { headers: { accept: 'application/json' } })
+						const payload = await fetchJson(metaUrlFor(project, refresh), { headers: { accept: 'application/json' } })
+						// A NEWER request (or a project switch) owns the snapshot now: this
+						// answer describes a board that is no longer on screen, so discard it.
+						if (seq !== metaSeq || projectKeyOf(snapshot.project) !== key) return { ok: false, stale: true }
 						if (payload === null || payload === undefined || payload.ok !== true) {
 							metaStatus = 'degraded'
 							metaErrors =
@@ -3780,6 +3826,7 @@ const createTaskStore = (function () {
 									: payload !== null && payload !== undefined && typeof payload.message === 'string' && payload.message !== ''
 										? { message: payload.message }
 										: {}
+							metaProject = key
 							emit(snapshot)
 							return { ok: false, payload: payload === undefined ? null : payload }
 						}
@@ -3789,23 +3836,33 @@ const createTaskStore = (function () {
 						metaCache = meta
 						metaErrors = payload.errors !== undefined && payload.errors !== null && typeof payload.errors === 'object' ? payload.errors : {}
 						metaAt = Date.now()
+						metaProject = key
 						metaStatus = Object.keys(metaErrors).length > 0 ? 'degraded' : 'ready'
 						emit(snapshot)
 						return { ok: true, payload: payload }
 					} catch (error) {
 						// A transport failure is a DEGRADED metadata state, never a board error.
+						if (seq !== metaSeq || projectKeyOf(snapshot.project) !== key) return { ok: false, stale: true }
 						metaStatus = 'degraded'
 						metaErrors = { message: String((error && error.message) || error) }
+						metaProject = key
 						emit(snapshot)
 						return { ok: false, error: error }
 					} finally {
-						metaFlight = null
+						if (metaFlight !== null && metaFlight.promise === request) metaFlight = null
 					}
 				})()
-				return metaFlight
+				metaFlight = { key: key, refresh: refresh, promise: request }
+				return request
 			}
 
-			async function load() {
+			/**
+			 * One poll. `options.refresh` forces the deferred metadata to be rebuilt
+			 * (the panel's refresh action); the routine 2.5 s poll keeps the host's
+			 * short-TTL answer.
+			 */
+			async function load(options) {
+				const o = options === undefined || options === null ? {} : options
 				if (loading !== null) return loading
 				// No pin means NO ?project=: the Host resolves the session workspace and
 				// answers with the project, which is the whole point of T-90.
@@ -3838,7 +3895,7 @@ const createTaskStore = (function () {
 							messageKind = null
 							// T-210: no project means no metadata to show (and none from the
 							// project the panel was on before).
-							resetMeta()
+							resetMeta(null)
 							activityLog = []
 							activityCursor = null
 							emit(unbound)
@@ -3854,7 +3911,7 @@ const createTaskStore = (function () {
 								activityLog = []
 								activityCursor = null
 								// T-210: the deferred blocks describe the OLD project; drop them.
-								resetMeta()
+								resetMeta(next.project)
 								// T-208: decision ids are project-scoped; an id answered in project A
 								// must not block the same id in project B.
 								answeredDecisions.clear()
@@ -3878,7 +3935,7 @@ const createTaskStore = (function () {
 							// T-210: the board (and the header's base facts) are painted; the
 							// deferred metadata is refreshed in the BACKGROUND and can fail
 							// without touching the board or the ready state.
-							void loadMeta()
+							void loadMeta(o.refresh === true ? { refresh: true } : undefined)
 						} else {
 							const failed = tcSnapshot(Object.assign({}, payload, { tasks: [] }), 'error', tcErrorMessage(payload, t))
 							failed.decisions = snapshot.decisions
@@ -3967,11 +4024,17 @@ const createTaskStore = (function () {
 							// the split; learn it here so a panel that bound a project before its
 							// first poll still asks for the deferred half.
 							if (isMetaSplit(host) || isMetaSplit(payload)) metaSupported = true
+							// T-210 review: the answer may describe ANOTHER project (openProject).
+							// The metadata of the old board must not survive onto the new one, and
+							// the next /meta must describe the project the board now shows.
+							if (projectKeyOf(next.project) !== projectKeyOf(snapshot.project)) resetMeta(next.project)
 							emit(next)
 							// T-210: an action changes host state (worktrees, environment, roles).
 							// Refresh the deferred blocks in the background; the action answer
-							// itself only carried the light board.
-							void loadMeta()
+							// itself only carried the light board. A real action forces a rebuild
+							// so the panel never shows pre-action worktrees/environment/roles for
+							// up to the cache TTL; a QUIET automatic call may reuse the cache.
+							void loadMeta(quiet ? undefined : { refresh: true })
 						} else if (decisionId !== null) {
 							// T-208: the answer response carries no snapshot. Drop the answered
 							// request from the queue right away so BOTH surfaces advance to the
@@ -4128,8 +4191,9 @@ const createTaskStore = (function () {
 					source: snapshot.source === 'setup' || snapshot.source === 'error' ? 'host' : snapshot.source,
 				})
 				if (explicit) bound.message = ''
-				// T-210: the metadata cache belongs to the OLD project.
-				resetMeta()
+				// T-210: the metadata cache belongs to the OLD project. The pin is already
+				// set, so the request below names the NEW project explicitly.
+				if (metaProject !== projectKeyOf(next)) resetMeta(next)
 				emit(bound)
 				void loadMeta()
 				return result
@@ -11363,7 +11427,7 @@ function createTaskCenter(deps) {
 		)
 		const newTaskButton = h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'new-task', disabled: snapshot.project === null, onClick: function () { startEdit(null) } }, '+ ' + t('newTask'))
 		const menuItems = [
-			['refresh', t('refresh'), function () { closePopovers(); void store.load() }],
+			['refresh', t('refresh'), function () { closePopovers(); void store.load({ refresh: true }) }],
 			['project', t('project'), function () { closePopovers(); openProjectDialog() }],
 			['settings', t('settings'), function () { closePopovers(); setSettingsOpen(true) }],
 			['copy-session-id', t('copySessionId'), function () { copySessionId(copySessionValue) }],
@@ -11381,7 +11445,9 @@ function createTaskCenter(deps) {
 				}),
 			),
 		)
-		const refreshButton = h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'refresh', title: t('refresh'), onClick: function () { void store.load() } }, '↻')
+		// T-210 review: the refresh action also forces the deferred metadata to be rebuilt
+		// (the host serves a short-TTL cached inventory to the routine poll).
+		const refreshButton = h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'refresh', title: t('refresh'), onClick: function () { void store.load({ refresh: true }) } }, '↻')
 		const kindFilterBar = h(
 			'div',
 			{ className: 'gbt-kindfilter', 'data-kind-filter': panelBoardUi.kind, title: t('kindFilterHint') },
