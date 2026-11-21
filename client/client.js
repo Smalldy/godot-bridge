@@ -1950,16 +1950,19 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-decisionsub{margin:2px 0 0;font-size:11.5px;color:var(--dsw-alias-label-secondary);word-break:break-word}',
 			'.gbt-decisioncountdown{margin:8px 0 0;font-size:11.5px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
 			'.gbt-decisionqueue{margin:2px 0 0;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
-			'.gbt-decisionbody{margin:10px 0 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}',
+			// T-215: a writeFiles path is one unbroken token. The body keeps pre-wrap
+			// (host line breaks survive) and may break anywhere, so the 368px dock can
+			// never push text past its inline edge.
+			'.gbt-decisionbody{margin:10px 0 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-width:100%;min-width:0}',
 			'.gbt-decisionoptions{display:flex;flex-direction:column;gap:6px;margin:12px 0 0}',
 			'.gbt-decisionoption{display:flex;align-items:flex-start;gap:8px;text-align:left;padding:9px 10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:9px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:1.45;cursor:pointer;min-width:0}',
 			'.gbt-decisionoption:hover{border-color:var(--dsw-alias-state-business-primary)}',
 			'.gbt-decisionoption[data-selected="true"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-module-platform)}',
 			'.gbt-decisionoption[data-danger="true"]{border-color:var(--dsw-alias-state-error,#d9534f)}',
 			'.gbt-decisionoption:disabled{opacity:.55;cursor:not-allowed}',
-			'.gbt-decisionoptionbody{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}',
-			'.gbt-decisionoptionlabel{font-weight:600}',
-			'.gbt-decisionoptiondesc{font-size:11px;color:var(--dsw-alias-label-tertiary);line-height:1.5}',
+			'.gbt-decisionoptionbody{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1;max-width:100%;overflow-wrap:anywhere;word-break:break-word}',
+			'.gbt-decisionoptionlabel{font-weight:600;min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:break-word}',
+			'.gbt-decisionoptiondesc{font-size:11px;color:var(--dsw-alias-label-tertiary);line-height:1.5;min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:break-word}',
 			'.gbt-decisionbadge{font-size:9.5px;line-height:1;padding:3px 5px;border-radius:999px;border:0.5px solid var(--dsw-alias-border-l4);color:var(--dsw-alias-label-tertiary);flex:0 0 auto;align-self:center}',
 			'.gbt-decisiontext{display:flex;flex-direction:column;gap:4px;margin:12px 0 0;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 			'.gbt-decisionhighrisk{margin:10px 0 0;display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dsw-alias-label-secondary)}',
@@ -1979,8 +1982,15 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			// computePlacement (visible layer area) and this CSS fallback for a shell
 			// whose geometry cannot be measured. Either way the body scrolls inside
 			// the card; nothing is clipped by the shell at 637px height.
-			'.gbt-decisiondockpanel{position:absolute;right:0;bottom:calc(100% + 8px);width:min(368px,calc(100vw - 24px));max-height:min(520px,72vh,calc(100vh - 96px));overflow-y:auto;overflow-x:hidden;border-radius:14px;pointer-events:auto;overscroll-behavior:contain}',
-			'.gbt-decision.gbt-decisioncompact{width:100%;max-height:none;overflow:visible;padding:14px;box-shadow:var(--dsw-shadow-lv2)}',
+			// T-215: the panel's containing block is the shrink-to-fit dock (chip-sized),
+			// so a percentage max-width would collapse the card to the chip width. The
+			// viewport-bound cap keeps the 368px width while never exceeding the screen.
+			// No overflow-x:hidden: the wrap rules must do the work, not a silent clip.
+			'.gbt-decisiondockpanel{position:absolute;right:0;bottom:calc(100% + 8px);width:min(368px,calc(100vw - 24px));max-width:calc(100vw - 24px);min-width:0;box-sizing:border-box;max-height:min(520px,72vh,calc(100vh - 96px));overflow-y:auto;overflow-x:auto;overflow-wrap:anywhere;word-break:break-word;border-radius:14px;pointer-events:auto;overscroll-behavior:contain}',
+			// T-215: border-box is the actual horizontal fix — content-box made the card
+			// 2*14px wider than the panel, so the right border and the last characters
+			// of every line were clipped by the panel edge.
+			'.gbt-decision.gbt-decisioncompact{box-sizing:border-box;width:100%;max-width:100%;min-width:0;max-height:none;overflow:visible;padding:14px;overflow-wrap:anywhere;word-break:break-word;box-shadow:var(--dsw-shadow-lv2)}',
 			// T-211: the one-shot attention pulse for a NEW pending decision. One
 			// iteration only (never infinite), no shake; the data marker is also the
 			// test hook. 'static' is the reduced-motion / card-open highlight.
