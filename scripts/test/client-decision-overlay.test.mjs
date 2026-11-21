@@ -669,4 +669,69 @@ console.log('PASS  T-211 the panel header falls back to a clickable entry only w
 }
 console.log('PASS  T-211 the docked card scrolls and the attention pulse is one-shot')
 
+// ── T-215: a long unbroken writeFiles path wraps inside the 368px dock ─────
+{
+  const LONG_PATH =
+    'C:\\Users\\74368\\AppData\\Local\\Programs\\DeepSeekHarness\\resources\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-tools\\lib\\index.js'
+  const body = '决策浮层横向裁切：写入文件\nclient/src/00-head.part\nclient/src/views/decision-modal.cjs\n' + LONG_PATH
+  const card = DecisionModal.DecisionCard({
+    decision: decision({ body: body }),
+    queueLeft: 2,
+    receivedAt: Date.now(),
+    t: t,
+    busy: false,
+    error: '',
+    onAnswer: () => {},
+    onDismiss: () => {},
+  })
+  const cardNode = find(card, (node) => node.props && node.props['data-decision-card'] === 'true')
+  assert.ok(cardNode !== null, 'the dock card still renders the foreground decision')
+  assert.equal(cardNode.props.className, 'gbt-decision gbt-decisioncompact', 'the compact card keeps its class hook')
+  assert.equal(cardNode.props.role, 'dialog')
+
+  const bodyNode = find(card, (node) => node.props && node.props['data-decision-body'] === 'true')
+  assert.ok(bodyNode !== null, 'the body is its own node')
+  assert.equal(bodyNode.type, 'p')
+  assert.equal(bodyNode.props.className, 'gbt-decisionbody')
+  assert.equal(bodyNode.props.children, body, 'the body reaches the DOM verbatim, newlines included')
+  assert.ok(LONG_PATH.length > 120 && LONG_PATH.indexOf(' ') === -1, 'the fixture is one long token with no break opportunity')
+  assert.equal(findAll(card, (node) => node.props && node.props['data-decision-option'] !== undefined).length, 2, 'both options still render next to the long body')
+
+  const HEAD = readFileSync(new URL('../../client/src/00-head.part', import.meta.url), 'utf8')
+  const bundle = readFileSync(new URL('../../client/client.js', import.meta.url), 'utf8')
+  const ruleOf = (selector) => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const match = HEAD.match(new RegExp(escaped + '\\{[^}]*\\}'))
+    assert.ok(match !== null, 'the shipped sheet carries ' + selector)
+    return match[0]
+  }
+
+  const bodyRule = ruleOf('.gbt-decisionbody')
+  assert.ok(bodyRule.includes('white-space:pre-wrap'), 'the body still preserves the host line breaks')
+  assert.ok(bodyRule.includes('overflow-wrap:anywhere'), 'a token with no spaces may wrap anywhere')
+  assert.ok(bodyRule.includes('word-break:break-word'))
+  assert.ok(bodyRule.includes('max-width:100%'))
+  assert.ok(bodyRule.includes('min-width:0'))
+
+  const compactRule = ruleOf('.gbt-decision.gbt-decisioncompact')
+  assert.ok(compactRule.includes('box-sizing:border-box'), 'the card width now includes its 14px padding')
+  assert.ok(compactRule.includes('max-width:100%'))
+  assert.ok(compactRule.includes('min-width:0'))
+  assert.ok(compactRule.includes('overflow-wrap:anywhere'))
+
+  const panelRule = ruleOf('.gbt-decisiondockpanel')
+  assert.ok(panelRule.includes('box-sizing:border-box'))
+  assert.ok(panelRule.includes('min-width:0'))
+  assert.ok(panelRule.includes('overflow-wrap:anywhere'))
+  assert.ok(panelRule.includes('max-width:calc(100vw - 24px)'), 'the panel is viewport-capped instead of clipped')
+  assert.equal(panelRule.includes('overflow-x:hidden'), false, 'no silent horizontal clipping is used as the fix')
+  for (const selector of ['.gbt-decisionoptionbody', '.gbt-decisionoptionlabel', '.gbt-decisionoptiondesc']) {
+    assert.ok(ruleOf(selector).includes('overflow-wrap:anywhere'), selector + ' lets a long token wrap')
+  }
+  assert.ok(/\.gbt-decisiondockpanel\{[^}]*max-height:[^}]*overflow-y:auto/.test(HEAD), 'the T-211 vertical cap still holds')
+  assert.ok(bundle.includes('overflow-wrap:anywhere'), 'the rebuilt bundle ships the wrap rule')
+  assert.ok(bundle.includes('gbt-decisioncompact{box-sizing:border-box'), 'the rebuilt bundle ships the border-box fix')
+}
+console.log('PASS  T-215 a long unbroken writeFiles path wraps inside the 368px dock')
+
 console.log('\nPASS  the conversation page answers pending decisions without opening the panel')
