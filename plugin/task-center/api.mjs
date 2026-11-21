@@ -11,6 +11,7 @@
  * never throws; the caller turns it into a tool error or an HTTP body.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import {
@@ -47,6 +48,9 @@ import { createLifecycleActions } from './actions/lifecycle.mjs'
 import { createRoleActions } from './actions/roles.mjs'
 import { createMergeActions } from './actions/merge.mjs'
 import { createStageService } from './stage-service.mjs'
+// T-221: the bound of a host agent-tree read lives next to the fallback reader,
+// and the stage facade delegates the deferred self-release reconciler to it.
+import { AGENT_LIST_TIMEOUT_MS, markDeferredReleaseReturned, reapDeferredReleases } from './task-agents.mjs'
 import { createReportAction } from './actions/report.mjs'
 import { createSubmitAction } from './actions/submit.mjs'
 import { createTestVerdictActions } from './actions/test-verdicts.mjs'
@@ -392,7 +396,52 @@ export function createApi(ctx, options) {
   // refuse with the typed code agent-runtime-unavailable instead of reaching for
   // a removed Agent Teams roster.
   const taskAgents = opts.taskAgents === undefined || opts.taskAgents === null ? null : opts.taskAgents
-  const stageAgents = taskAgents === null ? null : createStageService({ taskAgents: taskAgents })
+  // T-221: the stage service proves a disposed child is gone by reading the live
+  // tree. That read is the same O(tree) host call the release path must never
+  // wait on unbounded, so the stage service gets a facade whose ONLY change is
+  // the bounded read: everything else is the same object, and a read that
+  // overruns simply cannot prove anything.
+  const stageTaskAgents =
+    taskAgents === null
+      ? null
+      : {
+          get available() {
+            return taskAgents.available
+          },
+          startReviewer: function (task, brief, extra) {
+            return taskAgents.startReviewer(task, brief, extra)
+          },
+          startTester: function (task, brief, extra) {
+            return taskAgents.startTester(task, brief, extra)
+          },
+          send: function (agentId, text, options) {
+            return taskAgents.send(agentId, text, options)
+          },
+          release: function (agentId, releaseOptions) {
+            return taskAgents.release(agentId, releaseOptions)
+          },
+          releaseTask: function (task, releaseOptions) {
+            return taskAgents.releaseTask(task, releaseOptions)
+          },
+          taskAgentsFor: function (rootId) {
+            return typeof taskAgents.taskAgentsFor === 'function' ? taskAgents.taskAgentsFor(rootId) : null
+          },
+          listFor: function (rootId) {
+            return boundedAgentRowsFor(rootId)
+          },
+          listAgentsFor: function (rootId) {
+            return boundedAgentRowsFor(rootId)
+          },
+          markCallerReturned: function (agentId) {
+            return markDeferredReleaseReturned(agentId)
+          },
+          drainDeferredReleases: function (options) {
+            return reapDeferredReleases(options).catch(function () {
+              return []
+            })
+          },
+        }
+  const stageAgents = stageTaskAgents === null ? null : createStageService({ taskAgents: stageTaskAgents })
   const autoMerge = opts.autoMerge === true
   // The independent tester workflow (candidate checkout + host auto-merge) is
   // active when the production row wires the merge queue.
@@ -408,6 +457,12 @@ export function createApi(ctx, options) {
   // ensure, notification) must not hold the action or the serialised queue.
   const actionTimeoutMs = Number.isFinite(opts.actionTimeoutMs) ? Math.max(1, Math.floor(opts.actionTimeoutMs)) : HOST_ACTION_TIMEOUT_MS
   const notifyTimeoutMs = Number.isFinite(opts.notifyTimeoutMs) ? Math.max(1, Math.floor(opts.notifyTimeoutMs)) : 15 * 1000
+  // T-221: the live agent tree is a host call whose cost is O(tree) — one read
+  // took minutes on a large host and held the release/refresh waiting on it. Every
+  // tree read this API makes is bounded by this, and a read that overruns answers
+  // "unknown" instead of blocking the action that only wanted to confirm a child
+  // it can no longer prove. The release itself never depends on this read.
+  const agentListTimeoutMs = Number.isFinite(opts.agentListTimeoutMs) ? Math.max(1, Math.floor(opts.agentListTimeoutMs)) : AGENT_LIST_TIMEOUT_MS
   const sleep = typeof opts.sleep === 'function' ? opts.sleep : (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
   const clock = typeof opts.now === 'function' ? opts.now : () => state.clock()
 
@@ -742,7 +797,10 @@ export function createApi(ctx, options) {
     notifyMergeOutcome: notifyMergeOutcome,
     readBoardOrFail: readBoardOrFail,
     model: model,
-    writeTask: writeTask,
+    // T-221: every board write handed to the merge actions is guarded by the
+    // queue turn's cancellation token, so an abandoned turn cannot land a late
+    // refresh/outcome (the caller already got 'queue-timeout').
+    writeTask: queueGuardedWriteTask,
     recordMergeResult: recordMergeResult,
     clock: clock,
     writeByName: writeByName,
@@ -757,10 +815,11 @@ export function createApi(ctx, options) {
     messageOf: messageOf,
     stageAgents: stageAgents,
     // T-204: refreshMerge must prove the previous reviewer/tester is gone before
-    // it starts the next one, so it reads the same live tree the panel does.
+    // it starts the next one. T-221: that tree read is bounded and answers "cannot
+    // tell" when it overruns, so a hung catalog cannot hold the merge queue.
     liveStageIds: liveChildIdsOf,
-    markWaiting: markWaiting,
-    clearWaiting: clearWaiting,
+    markWaiting: queueGuardedMarkWaiting,
+    clearWaiting: queueGuardedClearWaiting,
     reviewBriefFor: reviewBriefFor,
     recordDeliveredTo: recordDeliveredTo,
     ok: ok,
@@ -1107,10 +1166,77 @@ export function createApi(ctx, options) {
   const worktreeProbeCache = new Map()
   const worktreeProbeFlights = new Map()
 
+  /**
+   * T-221: the cancellation signal of the merge-queue unit this code runs in.
+   *
+   * merge.mjs hands a unit a token and marks it aborted when the unit overruns
+   * its bound: the caller is answered 'queue-timeout' and moves on, but the unit
+   * itself keeps running in the background. Without a signal the background turn
+   * could still spawn a stage child and WRITE the board minutes later, landing a
+   * refresh nobody is waiting for (and, worse, after a later action already
+   * changed the same card). The token is put in an async-local store while the
+   * unit runs, so every write seam the unit was handed can refuse to land once the
+   * turn is abandoned.
+   */
+  const queueTurn = new AsyncLocalStorage()
+
+  /** Was the merge-queue unit this call runs in abandoned after its bound? */
+  function queueTurnAbandoned() {
+    const token = queueTurn.getStore()
+    return token !== undefined && token !== null && token.aborted === true
+  }
+
+  /** The readable refusal used by every seam that must not land after abandonment. */
+  function abandonedRefusal(what, id) {
+    const card = typeof id === 'string' && id !== '' ? id : 'this card'
+    return failure('action-abandoned', 'the merge queue turn for ' + card + ' was abandoned after its bound; nothing was written (' + what + ')')
+  }
+
   /** Merge actions are one-at-a-time: the queue serialises the whole read+git+write. */
   function serialised(work, key) {
-    if (merger !== null && typeof merger.enqueue === 'function') return merger.enqueue(work, key)
+    if (merger !== null && typeof merger.enqueue === 'function') {
+      // T-221: the unit's token rides along in the async context of the work, so
+      // a background continuation can ask whether it may still land anything.
+      return merger.enqueue(function (token) {
+        return queueTurn.run(token === undefined ? null : token, function () {
+          return work(token)
+        })
+      }, key)
+    }
     return work()
+  }
+
+  /**
+   * T-221: the board writes handed to the merge actions.
+   *
+   * An abandoned queue turn must never record a late outcome, a late refresh or a
+   * wait marker: the caller was already told nothing landed. The check runs BEFORE
+   * the write and once more inside the board transaction, so the window between
+   * the decision and the CAS write cannot land either.
+   */
+  async function queueGuardedWriteTask(projectPath, id, mutator, context) {
+    if (queueTurnAbandoned()) return abandonedRefusal('board write', id)
+    return writeTask(
+      projectPath,
+      id,
+      function (board) {
+        if (queueTurnAbandoned()) return abandonedRefusal('board write', id)
+        return mutator(board)
+      },
+      context,
+    )
+  }
+
+  /** A wait marker is a board write too; an abandoned turn may not persist it. */
+  async function queueGuardedMarkWaiting(projectPath, id, reason, detail, context) {
+    if (queueTurnAbandoned()) return { failed: abandonedRefusal('wait marker', id) }
+    return markWaiting(projectPath, id, reason, detail, context)
+  }
+
+  /** Clearing a wait marker is the same write, guarded the same way. */
+  async function queueGuardedClearWaiting(projectPath, id, context) {
+    if (queueTurnAbandoned()) return { failed: abandonedRefusal('wait marker', id) }
+    return clearWaiting(projectPath, id, context)
   }
 
   /** The queue key of a task: merges into one target are serial, targets are not. */
@@ -1156,6 +1282,19 @@ export function createApi(ctx, options) {
   function worktreeRootOf(board) {
     const settings = board === undefined || board === null || board.dispatch === undefined || board.dispatch === null ? null : board.dispatch.worktree
     return settings !== null && settings !== undefined && typeof settings.root === 'string' && settings.root.length > 0 ? settings.root : '.worktrees'
+  }
+
+  /**
+   * T-221: the live rows of one root, bounded.
+   *
+   * A read that overruns answers [] ("nothing proven") instead of waiting; the
+   * merge queue and the stage service both treat an empty answer as "the tree
+   * cannot contradict the release", never as a reason to hold the action.
+   */
+  async function boundedAgentRowsFor(rootId) {
+    if (taskAgents === null || taskAgents === undefined || typeof taskAgents.listFor !== 'function') return []
+    const read = await boundedAwait(() => taskAgents.listFor(rootId), agentListTimeoutMs)
+    return Array.isArray(read.value) ? read.value : []
   }
 
   /** The candidate checkout of a task in testing, for the panel and the brief. */
@@ -5400,19 +5539,21 @@ export function createApi(ctx, options) {
   async function liveChildIdsOf(rootId) {
     if (taskAgents === null || taskAgents === undefined || typeof taskAgents.listFor !== 'function') return null
     if (typeof rootId !== 'string' || rootId === '') return null
-    try {
-      const rows = await taskAgents.listFor(rootId)
-      if (Array.isArray(rows) === false) return null
-      const ids = new Set()
-      for (const row of rows) {
-        if (row === null || row === undefined || row.kind !== 'child') continue
-        if (row.activity !== 'running') continue
-        ids.add(String(row.id))
-      }
-      return ids
-    } catch (error) {
-      return null
+    // T-221: bounded. This read is O(tree) and a hung catalog used to hold the
+    // merge queue's refreshMerge until its unit was abandoned. An unread tree is
+    // "cannot tell" (null), never a reason to wait: the release that just ran is
+    // the evidence, and only an id it could NOT dispose is treated as still live.
+    const read = await boundedAwait(() => taskAgents.listFor(rootId), agentListTimeoutMs)
+    if (read.timedOut === true) return null
+    const rows = read.value
+    if (Array.isArray(rows) === false) return null
+    const ids = new Set()
+    for (const row of rows) {
+      if (row === null || row === undefined || row.kind !== 'child') continue
+      if (row.activity !== 'running') continue
+      ids.add(String(row.id))
     }
+    return ids
   }
 
   /**

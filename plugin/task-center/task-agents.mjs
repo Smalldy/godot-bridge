@@ -186,6 +186,163 @@ export async function releaseAgent(agentId) {
 }
 
 /**
+ * T-221: the live agent tree is a LAST-RESORT source of ids, and reading it is
+ * bounded, memoised and single-flighted.
+ *
+ * The catalog read is O(tree). On a long-lived host with hundreds of children it
+ * took minutes (>120 s, 45 s, 30 s in one incident), and a release that fell back
+ * to it held the whole merge queue: refreshMerge ran inside a queue unit, the unit
+ * was abandoned with 'queue-timeout', and the release kept waiting on a scan it
+ * did not need. A release now uses the EXACT ids the board recorded and the
+ * in-process activation receipts, and only reads the tree when those cannot name
+ * a child for a requested role — once, bounded, and never past its caller's
+ * patience. A timed-out read is reported as AGENT_LIST_TIMEOUT_CODE and never
+ * blocks the release itself.
+ */
+export const AGENT_LIST_TIMEOUT_MS = 2500
+export const AGENT_LIST_CACHE_MS = 2500
+export const AGENT_LIST_TIMEOUT_CODE = 'agent-list-timeout'
+export const AGENT_LIST_FAILED_CODE = 'agent-list-failed'
+
+const LIST_TIMED_OUT = Symbol('agent-list-timeout')
+
+/** rootId -> { at, rows, timedOut, code } — the last answer, reused for one window. */
+const agentListCache = new Map()
+/** Roots kept memoised. A long-lived host cycles sessions; the map must not grow. */
+const AGENT_LIST_CACHE_MAX = 32
+/** rootId -> in-flight read, so concurrent releases share ONE host call. */
+const agentListFlights = new Map()
+
+/** Process-wide cache control (tests, and a host that wants a fresh read). */
+export function forgetAgentListCache(rootId) {
+  if (typeof rootId === 'string' && rootId !== '') {
+    agentListCache.delete('root:' + rootId)
+    return true
+  }
+  agentListCache.clear()
+  return true
+}
+
+function listRootKey(runtime) {
+  const rootId = runtime !== null && runtime !== undefined && typeof runtime.rootId === 'string' && runtime.rootId !== '' ? runtime.rootId : ''
+  return rootId === '' ? 'root:*' : 'root:' + rootId
+}
+
+function listBounds(options) {
+  const opts = options === undefined || options === null ? {} : options
+  return {
+    timeoutMs: Number.isFinite(opts.timeoutMs) ? Math.max(1, Math.floor(opts.timeoutMs)) : AGENT_LIST_TIMEOUT_MS,
+    cacheMs: Number.isFinite(opts.cacheMs) ? Math.max(0, Math.floor(opts.cacheMs)) : AGENT_LIST_CACHE_MS,
+    signal: opts.signal,
+    fresh: opts.fresh === true,
+  }
+}
+
+function listRowId(row) {
+  if (row === null || row === undefined) return null
+  const id = row.id !== undefined ? row.id : row.sessionId
+  return id === undefined || id === null || String(id) === '' ? null : String(id)
+}
+
+/** Memoise one answer, dropping the oldest root when the map is at its bound. */
+function rememberAgentRows(key, entry) {
+  agentListCache.set(key, entry)
+  while (agentListCache.size > AGENT_LIST_CACHE_MAX) {
+    const oldest = agentListCache.keys().next()
+    if (oldest === undefined || oldest.done === true) break
+    agentListCache.delete(oldest.value)
+  }
+}
+
+/** Drop just-released ids from the memoised rows so they cannot be rediscovered. */
+function forgetCachedListRows(key, ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return
+  const cached = agentListCache.get(key)
+  if (cached === undefined || Array.isArray(cached.rows) !== true) return
+  cached.rows = cached.rows.filter((row) => {
+    const id = listRowId(row)
+    return id === null || ids.indexOf(id) < 0
+  })
+}
+
+/**
+ * The live tree of one root: cached for one short window, single-flighted while a
+ * read is in flight, and bounded — a hung catalog answers { timedOut: true }
+ * instead of holding the caller.
+ */
+function readAgentRows(runtime, options) {
+  const bounds = listBounds(options)
+  const key = listRootKey(runtime)
+  if (bounds.fresh !== true) {
+    const cached = agentListCache.get(key)
+    if (cached !== undefined && Date.now() - cached.at < bounds.cacheMs) {
+      return Promise.resolve({ rows: Array.isArray(cached.rows) ? cached.rows : [], cached: true, timedOut: cached.timedOut === true, code: cached.code })
+    }
+  }
+  const flight = agentListFlights.get(key)
+  if (flight !== undefined) return flight
+  const promise = (async function () {
+    let timer = null
+    const timeout = new Promise(function (resolveTimeout) {
+      timer = setTimeout(function () {
+        resolveTimeout(LIST_TIMED_OUT)
+      }, bounds.timeoutMs)
+    })
+    let value = null
+    try {
+      value = await Promise.race([
+        Promise.resolve().then(function () {
+          return runtime.list(bounds.signal)
+        }),
+        timeout,
+      ])
+    } catch (error) {
+      value = { __listError: error }
+    }
+    if (timer !== null) clearTimeout(timer)
+    if (value === LIST_TIMED_OUT) {
+      // A negative cache too: consecutive releases on a hung host must not each
+      // wait the full bound for the same unanswered read.
+      const previous = agentListCache.get(key)
+      const rows = previous !== undefined && Array.isArray(previous.rows) ? previous.rows : []
+      rememberAgentRows(key, { at: Date.now(), rows: rows, timedOut: true, code: AGENT_LIST_TIMEOUT_CODE })
+      return { rows: rows, cached: false, timedOut: true, code: AGENT_LIST_TIMEOUT_CODE }
+    }
+    if (value !== null && typeof value === 'object' && value.__listError !== undefined) {
+      // An error is NOT memoised: the next fallback may succeed.
+      return { rows: [], cached: false, timedOut: false, code: AGENT_LIST_FAILED_CODE }
+    }
+    const rows = Array.isArray(value) ? value : []
+    // A FRESH reader (the deferred-release watcher, which must see a turn end in
+    // the same window) never memoises its answer: only a discovery read may reuse
+    // one within the window.
+    if (bounds.fresh !== true) rememberAgentRows(key, { at: Date.now(), rows: rows, timedOut: false, code: null })
+    return { rows: rows, cached: false, timedOut: false, code: null }
+  })()
+  agentListFlights.set(key, promise)
+  const settle = function () {
+    if (agentListFlights.get(key) === promise) agentListFlights.delete(key)
+  }
+  promise.then(settle, settle)
+  return promise
+}
+
+/**
+ * The rows the deferred-release watcher reads: bounded like every other tree read.
+ * A read it cannot get throws, which the watcher already treats as "cannot tell"
+ * (the child keeps waiting, it is never disposed on a guess).
+ */
+async function releaseWatchRows(runtime, options) {
+  const read = await readAgentRows(runtime, options)
+  if (read.timedOut === true) {
+    const error = new Error('the live agent tree did not answer in time')
+    error.code = AGENT_LIST_TIMEOUT_CODE
+    throw error
+  }
+  return read.rows
+}
+
+/**
  * T-185: a self-release is never immediate.
  *
  * A verdict action (approveReview/requestChanges/passTest/failTest) runs inside
@@ -376,6 +533,10 @@ export function createTaskAgents(options) {
     throw error
   }
   const handles = new Map()
+  // T-221: bounds of the last-resort tree read. Instance options so a host (and
+  // a test) can tighten them; a per-release option still wins.
+  const listTimeoutMs = Number.isFinite(opts.listTimeoutMs) ? Math.max(1, Math.floor(opts.listTimeoutMs)) : AGENT_LIST_TIMEOUT_MS
+  const listCacheMs = Number.isFinite(opts.listCacheMs) ? Math.max(0, Math.floor(opts.listCacheMs)) : AGENT_LIST_CACHE_MS
 
   /**
    * T-204: one live child per role and card.
@@ -454,6 +615,9 @@ export function createTaskAgents(options) {
     }
     const agentId = String(handle.agentId)
     handles.set(agentId, handle)
+    // T-221: a spawn changes tree membership; a memoised fallback read from
+    // before this child existed must not hide it by name.
+    forgetAgentListCache(typeof runtime.rootId === 'string' ? runtime.rootId : null)
     activations.set(agentId, {
       agentId: agentId,
       name: typeof handle.name === 'string' && handle.name !== '' ? handle.name : name,
@@ -468,8 +632,10 @@ export function createTaskAgents(options) {
       },
       // T-185: the deferred self-release reconciler must be able to watch this
       // child's turn and, after the bounded wait, interrupt it before disposing.
+      // T-221: that watch is a bounded, fresh tree read; a hung catalog can no
+      // longer stall the host reconciler that retires these children.
       listRows: function () {
-        return runtime.list()
+        return releaseWatchRows(runtime, { timeoutMs: listTimeoutMs, fresh: true })
       },
       interrupt: function () {
         return interruptQuietly(agentId)
@@ -525,7 +691,7 @@ export function createTaskAgents(options) {
           return disposeById(id)
         },
         listRows: function () {
-          return runtime.list(releaseOptions.signal)
+          return releaseWatchRows(runtime, { timeoutMs: listTimeoutMs, fresh: true, signal: releaseOptions.signal })
         },
         interrupt: function () {
           return interruptQuietly(id)
@@ -589,8 +755,14 @@ export function createTaskAgents(options) {
       reviewer: review !== null && review !== undefined && review.deliveredTo !== null && review.deliveredTo !== undefined ? review.deliveredTo.id : null,
       tester: test !== null && test !== undefined && test.deliveredTo !== null && test.deliveredTo !== undefined ? test.deliveredTo.id : null,
     }
+    // T-221: the roles the board and the receipts already name. A covered role
+    // needs no tree scan, because the id IS the routing identity.
+    const covered = new Set()
     for (const role of roles) {
-      if (typeof recorded[role] === 'string' && recorded[role] !== '') add(recorded[role], null, role, 'record')
+      if (typeof recorded[role] === 'string' && recorded[role] !== '') {
+        add(recorded[role], null, role, 'record')
+        covered.add(role)
+      }
     }
 
     // 2) Disposal capabilities retained by this process for that exact card.
@@ -602,24 +774,43 @@ export function createTaskAgents(options) {
       if (ownerSession !== null && receipt.rootId !== null && receipt.rootId !== ownerSession) continue
       if (roles.indexOf(receipt.role) < 0) continue
       add(receipt.agentId, receipt.name, receipt.role, 'registry')
+      covered.add(receipt.role)
     }
 
-    // 3) The live agent tree, which can also see children started before this
-    //    module was loaded (they have a name but no receipt here).
-    let rows = []
-    try {
-      rows = await runtime.list(releaseOptions.signal)
-    } catch (error) {
-      rows = []
-    }
-    for (const row of Array.isArray(rows) ? rows : []) {
-      if (row === null || row === undefined) continue
-      const id = row.id !== undefined ? row.id : row.sessionId
-      if (id === undefined || id === null || String(id) === '') continue
-      const path = typeof row.path === 'string' && row.path !== '' ? row.path.split('/').pop() : null
-      const name = typeof row.name === 'string' && row.name !== '' ? row.name : path
-      const role = taskRoleOfAgentName(name, roles, taskId)
-      if (role !== null) add(id, name, role, 'tree')
+    // 3) The live agent tree is the LAST resort (T-221). It can still see a child
+    //    started before this module was loaded (a name but no receipt here), but
+    //    reading it is O(tree) and used to hold a released card — and the merge
+    //    queue that released it — for minutes. Only a role neither the board nor
+    //    a receipt names reaches for it, at most ONE bounded read per call.
+    const uncovered = roles.filter(function (role) { return covered.has(role) !== true })
+    let agentList = null
+    if (uncovered.length > 0) {
+      const read = await readAgentRows(runtime, {
+        timeoutMs: Number.isFinite(releaseOptions.listTimeoutMs) ? releaseOptions.listTimeoutMs : listTimeoutMs,
+        cacheMs: Number.isFinite(releaseOptions.listCacheMs) ? releaseOptions.listCacheMs : listCacheMs,
+        signal: releaseOptions.signal,
+      })
+      agentList = { attempted: true, cached: read.cached === true, timedOut: read.timedOut === true, code: read.code === undefined ? null : read.code }
+      for (const row of Array.isArray(read.rows) ? read.rows : []) {
+        if (row === null || row === undefined) continue
+        // The DSH catalog is append-only: a disposed child stays a row with
+        // activity:'inactive'. Only an explicitly inactive row is skipped; a row
+        // that cannot tell is kept (never assumed released).
+        if (row.activity === 'inactive') continue
+        const id = row.id !== undefined ? row.id : row.sessionId
+        if (id === undefined || id === null || String(id) === '') continue
+        const at = typeof row.path === 'string' && row.path !== '' ? row.path.split('/').pop() : null
+        const name = typeof row.name === 'string' && row.name !== '' ? row.name : at
+        // Once ONE bounded scan is paid for, it answers for every requested role:
+        // a leaked reviewer whose role the board happened to record is exactly the
+        // child this read exists to find (T-204), and ignoring it would leave a
+        // second live reviewer behind the recorded one. The name ONLY attributes an
+        // otherwise unknown row to this card; the id recorded on the board or in a
+        // receipt is never re-derived from a name, and every release/interrupt
+        // below is issued by exact id.
+        const role = taskRoleOfAgentName(name, roles, taskId)
+        if (role !== null) add(id, name, role, 'tree')
+      }
     }
 
     const released = []
@@ -637,7 +828,7 @@ export function createTaskAgents(options) {
             return disposeById(entry.agentId)
           },
           listRows: function () {
-            return runtime.list(releaseOptions.signal)
+            return releaseWatchRows(runtime, { timeoutMs: listTimeoutMs, fresh: true, signal: releaseOptions.signal })
           },
           interrupt: function () {
             return interruptQuietly(entry.agentId)
@@ -660,6 +851,13 @@ export function createTaskAgents(options) {
       if (interruptQuietly(entry.agentId)) interrupted.push(entry)
       else unresolved.push(entry)
     }
+    // T-221: an id this call disposed cannot be rediscovered by name later in the
+    // cache window; drop it from the memoised rows instead of invalidating the
+    // whole read (consecutive releases then keep sharing ONE scan).
+    if (agentList !== null) {
+      const touched = released.concat(interrupted, failed, unresolved).map(function (entry) { return entry.agentId })
+      forgetCachedListRows(listRootKey(runtime), touched)
+    }
     return {
       ok: failed.length === 0 && unresolved.length === 0,
       taskId: taskId,
@@ -671,6 +869,10 @@ export function createTaskAgents(options) {
       // T-185: queued self-releases. Not a failure: the caller is retired by the
       // reconciler after its turn ends.
       deferred: deferred,
+      // T-221: the last-resort tree read. null when the board records and the
+      // receipts already named every requested role. A timed-out read says so and
+      // still does not block the release of the ids that WERE known.
+      agentList: agentList,
     }
   }
 
