@@ -3,8 +3,12 @@
 // plus hostCheck reuse on an unchanged candidate fingerprint.
 
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { createRequire } from 'node:module'
-import { createFakeGit, createFakeTaskAgents, createRig, createTask, PROJECT } from './support/fixtures.mjs'
+import { createApi } from '../../plugin/task-center/api.mjs'
+import { createDispatcher } from '../../plugin/task-center/dispatch.mjs'
+import { createState } from '../../plugin/task-center/state.mjs'
+import { createFakeFs, createFakeGit, createFakeTaskAgents, createRig, createStrictCtx, createTask, PROJECT, seedBoard } from './support/fixtures.mjs'
 
 const require = createRequire(import.meta.url)
 const { createTaskCard } = require('../../client/src/views/task-card.cjs')
@@ -614,6 +618,262 @@ for (const outcome of ['conflict', 'failed']) {
     assert.equal(retried.code, 'no-open-merge')
   })
   candidateRig.scheduler.dispose()
+}
+
+// ── T-217: a PENDING test round is never rebuilt, replaced or merged ────────
+//
+// The regression: a card in testing + test.pending + waitingReason=candidate-stale
+// was rebuilt by the SAME sweep that had just started its tester (the
+// provisioning pass wrote the board, the rebuild pass still used the pre-start
+// snapshot). The merge then refused with no-open-merge, the card was marked
+// candidate-stale again, and the next sweep replaced the tester — the round could
+// never finish. Every sweep below is the real autoMergePending.
+const HEX = (char) => char.repeat(40)
+
+/** The sweep's host check: the declared verify command always exits 0 here. */
+function hostCheckHarness() {
+  const calls = []
+  return {
+    calls: calls,
+    spawn(input) {
+      calls.push(input)
+      return {
+        collected: {
+          stdout: { readFrom: () => ({ text: 'PASS 67/67\n' }) },
+          stderr: { readFrom: () => ({ text: '' }) },
+        },
+        done: Promise.resolve({ exitCode: 0 }),
+      }
+    },
+  }
+}
+
+/** The merger the sweep drives, with every candidate/merge call recorded. */
+function recordingMerger() {
+  const calls = []
+  return {
+    calls: calls,
+    async createCandidate(task) {
+      calls.push({ kind: 'createCandidate', id: String(task.id) })
+      return {
+        ok: true,
+        path: join(PROJECT, '.worktrees', 'test-' + String(task.id)),
+        base: HEX('c'),
+        head: 'candidate-head-' + String(task.id),
+        target: 'main',
+        actualFiles: [],
+      }
+    },
+    async mergeCandidate(task) {
+      calls.push({ kind: 'mergeCandidate', id: String(task.id) })
+      return { ok: true, status: 'merged', mergeCommit: 'merged-' + String(task.id), candidateRemoved: true, taskWorktreeRemoved: false }
+    },
+    async discardCandidate(task) {
+      calls.push({ kind: 'discardCandidate', id: String(task.id) })
+      return { ok: true }
+    },
+  }
+}
+
+/** A testing card whose merge request sits on an OLD target head (base drift). */
+function staleCandidateCard(id, overrides) {
+  const stamp = '2026-11-20T00:00:00.000Z'
+  return Object.assign(
+    {
+      id: id,
+      title: 'stale candidate ' + id,
+      status: 'testing',
+      kind: 'dev',
+      target: 'main',
+      base: HEX('a'),
+      branch: 'task/' + id + '-1',
+      commit: HEX('b'),
+      worktree: join(PROJECT, '.worktrees', id + '-1'),
+      ownerSession: 'session-lead',
+      writeFiles: [],
+      verify: { command: 'npm test', timeoutMs: 5000 },
+      verification: { probes: [{ id: 'probe-a', command: 'node --test scripts/a.test.mjs' }] },
+      review: { status: 'approved', attempt: 1 },
+      test: { status: 'pending', attempt: 1, deliveredTo: null },
+      merge: { status: 'open', base: HEX('a'), head: HEX('b'), target: 'main', mergeCommit: HEX('b'), actualFiles: [] },
+      waitingReason: 'candidate-stale',
+      waitingDetail: 'diff changed: the target moved after the test round opened',
+      history: [],
+      createdAt: stamp,
+      updatedAt: stamp,
+    },
+    overrides === undefined ? {} : overrides,
+  )
+}
+
+/** One project, one seeded board, the real sweep with autoMerge enabled. */
+function createSweepRig(options) {
+  const opts = options === undefined ? {} : options
+  const fs = createFakeFs()
+  fs.dirs.add(PROJECT)
+  fs.dirs.add(join(PROJECT, '.git'))
+  fs.dirs.add(join(PROJECT, '.agents'))
+  fs.dirs.add(join(PROJECT, '.worktrees'))
+  const git = createFakeGit({ base: HEX('b'), heads: opts.heads })
+  // The target moved past every recorded base: the merge loop sees drift.
+  git.revParse = async () => ({ ok: true, hash: HEX('c') })
+  git.isAncestor = async () => ({ ok: true, ancestor: true })
+  const subprocess = hostCheckHarness()
+  const ctx = createStrictCtx(
+    {
+      fs: fs,
+      sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+      get(key) {
+        if (key === 'agents') return { list: () => [{ id: 'session-lead' }] }
+        if (key === 'subagents') return { list: () => ['spawn'] }
+        if (key === 'subprocess') return subprocess
+        return undefined
+      },
+    },
+    ['fs', 'sandboxPolicy', 'tools', 'webServer'],
+  )
+  const state = createState(ctx, { sessionLookup: null })
+  state.setSessionRoot('session-lead', PROJECT)
+  const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: true, git: git, taskAgents: opts.taskAgents })
+  const api = createApi(ctx, { state: state, scheduler: scheduler, git: git, merger: opts.merger, taskAgents: opts.taskAgents, autoMerge: true })
+  seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: opts.cards.length + 1, dispatch: { state: 'running' }, tasks: opts.cards }))
+  async function card(id) {
+    const snap = await api.perform('board', {}, { projectPath: PROJECT, by: '@user', role: 'user', agent: null, sessionId: 'session-lead' })
+    assert.equal(snap.ok, true, JSON.stringify(snap).slice(0, 600))
+    return snap.tasks.filter((entry) => entry.id === id)[0]
+  }
+  return { fs: fs, state: state, scheduler: scheduler, api: api, git: git, subprocess: subprocess, card: card }
+}
+
+// A. pending tester + candidate-stale: no rebuild, no merge, exactly one tester
+{
+  const taskAgents = createFakeTaskAgents()
+  const merger = recordingMerger()
+  const rig = createSweepRig({ taskAgents: taskAgents, merger: merger, cards: [staleCandidateCard('T-900')] })
+  const sweeps = []
+  for (let round = 0; round < 3; round += 1) sweeps.push(await rig.api.autoMergePending(PROJECT))
+  const card = await rig.card('T-900')
+  const testerStarts = taskAgents.calls.filter((call) => call.kind === 'startTester' && call.taskId === 'T-900')
+
+  check('T-217 a pending test round is never rebuilt into a merge', () => {
+    assert.equal(sweeps.every((sweep) => sweep.ok === true), true, JSON.stringify(sweeps))
+    assert.equal(merger.calls.filter((call) => call.kind === 'createCandidate').length, 0, 'the sweep rebuilt a candidate under a pending tester: ' + JSON.stringify(merger.calls))
+    assert.equal(merger.calls.filter((call) => call.kind === 'mergeCandidate').length, 0, 'the sweep merged a pending test round')
+  })
+
+  check('T-217 the waiting card gets exactly one tester, which then owns the round', () => {
+    assert.equal(testerStarts.length, 1, 'startTester calls: ' + JSON.stringify(testerStarts.map((call) => call.agentId)))
+    assert.equal(taskAgents.live.has(testerStarts[0].agentId), true, 'the started tester is not live')
+    assert.equal(card.status, 'testing')
+    assert.equal(card.test.status, 'pending')
+    assert.equal(card.test.deliveredTo.id, testerStarts[0].agentId, 'the card does not point at the tester it started')
+    assert.equal(card.waitingReason, null, 'the card still waits for a stale-candidate rebuild while its tester runs')
+  })
+
+  check('T-217 three consecutive sweeps never replace that tester', () => {
+    assert.equal(testerStarts.length, 1, 'a later sweep started another tester')
+    assert.equal(taskAgents.calls.filter((call) => call.kind === 'releaseTask').length, 0, 'the sweep disposed the running tester')
+    assert.equal(card.status, 'testing', 'the card left testing without a verdict')
+  })
+  rig.scheduler.dispose()
+}
+
+// B. no tester service: the card keeps waiting, one attempt per sweep, no rebuild
+{
+  const taskAgents = createFakeTaskAgents()
+  taskAgents.startTester = async function (task, prompt) {
+    taskAgents.calls.push({ kind: 'startTester', taskId: String(task.id), agentId: null, text: prompt })
+    throw new Error('no tester runtime in this profile')
+  }
+  const merger = recordingMerger()
+  const rig = createSweepRig({ taskAgents: taskAgents, merger: merger, cards: [staleCandidateCard('T-901')] })
+  const sweeps = []
+  for (let round = 0; round < 3; round += 1) sweeps.push(await rig.api.autoMergePending(PROJECT))
+  const card = await rig.card('T-901')
+  const attempts = taskAgents.calls.filter((call) => call.kind === 'startTester')
+
+  check('T-217 without a tester the sweep keeps waiting instead of rebuilding', () => {
+    assert.equal(sweeps.every((sweep) => sweep.ok === true), true, JSON.stringify(sweeps))
+    assert.equal(attempts.length, 3, 'one start attempt per sweep, got ' + String(attempts.length))
+    assert.equal(merger.calls.length, 0, 'the sweep reached the candidate/merge service: ' + JSON.stringify(merger.calls))
+    assert.equal(card.status, 'testing')
+    assert.equal(card.test.status, 'pending')
+    assert.equal(card.waitingReason, 'candidate-stale', 'the wait was cleared without a tester')
+    assert.equal(card.test.deliveredTo, null, 'a tester was recorded although none started')
+  })
+  rig.scheduler.dispose()
+}
+
+// C. the rebuild gate is the PASSED verdict: same sweep, pending skipped, passed merged
+{
+  const taskAgents = createFakeTaskAgents()
+  const merger = recordingMerger()
+  const passedWorktree = join(PROJECT, '.worktrees', 'T-903-1')
+  const rig = createSweepRig({
+    taskAgents: taskAgents,
+    merger: merger,
+    heads: { [passedWorktree]: HEX('e') },
+    cards: [
+      staleCandidateCard('T-902'),
+      staleCandidateCard('T-903', {
+        base: HEX('d'),
+        commit: HEX('e'),
+        test: { status: 'passed', attempt: 1 },
+        merge: { status: 'open', base: HEX('d'), head: HEX('e'), target: 'main', mergeCommit: HEX('e'), actualFiles: [] },
+      }),
+    ],
+  })
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  const pendingCard = await rig.card('T-902')
+  const passedCard = await rig.card('T-903')
+  const builds = merger.calls.filter((call) => call.kind === 'createCandidate')
+
+  check('T-217 only a passed test round is rebuilt and merged, pending is left alone', () => {
+    assert.equal(sweep.ok, true, JSON.stringify(sweep).slice(0, 900))
+    assert.equal(builds.length, 1, 'candidate builds in one sweep: ' + JSON.stringify(merger.calls))
+    assert.equal(builds[0].id, 'T-903')
+    assert.equal(merger.calls.filter((call) => call.kind === 'mergeCandidate').length, 1)
+    assert.equal(passedCard.status, 'done', JSON.stringify(passedCard).slice(0, 500))
+    assert.equal(passedCard.merge.status, 'merged')
+    assert.equal(passedCard.waitingReason, null)
+    assert.equal(pendingCard.status, 'testing')
+    assert.equal(pendingCard.test.status, 'pending')
+    assert.equal(taskAgents.calls.filter((call) => call.kind === 'startTester').length, 1, 'only the pending card is given a tester')
+    assert.equal(taskAgents.calls.filter((call) => call.kind === 'startTester')[0].taskId, 'T-902')
+  })
+  rig.scheduler.dispose()
+}
+
+// D. a reviewing card waiting for its candidate rebuild gets ONE refresh, not a
+//    reviewer start followed by another reviewer from the refresh
+{
+  const taskAgents = createFakeTaskAgents()
+  const merger = recordingMerger()
+  const rig = createSweepRig({
+    taskAgents: taskAgents,
+    merger: merger,
+    cards: [
+      staleCandidateCard('T-904', {
+        status: 'reviewing',
+        test: null,
+        review: { status: 'pending', attempt: 1, deliveredTo: null },
+      }),
+    ],
+  })
+  const sweep = await rig.api.autoMergePending(PROJECT)
+  const card = await rig.card('T-904')
+  const reviewers = taskAgents.calls.filter((call) => call.kind === 'startReviewer')
+
+  check('T-217 a reviewing stale card is refreshed once, by the pass that owns it', () => {
+    assert.equal(sweep.ok, true, JSON.stringify(sweep).slice(0, 900))
+    assert.equal(reviewers.length, 1, 'reviewer starts in one sweep: ' + JSON.stringify(reviewers.map((call) => call.agentId)))
+    assert.equal(taskAgents.calls.filter((call) => call.kind === 'startTester').length, 0, 'a tester was started for a card with no test round')
+    assert.equal(merger.calls.length, 0, 'the refresh must not build a candidate itself: ' + JSON.stringify(merger.calls))
+    assert.equal(card.status, 'reviewing')
+    assert.equal(card.review.deliveredTo.id, reviewers[0].agentId)
+    assert.equal(card.waitingReason, null, 'the refreshed card still waits for a stale-candidate rebuild')
+  })
+  rig.scheduler.dispose()
 }
 
 const failedChecks = checks.filter((row) => !row.ok)

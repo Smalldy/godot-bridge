@@ -6317,6 +6317,20 @@ export function createApi(ctx, options) {
     if (task.waitingReason === 'needs-rebase') {
       return failure('needs-rebase', id + ' is waiting for a manual rebase: ' + String(task.waitingDetail === null ? '' : task.waitingDetail))
     }
+    // T-217: the rebuild belongs to a PASSED test round on an OPEN request. While
+    // the test round is still pending the candidate is the tester's checkout:
+    // rebuilding it replaced the tree under the running tester, the merge then
+    // refused (no-open-merge) and the card went straight back to candidate-stale,
+    // so every sweep started yet another tester and the round never finished.
+    // Returning here has no side effect: no candidate, no merge, no markWaiting
+    // (the wait marker the caller wrote stays exactly as it was).
+    const test = task.test
+    if (test === null || test === undefined || test.status !== 'passed') {
+      return failure('test-pending', id + ' still has an open test round; the candidate is rebuilt only after the tester passes it')
+    }
+    if (task.merge.status !== 'open') {
+      return failure('no-open-merge', id + ' has no open merge request to rebuild')
+    }
     if (merger === null || typeof merger.createCandidate !== 'function') {
       await markWaiting(projectPath, id, 'candidate-stale', 'no merge service to rebuild the candidate', context)
       return failure('candidate-stale', 'the merge service cannot rebuild the candidate')
@@ -6469,20 +6483,51 @@ export function createApi(ctx, options) {
    * Every host sweep retries provisioning and clears the marker on success, so a
    * waiting task resumes without a human reopen.
    */
-  async function recoverWaiting(projectPath, board, context, attempted) {
+  async function recoverWaiting(projectPath, board, context, attempted, startedThisSweep) {
     const recovered = []
     const tried = attempted === undefined || attempted === null ? new Set() : attempted
+    // T-217: ONE action per card per sweep. autoMergePending calls this helper
+    // twice in one sweep, and one start must never be followed by a rebuild of
+    // the same card from the pre-start snapshot: that rebuilt the candidate
+    // under the tester it had just started, the merge refused (no-open-merge)
+    // and the card returned to candidate-stale, so the next sweep replaced the
+    // tester again — forever. 'served' records the cards this sweep touched (or
+    // deliberately kept); 'starting' is shared by both calls, so a card is
+    // attempted at most once per sweep even when its start fails.
+    const served = new Set()
+    const starting = startedThisSweep === undefined || startedThisSweep === null ? new Set() : startedThisSweep
     for (const task of board.tasks) {
       if (typeof task.waitingReason !== 'string' || task.waitingReason === '') continue
       // A needs-rebase card waits for a HUMAN: provisioning must not clear that
       // marker (which would hand it straight back to the rebuild loop).
       if (task.waitingReason === 'needs-rebase') continue
+      // T-217: a reviewing card waiting for its candidate rebuild is owned by the
+      // refresh pass below — refreshMerge releases this round's children and
+      // starts the reviewer itself, so a reviewer started here would be replaced
+      // immediately (and the refresh skipped for a card this pass served).
+      if (task.waitingReason === 'candidate-stale' && task.status === 'reviewing') continue
       // v3: only an OPEN stage round can be retried; the stage child is started
       // again and its Session id re-recorded on the card.
       const kind = task.status === 'reviewing' ? 'reviewer' : task.status === 'testing' ? 'tester' : null
       if (kind === null || stageAgents === null) continue
       const record = kind === 'reviewer' ? task.review : task.test
       if (record === null || record === undefined || record.status !== 'pending') continue
+      const key = String(task.id)
+      if (served.has(key) || starting.has(key)) continue
+      // T-217: an ALREADY DELIVERED stage child that is still RUNNING is kept.
+      // A pending round belongs to that child; replacing it on every sweep resets
+      // the round instead of recovering it. Only a card whose child is gone (or
+      // was never delivered) is attempted again.
+      const delivered = record.deliveredTo === null || record.deliveredTo === undefined ? null : record.deliveredTo
+      if (delivered !== null && typeof delivered.id === 'string' && delivered.id !== '') {
+        const live = await liveChildIdsOf(task.ownerSession)
+        if (live !== null && live.has(String(delivered.id))) {
+          served.add(key)
+          continue
+        }
+      }
+      starting.add(key)
+      served.add(key)
       const candidate = kind === 'tester' ? candidateOf(projectPath, board, task) : null
       const text =
         kind === 'reviewer'
@@ -6497,14 +6542,29 @@ export function createApi(ctx, options) {
         recovered.push(task.id)
       }
     }
+    // The pass above may have written (a started child, a cleared wait), so the
+    // snapshot this function was handed is already out of date. Re-read before
+    // acting on any card it touched: acting on the old snapshot is exactly the
+    // T-217 double action (start a tester, then rebuild under it).
+    let current = board
+    if (served.size > 0) {
+      const reread = await readBoardOrFail(projectPath)
+      if (reread.failed === undefined) current = reread.board
+    }
     // A stale candidate is rebuilt here, before the merge queue runs. A testing
     // card takes the base-only fast path (direct merge, no new review round); a
     // reviewing card (build-time conflict) re-opens its merge request so the
     // candidate is built again. needs-rebase waits for a human/worker rebase.
-    for (const task of board.tasks) {
+    for (const task of current.tasks) {
       if (task.waitingReason === 'needs-rebase') continue
       if (task.waitingReason !== 'candidate-stale') continue
+      if (served.has(String(task.id))) continue
       if (task.status === 'testing') {
+        // T-217: a PENDING test round is not a stale candidate. The tester is
+        // still finishing; the rebuild (and the merge) belongs to the sweep that
+        // sees the passed verdict — never to the one that started the tester.
+        const test = task.test
+        if (test === null || test === undefined || test.status !== 'passed') continue
         tried.add(task.id)
         const fast = await rebuildAndMergeStale(projectPath, task.id, context)
         if (fast.ok === true) {
@@ -6544,10 +6604,15 @@ export function createApi(ctx, options) {
     // retried a candidate-stale card, and the merge loop must not retry it again
     // (which would double-count the cross-round counter and rebuild twice).
     const rebuiltThisSweep = new Set()
+    // T-217: the same rule for stage starts. recoverWaiting runs twice below; a
+    // second start in the same sweep must not dispose the tester the first call
+    // just started (the stage service replaces a card's child, it does not reuse
+    // it), so one attempt per card per sweep is kept in a shared set.
+    const startedThisSweep = new Set()
     {
       const waiting = await readBoardOrFail(projectPath)
       if (waiting.failed === undefined && waiting.board.tasks.some((task) => typeof task.waitingReason === 'string' && task.waitingReason !== '')) {
-        await recoverWaiting(projectPath, waiting.board, { projectPath: projectPath, by: 'system', role: 'user', agent: null }, rebuiltThisSweep)
+        await recoverWaiting(projectPath, waiting.board, { projectPath: projectPath, by: 'system', role: 'user', agent: null }, rebuiltThisSweep, startedThisSweep)
       }
     }
     if (autoMerge !== true) return ok({ merged: [], skipped: [], disabled: true, archive: archiveResult })
@@ -6555,7 +6620,7 @@ export function createApi(ctx, options) {
     let read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const systemContext = { projectPath: projectPath, by: 'system', role: 'user', agent: null }
-    await recoverWaiting(projectPath, read.board, systemContext, rebuiltThisSweep)
+    await recoverWaiting(projectPath, read.board, systemContext, rebuiltThisSweep, startedThisSweep)
     read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const candidates = read.board.tasks
@@ -6595,6 +6660,14 @@ export function createApi(ctx, options) {
         const headLooksReal = head.ok === true && /^[0-9a-f]{7,40}$/i.test(String(head.head))
         const stale = baseLooksReal && headLooksReal && before.merge.base !== head.head
         if (stale) {
+          // T-217: the rebuild gate is a PASSED test round on an open request. A
+          // pending round belongs to its tester: the candidate is not rebuilt and
+          // the card is reported as such instead of being marked stale again.
+          const test = before.test
+          if (test === null || test === undefined || test.status !== 'passed') {
+            skipped.push({ id: id, code: 'test-pending' })
+            continue
+          }
           // Fast path: rebuild against the new head and merge directly when the
           // verified branch head did not move (base-only drift).
           const fast = await rebuildAndMergeStale(projectPath, id, systemContext)
