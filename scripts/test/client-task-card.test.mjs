@@ -91,7 +91,9 @@ const withSidebar = createTaskCard(Object.assign({ React, h, toneForDependency: 
   agentSidebar: {
     sessionOf: agentSessionOf,
     available: () => true,
-    open: (sessionId) => { opened.push(sessionId); return true },
+    // T-216: the entry hands over the agent session AND the clicked card's id,
+    // so the tab never has to guess the card from a (possibly shared) session.
+    open: (sessionId, taskId) => { opened.push([sessionId, taskId]); return true },
     label: (key) => (sidebarLabels[key] === undefined ? key : sidebarLabels[key]),
   },
 }))
@@ -136,8 +138,23 @@ assert.ok(entry !== null, 'the entry is a button')
 assert.equal(entry.type, 'button')
 let stopped = 0
 entry.props.onClick({ stopPropagation: () => { stopped += 1 } })
-assert.deepEqual(opened, ['session-t9'], 'clicking opens the agent tab for that session')
+assert.deepEqual(opened, [['session-t9', 'T-9']], 'clicking opens the agent tab for that session AND that card')
 assert.equal(stopped, 1, 'the card must not also open its detail drawer')
+
+// T-216 regression: two cards of the SAME owner session. Deriving the card from
+// the session alone would open the wrong one, so each card must forward its own id.
+const sharedSession = 'session-owner'
+const pendingCard = Object.assign({}, agentTask, { id: 'T-PEND', title: 'pending', status: 'pending', assignee: null, lastAssignee: null, ownerSession: sharedSession })
+const runningCard = Object.assign({}, agentTask, { id: 'T-RUN', title: 'running', status: 'running', assignee: null, lastAssignee: null, ownerSession: sharedSession })
+const pendingEntry = findEntry(renderCard(withSidebar, pendingCard))
+const runningEntry = findEntry(renderCard(withSidebar, runningCard))
+assert.ok(pendingEntry !== null && runningEntry !== null, 'both shared-session cards render the entry')
+assert.equal(pendingEntry.props['data-sidebar-session'], sharedSession)
+assert.equal(runningEntry.props['data-sidebar-session'], sharedSession)
+opened.length = 0
+pendingEntry.props.onClick({ stopPropagation: () => {} })
+runningEntry.props.onClick({ stopPropagation: () => {} })
+assert.deepEqual(opened, [[sharedSession, 'T-PEND'], [sharedSession, 'T-RUN']], 'each card forwards its own taskId, not the session-derived one')
 
 const anonymous = renderCard(withSidebar, Object.assign({}, agentTask, { id: 'T-10', assignee: null, ownerSession: null }))
 assert.equal(JSON.stringify(anonymous).includes('open-agent-sidebar'), false, 'a card without a session hides the entry')

@@ -16,6 +16,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const sidebar = require('../../client/src/views/agent-sidebar.cjs')
+const { createTaskCard } = require('../../client/src/views/task-card.cjs')
 
 function h(type, props, ...children) {
   return { type, props: Object.assign({}, props, children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }) }
@@ -580,6 +581,78 @@ const guideBody = guideView.Body({ sessionId: HOST_SESSION })
 assert.equal(guideBody.props['data-agent-session'], HOST_SESSION, 'the guide overview shows the navigation session')
 assert.equal(guideBody.props['data-agent-task'], '', 'the host session has no card on this board')
 guideDispose()
+
+// ── T-216 regression: the REAL card click path on a shared session ──────────
+// Every card carries the creating session as ownerSession, so several cards
+// commonly share one session. The tab must open for the card the user clicked,
+// not for the session-derived "best" card.
+{
+  const sharedTask = (id, status, at) => Object.assign({}, task, {
+    id: id,
+    title: id,
+    status: status,
+    assignee: null,
+    lastAssignee: null,
+    review: null,
+    test: null,
+    ownerSession: 'session-root',
+    updatedAt: at,
+  })
+  const previous = storeSnapshot
+  storeSnapshot = {
+    tasks: [sharedTask('T-PEND', 'pending', '2026-11-21T05:00:00.000Z'), sharedTask('T-RUN', 'running', '2026-11-21T06:00:00.000Z')],
+    agentTree: agentTree,
+    activityEvents: null,
+  }
+  try {
+    const clickView = createView()
+    const clickHost = createHost()
+    const clickDispose = clickView.mount(clickHost.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+    // The card receives the module-level facade, exactly like client.js wires it.
+    const handle = { sessionOf: sidebar.agentSessionOf, available: sidebar.available, open: sidebar.openIn, label: sidebar.label }
+    const Card = createTaskCard(Object.assign({
+      React: React,
+      h: h,
+      tcBaseName: (value) => String(value).split('/').pop(),
+      tcIsInvestigation: (entry) => entry.kind === 'investigate',
+      tcKindOf: (entry) => (entry.kind === 'investigate' ? 'investigate' : 'dev'),
+      tcLease: () => null,
+      tcMergeLabel: () => 'merge',
+      tcMergeOf: () => null,
+      tcMergeTone: () => 'running',
+      tcPhaseLabel: helpers.tcPhaseLabel,
+      tcPhaseTone: () => 'running',
+      tcReviewLabel: () => 'review',
+      tcReviewOf: () => null,
+      tcReviewTone: () => 'waiting',
+      tcRound: () => 1,
+      tcStageQueued: () => false,
+      tcTestLabel: () => 'test',
+      tcTestOf: () => null,
+      tcTestTone: () => 'waiting',
+      toneForDependency: () => 'waiting',
+      waitingChip: () => null,
+      agentSidebar: handle,
+    }))
+    const pendingCard = Card({ task: storeSnapshot.tasks[0], t: t, now: 1000, selected: false, onOpen: () => {}, onVerdict: () => {} })
+    const pendingEntry = findNode(pendingCard, (node) => node.props !== undefined && node.props['data-action'] === 'open-agent-sidebar')
+    assert.ok(pendingEntry !== null, 'the pending card renders its sidebar entry')
+    assert.equal(pendingEntry.props['data-sidebar-session'], 'session-root', 'the entry targets the shared owner session')
+    pendingEntry.props.onClick({ stopPropagation: () => {} })
+    assert.deepEqual(
+      clickHost.calls.openTabIn[0],
+      [HOST_SESSION, 'godot-bridge-agent', { params: { taskId: 'T-PEND', agentSession: 'session-root' } }],
+      'the click opens for the CLICKED card, not for the session-derived best card',
+    )
+    const placed = (clickHost.strips.get(HOST_SESSION) || [])[0]
+    assert.ok(placed !== undefined, 'the tab really landed in the host strip')
+    const clickedBody = clickView.Body({ sessionId: HOST_SESSION, useTabInfo: () => ({ tab: { navigation: { params: placed.params } } }) })
+    assert.equal(clickedBody.props['data-agent-task'], 'T-PEND', 'the tab body shows the clicked card')
+    clickDispose()
+  } finally {
+    storeSnapshot = previous
+  }
+}
 
 // ── 40-tail / shipped bundle carry the same wiring ──────────────────────────
 const TAIL = readFileSync(new URL('../../client/src/40-tail.part', import.meta.url), 'utf8')

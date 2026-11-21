@@ -68,7 +68,8 @@ const DetailViewWithSidebar = createDetailView(Object.assign({}, deps, {
   agentSidebar: {
     sessionOf: agentSessionOf,
     available: () => true,
-    open: (sessionId) => { opened.push(sessionId); return true },
+    // T-216: the drawer hands over the agent session AND the opened card's id.
+    open: (sessionId, taskId) => { opened.push([sessionId, taskId]); return true },
     label: (key) => (labels[key] === undefined ? key : labels[key]),
   },
 }))
@@ -107,7 +108,16 @@ const entry = findEntry(detailWithEntry)
 assert.ok(entry !== null, 'the drawer entry is a button')
 assert.equal(entry.type, 'button')
 entry.props.onClick()
-assert.deepEqual(opened, ['session-t1'], 'clicking the drawer entry opens the agent tab for that session')
+assert.deepEqual(opened, [['session-t1', 'T-1']], 'clicking the drawer entry opens the agent tab for that session AND that card')
+
+// T-216 regression: the drawer forwards the opened card's own id even when the
+// session is shared with another task (the owner session is the common case).
+const sharedTask = Object.assign({}, task, { id: 'T-DRAWER', assignee: null, ownerSession: 'session-owner' })
+const sharedEntry = findEntry(renderDetail(DetailViewWithSidebar, sharedTask))
+assert.ok(sharedEntry !== null, 'a drawer whose session is shared still renders the entry')
+opened.length = 0
+sharedEntry.props.onClick()
+assert.deepEqual(opened, [['session-owner', 'T-DRAWER']], 'the drawer forwards the opened card id, not a session-derived one')
 
 const anonymous = renderDetail(DetailViewWithSidebar, Object.assign({}, task, { assignee: null, ownerSession: null }))
 assert.equal(JSON.stringify(anonymous).includes('open-agent-sidebar'), false, 'a drawer without a session hides the entry')

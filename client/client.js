@@ -5548,10 +5548,16 @@ function createTaskCard(deps) {
 		}
 	}
 
-	function openSidebar(sessionId) {
+	/**
+	 * T-216: the clicked card's id travels WITH the session. The tab opens in the
+	 * host session and shows the exact card; deriving it from the session alone
+	 * picks another card whenever a session (the owner session, typically) is
+	 * shared by several cards.
+	 */
+	function openSidebar(sessionId, taskId) {
 		if (agentSidebar === null || typeof agentSidebar.open !== 'function') return false
 		try {
-			return agentSidebar.open(sessionId) === true
+			return agentSidebar.open(sessionId, taskId) === true
 		} catch (error) {
 			return false
 		}
@@ -5691,7 +5697,7 @@ function createTaskCard(deps) {
 							title: sidebarLabel('openInSidebarHint'),
 							onClick: function (event) {
 								if (event !== null && event !== undefined && typeof event.stopPropagation === 'function') event.stopPropagation()
-								openSidebar(sidebarSession)
+								openSidebar(sidebarSession, task.id)
 							},
 							onKeyDown: function (event) {
 								if (event !== null && event !== undefined && (event.key === 'Enter' || event.key === ' ')) event.stopPropagation()
@@ -8407,10 +8413,16 @@ function createDetailView(deps) {
 		}
 	}
 
-	function openSidebar(sessionId) {
+	/**
+	 * T-216: the clicked card's id travels WITH the session. The tab opens in the
+	 * host session and shows the exact card; deriving it from the session alone
+	 * picks another card whenever a session (the owner session, typically) is
+	 * shared by several cards.
+	 */
+	function openSidebar(sessionId, taskId) {
 		if (agentSidebar === null || typeof agentSidebar.open !== 'function') return false
 		try {
-			return agentSidebar.open(sessionId) === true
+			return agentSidebar.open(sessionId, taskId) === true
 		} catch (error) {
 			return false
 		}
@@ -8509,7 +8521,7 @@ function createDetailView(deps) {
 			actions.push(
 				h(
 					'button',
-					{ key: 'sidebar', type: 'button', className: 'gbt-btn', 'data-action': 'open-agent-sidebar', 'data-sidebar-session': sidebarSession, title: sidebarLabel('openInSidebarHint'), onClick: function () { openSidebar(sidebarSession) } },
+					{ key: 'sidebar', type: 'button', className: 'gbt-btn', 'data-action': 'open-agent-sidebar', 'data-sidebar-session': sidebarSession, title: sidebarLabel('openInSidebarHint'), onClick: function () { openSidebar(sidebarSession, task.id) } },
 					'▤ ' + sidebarLabel('openInSidebar'),
 				),
 			)
