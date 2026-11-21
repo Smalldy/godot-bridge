@@ -41,12 +41,17 @@
 						),
 					)
 				})
-				// T-209: the native right-sidebar agent tab. Both services are OPTIONAL:
-				// a shell without them never runs this callback, the card/detail entry
-				// stays hidden (the module handle reports unavailable), and a host that
-				// rejects the registration must not take the panel down with it.
+				// T-209: the native right-sidebar agent tab. The sidebar services are
+				// OPTIONAL: a shell without them never runs this callback, the
+				// card/detail entry stays hidden (the module handle reports
+				// unavailable), and a host that rejects the registration must not take
+				// the panel down with it.
+				// T-212: the same sidebar injection also waits for uiWorkspace, the
+				// service the tab body asks to switch the main view to the subagent's
+				// conversation. The tab module treats it as optional too: a mount
+				// without it still renders the overview and simply omits the action.
 				ctx.effect(() => ctx.locale.register(AGENT_TAB_NS, AGENT_TAB_COPY), 'godot-bridge: agent tab copy')
-				ctx.inject(['sidebarRight', 'sidebarRightTabs'], (scoped) => {
+				ctx.inject(['sidebarRight', 'sidebarRightTabs', 'uiWorkspace'], (scoped) => {
 					const tab = createAgentSidebarView({
 						React: React,
 						h: h,
@@ -55,7 +60,16 @@
 						tcAgo: tcAgo,
 						tcAgentStatusKey: tcAgentStatusKey,
 					})
-					return tab.mount(scoped, { slots: ctx.slots, store: store, locale: ctx.locale, ns: AGENT_TAB_NS, taskNs: TC_NS })
+					return tab.mount(scoped, {
+						slots: ctx.slots,
+						store: store,
+						locale: ctx.locale,
+						ns: AGENT_TAB_NS,
+						taskNs: TC_NS,
+						// Explicit even though the module can read the scope: this is the
+						// service the overview's "open subagent conversation" action uses.
+						uiWorkspace: scoped === null || scoped === undefined ? null : scoped.uiWorkspace,
+					})
 				})
 				ctx.effect(() => {
 					const style = document.createElement('style')

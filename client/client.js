@@ -4138,7 +4138,7 @@ const createTaskStore = (function () {
 			const module = { exports: {} }
 			;(function (module, exports) {
 /**
- * Agent sidebar tab (T-209).
+ * Agent sidebar tab (T-209, extended by T-212).
  *
  * The task center can open the AGENT behind a card in DSH's native right
  * sidebar. This module owns everything that needs the host's optional sidebar
@@ -4147,18 +4147,26 @@ const createTaskStore = (function () {
  *   - one custom tab kind/id ('godot-bridge-agent' / 'godot-bridge/agent'),
  *     registered through `sidebarRightTabs`; the body and title are OUR React
  *     components registered into 'sidebar.right.pane.tab' and ...'.title';
- *   - `openIn(sessionId)`, the one call the card/detail entry uses, which
- *     forwards to `sidebarRight.openTabIn(sessionId, kind)`;
+ *   - `openIn(sessionId, taskId?)`, the one call the card/detail entry uses,
+ *     which forwards to `sidebarRight.openTabIn(sessionId, kind, { params })`.
+ *     The card the tab was opened from travels in the tab's navigation params,
+ *     so the tab resolves THAT card instead of the panel's current one;
  *   - the tab body/title: agent name, role, status, task id, stage and the
- *     latest activity of the session, read from the SHARED task store.
+ *     latest activity, read from the SHARED task store;
+ *   - the body's "open subagent conversation" action, which asks the host's
+ *     `uiWorkspace.openSession(sessionId)` to switch the main view to the
+ *     agent's own conversation. Without `uiWorkspace` the action is hidden.
  *
- * The host services are OPTIONAL. A shell without them never mounts, `available()`
- * stays false, `openIn()` returns false without throwing, and the card/detail
- * hide their entry instead of rendering a dead button.
+ * The host services are OPTIONAL. A shell without the sidebar services never
+ * mounts, `available()` stays false, `openIn()` returns false without throwing,
+ * and the card/detail hide their entry instead of rendering a dead button. A
+ * mounted tab without `uiWorkspace` still renders its overview; only the
+ * conversation switch is omitted.
  *
- * The session id is never minted here: it comes from the card's own
- * `assignee.session` (or the owning session when no executor is recorded).
- * The panel's window fallback session is deliberately NOT used.
+ * The session id is never minted here: it is the card's own agent session,
+ * resolved in the card's own order (assignee, then lastAssignee, then the
+ * review deliverer, then the test deliverer, then the owning session). The
+ * panel's window fallback session is deliberately NOT used.
  */
 const AGENT_TAB_KIND = 'godot-bridge-agent'
 const AGENT_TAB_ID = 'godot-bridge/agent'
@@ -4166,6 +4174,8 @@ const AGENT_TAB_BODY_SLOT = 'sidebar.right.pane.tab'
 const AGENT_TAB_TITLE_SLOT = 'sidebar.right.pane.tab.title'
 const AGENT_TAB_OPEN_ACTION = 'open-agent-sidebar'
 const AGENT_TAB_GUIDE_ORDER = 60
+// T-212: the tab's navigation params carry the exact card it was opened from.
+const AGENT_TAB_TASK_PARAM = 'taskId'
 // The tab has its own small locale namespace so it ships next to the component
 // instead of growing the panel's shared dictionary. Labels that already exist in
 // the task center namespace (role/status/event/stage words) fall back to it.
@@ -4182,6 +4192,8 @@ const AGENT_TAB_COPY = {
 		agentTabNoSession: '没有可显示的会话',
 		agentTabNoTask: '没有关联任务',
 		agentTabNoActivity: '没有活动记录',
+		agentTabOpenSession: '打开子代理会话',
+		agentTabOpenSessionHint: '在主页打开这个子代理的会话',
 	},
 	en: {
 		openInSidebar: 'Open in sidebar',
@@ -4193,6 +4205,8 @@ const AGENT_TAB_COPY = {
 		agentTabNoSession: 'No session to show',
 		agentTabNoTask: 'No task for this session',
 		agentTabNoActivity: 'No activity yet',
+		agentTabOpenSession: 'Open subagent conversation',
+		agentTabOpenSessionHint: 'Open this subagent\'s conversation in the main view',
 	},
 }
 
@@ -4206,7 +4220,11 @@ const AGENT_TAB_CSS =
 	'.gbt-agenttabhead .gbt-detailwhen{margin-left:auto;font-weight:400}\n' +
 	'.gbt-agenttabrows{display:flex;flex-direction:column;gap:5px}\n' +
 	'.gbt-agenttabactivity{padding-top:8px;border-top:1px solid var(--dsw-alias-border-l4)}\n' +
-	'.gbt-agenttabtitle{display:inline-flex;align-items:center;gap:5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n'
+	'.gbt-agenttabtitle{display:inline-flex;align-items:center;gap:5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n' +
+	// T-212: the conversation switch, a full-width secondary action under the facts.
+	'.gbt-agenttabopen{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;height:28px;padding:0 10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n' +
+	'.gbt-agenttabopen:hover{background:var(--dsw-alias-bg-module-platform)}\n' +
+	'.gbt-agenttabopen:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}\n'
 
 const ROLE_LABEL_KEYS = { worker: 'roleKindWorker', reviewer: 'roleKindReviewer', tester: 'roleKindTester' }
 const ACTIVITY_LABEL_KEYS = {
@@ -4278,56 +4296,112 @@ function timeOf(value) {
 	return Number.isFinite(at) ? at : 0
 }
 
+/** One record-shaped field of a card (`{ name, session }` or `{ name, id }`), or null. */
+function memberOf(value) {
+	return isRecord(value) ? value : null
+}
+
 /** The executor session recorded on the card, or null. */
 function assignedSessionOf(task) {
-	const assignee = isRecord(task) ? task.assignee : null
-	return isRecord(assignee) ? textOf(assignee.session) : null
+	const assignee = isRecord(task) ? memberOf(task.assignee) : null
+	return assignee !== null ? textOf(assignee.session) : null
+}
+
+/** The previous executor session the host kept when a card was paused/retried. */
+function lastAssignedSessionOf(task) {
+	const previous = isRecord(task) ? memberOf(task.lastAssignee) : null
+	return previous !== null ? textOf(previous.session) : null
+}
+
+/** The session a stage record was delivered to (`deliveredTo.id`), or null. */
+function deliveredSessionOf(record) {
+	if (!isRecord(record)) return null
+	const delivered = memberOf(record.deliveredTo)
+	return delivered !== null ? textOf(delivered.id) : null
+}
+
+function reviewSessionOf(task) {
+	return isRecord(task) ? deliveredSessionOf(task.review) : null
+}
+
+function testSessionOf(task) {
+	return isRecord(task) ? deliveredSessionOf(task.test) : null
 }
 
 /**
- * The REAL host session a card belongs to: the executor's session when one was
- * recorded, else the owning session. Nothing is minted and no panel fallback
+ * The REAL host session a card belongs to, in the card's own order: the current
+ * executor, the previous executor, the review deliverer, the test deliverer,
+ * and finally the owning session. Nothing is minted and no panel fallback
  * session is used, so a card without a recorded session has no entry.
  */
 function agentSessionOf(task) {
 	if (isRecord(task) !== true) return null
-	const assigned = assignedSessionOf(task)
-	if (assigned !== null) return assigned
-	return textOf(task.ownerSession)
-}
-
-/** Every session the card names: worker, owner, and the review/test deliverers. */
-function sessionsOfTask(task) {
-	const ids = []
-	const push = function (value) {
-		const text = textOf(value)
-		if (text !== null && ids.indexOf(text) < 0) ids.push(text)
+	const ordered = [
+		assignedSessionOf(task),
+		lastAssignedSessionOf(task),
+		reviewSessionOf(task),
+		testSessionOf(task),
+		textOf(task.ownerSession),
+	]
+	for (const value of ordered) {
+		if (value !== null) return value
 	}
-	if (isRecord(task) !== true) return ids
-	push(assignedSessionOf(task))
-	push(task.ownerSession)
-	if (isRecord(task.review) && isRecord(task.review.deliveredTo)) push(task.review.deliveredTo.id)
-	if (isRecord(task.test) && isRecord(task.test.deliveredTo)) push(task.test.deliveredTo.id)
-	return ids
+	return null
 }
 
-/** The most relevant card for a session: assigned first, active, then newest. */
+/** Where a session sits in one card's own record (0 = closest), or null. */
+function sessionRankOf(task, sessionId) {
+	if (isRecord(task) !== true) return null
+	if (assignedSessionOf(task) === sessionId) return 0
+	if (lastAssignedSessionOf(task) === sessionId) return 1
+	if (reviewSessionOf(task) === sessionId) return 2
+	if (testSessionOf(task) === sessionId) return 3
+	if (textOf(task.ownerSession) === sessionId) return 4
+	return null
+}
+
+function activeRankOf(task) {
+	return isRecord(task) && (task.status === 'running' || task.status === 'reviewing' || task.status === 'testing') ? 0 : 1
+}
+
+/**
+ * The most relevant card for a session. A card whose executor IS this session
+ * outranks one where it is only the deliverer or owner, then the live stage,
+ * then the newest card. This is the fallback used when the tab carries no
+ * taskId (the guide overview); a card opened from a card always carries one.
+ */
 function taskForSession(snapshot, sessionId) {
-	if (snapshot === null || snapshot === undefined || Array.isArray(snapshot.tasks) !== true) return null
-	const tasks = snapshot.tasks.filter(function (task) {
-		return isRecord(task) && String(task.id === undefined || task.id === null ? '' : task.id) !== ''
-	})
-	const related = tasks.filter(function (task) { return sessionsOfTask(task).indexOf(sessionId) >= 0 })
+	const id = textOf(sessionId)
+	if (snapshot === null || snapshot === undefined || Array.isArray(snapshot.tasks) !== true || id === null) return null
+	const related = []
+	for (const task of snapshot.tasks) {
+		if (!isRecord(task) || String(task.id === undefined || task.id === null ? '' : task.id) === '') continue
+		const rank = sessionRankOf(task, id)
+		if (rank !== null) related.push({ task: task, rank: rank })
+	}
 	if (related.length === 0) return null
-	const assigned = related.filter(function (task) { return assignedSessionOf(task) === sessionId })
-	const active = related.filter(function (task) { return task.status === 'running' || task.status === 'reviewing' || task.status === 'testing' })
-	const pool = assigned.length > 0 ? assigned : active.length > 0 ? active : related
-	return pool.slice().sort(function (left, right) {
-		return timeOf(right.updatedAt) - timeOf(left.updatedAt)
-	})[0]
+	related.sort(function (left, right) {
+		return left.rank - right.rank || activeRankOf(left.task) - activeRankOf(right.task) || timeOf(right.task.updatedAt) - timeOf(left.task.updatedAt)
+	})
+	return related[0].task
 }
 
-/** The live tree agent for a session, when the host reports the tree. */
+/** The exact card a tab was opened from, or null when it is no longer on the board. */
+function taskOfId(snapshot, taskId) {
+	const id = textOf(taskId)
+	if (id === null || snapshot === null || snapshot === undefined || Array.isArray(snapshot.tasks) !== true) return null
+	for (const task of snapshot.tasks) {
+		if (isRecord(task) && String(task.id === undefined || task.id === null ? '' : task.id) === id) return task
+	}
+	return null
+}
+
+/**
+ * The live tree entry for a session, when the host reports the tree. The root
+ * and the members are reported apart: only the root may be shown as the root
+ * Agent, and only a member may name a worker/reviewer/tester session.
+ * @returns `{ agent, isRoot }` or null.
+ */
 function treeAgentOf(snapshot, sessionId, tcAgentTreeOf) {
 	if (typeof tcAgentTreeOf !== 'function' || snapshot === null || snapshot === undefined) return null
 	let tree = null
@@ -4337,10 +4411,10 @@ function treeAgentOf(snapshot, sessionId, tcAgentTreeOf) {
 		tree = null
 	}
 	if (!isRecord(tree)) return null
-	if (isRecord(tree.root) && tree.root.id === sessionId) return tree.root
+	if (isRecord(tree.root) && tree.root.id === sessionId) return { agent: tree.root, isRoot: true }
 	const members = Array.isArray(tree.members) ? tree.members : []
 	for (const member of members) {
-		if (isRecord(member) && member.id === sessionId) return member
+		if (isRecord(member) && member.id === sessionId) return { agent: member, isRoot: false }
 	}
 	return null
 }
@@ -4352,13 +4426,25 @@ function roleLabelOf(role, t) {
 	return t(key)
 }
 
-/** The role a card's stage makes the session responsible for (no roster guess). */
-function roleOfSession(task, sessionId) {
+/**
+ * What a card's own records make this session responsible for:
+ * `{ role, name }` with role worker/reviewer/tester/root, or null. The worker
+ * fields are checked first, so a session that is both the executor and the
+ * card's owner stays a worker instead of borrowing the root Agent's role.
+ */
+function sessionRoleOf(task, sessionId) {
 	if (isRecord(task) !== true) return null
-	if (assignedSessionOf(task) === sessionId) return 'worker'
-	if (isRecord(task.review) && isRecord(task.review.deliveredTo) && task.review.deliveredTo.id === sessionId) return 'reviewer'
-	if (isRecord(task.test) && isRecord(task.test.deliveredTo) && task.test.deliveredTo.id === sessionId) return 'tester'
-	if (textOf(task.ownerSession) === sessionId) return 'lead'
+	const current = memberOf(task.assignee)
+	if (current !== null && textOf(current.session) === sessionId) return { role: 'worker', name: textOf(current.name) }
+	const previous = memberOf(task.lastAssignee)
+	if (previous !== null && textOf(previous.session) === sessionId) return { role: 'worker', name: textOf(previous.name) }
+	const review = memberOf(task.review)
+	const reviewer = review !== null ? memberOf(review.deliveredTo) : null
+	if (reviewer !== null && textOf(reviewer.id) === sessionId) return { role: 'reviewer', name: textOf(reviewer.name) }
+	const test = memberOf(task.test)
+	const tester = test !== null ? memberOf(test.deliveredTo) : null
+	if (tester !== null && textOf(tester.id) === sessionId) return { role: 'tester', name: textOf(tester.name) }
+	if (textOf(task.ownerSession) === sessionId) return { role: 'root', name: null }
 	return null
 }
 
@@ -4366,8 +4452,8 @@ function roleOfSession(task, sessionId) {
 function stageStatusOf(task, sessionId) {
 	if (isRecord(task) !== true) return 'unknown'
 	if (task.status === 'running' && assignedSessionOf(task) === sessionId) return 'running'
-	if (task.status === 'reviewing' && isRecord(task.review) && isRecord(task.review.deliveredTo) && task.review.deliveredTo.id === sessionId) return 'running'
-	if (task.status === 'testing' && isRecord(task.test) && isRecord(task.test.deliveredTo) && task.test.deliveredTo.id === sessionId) return 'running'
+	if (task.status === 'reviewing' && reviewSessionOf(task) === sessionId) return 'running'
+	if (task.status === 'testing' && testSessionOf(task) === sessionId) return 'running'
 	return 'unknown'
 }
 
@@ -4443,29 +4529,42 @@ function activityOf(snapshot, task, now, tcAgo) {
 /**
  * Everything the tab renders for one session. Pure: the selectors are injected
  * so the unit test can drive the same resolution without the bundle.
+ *
+ * T-212: the tab may carry the exact taskId it was opened from. That card is
+ * used as-is instead of guessing from the live tree or the panel's session —
+ * a card deleted since then keeps its id with no stage rather than showing
+ * another card's data. Without a taskId (the guide overview) the card is
+ * resolved from the session by the card's own field order.
  */
-function agentInfoOf(snapshot, sessionId, t, now, helpers) {
+function agentInfoOf(snapshot, sessionId, t, now, helpers, taskId) {
 	const tool = isRecord(helpers) ? helpers : {}
 	const tcAgentTreeOf = tool.tcAgentTreeOf
 	const tcPhaseLabel = typeof tool.tcPhaseLabel === 'function' ? tool.tcPhaseLabel : function (task) { return task !== null && task !== undefined && typeof task.status === 'string' ? task.status : '—' }
 	const tcAgo = typeof tool.tcAgo === 'function' ? tool.tcAgo : function () { return '—' }
 	const tcAgentStatusKey = typeof tool.tcAgentStatusKey === 'function' ? tool.tcAgentStatusKey : function () { return 'agentStatusUnknown' }
-	const treeAgent = treeAgentOf(snapshot, sessionId, tcAgentTreeOf)
-	let task = taskForSession(snapshot, sessionId)
-	if (treeAgent !== null && typeof treeAgent.taskId === 'string' && treeAgent.taskId !== '' && snapshot !== null && snapshot !== undefined && Array.isArray(snapshot.tasks)) {
-		const linked = snapshot.tasks.filter(function (entry) { return isRecord(entry) && entry.id === treeAgent.taskId })[0]
-		if (linked !== undefined) task = linked
+	const exactId = textOf(taskId)
+	const tree = treeAgentOf(snapshot, sessionId, tcAgentTreeOf)
+	const treeAgent = tree !== null ? tree.agent : null
+	const task = exactId !== null ? taskOfId(snapshot, exactId) : taskForSession(snapshot, sessionId)
+	const matched = task !== null ? sessionRoleOf(task, sessionId) : null
+	let role = matched !== null ? matched.role : null
+	let name = matched !== null ? matched.name : null
+	if (tree !== null) {
+		const liveRole = tree.isRoot === true ? 'root' : textOf(treeAgent.role)
+		if (role === null) {
+			if (tree.isRoot === true) role = 'root'
+			else if (liveRole === 'worker' || liveRole === 'reviewer' || liveRole === 'tester') role = liveRole
+		}
+		// Name and role must agree: the tree root may only name the root role, a
+		// member may only name a worker/reviewer/tester. That is what keeps a
+		// worker's name from ever being paired with the root Agent's role.
+		const liveName = textOf(treeAgent.name)
+		if (name === null && liveName !== null && (role === null || (role === 'root') === (tree.isRoot === true))) name = liveName
 	}
-	const assigned = task !== null && isRecord(task.assignee) ? task.assignee : null
-	const assignedName = assigned !== null && assigned.session === sessionId ? textOf(assigned.name) : null
-	let name = treeAgent !== null ? textOf(treeAgent.name) : null
-	if (name === null) name = assignedName
 	if (name === null) name = sessionShort(sessionId)
-	let role = treeAgent !== null ? textOf(treeAgent.role) : null
-	if (role === null) role = roleOfSession(task, sessionId)
 	const reported = treeAgent !== null ? textOf(treeAgent.status) : null
 	const status = reported !== null ? reported : stageStatusOf(task, sessionId)
-	const taskId = task !== null && task.id !== undefined && task.id !== null ? String(task.id) : treeAgent !== null && typeof treeAgent.taskId === 'string' ? treeAgent.taskId : null
+	const resolvedId = task !== null && task.id !== undefined && task.id !== null ? String(task.id) : exactId
 	return {
 		sessionId: sessionId,
 		sessionShort: sessionShort(sessionId),
@@ -4475,11 +4574,36 @@ function agentInfoOf(snapshot, sessionId, t, now, helpers) {
 		status: status,
 		statusPill: statusPillOf(status),
 		statusLabelKey: tcAgentStatusKey(status),
-		taskId: taskId,
+		taskId: resolvedId,
 		taskTitle: task !== null && typeof task.title === 'string' ? task.title : '',
 		stage: task !== null ? tcPhaseLabel(task, t) : t('agentTabNoTask'),
 		activity: activityOf(snapshot, task, now, tcAgo),
 	}
+}
+
+/**
+ * The taskId the tab was opened with, from the host's navigation params
+ * (`useTabInfo().tab.navigation.params`). A component mounted directly (the
+ * unit test, or an older host that passes nothing) may hand the id over as an
+ * explicit `taskId` prop instead. Never throws: a missing service or params
+ * object simply means "no exact card".
+ */
+function tabTaskIdOf(props) {
+	if (props === null || props === undefined) return null
+	const direct = textOf(props.taskId)
+	if (direct !== null) return direct
+	const useTabInfo = props.useTabInfo
+	if (typeof useTabInfo !== 'function') return null
+	let info = null
+	try {
+		info = useTabInfo()
+	} catch (error) {
+		return null
+	}
+	const tab = info !== null && info !== undefined && isRecord(info.tab) ? info.tab : null
+	const navigation = tab !== null && isRecord(tab.navigation) ? tab.navigation : null
+	const params = navigation !== null && isRecord(navigation.params) ? navigation.params : null
+	return params !== null ? textOf(params[AGENT_TAB_TASK_PARAM]) : null
 }
 
 function createAgentSidebar(deps) {
@@ -4561,6 +4685,26 @@ function createAgentSidebar(deps) {
 		return pair[0]
 	}
 
+	/** The host's optional workspace service, when it can switch the main view. */
+	function workspaceOf() {
+		const workspace = runtime !== null ? runtime.workspace : null
+		return isRecord(workspace) && typeof workspace.openSession === 'function' ? workspace : null
+	}
+
+	/** Switch the main view to this agent's own conversation; a quiet false without the service. */
+	function openConversation(sessionId) {
+		const value = textOf(sessionId)
+		if (value === null || mounted !== true || disposed === true) return false
+		const workspace = workspaceOf()
+		if (workspace === null) return false
+		try {
+			workspace.openSession(value)
+			return true
+		} catch (error) {
+			return false
+		}
+	}
+
 	function AgentTabIcon(props) {
 		const size = props !== null && props !== undefined && typeof props.size === 'number' ? props.size : 14
 		return h(
@@ -4575,8 +4719,9 @@ function createAgentSidebar(deps) {
 		const t = useTranslate()
 		const snapshot = useSnapshot()
 		const sessionId = props !== null && props !== undefined && typeof props.sessionId === 'string' ? props.sessionId.trim() : ''
-		const label = sessionId === '' ? t('agentTabTitle') : agentInfoOf(snapshot, sessionId, t, Date.now(), selectors).name
-		return h('span', { className: 'gbt-agenttabtitle', 'data-agent-tab': 'title', 'data-agent-session': sessionId }, h(AgentTabIcon, { size: 13 }), h('span', null, label))
+		const taskId = tabTaskIdOf(props)
+		const label = sessionId === '' ? t('agentTabTitle') : agentInfoOf(snapshot, sessionId, t, Date.now(), selectors, taskId).name
+		return h('span', { className: 'gbt-agenttabtitle', 'data-agent-tab': 'title', 'data-agent-session': sessionId, 'data-agent-task': taskId === null ? '' : taskId }, h(AgentTabIcon, { size: 13 }), h('span', null, label))
 	}
 
 	function AgentTabBody(props) {
@@ -4584,6 +4729,9 @@ function createAgentSidebar(deps) {
 		const snapshot = useSnapshot()
 		const now = useNow()
 		const sessionId = props !== null && props !== undefined && typeof props.sessionId === 'string' ? props.sessionId.trim() : ''
+		// Read the navigation params before any early return so the injected
+		// tab-info hook is always called in the same order on every render.
+		const taskId = tabTaskIdOf(props)
 		if (sessionId === '') {
 			return h(
 				'div',
@@ -4592,7 +4740,7 @@ function createAgentSidebar(deps) {
 				h('p', { className: 'gbt-footnote' }, t('agentTabNoSession')),
 			)
 		}
-		const info = agentInfoOf(snapshot, sessionId, t, now, selectors)
+		const info = agentInfoOf(snapshot, sessionId, t, now, selectors, taskId)
 		const children = [
 			h(
 				'div',
@@ -4614,6 +4762,24 @@ function createAgentSidebar(deps) {
 				),
 				h('div', { className: 'gbt-detailkv' }, h('span', null, t('agentTabStage')), h('b', null, info.stage)),
 			),
+			// T-212: the overview's one action — switch the main view to this
+			// subagent's own conversation. A root session (or a shell without
+			// uiWorkspace) has nothing to switch to, so the action is omitted.
+			info.role === 'root' || workspaceOf() === null
+				? null
+				: h(
+					'button',
+					{
+						key: 'open',
+						type: 'button',
+						className: 'gbt-agenttabopen',
+						'data-agent-action': 'open-session',
+						'data-agent-session': sessionId,
+						title: t('agentTabOpenSessionHint'),
+						onClick: function () { openConversation(sessionId) },
+					},
+					t('agentTabOpenSession'),
+				),
 			h(
 				'div',
 				{ key: 'activity', className: 'gbt-agenttabactivity' },
@@ -4674,6 +4840,9 @@ function createAgentSidebar(deps) {
 		const scope = isRecord(host) ? host : null
 		const sidebar = readService(scope, 'sidebarRight')
 		const tabs = readService(scope, 'sidebarRightTabs')
+		// T-212: optional. The tab mounts and renders its overview without it;
+		// only the "open subagent conversation" action is withheld.
+		const workspace = isRecord(opts.uiWorkspace) ? opts.uiWorkspace : readService(scope, 'uiWorkspace')
 		const slots = isRecord(scope) && isRecord(scope.slots) ? scope.slots : isRecord(opts.slots) ? opts.slots : null
 		if (!isRecord(sidebar) || typeof sidebar.openTabIn !== 'function') return noop
 		if (!isRecord(tabs) || typeof tabs.register !== 'function') return noop
@@ -4684,7 +4853,7 @@ function createAgentSidebar(deps) {
 			ns: typeof opts.ns === 'string' ? opts.ns : '',
 			taskNs: typeof opts.taskNs === 'string' ? opts.taskNs : '',
 		}
-		runtime = { sidebar: sidebar }
+		runtime = { sidebar: sidebar, workspace: isRecord(workspace) ? workspace : null }
 		let released = false
 		function release() {
 			if (released === true) return
@@ -4752,13 +4921,35 @@ function createAgentSidebar(deps) {
 		return dispose
 	}
 
-	function openIn(sessionId) {
+	/**
+	 * The card a session currently stands for, resolved from the shared store
+	 * with the card's own field order (executor first). Used only because the
+	 * card entry hands over the session, not the card: the id is then carried in
+	 * the tab's navigation params so the body resolves that exact card.
+	 */
+	function cardIdOf(sessionId) {
+		const store = context !== null ? context.store : null
+		if (!isRecord(store) || typeof store.getSnapshot !== 'function') return null
+		let snapshot = null
+		try {
+			snapshot = store.getSnapshot()
+		} catch (error) {
+			return null
+		}
+		const task = taskForSession(snapshot, sessionId)
+		return task !== null && task.id !== undefined && task.id !== null ? String(task.id) : null
+	}
+
+	function openIn(sessionId, taskId) {
 		const value = typeof sessionId === 'string' ? sessionId.trim() : ''
 		if (value === '' || mounted !== true || disposed === true) return false
 		const sidebar = runtime !== null ? runtime.sidebar : null
 		if (!isRecord(sidebar) || typeof sidebar.openTabIn !== 'function') return false
+		const exact = textOf(taskId)
+		const cardId = exact !== null ? exact : cardIdOf(value)
 		try {
-			sidebar.openTabIn(value, AGENT_TAB_KIND)
+			if (cardId === null) sidebar.openTabIn(value, AGENT_TAB_KIND)
+			else sidebar.openTabIn(value, AGENT_TAB_KIND, { params: { [AGENT_TAB_TASK_PARAM]: cardId } })
 			return true
 		} catch (error) {
 			return false
@@ -4770,8 +4961,8 @@ function createAgentSidebar(deps) {
 		id: AGENT_TAB_ID,
 		action: AGENT_TAB_OPEN_ACTION,
 		sessionOf: agentSessionOf,
-		infoOf: function (snapshot, sessionId, t, now) {
-			return agentInfoOf(snapshot, sessionId, t, now, selectors)
+		infoOf: function (snapshot, sessionId, t, now, taskId) {
+			return agentInfoOf(snapshot, sessionId, t, now, selectors, taskId)
 		},
 		Title: AgentTabTitle,
 		Body: AgentTabBody,
@@ -4781,6 +4972,12 @@ function createAgentSidebar(deps) {
 			return mounted === true && disposed !== true && bound === api
 		},
 		openIn: openIn,
+		/** Switch the main view to the agent's conversation; false without uiWorkspace. */
+		openConversation: openConversation,
+		/** Whether the mounted host gave us a usable uiWorkspace. */
+		hasWorkspace: function () {
+			return workspaceOf() !== null
+		},
 		label: function (key) {
 			return translate()(key)
 		},
@@ -4793,9 +4990,9 @@ function available() {
 	return bound !== null && typeof bound.isMounted === 'function' && bound.isMounted() === true
 }
 
-/** Open the agent tab for a REAL session; false (never a throw) when unavailable. */
-function openIn(sessionId) {
-	return bound === null ? false : bound.openIn(sessionId)
+/** Open the agent tab for a REAL session (and optionally its exact card); false (never a throw) when unavailable. */
+function openIn(sessionId, taskId) {
+	return bound === null ? false : bound.openIn(sessionId, taskId)
 }
 
 /** A localized entry label for the card/detail; the zh copy before mount. */
@@ -12354,12 +12551,17 @@ module.exports = { createDecisionOverlay }
 						),
 					)
 				})
-				// T-209: the native right-sidebar agent tab. Both services are OPTIONAL:
-				// a shell without them never runs this callback, the card/detail entry
-				// stays hidden (the module handle reports unavailable), and a host that
-				// rejects the registration must not take the panel down with it.
+				// T-209: the native right-sidebar agent tab. The sidebar services are
+				// OPTIONAL: a shell without them never runs this callback, the
+				// card/detail entry stays hidden (the module handle reports
+				// unavailable), and a host that rejects the registration must not take
+				// the panel down with it.
+				// T-212: the same sidebar injection also waits for uiWorkspace, the
+				// service the tab body asks to switch the main view to the subagent's
+				// conversation. The tab module treats it as optional too: a mount
+				// without it still renders the overview and simply omits the action.
 				ctx.effect(() => ctx.locale.register(AGENT_TAB_NS, AGENT_TAB_COPY), 'godot-bridge: agent tab copy')
-				ctx.inject(['sidebarRight', 'sidebarRightTabs'], (scoped) => {
+				ctx.inject(['sidebarRight', 'sidebarRightTabs', 'uiWorkspace'], (scoped) => {
 					const tab = createAgentSidebarView({
 						React: React,
 						h: h,
@@ -12368,7 +12570,16 @@ module.exports = { createDecisionOverlay }
 						tcAgo: tcAgo,
 						tcAgentStatusKey: tcAgentStatusKey,
 					})
-					return tab.mount(scoped, { slots: ctx.slots, store: store, locale: ctx.locale, ns: AGENT_TAB_NS, taskNs: TC_NS })
+					return tab.mount(scoped, {
+						slots: ctx.slots,
+						store: store,
+						locale: ctx.locale,
+						ns: AGENT_TAB_NS,
+						taskNs: TC_NS,
+						// Explicit even though the module can read the scope: this is the
+						// service the overview's "open subagent conversation" action uses.
+						uiWorkspace: scoped === null || scoped === undefined ? null : scoped.uiWorkspace,
+					})
 				})
 				ctx.effect(() => {
 					const style = document.createElement('style')
