@@ -1,5 +1,7 @@
 # 评审、测试、合并
 
+> **本文是根 Agent 参考**（协调用）：理解阶段、信号与边界。reviewer / tester 执行时以各自**阶段 brief 为准**（brief 自带全部输入、产物与拒绝码），不要求子代理加载根技能。
+
 ## submit
 
 - 本地验证通过并提交后带 evidence；`submit` 仅 assignee / 用户。

@@ -90,9 +90,10 @@ export function renderStatusBrief(input) {
 }
 
 /**
- * The small, always-loaded entry point. It explains who the Lead is, the first
- * move (onboard), the next-code table, the minimal workflow, and where the
- * detailed chapters live. Everything else is deliberately out of this body.
+ * The small, always-loaded entry point. It explains who the root Agent is, the
+ * first move (onboard), the next-code table, the minimal workflow, the
+ * pre-split checklist, and which chapter to read before which action.
+ * Everything else is deliberately out of this body.
  */
 export function buildInitContent(options) {
   const opts = options === undefined || options === null ? {} : options
@@ -115,15 +116,13 @@ export function buildInitContent(options) {
     '- **你做**：管理看板、申请派发、处理阻塞。**不做**：替 worker 写实现、替 reviewer/tester 下结论、自己合并；越权会被 `wrong-role` / `user-only` 拒绝。',
     '- **卡住先查事实**：看板、分支、ref、合并记录，再决定 reopen / retry / 打回。',
     '',
-    '执行者是根 Agent 的临时子代理：每张运行中的卡有一个 worker；reviewer/tester 只在自己的阶段存在，结束即释放。临时子代理没有常驻槽位。没有 Team、没有 Lead 花名册、没有 merger agent。',
-    '',
-    '## 执行树属于根 Agent，先能派发再建卡',
+    '执行者是根 Agent 的临时子代理：运行中的卡各有 worker；reviewer/tester 只在阶段内存在，结束即释放。无常驻槽位、Team、Lead 花名册或 merger agent。',
     '',
     '- 项目 board 是项目级的；每张卡由 `ownerSession` 的根 Agent spawn 子代理执行；`create`/`start` 不需要 Team。',
     '',
     '## 接入（onboard）',
     '',
-    '用任务中心时先调**一次** `task_center { action: "onboard" }`：宿主解析项目根、识别 git + 标记（`.agents/` 或 `project.godot`）、绑定看板，返回 brief + next。',
+    '用任务中心时先调**一次** `task_center { action: "onboard" }`：宿主解析项目根、绑定看板，返回 brief + next。',
     '',
     '1. 把 `onboard.brief` **原样**给用户：不改写、不加“我是 Lead”。',
     '2. 按 `onboard.next.code` 只做一件事：',
@@ -132,7 +131,7 @@ export function buildInitContent(options) {
     '|---|---|',
     '| `choose-project` | 停下来问用户要项目路径，不要猜 |',
     '| `git-init` | 有 project.godot 但没 git：先问用户，再 `git init` |',
-    '| `not-a-project` | git 仓库但没有 `.agents`/`project.godot`：可征得用户同意建空 `.agents/`（不需要 Godot），或换项目；不擅自建板 |',
+    '| `not-a-project` | git 仓库但没有 `.agents`/`project.godot`：征得用户同意可建空 `.agents/`，或换项目 |',
     '| `fix-host` | 按 brief 的缺项修宿主，不建卡 |',
     '| `open-owning-session` | 让用户从当前项目会话接入，不借别的会话的绑定 |',
     '| `resume-owning-session` | 回原会话继续，不建第二个根 Agent |',
@@ -146,7 +145,7 @@ export function buildInitContent(options) {
     '| `create-task` | 问用户要做什么；只建卡，不派发 |',
     '| `none` | 不需要用户动作 |',
     '',
-    '3. 不要用 `openProject`+`board` 自己拼接入；onboard 幂等，路径/任务没变不重复调用。`choose-project` 必须**停下来问**，不要猜；不擅自建卡或派发。',
+    '3. 不要用 `openProject`+`board` 自己拼接入；onboard 幂等，不重复调用。`choose-project` 必须**停下来问**；不擅自建卡或派发。',
     '',
     '**会话归属**：别会话的卡先做 `onboard{handoff}` 决定，决定前不建卡、不派发。',
     '',
@@ -165,19 +164,25 @@ export function buildInitContent(options) {
     '4. `submit` —— 本地验证通过并提交后带 evidence。',
     '5. 宿主接管：reviewer 评审 → 候选跑 `verify` → tester 测试 → 通过且 target 未动即自动合并；打回在同一 worktree 修完再 submit。',
     '',
-    '**动作前置决策**：`create`/`start`/`reopen`/`delete`/`cancel` 先问用户，回 `needs-decision`（`start` 码 `needs-consent`，带 `waitForUser`、`retryable:false`、`decisionId`）：**收到就停，绝不能重试 create**，等面板答复。',
+    '**动作前置决策**：`create`/`start`/`reopen`/`delete`/`cancel` 先问用户，回 `needs-decision`（`start` 码 `needs-consent`，带 `waitForUser`、`retryable:false`、`decisionId`）：**收到就停，别重试 create**，等面板答复。',
     '',
-    '## 拆卡与并行',
+    '## 拆卡前检查',
     '',
-    '- 按不变量/契约拆卡，不按文件数或阶段；一张卡一个可独立验收的产物，acceptance/probes 单卡可执行。',
-    '- `dependsOn` 只表示逻辑前序（B 消费 A 的 schema/接口/产物），不用于解决文件重叠；无逻辑先后就不加。',
-    '- 文件重叠由 `writeFiles` 锁串行；重叠面大就合并成一张卡，或拆纯模块卡（可先并行）+ 集成卡（依赖模块卡）。',
+    '1. 一张卡只交付**一个独立可验收的产物**；不塞“实现 + 集成 + E2E + 迁移”。',
+    '2. **按不变量/契约拆**，不按文件数或阶段切；一张卡一组 `writeFiles`。',
+    '3. **拆完至少两张子卡能并行**；不能并行就先考虑合并。',
+    '4. `dependsOn` 只表示逻辑前序，不用于解决文件重叠；重叠交给 `writeFiles` 锁串行。',
+    '5. **纯模块卡 + 集成卡**：同文件重叠大时，模块卡先并行，集成卡（接线/E2E）后接；集成卡不重做子卡。',
+    '6. acceptance/probes 在该卡 worktree 内跑得完；无独立集成产物不建 dev 总卡。',
     '',
-    '## 细节资源',
+    '## 触发表：先读再动手',
     '',
-    '这些文件在 resourceBase 下，需要时用 read 读取：',
+    '资源在 resourceBase 下，用 read 读取：',
     '',
-    '- `cards.md`（写卡/拆卡/阶段契约/verify）、`run.md`（派发/worktree/执行树）、`gates.md`（评审/测试/合并/drift）、`reference.md`（动作矩阵/拒绝码）。',
+    '- 写卡/拆卡前必须先读 `cards.md` 的「拆卡与并行」',
+    '- 派发/worktree 读 `run.md`',
+    '- 评审/测试/合并/drift 读 `gates.md`',
+    '- 动作/拒绝码读 `reference.md`',
     '',
     '当前可写动作：' + names(writable) + '。',
     '只读动作：' + names(readOnly) + '。',
