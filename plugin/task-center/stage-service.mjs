@@ -126,13 +126,18 @@ export function createStageService(options) {
     return { ok: true, replaced: { agentId: prior.id, released: disposed !== null && disposed.ok === true } }
   }
 
-  async function start(kind, task, brief) {
+  async function start(kind, task, brief, extra) {
+    // T-214: the caller names the directory the stage child must start in (a
+    // tester passes the candidate checkout it tests). A missing path is passed
+    // through as "no cwd"; the stage never guesses one.
+    const requested = extra === undefined || extra === null ? {} : extra
+    const spawnOptions = typeof requested.cwd === 'string' && requested.cwd.trim() !== '' ? { cwd: requested.cwd.trim() } : undefined
     try {
       const prior = await disposePriorChild(kind, task)
       if (prior.ok !== true) return prior
       const started = kind === 'reviewer'
-        ? await agents.startReviewer(task, brief)
-        : await agents.startTester(task, brief)
+        ? await agents.startReviewer(task, brief, spawnOptions)
+        : await agents.startTester(task, brief, spawnOptions)
       return {
         ok: true,
         agentId: started.agentId,
@@ -229,8 +234,8 @@ export function createStageService(options) {
 
   return {
     available: true,
-    startReviewer(task, brief) { return start('reviewer', task, brief) },
-    startTester(task, brief) { return start('tester', task, brief) },
+    startReviewer(task, brief, extra) { return start('reviewer', task, brief, extra) },
+    startTester(task, brief, extra) { return start('tester', task, brief, extra) },
     async release(agentId, options) {
       if (typeof agentId !== 'string' || agentId === '') return false
       const releaseOptions = options === undefined || options === null ? {} : options

@@ -1290,6 +1290,8 @@ export function briefPartsFor(task, projectPath, leadName, roleConfig) {
         '  branch:   ' + String(task.branch === null || task.branch === undefined ? '' : task.branch),
         '  base:     ' + String(task.base === null || task.base === undefined ? '' : task.base),
         'Change files ONLY inside that worktree, and run the tests there.',
+        'Your shell starts in that worktree; if it does not, cd there before running anything.',
+        'Never write scratch files, checkouts or evidence into the main project checkout.',
         'The task board still lives in the main project — point task_center at',
         'the main project ("' + projectPath + '"), not at the worktree.',
       ].join('\n'),
@@ -2108,6 +2110,8 @@ export function testerBriefFor(task, projectPath, candidate, options) {
   lines.push('Candidate branch: ' + String(candidate.branch))
   lines.push('Candidate base: ' + String(candidate.base) + ' (the ' + String(task.target) + ' head when the candidate was built)')
   lines.push('Candidate head: ' + String(candidate.head))
+  lines.push('Your shell starts in that candidate worktree; if it does not, cd there before running anything.')
+  lines.push('Never write scratch files or evidence into the main project checkout.')
   lines.push('Task branch merged into it: ' + String(task.branch === null || task.branch === undefined ? '' : task.branch))
   if (typeof task.spec === 'string' && task.spec !== '') lines.push('', 'What it involves:', task.spec)
   if (typeof task.acceptance === 'string' && task.acceptance !== '') lines.push('', 'Acceptance:', task.acceptance)
@@ -3525,12 +3529,23 @@ export function createDispatcher(ctx, options) {
         detail: String(worktree.message),
       }
     }
+    // T-214: the worker must start in the worktree THIS attempt prepared. The
+    // board row still carries the previous attempt's worktree (null on a first
+    // dispatch), so the brief and the child both get the live path here.
+    const spawnTask =
+      typeof worktree.path === 'string' && worktree.path !== ''
+        ? Object.assign({}, task, {
+            worktree: worktree.path,
+            branch: typeof worktree.branch === 'string' && worktree.branch !== '' ? worktree.branch : task.branch,
+            base: typeof worktree.base === 'string' && worktree.base !== '' ? worktree.base : task.base,
+          })
+        : task
     const brief = task.kind === 'investigate'
       ? investigationBriefFor(task, project, { path: worktree.path, base: worktree.base, target: worktree.target })
-      : briefFor(task, project, taskAgents.root === null ? 'lead' : String(taskAgents.root.name || 'lead'), workerConfig)
+      : briefFor(spawnTask, project, taskAgents.root === null ? 'lead' : String(taskAgents.root.name || 'lead'), workerConfig)
     let spawned
     try {
-      spawned = await taskAgents.startWorker(task, brief)
+      spawned = await taskAgents.startWorker(spawnTask, brief)
     } catch (error) {
       releaseTaskLocks(task.id)
       await removeWorktree(gitFacade(), project, worktree.path)
