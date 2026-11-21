@@ -1,9 +1,11 @@
-// T-209/T-212: the right-sidebar agent tab.
+// T-209/T-212/T-216: the right-sidebar agent tab.
 //
 // The bundled view is required directly (like the other client-*.test.mjs
 // suites) and mounted against a fake host, so the test proves the real
 // registration contract: one custom tab kind, body/title slots keyed by the
-// tab id, sidebar.openTabIn(sessionId, kind, { params: { taskId } }),
+// tab id, the tab opened in the HOST's current session (T-216) with
+// { params: { taskId, agentSession } }, sidebarRight.tabsIn() used to verify
+// the placement (a host no-op is false, never a fake success),
 // uiWorkspace.openSession(sessionId) for the overview's conversation switch,
 // the card's own session order, the role of the stage behind it, exact taskId
 // resolution, and no throw when the optional host services are missing.
@@ -106,18 +108,45 @@ const store = {
   getSnapshot() { return storeSnapshot },
 }
 
+// The HOST session whose right sidebar has an adopted surface. A subagent
+// session never has one, which is exactly why T-216 must not open there.
+const HOST_SESSION = 'session-host'
+
 function createHost(options) {
   const opts = options === undefined ? {} : options
   const calls = { tabs: [], openTabIn: [], sessions: [], slots: [], slotDisposals: 0, tabDisposals: 0 }
   const registered = []
   const services = {}
+  // Only these sessions have an adopted surface; openTabIn silently no-ops for
+  // any other session, like the real host (and returns void either way).
+  const surfaces = opts.surfaces === undefined ? [HOST_SESSION] : opts.surfaces
+  const strips = new Map()
+  let planted = 0
   if (opts.sidebar !== false) {
     services.sidebarRight = {
+      tabsIn(sessionId) {
+        if (opts.tabsInThrows === true) throw new Error('tab strip unavailable')
+        const list = strips.get(sessionId)
+        return list === undefined ? [] : list.slice()
+      },
       openTabIn(sessionId, kind, options) {
         calls.openTabIn.push(arguments.length >= 3 ? [sessionId, kind, options] : [sessionId, kind])
         if (opts.openThrows === true) throw new Error('sidebar unavailable')
+        if (opts.openNoop === true) return
+        if (surfaces.indexOf(sessionId) < 0) return
+        const list = strips.get(sessionId) === undefined ? [] : strips.get(sessionId)
+        // Our tab type is single-instance: the host reveals the open tab.
+        let tab = list.filter((entry) => entry.kind === kind)[0]
+        if (tab === undefined) {
+          planted += 1
+          tab = { id: 'tab-' + String(planted), kind: kind }
+          list.push(tab)
+          strips.set(sessionId, list)
+        }
+        tab.params = options === undefined || options.params === undefined ? null : options.params
       },
     }
+    if (opts.tabsIn === false) delete services.sidebarRight.tabsIn
   }
   if (opts.tabs !== false) {
     services.sidebarRightTabs = {
@@ -135,6 +164,17 @@ function createHost(options) {
         if (opts.workspaceThrows === true) throw new Error('workspace unavailable')
       },
     }
+    // The host's current session — the one with a sidebar surface. The tab
+    // opens THERE (T-216); the agent session is only a navigation param.
+    if (opts.selection !== false) {
+      const current = opts.currentSession === undefined ? HOST_SESSION : opts.currentSession
+      services.uiWorkspace.selection = {
+        getSnapshot() {
+          if (opts.selectionThrows === true) throw new Error('selection unavailable')
+          return current === null ? {} : { sessionId: current }
+        },
+      }
+    }
   }
   const host = {
     get(name) { return services[name] === undefined ? null : services[name] },
@@ -150,7 +190,7 @@ function createHost(options) {
       },
     },
   }
-  return { host: host, calls: calls, registered: registered }
+  return { host: host, calls: calls, registered: registered, strips: strips }
 }
 
 function createView() {
@@ -186,6 +226,14 @@ function openButtonOf(body) {
 /** A host tab-info hook as the slot framework hands it to a body: navigation.params. */
 function tabInfoWith(taskId) {
   return () => ({ tab: { navigation: { params: taskId === null ? {} : { taskId: taskId } } } })
+}
+
+/** T-216: the tab runs in the host session, so the agent rides in the params. */
+function tabInfoWithAgent(taskId, agentSession) {
+  const params = {}
+  if (taskId !== null) params.taskId = taskId
+  if (agentSession !== null) params.agentSession = agentSession
+  return () => ({ tab: { navigation: { params: params } } })
 }
 
 // ── the session helper: the card's own order, never a minted id ─────────────
@@ -244,17 +292,32 @@ assert.equal(spec.guide[0].title(), '代理')
 assert.equal(spec.guide[0].description(), '在右侧栏跟随任务卡上的执行 Agent')
 assert.equal(typeof spec.guide[0].icon, 'function')
 
-// The card entry hands over only the session; the tab resolves the card once
-// and carries its id in the navigation params so the body shows THAT card.
+// T-216: the card entry hands over the AGENT session; the tab opens in the
+// HOST's current session (the only one with a sidebar surface) and carries the
+// agent session plus the resolved card in its navigation params.
 assert.equal(sidebar.openIn('session-w212'), true, 'openIn forwards to the host')
-assert.deepEqual(mounted.calls.openTabIn, [['session-w212', 'godot-bridge-agent', { params: { taskId: 'T-212' } }]], 'openTabIn gets the REAL session, OUR kind and the exact card')
+assert.deepEqual(
+  mounted.calls.openTabIn,
+  [[HOST_SESSION, 'godot-bridge-agent', { params: { taskId: 'T-212', agentSession: 'session-w212' } }]],
+  'openTabIn gets the HOST session, OUR kind and both navigation params',
+)
+assert.equal(
+  mounted.calls.openTabIn.every((call) => call[0] === HOST_SESSION),
+  true,
+  'the agent session is never the session the tab is opened in',
+)
+assert.deepEqual(mounted.strips.get(HOST_SESSION), [{ id: 'tab-1', kind: 'godot-bridge-agent', params: { taskId: 'T-212', agentSession: 'session-w212' } }], 'the tab really landed in the host session strip')
+assert.equal(mounted.strips.has('session-w212'), false, 'the agent session owns no tab strip')
+
 assert.equal(api.openIn('session-rev212', 'T-EXPLICIT'), true, 'an explicit taskId is forwarded verbatim')
-assert.deepEqual(mounted.calls.openTabIn[1], ['session-rev212', 'godot-bridge-agent', { params: { taskId: 'T-EXPLICIT' } }], 'the explicit card travels in the params')
+assert.deepEqual(mounted.calls.openTabIn[1], [HOST_SESSION, 'godot-bridge-agent', { params: { taskId: 'T-EXPLICIT', agentSession: 'session-rev212' } }], 'the explicit card travels in the params next to the agent session')
 assert.equal(sidebar.openIn('session-unknown'), true, 'a session with no card still opens the overview')
-assert.deepEqual(mounted.calls.openTabIn[2], ['session-unknown', 'godot-bridge-agent'], 'without a card the open carries no params')
+assert.deepEqual(mounted.calls.openTabIn[2], [HOST_SESSION, 'godot-bridge-agent', { params: { agentSession: 'session-unknown' } }], 'without a card the params still name the agent session')
+assert.equal(mounted.calls.openTabIn.length, 3, 'every open went to the host session')
 assert.equal(sidebar.openIn(''), false, 'an empty session is refused')
 assert.equal(sidebar.openIn(null), false, 'a missing session is refused')
 assert.equal(sidebar.openIn(42), false, 'a non-string session is refused')
+assert.equal(mounted.calls.openTabIn.length, 3, 'a refused call never reaches the host')
 
 // ── the four sessions of one card resolve their own role and name ───────────
 const workerInfo = api.infoOf(snapshot, 'session-w212', t, 1000)
@@ -395,12 +458,16 @@ assert.doesNotThrow(() => withoutWorkspaceView.openConversation('session-w212'),
 const workspaceLessBody = withoutWorkspaceView.Body({ sessionId: 'session-w212', useTabInfo: tabInfoWith('T-212') })
 assert.equal(openButtonOf(workspaceLessBody), null, 'the switch is hidden without uiWorkspace')
 assert.ok(JSON.stringify(workspaceLessBody).includes('worker-t-212'), 'the rest of the overview still renders')
-assert.equal(withoutWorkspaceView.openIn('session-w212'), true, 'opening the tab still works without uiWorkspace')
+// T-216: without uiWorkspace there is no host session to open in. Falling back
+// to the agent session would be the silent host no-op this task removes.
+assert.equal(withoutWorkspaceView.openIn('session-w212'), false, 'without a host session the open is refused, not silently redirected')
+assert.equal(withoutWorkspace.calls.openTabIn.length, 0, 'no openTabIn is attempted without a host session')
 withoutWorkspaceDispose()
 
 // ── missing sidebar services: hide, never throw ─────────────────────────────
 for (const variant of [
   { sidebar: false },
+  { tabsIn: false },
   { tabs: false },
   { slots: false },
   { tabsThrow: true },
@@ -433,6 +500,87 @@ assert.ok(throwingButton !== null, 'the switch is rendered when uiWorkspace exis
 assert.doesNotThrow(() => throwingButton.props.onClick({}), 'a throwing openSession does not escape the click')
 throwingDispose()
 
+// ── T-216: the tab opens in the HOST session, verified through tabsIn ───────
+// A host that answers openTabIn with void but has no adopted surface silently
+// does nothing. The entry must report that as false instead of a fake success.
+const noopOpen = createHost({ openNoop: true })
+const noopOpenView = createView()
+const noopOpenDispose = noopOpenView.mount(noopOpen.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+assert.equal(sidebar.available(), true, 'the entry mounts against a host that accepts the call')
+assert.equal(sidebar.openIn('session-w212'), false, 'a silent host no-op is reported as false')
+assert.equal(noopOpen.strips.get(HOST_SESSION), undefined, 'the host strip confirms nothing was placed')
+assert.equal(noopOpen.calls.openTabIn.length, 1, 'the call was still attempted once')
+noopOpenDispose()
+
+// The agent session is never the opening session, even if it were the only
+// session the host had a surface for.
+const agentSurface = createHost({ surfaces: ['session-w212'] })
+const agentSurfaceView = createView()
+const agentSurfaceDispose = agentSurfaceView.mount(agentSurface.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+assert.equal(agentSurfaceView.openIn('session-w212'), false, 'the agent session is not opened in and does not fall back')
+assert.deepEqual(agentSurface.calls.openTabIn, [[HOST_SESSION, 'godot-bridge-agent', { params: { taskId: 'T-212', agentSession: 'session-w212' } }]], 'the open still names the host session')
+agentSurfaceDispose()
+
+// No host session (no selection, an empty snapshot, or a throwing one): refuse
+// the open instead of redirecting it to the agent session.
+for (const variant of [
+  { currentSession: null },
+  { selection: false },
+  { selectionThrows: true },
+]) {
+  const off = createHost(variant)
+  const view = createView()
+  const disposal = view.mount(off.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+  assert.equal(view.isMounted(), true, 'the tab still mounts without a current session')
+  assert.equal(view.openIn('session-w212'), false, 'without a current host session the open is refused (' + JSON.stringify(variant) + ')')
+  assert.equal(off.calls.openTabIn.length, 0, 'no openTabIn is attempted (' + JSON.stringify(variant) + ')')
+  disposal()
+}
+
+// A host that cannot report its tab strip leaves the open unverifiable: false.
+const stripBlind = createHost({ tabsIn: false })
+const stripBlindView = createView()
+const stripBlindDispose = stripBlindView.mount(stripBlind.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+assert.equal(stripBlindView.isMounted(), false, 'a host without tabsIn does not offer a dead entry')
+stripBlindDispose()
+const stripThrows = createHost({ tabsInThrows: true })
+const stripThrowsView = createView()
+const stripThrowsDispose = stripThrowsView.mount(stripThrows.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+assert.equal(stripThrowsView.isMounted(), true, 'the strip reader may fail after mount')
+assert.equal(stripThrowsView.openIn('session-w212'), false, 'an unverifiable placement is false')
+assert.equal(stripThrows.calls.openTabIn.length, 0, 'nothing is attempted without a strip inventory')
+stripThrowsDispose()
+
+// The body/title run in the HOST session, so the agent they show comes from the
+// navigation params; the tab's own session is only the fallback.
+const paramView = createView()
+const paramHost = createHost()
+const paramDispose = paramView.mount(paramHost.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+const paramBody = paramView.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-212', 'session-w212') })
+assert.equal(paramBody.props['data-agent-session'], 'session-w212', 'the body shows the agent session from the params, not the host session')
+assert.equal(paramBody.props['data-agent-role'], 'worker')
+assert.equal(paramBody.props['data-agent-task'], 'T-212')
+assert.ok(JSON.stringify(paramBody).includes('worker-t-212'), 'the body names the agent from the params')
+const paramButton = openButtonOf(paramBody)
+assert.ok(paramButton !== null, 'the conversation switch still renders in the host session')
+assert.equal(paramButton.props['data-agent-session'], 'session-w212')
+assert.doesNotThrow(() => paramButton.props.onClick({}), 'the switch still never throws')
+assert.deepEqual(paramHost.calls.sessions, ['session-w212'], 'the switch opens the SUBAGENT conversation (unchanged)')
+const paramTitle = paramView.Title({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-212', 'session-w212') })
+assert.ok(JSON.stringify(paramTitle).includes('worker-t-212'), 'the title names the agent from the params')
+assert.equal(paramView.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent(null, 'session-w212') }).props['data-agent-task'], 'T-212', 'the agent session alone still resolves its card')
+assert.equal(paramView.Body({ sessionId: 'session-w212' }).props['data-agent-session'], 'session-w212', 'without params the navigation session is the fallback')
+paramDispose()
+
+// A guide-opened tab (no params) belongs to the host session and shows it.
+const guideView = createView()
+const guideHost = createHost()
+const guideDispose = guideView.mount(guideHost.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+const guideBody = guideView.Body({ sessionId: HOST_SESSION })
+assert.equal(guideBody.props['data-agent-session'], HOST_SESSION, 'the guide overview shows the navigation session')
+assert.equal(guideBody.props['data-agent-task'], '', 'the host session has no card on this board')
+guideDispose()
+
 // ── 40-tail / shipped bundle carry the same wiring ──────────────────────────
 const TAIL = readFileSync(new URL('../../client/src/40-tail.part', import.meta.url), 'utf8')
 const BUNDLE = readFileSync(new URL('../../client/client.js', import.meta.url), 'utf8')
@@ -441,5 +589,8 @@ assert.ok(TAIL.includes('uiWorkspace: scoped === null || scoped === undefined ? 
 assert.ok(TAIL.includes('return tab.mount(scoped, {'), 'the tab still mounts on the scoped services')
 assert.ok(BUNDLE.includes("ctx.inject(['sidebarRight', 'sidebarRightTabs', 'uiWorkspace']"), 'the shipped bundle carries the same sidebar injection')
 assert.ok(BUNDLE.includes('agentTabOpenSession'), 'the shipped bundle carries the conversation switch')
+assert.ok(BUNDLE.includes("AGENT_TAB_SESSION_PARAM = 'agentSession'"), 'the shipped bundle carries the agent-session navigation param')
+assert.ok(BUNDLE.includes('sidebar.tabsIn'), 'the shipped bundle verifies the placement through the tab strip')
+assert.ok(BUNDLE.includes('hostSessionOf'), 'the shipped bundle resolves the host session')
 
-console.log('PASS  agent sidebar registers its own tab kind, opens real sessions with their card, switches to the subagent conversation and degrades safely')
+console.log('PASS  agent sidebar opens its own tab in the host session with the agent and card in the params, verifies the placement through tabsIn, switches to the subagent conversation and degrades safely')

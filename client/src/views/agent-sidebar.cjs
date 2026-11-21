@@ -1,5 +1,5 @@
 /**
- * Agent sidebar tab (T-209, extended by T-212).
+ * Agent sidebar tab (T-209, extended by T-212, corrected by T-216).
  *
  * The task center can open the AGENT behind a card in DSH's native right
  * sidebar. This module owns everything that needs the host's optional sidebar
@@ -8,10 +8,13 @@
  *   - one custom tab kind/id ('godot-bridge-agent' / 'godot-bridge/agent'),
  *     registered through `sidebarRightTabs`; the body and title are OUR React
  *     components registered into 'sidebar.right.pane.tab' and ...'.title';
- *   - `openIn(sessionId, taskId?)`, the one call the card/detail entry uses,
- *     which forwards to `sidebarRight.openTabIn(sessionId, kind, { params })`.
- *     The card the tab was opened from travels in the tab's navigation params,
- *     so the tab resolves THAT card instead of the panel's current one;
+ *   - `openIn(agentSession, taskId?)`, the one call the card/detail entry uses.
+ *     It opens the tab in the CURRENT HOST SESSION — the only session whose
+ *     right sidebar has an adopted surface — and carries the agent session and
+ *     the exact card in the tab's navigation params, so the body resolves THAT
+ *     agent and THAT card instead of the panel's current one (T-216: passing
+ *     the agent session itself to `sidebarRight.openTabIn` was a silent host
+ *     no-op, because a subagent session owns no sidebar surface);
  *   - the tab body/title: agent name, role, status, task id, stage and the
  *     latest activity, read from the SHARED task store;
  *   - the body's "open subagent conversation" action, which asks the host's
@@ -28,6 +31,23 @@
  * resolved in the card's own order (assignee, then lastAssignee, then the
  * review deliverer, then the test deliverer, then the owning session). The
  * panel's window fallback session is deliberately NOT used.
+ *
+ * T-216 — which session opens the tab, and which session it shows, are two
+ * different questions:
+ *
+ *   - the OPENING session is the host's current session
+ *     (`uiWorkspace.selection.getSnapshot().sessionId`). Only a session with an
+ *     adopted sidebar surface has a tab strip; `sidebarRight.openTabIn` silently
+ *     no-ops for any other id and returns nothing, so a call is not proof. The
+ *     open therefore requires a host session (no fallback to the agent's own
+ *     session) and then asks `sidebarRight.tabsIn(hostSession)` before and after
+ *     the call: our kind must really be in the strip, otherwise the entry
+ *     reports false instead of pretending it worked;
+ *   - the SHOWN agent travels in the navigation params (`agentSession`), next to
+ *     the exact card (`taskId`). The body/title resolve the card from `taskId`
+ *     first, then fall back to the agent session, and only then to the tab's own
+ *     navigation session (the host session, or whatever a directly mounted body
+ *     was handed).
  */
 const AGENT_TAB_KIND = 'godot-bridge-agent'
 const AGENT_TAB_ID = 'godot-bridge/agent'
@@ -37,6 +57,9 @@ const AGENT_TAB_OPEN_ACTION = 'open-agent-sidebar'
 const AGENT_TAB_GUIDE_ORDER = 60
 // T-212: the tab's navigation params carry the exact card it was opened from.
 const AGENT_TAB_TASK_PARAM = 'taskId'
+// T-216: the tab opens in the host session, so the agent it must SHOW travels in
+// the params too; the tab's own navigation session is the host, not the agent.
+const AGENT_TAB_SESSION_PARAM = 'agentSession'
 // The tab has its own small locale namespace so it ships next to the component
 // instead of growing the panel's shared dictionary. Labels that already exist in
 // the task center namespace (role/status/event/stage words) fall back to it.
@@ -443,16 +466,11 @@ function agentInfoOf(snapshot, sessionId, t, now, helpers, taskId) {
 }
 
 /**
- * The taskId the tab was opened with, from the host's navigation params
- * (`useTabInfo().tab.navigation.params`). A component mounted directly (the
- * unit test, or an older host that passes nothing) may hand the id over as an
- * explicit `taskId` prop instead. Never throws: a missing service or params
- * object simply means "no exact card".
+ * The tab's navigation params (`useTabInfo().tab.navigation.params`), or null.
+ * Never throws: a missing service or params object simply means "no params".
  */
-function tabTaskIdOf(props) {
+function tabParamsOf(props) {
 	if (props === null || props === undefined) return null
-	const direct = textOf(props.taskId)
-	if (direct !== null) return direct
 	const useTabInfo = props.useTabInfo
 	if (typeof useTabInfo !== 'function') return null
 	let info = null
@@ -463,8 +481,27 @@ function tabTaskIdOf(props) {
 	}
 	const tab = info !== null && info !== undefined && isRecord(info.tab) ? info.tab : null
 	const navigation = tab !== null && isRecord(tab.navigation) ? tab.navigation : null
-	const params = navigation !== null && isRecord(navigation.params) ? navigation.params : null
-	return params !== null ? textOf(params[AGENT_TAB_TASK_PARAM]) : null
+	return navigation !== null && isRecord(navigation.params) ? navigation.params : null
+}
+
+/**
+ * Which agent, and which card, this tab has to show (T-216). The host opens the
+ * tab in the HOST session, so the navigation session is not the subagent: the
+ * agent session comes from the `agentSession` navigation param (or an explicit
+ * prop when a component is mounted directly), and only then falls back to the
+ * navigation session. The card id comes from the `taskId` param/prop; without it
+ * the body resolves the card from the agent session, exactly as before.
+ * @returns `{ sessionId, taskId }`; `sessionId` is '' when there is nothing to show.
+ */
+function tabSelectionOf(props) {
+	const target = props === null || props === undefined ? null : props
+	const navigationSession = target !== null && typeof target.sessionId === 'string' ? target.sessionId.trim() : ''
+	const params = tabParamsOf(target)
+	const directAgent = target !== null ? textOf(target.agentSession) : null
+	const directTask = target !== null ? textOf(target.taskId) : null
+	const agentSession = directAgent !== null ? directAgent : params !== null ? textOf(params[AGENT_TAB_SESSION_PARAM]) : null
+	const taskId = directTask !== null ? directTask : params !== null ? textOf(params[AGENT_TAB_TASK_PARAM]) : null
+	return { sessionId: agentSession !== null ? agentSession : navigationSession, taskId: taskId }
 }
 
 function createAgentSidebar(deps) {
@@ -579,8 +616,11 @@ function createAgentSidebar(deps) {
 	function AgentTabTitle(props) {
 		const t = useTranslate()
 		const snapshot = useSnapshot()
-		const sessionId = props !== null && props !== undefined && typeof props.sessionId === 'string' ? props.sessionId.trim() : ''
-		const taskId = tabTaskIdOf(props)
+		// T-216: the navigation session is the HOST session; the agent to show is
+		// resolved from the params (or handed over directly by a mounted test).
+		const selection = tabSelectionOf(props)
+		const sessionId = selection.sessionId
+		const taskId = selection.taskId
 		const label = sessionId === '' ? t('agentTabTitle') : agentInfoOf(snapshot, sessionId, t, Date.now(), selectors, taskId).name
 		return h('span', { className: 'gbt-agenttabtitle', 'data-agent-tab': 'title', 'data-agent-session': sessionId, 'data-agent-task': taskId === null ? '' : taskId }, h(AgentTabIcon, { size: 13 }), h('span', null, label))
 	}
@@ -589,10 +629,14 @@ function createAgentSidebar(deps) {
 		const t = useTranslate()
 		const snapshot = useSnapshot()
 		const now = useNow()
-		const sessionId = props !== null && props !== undefined && typeof props.sessionId === 'string' ? props.sessionId.trim() : ''
 		// Read the navigation params before any early return so the injected
 		// tab-info hook is always called in the same order on every render.
-		const taskId = tabTaskIdOf(props)
+		// T-216: the tab lives in the HOST session, so the agent it names comes
+		// from the `agentSession` param; the navigation session is only the
+		// fallback (a guide-opened tab, or a directly mounted body).
+		const selection = tabSelectionOf(props)
+		const sessionId = selection.sessionId
+		const taskId = selection.taskId
 		if (sessionId === '') {
 			return h(
 				'div',
@@ -706,6 +750,9 @@ function createAgentSidebar(deps) {
 		const workspace = isRecord(opts.uiWorkspace) ? opts.uiWorkspace : readService(scope, 'uiWorkspace')
 		const slots = isRecord(scope) && isRecord(scope.slots) ? scope.slots : isRecord(opts.slots) ? opts.slots : null
 		if (!isRecord(sidebar) || typeof sidebar.openTabIn !== 'function') return noop
+		// T-216: openIn has to verify the placement through the tab strip; a host
+		// that cannot report it would leave a dead entry, so it does not mount.
+		if (typeof sidebar.tabsIn !== 'function') return noop
 		if (!isRecord(tabs) || typeof tabs.register !== 'function') return noop
 		if (!isRecord(slots) || typeof slots.inject !== 'function' || typeof slots.register !== 'function') return noop
 		context = {
@@ -783,6 +830,48 @@ function createAgentSidebar(deps) {
 	}
 
 	/**
+	 * The session whose right sidebar actually has a surface: the host's current
+	 * session, read from `uiWorkspace.selection` (the same store the panel
+	 * follows). T-216: the agent's own subagent session has NO adopted surface,
+	 * so it is never a fallback — an unavailable host session fails the open.
+	 */
+	function hostSessionOf() {
+		const workspace = runtime !== null ? runtime.workspace : null
+		if (!isRecord(workspace)) return null
+		const selection = workspace.selection
+		if (!isRecord(selection) || typeof selection.getSnapshot !== 'function') return null
+		let snapshot = null
+		try {
+			snapshot = selection.getSnapshot()
+		} catch (error) {
+			return null
+		}
+		return isRecord(snapshot) ? textOf(snapshot.sessionId) : null
+	}
+
+	/**
+	 * The tab kinds in one session's right-sidebar strip, or null when the host
+	 * cannot report them. Used only to VERIFY an open (T-216): `openTabIn`
+	 * answers with void and silently no-ops without a surface.
+	 */
+	function agentTabKinds(sessionId) {
+		const sidebar = runtime !== null ? runtime.sidebar : null
+		if (!isRecord(sidebar) || typeof sidebar.tabsIn !== 'function') return null
+		let list = null
+		try {
+			list = sidebar.tabsIn(sessionId)
+		} catch (error) {
+			return null
+		}
+		if (Array.isArray(list) !== true) return null
+		const kinds = []
+		for (const tab of list) {
+			if (isRecord(tab) && typeof tab.kind === 'string') kinds.push(tab.kind)
+		}
+		return kinds
+	}
+
+	/**
 	 * The card a session currently stands for, resolved from the shared store
 	 * with the card's own field order (executor first). Used only because the
 	 * card entry hands over the session, not the card: the id is then carried in
@@ -801,20 +890,46 @@ function createAgentSidebar(deps) {
 		return task !== null && task.id !== undefined && task.id !== null ? String(task.id) : null
 	}
 
+	/**
+	 * Open the agent tab for `agentSession` (and optionally its exact card) in
+	 * the CURRENT HOST SESSION (T-216). The agent session only travels in the
+	 * navigation params: passing it as the opening session was a silent no-op
+	 * because a subagent session owns no sidebar surface.
+	 *
+	 * A host that answers `openTabIn` with void is not proof the tab exists, so
+	 * the call is verified against the session's tab strip. Returns true only
+	 * when OUR kind is really in the strip afterwards; false (never a throw) for
+	 * an unavailable host, an unavailable host session, a no-op, or a strip that
+	 * does not report our kind.
+	 */
 	function openIn(sessionId, taskId) {
-		const value = typeof sessionId === 'string' ? sessionId.trim() : ''
-		if (value === '' || mounted !== true || disposed === true) return false
+		const agentSession = textOf(sessionId)
+		if (agentSession === null || mounted !== true || disposed === true) return false
 		const sidebar = runtime !== null ? runtime.sidebar : null
 		if (!isRecord(sidebar) || typeof sidebar.openTabIn !== 'function') return false
+		const hostSession = hostSessionOf()
+		if (hostSession === null) return false
+		// No strip inventory means we could not prove the tab exists: never claim
+		// success on an unchecked call.
+		const before = agentTabKinds(hostSession)
+		if (before === null) return false
 		const exact = textOf(taskId)
-		const cardId = exact !== null ? exact : cardIdOf(value)
+		const cardId = exact !== null ? exact : cardIdOf(agentSession)
+		const params = {}
+		if (cardId !== null) params[AGENT_TAB_TASK_PARAM] = cardId
+		params[AGENT_TAB_SESSION_PARAM] = agentSession
 		try {
-			if (cardId === null) sidebar.openTabIn(value, AGENT_TAB_KIND)
-			else sidebar.openTabIn(value, AGENT_TAB_KIND, { params: { [AGENT_TAB_TASK_PARAM]: cardId } })
-			return true
+			sidebar.openTabIn(hostSession, AGENT_TAB_KIND, { params: params })
 		} catch (error) {
 			return false
 		}
+		// Our kind is single-instance (the tab type is not declared `multiple`), so
+		// the host reveals an already-open tab instead of minting a second one:
+		// the after-strip holding our kind means the tab was placed or revealed,
+		// and an after-strip without it is the silent no-op this guards against.
+		const after = agentTabKinds(hostSession)
+		if (after === null) return false
+		return after.indexOf(AGENT_TAB_KIND) >= 0
 	}
 
 	const api = {
@@ -866,6 +981,8 @@ module.exports = {
 	AGENT_TAB_KIND,
 	AGENT_TAB_ID,
 	AGENT_TAB_OPEN_ACTION,
+	AGENT_TAB_TASK_PARAM,
+	AGENT_TAB_SESSION_PARAM,
 	AGENT_TAB_NS,
 	AGENT_TAB_COPY,
 	AGENT_TAB_CSS,
