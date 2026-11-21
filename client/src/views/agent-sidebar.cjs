@@ -5,9 +5,10 @@
  * sidebar. This module owns everything that needs the host's optional sidebar
  * services:
  *
- *   - one custom tab kind/id ('godot-bridge-agent' / 'godot-bridge/agent'),
- *     registered through `sidebarRightTabs`; the body and title are OUR React
- *     components registered into 'sidebar.right.pane.tab' and ...'.title';
+ *   - one custom tab type/kind/id ('godot-bridge-agent' / 'godot-bridge/agent'),
+ *     registered through `sidebarRightTabs` as `multiple`, so every open mints
+ *     its own tab instance; the body and title are OUR React components
+ *     registered into 'sidebar.right.pane.tab' and ...'.title';
  *   - `openIn(agentSession, taskId?)`, the one call the card/detail entry uses.
  *     It opens the tab in the CURRENT HOST SESSION — the only session whose
  *     right sidebar has an adopted surface — and carries the agent session and
@@ -48,6 +49,27 @@
  *     first, then fall back to the agent session, and only then to the tab's own
  *     navigation session (the host session, or whatever a directly mounted body
  *     was handed).
+ *
+ * T-218 — one card, one tab (the user-visible regressions):
+ *
+ *   - the tab type declares `multiple: true`. Without it the host keys the page
+ *     by kind alone (`sidebar://godot-bridge-agent`), so the second "open in
+ *     sidebar" NAVIGATED the already open tab and its body switched from the
+ *     first card to the second. With `multiple` the host mints
+ *     `sidebar://<kind>/<uuid>` per open and each tab keeps its own navigation;
+ *   - `openIn` proves the tab by the strip DELTA (one more tab, a new identity
+ *     and a content address no earlier tab used) instead of "our kind is in the
+ *     strip". An older host that still reuses one page reports false, never a
+ *     fake success;
+ *   - after the tab is placed, `openIn` switches the main view to the HOST
+ *     session's conversation (`uiWorkspace.openSession(hostSession)`). From the
+ *     plugin page the tab is invisible without that switch, which is what made
+ *     the entry look like it did nothing. A host without that service keeps the
+ *     tab but reports false instead of claiming the page moved;
+ *   - the overview's "open subagent conversation" action switches the main
+ *     session to the SUBAGENT, and the right sidebar then belongs to that new
+ *     session. Tabs opened in the host session are not carried across sessions;
+ *     the copy says so instead of promising a tab that stays visible.
  */
 const AGENT_TAB_KIND = 'godot-bridge-agent'
 const AGENT_TAB_ID = 'godot-bridge/agent'
@@ -76,8 +98,9 @@ const AGENT_TAB_COPY = {
 		agentTabNoSession: '没有可显示的会话',
 		agentTabNoTask: '没有关联任务',
 		agentTabNoActivity: '没有活动记录',
-		agentTabOpenSession: '打开子代理会话',
-		agentTabOpenSessionHint: '在主页打开这个子代理的会话',
+		agentTabOpenSession: '打开子代理对话',
+		agentTabOpenSessionHint: '在主页打开这个子代理的对话；主会话会切到子代理，右侧栏属于新会话',
+		agentTabSwitchNote: '切到子代理后，右侧栏属于子代理会话，本会话的标签不会跟随',
 	},
 	en: {
 		openInSidebar: 'Open in sidebar',
@@ -90,7 +113,8 @@ const AGENT_TAB_COPY = {
 		agentTabNoTask: 'No task for this session',
 		agentTabNoActivity: 'No activity yet',
 		agentTabOpenSession: 'Open subagent conversation',
-		agentTabOpenSessionHint: 'Open this subagent\'s conversation in the main view',
+		agentTabOpenSessionHint: 'Open this subagent\'s conversation in the main view; the main session switches to the subagent, so the sidebar belongs to the new session',
+		agentTabSwitchNote: 'After the switch the sidebar belongs to the subagent session; this session\'s tabs do not follow',
 	},
 }
 
@@ -108,7 +132,11 @@ const AGENT_TAB_CSS =
 	// T-212: the conversation switch, a full-width secondary action under the facts.
 	'.gbt-agenttabopen{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;height:28px;padding:0 10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n' +
 	'.gbt-agenttabopen:hover{background:var(--dsw-alias-bg-module-platform)}\n' +
-	'.gbt-agenttabopen:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}\n'
+	'.gbt-agenttabopen:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}\n' +
+	// T-218: the switch changes the main session, so the sidebar that follows belongs
+	// to the subagent; the note spells that out instead of letting the user expect
+	// this session's tab strip to travel along.
+	'.gbt-agenttabnote{margin:0}\n'
 
 const ROLE_LABEL_KEYS = { worker: 'roleKindWorker', reviewer: 'roleKindReviewer', tester: 'roleKindTester' }
 const ACTIVITY_LABEL_KEYS = {
@@ -583,7 +611,11 @@ function createAgentSidebar(deps) {
 		return pair[0]
 	}
 
-	/** The host's optional workspace service, when it can switch the main view. */
+	/**
+	 * The host's optional workspace service, when it can switch the main view.
+	 * T-218: `openIn` also uses it to leave the plugin page for the host session's
+	 * conversation after placing the tab.
+	 */
 	function workspaceOf() {
 		const workspace = runtime !== null ? runtime.workspace : null
 		return isRecord(workspace) && typeof workspace.openSession === 'function' ? workspace : null
@@ -685,6 +717,12 @@ function createAgentSidebar(deps) {
 					},
 					t('agentTabOpenSession'),
 				),
+			// T-218: the switch moves the MAIN session to the subagent, and the right
+			// sidebar then belongs to that new session: tabs opened in the host session
+			// are not carried over. Say it instead of letting them vanish unexplained.
+			info.role === 'root' || workspaceOf() === null
+				? null
+				: h('p', { key: 'switchNote', className: 'gbt-footnote gbt-agenttabnote', 'data-agent-note': 'sidebar-scope' }, t('agentTabSwitchNote')),
 			h(
 				'div',
 				{ key: 'activity', className: 'gbt-agenttabactivity' },
@@ -796,6 +834,10 @@ function createAgentSidebar(deps) {
 					tabs.register({
 						id: AGENT_TAB_ID,
 						kind: AGENT_TAB_KIND,
+						// T-218: each open must be its own tab. Without `multiple` the host
+						// keys the page by kind alone (one sidebar://<kind>) and the next
+						// "open in sidebar" navigates the open tab into another card.
+						multiple: true,
 						title: function () { return translate()('agentTabTitle') },
 						guide: [
 							{
@@ -850,11 +892,11 @@ function createAgentSidebar(deps) {
 	}
 
 	/**
-	 * The tab kinds in one session's right-sidebar strip, or null when the host
-	 * cannot report them. Used only to VERIFY an open (T-216): `openTabIn`
-	 * answers with void and silently no-ops without a surface.
+	 * The tabs in one session's right-sidebar strip, or null when the host cannot
+	 * report them. Used only to VERIFY an open: `openTabIn` answers with void and
+	 * silently no-ops without a surface, so the strip delta is the proof.
 	 */
-	function agentTabKinds(sessionId) {
+	function agentTabRecords(sessionId) {
 		const sidebar = runtime !== null ? runtime.sidebar : null
 		if (!isRecord(sidebar) || typeof sidebar.tabsIn !== 'function') return null
 		let list = null
@@ -864,11 +906,50 @@ function createAgentSidebar(deps) {
 			return null
 		}
 		if (Array.isArray(list) !== true) return null
-		const kinds = []
-		for (const tab of list) {
-			if (isRecord(tab) && typeof tab.kind === 'string') kinds.push(tab.kind)
+		return list.filter(function (tab) { return isRecord(tab) })
+	}
+
+	/** One tab's identity: its layout id, else its content address, else its index. */
+	function tabKeyOf(tab, index) {
+		const id = isRecord(tab) ? textOf(tab.id) : null
+		if (id !== null) return 'id:' + id
+		const contentId = isRecord(tab) ? textOf(tab.contentId) : null
+		if (contentId !== null) return 'content:' + contentId
+		return 'index:' + String(index)
+	}
+
+	function tabKeysOf(list) {
+		const keys = new Set()
+		for (let index = 0; index < list.length; index += 1) keys.add(tabKeyOf(list[index], index))
+		return keys
+	}
+
+	/**
+	 * The tab THIS call added, or null. T-218: a tab type registered as `multiple`
+	 * makes the host mint a fresh `sidebar://<kind>/<uuid>` per open, so the strip
+	 * really grows by one record with a brand-new address. A host that ignores
+	 * `multiple` keeps ONE page per kind and NAVIGATES it into the new card: the
+	 * count does not grow, and that is the regression this must report as false.
+	 */
+	function createdTabOf(before, after) {
+		if (Array.isArray(after) !== true || after.length <= before.length) return null
+		const known = tabKeysOf(before)
+		const addresses = new Set()
+		for (const tab of before) {
+			const contentId = isRecord(tab) ? textOf(tab.contentId) : null
+			if (contentId !== null) addresses.add(contentId)
 		}
-		return kinds
+		let created = null
+		for (let index = 0; index < after.length; index += 1) {
+			const tab = after[index]
+			if (!isRecord(tab) || tab.kind !== AGENT_TAB_KIND) continue
+			if (known.has(tabKeyOf(tab, index))) continue
+			if (created !== null) return null
+			const contentId = textOf(tab.contentId)
+			if (contentId !== null && addresses.has(contentId)) return null
+			created = tab
+		}
+		return created
 	}
 
 	/**
@@ -891,16 +972,38 @@ function createAgentSidebar(deps) {
 	}
 
 	/**
+	 * T-218: leave the plugin page for the host session's conversation — the only
+	 * view that shows the right sidebar the tab was just placed in. A host without
+	 * `openSession`, or one that throws, keeps the tab (the caller never undoes it)
+	 * but reports false: the entry did not finish, and claiming otherwise is the
+	 * fake success this replaces.
+	 */
+	function switchToHost(sessionId) {
+		const workspace = workspaceOf()
+		if (workspace === null) return false
+		try {
+			workspace.openSession(sessionId)
+			return true
+		} catch (error) {
+			return false
+		}
+	}
+
+	/**
 	 * Open the agent tab for `agentSession` (and optionally its exact card) in
-	 * the CURRENT HOST SESSION (T-216). The agent session only travels in the
-	 * navigation params: passing it as the opening session was a silent no-op
-	 * because a subagent session owns no sidebar surface.
+	 * the CURRENT HOST SESSION (T-216), then switch the main view to that session
+	 * (T-218). The agent session only travels in the navigation params: passing it
+	 * as the opening session was a silent no-op because a subagent session owns no
+	 * sidebar surface.
 	 *
-	 * A host that answers `openTabIn` with void is not proof the tab exists, so
-	 * the call is verified against the session's tab strip. Returns true only
-	 * when OUR kind is really in the strip afterwards; false (never a throw) for
-	 * an unavailable host, an unavailable host session, a no-op, or a strip that
-	 * does not report our kind.
+	 * The tab type is registered as `multiple`, so every call creates an
+	 * independent tab whose navigation carries THIS card and THIS agent. The call
+	 * is verified by the strip DELTA (one new tab, a new identity, a content
+	 * address no earlier tab used) — not by "our kind exists", which was true
+	 * even when the host merely navigated the previously open tab into another
+	 * card. Returns true only when a NEW tab was really placed AND the main view
+	 * was switched; false (never a throw) for an unavailable host or host session,
+	 * a silent no-op, a host that still reuses one page, or a failed switch.
 	 */
 	function openIn(sessionId, taskId) {
 		const agentSession = textOf(sessionId)
@@ -911,10 +1014,12 @@ function createAgentSidebar(deps) {
 		if (hostSession === null) return false
 		// No strip inventory means we could not prove the tab exists: never claim
 		// success on an unchecked call.
-		const before = agentTabKinds(hostSession)
+		const before = agentTabRecords(hostSession)
 		if (before === null) return false
 		const exact = textOf(taskId)
 		const cardId = exact !== null ? exact : cardIdOf(agentSession)
+		// T-218: every open builds its own params object; two tabs never share the
+		// card/agent pair, so the second open cannot rewrite the first tab's body.
 		const params = {}
 		if (cardId !== null) params[AGENT_TAB_TASK_PARAM] = cardId
 		params[AGENT_TAB_SESSION_PARAM] = agentSession
@@ -923,13 +1028,10 @@ function createAgentSidebar(deps) {
 		} catch (error) {
 			return false
 		}
-		// Our kind is single-instance (the tab type is not declared `multiple`), so
-		// the host reveals an already-open tab instead of minting a second one:
-		// the after-strip holding our kind means the tab was placed or revealed,
-		// and an after-strip without it is the silent no-op this guards against.
-		const after = agentTabKinds(hostSession)
+		const after = agentTabRecords(hostSession)
 		if (after === null) return false
-		return after.indexOf(AGENT_TAB_KIND) >= 0
+		if (createdTabOf(before, after) === null) return false
+		return switchToHost(hostSession)
 	}
 
 	const api = {
