@@ -191,6 +191,29 @@ function createTaskCenter(deps) {
 		const busy = snapshot.busy === undefined || snapshot.busy === null ? null : snapshot.busy
 		// T-195: pending host decisions, oldest first (the host's queue order).
 		const decisionQueue = Array.isArray(snapshot.decisions) ? snapshot.decisions : []
+		// T-211: 'shell.overlay' is an OPTIONAL Host slot. When it is absent (or its
+		// registration failed) the conversation-page chip never mounts; this header
+		// entry keeps the pending queue reachable from the panel instead. It is
+		// rendered only while no overlay mounted, so the two entries never stack.
+		const decisionOverlayAvailable = typeof store.decisionOverlayAvailable === 'function' ? store.decisionOverlayAvailable() === true : false
+		const decisionFallback =
+			decisionQueue.length === 0 || decisionOverlayAvailable === true
+				? null
+				: h(
+						'button',
+						{
+							key: 'decision-fallback',
+							type: 'button',
+							className: 'gbt-chip gbt-chipbtn gbt-decisionchip gbt-decisionheaderchip',
+							'data-decision-header-fallback': 'true',
+							'data-decision-fallback-count': String(decisionQueue.length),
+							'aria-label': t('decisionOverlayAria'),
+							title: t('decisionTitle'),
+							onClick: function () { setDecisionPeek(false) },
+						},
+						h('span', { className: 'gbt-decisionchipdot', 'aria-hidden': 'true' }),
+						h('span', { 'data-decision-chip-label': 'true' }, t('decisionOverlayChip').replace('{n}', String(decisionQueue.length))),
+					)
 
 		function isBusy(action, id) {
 			return busy !== null && busy.action === action && (id === undefined || busy.id === id)
@@ -696,7 +719,7 @@ function createTaskCenter(deps) {
 			{ className: 'gbt-toprow' },
 			brand,
 			h('div', { className: 'gbt-context' }, sessionsAnchor, currentPill, dispatchPill, agentsAnchor, workspaceBar),
-			h('div', { className: 'gbt-topactions' }, newTaskButton, moreMenu),
+			h('div', { className: 'gbt-topactions' }, decisionFallback, newTaskButton, moreMenu),
 		)
 		const toolbarRow = h('div', { className: 'gbt-toolbar' }, tabsView, h('div', { className: 'gbt-toolbarright' }, refreshButton, kindFilterBar))
 		const header = h('header', { className: 'gbt-header gbt-headertwo', 'data-header-rows': '2' }, topRow, toolbarRow)

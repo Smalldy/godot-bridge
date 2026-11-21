@@ -53,6 +53,16 @@
 			const answeringDecisions = new Set()
 			const answeredDecisions = new Set()
 			let decisionsLoading = null
+			// T-211: did the conversation-page overlay actually mount? The Host may
+			// not offer the optional 'shell.overlay' slot (or the registration may
+			// throw). The task-center header reads this to offer its own clickable
+			// fallback only when the floating entry can never be there.
+			let decisionOverlayMounted = false
+			// T-211: a hung decision-list request must not wedge the queue forever.
+			// After this long the poll gives up, releases the single-flight guard and
+			// the next tick starts a fresh request.
+			const DECISION_LOAD_TIMEOUT_MS = 15000
+			const DECISION_LOAD_TIMEOUT = { timedOut: true }
 			// T-182: "no project is bound to this session" is the EXPECTED answer
 			// before the first project is opened. It is a SETUP state, not a failure:
 			// routing it into the error banner put "操作失败" over a panel that was
@@ -325,18 +335,36 @@
 			 * field and never enters the action-result channel (a background poll must
 			 * not raise the task-center banner).
 			 */
-			async function loadDecisions() {
+			async function loadDecisions(options) {
+				// T-211: SINGLE FLIGHT per queue refresh. Every surface (the panel and
+				// the conversation overlay) shares this promise instead of racing N
+				// decisionList requests, and a hung one cannot block the next tick:
+				// the optional timeout releases the guard in `finally`.
 				if (decisionsLoading !== null) return decisionsLoading
+				const opts = options === undefined || options === null ? {} : options
+				const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : DECISION_LOAD_TIMEOUT_MS
 				decisionsLoading = (async function () {
-					const body = { action: 'decisionList', decisionStatus: 'pending', session: tcSessionId() }
-					const project = tcPinnedProject()
-					if (project !== null) body.project = project
+					let timer = null
 					try {
-						const payload = await fetchJson(tcWithSession(TC_ACTION_URL), {
+						const body = { action: 'decisionList', decisionStatus: 'pending', session: tcSessionId() }
+						const project = tcPinnedProject()
+						if (project !== null) body.project = project
+						const request = fetchJson(tcWithSession(TC_ACTION_URL), {
 							method: 'POST',
 							headers: { 'content-type': 'application/json' },
 							body: JSON.stringify(body),
 						})
+						let timeout = null
+						if (typeof setTimeout === 'function') {
+							timeout = new Promise(function (resolve) {
+								timer = setTimeout(function () { resolve(DECISION_LOAD_TIMEOUT) }, timeoutMs)
+							})
+							// The race may settle on the timeout first; the late request must
+							// not surface as an unhandled rejection.
+							request.catch(function () {})
+						}
+						const payload = timeout === null ? await request : await Promise.race([request, timeout])
+						if (payload === DECISION_LOAD_TIMEOUT) return { ok: false, timedOut: true, payload: null }
 						if (payload !== null && payload !== undefined && payload.ok === true && Array.isArray(payload.decisions)) {
 							// withDecisions carries the queue and the receipt time the countdown
 							// needs; every other field (tasks, project, banner) stays as it is.
@@ -347,10 +375,26 @@
 					} catch (error) {
 						return { ok: false, error: error }
 					} finally {
+						if (timer !== null && typeof clearTimeout === 'function') clearTimeout(timer)
 						decisionsLoading = null
 					}
 				})()
 				return decisionsLoading
+			}
+
+			/**
+			 * T-211: the conversation-page overlay marks itself when it renders, so
+			 * the panel header knows whether 'shell.overlay' really produced an
+			 * entry. A missing slot never calls this, which is exactly the fallback
+			 * condition.
+			 */
+			function markDecisionOverlayMounted() {
+				decisionOverlayMounted = true
+			}
+
+			/** Is the shell overlay entry available in this Host shell? */
+			function decisionOverlayAvailable() {
+				return decisionOverlayMounted === true
 			}
 
 			/** One page of the server-side completed list (T-82 /list route). */
@@ -486,6 +530,11 @@
 				},
 				load: load,
 				loadDecisions: loadDecisions,
+				// T-211: overlay presence, so the panel header can fall back when the
+				// Host shell has no 'shell.overlay' slot.
+				markDecisionOverlayMounted: markDecisionOverlayMounted,
+				decisionOverlayAvailable: decisionOverlayAvailable,
+				DECISION_LOAD_TIMEOUT_MS: DECISION_LOAD_TIMEOUT_MS,
 				send: send,
 				loadWorktrees: loadWorktrees,
 				switchProject: switchProject,
