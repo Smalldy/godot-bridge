@@ -455,15 +455,26 @@ function createTaskCenter(deps) {
 		const projectLabel = projectName === null ? t('projectUnknown') : projectName
 		const panelSessionId = scopePanelSession
 		const copySessionValue = panelSessionId === null ? '' : panelSessionId
-		// The pill reports the live tree, not a team. While the core snapshot is
-		// still missing scope/agentTree it shows a spinner instead of a fake zero.
-		const metadataLoading = scope === null || agentTree.error === 'deferred'
-		const agentsState = metadataLoading ? 'loading' : agentTree.root !== null ? 'ready' : 'none'
-		const agentsPillLabel = metadataLoading
+		// T-210: the header no longer waits for the full /state. The light answer
+		// carries the session scope, so the sessions pill is ready with the cards;
+		// the agent tree arrives separately from /meta. While that deferred block
+		// is loading only ITS OWN pill spins — and if it fails it says so instead
+		// of spinning forever or reporting a fake zero.
+		const metadata = snapshot.metadata !== null && snapshot.metadata !== undefined && typeof snapshot.metadata === 'object' ? snapshot.metadata : null
+		const metadataStatus = metadata === null || typeof metadata.status !== 'string' ? 'unknown' : metadata.status
+		// 'deferred' is what a light /state answers for the heavy blocks.
+		const agentTreeDeferred = agentTree.error === 'deferred'
+		const sessionsLoading = scope === null
+		const agentsPending = agentTreeDeferred && (metadataStatus === 'idle' || metadataStatus === 'loading' || metadataStatus === 'unknown')
+		const agentsDegraded = agentTreeDeferred && (metadataStatus === 'degraded' || metadataStatus === 'failed')
+		const agentsState = agentsPending ? 'loading' : agentTree.root !== null ? 'ready' : 'none'
+		const agentsPillLabel = agentsPending
 			? t('loading')
-			: agentsState === 'ready'
-				? t('agentsPillRoot').replace('{n}', String(agentTree.members.length))
-				: t('agentsPillNone')
+			: agentsDegraded
+				? t('agentsPillNone')
+				: agentsState === 'ready'
+					? t('agentsPillRoot').replace('{n}', String(agentTree.members.length))
+					: t('agentsPillNone')
 		const dispatchCap = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
 		const sourceBadge =
 			boardSourceLabel === null
@@ -493,16 +504,16 @@ function createTaskCenter(deps) {
 				type: 'button',
 				className: 'gbt-chip gbt-chipbtn gbt-sessionschip',
 				'data-sessions-pill': 'true',
-				'data-sessions-count': metadataLoading ? 'loading' : String(scopeSessions.length),
-				'data-loading': metadataLoading ? 'true' : undefined,
-				'aria-busy': metadataLoading ? 'true' : undefined,
+				'data-sessions-count': sessionsLoading ? 'loading' : String(scopeSessions.length),
+				'data-loading': sessionsLoading ? 'true' : undefined,
+				'aria-busy': sessionsLoading ? 'true' : undefined,
 				'aria-haspopup': 'dialog',
 				'aria-expanded': sessionsOpen ? 'true' : 'false',
-				disabled: metadataLoading,
-				title: metadataLoading ? t('loading') : t('sessionsHint'),
+				disabled: sessionsLoading,
+				title: sessionsLoading ? t('loading') : t('sessionsHint'),
 				onClick: function () { setSessionsOpen(!sessionsOpen) },
 			},
-			metadataLoading
+			sessionsLoading
 				? [h('span', { key: 'spin', className: 'gbt-spinner', 'aria-hidden': 'true' }), h('span', { key: 'text' }, t('loading'))]
 				: [
 					scopeSessions.length === 0
@@ -514,7 +525,7 @@ function createTaskCenter(deps) {
 		)
 		const currentPill =
 			panelSessionId === null
-				? metadataLoading
+				? sessionsLoading
 					? h('span', { className: 'gbt-chip gbt-currentsession', 'data-current-session-loading': 'true', 'aria-busy': 'true' }, h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' }), h('span', null, t('loading')))
 					: null
 				: h('span', { className: 'gbt-chip gbt-currentsession', 'data-current-session': panelSessionId, title: panelSessionId }, h('span', { className: 'gbt-dot', 'data-running': 'true' }), h('b', { className: 'gbt-mono' }, sessionShortOf(panelSessionId)), h('span', { className: 'gbt-tag' }, t('sessionsCurrent')))
@@ -540,17 +551,21 @@ function createTaskCenter(deps) {
 				type: 'button',
 				className: 'gbt-chip gbt-chipbtn gbt-agentpill',
 				'data-agent-pill': agentsState,
+				// T-210: the deferred agent tree has its OWN progress/degraded markers;
+				// it never gates the sessions pill, the tabs or the board.
+				'data-agent-deferred': agentTreeDeferred ? 'true' : undefined,
+				'data-agent-degraded': agentsDegraded ? 'true' : undefined,
 				'data-agent-root': agentTree.root !== null && typeof agentTree.root.name === 'string' ? agentTree.root.name : '',
-				'data-agent-live': metadataLoading ? 'loading' : String(agentTree.members.length),
-				'data-loading': metadataLoading ? 'true' : undefined,
-				'aria-busy': metadataLoading ? 'true' : undefined,
+				'data-agent-live': agentsPending ? 'loading' : String(agentTree.members.length),
+				'data-loading': agentsPending ? 'true' : undefined,
+				'aria-busy': agentsPending ? 'true' : undefined,
 				'aria-haspopup': 'dialog',
 				'aria-expanded': agentsOpen ? 'true' : 'false',
-				disabled: metadataLoading,
-				title: metadataLoading ? t('loading') : t('agentsPopoverTitle'),
+				disabled: agentsPending,
+				title: agentsPending ? t('loading') : agentsDegraded ? t('agentsUnavailable') : t('agentsPopoverTitle'),
 				onClick: function () { setAgentsOpen(!agentsOpen) },
 			},
-			metadataLoading
+			agentsPending
 				? h('span', { className: 'gbt-spinner', 'aria-hidden': 'true' })
 				: h('span', { className: 'gbt-dot', 'data-running': agentsState === 'ready' ? 'true' : 'false' }),
 			h('span', null, agentsPillLabel),
@@ -640,7 +655,7 @@ function createTaskCenter(deps) {
 		)
 		const newTaskButton = h('button', { type: 'button', className: 'gbt-btn', 'data-variant': 'primary', 'data-action': 'new-task', disabled: snapshot.project === null, onClick: function () { startEdit(null) } }, '+ ' + t('newTask'))
 		const menuItems = [
-			['refresh', t('refresh'), function () { closePopovers(); void store.load() }],
+			['refresh', t('refresh'), function () { closePopovers(); void store.load({ refresh: true }) }],
 			['project', t('project'), function () { closePopovers(); openProjectDialog() }],
 			['settings', t('settings'), function () { closePopovers(); setSettingsOpen(true) }],
 			['copy-session-id', t('copySessionId'), function () { copySessionId(copySessionValue) }],
@@ -658,7 +673,9 @@ function createTaskCenter(deps) {
 				}),
 			),
 		)
-		const refreshButton = h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'refresh', title: t('refresh'), onClick: function () { void store.load() } }, '↻')
+		// T-210 review: the refresh action also forces the deferred metadata to be rebuilt
+		// (the host serves a short-TTL cached inventory to the routine poll).
+		const refreshButton = h('button', { type: 'button', className: 'gbt-iconbtn', 'data-action': 'refresh', title: t('refresh'), onClick: function () { void store.load({ refresh: true }) } }, '↻')
 		const kindFilterBar = h(
 			'div',
 			{ className: 'gbt-kindfilter', 'data-kind-filter': panelBoardUi.kind, title: t('kindFilterHint') },
@@ -722,7 +739,15 @@ function createTaskCenter(deps) {
 			h('div', { className: 'gbt-topactions' }, decisionFallback, newTaskButton, moreMenu),
 		)
 		const toolbarRow = h('div', { className: 'gbt-toolbar' }, tabsView, h('div', { className: 'gbt-toolbarright' }, refreshButton, kindFilterBar))
-		const header = h('header', { className: 'gbt-header gbt-headertwo', 'data-header-rows': '2' }, topRow, toolbarRow)
+		// T-210: `data-metadata-state` is the evidence that 'header ready' does not
+		// mean 'host inventory done': the header renders from the light /state, and
+		// the deferred blocks report idle/loading/ready/degraded independently.
+		const header = h(
+			'header',
+			{ className: 'gbt-header gbt-headertwo', 'data-header-rows': '2', 'data-metadata-state': metadataStatus, 'data-header-ready': sessionsLoading ? 'false' : 'true' },
+			topRow,
+			toolbarRow,
+		)
 		const footer = h(
 			'footer',
 			{ className: 'gbt-statusbar', 'data-panel-footer': 'true' },
@@ -921,7 +946,7 @@ function createTaskCenter(deps) {
 
 		return h(
 			'div',
-			{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center', 'data-tc-theme': theme },
+			{ className: 'gbt-root', 'data-panel': 'task-center', 'data-panel-root': 'task-center', 'data-tc-theme': theme, 'data-metadata-state': metadataStatus },
 			header,
 			environmentBar,
 			busyBar,

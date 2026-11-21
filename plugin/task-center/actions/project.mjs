@@ -58,7 +58,12 @@ export function createProjectActions(deps) {
     // so wait for it and report where it landed — or why it did not persist.
     if (typeof state.flushRegistry === 'function') await state.flushRegistry()
     const registryStatus = typeof state.registryStatus === 'function' ? state.registryStatus() : null
-    return Object.assign({}, await snapshot(absolute, { worktreeRoot: preflight.worktreeRoot, sessionId: sessionId }), {
+    // T-210 review: the DELIVERY of the answer is the caller's choice. The panel
+    // asks for the LIGHT snapshot (board + counts + light scope) because it fetches
+    // the deferred metadata from /meta; a tool caller gets the full snapshot it
+    // has always asked for.
+    const light = context !== null && context !== undefined && context.snapshotDelivery === 'light'
+    return Object.assign({}, await snapshot(absolute, light ? { worktreeRoot: preflight.worktreeRoot, sessionId: sessionId, light: true } : { worktreeRoot: preflight.worktreeRoot, sessionId: sessionId }), {
       preflight: preflight,
       registry: registryStatus,
       // A flat string for callers that only want "did it persist, and why not".

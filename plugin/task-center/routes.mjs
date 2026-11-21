@@ -18,6 +18,11 @@ import { probeDispatch } from './dispatch.mjs'
 
 export const ROUTE_PREFIX = '/godot-bridge/task-center'
 export const STATE_PATH = ROUTE_PREFIX + '/state'
+// T-210: the deferred metadata of one project (/state has become the LIGHT
+// first paint). Agent tree, worktrees, environment, the activity timeline, the
+// roles and the decision policy live here, so a slow host inventory can never
+// block the cards or the header.
+export const META_PATH = ROUTE_PREFIX + '/meta'
 export const ACTION_PATH = ROUTE_PREFIX + '/action'
 export const DIAGNOSTICS_PATH = ROUTE_PREFIX + '/diagnostics'
 /** On-demand single-task detail (summary snapshots leave details out). */
@@ -200,6 +205,13 @@ export function registerTaskRoutes(ctx, options) {
       const activitySince = activitySinceRaw === null || activitySinceRaw === '' ? null : String(activitySinceRaw)
       // First paint: board/counts only. The panel asks for the full snapshot next.
       const core = url !== null && url.searchParams.get('core') === '1'
+      // T-210: `light=1` is the SPLIT first paint — board + counts + dispatch AND
+      // the light project/session scope, while every host inventory (agent tree,
+      // worktrees, environment, activity timeline, roles, decision policy,
+      // archive) is deferred to /meta. This is what the panel polls.
+      const light = url !== null && url.searchParams.get('light') === '1'
+      // Opt-in per-segment timings (`&timings=1`): evidence, not a payload.
+      const timings = url !== null && url.searchParams.get('timings') === '1'
       // T-110: the Team belongs to the session, so the panel snapshot is resolved
       // for the SAME session the rest of its calls speak as.
       const snapshot = await api.snapshot(project, {
@@ -209,6 +221,8 @@ export function registerTaskRoutes(ctx, options) {
         resolveSessionProjects: false,
         doneLimit: 30,
         core: core,
+        light: light,
+        timings: timings,
         since: Number.isFinite(since) ? since : null,
         activitySince: activitySince,
         resolvedFrom: target.resolvedFrom,
@@ -221,6 +235,43 @@ export function registerTaskRoutes(ctx, options) {
     }
   }
 
+  /**
+   * T-210: the deferred metadata of one project, on its own request. It obeys
+   * the SAME project rules as /state (session resolution, explicit pin, and the
+   * T-203 rule that a foreground request with no session binds NOTHING), so the
+   * two halves can never describe different projects.
+   */
+  async function handleMeta(req, res) {
+    try {
+      const sessionId = sessionFromRequest(req, null)
+      const target = await resolveProject(req, null, sessionId)
+      if (target.failed !== undefined) {
+        sendJson(res, 200, { ok: false, code: 'no-project-bound', params: {}, resolvedFrom: 'unbound' })
+        return
+      }
+      const project = target.root
+      state.noteProject(project, sessionId)
+      if (sessionId !== null && (target.resolvedFrom === 'session' || target.resolvedFrom === 'session-lookup')) {
+        try {
+          state.setSessionRoot(sessionId, project)
+        } catch (error) {}
+      }
+      const url = queryOf(req)
+      const get = (name) => (url === null ? null : url.searchParams.get(name))
+      const activitySinceRaw = get('activitySince')
+      const payload = await api.metadata(project, {
+        sessionId: sessionId,
+        resolvedFrom: target.resolvedFrom,
+        // The activity timeline is incremental on its OWN cursor (T-111).
+        activitySince: activitySinceRaw === null || activitySinceRaw === '' ? null : String(activitySinceRaw),
+        timings: get('timings') === '1',
+        refresh: get('refresh') === '1',
+      })
+      sendJson(res, 200, payload)
+    } catch (error) {
+      sendJson(res, 500, { ok: false, code: 'failed', message: String((error && error.message) || error) })
+    }
+  }
   async function handleAction(req, res) {
     if (!isJson(req)) {
       sendJson(res, 415, { ok: false, code: 'content-type', params: { expected: 'application/json' } })
@@ -269,13 +320,20 @@ export function registerTaskRoutes(ctx, options) {
         // is session-scoped instead of falling back to "some Lead".
         sessionId: sessionId,
         resolvedFrom: target.resolvedFrom,
+        // T-210 review: the PANEL's openProject answer is the LIGHT snapshot, so
+        // opening/switching a project paints the board + header without waiting
+        // for the host inventory; /meta supplies the deferred half. The tool path
+        // passes no flag and keeps its full answer.
+        snapshotDelivery: action === 'openProject' ? 'light' : undefined,
       })
       // T-129: the onboard answer is deliberately small (brief + next); the panel
       // must not be handed a whole board snapshot next to it.
       if (result.ok === true && action !== 'openProject' && action !== 'onboard' && project !== null) {
         if (result.board !== undefined) delete result.board
         try {
-          result.snapshot = await api.snapshot(project, { full: false, resolvedFrom: target.resolvedFrom, sessionId: sessionId })
+          // T-210: an action's refreshed board is the LIGHT answer too — a user
+          // action must not wait for a host inventory the panel already has.
+          result.snapshot = await api.snapshot(project, { full: false, light: true, resolvedFrom: target.resolvedFrom, sessionId: sessionId })
         } catch (error) {
           result.snapshotError = String((error && error.message) || error)
         }
@@ -408,6 +466,7 @@ export function registerTaskRoutes(ctx, options) {
 
   const disposers = [
     ctx.webServer.register({ kind: 'exact', path: STATE_PATH, handler: handleState }),
+    ctx.webServer.register({ kind: 'exact', path: META_PATH, handler: handleMeta }),
     ctx.webServer.register({ kind: 'exact', path: ACTION_PATH, handler: handleAction }),
     ctx.webServer.register({ kind: 'exact', path: TASK_PATH, handler: handleTask }),
     ctx.webServer.register({ kind: 'exact', path: LIST_PATH, handler: handleList }),
