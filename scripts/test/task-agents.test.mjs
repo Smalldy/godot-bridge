@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import {
   agentNameFor,
+  AGENT_LIST_TIMEOUT_CODE,
   createTaskAgents,
   DEFERRED_RELEASE_GRACE_MS,
   deferReleaseAgent,
   deferredReleaseIds,
+  forgetAgentListCache,
   forgetDeferredRelease,
   markDeferredReleaseReturned,
   reapDeferredReleases,
@@ -45,6 +47,9 @@ const state = {
   taken: new Set(),
   rejectNextNames: 0,
   listFails: false,
+  // T-221: how many times the whole tree was read (the calls a release must avoid).
+  listCalls: 0,
+  hangList: false,
   disposeFailuresLeft: 0,
   // T-185: a child whose turn already ended lists as inactive.
   inactive: new Set(),
@@ -86,6 +91,9 @@ const subagents = {
   async sendMessage() { return 'message' },
   interrupt(id) { state.interrupted.push(String(id)) },
   async listDescendants() {
+    state.listCalls += 1
+    // A catalog that never answers: the bounded fallback must time out, not wait.
+    if (state.hangList === true) return new Promise(function () {})
     if (state.listFails) throw new Error('catalog unreadable')
     return Array.from(state.live.entries()).map((entry) => ({
       kind: 'child',
@@ -197,18 +205,23 @@ await check('release still works after the per-root handle map is lost', async (
   assert.equal(state.live.has(reviewer.agentId), false)
 })
 
-await check('releaseTask finds a child by name in the agent tree when the handle is gone', async () => {
+await check('a receipted child is released by its exact id without a tree scan', async () => {
   const firstInstance = createTaskAgents({ runtime })
   const tester = await firstInstance.startTester({ id: 'T-6' }, 'test')
+  // Simulate a plugin reload: a new task-agent set has no handles at all.
   const reloaded = createTaskAgents({ runtime })
-  // The board record passed here has no deliveredTo id: discovery must come from
-  // the tree row name, disposal from the retained activation receipt.
+  // T-221: the board record passed here has no deliveredTo id, but the process
+  // still holds the activation receipt for that exact child. A receipt IS an
+  // exact id, so the O(tree) name scan is not reached at all.
+  forgetAgentListCache()
+  const before = state.listCalls
   const result = await reloaded.releaseTask({ id: 'T-6', ownerSession: 'root' }, { roles: ['tester'] })
+  assert.equal(state.listCalls - before, 0, 'a receipted child triggered a whole-tree scan')
   assert.equal(result.ok, true)
   assert.equal(result.released.length, 1)
   assert.equal(result.released[0].agentId, tester.agentId)
-  assert.ok(result.released[0].sources.indexOf('tree') >= 0)
-  assert.ok(result.released[0].sources.indexOf('registry') >= 0)
+  assert.deepEqual(result.released[0].sources, ['registry'], 'an exact receipt is the discovery source')
+  assert.equal(result.agentList, null, 'no fallback tree read was attempted')
   assert.equal(state.live.has(tester.agentId), false)
 })
 
@@ -474,6 +487,98 @@ await check('the spawn-edge sweep is limited to the reviewer/tester roles', asyn
   assert.equal(released.ok, true)
   assert.equal(state.live.has(first.agentId), false)
   assert.equal(state.live.has(second.agentId), false)
+})
+
+// ── T-221: the tree scan is a bounded LAST resort ───────────────────────────
+// A full catalog read is O(tree). On a long-lived host it took minutes and the
+// release waiting on it held the merge queue until its unit was abandoned. The
+// board's own records and the in-process receipts are exact ids; the scan is only
+// reached when they cannot name a child for a requested role, and then it is
+// bounded, memoised and single-flighted.
+await check('T-221 a fully recorded card is released without any tree scan', async () => {
+  forgetAgentListCache()
+  const worker = await agents.startWorker({ id: 'T-50' }, 'implement')
+  const reviewer = await agents.startReviewer({ id: 'T-50' }, 'review')
+  const tester = await agents.startTester({ id: 'T-50' }, 'test')
+  const before = state.listCalls
+  const result = await agents.releaseTask(
+    {
+      id: 'T-50',
+      assignee: { session: worker.agentId },
+      review: { deliveredTo: { id: reviewer.agentId } },
+      test: { deliveredTo: { id: tester.agentId } },
+    },
+    {},
+  )
+  assert.equal(state.listCalls - before, 0, 'a fully recorded card triggered a whole-tree scan')
+  assert.equal(result.agentList, null, 'no fallback read was attempted')
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.released.map((entry) => entry.agentId).sort(), [worker.agentId, reviewer.agentId, tester.agentId].sort())
+  assert.equal(state.live.has(worker.agentId), false)
+  assert.equal(state.live.has(reviewer.agentId), false)
+  assert.equal(state.live.has(tester.agentId), false)
+})
+
+await check('T-221 a missing record and no receipt: exactly ONE bounded fallback read', async () => {
+  forgetAgentListCache()
+  state.live.set('stray-51', agentNameFor('reviewer', 'T-51', 'abc67890'))
+  const freshInstance = createTaskAgents({ runtime })
+  const before = state.listCalls
+  const result = await freshInstance.releaseTask({ id: 'T-51', ownerSession: 'root' }, { roles: ['reviewer'] })
+  assert.equal(state.listCalls - before, 1, 'the fallback must read the tree exactly once')
+  assert.ok(result.agentList !== null, 'no fallback read was reported')
+  assert.equal(result.agentList.attempted, true)
+  assert.equal(result.agentList.timedOut, false)
+  assert.equal(result.interrupted.length, 1)
+  assert.equal(result.interrupted[0].agentId, 'stray-51')
+  assert.ok(state.interrupted.indexOf('stray-51') >= 0, 'the tree-only orphan was never stopped')
+  state.live.delete('stray-51')
+})
+
+await check('T-221 a hung catalog is bounded and never blocks the release', async () => {
+  forgetAgentListCache()
+  const worker = await agents.startWorker({ id: 'T-52' }, 'implement')
+  state.hangList = true
+  // listCacheMs 0: this read must be a real one, not a memoised answer.
+  const boundedAgents = createTaskAgents({ runtime, listTimeoutMs: 40, listCacheMs: 0 })
+  const startedAt = Date.now()
+  const result = await boundedAgents.releaseTask({ id: 'T-52', assignee: { session: worker.agentId }, ownerSession: 'root' })
+  const elapsed = Date.now() - startedAt
+  state.hangList = false
+  assert.ok(elapsed < 2000, 'the release waited ' + String(elapsed) + 'ms on a hung catalog')
+  assert.equal(result.ok, true, 'a timed-out tree read must not fail the release')
+  assert.equal(result.released.length, 1, 'the recorded worker was not released')
+  assert.equal(result.released[0].agentId, worker.agentId)
+  assert.equal(state.live.has(worker.agentId), false)
+  assert.equal(result.agentList.timedOut, true)
+  assert.equal(result.agentList.code, AGENT_LIST_TIMEOUT_CODE, 'a timed-out read must name agent-list-timeout')
+})
+
+await check('T-221 consecutive releases share ONE fallback read', async () => {
+  forgetAgentListCache()
+  state.live.set('stray-53', agentNameFor('reviewer', 'T-53', 'def24680'))
+  const freshInstance = createTaskAgents({ runtime })
+  const before = state.listCalls
+  const first = await freshInstance.releaseTask({ id: 'T-53', ownerSession: 'root' }, { roles: ['reviewer'] })
+  const second = await freshInstance.releaseTask({ id: 'T-54', ownerSession: 'root' }, { roles: ['reviewer'] })
+  assert.equal(state.listCalls - before, 1, 'a second release repeated the whole-tree scan')
+  assert.equal(first.agentList.cached, false)
+  assert.equal(second.agentList.cached, true, 'the second release did not reuse the memoised rows')
+  assert.ok(state.interrupted.indexOf('stray-53') >= 0, 'the cached read lost the orphan')
+  state.live.delete('stray-53')
+})
+
+await check('T-221 a spawn invalidates the memoised rows', async () => {
+  forgetAgentListCache()
+  state.live.set('stray-55', agentNameFor('reviewer', 'T-55', 'aaa11111'))
+  const freshInstance = createTaskAgents({ runtime })
+  const first = await freshInstance.releaseTask({ id: 'T-55', ownerSession: 'root' }, { roles: ['reviewer'] })
+  assert.equal(first.agentList.cached, false)
+  const started = await freshInstance.startWorker({ id: 'T-56' }, 'implement')
+  const second = await freshInstance.releaseTask({ id: 'T-57', ownerSession: 'root' }, { roles: ['tester'] })
+  assert.equal(second.agentList.cached, false, 'a spawn left the tree membership memoised as stale')
+  state.live.delete('stray-55')
+  await freshInstance.release(started.agentId)
 })
 
 const failed = checks.filter((row) => !row.ok)

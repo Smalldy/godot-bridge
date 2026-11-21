@@ -8,7 +8,7 @@ import { createRequire } from 'node:module'
 import { createApi } from '../../plugin/task-center/api.mjs'
 import { createDispatcher } from '../../plugin/task-center/dispatch.mjs'
 import { createState } from '../../plugin/task-center/state.mjs'
-import { createFakeFs, createFakeGit, createFakeTaskAgents, createRig, createStrictCtx, createTask, PROJECT, seedBoard } from './support/fixtures.mjs'
+import { boardText, createFakeFs, createFakeGit, createFakeTaskAgents, createRig, createStrictCtx, createTask, PROJECT, seedBoard } from './support/fixtures.mjs'
 
 const require = createRequire(import.meta.url)
 const { createTaskCard } = require('../../client/src/views/task-card.cjs')
@@ -874,6 +874,183 @@ function createSweepRig(options) {
     assert.equal(card.waitingReason, null, 'the refreshed card still waits for a stale-candidate rebuild')
   })
   rig.scheduler.dispose()
+}
+
+// ── T-221: a hung agent tree must not hold the merge queue, and an ABANDONED
+//    queue turn must never land its refresh ───────────────────────────────────
+//
+// The incident: refreshMerge ran inside one merge-queue unit; releasing the old
+// stage children fell back to a whole-tree catalog read that took minutes; the
+// unit was abandoned with 'queue-timeout', the caller moved on, and the refresh
+// kept running in the background (it would have written the board minutes later).
+{
+  /** A rig whose API gets a short agent-list bound, for the hung-catalog case. */
+  function createT221Rig(options) {
+    const opts = options === undefined ? {} : options
+    const fs = createFakeFs()
+    fs.dirs.add(PROJECT)
+    fs.dirs.add(join(PROJECT, '.git'))
+    fs.dirs.add(join(PROJECT, '.agents'))
+    fs.dirs.add(join(PROJECT, '.worktrees'))
+    const git = createFakeGit({ base: 'base-sha', heads: opts.heads })
+    const ctx = createStrictCtx(
+      {
+        fs: fs,
+        sandboxPolicy: { resolve: () => ({ workspaceRoot: PROJECT }) },
+        get(key) {
+          if (key === 'agents') return { list: () => [{ id: 'session-lead' }] }
+          if (key === 'subagents') return { list: () => ['spawn'] }
+          return undefined
+        },
+      },
+      ['fs', 'sandboxPolicy', 'tools', 'webServer'],
+    )
+    const state = createState(ctx, { sessionLookup: null })
+    state.setSessionRoot('session-lead', PROJECT)
+    const scheduler = createDispatcher(ctx, { state: state, projectPath: () => PROJECT, allowSpawn: false, git: git, taskAgents: opts.taskAgents })
+    const api = createApi(ctx, {
+      state: state,
+      scheduler: scheduler,
+      git: git,
+      merger: opts.merger,
+      taskAgents: opts.taskAgents,
+      // The production bound is seconds; a test states it in milliseconds.
+      agentListTimeoutMs: opts.agentListTimeoutMs === undefined ? 60 : opts.agentListTimeoutMs,
+    })
+    seedBoard(fs, PROJECT, JSON.stringify({ version: 2, seq: opts.cards.length + 1, dispatch: { state: 'running' }, tasks: opts.cards }))
+    // Read the card from the FILE: a board action may rebuild host metadata, and
+    // the point of these checks is that no read of the agent tree happens at all.
+    function rawCard(id) {
+      const board = JSON.parse(boardText(fs, PROJECT))
+      return board.tasks.filter((entry) => entry.id === id)[0]
+    }
+    return { fs: fs, state: state, scheduler: scheduler, api: api, git: git, rawCard: rawCard }
+  }
+
+  function performOn(rigInstance, agentId, name, action, payload) {
+    return rigInstance.api.perform(action, payload, { projectPath: PROJECT, by: '@' + name, role: 'agent', agent: { id: agentId, name: name } })
+  }
+
+  /** A card blocked by a merge conflict whose stage round is still recorded. */
+  function mergeConflictCard(id, worktreeHead) {
+    const stamp = '2026-11-20T00:00:00.000Z'
+    const worktree = join(PROJECT, '.worktrees', id + '-1')
+    return {
+      id: id,
+      title: 'merge conflict ' + id,
+      status: 'blocked',
+      kind: 'dev',
+      target: 'main',
+      base: 'base-sha',
+      branch: 'task/' + id + '-1',
+      commit: worktreeHead,
+      worktree: worktree,
+      ownerSession: 'session-lead',
+      writeFiles: [],
+      verify: { command: 'npm test', timeoutMs: 5000 },
+      verification: { probes: [{ id: 'probe-a', command: 'node --test scripts/a.test.mjs' }] },
+      review: { status: 'approved', attempt: 1, deliveredTo: { name: 'reviewer-t-' + id, id: 'reviewer-old-' + id, at: stamp } },
+      test: { status: 'passed', attempt: 1, deliveredTo: { name: 'tester-t-' + id, id: 'tester-old-' + id, at: stamp } },
+      merge: { status: 'conflict', base: 'base-sha', head: 'old-head', target: 'main', conflict: 'a.gd', actualFiles: [] },
+      blockedReason: { code: 'merge-conflict', from: 'testing', phase: 'merge', at: stamp },
+      lastAssignee: { name: 'worker-t-' + id, session: 'worker-session-' + id, at: stamp },
+      assignee: null,
+      history: [],
+      createdAt: stamp,
+      updatedAt: stamp,
+    }
+  }
+
+  // 1) A catalog that never answers. Before T-221 this held the whole queue unit
+  //    until it was abandoned; now every read is bounded and the refresh lands.
+  {
+    // The recorded round is LIVE: a release the board can prove must not need the
+    // (hung) tree to be released.
+    const agents = createFakeTaskAgents({ live: ['reviewer-old-T-920', 'tester-old-T-920'] })
+    const hang = function () {
+      return new Promise(function () {})
+    }
+    agents.listFor = hang
+    agents.listAgentsFor = hang
+    const worktree = join(PROJECT, '.worktrees', 'T-920-1')
+    const rig = createT221Rig({
+      taskAgents: agents,
+      merger: recordingMerger(),
+      agentListTimeoutMs: 60,
+      heads: { [worktree]: 'repaired-head' },
+      cards: [mergeConflictCard('T-920', 'repaired-head')],
+    })
+    const startedAt = Date.now()
+    const refreshed = await performOn(rig, 'worker-session-T-920', 'worker-t-T-920', 'refreshMerge', { id: 'T-920' })
+    const elapsed = Date.now() - startedAt
+    const card = rig.rawCard('T-920')
+    check('T-221 a hung agent tree cannot hold refreshMerge', () => {
+      assert.ok(elapsed < 2000, 'refreshMerge waited ' + String(elapsed) + 'ms on a hung catalog')
+      assert.equal(refreshed.ok, true, JSON.stringify(refreshed).slice(0, 900))
+      assert.equal(card.status, 'reviewing')
+      assert.equal(card.merge.status, 'open')
+      assert.equal(card.merge.head, 'repaired-head')
+      assert.equal(card.blockedReason, null)
+      assert.ok(card.review.deliveredTo !== null && card.review.deliveredTo !== undefined, 'the refreshed round has no reviewer')
+    })
+    rig.scheduler.dispose()
+  }
+
+  // 2) The queue unit is abandoned WHILE the release is running. The release is
+  //    already in flight (nothing can undo it), but the refresh must not write: the
+  //    caller was told 'queue-timeout', so a later board write would be a phantom.
+  {
+    const agents = createFakeTaskAgents({ live: ['reviewer-old-T-921', 'tester-old-T-921'] })
+    const baseRelease = agents.release
+    let openGate = null
+    let markEntered = null
+    const gate = new Promise(function (resolve) {
+      openGate = resolve
+    })
+    const entered = new Promise(function (resolve) {
+      markEntered = resolve
+    })
+    agents.release = async function (agentId) {
+      markEntered()
+      await gate
+      return baseRelease.call(agents, agentId)
+    }
+    const token = { aborted: false }
+    const merger = Object.assign(recordingMerger(), {
+      enqueue(work) {
+        return work(token)
+      },
+    })
+    const worktree = join(PROJECT, '.worktrees', 'T-921-1')
+    const rig = createT221Rig({
+      taskAgents: agents,
+      merger: merger,
+      heads: { [worktree]: 'repaired-head' },
+      cards: [mergeConflictCard('T-921', 'repaired-head')],
+    })
+    const before = boardText(rig.fs, PROJECT)
+    const pending = performOn(rig, 'worker-session-T-921', 'worker-t-T-921', 'refreshMerge', { id: 'T-921' })
+    await entered
+    token.aborted = true
+    openGate()
+    const refreshed = await pending
+    const after = rig.rawCard('T-921')
+    check('T-221 an abandoned merge turn never lands its refresh', () => {
+      assert.equal(refreshed.ok, false, JSON.stringify(refreshed).slice(0, 900))
+      assert.equal(refreshed.code, 'action-abandoned', 'the background turn did not report abandonment')
+      assert.equal(boardText(rig.fs, PROJECT), before, 'an abandoned queue turn wrote the board')
+      assert.equal(after.status, 'blocked')
+      assert.equal(after.merge.status, 'conflict')
+      assert.equal(after.merge.head, 'old-head')
+      assert.equal(after.review.deliveredTo.id, 'reviewer-old-T-921')
+    })
+    check('T-221 an abandoned turn leaves no unrecorded reviewer behind', () => {
+      const reviewers = Array.from(agents.live).filter((id) => String(id).indexOf('reviewer-T-921') === 0)
+      assert.deepEqual(reviewers, [], 'the reviewer started by the abandoned turn was not rolled back')
+      assert.equal(agents.calls.filter((call) => call.kind === 'startReviewer' && call.taskId === 'T-921').length, 1)
+    })
+    rig.scheduler.dispose()
+  }
 }
 
 const failedChecks = checks.filter((row) => !row.ok)
