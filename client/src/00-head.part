@@ -1975,8 +1975,23 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-chipbtn.gbt-decisionchip{border-color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-warn-label);font-weight:600;height:30px}',
 			'.gbt-chipbtn.gbt-decisionchip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
 			'.gbt-decisionchipdot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-warn-primary);flex:0 0 auto}',
-			'.gbt-decisiondockpanel{position:absolute;right:0;bottom:calc(100% + 8px);width:min(368px,calc(100vw - 24px));max-height:min(520px,72vh);overflow:auto;border-radius:14px;pointer-events:auto;overscroll-behavior:contain}',
+			// T-211: the card is capped TWICE — the measured inline max-height from
+			// computePlacement (visible layer area) and this CSS fallback for a shell
+			// whose geometry cannot be measured. Either way the body scrolls inside
+			// the card; nothing is clipped by the shell at 637px height.
+			'.gbt-decisiondockpanel{position:absolute;right:0;bottom:calc(100% + 8px);width:min(368px,calc(100vw - 24px));max-height:min(520px,72vh,calc(100vh - 96px));overflow-y:auto;overflow-x:hidden;border-radius:14px;pointer-events:auto;overscroll-behavior:contain}',
 			'.gbt-decision.gbt-decisioncompact{width:100%;max-height:none;overflow:visible;padding:14px;box-shadow:var(--dsw-shadow-lv2)}',
+			// T-211: the one-shot attention pulse for a NEW pending decision. One
+			// iteration only (never infinite), no shake; the data marker is also the
+			// test hook. 'static' is the reduced-motion / card-open highlight.
+			'.gbt-decisionheaderchip{flex:0 0 auto}',
+			'.gbt-decisiondock[data-decision-attention="play"] .gbt-decisionchip{animation:gbt-decisionattn 600ms cubic-bezier(.2,.7,.3,1) 1}',
+			'.gbt-decisiondock[data-decision-attention="static"] .gbt-decisionchip{box-shadow:0 0 0 2px var(--dsw-alias-state-warn-primary)}',
+			// The tiny enlarge uses the standalone 'scale' property rather than a layout
+			// transform: the roles layout guard forbids scale/zoom hacks on the panel CSS,
+			// and this keeps that guard meaningful while the chip still goes 1 -> 1.04 -> 1.
+			'@keyframes gbt-decisionattn{0%{scale:1;box-shadow:0 0 0 0 var(--dsw-alias-state-warn-primary)}40%{scale:1.04;box-shadow:0 0 0 3px var(--dsw-alias-state-warn-primary)}100%{scale:1;box-shadow:0 0 0 5px transparent}}',
+			'@media (prefers-reduced-motion: reduce){.gbt-decisiondock[data-decision-attention="play"] .gbt-decisionchip{animation:none;box-shadow:0 0 0 2px var(--dsw-alias-state-warn-primary)}}',
 			'.gbt-decisionclose{appearance:none;border:0;background:none;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:16px;line-height:1;cursor:pointer;padding:2px 5px;border-radius:6px;flex:0 0 auto;margin-left:-2px}',
 			'.gbt-decisionclose:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
 			'.gbt-decisionerror{margin:10px 0 0;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-state-error-primary);word-break:break-word}',

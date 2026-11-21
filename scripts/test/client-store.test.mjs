@@ -113,6 +113,60 @@ assert.equal(store.getSnapshot().source, 'host')
   assert.equal(store.getSnapshot().busy, null, 'a background poll never takes the action busy channel')
 }
 console.log('PASS  loadDecisions polls only the pending queue and leaves the board snapshot alone')
+// ── T-211: loadDecisions is single-flight, times out and recovers ──────────
+{
+  let calls = 0
+  let release = null
+  globalThis.fetch = () => {
+    calls += 1
+    return new Promise((resolve) => {
+      release = () => resolve({ json: async () => ({ ok: true, decisions: [{ id: 'DEC-LATE', status: 'pending' }] }) })
+    })
+  }
+  const first = store.loadDecisions({ timeoutMs: 40 })
+  const second = store.loadDecisions({ timeoutMs: 40 })
+  assert.equal(calls, 1, 'two surfaces share ONE in-flight decisionList request')
+  const timedOut = await first
+  const timedOutAgain = await second
+  assert.equal(timedOut.ok, false)
+  assert.equal(timedOut.timedOut, true, 'a hung request resolves as timedOut instead of wedging the queue')
+  assert.equal(timedOutAgain.timedOut, true)
+  assert.equal(store.getSnapshot().decisions.some((entry) => entry.id === 'DEC-LATE'), false, 'the late response must not land after the timeout')
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(store.getSnapshot().decisions.some((entry) => entry.id === 'DEC-LATE'), false, 'a response that lost the timeout race is ignored')
+  // The guard was released in finally: the next poll is a fresh request.
+  globalThis.fetch = async () => {
+    calls += 1
+    return { json: async () => ({ ok: true, decisions: [{ id: 'DEC-NEXT', status: 'pending' }], counts: { pending: 1 } }) }
+  }
+  const recovered = await store.loadDecisions()
+  assert.equal(recovered.ok, true, 'the next poll recovers without waiting for the hung request')
+  assert.equal(calls, 2)
+  assert.deepEqual(store.getSnapshot().decisions.map((entry) => entry.id), ['DEC-NEXT'])
+  // A transport failure also leaves the guard clean and the queue usable.
+  let failures = 0
+  globalThis.fetch = async () => {
+    failures += 1
+    if (failures === 1) throw new Error('offline')
+    return { json: async () => ({ ok: true, decisions: [], counts: {} }) }
+  }
+  const failed = await store.loadDecisions()
+  assert.equal(failed.ok, false)
+  const retried = await store.loadDecisions()
+  assert.equal(retried.ok, true, 'a failed poll is retried on the next tick')
+  assert.equal(failures, 2)
+  assert.equal(store.DECISION_LOAD_TIMEOUT_MS, 15000, 'the production timeout is bounded')
+}
+console.log('PASS  T-211 loadDecisions is single-flight, times out and recovers with a clean guard')
+
+// ── T-211: the store reports whether the shell overlay really mounted ──────
+{
+  assert.equal(store.decisionOverlayAvailable(), false, 'a missing shell.overlay slot never marks itself mounted')
+  store.markDecisionOverlayMounted()
+  assert.equal(store.decisionOverlayAvailable(), true)
+}
+console.log('PASS  T-211 the panel header can tell whether the shell overlay mounted')
 
 // ── T-208: one decision answer, never two ───────────────────────────────────
 {
