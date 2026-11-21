@@ -4378,15 +4378,16 @@ const createTaskStore = (function () {
  *     no-op, because a subagent session owns no sidebar surface);
  *   - the tab body/title: agent name, role, status, task id, stage and the
  *     latest activity, read from the SHARED task store;
- *   - the body's "open subagent conversation" action, which asks the host's
- *     `uiWorkspace.openSession(sessionId)` to switch the main view to the
- *     agent's own conversation. Without `uiWorkspace` the action is hidden.
+ *   - the body's three stage rows (T-219), one each for the card's develop,
+ *     review and test sessions; each row asks the host's
+ *     `uiWorkspace.openSession(sessionId)` to switch the main view to THAT
+ *     stage's subagent conversation.
  *
  * The host services are OPTIONAL. A shell without the sidebar services never
  * mounts, `available()` stays false, `openIn()` returns false without throwing,
  * and the card/detail hide their entry instead of rendering a dead button. A
- * mounted tab without `uiWorkspace` still renders its overview; only the
- * conversation switch is omitted.
+ * mounted tab without `uiWorkspace` still renders its overview; the three stage
+ * rows are then disabled with an explanation instead of disappearing.
  *
  * The session id is never minted here: it is the card's own agent session,
  * resolved in the card's own order (assignee, then lastAssignee, then the
@@ -4426,10 +4427,25 @@ const createTaskStore = (function () {
  *     plugin page the tab is invisible without that switch, which is what made
  *     the entry look like it did nothing. A host without that service keeps the
  *     tab but reports false instead of claiming the page moved;
- *   - the overview's "open subagent conversation" action switches the main
- *     session to the SUBAGENT, and the right sidebar then belongs to that new
- *     session. Tabs opened in the host session are not carried across sessions;
- *     the copy says so instead of promising a tab that stays visible.
+ *   - the overview's conversation switch (T-219: one per stage row) switches
+ *     the main session to the SUBAGENT, and the right sidebar then belongs to
+ *     that new session. Tabs opened in the host session are not carried across
+ *     sessions; the copy says so instead of promising a tab that stays visible.
+ *
+ * T-219 — three stage rows instead of one conversation switch:
+ *
+ *   - after the exact card is resolved, the develop/review/test rows take their
+ *     sessions from `task.assignee.session`, `task.review.deliveredTo.id` and
+ *     `task.test.deliveredTo.id`. A stage with no recorded session keeps its
+ *     row but shows "not assigned" and a disabled action: no id is minted and
+ *     no other card's session is borrowed;
+ *   - each row shows the stage, the agent and the live status, and its "open
+ *     conversation" action switches the main view to THAT row's session. One
+ *     session may back two rows (a reused session); each row still opens its own
+ *     stage's session, and a tab only ever reads ITS card;
+ *   - the top (agent name, role, status, card, stage, latest activity) is
+ *     unchanged. Without `uiWorkspace` the rows are disabled and a note says
+ *     why, rather than silently dropping the entries.
  */
 const AGENT_TAB_KIND = 'godot-bridge-agent'
 const AGENT_TAB_ID = 'godot-bridge/agent'
@@ -4458,8 +4474,16 @@ const AGENT_TAB_COPY = {
 		agentTabNoSession: '没有可显示的会话',
 		agentTabNoTask: '没有关联任务',
 		agentTabNoActivity: '没有活动记录',
-		agentTabOpenSession: '打开子代理对话',
-		agentTabOpenSessionHint: '在主页打开这个子代理的对话；主会话会切到子代理，右侧栏属于新会话',
+		agentStagesTitle: '阶段会话',
+		agentStageDevelop: '开发',
+		agentStageReview: '评审',
+		agentStageTest: '测试',
+		agentStageOpen: '打开对话',
+		agentStageOpenHint: '在主页打开这个阶段的子代理对话；主会话会切到子代理，右侧栏属于新会话',
+		agentStageNoSession: '未分配',
+		agentStageNoSessionHint: '这个阶段还没有会话',
+		agentStageUnavailable: '不可用',
+		agentStageNoWorkspace: '当前宿主没有切换会话的服务，三行阶段入口都不可用',
 		agentTabSwitchNote: '切到子代理后，右侧栏属于子代理会话，本会话的标签不会跟随',
 	},
 	en: {
@@ -4472,8 +4496,16 @@ const AGENT_TAB_COPY = {
 		agentTabNoSession: 'No session to show',
 		agentTabNoTask: 'No task for this session',
 		agentTabNoActivity: 'No activity yet',
-		agentTabOpenSession: 'Open subagent conversation',
-		agentTabOpenSessionHint: 'Open this subagent\'s conversation in the main view; the main session switches to the subagent, so the sidebar belongs to the new session',
+		agentStagesTitle: 'Stage sessions',
+		agentStageDevelop: 'Develop',
+		agentStageReview: 'Review',
+		agentStageTest: 'Test',
+		agentStageOpen: 'Open conversation',
+		agentStageOpenHint: 'Open this stage\'s subagent conversation in the main view; the main session switches to the subagent, so the sidebar belongs to the new session',
+		agentStageNoSession: 'Not assigned',
+		agentStageNoSessionHint: 'No session for this stage yet',
+		agentStageUnavailable: 'Unavailable',
+		agentStageNoWorkspace: 'This host cannot switch conversations, so the three stage entries are disabled',
 		agentTabSwitchNote: 'After the switch the sidebar belongs to the subagent session; this session\'s tabs do not follow',
 	},
 }
@@ -4489,13 +4521,23 @@ const AGENT_TAB_CSS =
 	'.gbt-agenttabrows{display:flex;flex-direction:column;gap:5px}\n' +
 	'.gbt-agenttabactivity{padding-top:8px;border-top:1px solid var(--dsw-alias-border-l4)}\n' +
 	'.gbt-agenttabtitle{display:inline-flex;align-items:center;gap:5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n' +
-	// T-212: the conversation switch, a full-width secondary action under the facts.
-	'.gbt-agenttabopen{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;height:28px;padding:0 10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n' +
-	'.gbt-agenttabopen:hover{background:var(--dsw-alias-bg-module-platform)}\n' +
-	'.gbt-agenttabopen:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}\n' +
-	// T-218: the switch changes the main session, so the sidebar that follows belongs
-	// to the subagent; the note spells that out instead of letting the user expect
-	// this session's tab strip to travel along.
+	// T-219: three stage rows (develop/review/test), each with its own compact
+	// action. The agent name is the only flexible cell: it ellipsizes, the pill is
+	// capped and the row clips, so three rows never widen the tab.
+	'.gbt-agenttabstages{display:flex;flex-direction:column;gap:4px;min-width:0}\n' +
+	'.gbt-agenttabstage{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;padding:4px 6px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}\n' +
+	'.gbt-agenttabstage[data-agent-stage-has-session="false"]{background:transparent;border-style:dashed}\n' +
+	'.gbt-agenttabstagelabel{flex:none;font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary)}\n' +
+	'.gbt-agenttabstagename{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px}\n' +
+	'.gbt-agenttabstagenone{font-weight:400;color:var(--dsw-alias-label-tertiary)}\n' +
+	'.gbt-agenttabstage .gbt-pill{flex:none;max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n' +
+	'.gbt-agenttabstagebtn{flex:none;height:22px;padding:0 8px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}\n' +
+	'.gbt-agenttabstagebtn:hover:not(:disabled){background:var(--dsw-alias-bg-module-platform)}\n' +
+	'.gbt-agenttabstagebtn:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}\n' +
+	'.gbt-agenttabstagebtn:disabled{cursor:not-allowed;opacity:.55}\n' +
+	// T-218/T-219: a stage switch changes the main session, so the sidebar that
+	// follows belongs to the subagent; the note spells that out instead of letting
+	// the user expect this session's tab strip to travel along.
 	'.gbt-agenttabnote{margin:0}\n'
 
 const ROLE_LABEL_KEYS = { worker: 'roleKindWorker', reviewer: 'roleKindReviewer', tester: 'roleKindTester' }
@@ -4598,6 +4640,33 @@ function reviewSessionOf(task) {
 
 function testSessionOf(task) {
 	return isRecord(task) ? deliveredSessionOf(task.test) : null
+}
+
+/**
+ * T-219: one row per stage, in pipeline order. Each row carries the session the
+ * card recorded FOR THAT STAGE — develop from `assignee.session`, review from
+ * `review.deliveredTo.id`, test from `test.deliveredTo.id`. A stage without a
+ * recorded session keeps its row with `session: null`: the row then says "not
+ * assigned" instead of inventing an id, and the same session may legitimately
+ * appear in two rows when one agent ran two stages.
+ */
+const AGENT_STAGE_ROWS = [
+	{ stage: 'develop', labelKey: 'agentStageDevelop' },
+	{ stage: 'review', labelKey: 'agentStageReview' },
+	{ stage: 'test', labelKey: 'agentStageTest' },
+]
+
+function stageSessionsOf(task) {
+	const card = isRecord(task) ? task : null
+	return AGENT_STAGE_ROWS.map(function (row) {
+		let session = null
+		if (card !== null) {
+			if (row.stage === 'develop') session = assignedSessionOf(card)
+			else if (row.stage === 'review') session = reviewSessionOf(card)
+			else session = testSessionOf(card)
+		}
+		return { stage: row.stage, labelKey: row.labelKey, session: session }
+	})
 }
 
 /**
@@ -5038,6 +5107,63 @@ function createAgentSidebar(deps) {
 			)
 		}
 		const info = agentInfoOf(snapshot, sessionId, t, now, selectors, taskId)
+		// T-219: the three stage rows come from the EXACT card the tab was opened
+		// from (never from the top agent's card, and never from another tab). A tab
+		// without a taskId (the guide overview) has no card and therefore no rows.
+		const card = taskId === null ? null : taskOfId(snapshot, taskId)
+		const stages = card === null ? [] : stageSessionsOf(card)
+		const workspace = workspaceOf()
+		const hasStageSwitch = workspace !== null && stages.some(function (row) { return row.session !== null })
+
+		/** One stage row: stage label, agent name, live status, and its own action. */
+		function stageRowOf(row) {
+			const session = row.session
+			const hasSession = session !== null
+			const stageInfo = hasSession ? agentInfoOf(snapshot, session, t, now, selectors, taskId) : null
+			const canOpen = hasSession && workspace !== null
+			const buttonTitle = hasSession === false
+				? t('agentStageNoSessionHint')
+				: workspace === null
+					? t('agentStageNoWorkspace')
+					: t('agentStageOpenHint')
+			return h(
+				'div',
+				{
+					key: row.stage,
+					className: 'gbt-agenttabstage',
+					'data-agent-stage': row.stage,
+					'data-agent-stage-has-session': hasSession ? 'true' : 'false',
+					'data-agent-stage-session': hasSession ? session : '',
+				},
+				h('span', { key: 'stage', className: 'gbt-agenttabstagelabel' }, t(row.labelKey)),
+				hasSession
+					? h('b', { key: 'name', className: 'gbt-agenttabstagename', title: stageInfo.name }, stageInfo.name)
+					: h('span', { key: 'name', className: 'gbt-agenttabstagename gbt-agenttabstagenone', title: t('agentStageNoSessionHint') }, t('agentStageNoSession')),
+				hasSession
+					? h('span', { key: 'status', className: 'gbt-pill', 'data-status': stageInfo.statusPill, 'data-agent-stage-status': stageInfo.status }, t(stageInfo.statusLabelKey))
+					: h('span', { key: 'status', className: 'gbt-pill', 'data-status': 'inactive', 'data-agent-stage-status': 'none' }, t('agentStageUnavailable')),
+				h(
+					'button',
+					{
+						key: 'open',
+						type: 'button',
+						className: 'gbt-agenttabstagebtn',
+						'data-agent-action': 'open-stage-session',
+						'data-agent-stage': row.stage,
+						'data-agent-session': hasSession ? session : '',
+						disabled: canOpen !== true,
+						'aria-disabled': canOpen === true ? 'false' : 'true',
+						title: buttonTitle,
+						// openConversation() re-checks the session and the service: a
+						// disabled row can never reach the host, and a missing stage
+						// never opens anything.
+						onClick: function () { openConversation(session) },
+					},
+					t('agentStageOpen'),
+				),
+			)
+		}
+
 		const children = [
 			h(
 				'div',
@@ -5059,30 +5185,27 @@ function createAgentSidebar(deps) {
 				),
 				h('div', { className: 'gbt-detailkv' }, h('span', null, t('agentTabStage')), h('b', null, info.stage)),
 			),
-			// T-212: the overview's one action — switch the main view to this
-			// subagent's own conversation. A root session (or a shell without
-			// uiWorkspace) has nothing to switch to, so the action is omitted.
-			info.role === 'root' || workspaceOf() === null
+			// T-219: the card's three stage entries. Each row names the stage, the
+			// agent and the live status, and opens THAT stage's conversation. A
+			// missing stage keeps its row (no session, disabled action); without
+			// uiWorkspace every row is disabled and a note says why.
+			stages.length === 0
 				? null
 				: h(
-					'button',
-					{
-						key: 'open',
-						type: 'button',
-						className: 'gbt-agenttabopen',
-						'data-agent-action': 'open-session',
-						'data-agent-session': sessionId,
-						title: t('agentTabOpenSessionHint'),
-						onClick: function () { openConversation(sessionId) },
-					},
-					t('agentTabOpenSession'),
+					'div',
+					{ key: 'stages', className: 'gbt-agenttabstages', 'data-agent-section': 'stage-sessions' },
+					h('div', { key: 'title', className: 'gbt-subhead' }, t('agentStagesTitle')),
+					stages.map(function (row) { return stageRowOf(row) }),
+					workspace === null
+						? h('p', { key: 'noWorkspace', className: 'gbt-footnote', 'data-agent-note': 'no-workspace' }, t('agentStageNoWorkspace'))
+						: null,
 				),
-			// T-218: the switch moves the MAIN session to the subagent, and the right
-			// sidebar then belongs to that new session: tabs opened in the host session
-			// are not carried over. Say it instead of letting them vanish unexplained.
-			info.role === 'root' || workspaceOf() === null
-				? null
-				: h('p', { key: 'switchNote', className: 'gbt-footnote gbt-agenttabnote', 'data-agent-note': 'sidebar-scope' }, t('agentTabSwitchNote')),
+			// T-218/T-219: a stage switch moves the MAIN session to the subagent, and
+			// the right sidebar then belongs to that new session: tabs opened in the
+			// host session are not carried over. Say it instead of letting them vanish.
+			hasStageSwitch
+				? h('p', { key: 'switchNote', className: 'gbt-footnote gbt-agenttabnote', 'data-agent-note': 'sidebar-scope' }, t('agentTabSwitchNote'))
+				: null,
 			h(
 				'div',
 				{ key: 'activity', className: 'gbt-agenttabactivity' },
@@ -5143,8 +5266,8 @@ function createAgentSidebar(deps) {
 		const scope = isRecord(host) ? host : null
 		const sidebar = readService(scope, 'sidebarRight')
 		const tabs = readService(scope, 'sidebarRightTabs')
-		// T-212: optional. The tab mounts and renders its overview without it;
-		// only the "open subagent conversation" action is withheld.
+		// T-212/T-219: optional. The tab mounts and renders its overview without
+		// it; the three stage rows are then disabled with an explanation.
 		const workspace = isRecord(opts.uiWorkspace) ? opts.uiWorkspace : readService(scope, 'uiWorkspace')
 		const slots = isRecord(scope) && isRecord(scope.slots) ? scope.slots : isRecord(opts.slots) ? opts.slots : null
 		if (!isRecord(sidebar) || typeof sidebar.openTabIn !== 'function') return noop
@@ -5449,6 +5572,7 @@ module.exports = {
 	AGENT_TAB_COPY,
 	AGENT_TAB_CSS,
 	agentSessionOf,
+	stageSessionsOf,
 	agentInfoOf,
 	createAgentSidebar,
 	available,
