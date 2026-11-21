@@ -45,8 +45,16 @@ const copy = {
   agentTabNoSession: '没有可显示的会话',
   agentTabNoTask: '没有关联任务',
   agentTabNoActivity: '没有活动记录',
-  agentTabOpenSession: '打开子代理对话',
-  agentTabOpenSessionHint: '在主页打开这个子代理的对话；主会话会切到子代理，右侧栏属于新会话',
+  agentStagesTitle: '阶段会话',
+  agentStageDevelop: '开发',
+  agentStageReview: '评审',
+  agentStageTest: '测试',
+  agentStageOpen: '打开对话',
+  agentStageOpenHint: '在主页打开这个阶段的子代理对话；主会话会切到子代理，右侧栏属于新会话',
+  agentStageNoSession: '未分配',
+  agentStageNoSessionHint: '这个阶段还没有会话',
+  agentStageUnavailable: '不可用',
+  agentStageNoWorkspace: '当前宿主没有切换会话的服务，三行阶段入口都不可用',
   agentTabSwitchNote: '切到子代理后，右侧栏属于子代理会话，本会话的标签不会跟随',
   agentStatusRunning: '运行中',
   agentStatusIdle: '空闲',
@@ -235,8 +243,34 @@ function findNode(node, predicate) {
   return findNode(node.props === undefined ? undefined : node.props.children, predicate)
 }
 
-function openButtonOf(body) {
-  return findNode(body, (node) => node.props !== undefined && node.props['data-agent-action'] === 'open-session')
+/** Every stage row in a rendered body, in pipeline order. */
+function stageRowNodes(body) {
+  const rows = []
+  const visit = (node) => {
+    if (node === null || node === undefined) return
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child)
+      return
+    }
+    if (typeof node !== 'object') return
+    if (node.props !== undefined && node.props.className === 'gbt-agenttabstage' && node.props['data-agent-stage'] !== undefined) rows.push(node)
+    visit(node.props === undefined ? undefined : node.props.children)
+  }
+  visit(body)
+  return rows
+}
+
+function stageRowOf(body, stage) {
+  return stageRowNodes(body).filter((row) => row.props['data-agent-stage'] === stage)[0] || null
+}
+
+function stageButtonOf(body, stage) {
+  const row = stageRowOf(body, stage)
+  return row === null ? null : findNode(row, (node) => node.props !== undefined && node.props['data-agent-action'] === 'open-stage-session')
+}
+
+function noWorkspaceNoteOf(body) {
+  return findNode(body, (node) => node.props !== undefined && node.props['data-agent-note'] === 'no-workspace')
 }
 
 function scopeNoteOf(body) {
@@ -276,17 +310,68 @@ assert.equal(sidebar.agentSessionOf(Object.assign({}, fullCard, { assignee: null
 assert.equal(sidebar.agentSessionOf(Object.assign({}, fullCard, { assignee: null, lastAssignee: null, review: null })), 'session-test', 'the test deliverer is the next fallback')
 assert.equal(sidebar.agentSessionOf(Object.assign({}, fullCard, { assignee: null, lastAssignee: null, review: null, test: null })), 'session-owner', 'the owning session is the last fallback')
 assert.equal(sidebar.agentSessionOf({ assignee: { session: '   ' }, lastAssignee: { session: '' }, review: null, test: null, ownerSession: '  ' }), null, 'blank ids are not sessions')
+
+// ── T-219: one row per stage, read from the card's own fields ───────────────
+const fullStages = sidebar.stageSessionsOf(task)
+assert.deepEqual(fullStages.map((row) => row.stage), ['develop', 'review', 'test'], 'the rows are in pipeline order')
+assert.deepEqual(fullStages.map((row) => row.labelKey), ['agentStageDevelop', 'agentStageReview', 'agentStageTest'], 'each row names its stage')
+assert.deepEqual(fullStages.map((row) => row.session), ['session-w212', 'session-rev212', 'session-test212'], 'each row takes its own stage session')
+assert.deepEqual(
+  sidebar.stageSessionsOf({ id: 'T-P', assignee: { session: 'session-only-dev' } }).map((row) => row.session),
+  ['session-only-dev', null, null],
+  'a missing stage keeps its row with no session',
+)
+assert.deepEqual(
+  sidebar.stageSessionsOf({ review: { deliveredTo: { id: 'session-only-review' } } }).map((row) => row.session),
+  [null, 'session-only-review', null],
+  'the review row reads review.deliveredTo.id',
+)
+assert.deepEqual(
+  sidebar.stageSessionsOf({ test: { deliveredTo: { id: 'session-only-test' } } }).map((row) => row.session),
+  [null, null, 'session-only-test'],
+  'the test row reads test.deliveredTo.id',
+)
+assert.deepEqual(
+  sidebar.stageSessionsOf({ assignee: { session: '   ' }, review: { deliveredTo: { id: '' } }, test: null }).map((row) => row.session),
+  [null, null, null],
+  'blank stage ids are not sessions',
+)
+const reusedStages = sidebar.stageSessionsOf({
+  assignee: { session: 'session-same' },
+  review: { deliveredTo: { id: 'session-same' } },
+  test: { deliveredTo: { id: 'session-same' } },
+})
+assert.deepEqual(reusedStages.map((row) => row.session), ['session-same', 'session-same', 'session-same'], 'one session may back several stage rows')
+assert.equal(sidebar.stageSessionsOf(null).every((row) => row.session === null), true, 'no card means no sessions')
+assert.equal(sidebar.stageSessionsOf(undefined).every((row) => row.session === null), true, 'an absent card mints no session')
 assert.deepEqual(
   Object.keys(sidebar.AGENT_TAB_COPY.zh).sort(),
   Object.keys(sidebar.AGENT_TAB_COPY.en).sort(),
   'the tab ships the same keys in both locales',
 )
-assert.ok(sidebar.AGENT_TAB_COPY.zh.agentTabOpenSession !== undefined, 'the conversation switch is localized')
+assert.equal(sidebar.AGENT_TAB_COPY.zh.agentStageDevelop, '开发', 'the develop row is labeled')
+assert.equal(sidebar.AGENT_TAB_COPY.zh.agentStageReview, '评审', 'the review row is labeled')
+assert.equal(sidebar.AGENT_TAB_COPY.zh.agentStageTest, '测试', 'the test row is labeled')
+assert.ok(sidebar.AGENT_TAB_COPY.zh.agentStageOpen !== undefined, 'the per-stage conversation switch is localized')
 assert.ok(sidebar.AGENT_TAB_COPY.zh.agentTabSwitchNote !== undefined, 'the session-scope note is localized')
-assert.ok(sidebar.AGENT_TAB_COPY.zh.agentTabOpenSessionHint.includes('右侧栏属于新会话'), 'the switch hint names the session change instead of promising the tab follows')
-assert.ok(sidebar.AGENT_TAB_COPY.en.agentTabOpenSessionHint.includes('sidebar belongs to the new session'), 'the English hint says the same')
+assert.ok(sidebar.AGENT_TAB_COPY.zh.agentStageOpenHint.includes('右侧栏属于新会话'), 'the switch hint names the session change instead of promising the tab follows')
+assert.ok(sidebar.AGENT_TAB_COPY.en.agentStageOpenHint.includes('sidebar belongs to the new session'), 'the English hint says the same')
+assert.ok(sidebar.AGENT_TAB_COPY.zh.agentStageNoWorkspace.includes('没有切换会话的服务'), 'the no-workspace note explains the disabled rows')
+assert.ok(sidebar.AGENT_TAB_COPY.zh.agentStageNoSession !== undefined, 'a missing stage has its own copy')
 assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttab'), 'the tab ships its own token-only styles')
-assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabopen'), 'the conversation switch has its own style')
+assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabstages'), 'the three stage rows have their own container style')
+assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabstagebtn'), 'each stage row action has its own style')
+assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabstagename'), 'the row name is styled for ellipsis')
+assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabstage[data-agent-stage-has-session="false"]'), 'a missing stage row is visually distinct')
+assert.ok(
+  sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabstagename{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'),
+  'a long agent name ellipsizes instead of widening the tab',
+)
+assert.ok(
+  sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabstage{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden'),
+  'a stage row clips instead of widening the tab',
+)
+assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabstagebtn:disabled'), 'a disabled stage action reads as disabled')
 assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabnote'), 'the session-scope note has its own style')
 assert.equal(sidebar.available(), false, 'nothing is available before a mount')
 assert.equal(sidebar.openIn('session-w212'), false, 'openIn without a host is a quiet false')
@@ -299,7 +384,7 @@ assert.equal(sidebar.available(), true, 'a successful mount makes the entry avai
 assert.equal(api.hasWorkspace(), true, 'the mounted host provides uiWorkspace')
 assert.equal(sidebar.label('openInSidebar'), '在侧边栏打开', 'the shared label helper resolves the entry copy')
 assert.equal(api.label('agentTabTitle'), '代理', 'the overview tab is still the agent tab')
-assert.equal(api.label('agentTabOpenSession'), '打开子代理对话', 'the conversation switch is labeled')
+assert.equal(api.label('agentStageOpen'), '打开对话', 'the per-stage conversation switch is labeled')
 assert.equal(mounted.calls.tabs.length, 1, 'exactly one tab is registered')
 const spec = mounted.calls.tabs[0]
 assert.equal(spec.id, 'godot-bridge/agent', 'the tab has OUR id (not a DSH private agent kind)')
@@ -419,7 +504,7 @@ const previousInfo = api.infoOf(previousSnapshot, 'session-prev212', t, 1000)
 assert.equal(previousInfo.role, 'worker', 'lastAssignee is the worker fallback')
 assert.equal(previousInfo.name, 'worker-prev-212')
 
-// ── the overview renders the switch and calls uiWorkspace.openSession ───────
+// ── T-219: the body renders the three stage rows and opens each session ────
 const workerBody = api.Body({ sessionId: 'session-w212', useTabInfo: tabInfoWith('T-212') })
 const workerBodyText = JSON.stringify(workerBody)
 assert.ok(workerBodyText.includes('worker-t-212'), 'the body shows the agent name')
@@ -429,7 +514,8 @@ assert.ok(workerBodyText.includes('T-212'), 'the body shows the task id')
 assert.ok(workerBodyText.includes('实现中'), 'the body shows the stage')
 assert.ok(workerBodyText.includes('最近活动'), 'the body shows the activity section')
 assert.ok(workerBodyText.includes('提交'), 'the body shows the latest activity')
-assert.ok(workerBodyText.includes('打开子代理对话'), 'the overview carries the conversation switch')
+assert.ok(workerBodyText.includes('阶段会话'), 'the body carries the stage-session section')
+assert.ok(workerBodyText.includes('打开对话'), 'every stage row carries its own conversation action')
 assert.equal(workerBody.props['data-agent-session'], 'session-w212')
 assert.equal(workerBody.props['data-agent-task'], 'T-212')
 assert.equal(workerBody.props['data-agent-role'], 'worker')
@@ -439,23 +525,46 @@ const legacyBody = api.Body({ sessionId: 'session-w212' })
 assert.equal(legacyBody.props['data-agent-task'], 'T-212', 'without tab info the body falls back to the session card')
 assert.equal(legacyBody.props['data-agent-role'], 'worker')
 
-const openButton = openButtonOf(workerBody)
-assert.ok(openButton !== null, 'the switch is a real button')
-assert.equal(openButton.props['data-agent-session'], 'session-w212')
-assert.equal(typeof openButton.props.onClick, 'function')
-assert.doesNotThrow(() => openButton.props.onClick({}), 'clicking the switch never throws')
-assert.deepEqual(mounted.calls.sessions, [HOST_SESSION, HOST_SESSION, HOST_SESSION, 'session-w212'], 'clicking the switch asks uiWorkspace to open THAT subagent session')
+const workerRows = stageRowNodes(workerBody)
+assert.equal(workerRows.length, 3, 'the body renders all three stage rows')
+assert.deepEqual(workerRows.map((row) => row.props['data-agent-stage']), ['develop', 'review', 'test'], 'the rows are the three stages')
+assert.deepEqual(workerRows.map((row) => row.props['data-agent-stage-session']), ['session-w212', 'session-rev212', 'session-test212'], 'each row carries its own stage session')
+assert.deepEqual(workerRows.map((row) => row.props['data-agent-stage-has-session']), ['true', 'true', 'true'], 'every recorded stage is available')
+assert.ok(JSON.stringify(workerRows[0]).includes('worker-t-212'), 'the develop row names its agent')
+assert.ok(JSON.stringify(workerRows[1]).includes('reviewer-t-212'), 'the review row names its agent')
+assert.ok(JSON.stringify(workerRows[2]).includes('tester-t-212'), 'the test row names its agent')
+const expectedWorkerSessions = ['session-w212', 'session-rev212', 'session-test212']
+for (const [index, stage] of ['develop', 'review', 'test'].entries()) {
+  const button = stageButtonOf(workerBody, stage)
+  assert.ok(button !== null, 'the ' + stage + ' row has a real button')
+  assert.equal(button.props.disabled, false, 'the ' + stage + ' row is clickable with uiWorkspace')
+  assert.equal(button.props['data-agent-session'], expectedWorkerSessions[index], 'the ' + stage + ' button names ITS session')
+  assert.equal(typeof button.props.onClick, 'function')
+  assert.doesNotThrow(() => button.props.onClick({}), 'clicking the ' + stage + ' row never throws')
+}
+assert.deepEqual(
+  mounted.calls.sessions,
+  [HOST_SESSION, HOST_SESSION, HOST_SESSION, 'session-w212', 'session-rev212', 'session-test212'],
+  'each row asks uiWorkspace to open exactly its own stage session',
+)
 
-// T-218: the switch moves the MAIN session to the subagent, and the right
-// sidebar then belongs to that new session — the body says so.
+// T-218/T-219: a stage switch moves the MAIN session to the subagent, and the
+// right sidebar then belongs to that new session — the body says so.
 const scopeNote = scopeNoteOf(workerBody)
-assert.ok(scopeNote !== null, 'the switch carries a visible session-scope note')
+assert.ok(scopeNote !== null, 'the stage rows carry a visible session-scope note')
 assert.ok(JSON.stringify(scopeNote).includes('本会话的标签不会跟随'), 'the note says this session tabs do not follow')
 
-// A root session is not a subagent: the overview has nothing to switch to.
+// The three rows belong to the CARD, not to the agent the tab is centered on:
+// a root-centered card tab still offers all three stage entries.
 const rootBody = api.Body({ sessionId: 'session-root', useTabInfo: tabInfoWith('T-212') })
-assert.equal(openButtonOf(rootBody), null, 'the switch is omitted on the root Agent')
-assert.equal(scopeNoteOf(rootBody), null, 'without a switch there is no scope note')
+assert.equal(stageRowNodes(rootBody).length, 3, 'the card rows are shown even when the top agent is the root')
+assert.equal(stageButtonOf(rootBody, 'review').props.disabled, false, 'the review row is still actionable')
+
+// Without a taskId (the guide overview) there is no card, and therefore no rows.
+const guideNoTaskBody = api.Body({ sessionId: HOST_SESSION })
+assert.equal(stageRowNodes(guideNoTaskBody).length, 0, 'the guide overview has no stage rows')
+assert.equal(noWorkspaceNoteOf(guideNoTaskBody), null, 'nothing to explain without rows')
+assert.equal(scopeNoteOf(guideNoTaskBody), null, 'nothing to switch, no scope note')
 
 const title = api.Title({ sessionId: 'session-w212', useTabInfo: tabInfoWith('T-212') })
 assert.ok(JSON.stringify(title).includes('worker-t-212'), 'the title names the agent')
@@ -466,7 +575,11 @@ assert.ok(JSON.stringify(emptyBody).includes('没有可显示的会话'), 'an em
 
 const openConversation = api.openConversation('session-rev212')
 assert.equal(openConversation, true, 'openConversation forwards to uiWorkspace')
-assert.deepEqual(mounted.calls.sessions, [HOST_SESSION, HOST_SESSION, HOST_SESSION, 'session-w212', 'session-rev212'])
+assert.deepEqual(
+  mounted.calls.sessions,
+  [HOST_SESSION, HOST_SESSION, HOST_SESSION, 'session-w212', 'session-rev212', 'session-test212', 'session-rev212'],
+  'the direct call opens the requested subagent session on top of the three row clicks',
+)
 assert.equal(api.openConversation(''), false, 'an empty session is not opened')
 assert.equal(api.openConversation(null), false, 'a missing session is not opened')
 
@@ -513,8 +626,17 @@ assert.equal(withoutWorkspaceView.hasWorkspace(), false, 'no uiWorkspace means n
 assert.equal(withoutWorkspaceView.openConversation('session-w212'), false, 'openConversation degrades to false')
 assert.doesNotThrow(() => withoutWorkspaceView.openConversation('session-w212'), 'a missing uiWorkspace never throws')
 const workspaceLessBody = withoutWorkspaceView.Body({ sessionId: 'session-w212', useTabInfo: tabInfoWith('T-212') })
-assert.equal(openButtonOf(workspaceLessBody), null, 'the switch is hidden without uiWorkspace')
+assert.equal(stageRowNodes(workspaceLessBody).length, 3, 'the stage rows still render without uiWorkspace')
 assert.ok(JSON.stringify(workspaceLessBody).includes('worker-t-212'), 'the rest of the overview still renders')
+for (const stage of ['develop', 'review', 'test']) {
+  const button = stageButtonOf(workspaceLessBody, stage)
+  assert.ok(button !== null, 'the ' + stage + ' row still renders its action')
+  assert.equal(button.props.disabled, true, 'the ' + stage + ' row is disabled without uiWorkspace')
+  assert.doesNotThrow(() => button.props.onClick({}), 'a disabled row never throws when clicked')
+}
+assert.ok(noWorkspaceNoteOf(workspaceLessBody) !== null, 'the disabled rows explain why')
+assert.ok(JSON.stringify(workspaceLessBody).includes('当前宿主没有切换会话的服务'), 'the note names the missing service')
+assert.equal(scopeNoteOf(workspaceLessBody), null, 'no switch is possible, so no scope note')
 // T-216: without uiWorkspace there is no host session to open in. Falling back
 // to the agent session would be the silent host no-op this task removes.
 assert.equal(withoutWorkspaceView.openIn('session-w212'), false, 'without a host session the open is refused, not silently redirected')
@@ -553,8 +675,9 @@ assert.equal(sidebar.available(), true)
 assert.equal(sidebar.openIn('session-w212'), false, 'openTabIn errors are reported as false, not thrown')
 assert.equal(throwingView.openConversation('session-w212'), false, 'openSession errors are reported as false, not thrown')
 const throwingBody = throwingView.Body({ sessionId: 'session-w212', useTabInfo: tabInfoWith('T-212') })
-const throwingButton = openButtonOf(throwingBody)
-assert.ok(throwingButton !== null, 'the switch is rendered when uiWorkspace exists')
+const throwingButton = stageButtonOf(throwingBody, 'develop')
+assert.ok(throwingButton !== null, 'the stage action is rendered when uiWorkspace exists')
+assert.equal(throwingButton.props.disabled, false, 'a throwing service does not pre-disable the rows')
 assert.doesNotThrow(() => throwingButton.props.onClick({}), 'a throwing openSession does not escape the click')
 throwingDispose()
 
@@ -622,11 +745,11 @@ assert.equal(paramBody.props['data-agent-session'], 'session-w212', 'the body sh
 assert.equal(paramBody.props['data-agent-role'], 'worker')
 assert.equal(paramBody.props['data-agent-task'], 'T-212')
 assert.ok(JSON.stringify(paramBody).includes('worker-t-212'), 'the body names the agent from the params')
-const paramButton = openButtonOf(paramBody)
-assert.ok(paramButton !== null, 'the conversation switch still renders in the host session')
+const paramButton = stageButtonOf(paramBody, 'develop')
+assert.ok(paramButton !== null, 'the develop row still renders in the host session')
 assert.equal(paramButton.props['data-agent-session'], 'session-w212')
-assert.doesNotThrow(() => paramButton.props.onClick({}), 'the switch still never throws')
-assert.deepEqual(paramHost.calls.sessions, ['session-w212'], 'the switch opens the SUBAGENT conversation (unchanged)')
+assert.doesNotThrow(() => paramButton.props.onClick({}), 'the stage action still never throws')
+assert.deepEqual(paramHost.calls.sessions, ['session-w212'], 'the develop row opens the SUBAGENT conversation')
 const paramTitle = paramView.Title({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-212', 'session-w212') })
 assert.ok(JSON.stringify(paramTitle).includes('worker-t-212'), 'the title names the agent from the params')
 assert.equal(paramView.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent(null, 'session-w212') }).props['data-agent-task'], 'T-212', 'the agent session alone still resolves its card')
@@ -833,8 +956,88 @@ guideDispose()
   assert.deepEqual(strip[0].params, { taskId: 'T-212', agentSession: 'session-w212' }, 'the kept tab still carries its card and agent')
   assert.equal(host.calls.sessions.length, 0, 'no page switch was claimed or attempted')
   const noteBody = view.Body({ sessionId: 'session-w212', useTabInfo: tabInfoWith('T-212') })
-  assert.equal(openButtonOf(noteBody), null, 'the subagent switch is hidden without openSession')
+  assert.equal(stageButtonOf(noteBody, 'develop').props.disabled, true, 'the stage actions are disabled without openSession')
+  assert.ok(noWorkspaceNoteOf(noteBody) !== null, 'the disabled rows explain why')
   disposal()
+}
+
+// ── T-219: partial stages, a reused session, and no cross-card leakage ─────
+{
+  const previous = storeSnapshot
+  const partialCard = {
+    id: 'T-PART',
+    title: 'partial stages',
+    status: 'reviewing',
+    assignee: null,
+    lastAssignee: null,
+    review: { status: 'running', deliveredTo: { id: 'session-review-only', name: 'reviewer-part' } },
+    test: null,
+    ownerSession: 'session-root',
+    updatedAt: '2026-11-21T08:00:00.000Z',
+    history: [],
+  }
+  const reusedCard = {
+    id: 'T-REUSE',
+    title: 'reused session',
+    status: 'testing',
+    assignee: { name: 'worker-reuse', session: 'session-reuse' },
+    lastAssignee: null,
+    review: { status: 'passed', deliveredTo: { id: 'session-reuse', name: 'worker-reuse' } },
+    test: { status: 'running', deliveredTo: { id: 'session-reuse', name: 'worker-reuse' } },
+    ownerSession: 'session-root',
+    updatedAt: '2026-11-21T08:05:00.000Z',
+    history: [],
+  }
+  storeSnapshot = { tasks: [partialCard, reusedCard], agentTree: { available: true, root: null, members: [], count: 0, error: null }, activityEvents: null }
+  try {
+    const view = createView()
+    const host = createHost()
+    const disposal = view.mount(host.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+
+    // Partial: only the review stage was recorded. The missing rows stay
+    // visible, say "not assigned", and carry NO fabricated session id.
+    const partialBody = view.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-PART', 'session-review-only') })
+    const partialRows = stageRowNodes(partialBody)
+    assert.equal(partialRows.length, 3, 'a partial card still renders three stage rows')
+    assert.deepEqual(partialRows.map((row) => row.props['data-agent-stage-has-session']), ['false', 'true', 'false'], 'only the recorded review stage is available')
+    assert.deepEqual(partialRows.map((row) => row.props['data-agent-stage-session']), ['', 'session-review-only', ''], 'no session is invented for a missing stage')
+    assert.ok(JSON.stringify(partialRows[0]).includes('未分配'), 'a missing stage says it is not assigned')
+    assert.ok(JSON.stringify(partialRows[2]).includes('未分配'), 'both missing stages say it')
+    assert.ok(JSON.stringify(partialRows[0]).includes('不可用'), 'a missing stage shows an unavailable status')
+    assert.ok(JSON.stringify(partialRows[2]).includes('不可用'), 'both missing stages show it')
+    assert.ok(JSON.stringify(partialRows[1]).includes('reviewer-part'), 'the recorded stage names its agent')
+    for (const stage of ['develop', 'test']) {
+      const button = stageButtonOf(partialBody, stage)
+      assert.equal(button.props.disabled, true, 'the missing ' + stage + ' stage is not clickable')
+      assert.equal(button.props['data-agent-session'], '', 'the missing ' + stage + ' stage carries no session id')
+      assert.doesNotThrow(() => button.props.onClick({}), 'clicking a missing ' + stage + ' stage never throws')
+    }
+    assert.equal(stageButtonOf(partialBody, 'review').props.disabled, false, 'the recorded review stage is actionable')
+    assert.equal(stageButtonOf(partialBody, 'review').props['data-agent-session'], 'session-review-only')
+    assert.deepEqual(host.calls.sessions, [], 'rendering disabled rows never switches the main view')
+    stageButtonOf(partialBody, 'review').props.onClick({})
+    assert.deepEqual(host.calls.sessions, ['session-review-only'], 'the review row opens ITS session')
+
+    // Reused session: three rows, ONE session id; each row still opens it.
+    const reusedBody = view.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-REUSE', 'session-reuse') })
+    const reusedRows = stageRowNodes(reusedBody)
+    assert.deepEqual(reusedRows.map((row) => row.props['data-agent-stage-session']), ['session-reuse', 'session-reuse', 'session-reuse'], 'one session may back three rows')
+    for (const stage of ['develop', 'review', 'test']) {
+      assert.equal(stageButtonOf(reusedBody, stage).props['data-agent-session'], 'session-reuse', 'the ' + stage + ' row opens the reused session')
+    }
+    assert.deepEqual(host.calls.sessions, ['session-review-only'], 'rendering reused rows does not open anything')
+    stageButtonOf(reusedBody, 'test').props.onClick({})
+    assert.deepEqual(host.calls.sessions, ['session-review-only', 'session-reuse'], 'the reused session opens once per click')
+
+    // Cross-card: each tab reads ITS card even though both tabs are centered
+    // on the same host session.
+    const crossBody = view.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithAgent('T-REUSE', 'session-review-only') })
+    assert.deepEqual(stageRowNodes(crossBody).map((row) => row.props['data-agent-stage-session']), ['session-reuse', 'session-reuse', 'session-reuse'], 'a tab never borrows another card sessions')
+    assert.deepEqual(stageRowNodes(partialBody).map((row) => row.props['data-agent-stage-session']), ['', 'session-review-only', ''], 'the first tab keeps its own card rows')
+    disposal()
+  } finally {
+    storeSnapshot = previous
+  }
 }
 
 // ── 40-tail / shipped bundle carry the same wiring ──────────────────────────
@@ -844,7 +1047,10 @@ assert.ok(TAIL.includes("ctx.inject(['sidebarRight', 'sidebarRightTabs', 'uiWork
 assert.ok(TAIL.includes('uiWorkspace: scoped === null || scoped === undefined ? null : scoped.uiWorkspace'), 'the mount receives the uiWorkspace service')
 assert.ok(TAIL.includes('return tab.mount(scoped, {'), 'the tab still mounts on the scoped services')
 assert.ok(BUNDLE.includes("ctx.inject(['sidebarRight', 'sidebarRightTabs', 'uiWorkspace']"), 'the shipped bundle carries the same sidebar injection')
-assert.ok(BUNDLE.includes('agentTabOpenSession'), 'the shipped bundle carries the conversation switch')
+assert.ok(BUNDLE.includes('agentStageOpen'), 'the shipped bundle carries the per-stage conversation switch')
+assert.ok(BUNDLE.includes('stageSessionsOf'), 'the shipped bundle carries the three-stage resolver')
+assert.ok(BUNDLE.includes('open-stage-session'), 'the shipped bundle carries the stage-row action')
+assert.ok(BUNDLE.includes('gbt-agenttabstagebtn'), 'the shipped bundle carries the stage-row styles')
 assert.ok(BUNDLE.includes('agentTabSwitchNote'), 'the shipped bundle carries the session-scope note')
 assert.ok(BUNDLE.includes("AGENT_TAB_SESSION_PARAM = 'agentSession'"), 'the shipped bundle carries the agent-session navigation param')
 assert.ok(BUNDLE.includes('multiple: true'), 'the shipped bundle registers the tab type as multiple')
@@ -853,4 +1059,4 @@ assert.ok(BUNDLE.includes('hostSessionOf'), 'the shipped bundle resolves the hos
 assert.ok(BUNDLE.includes('switchToHost(hostSession)'), 'the shipped bundle switches the main view after a verified open')
 assert.ok(BUNDLE.includes('createdTabOf(before, after)'), 'the shipped bundle verifies a NEW tab, not just the kind')
 
-console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, switches to the host conversation (and says the subagent switch takes the sidebar with it), and degrades safely')
+console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, lists the develop/review/test stage sessions (exact-card only, reused sessions allowed, missing stages disabled, no-workspace disabled with a note), switches to the host conversation (and says the subagent switch takes the sidebar with it), and degrades safely')
