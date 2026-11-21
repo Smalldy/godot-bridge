@@ -1,14 +1,18 @@
-// T-209/T-212/T-216: the right-sidebar agent tab.
+// T-209/T-212/T-216/T-218: the right-sidebar agent tab.
 //
 // The bundled view is required directly (like the other client-*.test.mjs
 // suites) and mounted against a fake host, so the test proves the real
-// registration contract: one custom tab kind, body/title slots keyed by the
-// tab id, the tab opened in the HOST's current session (T-216) with
-// { params: { taskId, agentSession } }, sidebarRight.tabsIn() used to verify
-// the placement (a host no-op is false, never a fake success),
-// uiWorkspace.openSession(sessionId) for the overview's conversation switch,
-// the card's own session order, the role of the stage behind it, exact taskId
-// resolution, and no throw when the optional host services are missing.
+// registration contract: one custom tab type registered as multiple (T-218:
+// each open mints its own tab instead of navigating the previous one), body/
+// title slots keyed by the tab id, the tab opened in the HOST's current session
+// (T-216) with { params: { taskId, agentSession } }, sidebarRight.tabsIn() used
+// to verify the placement by the strip DELTA (a host no-op or a host that still
+// reuses one page is false, never a fake success), uiWorkspace.openSession(host)
+// after a verified open so the plugin page actually leaves for the conversation
+// that shows the sidebar, uiWorkspace.openSession(subagent) for the overview's
+// conversation switch, the card's own session order, the role of the stage
+// behind it, exact taskId resolution, and no throw when the optional host
+// services are missing.
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -41,8 +45,9 @@ const copy = {
   agentTabNoSession: '没有可显示的会话',
   agentTabNoTask: '没有关联任务',
   agentTabNoActivity: '没有活动记录',
-  agentTabOpenSession: '打开子代理会话',
-  agentTabOpenSessionHint: '在主页打开这个子代理的会话',
+  agentTabOpenSession: '打开子代理对话',
+  agentTabOpenSessionHint: '在主页打开这个子代理的对话；主会话会切到子代理，右侧栏属于新会话',
+  agentTabSwitchNote: '切到子代理后，右侧栏属于子代理会话，本会话的标签不会跟随',
   agentStatusRunning: '运行中',
   agentStatusIdle: '空闲',
   agentStatusFailed: '失败',
@@ -136,11 +141,20 @@ function createHost(options) {
         if (opts.openNoop === true) return
         if (surfaces.indexOf(sessionId) < 0) return
         const list = strips.get(sessionId) === undefined ? [] : strips.get(sessionId)
-        // Our tab type is single-instance: the host reveals the open tab.
-        let tab = list.filter((entry) => entry.kind === kind)[0]
+        const definition = calls.tabs.filter((spec) => spec.kind === kind)[0]
+        // T-218: like the real host, a type registered as multiple gets a fresh
+        // content address (sidebar://<kind>/<n>) per open, so each call plants a
+        // new tab. A host that does not honour multiple keeps ONE page per kind
+        // and NAVIGATES it into the new params — the regression this task fixes.
+        const multiple = definition !== undefined && definition.multiple === true && opts.ignoreMultiple !== true
+        let tab = multiple === true ? undefined : list.filter((entry) => entry.kind === kind)[0]
         if (tab === undefined) {
           planted += 1
-          tab = { id: 'tab-' + String(planted), kind: kind }
+          tab = {
+            id: 'tab-' + String(planted),
+            kind: kind,
+            contentId: 'sidebar://' + kind + (multiple === true ? '/' + String(planted) : ''),
+          }
           list.push(tab)
           strips.set(sessionId, list)
         }
@@ -159,11 +173,12 @@ function createHost(options) {
     }
   }
   if (opts.workspace !== false) {
-    services.uiWorkspace = {
-      openSession(sessionId) {
+    services.uiWorkspace = {}
+    if (opts.openSession !== false) {
+      services.uiWorkspace.openSession = function (sessionId) {
         calls.sessions.push(sessionId)
         if (opts.workspaceThrows === true) throw new Error('workspace unavailable')
-      },
+      }
     }
     // The host's current session — the one with a sidebar surface. The tab
     // opens THERE (T-216); the agent session is only a navigation param.
@@ -224,6 +239,10 @@ function openButtonOf(body) {
   return findNode(body, (node) => node.props !== undefined && node.props['data-agent-action'] === 'open-session')
 }
 
+function scopeNoteOf(body) {
+  return findNode(body, (node) => node.props !== undefined && node.props['data-agent-note'] === 'sidebar-scope')
+}
+
 /** A host tab-info hook as the slot framework hands it to a body: navigation.params. */
 function tabInfoWith(taskId) {
   return () => ({ tab: { navigation: { params: taskId === null ? {} : { taskId: taskId } } } })
@@ -235,6 +254,11 @@ function tabInfoWithAgent(taskId, agentSession) {
   if (taskId !== null) params.taskId = taskId
   if (agentSession !== null) params.agentSession = agentSession
   return () => ({ tab: { navigation: { params: params } } })
+}
+
+function tabInfoWithParams(params) {
+  const captured = Object.assign({}, params)
+  return () => ({ tab: { navigation: { params: captured } } })
 }
 
 // ── the session helper: the card's own order, never a minted id ─────────────
@@ -258,8 +282,12 @@ assert.deepEqual(
   'the tab ships the same keys in both locales',
 )
 assert.ok(sidebar.AGENT_TAB_COPY.zh.agentTabOpenSession !== undefined, 'the conversation switch is localized')
+assert.ok(sidebar.AGENT_TAB_COPY.zh.agentTabSwitchNote !== undefined, 'the session-scope note is localized')
+assert.ok(sidebar.AGENT_TAB_COPY.zh.agentTabOpenSessionHint.includes('右侧栏属于新会话'), 'the switch hint names the session change instead of promising the tab follows')
+assert.ok(sidebar.AGENT_TAB_COPY.en.agentTabOpenSessionHint.includes('sidebar belongs to the new session'), 'the English hint says the same')
 assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttab'), 'the tab ships its own token-only styles')
 assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabopen'), 'the conversation switch has its own style')
+assert.ok(sidebar.AGENT_TAB_CSS.includes('.gbt-agenttabnote'), 'the session-scope note has its own style')
 assert.equal(sidebar.available(), false, 'nothing is available before a mount')
 assert.equal(sidebar.openIn('session-w212'), false, 'openIn without a host is a quiet false')
 
@@ -271,11 +299,12 @@ assert.equal(sidebar.available(), true, 'a successful mount makes the entry avai
 assert.equal(api.hasWorkspace(), true, 'the mounted host provides uiWorkspace')
 assert.equal(sidebar.label('openInSidebar'), '在侧边栏打开', 'the shared label helper resolves the entry copy')
 assert.equal(api.label('agentTabTitle'), '代理', 'the overview tab is still the agent tab')
-assert.equal(api.label('agentTabOpenSession'), '打开子代理会话', 'the conversation switch is labeled')
+assert.equal(api.label('agentTabOpenSession'), '打开子代理对话', 'the conversation switch is labeled')
 assert.equal(mounted.calls.tabs.length, 1, 'exactly one tab is registered')
 const spec = mounted.calls.tabs[0]
 assert.equal(spec.id, 'godot-bridge/agent', 'the tab has OUR id (not a DSH private agent kind)')
 assert.equal(spec.kind, 'godot-bridge-agent', 'the tab has OUR kind')
+assert.equal(spec.multiple, true, 'T-218: the tab type is registered as multiple so every open is its own tab')
 assert.equal(typeof spec.title, 'function')
 assert.equal(spec.title(), '代理', 'the tab title is localized through the plugin locale')
 assert.deepEqual(mounted.calls.slots, ['inject:sidebar.right.pane.tab', 'inject:sidebar.right.pane.tab.title'], 'body and title slots are waited for')
@@ -296,6 +325,8 @@ assert.equal(typeof spec.guide[0].icon, 'function')
 // T-216: the card entry hands over the AGENT session; the tab opens in the
 // HOST's current session (the only one with a sidebar surface) and carries the
 // agent session plus the resolved card in its navigation params.
+// T-218: the verified open then switches the main view to that host session, so
+// clicking "open in sidebar" really leaves the plugin page for the sidebar.
 assert.equal(sidebar.openIn('session-w212'), true, 'openIn forwards to the host')
 assert.deepEqual(
   mounted.calls.openTabIn,
@@ -307,7 +338,12 @@ assert.equal(
   true,
   'the agent session is never the session the tab is opened in',
 )
-assert.deepEqual(mounted.strips.get(HOST_SESSION), [{ id: 'tab-1', kind: 'godot-bridge-agent', params: { taskId: 'T-212', agentSession: 'session-w212' } }], 'the tab really landed in the host session strip')
+assert.deepEqual(mounted.calls.sessions, [HOST_SESSION], 'a verified open switches the main view to the HOST conversation, not to the agent')
+assert.deepEqual(
+  mounted.strips.get(HOST_SESSION),
+  [{ id: 'tab-1', kind: 'godot-bridge-agent', contentId: 'sidebar://godot-bridge-agent/1', params: { taskId: 'T-212', agentSession: 'session-w212' } }],
+  'the tab really landed in the host session strip',
+)
 assert.equal(mounted.strips.has('session-w212'), false, 'the agent session owns no tab strip')
 
 assert.equal(api.openIn('session-rev212', 'T-EXPLICIT'), true, 'an explicit taskId is forwarded verbatim')
@@ -315,6 +351,19 @@ assert.deepEqual(mounted.calls.openTabIn[1], [HOST_SESSION, 'godot-bridge-agent'
 assert.equal(sidebar.openIn('session-unknown'), true, 'a session with no card still opens the overview')
 assert.deepEqual(mounted.calls.openTabIn[2], [HOST_SESSION, 'godot-bridge-agent', { params: { agentSession: 'session-unknown' } }], 'without a card the params still name the agent session')
 assert.equal(mounted.calls.openTabIn.length, 3, 'every open went to the host session')
+// T-218: three opens, three tabs; the first one was never navigated.
+assert.deepEqual(
+  mounted.strips.get(HOST_SESSION).map((entry) => entry.params),
+  [
+    { taskId: 'T-212', agentSession: 'session-w212' },
+    { taskId: 'T-EXPLICIT', agentSession: 'session-rev212' },
+    { agentSession: 'session-unknown' },
+  ],
+  'each open keeps its own navigation params instead of rewriting the open tab',
+)
+assert.equal(new Set(mounted.strips.get(HOST_SESSION).map((entry) => entry.id)).size, 3, 'three distinct tab records')
+assert.equal(new Set(mounted.strips.get(HOST_SESSION).map((entry) => entry.contentId)).size, 3, 'three distinct content addresses')
+assert.deepEqual(mounted.calls.sessions, [HOST_SESSION, HOST_SESSION, HOST_SESSION], 'every verified open switched to the host conversation')
 assert.equal(sidebar.openIn(''), false, 'an empty session is refused')
 assert.equal(sidebar.openIn(null), false, 'a missing session is refused')
 assert.equal(sidebar.openIn(42), false, 'a non-string session is refused')
@@ -380,7 +429,7 @@ assert.ok(workerBodyText.includes('T-212'), 'the body shows the task id')
 assert.ok(workerBodyText.includes('实现中'), 'the body shows the stage')
 assert.ok(workerBodyText.includes('最近活动'), 'the body shows the activity section')
 assert.ok(workerBodyText.includes('提交'), 'the body shows the latest activity')
-assert.ok(workerBodyText.includes('打开子代理会话'), 'the overview carries the conversation switch')
+assert.ok(workerBodyText.includes('打开子代理对话'), 'the overview carries the conversation switch')
 assert.equal(workerBody.props['data-agent-session'], 'session-w212')
 assert.equal(workerBody.props['data-agent-task'], 'T-212')
 assert.equal(workerBody.props['data-agent-role'], 'worker')
@@ -395,11 +444,18 @@ assert.ok(openButton !== null, 'the switch is a real button')
 assert.equal(openButton.props['data-agent-session'], 'session-w212')
 assert.equal(typeof openButton.props.onClick, 'function')
 assert.doesNotThrow(() => openButton.props.onClick({}), 'clicking the switch never throws')
-assert.deepEqual(mounted.calls.sessions, ['session-w212'], 'clicking the switch asks uiWorkspace to open THAT session')
+assert.deepEqual(mounted.calls.sessions, [HOST_SESSION, HOST_SESSION, HOST_SESSION, 'session-w212'], 'clicking the switch asks uiWorkspace to open THAT subagent session')
+
+// T-218: the switch moves the MAIN session to the subagent, and the right
+// sidebar then belongs to that new session — the body says so.
+const scopeNote = scopeNoteOf(workerBody)
+assert.ok(scopeNote !== null, 'the switch carries a visible session-scope note')
+assert.ok(JSON.stringify(scopeNote).includes('本会话的标签不会跟随'), 'the note says this session tabs do not follow')
 
 // A root session is not a subagent: the overview has nothing to switch to.
 const rootBody = api.Body({ sessionId: 'session-root', useTabInfo: tabInfoWith('T-212') })
 assert.equal(openButtonOf(rootBody), null, 'the switch is omitted on the root Agent')
+assert.equal(scopeNoteOf(rootBody), null, 'without a switch there is no scope note')
 
 const title = api.Title({ sessionId: 'session-w212', useTabInfo: tabInfoWith('T-212') })
 assert.ok(JSON.stringify(title).includes('worker-t-212'), 'the title names the agent')
@@ -410,7 +466,7 @@ assert.ok(JSON.stringify(emptyBody).includes('没有可显示的会话'), 'an em
 
 const openConversation = api.openConversation('session-rev212')
 assert.equal(openConversation, true, 'openConversation forwards to uiWorkspace')
-assert.deepEqual(mounted.calls.sessions, ['session-w212', 'session-rev212'])
+assert.deepEqual(mounted.calls.sessions, [HOST_SESSION, HOST_SESSION, HOST_SESSION, 'session-w212', 'session-rev212'])
 assert.equal(api.openConversation(''), false, 'an empty session is not opened')
 assert.equal(api.openConversation(null), false, 'a missing session is not opened')
 
@@ -463,6 +519,7 @@ assert.ok(JSON.stringify(workspaceLessBody).includes('worker-t-212'), 'the rest 
 // to the agent session would be the silent host no-op this task removes.
 assert.equal(withoutWorkspaceView.openIn('session-w212'), false, 'without a host session the open is refused, not silently redirected')
 assert.equal(withoutWorkspace.calls.openTabIn.length, 0, 'no openTabIn is attempted without a host session')
+assert.equal(withoutWorkspace.calls.sessions.length, 0, 'nothing claims to have switched the main view')
 withoutWorkspaceDispose()
 
 // ── missing sidebar services: hide, never throw ─────────────────────────────
@@ -511,6 +568,7 @@ assert.equal(sidebar.available(), true, 'the entry mounts against a host that ac
 assert.equal(sidebar.openIn('session-w212'), false, 'a silent host no-op is reported as false')
 assert.equal(noopOpen.strips.get(HOST_SESSION), undefined, 'the host strip confirms nothing was placed')
 assert.equal(noopOpen.calls.openTabIn.length, 1, 'the call was still attempted once')
+assert.equal(noopOpen.calls.sessions.length, 0, 'no page switch is claimed for a tab that was never placed')
 noopOpenDispose()
 
 // The agent session is never the opening session, even if it were the only
@@ -520,6 +578,7 @@ const agentSurfaceView = createView()
 const agentSurfaceDispose = agentSurfaceView.mount(agentSurface.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
 assert.equal(agentSurfaceView.openIn('session-w212'), false, 'the agent session is not opened in and does not fall back')
 assert.deepEqual(agentSurface.calls.openTabIn, [[HOST_SESSION, 'godot-bridge-agent', { params: { taskId: 'T-212', agentSession: 'session-w212' } }]], 'the open still names the host session')
+assert.equal(agentSurface.calls.sessions.length, 0, 'an unplaced tab never switches the main view')
 agentSurfaceDispose()
 
 // No host session (no selection, an empty snapshot, or a throwing one): refuse
@@ -535,6 +594,7 @@ for (const variant of [
   assert.equal(view.isMounted(), true, 'the tab still mounts without a current session')
   assert.equal(view.openIn('session-w212'), false, 'without a current host session the open is refused (' + JSON.stringify(variant) + ')')
   assert.equal(off.calls.openTabIn.length, 0, 'no openTabIn is attempted (' + JSON.stringify(variant) + ')')
+  assert.equal(off.calls.sessions.length, 0, 'no page switch is attempted (' + JSON.stringify(variant) + ')')
   disposal()
 }
 
@@ -644,14 +704,137 @@ guideDispose()
       [HOST_SESSION, 'godot-bridge-agent', { params: { taskId: 'T-PEND', agentSession: 'session-root' } }],
       'the click opens for the CLICKED card, not for the session-derived best card',
     )
+    assert.deepEqual(clickHost.calls.sessions, [HOST_SESSION], 'the click leaves the plugin page for the host conversation')
     const placed = (clickHost.strips.get(HOST_SESSION) || [])[0]
     assert.ok(placed !== undefined, 'the tab really landed in the host strip')
-    const clickedBody = clickView.Body({ sessionId: HOST_SESSION, useTabInfo: () => ({ tab: { navigation: { params: placed.params } } }) })
+    const clickedBody = clickView.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithParams(placed.params) })
     assert.equal(clickedBody.props['data-agent-task'], 'T-PEND', 'the tab body shows the clicked card')
     clickDispose()
   } finally {
     storeSnapshot = previous
   }
+}
+
+// ── T-218: two cards, two independent tabs, each showing its own agent ──────
+{
+  const previous = storeSnapshot
+  const cardA = Object.assign({}, task, {
+    id: 'T-215',
+    title: 'decision overlay',
+    assignee: { name: 'worker-t-215', session: 'session-w215' },
+    lastAssignee: null,
+    review: null,
+    test: null,
+    ownerSession: 'session-root',
+    updatedAt: '2026-11-21T07:00:00.000Z',
+  })
+  const cardB = Object.assign({}, task, {
+    id: 'T-217',
+    title: 'merge loop',
+    assignee: { name: 'worker-t-217', session: 'session-w217' },
+    lastAssignee: null,
+    review: null,
+    test: null,
+    ownerSession: 'session-root',
+    updatedAt: '2026-11-21T07:05:00.000Z',
+  })
+  storeSnapshot = { tasks: [cardA, cardB], agentTree: agentTree, activityEvents: null }
+  try {
+    const view = createView()
+    const host = createHost()
+    const disposal = view.mount(host.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+
+    // First card: a tab of its own, and the plugin page leaves for the host
+    // conversation that shows the sidebar.
+    assert.equal(view.openIn('session-w215', 'T-215'), true, 'the first card opens a tab')
+    assert.deepEqual(host.calls.openTabIn[0], [HOST_SESSION, 'godot-bridge-agent', { params: { taskId: 'T-215', agentSession: 'session-w215' } }])
+    assert.deepEqual(host.calls.sessions, [HOST_SESSION], 'the first open switches to the host conversation')
+    const firstStrip = host.strips.get(HOST_SESSION)
+    assert.equal(firstStrip.length, 1, 'one tab after the first open')
+    const firstTab = firstStrip[0]
+    const firstParams = Object.assign({}, firstTab.params)
+
+    // Second card: a SECOND tab. The first tab keeps its own params — this is
+    // the regression: it used to be navigated from T-215 to T-217.
+    assert.equal(view.openIn('session-w217', 'T-217'), true, 'the second card opens its own tab')
+    assert.deepEqual(host.calls.openTabIn[1], [HOST_SESSION, 'godot-bridge-agent', { params: { taskId: 'T-217', agentSession: 'session-w217' } }])
+    const strip = host.strips.get(HOST_SESSION)
+    assert.equal(strip.length, 2, 'two independent tabs')
+    assert.notEqual(strip[0].id, strip[1].id, 'the two tabs have different layout ids')
+    assert.notEqual(strip[0].contentId, strip[1].contentId, 'the two opens minted different content addresses')
+    assert.deepEqual(strip[0].params, firstParams, 'the first tab was not navigated by the second open')
+    assert.deepEqual(strip[0].params, { taskId: 'T-215', agentSession: 'session-w215' })
+    assert.deepEqual(strip[1].params, { taskId: 'T-217', agentSession: 'session-w217' })
+    assert.deepEqual(host.calls.sessions, [HOST_SESSION, HOST_SESSION], 'each verified open switches the main view to the host conversation')
+
+    // Each tab body/title resolves ITS OWN navigation params: the first tab still
+    // shows T-215 / session-w215 after T-217 was opened.
+    const bodyA = view.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithParams(strip[0].params) })
+    const bodyB = view.Body({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithParams(strip[1].params) })
+    assert.equal(bodyA.props['data-agent-task'], 'T-215')
+    assert.equal(bodyA.props['data-agent-session'], 'session-w215')
+    assert.equal(bodyB.props['data-agent-task'], 'T-217')
+    assert.equal(bodyB.props['data-agent-session'], 'session-w217')
+    assert.ok(JSON.stringify(bodyA).includes('worker-t-215'), 'the first tab shows its own agent')
+    assert.ok(!JSON.stringify(bodyA).includes('worker-t-217'), 'the first tab never shows the second tab agent')
+    assert.ok(JSON.stringify(bodyB).includes('worker-t-217'), 'the second tab shows its own agent')
+    const titleA = view.Title({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithParams(strip[0].params) })
+    const titleB = view.Title({ sessionId: HOST_SESSION, useTabInfo: tabInfoWithParams(strip[1].params) })
+    assert.ok(JSON.stringify(titleA).includes('worker-t-215'), 'the first tab title names its own agent')
+    assert.ok(JSON.stringify(titleB).includes('worker-t-217'), 'the second tab title names its own agent')
+
+    // A third open for the same card still mints a new tab (each open is its own
+    // instance); the previous two keep their params.
+    assert.equal(view.openIn('session-w215', 'T-215'), true, 'a repeated card open still creates a tab')
+    const threeStrip = host.strips.get(HOST_SESSION)
+    assert.equal(threeStrip.length, 3, 'the strip grew by one each open')
+    assert.deepEqual(threeStrip.slice(0, 2).map((entry) => entry.params), [strip[0].params, strip[1].params], 'the earlier tabs were never navigated')
+    disposal()
+  } finally {
+    storeSnapshot = previous
+  }
+}
+
+// T-218: a host that still keeps one page per kind NAVIGATES the open tab. The
+// entry must report false instead of calling that a new tab (no fake success).
+{
+  const previous = storeSnapshot
+  const cardA = Object.assign({}, task, { id: 'T-215', assignee: { name: 'worker-t-215', session: 'session-w215' }, lastAssignee: null, review: null, test: null, ownerSession: 'session-root' })
+  const cardB = Object.assign({}, task, { id: 'T-217', assignee: { name: 'worker-t-217', session: 'session-w217' }, lastAssignee: null, review: null, test: null, ownerSession: 'session-root' })
+  storeSnapshot = { tasks: [cardA, cardB], agentTree: agentTree, activityEvents: null }
+  try {
+    const host = createHost({ ignoreMultiple: true })
+    const view = createView()
+    const disposal = view.mount(host.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+    assert.equal(view.openIn('session-w215', 'T-215'), true, 'the first open still plants the one tab')
+    assert.deepEqual(host.calls.sessions, [HOST_SESSION])
+    assert.equal(view.openIn('session-w217', 'T-217'), false, 'a strip that did not grow is not a new tab')
+    const strip = host.strips.get(HOST_SESSION)
+    assert.equal(strip.length, 1, 'the host reused its single page')
+    assert.deepEqual(strip[0].params, { taskId: 'T-217', agentSession: 'session-w217' }, 'the host navigated the open tab (the bug the new contract detects)')
+    assert.deepEqual(host.calls.sessions, [HOST_SESSION], 'a failed open never claims a page switch')
+    disposal()
+  } finally {
+    storeSnapshot = previous
+  }
+}
+
+// T-218: no openSession (but a host session still selectable): the tab is
+// KEPT, yet the entry does not pretend the page moved.
+{
+  const host = createHost({ openSession: false })
+  const view = createView()
+  const disposal = view.mount(host.host, { store: store, locale: locale, ns: 'godotBridgeAgentTab', taskNs: 'godotBridgeTaskCenter' })
+  assert.equal(view.hasWorkspace(), false, 'a workspace without openSession cannot switch the main view')
+  assert.equal(view.openIn('session-w212', 'T-212'), false, 'the unswitched open is not reported as a completed entry')
+  assert.equal(host.calls.openTabIn.length, 1, 'the tab was still placed')
+  const strip = host.strips.get(HOST_SESSION)
+  assert.equal(strip.length, 1, 'the placed tab stays in the strip')
+  assert.deepEqual(strip[0].params, { taskId: 'T-212', agentSession: 'session-w212' }, 'the kept tab still carries its card and agent')
+  assert.equal(host.calls.sessions.length, 0, 'no page switch was claimed or attempted')
+  const noteBody = view.Body({ sessionId: 'session-w212', useTabInfo: tabInfoWith('T-212') })
+  assert.equal(openButtonOf(noteBody), null, 'the subagent switch is hidden without openSession')
+  disposal()
 }
 
 // ── 40-tail / shipped bundle carry the same wiring ──────────────────────────
@@ -662,8 +845,12 @@ assert.ok(TAIL.includes('uiWorkspace: scoped === null || scoped === undefined ? 
 assert.ok(TAIL.includes('return tab.mount(scoped, {'), 'the tab still mounts on the scoped services')
 assert.ok(BUNDLE.includes("ctx.inject(['sidebarRight', 'sidebarRightTabs', 'uiWorkspace']"), 'the shipped bundle carries the same sidebar injection')
 assert.ok(BUNDLE.includes('agentTabOpenSession'), 'the shipped bundle carries the conversation switch')
+assert.ok(BUNDLE.includes('agentTabSwitchNote'), 'the shipped bundle carries the session-scope note')
 assert.ok(BUNDLE.includes("AGENT_TAB_SESSION_PARAM = 'agentSession'"), 'the shipped bundle carries the agent-session navigation param')
+assert.ok(BUNDLE.includes('multiple: true'), 'the shipped bundle registers the tab type as multiple')
 assert.ok(BUNDLE.includes('sidebar.tabsIn'), 'the shipped bundle verifies the placement through the tab strip')
 assert.ok(BUNDLE.includes('hostSessionOf'), 'the shipped bundle resolves the host session')
+assert.ok(BUNDLE.includes('switchToHost(hostSession)'), 'the shipped bundle switches the main view after a verified open')
+assert.ok(BUNDLE.includes('createdTabOf(before, after)'), 'the shipped bundle verifies a NEW tab, not just the kind')
 
-console.log('PASS  agent sidebar opens its own tab in the host session with the agent and card in the params, verifies the placement through tabsIn, switches to the subagent conversation and degrades safely')
+console.log('PASS  agent sidebar registers a multiple tab type, opens one independent tab per card in the host session, verifies the strip delta, switches to the host conversation (and says the subagent switch takes the sidebar with it), and degrades safely')
