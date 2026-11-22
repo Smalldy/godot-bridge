@@ -58,6 +58,18 @@ function createStatusView(deps) {
 		const maxConcurrent = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
 		const ready = counts.ready === undefined || counts.ready === null ? 0 : counts.ready
 		const blocked = counts.blocked || 0
+		// T-228: the status page owns the dispatch queue now. snapshot.queue is the
+		// Host's READY list (what dispatch takes next); a pending card whose
+		// dependency is not ready is the WAITING half. Both render as rows that
+		// open the same task detail a board card opens.
+		const queue = Array.isArray(snapshot.queue)
+			? snapshot.queue.filter(function (task) { return task !== null && task !== undefined && typeof task === 'object' })
+			: []
+		const waitingQueue = tasks.filter(function (task) {
+			if (task === null || task === undefined || task.status !== 'pending') return false
+			const dependency = task.dependency === null || task.dependency === undefined ? null : task.dependency
+			return dependency === null || dependency.state !== 'ready'
+		})
 		const worktrees = snapshot.worktrees
 		const activity = snapshot.activity
 		// T-111: the sweep is telemetry, not an event.
@@ -284,16 +296,18 @@ function createStatusView(deps) {
 			const runningNow = isRoot === true || status === 'running'
 			return h(
 		'div',
-		{ key: 'agent-' + name, className: 'gbt-deckperson', 'data-status-agent': name, 'data-status-agent-id': session, 'data-status-agent-role': isRoot === true ? 'root' : role === null ? '' : role, 'data-status-agent-status': status === null ? '' : status, 'data-status-agent-task': taskId === null ? '' : taskId, 'data-tone': runningNow ? 'live' : 'idle' },
-		h('span', { className: 'gbt-deckdot', 'data-running': runningNow ? 'true' : 'false' }),
-		h('div', { className: 'gbt-deckpersonmain' },
+		{ key: 'agent-' + name, className: 'gbt-deckagent', 'data-status-agent': name, 'data-status-agent-id': session, 'data-status-agent-role': isRoot === true ? 'root' : role === null ? '' : role, 'data-status-agent-status': status === null ? '' : status, 'data-status-agent-task': taskId === null ? '' : taskId, 'data-tone': runningNow ? 'live' : 'idle' },
+		// T-228: one shared column set for the root Agent and every child —
+		// 角色 / 名称 / 状态 / 任务 — so the tree reads as a table instead of
+		// two different row shapes glued together.
+		h('span', { className: 'gbt-deckagentrole', title: roleText }, roleText),
+		h('span', { className: 'gbt-deckagentname' },
+			h('i', { className: 'gbt-deckdot', 'data-on': runningNow ? 'true' : 'false', 'aria-hidden': 'true' }),
 			h('b', { className: 'gbt-mono', title: name }, name),
-			h('span', null, roleText + ' · ' + statusText),
 		),
-		h('div', { className: 'gbt-deckpersonmeta' },
-			h('em', { className: 'gbt-mono', title: taskId === null ? '' : taskId }, taskId === null ? '—' : taskId),
-			h('button', { type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } }, '⋯'),
-		),
+		h('span', { className: 'gbt-deckagentstatus', 'data-status': status === null ? '' : status, title: statusText }, statusText),
+		h('span', { className: 'gbt-deckagenttask gbt-mono', title: taskId === null ? '' : taskId }, taskId === null ? '—' : taskId),
+		h('button', { type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } }, '⋯'),
 		expanded
 			? h(
 			'div',
@@ -335,6 +349,81 @@ function createStatusView(deps) {
 		function deckPanelHead(eyebrow, title, meta) {
 			return h('div', { className: 'gbt-deckpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, eyebrow), h('h2', null, title), meta === null || meta === undefined ? null : h('span', { className: 'gbt-deckpanelmeta' }, meta))
 		}
+		// T-228: one queue row shape for READY and WAITING. It reuses the panel's
+		// existing row vocabulary (gbt-row / gbt-order / gbt-id / gbt-rowtitle /
+		// gbt-chip) and the deck skin, and opens the task detail like a board card.
+		function queueDependencyOf(task) {
+			const dependency = task.dependency !== null && task.dependency !== undefined && typeof task.dependency === 'object' ? task.dependency : null
+			const listOf = function (value) { return Array.isArray(value) ? value.join(', ') : '' }
+			if (dependency !== null && dependency.state === 'broken') return { tone: 'blocked', text: t('brokenOn') + ' ' + listOf(dependency.brokenOn) }
+			if (dependency !== null && dependency.state !== 'ready') return { tone: 'waiting', text: t('waitingOn') + ' ' + listOf(dependency.waitingOn) }
+			const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
+			return { tone: 'ready', text: deps.length === 0 ? t('noDeps') : '↳ ' + deps.join(', ') }
+		}
+		function queueRow(task, index, state) {
+			const dependency = queueDependencyOf(task)
+			const idText = task.id === undefined || task.id === null ? '—' : String(task.id)
+			const titleText = typeof task.title === 'string' && task.title !== '' ? task.title : '—'
+			const priority = Number.isFinite(task.priority) && task.priority !== 0 ? task.priority : null
+			const lockCount = Number.isFinite(task.writeFileCount) ? task.writeFileCount : 0
+			const open = function () { if (typeof props.onOpen === 'function') props.onOpen(idText) }
+			return h(
+				'div',
+				{
+					key: 'queue-' + state + '-' + idText,
+					className: 'gbt-row gbt-deckqrow',
+					role: 'button',
+					tabIndex: 0,
+					'data-queue-row': idText,
+					'data-queue-state': state,
+					'data-queue-dependency': dependency.tone,
+					title: idText + ' · ' + titleText,
+					onClick: open,
+					onKeyDown: function (event) {
+						const key = event === null || event === undefined ? '' : event.key
+						if (key === 'Enter' || key === ' ') {
+							event.preventDefault()
+							open()
+						}
+					},
+				},
+				h('span', { className: 'gbt-order' }, String(index + 1)),
+				h('span', { className: 'gbt-id' }, idText),
+				h('div', { className: 'gbt-deckqmain' },
+					h('div', { className: 'gbt-rowtitle' }, titleText),
+					h('div', { className: 'gbt-cardmeta' },
+						priority === null ? null : h('span', { className: 'gbt-chip' }, 'P' + String(priority)),
+						h('span', { className: 'gbt-chip', 'data-tone': dependency.tone }, dependency.text),
+						lockCount > 0 ? h('span', { className: 'gbt-chip', title: t('statusQueueLocks') }, '🔒 ' + String(lockCount)) : null,
+					),
+				),
+			)
+		}
+		const queueCard = h(
+			'section',
+			{ className: 'gbt-statuscard gbt-deckqueue', 'data-status-card': 'queue' },
+			h(
+				'div',
+				{ className: 'gbt-deckpanelhead' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'QUEUE / ' + String(queue.length + waitingQueue.length).padStart(2, '0')),
+				h('h2', null, t('statusCardQueue')),
+				h('span', { className: 'gbt-deckpanelmeta', 'data-queue-summary': 'true' }, String(queue.length) + ' ' + t('statusQueueReady') + ' · ' + String(waitingQueue.length) + ' ' + t('statusQueueWaiting')),
+			),
+			queue.length === 0 && waitingQueue.length === 0
+				? h('div', { className: 'gbt-deckempty', 'data-queue-empty': 'all' }, t('statusQueueEmpty'))
+				: h(
+					'div',
+					{ className: 'gbt-deckqbody', 'data-status-queue': 'true' },
+					h('div', { className: 'gbt-deckqgroup', 'data-queue-section': 'ready' }, h('span', null, 'READY / ' + t('statusQueueReady')), h('b', null, String(queue.length))),
+					queue.length === 0
+						? h('div', { className: 'gbt-deckempty', 'data-queue-empty': 'ready' }, t('statusQueueNone'))
+						: queue.map(function (task, index) { return queueRow(task, index, 'ready') }),
+					h('div', { className: 'gbt-deckqgroup', 'data-queue-section': 'waiting' }, h('span', null, 'WAITING / ' + t('statusQueueWaiting')), h('b', null, String(waitingQueue.length))),
+					waitingQueue.length === 0
+						? h('div', { className: 'gbt-deckempty', 'data-queue-empty': 'waiting' }, t('statusQueueNoWaiting'))
+						: waitingQueue.map(function (task, index) { return queueRow(task, index, 'waiting') }),
+				),
+		)
 		const scanAgo = scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—'
 		const dispatchCard = h(
 			'section',
@@ -346,7 +435,8 @@ function createStatusView(deps) {
 			pauseAuditLine,
 			h('div', { className: 'gbt-deckmetrics' },
 				h('div', { className: 'gbt-deckmetric', 'data-kv': 'concurrent' }, h('b', null, String(running.length) + ' / ' + String(maxConcurrent)), h('span', null, t('statusConcurrent'))),
-				h('div', { className: 'gbt-deckmetric', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))),
+				// T-228: the ready count lives on the QUEUE card's head now; this card
+				// stays the dispatch summary (running / capacity / merge / tasks / scan).
 				h('div', { className: 'gbt-deckmetric', 'data-kv': 'merge-queue', 'data-merge-queue': mergeQueued === null ? 'unavailable' : 'ready', title: mergeActive === null ? '' : String(mergeActive) }, h('b', null, mergeQueued === null ? '—' : String(mergeQueued)), h('span', null, t('statusMergeQueue'))),
 				h('div', { className: 'gbt-deckmetric', 'data-kv': 'tasks' }, h('b', null, String(tasks.length)), h('span', null, t('statusTasks'))),
 				h('div', { className: 'gbt-deckmetric', 'data-kv': 'last-scan', 'data-status-scan': 'true' }, h('b', null, scanAgo), h('span', null, t('statusLastScan'))),
@@ -561,25 +651,49 @@ function createStatusView(deps) {
 					resultBlock,
 				),
 		)
-		// v3: the executors rail is the live execution tree — the root Agent plus
+		// v3: the executors card is the live execution tree — the root Agent plus
 		// every live child the Host reports. No roster, no team readiness, no
-		// leftover slot inventory.
+		// leftover slot inventory. T-228: it is a four-column table (角色 / 名称 /
+		// 状态 / 任务) sharing one row shape for the root and every child.
 		const agentRows = []
 		if (agentTree.root !== null) agentRows.push(agentRow(agentTree.root, true, -1))
 		agentTree.members.forEach(function (member, index) { agentRows.push(agentRow(member, false, index)) })
 		const liveCount = agentTree.root === null ? 0 : agentTree.members.length + 1
 		const anyRunning = agentTree.root !== null || agentTree.members.some(function (member) { return member.status === 'running' })
+		const agentsUnavailable = snapshot.agentTree === null || snapshot.agentTree === undefined || agentTree.available !== true
 		const agentsCard = h(
 			'section',
 			{ className: 'gbt-statuscard gbt-deckexecutors', 'data-status-card': 'agents' },
-			h('div', { className: 'gbt-decklabel' }, h('span', null, 'AGENTS'), h('span', { className: 'gbt-decklabelzh' }, t('statusCardAgents')), h('em', { 'data-running': anyRunning ? 'true' : 'false' }, String(liveCount))),
-			h('div', { className: 'gbt-deckpeople', 'data-status-agents': 'true' },
-				snapshot.agentTree === null || snapshot.agentTree === undefined || agentTree.available !== true
-					? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'unavailable' }, t('statusAgentsUnavailable'))
-					: agentTree.root === null
-						? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'no-root' }, t('statusAgentsNoRoot'))
-						: h('div', null, agentRows, agentTree.members.length === 0 ? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'no-children' }, t('statusAgentsNoChildren')) : null),
+			h(
+				'div',
+				{ className: 'gbt-deckpanelhead' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'AGENTS / ' + String(liveCount).padStart(2, '0')),
+				h('h2', null, t('statusCardAgents')),
+				h('span', { className: 'gbt-deckpanelmeta', 'data-agents-running': anyRunning ? 'true' : 'false' }, String(agentTree.members.length) + ' ' + t('agentsLive')),
 			),
+			agentsUnavailable
+				? h('div', { className: 'gbt-deckempty', 'data-status-agents-empty': 'unavailable' }, t('statusAgentsUnavailable'))
+				: agentTree.root === null
+					? h('div', { className: 'gbt-deckempty', 'data-status-agents-empty': 'no-root' }, t('statusAgentsNoRoot'))
+					: h(
+						'div',
+						{ className: 'gbt-deckagents', 'data-status-agents': 'true' },
+						h(
+							'div',
+							{ className: 'gbt-deckagenthead', 'data-agent-columns': 'true' },
+							h('span', null, t('agentRole')),
+							h('span', null, t('agentColumnName')),
+							h('span', null, t('agentStatus')),
+							h('span', null, t('agentTask')),
+							h('span', { 'aria-hidden': 'true' }, ''),
+						),
+						h(
+							'div',
+							{ className: 'gbt-deckagentrows' },
+							agentRows,
+							agentTree.members.length === 0 ? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'no-children' }, t('statusAgentsNoChildren')) : null,
+						),
+					),
 		)
 		const timeline = snapshot.activityEvents
 		// Available when the Host sends the derived timeline OR (legacy Host) the ring.
@@ -785,7 +899,8 @@ function createStatusView(deps) {
 			h(
 				'div',
 				{ className: 'gbt-statustop gbt-deckhead', 'data-status-top': 'true' },
-				h('span', { className: 'gbt-deckeyebrow' }, 'STATUS / 03'),
+				// T-228: status is the second of three tabs now.
+				h('span', { className: 'gbt-deckeyebrow' }, 'STATUS / 02'),
 				h('h1', null, t('status')),
 				h('span', { className: 'gbt-deckheadcrumb', title: lastActivityText === null ? '' : lastActivityText }, lastActivityText === null ? '' : lastActivityText),
 				h('div', { className: 'gbt-statusactions' },
@@ -794,7 +909,10 @@ function createStatusView(deps) {
 				),
 			),
 			h('div', { className: 'gbt-statusgrid gbt-deckgrid', 'data-status-grid': 'true' },
-				h('aside', { className: 'gbt-deckrail' }, dispatchCard, agentsCard),
+				// T-228: the left column is the execution rail — dispatch summary,
+				// the ready/waiting queue rows, then the agent table. The right column
+				// keeps the board inventory (sessions / worktrees / activity).
+				h('aside', { className: 'gbt-deckrail' }, dispatchCard, queueCard, agentsCard),
 				sessionsCard,
 				detailSessionCard,
 				worktreesCard,

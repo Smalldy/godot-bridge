@@ -224,6 +224,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				agentsLiveLine: '活动子代理：{n}',
 				agentRootRole: '根代理',
 				agentRole: '角色',
+				// T-228: the status page's agent table labels the identity column
+				// 名称 — the role column already says what the member is.
+				agentColumnName: '名称',
 				agentName: '代理',
 				agentStatus: '状态',
 				agentTask: '任务',
@@ -575,6 +578,15 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				statusRunningCount: '有 {n} 个任务在跑',
 				statusLastActivity: '最近活动',
 				statusCardDispatch: '派发',
+				// T-228: queue + agents are cards on this page now, so the queue rows
+				// and the four-column agent table need their own copy.
+				statusCardQueue: '执行队列',
+				statusQueueReady: '就绪',
+				statusQueueWaiting: '等待',
+				statusQueueEmpty: '队列为空：没有就绪或等待的任务。',
+				statusQueueNone: '没有就绪任务。',
+				statusQueueNoWaiting: '没有等待任务。',
+				statusQueueLocks: '文件锁',
 				statusCardWorktrees: '工作树',
 				statusCardAgents: '代理',
 				statusCardActivity: '活动',
@@ -1054,6 +1066,8 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				agentsLiveLine: 'Live children: {n}',
 				agentRootRole: 'Root Agent',
 				agentRole: 'Role',
+				// T-228: identity column, named separately from the role column.
+				agentColumnName: 'Name',
 				agentName: 'Agent',
 				agentStatus: 'Status',
 				agentTask: 'Task',
@@ -1402,6 +1416,14 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 				statusRunningCount: '{n} task(s) running',
 				statusLastActivity: 'last activity',
 				statusCardDispatch: 'Dispatch',
+				// T-228: queue + agents are cards on this page now.
+				statusCardQueue: 'Run queue',
+				statusQueueReady: 'ready',
+				statusQueueWaiting: 'waiting',
+				statusQueueEmpty: 'The queue is empty — nothing ready or waiting.',
+				statusQueueNone: 'No ready tasks.',
+				statusQueueNoWaiting: 'No waiting tasks.',
+				statusQueueLocks: 'file locks',
 				statusCardWorktrees: 'Worktrees',
 				statusCardAgents: 'Agents',
 				statusAgentsNoRoot: 'The host reported no root Agent.',
@@ -1763,30 +1785,9 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'.gbt-counts{display:flex;gap:6px;flex-wrap:wrap}',
 			'.gbt-count{display:flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-secondary)}',
 			'.gbt-count b{font-weight:600;color:var(--dsw-alias-label-primary)}',
-			'.gbt-workermeta{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}',
-			// T-137: the agents page is the live tree — root Agent and member table.
-			// Tokens only (T-133); the table scrolls inside its wrapper so a narrow
-			// panel never gets a horizontal page overflow.
-			'.gbt-workersview{display:flex;flex-direction:column;gap:12px}',
-			'.gbt-workerhead{display:flex;flex-direction:column;gap:9px;padding:12px 13px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;background:var(--dsw-alias-bg-layer-2)}',
-			'.gbt-workerheadtop{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
-			'.gbt-workertitle{margin:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
-			'.gbt-workerchips{display:flex;gap:6px;flex-wrap:wrap}',
-			'.gbt-workeridentity{display:flex;align-items:center;gap:7px 14px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
-			'.gbt-workerid{display:inline-flex;align-items:center;gap:5px;min-width:0}',
-			'.gbt-workerid b{font-weight:500;color:var(--dsw-alias-label-secondary);min-width:0;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-			'.gbt-workeridentity .gbt-btn{height:22px;padding:2px 8px;font-size:10px}',
-			'.gbt-rolecards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}',
-			'.gbt-workercard{display:flex;flex-direction:column;gap:6px;padding:10px 11px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:10px;background:var(--dsw-alias-bg-layer-2);min-width:0}',
-			'.gbt-workercardhead{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0}',
-			'.gbt-workercardname{font-size:12px;font-weight:500;color:var(--dsw-alias-label-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-			'.gbt-workercard .gbt-pill{max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-			'.gbt-workercardline{display:flex;gap:4px 10px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-secondary)}',
-			'.gbt-workercardline b{font-weight:600;color:var(--dsw-alias-label-primary)}',
-			'.gbt-workertable{min-width:560px}',
-			'.gbt-workername{display:block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-			'.gbt-workertask{display:block;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-			'.gbt-workertable th:first-child,.gbt-workertable td:first-child{width:1%;white-space:nowrap}',
+			// T-228: the standalone queue / agents pages are gone from the nav. Their
+			// page-only decoration was removed with them; the status page renders the
+			// same rows with the shared deck/section tokens below.
 			'.gbt-controls{display:flex;gap:8px;margin-left:auto;align-items:center;flex-wrap:wrap}',
 			'.gbt-btn{appearance:none;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);height:30px;padding:0 12px;border-radius:8px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;gap:5px}',
 			'.gbt-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
@@ -1909,7 +1910,6 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 			'@media (max-width:900px){.gbt-casebook{grid-template-columns:1fr}.gbt-caseindex{flex-direction:row;flex-wrap:wrap;align-items:flex-start}.gbt-caseindex .gbt-casefacts{flex:1 1 220px}.gbt-caseindex .gbt-detailevents{flex:1 1 260px}}',
 
 			'.gbt-empty{padding:26px 12px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:12px;border:0.5px dashed var(--dsw-alias-border-l4);border-radius:10px;margin:6px}',
-			'.gbt-rowlist{display:flex;flex-direction:column;gap:6px}',
 			'.gbt-row{display:grid;grid-template-columns:34px 64px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 10px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:9px;background:var(--dsw-alias-bg-layer-3);cursor:pointer}',
 			'.gbt-row:hover{border-color:var(--dsw-alias-state-business-primary)}',
 			'.gbt-order{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-tertiary);text-align:right}',
@@ -2209,43 +2209,66 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-deckhead .gbt-statusactions{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:11px;color:var(--deck-muted);flex:none}',
 '.gbt-decklastscan{white-space:nowrap;color:var(--deck-dim)}',
 '.gbt-deckhead .gbt-btn{background:none;color:var(--deck-muted);border:1px solid var(--deck-line);padding:4px 9px;border-radius:3px;font:inherit;font-size:11px}',
-'.gbt-deckgrid{display:grid;grid-template-columns:260px minmax(0,1fr) 420px;grid-template-areas:"rail sessions worktrees" "rail activity activity";grid-template-rows:minmax(0,1fr) 172px;gap:1px;background:var(--deck-line);flex:1 1 auto;min-height:0;width:100%;min-width:0;max-width:100%;overflow:auto;box-sizing:border-box}',
+// T-228: TWO columns at desktop — the execution rail (dispatch / queue /
+// agents) and the board inventory. The inventory gives sessions the full width
+// and splits the bottom row into worktrees + activity, so no card has to
+// truncate at a header just to make room.
+'.gbt-deckgrid{display:grid;grid-template-columns:minmax(360px,440px) minmax(0,1fr) minmax(0,1fr);grid-template-areas:"rail sessions sessions" "rail worktrees activity";grid-template-rows:minmax(280px,1.1fr) minmax(230px,.95fr);gap:1px;background:var(--deck-line);flex:1 1 auto;min-height:0;width:100%;min-width:0;max-width:100%;overflow:hidden;box-sizing:border-box}',
 '.gbt-shiftdeck .gbt-statuscard{border:0;border-radius:0;background:var(--deck-panel);color:var(--deck-text);min-height:0;min-width:0;overflow:hidden;box-shadow:none}',
 '.gbt-deckrail{grid-area:rail;display:flex;flex-direction:column;gap:1px;min-height:0;min-width:0;overflow:auto;background:var(--deck-line)}',
-'.gbt-deckdispatch{flex:0 0 auto;padding:13px 14px 11px;display:flex;flex-direction:column;gap:0;min-width:0;overflow:hidden}',
+'.gbt-deckdispatch{flex:0 0 auto;padding:12px 14px 10px;display:flex;flex-direction:column;gap:0;min-width:0;overflow:hidden}',
 '.gbt-decklabel{display:flex;align-items:center;gap:7px;font-size:10px;letter-spacing:.12em;color:var(--deck-dim);text-transform:uppercase;min-width:0;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
 '.gbt-decklabelzh{font-size:11px;letter-spacing:0;color:var(--deck-muted);text-transform:none;font-family:inherit}',
 '.gbt-decklabel em{margin-left:auto;font-style:normal;color:var(--deck-lime);font-size:10px;letter-spacing:.08em;white-space:nowrap}',
 '.gbt-decklabel em[data-running="false"]{color:var(--deck-amber)}',
-'.gbt-deckbig{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:44px;line-height:1;letter-spacing:-.06em;margin:12px 0 2px;font-variant-numeric:tabular-nums}',
+'.gbt-deckbig{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:40px;line-height:1;letter-spacing:-.06em;margin:10px 0 0;font-variant-numeric:tabular-nums}',
 '.gbt-deckbig small{font-size:17px;color:var(--deck-dim);letter-spacing:0}',
-'.gbt-deckbar{height:4px;display:flex;gap:2px;background:var(--tc-track);margin:9px 0 7px}',
+'.gbt-deckbar{height:4px;display:flex;gap:2px;background:var(--tc-track);margin:8px 0 6px}',
 '.gbt-deckbar i{flex:1;display:block;background:var(--tc-track)}',
 '.gbt-deckbar i[data-on="true"]{background:var(--deck-lime)}',
-'.gbt-decknote{margin:6px 0 0;color:var(--deck-muted);font-size:11px;line-height:1.5;min-width:0;overflow-wrap:anywhere}',
+'.gbt-decknote{margin:4px 0 0;color:var(--deck-muted);font-size:11px;line-height:1.5;min-width:0;overflow-wrap:anywhere}',
 '.gbt-pauseaudit{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;margin-top:7px;padding:6px 0 0;border-top:1px solid var(--deck-line);font-size:10.5px;color:var(--deck-muted)}',
-'.gbt-deckmetrics{display:grid;grid-template-columns:1fr 1fr;gap:7px 10px;margin:9px 0 0;padding-top:8px;border-top:1px solid var(--deck-line)}',
+// T-228: the dispatch card is a SUMMARY now (running / capacity / merge / tasks
+// / last scan); the queue rows own the ready detail, so the metrics fit one row.
+'.gbt-deckmetrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:8px 0 0;padding-top:7px;border-top:1px solid var(--deck-line)}',
 '.gbt-deckmetric{min-width:0;border-top:1px solid var(--deck-line);padding-top:6px}',
 '.gbt-deckmetric b{display:block;font:17px/1 ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:500;letter-spacing:-.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
 '.gbt-deckmetric span{display:block;color:var(--deck-dim);font-size:10px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
 '.gbt-deckscanline{font-size:10.5px;color:var(--deck-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
 '.gbt-deckdispatch .gbt-statusscan{font-size:10.5px;color:var(--deck-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-'.gbt-deckexecutors{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden;border-top:1px solid var(--deck-line)}',
-'.gbt-deckexecutors .gbt-decklabel{flex:none;padding:11px 14px 4px}',
-'.gbt-deckpeople{flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 14px 10px}',
-'.gbt-deckperson{display:grid;grid-template-columns:7px minmax(0,1fr) auto;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--deck-line);min-width:0}',
+'.gbt-deckexecutors{flex:0.85 1 0;min-height:200px;display:flex;flex-direction:column;overflow:hidden;border-top:1px solid var(--deck-line)}',
+// T-228: the queue card sits between the dispatch summary and the agent table.
+// Rows reuse gbt-row / gbt-order / gbt-id / gbt-rowtitle / gbt-chip; only the
+// deck skin (transparent row, deck hairlines, deck tone dots) is added here.
+'.gbt-deckqueue{flex:1.15 1 0;min-height:240px;display:flex;flex-direction:column;min-width:0;overflow:hidden;border-top:1px solid var(--deck-line)}',
+'.gbt-deckqbody{flex:1 1 auto;min-height:0;overflow-y:auto}',
+'.gbt-deckqgroup{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 13px;border-bottom:1px solid var(--deck-line);color:var(--deck-dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+'.gbt-deckqgroup b{font-weight:400;color:var(--deck-muted)}',
+'.gbt-deckqmain{min-width:0}',
+'.gbt-shiftdeck .gbt-row{grid-template-columns:24px 58px minmax(0,1fr);gap:8px;align-items:center;padding:6px 13px;border:0;border-bottom:1px solid var(--deck-line);border-radius:0;background:none;color:var(--deck-text);cursor:pointer}',
+'.gbt-shiftdeck .gbt-row:hover{background:var(--deck-panel2)}',
+'.gbt-shiftdeck .gbt-order{font-size:10px;color:var(--deck-dim);text-align:right}',
+'.gbt-shiftdeck .gbt-id{font-size:10.5px;color:var(--deck-lime);white-space:nowrap}',
+'.gbt-shiftdeck .gbt-rowtitle{font-size:11px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+'.gbt-shiftdeck .gbt-cardmeta{gap:4px;margin-top:1px;overflow:hidden;flex-wrap:nowrap}',
+'.gbt-shiftdeck .gbt-cardmeta .gbt-chip{min-width:0;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-deckagents{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;min-width:0;overflow:hidden}',
+'.gbt-deckagenthead{display:grid;grid-template-columns:44px minmax(0,1fr) 60px 54px 14px;gap:8px;align-items:center;height:27px;min-height:27px;padding:0 13px;border-bottom:1px solid var(--deck-line);color:var(--deck-dim);font-size:10px;letter-spacing:.07em;text-transform:uppercase;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+'.gbt-deckagenthead span:nth-child(3),.gbt-deckagenthead span:nth-child(4){text-align:right}',
+'.gbt-deckagentrows{flex:1 1 auto;min-height:0;overflow-y:auto}',
+'.gbt-deckagent{display:grid;grid-template-columns:44px minmax(0,1fr) 60px 54px 14px;gap:8px;align-items:center;min-height:32px;padding:4px 13px;border-bottom:1px solid var(--deck-line);min-width:0}',
+'.gbt-deckagentrole{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--deck-muted);font-size:10.5px}',
+'.gbt-deckagentname{display:flex;align-items:center;gap:6px;min-width:0}',
+'.gbt-deckagentname b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:500}',
+'.gbt-deckagentstatus{text-align:right;color:var(--deck-dim);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-deckagentstatus[data-status="running"]{color:var(--deck-lime)}',
+'.gbt-deckagentstatus[data-status="failed"]{color:var(--deck-red)}',
+'.gbt-deckagenttask{text-align:right;color:var(--deck-muted);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.gbt-deckagent .gbt-statusmore{color:var(--deck-dim);background:none;border:0;padding:0;cursor:pointer;font:12px/1 ui-monospace,SFMono-Regular,Consolas,monospace}',
 '.gbt-deckdot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:none;background:var(--deck-muted)}',
 '.gbt-deckdot[data-on="true"]{background:var(--deck-lime);box-shadow:0 0 0 3px var(--tc-accent-ring)}',
-'.gbt-deckpersonmain{min-width:0}',
-'.gbt-deckpersonmain b{display:block;font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-'.gbt-deckpersonmain span{display:block;color:var(--deck-dim);font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}',
-'.gbt-deckrole{color:var(--deck-muted)}',
-'.gbt-deckpersonmeta{display:flex;align-items:center;gap:5px;min-width:0}',
-'.gbt-deckpersonmeta em{font-style:normal;color:var(--deck-dim);font-size:10px;max-width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}',
-'.gbt-deckperson .gbt-statusmore{color:var(--deck-dim);background:none;border:0;padding:0;cursor:pointer}',
 '.gbt-decksession{grid-column:1 / -1;display:flex;align-items:center;gap:6px;padding-top:4px;font-size:10.5px;color:var(--deck-dim);min-width:0;overflow:hidden}',
 '.gbt-decksession code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
-'.gbt-deckpeople .gbt-statusrow{display:grid;grid-template-columns:minmax(0,1fr) 46px minmax(0,1fr) auto;gap:6px;align-items:center;border-bottom:1px solid var(--deck-line);min-width:0}',
 '.gbt-decksessions{grid-area:sessions;display:flex;flex-direction:column;min-height:0;overflow:hidden}',
 '.gbt-deckworktrees{grid-area:worktrees;display:flex;flex-direction:column;min-height:0;overflow:hidden}',
 '.gbt-deckpanelhead{display:flex;align-items:center;gap:10px;height:49px;min-height:49px;padding:0 13px;border-bottom:1px solid var(--deck-line);min-width:0}',
@@ -2256,7 +2279,7 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-deckthead{height:27px;min-height:27px;display:grid;grid-template-columns:minmax(0,1.45fr) 76px 70px 74px 58px 58px;gap:8px;align-items:center;padding:0 13px;border-bottom:1px solid var(--deck-line);color:var(--deck-dim);font-size:10px;letter-spacing:.07em;text-transform:uppercase;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
 '.gbt-deckthead span:nth-child(n+2){text-align:right}',
 '.gbt-deckrows{flex:1 1 auto;min-height:0;overflow-y:auto}',
-'.gbt-decksessionrow{min-height:54px;display:grid;grid-template-columns:minmax(0,1.45fr) 76px 70px 74px 58px 58px;gap:8px;align-items:center;padding:0 13px;border-bottom:1px solid var(--deck-line);position:relative;min-width:0}',
+'.gbt-decksessionrow{min-height:44px;display:grid;grid-template-columns:minmax(0,1.45fr) 76px 70px 74px 58px 58px;gap:8px;align-items:center;padding:0 13px;border-bottom:1px solid var(--deck-line);position:relative;min-width:0}',
 '.gbt-decksessionrow.is-current{background:var(--tc-selected)}',
 '.gbt-decksessionrow.is-current:before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--deck-lime)}',
 '.gbt-decksessionname{min-width:0;display:flex;flex-direction:column;gap:2px;align-items:flex-start}',
@@ -2301,9 +2324,16 @@ const TC_WORKTREES_URL = '/godot-bridge/task-center/worktrees'
 '.gbt-shiftdeck .gbt-statusfold{margin:4px 0;border-top:1px dashed var(--deck-line);font-size:10px;color:var(--deck-dim)}',
 '.gbt-shiftdeck .gbt-statusnote{color:var(--deck-dim);font-size:10.5px}',
 '.gbt-shiftdeck .gbt-btn[data-variant="primary"]{background:var(--deck-lime);border-color:var(--deck-lime);color:var(--tc-accent-ink)}',
-'@media (max-width:900px){.gbt-statusview.gbt-shiftdeck{height:auto;min-height:100%;overflow:visible}.gbt-deckgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"rail" "sessions" "worktrees" "activity";grid-template-rows:auto;flex:0 0 auto;height:auto;min-height:0;overflow:visible}.gbt-deckrail{overflow:visible}.gbt-deckdispatch,.gbt-deckexecutors,.gbt-decksessions,.gbt-deckworktrees{overflow:visible}.gbt-deckpeople,.gbt-deckrows,.gbt-deckwtrows,.gbt-deckactivitybody{overflow:visible}.gbt-deckhead{height:auto;min-height:44px;flex-wrap:wrap;padding:8px 12px}.gbt-deckheadcrumb{display:none}.gbt-deckthead,.gbt-decksessionrow{grid-template-columns:minmax(0,1.4fr) 58px 64px 60px 52px 52px;padding:0 10px}.gbt-deckactivity{min-height:0}.gbt-deckpanelhead,.gbt-deckwtool{padding:0 10px}.gbt-deckwtoolmeta{display:none}}',
+// Below 1150px the right area's bottom split is too narrow for two cards: fold
+// it back into one stacked right column, still beside the execution rail.
+'@media (max-width:1150px){.gbt-deckgrid{grid-template-columns:minmax(340px,400px) minmax(0,1fr);grid-template-areas:"rail sessions" "rail worktrees" "rail activity";grid-template-rows:minmax(280px,1.1fr) minmax(220px,1fr) minmax(150px,.8fr)}}',
+// T-228: below 900px the two columns fold into one: rail (dispatch / queue /
+// agents) first, then sessions, worktrees, activity — the DOM order already
+// reads that way. Every card grows to its content instead of scrolling.
+'@media (max-width:900px){.gbt-statusview.gbt-shiftdeck{height:auto;min-height:100%;overflow:visible}.gbt-deckgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"rail" "sessions" "worktrees" "activity";grid-template-rows:auto;flex:0 0 auto;height:auto;min-height:0;overflow:visible}.gbt-deckrail{overflow:visible}.gbt-deckdispatch,.gbt-deckqueue,.gbt-deckexecutors,.gbt-decksessions,.gbt-deckworktrees{overflow:visible}.gbt-deckqueue,.gbt-deckexecutors{flex:0 0 auto;min-height:0}.gbt-deckqbody,.gbt-deckagentrows,.gbt-deckrows,.gbt-deckwtrows,.gbt-deckactivitybody{overflow:visible}.gbt-deckhead{height:auto;min-height:44px;flex-wrap:wrap;padding:8px 12px}.gbt-deckheadcrumb{display:none}.gbt-deckthead,.gbt-decksessionrow{grid-template-columns:minmax(0,1.4fr) 58px 64px 60px 52px 52px;padding:0 10px}.gbt-deckactivity{min-height:0}.gbt-deckpanelhead,.gbt-deckwtool{padding:0 10px}.gbt-deckwtoolmeta{display:none}}',
+// The session detail card is hidden: the two-column layout has no third column
+// for it (it used to appear only at ≥1800px in the old three-column grid).
 '.gbt-decksessiondetail{display:none}',
-'@media (min-width:1800px){.gbt-deckgrid{grid-template-areas:"rail sessions worktrees" "rail detail worktrees" "rail activity worktrees";grid-template-rows:auto auto minmax(172px,1fr);height:100%}.gbt-decksessions{grid-area:sessions;overflow:hidden;height:454px;max-height:454px}.gbt-decksessions .gbt-deckrows{flex:1 1 auto;min-height:0;overflow-y:auto;max-height:none}.gbt-decksessiondetail{grid-area:detail;display:flex;flex-direction:column;min-height:290px;max-height:290px;height:290px;min-width:0;overflow:hidden;background:var(--deck-panel)}.gbt-deckworktrees{grid-area:worktrees;grid-row:1 / 4}.gbt-deckactivity{grid-area:activity;min-height:172px;height:100%;align-self:stretch}}',
 '.gbt-detailbody{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.85fr) minmax(0,1fr);grid-template-rows:auto;align-content:start;gap:10px 12px;padding:12px;min-width:0}',
 '.gbt-detailidentity{display:flex;flex-direction:column;gap:6px;min-width:0;padding-right:12px;border-right:1px solid var(--deck-line)}',
 '.gbt-detailidentityline{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}',
@@ -7907,6 +7937,18 @@ function createStatusView(deps) {
 		const maxConcurrent = dispatch.maxConcurrent === undefined || dispatch.maxConcurrent === null ? 3 : dispatch.maxConcurrent
 		const ready = counts.ready === undefined || counts.ready === null ? 0 : counts.ready
 		const blocked = counts.blocked || 0
+		// T-228: the status page owns the dispatch queue now. snapshot.queue is the
+		// Host's READY list (what dispatch takes next); a pending card whose
+		// dependency is not ready is the WAITING half. Both render as rows that
+		// open the same task detail a board card opens.
+		const queue = Array.isArray(snapshot.queue)
+			? snapshot.queue.filter(function (task) { return task !== null && task !== undefined && typeof task === 'object' })
+			: []
+		const waitingQueue = tasks.filter(function (task) {
+			if (task === null || task === undefined || task.status !== 'pending') return false
+			const dependency = task.dependency === null || task.dependency === undefined ? null : task.dependency
+			return dependency === null || dependency.state !== 'ready'
+		})
 		const worktrees = snapshot.worktrees
 		const activity = snapshot.activity
 		// T-111: the sweep is telemetry, not an event.
@@ -8133,16 +8175,18 @@ function createStatusView(deps) {
 			const runningNow = isRoot === true || status === 'running'
 			return h(
 		'div',
-		{ key: 'agent-' + name, className: 'gbt-deckperson', 'data-status-agent': name, 'data-status-agent-id': session, 'data-status-agent-role': isRoot === true ? 'root' : role === null ? '' : role, 'data-status-agent-status': status === null ? '' : status, 'data-status-agent-task': taskId === null ? '' : taskId, 'data-tone': runningNow ? 'live' : 'idle' },
-		h('span', { className: 'gbt-deckdot', 'data-running': runningNow ? 'true' : 'false' }),
-		h('div', { className: 'gbt-deckpersonmain' },
+		{ key: 'agent-' + name, className: 'gbt-deckagent', 'data-status-agent': name, 'data-status-agent-id': session, 'data-status-agent-role': isRoot === true ? 'root' : role === null ? '' : role, 'data-status-agent-status': status === null ? '' : status, 'data-status-agent-task': taskId === null ? '' : taskId, 'data-tone': runningNow ? 'live' : 'idle' },
+		// T-228: one shared column set for the root Agent and every child —
+		// 角色 / 名称 / 状态 / 任务 — so the tree reads as a table instead of
+		// two different row shapes glued together.
+		h('span', { className: 'gbt-deckagentrole', title: roleText }, roleText),
+		h('span', { className: 'gbt-deckagentname' },
+			h('i', { className: 'gbt-deckdot', 'data-on': runningNow ? 'true' : 'false', 'aria-hidden': 'true' }),
 			h('b', { className: 'gbt-mono', title: name }, name),
-			h('span', null, roleText + ' · ' + statusText),
 		),
-		h('div', { className: 'gbt-deckpersonmeta' },
-			h('em', { className: 'gbt-mono', title: taskId === null ? '' : taskId }, taskId === null ? '—' : taskId),
-			h('button', { type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } }, '⋯'),
-		),
+		h('span', { className: 'gbt-deckagentstatus', 'data-status': status === null ? '' : status, title: statusText }, statusText),
+		h('span', { className: 'gbt-deckagenttask gbt-mono', title: taskId === null ? '' : taskId }, taskId === null ? '—' : taskId),
+		h('button', { type: 'button', className: 'gbt-statusmore', 'data-action': 'status-session', 'data-agent': name, 'aria-expanded': expanded ? 'true' : 'false', onClick: function () { const next = expanded ? null : name; statusUiState.session = next; setOpenSession(next) } }, '⋯'),
 		expanded
 			? h(
 			'div',
@@ -8184,6 +8228,81 @@ function createStatusView(deps) {
 		function deckPanelHead(eyebrow, title, meta) {
 			return h('div', { className: 'gbt-deckpanelhead' }, h('span', { className: 'gbt-deckeyebrow' }, eyebrow), h('h2', null, title), meta === null || meta === undefined ? null : h('span', { className: 'gbt-deckpanelmeta' }, meta))
 		}
+		// T-228: one queue row shape for READY and WAITING. It reuses the panel's
+		// existing row vocabulary (gbt-row / gbt-order / gbt-id / gbt-rowtitle /
+		// gbt-chip) and the deck skin, and opens the task detail like a board card.
+		function queueDependencyOf(task) {
+			const dependency = task.dependency !== null && task.dependency !== undefined && typeof task.dependency === 'object' ? task.dependency : null
+			const listOf = function (value) { return Array.isArray(value) ? value.join(', ') : '' }
+			if (dependency !== null && dependency.state === 'broken') return { tone: 'blocked', text: t('brokenOn') + ' ' + listOf(dependency.brokenOn) }
+			if (dependency !== null && dependency.state !== 'ready') return { tone: 'waiting', text: t('waitingOn') + ' ' + listOf(dependency.waitingOn) }
+			const deps = Array.isArray(task.dependsOn) ? task.dependsOn : []
+			return { tone: 'ready', text: deps.length === 0 ? t('noDeps') : '↳ ' + deps.join(', ') }
+		}
+		function queueRow(task, index, state) {
+			const dependency = queueDependencyOf(task)
+			const idText = task.id === undefined || task.id === null ? '—' : String(task.id)
+			const titleText = typeof task.title === 'string' && task.title !== '' ? task.title : '—'
+			const priority = Number.isFinite(task.priority) && task.priority !== 0 ? task.priority : null
+			const lockCount = Number.isFinite(task.writeFileCount) ? task.writeFileCount : 0
+			const open = function () { if (typeof props.onOpen === 'function') props.onOpen(idText) }
+			return h(
+				'div',
+				{
+					key: 'queue-' + state + '-' + idText,
+					className: 'gbt-row gbt-deckqrow',
+					role: 'button',
+					tabIndex: 0,
+					'data-queue-row': idText,
+					'data-queue-state': state,
+					'data-queue-dependency': dependency.tone,
+					title: idText + ' · ' + titleText,
+					onClick: open,
+					onKeyDown: function (event) {
+						const key = event === null || event === undefined ? '' : event.key
+						if (key === 'Enter' || key === ' ') {
+							event.preventDefault()
+							open()
+						}
+					},
+				},
+				h('span', { className: 'gbt-order' }, String(index + 1)),
+				h('span', { className: 'gbt-id' }, idText),
+				h('div', { className: 'gbt-deckqmain' },
+					h('div', { className: 'gbt-rowtitle' }, titleText),
+					h('div', { className: 'gbt-cardmeta' },
+						priority === null ? null : h('span', { className: 'gbt-chip' }, 'P' + String(priority)),
+						h('span', { className: 'gbt-chip', 'data-tone': dependency.tone }, dependency.text),
+						lockCount > 0 ? h('span', { className: 'gbt-chip', title: t('statusQueueLocks') }, '🔒 ' + String(lockCount)) : null,
+					),
+				),
+			)
+		}
+		const queueCard = h(
+			'section',
+			{ className: 'gbt-statuscard gbt-deckqueue', 'data-status-card': 'queue' },
+			h(
+				'div',
+				{ className: 'gbt-deckpanelhead' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'QUEUE / ' + String(queue.length + waitingQueue.length).padStart(2, '0')),
+				h('h2', null, t('statusCardQueue')),
+				h('span', { className: 'gbt-deckpanelmeta', 'data-queue-summary': 'true' }, String(queue.length) + ' ' + t('statusQueueReady') + ' · ' + String(waitingQueue.length) + ' ' + t('statusQueueWaiting')),
+			),
+			queue.length === 0 && waitingQueue.length === 0
+				? h('div', { className: 'gbt-deckempty', 'data-queue-empty': 'all' }, t('statusQueueEmpty'))
+				: h(
+					'div',
+					{ className: 'gbt-deckqbody', 'data-status-queue': 'true' },
+					h('div', { className: 'gbt-deckqgroup', 'data-queue-section': 'ready' }, h('span', null, 'READY / ' + t('statusQueueReady')), h('b', null, String(queue.length))),
+					queue.length === 0
+						? h('div', { className: 'gbt-deckempty', 'data-queue-empty': 'ready' }, t('statusQueueNone'))
+						: queue.map(function (task, index) { return queueRow(task, index, 'ready') }),
+					h('div', { className: 'gbt-deckqgroup', 'data-queue-section': 'waiting' }, h('span', null, 'WAITING / ' + t('statusQueueWaiting')), h('b', null, String(waitingQueue.length))),
+					waitingQueue.length === 0
+						? h('div', { className: 'gbt-deckempty', 'data-queue-empty': 'waiting' }, t('statusQueueNoWaiting'))
+						: waitingQueue.map(function (task, index) { return queueRow(task, index, 'waiting') }),
+				),
+		)
 		const scanAgo = scheduler !== null && scheduler.lastTickAt !== null && scheduler.lastTickAt !== undefined ? tcAgo(scheduler.lastTickAt, now) : '—'
 		const dispatchCard = h(
 			'section',
@@ -8195,7 +8314,8 @@ function createStatusView(deps) {
 			pauseAuditLine,
 			h('div', { className: 'gbt-deckmetrics' },
 				h('div', { className: 'gbt-deckmetric', 'data-kv': 'concurrent' }, h('b', null, String(running.length) + ' / ' + String(maxConcurrent)), h('span', null, t('statusConcurrent'))),
-				h('div', { className: 'gbt-deckmetric', 'data-kv': 'ready' }, h('b', null, String(ready)), h('span', null, t('statusReady'))),
+				// T-228: the ready count lives on the QUEUE card's head now; this card
+				// stays the dispatch summary (running / capacity / merge / tasks / scan).
 				h('div', { className: 'gbt-deckmetric', 'data-kv': 'merge-queue', 'data-merge-queue': mergeQueued === null ? 'unavailable' : 'ready', title: mergeActive === null ? '' : String(mergeActive) }, h('b', null, mergeQueued === null ? '—' : String(mergeQueued)), h('span', null, t('statusMergeQueue'))),
 				h('div', { className: 'gbt-deckmetric', 'data-kv': 'tasks' }, h('b', null, String(tasks.length)), h('span', null, t('statusTasks'))),
 				h('div', { className: 'gbt-deckmetric', 'data-kv': 'last-scan', 'data-status-scan': 'true' }, h('b', null, scanAgo), h('span', null, t('statusLastScan'))),
@@ -8410,25 +8530,49 @@ function createStatusView(deps) {
 					resultBlock,
 				),
 		)
-		// v3: the executors rail is the live execution tree — the root Agent plus
+		// v3: the executors card is the live execution tree — the root Agent plus
 		// every live child the Host reports. No roster, no team readiness, no
-		// leftover slot inventory.
+		// leftover slot inventory. T-228: it is a four-column table (角色 / 名称 /
+		// 状态 / 任务) sharing one row shape for the root and every child.
 		const agentRows = []
 		if (agentTree.root !== null) agentRows.push(agentRow(agentTree.root, true, -1))
 		agentTree.members.forEach(function (member, index) { agentRows.push(agentRow(member, false, index)) })
 		const liveCount = agentTree.root === null ? 0 : agentTree.members.length + 1
 		const anyRunning = agentTree.root !== null || agentTree.members.some(function (member) { return member.status === 'running' })
+		const agentsUnavailable = snapshot.agentTree === null || snapshot.agentTree === undefined || agentTree.available !== true
 		const agentsCard = h(
 			'section',
 			{ className: 'gbt-statuscard gbt-deckexecutors', 'data-status-card': 'agents' },
-			h('div', { className: 'gbt-decklabel' }, h('span', null, 'AGENTS'), h('span', { className: 'gbt-decklabelzh' }, t('statusCardAgents')), h('em', { 'data-running': anyRunning ? 'true' : 'false' }, String(liveCount))),
-			h('div', { className: 'gbt-deckpeople', 'data-status-agents': 'true' },
-				snapshot.agentTree === null || snapshot.agentTree === undefined || agentTree.available !== true
-					? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'unavailable' }, t('statusAgentsUnavailable'))
-					: agentTree.root === null
-						? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'no-root' }, t('statusAgentsNoRoot'))
-						: h('div', null, agentRows, agentTree.members.length === 0 ? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'no-children' }, t('statusAgentsNoChildren')) : null),
+			h(
+				'div',
+				{ className: 'gbt-deckpanelhead' },
+				h('span', { className: 'gbt-deckeyebrow' }, 'AGENTS / ' + String(liveCount).padStart(2, '0')),
+				h('h2', null, t('statusCardAgents')),
+				h('span', { className: 'gbt-deckpanelmeta', 'data-agents-running': anyRunning ? 'true' : 'false' }, String(agentTree.members.length) + ' ' + t('agentsLive')),
 			),
+			agentsUnavailable
+				? h('div', { className: 'gbt-deckempty', 'data-status-agents-empty': 'unavailable' }, t('statusAgentsUnavailable'))
+				: agentTree.root === null
+					? h('div', { className: 'gbt-deckempty', 'data-status-agents-empty': 'no-root' }, t('statusAgentsNoRoot'))
+					: h(
+						'div',
+						{ className: 'gbt-deckagents', 'data-status-agents': 'true' },
+						h(
+							'div',
+							{ className: 'gbt-deckagenthead', 'data-agent-columns': 'true' },
+							h('span', null, t('agentRole')),
+							h('span', null, t('agentColumnName')),
+							h('span', null, t('agentStatus')),
+							h('span', null, t('agentTask')),
+							h('span', { 'aria-hidden': 'true' }, ''),
+						),
+						h(
+							'div',
+							{ className: 'gbt-deckagentrows' },
+							agentRows,
+							agentTree.members.length === 0 ? h('div', { className: 'gbt-statusnote', 'data-status-agents-empty': 'no-children' }, t('statusAgentsNoChildren')) : null,
+						),
+					),
 		)
 		const timeline = snapshot.activityEvents
 		// Available when the Host sends the derived timeline OR (legacy Host) the ring.
@@ -8634,7 +8778,8 @@ function createStatusView(deps) {
 			h(
 				'div',
 				{ className: 'gbt-statustop gbt-deckhead', 'data-status-top': 'true' },
-				h('span', { className: 'gbt-deckeyebrow' }, 'STATUS / 03'),
+				// T-228: status is the second of three tabs now.
+				h('span', { className: 'gbt-deckeyebrow' }, 'STATUS / 02'),
 				h('h1', null, t('status')),
 				h('span', { className: 'gbt-deckheadcrumb', title: lastActivityText === null ? '' : lastActivityText }, lastActivityText === null ? '' : lastActivityText),
 				h('div', { className: 'gbt-statusactions' },
@@ -8643,7 +8788,10 @@ function createStatusView(deps) {
 				),
 			),
 			h('div', { className: 'gbt-statusgrid gbt-deckgrid', 'data-status-grid': 'true' },
-				h('aside', { className: 'gbt-deckrail' }, dispatchCard, agentsCard),
+				// T-228: the left column is the execution rail — dispatch summary,
+				// the ready/waiting queue rows, then the agent table. The right column
+				// keeps the board inventory (sessions / worktrees / activity).
+				h('aside', { className: 'gbt-deckrail' }, dispatchCard, queueCard, agentsCard),
 				sessionsCard,
 				detailSessionCard,
 				worktreesCard,
@@ -11610,16 +11758,19 @@ module.exports = { createDecisionModal }
 /**
  * Task center shell view module.
  *
- * Extracted from the forms/shell fragments; React, h, the five views, the
- * forms, the panel hooks/state and the project/header helpers are injected by
- * the build.
+ * Extracted from the forms/shell fragments; React, h, the board/status/roles
+ * views, the forms, the panel hooks/state and the project/header helpers are
+ * injected by the build.
+ *
+ * T-228: the top navigation is 看板 / 状态 / 角色. The retired queue and agents
+ * pages were folded into the status page (queue rows + agent table), so a
+ * persisted view that still names them falls back to status instead of
+ * rendering a page the nav no longer exposes.
  */
 function createTaskCenter(deps) {
 	const React = deps.React
 	const h = deps.h
 	const Board = deps.Board
-	const QueueView = deps.QueueView
-	const WorkersView = deps.WorkersView
 	const StatusView = deps.StatusView
 	const RolesView = deps.RolesView
 	const DetailView = deps.DetailView
@@ -11690,8 +11841,15 @@ function createTaskCenter(deps) {
 		const t = useTranslate()
 		const snapshot = useSnapshot()
 		const now = useNow(5000)
-		// Rendering tests may pick the first view; the production slot passes no props.
-		const initialView = props !== undefined && props !== null && ['board', 'queue', 'workers', 'status', 'roles'].indexOf(props.initialView) >= 0 ? props.initialView : panelState.view
+		// T-228: three views only. A rendering test may pin one; the production
+		// slot passes no props. The retired queue/workers names (in the props or in
+		// a panelState persisted before T-228) land on the status page, which now
+		// owns the queue rows and the agent table.
+		function normalizeView(value) {
+			if (value === 'queue' || value === 'workers') return 'status'
+			return value === 'board' || value === 'status' || value === 'roles' ? value : 'board'
+		}
+		const initialView = normalizeView(props !== undefined && props !== null && props.initialView !== undefined ? props.initialView : panelState.view)
 		const [view, setViewState] = React.useState(initialView)
 		const [selectedId, setSelectedIdState] = React.useState(panelState.selectedId)
 		const [editing, setEditing] = React.useState(null)
@@ -11795,7 +11953,6 @@ function createTaskCenter(deps) {
 			if (base === undefined) return null
 			return Object.assign({}, base, snapshot.details[editing] === undefined ? {} : snapshot.details[editing].task)
 		})()
-		const queue = snapshot.queue === undefined || snapshot.queue === null ? [] : snapshot.queue
 		const scheduler = snapshot.scheduler
 		const busy = snapshot.busy === undefined || snapshot.busy === null ? null : snapshot.busy
 		// T-195: pending host decisions, oldest first (the host's queue order).
@@ -11880,10 +12037,10 @@ function createTaskCenter(deps) {
 			if (status === 'stale') return t('sessionsStatusStale')
 			return t('sessionsStatusUnknown')
 		}
+		// T-228: 看板 / 状态 / 角色. Queue and agents are cards on the status page,
+		// not separate destinations.
 		const tabs = [
 			{ key: 'board', label: t('boardTab') },
-			{ key: 'queue', label: t('queue') },
-			{ key: 'workers', label: t('agentsTab') },
 			{ key: 'status', label: t('statusTab') },
 			{ key: 'roles', label: t('rolesTab') },
 		]
@@ -12313,7 +12470,6 @@ function createTaskCenter(deps) {
 		)
 		const tabCountOf = function (key) {
 			if (key === 'board') return Number.isFinite(counts.total) ? counts.total : tasks.length
-			if (key === 'queue') return queue.length
 			return null
 		}
 		const tabsView = h(
@@ -12495,16 +12651,15 @@ function createTaskCenter(deps) {
 					onColumnToggle: function () { setColumnTick(function (count) { return count + 1 }) },
 					onKindFilterChange: function () { setColumnTick(function (count) { return count + 1 }) },
 				})
-		: view === 'queue'
-			? h(QueueView, { snapshot: snapshot, t: t, onOpen: openTask })
-			: view === 'workers'
-				? h(WorkersView, { snapshot: snapshot, t: t })
-				: view === 'status'
+		: view === 'status'
 			? h(StatusView, {
 				snapshot: snapshot,
 				t: t,
 				now: now,
 				store: store,
+				// T-228: a queue row on the status page opens the same task detail as
+				// a board card; the status page owns no routing of its own.
+				onOpen: openTask,
 				onOpenArchive: function () {
 					doneAllReset()
 					setDoneAllArchived(true)

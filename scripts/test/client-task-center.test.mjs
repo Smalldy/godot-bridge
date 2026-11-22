@@ -80,7 +80,6 @@ assert.equal(out.props.className, 'gbt-root')
 assert.equal(out.props['data-panel'], 'task-center')
 const text = JSON.stringify(out)
 assert.ok(text.includes('gbt-tabs'))
-assert.ok(text.includes('agentsTab'))
 assert.ok(text.includes('data-agent-pill'))
 assert.ok(text.includes('"data-agent-pill":"ready"'))
 assert.ok(text.includes('data-agent-popover'))
@@ -92,6 +91,60 @@ assert.ok(!text.includes('bootstrapTeam'))
 assert.ok(!text.includes('teamPill'))
 assert.ok(!text.includes('workersTab'))
 console.log('PASS  TaskCenter renders the agent-tree pill and popover, never a team')
+
+// ── T-228: 看板 / 状态 / 角色 — queue + agents live on the status page ──────
+// The top nav exposes three destinations. The retired queue/workers views are
+// not reachable from it, and a persisted (or caller-supplied) legacy view lands
+// on the status page instead of rendering a page the nav no longer shows.
+{
+  const navViews = []
+  collect(out, (node) => { if (node.props !== undefined && typeof node.props['data-view'] === 'string') navViews.push(node.props['data-view']) })
+  assert.deepEqual(navViews, ['board', 'status', 'roles'], 'the top nav is exactly 看板 / 状态 / 角色')
+  assert.ok(!text.includes('"data-view":"queue"') && !text.includes('"data-view":"workers"'), 'no queue/workers tab is rendered')
+
+  const statusSpy = (props) => ({ type: 'status', props: props })
+  const findStatus = (tree) => {
+    const found = []
+    collect(tree, (node) => { if (node.type === statusSpy) found.push(node) })
+    return found
+  }
+
+  for (const legacy of ['queue', 'workers']) {
+    const harness = createHookHarness()
+    const Legacy = createTaskCenter(Object.assign({}, deps, { React: harness.React, StatusView: statusSpy, panelState: { view: legacy, selectedId: null, doneAllOpen: false, doneAllArchived: false } }))
+    const tree = renderAt(harness, Legacy, {})
+    const status = findStatus(tree)
+    assert.equal(status.length, 1, 'a persisted ' + legacy + ' view renders the status page')
+    assert.equal(typeof status[0].props.onOpen, 'function', 'the status page can open a task detail')
+  }
+
+  // The same fallback applies to a caller-supplied initialView (the rendering
+  // seam), so no test or host can revive the retired pages. A fresh harness per
+  // case: useState only seeds its value on mount.
+  const directView = function (initialView) {
+    const harness = createHookHarness()
+    const Direct = createTaskCenter(Object.assign({}, deps, { React: harness.React, StatusView: statusSpy }))
+    return renderAt(harness, Direct, { initialView: initialView })
+  }
+  for (const legacy of ['queue', 'workers']) {
+    assert.equal(findStatus(directView(legacy)).length, 1, 'initialView ' + legacy + ' falls back to the status page')
+  }
+  assert.equal(findStatus(directView('board')).length, 0, 'the board is still reachable directly')
+
+  // Clicking the 状态 tab mounts the status page (the nav drives the view).
+  const clickHarness = createHookHarness()
+  const Click = createTaskCenter(Object.assign({}, deps, { React: clickHarness.React, StatusView: statusSpy }))
+  let tree = renderAt(clickHarness, Click, {})
+  let statusTab = null
+  collect(tree, (node) => {
+    if (statusTab === null && node.type === 'button' && node.props !== undefined && node.props['data-view'] === 'status') statusTab = node
+  })
+  assert.ok(statusTab !== null, 'the status tab is rendered')
+  statusTab.props.onClick()
+  tree = renderAt(clickHarness, Click, {})
+  assert.equal(findStatus(tree).length, 1, 'the status tab opens the status page')
+  console.log('PASS  T-228 the top nav is board/status/roles and legacy views land on status')
+}
 
 // ── T-210: the header is ready from the LIGHT state, not from the inventory ──
 // The light /state carries the session scope while the agent tree is deferred to
