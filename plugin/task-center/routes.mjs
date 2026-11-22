@@ -328,14 +328,23 @@ export function registerTaskRoutes(ctx, options) {
       })
       // T-129: the onboard answer is deliberately small (brief + next); the panel
       // must not be handed a whole board snapshot next to it.
+      //
+      // T-231: a write answers what changed — { ok, seq, affected, changed } — and
+      // NOT the board. The extra light snapshot on every action duplicated the
+      // panel's own 2.5 s poll (and made one write cost two board reads). The old
+      // attachment survives as an EXPLICIT, versioned escape hatch: a caller that
+      // sends includeSnapshot:true gets the light snapshot (carrying its own
+      // version/seq) back on the same answer. Default OFF.
       if (result.ok === true && action !== 'openProject' && action !== 'onboard' && project !== null) {
         if (result.board !== undefined) delete result.board
-        try {
-          // T-210: an action's refreshed board is the LIGHT answer too — a user
-          // action must not wait for a host inventory the panel already has.
-          result.snapshot = await api.snapshot(project, { full: false, light: true, resolvedFrom: target.resolvedFrom, sessionId: sessionId })
-        } catch (error) {
-          result.snapshotError = String((error && error.message) || error)
+        if (body.includeSnapshot === true) {
+          try {
+            // T-210: an action's refreshed board is the LIGHT answer too — a user
+            // action must not wait for a host inventory the panel already has.
+            result.snapshot = await api.snapshot(project, { full: false, light: true, resolvedFrom: target.resolvedFrom, sessionId: sessionId })
+          } catch (error) {
+            result.snapshotError = String((error && error.message) || error)
+          }
         }
       }
       // openProject answers with the snapshot itself; the panel renders that

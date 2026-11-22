@@ -14,10 +14,13 @@ const model = {
   findTask: (source, id) => source.tasks.filter((task) => task.id === id)[0],
 }
 const locks = { view: () => [{ taskId: 'T-1', path: 'a.js' }] }
-// T-230: list asks the API's read model for its page — ONE builder for /state,
-// /list and the tool list. The fake here IS the seam: it must receive the
-// project, the board, the clock and the FILTERED rows.
-const summaryCalls = []
+// T-231: the read actions are the ONE read contract per action, so this fake
+// seam pins what each one delegates to:
+//   board   boardPage(project, {limit,cursor}) by default; the snapshot for
+//           view:'full' (the explicit diagnostic escape hatch)
+//   list    taskList(project, query) — literally the /list handler
+const pageCalls = []
+const listCalls = []
 const readActions = createReadActions({
   snapshot: async (project, options) => ({ ok: true, project: project, sessionId: options.sessionId }),
   readBoardOrFail: async () => ({ board: board }),
@@ -27,26 +30,47 @@ const readActions = createReadActions({
   archivedTask: async (project, id) => (id === 'OLD' ? { id: 'OLD', status: 'done' } : null),
   detailOf: (source, task) => ({ id: task.id, detail: true }),
   candidateOf: () => true,
-  boardSummaryOf: (project, source, now, rows) => {
-    summaryCalls.push({ project: project, now: now, ids: rows.map((task) => task.id) })
-    return { counts: model.counts(source), tasks: rows.map((task) => model.summary(source, task)) }
+  boardSummaryOf: () => {
+    throw new Error('T-231: list must ask /list (taskList), not build its own page')
+  },
+  taskList: async (project, query) => {
+    listCalls.push({ project: project, query: query })
+    return { ok: true, tasks: [{ id: 'T-1', status: 'pending' }], nextCursor: null, count: 1 }
+  },
+  boardPage: async (project, options) => {
+    pageCalls.push({ project: project, options: options })
+    return { ok: true, view: 'summary', project: project, tasks: [{ id: 'T-1' }], counts: model.counts(board) }
   },
   callerSessionId: () => 'session-1',
   ok: (payload) => Object.assign({ ok: true }, payload),
   failure: (code, message) => ({ ok: false, code: code, message: message }),
 })
 
-const boardResult = await readActions.board({}, {}, '/project')
+// board: a summary PAGE by default (limit/cursor forwarded, no detail snapshot).
+const boardResult = await readActions.board({ limit: 7, cursor: '0|T-0' }, {}, '/project')
 assert.equal(boardResult.ok, true)
-assert.equal(boardResult.sessionId, 'session-1')
+assert.equal(boardResult.view, 'summary')
+assert.equal(pageCalls.length, 1)
+assert.equal(pageCalls[0].project, '/project')
+assert.deepEqual(pageCalls[0].options, { limit: 7, cursor: '0|T-0' })
 
-const listResult = await readActions.list({ status: 'pending' }, {}, '/project', 1000)
+// board: view:'full' is the explicit escape hatch back to the diagnostic snapshot.
+const boardFull = await readActions.board({ view: 'full' }, {}, '/project')
+assert.equal(boardFull.ok, true)
+assert.equal(boardFull.sessionId, 'session-1')
+assert.equal(pageCalls.length, 1, 'view:full must not build a summary page')
+
+// list: the /list handler, with q/cursor/limit/archived forwarded verbatim.
+const listResult = await readActions.list({ status: 'pending', limit: 5, cursor: 'c1', q: 'two', archived: true }, {}, '/project', 1000)
 assert.deepEqual(listResult.tasks, [{ id: 'T-1', status: 'pending' }])
-assert.deepEqual(listResult.counts, { pending: 1, done: 1 })
-assert.equal(summaryCalls.length, 1, 'list projects its page through the shared read model')
-assert.equal(summaryCalls[0].project, '/project')
-assert.equal(summaryCalls[0].now, 1000)
-assert.deepEqual(summaryCalls[0].ids, ['T-1'], 'the status filter happens BEFORE the read model projects the page')
+assert.equal(listResult.count, 1)
+assert.equal(listCalls.length, 1, 'list delegates to the /list handler')
+assert.equal(listCalls[0].project, '/project')
+assert.equal(listCalls[0].query.status, 'pending')
+assert.equal(listCalls[0].query.limit, 5)
+assert.equal(listCalls[0].query.cursor, 'c1')
+assert.equal(listCalls[0].query.q, 'two')
+assert.equal(listCalls[0].query.archived, true)
 
 const getResult = await readActions.get({ id: 'T-1' }, {}, '/project', 1000)
 assert.equal(getResult.task.candidate, true)

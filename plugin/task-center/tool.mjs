@@ -186,22 +186,26 @@ function emptyResultEnvelope(action) {
 const DESCRIPTION =
   'Project task board with dependency-driven dispatch, file locks and a review/test/merge pipeline; every task runs in its own worktree. ' +
   // T-129: onboarding is the FIRST move, so it is named before the manual.
-  'Start with action onboard: resolves and binds the project, returns a brief plus one next step. ' +
+  'Start with action onboard: binds the project, returns a brief plus one next step. ' +
   'Read the skill "' + SKILL_NAME + '" first: workflow, actions, card rules, refusal codes. ' +
   'Actions: ' + AGENT_ACTIONS.join(', ') + '. ' +
   // T-131/T-132: the second lifecycle, named where the model routes; the skill
   // carries the full investigation chapter (when to use it, the report action,
   // the scratch/probe rules and the panel rendering).
-  'A card with kind investigate delivers a report instead of code (the skill has its chapter): finish it with action report; submit/review/test/merge refuse it. ' +
+  'kind investigate delivers a report, not code: finish it with report; submit/review/test/merge refuse it. ' +
   // T-207: the pre-decision answer is a stable, explicit contract, not an
   // opaque error. The model must STOP and wait for the user; retrying create
   // can only return the SAME pending decision and never makes a second card.
-  'create/start/reopen/delete/cancel ask first: needs-decision + status needs-decision, waitForUser:true, retryable:false, decisionId, decision, next (start keeps needs-consent). STOP and wait for the panel: never retry create — a repeat returns the SAME decision, not a second card. The host executes the answer and messages you. ' +
+  'create/start/reopen/delete/cancel ask first (needs-decision, waitForUser:true, retryable:false, decisionId, next; start keeps needs-consent). STOP and wait for the panel; never retry create — a repeat returns the SAME decision. The host executes it and messages you. ' +
+  // T-231: the read contract is named where the model routes, because "board"
+  // used to answer the full 4.85 MB snapshot. A summary page is the read; the
+  // full snapshot is an explicit diagnostic hatch; get is the only detail read.
+  'Reads: board = paged TaskSummary (limit/cursor; view:"full" = diagnostic hatch); list = /list; get = detail; writes answer seq/affected/changed. ' +
   'Dependencies: B.dependsOn=[A] means A must be done and merged before B runs. ' +
   // T-195/T-196: the host may ask a human a question and wait non-blockingly.
   // The model reads the queue; a plain question may be answered here, while an
   // ACTION question (create/start/reopen/delete/cancel) is user-only.
-  'Decisions: decisionList reads the queue; decisionAnswer takes decisionId + option (or text); destructive need "DELETE".'
+  'Decisions: decisionList reads the queue; decisionAnswer takes decisionId + option/text; destructive need "DELETE".'
 
 export function registerTaskTool(ctx, options) {
   const opts = options === undefined ? {} : options
@@ -390,7 +394,20 @@ export function registerTaskTool(ctx, options) {
       maxAttempts: { type: 'number', description: 'Dispatch attempts before the task blocks.' },
       maxConcurrent: { type: 'number', description: 'Concurrent running tasks (settings).' },
       allowSpawn: { type: 'boolean', description: 'Whether the scheduler may spawn a WorkAgent (settings).' },
-      status: { type: 'string', description: 'Filter for list.' },
+      status: { type: 'string', description: 'Filter for list by task status (e.g. pending, done).' },
+      // T-231: the read contract. board answers a page by default and `view` is
+      // the only way back to the diagnostic full snapshot; list pages/searches
+      // exactly like /list; get stays the ONE detail read.
+      view: {
+        type: 'string',
+        enum: ['summary', 'full'],
+        description:
+          'board only: "summary" (default) answers a paged TaskSummary list plus counts/dispatch/locks/seq; "full" is the diagnostic escape hatch that answers the whole detail snapshot. Do not use "full" to browse.',
+      },
+      limit: { type: 'number', description: 'Page size for board/list (default 50, max 200).' },
+      cursor: { type: 'string', description: 'Opaque page cursor: pass nextCursor from a previous board/list answer to read the next page.' },
+      q: { type: 'string', description: 'list only: search text matched against id/title/spec/acceptance.' },
+      archived: { type: 'boolean', description: 'list only: true reads the archive of done cards instead of the live board.' },
       taskId: { type: 'string', description: 'Task id for actions that accept it.' },
       // T-195: the decision surface. Only the panel normally answers, but the
       // same actions are reachable from a session (and from HTTP as role user).
@@ -422,6 +439,10 @@ export function registerTaskTool(ctx, options) {
       const me = agentLabel(agent)
       const projectPath = projectPathOf(ctx, agent)
       const context = { projectPath: projectPath, by: me, role: 'agent', agent: agent }
+      // T-231: a TOOL openProject binds the project and needs its summary page +
+      // preflight/registry — never the full detail + host-inventory snapshot the
+      // API keeps for direct callers. The delivery is named, not inferred.
+      if (action === 'openProject') context.snapshotDelivery = 'summary'
       const input = Object.assign({}, args)
       const result = await api.perform(action, input, context)
       // T-207: never answer `{}`. An empty/absent result is a transport bug, and a
@@ -433,7 +454,11 @@ export function registerTaskTool(ctx, options) {
       } else if (result.ok !== true) {
         answer = refusalEnvelope(result)
       } else {
+        // T-231: a write answer carries seq/affected/changed, never a board or a
+        // snapshot. The route keeps the snapshot behind an explicit opt-in; the
+        // tool answer must stay a bounded read-model page.
         if (result.board !== undefined) delete result.board
+        if (result.snapshot !== undefined) delete result.snapshot
         answer = result
       }
       // T-220: every egress — success, refusal, empty — leaves through the

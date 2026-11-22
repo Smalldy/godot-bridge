@@ -3,6 +3,12 @@
  *
  * Extracted from api.mjs. Keeps the same path resolution, preflight, registry
  * flush, session binding and resolvedFrom semantics.
+ *
+ * T-231 (Phase 1): the answer's SIZE is part of this contract. The panel asks
+ * for the LIGHT first paint (T-210); a TOOL caller now asks for a TaskSummary
+ * page (plus preflight/registry) instead of the full 4.85 MB snapshot it used
+ * to receive. Both are projections of the same board and the same read model —
+ * only the delivery differs, and it is named on the context, never guessed.
  */
 import { resolve } from 'node:path'
 
@@ -13,6 +19,7 @@ export function createProjectActions(deps) {
   const preflightProject = deps.preflightProject
   const remember = deps.remember
   const snapshot = deps.snapshot
+  const boardPage = deps.boardPage
   const resolveProjectRoot = deps.resolveProjectRoot
   const messageOf = deps.messageOf
   const failure = deps.failure
@@ -58,17 +65,30 @@ export function createProjectActions(deps) {
     // so wait for it and report where it landed — or why it did not persist.
     if (typeof state.flushRegistry === 'function') await state.flushRegistry()
     const registryStatus = typeof state.registryStatus === 'function' ? state.registryStatus() : null
-    // T-210 review: the DELIVERY of the answer is the caller's choice. The panel
-    // asks for the LIGHT snapshot (board + counts + light scope) because it fetches
-    // the deferred metadata from /meta; a tool caller gets the full snapshot it
-    // has always asked for.
-    const light = context !== null && context !== undefined && context.snapshotDelivery === 'light'
-    return Object.assign({}, await snapshot(absolute, light ? { worktreeRoot: preflight.worktreeRoot, sessionId: sessionId, light: true } : { worktreeRoot: preflight.worktreeRoot, sessionId: sessionId }), {
+    const binding = {
       preflight: preflight,
       registry: registryStatus,
+      // The path was explicit (the caller named it); the panel route rewrites
+      // this to 'panel' for its own answer.
+      resolvedFrom: 'explicit',
       // A flat string for callers that only want "did it persist, and why not".
       registryError: registryStatus !== null && registryStatus.ok !== true ? String(registryStatus.error) : null,
-    })
+    }
+    // The DELIVERY of the answer is the caller's choice, named on the context:
+    //   'light'   the panel's T-210 first paint (board + counts + light scope);
+    //             it fetches the deferred metadata from /meta afterwards.
+    //   'summary' the TOOL's answer (T-231): a TaskSummary page + binding facts.
+    //             It used to receive the full detail + host inventory snapshot
+    //             (4.85 MB on a real board) for the same binding decision.
+    // anything else keeps the historical full snapshot (direct API callers).
+    const delivery = context !== null && context !== undefined ? context.snapshotDelivery : null
+    if (delivery === 'summary') {
+      const page = await boardPage(absolute, { limit: input.limit, cursor: input.cursor, sessionId: sessionId })
+      if (page.ok !== true) return page
+      return Object.assign(page, binding)
+    }
+    const light = delivery === 'light'
+    return Object.assign({}, await snapshot(absolute, light ? { worktreeRoot: preflight.worktreeRoot, sessionId: sessionId, light: true } : { worktreeRoot: preflight.worktreeRoot, sessionId: sessionId }), binding)
   }
 
   async function resolveIncoming(source, context) {

@@ -28,7 +28,7 @@
 
 ## 状态与追踪
 
-- `board`/`get` 看阶段、轮次、证据、`waitingReason`、`queuePosition`；状态/执行者页展示根 Agent 的执行树，没有 Team 聚合。
+- `board` 看阶段、轮次、`waitingReason`、`queuePosition`（默认 TaskSummary 分页：`limit`/`cursor`，`view:"full"` 仅诊断）；`get` 取 spec/acceptance/evidence/history 等 detail。状态/执行者页展示根 Agent 的执行树，没有 Team 聚合。
 - 派发前看依赖是否 done+merged；target 动了结论失效，用 `refreshMerge` 重开一轮。
 - 卡住先查事实：看板、分支、ref、合并记录，再决定 reopen / retry / 打回。
 

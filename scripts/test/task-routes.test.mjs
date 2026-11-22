@@ -123,19 +123,50 @@ check(
   let res = await post({ action: 'create', title: 'A', dependsOn: [], verification: { probes: [{ id: 'suite', command: 'npm test' }] } })
   let payload = res.json()
   check('the route creates a task', payload.ok === true && payload.task.title === 'A', res.text)
-  check('the response carries the board snapshot', payload.snapshot !== undefined && payload.snapshot.tasks.length === 1)
+  // T-231: a successful write ANSWERS WHAT CHANGED — { ok, seq, affected,
+  // changed } — instead of attaching a second copy of the board the panel
+  // already polls every 2.5 s (and the tool answer never attaches one at all).
+  check(
+    'T-231 a successful write answers seq/affected/changed, not a board snapshot',
+    payload.snapshot === undefined &&
+      Number.isFinite(payload.seq) &&
+      payload.affected !== undefined &&
+      payload.affected.ids.indexOf(payload.task.id) >= 0 &&
+      payload.affected.count === payload.affected.ids.length &&
+      payload.changed.join(',') === 'board,detail',
+    res.text.substring(0, 400),
+  )
   const id = payload.task.id
   res = await post({ action: 'start' })
   payload = res.json()
   check('the route starts dispatch', payload.ok === true && payload.dispatch.state === 'running', res.text)
-  res = await post({ action: 'pause' })
-  check('the route pauses dispatch', res.json().dispatch.state === 'paused', res.text)
+  check('T-231 a dispatch write changes the board domain only', payload.changed.join(',') === 'board' && Array.isArray(payload.affected.ids) && payload.affected.ids.length === 0, JSON.stringify({ changed: payload.changed, affected: payload.affected }))
+  res = await post({ action: 'pause', includeSnapshot: true })
+  payload = res.json()
+  check('the route pauses dispatch', payload.dispatch.state === 'paused', res.text)
+  check(
+    'T-231 includeSnapshot:true is the explicit, versioned delta escape hatch',
+    payload.snapshot !== undefined && payload.snapshot.ok === true && Array.isArray(payload.snapshot.tasks) && Number.isFinite(payload.snapshot.seq) && typeof payload.snapshot.version === 'number',
+    res.text.substring(0, 400),
+  )
   res = await post({ action: 'start', taskId: id })
   check('start refuses a task id', res.json().ok === false && res.json().code === 'start-is-dispatch-only', res.text)
   res = await post({ action: 'get', id: id })
   check('the route reads one task', res.json().ok === true && res.json().task.id === id, res.text)
   res = await post({ action: 'board' })
-  check('the route returns the board', res.json().ok === true && res.json().tasks.length === 1)
+  payload = res.json()
+  check(
+    'T-231 the route board is a summary page (counts/dispatch/seq + cards)',
+    payload.ok === true && payload.view === 'summary' && payload.tasks.length === 1 && payload.tasks[0].id === id && payload.tasks[0].spec === undefined && payload.counts.total === 1 && Number.isFinite(payload.seq) && payload.dispatch.state === 'paused',
+    res.text.substring(0, 400),
+  )
+  res = await post({ action: 'board', view: 'full' })
+  payload = res.json()
+  check(
+    'T-231 view:"full" keeps the diagnostic detail board as the escape hatch',
+    payload.ok === true && payload.view === undefined && payload.tasks.length === 1 && typeof payload.tasks[0].spec === 'string' && payload.agentTree !== undefined,
+    res.text.substring(0, 300),
+  )
   res = await post({ action: 'no-such-action' })
   check('an unknown action is a typed refusal', res.json().ok === false && res.json().code === 'unknown-action', res.text)
 }
@@ -347,10 +378,19 @@ check(
   let res = await post({ action: 'decisionList' })
   let payload = res.json()
   check('the route lists pending decisions', payload.ok === true && Array.isArray(payload.decisions) && payload.decisions.length === 1 && payload.decisions[0].id === 'DEC-1', res.text.substring(0, 400))
-  check('the route answer carries the board snapshot for the panel', payload.snapshot !== undefined && Array.isArray(payload.snapshot.tasks))
+  check(
+    'T-231 a READ answer never grows a write envelope or a board snapshot',
+    payload.snapshot === undefined && payload.seq === undefined && payload.affected === undefined && payload.changed === undefined,
+    Object.keys(payload).join(','),
+  )
   res = await post({ action: 'decisionAnswer', decisionId: 'DEC-1', option: 'approve' })
   payload = res.json()
   check('the route answers a decision once', payload.ok === true && payload.decision.status === 'answered' && payload.decision.resolution.option === 'approve', res.text.substring(0, 400))
+  check(
+    'T-231 a decision answer names the decisions domain and carries no board snapshot',
+    payload.snapshot === undefined && payload.changed.join(',') === 'decisions' && payload.affected !== undefined,
+    res.text.substring(0, 400),
+  )
   res = await post({ action: 'decisionAnswer', decisionId: 'DEC-1', option: 'hold' })
   payload = res.json()
   check('the route refuses a second answer by typed code', payload.ok === false && payload.code === 'already-answered', res.text.substring(0, 400))
@@ -371,9 +411,14 @@ check(
     JSON.stringify(payload.decisions),
   )
   check('T-196 the board is untouched while the question is pending', payload.tasks.filter((task) => task.title === 'Routed card').length === 0, JSON.stringify(payload.tasks.map((task) => task.title)))
-  res = await post({ action: 'decisionAnswer', decisionId: asked.decision.id, option: 'create' })
+  res = await post({ action: 'decisionAnswer', decisionId: asked.decision.id, option: 'create', includeSnapshot: true })
   payload = res.json()
   check('T-196 the route answer executes the stored create', payload.ok === true && payload.applied !== null && payload.applied.executed === true && typeof payload.applied.summary.taskId === 'string', res.text.substring(0, 600))
+  check(
+    'T-231 an executed decision names the card it created and changes board+detail+decisions',
+    Number.isFinite(payload.seq) && payload.affected.ids.indexOf(payload.applied.summary.taskId) >= 0 && payload.changed.join(',') === 'board,detail,decisions',
+    JSON.stringify({ seq: payload.seq, affected: payload.affected, changed: payload.changed }),
+  )
   const taskId = payload.applied.summary.taskId
   check('T-196 the answer carries the refreshed board', payload.snapshot !== undefined && payload.snapshot.tasks.some((task) => task.id === taskId), res.text.substring(0, 300))
   res = await post({ action: 'decisionAnswer', decisionId: asked.decision.id, option: 'cancel' })
@@ -382,11 +427,11 @@ check(
   // start: the agent asks, hold keeps the queue waiting, approve dispatches.
   const startAsked = await rig.api.perform('start', {}, asAgent)
   check('T-196 an agent start is a route-visible decision', startAsked.code === 'needs-consent' && startAsked.decision !== undefined, JSON.stringify(startAsked).substring(0, 400))
-  res = await post({ action: 'decisionAnswer', decisionId: startAsked.decision.id, option: 'hold' })
+  res = await post({ action: 'decisionAnswer', decisionId: startAsked.decision.id, option: 'hold', includeSnapshot: true })
   payload = res.json()
   check('T-196 暂不派发 leaves dispatch paused through the route', payload.ok === true && payload.snapshot.dispatch.state === 'paused', res.text.substring(0, 400))
   const startAgain = await rig.api.perform('start', {}, asAgent)
-  res = await post({ action: 'decisionAnswer', decisionId: startAgain.decision.id, option: 'approve' })
+  res = await post({ action: 'decisionAnswer', decisionId: startAgain.decision.id, option: 'approve', includeSnapshot: true })
   payload = res.json()
   check('T-196 批准派发 starts dispatch through the route', payload.ok === true && payload.snapshot.dispatch.state === 'running', res.text.substring(0, 400))
   check('T-196 the asking Session received the outcome as a message', routeAgents.calls.some((entry) => entry.kind === 'send' && entry.text.indexOf('created ' + String(taskId)) >= 0), JSON.stringify(routeAgents.calls.filter((entry) => entry.kind === 'send')))
