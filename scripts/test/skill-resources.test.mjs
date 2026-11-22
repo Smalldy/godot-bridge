@@ -127,6 +127,38 @@ assert.ok(gates.includes('reviewer') && gates.includes('tester') && gates.includ
   assert.ok(gates.includes('不要求子代理加载根技能'), 'gates.md does not require subagents to load the root skill')
 }
 
+// T-224: a card has to carry its own context. The full template lives in
+// cards.md; the always-loaded entry gets one short hard line. No new fields and
+// no mechanical validation are added, so the init budget must still hold.
+{
+  const template = '## 卡片模板'
+  assert.ok(cards.includes(template), 'cards.md carries the card template chapter')
+  for (const section of ['问题', '当前结论', '方案', '不做什么', '验收']) {
+    assert.ok(cards.includes(section), 'the card template names ' + section)
+  }
+  assert.ok(cards.includes('自包含'), 'the template requires a self-contained spec')
+  assert.ok(cards.includes('反例') && cards.includes('正例'), 'the template ships a counter-example and a worked example')
+  const forbidden = cards.slice(cards.indexOf('**禁止**'), cards.indexOf('### 反例'))
+  assert.ok(
+    forbidden.length > 0 && forbidden.includes('按商定') && forbidden.includes('如上') && forbidden.includes('之前说的'),
+    'the template names every dangling chat reference: ' + forbidden,
+  )
+  assert.ok(cards.includes('证据'), 'the template ties conclusions to evidence')
+  assert.ok(cards.includes('被否'), 'the template records why the rejected alternative lost')
+
+  assert.ok(init.includes('## 写卡：spec 自包含'), 'the init body states the self-contained spec rule')
+  for (const needle of ['要解决的问题', '已确认结论', '方案边界', '按商定', '如上', '之前说的']) {
+    assert.ok(init.includes(needle), 'the init self-contained hint keeps ' + needle)
+  }
+  const hintStart = init.indexOf('## 写卡：spec 自包含')
+  const hintEnd = init.indexOf('## 拆卡前检查')
+  const hint = hintStart >= 0 && hintEnd > hintStart ? init.slice(hintStart, hintEnd) : ''
+  assert.ok(hint.includes('自包含') && hint.includes('模板') && hint.includes('cards.md'), 'the init hint points at the template chapter')
+  assert.ok(init.split('\n').some((line) => line.includes('写卡/拆卡前') && line.includes('卡片模板')), 'the cards trigger names the template chapter')
+  assert.ok(Buffer.byteLength(init, 'utf8') < 5000, 'T-224 keeps the init under its budget: ' + Buffer.byteLength(init, 'utf8'))
+  assert.ok(!normaliseEol(init).includes(normaliseEol(cards).trim()), 'the init never inlines cards.md to carry the template')
+}
+
 const combined = buildSkillContent(options)
 assert.ok(combined.includes('worker-cannot-self-review'))
 assert.ok(combined.includes('sandbox-crash'))
