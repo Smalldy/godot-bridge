@@ -4,6 +4,11 @@
  * Extracted from the performResolved if-chain. The factory receives the API's
  * helpers, so the handlers keep the exact same board/read/lock semantics while
  * the action table can route to them by name.
+ *
+ * T-230: `list` no longer builds its own card view from the model. It asks the
+ * API's read model (`boardSummaryOf`), which is the SAME builder and the SAME
+ * per-request view /state.tasks and /list use — a tool reader and the panel now
+ * read one TaskSummary, not two vocabularies.
  */
 export function createReadActions(deps) {
   const snapshot = deps.snapshot
@@ -14,6 +19,7 @@ export function createReadActions(deps) {
   const archivedTask = deps.archivedTask
   const detailOf = deps.detailOf
   const candidateOf = deps.candidateOf
+  const boardSummaryOf = deps.boardSummaryOf
   const callerSessionId = deps.callerSessionId
   const ok = deps.ok
   const failure = deps.failure
@@ -33,10 +39,9 @@ export function createReadActions(deps) {
     const read = await readBoardOrFail(projectPath)
     if (read.failed !== undefined) return read.failed
     const status = typeof source.status === 'string' ? source.status : null
-    const tasks = read.board.tasks
-      .filter((task) => status === null || task.status === status)
-      .map((task) => model.summary(read.board, task, now))
-    return ok({ tasks: tasks, counts: model.counts(read.board) })
+    const rows = read.board.tasks.filter((task) => status === null || task.status === status)
+    // The page's cards plus the board counters, from the frozen read model.
+    return ok(boardSummaryOf(projectPath, read.board, now, rows))
   }
 
   async function get(source, context, projectPath, now) {
