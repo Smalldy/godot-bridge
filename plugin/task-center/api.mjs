@@ -35,6 +35,10 @@ import {
   waitsForHuman,
 } from './schema.mjs'
 import * as model from './service.mjs'
+// T-230: the ONE card read model. Every read surface (/state.tasks, /state.queue,
+// /list, the tool list, /task, the tool board/get) projects a card through these
+// builders with ONE per-request view, so a card cannot have two shapes again.
+import { buildBoardSummary, buildTaskDetail, buildTaskSummary } from './read-model.mjs'
 // T-201: the sole card-status write entry (base-only drift is a transition too).
 import { blockedReasonOf, enterState, isMergeReason } from './state-machine.mjs'
 import * as locks from './locks.mjs'
@@ -725,6 +729,12 @@ export function createApi(ctx, options) {
     detailOf: detailOf,
     candidateOf: candidateOf,
     callerSessionId: callerSessionId,
+    // T-230: the tool list projects its page through the SAME read model and the
+    // same per-request view /state and /list use, so the two clients read one
+    // card shape (never a second summaryOf).
+    boardSummaryOf: function (projectPath, board, now, rows) {
+      return buildBoardSummary(board, now, readViewOf(projectPath, board), rows)
+    },
     ok: ok,
     failure: failure,
   })
@@ -2744,165 +2754,38 @@ export function createApi(ctx, options) {
     )
   }
 
-  function waitingReasonOf(board, task) {
-    if (typeof task.waitingReason === 'string' && task.waitingReason !== '') return task.waitingReason
-    if (task.status !== 'pending') return null
-    const dispatch = board.dispatch === undefined || board.dispatch === null ? {} : board.dispatch
-    if (dispatch.state !== 'running') return 'dispatch-paused'
-    const dependency = model.dependencyInfo(board, task)
-    if (dependency.state === 'broken') return 'dependency-broken'
-    if (dependency.state === 'waiting') return 'dependency'
-    const files = Array.isArray(task.writeFiles) ? task.writeFiles : []
-    if (files.length > 0 && locks.conflictsFor(state.memory.locks, files, 'task:' + task.id).length > 0) return 'file-lock'
-    const running = board.tasks.filter((other) => other.status === 'running').length
-    const limit = Number.isFinite(dispatch.maxConcurrent) ? dispatch.maxConcurrent : 1
-    if (running >= limit) return 'concurrency'
-    return null
-  }
-
-  /** model.detail plus the report fields this API adds on top of it. */
-  function detailOf(board, task, now) {
-    const base = model.detail(board, task, now)
-    return Object.assign(base, {
-      waitingReason: waitingReasonOf(board, task),
-      waitingDetail: typeof task.waitingDetail === 'string' && task.waitingDetail !== '' ? task.waitingDetail : null,
-      liveExecutors: model.liveExecutors(task),
-    })
-  }
-
   /**
-   * T-225: the agent sidebar's stage rows resolve their session from
-   * review.deliveredTo.id / test.deliveredTo.id, and they read the SUMMARY
-   * (/state), never /task. Keep that identity (name + id) on each open round so
-   * a reviewing/testing/done card still names its real reviewer/tester instead
-   * of showing 未分配. Only these two small strings ride the summary: the `at`
-   * stamp, the generation and the record stay behind /task.
+   * T-230: the per-request READ VIEW — the process facts a pure projection
+   * cannot know. Every surface builds it HERE, once, and hands it to the same
+   * read model (read-model.mjs), so the same card cannot be projected two ways:
+   *
+   *   locks      the in-memory lock table (waitingReason 'file-lock')
+   *   stageSlot  the stage slot this process recorded (queuePosition, deliveredAt)
+   *   candidate  the testing candidate checkout (a small {path,branch,base,head})
    */
-  function summaryDeliveredTo(record) {
-    const delivered = record === null || record === undefined ? null : record.deliveredTo
-    if (delivered === null || typeof delivered !== 'object') return null
-    const name = typeof delivered.name === 'string' && delivered.name !== '' ? delivered.name : null
-    const id = typeof delivered.id === 'string' && delivered.id !== '' ? delivered.id : null
-    if (name === null && id === null) return null
-    return { name: name, id: id }
-  }
-
-  /**
-   * The snapshot summary: only the fields the panel renders. spec / acceptance /
-   * evidence / full history stay behind /task so a 3-second poll does not resend
-   * them (81 done cards were ~1.2 MB, half of it detail). A bounded tail of the
-   * history (last 2 rows) is kept as `events` because the status page's activity stream needs
-   * the newest rows; full history is fetched on demand.
-   */
-  function summaryOf(board, task, now) {
-    const detail = detailOf(board, task, now)
-    const hist = Array.isArray(task.history) ? task.history.slice(-2).map((entry) => ({
-      at: entry.at,
-      by: entry.by,
-      byName: entry.byName === undefined ? null : entry.byName,
-      from: entry.from === undefined ? null : entry.from,
-      to: entry.to === undefined ? null : entry.to,
-      note: typeof entry.note === 'string' ? entry.note.slice(0, 120) : '',
-    })) : []
-    // Detail-class strings never ride the summary: merge verification output /
-    // tests, the test evidence, the review reasons and the file lists are what
-    // made a real 84-card board answer ~545 KB. Counts/statuses stay; /task keeps
-    // the strings (the drawer fetches it on open).
-    const merge = detail.merge === null || detail.merge === undefined ? null : {
-      status: detail.merge.status,
-      base: detail.merge.base,
-      target: detail.merge.target,
-      head: detail.merge.head,
-      mergeCommit: detail.merge.mergeCommit,
-      reviewer: detail.merge.reviewer,
-      conflict: detail.merge.conflict === undefined ? null : detail.merge.conflict,
-      at: detail.merge.at,
-      declaredCount: Array.isArray(detail.merge.declaredFiles) ? detail.merge.declaredFiles.length : 0,
-      actualCount: Array.isArray(detail.merge.actualFiles) ? detail.merge.actualFiles.length : 0,
-      outputLength: typeof detail.merge.output === 'string' ? detail.merge.output.length : 0,
-      testsLength: typeof detail.merge.tests === 'string' ? detail.merge.tests.length : 0,
-      // T-156: the audit signals are small facts, not detail-class strings — the
-      // panel shows a drift/verify badge straight from /state, like queue[] does.
-      targetDrift: detail.merge.targetDrift === undefined ? null : detail.merge.targetDrift,
-      verifyChanged: detail.merge.verifyChanged === true,
-      verifyFingerprints: detail.merge.verifyFingerprints === undefined ? null : detail.merge.verifyFingerprints,
-    }
-    const review = detail.review === null || detail.review === undefined ? null : {
-      status: detail.review.status,
-      by: detail.review.by,
-      byName: detail.review.byName === undefined ? null : detail.review.byName,
-      at: detail.review.at,
-      attempt: detail.review.attempt,
-      deliveredAt: detail.review.deliveredAt === undefined ? null : detail.review.deliveredAt,
-      // T-225: the stage rows need the delivery identity, not the record.
-      deliveredTo: summaryDeliveredTo(detail.review),
-    }
-    const test = detail.test === null || detail.test === undefined ? null : {
-      status: detail.test.status,
-      by: detail.test.by,
-      byName: detail.test.byName === undefined ? null : detail.test.byName,
-      at: detail.test.at,
-      attempt: detail.test.attempt,
-      deliveredAt: detail.test.deliveredAt === undefined ? null : detail.test.deliveredAt,
-      evidenceLength: typeof detail.test.evidence === 'string' ? detail.test.evidence.length : 0,
-      // T-225: same compact delivery identity as the review round.
-      deliveredTo: summaryDeliveredTo(detail.test),
-    }
+  function readViewOf(projectPath, board) {
     return {
-      id: detail.id,
-      title: detail.title,
-      status: detail.status,
-      // T-201: detail/snapshot expose the state + phase projection without
-      // changing any existing field the panel already reads.
-      state: detail.state,
-      phase: detail.phase,
-      blockedReason: detail.blockedReason === undefined ? null : detail.blockedReason,
-      // T-131: the panel needs the kind to render an investigation and the
-      // headline to show its report without fetching detail; the full report stays
-      // behind /task.
-      kind: detail.kind,
-      reportSummary: detail.reportSummary,
-      // T-152: the card's owner is readable from the summary too, so the panel can
-      // group cards by participating session without a /task round-trip per card.
-      ownerSession: detail.ownerSession === undefined ? null : detail.ownerSession,
-      priority: detail.priority,
-      dependsOn: detail.dependsOn,
-      dependency: detail.dependency,
-      writeFileCount: Array.isArray(detail.writeFiles) ? detail.writeFiles.length : 0,
-      target: detail.target,
-      base: detail.base,
-      // T-156: the dispatch/submit audit baseline rides the compact summary too.
-      targetBase: detail.targetBase === undefined ? null : detail.targetBase,
-      verifyFingerprint: detail.verifyFingerprint === undefined ? null : detail.verifyFingerprint,
-      branch: detail.branch,
-      worktree: detail.worktree,
-      worktreeError: detail.worktreeError,
-      commit: detail.commit,
-      requiredRole: detail.requiredRole,
-      merge: merge,
-      review: review,
-      test: test,
-      assignee: detail.assignee,
-      attempts: detail.attempts,
-      maxAttempts: detail.maxAttempts,
-      interruptions: detail.interruptions,
-      executors: Array.isArray(detail.executors) ? detail.executors.slice(-3) : [],
-      // Live executors carry the project they were dispatched for, so a reader can
-      // see that a member belongs to this board (and a cross-project borrow would
-      // be visible instead of silent).
-      liveExecutors: detail.liveExecutors,
-      leaseUntil: detail.leaseUntil,
-      leaseRemaining: detail.leaseRemaining,
-      leaseExpired: detail.leaseExpired,
-      leaseReminder: detail.leaseReminder,
-      dispatch: detail.dispatch,
-      waitingReason: detail.waitingReason,
-      candidate: detail.candidate,
-      queuePosition: detail.queuePosition,
-      createdAt: detail.createdAt,
-      updatedAt: detail.updatedAt,
-      events: hist,
+      locks: state.memory.locks,
+      stageSlot: function (task, kind) {
+        return stageSlotOf(ctx, task === null || task === undefined ? null : task.id, kind)
+      },
+      candidate:
+        typeof projectPath === 'string' && projectPath !== ''
+          ? function (task) {
+              return candidateOf(projectPath, board, task)
+            }
+          : null,
     }
+  }
+
+  /** One card as the frozen TaskSummary (the only shape /state/list/tool list sends). */
+  function summaryOf(board, task, now, view) {
+    return buildTaskSummary(board, task, now, view === undefined ? readViewOf(null, board) : view)
+  }
+
+  /** One card as the frozen TaskDetail (the summary plus the detail-class fields). */
+  function detailOf(board, task, now, view) {
+    return buildTaskDetail(board, task, now, view === undefined ? readViewOf(null, board) : view)
   }
 
   /**
@@ -4175,24 +4058,13 @@ export function createApi(ctx, options) {
     // a pending task, and the stale board would then drop its locks.
     state.sweepLocks()
     reconcileLocks(board)
-    const isoOf = (slot) => (slot === null || slot.at === null ? null : new Date(slot.at).toISOString())
-    const buildTask = (task) => {
-      const view = summaryOnly
-        ? summaryOf(board, task, now)
-        : Object.assign(detailOf(board, task, now), { candidate: candidateOf(projectPath, board, task) })
-      const reviewSlot = stageSlotOf(ctx, task.id, 'reviewer')
-      const testSlot = stageSlotOf(ctx, task.id, 'tester')
-      // Only the CURRENT stage's slot can describe a wait, and only while the
-      // card is still queued (position set, not delivered). Falling back to the
-      // other stage's slot is what let a stale review position reappear during
-      // testing (and a stale test position during a later review round).
-      const currentSlot = task.status === 'reviewing' ? reviewSlot : task.status === 'testing' ? testSlot : null
-      view.queuePosition =
-        currentSlot !== null && currentSlot.at === null && currentSlot.position !== null ? currentSlot.position : null
-      if (view.review !== null && view.review !== undefined) view.review = Object.assign({}, view.review, { deliveredAt: isoOf(reviewSlot) })
-      if (view.test !== null && view.test !== undefined) view.test = Object.assign({}, view.test, { deliveredAt: isoOf(testSlot) })
-      return view
-    }
+    // T-230: ONE view per request. /state.tasks, /state.queue, /list and the tool
+    // list all project a card through the same read model with this view, so the
+    // queue slot, the stage delivery time and the candidate cannot differ per
+    // surface. The summary answer is the panel's poll; the full answer is the
+    // tool board and the older detail-shaped /state read.
+    const readView = readViewOf(projectPath, board)
+    const buildTask = (task) => (summaryOnly ? buildTaskSummary(board, task, now, readView) : buildTaskDetail(board, task, now, readView))
     const tasksStarted = Date.now()
     const allTasks = board.tasks
       .slice()
@@ -4392,7 +4264,7 @@ export function createApi(ctx, options) {
       boardSize: boardSize,
       // The DISPATCH queue: cards ready to be dispatched. This is NOT the merge
       // queue (T-154: the status page used to misread it as one).
-      queue: model.readyTasks(board).map((task) => model.summary(board, task, now)),
+      queue: model.readyTasks(board).map((task) => buildTaskSummary(board, task, now, readView)),
       // T-154: the REAL merge queue, read from the merger that owns it. A host
       // without a merger answers null — never a fabricated zero.
       mergeQueue: timer === null ? mergerQueueStatus() : await timer.measure('mergeQueue', () => mergerQueueStatus()),
@@ -4446,7 +4318,8 @@ export function createApi(ctx, options) {
       return failure('unknown-task', 'no task with id ' + String(id))
     }
     const now = clock()
-    return ok({ task: Object.assign(detailOf(read.board, task, now), { candidate: candidateOf(projectPath, read.board, task) }) })
+    const readView = readViewOf(projectPath, read.board)
+    return ok({ task: buildTaskDetail(read.board, task, now, readView) })
   }
 
   /**
@@ -4527,7 +4400,8 @@ export function createApi(ctx, options) {
     const page = rows.slice(0, limit)
     const last = page.length === 0 ? null : page[page.length - 1]
     const nextCursor = rows.length > limit && last !== null ? String(last.updatedAt) + '|' + String(last.id) : null
-    return ok({ tasks: page.map((task) => summaryOf(read.board, task, now)), nextCursor: nextCursor, count: page.length })
+    const readView = readViewOf(projectPath, read.board)
+    return ok({ tasks: page.map((task) => buildTaskSummary(read.board, task, now, readView)), nextCursor: nextCursor, count: page.length })
   }
 
   /** Renew the lease of every running task the caller owns. Any activity by the

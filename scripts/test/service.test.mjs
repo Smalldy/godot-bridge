@@ -569,9 +569,18 @@ const ids = (board) => board.tasks.map((task) => task.id).join(',')
     view.worktree === task.worktree && view.branch === 'task/T-1' && view.base === 'base-sha' && view.target === 'main' && view.commit === 'commit-sha' && view.requiredRole === 'reviewer',
     JSON.stringify(view),
   )
-  check('summary carries actualFiles and merge', view.actualFiles.join(',') === 'scripts/a.gd' && view.merge.status === 'open', JSON.stringify(view))
+  // T-230: the summary is the FROZEN read model — it names the file COUNT and
+  // the merge state, and the file lists themselves are detail-class.
+  check(
+    'summary carries the merge state and the declared-file count',
+    view.merge.status === 'open' && view.merge.declaredCount === 1 && view.merge.actualCount === 1 && view.actualFiles === undefined,
+    JSON.stringify(view.merge),
+  )
+  check('summary carries the file count, not the list', view.writeFileCount === 0 && view.writeFiles === undefined, JSON.stringify({ count: view.writeFileCount, files: view.writeFiles }))
   const full = detail(board, task, T0)
   check('detail carries the merge record', full.merge.head === 'commit-sha' && full.merge.declaredFiles.join(',') === 'scripts/a.gd' && full.worktree === task.worktree)
+  check('detail carries the file lists the summary dropped', Array.isArray(full.actualFiles) && full.actualFiles.join(',') === 'scripts/a.gd' && Array.isArray(full.writeFiles))
+  check('detail is the summary plus the detail-class fields', Object.keys(view).every((key) => Object.prototype.hasOwnProperty.call(full, key)))
 }
 
 // counts

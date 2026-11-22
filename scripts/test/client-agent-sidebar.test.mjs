@@ -205,7 +205,7 @@ const helpers = {
 // the server really sends.
 const SUMMARY_TASK_KEYS = [
   'id', 'title', 'status', 'state', 'phase', 'blockedReason', 'kind', 'reportSummary',
-  'ownerSession', 'priority', 'dependsOn', 'dependency', 'writeFileCount', 'target', 'base',
+  'ownerSession', 'priority', 'dependsOn', 'dependency', 'writeFileCount', 'verification', 'target', 'base',
   'targetBase', 'verifyFingerprint', 'branch', 'worktree', 'worktreeError', 'commit',
   'requiredRole', 'merge', 'review', 'test', 'assignee', 'attempts', 'maxAttempts',
   'interruptions', 'executors', 'liveExecutors', 'leaseUntil', 'leaseRemaining',
@@ -226,6 +226,8 @@ const task = {
   dependsOn: [],
   dependency: { state: 'ready', waitingOn: [], brokenOn: [] },
   writeFileCount: 1,
+  // T-230: the frozen summary names the probe COUNT; the probe list is detail-class.
+  verification: { probeCount: 1 },
   target: 'feat/task-center-v2',
   base: 'base-sha',
   targetBase: 'base-sha',

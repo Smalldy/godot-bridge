@@ -28,7 +28,6 @@ import {
   TASK_HEARTBEAT_MS,
   TASK_LEASE_MS,
   TASK_LEASE_EXTENSION_MAX_MS,
-  TASK_LEASE_REMINDER_MS,
   normaliseDispatch,
   normaliseEvidence,
   normaliseKind,
@@ -43,7 +42,11 @@ import {
 } from './schema.mjs'
 import { normaliseReviewRecord, normaliseTestRecord } from './stage-contract.mjs'
 // T-201: every card status write goes through the state machine (one table).
-import { blockedReasonOf, enterState, phaseOf, restoreTargetOf, transition } from './state-machine.mjs'
+import { enterState, restoreTargetOf, transition } from './state-machine.mjs'
+// T-230: the ONE card read model. These builders are pure; the summary/detail
+// exports below are the compatibility delegation, not a second vocabulary.
+import { buildTaskDetail, buildTaskSummary, counts, dependencyInfo, liveExecutors, readyTasks } from './read-model.mjs'
+export { counts, dependencyInfo, liveExecutors, readyTasks }
 
 const iso = (now) => new Date(now).toISOString()
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -117,18 +120,6 @@ export function attemptSlot(task) {
   const attempts = Number.isFinite(task.attempts) ? Math.max(0, Math.floor(task.attempts)) : 0
   const interruptions = Number.isFinite(task.interruptions) ? Math.max(0, Math.floor(task.interruptions)) : 0
   return attempts + interruptions + 1
-}
-
-/** Executor identities still counted as live: handed the task, never retired.
- * A running claim always counts as one, even on a board written before the ledger
- * existed, so the panel never reports "0 live executors" for running work. */
-export function liveExecutors(task) {
-  const list = task === null || task === undefined || !Array.isArray(task.executors) ? [] : task.executors
-  const live = list.filter((entry) => entry !== null && typeof entry === 'object' && (entry.retiredAt === null || entry.retiredAt === undefined))
-  if (live.length === 0 && task !== null && task !== undefined && task.status === 'running' && task.assignee !== null && task.assignee !== undefined) {
-    return [{ name: String(task.assignee.name), session: task.assignee.session === undefined ? null : task.assignee.session, at: null, retiredAt: null, retiredReason: null }]
-  }
-  return live
 }
 
 function normaliseList(value) {
@@ -512,56 +503,6 @@ export function setDispatch(board, patch, now, by) {
 }
 
 // ── task lifecycle ─────────────────────────────────────────────────────────
-
-/**
- * Does this dependency satisfy its dependents?
- *
- * A task must be DONE and — when it has a merge request — MERGED. Starting a
- * dependent on an unmerged branch gives that dependent a stale base and all but
- * guarantees a conflict later. A legacy task with no merge record keeps the old
- * "done is enough" behaviour, so historical tasks do not block the board.
- */
-function dependencySatisfied(dependency) {
-  if (dependency.status !== 'done') return false
-  // An investigation delivers a report, not a branch: done is the whole story.
-  if (dependency.kind === INVESTIGATE_KIND) return true
-  if (dependency.merge === null || dependency.merge === undefined) return true
-  return dependency.merge.status === 'merged'
-}
-
-/** Dependencies that are missing or cancelled make the task BROKEN (visible to
- * the user instead of waiting forever). A done-but-unmerged dependency is not
- * broken: it is still WAITING, and shows up in waitingOn. */
-export function dependencyInfo(board, task) {
-  const waitingOn = []
-  const brokenOn = []
-  for (const id of task.dependsOn) {
-    const dependency = findTask(board, id)
-    if (dependency === undefined || dependency.status === 'cancelled') {
-      brokenOn.push(id)
-      continue
-    }
-    if (!dependencySatisfied(dependency)) waitingOn.push(id)
-  }
-  return {
-    state: brokenOn.length > 0 ? 'broken' : waitingOn.length > 0 ? 'waiting' : 'ready',
-    waitingOn: waitingOn,
-    brokenOn: brokenOn,
-  }
-}
-
-/** Pending tasks whose dependencies are all done (and merged, when they have a
- * merge request), in dispatch order: priority desc, then creation time, then id. */
-export function readyTasks(board) {
-  return board.tasks
-    .filter((task) => task.status === 'pending' && dependencyInfo(board, task).state === 'ready')
-    .sort((left, right) => {
-      if (right.priority !== left.priority) return right.priority - left.priority
-      const created = Date.parse(left.createdAt) - Date.parse(right.createdAt)
-      if (created !== 0) return created
-      return left.id.localeCompare(right.id)
-    })
-}
 
 /** Claim a ready task for a worker. The claim is the mutex: only claimTask can
  * produce status running, so a second dispatch of the same task fails on the
@@ -1471,109 +1412,21 @@ export function renewRunningLeases(board, now, options) {
 
 // ── views ──────────────────────────────────────────────────────────────────
 
-export function counts(board) {
-  const out = {
-    total: board.tasks.length,
-    pending: 0,
-    ready: 0,
-    running: 0,
-    reviewing: 0,
-    testing: 0,
-    done: 0,
-    blocked: 0,
-    cancelled: 0,
-    // T-131: how many of the running cards are investigations (they are also
-    // counted in `running`, so the existing totals stay additive).
-    investigating: 0,
-  }
-  const ready = new Set(readyTasks(board).map((task) => task.id))
-  for (const task of board.tasks) {
-    out[task.status] = (out[task.status] || 0) + 1
-    if (task.status === 'running' && task.kind === INVESTIGATE_KIND) out.investigating += 1
-    if (ready.has(task.id)) out.ready += 1
-  }
-  return out
+/**
+ * T-230: the card read views are the FROZEN read model (read-model.mjs).
+ *
+ * These two exports are a compatibility delegation, not a second vocabulary:
+ * every read surface (/state.tasks, /state.queue, /list, the tool list, /task,
+ * the tool board and get) goes through the same builders with the same view, so
+ * a card has ONE shape. `summary` is the TaskSummary contract (no spec /
+ * acceptance / evidence / history / writeFiles / verify / full stage records);
+ * `detail` is its strict superset.
+ */
+export function summary(board, task, now, view) {
+  return buildTaskSummary(board, task, now, view)
 }
 
-export function summary(board, task, now) {
-  const dependency = dependencyInfo(board, task)
-  const at = typeof now === 'number' ? now : Date.now()
-  const report = task.report === undefined ? null : task.report
-  return {
-    id: task.id,
-    title: task.title,
-    // T-201: state is the persisted authority; phase is the derived stage
-    // projection (a tested card waiting for its merge reads phase 'merge').
-    status: task.status,
-    state: task.status,
-    phase: phaseOf(task),
-    blockedReason: blockedReasonOf(task),
-    kind: task.kind === undefined ? 'dev' : task.kind,
-    // The summary poll carries only the report HEADLINE; the body/evidence ride on
-    // /task (detail) and the full markdown lives in .agents/reports/<id>.md.
-    reportSummary:
-      report === null || report === undefined
-        ? null
-        : {
-            summary: report.summary,
-            createdAt: report.createdAt,
-            by: report.by,
-            byName: report.byName,
-            evidence: Array.isArray(report.evidence) ? report.evidence.length : 0,
-            artifacts: Array.isArray(report.artifacts) ? report.artifacts.length : 0,
-            hasBody: typeof report.body === 'string' && report.body !== '',
-          },
-    ownerSession: task.ownerSession === undefined ? null : task.ownerSession,
-    priority: task.priority,
-    dependsOn: task.dependsOn,
-    dependency: dependency,
-    writeFiles: task.writeFiles,
-    verify: task.verify,
-    // T-191: the executable probes the test stage receives.
-    verification: task.verification === undefined ? { probes: [] } : task.verification,
-    worktree: task.worktree,
-    worktreeError: task.worktreeError,
-    branch: task.branch,
-    base: task.base,
-    // T-156: audit baseline, readable from board/get.
-    targetBase: task.targetBase === undefined ? null : task.targetBase,
-    verifyFingerprint: task.verifyFingerprint === undefined ? null : task.verifyFingerprint,
-    target: task.target,
-    commit: task.commit,
-    actualFiles: task.actualFiles,
-    requiredRole: task.requiredRole,
-    merge: task.merge,
-    review: task.review,
-    test: task.test,
-    assignee: task.assignee,
-    lastAssignee: task.lastAssignee,
-    attempts: task.attempts,
-    maxAttempts: task.maxAttempts,
-    interruptions: Number.isFinite(task.interruptions) ? task.interruptions : 0,
-    executors: Array.isArray(task.executors) ? task.executors : [],
-    liveExecutors: liveExecutors(task).length,
-    leaseUntil: task.leaseUntil,
-    leaseRemaining: task.leaseUntil === null ? null : Math.max(0, Date.parse(task.leaseUntil) - at),
-    leaseExpired: task.leaseUntil !== null && Date.parse(task.leaseUntil) <= at,
-    leaseReminder:
-      task.status === 'running' &&
-      task.leaseUntil !== null &&
-      Date.parse(task.leaseUntil) > at &&
-      Date.parse(task.leaseUntil) - at <= TASK_LEASE_REMINDER_MS,
-    dispatch: task.dispatch,
-    createdAt: task.createdAt,
-    updatedAt: task.updatedAt,
-  }
-}
-
-/** The whole picture for one task, with dependency states and history. */
-export function detail(board, task, now) {
-  return Object.assign(summary(board, task, now), {
-    spec: task.spec,
-    acceptance: task.acceptance,
-    evidence: task.evidence,
-    report: task.report === undefined ? null : task.report,
-    createdBy: task.createdBy,
-    history: task.history,
-  })
+/** The whole picture for one task: the summary plus the detail-class fields. */
+export function detail(board, task, now, view) {
+  return buildTaskDetail(board, task, now, view)
 }
